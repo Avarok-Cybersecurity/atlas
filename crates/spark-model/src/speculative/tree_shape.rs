@@ -10,7 +10,7 @@
 //! spine(1..d-1) + self", the drafter KV stays a linear chain, and GDN
 //! verification decomposes into one spine pass + one 1-token pass per hedge.
 //!
-//! Shape notation (`ATLAS_TREE_SHAPE="1,2,2,2"`): per-depth node counts;
+//! Shape notation (`AVAROK_TREE_SHAPE="1,2,2,2"`): per-depth node counts;
 //! depth d contributes 1 spine node + (count_d - 1) hedges. Verify width
 //! M = 1 (root row) + total nodes.
 //!
@@ -40,7 +40,7 @@ impl TreeShape {
             .split(',')
             .map(|t| t.trim().parse::<u8>())
             .collect::<std::result::Result<_, _>>()
-            .map_err(|e| anyhow::anyhow!("ATLAS_TREE_SHAPE parse: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("AVAROK_TREE_SHAPE parse: {e}"))?;
         let shape = Self { counts };
         shape.validate()?;
         Ok(shape)

@@ -4,4 +4,4 @@
 //!
 //! Not a GDN/Mamba reuse. CUDA: [`super::kda_cuda`] (`K3_CUDA_KDA=0` disables).
 
-pub use atlas_core::kimi_k3::kda::*;
+pub use avarok_core::kimi_k3::kda::*;

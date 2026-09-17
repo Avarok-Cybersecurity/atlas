@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -499,7 +499,7 @@ impl TransformerModel {
             )?;
             self.gpu.synchronize(stream)?;
             let elapsed = t0.elapsed().as_micros() as u64;
-            if self.config.layer_type(i) == atlas_core::config::LayerType::FullAttention {
+            if self.config.layer_type(i) == avarok_core::config::LayerType::FullAttention {
                 attn_us += elapsed;
             } else {
                 ssm_us += elapsed;

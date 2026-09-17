@@ -5,13 +5,13 @@
 //!
 //! **WHY (#915 root cause; O9 of the 2026-09-05 rental; refs #916, #917, #736).**
 //! Measured on 1xH100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8` at `5f78270dc`,
-//! native-FP8 profile (`ATLAS_DENSE_FP8=1`, `--lm-head-dtype bf16`):
+//! native-FP8 profile (`AVAROK_DENSE_FP8=1`, `--lm-head-dtype bf16`):
 //!
 //! * the checkpoint itself is **28.75 GB** — `WeightStore after prune: 1606
 //!   tensors, 28.747 GiB still resident`, one ledger site
 //!   (`fast_weights/mod.rs:434`, 29,436.7 MB x1606);
 //! * the ledger nevertheless reported **58.1 GB live before the KV cache was
-//!   sized**, and `ATLAS_MEM_PROFILE` recorded GPU-free falling **437 MB per
+//!   sized**, and `AVAROK_MEM_PROFILE` recorded GPU-free falling **437 MB per
 //!   layer over all 64 layers (28.0 GB)** *after* the checkpoint was resident;
 //! * the teardown sweep reclaimed **28.01 GB across 1,980 allocations that no
 //!   `ModelResource` owned**.
@@ -50,7 +50,7 @@
 //!   of the environment and a serve never rewrites its own environment, so the
 //!   loader's answer and the context's answer cannot disagree.
 //!
-//! `ATLAS_FFN_W8A16_ONLY` is deliberately NOT an input: it steers the dense FFN
+//! `AVAROK_FFN_W8A16_ONLY` is deliberately NOT an input: it steers the dense FFN
 //! from the W8A8 arm onto rung 5 of the same `w8_gemm!` match, whose transposed
 //! operand is that literal `None` — so it selects between two kernels that both
 //! read the original FP8 bytes, and cannot resurrect an NVFP4 reader.
@@ -58,7 +58,7 @@
 //! That is the contract: **any new lever that can route a native-FP8 layer back
 //! onto an NVFP4 kernel must be added to [`DenseFp8Plan::resolve`] as well as
 //! to the dispatch site**, or the loader will have freed the weight that site
-//! wants. `ATLAS_DENSE_FP8_KEEP_NVFP4` is the escape hatch that restores the
+//! wants. `AVAROK_DENSE_FP8_KEEP_NVFP4` is the escape hatch that restores the
 //! pre-#915 behaviour wholesale while such a gap is diagnosed.
 
 use crate::layers::ops::GemmDispatch;
@@ -67,12 +67,12 @@ use crate::layers::qwen3_attention::Fp8TwinSet;
 /// The per-layer kill switch that restores the pre-#915 behaviour: build every
 /// NVFP4 fallback copy even where the dispatch cannot reach it.
 ///
-/// PRESENCE (any value, including empty), matching `ATLAS_FFN_W8A16_ONLY` —
+/// PRESENCE (any value, including empty), matching `AVAROK_FFN_W8A16_ONLY` —
 /// this is an escape hatch an operator reaches for while a serve is
-/// misbehaving, and `ATLAS_DENSE_FP8_KEEP_NVFP4=0` meaning "on" is a trap.
+/// misbehaving, and `AVAROK_DENSE_FP8_KEEP_NVFP4=0` meaning "on" is a trap.
 pub fn keep_nvfp4_fallback() -> bool {
     static KEEP: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *KEEP.get_or_init(|| std::env::var_os("ATLAS_DENSE_FP8_KEEP_NVFP4").is_some())
+    *KEEP.get_or_init(|| std::env::var_os("AVAROK_DENSE_FP8_KEEP_NVFP4").is_some())
 }
 
 /// What a native-FP8 dense layer must materialise beyond the checkpoint bytes.
@@ -95,11 +95,11 @@ pub struct DenseFp8Plan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DenseFp8Inputs {
     /// The native FP8 dense-FFN overlay will be installed on this layer
-    /// (`ATLAS_DENSE_FP8=1`, tp_size 1, `Fp8Dequanted`, gate_proj native FP8).
+    /// (`AVAROK_DENSE_FP8=1`, tp_size 1, `Fp8Dequanted`, gate_proj native FP8).
     pub ffn_fp8: bool,
     /// The native FP8 attention overlay will be installed on this layer.
     pub attn_fp8: bool,
-    /// `ATLAS_DENSE_FP8_KEEP_NVFP4` — restore the pre-#915 behaviour.
+    /// `AVAROK_DENSE_FP8_KEEP_NVFP4` — restore the pre-#915 behaviour.
     pub keep_nvfp4: bool,
     /// Resolved exactly as `model/impl_a1.rs:836` resolves it.
     pub dispatch: GemmDispatch,
@@ -109,14 +109,14 @@ pub struct DenseFp8Inputs {
     /// `prefill/paged_oproj.rs:94`; without them those two chains fall through
     /// to the transposed W8A16 kernels, which read the FP8 twins.
     pub w8a8_kernels: bool,
-    /// `ATLAS_ATTN_W4A4` is set. `prefill/paged_oproj.rs:38-42` builds its W4A4
+    /// `AVAROK_ATTN_W4A4` is set. `prefill/paged_oproj.rs:38-42` builds its W4A4
     /// arm with NO weight-type predicate and then feeds it
     /// `&self.attn.o_proj` — the NVFP4 o_proj — so this one lever keeps the
     /// NVFP4 attention weights alive even under a full FP8 overlay. (The QKV
     /// side at `paged_qkv.rs:51` does check `as_nvfp4()`, so it is already
     /// closed; the o_proj asymmetry is not.)
     pub attn_w4a4: bool,
-    /// `ATLAS_ATTN_PREFILL_Q_T=1`. `prefill/cache_skip_qkv.rs:142` reads it per
+    /// `AVAROK_ATTN_PREFILL_Q_T=1`. `prefill/cache_skip_qkv.rs:142` reads it per
     /// projection per prefill and, when set, dispatches Q through `q_fp8w_t`.
     pub attn_prefill_q_t: bool,
 }
@@ -131,7 +131,7 @@ impl DenseFp8Plan {
     /// * **Attention NVFP4** — `set_fp8_weights` *overwrites*
     ///   `q_weight`/`k_weight`/`v_weight`/`o_weight` with `QuantWeight::Fp8`,
     ///   so the base NVFP4 weights are orphaned at load. The transposed and
-    ///   fused twins survive only behind the `ATLAS_CUTLASS_NVFP4_*` levers,
+    ///   fused twins survive only behind the `AVAROK_CUTLASS_NVFP4_*` levers,
     ///   which default off.
     /// * **Attention FP8 twins, K and V** — KEPT UNCONDITIONALLY. The
     ///   first prefill chunk (`seq_len_start == 0`, the default for every
@@ -141,7 +141,7 @@ impl DenseFp8Plan {
     ///   / `:235` on every request regardless of `fp8_blockscaled_prefill`.
     ///   Freeing them is a NULL-pointer kernel launch on the first token.
     /// * **Attention FP8 twins, Q and O** — Q on that same chain is behind
-    ///   `ATLAS_ATTN_PREFILL_Q_T=1` (`cache_skip_qkv.rs:142`) and O is routed
+    ///   `AVAROK_ATTN_PREFILL_Q_T=1` (`cache_skip_qkv.rs:142`) and O is routed
     ///   to `paged_oproj.rs` from both chains, so both are reachable only after
     ///   the W8A8 arm declines — block-scaled prefill off, or a target missing
     ///   one of the two kernels.
@@ -208,8 +208,8 @@ impl RouteEnv {
             dispatch: GemmDispatch::from_env(),
             // Same predicates as the dispatch sites, character for character:
             // `is_ok()` (presence) for W4A4, `== "1"` for the Q-transpose.
-            attn_w4a4: std::env::var("ATLAS_ATTN_W4A4").is_ok(),
-            attn_prefill_q_t: std::env::var("ATLAS_ATTN_PREFILL_Q_T").ok().as_deref() == Some("1"),
+            attn_w4a4: std::env::var("AVAROK_ATTN_W4A4").is_ok(),
+            attn_prefill_q_t: std::env::var("AVAROK_ATTN_PREFILL_Q_T").ok().as_deref() == Some("1"),
         }
     }
 
@@ -408,7 +408,7 @@ impl DerivedResidency {
     /// The line the next H100 run is read against.
     ///
     /// Emitted at the end of `load_layers` so a serve log proves the residency
-    /// without an `ATLAS_MEM_PROFILE` rerun: `weights` is the checkpoint,
+    /// without an `AVAROK_MEM_PROFILE` rerun: `weights` is the checkpoint,
     /// `derived` is everything this loader built on top of it, and `skipped`
     /// is what the pre-#915 loader would have built and this one did not.
     pub fn summary(&self, weight_bytes: usize) -> String {

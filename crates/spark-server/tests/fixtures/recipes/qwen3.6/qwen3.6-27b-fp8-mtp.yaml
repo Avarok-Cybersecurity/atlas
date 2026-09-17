@@ -47,7 +47,7 @@ metadata:
     fused FP8 dual-GEMV decode kernel would raise the no-spec floor and
     change every number in that table. Do not read 15.6 as "this model's
     speed".
-  maintainer: avarok
+  maintainer: atlas
   category: chat
   model_params: 27B
   model_dtype: fp8

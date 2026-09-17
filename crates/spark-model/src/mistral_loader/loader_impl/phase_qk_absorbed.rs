@@ -30,11 +30,11 @@ fn widen_bf16(buf: &[u8]) -> Vec<f32> {
 
 /// How many worker threads the absorption GEMM may use.
 ///
-/// `ATLAS_MLA_ABSORB_THREADS` overrides (1 = fully sequential, which is the
+/// `AVAROK_MLA_ABSORB_THREADS` overrides (1 = fully sequential, which is the
 /// escape hatch if this is ever suspected of a numerics change — it is not,
 /// see `absorb_rows`, but the knob costs nothing).
 fn absorb_threads(rows: usize) -> usize {
-    let want = std::env::var("ATLAS_MLA_ABSORB_THREADS")
+    let want = std::env::var("AVAROK_MLA_ABSORB_THREADS")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)

@@ -36,9 +36,9 @@ __device__ __forceinline__ __nv_bfloat16 fp8_to_bf16(__nv_fp8_storage_t b, float
 // GATED 2026-06-28 (dgx1): occupancy-NEUTRAL (1->2 CTAs/SM but per-attn-layer
 // time unchanged; attention is dependency-latency bound). Disabled on serving;
 // kept for a future larger-BR retile that uses the freed smem. See handoff.
-// #define ATLAS_ATTN_FP8_SMEM
+// #define AVAROK_ATTN_FP8_SMEM
 
-#ifdef ATLAS_ATTN_FP8_SMEM
+#ifdef AVAROK_ATTN_FP8_SMEM
 // Copy raw E4M3 bytes (8 B / chunk via uint2); dequant deferred to MMA read.
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
     do { \

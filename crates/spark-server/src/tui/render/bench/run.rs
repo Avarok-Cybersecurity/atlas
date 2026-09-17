@@ -148,7 +148,7 @@ fn draw_log(f: &mut Frame, app: &App, area: Rect) {
     let width = inner.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
     for entry in app.bench.log.iter().rev() {
-        use atlas_plugin::LogLevel as L;
+        use avarok_plugin::LogLevel as L;
         let style = match entry.level {
             L::Error => theme::error(),
             L::Warn => theme::warn(),

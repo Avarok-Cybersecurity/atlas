@@ -35,7 +35,7 @@
 //!
 //! **The precedent.** `weight_loader/gemma4/loader_a.rs::ffn_transpose_fits`
 //! already does exactly this for the Gemma-4 dense FFN, under
-//! `ATLAS_GEMMA4_FFN_TRANSPOSE=0`, and for the same reason. This module is that
+//! `AVAROK_GEMMA4_FFN_TRANSPOSE=0`, and for the same reason. This module is that
 //! mechanism generalised to the three families the Qwen3.5-class dense loader
 //! builds, and it keeps gemma4's most important property: **the decision is
 //! made ONCE, before any layer allocates.** `free_memory()` shrinks as layers
@@ -63,7 +63,7 @@
 //! **What this lever does NOT govern, and must not.** The attention
 //! `Fp8WeightTransposed` twins that `transpose_fp8_for_prefill_selected` builds
 //! are a different family on a different route: they exist only under the
-//! native-FP8 overlay (`ATLAS_DENSE_FP8=1` on a block-scaled FP8 checkpoint,
+//! native-FP8 overlay (`AVAROK_DENSE_FP8=1` on a block-scaled FP8 checkpoint,
 //! which is not the layout this work is about), they are already selected per
 //! projection by `Fp8TwinSet` and the #915 plan, and `fp8_residency.rs` records
 //! that the K and V members are dereferenced UNCONDITIONALLY on the first
@@ -79,7 +79,7 @@
 //! second layout to build or skip, on any target. This module buys a serve
 //! tonight; it does not buy the kernel.
 
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 
 /// VRAM the `auto` probe refuses to spend on twins.
@@ -92,7 +92,7 @@ use spark_runtime::gpu::GpuBackend;
 /// reserves the number the ledger actually names.
 const SERVE_RESERVE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 
-/// What `ATLAS_LOAD_TRANSPOSED_TWINS` selects.
+/// What `AVAROK_LOAD_TRANSPOSED_TWINS` selects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TwinPolicy {
     /// Build every twin. Today's behaviour, byte for byte.
@@ -108,9 +108,9 @@ impl TwinPolicy {
     /// operator would type to pin it.
     fn lever(self) -> &'static str {
         match self {
-            Self::Always => "ATLAS_LOAD_TRANSPOSED_TWINS=1",
-            Self::Never => "ATLAS_LOAD_TRANSPOSED_TWINS=0",
-            Self::Auto => "ATLAS_LOAD_TRANSPOSED_TWINS=auto",
+            Self::Always => "AVAROK_LOAD_TRANSPOSED_TWINS=1",
+            Self::Never => "AVAROK_LOAD_TRANSPOSED_TWINS=0",
+            Self::Auto => "AVAROK_LOAD_TRANSPOSED_TWINS=auto",
         }
     }
 }
@@ -249,8 +249,10 @@ impl TwinPlan {
         gpu: &dyn GpuBackend,
     ) -> Self {
         let policy = decide(
-            std::env::var("ATLAS_LOAD_TRANSPOSED_TWINS").ok().as_deref(),
-            cfg!(atlas_scale),
+            std::env::var("AVAROK_LOAD_TRANSPOSED_TWINS")
+                .ok()
+                .as_deref(),
+            cfg!(avarok_scale),
         );
         let projected = projected_bytes(config, layer_types);
         let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -292,13 +294,13 @@ impl TwinPlan {
             // Two different facts depending on the target, so say which one
             // this build is looking at rather than printing the GB10 number on
             // a board where it is not true.
-            if cfg!(atlas_scale) {
+            if cfg!(avarok_scale) {
                 tracing::info!(
                     "transposed prefill twins skipped: FFN prefill runs the untransposed \
                      w4a16_gemm, which on gfx1201 measured FASTER than the twin arm \
                      (~4 TFLOP/s against ~1 for w4a16_gemm_t_m128, R9700 2026-09-17) \
                      as well as 12.74 GiB smaller on Qwen3.8-27B. Decode is unaffected. \
-                     ATLAS_LOAD_TRANSPOSED_TWINS=1 builds them anyway for an A/B. \
+                     AVAROK_LOAD_TRANSPOSED_TWINS=1 builds them anyway for an A/B. \
                      See docs/porting/r9700-residency.md."
                 );
             } else {
@@ -306,7 +308,7 @@ impl TwinPlan {
                     "transposed prefill twins skipped: FFN prefill falls back to the \
                      untransposed w4a16_gemm (~7 TFLOP/s against ~51 for w4a16_gemm_t_m128 \
                      on the Gemma-4-31B measurement). Decode is unaffected. \
-                     ATLAS_LOAD_TRANSPOSED_TWINS=1 restores them. \
+                     AVAROK_LOAD_TRANSPOSED_TWINS=1 restores them. \
                      See docs/porting/r9700-residency.md."
                 );
             }

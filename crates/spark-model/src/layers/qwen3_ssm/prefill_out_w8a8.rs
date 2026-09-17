@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! W8A8 block-scaled cuBLASLt arm for the SSM/GDN **`out_proj` PREFILL**
-//! projection — the `ATLAS_CUBLAS_GEMM=ssm` route for the second half of the
+//! projection — the `AVAROK_CUBLAS_GEMM=ssm` route for the second half of the
 //! GDN block, alongside `prefill_w8a8.rs`'s `in_proj_qkvz` arm.
 //!
 //! WHY THIS EXISTS (#917 / #928). nsys on 1xH100, 2026-09-11 round 9,
-//! `Qwen/Qwen3.8-27B-FP8`, best recipe `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`
+//! `Qwen/Qwen3.8-27B-FP8`, best recipe `AVAROK_CUBLAS_GEMM=ffn,ssm,attn`
 //! (`nsys-r9-prefill`, kernel-sum CSV). A 1193-token prefill is **368.263 ms**
 //! of GPU-busy union, and `w8a16_gemm_pipelined` is **100.582 ms = 27.31%** of
 //! it across **112 launches**. Resolved by launch geometry — the kernel's grid
@@ -24,9 +24,9 @@
 //! At 4593 tokens it is 163.5 ms of the kernel's 285.5 ms.
 //!
 //! WHY IT WAS EXCLUDED. `prefill_out_proj_dispatch` had no cuBLASLt arm at all,
-//! and its only W8A8 arm was gated on a bare `ATLAS_FP8_W8A8=1` env read —
+//! and its only W8A8 arm was gated on a bare `AVAROK_FP8_W8A8=1` env read —
 //! **not** on `ctx.dispatch.fp8_blockscaled_prefill` (the gate the QKVZ,
-//! attention and dense-FFN prefills use) and **not** on any `ATLAS_CUBLAS_GEMM`
+//! attention and dense-FFN prefills use) and **not** on any `AVAROK_CUBLAS_GEMM`
 //! family. So the serve recipe that armed `ssm` moved `in_proj_qkvz` to
 //! cuBLASLt and left `out_proj` — the same layer's other GEMM — on the W8A16
 //! tensor-core kernel, where BF16 activations against E4M3 weights turn the
@@ -44,7 +44,7 @@
 //! is lossier than W8A16 by construction — the same deliberate trade the other
 //! three prefill families already made. `native_fp8_prefill_proj_w8a8_microtest`
 //! gates it at cosine >= 0.999 / rel_rms <= 3e-2 against the W8A16 reference at
-//! the real shapes. `ATLAS_SSM_OUT_W8A16_ONLY` (presence) restores W8A16.
+//! the real shapes. `AVAROK_SSM_OUT_W8A16_ONLY` (presence) restores W8A16.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
@@ -54,16 +54,16 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{Fp8Weight, WeightQuantFormat};
 
-/// `ATLAS_SSM_OUT_W8A16_ONLY` kill switch: PRESENCE (any value, including
+/// `AVAROK_SSM_OUT_W8A16_ONLY` kill switch: PRESENCE (any value, including
 /// empty) keeps the SSM `out_proj` prefill on the W8A16 kernels. Presence
-/// rather than `=1` for the same reason as `ATLAS_FFN_W8A16_ONLY` — this is an
+/// rather than `=1` for the same reason as `AVAROK_FFN_W8A16_ONLY` — this is an
 /// escape hatch reached for mid-incident, and `=0` meaning "on" is a trap.
 ///
 /// `OnceLock`-cached: the selector runs once per GDN layer per prefill chunk
 /// (48x per chunk on a 27B) and `var_os` walks the whole environment block.
 pub(super) fn ssm_out_w8a16_only() -> bool {
     static ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ONLY.get_or_init(|| std::env::var_os("ATLAS_SSM_OUT_W8A16_ONLY").is_some())
+    *ONLY.get_or_init(|| std::env::var_os("AVAROK_SSM_OUT_W8A16_ONLY").is_some())
 }
 
 /// Everything the `out_proj` cuBLASLt arm needs, as a pure function so the CPU
@@ -72,9 +72,9 @@ pub(super) fn ssm_out_w8a16_only() -> bool {
 /// Clauses, each load-bearing:
 ///
 /// * `!w8a16_only` — the kill switch above.
-/// * `cublas_ssm` — `ATLAS_CUBLAS_GEMM` must name the `ssm` family. Scoped,
+/// * `cublas_ssm` — `AVAROK_CUBLAS_GEMM` must name the `ssm` family. Scoped,
 ///   deliberately: arming the dense FFN must not arm this.
-/// * `fp8_blockscaled_prefill` — the `ATLAS_FP8_SINGLE_SCALE` kill switch that
+/// * `fp8_blockscaled_prefill` — the `AVAROK_FP8_SINGLE_SCALE` kill switch that
 ///   already governs every other W8A8 prefill arm.
 /// * `m > 4` — the same floor `w8a8_prefill_selected` uses; at M<=4 the GEMV
 ///   tier streams each weight once and beats any MMA tile.
@@ -229,15 +229,15 @@ impl Qwen3SsmLayer {
         if ctx.stats.once("log:ssm_out_proj_prefill") {
             if cublas {
                 tracing::info!(
-                    "[atlas] SSM out_proj prefill: W8A8 block-scaled via cuBLASLt \
+                    "[avarok] SSM out_proj prefill: W8A8 block-scaled via cuBLASLt \
                      (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue). \
-                     ATLAS_CUBLAS_GEMM=ssm selected it; ATLAS_SSM_OUT_W8A16_ONLY restores W8A16. \
+                     AVAROK_CUBLAS_GEMM=ssm selected it; AVAROK_SSM_OUT_W8A16_ONLY restores W8A16. \
                      This arm allocates nothing."
                 );
             } else {
                 tracing::info!(
-                    "[atlas] SSM out_proj prefill: W8A16 (BF16 act x FP8 weight). \
-                     W8A8 cuBLASLt not selected — add `ssm` to ATLAS_CUBLAS_GEMM; see #917/#928."
+                    "[avarok] SSM out_proj prefill: W8A16 (BF16 act x FP8 weight). \
+                     W8A8 cuBLASLt not selected — add `ssm` to AVAROK_CUBLAS_GEMM; see #917/#928."
                 );
             }
         }

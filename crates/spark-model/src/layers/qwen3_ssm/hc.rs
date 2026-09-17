@@ -30,7 +30,7 @@ impl Qwen3SsmLayer {
     ///
     /// Those paths keep their own residual bookkeeping, which the highway
     /// replaces — running them would add each block output to the residual a
-    /// second time. v1 is C=1 only on this model (Avarok #753), and refusing
+    /// second time. v1 is C=1 only on this model (Atlas #753), and refusing
     /// is the point: a batched GDN step on an unmixed stream produces
     /// plausible, wrong activations with nothing in the log.
     ///
@@ -43,7 +43,7 @@ impl Qwen3SsmLayer {
             "qwen3_ssm::{path}: the mHC highway has no batched GDN path yet. \
              This model serves at concurrency 1; the batched paths maintain \
              their own residual, which the highway replaces, so running them \
-             would count every block output twice. Avarok #753 item B."
+             would count every block output twice. Atlas #753 item B."
         );
         Ok(())
     }

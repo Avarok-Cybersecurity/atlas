@@ -70,8 +70,8 @@ impl Carried {
     /// carries forward.
     ///
     /// # Errors
-    /// When any of the `ATLAS_RATE_LIMIT_*`, `ATLAS_STORE_*` or
-    /// `ATLAS_CONVERSATION_*` variables holds a value that does not parse.
+    /// When any of the `AVAROK_RATE_LIMIT_*`, `AVAROK_STORE_*` or
+    /// `AVAROK_CONVERSATION_*` variables holds a value that does not parse.
     /// Refused rather than defaulted: these are the process's SECURITY and
     /// RETENTION settings, and the default for a rate limit is "no limit", so
     /// a swallowed typo used to open the server up without a word. This runs
@@ -128,7 +128,7 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(2, "config");
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
-    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
+    // CLI `--lm-head-dtype` override (replaces AVAROK_LMHEAD_BF16). Validate eagerly (PCND).
     // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
     // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
     // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
@@ -182,7 +182,7 @@ pub(crate) fn load_model(
                 // `read_preprocessor_max_pixels` logs the resolved path and
                 // key on its own line. Naming one here was wrong for every
                 // unsloth checkpoint, which ships only the other.
-                "checkpoint processor config / ATLAS_VISION_MAX_PIXELS"
+                "checkpoint processor config / AVAROK_VISION_MAX_PIXELS"
             }
         ),
         None => tracing::info!(
@@ -296,7 +296,7 @@ pub(crate) fn load_model(
     .into_iter()
     .flatten()
     .collect();
-    let ptx_set = atlas_kernels::ptx_for_config(
+    let ptx_set = avarok_kernels::ptx_for_config(
         &config.model_type,
         config.hidden_size,
         &model_refs,
@@ -309,7 +309,7 @@ pub(crate) fn load_model(
              Available targets: {:?}",
             config.model_type,
             config.hidden_size,
-            atlas_kernels::available_targets()
+            avarok_kernels::available_targets()
                 .iter()
                 .map(|t| &t.target.model)
                 .collect::<Vec<_>>(),
@@ -325,7 +325,7 @@ pub(crate) fn load_model(
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
     // `ptx_for_config` selects on (model_type, hidden_size) but not on
-    // QUANT. With ATLAS_TARGET_QUANT=* the build emits one bundle per
+    // QUANT. With AVAROK_TARGET_QUANT=* the build emits one bundle per
     // model whose label happens to be the first variant compiled
     // ("nvfp4") even when the bundle contains native FP8 dispatch too.
     // For now we accept the historically-compatible pairs hardcoded in
@@ -342,7 +342,7 @@ pub(crate) fn load_model(
              Model declares quant={model_quant} ({}). \
              The compiled kernel set has no known dispatch path for \
              quant '{model_quant}' — loading would produce silent garbage. \
-             Rebuild with ATLAS_TARGET_QUANT={model_quant} (or =* to bundle multiple \
+             Rebuild with AVAROK_TARGET_QUANT={model_quant} (or =* to bundle multiple \
              variants) and restart.",
             ptx_set.target,
             describe_quant_source(&config),
@@ -485,18 +485,18 @@ pub(crate) fn load_model(
     // the system's RAM, so "GPU free < 2 GB" means the host is about to lock
     // up. On a discrete board (kernels/r9700, 32 GB of dedicated VRAM) the
     // same reading is an ordinary allocation about to fail with an error, and
-    // exit(1) three polls later hides which allocation it was. ATLAS_OOM_WATCHDOG_MB
+    // exit(1) three polls later hides which allocation it was. AVAROK_OOM_WATCHDOG_MB
     // overrides the threshold in MB; 0 disables the watchdog so the real
     // allocation failure surfaces instead. Default unchanged.
     #[cfg(feature = "cuda")]
-    let oom_watchdog_mb: usize = std::env::var("ATLAS_OOM_WATCHDOG_MB")
+    let oom_watchdog_mb: usize = std::env::var("AVAROK_OOM_WATCHDOG_MB")
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(2048);
     #[cfg(feature = "cuda")]
     let _oom_watchdog = if oom_watchdog_mb == 0 {
         tracing::warn!(
-            "OOM watchdog DISABLED (ATLAS_OOM_WATCHDOG_MB=0); a GPU OOM will surface as an \
+            "OOM watchdog DISABLED (AVAROK_OOM_WATCHDOG_MB=0); a GPU OOM will surface as an \
              allocation error instead of an early exit. Do not use on unified-memory boards."
         );
         None
@@ -929,7 +929,7 @@ pub(crate) fn load_model(
     // EP gate. v1 single-sequence worker protocol required max_batch_size=1
     // because each cmd targeted one slot and the head's per-token broadcast
     // loop had no way to address slot N. v2 adds a per-cmd seq_id preamble
-    // (set ATLAS_EP_PROTOCOL=v2) so the worker routes commands by slot_idx
+    // (set AVAROK_EP_PROTOCOL=v2) so the worker routes commands by slot_idx
     // and runs decode() per-seq. The head's decode_batch_dispatch EP branch
     // stages each seq's logits row to host between decode() calls so all N
     // rows survive into process_decode_logits — without that, the single-row
@@ -1065,7 +1065,7 @@ pub(crate) fn load_model(
     // DFlash mode: the drafter proposes on raw argmax, so the verify steps
     // must judge acceptance on the same (GOLD) basis — skipping the
     // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
-    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // construction and accept craters. AVAROK_DFLASH_MASKED_VERIFY=1 routes
     // verify PICKS back through the pre-sample masking (unmasked
     // special-token leak fix); that is handled at the pick sites via
     // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
@@ -1089,7 +1089,9 @@ pub(crate) fn load_model(
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
     sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
         ptx_set.behavior.enable_loop_watchdog,
-        std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
+        std::env::var("AVAROK_CONTENT_LOOP_WATCHDOG")
+            .ok()
+            .as_deref(),
         args.content_loop_watchdog,
     ));
     // The run's snapshot cell, shared with the dashboard for the same reason
@@ -1176,7 +1178,7 @@ pub(crate) fn load_model(
                 cfg_path.display()
             )
         })?;
-        let peft = atlas_core::config::parse_peft_adapter_config(&raw)
+        let peft = avarok_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("--lora-stageable '{name}': parse {}", cfg_path.display()))?;
         lora_stageable.insert(
             name.clone(),
@@ -1188,7 +1190,7 @@ pub(crate) fn load_model(
     }
     if !lora_stageable.is_empty() && lora_peer_addr.is_none() {
         anyhow::bail!(
-            "--lora-stageable given ({} adapter(s)) but $ATLAS_LORA_PEER is unset; \
+            "--lora-stageable given ({} adapter(s)) but $AVAROK_LORA_PEER is unset; \
              demand promotion needs a weight peer to RDMA-stage from",
             lora_stageable.len()
         );
@@ -1221,7 +1223,7 @@ pub(crate) fn load_model(
                 cfg_path.display()
             )
         })?;
-        let peft = atlas_core::config::parse_peft_adapter_config(&raw).with_context(|| {
+        let peft = avarok_core::config::parse_peft_adapter_config(&raw).with_context(|| {
             format!(
                 "--lora-stageable-disk '{name}': parse {}",
                 cfg_path.display()
@@ -1243,14 +1245,14 @@ pub(crate) fn load_model(
         );
     }
     // The disk swap re-points a cache slot only when rotation is armed
-    // (decode runs eager). ATLAS_LORA_ROTATE=1 arms it; a peer being set also
+    // (decode runs eager). AVAROK_LORA_ROTATE=1 arms it; a peer being set also
     // forces eager decode, so accept either.
     if !lora_disk_stageable.is_empty()
         && !spark_model::lora::lora_rotate_env()
         && lora_peer_addr.is_none()
     {
         anyhow::bail!(
-            "--lora-stageable-disk needs rotation armed: set ATLAS_LORA_ROTATE=1 so decode \
+            "--lora-stageable-disk needs rotation armed: set AVAROK_LORA_ROTATE=1 so decode \
              runs eager and the disk swap can re-point a cache slot"
         );
     }

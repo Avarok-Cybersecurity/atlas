@@ -110,12 +110,12 @@ pub fn load_adapter_safetensors(
     Ok(WeightStore::from_map(weights))
 }
 
-// Gated on `feature = "cuda"`: the test constructs a real `AtlasCudaBackend`
+// Gated on `feature = "cuda"`: the test constructs a real `AvarokCudaBackend`
 // (a CUDA-only module), so the metal / no-CUDA build must not compile it.
 #[cfg(all(test, feature = "cuda"))]
 mod tests {
     use super::load_adapter_safetensors;
-    use crate::cuda_backend::AtlasCudaBackend;
+    use crate::cuda_backend::AvarokCudaBackend;
     use crate::gpu::GpuBackend; // brings copy_d2h into scope
     use crate::weights::WeightDtype;
     use half::bf16;
@@ -133,7 +133,7 @@ mod tests {
     /// `lora_A` + `lora_B`), loads it on a live CUDA device, and asserts every
     /// returned tensor is BF16 and round-trips bit-exact.
     ///
-    /// Gated `#[ignore]` (Atlas convention) because `AtlasCudaBackend::new`
+    /// Gated `#[ignore]` (Atlas convention) because `AvarokCudaBackend::new`
     /// touches the CUDA driver; a GPU-less `cargo test` skips it. Opt in with
     /// `-- --ignored`.
     #[test]
@@ -157,7 +157,7 @@ mod tests {
         // Unique tempdir with no extra dep (spark-runtime has no tempfile
         // dev-dep): per-pid + per-thread subdir.
         let dir = std::env::temp_dir().join(format!(
-            "atlas_adapter_test_{}_{:?}",
+            "avarok_adapter_test_{}_{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -173,7 +173,7 @@ mod tests {
 
         // Real GPU backend. The loader only allocs + copies (launches no
         // kernel), but pass the codegen'd PTX set to mirror prod init.
-        let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules()).unwrap();
+        let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules()).unwrap();
 
         let store = load_adapter_safetensors(&dir, &gpu, 0).unwrap();
 

@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 use half::bf16;
 use serde_json::Value;
 use spark_model::layers::glm5next_kda_ref::{KdaDims, kda_recurrent_prenorm};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 

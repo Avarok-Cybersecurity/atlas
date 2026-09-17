@@ -36,21 +36,21 @@ use parking_lot::Mutex;
 /// Whether loaders should free a store tensor as soon as they have fully
 /// converted it into a layer-owned allocation.
 ///
-/// `ATLAS_LOAD_RELEASE_SOURCES=1` forces on, `=0` forces off, unset takes
-/// `cfg!(atlas_scale)`. Resolved once: a serve never rewrites its own
+/// `AVAROK_LOAD_RELEASE_SOURCES=1` forces on, `=0` forces off, unset takes
+/// `cfg!(avarok_scale)`. Resolved once: a serve never rewrites its own
 /// environment, and a loader that asked twice and got two answers would free a
 /// tensor a later layer still reads.
 ///
 /// EXPLICIT `1`/`0`, not presence, because the interesting operator action
 /// here is turning it OFF on an AMD board to bisect a suspected
-/// use-after-free, and `ATLAS_LOAD_RELEASE_SOURCES=0` meaning "on" would make
+/// use-after-free, and `AVAROK_LOAD_RELEASE_SOURCES=0` meaning "on" would make
 /// that impossible.
 pub fn release_sources_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         decide(
-            std::env::var("ATLAS_LOAD_RELEASE_SOURCES").ok().as_deref(),
-            cfg!(atlas_scale),
+            std::env::var("AVAROK_LOAD_RELEASE_SOURCES").ok().as_deref(),
+            cfg!(avarok_scale),
         )
     })
 }

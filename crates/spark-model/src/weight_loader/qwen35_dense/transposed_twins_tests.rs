@@ -12,7 +12,7 @@
 //! No GPU, no checkpoint, no environment.
 
 use super::*;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 
 const MIB: usize = 1024 * 1024;
 
@@ -189,7 +189,7 @@ fn every_policy_names_itself_as_an_assignment() {
     for p in [TwinPolicy::Always, TwinPolicy::Never, TwinPolicy::Auto] {
         let s = p.lever();
         assert!(
-            s.starts_with("ATLAS_LOAD_TRANSPOSED_TWINS="),
+            s.starts_with("AVAROK_LOAD_TRANSPOSED_TWINS="),
             "{s} is not something an operator can type"
         );
         assert_eq!(

@@ -20,8 +20,8 @@ use spark_runtime::kernel_args::KernelLaunch;
 /// `dense_gemm_bf16_pipelined`, keeping only the elementwise seams custom.
 /// Slabbed at <= 2048 tokens to bound the scratch region.
 ///
-/// `ATLAS_QWEN4EXP_NO_HC_GEMM=1` falls back to the fused kernel (kill switch,
-/// same convention as ATLAS_NO_GDN_FLA).
+/// `AVAROK_QWEN4EXP_NO_HC_GEMM=1` falls back to the fused kernel (kill switch,
+/// same convention as AVAROK_NO_GDN_FLA).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hc_pre_gemm(
     gpu: &dyn GpuBackend,

@@ -7,7 +7,7 @@
 //! code changes needed.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;

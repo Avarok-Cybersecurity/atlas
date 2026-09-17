@@ -1,7 +1,7 @@
 # Qwen3.8-Flash-Next — hybrid GDN + QSA sparse attention, multi-hyperconnection
 # streams, PLE n-gram injection, 512-expert MoE, ViT tower, 1 MTP layer.
 #
-# Port tracked in Avarok #753. Serving is NOT complete: this target exists so
+# Port tracked in Atlas #753. Serving is NOT complete: this target exists so
 # the model can RESOLVE and LOAD. The hyper-connection mixer, the QSA indexer
 # and the PLE n-gram injection are not wired yet and refuse by name.
 #
@@ -198,9 +198,9 @@ gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty 
 gated_delta_rule_decode_f32_strided_norm_half = """
 Half-register twin of the resolved f32_strided_norm; selected only when
 the resolved half-register gate is set, and that gate is off by default
-(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+(AVAROK_GDN_HALF_REG presence). Not a live path as shipped."""
 gated_delta_rule_decode_f32_strided_norm_smem = """
-SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (presence, off by
 default) AND the half-register gate. Not a live path as shipped."""
 
 # #438: the exact-verify `_snap` twins are model-shadow staged in
@@ -265,7 +265,7 @@ use_sampling_presets_for_core = true
 # and with `</think>` suppressed the turn-ending mass reroutes to
 # <|im_end|>/<|im_start|> — sampled runs EOS inside think (empty body) or
 # simulate new template turns (word salad). Measured 2026-08-26 via
-# ATLAS_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>
+# AVAROK_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>
 # reappears at logit ~6 the moment the floor expires. 0 disables the floor.
 min_reasoning_floor_tokens = 0
 # When the model does sample an EOS inside <think> (temp 1.0 makes this

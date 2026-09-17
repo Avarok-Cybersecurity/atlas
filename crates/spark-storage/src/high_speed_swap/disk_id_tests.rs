@@ -19,7 +19,7 @@ fn dims() -> ModelDims {
 
 fn cfg(dir: &str) -> HighSpeedSwapConfig {
     HighSpeedSwapConfig {
-        dir: std::env::temp_dir().join(format!("atlas-hss-disk-id-{dir}-{}", std::process::id())),
+        dir: std::env::temp_dir().join(format!("avarok-hss-disk-id-{dir}-{}", std::process::id())),
         bytes: 64 * (1 << 20),
         resident_blocks: 4,
         rank: 32,

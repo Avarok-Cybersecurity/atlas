@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-use atlas_core::config::PeftAdapterConfig;
+use avarok_core::config::PeftAdapterConfig;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::weights::WeightStore;
 
@@ -56,8 +56,8 @@ impl LoraModule {
     /// hybrid's linear-attention layers carry the SwiGLU FFN too); GDN out_proj
     /// on linear-attention layers only. THE authority for BOTH the pool layout
     /// and the packing walk, so reserved and written bytes cannot disagree.
-    pub fn applies_to_layer(&self, cfg: &atlas_core::config::ModelConfig, layer: usize) -> bool {
-        use atlas_core::config::LayerType;
+    pub fn applies_to_layer(&self, cfg: &avarok_core::config::ModelConfig, layer: usize) -> bool {
+        use avarok_core::config::LayerType;
         let full_attn = cfg.layer_type(layer) == LayerType::FullAttention;
         if self.is_dense_ffn() {
             // MoE `mlp.*` is the routed-expert path, packed separately.
@@ -91,7 +91,7 @@ impl LoraModule {
     /// emits the interleaved `[Q|gate]` at width `2·q_heads·head_dim` (the
     /// FULL width the PEFT `lora_B` was trained against — verified `[8192,16]`
     /// on holo-3.1-35b); ungated q is `q_heads·head_dim`.
-    pub fn dims(&self, cfg: &atlas_core::config::ModelConfig) -> (usize, usize) {
+    pub fn dims(&self, cfg: &avarok_core::config::ModelConfig) -> (usize, usize) {
         let h = cfg.hidden_size;
         match self {
             Self::QProj => (
@@ -134,7 +134,7 @@ pub struct LoraLayerWeights {
     /// GDN out_proj delta (linear-attention layers only).
     pub out_proj: Option<LoraPair>,
     /// Feature-1: MoE router (`mlp.gate`) delta on the routing logits. `None`
-    /// unless the adapter targets the router AND `ATLAS_LORA_EXPERTS=1`.
+    /// unless the adapter targets the router AND `AVAROK_LORA_EXPERTS=1`.
     pub router: Option<LoraPair>,
     /// Feature-1: this layer's routed-expert LoRA coverage (sparse per-expert
     /// pairs). `None` for attention/dense-only adapters or when expert LoRA is

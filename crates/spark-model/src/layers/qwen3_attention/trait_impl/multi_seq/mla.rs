@@ -198,10 +198,10 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
-        // ATLAS_MLA_HSD: per-seq diagnostic — scans each sequence's full
+        // AVAROK_MLA_HSD: per-seq diagnostic — scans each sequence's full
         // `o_out` row for NaN/Inf and reports magnitude, to localize
         // cross-sequence corruption in the batched MLA decode.
-        if std::env::var("ATLAS_MLA_HSD").is_ok_and(|v| v == "1") && self.attn_layer_idx == 0 {
+        if std::env::var("AVAROK_MLA_HSD").is_ok_and(|v| v == "1") && self.attn_layer_idx == 0 {
             c.fwd.gpu.synchronize(stream)?;
             for i in 0..c.n {
                 let mut row = vec![0u8; c.h * bf16];

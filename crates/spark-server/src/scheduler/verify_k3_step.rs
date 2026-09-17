@@ -223,7 +223,7 @@ pub fn step_verify_k3(
         2
     };
 
-    // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
+    // Shadow top-k target line (AVAROK_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
     // `base` is seq_len at step entry = the propose-time position of draft 0.
     if sched.levers.shadow_topk > 0 {
@@ -239,7 +239,7 @@ pub fn step_verify_k3(
     // steps where position 1 happened to succeed.
     k3_record_positional(sched, drafts[0] == v0, drafts[1] == v1, a.seq.seq_len);
 
-    // ATLAS_MTP_REFEED_ACCEPTED: ring the TARGET's true hidden for every
+    // AVAROK_MTP_REFEED_ACCEPTED: ring the TARGET's true hidden for every
     // accepted position so the next propose's catch-up feed can rebuild the
     // drafter rows that `after_verify` is about to drop.
     //

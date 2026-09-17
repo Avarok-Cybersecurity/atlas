@@ -24,7 +24,7 @@ fn ptx_hash(bytes: &[u8]) -> String {
 
 /// Render the embedded kernel set (`embedded` = the LOADED target's
 /// `TargetPtxSet::modules`) plus the runtime resolution overlay. `set_hash` is
-/// `atlas_kernels::KERNEL_SET_HASH`. `shadowed_dropped` drives the SHADOWED
+/// `avarok_kernels::KERNEL_SET_HASH`. `shadowed_dropped` drives the SHADOWED
 /// column; `expected_absent` is the target's MODEL.toml declaration and drives
 /// the required-vs-expected split (via [`super::classify_failures`] — this file
 /// does not own that rule).

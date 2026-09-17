@@ -22,7 +22,7 @@
 
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// Per-family presence flags, derived once per layer construction.
 #[derive(Clone, Copy, Debug)]

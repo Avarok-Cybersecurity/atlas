@@ -93,7 +93,7 @@ pub struct VisionEncoder {
     k_norm: KernelHandle, // vision_layer_norm (biased, in-place)
     k_add: KernelHandle,  // vision_add_inplace
     k_gelu: KernelHandle, // vision_gelu (in-place)
-    k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — ATLAS_VISION_ATTN_LEGACY=1)
+    k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — AVAROK_VISION_ATTN_LEGACY=1)
     k_rope_deint: KernelHandle, // vit_rope_deinterleave (rope + head-contig Qr/Kr + V transpose)
     k_softmax: KernelHandle, // vit_softmax_rows (parallel row softmax)
     k_scatter_head: KernelHandle, // vit_scatter_head (contig → interleaved O slot)

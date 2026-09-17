@@ -1,6 +1,6 @@
 ---
 name: oracle_pre_commit_cross_hardware_check
-description: "O.R.A.C.L.E::pre_commit_cross_hardware_check — run BEFORE pushing any commit that touches kernels/ (especially kernels/gb10/common/), a __SCALE__ / __HIP / __CUDA_ARCH__ arm, cfg!(atlas_scale) or cfg(atlas_hip) host dispatch, a KERNEL.toml / MODEL.toml / HARDWARE.toml, or a symlink under kernels/. Detects cross-hardware kernel interference (CHKI): a change meant for one hardware (gb10, strix, strix-hip, metal) that alters what another hardware compiles through symlinks, common/ fan-out, or kernel_source redirects — strix is 7 real files and 105 symlinks into gb10, so a gb10 edit silently changes what AMD builds. Runs the static reach check, gathers verbatim evidence, launches the oracle for the remedy verdict (benign / parameterize in HARDWARE.toml with a reader / separate kernel with no symlink), and writes the Hardware: and CHKI-Verdict: trailers the CI job cross-hardware-reach requires. Also use when that CI job is red, when a strix or strix-hip compile leg fails on a gb10 edit, or when tempted to add a __SCALE__ guard to a gb10 file. Born from d584c0c50 (a gb10 edit broke hipcc, caught only by a compile leg) and 17fe989ec (a Strix workaround in gb10 common code invalidated 27 targets' records)."
+description: "O.R.A.C.L.E::pre_commit_cross_hardware_check — run BEFORE pushing any commit that touches kernels/ (especially kernels/gb10/common/), a __SCALE__ / __HIP / __CUDA_ARCH__ arm, cfg!(avarok_scale) or cfg(avarok_hip) host dispatch, a KERNEL.toml / MODEL.toml / HARDWARE.toml, or a symlink under kernels/. Detects cross-hardware kernel interference (CHKI): a change meant for one hardware (gb10, strix, strix-hip, metal) that alters what another hardware compiles through symlinks, common/ fan-out, or kernel_source redirects — strix is 7 real files and 105 symlinks into gb10, so a gb10 edit silently changes what AMD builds. Runs the static reach check, gathers verbatim evidence, launches the oracle for the remedy verdict (benign / parameterize in HARDWARE.toml with a reader / separate kernel with no symlink), and writes the Hardware: and CHKI-Verdict: trailers the CI job cross-hardware-reach requires. Also use when that CI job is red, when a strix or strix-hip compile leg fails on a gb10 edit, or when tempted to add a __SCALE__ guard to a gb10 file. Born from d584c0c50 (a gb10 edit broke hipcc, caught only by a compile leg) and 17fe989ec (a Strix workaround in gb10 common code invalidated 27 targets' records)."
 argument-hint: "[<base-ref>=origin/main] [--staged | --range A..B | --paths p1 p2 ...]"
 allowed-tools: Bash, Read, Grep, Glob, Agent
 ---
@@ -43,7 +43,7 @@ The oracle refuses summaries. Collect all of it:
 python3 scripts/check_cross_hardware.py --base "$BASE" --worktree --json
 git diff "$BASE"...HEAD -- kernels/
 git log --format=%B "$BASE"..HEAD | grep -E '^(Hardware|CHKI-Verdict):' || true
-git diff --name-only "$BASE"...HEAD -- crates/ | xargs -r grep -ln 'atlas_scale\|atlas_hip' || true
+git diff --name-only "$BASE"...HEAD -- crates/ | xargs -r grep -ln 'avarok_scale\|avarok_hip' || true
 ```
 
 For every file whose `reach_hw` has more than one entry, per reached AMD hardware:
@@ -71,7 +71,7 @@ a softer answer.
 **benign** — nothing changes in `kernels/`. Go to Step 5.
 
 **parameterize** — in the SAME commit: add the key to `kernels/<hw>/HARDWARE.toml`; add the
-reader in `crates/atlas-kernels/build.rs` beside the `arch`/`vendor` reads; replace the
+reader in `crates/avarok-kernels/build.rs` beside the `arch`/`vendor` reads; replace the
 `__SCALE__` branch with `#if KEY == VALUE`. ★ Only `vendor` and `arch` are read today — a key
 with no reader is decoration, and `kernels/strix/HARDWARE.toml` says so in writing.
 

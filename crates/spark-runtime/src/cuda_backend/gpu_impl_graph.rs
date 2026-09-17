@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! CUDA graph capture/replay, stream + event management, memset, memory
-//! queries, and pinned-host allocation for [`AtlasCudaBackend`].
+//! queries, and pinned-host allocation for [`AvarokCudaBackend`].
 //!
 //! Split out of `gpu_impl.rs` to keep both files under the repo's 500-LoC cap.
 //! Same shape as `spark-model`'s `model/trait_impl/`: these are the inherent
@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use anyhow::{Result, bail};
 
 use super::{
-    AtlasCudaBackend, cuCtxGetDevice, cuCtxSetCurrent, cuDeviceGetAttribute, cuEventCreate,
+    AvarokCudaBackend, cuCtxGetDevice, cuCtxSetCurrent, cuDeviceGetAttribute, cuEventCreate,
     cuEventDestroy_v2, cuEventRecord, cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy,
     cuGraphLaunch, cuMemAllocHost_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemsetD8Async,
     cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::gpu::{DevicePtr, GraphHandle};
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     pub(super) fn begin_capture_cu(&self, stream: u64) -> Result<()> {
         // CU_STREAM_CAPTURE_MODE_RELAXED = 2
         // Relaxed mode allows NCCL's internal streams to operate during
@@ -62,9 +62,9 @@ impl AtlasCudaBackend {
         // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
         // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
         let mut graph_exec: u64 = 0;
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
         if status != 0 {
             unsafe { cuGraphDestroy(graph) };
@@ -378,10 +378,10 @@ impl AtlasCudaBackend {
             // handler, which can run before ours. Pinned host memory allocated
             // against a context that no longer exists was already reclaimed
             // with it — reporting that as a failure is noise at every exit.
-            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+            if status != 0 && !avarok_core::registry::is_teardown_noop(status) {
                 bail!(
                     "cuMemFreeHost failed: {}",
-                    atlas_core::registry::cuda_error_text(status)
+                    avarok_core::registry::cuda_error_text(status)
                 );
             }
         }

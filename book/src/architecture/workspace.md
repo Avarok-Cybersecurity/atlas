@@ -35,18 +35,18 @@ atlas/
 
 ```toml
 members = [
-    "crates/atlas-core",
-    "crates/atlas-kernels",
-    "crates/atlas-plugin",
-    "crates/atlas-tier",
-    "crates/atlas-rdma",
+    "crates/avarok-core",
+    "crates/avarok-kernels",
+    "crates/avarok-plugin",
+    "crates/avarok-tier",
+    "crates/avarok-rdma",
     "crates/spark-runtime",
     "crates/spark-comm",
     "crates/spark-model",
     "crates/spark-nllb",
     "crates/spark-server",
     "crates/spark-storage",
-    "crates/atlas-spark-bench",
+    "crates/avarok-spark-bench",
     "crates/cufile-sys",
     "crates/xgrammar",
 ]
@@ -56,15 +56,15 @@ Each is its own crate with its own `Cargo.toml`, its own unit tests, and its own
 
 | Crate | Role | Consumed by |
 |---|---|---|
-| `atlas-core` | Traits & types used by every crate below: `ComputeTarget` (build-time compiler abstraction), `KernelTarget` (runtime dispatch key), `Vendor`, `Dtype`, `Tensor`, `ModelConfig` parsing, and the host-side numerics (`numeric`: FP8 E4M3 LUT, f32 → BF16 RNE cast) every weight loader shares | everyone |
-| `atlas-kernels` | Auto-generated Rust glue over compiled PTX. `build.rs` enumerates `kernels/<hw>/<model>/<quant>/*.cu`, compiles each through the matching `ComputeTarget`, emits one `target_ptx.rs` that `include!()`s back into this crate | `spark-runtime` |
+| `avarok-core` | Traits & types used by every crate below: `ComputeTarget` (build-time compiler abstraction), `KernelTarget` (runtime dispatch key), `Vendor`, `Dtype`, `Tensor`, `ModelConfig` parsing, and the host-side numerics (`numeric`: FP8 E4M3 LUT, f32 → BF16 RNE cast) every weight loader shares | everyone |
+| `avarok-kernels` | Auto-generated Rust glue over compiled PTX. `build.rs` enumerates `kernels/<hw>/<model>/<quant>/*.cu`, compiles each through the matching `ComputeTarget`, emits one `target_ptx.rs` that `include!()`s back into this crate | `spark-runtime` |
 | `spark-runtime` | `GpuBackend` trait (27 methods) + CUDA impl (`cuda_backend.rs`). KV cache, prefix cache (radix tree), paged FP8 cache, buffer arena, sampler, `WeightStore` (`O_DIRECT` + pipelined safetensors loader). Everything that touches the GPU goes through here. | `spark-model`, `spark-server` |
 | `spark-comm` | `CommBackend` trait (collective ops) + NCCL impl. `SingleGpuBackend` is the no-op impl for single-GPU runs. | `spark-model`, `spark-server` |
 | `spark-model` | Model assembly: layers (`Qwen3Attention`, `Qwen3Ssm`, `NemotronMamba2`, `MoeLayer`, `VisionEncoder`), per-family weight loaders, `TransformerLayer` trait, the inference engine (`engine.rs`), speculative decoding, vision preprocessing | `spark-server` |
 | `spark-server` | Binary. HTTP server (axum), OpenAI + Anthropic compatible endpoints, tool-call parsing (Hermes / Qwen3-coder / Mistral / XGrammar), tokenizer wrapper, rate limiter, CLI | n/a — the deliverable |
-| `atlas-spark-bench` | Criterion benchmark client. Targets a live server, records per-endpoint throughput + TTFT. The numbers in `bench/` come from here. | bench runs only |
+| `avarok-spark-bench` | Criterion benchmark client. Targets a live server, records per-endpoint throughput + TTFT. The numbers in `bench/` come from here. | bench runs only |
 
-The dependency graph runs strictly downward in the table above — `atlas-core` has no internal deps, every crate above it builds on crates below. There are no cycles.
+The dependency graph runs strictly downward in the table above — `avarok-core` has no internal deps, every crate above it builds on crates below. There are no cycles.
 
 ## The kernel tree
 
@@ -123,9 +123,9 @@ The book you're reading in `book/` synthesises all of this into a single narrati
 
 | You added | You touched |
 |---|---|
-| A new quantization (e.g. MXFP4) | `kernels/<hw>/<model>/<scheme>/*.cu`, a format module under `spark-model/src/quant_format/`, the loader arms in `spark-model/src/weight_map/`, and any new host-side conversion in `atlas-core/src/numeric.rs` |
+| A new quantization (e.g. MXFP4) | `kernels/<hw>/<model>/<scheme>/*.cu`, a format module under `spark-model/src/quant_format/`, the loader arms in `spark-model/src/weight_map/`, and any new host-side conversion in `avarok-core/src/numeric.rs` |
 | A new model family (e.g. Phi-4) | `spark-model/src/weight_loader/<family>.rs`, one arm in `spark-model/src/factory.rs`, `kernels/<hw>/<family>/<quant>/MODEL.toml`, optional `jinja-templates/<family>.j2` |
-| A new hardware vendor (e.g. MI300X) | `atlas-core/src/compute.rs` (new `ComputeTarget` impl), `atlas-kernels/build.rs::resolve_compute_target()` arm, `spark-runtime/src/<vendor>_backend.rs` (new `GpuBackend` impl), `spark-comm/src/<vendor>_backend.rs` if the vendor needs its own collective impl, `kernels/<hw>/HARDWARE.toml`, kernel source under `kernels/<hw>/<model>/<quant>/` |
+| A new hardware vendor (e.g. MI300X) | `avarok-core/src/compute.rs` (new `ComputeTarget` impl), `avarok-kernels/build.rs::resolve_compute_target()` arm, `spark-runtime/src/<vendor>_backend.rs` (new `GpuBackend` impl), `spark-comm/src/<vendor>_backend.rs` if the vendor needs its own collective impl, `kernels/<hw>/HARDWARE.toml`, kernel source under `kernels/<hw>/<model>/<quant>/` |
 | A new CLI flag | `spark-server/src/cli.rs`, plumbing wherever it lands |
 | A new tool-call format | `spark-server/src/tool_parser.rs` |
 

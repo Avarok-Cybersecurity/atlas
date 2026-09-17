@@ -30,7 +30,7 @@ violation (rc 1) — the same doctrine as campaign-guard.sh's exit 2.
 
 WHAT IT CANNOT DECIDE, and hands to the oracle
 (.claude/skills/oracle_pre_commit_cross_hardware_check): whether a hunk sits inside a
-`#if defined(__SCALE__)` arm the other hardware never compiles; whether a `cfg!(atlas_scale)`
+`#if defined(__SCALE__)` arm the other hardware never compiles; whether a `cfg!(avarok_scale)`
 host site pairs with a device constant you moved; and whether a textually-shared change is
 performance-relevant to a hardware with no benchmark record and no CI box. Reach is provable;
 harm is not.
@@ -299,7 +299,7 @@ def main():
             print("next: /oracle_pre_commit_cross_hardware_check, then ONE of")
             print("  (a) Hardware: <every reached hw>  +  CHKI-Verdict: benign -- <proof>")
             print("  (b) parameterize in kernels/<hw>/HARDWARE.toml AND add the reader in")
-            print("      crates/atlas-kernels/build.rs in the SAME change (only `vendor` and")
+            print("      crates/avarok-kernels/build.rs in the SAME change (only `vendor` and")
             print("      `arch` are read today; a key with no reader is decoration)")
             print("  (c) separate kernel in the intended tree, pinned to base bytes, NO symlink")
         else:

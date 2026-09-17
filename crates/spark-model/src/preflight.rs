@@ -19,7 +19,7 @@
 //! call on every rank.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 mod deepseek_v4;

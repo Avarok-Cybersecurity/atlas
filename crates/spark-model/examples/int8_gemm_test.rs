@@ -4,7 +4,7 @@
 //! int8 GEMM (cosine ~1.0 proves the MMA + dequant indexing). Speed: prefill shapes.
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -60,7 +60,7 @@ fn run(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let h = gpu.kernel("w4a16", "int8_gemm_t_m128")?;

@@ -8,7 +8,7 @@
   <div class="shell ftr-grid">
     <div class="ftr-col ftr-brand">
       <a class="ftr-logo" href={MAIN_SITE} aria-label="Atlas Inference Engine">
-        <AtlasLockup kind="full" label="Atlas Inference Engine" />
+        <AtlasLockup kind="corp" />
       </a>
       <p>Zero-trust inference on hardware you own. Pure Rust and CUDA, built in North Carolina.</p>
     </div>

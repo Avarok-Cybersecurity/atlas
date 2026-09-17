@@ -44,7 +44,7 @@
     grid-template-columns: 1.2em 13ch 1fr;
   }
   .kv-mark {
-    color: var(--sx);
+    color: var(--sx-text);
     font-weight: 700;
   }
   dt {

@@ -8,7 +8,7 @@
 # Prints `<name> <sha256[0:8]> <tok/s>` per probe. Compare the hash column across arms; the
 # tok/s column is indicative only (one rep, no warmup discipline).
 #
-# Sealed t47 reference (2026-08-28, world=2 TP=2 EP=2, fp8 KV, ATLAS_EP_GRAPHS=1):
+# Sealed t47 reference (2026-08-28, world=2 TP=2 EP=2, fp8 KV, AVAROK_EP_GRAPHS=1):
 #   de4e9745 / 5f16d368 / 04c73e90 / 2a7c7286 / 015083e7 / 44597015
 set -uo pipefail
 # 🪤 The server binds LOOPBACK only. Every request has to originate inside the node, so this

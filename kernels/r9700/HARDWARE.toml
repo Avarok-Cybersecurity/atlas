@@ -55,8 +55,8 @@ memory_gb = 32
 #   * The kernel set compiles. All 97 .cu the CURATED strix-shaped tree
 #     reached built clean with the SCALE nvcc, and `cargo build --release -p
 #     spark-server --no-default-features --features cuda` under
-#     ATLAS_TARGET_HW=r9700, ATLAS_TARGET_MODEL=qwen3.8-27b,
-#     ATLAS_TARGET_QUANT=nvfp4 exited 0 with 94 kernels built.
+#     AVAROK_TARGET_HW=r9700, AVAROK_TARGET_MODEL=qwen3.8-27b,
+#     AVAROK_TARGET_QUANT=nvfp4 exited 0 with 94 kernels built.
 #
 #     That tree is GONE as of 2026-09-17. It compiled a smaller inventory than
 #     the model dispatches, and the qwen3.8-27b serve died in model build at
@@ -75,12 +75,12 @@ memory_gb = 32
 #     allocation is rejected outright: "local memory (73728) exceeds limit
 #     (65536)". The `__SCALE__` gate in
 #     `kernels/gb10/common/prefill_paged_compute.cuh` and the matching 32-row
-#     host grid stride from `cfg!(atlas_scale)` in
+#     host grid stride from `cfg!(avarok_scale)` in
 #     `ops/prefill_attn_main_{a,b}.rs` therefore stay exactly as they are, and
 #     the prefill throughput they cost is a hardware limit, not an
 #     unexamined carry-over. This closes the first bullet of the old list.
 #
-#   * SCALE has NO e4m3 MMA codegen on gfx1201, so `ATLAS_W4A16_VARIANT=v1`
+#   * SCALE has NO e4m3 MMA codegen on gfx1201, so `AVAROK_W4A16_VARIANT=v1`
 #     is REQUIRED. It provides no declaration of
 #     `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`, and it
 #     rejects inline `cvt.rn.satfinite.e4m3x2.f32` ("does not provide a
@@ -89,18 +89,18 @@ memory_gb = 32
 #     m16n8k16`, which is the path v1 takes. RDNA 4's native FP8 WMMA is a
 #     property of the silicon that this toolchain does not reach, so the
 #     hoped-for saving is not available. `serve-amd.sh` also sets
-#     `ATLAS_NO_GDN_FP8_PREFILL=1` on this target only, as a conservative
+#     `AVAROK_NO_GDN_FP8_PREFILL=1` on this target only, as a conservative
 #     first-serve default (strix never set it and serves coherently with the
 #     native FP8 SSM prefill on); it is the first knob to bisect OFF.
-#     ATLAS_NO_FP8_PREDEQUANT IS READ, contrary to what this note said until
+#     AVAROK_NO_FP8_PREDEQUANT IS READ, contrary to what this note said until
 #     2026-09-17: `spark-model/src/layers/fp8_predequant.rs` reads it (the
 #     `PredequantSkip::Env` arm) and `serve-amd.sh` exports it on r9700. Only
-#     ATLAS_FORCE_GLOBAL_GDN has no reader anywhere in the tree, and only that
+#     AVAROK_FORCE_GLOBAL_GDN has no reader anywhere in the tree, and only that
 #     one is no longer exported.
 #
 #   * SCALE's cuMemGetInfo FREE figure is not truthful here, so Atlas takes
 #     free VRAM from /sys/class/drm/card*/device/mem_info_vram_{total,used}
-#     on this target (override with ATLAS_MEMINFO_SOURCE; see
+#     on this target (override with AVAROK_MEMINFO_SOURCE; see
 #     crates/spark-runtime/src/cuda_backend/meminfo_source.rs and the r9700
 #     section of docs/HARDWARE.md). SCALE charges ~16 MiB of phantom usage
 #     per ALLOCATION to its own accounting: 2000 x 11 MiB reports 60 MiB
@@ -112,11 +112,11 @@ memory_gb = 32
 #     failure here, not a missed lookup. `nvfp4_mmq.cu` is entirely inside
 #     `#if defined(BLACKWELL_MMA_AVAILABLE)`, so gfx1201 builds it to an
 #     object with no kernels; SCALE's `cuModuleGetFunction` then returns
-#     SUCCESS for `atlas_nvfp4_repack` and the first launch dies with
+#     SUCCESS for `avarok_nvfp4_repack` and the first launch dies with
 #     CUDA_ERROR_INVALID_IMAGE (200). NVIDIA answers "not found" and the
 #     optional-kernel probe absorbs it. The registry therefore reads each
 #     binary module's ELF symbol table and refuses names the object does not
-#     define (`crates/atlas-core/src/elf_symbols.rs`); the build log names the
+#     define (`crates/avarok-core/src/elf_symbols.rs`); the build log names the
 #     empty modules too. See the r9700 section of docs/HARDWARE.md.
 #
 # ── STILL UNVERIFIED ON SILICON ───────────────────────────────────
@@ -141,7 +141,7 @@ memory_gb = 32
 # the shapes, is `docs/porting/r9700-residency.md`. The steady-state resident
 # set the 64 layers would have reached is 47.07 GiB (50.54 GB).
 #
-# `ATLAS_LOAD_RELEASE_SOURCES` (default ON here, OFF on NVIDIA) takes 9.94 GiB
+# `AVAROK_LOAD_RELEASE_SOURCES` (default ON here, OFF on NVIDIA) takes 9.94 GiB
 # of that back by freeing the FP8 projections the loader has already
 # requantised. It is NECESSARY AND NOT SUFFICIENT: 37.78 GB still does not load
 # on a 31.9 GB board. What is left, in the order it should be attempted:
@@ -156,7 +156,7 @@ memory_gb = 32
 #   3. Do not build the transposed dense-FFN twins: 8.96 GiB, the largest item
 #      left. `DenseFfnWeights::{gate,up,down}_proj_t` are already `Option` and
 #      `weight_loader/gemma4/loader_a.rs:30-52` is a working precedent
-#      (`ffn_transpose_fits`, `ATLAS_GEMMA4_FFN_TRANSPOSE=0`). The cost is
+#      (`ffn_transpose_fits`, `AVAROK_GEMMA4_FFN_TRANSPOSE=0`). The cost is
 #      written down there and it is large: with all three `None` every fast arm
 #      of `w4_gemm!` is skipped and prefill lands on plain `w4a16_gemm`, which
 #      the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 for
@@ -173,7 +173,7 @@ memory_gb = 32
 #      `[N,1]`; every `w8a16` kernel indexes `block_scale[n/128, k/128]`, and
 #      the row-wise cuBLASLt FP8 path is dead on this class (SCALE has no e4m3
 #      MMA codegen on gfx1201 at all, which is the same gap that pins
-#      `ATLAS_W4A16_VARIANT=v1`). Worth 6.72 GiB of FP8 store plus the 9.6 GiB
+#      `AVAROK_W4A16_VARIANT=v1`). Worth 6.72 GiB of FP8 store plus the 9.6 GiB
 #      of NVFP4 the requant produces.
 #   7. Serve `Qwen/Qwen3.8-27B-FP8` instead. Block-scaled FP8 is the layout
 #      this loader is smallest and fastest on, and `qwen3.8-27b/MODEL.toml`
@@ -183,7 +183,7 @@ memory_gb = 32
 # Also unverified: whether the attention BF16 dequant leak this work found
 # (`qwen35_dense.rs`, the `CompressedTensors` arm, 3.12 GiB on the 27B) can be
 # freed UNCONDITIONALLY. It is a plain bug on every target, but the fix sits
-# behind `ATLAS_LOAD_RELEASE_SOURCES` until an NVIDIA serve says so.
+# behind `AVAROK_LOAD_RELEASE_SOURCES` until an NVIDIA serve says so.
 
 # No `[benchmarks.limits]` table: campaigning or self-serving a gate on this
 # class needs measured thermal/memory/timing/equivalence facts, and nobody
@@ -217,8 +217,8 @@ memory_gb = 32
 # the same "no FP multiply-add contraction" twice is free.
 #
 # It lives at the HARDWARE layer rather than in a model KERNEL.toml for the
-# reason `crates/atlas-kernels/build_flags.rs` gives for
-# `ATLAS_NO_WARP_BLOCKSCALE_MMA` on hopper/b200: every KERNEL.toml on this
+# reason `crates/avarok-kernels/build_flags.rs` gives for
+# `AVAROK_NO_WARP_BLOCKSCALE_MMA` on hopper/b200: every KERNEL.toml on this
 # target is now a relative symlink into `kernels/gb10`, so a per-model
 # declaration would mean forking a shared file once per model, and again for
 # every model added later. This is a TOOLCHAIN fact and it is stated once, for
@@ -260,7 +260,7 @@ extra_nvcc_flags = ["-ffp-contract=off"]
 #
 # The `qwen3.6-27b/nvfp4/` mirror drops two more: `w4a16_gemm_v2.cu`
 # (`241:5: error`, the e4m3 MMA path SCALE has no codegen for on gfx1201, the
-# same gap that pins `ATLAS_W4A16_VARIANT=v1`) and `w4a4_gemm.cu` (`41:8:
+# same gap that pins `AVAROK_W4A16_VARIANT=v1`) and `w4a4_gemm.cu` (`41:8:
 # error: unknown opcode`). They are NOT listed here: this key is scoped to
 # `common/`, which is what RULE 3 checks. Both are declared
 # `[expected_absent]` in the two MODEL.tomls.

@@ -12,7 +12,7 @@ impl MoeLayer {
     pub fn predequant_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
         // Same guard as the SSM and attention sites
@@ -89,7 +89,7 @@ impl MoeLayer {
 
     /// Set BF16 expert weights for the FP8-dequant-on-load MoE path.
     ///
-    /// Activated by `ATLAS_FP8_DEQUANT_MOE_TO_BF16=1`. Eliminates the per-layer
+    /// Activated by `AVAROK_FP8_DEQUANT_MOE_TO_BF16=1`. Eliminates the per-layer
     /// 0.989 FP8 cosine ceiling (measured in bench/fp8_dgx2_drift/cosine_run.py)
     /// by serving experts as BF16 throughout, matching vLLM-BF16 reference
     /// numerics. Memory cost: 2× expert weights vs native FP8.

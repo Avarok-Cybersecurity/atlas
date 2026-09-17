@@ -29,7 +29,7 @@ impl Qwen3AttentionLayer {
         k: u32,
         stream: u64,
     ) -> anyhow::Result<()> {
-        // ATLAS_W4A16_VARIANT: "v1"/"v2"/"v3" pin a kernel; 0 = auto (v2 — 3
+        // AVAROK_W4A16_VARIANT: "v1"/"v2"/"v3" pin a kernel; 0 = auto (v2 — 3
         // CTAs/SM, 8 warps; v3 with K_STEP=64 is slower in practice, kept for
         // A/B). Resolved once per model into `GemmDispatch`, which the forward
         // pass already carries.
@@ -37,7 +37,7 @@ impl Qwen3AttentionLayer {
         // LOSSLESS opt-in: route QKV/o projection prefill through the BF16-TC
         // kernel (FP4→BF16 dequant + BF16 MMA, bit-identical to base w4a16_gemm)
         // instead of the default t_m128 which crushes activations to FP8 E4M3.
-        // Gated by ATLAS_BF16_TC_PROJ (default off → unchanged). Removes the
+        // Gated by AVAROK_BF16_TC_PROJ (default off → unchanged). Removes the
         // FP8 prefill perturbation on the attention projections.
         // Load-time weight prep runs before any `TransformerModel` exists to
         // carry the levers, so this cannot take a plumbed value and reads the
@@ -115,7 +115,7 @@ impl Qwen3AttentionLayer {
     }
 
     /// Install keep-packed ternary Q2_0 q/k/v/o weights (Tier-1c,
-    /// `ATLAS_GGUF_NATIVE_Q2=1`). Decode dispatches `q2_0_gemv_vec` (2-bit
+    /// `AVAROK_GGUF_NATIVE_Q2=1`). Decode dispatches `q2_0_gemv_vec` (2-bit
     /// resident, no NVFP4); prefill transient-dequants each to BF16 via
     /// `Self::q2_prefill_gemm`. Replaces the NVFP4 decode weights (which are
     /// NULL on this path — no NVFP4 was allocated).
@@ -134,10 +134,10 @@ impl Qwen3AttentionLayer {
         // Resolved here, not in the constructor: these ship only in
         // GGUF-serving targets and the boot audit fails closed on an
         // unconditional probe everywhere else.
-        self.q2_0_mmq_nc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
-        self.q2_0_mmq_wc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
+        self.q2_0_mmq_nc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = crate::layers::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_wc");
         self.q4k_quant_act_k =
-            crate::layers::try_kernel(gpu, "q4k_mmq", "atlas_q8_1_quantize_ds4_bf16");
+            crate::layers::try_kernel(gpu, "q4k_mmq", "avarok_q8_1_quantize_ds4_bf16");
     }
 
     /// Transient-dequant prefill GEMM for a keep-packed Q2_0 projection: dequant
@@ -163,7 +163,7 @@ impl Qwen3AttentionLayer {
     ) -> Result<()> {
         let (n, k) = (w.n, w.k);
 
-        // Tier-2 native MMQ (ATLAS_GGUF_NATIVE_Q2_MMQ=1): quantize `input` to q8_1
+        // Tier-2 native MMQ (AVAROK_GGUF_NATIVE_Q2_MMQ=1): quantize `input` to q8_1
         // then run the packed 2-bit MMQ GEMM — no BF16 weight dequant, no shared
         // `q2_dequant_scratch` race. Group-128 only (else fall through).
         if self.q2_0_mmq_nc_k.0 != 0
@@ -384,7 +384,7 @@ impl Qwen3AttentionLayer {
         // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
         if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
-                "Skipping attention FP8 prefill transposes because ATLAS_CUTLASS_NVFP4_GEMM=1"
+                "Skipping attention FP8 prefill transposes because AVAROK_CUTLASS_NVFP4_GEMM=1"
             );
             return Ok(());
         }
@@ -433,10 +433,10 @@ impl Qwen3AttentionLayer {
     pub fn predequant_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
-        // Under native NVFP4 prefill (ATLAS_CUTLASS_NVFP4_GEMM=1) all of Q/K/V/O
+        // Under native NVFP4 prefill (AVAROK_CUTLASS_NVFP4_GEMM=1) all of Q/K/V/O
         // take the CUTLASS NVFP4 path; the FP8 predequant outputs (q_fp8..o_fp8)
         // are read only by the legacy FP8 prefill path and decode never reads
         // them (decode attention uses its own weights), so they'd be allocated
@@ -448,7 +448,7 @@ impl Qwen3AttentionLayer {
         // SSOT in `GemmDispatch`, and one getenv per layer at load is free.
         if crate::layers::ops::GemmDispatch::from_env().cutlass_nvfp4_gemm {
             tracing::info!(
-                "Skipping attention FP8 prefill predequant because ATLAS_CUTLASS_NVFP4_GEMM=1"
+                "Skipping attention FP8 prefill predequant because AVAROK_CUTLASS_NVFP4_GEMM=1"
             );
             return Ok(());
         }

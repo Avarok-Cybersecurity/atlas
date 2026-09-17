@@ -15,7 +15,7 @@
 //! `longsparse` (S=2560 ⇒ 640 pools vs a 512 budget, so 128 pools are genuinely dropped),
 //! and `decode` (one query over the same 2560-token state).
 //!
-//!   KDA_DSA_PACKET_DIR=/home/msi1/atlas-scratch/dsa-family \
+//!   KDA_DSA_PACKET_DIR=/home/msi1/avarok-scratch/dsa-family \
 //!   cargo run -p spark-model --release --example dsa_indexer_microtest \
 //!       --features cuda,gpu-examples
 
@@ -25,7 +25,7 @@ use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
 use spark_model::layers::glm5next_dsa_ref::DsaDims;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 #[path = "common/dsa_indexer_layer.rs"]
@@ -52,7 +52,7 @@ pub(crate) static MLA_GOLDEN: std::sync::LazyLock<String> = std::sync::LazyLock:
     )
 });
 
-/// `AtlasCudaBackend` has no `cuFuncSetAttribute` opt-in, so this is the hard ceiling.
+/// `AvarokCudaBackend` has no `cuFuncSetAttribute` opt-in, so this is the hard ceiling.
 pub(crate) const SMEM_CEILING: usize = 49_152;
 
 // ───────────────────────────────────────────────────────────────────── plumbing
@@ -285,7 +285,7 @@ impl Kernels {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let iv: Value = serde_json::from_str(&IDX_GOLDEN)?;
     let mv: Value = serde_json::from_str(&MLA_GOLDEN)?;
@@ -343,7 +343,7 @@ fn main() -> Result<()> {
     println!("  7 DSA kernel entry points resolved (no fallback path)");
 
     let dir = std::env::var("KDA_DSA_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/dsa-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/dsa-family".to_string());
 
     let layers: Vec<usize> = f["layers"]
         .as_array()

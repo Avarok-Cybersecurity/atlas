@@ -21,7 +21,7 @@
 //! `model.norm.weight`.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::weights::WeightStore;
 

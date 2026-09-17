@@ -130,7 +130,7 @@ which is `M ≥ 53` at K=5120, `M ≥ 44` at K=6144 and `M ≥ 16` at K=17408, a
 reproduces the sign of all fifteen arms. Rule:
 `layers/ops/fp8_act_quant_floor.rs`; lever `[defaults] fp8_act_quant_hopper`
 (hopper `true`, gb10/b200 `false` and inert), kill switch
-`ATLAS_FP8_ACT_QUANT_HOPPER=0`.
+`AVAROK_FP8_ACT_QUANT_HOPPER=0`.
 
 ## Round-14 prediction, restated from the measurement
 

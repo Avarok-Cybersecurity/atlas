@@ -444,7 +444,7 @@ pub fn start_chunked_prefill(
         // matcher). Mirrors prefill_b_step; no-op when no grammar is active.
         // P1-4 (2026-07-09): thread the resolved `min_p` (request +
         // MODEL.toml floor) — previously a hardcoded 0.0 inside the sampler.
-        // Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // Kill-switch: AVAROK_NO_MTP_MINP=1.
         let first = match sample_first_token(
             model,
             logits,

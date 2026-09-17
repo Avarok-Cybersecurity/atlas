@@ -74,7 +74,7 @@ impl Clocks {
 /// the model's default — see [`ThinkingRequest`].
 fn request_body(messages: &[(String, String)], thinking: ThinkingRequest) -> String {
     let mut body = serde_json::json!({
-        "model": "atlas-tui",
+        "model": "avarok-tui",
         "stream": true,
         "messages": messages
             .iter()
@@ -156,7 +156,7 @@ pub(super) async fn stream_chat(
                     }
                     // The WHOLE response, headers included: the error body is
                     // chunked, and de-chunking is the shared reader's job.
-                    let msg = atlas_plugin::http::error_message_from_response(&buf)
+                    let msg = avarok_plugin::http::error_message_from_response(&buf)
                         .map(|m| format!("{status} — {m}"))
                         .unwrap_or(status);
                     let _ = tx.send(ChatDelta::Error(msg));

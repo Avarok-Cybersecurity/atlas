@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// FP16 h-state twin of `gated_delta_rule_wy4` — stage 2 of `ATLAS_SSM_H_FP16`.
+// FP16 h-state twin of `gated_delta_rule_wy4` — stage 2 of `AVAROK_SSM_H_FP16`.
 //
 // MECHANICALLY DERIVED from the FP32 parent: every float expression, gate
 // clamp, accumulation order and reduction below is the parent's, unchanged.
@@ -34,7 +34,7 @@
 #include "gdn_f16_state.cuh"
 #define BLOCK_SIZE 128
 
-// Reduction primitives (atlas_block_reduce_sum) from gdn_reduce.cuh match
+// Reduction primitives (avarok_block_reduce_sum) from gdn_reduce.cuh match
 // the per-token baseline bit-exactly.
 
 extern "C" __global__ void gated_delta_rule_wy4_f16(
@@ -122,7 +122,7 @@ extern "C" __global__ void gated_delta_rule_wy4_f16(
     // ── Compute 6 k_dot products via block reduction ──
     #define KDOT(NAME, A, B) { \
         float p = (tid<k_dim) ? s##A[tid]*s##B[tid] : 0.0f; \
-        float r = atlas_block_reduce_sum(p, smem_warp, tid); \
+        float r = avarok_block_reduce_sum(p, smem_warp, tid); \
         if (tid==0) NAME = r; \
         __syncthreads(); \
     }

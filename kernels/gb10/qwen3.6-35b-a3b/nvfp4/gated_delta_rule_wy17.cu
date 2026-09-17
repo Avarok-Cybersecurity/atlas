@@ -108,7 +108,7 @@ extern "C" __global__ void gated_delta_rule_wy17(
         #pragma unroll
         for (int s = 0; s < t; s++) {
             float p = (tid < k_dim) ? sk[t][tid] * sk[s][tid] : 0.0f;
-            float r = atlas_block_reduce_sum(p, smem_warp, tid);
+            float r = avarok_block_reduce_sum(p, smem_warp, tid);
             if (tid == 0) {
                 kd_flat[t * (t - 1) / 2 + s] = r;
             }

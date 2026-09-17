@@ -76,7 +76,7 @@ fn completion_response_carries_system_fingerprint_and_optional_logprobs() {
     };
     let resp = CompletionResponse::new("m", "hi".into(), usage, "stop");
     let v = serde_json::to_value(&resp).expect("serialize");
-    assert_eq!(v["system_fingerprint"], "fp_atlas");
+    assert_eq!(v["system_fingerprint"], "fp_avarok");
     // logprobs must be ABSENT (not null) when not requested — some
     // clients treat an explicit null as a malformed logprobs block.
     assert!(v["choices"][0].get("logprobs").is_none());

@@ -5,12 +5,12 @@
 //!
 //! Split from `bench_resolve_tests.rs` for the 500-LoC cap, and because these
 //! read against a different oracle: the box-class REGISTRY
-//! (`atlas_plugin::hardware::ids`), not the assembled baseline.
+//! (`avarok_plugin::hardware::ids`), not the assembled baseline.
 
 use super::tests::baseline;
 use super::*;
 
-/// Oracle: `atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS` — the registry of
+/// Oracle: `avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS` — the registry of
 /// box classes Atlas recognises — crossed with the Hopper campaign's premise
 /// that no H100 record exists yet.
 ///

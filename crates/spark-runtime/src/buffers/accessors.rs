@@ -207,7 +207,7 @@ impl BufferArena {
     }
     /// Persistent BF16 transient-dequant scratch for native keep-packed Q2_0
     /// prefill. Reused per projection: dequant into it, GEMM reads it (same
-    /// stream), no free. NULL unless `ATLAS_GGUF_NATIVE_Q2`.
+    /// stream), no free. NULL unless `AVAROK_GGUF_NATIVE_Q2`.
     pub fn q2_dequant_scratch(&self) -> DevicePtr {
         self.q2_dequant_scratch
     }
@@ -216,7 +216,7 @@ impl BufferArena {
         self.sizes.q2_dequant_scratch
     }
     /// Persistent q8_1 activation scratch for native Q2_0 MMQ prefill
-    /// (`ATLAS_GGUF_NATIVE_Q2_MMQ`). NULL unless the flag is set.
+    /// (`AVAROK_GGUF_NATIVE_Q2_MMQ`). NULL unless the flag is set.
     pub fn q2_act_q8(&self) -> DevicePtr {
         self.q2_act_q8
     }
@@ -270,7 +270,7 @@ impl BufferArena {
         &self.sizes
     }
 
-    /// Env-gated (`ATLAS_SSM_SAVE_DUMP`) per-buffer checksum probe.
+    /// Env-gated (`AVAROK_SSM_SAVE_DUMP`) per-buffer checksum probe.
     ///
     /// CBD: localize a stale/uninitialized decode-scratch buffer on the
     /// prefix-cache skip path. Dumps sum/ssq/sabs over the FULL allocation
@@ -329,7 +329,7 @@ impl BufferArena {
                 }
             }
             tracing::warn!(
-                "ATLAS_BUF_CKSUM[{tag}] {name} bytes={bytes} sum={sum:.6} ssq={ssq:.6} sabs={sabs:.6}"
+                "AVAROK_BUF_CKSUM[{tag}] {name} bytes={bytes} sum={sum:.6} ssq={ssq:.6} sabs={sabs:.6}"
             );
         };
         probe(

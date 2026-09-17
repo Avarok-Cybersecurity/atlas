@@ -23,7 +23,7 @@
 // is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
 // software scl_fp8 there; the NVIDIA path is the verbatim cast.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
     if (e == 0u)               v = (float)m * 0.001953125f;
     else if (e == 15u && m == 7u) v = 0.0f;
@@ -31,7 +31,7 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
     return s ? -v : v;
 }
 #else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
 }
 #endif
@@ -50,6 +50,6 @@ __device__ __forceinline__ float mx_block_scale(unsigned char sb, float s2) {
         if (sb == 0u || sb == 255u) return 0.0f;
         return __uint_as_float((unsigned int)sb << 23);
     } else {
-        return atlas_dec_e4m3(sb) * s2;
+        return avarok_dec_e4m3(sb) * s2;
     }
 }

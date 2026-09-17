@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Serve a model with Atlas on AMD GPUs (SCALE runtime).
+# Serve a model with Avarok on AMD GPUs (SCALE runtime).
 #
-# The hardware target comes from ATLAS_TARGET_HW and defaults to `strix`. The
+# The hardware target comes from AVAROK_TARGET_HW and defaults to `strix`. The
 # SCALE toolchain directory is read from the `arch` key of
-# kernels/$ATLAS_TARGET_HW/HARDWARE.toml rather than hardcoded, so this script
+# kernels/$AVAROK_TARGET_HW/HARDWARE.toml rather than hardcoded, so this script
 # and the build agree about the arch by construction.
 #
 #   ./serve-amd.sh                                                   # strix / gfx1151
-#   ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4   # r9700 / gfx1201
+#   AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4   # r9700 / gfx1201
 #
 # Verified coherent on gfx1151 / Strix Halo with Qwen/Qwen3.6-27B-FP8. On
 # gfx1201 / Radeon AI PRO R9700 the build is green and the two runtime knobs
@@ -15,20 +15,20 @@
 # observed yet. See docs/porting/amd-strix-halo-scale.md and the r9700 section
 # of docs/HARDWARE.md.
 #
-# On a SCALE build Atlas reads free VRAM from the amdgpu sysfs counters
+# On a SCALE build Avarok reads free VRAM from the amdgpu sysfs counters
 # (/sys/class/drm/card*/device/mem_info_vram_{total,used}) rather than
 # cuMemGetInfo, whose free figure is not truthful there. That is the default
-# and needs no export here; ATLAS_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>
+# and needs no export here; AVAROK_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>
 # overrides it for a bisect. See the r9700 section of docs/HARDWARE.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 : "${SCALE_HOME:=$HOME/scale171/scale-1.7.1-Linux}"
-export ATLAS_TARGET_HW="${ATLAS_TARGET_HW:-strix}"
+export AVAROK_TARGET_HW="${AVAROK_TARGET_HW:-strix}"
 
 # Defaults that follow the hardware: the model served, and the fraction of the
 # GPU pool the KV sizer may fill.
-case "$ATLAS_TARGET_HW" in
+case "$AVAROK_TARGET_HW" in
   r9700)
     default_model="unsloth/Qwen3.8-27B-NVFP4"
     # Measured 2026-09-17 on an R9700 that was also driving a desktop
@@ -57,10 +57,10 @@ case "$ATLAS_TARGET_HW" in
 esac
 MODEL="${1:-$default_model}"
 
-hardware_toml="kernels/$ATLAS_TARGET_HW/HARDWARE.toml"
+hardware_toml="kernels/$AVAROK_TARGET_HW/HARDWARE.toml"
 if [[ ! -f "$hardware_toml" ]]; then
   echo "serve-amd.sh: no such hardware target: $hardware_toml" >&2
-  echo "  ATLAS_TARGET_HW must name a kernels/<hw>/ directory, e.g. strix or r9700." >&2
+  echo "  AVAROK_TARGET_HW must name a kernels/<hw>/ directory, e.g. strix or r9700." >&2
   exit 1
 fi
 
@@ -86,23 +86,23 @@ fi
 # Runtime knobs. Only these two are exported: both have readers in this tree,
 # and both are required on every SCALE target we have silicon for.
 #
-# ATLAS_W4A16_VARIANT=v1 (spark-model/src/layers/mod.rs) pins the BF16-MMA
+# AVAROK_W4A16_VARIANT=v1 (spark-model/src/layers/mod.rs) pins the BF16-MMA
 # NVFP4 GEMM instead of the FP8 path. SCALE emits no e4m3 MMA codegen on
 # either AMD arch: on gfx1201 it has no `fragment<accumulator, 16, 8, 32,
 # float>` declaration at all and rejects inline cvt.rn.satfinite.e4m3x2.f32,
 # while BF16 mma.sync m16n8k16 compiles, which is exactly what v1 uses.
-export ATLAS_W4A16_VARIANT=v1
-# ATLAS_NO_GDN_FP8_PREFILL=1 (spark-model/src/weight_loader/qwen35_dense.rs)
+export AVAROK_W4A16_VARIANT=v1
+# AVAROK_NO_GDN_FP8_PREFILL=1 (spark-model/src/weight_loader/qwen35_dense.rs)
 # keeps GDN/SSM prefill off the native-FP8 path. It is NOT set for strix: the
 # gfx1151 config that produced coherent output never set it, and the native
 # FP8 SSM prefill is on by default there (kernels/strix/HARDWARE.toml calls
 # that an open question, not a settled shim). On r9700 it is set as the
 # conservative first-serve default until the runtime bisect on gfx1201 says
 # which way is correct; whichever wins gets recorded in kernels/r9700.
-case "$ATLAS_TARGET_HW" in
-  r9700) export ATLAS_NO_GDN_FP8_PREFILL=1 ;;
+case "$AVAROK_TARGET_HW" in
+  r9700) export AVAROK_NO_GDN_FP8_PREFILL=1 ;;
 esac
-# ATLAS_NO_FP8_PREDEQUANT=1 (spark-model/src/layers/fp8_predequant.rs) stops the
+# AVAROK_NO_FP8_PREDEQUANT=1 (spark-model/src/layers/fp8_predequant.rs) stops the
 # loader building NVFP4-to-FP8 prefill copies of the SSM out_proj, the attention
 # q/k/v/o and the MoE gate + shared expert. The prefill dispatch PREFERS those
 # copies over both NVFP4 arms, and the GEMM it then launches is
@@ -115,12 +115,12 @@ esac
 # BELT, NOT THE FIX: the guard probes the kernels itself and skips the copies on
 # any target that cannot launch them, so a serve without this export is correct
 # too. It is exported here so the r9700 recipe says out loud which path it is
-# on, and so an operator reading the serve log sees `ATLAS_NO_FP8_PREDEQUANT is
+# on, and so an operator reading the serve log sees `AVAROK_NO_FP8_PREDEQUANT is
 # set` rather than having to infer it from a kernel name.
-case "$ATLAS_TARGET_HW" in
-  r9700) export ATLAS_NO_FP8_PREDEQUANT=1 ;;
+case "$AVAROK_TARGET_HW" in
+  r9700) export AVAROK_NO_FP8_PREDEQUANT=1 ;;
 esac
-# ATLAS_LOAD_TRANSPOSED_TWINS=0 (spark-model/src/weight_loader/qwen35_dense/
+# AVAROK_LOAD_TRANSPOSED_TWINS=0 (spark-model/src/weight_loader/qwen35_dense/
 # transposed_twins.rs) declines the transposed second copy of every quantised
 # weight. On GB10 that copy is a large prefill win and declining it is a
 # residency trade; ON THIS BOARD IT IS NOT A TRADE AT ALL. The R9700 prefill
@@ -131,15 +131,15 @@ esac
 # Ornith-1.0-9B). The 7-vs-51 TFLOP/s figures that used to be quoted here are
 # the Gemma-4-31B numbers from GB10 and were never measured on SCALE.
 # Decode is untouched either way: it reads the packed original.
-# `0` is also the loader's own unset default under cfg(atlas_scale), so this
+# `0` is also the loader's own unset default under cfg(avarok_scale), so this
 # export only makes the recipe say out loud which path it is on. `=1` builds
 # them anyway and `=auto` restores the free-VRAM probe, which is how the A/B
 # above gets re-run.
 # See the r9700 section of docs/HARDWARE.md and docs/porting/r9700-residency.md.
-case "$ATLAS_TARGET_HW" in
-  r9700) export ATLAS_LOAD_TRANSPOSED_TWINS=0 ;;
+case "$AVAROK_TARGET_HW" in
+  r9700) export AVAROK_LOAD_TRANSPOSED_TWINS=0 ;;
 esac
-# Removed here: ATLAS_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
+# Removed here: AVAROK_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
 # tree as of this commit, so exporting it only suggested a control that does not
 # exist.
 

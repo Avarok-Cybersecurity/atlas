@@ -79,7 +79,7 @@ pub struct ServeArgs {
     /// logged at `warn!` on every boot. A flag that muted the warning would
     /// recreate the bug it exists to catch.
     ///
-    /// This replaces `ATLAS_ALLOW_SHADOWED_KERNELS`, which covered only the
+    /// This replaces `AVAROK_ALLOW_SHADOWED_KERNELS`, which covered only the
     /// shadow-dropped subset — one switch, and a CLI flag rather than an
     /// environment variable so it is visible in the command that started the
     /// process.
@@ -105,7 +105,7 @@ pub struct ServeArgs {
     /// another flag can silence is worth nothing. Passing both still prints the
     /// full list and still exits with the count.
     ///
-    /// A one-line JSON object (`{"atlas_kernel_check": …}`) is printed on
+    /// A one-line JSON object (`{"avarok_kernel_check": …}`) is printed on
     /// stdout after the human report, so a sweep over every target can
     /// aggregate without parsing prose.
     #[arg(long, default_value_t = false)]
@@ -172,7 +172,7 @@ pub struct ServeArgs {
 
     // ── GDN / SSM decode path ──
     //
-    // These four were `ATLAS_*` environment variables. They are CONFIGURATION,
+    // These four were `AVAROK_*` environment variables. They are CONFIGURATION,
     // not diagnostics: the enterprise-concurrency campaign's best recipe needs
     // three of them, and a recipe that has to carry a ten-line env block is a
     // recipe nobody can read or audit. A CLI flag satisfies PCND exactly as an
@@ -221,7 +221,7 @@ pub struct ServeArgs {
     /// `ssm-state-poisoning-gate`, `decode-floor`, `bfcl-subset` and the
     /// agentic gate.
     ///
-    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 — never f16-pool,
+    /// Legacy: `AVAROK_SSM_H_FP16` (presence) selects f16 — never f16-pool,
     /// which has no environment spelling — when NONE of the three GDN flags
     /// is given. `GdnFlags` is published as one cell, so any of them takes
     /// the whole decision away from the environment; `warn_shadowed_env`
@@ -271,7 +271,7 @@ pub struct ServeArgs {
     /// `0` disables the ring outright; 8 is the wired default and the
     /// arithmetic ceiling.
     ///
-    /// Legacy: `ATLAS_SSM_DECODE_RING=1|0` still means depth 8 and 0. It is
+    /// Legacy: `AVAROK_SSM_DECODE_RING=1|0` still means depth 8 and 0. It is
     /// only consulted when this flag is `auto` — absent is not a value.
     #[arg(long, default_value = "auto", value_name = "AUTO_OR_N")]
     pub ssm_decode_ring_slots: String,
@@ -286,7 +286,7 @@ pub struct ServeArgs {
     /// nondeterminism. Under PCND an unproven numerics change is explicit
     /// configuration, not a default.
     ///
-    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
+    /// Legacy: `AVAROK_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
     ///
     /// `Option` so that ABSENT is distinguishable from `false`: publishing the
     /// clap default sealed the flags cell on every boot, which made the legacy
@@ -301,7 +301,7 @@ pub struct ServeArgs {
     /// One strided launch across the batch instead of one per sequence.
     /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
     ///
-    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`, on the same terms as
+    /// Legacy: `AVAROK_SSM_BATCHED_RECURRENT=1`, on the same terms as
     /// `--gdn-fused-norm`, and `Option` for the same reason.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
@@ -320,7 +320,7 @@ pub struct ServeArgs {
     /// differently, so per-request outputs are not bitwise-identical to the
     /// serial path. Gate recipes stay on the default (off) until certified.
     ///
-    /// Legacy: `ATLAS_PREFILL_VARLEN=1`, on the same terms as
+    /// Legacy: `AVAROK_PREFILL_VARLEN=1`, on the same terms as
     /// `--gdn-fused-norm`, and `Option` for the same reason.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub prefill_varlen_batch: Option<bool>,
@@ -423,7 +423,7 @@ pub struct ServeArgs {
     /// clamp-based tail-checkpoint path costs on a warm turn. Off is
     /// byte-identical to the pre-2026-07-19 baseline.
     ///
-    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
+    /// Legacy: `AVAROK_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
     ///
     /// Absent is not the same as `--ssm-tail-midchunk true`, which is why there
     /// is no clap default here: publishing a default sealed the runtime's cell
@@ -443,7 +443,7 @@ pub struct ServeArgs {
     /// if forcing wins, the GATE is miscalibrated and that is the fix, not
     /// this flag. To run without speculation at all, omit `--speculative`.
     ///
-    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force` when this flag is
+    /// Legacy: `AVAROK_MTP_GATE_FORCE=1` selects `force` when this flag is
     /// ABSENT. As with `--ssm-tail-midchunk`, there is no clap default: a
     /// published default would seal the scheduler's cell to `auto` on every
     /// boot and silently ignore the variable it documents.
@@ -468,7 +468,7 @@ pub struct ServeArgs {
     /// long-generation harness before enabling nvfp4/fp8 — do not trust a short smoke.
     /// (An FP32-accumulate logits path would cut the flips but forces host-side sampling
     /// → ~6 tok/s; making nvfp4/fp8 both fast AND safe needs a GPU-side FP32 sampler.)
-    /// Replaces the former ATLAS_LMHEAD_BF16 env var.
+    /// Replaces the former AVAROK_LMHEAD_BF16 env var.
     #[arg(long, default_value = "default")]
     pub lm_head_dtype: String,
 
@@ -531,7 +531,7 @@ pub struct ServeArgs {
     /// the cap on free-prose tokens between successive tool calls on a
     /// tool-armed request, after which the scheduler ends the response
     /// with finish_reason "length" (#328). 0 disables the guard entirely.
-    /// Precedence (highest wins): this flag → ATLAS_MAX_INTER_TOOL_PROSE
+    /// Precedence (highest wins): this flag → AVAROK_MAX_INTER_TOOL_PROSE
     /// → MODEL.toml → built-in default (3072).
     #[arg(long)]
     pub max_inter_tool_prose: Option<u32>,
@@ -541,7 +541,7 @@ pub struct ServeArgs {
     /// a response whose tail is a short-period token repeat; its built-in
     /// threshold (3 end-anchored repeats of a period-2..64 pattern) can
     /// false-positive on legitimately repetitive output such as code.
-    /// Precedence (highest wins): this flag → ATLAS_CONTENT_LOOP_WATCHDOG
+    /// Precedence (highest wins): this flag → AVAROK_CONTENT_LOOP_WATCHDOG
     /// → MODEL.toml. Runtime-toggleable from the TUI via `/watchdog on|off`.
     #[arg(long)]
     pub content_loop_watchdog: Option<bool>,
@@ -551,7 +551,7 @@ pub struct ServeArgs {
     /// Raise it for models whose legitimate output is short-period
     /// repetitive (code, tables). A per-request `repetition_detection`
     /// object still outranks this. Precedence: this flag →
-    /// ATLAS_CONTENT_LOOP_MIN_REPEATS → built-in default.
+    /// AVAROK_CONTENT_LOOP_MIN_REPEATS → built-in default.
     #[arg(long)]
     pub content_loop_min_repeats: Option<u32>,
 
@@ -831,7 +831,7 @@ pub struct ServeArgs {
     /// BFCL draw disagreeing with the same draw run whole on 12 of 995
     /// samples; disabling restore takes it to 2. A known-answer gate needs that
     /// configuration IN ITS RECORD, and only recipe keys reach a record —
-    /// `ATLAS_MARCONI_MIN_TOKENS` cannot, so a run using it could not say so.
+    /// `AVAROK_MARCONI_MIN_TOKENS` cannot, so a run using it could not say so.
     ///
     /// This is a correctness knob for KAT gates, not a throughput knob:
     /// disabling restore gives up the warm-turn saving. On single-turn
@@ -884,7 +884,7 @@ pub struct ServeArgs {
 
     /// Swap space in GB for KV cache overflow to disk. When GPU blocks are
     /// exhausted, sequences are swapped to disk and resumed later.
-    /// 0 = disabled. Swap files stored in /tmp/atlas-swap/.
+    /// 0 = disabled. Swap files stored in /tmp/avarok-swap/.
     #[arg(long, default_value_t = 3)]
     pub swap_space_gb: usize,
 
@@ -900,7 +900,7 @@ pub struct ServeArgs {
 
     /// Directory for the per-layer NVMe-backed KV files. Required when
     /// --high-speed-swap is set; must be on a different mount than
-    /// --swap-space-gb's /tmp/atlas-swap to avoid file collisions.
+    /// --swap-space-gb's /tmp/avarok-swap to avoid file collisions.
     #[arg(long)]
     pub high_speed_swap_dir: Option<std::path::PathBuf>,
 
@@ -974,7 +974,7 @@ pub struct ServeArgs {
     /// `--fp8-kv-calibration-tokens` tokens, so the frozen scale covers
     /// headroom× their max — later tokens whose magnitude grows don't clip, at
     /// a cost of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
-    /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
+    /// rejected at startup). Replaces `AVAROK_FP8_KV_HEADROOM`.
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,
 
@@ -1003,20 +1003,20 @@ pub struct ServeArgs {
     /// with a per-shard heuristic that picks between O_DIRECT and buffered
     /// reads) is on by default — this flag is an escape hatch for rare
     /// filesystems that misbehave with O_DIRECT or for A/B debugging.
-    /// Setting `ATLAS_FAST_LOAD=0` has the same effect.
+    /// Setting `AVAROK_FAST_LOAD=0` has the same effect.
     #[arg(long, default_value_t = false)]
     pub no_fast_load: bool,
 
     /// Disable the interactive TUI dashboard even on a TTY, keeping the plain
     /// log stream. The TUI also auto-disables when stdout/stdin is not an
-    /// interactive terminal (pipes, `docker -d`, CI) or `ATLAS_NO_TUI=1`.
+    /// interactive terminal (pipes, `docker -d`, CI) or `AVAROK_NO_TUI=1`.
     #[arg(long, default_value_t = false)]
     pub no_tui: bool,
 
     /// Ask the fast loader to prefetch each buffered shard before per-tensor
     /// reads. Useful on NFS-backed model stores with many small tensors per
     /// shard, where normal kernel readahead may not keep up. Also enabled by
-    /// `ATLAS_FAST_LOAD_PREFETCH_SHARDS=1`.
+    /// `AVAROK_FAST_LOAD_PREFETCH_SHARDS=1`.
     #[arg(long, default_value_t = false)]
     pub fast_load_prefetch_shards: bool,
 
@@ -1036,7 +1036,7 @@ pub struct ServeArgs {
     /// vision token count per image quadratically — a 4096² image is ~16k
     /// merged tokens — so it is charged against the context budget.
     ///
-    /// Also settable with `ATLAS_VISION_MAX_PIXELS`.
+    /// Also settable with `AVAROK_VISION_MAX_PIXELS`.
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
 
@@ -1211,11 +1211,11 @@ pub struct ServeArgs {
     /// Task #27: a STAGEABLE (promotable-but-not-resident) LoRA adapter, as
     /// `NAME=PEER_STAGE_ID=CONFIG_DIR` (repeatable). NAME is what a request's
     /// `adapter` field asks for; PEER_STAGE_ID is the adapter's id on the
-    /// `$ATLAS_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
+    /// `$AVAROK_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
     /// `adapter_config.json` (the peer manifest carries no r/alpha, so the peft
     /// scaling is read from here at startup). A request naming a stageable
     /// adapter triggers an on-miss RDMA promotion into a cache pool slot instead
-    /// of a 404. Requires `$ATLAS_LORA_PEER`. Empty = today's resident-only
+    /// of a 404. Requires `$AVAROK_LORA_PEER`. Empty = today's resident-only
     /// behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PEER_ID=DIR", value_parser = parse_lora_stageable_spec)]
     pub lora_stageable: Vec<(String, String, String)>,
@@ -1224,7 +1224,7 @@ pub struct ServeArgs {
     /// `NAME=PATH_OR_HF_ID` (repeatable). A request naming NAME triggers an
     /// on-miss DISK fault-in into a cache pool slot (LRU-evicted) instead of a
     /// 404 — the no-RDMA sibling of `--lora-stageable`. Needs
-    /// `ATLAS_LORA_ROTATE=1` (so decode runs eager and the disk swap can
+    /// `AVAROK_LORA_ROTATE=1` (so decode runs eager and the disk swap can
     /// re-point a cache slot) and `--max-loras > resident count` for cache
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]

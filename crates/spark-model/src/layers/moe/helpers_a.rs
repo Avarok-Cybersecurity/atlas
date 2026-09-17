@@ -30,7 +30,7 @@ impl MoeLayer {
     pub fn transpose_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         self.transpose_for_prefill_impl(gpu, config, true)
     }
@@ -45,7 +45,7 @@ impl MoeLayer {
     pub fn transpose_gate_up_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         self.transpose_for_prefill_impl(gpu, config, false)
     }
@@ -53,7 +53,7 @@ impl MoeLayer {
     pub(super) fn transpose_for_prefill_impl(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         include_down: bool,
     ) -> Result<()> {
         let h = config.hidden_size;
@@ -150,14 +150,14 @@ impl MoeLayer {
     /// run; dispatch must use the `_t` decode kernels (which do).
     ///
     /// Caller responsibilities:
-    ///   1. Set `ATLAS_UNIFIED_MOE_LAYOUT=1` so `MoeLayer::use_t_layout_for_decode()`
+    ///   1. Set `AVAROK_UNIFIED_MOE_LAYOUT=1` so `MoeLayer::use_t_layout_for_decode()`
     ///      returns true at dispatch time.
     ///   2. Call this method INSTEAD of `transpose_for_prefill` /
     ///      `transpose_gate_up_for_prefill`.
     pub fn transpose_for_prefill_unified(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         self.transpose_for_prefill_unified_inner(gpu, config, false)
     }
@@ -172,7 +172,7 @@ impl MoeLayer {
     pub fn transpose_for_prefill_hybrid(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         self.transpose_for_prefill_unified_inner(gpu, config, true)
     }
@@ -185,7 +185,7 @@ impl MoeLayer {
     pub(super) fn transpose_for_prefill_unified_inner(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         keep_originals: bool,
     ) -> Result<()> {
         let h = config.hidden_size;
@@ -406,7 +406,7 @@ impl MoeLayer {
     }
 
     /// Build per-expert swizzled SFB weight-scale tables for the CUTLASS grouped
-    /// NVFP4 path (`ATLAS_HOLO_MOE_GROUPED_CUTLASS`). For each expert, swizzle the
+    /// NVFP4 path (`AVAROK_HOLO_MOE_GROUPED_CUTLASS`). For each expert, swizzle the
     /// `[K/16,N]` `gate_ptrs_t`/`up_ptrs_t` scale into the CUTLASS SFB atom via
     /// `pack_weight_sfb`, then upload the per-expert pointer arrays. The grouped
     /// kernel pairs these with `gate_ptrs.packed` (`[N,K/2]`) + the real per-expert
@@ -414,7 +414,7 @@ impl MoeLayer {
     pub fn build_cutlass_grouped_sfb(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
         let h = config.hidden_size;

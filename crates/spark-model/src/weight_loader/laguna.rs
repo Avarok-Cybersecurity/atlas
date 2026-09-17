@@ -5,7 +5,7 @@
 mod load_layers;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;

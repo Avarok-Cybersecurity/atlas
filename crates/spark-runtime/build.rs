@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
-    println!("cargo:rerun-if-env-changed=ATLAS_TARGET_HW");
+    println!("cargo:rerun-if-env-changed=AVAROK_SKIP_BUILD");
+    println!("cargo:rerun-if-env-changed=AVAROK_TARGET_HW");
     println!("cargo:rerun-if-env-changed=CUTLASS_HOME");
     println!("cargo:rerun-if-env-changed=FLASHINFER_HOME");
-    println!("cargo:rerun-if-env-changed=ATLAS_CUDA_ARCH");
-    // Register the `atlas_scale` cfg so `#[cfg(atlas_scale)]` does not trip
-    // the `unexpected_cfgs` lint. `atlas_scale` selects SCALE/AMD codepaths
-    // over NVIDIA ones where the CUDA driver ABI differs — e.g. SCALE's
-    // libcuda exports `cuGraphInstantiate` (not the NVIDIA-only
+    println!("cargo:rerun-if-env-changed=AVAROK_CUDA_ARCH");
+    // Register the `avarok_scale` cfg so `#[cfg(avarok_scale)]` does not trip
+    // the `unexpected_cfgs` lint. `avarok_scale` selects SCALE/AMD codepaths
+    // over NVIDIA ones where the CUDA driver ABI differs, e.g. SCALE's libcuda
+    // exports `cuGraphInstantiate` (not the NVIDIA-only
     // `cuGraphInstantiateWithFlags`).
-    println!("cargo:rustc-check-cfg=cfg(atlas_scale)");
-    println!("cargo:rustc-check-cfg=cfg(atlas_cutlass)");
-    println!("cargo:rustc-check-cfg=cfg(atlas_flashinfer)");
+    println!("cargo:rustc-check-cfg=cfg(avarok_scale)");
+    println!("cargo:rustc-check-cfg=cfg(avarok_cutlass)");
+    println!("cargo:rustc-check-cfg=cfg(avarok_flashinfer)");
 
     // Resolved HERE, before every early return: the SM architecture is a
     // property of the selected target, not of whether an optional reference
@@ -24,35 +24,35 @@ fn main() {
     println!("cargo:rerun-if-changed={}", hardware_toml.display());
     let cuda_arch = resolve_cuda_arch(&hardware_toml);
 
-    // ── VENDOR, not name ──────────────────────────────────────────────────
-    // This used to read `ATLAS_TARGET_HW.starts_with("strix")`, which made the
-    // driver-ABI choice a function of the DIRECTORY NAME. It is a property of
-    // the TOOLCHAIN: `[hardware].vendor` is what atlas-kernels/build.rs
-    // already switches `resolve_compute_target` on, so `amd` (SCALE) and
-    // `hip` (native ROCm) are exactly the targets whose libcuda is not
-    // NVIDIA's. A second SCALE target whose directory is not named "strix"
-    // (`kernels/r9700`, gfx1201) would otherwise have been built against the
-    // NVIDIA driver surface and failed to link — or worse, called an entry
-    // point SCALE's libcuda does not export.
+    // Vendor, not name. This used to read
+    // `AVAROK_TARGET_HW.starts_with("strix")`, which made the driver-ABI
+    // choice a function of the directory name. It is a property of the
+    // toolchain: `[hardware].vendor` is what avarok-kernels/build.rs already
+    // switches `resolve_compute_target` on, so `amd` (SCALE) and `hip` (native
+    // ROCm) are exactly the targets whose libcuda is not NVIDIA's. A second
+    // SCALE target whose directory is not named "strix" (`kernels/r9700`,
+    // gfx1201) would otherwise be built against the NVIDIA driver surface and
+    // fail to link, or worse, call an entry point SCALE's libcuda does not
+    // export.
     //
     // Same file `resolve_cuda_arch` below reads for `-arch=`, and its
     // `rerun-if-changed` is emitted once above for both. Behaviour is
     // unchanged for every existing target: strix declares `amd`, strix-hip
-    // declares `hip`, gb10/hopper/b200 declare `nvidia`, metal `apple`, and
-    // an unset ATLAS_TARGET_HW still resolves to gb10 — no cfg either way.
-    // An unreadable file leaves the cfg unset, as it did before.
+    // declares `hip`, gb10/hopper/b200 declare `nvidia`, metal `apple`, and an
+    // unset AVAROK_TARGET_HW still resolves to gb10, no cfg either way. An
+    // unreadable file leaves the cfg unset, as it did before.
     if matches!(
         hardware_vendor(&hardware_toml).as_deref(),
         Some("amd") | Some("hip")
     ) {
-        println!("cargo:rustc-cfg=atlas_scale");
+        println!("cargo:rustc-cfg=avarok_scale");
     }
 
     if matches!(
-        std::env::var("ATLAS_SKIP_BUILD").as_deref(),
+        std::env::var("AVAROK_SKIP_BUILD").as_deref(),
         Ok("1") | Ok("true")
     ) {
-        // Even under ATLAS_SKIP_BUILD (CI no-GPU test build, no nvcc), the
+        // Even under AVAROK_SKIP_BUILD (CI no-GPU test build, no nvcc), the
         // cublaslt.rs FFI references cublasLt symbols that must resolve at LINK
         // time. cudarc emits -lcuda for us, but -lcublasLt is our own; emit it
         // here so the no-GPU `cargo test` build links (CI provides a stub
@@ -74,26 +74,26 @@ fn main() {
     }
 
     // libcuda is only needed when the cuda feature is on (i.e. when
-    // AtlasCudaBackend is compiled in). The metal feature build on
+    // AvarokCudaBackend is compiled in). The metal feature build on
     // Apple Silicon must not request -lcuda.
     if std::env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
 
-    // Link libcuda for AtlasCudaBackend's raw CUDA driver API calls.
+    // Link libcuda for AvarokCudaBackend's raw CUDA driver API calls.
     // The actual CUDA driver is a stub at compile time; at runtime
     // it resolves to the NVIDIA driver installed on the system.
     println!("cargo:rustc-link-lib=dylib=cuda");
-    // cuBLASLt for the high-efficiency GEMM path (ATLAS_CUBLAS_GEMM=1). The
+    // cuBLASLt for the high-efficiency GEMM path (AVAROK_CUBLAS_GEMM=1). The
     // hand-written mma.sync projection/MoE GEMMs hit only ~30% of the cuBLAS
     // ceiling on GB10; cuBLASLt is a measured 2.7-4.8x lever on those shapes.
     println!("cargo:rustc-link-lib=dylib=cublasLt");
     // cudart: copy_d2d_2d_async uses cudaMemcpy2DAsync (a runtime, not driver,
-    // symbol). Previously only emitted in the ATLAS_SKIP_BUILD stub path and
+    // symbol). Previously only emitted in the AVAROK_SKIP_BUILD stub path and
     // the optional CUTLASS/FlashInfer object paths below, so a real GPU build
     // without CUTLASS_HOME/FLASHINFER_HOME set fails to link with "undefined
     // reference to cudaMemcpy2DAsync" even though CI (which builds under
-    // ATLAS_SKIP_BUILD) is green.
+    // AVAROK_SKIP_BUILD) is green.
     println!("cargo:rustc-link-lib=dylib=cudart");
 
     if let Ok(cuda_path) = std::env::var("CUDA_HOME") {
@@ -110,7 +110,7 @@ fn main() {
     // `FLASHINFER_HOME` unset is the NORMAL build: it emits no third-party
     // kernel object, and the binary serves entirely on Atlas's own kernels.
     // Setting them only makes the opponent available behind its runtime
-    // opt-in (`ATLAS_CUTLASS_GEMM=1` / `ATLAS_FLASHINFER_PREFILL=1`), which
+    // opt-in (`AVAROK_CUTLASS_GEMM=1` / `AVAROK_FLASHINFER_PREFILL=1`), which
     // stays OFF by default. Canonical rationale: the module docs on
     // `spark_runtime::cutlass` and `spark_runtime::flashinfer`.
     if let Some(cutlass_home) = std::env::var_os("CUTLASS_HOME") {
@@ -131,13 +131,13 @@ fn build_flashinfer_object(fi_home: std::path::PathBuf, arch: &str) {
     use std::process::Command;
 
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set"));
-    let lib = out_dir.join("libatlas_flashinfer.a");
+    let lib = out_dir.join("libavarok_flashinfer.a");
     let cuda_home = std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".to_string());
     let nvcc = std::path::Path::new(&cuda_home).join("bin/nvcc");
 
     let src = std::path::PathBuf::from("cuda/flashinfer_ragged_prefill.cu");
     println!("cargo:rerun-if-changed={}", src.display());
-    println!("cargo:rustc-cfg=atlas_flashinfer");
+    println!("cargo:rustc-cfg=avarok_flashinfer");
 
     let cccl = fi_home.join("3rdparty/cccl");
     let obj = out_dir.join("flashinfer_ragged_prefill.o");
@@ -179,7 +179,7 @@ fn build_flashinfer_object(fi_home: std::path::PathBuf, arch: &str) {
     );
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=atlas_flashinfer");
+    println!("cargo:rustc-link-lib=static=avarok_flashinfer");
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }
@@ -188,7 +188,7 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
     use std::process::Command;
 
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR set"));
-    let lib = out_dir.join("libatlas_cutlass.a");
+    let lib = out_dir.join("libavarok_cutlass.a");
     let cuda_home = std::env::var("CUDA_HOME").unwrap_or_else(|_| "/usr/local/cuda".to_string());
     let nvcc = std::path::Path::new(&cuda_home).join("bin/nvcc");
 
@@ -200,7 +200,7 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
     for src in &sources {
         println!("cargo:rerun-if-changed={}", src.display());
     }
-    println!("cargo:rustc-cfg=atlas_cutlass");
+    println!("cargo:rustc-cfg=avarok_cutlass");
 
     let mut objects = Vec::new();
     for src in &sources {
@@ -249,7 +249,7 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
     );
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=atlas_cutlass");
+    println!("cargo:rustc-link-lib=static=avarok_cutlass");
     println!("cargo:rustc-link-lib=dylib=cudart");
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }
@@ -257,16 +257,16 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
 /// The SM architecture the CUTLASS / FlashInfer reference objects compile for.
 ///
 /// SSOT is `kernels/<hw>/HARDWARE.toml` `[hardware].arch` — the same file
-/// `atlas-kernels/build.rs` compiles Atlas's own kernels from. Hard-coding
+/// `avarok-kernels/build.rs` compiles Atlas's own kernels from. Hard-coding
 /// `sm_121f` here meant a build for any other hardware silently produced
 /// reference objects for GB10, which is a benchmark comparing two different
-/// GPUs' code. `ATLAS_CUDA_ARCH` still wins when set explicitly.
+/// GPUs' code. `AVAROK_CUDA_ARCH` still wins when set explicitly.
 ///
 /// The literal survives only as the fallback for an unreadable file, announced
 /// as a `cargo:warning` rather than applied silently.
 fn resolve_cuda_arch(hardware_toml: &std::path::Path) -> String {
     const FALLBACK: &str = "sm_121f";
-    if let Ok(explicit) = std::env::var("ATLAS_CUDA_ARCH") {
+    if let Ok(explicit) = std::env::var("AVAROK_CUDA_ARCH") {
         return explicit;
     }
     match hardware_arch(hardware_toml) {
@@ -274,8 +274,8 @@ fn resolve_cuda_arch(hardware_toml: &std::path::Path) -> String {
         None => {
             println!(
                 "cargo:warning=spark-runtime: no [hardware].arch in {} — reference objects fall \
-                 back to {FALLBACK}; set ATLAS_TARGET_HW to a target under kernels/, or \
-                 ATLAS_CUDA_ARCH to override",
+                 back to {FALLBACK}; set AVAROK_TARGET_HW to a target under kernels/, or \
+                 AVAROK_CUDA_ARCH to override",
                 hardware_toml.display()
             );
             FALLBACK.to_string()
@@ -283,11 +283,11 @@ fn resolve_cuda_arch(hardware_toml: &std::path::Path) -> String {
     }
 }
 
-/// `kernels/<ATLAS_TARGET_HW>/HARDWARE.toml` — the one hardware declaration
+/// `kernels/<AVAROK_TARGET_HW>/HARDWARE.toml`: the one hardware declaration
 /// this build reads, for both `-arch=` and the vendor cfg above. Defaults to
-/// gb10 when `ATLAS_TARGET_HW` is unset, exactly as the arch resolution did.
+/// gb10 when `AVAROK_TARGET_HW` is unset, exactly as the arch resolution did.
 fn hardware_toml_path() -> std::path::PathBuf {
-    let hw = std::env::var("ATLAS_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
+    let hw = std::env::var("AVAROK_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
     std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|crates| crates.parent())
@@ -307,7 +307,7 @@ fn hardware_arch(path: &std::path::Path) -> Option<String> {
 /// `[hardware].vendor` from a `HARDWARE.toml`, or `None` if it cannot be read.
 ///
 /// The compiler-family key: `nvidia` | `apple` | `amd` | `hip`, the same
-/// values `atlas-kernels/build_target.rs::resolve_compute_target` switches on.
+/// values `avarok-kernels/build_target.rs::resolve_compute_target` switches on.
 fn hardware_vendor(path: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let doc: toml::Value = text.parse().ok()?;

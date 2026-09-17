@@ -13,7 +13,7 @@
 #
 # The 6 MB assets/atlas-demo.mp4 is deliberately NOT exempted — it is what the
 # blanket rule is for.
-crates/atlas-plugin/assets/video/*.mp4 -filter -diff -merge -text
+crates/avarok-plugin/assets/video/*.mp4 -filter -diff -merge -text
 tests/fixtures/videos/*.mp4 -filter -diff -merge -text
 
 # Append-style files that every feature PR touches (changelog entry, model-support

@@ -6,7 +6,7 @@
 // inline because it owns enough closures to fight extraction.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;

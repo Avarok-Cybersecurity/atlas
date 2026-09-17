@@ -35,7 +35,7 @@ impl Qwen3SsmLayer {
             .downcast_mut::<SsmLayerState>()
             .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
 
-        // ATLAS_FP32_ROUTING has the SSM's fused `residual_add_rms_norm_gatef32`
+        // AVAROK_FP32_ROUTING has the SSM's fused `residual_add_rms_norm_gatef32`
         // populate `moe_router_in_f32` for the gate GEMM to read at full
         // precision. This path does not run that kernel — `hc_norm` inside
         // `hc_pre` is the norm — so the buffer would hold the PREVIOUS layer's
@@ -43,7 +43,7 @@ impl Qwen3SsmLayer {
         // flag is off by default) and silent if it ever is not.
         anyhow::ensure!(
             !self.ffn.fp32_routing_active(ctx.levers),
-            "qwen3_ssm mHC: ATLAS_FP32_ROUTING needs the fused gate-f32 norm, \
+            "qwen3_ssm mHC: AVAROK_FP32_ROUTING needs the fused gate-f32 norm, \
              which the highway path replaces. The router would read a stale \
              moe_router_in_f32. Unset it."
         );
@@ -52,13 +52,13 @@ impl Qwen3SsmLayer {
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
 
-        // ATLAS_QWEN4EXP_DECODE_PROF=1: per-stage wall clock, first tokens
+        // AVAROK_QWEN4EXP_DECODE_PROF=1: per-stage wall clock, first tokens
         // only (the counter caps the log volume). Each probe syncs, so the
         // numbers are honest and the mode is not for serving.
         static PROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         static PROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(150);
         let prof = *PROF
-            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_DECODE_PROF").as_deref() == Ok("1"))
+            .get_or_init(|| std::env::var("AVAROK_QWEN4EXP_DECODE_PROF").as_deref() == Ok("1"))
             && PROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
         let mut t = if prof {
             ctx.gpu.synchronize(stream).ok();

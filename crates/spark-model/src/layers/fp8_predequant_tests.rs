@@ -41,7 +41,7 @@ fn a_missing_ldmab_kernel_skips_the_predequant() {
     );
 }
 
-/// ...but only while that route is armed. `ATLAS_FP8_LDMAB=0` takes
+/// ...but only while that route is armed. `AVAROK_FP8_LDMAB=0` takes
 /// `fp8_gemm_n128` off it, and then a missing ldmab kernel is irrelevant.
 #[test]
 fn the_ldmab_kernel_only_matters_while_that_route_is_armed() {
@@ -125,7 +125,7 @@ fn every_reason_names_what_is_missing() {
     assert!(
         PredequantSkip::Env
             .reason()
-            .contains("ATLAS_NO_FP8_PREDEQUANT")
+            .contains("AVAROK_NO_FP8_PREDEQUANT")
     );
     assert!(
         PredequantSkip::KernelMissing("w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab")

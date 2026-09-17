@@ -57,10 +57,10 @@
 //! ## What this module does NOT change
 //!
 //! Nothing on NVIDIA. The default is [`MemInfoSource::Driver`] unless the
-//! build is a SCALE build (`cfg!(atlas_scale)`, set by `build.rs` from
+//! build is a SCALE build (`cfg!(avarok_scale)`, set by `build.rs` from
 //! `kernels/<hw>/HARDWARE.toml` `[hardware].vendor`) AND a matching amdgpu
 //! node is actually found, so an NVIDIA binary resolves to `Driver` without
-//! so much as a `read_dir`. `ATLAS_MEMINFO_SOURCE` overrides in both
+//! so much as a `read_dir`. `AVAROK_MEMINFO_SOURCE` overrides in both
 //! directions for a bisect.
 
 use std::path::{Path, PathBuf};
@@ -69,7 +69,7 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result};
 
 /// `driver` | `sysfs` | `sysfs:/sys/class/drm/cardN/device`.
-pub(super) const ENV_VAR: &str = "ATLAS_MEMINFO_SOURCE";
+pub(super) const ENV_VAR: &str = "AVAROK_MEMINFO_SOURCE";
 
 /// Where the free-memory figure comes from for this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,7 +91,7 @@ pub(super) fn resolve(total_hint: usize) -> &'static MemInfoSource {
     static RESOLVED: OnceLock<MemInfoSource> = OnceLock::new();
     RESOLVED.get_or_init(|| {
         let env = std::env::var(ENV_VAR).ok();
-        let decision = decide(env.as_deref(), cfg!(atlas_scale), || {
+        let decision = decide(env.as_deref(), cfg!(avarok_scale), || {
             autodetect_amdgpu_sysfs(total_hint)
         });
         if let Some(warning) = &decision.warning {
@@ -136,7 +136,7 @@ pub(super) fn decide(
         // Explicit driver: the escape hatch if sysfs ever misleads.
         Some(v) if v.eq_ignore_ascii_case("driver") => Decision {
             source: MemInfoSource::Driver,
-            why: "forced by ATLAS_MEMINFO_SOURCE=driver",
+            why: "forced by AVAROK_MEMINFO_SOURCE=driver",
             warning: None,
         },
         // Explicit sysfs with the device directory spelled out. Taken
@@ -144,18 +144,18 @@ pub(super) fn decide(
         // is reported by `sysfs_free_bytes` with the path in the message.
         Some(v) if v.len() > 6 && v[..6].eq_ignore_ascii_case("sysfs:") => Decision {
             source: MemInfoSource::Sysfs(PathBuf::from(v[6..].trim())),
-            why: "path given by ATLAS_MEMINFO_SOURCE=sysfs:<dir>",
+            why: "path given by AVAROK_MEMINFO_SOURCE=sysfs:<dir>",
             warning: None,
         },
         Some(v) if v.eq_ignore_ascii_case("sysfs") => match autodetect() {
             Some(dir) => Decision {
                 source: MemInfoSource::Sysfs(dir),
-                why: "forced by ATLAS_MEMINFO_SOURCE=sysfs, device auto-detected",
+                why: "forced by AVAROK_MEMINFO_SOURCE=sysfs, device auto-detected",
                 warning: None,
             },
             None => Decision {
                 source: MemInfoSource::Driver,
-                why: "ATLAS_MEMINFO_SOURCE=sysfs, but no amdgpu device matched",
+                why: "AVAROK_MEMINFO_SOURCE=sysfs, but no amdgpu device matched",
                 warning: Some(format!(
                     "{ENV_VAR}=sysfs but no /sys/class/drm/card*/device carries a \
                      mem_info_vram_total within 5% of the driver-reported total; \
@@ -169,7 +169,7 @@ pub(super) fn decide(
         // before this module existed.
         Some(v) => Decision {
             source: MemInfoSource::Driver,
-            why: "unrecognised ATLAS_MEMINFO_SOURCE value",
+            why: "unrecognised AVAROK_MEMINFO_SOURCE value",
             warning: Some(format!(
                 "{ENV_VAR}={v:?} is not one of driver | sysfs | sysfs:<dir>; \
                  using the CUDA driver"

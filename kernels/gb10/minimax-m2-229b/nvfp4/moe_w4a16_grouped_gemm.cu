@@ -942,7 +942,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// K64 fused gate+up MoE GEMM with M=128 tile (Block D #3 — Avarok pattern).
+// K64 fused gate+up MoE GEMM with M=128 tile (Block D #3 — Atlas pattern).
 //
 // Doubles M_TILE from 64 → 128: halves block count for large prefill,
 // reduces launch amortization at 25-SM GB10. Same K=64 cp.async pipeline

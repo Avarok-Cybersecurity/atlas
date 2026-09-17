@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The 5..=32-row native-FP8 dense-FFN decode tier on TENSOR CORES —
-//! `w8a16_gemm_m16`, behind `ATLAS_FFN_M16_TC` (#927).
+//! `w8a16_gemm_m16`, behind `AVAROK_FFN_M16_TC` (#927).
 //!
 //! WHY. Measured on 1xH100, 2026-09-11, Qwen/Qwen3.8-27B-FP8, tip
 //! `2962cfed7`: at a decode batch of 16 the step is **86.7 ms**, of which the
@@ -55,7 +55,7 @@
 //! still beat one M-padded MMA tile at these widths.
 //!
 //! ── THE LEVER IS SPLIT PER PROJECTION FAMILY (round 6) ─────────────────────
-//! Round 6's serving A/B on 1xH100 (2026-09-11, bs16, `ATLAS_MS_PROFILE`) with
+//! Round 6's serving A/B on 1xH100 (2026-09-11, bs16, `AVAROK_MS_PROFILE`) with
 //! the single old lever turned the WHOLE route on at once and measured two
 //! opposite results in one number:
 //!
@@ -70,16 +70,16 @@
 //!
 //! | variable | turns on |
 //! |---|---|
-//! | `ATLAS_ATTN_M16_TC` | the QKV and o_proj tiers |
-//! | `ATLAS_FFN_M16_TC` | the dense-FFN arm (rungs 2-3 above) |
-//! | `ATLAS_M16_TC` | BOTH — the umbrella, i.e. round 6's behaviour |
+//! | `AVAROK_ATTN_M16_TC` | the QKV and o_proj tiers |
+//! | `AVAROK_FFN_M16_TC` | the dense-FFN arm (rungs 2-3 above) |
+//! | `AVAROK_M16_TC` | BOTH — the umbrella, i.e. round 6's behaviour |
 //!
-//! ⚠ `ATLAS_FFN_M16_TC=1` MEANS SOMETHING NARROWER THAN IT DID IN ROUND 6.
+//! ⚠ `AVAROK_FFN_M16_TC=1` MEANS SOMETHING NARROWER THAN IT DID IN ROUND 6.
 //! Before this commit it was the only lever and it reached all three tiers;
 //! round 6's serve J and its +5.2% were measured with it. The recipe that
-//! reproduces round 6 is now `ATLAS_M16_TC=1`. The recipe that buys the
+//! reproduces round 6 is now `AVAROK_M16_TC=1`. The recipe that buys the
 //! attention win WITHOUT the FFN loss — the point of the split — is
-//! `ATLAS_ATTN_M16_TC=1` alone.
+//! `AVAROK_ATTN_M16_TC=1` alone.
 //!
 //! ── WHY THE FFN ARM LOSES WHERE THE ATTENTION TIERS WIN (HYPOTHESIS) ───────
 //! Same kernel, same M, same weight format; the one thing that differs is N,
@@ -109,12 +109,12 @@
 //! kernel header — which holds comfortably at N=1024 — may not hold at
 //! N=17408.
 //!
-//! Both hypotheses predict the same fix, which is why `ATLAS_FFN_M16_TC_NTILE`
+//! Both hypotheses predict the same fix, which is why `AVAROK_FFN_M16_TC_NTILE`
 //! exists: `=64` selects `w8a16_gemm_m16_n64`, taking gate/up to 272 CTAs
 //! (inside one wave) and doubling A reuse. Default stays 32 — the tile with the
 //! receipt. NEITHER hypothesis has been measured; the A/B that settles it is
-//! `ATLAS_FFN_M16_TC=1 ATLAS_FFN_M16_TC_NTILE=64` against
-//! `ATLAS_FFN_M16_TC=1` on the same serve.
+//! `AVAROK_FFN_M16_TC=1 AVAROK_FFN_M16_TC_NTILE=64` against
+//! `AVAROK_FFN_M16_TC=1` on the same serve.
 //!
 //! ── THE ROUND-6 M=32 RED CELL WAS THE ORACLE, NOT THE SPLIT ────────────────
 //! Round 6's microtest reported `gate/up M=32` at `max_ulp 28`, 5 of 557,056
@@ -155,13 +155,13 @@ use spark_runtime::gpu::KernelHandle;
 /// construction into a field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct M16TcLevers {
-    /// The dense-FFN arm (`ATLAS_FFN_M16_TC`).
+    /// The dense-FFN arm (`AVAROK_FFN_M16_TC`).
     pub ffn: bool,
     /// The multi-seq FP8 QKV tier and the FP8 o_proj tier
-    /// (`ATLAS_ATTN_M16_TC`).
+    /// (`AVAROK_ATTN_M16_TC`).
     pub attn: bool,
     /// CTA N width for the FFN arm: 32 (default) or 64
-    /// (`ATLAS_FFN_M16_TC_NTILE=64`). Attention always runs 32 — the wide tile
+    /// (`AVAROK_FFN_M16_TC_NTILE=64`). Attention always runs 32 — the wide tile
     /// has no strided twin and its N is already CTA-starved.
     pub ffn_n_tile: u32,
 }
@@ -172,12 +172,12 @@ pub struct M16TcLevers {
 ///
 /// Presence rather than `=1` everywhere (the N tile aside, which needs a
 /// value): it keeps every A/B recipe a bare `VAR=1` prefix with no "=0 means
-/// on" trap, the same contract `ATLAS_FFN_NO_BATCH16` uses next door. All three
+/// on" trap, the same contract `AVAROK_FFN_NO_BATCH16` uses next door. All three
 /// default OFF, which is the opposite polarity to that kill switch and
 /// deliberately so: it is an operator's escape hatch from a shipped default,
 /// these are opt-ins to a route that trades #927's bit-exactness for bandwidth.
 ///
-/// An unrecognised `ATLAS_FFN_M16_TC_NTILE` falls back to 32 rather than
+/// An unrecognised `AVAROK_FFN_M16_TC_NTILE` falls back to 32 rather than
 /// failing the boot: the tile is a perf A/B knob, and the route log says which
 /// one actually ran.
 pub(crate) fn resolve_m16_tc_levers(ffn: bool, attn: bool, n_tile: Option<&str>) -> M16TcLevers {
@@ -199,12 +199,12 @@ pub(crate) fn resolve_m16_tc_levers(ffn: bool, attn: bool, n_tile: Option<&str>)
 pub fn m16_tc_levers() -> M16TcLevers {
     static ON: std::sync::OnceLock<M16TcLevers> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        let n_tile = std::env::var("ATLAS_FFN_M16_TC_NTILE").ok();
+        let n_tile = std::env::var("AVAROK_FFN_M16_TC_NTILE").ok();
         resolve_m16_tc_levers(
             // ★ THE TARGET'S DECLARATION, environment second. `ffn_m16_tc` is
             // a `[defaults]` row (`kernels/<hw>/HARDWARE.toml`), so an H100
             // serve reproduces round 6's verdict — the FFN arm OFF — with an
-            // empty environment, and `ATLAS_FFN_M16_TC` / `ATLAS_M16_TC`
+            // empty environment, and `AVAROK_FFN_M16_TC` / `AVAROK_M16_TC`
             // remain the A/B. Both variables are folded in by the resolver,
             // not here: an umbrella that could also DISARM a declaration would
             // make the recipe depend on export order.
@@ -255,7 +255,7 @@ pub(crate) fn m16_tc_plan(m: u32, k: u32, loaded: bool, enabled: bool) -> Option
 /// tile and which entry points this shadow actually carries.
 ///
 /// A shadow built before the wide arm existed has no `w8a16_gemm_m16_n64`, so
-/// `ATLAS_FFN_M16_TC_NTILE=64` must fall back to the 32-wide kernel rather than
+/// `AVAROK_FFN_M16_TC_NTILE=64` must fall back to the 32-wide kernel rather than
 /// launch a zero handle. The fallback is silent by design — the route log names
 /// the tile that ran.
 pub(crate) fn m16_tc_kernel(
@@ -342,12 +342,12 @@ impl DenseFfnLayer {
             };
             let asked = self.m16_tc_n_tile;
             tracing::info!(
-                "[atlas] dense FFN decode: ATLAS_FFN_M16_TC — tensor-core w8a16_gemm_m16 \
+                "[avarok] dense FFN decode: AVAROK_FFN_M16_TC — tensor-core w8a16_gemm_m16 \
                  N_TILE={n_tile} (asked {asked}) ({how}) for 5..=32 rows, ahead of \
                  w8a16_gemv_batch16. One weight pass, m16n8k16 MMA, so outputs are \
                  REASSOCIATED vs the scalar w8a16_gemv (<= 2 BF16 ULP), unlike the batch16 \
                  tier. This lever no longer reaches the attention tiers — that is \
-                 ATLAS_ATTN_M16_TC, and ATLAS_M16_TC is both. Unset it to restore the \
+                 AVAROK_ATTN_M16_TC, and AVAROK_M16_TC is both. Unset it to restore the \
                  bit-exact tier (#927)."
             );
         }

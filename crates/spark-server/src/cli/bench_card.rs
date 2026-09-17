@@ -33,14 +33,14 @@ pub(crate) fn card_output_path(target: &str) -> std::path::PathBuf {
 /// Render the shareable card for a finished run.
 pub(crate) fn write_card(
     root: &std::path::Path,
-    record: &atlas_plugin::gate::GateRecord,
+    record: &avarok_plugin::gate::GateRecord,
     target: &str,
     card_args: &std::collections::BTreeMap<String, String>,
 ) -> Result<std::path::PathBuf> {
     let template_path = root.join("assets/cards/result-card.svg");
     let template = std::fs::read_to_string(&template_path)
         .with_context(|| format!("reading the card template at {}", template_path.display()))?;
-    let svg = atlas_plugin::gate::card::render(&template, record, card_args);
+    let svg = avarok_plugin::gate::card::render(&template, record, card_args);
     let out = card_output_path(target);
     if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
@@ -53,12 +53,12 @@ pub(crate) fn write_card(
 /// `spark benchmark card <record>` — a card from an already-measured result.
 pub(crate) fn card_cmd(args: crate::cli::bench_args::CardArgs) -> Result<()> {
     let record_path = resolve_record(&args.record)?;
-    let record = atlas_plugin::gate::read_record(&record_path)
+    let record = avarok_plugin::gate::read_record(&record_path)
         .with_context(|| format!("reading the record at {}", record_path.display()))?;
     let card_args = args
         .output_image_args
         .as_deref()
-        .map(atlas_plugin::gate::card::parse_args)
+        .map(avarok_plugin::gate::card::parse_args)
         .transpose()
         .map_err(|e| anyhow::anyhow!("--output-image-args: {e}"))?
         .unwrap_or_default();
@@ -144,7 +144,7 @@ fn resolve_record(arg: &str) -> Result<std::path::PathBuf> {
 /// showing a different run than the row the operator selected.
 pub fn render_card_for_benchmark(id: &str, output: Option<&str>) -> Result<std::path::PathBuf> {
     let record_path = resolve_record(id)?;
-    let record = atlas_plugin::gate::read_record(&record_path)
+    let record = avarok_plugin::gate::read_record(&record_path)
         .with_context(|| format!("reading {}", record_path.display()))?;
     let target = output
         .map(str::to_string)

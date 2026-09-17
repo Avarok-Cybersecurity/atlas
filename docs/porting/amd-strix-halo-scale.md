@@ -32,18 +32,18 @@ the HF cache and SCALE 1.7.1 unpacked at `$SCALE_HOME`:
 ```bash
 # Build (SCALE compiles the unmodified CUDA kernels for gfx1151)
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
-export ATLAS_TARGET_HW=strix ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4
+export AVAROK_TARGET_HW=strix AVAROK_TARGET_MODEL=qwen3.6-27b AVAROK_TARGET_QUANT=nvfp4
 export CUDA_PATH="$SCALE_HOME/targets/gfx1151" CUDA_HOME="$CUDA_PATH"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:/opt/rocm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRARY_PATH"
 export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — one runtime knob is required on gfx1151 (see §4). ATLAS_FORCE_GLOBAL_GDN
-# and ATLAS_NO_FP8_PREDEQUANT used to be exported here; neither has a reader in
-# the tree any more. ATLAS_NO_GDN_FP8_PREFILL exists but is NOT set on strix:
+# Serve — one runtime knob is required on gfx1151 (see §4). AVAROK_FORCE_GLOBAL_GDN
+# and AVAROK_NO_FP8_PREDEQUANT used to be exported here; neither has a reader in
+# the tree any more. AVAROK_NO_GDN_FP8_PREFILL exists but is NOT set on strix:
 # the coherent gfx1151 runs never set it (see kernels/strix/HARDWARE.toml).
-export ATLAS_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
+export AVAROK_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64:
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:$PATH"
@@ -53,13 +53,13 @@ target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
 ```
 
 Ready-made scripts live at `build-amd.sh` and `serve-amd.sh` in the repo
-root. Both take the hardware target from `ATLAS_TARGET_HW` (default `strix`)
-and read the SCALE arch from `kernels/$ATLAS_TARGET_HW/HARDWARE.toml`, so the
+root. Both take the hardware target from `AVAROK_TARGET_HW` (default `strix`)
+and read the SCALE arch from `kernels/$AVAROK_TARGET_HW/HARDWARE.toml`, so the
 same two scripts drive the gfx1201 board:
 
 ```bash
-ATLAS_TARGET_HW=r9700 ./build-amd.sh
-ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
+AVAROK_TARGET_HW=r9700 ./build-amd.sh
+AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
 ```
 
 Sections 1–6 below explain each step, the SCALE mechanics, and why each
@@ -161,7 +161,7 @@ compile-verified** → 82/92, via the exact recipe in §4.
 
 ## 3. Build-system integration (done)
 
-`crates/atlas-kernels/build_target.rs` already abstracts the compiler behind
+`crates/avarok-kernels/build_target.rs` already abstracts the compiler behind
 the `ComputeTarget` trait. The AMD path is purely additive (NVIDIA untouched):
 
 - `ScaleTarget` (`build_target.rs`): invokes
@@ -209,7 +209,7 @@ SCALE is binary **but** CUDA-runtime-compatible (its driver API exposes
    enum) so the text path is untouched (NVIDIA zero-risk) and the SCALE path
    carries bytes. Keep `KernelTarget`/metadata identical.
 3. Runtime: add `KernelModule::from_binary(ctx,&[u8])` beside
-   `from_ptx_src`. `atlas-core/src/registry.rs` already has the raw
+   `from_ptx_src`. `avarok-core/src/registry.rs` already has the raw
    `cuModuleLoadData(module, image)` FFI — feed it the blob bytes (skip
    cudarc's `Ptx::from_src`, which is text-only). `cuda_backend.rs` selects
    blob-vs-text by build cfg / a generated flag.
@@ -233,7 +233,7 @@ launch by name via the registry. SCALE's native model = offload-bundle device
 code into the binary, auto-registered, launched by C++ symbol. **Two paths:**
   1. **SCALE-native (lower risk):** AMD build compiles kernels into the
      binary via SCALE's normal flow; the registry resolves kernels by symbol
-     instead of `cuModuleLoadData`(blob). Bigger atlas-core/spark-runtime
+     instead of `cuModuleLoadData`(blob). Bigger avarok-core/spark-runtime
      change but uses SCALE exactly as designed.
   2. **Atlas-style:** device-link relocatables → a loadable code object,
      embed bytes, `cuModuleLoadData` it. Needs SCALE to support loading a
@@ -295,23 +295,23 @@ no-op. (Draft the email; do not auto-send.)
 Verified on native Ubuntu (kernel 6.17.0-oem), gfx1151, SCALE 1.7.1. The repo
 ships `build-amd.sh` and `serve-amd.sh` that wrap exactly the commands below,
 with `gfx1151` read from `kernels/strix/HARDWARE.toml` rather than hardcoded:
-`ATLAS_TARGET_HW=r9700 ./build-amd.sh` and `ATLAS_TARGET_HW=r9700
+`AVAROK_TARGET_HW=r9700 ./build-amd.sh` and `AVAROK_TARGET_HW=r9700
 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` run the same steps against
 `targets/gfx1201`.
 
 ```bash
 # Build — SCALE_HOME set, kernels compiled for gfx1151:
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
-export ATLAS_TARGET_HW=strix ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4
+export AVAROK_TARGET_HW=strix AVAROK_TARGET_MODEL=qwen3.6-27b AVAROK_TARGET_QUANT=nvfp4
 export CUDA_PATH="$SCALE_HOME/targets/gfx1151" CUDA_HOME="$CUDA_PATH"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:/opt/rocm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRARY_PATH"
 export CUDARC_CUDA_VERSION=12080
-rm -rf target/release/build/atlas-kernels-*      # stale-cache guard on .cu change
+rm -rf target/release/build/avarok-kernels-*      # stale-cache guard on .cu change
 cargo build --release -p spark-server --no-default-features --features cuda
 
 # Serve — the gfx1151 runtime knob (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
-export ATLAS_W4A16_VARIANT=v1
+export AVAROK_W4A16_VARIANT=v1
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
   --port 8081 --max-seq-len 4096 --gpu-memory-utilization 0.70 \

@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::gpu::mock::MockGpuBackend;
-use atlas_core::scope::{ModelResource, Teardown};
+use avarok_core::scope::{ModelResource, Teardown};
 use std::collections::HashMap;
 
 fn store_with(gpu: &dyn GpuBackend, n: usize) -> WeightStore {
@@ -98,7 +98,7 @@ fn teardown_releases_in_reverse_registration_order() {
 }
 
 /// #736/#915: a buffer a loader DERIVED from these tensors must be released
-/// here, not left for `AtlasCudaBackend::sweep_unreleased` to reclaim unowned.
+/// here, not left for `AvarokCudaBackend::sweep_unreleased` to reclaim unowned.
 ///
 /// The mock backend's live-allocation count is the same instrument the CUDA
 /// ledger is: "every allocation this backend made and nobody released".
@@ -189,7 +189,7 @@ fn a_released_tensor_is_reported_as_released_not_as_missing() {
     };
     assert!(msg.contains("RELEASED"), "got: {msg}");
     assert!(
-        msg.contains("ATLAS_LOAD_RELEASE_SOURCES"),
+        msg.contains("AVAROK_LOAD_RELEASE_SOURCES"),
         "the message must name the knob that turns this off: {msg}"
     );
     // And a genuinely absent name still says so, so the two faults stay

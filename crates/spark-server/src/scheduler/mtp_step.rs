@@ -21,7 +21,7 @@ pub fn step_mtp(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
-    // ATLAS_MTP_TIMING outer bracket: `step_mtp` minus the per-chunk verify
+    // AVAROK_MTP_TIMING outer bracket: `step_mtp` minus the per-chunk verify
     // guard's TOTAL is the driver's own host prep/tail (classification,
     // bootstrap, D-Cut plan, chunk sort) — one component of the out-of-step
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
@@ -43,7 +43,7 @@ pub fn step_mtp(
     // (8x4) and n=16 (16x2) sit at 32 rows. The depth step-down that used
     // to sit at n>4 was an artifact of the chunk cap below, not of GDN
     // depth cost (see that comment); the one at n>8 is real (16:2 -> 94.1).
-    // SSOT + overrides (`ATLAS_MTP_K_LADDER`, `ATLAS_NO_MTP_K_LADDER`):
+    // SSOT + overrides (`AVAROK_MTP_K_LADDER`, `AVAROK_NO_MTP_K_LADDER`):
     // `spark_model::speculative::ladder`. DFlash keeps its own γ economics.
     // Wave 28: at the n=16 rung the draft count is ACCEPT-RATE-AWARE — the
     // static rung cannot win both regimes (prose wants k=1, tool-shaped
@@ -82,7 +82,7 @@ pub fn step_mtp(
     // batched cross-sequence propose, replacing n M=1 weight sweeps of the
     // target and n of the drafter. Falls back to the per-sequence loop below
     // whenever the envelope does not hold (`mtp_bootstrap_step`); kill switch
-    // ATLAS_NO_MTP_BATCH_BOOTSTRAP.
+    // AVAROK_NO_MTP_BATCH_BOOTSTRAP.
     if can_batch_bootstrap(model, sched, bootstrap_idxs.len(), dflash_verify_raw_argmax) {
         step_mtp_bootstrap_batched(model, active, sched, &bootstrap_idxs, ladder_nd, verify_ctx);
         bootstrap_idxs.clear();
@@ -209,7 +209,7 @@ pub fn step_mtp(
         // FP8/NVFP4 argmax-flip tail tokens. The sampler now reads
         // `penalties.min_p`, which `penalty_params_for` copies from
         // `a.min_p` (request value + floor, resolved in `sampling_setup`) —
-        // SSOT, no new channel. Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // SSOT, no new channel. Kill-switch: AVAROK_NO_MTP_MINP=1.
         let tok = match sample_token_with_grammar(
             model,
             logits,
@@ -245,7 +245,7 @@ pub fn step_mtp(
         // Adaptive speculation: count serial tokens toward the re-probe window.
         crate::scheduler::adaptive_spec::tick_serial(a, sched);
 
-        // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
+        // Ctx-holes fix (AVAROK_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
         // the serial ctx-append fires iff propose() will NOT run this
         // iteration, so append and propose decode-append can never both
         // cover one token — double-append impossible by construction
@@ -330,8 +330,8 @@ pub fn step_mtp(
     // ── Phase B: Verify with pipelined checkpoint ──
     //
     // Batched multi-seq K-row verify (batched-MTP E11 + the ladder). Only
-    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 32 with the ladder)
-    // puts >= 2 verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1`
+    // reachable when `AVAROK_MTP_MAX_SEQS > 1` (default 32 with the ladder)
+    // puts >= 2 verify-ready sequences in one step (`AVAROK_MTP_MAX_SEQS=1`
     // ⇒ this partition is a no-op and every seq takes the per-seq loop
     // below, byte-identical to the pre-batched HEAD). Batchable =
     // grammarless, non-DFlash, >= ladder_nd pending drafts (surplus from a
@@ -339,7 +339,7 @@ pub fn step_mtp(
     // grammar-boundary path already does; `after_verify`'s
     // `last_num_drafted` trim contract stays consistent). The model
     // additionally self-gates (non-EP, non-HSS, no LoRA) via
-    // `can_batch_verify(&ks)`. Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
+    // `can_batch_verify(&ks)`. Kill switch `AVAROK_NO_MTP_BATCH_VERIFY`
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
@@ -348,7 +348,7 @@ pub fn step_mtp(
     // grammarless sequences carrying the SAME γ drafts; anything else falls
     // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
     // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
-    // from C=1..4 before this). Kill switch: ATLAS_DFLASH_BATCH_VERIFY=0.
+    // from C=1..4 before this). Kill switch: AVAROK_DFLASH_BATCH_VERIFY=0.
     // One-shot attribution for "why is the batched path not running": each
     // of these four is individually capable of silently keeping every
     // sequence on the per-sequence verify, which reads as "no concurrency
@@ -490,9 +490,9 @@ pub fn step_mtp(
     let rows = ladder_nd + 1;
 
     // ── D-Cut: per-sequence verify depth from drafter confidence ──
-    // Default ON at ratio 0.75 (+2.6% at C=8; kill switch `ATLAS_NO_MTP_DCUT`,
+    // Default ON at ratio 0.75 (+2.6% at C=8; kill switch `AVAROK_NO_MTP_DCUT`,
     // PRESENCE). Ranks every prunable draft position ACROSS the batch by its
-    // prefix-product survival score and keeps the top `ATLAS_MTP_DCUT_RATIO`
+    // prefix-product survival score and keeps the top `AVAROK_MTP_DCUT_RATIO`
     // fraction (`mtp_dcut`). The retained set is a per-sequence PREFIX by
     // construction, so the only downstream effect is a RAGGED row count. OFF
     // (or `ladder_nd < 2`, or the batch wider than `dcut_width_cap()` = 8 —

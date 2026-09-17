@@ -675,7 +675,7 @@ if [ -s "$TMP/oc.sh" ]; then
   # the registry knows a benchmark's Sensitivity and the rule is now
   # class-conditional. This selftest step is deliberately pure-Python with NO
   # Rust toolchain, so it cannot and must not run that half; the verdict has ten
-  # tests with red/green controls under `cargo test -p atlas-plugin agreement`,
+  # tests with red/green controls under `cargo test -p avarok-plugin agreement`,
   # including the two that matter — a Speed set spanning signers is refused, a
   # Correctness set spanning signers is allowed.
   #
@@ -1394,8 +1394,8 @@ want_rc_msg 1 "leaves the required context uncreated" "control: renaming a requi
 # A required check whose verdict is not about the thing it claims to test
 # ---------------------------------------------------------------------------
 # `cargo test --features metal (macOS aarch64)` inherited ci.yml's
-# workflow-level ATLAS_SKIP_BUILD=1 (there so the ubuntu jobs type-check
-# without nvcc). atlas-kernels' build.rs honours it first and emits a stub
+# workflow-level AVAROK_SKIP_BUILD=1 (there so the ubuntu jobs type-check
+# without nvcc). avarok-kernels' build.rs honours it first and emits a stub
 # whose `metallib_modules()` is Vec::new(), so MetalGpuBackend loaded ZERO
 # libraries and all 35 parity tests died with `Metal: unknown module`. The
 # check was permanently red about a stub, and the merge queue was impassable
@@ -1417,24 +1417,24 @@ want_rc 0 "every required context resolves to a live job that a failed dependenc
   python3 .github/scripts/assert-gates-are-wired.py
 
 # The regression itself: put the stub env back on the metal test step.
-sg_sabotage ci.yml "$rc_metal_env"'env["ATLAS_SKIP_BUILD"] = "1"'
+sg_sabotage ci.yml "$rc_metal_env"'env["AVAROK_SKIP_BUILD"] = "1"'
 want_rc_msg 1 "is about the stub, not the kernels" \
   "control: running the metal suite against a kernel-build stub is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
 # Inheritance, not just the step: deleting the step override lets ci.yml's
-# workflow-level ATLAS_SKIP_BUILD=1 reach the job again. A guard that only
+# workflow-level AVAROK_SKIP_BUILD=1 reach the job again. A guard that only
 # looked at the step's own env would pass here.
-sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_SKIP_BUILD")'
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("AVAROK_SKIP_BUILD")'
 want_rc_msg 1 "is about the stub, not the kernels" \
   "control: dropping the override so the workflow-level stub env is inherited is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
-# Without ATLAS_TARGET_HW, build.rs takes its macOS auto-skip and embeds
-# nothing even with ATLAS_SKIP_BUILD=0 -- the same empty set by another route.
-sg_sabotage ci.yml "$rc_metal_env"'env.pop("ATLAS_TARGET_HW")'
+# Without AVAROK_TARGET_HW, build.rs takes its macOS auto-skip and embeds
+# nothing even with AVAROK_SKIP_BUILD=0 -- the same empty set by another route.
+sg_sabotage ci.yml "$rc_metal_env"'env.pop("AVAROK_TARGET_HW")'
 want_rc_msg 1 "build.rs takes the macOS auto-skip" \
-  "control: dropping ATLAS_TARGET_HW from the metal suite is caught" \
+  "control: dropping AVAROK_TARGET_HW from the metal suite is caught" \
   python3 "$TMP/sg/scripts/assert-gates-are-wired.py"
 
 # The other half of the family: a required job that a FAILED dependency
@@ -2413,7 +2413,7 @@ dl_tree() {  # build a miniature repo the checker can be pointed at
   printf 'PNG' > "$TMP/dl/blog/static/images/hero.webp"
   printf '[ok](target.md)\n'          > "$TMP/dl/docs/good.md"
   printf '![h](/images/hero.webp)\n'  > "$TMP/dl/blog/src/post.md"
-  printf '[api](/api/atlas_core/)\n'  > "$TMP/dl/book/src/redirect.md"
+  printf '[api](/api/avarok_core/)\n'  > "$TMP/dl/book/src/redirect.md"
 }
 dl_run() { python3 "$TMP/dl/.github/scripts/assert-doc-links.py"; }
 

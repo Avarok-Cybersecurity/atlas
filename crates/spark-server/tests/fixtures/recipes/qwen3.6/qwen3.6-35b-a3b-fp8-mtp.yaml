@@ -18,7 +18,7 @@ metadata:
         at agentic lengths; fp8 KV is a memory-only lever for ~128K.
       - Re-verified post --lm-head-dtype merge 2026-06-09: 10/10 ws_ok,
         10/10 followed_directions.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: fp8

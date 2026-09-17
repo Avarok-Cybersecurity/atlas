@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::{self, signing};
+use avarok_plugin::gate::{self, signing};
 
 use super::atlasctl::FetchedFile;
 

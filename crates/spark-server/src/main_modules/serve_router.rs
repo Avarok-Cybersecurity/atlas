@@ -111,12 +111,12 @@ pub(crate) async fn build_and_serve(
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))
         // Body size limit. Default 32 MB covers typical multi-image and
-        // long-prompt requests; raise via `ATLAS_MAX_BODY_BYTES` (in
+        // long-prompt requests; raise via `AVAROK_MAX_BODY_BYTES` (in
         // bytes) for unusual deployments. Lowering it protects against
         // DoS attempts that send oversized payloads to burn CPU on JSON
         // parsing + tokenization before the model even sees them.
         .layer(axum::extract::DefaultBodyLimit::max(
-            std::env::var("ATLAS_MAX_BODY_BYTES")
+            std::env::var("AVAROK_MAX_BODY_BYTES")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),

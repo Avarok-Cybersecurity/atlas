@@ -70,7 +70,7 @@ fn tensor_map_encode_tiled() -> Option<EncodeTiledFn> {
         // `dlsym` exists only on unix — on Windows this symbol has no libc
         // provider and the build DIED AT LINK (LNK2019 unresolved external
         // `dlsym`, seen on the windows-x86_64 release-matrix builds
-        // 2026-08-22). TMA is opt-in (`ATLAS_GDN_TMA=1`), measured neutral,
+        // 2026-08-22). TMA is opt-in (`AVAROK_GDN_TMA=1`), measured neutral,
         // and unresolved here just routes callers to their non-TMA path — so
         // Windows reporting "unavailable" is the honest and cheap behaviour,
         // not a loss of function.

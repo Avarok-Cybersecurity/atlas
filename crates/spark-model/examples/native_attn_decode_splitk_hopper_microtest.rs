@@ -41,7 +41,7 @@
 
 use anyhow::{Result, ensure};
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -345,7 +345,7 @@ fn report(arm: Arm, s: &Score, seconds: f64) -> String {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &gpu;
     let k = Kernels::resolve(gpu)?;
     let f = upload_fixture(gpu)?;
@@ -353,8 +353,8 @@ fn main() -> Result<()> {
     eprintln!(
         "native_attn_decode_splitk_hopper_microtest: nq={NQ} nkv={NKV} hd={HD} block={BLOCK} \
          sm_count={sms} auto_splits={auto}",
-        sms = atlas_kernels::TARGET_SM_COUNT,
-        auto = atlas_kernels::attn_splitk::auto_splits(atlas_kernels::TARGET_SM_COUNT, NQ as u32),
+        sms = avarok_kernels::TARGET_SM_COUNT,
+        auto = avarok_kernels::attn_splitk::auto_splits(avarok_kernels::TARGET_SM_COUNT, NQ as u32),
     );
 
     let mut failures: Vec<String> = Vec::new();

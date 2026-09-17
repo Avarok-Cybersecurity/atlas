@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next (`qwen4_exp`) — plan of work to first correct token
 
-Written 2026-08-26, after the load milestone (Avarok #753, PR #754). The model
+Written 2026-08-26, after the load milestone (Atlas #753, PR #754). The model
 boots, passes the fail-closed kernel audit, and serves the HTTP API. It does
 not generate: a request reaches model layer 0 and is refused by name.
 
@@ -263,12 +263,12 @@ already read `normed` and write `out_proj_buf` and touch the residual nowhere.
 - [x] `decode_batched` / `decode_multi_seq` / `decode_verify_multi` refuse via
       `refuse_batched_under_hc` — C=1 only, stated
 - [x] `ensure_no_unwired_hc` retired; what is left is the batched refusal
-- [x] **PLE refused at LOAD** unless `ATLAS_QWEN4EXP_NO_PLE=1`, with the
+- [x] **PLE refused at LOAD** unless `AVAROK_QWEN4EXP_NO_PLE=1`, with the
       warning naming what is wrong and why
 
 **Milestone: greedy generation with PLE stubbed.** Output is *wrong* — model
 layer 1's injection is missing — so it stays behind an explicit
-`ATLAS_QWEN4EXP_NO_PLE=1` that logs a loud warning and is refused by default.
+`AVAROK_QWEN4EXP_NO_PLE=1` that logs a loud warning and is refused by default.
 It is a diagnostic that proves the mHC spine end to end, not a result.
 
 ### D — PLE n-gram injection · large

@@ -452,8 +452,8 @@ impl TransformerModel {
             // decode graph; re-pointing would be replayed stale. Refuse rather
             // than silently mis-serve.
             anyhow::bail!(
-                "LoRA rotation not armed (single adapter, ATLAS_LORA_ROTATE unset); \
-                 set ATLAS_LORA_ROTATE=1 (forces eager decode) to rotate at runtime"
+                "LoRA rotation not armed (single adapter, AVAROK_LORA_ROTATE unset); \
+                 set AVAROK_LORA_ROTATE=1 (forces eager decode) to rotate at runtime"
             );
         }
         // #25 safety: rotation RE-INSTALLS the new slot's pairs onto the layer

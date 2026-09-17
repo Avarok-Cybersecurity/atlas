@@ -27,7 +27,7 @@ def sanitizer_step():
 
 class BodySanitizerTests(unittest.TestCase):
     def run_step(self, body, *, fail_perl=False):
-        with tempfile.TemporaryDirectory(prefix="atlas-pr-body-") as directory:
+        with tempfile.TemporaryDirectory(prefix="avarok-pr-body-") as directory:
             root = Path(directory)
             output = root / "output"
             env = dict(os.environ, PR_BODY=body, GITHUB_OUTPUT=str(output))
@@ -56,7 +56,7 @@ class BodySanitizerTests(unittest.TestCase):
         self.assertLessEqual(len(data), 2000)
         self.assertFalse(injected)
         first, payload = emitted.split(b"\n", 1)
-        self.assertRegex(first, rb"^text<<__ATLAS_EOF_[0-9]+$")
+        self.assertRegex(first, rb"^text<<__AVAROK_EOF_[0-9]+$")
         delimiter = first.removeprefix(b"text<<")
         framed = data + (b"\n" if data and not data.endswith(b"\n") else b"")
         self.assertEqual(payload, framed + delimiter + b"\n")

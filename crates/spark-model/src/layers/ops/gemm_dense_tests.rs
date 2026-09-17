@@ -7,8 +7,8 @@
 //!
 //! These are SOURCE tests. They read `kernels/**.cu` and `gemm_dense.rs` as
 //! text and pin the launcher/kernel contract on CPU. They compile nothing and
-//! run nothing on a GPU — `cargo test` runs with `ATLAS_SKIP_BUILD=1`, so the
-//! PTX-level sibling (`atlas-kernels/tests/kernel_arity.rs`) is VACUOUS in CI
+//! run nothing on a GPU — `cargo test` runs with `AVAROK_SKIP_BUILD=1`, so the
+//! PTX-level sibling (`avarok-kernels/tests/kernel_arity.rs`) is VACUOUS in CI
 //! and these are the only automatic guard the contract has there.
 
 #[path = "gemm_dense_tests_util.rs"]
@@ -253,8 +253,8 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
 }
 
 /// The launcher and the kernel must agree on ARITY in both directions. This is
-/// the CPU-side stand-in for `atlas-kernels/tests/kernel_arity.rs`, which reads
-/// the real PTX and is vacuous under `ATLAS_SKIP_BUILD=1`.
+/// the CPU-side stand-in for `avarok-kernels/tests/kernel_arity.rs`, which reads
+/// the real PTX and is vacuous under `AVAROK_SKIP_BUILD=1`.
 #[test]
 fn ldb_launcher_arg_count_matches_kernel_param_count() {
     let launchers = include_str!("gemm_dense.rs");

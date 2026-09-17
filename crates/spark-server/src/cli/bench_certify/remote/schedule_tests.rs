@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::super::super::plan::{Estimate, Unit};
 use super::*;
-use atlas_plugin::hardware::equivalence::{EquivalencePolicy, HardwareFingerprint};
+use avarok_plugin::hardware::equivalence::{EquivalencePolicy, HardwareFingerprint};
 
 fn gb10_policy() -> Option<EquivalencePolicy> {
     Some(EquivalencePolicy {

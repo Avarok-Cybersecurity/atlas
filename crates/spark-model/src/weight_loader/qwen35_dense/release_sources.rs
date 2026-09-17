@@ -33,10 +33,10 @@
 //! ZERO-COPY, and each call site names its own:
 //!
 //!   * `rowwise_fp8::load_fp8_per_row` returns `weight: w.ptr`
-//!     (`rowwise_fp8.rs:179`), so under `ATLAS_FP8_ROWWISE=1` the GDN
+//!     (`rowwise_fp8.rs:179`), so under `AVAROK_FP8_ROWWISE=1` the GDN
 //!     `out_proj` is ALIVE;
 //!   * `load_fp8_block_scaled_as_fp8weight` is zero-copy the same way, so the
-//!     `ATLAS_DENSE_FP8=1` attention and FFN overlays keep their sources.
+//!     `AVAROK_DENSE_FP8=1` attention and FFN overlays keep their sources.
 //!
 //! **Ordering.** `gpu.free` on a buffer a queued kernel still reads is
 //! undefined, and `dequant_fp8_blockscaled_to_bf16` deliberately skips its
@@ -71,7 +71,7 @@ use spark_runtime::weights::{WeightDtype, WeightStore, release_sources_enabled};
 /// and a reader that runs too late gets the named "RELEASED on consume" error
 /// instead of whatever the allocator handed out next.
 ///
-/// NOT gated on `ATLAS_LOAD_RELEASE_SOURCES`. That knob decides whether to free
+/// NOT gated on `AVAROK_LOAD_RELEASE_SOURCES`. That knob decides whether to free
 /// a LIVE store tensor early; this decides how to record a free that already
 /// happens on every target. A correctness fix that only applies where a
 /// residency knob is on is not a correctness fix.
@@ -128,7 +128,7 @@ impl SourceReleaser {
     pub(super) fn new() -> Self {
         let enabled = release_sources_enabled();
         tracing::info!(
-            "ATLAS_LOAD_RELEASE_SOURCES={} — consumed FP8 checkpoint tensors are {} \
+            "AVAROK_LOAD_RELEASE_SOURCES={} — consumed FP8 checkpoint tensors are {} \
              (default on this build: {}). See docs/porting/r9700-residency.md.",
             u8::from(enabled),
             if enabled {
@@ -136,7 +136,7 @@ impl SourceReleaser {
             } else {
                 "kept resident for the life of the model"
             },
-            if cfg!(atlas_scale) { "on" } else { "off" },
+            if cfg!(avarok_scale) { "on" } else { "off" },
         );
         Self {
             enabled,

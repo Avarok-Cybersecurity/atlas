@@ -21,7 +21,7 @@
 //!    positive legs prove nothing.
 //!
 //! GPU REQUIRED — this example cannot run in a CPU-only session. Build with
-//! the qwen3.6-27b kernels present (`ATLAS_TARGET_MODEL="*"` or the 27b
+//! the qwen3.6-27b kernels present (`AVAROK_TARGET_MODEL="*"` or the 27b
 //! target), then:
 //!   cargo run -p spark-model --release --example verify_exact_microtest \
 //!       --features cuda,gpu-examples
@@ -29,7 +29,7 @@
 //! build's PTX set — the gate did NOT run).
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -382,15 +382,15 @@ fn run_legacy_wy4(g: &dyn GpuBackend, ks: &Kernels, inp: &Inputs) -> Result<Vec<
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_model("qwen3.6-27b")
+    let set = avarok_kernels::ptx_for_model("qwen3.6-27b")
         .or_else(|| {
-            atlas_kernels::ptx_for_config("qwen3_5_text", 5120, &[], None)
+            avarok_kernels::ptx_for_config("qwen3_5_text", 5120, &[], None)
                 .ok()
                 .flatten()
         })
         .expect("no qwen3.6-27b ptx set");
     eprintln!("kernel set: {}", set.target.model);
-    let gpu = AtlasCudaBackend::new(0, &set.modules)?;
+    let gpu = AvarokCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &gpu;
     let opt = |m: &str, f: &str| g.kernel(m, f).unwrap_or(KernelHandle(0));
     let ks = Kernels {
@@ -415,7 +415,7 @@ fn main() -> Result<()> {
     if ks.snap.0 == 0 || ks.snap_strided.0 == 0 || ks.fused_conv_f32.0 == 0 {
         println!(
             "SKIPPED: snap/fused-f32 kernels not in this build's PTX set — build with \
-             the qwen3.6-27b target (ATLAS_TARGET_MODEL=\"*\"). The bitwise gate did NOT run."
+             the qwen3.6-27b target (AVAROK_TARGET_MODEL=\"*\"). The bitwise gate did NOT run."
         );
         std::process::exit(2);
     }

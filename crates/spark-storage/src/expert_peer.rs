@@ -24,12 +24,12 @@
 #[cfg(unix)]
 use anyhow::{Context, Result, bail};
 
-// The handshake wire codecs moved verbatim to the CUDA-free `atlas-rdma`
-// crate (extracted to atlas-rdma); re-exported here at their old paths so
+// The handshake wire codecs moved verbatim to the CUDA-free `avarok-rdma`
+// crate (extracted to avarok-rdma); re-exported here at their old paths so
 // the server below and every external user are zero-diff. The byte layouts
 // are golden-pinned in `tests/rdma_wire_golden.rs` and frozen vs the live
 // gx10 peer.
-pub use atlas_rdma::wire::{
+pub use avarok_rdma::wire::{
     MODE_TCP, MODE_VERBS, STATUS_ERR, STATUS_OK, VerbsClientParams, VerbsServerParams,
     read_server_rails, write_server_rails,
 };
@@ -94,7 +94,7 @@ mod server_impl {
     }
 
     /// Serve records from `dir` on `addr` until interrupted. One thread per
-    /// connection. Blocking; intended to run as its own process (`atlas-expert-peer`).
+    /// connection. Blocking; intended to run as its own process (`avarok-expert-peer`).
     pub fn serve<A: ToSocketAddrs>(dir: &Path, addr: A, rdma: RdmaConfig) -> Result<()> {
         let reader = Arc::new(ExpertFileReader::open(dir)?);
         let manifest = serde_json::to_vec(reader.index())?;
@@ -199,7 +199,7 @@ mod server_impl {
         Ok(())
     }
 
-    #[cfg(not(atlas_rdma_verbs))]
+    #[cfg(not(avarok_rdma_verbs))]
     fn serve_verbs(
         _stream: TcpStream,
         _reader: &ExpertFileReader,
@@ -214,7 +214,7 @@ mod server_impl {
     /// file with REMOTE_READ, publishes the MRs' `{base, rkey}` + its QP params,
     /// connects to the client's QP, then goes idle: the client pulls records
     /// directly out of these MRs. The server CPU never touches a record byte.
-    #[cfg(atlas_rdma_verbs)]
+    #[cfg(avarok_rdma_verbs)]
     fn serve_verbs(
         mut stream: TcpStream,
         reader: &ExpertFileReader,
@@ -222,7 +222,7 @@ mod server_impl {
         rdma: &RdmaConfig,
         ledger: &Arc<crate::blade_cap::CommitLedger>,
     ) -> Result<()> {
-        use atlas_rdma::verbs::Verbs;
+        use avarok_rdma::verbs::Verbs;
 
         let index = reader.index();
         let num_layers = index.num_moe_layers;
@@ -326,13 +326,13 @@ mod server_impl {
     }
 
     /// A read-only `mmap` of a whole file, unmapped on drop.
-    #[cfg(atlas_rdma_verbs)]
+    #[cfg(avarok_rdma_verbs)]
     struct Mmap {
         addr: *mut libc::c_void,
         len: usize,
     }
 
-    #[cfg(atlas_rdma_verbs)]
+    #[cfg(avarok_rdma_verbs)]
     impl Mmap {
         fn open_ro(path: &Path) -> Result<Self> {
             use std::os::fd::AsRawFd;
@@ -364,7 +364,7 @@ mod server_impl {
         }
     }
 
-    #[cfg(atlas_rdma_verbs)]
+    #[cfg(avarok_rdma_verbs)]
     impl Drop for Mmap {
         fn drop(&mut self) {
             // SAFETY: addr/len came from a successful mmap and are unmapped once.
@@ -405,6 +405,6 @@ mod tests {
     }
 
     // The codec round-trip / validation tests moved WITH the codecs to
-    // `crates/atlas-rdma/tests/wire_roundtrip.rs` (extracted to atlas-rdma);
+    // `crates/avarok-rdma/tests/wire_roundtrip.rs` (extracted to avarok-rdma);
     // the exact byte layouts stay pinned by `tests/rdma_wire_golden.rs` here.
 }

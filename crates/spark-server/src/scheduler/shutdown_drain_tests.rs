@@ -33,7 +33,7 @@ fn message(label: &str, mut rx: RespRx) -> String {
 #[test]
 fn shutdown_tells_every_parked_request_which_state_it_died_in() {
     let model = PreemptStubModel::default();
-    let dir = std::env::temp_dir().join(format!("atlas-shutdown-drain-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok-shutdown-drain-{}", std::process::id()));
     let mut spill = KvSpillManager::new(dir, 8 * 1024 * 1024).expect("spill manager");
 
     let (prefill, prefill_rx) = test_prefill(vec![1, 2, 3]);

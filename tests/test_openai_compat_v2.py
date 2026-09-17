@@ -10,9 +10,9 @@ Covers items shipped after alpha-2.44:
   6. URL annotation extractor improvements
   7. 501 stubs on unsupported endpoints
 
-Assumes an Atlas server is running on localhost:8888 (set ATLAS_URL to
+Assumes an Atlas server is running on localhost:8888 (set AVAROK_URL to
 override). The rate-limit test requires the server was started with
-ATLAS_RATE_LIMIT_RPM=3 so a small burst exhausts the bucket; if not set,
+AVAROK_RATE_LIMIT_RPM=3 so a small burst exhausts the bucket; if not set,
 the rate-limit assertion is skipped with a note.
 """
 import json
@@ -41,8 +41,8 @@ except ImportError:
     from openai import OpenAI
 
 
-BASE = os.environ.get("ATLAS_URL", "http://localhost:8888/v1")
-MODEL = os.environ.get("ATLAS_MODEL", "Qwen/Qwen3.5-35B-A3B-FP8")
+BASE = os.environ.get("AVAROK_URL", "http://localhost:8888/v1")
+MODEL = os.environ.get("AVAROK_MODEL", "Qwen/Qwen3.5-35B-A3B-FP8")
 c = OpenAI(base_url=BASE, api_key="sk-dummy")
 HOST = urlparse(BASE).netloc
 
@@ -244,12 +244,12 @@ except Exception as e:
 
 # ── 5. Rate-limit 429 ─────────────────────────────────────────────────────
 section("[5] Rate-limit enforcement (429 + retry-after)")
-rpm = os.environ.get("ATLAS_RATE_LIMIT_RPM_OBSERVED", "")
+rpm = os.environ.get("AVAROK_RATE_LIMIT_RPM_OBSERVED", "")
 if not rpm:
     record(
         "rate-limit 429",
         SKIP,
-        "server must start with ATLAS_RATE_LIMIT_RPM=3 (small) to trigger",
+        "server must start with AVAROK_RATE_LIMIT_RPM=3 (small) to trigger",
     )
 else:
     try:

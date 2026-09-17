@@ -26,7 +26,7 @@ use crate::tui::render::harness::{has, screen};
 /// chrome. `3n + 20` keeps the page strictly larger than the registry with
 /// room to spare, and grows correctly as entries are added.
 fn tall_enough() -> u16 {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     u16::try_from(n * 3 + 20).expect("fits a u16 terminal")
 }
 
@@ -46,7 +46,7 @@ fn every_registered_benchmark_is_reachable_by_scrolling() {
     // the selection there. 120 columns, not 80: names are only guaranteed
     // unclipped horizontally on a wide terminal (`render_tests` states the
     // same rule for 160), and this test is about the vertical fold.
-    let all = atlas_plugin::registry::all();
+    let all = avarok_plugin::registry::all();
     for (i, descriptor) in all.iter().enumerate() {
         let rows = screen(&list_app(i), 120, 24);
         assert!(
@@ -59,7 +59,7 @@ fn every_registered_benchmark_is_reachable_by_scrolling() {
 
 #[test]
 fn the_clip_indicator_appears_only_when_the_list_is_clipped() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     // 80x24 cannot hold the whole suite: the bottom border must say where
     // the window sits, starting at entry 1. Both halves on one row, so the
     // footer's own "1-7 jump" cannot satisfy this by accident.
@@ -81,7 +81,7 @@ fn the_clip_indicator_appears_only_when_the_list_is_clipped() {
 
 #[test]
 fn the_indicator_tracks_the_selection_to_the_bottom() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let rows = screen(&list_app(n - 1), 80, 24);
     assert!(
         has(&rows, &format!("-{n} of {n} ─")),
@@ -94,7 +94,7 @@ fn the_offset_is_clamped_at_both_ends() {
     // A selection past the registry — a stale index after the registry
     // shrinks — must show the last page, not scroll into blank space below
     // the real entries.
-    let all = atlas_plugin::registry::all();
+    let all = avarok_plugin::registry::all();
     let rows = screen(&list_app(all.len() + 40), 80, 24);
     assert!(
         has(&rows, all[all.len() - 1].name),
@@ -109,7 +109,7 @@ fn the_offset_is_clamped_at_both_ends() {
 fn compaction_keeps_the_summary_and_duration_on_every_entry() {
     // Fitting more entries by dropping the separator row, never by dropping
     // the rows that say what a benchmark does and how long it takes.
-    let all = atlas_plugin::registry::all();
+    let all = avarok_plugin::registry::all();
     let rows = screen(&list_app(0), 80, 24);
     assert!(
         has(&rows, all[0].duration_hint),
@@ -121,7 +121,7 @@ fn compaction_keeps_the_summary_and_duration_on_every_entry() {
 fn the_renderer_publishes_the_page_size_for_the_key_handler() {
     // The `log_scroll_max` contract: PgUp/PgDn page by whatever one frame
     // actually held, so the stride is never a guess about the terminal.
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let a = list_app(0);
     screen(&a, 80, 24);
     let page = a.bench.suite_page.get();
@@ -145,7 +145,7 @@ fn the_list_survives_a_12x4_terminal() {
     // The floor the rest of the suite is exercised at. Nothing readable
     // fits; the assertion is that the windowing math holds — `visible`
     // floored at one entry, the offset clamp — instead of panicking.
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     for selected in [0, n - 1] {
         let rows = screen(&list_app(selected), 12, 4);
         assert_eq!(rows.len(), 4, "selected {selected}");

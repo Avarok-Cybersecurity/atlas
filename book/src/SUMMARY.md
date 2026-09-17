@@ -21,13 +21,13 @@
 
 # Part III — The Crates
 
-- [atlas-core](./crates/atlas-core.md)
-- [atlas-kernels](./crates/atlas-kernels.md)
+- [avarok-core](./crates/avarok-core.md)
+- [avarok-kernels](./crates/avarok-kernels.md)
 - [spark-runtime](./crates/spark-runtime.md)
 - [spark-comm](./crates/spark-comm.md)
 - [spark-model](./crates/spark-model.md)
 - [spark-server](./crates/spark-server.md)
-- [atlas-spark-bench](./crates/atlas-spark-bench.md)
+- [avarok-spark-bench](./crates/avarok-spark-bench.md)
 
 # Part IV — Engineering Deep Dives
 

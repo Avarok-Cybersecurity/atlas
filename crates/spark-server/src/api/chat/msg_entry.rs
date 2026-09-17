@@ -11,7 +11,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use atlas_core::config::VisionConfig;
+use avarok_core::config::VisionConfig;
 
 use crate::ir::{ContentPart, ImageData, MediaKind, Message, Role};
 
@@ -269,7 +269,7 @@ pub(super) fn build_msg_entries(
             continue;
         }
 
-        // Wave 3 (2026-05-26): `ATLAS_STRIP_REASONING_HISTORY=1` drops
+        // Wave 3 (2026-05-26): `AVAROK_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
         // whose PR description matches Atlas's Wave-1 failure mode
@@ -277,7 +277,7 @@ pub(super) fn build_msg_entries(
         // emit `<|im_end|>` prematurely AND seeds loop-attractor drift
         // on prior-failed-attempt token patterns (the `lean://` loop
         // observed in the Wave-1 opencode probe).
-        let strip_reasoning = std::env::var("ATLAS_STRIP_REASONING_HISTORY")
+        let strip_reasoning = std::env::var("AVAROK_STRIP_REASONING_HISTORY")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         // OpenAI's `developer` role is the successor of `system` (o-series
@@ -322,7 +322,7 @@ pub(super) fn build_msg_entries(
     // Mask the OLDER occurrences of a repeated error-shaped tool
     // result, keeping only the NEWEST verbatim (hints attach to the
     // newest, which is preserved untouched). Kill-switch
-    // ATLAS_NO_ERROR_DEDUP=1 restores verbatim history. MUST run
+    // AVAROK_NO_ERROR_DEDUP=1 restores verbatim history. MUST run
     // before the vacuous-system removal below — the recorded indices
     // refer to the un-shifted `messages` vec.
     if tools_active && !error_dedup_disabled() {
@@ -469,7 +469,7 @@ pub(super) fn build_msg_entries(
     // BW1 bash-wandering watchdog: if the agent has run many tool calls with
     // no productive file output, append a steering nudge to the most recent
     // tool response (what the model reads just before its next action). Gated
-    // by ATLAS_BASH_WANDER_WATCHDOG (PCND, default-off).
+    // by AVAROK_BASH_WANDER_WATCHDOG (PCND, default-off).
     if tools_active
         && let Some(hint) = crate::hint_injector::bash_wander_hint(
             total_tool_calls,
@@ -513,10 +513,10 @@ fn is_vacuous_system_content(content: &str) -> bool {
     false
 }
 
-/// P1-6 (2026-07-09): kill-switch — `ATLAS_NO_ERROR_DEDUP=1` restores
+/// P1-6 (2026-07-09): kill-switch — `AVAROK_NO_ERROR_DEDUP=1` restores
 /// verbatim duplicate-error history (disables the masking pass).
 fn error_dedup_disabled() -> bool {
-    std::env::var("ATLAS_NO_ERROR_DEDUP").as_deref() == Ok("1")
+    std::env::var("AVAROK_NO_ERROR_DEDUP").as_deref() == Ok("1")
 }
 
 /// P1-6 (2026-07-09): duplicate-error observation masking.

@@ -51,11 +51,11 @@ fn logits_ctx<'a>(
 }
 
 /// Admit `think_ended` rows (which need only a 2-token mask) to the GPU argmax
-/// fast path. Kill switch: `ATLAS_NO_THINKENDED_GPU_ARGMAX=1`.
+/// fast path. Kill switch: `AVAROK_NO_THINKENDED_GPU_ARGMAX=1`.
 fn think_ended_gpu_argmax_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var("ATLAS_NO_THINKENDED_GPU_ARGMAX")
+        std::env::var("AVAROK_NO_THINKENDED_GPU_ARGMAX")
             .ok()
             .as_deref()
             != Some("1")
@@ -67,15 +67,15 @@ fn think_ended_gpu_argmax_enabled() -> bool {
 /// fast path is not paying for itself.
 static THINK_MASK_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Parallel host sampling toggle (ATLAS_PARALLEL_SAMPLE, default ON). Set to
+/// Parallel host sampling toggle (AVAROK_PARALLEL_SAMPLE, default ON). Set to
 /// "0" to force the serial per-seq sampling path — an escape hatch for the
 /// telemetry-ordering caveat above, or for A/B measurement of the rayon win.
 fn parallel_sample_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_PARALLEL_SAMPLE").as_deref() != Ok("0"))
+    *CACHED.get_or_init(|| std::env::var("AVAROK_PARALLEL_SAMPLE").as_deref() != Ok("0"))
 }
 
-/// DIAG (ATLAS_DECODE_TIMING=1): localize the host-path decode cost. Splits the
+/// DIAG (AVAROK_DECODE_TIMING=1): localize the host-path decode cost. Splits the
 /// per-token wall into `copy` (D2H of the full 248k-vocab logits + the GPU
 /// forward-wait absorbed by that sync) vs `sample` (the host scalar loops over
 /// 248k: BF16→FP32 expand + penalties + masks + argmax). Emits a 100-token
@@ -149,7 +149,7 @@ pub fn process_decode_logits(
     // passes. The GPU argmax fast path was dead code in that config, which is
     // also the MLPerf-edge config.
     //
-    // Kill switch: ATLAS_NO_THINKENDED_GPU_ARGMAX=1.
+    // Kill switch: AVAROK_NO_THINKENDED_GPU_ARGMAX=1.
     let think_ended_gpu_ok = |a: &ActiveSeq| {
         a.think_ended
             && !a.inside_thinking
@@ -245,7 +245,7 @@ pub fn process_decode_logits(
         // opencode host path) the serial path avoids rayon's dispatch
         // overhead. `process_seq_logits` touches no GPU state (its `_model`
         // arg is unused), so no CUDA calls cross threads. The parallel path
-        // is also gated off when the opt-in `ATLAS_LOGIT_DUMP` diagnostic is
+        // is also gated off when the opt-in `AVAROK_LOGIT_DUMP` diagnostic is
         // active, since its shared per-step record would interleave across
         // workers.
         let parallel_sample = n > 1 && sched.dumps.logits.is_none() && parallel_sample_enabled();
@@ -551,7 +551,7 @@ pub fn process_decode_logits(
             // Tool-call-repetition runaway guard. On a `tool_choice="auto"`
             // grammar turn the grammar never terminates after a tool call
             // (stop_after_first=false), so EOS stays grammar-suppressed and the
-            // only stop path is the ATLAS_TOOL_EOS_ESCAPE hatch — which a
+            // only stop path is the AVAROK_TOOL_EOS_ESCAPE hatch — which a
             // re-opened tool body defeats (its `!inside_tool_body` guard flips
             // false the moment the model emits another `<tool_call>`). A
             // degenerating FP8/long-context model loops emitting whole
@@ -685,7 +685,7 @@ pub fn process_decode_logits(
         // suppressed forever — trapping the model into a hallucinated-transcript
         // runaway. When enabled and a tool call has completed (and we're not
         // inside a tool body / thinking), lift the grammar suppression so the
-        // model's natural EOS ends the turn. Inert unless ATLAS_TOOL_EOS_ESCAPE=1.
+        // model's natural EOS ends the turn. Inert unless AVAROK_TOOL_EOS_ESCAPE=1.
         let eos_escape = sched.levers.tool_eos_escape
             && a.tool_call_completed
             && !a.inside_tool_body
@@ -825,7 +825,7 @@ pub fn process_decode_logits(
                 a.think_just_ended = true;
             }
             tracing::debug!(
-                target: "atlas::eos",
+                target: "avarok::eos",
                 tok,
                 implicit_think_close = thinking_is_sole_suppressor && honor_eos_in_think,
                 thinking_sole_suppressor = thinking_is_sole_suppressor,

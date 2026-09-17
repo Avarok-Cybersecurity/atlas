@@ -46,7 +46,7 @@ impl Qwen3AttentionLayer {
         let hd_mla = nope + rope;
         let use_tc = self.dense_gemm_tc_k.0 != 0;
         let diag_all =
-            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+            std::env::var("AVAROK_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
         let diag_this = self.attn_layer_idx == 0 || diag_all;
 
         // Per-token NaN scan of `normed` (post hc_pre + input_norm) — localizes

@@ -139,7 +139,7 @@ fn env_sysfs_with_no_match_warns_and_falls_back() {
     assert_eq!(d.source, MemInfoSource::Driver);
     let warning = d.warning.expect("an unhonoured request must warn");
     assert!(
-        warning.contains("ATLAS_MEMINFO_SOURCE=sysfs:"),
+        warning.contains("AVAROK_MEMINFO_SOURCE=sysfs:"),
         "the warning must name the explicit-path form: {warning}"
     );
 }
@@ -202,7 +202,7 @@ fn unset_without_scale_never_touches_sysfs() {
 
 #[test]
 fn an_empty_value_reads_as_unset() {
-    // `ATLAS_MEMINFO_SOURCE=` in a serve script is an operator clearing the
+    // `AVAROK_MEMINFO_SOURCE=` in a serve script is an operator clearing the
     // knob, not asking for a source named "".
     let d = decide(Some(""), false, never);
     assert_eq!(d.source, MemInfoSource::Driver);
@@ -217,7 +217,7 @@ struct FakeSysfs(PathBuf);
 impl FakeSysfs {
     fn new(tag: &str, files: &[(&str, &str)]) -> Self {
         let path =
-            std::env::temp_dir().join(format!("atlas-meminfo-{}-{}", std::process::id(), tag));
+            std::env::temp_dir().join(format!("avarok-meminfo-{}-{}", std::process::id(), tag));
         std::fs::create_dir_all(&path).expect("create the fake sysfs dir");
         for (name, contents) in files {
             std::fs::write(path.join(name), contents).expect("write a fake counter");

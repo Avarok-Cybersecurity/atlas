@@ -13,6 +13,6 @@
 // it `expected_absent` and leaving this model on the scalar kernel.
 #define HDIM 512
 #define BC 16
-#define ATLAS_PREFILL_ENTRY inferspark_prefill_512tc
-#define ATLAS_SKIP_PREFILL_64 1
+#define AVAROK_PREFILL_ENTRY inferspark_prefill_512tc
+#define AVAROK_SKIP_PREFILL_64 1
 #include "../../common/inferspark_prefill.cu"

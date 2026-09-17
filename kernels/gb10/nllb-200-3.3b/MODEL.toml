@@ -28,7 +28,7 @@ hidden_size = 2048
 # Wildcards (no hidden_size) so the SAME dimension-agnostic bf16 kernels serve
 # every NLLB / M2M-100 size — e.g. the distilled-1.3B (hidden_size=1024) and
 # distilled-600M — not just the 3.3B. Exact-match 2048 still wins for the 3.3B
-# per `atlas_kernels::ptx_for_config` resolution order; these catch the rest.
+# per `avarok_kernels::ptx_for_config` resolution order; these catch the rest.
 [[model_types]]
 model_type = "m2m_100"
 

@@ -355,7 +355,7 @@ fn a_pair_with_no_parent_keeps_the_twin_at_every_width() {
         assert!(pick.twin && pick.reject.is_none(), "M={m} K={k}");
         assert_eq!(pick.kernel.0, 0xB2);
     }
-    // …and the LEVER does not change that: `ATLAS_FP8_ACT_QUANT_HOPPER=0` on a
+    // …and the LEVER does not change that: `AVAROK_FP8_ACT_QUANT_HOPPER=0` on a
     // pair with no parent would otherwise launch `KernelHandle(0)`. The escape
     // outranks the lever for the same reason it outranks the floor — an
     // operator's "prefer the parent" cannot mean "launch nothing".

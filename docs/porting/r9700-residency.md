@@ -8,9 +8,9 @@
 for `self_attn.{q,k,v,o}_proj`, `linear_attn.{in_proj_qkv,in_proj_z,out_proj}`,
 `lm_head` and the MLPs of layers 56..63; packed NVFP4 for every other MLP; BF16
 for embeddings, norms and the vision tower. 1968 tensors, 21.81 GiB on disk.
-**Serve:** `ATLAS_TARGET_HW=r9700 ATLAS_TARGET_MODEL=qwen3.8-27b
-ATLAS_TARGET_QUANT=nvfp4`, `ATLAS_W4A16_VARIANT=v1
-ATLAS_NO_GDN_FP8_PREFILL=1`, `--oom-guard-mb 1024 --gpu-memory-utilization 0.80
+**Serve:** `AVAROK_TARGET_HW=r9700 AVAROK_TARGET_MODEL=qwen3.8-27b
+AVAROK_TARGET_QUANT=nvfp4`, `AVAROK_W4A16_VARIANT=v1
+AVAROK_NO_GDN_FP8_PREFILL=1`, `--oom-guard-mb 1024 --gpu-memory-utilization 0.80
 --max-seq-len 4096 --max-batch-size 4`.
 
 ## The failure this document explains
@@ -111,7 +111,7 @@ plus the buffer arena plus the vision encoder's working set leaves **27.9 GB**
 | release every dead store tensor except `lm_head` | 38.31 | 41.13 | no |
 | ... and free the attention BF16 dequant | 35.18 | 37.78 | no |
 | ... and release the FP8 `lm_head` too | 34.00 | 36.50 | no |
-| ... and drop every transposed twin (`ATLAS_LOAD_TRANSPOSED_TWINS=0`) | 21.25 | 22.82 | **yes** |
+| ... and drop every transposed twin (`AVAROK_LOAD_TRANSPOSED_TWINS=0`) | 21.25 | 22.82 | **yes** |
 
 **Release-on-consume is necessary and not sufficient.** It buys 8.76 GiB
 (9.40 GB). The attention leak buys another 3.12 GiB. Together they take the
@@ -121,12 +121,12 @@ a single-layout prefill kernel) closes the gap.
 
 ### The lever that closes it, and what it costs
 
-`ATLAS_LOAD_TRANSPOSED_TWINS` (`weight_loader/qwen35_dense/transposed_twins.rs`)
+`AVAROK_LOAD_TRANSPOSED_TWINS` (`weight_loader/qwen35_dense/transposed_twins.rs`)
 is `1` (build every twin; the pre-lever behaviour byte for byte, and the default
 on every non-SCALE target), `0` (build none) or `auto` (build them only if
 `gpu.free_memory()` after the checkpoint is resident exceeds their projected
 bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the vision
-encoder's working set). Unset takes `cfg!(atlas_scale)`, which since 2026-09-17
+encoder's working set). Unset takes `cfg!(avarok_scale)`, which since 2026-09-17
 is **`0`** on SCALE rather than `auto`. See "The cost" below. `serve-amd.sh`
 exports `0` for r9700.
 
@@ -240,7 +240,7 @@ projections are not NVFP4-packed, which is the whole unsloth mixed-precision
 family, on every target including NVIDIA.
 
 **FIXED UNCONDITIONALLY**, one commit after it was first written down. It rode
-`ATLAS_LOAD_RELEASE_SOURCES` only because that change was not allowed to move
+`AVAROK_LOAD_RELEASE_SOURCES` only because that change was not allowed to move
 NVIDIA behaviour, and on re-reading that constraint does not cover this: what
 "byte-identical on NVIDIA" protects is which values the GEMMs read, and this
 buffer has no reader: `quantize_to_nvfp4` has already consumed it into a fresh
@@ -252,18 +252,18 @@ uncopied for a BF16 tensor.
 
 ### `spark-model/build.rs` documents a free that does not exist
 
-The `atlas_scale` comment says the cfg exists "so the weight loader frees each
+The `avarok_scale` comment says the cfg exists "so the weight loader frees each
 FP8 source tensor right after requant (see `quantized_from_fp8`)".
 `quantized_from_fp8` (`nvfp4_detect.rs:366-370`) frees the **BF16 intermediate**
-and leaves the FP8 source in the store. No `#[cfg(atlas_scale)]` appears
+and leaves the FP8 source in the store. No `#[cfg(avarok_scale)]` appears
 anywhere in `spark-model/src`. The cfg is real and load-bearing (it pins the
 32-row prefill grid stride and the GDN prefill arm), but this particular
-sentence describes an intent, not an implementation. `ATLAS_LOAD_RELEASE_SOURCES`
+sentence describes an intent, not an implementation. `AVAROK_LOAD_RELEASE_SOURCES`
 is that implementation.
 
-## `ATLAS_LOAD_RELEASE_SOURCES`
+## `AVAROK_LOAD_RELEASE_SOURCES`
 
-`1`/`0`. Default **ON** under `cfg!(atlas_scale)`, **OFF** otherwise.
+`1`/`0`. Default **ON** under `cfg!(avarok_scale)`, **OFF** otherwise.
 
 Why the asymmetry, stated plainly so it can be argued with:
 
@@ -308,16 +308,16 @@ NOT released, deliberately:
   copy has no reader at all. **RELEASED as of 2026-09-17** by
   `lm_head_setup::release_lm_head_source`, called from `build_model` right after
   `setup_lm_heads` and BEFORE the KV sizer, on the same
-  `ATLAS_LOAD_RELEASE_SOURCES` knob as the sites above. 1.18 GiB. The guard is
+  `AVAROK_LOAD_RELEASE_SOURCES` knob as the sites above. 1.18 GiB. The guard is
   `lm_head_source_is_dead(source_is_fp8, lm_head_fp8, dflash, speculative)`, and
   `source_is_fp8` is the load-bearing term: on a BF16 or NVFP4-prepacked
   checkpoint `load_lm_head` / `weight_map::quantized` hand the STORE's pointer
   through uncopied, and releasing it there is a use-after-free on the first
   token. `lm_head_setup_tests.rs` pins all sixteen rows of that table.
-* **SSM `out_proj` when `ATLAS_FP8_ROWWISE=1`.** `rowwise_fp8::load_fp8_per_row`
+* **SSM `out_proj` when `AVAROK_FP8_ROWWISE=1`.** `rowwise_fp8::load_fp8_per_row`
   returns `weight: w.ptr` (`rowwise_fp8.rs:179`), so under that flag the layer
   holds the store's bytes. The release predicate excludes it.
-* **attention and SSM under `ATLAS_DENSE_FP8=1`.**
+* **attention and SSM under `AVAROK_DENSE_FP8=1`.**
   `load_fp8_block_scaled_as_fp8weight` is also zero-copy on `.weight`. That arm
   is unreachable on a CompressedTensors checkpoint, but the predicate checks
   rather than assumes.
@@ -394,14 +394,14 @@ the same pointer and records it, so both become correct by substitution.
 2. **Do not build the transposed dense FFN twins.** 8.96 GiB, the single
    largest item left. `DenseFfnWeights::{gate,up,down}_proj_t` are already
    `Option`, and `gemma4/loader_a.rs:30-52` is a working precedent
-   (`ffn_transpose_fits`, `ATLAS_GEMMA4_FFN_TRANSPOSE=0`). The cost is written
+   (`ffn_transpose_fits`, `AVAROK_GEMMA4_FFN_TRANSPOSE=0`). The cost is written
    down in that same comment and it is large: with all three `None` every fast
    arm of `w4_gemm!` is skipped and prefill lands on plain `w4a16_gemm`, which
    the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 TFLOP/s for
    `t_m128`. Call it a 7x slower FFN prefill. On a board that otherwise cannot
    load the model at all, that trade is available; it should be a knob with a
    measured A/B, not a silent default. **DONE**, as
-   `ATLAS_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one lever
+   `AVAROK_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one lever
    for all three families rather than three, because a build that skips one and
    builds the others has no state anyone measured. **The A/B is now RUN, and it
    went the other way**: on gfx1201 `w4a16_gemm_t_m128` measures ~1 TFLOP/s and
@@ -430,7 +430,7 @@ the same pointer and records it, so both become correct by substitution.
    (`proj_is_fp8_any_scale` refuses it for exactly that reason), and the
    row-wise cuBLASLt FP8 GEMM is dead on this class
    (`rowwise_fp8.rs`, sm_121 heuristic status 15, and SCALE has no e4m3 MMA
-   codegen on gfx1201 at all, which is why `ATLAS_W4A16_VARIANT=v1` is
+   codegen on gfx1201 at all, which is why `AVAROK_W4A16_VARIANT=v1` is
    required). A per-row `w8a16_gemv`/`gemm` is the missing piece. It would save
    the 6.72 GiB of FP8 store plus the 9.6 GiB of NVFP4 the requant produces.
 6. **Serve `Qwen/Qwen3.8-27B-FP8` instead.** Block-scaled FP8, which Atlas loads

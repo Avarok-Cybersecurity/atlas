@@ -46,7 +46,7 @@ __device__ __constant__ float E2M1_LUT_BATCH2[16] = {
 // is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
 // software scl_fp8 there; NVIDIA path is the verbatim cast.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
     if (e == 0u)               v = (float)m * 0.001953125f;
     else if (e == 15u && m == 7u) v = 0.0f;
@@ -54,7 +54,7 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
     return s ? -v : v;
 }
 #else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
 }
 #endif
@@ -175,12 +175,12 @@ __device__ void gate_up_gemv_batch2(
             unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
             unsigned int sg = base_k / GROUP_SIZE;
             unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
-            float sc1 = atlas_dec_e4m3(sb1) * s2;
+            float sc1 = avarok_dec_e4m3(sb1) * s2;
 
             unsigned int packed4_2 = have_n2 ?
                 *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
             unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
-            float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
+            float sc2 = have_n2 ? avarok_dec_e4m3(sb2) * s2 : 0.0f;
 
             #pragma unroll
             for (int b = 0; b < 4; b++) {
@@ -258,12 +258,12 @@ __device__ void silu_down_gemv_batch2(
             unsigned int packed4_1 = *(const unsigned int*)(B_packed + (unsigned long long)n1 * half_K + k8 * 4);
             unsigned int sg = base_k / GROUP_SIZE;
             unsigned char sb1 = B_scale[(unsigned long long)n1 * num_groups + sg];
-            float sc1 = atlas_dec_e4m3(sb1) * s2;
+            float sc1 = avarok_dec_e4m3(sb1) * s2;
 
             unsigned int packed4_2 = have_n2 ?
                 *(const unsigned int*)(B_packed + (unsigned long long)n2 * half_K + k8 * 4) : 0;
             unsigned char sb2 = have_n2 ? B_scale[(unsigned long long)n2 * num_groups + sg] : 0;
-            float sc2 = have_n2 ? atlas_dec_e4m3(sb2) * s2 : 0.0f;
+            float sc2 = have_n2 ? avarok_dec_e4m3(sb2) * s2 : 0.0f;
 
             #pragma unroll
             for (int b = 0; b < 4; b++) {

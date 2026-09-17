@@ -22,13 +22,13 @@
 //! 1.06-1.45x depending on shape).
 //!
 //! Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=laguna-s-2.1 ATLAS_TARGET_QUANT=nvfp4 \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=laguna-s-2.1 AVAROK_TARGET_QUANT=nvfp4 \
 //!     cargo run -p spark-model --release --features cuda,gpu-examples \
 //!     --example dense_gemv_bf16_batchm_microtest
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -145,7 +145,7 @@ fn launch_batchm(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let m1_k = g.kernel("gemv", "dense_gemv_bf16")?;
     let bm_k = g.kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")?;

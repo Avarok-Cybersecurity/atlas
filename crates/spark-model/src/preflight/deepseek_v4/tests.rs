@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
 

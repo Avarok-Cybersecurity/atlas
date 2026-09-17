@@ -26,10 +26,10 @@
 //! element, and for a dot product of independent terms that error does NOT
 //! average down relative to the signal: the expected `rel_rms` of this
 //! comparison on random inputs is ~2-2.6%, sitting right on the 2% gate.
-//! Cosine is the robust metric (~0.9997 at that error). `ATLAS_W8A8_REL_RMS_GATE`
+//! Cosine is the robust metric (~0.9997 at that error). `AVAROK_W8A8_REL_RMS_GATE`
 //! overrides the bound for a measurement run; the value used is always printed.
 //!
-//! SCALE LAYOUT — `ATLAS_CUBLAS_SCALE_LAYOUT=kmajor|rowmajor` (default
+//! SCALE LAYOUT — `AVAROK_CUBLAS_SCALE_LAYOUT=kmajor|rowmajor` (default
 //! `kmajor`). cuBLASLt reads the VEC128 activation scales with the TOKEN index
 //! contiguous, the transpose of the `[M, K/128]` the quantizer writes; the
 //! `rowmajor` setting feeds the untransposed buffer, which is the reading that
@@ -39,9 +39,9 @@
 //! Run (H100):
 //!   cargo run --release -p spark-model --features cuda,gpu-examples \
 //!     --example native_fp8_ffn_w8a8_microtest
-//!   ATLAS_CUBLAS_GEMM=1 cargo run --release -p spark-model \
+//!   AVAROK_CUBLAS_GEMM=1 cargo run --release -p spark-model \
 //!     --features cuda,gpu-examples --example native_fp8_ffn_w8a8_microtest
-//!   ATLAS_CUBLAS_GEMM=1 ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor cargo run --release \
+//!   AVAROK_CUBLAS_GEMM=1 AVAROK_CUBLAS_SCALE_LAYOUT=rowmajor cargo run --release \
 //!     -p spark-model --features cuda,gpu-examples \
 //!     --example native_fp8_ffn_w8a8_microtest
 
@@ -49,7 +49,7 @@ use anyhow::{Result, bail};
 use half::bf16;
 use spark_model::layers::ops;
 use spark_model::weight_map::{Fp8Weight, WeightQuantFormat};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 #[path = "common/native_fp8_bf16_compare.rs"]
@@ -159,7 +159,7 @@ struct Shape {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let stream = 0u64;
     let w8a16_k = gpu.kernel("w8a16_gemm_pipelined", "w8a16_gemm_pipelined")?;
     // `Fp8ActQuant::resolve` prefers the Hopper twin when the image has it
@@ -170,9 +170,9 @@ fn main() -> Result<()> {
     let quant_k = ops::Fp8ActQuant::resolve(&gpu);
     let w8a8_k = gpu.kernel("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled")?;
     let scale_kmajor_k = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
-    let want_cublas = std::env::var("ATLAS_CUBLAS_GEMM").as_deref() == Ok("1");
+    let want_cublas = std::env::var("AVAROK_CUBLAS_GEMM").as_deref() == Ok("1");
     let kmajor = ops::cublas_scale_layout_kmajor();
-    let rel_rms_gate = std::env::var("ATLAS_W8A8_REL_RMS_GATE")
+    let rel_rms_gate = std::env::var("AVAROK_W8A8_REL_RMS_GATE")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(REL_RMS_GATE);
@@ -184,7 +184,7 @@ fn main() -> Result<()> {
          |v|<{CUBLAS_SMALL_MAGNITUDE}) cosine>={CUBLAS_COSINE_GATE} \
          rel_rms<={CUBLAS_REL_RMS_GATE}",
         if want_cublas {
-            "on (ATLAS_CUBLAS_GEMM=1)"
+            "on (AVAROK_CUBLAS_GEMM=1)"
         } else {
             "off"
         },

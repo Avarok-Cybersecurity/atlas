@@ -4,10 +4,10 @@
    instruments. The signature element is the gate receipt (.receipt). Boldness
    is spent there; the rest stays disciplined. Theme is committed dark.
    ========================================================================== */
-/* The :root token block lives in web-shared/atlas-tokens.css, which the blog
+/* The :root token block lives in web-shared/avarok-tokens.css, which the blog
    imports too. One copy, so atlascybernetics.ai and blog.atlascybernetics.ai
    cannot drift apart. Property-specific rules stay below. */
-@import '../../web-shared/atlas-tokens.css';
+@import '../../web-shared/avarok-tokens.css';
 
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -126,7 +126,7 @@ nav {
 .ann-tag {
   flex-shrink: 0; padding: 0.08rem 0.42rem; border-radius: 4px;
   background: color-mix(in srgb, var(--ch-cyan) 16%, transparent);
-  color: var(--ch-cyan); border: 1px solid color-mix(in srgb, var(--ch-cyan) 35%, transparent);
+  color: var(--ch-cyan-text); border: 1px solid color-mix(in srgb, var(--ch-cyan) 35%, transparent);
   font-size: 0.64rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
 }
 
@@ -258,7 +258,7 @@ nav {
 .scale-note p { font-size: 0.94rem; color: var(--t2); line-height: 1.65; }
 .scale-note p + p { margin-top: 0.9rem; }
 .scale-figure { font-size: 1rem !important; color: var(--t1) !important; border-left: 3px solid var(--sx); padding-left: 0.9rem; }
-.scale-up { color: var(--sx); font-weight: 750; font-variant-numeric: tabular-nums; }
+.scale-up { color: var(--sx-text); font-weight: 750; font-variant-numeric: tabular-nums; }
 /* Deliberately not red. The baseline flattening is a measurement, not a
    failure, and colouring it as an error reads as a taunt rather than a result. */
 .scale-flat { color: var(--t3); font-weight: 750; font-variant-numeric: tabular-nums; }
@@ -309,7 +309,7 @@ nav {
 .subcard-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .chip { display: inline-block; font-size: 0.6rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px; letter-spacing: 0.04em; text-transform: uppercase; border: 1px solid transparent; }
 .chip-nvfp4 { background: var(--accent-soft); color: var(--accent-deep); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
-.chip-fp8 { background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); color: var(--ch-cyan); border-color: color-mix(in srgb, var(--ch-cyan) 30%, transparent); }
+.chip-fp8 { background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); color: var(--ch-cyan-text); border-color: color-mix(in srgb, var(--ch-cyan) 30%, transparent); }
 .chip-bf16 { background: rgba(0, 0, 0,0.08); color: var(--t2); border-color: var(--border); }
 .chip-single { background: rgba(0, 0, 0,0.06); color: var(--t2); border-color: var(--border); }
 .chip-ep2 { background: var(--green-soft); color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); }
@@ -479,7 +479,7 @@ footer { border-top: 1px solid var(--border); padding: 3rem 2rem 2.5rem; backgro
 .fcol a:hover { color: var(--accent); }
 .footer-member { max-width: 1080px; margin: 2.5rem auto 0; }
 .footer-member a { display: inline-block; line-height: 0; }
-.footer-member img { width: 140px; height: auto; opacity: 0.55; transition: opacity 0.2s; }
+.footer-member img { width: 140px; height: auto; opacity: 0.72; transition: opacity 0.2s; }
 .footer-member a:hover img, .footer-member a:focus-visible img { opacity: 1; }
 .footer-legal { max-width: 1080px; margin: 2rem auto 0; padding-top: 1.5rem; border-top: 1px solid var(--border); font-size: 0.68rem; color: var(--t3); line-height: 1.6; }
 .footer-legal .tm { margin-top: 0.6rem; }
@@ -580,10 +580,10 @@ section { padding: 7rem 2rem; }
    that says where the numbers under it came from. The three-chevron mark stops
    being a logo in the corner and becomes the structure of the page.
    ========================================================================== */
-.sx-violet { --sx: var(--ch-violet); }
-.sx-cyan   { --sx: var(--ch-cyan); }
-.sx-green  { --sx: var(--ch-green); }
-.sx-gold   { --sx: var(--ch-gold); }
+.sx-violet { --sx: var(--ch-violet); --sx-text: var(--ch-violet-text); }
+.sx-cyan   { --sx: var(--ch-cyan);   --sx-text: var(--ch-cyan-text); }
+.sx-green  { --sx: var(--ch-green);  --sx-text: var(--ch-green-text); }
+.sx-gold   { --sx: var(--ch-gold);   --sx-text: var(--ch-gold-text); }
 
 .ledger-rail {
   display: flex; align-items: center; gap: 0.6rem;
@@ -594,10 +594,10 @@ section { padding: 7rem 2rem; }
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
   color: var(--t3); flex-shrink: 0;
 }
-.ledger-chev { color: var(--sx); flex-shrink: 0; display: block; }
+.ledger-chev { color: var(--sx-text); flex-shrink: 0; display: block; }
 .ledger-name {
   font-family: var(--font-mono); font-size: 0.72rem; font-weight: 650;
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--sx);
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--sx-text);
   white-space: nowrap; flex-shrink: 0;
 }
 /* The rule fades out rather than stopping, so the rail reads as continuing
@@ -623,7 +623,7 @@ a.prov:hover { color: var(--t2); border-color: var(--border-strong); }
    place. These four selectors are why the chevron system is not just paint. */
 .ms-accent, .news-accent { background: var(--sx); }
 .mech-line { border-left-color: var(--sx); }
-.road-status { background: color-mix(in srgb, var(--sx) 16%, transparent); color: var(--sx); }
+.road-status { background: color-mix(in srgb, var(--sx) 16%, transparent); color: var(--sx-text); }
 
 /* Informational cards stop levitating. A card that lifts is telling the reader
    it is clickable; news, hardware and roadmap cards are not. */
@@ -640,13 +640,13 @@ a.prov:hover { color: var(--t2); border-color: var(--border-strong); }
 }
 .quote-mark {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(620px, 78vw); height: auto; color: var(--sx);
+  width: min(620px, 78vw); height: auto; color: var(--sx-text);
   opacity: 0.05; pointer-events: none;
 }
 .quote-band .container { position: relative; }
 .quote-title {
   font-family: var(--font-mono); font-size: 0.72rem; font-weight: 650;
-  letter-spacing: 0.14em; text-transform: uppercase; color: var(--sx);
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--sx-text);
 }
 .quote-statement {
   margin: 1.1rem auto 0; max-width: 26ch;
@@ -682,7 +682,7 @@ a.prov:hover { color: var(--t2); border-color: var(--border-strong); }
 }
 .faq-item summary::-webkit-details-marker { display: none; }
 .faq-q { font-size: 1.02rem; font-weight: 700; color: var(--t1); letter-spacing: -0.01em; }
-.faq-item summary:hover .faq-q { color: var(--sx); }
+.faq-item summary:hover .faq-q { color: var(--sx-text); }
 /* A chevron built from the mark's geometry: same round caps, same 41° arm,
    rotated down when open. */
 .faq-mark {

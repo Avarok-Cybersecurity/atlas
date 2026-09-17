@@ -20,7 +20,7 @@ use super::*;
 /// of keeping a second copy of this precedence. `None` means "the config
 /// does not say"; it is NEVER a guess, and the sniffing half of
 /// [`detect_nvfp4_variant`] is what resolves it once the store is loaded.
-pub fn config_declared_variant(config: &atlas_core::config::ModelConfig) -> Option<Nvfp4Variant> {
+pub fn config_declared_variant(config: &avarok_core::config::ModelConfig) -> Option<Nvfp4Variant> {
     let qc = config.quantization_config.as_ref()?;
     match qc.quant_method.as_str() {
         "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => Some(Nvfp4Variant::Standard),
@@ -62,7 +62,7 @@ pub fn config_declared_variant(config: &atlas_core::config::ModelConfig) -> Opti
 ///      that ship without a `quantization_config` block.
 pub fn detect_nvfp4_variant(
     store: &WeightStore,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Nvfp4Variant {
     // (1) Config-first dispatch. See module docs on `quant_format` for
     // the full rationale — this is the fix for the Discord 2026-04-17
@@ -144,7 +144,7 @@ pub fn detect_nvfp4_variant(
             format!("{pfx}.self_attn.q_proj.weight"),
         ] {
             // `checkpoint_dtype`, not `get`: this asks what the FILE ships.
-            // Under `ATLAS_LOAD_RELEASE_SOURCES` the loader frees exactly
+            // Under `AVAROK_LOAD_RELEASE_SOURCES` the loader frees exactly
             // these projections once it has requantised them, and this
             // function is called again afterwards (`load_mtp_weights`,
             // `prune_after_load`, `detect_quant_format`). Probing through
@@ -438,7 +438,7 @@ pub(crate) fn load_quantized_proj_qwen35(
 #[cfg(test)]
 mod ep_detection_tests {
     use super::*;
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use spark_runtime::weights::WeightStore;
 
     /// A store holding only the FP8 attention marker at a given layer, which is

@@ -18,7 +18,7 @@
 //! Exit 0 = PASS (cosine >= gate), 1 = FAIL.
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
         .map(|_| f32_to_bf16_bits(rng.uniform(-1.0, 1.0)))
         .collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let qp = upload(gpu, &u16s_to_le(&q))?;
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
     // Mirror the production op wrapper's BR after the fix: kernel BR64 is
     // clamped to 32 on AMD, so the grid stride must be 32 there (else rows are
     // dropped). NVIDIA uses 64.
-    let br = if cfg!(atlas_scale) { 32u32 } else { 64u32 };
+    let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     let handle = gpu.kernel("inferspark_prefill", "inferspark_prefill_64")?;
     KernelLaunch::new(gpu, handle)
         .grid([nq as u32, div_ceil(seq as u32, br), 1])

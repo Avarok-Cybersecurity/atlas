@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Which `ATLAS_CUBLAS_GEMM` families arm the SSM decode W8A8 arm, and over
+//! Which `AVAROK_CUBLAS_GEMM` families arm the SSM decode W8A8 arm, and over
 //! which row band — the SSM half of the #927 dispatch pins.
 //!
 //! The shape/capacity clauses are pinned once, for both families, in
@@ -43,16 +43,16 @@ fn qkvz_selected(raw: &str, rows: usize, disabled: bool) -> bool {
 }
 
 /// `ssm` (alone or in a list) and `all`/`1`/`true` arm it; NOTHING else does.
-/// `ATLAS_CUBLAS_GEMM=ffn` reaching the SSM projections is the #917 failure
+/// `AVAROK_CUBLAS_GEMM=ffn` reaching the SSM projections is the #917 failure
 /// (10.3 GiB of unledgered BF16 weight copies, `cuMemAlloc_v2 status 2` at
 /// layer 36), which is why the lever became a family set in the first place.
 #[test]
 fn only_the_ssm_family_arms_the_ssm_decode_arm() {
     for raw in ["ssm", "ffn,ssm", "ssm,attn", "all", "1", "true"] {
-        assert!(qkvz_selected(raw, 16, false), "ATLAS_CUBLAS_GEMM={raw:?}");
+        assert!(qkvz_selected(raw, 16, false), "AVAROK_CUBLAS_GEMM={raw:?}");
     }
     for raw in ["ffn", "attn", "head", "ffn,attn", "off", "", "junk"] {
-        assert!(!qkvz_selected(raw, 16, false), "ATLAS_CUBLAS_GEMM={raw:?}");
+        assert!(!qkvz_selected(raw, 16, false), "AVAROK_CUBLAS_GEMM={raw:?}");
     }
 }
 
@@ -68,7 +68,7 @@ fn the_ssm_decode_arm_takes_five_to_sixteen_rows_only() {
     }
 }
 
-/// `ATLAS_NO_W8A8_DECODE_PROJ` wins over an armed family, at every rung.
+/// `AVAROK_NO_W8A8_DECODE_PROJ` wins over an armed family, at every rung.
 #[test]
 fn the_kill_switch_beats_an_armed_ssm_family() {
     for rows in [5, 8, 16] {

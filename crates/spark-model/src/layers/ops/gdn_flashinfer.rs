@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Opt-in FlashInfer GDN prefill via `dlopen(libatlasgdn.so)` — behind `ATLAS_GDN_FLASHINFER=1`.
+//! Opt-in FlashInfer GDN prefill via `dlopen(libatlasgdn.so)` — behind `AVAROK_GDN_FLASHINFER=1`.
 //!
 //! Bridges Atlas's native packed-QKV + interleaved gate/beta buffers to the AOT-exported
 //! FlashInfer chunked gated-delta-rule scan (tensor-core, ~11× the scalar FLA `chunk_delta_h`
@@ -11,7 +11,7 @@
 //! so there is NO gate-space conversion.
 //!
 //! dlopen (not link-time) keeps this fully opt-in: the binary builds and runs without the
-//! library; it is only loaded when the flag is set. `ATLAS_GDN_LIB` overrides the path.
+//! library; it is only loaded when the flag is set. `AVAROK_GDN_LIB` overrides the path.
 use anyhow::{Result, anyhow, bail, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::os::raw::{c_char, c_float, c_int, c_void};
@@ -104,22 +104,22 @@ fn lib() -> Option<&'static Lib> {
     //     at most once, so `atlas_gdn_load()` (which loads the cubin module onto
     //     the device) is called exactly once, as the shim's `g_loaded` expects.
     LIB.get_or_init(|| unsafe {
-        let path = std::env::var("ATLAS_GDN_LIB").unwrap_or_else(|_| "libatlasgdn.so".to_string());
+        let path = std::env::var("AVAROK_GDN_LIB").unwrap_or_else(|_| "libatlasgdn.so".to_string());
         let cpath = std::ffi::CString::new(path.clone()).ok()?;
         let h = dlopen(cpath.as_ptr(), RTLD_NOW);
         if h.is_null() {
-            tracing::warn!("ATLAS_GDN_FLASHINFER: dlopen('{path}') failed — falling back to FLA");
+            tracing::warn!("AVAROK_GDN_FLASHINFER: dlopen('{path}') failed — falling back to FLA");
             return None;
         }
         let load = dlsym(h, c"atlas_gdn_load".as_ptr());
         let prefill = dlsym(h, c"atlas_gdn_prefill_packed_managed".as_ptr());
         if load.is_null() || prefill.is_null() {
-            tracing::warn!("ATLAS_GDN_FLASHINFER: symbols not found in lib — falling back to FLA");
+            tracing::warn!("AVAROK_GDN_FLASHINFER: symbols not found in lib — falling back to FLA");
             return None;
         }
         let load: LoadFn = std::mem::transmute(load);
         load(); // load the cubin module onto the device(s) once
-        tracing::info!("ATLAS_GDN_FLASHINFER: FlashInfer GDN kernel loaded (opt-in)");
+        tracing::info!("AVAROK_GDN_FLASHINFER: FlashInfer GDN kernel loaded (opt-in)");
         Some(Lib {
             prefill: std::mem::transmute::<*mut c_void, PackedFn>(prefill),
         })
@@ -127,9 +127,9 @@ fn lib() -> Option<&'static Lib> {
     .as_ref()
 }
 
-/// True when `ATLAS_GDN_FLASHINFER=1` AND the library + symbols loaded successfully.
+/// True when `AVAROK_GDN_FLASHINFER=1` AND the library + symbols loaded successfully.
 pub fn available() -> bool {
-    std::env::var("ATLAS_GDN_FLASHINFER").as_deref() == Ok("1") && lib().is_some()
+    std::env::var("AVAROK_GDN_FLASHINFER").as_deref() == Ok("1") && lib().is_some()
 }
 
 /// Run one prefill GDN scan through the FlashInfer kernel on Atlas's native buffers.

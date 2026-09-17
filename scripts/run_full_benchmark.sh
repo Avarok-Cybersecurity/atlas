@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_full_benchmark.sh — Full model sweep: coherence + concurrency benchmark
 #
-# Runs all GB10 models with atlas-gb10:latest, writes BENCHMARK_RESULTS.md
+# Runs all GB10 models with avarok-gb10:latest, writes BENCHMARK_RESULTS.md
 #
 # Usage:
 #   bash scripts/run_full_benchmark.sh [--quick]
@@ -10,8 +10,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IMAGE="${IMAGE:-atlas-gb10:latest}"
-EP_IMAGE="${EP_IMAGE:-atlas-gb10:latest}"
+IMAGE="${IMAGE:-avarok-gb10:latest}"
+EP_IMAGE="${EP_IMAGE:-avarok-gb10:latest}"
 PORT=8888
 OUTPUT="$REPO_ROOT/BENCHMARK_RESULTS.md"
 QUICK="${1:-}"
@@ -105,7 +105,7 @@ run_model() {
   local extra_args=("$@")
   local isls="${BENCH_ISLS:-$MOE_ISLS}"
   local concs="${BENCH_CONCS:-$MOE_CONCS}"
-  local container="atlas-bench"
+  local container="avarok-bench"
   local url="http://localhost:${PORT}"
 
   log "=== START: ${label} ==="
@@ -165,12 +165,12 @@ run_ep2_model() {
 
   log "=== START: ${label} (EP=2) ==="
 
-  sudo docker rm -f atlas-ep0 2>/dev/null || true
-  ssh "$worker_ip" "sudo docker rm -f atlas-ep1 2>/dev/null || true"
+  sudo docker rm -f avarok-ep0 2>/dev/null || true
+  ssh "$worker_ip" "sudo docker rm -f avarok-ep1 2>/dev/null || true"
 
   # Start rank 0 (head)
   sudo docker run -d \
-    --name atlas-ep0 \
+    --name avarok-ep0 \
     --gpus all \
     --ipc=host \
     --network host \
@@ -201,7 +201,7 @@ run_ep2_model() {
 
   # Start rank 1 (worker)
   ssh "$worker_ip" "sudo docker run -d \
-    --name atlas-ep1 \
+    --name avarok-ep1 \
     --gpus all --ipc=host --network host \
     --device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1 \
     -e RUST_LOG=warn \
@@ -240,13 +240,13 @@ run_ep2_model() {
       2>&1) || bench_out="ERROR: bench failed"
   else
     local docker_log
-    docker_log=$(sudo docker logs atlas-ep0 2>&1 | tail -20)
+    docker_log=$(sudo docker logs avarok-ep0 2>&1 | tail -20)
     coherence_out="SKIPPED — server did not start"
     bench_out="SKIPPED — server did not start\n\nDocker log tail:\n${docker_log}"
   fi
 
-  sudo docker rm -f atlas-ep0 2>/dev/null || true
-  ssh "$worker_ip" "sudo docker rm -f atlas-ep1 2>/dev/null || true"
+  sudo docker rm -f avarok-ep0 2>/dev/null || true
+  ssh "$worker_ip" "sudo docker rm -f avarok-ep1 2>/dev/null || true"
 
   append_model_results "$label" "$model" \
     "EP=2, NVFP4 KV, MTP K=2, max-seq-len=4096" \
@@ -262,7 +262,7 @@ cat > "$OUTPUT" << HEADER
 
 **Date:** $(date '+%Y-%m-%d')
 **Hardware:** 2× NVIDIA GB10 Grace Blackwell (119.7 GB GPU memory each)
-**Image:** \`atlas-gb10:latest\` (ATLAS_TARGET_MODEL=*)
+**Image:** \`avarok-gb10:latest\` (AVAROK_TARGET_MODEL=*)
 **KV Cache:** NVFP4 (all models)
 **Scheduler:** SLAI (SLO-aware: shortest-prompt-first prefill, decode-priority near TBT deadline)
 **Benchmark:** count-prompt mode, OSL=128, warmup=1
@@ -329,7 +329,7 @@ run_model \
   --max-seq-len 8192
 
 # ── 6. Qwen3.5-122B EP=2 ─────────────────────────────────────────────────────
-# atlas-122b:latest (16:52, head) pushed to worker; use it on both nodes.
+# avarok-122b:latest (16:52, head) pushed to worker; use it on both nodes.
 log "Checking worker node image..."
 if ssh ${WORKER_IP:-127.0.0.1} "sudo docker images ${EP_IMAGE} --format '{{.ID}}'" 2>/dev/null | grep -q .; then
   log "Worker has ${EP_IMAGE}, running 122B EP=2"

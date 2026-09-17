@@ -2,8 +2,8 @@
 
 //! Byte sizes for the per-pass GPU buffer arena.
 
-use atlas_core::config::ModelConfig;
-use atlas_kernels::attn_splitk;
+use avarok_core::config::ModelConfig;
+use avarok_kernels::attn_splitk;
 
 use super::sizes_q12::{Q12_SIZING_STREAMS, q12_batched_scratch_bytes};
 
@@ -32,11 +32,11 @@ pub struct BufferSizes {
     pub qkv_output: usize,
     pub attn_output: usize,
     pub gate_logits: usize,
-    /// FP32 gate logits [m, num_experts] for the ATLAS_FP32_GATE routing path.
+    /// FP32 gate logits [m, num_experts] for the AVAROK_FP32_GATE routing path.
     /// Keeps the router GEMM accumulator unrounded into top-K so near-tied
     /// experts don't flip on a BF16 store. Allocated whenever num_experts > 0.
     pub gate_logits_f32: usize,
-    /// FP32 MoE-input norm output [m, hidden] for ATLAS_FP32_ROUTING — the
+    /// FP32 MoE-input norm output [m, hidden] for AVAROK_FP32_ROUTING — the
     /// full-precision router_in the gate GEMM consumes. Allocated when experts > 0.
     pub moe_router_in_f32: usize,
     pub moe_output: usize,
@@ -52,7 +52,7 @@ pub struct BufferSizes {
     pub expert_down_out: usize,
     pub splitk_workspace: usize,
     /// GDN FLA chunked-prefill scratch (single buffer, sub-divided W|U|S|uc).
-    /// 0 unless the model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
+    /// 0 unless the model is a 128-dim-linear-head GDN model (AVAROK_GDN_FLA path).
     pub gdn_fla_scratch: usize,
     /// Mamba-2 SSD chunked-scan scratch (single buffer, sub-divided dt | dA_cumsum | CB).
     /// 0 unless the model has Mamba-2 SSM layers. Shared across layers: they run
@@ -149,13 +149,13 @@ pub struct BufferSizes {
     /// (adapter_max_rank == 0).
     pub lora_seq_slot: usize,
     /// Native keep-packed Q2_0 prefill transient-dequant scratch
-    /// (`ATLAS_GGUF_NATIVE_Q2=1`). ONE persistent BF16 `[N,K]` buffer sized to
+    /// (`AVAROK_GGUF_NATIVE_Q2=1`). ONE persistent BF16 `[N,K]` buffer sized to
     /// the LARGEST keep-packed projection, REUSED for every per-projection
     /// dequant so prefill stops doing a per-matmul cuMemAlloc +
     /// cuStreamSynchronize + cuMemFree (the multi-second fixed cost behind the
     /// 3.7 s / 28-token TTFT regression). 0 (→ NULL) unless the flag is set.
     pub q2_dequant_scratch: usize,
-    /// Native Q2_0 MMQ prefill q8_1 activation scratch (`ATLAS_GGUF_NATIVE_Q2_MMQ=1`).
+    /// Native Q2_0 MMQ prefill q8_1 activation scratch (`AVAROK_GGUF_NATIVE_Q2_MMQ=1`).
     /// ONE persistent q8_1_mmq buffer (`m*kpad*4 + 1MB`) shared by every kept-packed
     /// projection (FFN gate/up/down, attn q/k/v/o, GDN qkvz): each seam quantizes
     /// its BF16 activation into this buffer then runs the packed MMQ GEMM — so the
@@ -164,7 +164,7 @@ pub struct BufferSizes {
     /// widest projection K = max(hidden, intermediate, q_heads*head_dim).
     /// 0 (→ NULL) unless the MMQ sub-flag is set.
     pub q2_act_q8: usize,
-    /// Row-wise FP8 GDN prefill BF16-weight slab (`ATLAS_FP8_ROWWISE=1`).
+    /// Row-wise FP8 GDN prefill BF16-weight slab (`AVAROK_FP8_ROWWISE=1`).
     /// ONE arena allocation holding the BF16 dequant of EVERY GDN layer's
     /// per-row `in_proj_qkvz` + `out_proj`, bump-carved one slice per layer
     /// on that layer's first prefill and never freed. Replaces the lazy
@@ -341,7 +341,7 @@ impl BufferSizes {
         // `((seq * q_heads) + head) * num_splits + split`, so a short
         // allocation here is an out-of-bounds DEVICE WRITE with no error —
         // which is why the slot count comes from the same pure function the
-        // dispatch picks `num_splits` with (`atlas_kernels::attn_splitk`,
+        // dispatch picks `num_splits` with (`avarok_kernels::attn_splitk`,
         // #928) rather than from a literal restated here.
         //
         // The bound is `DecodeMetaLayout::rows()`, not the pinned max batch:
@@ -356,7 +356,7 @@ impl BufferSizes {
         // whole lever is for.
         let splitk_slots = attn_splitk::workspace_slots(
             attn_splitk::policy_from_env(),
-            atlas_kernels::TARGET_SM_COUNT,
+            avarok_kernels::TARGET_SM_COUNT,
             q_heads as u32,
             decode_meta.rows() as u32,
             (max_batch_size as u32).max(1),
@@ -412,7 +412,7 @@ impl BufferSizes {
         // sized for the chunked-prefill arena (nt = ceil(max_batch_tokens / CHUNK)).
         // Only the 128-dim-linear-head GDN path uses it (the FLA kernels are compiled
         // for K_DIM=V_DIM=128); 0 otherwise so BufferArena allocs NULL and the
-        // ATLAS_GDN_FLA dispatch stays disabled. Layout per region:
+        // AVAROK_GDN_FLA dispatch stays disabled. Layout per region:
         //   W  [nt*nv][CHUNK][kd] bf16 ; U,uc [nt*nv][CHUNK][vd] bf16 ;
         //   S  [nt*nv][kd][vd] bf16 ; gc [nt*nv][CHUNK] f32.
         const FLA_CHUNK: usize = 64;
@@ -432,7 +432,7 @@ impl BufferSizes {
             && config.linear_key_head_dim == 128
             && config.linear_value_head_dim == 128
         {
-            // +margin: the batched FLA path (ATLAS_GDN_BATCHED_FLA) sizes its
+            // +margin: the batched FLA path (AVAROK_GDN_BATCHED_FLA) sizes its
             // regions by total_nt = batch*ceil(chunk_len/64), which can exceed
             // ceil(m/64) by up to `batch` chunks due to per-stream last-chunk
             // rounding. 16 covers the co-dispatch max-seqs.
@@ -456,7 +456,7 @@ impl BufferSizes {
         let (q2_dequant_scratch, q2_act_q8) = super::sizes_q2::q2_scratch_sizes(config, m, h, hd);
 
         // Row-wise FP8 GDN prefill BF16-weight slab; env-gated, 0 unless
-        // `ATLAS_FP8_ROWWISE=1`. Sizing + the #917 receipt live on
+        // `AVAROK_FP8_ROWWISE=1`. Sizing + the #917 receipt live on
         // `sizes_rowwise::ssm_rowwise_w_bf16_bytes`.
         let ssm_rowwise_w_bf16 = super::sizes_rowwise::ssm_rowwise_w_bf16_bytes(config);
 

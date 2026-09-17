@@ -70,7 +70,7 @@ pub(crate) enum Fp8DownArm {
     /// reason the NVFP4 arm made the same trade its default.
     SplitSilu,
     /// `w8a16_gemv_dual`, then the fused `w8a16_gemv_silu_input`. What shipped
-    /// before #928; reachable via `ATLAS_NO_DECODE_SPLIT_SILU`, or when this
+    /// before #928; reachable via `AVAROK_NO_DECODE_SPLIT_SILU`, or when this
     /// target lacks `moe_silu_mul` / `w8a16_gemv`.
     FusedSilu,
     /// Neither fused path is usable — the 4-launch per-projection
@@ -84,7 +84,7 @@ pub(crate) enum Fp8DownArm {
 ///
 /// Each `bool` is "this handle resolved on this target" (`KernelHandle(0)` on
 /// a shadow that lacks the entry point) except `split_silu_lever`, which is
-/// `ModelLevers::decode_split_silu` (`ATLAS_NO_DECODE_SPLIT_SILU`, presence).
+/// `ModelLevers::decode_split_silu` (`AVAROK_NO_DECODE_SPLIT_SILU`, presence).
 pub(crate) fn fp8_down_arm(
     is_silu: bool,
     dual: bool,

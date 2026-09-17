@@ -44,7 +44,7 @@ __device__ __forceinline__ float sw_exp_h(float x) {
 // BLK = block-row count (32). Entry-specific only in launch dims; the AMD
 // build clamps the 64-row variant to 32 rows. That variant IS still dispatched
 // on AMD — the host picks it on chunk length alone — and the host grid stride
-// is clamped to match by cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs.
+// is clamped to match by cfg!(avarok_scale) in ops/prefill_attn_main_{a,b}.rs.
 #define INFERSPARK_H128_BODY(BLK)                                                      \
     const unsigned int q_head = blockIdx.x;                                            \
     const unsigned int q_block = blockIdx.y;                                           \
@@ -201,7 +201,7 @@ extern "C" __global__ void inferspark_prefill_h128(
 // BR=64 variant — clamped to BR=32 on AMD. It is still dispatched there (no
 // `force_br32_prefill` routing ever existed; that HARDWARE.toml key had no
 // reader and has been removed), so the host grid must use the same 32-row
-// stride — see cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs.
+// stride — see cfg!(avarok_scale) in ops/prefill_attn_main_{a,b}.rs.
 // 256-thread launch uses only warps
 // 0-3 (the `warp_id >= 4` guard in the body returns the rest).
 extern "C" __global__ void inferspark_prefill_h128_64(

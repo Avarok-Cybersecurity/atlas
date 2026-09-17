@@ -32,7 +32,7 @@ behind specific subsystems — see the
   from that copy, so the checkpoint's own bytes have no reader. **1.18 GiB**,
   item 1 of the ranked list in `docs/porting/r9700-residency.md`. Released by
   `lm_head_setup::release_lm_head_source` on the existing
-  `ATLAS_LOAD_RELEASE_SOURCES` knob (ON under `cfg!(atlas_scale)`, so an NVIDIA
+  `AVAROK_LOAD_RELEASE_SOURCES` knob (ON under `cfg!(avarok_scale)`, so an NVIDIA
   build with the variable unset frees exactly what it freed before). Four
   guards, each a consumer that would otherwise still hold the pointer: the
   checkpoint's head must actually be FP8 (the proof a copy was made: on a BF16
@@ -60,7 +60,7 @@ behind specific subsystems — see the
   re-quant), so a tower in that layout was read, never bound and never freed.
   Both sites now call one predicate, `fast_weights::is_vision_tensor`, and it
   carries the fourth spelling.
-- **`ATLAS_LOAD_TRANSPOSED_TWINS`, a lever for the transposed second weight
+- **`AVAROK_LOAD_TRANSPOSED_TWINS`, a lever for the transposed second weight
   layout.** Atlas keeps every NVFP4 projection in two layouts: the packed
   `[N, K/2]` original decode reads, and a transposed `[K, N/2]` twin the fast
   prefill GEMMs consume. On a 32 GB R9700 serving
@@ -71,7 +71,7 @@ behind specific subsystems — see the
   them (the pre-lever behaviour byte for byte, and the default on every
   non-SCALE target), `0` builds none, `auto` builds them only if free VRAM after
   the checkpoint is resident clears their projected bytes plus a 4 GiB serve
-  reserve; unset takes `cfg!(atlas_scale)`, which is `0` on SCALE and `1`
+  reserve; unset takes `cfg!(avarok_scale)`, which is `0` on SCALE and `1`
   elsewhere. Decided ONCE before any layer
   allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives.
   **The cost is written down rather than discovered**, and it is not the same
@@ -90,12 +90,12 @@ behind specific subsystems — see the
   also drops the 1.41 GiB `out_proj` FP8 predequant and the NVFP4-MMQ finalize,
   both of which exist only to feed the same transposed GEMM. A proper fix is a
   prefill GEMM that reads the packed layout directly; this is a serve tonight.
-- **`ATLAS_LOAD_RELEASE_SOURCES`, release-on-consume for checkpoint tensors a
+- **`AVAROK_LOAD_RELEASE_SOURCES`, release-on-consume for checkpoint tensors a
   loader has finished requantising.** `WeightStore::release_tensor` frees one
   entry's device allocation during the layer loop and marks it consumed;
   `prune_after_load`, the existing answer to this shape, runs after the whole
   load and is thirty-six layers too late on a 32 GB board. `1`/`0`, defaulting
-  to `cfg!(atlas_scale)`: ON for SCALE/AMD, OFF for NVIDIA, where an unset
+  to `cfg!(avarok_scale)`: ON for SCALE/AMD, OFF for NVIDIA, where an unset
   variable leaves every path byte-identical. Wired into the Qwen3.5-dense
   loader at three sites (attention q/k/v/o, the GDN projections, the FP8 tail
   MLPs), which is **9.94 GiB** on `unsloth/Qwen3.8-27B-NVFP4`. A release
@@ -166,7 +166,7 @@ behind specific subsystems — see the
   `spark-server` build green), which settled two of those inherited
   decisions as gfx1201 facts rather than carry-overs: RDNA 4 has the same
   64 KB per-workgroup LDS cap, so the `BR64 32` prefill pin is required, and
-  SCALE emits no e4m3 MMA codegen there, so `ATLAS_W4A16_VARIANT=v1` is
+  SCALE emits no e4m3 MMA codegen there, so `AVAROK_W4A16_VARIANT=v1` is
   required. Coherent generation is still unobserved. The curated 99-entry
   `common/` described above did not survive its first serve attempt and is
   gone: see the mirror entry under Changed, in this same unreleased set.
@@ -182,7 +182,7 @@ behind specific subsystems — see the
   and three direct store frees now go through `WeightStore::release_tensor`.**
   The leak (200 MiB per full-attention layer, **3.12 GiB** across the sixteen of
   `unsloth/Qwen3.8-27B-NVFP4`, on every target including NVIDIA) rode
-  `ATLAS_LOAD_RELEASE_SOURCES` for one commit because that change was not
+  `AVAROK_LOAD_RELEASE_SOURCES` for one commit because that change was not
   allowed to move NVIDIA behaviour. It does not: what byte-identical protects is
   which values the GEMMs read, and the leaked buffer has no reader:
   `quantize_to_nvfp4` has already consumed it and `AttentionWeights` keeps only
@@ -205,12 +205,12 @@ behind specific subsystems — see the
   absent module turned a working fallback chain into a hard error.
   `layers/fp8_predequant.rs` is now the load-time guard: it probes every arm
   `ops::fp8_gemm_n128` and `fp8_gemm_n128_m128` can take, not just the
-  preferred one, and it restores a reader for `ATLAS_NO_FP8_PREDEQUANT`, which
+  preferred one, and it restores a reader for `AVAROK_NO_FP8_PREDEQUANT`, which
   the Strix recipe carried until the variable was dropped as unread. With the
   copies absent the SSM falls to `w4a16_gemm_n128` and then `w4a16_gemm`,
   attention's `use_fp8_act` goes false, and the MoE's three `if let Some` arms
   take their NVFP4 branch. NVIDIA is unchanged: with the kernels present and
-  the variable unset the guard returns "build them". `ATLAS_NO_FP8_PREDEQUANT=0`
+  the variable unset the guard returns "build them". `AVAROK_NO_FP8_PREDEQUANT=0`
   forces the copies back where an operator's environment sets the variable
   globally; it cannot override a kernel that is genuinely absent.
 - **The `CompressedTensors` attention arm of the Qwen3.5-dense loader leaked
@@ -221,7 +221,7 @@ behind specific subsystems — see the
   `unsloth/Qwen3.8-27B-NVFP4`, on every target including NVIDIA, and it is
   visible in the R9700 ledger as 28 stale `quant_helpers.rs:98` allocations
   belonging to layers that finished building up to twenty-four layers earlier.
-  The free is behind `ATLAS_LOAD_RELEASE_SOURCES` rather than unconditional
+  The free is behind `AVAROK_LOAD_RELEASE_SOURCES` rather than unconditional
   ONLY because this change was not allowed to move NVIDIA behaviour; it should
   become unconditional once an NVIDIA serve confirms it.
 - **`detect_nvfp4_variant` probes `checkpoint_dtype`, not `get`.** It runs both
@@ -308,32 +308,32 @@ behind specific subsystems — see the
   its total against the driver's within 5 percent. Those counters are the
   kernel's own accounting across every process, so they also see the desktop
   compositor. `total` stays on the driver, which was correct.
-  `ATLAS_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>` overrides either way.
-  NVIDIA is untouched: without `cfg!(atlas_scale)` the source resolves to the
+  `AVAROK_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>` overrides either way.
+  NVIDIA is untouched: without `cfg!(avarok_scale)` the source resolves to the
   driver without so much as scanning `/sys`.
 - **`build-amd.sh` and `serve-amd.sh` take their hardware from
-  `ATLAS_TARGET_HW`** (default `strix`, so an unset environment builds and
+  `AVAROK_TARGET_HW`** (default `strix`, so an unset environment builds and
   serves what it always did) and read the SCALE arch from
-  `kernels/$ATLAS_TARGET_HW/HARDWARE.toml` rather than hardcoding `gfx1151`
-  in four places each, so `ATLAS_TARGET_HW=r9700 ./build-amd.sh` and
-  `ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` drive the
-  gfx1201 board with the same two scripts. `ATLAS_TARGET_MODEL`, the served
+  `kernels/$AVAROK_TARGET_HW/HARDWARE.toml` rather than hardcoding `gfx1151`
+  in four places each, so `AVAROK_TARGET_HW=r9700 ./build-amd.sh` and
+  `AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` drive the
+  gfx1201 board with the same two scripts. `AVAROK_TARGET_MODEL`, the served
   model and `GPU_UTIL` follow the hardware. `serve-amd.sh` now exports
-  `ATLAS_W4A16_VARIANT=v1` (every target) and, for r9700 only as a
-  first-serve default pending the gfx1201 bisect, `ATLAS_NO_GDN_FP8_PREFILL=1`:
-  `ATLAS_FORCE_GLOBAL_GDN` and `ATLAS_NO_FP8_PREDEQUANT` have no reader
+  `AVAROK_W4A16_VARIANT=v1` (every target) and, for r9700 only as a
+  first-serve default pending the gfx1201 bisect, `AVAROK_NO_GDN_FP8_PREFILL=1`:
+  `AVAROK_FORCE_GLOBAL_GDN` and `AVAROK_NO_FP8_PREDEQUANT` have no reader
   anywhere in the tree, so exporting them advertised a control that does not
   exist.
-- **`atlas_scale` and `atlas_hip` are driven by `[hardware].vendor`, not by
+- **`avarok_scale` and `avarok_hip` are driven by `[hardware].vendor`, not by
   the target's name.** `spark-model/build.rs` and `spark-runtime/build.rs`
-  tested `ATLAS_TARGET_HW.starts_with("strix")`, which was correct only while
+  tested `AVAROK_TARGET_HW.starts_with("strix")`, which was correct only while
   every SCALE target was named strix-something. The kernel side is not name-
   keyed — `prefill_paged_compute.cuh` pins `BR64 32` under `__SCALE__` for
   every SCALE target — so a second one under another name would have compiled
   32-row prefill kernels and launched them with the 64-row host grid stride,
   silently dropping query rows 32..63 of every band with no build error.
   Behaviour is byte-identical for `strix` (`amd`), `strix-hip` (`hip`), the
-  NVIDIA targets and an unset `ATLAS_TARGET_HW`.
+  NVIDIA targets and an unset `AVAROK_TARGET_HW`.
 
 - `spark benchmark <list|run|history>` — the dashboard's benchmark suite as a
   headless subcommand, driving the same executor. Machine-readable output on
@@ -346,7 +346,7 @@ behind specific subsystems — see the
 - **A kernel module that compiled to nothing no longer takes the first launch
   down on SCALE.** `spark serve` on the R9700 (gfx1201, SCALE 1.7.1) loaded
   21.8 GB of weights and died at its first kernel with
-  `CUDA_ERROR_INVALID_IMAGE (200)` on `nvfp4_mmq::atlas_nvfp4_repack`.
+  `CUDA_ERROR_INVALID_IMAGE (200)` on `nvfp4_mmq::avarok_nvfp4_repack`.
   `nvfp4_mmq.cu` is entirely inside `#if defined(BLACKWELL_MMA_AVAILABLE)`, so
   on a non-Blackwell target it compiles to a code object with no kernel symbols
   at all. NVIDIA answers `cuModuleGetFunction` for such a name with "not
@@ -354,13 +354,13 @@ behind specific subsystems — see the
   site takes another path. SCALE answers SUCCESS and returns a handle backed by
   no code, so the guard never fires and the launch is the first thing that
   notices. The registry now reads each binary module's ELF symbol table at load
-  time, through `crates/atlas-core/src/elf_symbols.rs` (a dependency-free
+  time, through `crates/avarok-core/src/elf_symbols.rs` (a dependency-free
   ELF64 walk over `STT_FUNC` symbols and AMDGPU `<kernel>.kd` descriptors,
   bounds-checked throughout, declining anything it cannot parse), and refuses
   a lookup the object provably cannot satisfy with `<module>::<kernel>: not defined in this
   target's code object (optional module compiled out?)`. That error degrades to
   handle 0 through the same probe NVIDIA uses. Unparsable objects and the PTX
-  path are untouched. `atlas-kernels`' build script reads the same objects with
+  path are untouched. `avarok-kernels`' build script reads the same objects with
   the same code and names every empty module in the build log.
 - **Benchmark runs no longer overwrite each other.** History files were named by
   whole seconds, so two runs of the same benchmark within the same second
@@ -404,27 +404,27 @@ behind specific subsystems — see the
   determinism 8/8 identical over three runs, and nsys pricing the two twins at
   4.28× (`chunk_fwd_o_hopper`) and 1.60× (`recompute_wu_hopper`) with the shared
   spine kernel unchanged at 0.99× as the internal control. `kernels/gb10` and
-  `kernels/b200` keep `false` — this is an H100 receipt. `ATLAS_GDN_PREFILL_TC=0`
-  turns the whole family off and `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
+  `kernels/b200` keep `false` — this is an H100 receipt. `AVAROK_GDN_PREFILL_TC=0`
+  turns the whole family off and `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
   spine while pinning the twins to their parents; both print on the serve's
   `target defaults (hopper): …` line. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
 - **Serving defaults are now per-hardware-target and live in the repository.**
   `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
-  binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. A kernel-path lever
+  binary by `build.rs` as `avarok_kernels::TARGET_DEFAULTS`. A kernel-path lever
   that differs between one target and another resolves from that declaration
   FIRST and the environment second, so a serve reproduces its measured
-  configuration with no `ATLAS_*` prefix at all, and prints one
+  configuration with no `AVAROK_*` prefix at all, and prints one
   `target defaults (<hw>): …` line naming every resolved value and which of them
   came from the environment. GB10's declaration restates the previous hardcoded
   defaults exactly, asserted as an equality in
-  `atlas-kernels/tests/target_defaults.rs`, so GB10 behaviour is unchanged. The
+  `avarok-kernels/tests/target_defaults.rs`, so GB10 behaviour is unchanged. The
   first lever to differ is `ssm_batched_recurrent`, which `kernels/hopper`
   declares ON.
-- **`ATLAS_SSM_BATCHED_RECURRENT=0` now means OFF.** It was read as `== "1"`,
+- **`AVAROK_SSM_BATCHED_RECURRENT=0` now means OFF.** It was read as `== "1"`,
   so `=0` was indistinguishable from absent — which cannot express "off" once a
   target's default can be ON, leaving an operator no way to turn a lever off
-  without editing a launch script. `VAR=1` is unchanged, and the `ATLAS_NO_*`
-  kill switches stay presence-gated. `ATLAS_GDN_PREFILL_TC` joins it as
+  without editing a launch script. `VAR=1` is unchanged, and the `AVAROK_NO_*`
+  kill switches stay presence-gated. `AVAROK_GDN_PREFILL_TC` joins it as
   `[defaults] gdn_prefill_tc`: it was presence-gated, so `=0` used to mean ON
   and now means OFF. Every A/B recipe for it set `=1` and is unaffected.
 - `kernels/<hw>/HARDWARE.toml` also gained `[hardware] sm_count`, cross-checked

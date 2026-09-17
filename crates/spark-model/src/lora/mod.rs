@@ -4,7 +4,7 @@
 //! fixed-address rank-padded pool. v0 = one adapter, slot 0, always on.
 //!
 //! NAMING: everything here is `Peft*`/`adapter_*`/`Lora*` (adapter sense) —
-//! `kv_lora_rank`/`q_lora_rank` (atlas-core/src/config.rs:182-207) are MLA
+//! `kv_lora_rank`/`q_lora_rank` (avarok-core/src/config.rs:182-207) are MLA
 //! vocabulary, not this.
 //!
 //! NOTE on leaks: the intermediate `WeightStore` device copies of the
@@ -15,7 +15,7 @@
 //! SDD facade: the surface is split by functional seam into `types` (the
 //! module/AB enums + weight/slot structs + `LoraWeights` impl), `slot_math`
 //! (pure slot/offset placement + routing), `key` (classify + adapter identity),
-//! `env` (the `$ATLAS_LORA_*` hatches + `validate_peft_config`), and `loading`
+//! `env` (the `$AVAROK_LORA_*` hatches + `validate_peft_config`), and `loading`
 //! (audit/pack + the load entry points). Every public name re-exports at its
 //! own visibility so `crate::lora::X` / `spark_model::lora::X` paths are stable.
 

@@ -114,7 +114,7 @@ read it against the following.
 **1. "Any code change already invalidates all five gates" was never true.**
 Reason 2 under *What this does NOT buy* claimed the union is vacuous for code
 PRs because `PERF_PATHS` contains a bare `crates`. It does — but
-`GATE_MACHINERY` excludes the whole `crates/atlas-plugin/src/gate` prefix
+`GATE_MACHINERY` excludes the whole `crates/avarok-plugin/src/gate` prefix
 from **every** gate, so paths under it invalidate nothing and intent is their
 only source of coverage. The union was live inside `crates/` from day one; it
 was never waiting on the closure-hash narrowing.

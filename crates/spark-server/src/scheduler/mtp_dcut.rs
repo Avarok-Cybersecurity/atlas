@@ -31,7 +31,7 @@
 //!   and the SSM intermediates pools were built and audited for. Dropping a
 //!   sequence to zero drafts (rows_i = 1) is a separate, untested regime.
 //! * The budget is a FIXED ratio from the discrete bucket set, not a profiled
-//!   cost table. `ATLAS_MTP_DCUT_RATIO` picks it; values snap to the nearest
+//!   cost table. `AVAROK_MTP_DCUT_RATIO` picks it; values snap to the nearest
 //!   bucket so the search space stays the paper's four points.
 //! * Pruning changes only the VERIFY width. The propose already ran at full
 //!   width when this is called, so v1 banks the row saving, not a drafter
@@ -50,7 +50,7 @@ const BUCKETS: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 /// the budget is behavior-neutral for every default-reachable shape: the
 /// default ladder's widest row totals (16:2 = 48, 32:1 = 64, 8:3 = 32) all
 /// fit the OLD 64-row bound in one chunk, so chunking and pruning are
-/// unchanged — only explicit `ATLAS_MTP_K_LADDER` depth-at-width overrides
+/// unchanged — only explicit `AVAROK_MTP_K_LADDER` depth-at-width overrides
 /// (24:2 / 32:2) reach rows 65..=96.
 // Mirrors `VERIFY_ROW_CAP` (spark-model verify_e2.rs) — keep in
 // lock-step. 96 -> 160 with the DFlash n=20 × k=8 widening.
@@ -63,8 +63,8 @@ pub(super) const VERIFY_ROW_BUDGET: usize = 160;
 pub(super) const WIDTH_CAP: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS;
 
 /// Widest verify batch (SEQUENCES, not rows) D-Cut may prune —
-/// the D-Cut-at-depth policy. Value-parsed from `ATLAS_MTP_DCUT_MAX_SEQS`
-/// once per process (0 disables pruning entirely; `ATLAS_NO_MTP_DCUT` also
+/// the D-Cut-at-depth policy. Value-parsed from `AVAROK_MTP_DCUT_MAX_SEQS`
+/// once per process (0 disables pruning entirely; `AVAROK_NO_MTP_DCUT` also
 /// does).
 ///
 /// Default 8, anchored to two measurements on the same binary class:
@@ -81,14 +81,14 @@ pub(super) const WIDTH_CAP: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS;
 pub(super) fn dcut_width_cap() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_MTP_DCUT_MAX_SEQS")
+        std::env::var("AVAROK_MTP_DCUT_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8)
     })
 }
 
-/// Default ON, kill switch `ATLAS_NO_MTP_DCUT` — PRESENCE check (house
+/// Default ON, kill switch `AVAROK_NO_MTP_DCUT` — PRESENCE check (house
 /// convention: `=0` is NOT off).
 ///
 /// Measured at C=8 on binary `296b9674` (one fresh serve per leg, warmup
@@ -100,7 +100,7 @@ pub(super) fn dcut_width_cap() -> usize {
 /// pruning at the 16:2 rung's n=16 measured -9%).
 pub(super) fn dcut_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_DCUT").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_DCUT").is_none())
 }
 
 /// Retention ratio, VALUE-parsed once and snapped to the nearest
@@ -116,7 +116,7 @@ pub(super) fn dcut_enabled() -> bool {
 pub(super) fn dcut_ratio() -> f32 {
     static R: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
-        let raw = std::env::var("ATLAS_MTP_DCUT_RATIO")
+        let raw = std::env::var("AVAROK_MTP_DCUT_RATIO")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(0.75)
@@ -214,11 +214,11 @@ pub(super) fn select(
 /// 32-entry cache — nothing to collapse — and the forced assignment measured
 /// NET NEGATIVE there (-2.4% at C=2, -3.7% at C=4), so this falls back to the
 /// pre-canonical assignment byte for byte. `verify_key::canonical_assignment`
-/// is the single gate (threshold + `ATLAS_CANONICAL_KEY_MIN_WIDTH` override +
-/// the `ATLAS_NO_CANONICAL_VERIFY_KEY` kill switch); see `verify_key`'s module
+/// is the single gate (threshold + `AVAROK_CANONICAL_KEY_MIN_WIDTH` override +
+/// the `AVAROK_NO_CANONICAL_VERIFY_KEY` kill switch); see `verify_key`'s module
 /// docs and `CANONICAL_KEY_MIN_WIDTH` for the A/B table.
 ///
-/// With `ATLAS_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
+/// With `AVAROK_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
 /// sequences (the D-Cut-at-depth policy: pruning at the 16:2 rung's n=16
 /// measured -9%, so depth-at-width always verifies the uniform shape that
 /// won) — this is the uniform ladder shape and the batch order is untouched:
@@ -307,7 +307,7 @@ pub(super) fn plan(
 /// ★ The width bound used to be omitted here, on the reasoning that "n is
 /// separately bounded at 32" by the dispatch cap. It is — by
 /// `speculative::mtp_max_seqs()`, whose DEFAULT is 32 but which is an
-/// operator value (`ATLAS_MTP_MAX_SEQS`), and by nothing else. Raise it and
+/// operator value (`AVAROK_MTP_MAX_SEQS`), and by nothing else. Raise it and
 /// the row-derived cap lets a chunk reach 40/53/80 sequences; every such
 /// chunk is refused WHOLESALE by the `can_batch_verify` gate in `mtp_step`
 /// and falls to the per-seq verify loop — one weight sweep PER SEQUENCE.
@@ -317,7 +317,7 @@ pub(super) fn plan(
 /// is always one the model will actually batch. The old 8 was stale from the
 /// 32-row budget era and SILENTLY SERIALIZED any depth shape above n=8 into
 /// 8-wide verify chunks (double weight reads per step): a 2026-07-30 fixer-r2
-/// leg with `ATLAS_MTP_K_LADDER=..,16:2,..` measured 127-135 tok/s at C=16 vs
+/// leg with `AVAROK_MTP_K_LADDER=..,16:2,..` measured 127-135 tok/s at C=16 vs
 /// a 184-185 same-session 16:1 control, and its accept telemetry read
 /// `n=8 k_drafts=2` — the chunk cap, not depth economics (the exact artifact
 /// class the ladder history documents for "8:3 collapses" / "16:2 → 94.1").
@@ -354,7 +354,7 @@ pub(super) fn chunk_ranges(ks: &[usize]) -> Vec<(usize, usize)> {
 }
 
 /// Per-step retained-rows telemetry, under the existing
-/// `ATLAS_MTP_ACCEPT_DEBUG` gate. Counters only; one line per `PERIOD` steps.
+/// `AVAROK_MTP_ACCEPT_DEBUG` gate. Counters only; one line per `PERIOD` steps.
 fn record(rows_full: usize, rows_kept: usize, ks: &[usize]) {
     use std::sync::atomic::{AtomicU64, Ordering};
     const PERIOD: u64 = 200;

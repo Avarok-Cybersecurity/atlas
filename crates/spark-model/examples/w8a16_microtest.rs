@@ -6,7 +6,7 @@
 //! This is the grounding oracle for the Fix-A pipelined-GEMM rewrite: every
 //! kernel iteration is validated here (seconds) against an independent CPU
 //! reference BEFORE any full build→deploy→cosine cycle. It launches the real
-//! kernel via the production `GpuBackend`/`AtlasRegistry` path (SBIO/SSOT) and
+//! kernel via the production `GpuBackend`/`AvarokRegistry` path (SBIO/SSOT) and
 //! compares the BF16 output to a CPU recompute that mirrors the kernel's exact
 //! two-level FP32 accumulation (inner over a 128-K block, then `outer +=
 //! inner * block_scale`) — the accumulation order that holds the L31-39
@@ -24,7 +24,7 @@
 //! Exit code 0 = PASS (cosine >= threshold), 1 = FAIL — so it is scriptable.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -33,7 +33,7 @@ use std::time::Instant;
 // metric below includes per-launch host overhead (~0.3 ms floor) which swamps
 // the small per-lever deltas on the compute-bound large shapes. CUDA events
 // recorded on the launch stream measure GPU execution time only, so the
-// optimization signal is trustworthy. Signatures mirror atlas-spark-bench's
+// optimization signal is trustworthy. Signatures mirror avarok-spark-bench's
 // gpu.rs (the SSOT for these decls in the benchmark crate).
 unsafe extern "C" {
     fn cuEventCreate(event: *mut u64, flags: u32) -> i32;
@@ -174,9 +174,9 @@ fn launch(
         // false validation. (Bug found 2026-07-03 while isolating the 397B-V2
         // out_proj fault — the microtest passed the kernel at out_proj dims once
         // corrected, exonerating the kernel.)
-        #[cfg(atlas_hip)]
+        #[cfg(avarok_hip)]
         "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
-        #[cfg(not(atlas_hip))]
+        #[cfg(not(avarok_hip))]
         "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
         // Fix-A pipelined rewrite: 128×64 tile (M×N), 256-thread block (8 warps).
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
@@ -221,9 +221,9 @@ fn launch_no_sync(
         // false validation. (Bug found 2026-07-03 while isolating the 397B-V2
         // out_proj fault — the microtest passed the kernel at out_proj dims once
         // corrected, exonerating the kernel.)
-        #[cfg(atlas_hip)]
+        #[cfg(avarok_hip)]
         "w8a16_gemm" => ([n.div_ceil(128), m.div_ceil(256), 1], [512u32, 1, 1]),
-        #[cfg(not(atlas_hip))]
+        #[cfg(not(avarok_hip))]
         "w8a16_gemm" => ([n.div_ceil(64), m.div_ceil(64), 1], [128u32, 1, 1]),
         "w8a16_gemm_pipelined" => ([n.div_ceil(32), m.div_ceil(128), 1], [256u32, 1, 1]),
         other => bail!("no launch geometry registered for kernel '{other}' — add an arm"),
@@ -282,7 +282,7 @@ fn main() -> Result<()> {
         .collect();
 
     // ── GPU ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

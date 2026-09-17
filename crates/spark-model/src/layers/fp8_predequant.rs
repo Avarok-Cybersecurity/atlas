@@ -36,7 +36,7 @@
 //! copies on a target whose FP8 prefill GEMM does not exist, and the dispatch
 //! degrades on its own.
 //!
-//! **This is what `ATLAS_NO_FP8_PREDEQUANT=1` was for.** The Strix recipe
+//! **This is what `AVAROK_NO_FP8_PREDEQUANT=1` was for.** The Strix recipe
 //! carried it; `serve-amd.sh` dropped it in the commit that says "Neither name
 //! has a reader anywhere in this tree", which was true — the reader had been
 //! lost, not the need. This module is the reader, and it adds the probe the env
@@ -50,7 +50,7 @@ use spark_runtime::gpu::GpuBackend;
 /// Why the FP8 prefill copies are not being built.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PredequantSkip {
-    /// `ATLAS_NO_FP8_PREDEQUANT` is set to something other than `0`.
+    /// `AVAROK_NO_FP8_PREDEQUANT` is set to something other than `0`.
     Env,
     /// A kernel the prefill dispatch would launch does not resolve on this
     /// target. Carries the `module::function` that is missing.
@@ -61,7 +61,7 @@ impl PredequantSkip {
     /// The sentence the load log prints.
     pub fn reason(self) -> String {
         match self {
-            Self::Env => "ATLAS_NO_FP8_PREDEQUANT is set".to_owned(),
+            Self::Env => "AVAROK_NO_FP8_PREDEQUANT is set".to_owned(),
             Self::KernelMissing(k) => {
                 format!("this target does not define {k}, which its prefill GEMM would launch")
             }
@@ -75,7 +75,7 @@ impl PredequantSkip {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fp8PrefillKernels {
     /// `ops::fp8_gemm_n128` prefers `w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab`
-    /// unless `ATLAS_FP8_LDMAB=0`. Mirrors that predicate exactly.
+    /// unless `AVAROK_FP8_LDMAB=0`. Mirrors that predicate exactly.
     pub ldmab_armed: bool,
     /// `w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab`.
     pub ldmab: bool,
@@ -134,10 +134,10 @@ pub fn decide(no_predequant: Option<&str>, k: Fp8PrefillKernels) -> Option<Prede
 pub fn skip_reason(gpu: &dyn GpuBackend) -> Option<PredequantSkip> {
     let resolves = |m: &str, f: &str| crate::layers::try_kernel(gpu, m, f).0 != 0;
     decide(
-        std::env::var("ATLAS_NO_FP8_PREDEQUANT").ok().as_deref(),
+        std::env::var("AVAROK_NO_FP8_PREDEQUANT").ok().as_deref(),
         Fp8PrefillKernels {
             // Character for character `ops::gemm_fp8_prefill.rs:39`.
-            ldmab_armed: std::env::var("ATLAS_FP8_LDMAB").as_deref() != Ok("0"),
+            ldmab_armed: std::env::var("AVAROK_FP8_LDMAB").as_deref() != Ok("0"),
             ldmab: crate::layers::try_target_kernel(gpu, "w4a16_fp8_ldmab", "fp8_fp8_gemm_ldmab").0
                 != 0,
             bf16_to_fp8: resolves("w4a16", "bf16_to_fp8"),
@@ -158,7 +158,7 @@ pub fn skip_reason_logged(gpu: &dyn GpuBackend, what: &str) -> Option<Predequant
         tracing::info!(
             "FP8 prefill predequant skipped ({what} and every sibling): {}. \
              Prefill falls back to the NVFP4 arms; decode is unaffected. \
-             ATLAS_NO_FP8_PREDEQUANT=0 forces the copies back.",
+             AVAROK_NO_FP8_PREDEQUANT=0 forces the copies back.",
             skip.reason(),
         );
     }

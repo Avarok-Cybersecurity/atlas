@@ -9,7 +9,7 @@ use spark_runtime::gpu::GpuBackend;
 use super::ssm_snapshot::SsmSnapshotPool;
 
 /// Release every snapshot region, including the decode-rollback ring.
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmSnapshotPool {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for SsmSnapshotPool {
     fn label(&self) -> &'static str {
         "ssm snapshot pool"
     }

@@ -95,7 +95,7 @@ pub async fn get_model(
             "id": model_id,
             "object": "model",
             "created": crate::ids::unix_timestamp(),
-            "owned_by": "atlas-spark",
+            "owned_by": "avarok-spark",
             "max_model_len": state.max_seq_len,
         }))
         .into_response()

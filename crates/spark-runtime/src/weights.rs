@@ -42,7 +42,7 @@ pub enum WeightDtype {
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
     /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
-    /// produced by the GGUF loader under `ATLAS_GGUF_NATIVE_Q2=1`. Its byte
+    /// produced by the GGUF loader under `AVAROK_GGUF_NATIVE_Q2=1`. Its byte
     /// footprint is NOT a per-element size (2-bit codes + an inline scale per
     /// group), so [`WeightDtype::byte_size`] returns 0 for this variant and the
     /// real size is computed in [`WeightTensor::byte_size`] (shape + group).
@@ -254,9 +254,9 @@ impl WeightStore {
             bail!(
                 "Weight '{name}' was RELEASED on consume and its device memory is gone. \
                  A loader converted it into a layer-owned allocation and freed the source \
-                 (ATLAS_LOAD_RELEASE_SOURCES; see weights/release.rs). Either this reader \
+                 (AVAROK_LOAD_RELEASE_SOURCES; see weights/release.rs). Either this reader \
                  must run before that release site, or the release site must not claim \
-                 this tensor. Set ATLAS_LOAD_RELEASE_SOURCES=0 to serve while that is \
+                 this tensor. Set AVAROK_LOAD_RELEASE_SOURCES=0 to serve while that is \
                  diagnosed."
             )
         }
@@ -599,7 +599,7 @@ pub use release::release_sources_enabled;
 /// a shared block into this map. (Fused per-expert views DO exist — see
 /// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
 /// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     fn label(&self) -> &'static str {
         "weight store"
     }

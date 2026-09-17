@@ -40,7 +40,7 @@
 
 use anyhow::Result;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 const K_DIMS: [u32; 3] = [5120, 6144, 17408];
@@ -338,7 +338,7 @@ fn leg(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     let resolved = ops::Fp8ActQuant::resolve(g);
