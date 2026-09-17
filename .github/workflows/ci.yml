@@ -920,7 +920,21 @@ jobs:
     # back into one.
     name: metal device parity (self-hosted, advisory)
     needs: [changes]
-    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    # ★ SAME-REPO ONLY, and this was a hole. This job runs on the self-hosted
+    # Mac unconditionally, so a pull_request from a FORK — atlas is public —
+    # would have checked out and executed untrusted code on that box. The
+    # Linux pools have carried this guard since the fleet gate landed; the
+    # macOS pool was never covered, by either the workflow or
+    # assert-cmd-runner-safe.py, which now checks it.
+    #
+    # A fork PR therefore gets no real-device leg. That is the correct trade:
+    # the required `cargo test --features metal` job still compiles the 43
+    # `.metal` sources for it on hosted macOS, and device coverage is advisory
+    # for everyone.
+    if: >-
+      ${{ !cancelled() && needs.changes.outputs.web_only != 'true'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository) }}
     continue-on-error: true
     runs-on: [self-hosted, macOS, ARM64]
     steps:
