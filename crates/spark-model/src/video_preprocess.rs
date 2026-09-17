@@ -390,12 +390,25 @@ pub fn preprocess_video(
     let (frames, native_fps) = decode_frames(data_uri, target_fps, ffmpeg)?;
     let tp = vcfg.temporal_patch_size;
 
+    // ★ `--video-max-frames` HAS TO REACH THE SAMPLER, NOT JUST FFMPEG'S ARGV.
+    //
+    // It was only ever spelled into `-frames:v`, so the sampler kept using the
+    // 768 constant: raising the flag did nothing (the sampler cut back to 768)
+    // and the GIF path, which never goes near ffmpeg, was bounded by the
+    // constant alone and so ignored the flag outright. Reading the policy here
+    // is the one place that covers BOTH decoders. Defaults are unchanged —
+    // FfmpegPolicy::default() and the CLI both say 768, the same constant.
+    let max_frames = if ffmpeg.max_frames > 0 {
+        ffmpeg.max_frames
+    } else {
+        DEFAULT_MAX_FRAMES
+    };
     let keep = sample_indices(
         frames.len(),
         native_fps,
         target_fps,
         DEFAULT_MIN_FRAMES,
-        DEFAULT_MAX_FRAMES,
+        max_frames,
         tp,
     );
     ensure!(!keep.is_empty(), "frame sampling selected no frames");
