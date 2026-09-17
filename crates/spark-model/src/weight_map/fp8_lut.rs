@@ -185,6 +185,14 @@ pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
 ///
 /// Used by non-MoE models (e.g. Qwen3.5-27B) where the MLP is a standard
 /// SwiGLU FFN instead of a mixture of experts.
+/// `build_transposed` selects whether the three `_t` twins the fast
+/// `w4a16_gemm_t_m128` prefill arms read are built at all. `false` leaves them
+/// `None`, which `dense_ffn.rs`'s `w4_gemm!` handles with its `_ =>` arm — the
+/// untransposed `w4a16_gemm`, ~7 TFLOP/s against ~51 on the Gemma-4-31B
+/// measurement. It is 8.96 GiB on Qwen3.8-27B and the only reason to take that
+/// trade is a board the model does not otherwise fit;
+/// `weight_loader/qwen35_dense/transposed_twins.rs` owns the decision and the
+/// numbers, and is the ONLY caller that ever passes `false`.
 pub(crate) fn load_dense_ffn(
     store: &WeightStore,
     prefix: &str,
@@ -194,6 +202,7 @@ pub(crate) fn load_dense_ffn(
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
     config: &atlas_core::config::ModelConfig,
+    build_transposed: bool,
 ) -> Result<crate::layers::dense_ffn::DenseFfnWeights> {
     use crate::layers::dense_ffn::DenseFfnWeights;
     match variant {
@@ -245,9 +254,15 @@ pub(crate) fn load_dense_ffn(
                 gate_proj: gate,
                 up_proj: up,
                 down_proj: down,
-                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
-                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
-                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
+                gate_proj_t: build_transposed
+                    .then(|| gate.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                up_proj_t: build_transposed
+                    .then(|| up.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                down_proj_t: build_transposed
+                    .then(|| down.transpose_for_gemm(gpu, h, inter))
+                    .transpose()?,
             })
         }
         Nvfp4Variant::Bf16Raw => {
@@ -298,9 +313,15 @@ pub(crate) fn load_dense_ffn(
                 gate_proj: gate,
                 up_proj: up,
                 down_proj: down,
-                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
-                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
-                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
+                gate_proj_t: build_transposed
+                    .then(|| gate.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                up_proj_t: build_transposed
+                    .then(|| up.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                down_proj_t: build_transposed
+                    .then(|| down.transpose_for_gemm(gpu, h, inter))
+                    .transpose()?,
             })
         }
         _ => {
@@ -360,9 +381,15 @@ pub(crate) fn load_dense_ffn(
                 gate_proj: gate,
                 up_proj: up,
                 down_proj: down,
-                gate_proj_t: Some(gate.transpose_for_gemm(gpu, inter, h)?),
-                up_proj_t: Some(up.transpose_for_gemm(gpu, inter, h)?),
-                down_proj_t: Some(down.transpose_for_gemm(gpu, h, inter)?),
+                gate_proj_t: build_transposed
+                    .then(|| gate.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                up_proj_t: build_transposed
+                    .then(|| up.transpose_for_gemm(gpu, inter, h))
+                    .transpose()?,
+                down_proj_t: build_transposed
+                    .then(|| down.transpose_for_gemm(gpu, h, inter))
+                    .transpose()?,
             })
         }
     }

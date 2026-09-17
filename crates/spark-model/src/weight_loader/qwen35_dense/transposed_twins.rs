@@ -51,6 +51,18 @@
 //! Qwen3.8-27B (30 MiB x48) and it is deliberate, not incidental — the FP8
 //! predequant exists to feed the same transposed prefill GEMM.
 //!
+//! **What this lever does NOT govern, and must not.** The attention
+//! `Fp8WeightTransposed` twins that `transpose_fp8_for_prefill_selected` builds
+//! are a different family on a different route: they exist only under the
+//! native-FP8 overlay (`ATLAS_DENSE_FP8=1` on a block-scaled FP8 checkpoint,
+//! which is not the layout this work is about), they are already selected per
+//! projection by `Fp8TwinSet` and the #915 plan, and `fp8_residency.rs` records
+//! that the K and V members are dereferenced UNCONDITIONALLY on the first
+//! prefill chunk of every request (`prefill/cache_skip_qkv.rs:218`/`:235`, a
+//! chain with no W8A8 arm). Declining to build those is a null-pointer kernel
+//! launch on the first token, not a slower GEMM. `fp8_residency.rs` owns that
+//! family; this module owns the NVFP4 one, and the two must not be merged.
+//!
 //! **What a proper fix looks like**, so this knob is not mistaken for one: a
 //! prefill GEMM that reads the PACKED `[N, K/2]` layout directly with a
 //! transposed tile walk, the way `w4a16_gemm` already does at scalar speed but
@@ -198,12 +210,16 @@ pub(super) fn projected_bytes(config: &ModelConfig, layer_types: &[LayerType]) -
 }
 
 /// The decision, made once for the whole load.
+///
+/// One field: the policy and the projected bytes are reported on the load line
+/// and then thrown away, because nothing downstream may re-derive the decision
+/// — a second answer that disagreed with the first would leave prefill
+/// straddling two dispatch arms, which is the failure this type exists to make
+/// impossible.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TwinPlan {
     /// Build the transposed copies.
     pub build: bool,
-    pub policy: TwinPolicy,
-    pub projected: TwinBytes,
 }
 
 impl TwinPlan {
@@ -266,11 +282,7 @@ impl TwinPlan {
                  See docs/porting/r9700-residency.md."
             );
         }
-        Self {
-            build,
-            policy,
-            projected,
-        }
+        Self { build }
     }
 }
 

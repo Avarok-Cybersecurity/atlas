@@ -270,10 +270,16 @@ pub mod predicted_residency;
 // on. Measured basis: `docs/porting/r9700-residency.md`.
 mod release_sources;
 mod rowwise_fp8;
+// The second weight layout: whether this loader builds the transposed prefill
+// copy of every quantised projection, what declining costs in prefill
+// throughput, and the per-consumer proof that every one of them tolerates a
+// `None` twin. Measured basis: `docs/porting/r9700-residency.md`.
+mod transposed_twins;
 
 use crate::layers::qwen3_attention::Fp8TwinSet;
 use fp8_residency::{DerivedResidency, RouteEnv};
 use release_sources::SourceReleaser;
+use transposed_twins::TwinPlan;
 
 pub struct Qwen35DenseWeightLoader;
 
@@ -380,6 +386,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // what it did before this existed. `release_sources.rs` carries the
         // soundness rule and the R9700 measurement that motivates it.
         let mut releaser = SourceReleaser::new();
+        // The second layout, decided ONCE before any layer allocates. Under
+        // `auto` this reads `free_memory()` at the only moment the question has
+        // a stable answer: the checkpoint is resident and nothing layer-owned
+        // exists yet. `transposed_twins.rs` carries the per-consumer proof that
+        // a `None` twin degrades to the untransposed GEMM rather than launching
+        // on a null pointer, and the prefill cost of taking that fallback.
+        let twins = TwinPlan::resolve(config, &layer_types, gpu);
 
         for (i, lt) in layer_types.iter().enumerate() {
             if i % 8 == 0 {
@@ -473,7 +486,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             let ffn_nvfp4 = !ffn_q2 && plan.ffn_nvfp4;
             let ffn_weights = if ffn_nvfp4 {
                 load_dense_ffn(
-                    store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
+                    store,
+                    &lp,
+                    gpu,
+                    variant,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                    config,
+                    twins.build,
                 )?
             } else {
                 // NULL NVFP4 fallback. Packed-Q2 (Tier-1c): decode uses the
@@ -494,6 +515,12 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 }
             };
             residency.twins.ffn_nvfp4 |= ffn_nvfp4;
+            // The three `_t` copies `load_dense_ffn` did NOT build. Tallied
+            // here rather than inside it so the loader's own "not built" line
+            // prices the twin lever the same way it prices the #915 plan.
+            if ffn_nvfp4 && !twins.build {
+                residency.skip(transposed_twins::ffn_twin_bytes(h, ffn_inter(config)));
+            }
             // RELEASE SITE 1 — dense FFN. On a mixed-precision checkpoint the
             // tail layers (56..63 of Qwen3.8-27B) ship gate/up/down as FP8
             // E4M3 with a per-row scale inside an otherwise-NVFP4 net;
@@ -616,7 +643,17 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // was given; the adapter itself is installed later (build step 8),
             // so this is the only point where the decision can be made before
             // the twins are freed.
-            if config.adapter_max_rank == 0 {
+            //
+            // ALSO SKIPPED when the transposed twins were not built. This
+            // finalize is residency-NEUTRAL only because it frees the `_t`
+            // copies it makes dead; with no twins to free it is a pure ADD of
+            // one repacked gate/up (and down) copy per layer, which is the same
+            // order as the 8.96 GiB the twin lever just declined to spend. On a
+            // board that cannot fit the second layout it cannot fit this one
+            // either, and the FP4-MMQ arm is a prefill optimisation on a serve
+            // that has already accepted slow prefill. `ATLAS_LOAD_TRANSPOSED_TWINS=1`
+            // restores both together.
+            if config.adapter_max_rank == 0 && twins.build {
                 dffn.finalize_nvfp4_mmq_load(
                     gpu,
                     h as u32,
@@ -1071,7 +1108,17 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // of prefill GPU time on the base w4a16_gemm path; ~1.3x e2e).
                     // predequant_for_prefill() is deliberately NOT called: the FP8
                     // predequant route is slower for these bandwidth-bound GEMMs.
-                    if let (Some(qw), Some(kw), Some(vw)) = (q_nvfp4, k_nvfp4, v_nvfp4) {
+                    //
+                    // `twins.build` gates the whole block, the fused `[q|k|v]`
+                    // copy included. With it false every reader falls back:
+                    // `prefill/paged_qkv.rs`, `prefill/cache_skip_qkv.rs` and
+                    // `multi_seq/qkv.rs::wide_verify_gemm` all reach
+                    // `ops::w4a16_gemm` on the packed original, `paged_oproj.rs`
+                    // the same for o_proj, and the fused arm is behind
+                    // `self.qkv_nvfp4_t.is_some()`. 0.88 GiB on Qwen3.8-27B.
+                    if twins.build
+                        && let (Some(qw), Some(kw), Some(vw)) = (q_nvfp4, k_nvfp4, v_nvfp4)
+                    {
                         let (nh, hd) = (config.num_attention_heads, config.head_dim);
                         let (nkv, hh) = (config.num_key_value_heads, config.hidden_size);
                         let q_n = nh * hd * if config.attn_gated { 2 } else { 1 };
@@ -1106,6 +1153,16 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 "attention q/k/v have differing weight_scale_2 — fused QKV GEMM disabled (3 separate launches per layer)"
                             );
                         }
+                    }
+                    if !twins.build && q_nvfp4.is_some() {
+                        let (nh, hd) = (config.num_attention_heads, config.head_dim);
+                        let q_n = nh * hd * if config.attn_gated { 2 } else { 1 };
+                        residency.skip(transposed_twins::attn_twin_bytes(
+                            q_n,
+                            config.num_key_value_heads * hd,
+                            nh * hd,
+                            config.hidden_size,
+                        ));
                     }
                     // Native-BF16 (Bf16Raw): install the dense O-proj so decode +
                     // prefill prefer it over the (NULL) NVFP4 o_proj. Mutually
@@ -1252,8 +1309,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             quantize_k,
                             stream,
                         )?;
-                        let out_proj_nvfp4_t =
-                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                        // Second layout, gated: every `out_proj_nvfp4_t` reader
+                        // (`trait_prefill_helper.rs:97`/`:261`,
+                        // `trait_decode_batched.rs:1069`/`:1159`) is behind an
+                        // `if let Some`, and `predequant_for_prefill` keys its FP8
+                        // copy off the same option. See `transposed_twins.rs`.
+                        let out_proj_nvfp4_t = twins
+                            .build
+                            .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                            .transpose()?;
                         gpu.free(out_proj_dense.weight)?;
                         let ssm = SsmWeights {
                             in_proj_qkvz: DenseWeight {
@@ -1273,7 +1337,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             ffn,
                             None,
                             None,
-                            Some(out_proj_nvfp4_t),
+                            out_proj_nvfp4_t,
                             config,
                             gpu,
                         )?;
@@ -1491,7 +1555,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             Nvfp4Variant::Standard,
                         )?;
                         let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
-                        let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                        // Second layout, gated: see `transposed_twins.rs` for the
+                        // per-consumer proof that both of these degrade to the
+                        // untransposed GEMM rather than a null launch.
+                        let qkvz_nvfp4_t = twins
+                            .build
+                            .then(|| qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h))
+                            .transpose()?;
 
                         let out_proj_nvfp4 = quantized_auto(
                             store,
@@ -1499,8 +1569,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             gpu,
                             Nvfp4Variant::Standard,
                         )?;
-                        let out_proj_nvfp4_t =
-                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                        let out_proj_nvfp4_t = twins
+                            .build
+                            .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                            .transpose()?;
 
                         let ssm = SsmWeights {
                             in_proj_qkvz: DenseWeight {
@@ -1519,8 +1591,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             post_attn_norm,
                             ffn,
                             Some(qkvz_nvfp4),
-                            Some(qkvz_nvfp4_t),
-                            Some(out_proj_nvfp4_t),
+                            qkvz_nvfp4_t,
+                            out_proj_nvfp4_t,
                             config,
                             gpu,
                         )?;
@@ -1731,7 +1803,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         stream,
                     )?;
 
-                    let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                    // Second layout, gated. 2.90 GiB across the 48 GDN layers of
+                    // Qwen3.8-27B, and dropping `out_proj_nvfp4_t` also drops the
+                    // 1.41 GiB FP8 predequant below, which
+                    // `qwen3_ssm/init_fp8.rs:110` builds only when that twin is
+                    // `Some`. See `transposed_twins.rs`.
+                    let qkvz_nvfp4_t = twins
+                        .build
+                        .then(|| qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h))
+                        .transpose()?;
 
                     let out_proj_nvfp4 = quantize_to_nvfp4(
                         &out_proj_dense,
@@ -1743,7 +1823,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         stream,
                     )?;
 
-                    let out_proj_nvfp4_t = out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                    let out_proj_nvfp4_t = twins
+                        .build
+                        .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                        .transpose()?;
 
                     // Native FP8 SSM prefill GEMM: build a single-scale FP8
                     // copy of `qkvz_dense` [qkvz_size, h] and `out_proj_dense`
@@ -1831,11 +1914,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         post_attn_norm,
                         ffn,
                         Some(qkvz_nvfp4),
-                        Some(qkvz_nvfp4_t),
-                        Some(out_proj_nvfp4_t),
+                        qkvz_nvfp4_t,
+                        out_proj_nvfp4_t,
                         config,
                         gpu,
                     )?;
+                    if !twins.build {
+                        residency.skip(transposed_twins::ssm_twin_bytes(h, qkvz_size, value_dim));
+                    }
                     layer.predequant_for_prefill(gpu, config, stream)?;
                     // Install the FP8 prefill weights AFTER `predequant_for_prefill`
                     // (which sets `out_proj_fp8` from NVFP4 + scale2). The
