@@ -475,6 +475,37 @@ nothing has been served on this board. Beyond that:
   retuned sampling block, which are gfx1151 observations (a post-`</think>`
   content collapse on that silicon) carried over with the tree.
 
+**Free-memory source on AMD boards.** Atlas does NOT trust SCALE's
+`cuMemGetInfo` for free VRAM on this target. Measured 2026-09-17 on the R9700
+(SCALE 1.7.1, ROCm 7.2.0): the first shard of `unsloth/Qwen3.8-27B-NVFP4`
+logged `GPU memory: 31.56 GB used, 0.05 GB free` while
+`/sys/class/drm/card1/device/mem_info_vram_used` peaked at 22.9 GB of a
+31.86 GB board and the allocation ledger held 22.57 GB of tensors. A two-loop
+repro in one program pins it to the allocation COUNT, not the byte count: 56
+allocations of 512 MiB track sysfs within 1 percent (free 3704 MiB at
+28672 MiB allocated, sysfs used 29379 MiB), while 2000 allocations of 11 MiB
+report free 60 MiB at 16500 MiB allocated against sysfs used 17227 MiB of
+32624 MiB, stay pinned at 64 MiB free through 22000 MiB allocated, and never
+recover after every allocation is freed (22064 MiB free). Native HIP
+`hipMemGetInfo` in the same loop is honest. It is a **SCALE runtime reporting
+defect**, roughly 16 MiB of phantom usage charged per allocation to its own
+accounting (a pool granularity rather than real VRAM), and the clean repro
+exists for Spectral. Real VRAM use is fine; only the reported number is wrong.
+
+So on a SCALE build (`cfg!(atlas_scale)`, vendor-driven) the free leg comes
+from `mem_info_vram_total` minus `mem_info_vram_used` in
+`/sys/class/drm/card*/device`, auto-detected by matching the node's total
+against the driver's within 5 percent. That is the kernel's own TTM
+accounting, so it also counts the desktop compositor's 0.4 to 1.6 GB, which a
+per-context driver query never sees. `total` stays on the driver, which read
+32624 MiB, the board's true capacity. `ATLAS_MEMINFO_SOURCE` overrides:
+`driver` forces the old behaviour for an A/B, `sysfs` forces detection on a
+non-SCALE build, and `sysfs:/sys/class/drm/cardN/device` names the node when
+auto-detection cannot (two boards of the same size, an unusual DRM layout).
+Nothing about this reaches an NVIDIA build, which resolves to the driver
+without even scanning `/sys`. See
+`crates/spark-runtime/src/cuda_backend/meminfo_source.rs`.
+
 **Build and serve.** `build-amd.sh` and `serve-amd.sh` take the hardware
 target from `ATLAS_TARGET_HW` (default `strix`) and read the SCALE arch from
 `kernels/$ATLAS_TARGET_HW/HARDWARE.toml`, so this target needs no separate

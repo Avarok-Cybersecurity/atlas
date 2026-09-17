@@ -64,6 +64,16 @@ memory_gb = 32
 #     ATLAS_NO_FP8_PREDEQUANT, have no reader anywhere in the tree and are
 #     no longer exported.
 #
+#   * SCALE's cuMemGetInfo FREE figure is not truthful here, so Atlas takes
+#     free VRAM from /sys/class/drm/card*/device/mem_info_vram_{total,used}
+#     on this target (override with ATLAS_MEMINFO_SOURCE; see
+#     crates/spark-runtime/src/cuda_backend/meminfo_source.rs and the r9700
+#     section of docs/HARDWARE.md). SCALE charges ~16 MiB of phantom usage
+#     per ALLOCATION to its own accounting: 2000 x 11 MiB reports 60 MiB
+#     free at 16500 MiB allocated while sysfs shows 17227 MiB used of
+#     32624, and native HIP in the same loop is honest. The driver's TOTAL
+#     is correct (32624 MiB) and stays in use.
+#
 # ── STILL UNVERIFIED ON SILICON ───────────────────────────────────
 # The build is green. Nothing below it has been observed RUNNING, and "it
 # compiles and links" is not evidence about any of it:

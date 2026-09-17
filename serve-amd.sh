@@ -14,6 +14,12 @@
 # below are re-verified as necessary, but coherent generation has NOT been
 # observed yet. See docs/porting/amd-strix-halo-scale.md and the r9700 section
 # of docs/HARDWARE.md.
+#
+# On a SCALE build Atlas reads free VRAM from the amdgpu sysfs counters
+# (/sys/class/drm/card*/device/mem_info_vram_{total,used}) rather than
+# cuMemGetInfo, whose free figure is not truthful there. That is the default
+# and needs no export here; ATLAS_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>
+# overrides it for a bisect. See the r9700 section of docs/HARDWARE.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -35,6 +35,30 @@ behind specific subsystems — see the
   sits unused. Strix stays unmapped on purpose.
 
 ### Changed
+- **Free GPU memory comes from amdgpu sysfs, not the CUDA driver, on SCALE
+  builds.** Measured 2026-09-17 on an AMD Radeon AI PRO R9700 (gfx1201, SCALE
+  1.7.1, ROCm 7.2.0): loading `unsloth/Qwen3.8-27B-NVFP4` through the fast
+  loader, Atlas logged `Shard 1/2 done, GPU memory: 31.56 GB used, 0.05 GB
+  free` while `mem_info_vram_used` peaked at 22.9 GB of a 31.86 GB board with
+  22.57 GB of tensors on the allocation ledger. A two-loop repro in one
+  program isolates it as an allocation-COUNT effect: 56 x 512 MiB tracks
+  sysfs within 1 percent, 2000 x 11 MiB reports 60 MiB free at 16500 MiB
+  allocated against sysfs used 17227 MiB of 32624 (about 15 GB genuinely
+  free), stays at 64 MiB free through 22000 MiB allocated and never recovers
+  after every allocation is freed, and native HIP `hipMemGetInfo` in the same
+  loop is honest. It is a SCALE runtime reporting defect, roughly 16 MiB of
+  phantom usage charged per allocation to its own accounting, with real VRAM
+  use unaffected. Since every memory guard in Atlas keys off that number (the
+  fast loader's OOM guard, the pre-flight estimate, the KV sizer, the OOM
+  watchdog, the TUI gauge), `free_memory`, `device_free_memory` and the
+  watchdog poll now read `mem_info_vram_total` minus `mem_info_vram_used`
+  from the board's `/sys/class/drm/card*/device`, auto-detected by matching
+  its total against the driver's within 5 percent. Those counters are the
+  kernel's own accounting across every process, so they also see the desktop
+  compositor. `total` stays on the driver, which was correct.
+  `ATLAS_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>` overrides either way.
+  NVIDIA is untouched: without `cfg!(atlas_scale)` the source resolves to the
+  driver without so much as scanning `/sys`.
 - **`build-amd.sh` and `serve-amd.sh` take their hardware from
   `ATLAS_TARGET_HW`** (default `strix`, so an unset environment builds and
   serves what it always did) and read the SCALE arch from
