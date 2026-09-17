@@ -443,6 +443,12 @@ impl TransformerModel {
                     )?;
                 }
                 self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+                // INVARIANT: every exit from this loop body applies the
+                // control vector exactly once, over all K rows at
+                // `hc_row_offset = 0`. The per-row bodies above steer nothing
+                // themselves — they run at `row_ctx`, one row each, and the
+                // highway is only complete for this layer once they all have.
+                self.cvec_after_layer(&ctx, i, k, stream)?;
                 continue;
             }
             if batched_gdn && layer.is_ssm_layer() {
@@ -459,6 +465,8 @@ impl TransformerModel {
                     &ctx,
                     stream,
                 )?;
+                // See the INVARIANT above: this exit steers too.
+                self.cvec_after_layer(&ctx, i, k, stream)?;
                 continue;
             }
             layer.prefill(
@@ -476,6 +484,8 @@ impl TransformerModel {
                 stream,
             )?;
             self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+            // See the INVARIANT above: the fallthrough K-row body steers too.
+            self.cvec_after_layer(&ctx, i, k, stream)?;
         }
         drop(kv_cache);
 

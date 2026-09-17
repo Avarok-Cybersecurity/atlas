@@ -501,6 +501,9 @@ impl TransformerModel {
                 inner_ctx,
                 stream,
             )?;
+            // Activation steering. Inside the timed span on purpose: a
+            // profiled decode that excluded it would under-report the layer.
+            self.cvec_after_layer(inner_ctx, i, 1, stream)?;
             self.gpu.synchronize(stream)?;
             let elapsed = t0.elapsed().as_micros() as u64;
             if self.config.layer_type(i) == avarok_core::config::LayerType::FullAttention {
@@ -693,6 +696,15 @@ impl TransformerModel {
                 &ctx,
                 stream,
             )?;
+            // Activation steering on the layers this draft actually runs.
+            //
+            // The draft is deliberately a REDUCED model (SSM layers skipped),
+            // so it can never match the verifier exactly. Steering it anyway
+            // keeps it closer to the steered model it is predicting: a
+            // drafter that mismatches the verifier does not corrupt output —
+            // verify is authoritative — but it silently collapses acceptance,
+            // and nothing but a tok/s regression would show that.
+            self.cvec_after_layer(&ctx, i, 1, stream)?;
         }
 
         // Final norm + LM head

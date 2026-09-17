@@ -24,6 +24,7 @@
 #![allow(unused_imports, dead_code)]
 
 pub(crate) mod block_mgmt;
+pub(crate) mod control_vector_hook;
 pub(crate) mod decode_aux_ring;
 pub(crate) mod drafter_context;
 pub(crate) mod drop;

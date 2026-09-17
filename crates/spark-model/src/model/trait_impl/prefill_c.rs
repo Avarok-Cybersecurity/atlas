@@ -554,6 +554,10 @@ impl TransformerModel {
                         anyhow::anyhow!("Two-phase prefill attention layer {i} failed: {e}")
                     })?;
             }
+            // Activation steering, once per layer at the if/else tail — after
+            // the GDN arm's three phases as well as the attention arm, since
+            // only then is this layer's highway output complete.
+            self.cvec_after_layer(&ctx, i, proc_count, stream)?;
         }
 
         // ── 5. Update sequence state ──

@@ -562,6 +562,12 @@ impl TransformerModel {
                     &ctx,
                     stream,
                 )?;
+                // Activation steering over ALL `padded_n` rows, not the live
+                // `n`: the launch geometry has to stay fixed for a captured
+                // graph to replay at a different batch size, and the padded
+                // rows are never committed, so steering them costs nothing
+                // and changes nothing.
+                self.cvec_after_layer(&ctx, layer_idx, padded_n, stream)?;
                 if let Some(t0) = t0 {
                     self.gpu.synchronize(stream).ok();
                     let dt = t0.elapsed().as_micros();

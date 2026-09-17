@@ -23,7 +23,10 @@
 //! `AVAROK_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
 
 mod config;
-mod container;
+/// Public so a caller can parse a small SIDECAR GGUF — a control vector, say —
+/// without going through [`GgufLoader`], whose contract is "dequantize every
+/// tensor to BF16 and key it by HuggingFace name". A sidecar wants neither.
+pub mod container;
 mod dequant_cpu;
 mod dequant_gpu;
 mod names;

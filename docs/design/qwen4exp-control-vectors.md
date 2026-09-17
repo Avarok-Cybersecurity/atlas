@@ -1,9 +1,16 @@
 # Control vectors (activation steering) for Qwen3.8-Flash-Next on NVFP4
 
-WIP exploration note. Branch `wip/qwen4exp-control-vector`, cut from the #1063
-head (`4a253306e`). Nothing here is implemented yet — this records the
-mechanism, the exact insertion points in Atlas, and the traps, so the
-implementation can be costed and reviewed before it is written.
+WIP note. Branch `wip/qwen4exp-control-vector`, cut from the #1063 head
+(`4a253306e`).
+
+**Status.** The apply path is implemented and the boot-time arm works:
+`control_vector.cu` (kernel, proven against a CPU reference),
+`spark-model/src/control_vector.rs` (GGUF load + validation, 15 CPU tests),
+`model/control_vector_hook.rs` (the hook), and 14 call sites across the 11
+model-level layer loops. Not yet done: the serve flags (§3.5), the cosine-probe
+gate wired into a run (§5), per-request selection (§8), and any measurement on
+real weights — **nothing here has been run against the model**. The transfer
+question in §2 is still open.
 
 Motivating artifact:
 [`Cudecnik/Qwen3.8-Flash-Next-refusal-projection`](https://huggingface.co/Cudecnik/Qwen3.8-Flash-Next-refusal-projection)
@@ -195,17 +202,21 @@ cost either way.
 
 ### 3.5 Loading
 
-**The reader already exists.** `spark_nllb::gguf::read_gguf_f32(path) ->
-Result<Vec<GgufTensor>>` (`crates/spark-nllb/src/gguf.rs:127`) reads every
-F16/F32 tensor from a GGUF into host `f32` with `{name, dims, data}`. It is
-~255 lines, self-contained, zero heavy deps, and exists precisely because
-spark-runtime's parser is crate-private. Either depend on `spark-nllb` or lift
-the file.
+**The reader already exists — but not the one an earlier draft named.**
+`spark_nllb::gguf::read_gguf_f32` (`crates/spark-nllb/src/gguf.rs:127`) does
+the right thing, but `spark-nllb` pulls in `tokenizers` (with `onig`), which is
+the wrong dependency to hang on `spark-model` for a 480 KB sidecar.
 
-(`spark_runtime::weights::gguf::container::GgufFile::parse` is the fully general
-alternative but is private — `mod container;` in `weights/gguf.rs:27` — and
-`GgufLoader` itself is a whole-model loader that dequantizes to BF16 into a
-`WeightStore`, far too heavy for a sidecar vector file.)
+Use `spark_runtime::weights::gguf::container::GgufFile::parse` instead:
+spark-model already depends on spark-runtime, everything inside `container` is
+already `pub`, and only the `mod container;` declaration
+(`weights/gguf.rs:27`) needed opening. `GgufFile::parse` + `tensor_abs_offset`
+gives the header and each tensor's byte range; reading F32 rows out is ~40
+lines.
+
+(`GgufLoader` itself is a whole-model loader that dequantizes to BF16 into a
+`WeightStore` keyed by HuggingFace name — far too heavy, and the wrong
+contract, for a sidecar vector file.)
 
 Load once at boot into a single `[48, 2560]` F32 device buffer, zeroing rows
 outside the active range so the kernel needs no range branch.
@@ -235,11 +246,13 @@ stayed byte-correct.
 highway stale. The fold predicate already carries a `taps_inert` conjunct for
 exactly this class of reader — an armed cvec belongs in that conjunct.
 
-**Prefix caching is poisoned across a cvec change.** KV computed with the
-projection differs from KV computed without it, and there are four separate
-prefix-cache contamination incidents on record. **Make the vector a boot-time
-flag, not a per-request parameter** — llama.cpp does the same. A per-request
-cvec needs the prefix cache keyed by cvec identity; defer that.
+**Prefix caching is poisoned across a cvec change** — KV computed with the
+projection differs from KV computed without it. An earlier draft concluded from
+this that the vector had to be boot-time-only. **That was wrong about Atlas**,
+and the correction is in §8: the prefix cache is already partitioned by an
+adapter identity, and a cvec identity can ride the same channel. The MVP is
+still boot-time because that is the smaller change, not because per-request is
+unsound.
 
 **MTP: the drafter is ONE layer, not 48.** `Qwen4ExpMtpHead::draft_hidden`
 (`layers/qwen4_exp_mtp_hidden.rs:9`) runs a single `self.module.body.decode(...)`
@@ -334,3 +347,67 @@ reports movement on the harmless set as well as the harmful one
 undocumented) — a rank-1 ablation at s=1.0 is a blunt instrument and is not free
 of collateral behavioural change. Whatever we ship should be off by default and
 explicit at boot.
+
+## 8. Per-request opt-in
+
+The goal is request-level selection, the way a LoRA adapter is selected. An
+earlier draft of this note assumed that was blocked by the prefix cache. It is
+not — Atlas already solved this problem for LoRA, and the machinery generalises.
+
+**The prefix cache is not adapter-blind. It is adapter-keyed, twice over:**
+
+- `hash_token_prefix(tokens, count, adapter_id)`
+  (`spark-runtime/src/radix_tree.rs:37`) folds the id into the FNV-1a state
+  before the tokens, and the fold is a strict no-op at `adapter_id == 0`, so
+  base keying stays byte-identical to the old token-only hash.
+- `RadixTreeInner` holds `roots: HashMap<u64 /*adapter_id*/, NodeId>`
+  (`radix_tree/inner.rs:60-126`) — physically **disjoint radix roots**. The
+  comment there is explicit that the hash alone would not be enough, because
+  the children map is keyed by token chunk; disjoint roots are what stop a
+  cross-adapter insert collision. Asserted by
+  `radix_tree/tests/adapter.rs:13,48,71`.
+
+The discriminator is `adapter_id_hash(name, generation)`
+(`spark-model/src/lora/key.rs:31`) — name-derived so it survives pool-slot
+reuse, with a generation folded in so a re-staged slot misses the stale prefix.
+It is stamped onto the sequence at prefill (`scheduler/prefill_a_step.rs:159`),
+carried across preempt and restore, and threaded through every cache entry
+point.
+
+**There is a second belt.** `filter_adapter_cohort`
+(`scheduler/admission.rs:155`) restricts a batch to ONE adapter identity,
+re-queueing the others at the front rather than failing them. That exists
+because v0 LoRA decode does not route per row, so a batch mixing adapters is
+refused wholesale. **A control vector has exactly the same property** — the
+hook applies one vector to the whole highway, so a batch cannot mix cvec
+selections either. The cohort filter is therefore not an obstacle; it is the
+mechanism this needs, already built.
+
+### What to build
+
+Compose, in ONE function, a `variant_id: u64` from the adapter id and the cvec
+id, and use it for both consumers:
+
+1. the prefix-cache key (in place of the bare `adapter_id`), and
+2. the admission cohort key.
+
+Today there is exactly one `u64` slot for such a discriminator, and both
+consumers read it. If the two are computed in different places they will drift,
+and the failure is silent in the worst way: a cache hit that returns another
+variant's KV. This is the same four-consumer hazard the LoRA slot layout was
+bitten by.
+
+Keep `0` meaning "base, nothing applied", so a serve with neither an adapter
+nor a cvec hashes exactly as it does today.
+
+`ControlVector` should then become a small registry on the model (name → vector)
+rather than a single `Option`, with the per-request selection resolved at
+admission and carried on `ForwardContext` — `cvec_after_layer` would read
+`ctx`, not `self`. The call sites do not change; only what the hook reads.
+
+**One asymmetry worth noting before building it.** A LoRA adapter is selected
+by the `adapter` field or by `model`; there is no selector meaning "no
+adapter" once a pool is resident (`lora_control.rs:27`), which is a known wart.
+A refusal-steering vector should not inherit it: "off" has to be expressible
+per request, which means the cvec id must have a real zero and the request
+field must distinguish absent from "none".

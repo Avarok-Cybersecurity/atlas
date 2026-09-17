@@ -886,6 +886,10 @@ impl TransformerModel {
             derived: crate::layers::ops::DerivedWeights::new(),
             levers,
             stats: ops::ModelStats::new(),
+            // Installed after construction by `install_control_vector`, for
+            // the same reason as `weight_store`: the spec comes from serve
+            // flags, not from the weights this constructor is reading.
+            control_vector: None,
             #[cfg(feature = "cuda")]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;

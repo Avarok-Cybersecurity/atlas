@@ -1052,6 +1052,16 @@ impl TransformerModel {
                     }
                 }
 
+                // Activation steering over all R verify rows at once. This is
+                // the loop's single tail — no branch above it uses `continue`
+                // — so one call covers the highway-attention arm, the batched
+                // GDN arm and the dummy-state arm alike. `ctx` is the
+                // whole-pass context at `hc_row_offset = 0`; the inner
+                // per-row/per-seq contexts steer nothing themselves, because
+                // the highway is only complete for this layer once they have
+                // all run.
+                self.cvec_after_layer(&ctx, layer_idx, r_total, stream)?;
+
                 if let Some(t0) = t_layer {
                     // SYNC: the launches above are async, so without this the
                     // split would measure launch cost, not kernel cost.

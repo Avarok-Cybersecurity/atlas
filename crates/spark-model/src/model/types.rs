@@ -76,6 +76,11 @@ pub struct TransformerModel {
     /// Diagnostic counters and one-shot dump latches for this model. Sibling
     /// to `levers`: what the kernels did, rather than what they do.
     pub(super) stats: crate::layers::ops::ModelStats,
+    /// Activation steering on the mHC highway, when the operator loaded a
+    /// control vector at boot. Installed by the factory after construction,
+    /// like `weight_store`, and `None` for every model that has no highway to
+    /// steer. See `crate::control_vector`.
+    pub(super) control_vector: Option<crate::control_vector::ControlVector>,
     pub(super) embed_tokens: DenseWeight,
     /// Fused n-gram input embedding (LongCat family), when the architecture
     /// has one. `Mutex` because the forward path is `&self` while the row
