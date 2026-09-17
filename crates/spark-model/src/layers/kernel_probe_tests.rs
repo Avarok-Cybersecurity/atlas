@@ -33,3 +33,26 @@ fn a_module_the_target_never_built_is_not_looked_up() {
     assert_ne!(h.0, 0);
     assert_eq!(gpu.kernel_lookups_snapshot().len(), 2);
 }
+
+/// A module the target DID build, holding a name its code object does not
+/// define. `atlas_core::registry` refuses that lookup itself rather than
+/// trusting the driver: observed on SCALE 1.7.1 / gfx1201, `cuModuleGetFunction`
+/// on the compiled-out `nvfp4_mmq` returns SUCCESS with a handle backed by no
+/// code, and the first launch through it dies with CUDA_ERROR_INVALID_IMAGE
+/// (200) on `atlas_nvfp4_repack`. The refusal is an ordinary `Err`, so the
+/// optional-kernel probe degrades to handle 0 exactly as it does on NVIDIA,
+/// where the same lookup fails with "not found".
+#[test]
+fn a_refused_lookup_degrades_to_handle_zero() {
+    let gpu = MockGpuBackend::new();
+    gpu.deny_kernel("nvfp4_mmq", "atlas_nvfp4_repack");
+    // The module IS present in the build, so the target-scoped probe does not
+    // short-circuit: the lookup below is issued and the error is what turns it
+    // into handle 0 (the snapshot assertion is what proves both).
+    let h = try_target_kernel(&gpu, "nvfp4_mmq", "atlas_nvfp4_repack");
+    assert_eq!(h.0, 0);
+    assert_eq!(
+        gpu.kernel_lookups_snapshot(),
+        vec![("nvfp4_mmq".to_string(), "atlas_nvfp4_repack".to_string())]
+    );
+}

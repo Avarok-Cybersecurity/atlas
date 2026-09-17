@@ -14,7 +14,7 @@
 //!   unsafe { reg.stream.launch_builder(&func).arg(&ptr).launch(cfg)?; }
 //!   reg.stream.synchronize()?;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_void};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -22,6 +22,7 @@ use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchCo
 use cudarc::nvrtc::Ptx;
 
 pub use crate::cuda_host::{CudaHost, host, release};
+use crate::elf_symbols::defined_function_symbols;
 use crate::error::{AtlasError, Result};
 
 // Raw CUDA driver API. (`cuModuleLoadData`/`cuModuleUnload` left this list
@@ -133,6 +134,23 @@ pub struct AtlasRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+    /// For every binary (code-object) module whose symbol table could be read,
+    /// the kernel names that object actually DEFINES.
+    ///
+    /// The driver is not a reliable oracle for this. An optional module whose
+    /// whole body sits behind a capability guard (`nvfp4_mmq.cu` inside
+    /// `#if defined(BLACKWELL_MMA_AVAILABLE)`) compiles to an object with no
+    /// kernels in it. On NVIDIA `cuModuleGetFunction` then answers "not found"
+    /// and `try_kernel` turns that into `KernelHandle(0)`. Observed on SCALE
+    /// 1.7.1 / gfx1201 it answers SUCCESS with a handle backed by no code, and
+    /// the first launch dies with `CUDA_ERROR_INVALID_IMAGE (200)` on
+    /// `nvfp4_mmq::atlas_nvfp4_repack`. So the registry asks the object, not
+    /// the driver, and refuses the lookup itself.
+    ///
+    /// A module is ABSENT from this map when it is text (PTX, the unchanged
+    /// path) or when its bytes could not be parsed, and an absent module is not
+    /// guarded: the driver's answer stands, exactly as before.
+    binary_kernels: HashMap<&'static str, HashSet<String>>,
     /// Raw CUfunction handle -> `"module::kernel"`, for every function this
     /// registry has resolved.
     ///
@@ -214,6 +232,9 @@ impl AtlasRegistry {
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
+        let mut binary_kernels: HashMap<&'static str, HashSet<String>> = HashMap::new();
+        let mut binary_count = 0usize;
+        let mut empty_modules: Vec<&'static str> = Vec::new();
         for &(name, blob) in kernel_blobs {
             // NVIDIA emits PTX (ASCII text); SCALE/AMD (gfx1151) and HIP
             // emit a binary code object (ELF / clang offload bundle).
@@ -223,6 +244,30 @@ impl AtlasRegistry {
             let is_binary = blob.starts_with(b"\x7fELF")
                 || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__")
                 || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
+
+            // Which kernels does this code object actually define? Read once,
+            // here, while the blob is in hand. Text (PTX) modules are not
+            // sniffed: the NVIDIA path never had this problem.
+            if is_binary {
+                binary_count += 1;
+                match defined_function_symbols(blob) {
+                    Some(defined) => {
+                        if defined.is_empty() {
+                            empty_modules.push(name);
+                        }
+                        binary_kernels.insert(name, defined);
+                    }
+                    None => {
+                        // Not an ELF64 LE image (a clang offload bundle, say).
+                        // Nothing to guard with, so nothing is guarded: the
+                        // driver answers as it always did.
+                        eprintln!(
+                            "atlas: WARN: module '{name}': code object carries no readable ELF \
+                             symbol table; kernel lookups fall through to the driver"
+                        );
+                    }
+                }
+            }
 
             // Load via cudarc (safe API) — backs `function()` lookups.
             let ptx = if is_binary {
@@ -250,10 +295,31 @@ impl AtlasRegistry {
             modules.insert(name, module);
         }
 
+        if binary_count > 0 {
+            // atlas-core carries no `tracing` (see the note in `Drop`), so the
+            // one summary line goes to stderr like every other registry report.
+            empty_modules.sort_unstable();
+            let empty = empty_modules
+                .iter()
+                .map(|m| {
+                    format!(
+                        "; module '{m}' defines no kernels on this target \
+                         (optional module compiled out)"
+                    )
+                })
+                .collect::<String>();
+            eprintln!(
+                "atlas: {binary_count} binary kernel module(s), {} with a readable symbol table{}",
+                binary_kernels.len(),
+                empty
+            );
+        }
+
         Ok(AtlasRegistry {
             host,
             modules,
             raw_modules,
+            binary_kernels,
             func_names: Mutex::new(HashMap::new()),
         })
     }
@@ -264,6 +330,7 @@ impl AtlasRegistry {
             .modules
             .get(module_name)
             .ok_or_else(|| AtlasError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        self.reject_undefined(module_name, func_name)?;
         module
             .load_function(func_name)
             .map_err(|e| AtlasError::ModuleLoad(format!("{module_name}::{func_name}: {e}")))
@@ -304,6 +371,7 @@ impl AtlasRegistry {
             .raw_modules
             .get(module_name)
             .ok_or_else(|| AtlasError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        self.reject_undefined(module_name, func_name)?;
         let c_name = CString::new(func_name).map_err(|e| {
             AtlasError::ModuleLoad(format!("{module_name}::{func_name}: CString: {e}"))
         })?;
@@ -333,6 +401,26 @@ impl AtlasRegistry {
         Ok(raw)
     }
 
+    /// Refuse a lookup the module's own code object says cannot succeed.
+    ///
+    /// Only binary modules with a parsed symbol table are checked. Everything
+    /// else (PTX, an unparsable object, a module that is not loaded at all)
+    /// returns `Ok(())` and the driver decides, as it always did.
+    ///
+    /// The caller in `spark-model` is
+    /// `layers::kernel_probe::try_kernel`, which matches on ANY `Err` and
+    /// returns `KernelHandle(0)`, so an optional kernel guarded here degrades
+    /// to the same "not present" it degrades to on NVIDIA.
+    fn reject_undefined(&self, module_name: &str, func_name: &str) -> Result<()> {
+        if is_undefined(self.binary_kernels.get(module_name), func_name) {
+            return Err(AtlasError::ModuleLoad(undefined_symbol_message(
+                module_name,
+                func_name,
+            )));
+        }
+        Ok(())
+    }
+
     /// Retire the raw handles. Idempotent; `Drop` calls it.
     ///
     /// Since the raw map stopped being a second `cuModuleLoadData` of every
@@ -349,6 +437,7 @@ impl AtlasRegistry {
             .unwrap_or_else(|poison| poison.into_inner())
             .clear();
         self.raw_modules.drain().for_each(drop);
+        self.binary_kernels.drain().for_each(drop);
         self.modules.drain().for_each(drop);
         Vec::new()
     }
@@ -555,6 +644,25 @@ pub fn launch_failure_message(
     )
 }
 
+/// Whether a lookup is provably doomed: the module is binary, its symbol
+/// table parsed, and `func_name` is not in it.
+///
+/// `None` (a PTX module, an unparsable object, a module that is not loaded)
+/// is never a refusal. Split out from [`AtlasRegistry::reject_undefined`] so
+/// the decision itself is testable on a host with no CUDA context.
+pub fn is_undefined(defined: Option<&HashSet<String>>, func_name: &str) -> bool {
+    defined.is_some_and(|set| !set.contains(func_name))
+}
+
+/// The text of a lookup refused because the module's code object does not
+/// define the name. Pure, so the wording is unit-testable with no GPU.
+pub fn undefined_symbol_message(module_name: &str, func_name: &str) -> String {
+    format!(
+        "{module_name}::{func_name}: not defined in this target's code object \
+         (optional module compiled out?)"
+    )
+}
+
 /// The text of a `cuFuncSetAttribute(MAX_DYNAMIC_SHARED=..)` failure. Same
 /// division of labour as [`launch_failure_message`].
 pub fn func_attribute_failure_message(label: &str, shared_mem: u32, err_text: &str) -> String {
@@ -563,7 +671,12 @@ pub fn func_attribute_failure_message(label: &str, shared_mem: u32, err_text: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{func_attribute_failure_message, kernel_label, launch_failure_message};
+    use std::collections::HashSet;
+
+    use super::{
+        func_attribute_failure_message, is_undefined, kernel_label, launch_failure_message,
+        undefined_symbol_message,
+    };
 
     #[test]
     fn launch_failure_names_the_kernel() {
@@ -600,6 +713,33 @@ mod tests {
              CUDA_ERROR_INVALID_VALUE (1): invalid argument \
              (grid=[1,2,3], block=[64,1,1], shared_mem=8192)"
         );
+    }
+
+    /// The refusal names both halves and says why, because on SCALE the
+    /// alternative was a launch-time `CUDA_ERROR_INVALID_IMAGE` with nothing
+    /// in it about an optional module.
+    #[test]
+    fn an_undefined_symbol_is_refused_by_name() {
+        assert_eq!(
+            undefined_symbol_message("nvfp4_mmq", "atlas_nvfp4_repack"),
+            "nvfp4_mmq::atlas_nvfp4_repack: not defined in this target's code object \
+             (optional module compiled out?)"
+        );
+    }
+
+    /// The three answers a code object can give, and what each one licenses.
+    #[test]
+    fn only_a_parsed_set_that_lacks_the_name_refuses_a_lookup() {
+        let defines: HashSet<String> = ["atlas_nvfp4_repack".to_string()].into_iter().collect();
+        // Present: the driver is asked, as always.
+        assert!(!is_undefined(Some(&defines), "atlas_nvfp4_repack"));
+        // Parsed and absent: refused here, before any driver call. This is
+        // nvfp4_mmq on gfx1201: SCALE would answer SUCCESS for this name.
+        assert!(is_undefined(Some(&defines), "atlas_nvfp4_quantize"));
+        // An optional module compiled out defines nothing at all.
+        assert!(is_undefined(Some(&HashSet::new()), "atlas_nvfp4_repack"));
+        // No parsed set (PTX, or an object we could not read): never refused.
+        assert!(!is_undefined(None, "atlas_nvfp4_quantize"));
     }
 
     #[test]

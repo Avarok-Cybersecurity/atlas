@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod compute;
 pub mod config;
 pub mod dtype;
+pub mod elf_symbols;
 pub mod error;
 pub mod fault;
 pub mod kimi_k3;
