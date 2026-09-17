@@ -109,6 +109,21 @@ esac
 case "$ATLAS_TARGET_HW" in
   r9700) export ATLAS_NO_FP8_PREDEQUANT=1 ;;
 esac
+# ATLAS_LOAD_TRANSPOSED_TWINS=auto (spark-model/src/weight_loader/qwen35_dense/
+# transposed_twins.rs) lets the loader decide, once and before any layer
+# allocates, whether this board can hold the transposed second copy of every
+# quantised weight. THE TRADE, stated plainly: without the twins a 27B NVFP4
+# model fits 32 GB, and FFN prefill falls off w4a16_gemm_t_m128 onto the plain
+# w4a16_gemm, at ~7 TFLOP/s against ~51 on the Gemma-4-31B measurement, 7x
+# slower prefill. Decode is untouched. The twins are 12.74 GiB on
+# unsloth/Qwen3.8-27B-NVFP4 and 3.62 GiB on Ornith-1.0-9B, so `auto` will
+# normally BUILD them for the small models and skip them for the 27B; the serve
+# log says which way it went and why. `=1` forces them on (and forces the 27B
+# back to not loading), `=0` forces them off unconditionally.
+# See the r9700 section of docs/HARDWARE.md and docs/porting/r9700-residency.md.
+case "$ATLAS_TARGET_HW" in
+  r9700) export ATLAS_LOAD_TRANSPOSED_TWINS=auto ;;
+esac
 # Removed here: ATLAS_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
 # tree as of this commit, so exporting it only suggested a control that does not
 # exist.

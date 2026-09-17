@@ -222,10 +222,15 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             }
         }
     }
-    // ★ 5 PATHS, 2 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
+    // ★ 6 PATHS, 2 FILES. `kernels/{strix,hopper,b200,r9700}/common/w4a16_gemm.cu`
     // are all SYMLINKS to `../../gb10/common/w4a16_gemm.cu`, so those copies
     // were ported the moment gb10's was. `strix-hip/common/` is a real,
     // separate HIP file and had to be done by hand.
+    //
+    // r9700 (gfx1201 / RDNA 4) is the sixth, added with the target itself: its
+    // whole `common/` is symlinks into gb10's, so it inherited this port for
+    // free and the FORKED count below did not move. That is exactly the split
+    // these two assertions exist to report.
     //
     // BOTH numbers are asserted, and the second is the one that matters. Path
     // count is what the build walks, so it has to track the tree — but a new
@@ -234,9 +239,9 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
     // exists to catch. Asserting only the total would fire on the free case
     // and, once bumped, would go quiet on the expensive one.
     assert_eq!(
-        scalar, 5,
+        scalar, 6,
         "the shared `common/` scalar paths moved (gb10, strix, strix-hip, \
-         hopper, b200) — update this count with the tree"
+         hopper, b200, r9700): update this count with the tree"
     );
     assert_eq!(
         scalar_forked, 2,

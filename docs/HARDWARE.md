@@ -585,18 +585,95 @@ gfx1201 facts rather than carry-overs:
 **What the first bring-up must still probe.** Coherent generation above all;
 nothing has been served on this board. Beyond that:
 
-* **The two runtime knobs** `serve-amd.sh` exports for r9700:
+* **The four runtime knobs** `serve-amd.sh` exports for r9700:
   `ATLAS_W4A16_VARIANT=v1` is pinned by the missing e4m3 codegen above and is
   not a candidate to probe OFF until SCALE grows that path.
   `ATLAS_NO_GDN_FP8_PREFILL=1` is only a conservative first-serve default:
   strix never set it and serves coherently with the native FP8 SSM prefill on,
   so on r9700 it is the first knob to bisect OFF once a coherent baseline
-  exists. `ATLAS_FORCE_GLOBAL_GDN` and
-  `ATLAS_NO_FP8_PREDEQUANT`, which the script used to export, have no reader
-  anywhere in the tree and were dropped rather than carried here.
+  exists. `ATLAS_NO_FP8_PREDEQUANT=1` is a belt over a probe, not a pin; see
+  "The FP8 prefill predequant" below. `ATLAS_LOAD_TRANSPOSED_TWINS=auto` is the
+  residency lever, and what it costs is in "The transposed second weight
+  layout" below. `ATLAS_FORCE_GLOBAL_GDN`, which the script used to export, has
+  no reader anywhere in the tree and was dropped rather than carried here.
 * **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
   retuned sampling block, which are gfx1151 observations (a post-`</think>`
   content collapse on that silicon) carried over with the tree.
+
+**The FP8 prefill predequant.** Measured on this board, 2026-09-17:
+`Ornith-1.0-9B` loads, builds and passes the boot audit, and then every request
+dies at layer 0 with `ssm prefill: out_proj GEMM failed: Kernel lookup
+w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab: Module load failed: Module
+'w4a16_fp8_ldmab' not loaded`. `predequant_for_prefill` built an NVFP4-to-FP8
+copy of the SSM `out_proj` (and, on the loaders that call the other two, the
+attention q/k/v/o and the MoE gate + shared expert) without asking whether the
+GEMM that reads it exists, and the prefill dispatch PREFERS those copies over
+both NVFP4 arms, so one absent module turned a working fallback chain into a
+hard error. `w4a16_fp8_ldmab.cu` is the thirteenth gfx1201 census failure and is
+not in this target's tree at all.
+
+`crates/spark-model/src/layers/fp8_predequant.rs` is now the load-time guard. It
+probes every arm the dispatch can take rather than only the preferred one.
+`ops::fp8_gemm_n128` chooses between the `ldmatrix.x4` kernel and
+`w4a16::fp8_gemm_t` on `K % 32`, which is a property of the projection, and the
+caller chooses between it and `fp8_gemm_n128_m128` on the token count, which is
+a property of the request, so a partial answer is a serve that works on short
+prompts and dies on long ones. With the copies absent the SSM falls to
+`w4a16_gemm_n128` and then `w4a16_gemm`, attention's `use_fp8_act` goes false,
+and the MoE's three copies take their NVFP4 branch. `ATLAS_NO_FP8_PREDEQUANT=1`
+forces the same outcome and is exported for r9700 so the serve log names the
+decision in words; `=0` forces the copies back where an operator's environment
+sets the variable globally, and cannot override a genuinely absent kernel.
+
+**The transposed second weight layout.** Atlas keeps every NVFP4 projection in
+TWO layouts: the packed `[N, K/2]` original decode reads, and a transposed
+`[K, N/2]` twin the fast prefill GEMMs (`w4a16_gemm_t_m128` and its v2/k64
+siblings) consume. On this board that is the difference between loading a 27B
+and not. `docs/porting/r9700-residency.md` has the measured ledger; the summary:
+
+| | GiB | fits the ~27.9 GB weight budget? |
+|---|---|---|
+| as of 2026-09-17 | 47.07 | no |
+| release-on-consume (`ATLAS_LOAD_RELEASE_SOURCES`) | 38.31 | no |
+| ... and the attention BF16 dequant leak fixed | 35.18 | no |
+| ... and no transposed twins | 21.25 | **yes** |
+
+`ATLAS_LOAD_TRANSPOSED_TWINS` is `1` (build them; today's behaviour byte for
+byte, and the default on every non-SCALE target), `0` (build none) or `auto`
+(build them only if free VRAM after the checkpoint is resident exceeds their
+projected bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the
+vision encoder's working set). Unset takes `cfg!(atlas_scale)`, so SCALE
+probes and NVIDIA does not. The decision is made ONCE, before any layer
+allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives:
+`free_memory()` shrinks as layers load, so a per-layer probe transposes the
+early layers and skips the late ones and leaves prefill straddling two dispatch
+arms.
+
+The projected twins, from the model's own dimensions (the same arithmetic that
+reproduces the measured ledger, pinned by `transposed_twins_tests.rs`):
+
+| model | dense FFN | SSM | attention | total |
+|---|---|---|---|---|
+| `qwen3.8-27b` / `qwen3.6-27b` | 8.96 GiB | 2.90 GiB | 0.88 GiB | **12.74 GiB** |
+| `ornith-1.0-9b` | 2.53 GiB | 0.84 GiB | 0.25 GiB | **3.62 GiB** |
+
+So `auto` will normally build them for the small models and skip them for the
+27B. **What skipping costs**: every fast arm of `w4_gemm!` is skipped and FFN
+prefill lands on the plain `w4a16_gemm`, at ~7.0 TFLOP/s against ~51 for
+`w4a16_gemm_t_m128` on the Gemma-4-31B measurement, call it a 7x slower FFN
+prefill. The SSM and attention sides are the same shape of trade and are
+unmeasured. Decode is untouched: it reads the packed original either way.
+Dropping the SSM twin also drops the 1.41 GiB `out_proj` FP8 predequant, which
+exists to feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with
+them, because it is residency-neutral only while there are `_t` copies for it to
+free.
+
+**A proper fix is a kernel, not this knob**: a prefill GEMM that reads the
+packed `[N, K/2]` layout directly with a transposed tile walk, the way
+`w4a16_gemm` already does at scalar speed but with the 128x128 `cp.async`
+tiling the `_t` kernels have. Then there is no second layout to build or skip,
+on any target, and the 27B fits without paying 7x for prefill. Until that
+exists, this lever buys a serve and nothing else.
 
 **Free-memory source on AMD boards.** Atlas does NOT trust SCALE's
 `cuMemGetInfo` for free VRAM on this target. Measured 2026-09-17 on the R9700
@@ -695,7 +772,9 @@ cargo build --release -p spark-server --no-default-features --features cuda
 # the required knob and the conservative first-serve default (see above).
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
 export ATLAS_W4A16_VARIANT=v1
-export ATLAS_NO_GDN_FP8_PREFILL=1   # bisect candidate, not a pin
+export ATLAS_NO_GDN_FP8_PREFILL=1     # bisect candidate, not a pin
+export ATLAS_NO_FP8_PREDEQUANT=1      # belt; the loader probes for this anyway
+export ATLAS_LOAD_TRANSPOSED_TWINS=auto  # fits 32 GB, prefill on the plain arm
 target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
 ```
 

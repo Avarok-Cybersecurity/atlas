@@ -11,6 +11,29 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **`ATLAS_LOAD_TRANSPOSED_TWINS`, a lever for the transposed second weight
+  layout.** Atlas keeps every NVFP4 projection in two layouts: the packed
+  `[N, K/2]` original decode reads, and a transposed `[K, N/2]` twin the fast
+  prefill GEMMs consume. On a 32 GB R9700 serving
+  `unsloth/Qwen3.8-27B-NVFP4` the twins are **12.74 GiB** (8.96 dense FFN, 2.90
+  SSM, 0.88 attention), which is the difference between loading the model and
+  not: release-on-consume and the attention dequant-leak fix take that serve
+  from 47.07 GiB to 35.18, and dropping the twins takes it to 21.25. `1` builds
+  them (today's behaviour byte for byte, and the default on every non-SCALE
+  target), `0` builds none, `auto` builds them only if free VRAM after the
+  checkpoint is resident clears their projected bytes plus a 4 GiB serve
+  reserve; unset takes `cfg!(atlas_scale)`. Decided ONCE before any layer
+  allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives.
+  **The cost is written down rather than discovered**: with the twins absent
+  every fast arm of `w4_gemm!` is skipped and FFN prefill lands on the plain
+  `w4a16_gemm`, ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on the
+  Gemma-4-31B measurement, a 7x slower FFN prefill, with decode untouched. The
+  load line says which way it went and a warn repeats the trade. Every consumer
+  already tolerated a `None` twin and the per-site proof is tabulated in
+  `transposed_twins.rs`; nothing needed a new fallback. Dropping the SSM twin
+  also drops the 1.41 GiB `out_proj` FP8 predequant and the NVFP4-MMQ finalize,
+  both of which exist only to feed the same transposed GEMM. A proper fix is a
+  prefill GEMM that reads the packed layout directly; this is a serve tonight.
 - **`ATLAS_LOAD_RELEASE_SOURCES`, release-on-consume for checkpoint tensors a
   loader has finished requantising.** `WeightStore::release_tensor` frees one
   entry's device allocation during the layer loop and marks it consumed;
@@ -99,6 +122,21 @@ behind specific subsystems — see the
   sits unused. Strix stays unmapped on purpose.
 
 ### Fixed
+- **The `CompressedTensors` attention dequant leak is fixed unconditionally,
+  and three direct store frees now go through `WeightStore::release_tensor`.**
+  The leak (200 MiB per full-attention layer, **3.12 GiB** across the sixteen of
+  `unsloth/Qwen3.8-27B-NVFP4`, on every target including NVIDIA) rode
+  `ATLAS_LOAD_RELEASE_SOURCES` for one commit because that change was not
+  allowed to move NVIDIA behaviour. It does not: what byte-identical protects is
+  which values the GEMMs read, and the leaked buffer has no reader:
+  `quantize_to_nvfp4` has already consumed it and `AttentionWeights` keeps only
+  the NVFP4 result and the two norm pointers. Separately, the GDN concat inputs,
+  the GDN `out_proj` input and the `Bf16Raw` arm of `quantized_any` freed
+  pointers the store still listed, so teardown freed them again, on every raw
+  BF16 fine-tune Atlas serves, in the last case. Residency is unchanged to the
+  byte; what changes is that the store now forgets what was freed, so `contains`
+  and `get` stop claiming memory that is gone and a late reader gets a named
+  error instead of whatever the allocator handed out next.
 - **The FP8 prefill predequant is no longer built on a target whose FP8 prefill
   GEMM does not exist.** Measured on an R9700 (gfx1201, SCALE 1.7.1):
   `Ornith-1.0-9B` loads, builds and boots, then every request dies at layer 0

@@ -111,13 +111,55 @@ plus the buffer arena plus the vision encoder's working set leaves **27.9 GB**
 | release every dead store tensor except `lm_head` | 38.31 | 41.13 | no |
 | ... and free the attention BF16 dequant | 35.18 | 37.78 | no |
 | ... and release the FP8 `lm_head` too | 34.00 | 36.50 | no |
-| ... and drop every transposed twin | 21.25 | 22.82 | **yes** |
+| ... and drop every transposed twin (`ATLAS_LOAD_TRANSPOSED_TWINS=0`) | 21.25 | 22.82 | **yes** |
 
 **Release-on-consume is necessary and not sufficient.** It buys 8.76 GiB
 (9.40 GB). The attention leak buys another 3.12 GiB. Together they take the
 peak from 50.5 GB to 37.8 GB, which still will not load on this board. The
 remaining 12.74 GiB is the second layout, and nothing short of dropping it (or
 a single-layout prefill kernel) closes the gap.
+
+### The lever that closes it, and what it costs
+
+`ATLAS_LOAD_TRANSPOSED_TWINS` (`weight_loader/qwen35_dense/transposed_twins.rs`)
+is `1` (build every twin; today's behaviour byte for byte, and the default on
+every non-SCALE target), `0` (build none) or `auto` (build them only if
+`gpu.free_memory()` after the checkpoint is resident exceeds their projected
+bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the vision
+encoder's working set). Unset takes `cfg!(atlas_scale)`. `serve-amd.sh` exports
+`auto` for r9700.
+
+The projection is the SAME arithmetic that reproduces the measured ledger above,
+and `transposed_twins_tests.rs` pins it to the whole MiB against these numbers,
+so a drift between the projection and the ledger is a test failure rather than a
+probe deciding about a model that is not the one being loaded:
+
+| model | dense FFN | SSM | attention | total |
+|---|---|---|---|---|
+| `qwen3.8-27b` (64 layers, hidden 5120, inter 17408) | 9,180 MiB (8.96 GiB) | 2,970 MiB (2.90 GiB) | 900 MiB (0.88 GiB) | **13,050 MiB (12.74 GiB)** |
+| `ornith-1.0-9b` (32 layers, hidden 4096, inter 12288) | 2,592 MiB (2.53 GiB) | 864 MiB (0.84 GiB) | 252 MiB (0.25 GiB) | **3,708 MiB (3.62 GiB)** |
+
+The fused `[q|k|v]` attention twin is deliberately NOT priced: it is built only
+when q/k/v share one `weight_scale_2`, which this checkpoint's per-projection
+absmax makes false (see item 4 of the ranked list), and pricing a copy that is
+usually absent would make `auto` refuse room it does not need.
+
+**The cost.** With the twins absent every fast arm of `w4_gemm!` is skipped and
+FFN prefill lands on the plain `w4a16_gemm`: ~7.0 TFLOP/s against ~51 for
+`w4a16_gemm_t_m128` on the Gemma-4-31B measurement, a 7x slower FFN prefill.
+The SSM and attention sides are the same shape of trade and are unmeasured.
+Decode is untouched: it reads the packed original either way. Two further
+consequences are deliberate: dropping the SSM twin also drops the 1.41 GiB
+`out_proj` FP8 predequant (`qwen3_ssm/init_fp8.rs:110` keys off
+`out_proj_nvfp4_t.is_some()`), and `finalize_nvfp4_mmq_load` is skipped with
+them, because it is residency-neutral only while there are `_t` copies for it to
+free.
+
+**This is not the fix.** The fix is item 5's sibling: a prefill GEMM that reads
+the packed `[N, K/2]` layout directly with a transposed tile walk, with the
+128x128 `cp.async` tiling the `_t` kernels have. Then there is no second layout
+to build or skip, on any target, and the 27B fits without paying 7x. This lever
+buys a serve.
 
 ## DEAD versus ALIVE: the per-site argument
 
@@ -183,9 +225,18 @@ is exactly the 28 stale allocations the ledger shows.
 Cost on this checkpoint: 200 MiB per full-attention layer, **3.12 GiB (3.36 GB)
 across the 16**. It fires on any CompressedTensors checkpoint whose attention
 projections are not NVFP4-packed, which is the whole unsloth mixed-precision
-family, on every target including NVIDIA. It is a plain bug, and the only
-reason it is gated behind a flag in this change rather than fixed outright is
-the byte-identical-on-NVIDIA constraint this work was given.
+family, on every target including NVIDIA.
+
+**FIXED UNCONDITIONALLY**, one commit after it was first written down. It rode
+`ATLAS_LOAD_RELEASE_SOURCES` only because that change was not allowed to move
+NVIDIA behaviour, and on re-reading that constraint does not cover this: what
+"byte-identical on NVIDIA" protects is which values the GEMMs read, and this
+buffer has no reader: `quantize_to_nvfp4` has already consumed it into a fresh
+NVFP4 allocation and `AttentionWeights` keeps only that result and the two norm
+pointers. An allocation nothing reads is not behaviour. The FP8 dtype test stays
+and is not the knob in disguise: it is the proof that `dense_bf16` is a fresh
+allocation rather than the store's own pointer, which `dense_auto` returns
+uncopied for a BF16 tensor.
 
 ### `spark-model/build.rs` documents a free that does not exist
 
@@ -231,7 +282,7 @@ the consuming kernel has completed on the load stream.
 | attention q/k/v/o, CompressedTensors arm | `qwen35_dense.rs` | 4 FP8 tensors + scales x16 layers | 1.56 GiB |
 | SSM `in_proj_qkv`/`in_proj_z`/`out_proj`, dequant path | `qwen35_dense.rs` | 3 FP8 tensors + scales x48 layers | 5.16 GiB |
 | dense FFN gate/up/down, FP8 layers | `qwen35_dense.rs` | 3 FP8 tensors + scales x8 layers | 1.99 GiB |
-| attention BF16 dequant (not a store tensor; a leaked derived buffer) | `qwen35_dense.rs` | the `dense_bf16` intermediate | 3.12 GiB |
+| attention BF16 dequant (not a store tensor; a leaked derived buffer; NO LONGER on this knob, see above) | `qwen35_dense.rs` | the `dense_bf16` intermediate | 3.12 GiB |
 
 NOT released, deliberately:
 
@@ -300,7 +351,11 @@ the same pointer and records it, so both become correct by substitution.
 0. **Route the two direct store frees above through `release_tensor`.** No
    residency change at all, and it removes a double free that fires on every
    `Bf16Raw` checkpoint. Listed first because it is the cheapest and the only
-   item that is a correctness fix rather than a memory one.
+   item that is a correctness fix rather than a memory one. **DONE**, plus a
+   third of identical shape on the keep-packed Q2_0 GDN arm that this list did
+   not walk. `free_maybe_store_owned` compares POINTERS rather than dtypes, so a
+   TP shard, a dequant output and a concat, all of which reach those sites
+   through the same variable, keep the plain `gpu.free` they had.
 1. **Release the FP8 `lm_head`** behind a `!config.lm_head_fp8 &&
    !use_speculative` guard. 1.18 GiB, no kernel work, needs the loader trait to
    learn about the LM-head route or `prune_after_load` to do it after
@@ -314,18 +369,26 @@ the same pointer and records it, so both become correct by substitution.
    the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 TFLOP/s for
    `t_m128`. Call it a 7x slower FFN prefill. On a board that otherwise cannot
    load the model at all, that trade is available; it should be a knob with a
-   measured A/B, not a silent default.
+   measured A/B, not a silent default. **DONE**, as
+   `ATLAS_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one lever
+   for all three families rather than three, because a build that skips one and
+   builds the others has no state anyone measured. The A/B is still owed: the
+   7x is inherited from Gemma-4-31B on GB10, not measured here.
 3. **Do not build the transposed SSM twins.** 2.90 GiB. `qkvz_nvfp4_t` and
    `out_proj_nvfp4_t` are `Option` and every consumer is guarded
    (`trait_prefill_proj.rs:120`, `:327`, `trait_decode_batched.rs:424`, `:483`),
    but `predequant_for_prefill` keys off `out_proj_nvfp4_t.is_some()`
    (`init_fp8.rs:110`), so dropping it also drops the 1.41 GiB FP8 predequant,
-   for 4.31 GiB total. Unmeasured cost.
+   for 4.31 GiB total. Unmeasured cost. **DONE**, under the same lever as
+   item 2.
 4. **Do not build the transposed attention twins.** 0.88 GiB. Smallest of the
    three and the best-documented win (the fused `[q|k|v]` twin is not built at
    all on this checkpoint: `quantize_to_nvfp4` derives a per-tensor `scale2`
    from each projection's own absmax, so the `scales_equal` test at
-   `qwen35_dense.rs:997-999` fails and the loader logs the warning).
+   `qwen35_dense.rs:997-999` fails and the loader logs the warning). **DONE**,
+   under the same lever as item 2. The fused twin is NOT in the projection for
+   exactly the reason this item gives: pricing a copy that is usually absent
+   would make `auto` refuse room it does not need.
 5. **Keep the attention and SSM projections FP8 end to end.** This is the
    correct answer and it is blocked on a kernel: the checkpoint's scale is
    per-CHANNEL `[N,1]`, every `w8a16` kernel indexes `block_scale[n/128, k/128]`
