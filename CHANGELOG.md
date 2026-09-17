@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 For per-release deep dives — kernel-level wins, the engineering history
 behind specific subsystems — see the
-[Atlas Spark Journey](docs/AVAROK_SPARK_JOURNEY.md).
+[Atlas Spark Journey](docs/ATLAS_SPARK_JOURNEY.md).
 
 ## [Unreleased]
 
@@ -173,7 +173,7 @@ targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
 For the kernel-level perf history — long-context regression sweeps,
 the parking_lot migration, the libcuda + libnccl CI stubs, the
 multi-stage scheduler refactor — see
-[`docs/AVAROK_SPARK_JOURNEY.md`](docs/AVAROK_SPARK_JOURNEY.md) and the
+[`docs/ATLAS_SPARK_JOURNEY.md`](docs/ATLAS_SPARK_JOURNEY.md) and the
 [`book/`](book/) chapters under `deep-dives/`.
 
 [Unreleased]: https://github.com/Avarok-Cybersecurity/atlas/compare/v0.1.0...HEAD

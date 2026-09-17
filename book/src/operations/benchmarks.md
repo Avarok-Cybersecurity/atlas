@@ -123,7 +123,7 @@ Run a request, note the TTFT. Run the same request again — with `--enable-pref
 
 - **Pinned snapshots** (tracked): result files under `bench/`. These feed the book and the README.
 - **Ephemeral Criterion runs** (gitignored): `target/criterion/`.
-- **Historical benchmark journeys**: `docs/AVAROK_SPARK_JOURNEY.md` — the benchmark retrospective across the Spark line.
+- **Historical benchmark journeys**: `docs/ATLAS_SPARK_JOURNEY.md` — the benchmark retrospective across the Spark line.
 
 ## Apples-to-apples notes
 
@@ -298,5 +298,5 @@ Machine-readable output goes to **stdout**, progress to **stderr**, so
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.
 - `scripts/sweep_all_models.sh`, `scripts/run_conc_benchmark.sh` — automation.
-- `docs/AVAROK_SPARK_JOURNEY.md` — benchmark journey and retrospective.
+- `docs/ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective.
 - README "Benchmark Results" section — the authoritative long-form table.

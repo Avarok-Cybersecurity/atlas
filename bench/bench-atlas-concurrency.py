@@ -7,8 +7,8 @@ Same methodology as bench-nvfp4-concurrency.py (vLLM benchmark):
   Streaming SSE, P50/P90/P99 for TTFT and TPOT, aggregate throughput.
 
 Usage:
-  python3 bench-avarok-concurrency.py                          # Run benchmark
-  python3 bench-avarok-concurrency.py --compare VLLM.json      # Compare with vLLM results
+  python3 bench-atlas-concurrency.py                          # Run benchmark
+  python3 bench-atlas-concurrency.py --compare VLLM.json      # Compare with vLLM results
 """
 
 import asyncio
@@ -31,7 +31,7 @@ MODEL = None
 WARMUP_REQUESTS = 3
 REQUESTS_PER_LEVEL = int(os.environ.get("BENCH_REQUESTS_PER_LEVEL", "0"))
 RESULTS_FILE = os.environ.get("BENCH_RESULTS_FILE",
-                              "/workspace/avarok/bench-avarok-concurrency-results.json")
+                              "/workspace/avarok/bench-atlas-concurrency-results.json")
 
 # SSM state pool = 32 slots. Slots leak when pool is exhausted (server bug),
 # so cap concurrency well below pool size. conc=16 leaves headroom.

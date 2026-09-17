@@ -20,7 +20,7 @@
   env incl. `AVAROK_MTP_GATE_FORCE=1`. Binary: pushed tip of PR #369.
 - vLLM serve: `sparkrun-eugr-vllm:latest` (vLLM 0.23.1rc1.dev207), `--max-num-seqs 128`,
   `--max-model-len 32768`, util 0.85.
-- Synthetic scoreboard: `bench/bench-avarok-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
+- Synthetic scoreboard: `bench/bench-atlas-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
   regimes (≤4096); agentic-harness `target_concurrency` sweep follows as a second driver.
 
 ## Log (appended by drivers)

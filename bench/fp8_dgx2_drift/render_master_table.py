@@ -250,7 +250,7 @@ def main() -> int:
     out.append("./bench/fp8_dgx2_drift/dgx2_op_dump.sh")
     out.append("")
     out.append("# Fire the prompt (text-decoded for /v1/completions):")
-    out.append("python3 bench/fp8_dgx2_drift/fire_avarok_prompt.py")
+    out.append("python3 bench/fp8_dgx2_drift/fire_atlas_prompt.py")
     out.append("")
     out.append("# HF reference forward on dgx1 CPU (~30 min for 10382 tokens):")
     out.append("python3 bench/fp8_dgx2_drift/hf_op_dump.py")

@@ -195,7 +195,7 @@ Expected: `test result: ok. 32 passed; 0 failed`.
 
 ## Results
 
-All numbers in this section are from `tests/avarok_bench_comprehensive.py`
+All numbers in this section are from `tests/atlas_bench_comprehensive.py`
 on **Qwen3.6-35B-FP8**, single GPU, `--max-seq-len 32768
 --kv-high-precision-layers 0`. Per-metric median across the harness's
 repeated calls (5 for prefill + decode_short, 3 for dec_after_8K).
@@ -214,7 +214,7 @@ existing repo already reports.
 Reproduce one cell:
 
 ```bash
-python3 tests/avarok_bench_comprehensive.py \
+python3 tests/atlas_bench_comprehensive.py \
   --image atlas-gb10-tqplus \
   --model-path /path/to/qwen3.6-35b-fp8 \
   --config-name "tqplus-default" \
@@ -351,7 +351,7 @@ The 6 asym variants whose K-side is compatible with FP8 attention
 weights run end-to-end on Qwen3.6. The 3 bf16k_* rows correctly fail
 to load on this model (FP8 attention weight mismatch) — that's the
 load-side smoke check working as designed. Numbers measured against
-the same `tests/avarok_bench_comprehensive.py` harness.
+the same `tests/atlas_bench_comprehensive.py` harness.
 
 | dtype             | PPL sim | dec_short | pre_2K  | pre_8K  | pre_16K | dec_after_8K |
 |-------------------|--------:|----------:|--------:|--------:|--------:|-------------:|

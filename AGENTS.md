@@ -25,7 +25,7 @@ moving parts:
 - **`crates/avarok-spark-bench/`** — benchmark harness.
 
 Architecture decision records live in `docs/adr/`; the benchmark journey in
-`docs/AVAROK_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
+`docs/ATLAS_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
 
 ## Ground rules
 

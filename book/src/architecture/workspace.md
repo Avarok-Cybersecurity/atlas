@@ -113,8 +113,8 @@ The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avaro
 
 Inside `docs/`:
 
-- `adr/` — architecture decision records (licensing, pure-Rust, hybrid SSM/attention, NVFP4/FP8 quantization, TP/EP composition, EP batched decode, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here. Top-level notes like `ARCHITECTURE.md`, `AVAROK_KERNELS.md`, and `HARDWARE.md` sit alongside them.
-- `AVAROK_SPARK_JOURNEY.md` — benchmark journey and retrospective across the Spark line. Useful context, but not a contract.
+- `adr/` — architecture decision records (licensing, pure-Rust, hybrid SSM/attention, NVFP4/FP8 quantization, TP/EP composition, EP batched decode, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here. Top-level notes like `ARCHITECTURE.md`, `ATLAS_KERNELS.md`, and `HARDWARE.md` sit alongside them.
+- `ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective across the Spark line. Useful context, but not a contract.
 - `releases/` — human-readable release notes keyed by release (`README.md` plus per-release files).
 
 The book you're reading in `book/` synthesises all of this into a single narrative — it is *not* a canonical rewrite of those documents. The design records in `docs/adr/` remain the authoritative reference and the book links to them directly from the deep-dive chapters.

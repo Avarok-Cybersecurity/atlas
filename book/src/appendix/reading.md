@@ -39,7 +39,7 @@ Curated references that informed Atlas's design. Not exhaustive — just the pap
 ## Inference systems
 
 - **vLLM** — Kwon et al. (SOSP 2023). The PagedAttention paper. Atlas's paged KV cache follows the vLLM model with Atlas-specific kernel work below it.
-- **TensorRT-LLM** documentation and source. Atlas's TRT-LLM benchmark comparisons in `docs/AVAROK_SPARK_JOURNEY.md` are informed by reading the TRT-LLM codebase; that journey records the 29.6 tok/s ceiling for NVFP4 on SM121 TRT-LLM.
+- **TensorRT-LLM** documentation and source. Atlas's TRT-LLM benchmark comparisons in `docs/ATLAS_SPARK_JOURNEY.md` are informed by reading the TRT-LLM codebase; that journey records the 29.6 tok/s ceiling for NVFP4 on SM121 TRT-LLM.
 - **SGLang** — structured-generation inference framework.
 - **Triton** — inference server. Peripheral; Atlas does not use it but the operational patterns are informative.
 
@@ -64,6 +64,6 @@ Inside the repo, the canonical long-form references are the architecture decisio
 - `docs/adr/0007-tp-ep-composition.md`, `docs/adr/0011-ep-batched-decode-optimization.md` — EP=2 MoE dispatch and batched decode.
 - `docs/adr/0010-vendor-xgrammar.md` — constrained decoding via vendored XGrammar.
 - `docs/turboquant-plus.md` — TurboQuant KV.
-- `docs/ARCHITECTURE.md`, `docs/AVAROK_KERNELS.md`, `docs/HARDWARE.md` — the system, kernel, and hardware overviews.
+- `docs/ARCHITECTURE.md`, `docs/ATLAS_KERNELS.md`, `docs/HARDWARE.md` — the system, kernel, and hardware overviews.
 
 For the broader research context that informed Atlas's direction, see `docs/atlas-spark-research-articles.md` in the repo — a rolling curated list that's longer and more current than this page.

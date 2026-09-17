@@ -15,8 +15,8 @@
 # BASE explicitly or read it off the running container (`docker ps --format '{{.Image}}'`).
 # A stale base silently changes what is in the image below your one changed layer.
 set -euo pipefail
-TAG="${1:?usage: build-avarok-glm53-image.sh <tag>   e.g. t48}"
-BASE="${BASE:-avarok-glm53:t47}"
+TAG="${1:?usage: build-atlas-glm53-image.sh <tag>   e.g. t48}"
+BASE="${BASE:-atlas-glm53:t47}"
 NODES="${NODES:-10.10.10.1 10.10.10.2}"
 
 cd "$(dirname "$0")/.."
@@ -30,6 +30,6 @@ for n in $NODES; do
   sudo -n -u cluster scp -q -o BatchMode=yes target/release/spark "cluster@$n:~/glm53-build/spark"
   sudo -n -u cluster ssh -o BatchMode=yes "cluster@$n" "cd ~/glm53-build && \
     printf 'FROM %s\nCOPY spark /usr/local/bin/spark\n' '$BASE' > Dockerfile && \
-    docker build -q -t 'avarok-glm53:$TAG' ."
+    docker build -q -t 'atlas-glm53:$TAG' ."
 done
-echo "avarok-glm53:$TAG built on: $NODES   (base $BASE)"
+echo "atlas-glm53:$TAG built on: $NODES   (base $BASE)"

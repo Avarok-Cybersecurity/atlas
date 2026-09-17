@@ -20,7 +20,7 @@ The multi-model Docker image always tracks the latest alpha at `avarok/atlas-gb1
 
 ## Recent themes
 
-Rather than duplicate every release note, here's the shape of recent work. Each theme maps to architecture decision records under `docs/adr/` and the benchmark history in `docs/AVAROK_SPARK_JOURNEY.md`.
+Rather than duplicate every release note, here's the shape of recent work. Each theme maps to architecture decision records under `docs/adr/` and the benchmark history in `docs/ATLAS_SPARK_JOURNEY.md`.
 
 ### alpha-2.0 → alpha-2.20 — coherence and the model matrix
 

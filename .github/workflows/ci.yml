@@ -541,6 +541,10 @@ jobs:
           || 'ubuntu-latest' }}
     permissions:
       contents: read
+      # Only the merge-to-main step uses this, and only to rewrite one comment
+      # whose id is pinned in a repository variable. A read-only token cannot
+      # keep the backlog, and the backlog is the part of CHKI worth keeping.
+      discussions: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -590,6 +594,53 @@ jobs:
               # still run, so a tree that cannot be indexed fails here too.
               python3 scripts/check_cross_hardware.py --paths ;;
           esac
+
+      # The table's own rules, on every PR. Without this the renderer is only
+      # exercised on a merge, which is the one moment its failure cannot be
+      # fixed before it matters.
+      - name: The reach table's rules still fire
+        run: python3 scripts/chki_reach_table.py
+
+      # The verdict is advisory and scrolls away with the run; the BACKLOG does
+      # not. On a merge to main, append one row to the single comment that is
+      # the reach table -- which kernels landed, which hardware consumed them,
+      # and which of those hardware nothing in this repository compiles -- and
+      # rewrite its first row to the union of that last column. That union is
+      # the list of targets somebody has to build or measure by hand.
+      #
+      # Advisory here too: the step is `continue-on-error` by the job, and the
+      # table it would have written is printed to the run summary, so a token
+      # or permission problem loses a comment edit, never the record.
+      - name: Append this merge to the CHKI reach table
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # PCND: no default comment id. Unset means "not configured", and the
+          # step says so and exits 0 rather than editing an arbitrary comment.
+          CHKI_TABLE_COMMENT_ID: ${{ vars.CHKI_TABLE_COMMENT_ID }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # The PR the merge commit names. A push that is not a PR merge (a
+          # direct push, a revert made locally) has nothing to attribute, and
+          # an unattributed row would be a backlog entry nobody could chase.
+          pr=$(git log -1 --format=%s "${GITHUB_SHA}" | grep -oE '\(#[0-9]+\)$' | tr -d '()' || true)
+          if [ -z "$pr" ]; then
+            echo "merge commit names no PR — nothing to record."; exit 0
+          fi
+          base="${PUSH_BEFORE}"
+          case "$base" in 0000000000000000000000000000000000000000|"") base="${GITHUB_SHA}~1" ;; esac
+          python3 scripts/check_cross_hardware.py --base "$base" --head "${GITHUB_SHA}" --json > chki.json
+          python3 scripts/chki_reach_table.py --pr "$pr" --chki-json chki.json --out table.md
+          {
+            echo "### CHKI reach table — the row for $pr"; echo; cat table.md;
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ -z "${CHKI_TABLE_COMMENT_ID:-}" ]; then
+            echo "CHKI_TABLE_COMMENT_ID is not set — rendered the row above and posted nothing."
+            exit 0
+          fi
+          python3 scripts/chki_reach_table.py --pr "$pr" --chki-json chki.json \
+                  --comment-id "${CHKI_TABLE_COMMENT_ID}"
 
   bench-threshold-prose:
     name: BENCH.toml threshold prose
