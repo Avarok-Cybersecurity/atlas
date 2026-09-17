@@ -24,7 +24,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::expert_stream::{
     EngramRowReader, ExpertLru, ExpertSliceMap, ExpertSource, PinnedArena, ShardFiles,
@@ -638,9 +638,9 @@ mod real_file_tests {
     #[test]
     #[ignore = "requires a CUDA GB10 + the on-disk DeepSeek-V4.1-Flash Q2_K shards"]
     fn layer0_matches_the_cpu_reference_on_the_real_weights() {
-        let set = atlas_kernels::ptx_for_exact_target("deepseek-v4-flash", "nvfp4")
+        let set = avarok_kernels::ptx_for_exact_target("deepseek-v4-flash", "nvfp4")
             .expect("kernel target");
-        let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules)
+        let gpu = spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules)
             .expect("CUDA backend");
         let g: &dyn GpuBackend = &gpu;
         let stream = g.default_stream();
