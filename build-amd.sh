@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Build Avarok for AMD GPUs via SCALE (recompiles the unmodified CUDA kernels).
 #
-# The hardware target comes from AVAROK_TARGET_HW and defaults to `strix`, so
-# an unset environment builds exactly what it always did. The SCALE toolchain
-# directory is not hardcoded: it is read from the `arch` key of
-# kernels/$AVAROK_TARGET_HW/HARDWARE.toml, which is the same key
-# avarok-kernels/build_target.rs compiles with, so the script and the build
-# cannot disagree about which arch this is.
-#
 #   ./build-amd.sh                         # strix  / gfx1151 / qwen3.6-27b
 #   AVAROK_TARGET_HW=r9700 ./build-amd.sh  # r9700  / gfx1201 / qwen3.8-27b
 #
-# Verified: gfx1151 / Strix Halo, SCALE 1.7.1, native Ubuntu; and gfx1201 /
-# Radeon AI PRO R9700, SCALE 1.7.1 targets/gfx1201, ROCm 7.2.0 (97/97 kernels
-# compile, 94-kernel spark-server build green). See
+# Knobs, all with defaults:
+#   SCALE_HOME            SCALE install root. Default ~/scale171/scale-1.7.1-Linux.
+#   AVAROK_TARGET_HW      kernels/<hw>/ directory to build. Default strix.
+#   AVAROK_TARGET_MODEL   follows the hardware: qwen3.8-27b on r9700, else qwen3.6-27b.
+#   AVAROK_TARGET_QUANT   default nvfp4.
+#
+# The SCALE toolchain directory is not hardcoded: it is read from the `arch`
+# key of kernels/$AVAROK_TARGET_HW/HARDWARE.toml, the same key
+# avarok-kernels/build_target.rs compiles with, so the script and the build
+# cannot disagree about which arch this is.
+#
+# Verified on gfx1151 (Strix Halo, SCALE 1.7.1, native Ubuntu) and on gfx1201
+# (Radeon AI PRO R9700, SCALE 1.7.1 targets/gfx1201, ROCm 7.2.0). See
 # docs/porting/amd-strix-halo-scale.md and the r9700 section of
 # docs/HARDWARE.md.
 set -euo pipefail

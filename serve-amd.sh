@@ -1,25 +1,33 @@
 #!/usr/bin/env bash
 # Serve a model with Avarok on AMD GPUs (SCALE runtime).
 #
-# The hardware target comes from AVAROK_TARGET_HW and defaults to `strix`. The
-# SCALE toolchain directory is read from the `arch` key of
-# kernels/$AVAROK_TARGET_HW/HARDWARE.toml rather than hardcoded, so this script
-# and the build agree about the arch by construction.
-#
 #   ./serve-amd.sh                                                   # strix / gfx1151
 #   AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4   # r9700 / gfx1201
 #
-# Verified coherent on gfx1151 / Strix Halo with Qwen/Qwen3.6-27B-FP8. On
-# gfx1201 / Radeon AI PRO R9700 the build is green and the two runtime knobs
-# below are re-verified as necessary, but coherent generation has NOT been
-# observed yet. See docs/porting/amd-strix-halo-scale.md and the r9700 section
-# of docs/HARDWARE.md.
+# Knobs, all with defaults:
+#   $1                  model to serve. Default follows the hardware.
+#   SCALE_HOME          SCALE install root. Default ~/scale171/scale-1.7.1-Linux.
+#   AVAROK_TARGET_HW    kernels/<hw>/ directory to serve from. Default strix.
+#   PORT                default 8081.
+#   MAX_SEQ_LEN         default 4096.
+#   GPU_UTIL            fraction of the GPU pool the KV sizer may fill.
+#   MAX_BATCH           concurrent sequences.
+#   OOM_GUARD_MB        headroom the fast loader's OOM pre-flight demands.
 #
-# On a SCALE build Avarok reads free VRAM from the amdgpu sysfs counters
+# The SCALE toolchain directory is read from the `arch` key of
+# kernels/$AVAROK_TARGET_HW/HARDWARE.toml rather than hardcoded, so this script
+# and the build agree about the arch by construction.
+#
+# Verified coherent on gfx1151 (Strix Halo) with Qwen/Qwen3.6-27B-FP8, and on
+# gfx1201 (Radeon AI PRO R9700, SCALE 1.7.1 targets/gfx1201, ROCm 7.2.0) with
+# unsloth/Qwen3.8-27B-NVFP4. See docs/porting/amd-strix-halo-scale.md and the
+# r9700 section of docs/HARDWARE.md.
+#
+# Free VRAM on a SCALE build comes from the amdgpu sysfs counters
 # (/sys/class/drm/card*/device/mem_info_vram_{total,used}) rather than
 # cuMemGetInfo, whose free figure is not truthful there. That is the default
 # and needs no export here; AVAROK_MEMINFO_SOURCE=driver|sysfs|sysfs:<dir>
-# overrides it for a bisect. See the r9700 section of docs/HARDWARE.md.
+# overrides it for a bisect.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -31,12 +39,13 @@ export AVAROK_TARGET_HW="${AVAROK_TARGET_HW:-strix}"
 case "$AVAROK_TARGET_HW" in
   r9700)
     default_model="unsloth/Qwen3.8-27B-NVFP4"
-    # Measured 2026-09-17 on an R9700 that was also driving a desktop
-    # session: the 27B loads to 19.42 GB of weights (twins skipped, 9.35 GB
-    # released on consume) and 23.0 GB pre-KV. At 0.75 or 0.80 the KV sizer
-    # refused; at 0.90 with --max-batch-size 1 it booted with a 3.7 GB KV
-    # budget (4128 tokens) and 29.1 GB of VRAM in use, and answered
-    # coherently. A 9B (ornith-1.0-9b) fits at 0.75 with batch 4.
+    # Measured on gfx1201 (Radeon AI PRO R9700, SCALE 1.7.1, ROCm 7.2.0),
+    # 2026-09-17, on a board also driving a desktop session: the 27B loads to
+    # 19.42 GB of weights (twins skipped, 9.35 GB released on consume) and
+    # 23.0 GB pre-KV. At 0.75 or 0.80 the KV sizer refuses; at 0.90 with
+    # --max-batch-size 1 it boots with a 3.7 GB KV budget (4128 tokens) and
+    # 29.1 GB of VRAM in use, and answers coherently. A 9B (ornith-1.0-9b)
+    # fits at 0.75 with batch 4.
     default_gpu_util="0.90"
     default_max_batch="1"
     # The fast loader's OOM pre-flight is on-disk bytes x 1.3 plus this
@@ -83,8 +92,8 @@ if [[ ! -d "$scale_target" ]]; then
   exit 1
 fi
 
-# Runtime knobs. Only these two are exported: both have readers in this tree,
-# and both are required on every SCALE target we have silicon for.
+# Runtime knobs. Each one exported below has a reader in this tree; see the
+# r9700 section of docs/HARDWARE.md for the target facts behind them.
 #
 # AVAROK_W4A16_VARIANT=v1 (spark-model/src/layers/mod.rs) pins the BF16-MMA
 # NVFP4 GEMM instead of the FP8 path. SCALE emits no e4m3 MMA codegen on
@@ -102,46 +111,35 @@ export AVAROK_W4A16_VARIANT=v1
 case "$AVAROK_TARGET_HW" in
   r9700) export AVAROK_NO_GDN_FP8_PREFILL=1 ;;
 esac
-# AVAROK_NO_FP8_PREDEQUANT=1 (spark-model/src/layers/fp8_predequant.rs) stops the
-# loader building NVFP4-to-FP8 prefill copies of the SSM out_proj, the attention
-# q/k/v/o and the MoE gate + shared expert. The prefill dispatch PREFERS those
-# copies over both NVFP4 arms, and the GEMM it then launches is
-# w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab, a module gfx1201 does not compile — which
-# on 2026-09-17 made every Ornith-1.0-9B request on this board die at layer 0
-# with `Module 'w4a16_fp8_ldmab' not loaded`. The Strix recipe carried this
-# variable historically; it was dropped from this script when its reader was
-# lost, and the reader is back.
-#
-# BELT, NOT THE FIX: the guard probes the kernels itself and skips the copies on
-# any target that cannot launch them, so a serve without this export is correct
-# too. It is exported here so the r9700 recipe says out loud which path it is
-# on, and so an operator reading the serve log sees `AVAROK_NO_FP8_PREDEQUANT is
-# set` rather than having to infer it from a kernel name.
+# AVAROK_NO_FP8_PREDEQUANT=1 (spark-model/src/layers/fp8_predequant.rs) stops
+# the loader building NVFP4-to-FP8 prefill copies of the SSM out_proj, the
+# attention q/k/v/o and the MoE gate + shared expert. The prefill dispatch
+# PREFERS those copies over both NVFP4 arms, and the GEMM it then launches is
+# w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab, a module gfx1201 does not compile, so
+# every request died at layer 0 with `Module 'w4a16_fp8_ldmab' not loaded`.
+# Belt, not the fix: the guard probes the kernels itself and skips the copies
+# on any target that cannot launch them, so a serve without this export is
+# correct too. It is exported so the serve log names the decision in words.
 case "$AVAROK_TARGET_HW" in
   r9700) export AVAROK_NO_FP8_PREDEQUANT=1 ;;
 esac
 # AVAROK_LOAD_TRANSPOSED_TWINS=0 (spark-model/src/weight_loader/qwen35_dense/
 # transposed_twins.rs) declines the transposed second copy of every quantised
-# weight. On GB10 that copy is a large prefill win and declining it is a
-# residency trade; ON THIS BOARD IT IS NOT A TRADE AT ALL. The R9700 prefill
-# measurement of 2026-09-17 puts the twin arm w4a16_gemm_t_m128 at about
-# 1 TFLOP/s against about 4 for the plain w4a16_gemm it replaces (Ornith-1.0-9B
-# with the twins, Qwen3.8-27B without), so on gfx1201 the second layout is
-# SLOWER as well as 12.74 GiB larger on unsloth/Qwen3.8-27B-NVFP4 (3.62 GiB on
-# Ornith-1.0-9B). The 7-vs-51 TFLOP/s figures that used to be quoted here are
-# the Gemma-4-31B numbers from GB10 and were never measured on SCALE.
-# Decode is untouched either way: it reads the packed original.
-# `0` is also the loader's own unset default under cfg(avarok_scale), so this
-# export only makes the recipe say out loud which path it is on. `=1` builds
+# weight: 12.74 GiB on unsloth/Qwen3.8-27B-NVFP4, 3.62 GiB on Ornith-1.0-9B.
+# On GB10 that copy is a large prefill win and declining it is a residency
+# trade; on gfx1201 it is not a trade at all, because the twin arm
+# w4a16_gemm_t_m128 measures ~1 TFLOP/s against ~4 for the plain w4a16_gemm it
+# replaces. The 7-vs-51 TFLOP/s pair quoted for this lever elsewhere is a GB10
+# measurement and was never measured on SCALE. Decode is untouched either way:
+# it reads the packed original. `0` is also the loader's unset default under
+# cfg(avarok_scale), so this export only makes the recipe explicit; `=1` builds
 # them anyway and `=auto` restores the free-VRAM probe, which is how the A/B
-# above gets re-run.
-# See the r9700 section of docs/HARDWARE.md and docs/porting/r9700-residency.md.
+# gets re-run. See docs/porting/r9700-residency.md.
 case "$AVAROK_TARGET_HW" in
   r9700) export AVAROK_LOAD_TRANSPOSED_TWINS=0 ;;
 esac
-# Removed here: AVAROK_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
-# tree as of this commit, so exporting it only suggested a control that does not
-# exist.
+# Not exported: AVAROK_FORCE_GLOBAL_GDN. That name has no reader anywhere in
+# this tree, so exporting it advertised a control that does not exist.
 
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64 (the
 # gfx1151 queue-create fix lives in SCALE 1.7.1's bundled ROCm 7.2.3):
