@@ -10,7 +10,7 @@ metadata:
     the qwen3.5 family on a single GB10. No quantization, no MTP. Useful
     as a tiny-baseline reproducibility target alongside the 27B/35B/122B
     NVFP4 variants.
-  maintainer: avarok
+  maintainer: atlas
   category: chat
   model_params: 0.8B
   model_dtype: bf16

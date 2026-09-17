@@ -18,7 +18,7 @@ KNOWN-BAD
 - `maybe_rope` with `use_nope=true` leaves q/k unchanged (covered by `gated_nope_path_runs` vs rotate).
 
 TEST NOTES
-`cargo test -p atlas-core --lib -- kimi_k3::mla official_graph_census`
+`cargo test -p avarok-core --lib -- kimi_k3::mla official_graph_census`
 
 BUGS
 #N/A this slice.

@@ -198,7 +198,7 @@ fn arena_resolution_is_strict_and_block_aligned() {
     let bb = 65536u64; // Holo-like block_bytes
     // REQUIRED: absence is an error naming the variable (PCND).
     let err = resolve_arena_bytes_from(None, bb).unwrap_err().to_string();
-    assert!(err.contains("ATLAS_KV_PAGING_ARENA_GB"), "{err}");
+    assert!(err.contains("AVAROK_KV_PAGING_ARENA_GB"), "{err}");
     // 1 GiB is already a block multiple.
     assert_eq!(resolve_arena_bytes_from(Some("1"), bb).unwrap(), 1 << 30);
     // Fractional GiB floors to a block multiple.

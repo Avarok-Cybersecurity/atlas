@@ -54,7 +54,7 @@
 //!       --features cuda,gpu-examples
 use anyhow::{Result, ensure};
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -390,7 +390,7 @@ fn dual(gpu: &dyn GpuBackend, k: &Kernels, rng: &mut Rng) -> Result<usize> {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let kern = Kernels {
         gemv: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
         dual: gpu.kernel("w8a16_gemv_fused", "w8a16_gemv_dual")?,

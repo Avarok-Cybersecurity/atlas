@@ -2,7 +2,7 @@
 
 //! Stable, config-derived model fingerprint for the SHARED paging peer.
 //!
-//! The paging peer (atlas-cache-peer) owns ONE residency map shared across
+//! The paging peer (avarok-cache-peer) owns ONE residency map shared across
 //! every fleet client, keyed purely by the u64 the client sends — so the
 //! per-model namespace folded into each key is the ONLY thing preventing two
 //! models from silently serving each other's recurrent state. That makes the
@@ -48,12 +48,12 @@
 use std::num::NonZeroU64;
 
 use anyhow::{Result, anyhow, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
-// SSOT: the durable-key hash primitives live in atlas-tier (pure, dep-free, a
+// SSOT: the durable-key hash primitives live in avarok-tier (pure, dep-free, a
 // common ancestor of this crate and spark-storage's kv_paging). They were
 // transcribed in three places; the constants are now defined exactly once.
-pub(crate) use atlas_tier::hash::{FNV_OFFSET, fnv1a_64, mix64};
+pub(crate) use avarok_tier::hash::{FNV_OFFSET, fnv1a_64, mix64};
 
 /// Bump = deliberate fleet-wide cache-key rotation (document it).
 // v2 (2026-07-10): added hidden_size / num_attention_heads / intermediate_size /
@@ -82,16 +82,16 @@ pub(crate) struct ModelFingerprint(NonZeroU64);
 
 impl ModelFingerprint {
     /// Derive the fingerprint and log it at INFO so operators can see and pin
-    /// it. `ATLAS_MODEL_ID` (optional) is an extra salt for the one case
+    /// it. `AVAROK_MODEL_ID` (optional) is an extra salt for the one case
     /// geometry cannot distinguish: a fine-tune with byte-identical config —
     /// unset (the common case) it contributes an empty record and never
     /// rotates keys.
     pub(crate) fn derive(cfg: &ModelConfig, blob_bytes: usize) -> Result<Self> {
-        let model_id = std::env::var("ATLAS_MODEL_ID").unwrap_or_default();
+        let model_id = std::env::var("AVAROK_MODEL_ID").unwrap_or_default();
         let fp = Self::derive_with_id(cfg, blob_bytes, &model_id)?;
         tracing::info!(
             "SSM tier model fingerprint = {:#018x} (model_type={}, blob_bytes={blob_bytes}, \
-             ATLAS_MODEL_ID={model_id:?}); pin with ATLAS_SSM_SWAP_NS / ATLAS_SSM_DECODE_NS",
+             AVAROK_MODEL_ID={model_id:?}); pin with AVAROK_SSM_SWAP_NS / AVAROK_SSM_DECODE_NS",
             fp.get(),
             cfg.model_type,
         );
@@ -102,29 +102,29 @@ impl ModelFingerprint {
         // identity), so warn loudly exactly when it matters: a SHARED store backs
         // the tier and the operator gave neither a salt nor an explicit ns.
         //
-        // NOT just a peer: ATLAS_SSM_SWAP=1 is a LOCAL swap FILE, which two
+        // NOT just a peer: AVAROK_SSM_SWAP=1 is a LOCAL swap FILE, which two
         // processes pointed at one swap dir share exactly as dangerously. Saying
         // "peer" here sent an operator hunting for an RDMA peer that was never
         // configured (found by running the serve path, not by any unit test).
-        let shared_store = std::env::var("ATLAS_SSM_SWAP").ok().as_deref() == Some("1")
-            || std::env::var("ATLAS_SSM_DECODE_TIER").ok().as_deref() == Some("peer");
-        let overridden = std::env::var_os("ATLAS_SSM_SWAP_NS").is_some()
-            || std::env::var_os("ATLAS_SSM_DECODE_NS").is_some();
+        let shared_store = std::env::var("AVAROK_SSM_SWAP").ok().as_deref() == Some("1")
+            || std::env::var("AVAROK_SSM_DECODE_TIER").ok().as_deref() == Some("peer");
+        let overridden = std::env::var_os("AVAROK_SSM_SWAP_NS").is_some()
+            || std::env::var_os("AVAROK_SSM_DECODE_NS").is_some();
         if shared_store && model_id.is_empty() && !overridden {
             tracing::warn!(
-                "a SHARED SSM cache store is selected (ATLAS_SSM_SWAP=1 local swap file, or \
-                 ATLAS_SSM_DECODE_TIER=peer) but ATLAS_MODEL_ID is unset: the fingerprint is \
+                "a SHARED SSM cache store is selected (AVAROK_SSM_SWAP=1 local swap file, or \
+                 AVAROK_SSM_DECODE_TIER=peer) but AVAROK_MODEL_ID is unset: the fingerprint is \
                  derived from config GEOMETRY ONLY, so two checkpoints with identical config \
                  (fine-tunes, RL variants, continued pre-train of one base) will SHARE cache \
-                 keys and silently cross-serve recurrent state. Set ATLAS_MODEL_ID to a stable \
-                 per-checkpoint string (or set ATLAS_SSM_SWAP_NS / ATLAS_SSM_DECODE_NS \
+                 keys and silently cross-serve recurrent state. Set AVAROK_MODEL_ID to a stable \
+                 per-checkpoint string (or set AVAROK_SSM_SWAP_NS / AVAROK_SSM_DECODE_NS \
                  explicitly) when co-locating such models on one store."
             );
         }
         Ok(fp)
     }
 
-    /// KV-paging fingerprint (`ATLAS_KV_PAGING`): the SAME canonical
+    /// KV-paging fingerprint (`AVAROK_KV_PAGING`): the SAME canonical
     /// per-model encoding as the SSM tier, derived with the KV CONVENTION
     /// `blob_bytes = 0` (tag 0x40 = 0 marks the KV instance; SSM instances
     /// put their real, non-zero blob size there — so the two never share a
@@ -134,11 +134,11 @@ impl ModelFingerprint {
     /// exactly as the module doc above prescribes — do NOT add KV fields
     /// here (that would rotate SSM keys).
     pub(crate) fn derive_kv(cfg: &ModelConfig) -> Result<Self> {
-        let model_id = std::env::var("ATLAS_MODEL_ID").unwrap_or_default();
+        let model_id = std::env::var("AVAROK_MODEL_ID").unwrap_or_default();
         let fp = Self::derive_with_id(cfg, 0, &model_id)?;
         tracing::info!(
             "KV paging model fingerprint = {:#018x} (model_type={}, \
-             ATLAS_MODEL_ID={model_id:?}); folded into the ATLAS_KV_PAGING namespace",
+             AVAROK_MODEL_ID={model_id:?}); folded into the AVAROK_KV_PAGING namespace",
             fp.get(),
             cfg.model_type,
         );
@@ -157,7 +157,7 @@ impl ModelFingerprint {
         if cfg.model_type.is_empty() && cfg.num_hidden_layers == 0 {
             bail!(
                 "cannot derive a model fingerprint: empty model_type and zero geometry; \
-                 fix the model config or set ATLAS_SSM_SWAP_NS / ATLAS_SSM_DECODE_NS \
+                 fix the model config or set AVAROK_SSM_SWAP_NS / AVAROK_SSM_DECODE_NS \
                  to explicit non-zero u64 namespaces"
             );
         }
@@ -238,12 +238,12 @@ impl ModelFingerprint {
     }
 }
 
-/// Marconi swap namespace: `ATLAS_SSM_SWAP_NS` override (strict — junk or 0
+/// Marconi swap namespace: `AVAROK_SSM_SWAP_NS` override (strict — junk or 0
 /// is a startup ERROR, never a silent fallthrough) else the fingerprint.
 pub(crate) fn resolve_swap_ns(fp: ModelFingerprint) -> Result<NonZeroU64> {
     resolve_ns_from(
-        std::env::var("ATLAS_SSM_SWAP_NS").ok().as_deref(),
-        "ATLAS_SSM_SWAP_NS",
+        std::env::var("AVAROK_SSM_SWAP_NS").ok().as_deref(),
+        "AVAROK_SSM_SWAP_NS",
         fp.nonzero(),
     )
 }
@@ -252,7 +252,7 @@ pub(crate) fn resolve_swap_ns(fp: ModelFingerprint) -> Result<NonZeroU64> {
 /// store built in this process folds the SAME salt: `cold_key` determinism
 /// within a process is an invariant the spill FIFO / epoch guard rest on.
 ///
-/// `ATLAS_SSM_DECODE_CLIENT_ID` pins it (strict parse; 0 is PERMITTED — the
+/// `AVAROK_SSM_DECODE_CLIENT_ID` pins it (strict parse; 0 is PERMITTED — the
 /// salt is key material folded through `mix64`, not a sentinel); unset ⇒
 /// fresh OS entropy per process. Entropy failure is a hard startup error,
 /// never a silent zero-salt (a degraded shared salt would quietly reintroduce
@@ -268,9 +268,9 @@ fn decode_client_salt() -> Result<u64> {
     if let Some(&s) = SALT.get() {
         return Ok(s);
     }
-    let salt = match std::env::var("ATLAS_SSM_DECODE_CLIENT_ID").ok() {
-        Some(raw) => parse_u64_strict("ATLAS_SSM_DECODE_CLIENT_ID", &raw)?,
-        None => atlas_tier::entropy::random_u64()?,
+    let salt = match std::env::var("AVAROK_SSM_DECODE_CLIENT_ID").ok() {
+        Some(raw) => parse_u64_strict("AVAROK_SSM_DECODE_CLIENT_ID", &raw)?,
+        None => avarok_tier::entropy::random_u64()?,
     };
     // A racing thread may have won `get_or_init` meanwhile; both then return
     // the ONE stored value — the process-wide salt is still unique.
@@ -292,43 +292,44 @@ fn decode_client_salt() -> Result<u64> {
 /// `fp` bare (that IS the Marconi swap namespace), never `DECODE_DOMAIN` alone
 /// (model-blind). Total over all inputs.
 pub(crate) fn derive_decode_ns_salted(fp: u64, salt: u64) -> NonZeroU64 {
-    let base = NonZeroU64::new(mix64(fp, atlas_kernels::DECODE_DOMAIN)).unwrap_or_else(|| {
-        NonZeroU64::new(atlas_kernels::DECODE_DOMAIN).expect("DECODE_DOMAIN is a non-zero constant")
+    let base = NonZeroU64::new(mix64(fp, avarok_kernels::DECODE_DOMAIN)).unwrap_or_else(|| {
+        NonZeroU64::new(avarok_kernels::DECODE_DOMAIN)
+            .expect("DECODE_DOMAIN is a non-zero constant")
     });
     NonZeroU64::new(mix64(base.get(), salt)).unwrap_or(base)
 }
 
-/// Decode namespace: `ATLAS_SSM_DECODE_NS` override (strict, wins UNSALTED —
+/// Decode namespace: `AVAROK_SSM_DECODE_NS` override (strict, wins UNSALTED —
 /// the escape hatch fully determines the ns) else the per-process salted
 /// derivation [`derive_decode_ns_salted`]. Decode blobs are process-ephemeral
 /// (pid-named local arenas, all-Absent manager init, no store enumeration —
 /// never recovered across runs), so the per-process rotation loses nothing;
 /// the generated salt is INFO-logged so an operator can pin/reproduce it.
 pub(crate) fn resolve_decode_ns(fp: ModelFingerprint) -> Result<NonZeroU64> {
-    if let Ok(raw) = std::env::var("ATLAS_SSM_DECODE_NS") {
-        // Mirror the ATLAS_MODEL_ID warn in `ModelFingerprint::derive`: the
+    if let Ok(raw) = std::env::var("AVAROK_SSM_DECODE_NS") {
+        // Mirror the AVAROK_MODEL_ID warn in `ModelFingerprint::derive`: the
         // override is the documented escape hatch, and exactly as dangerous.
         tracing::warn!(
-            "ATLAS_SSM_DECODE_NS={raw:?} bypasses the per-process decode client salt: decode \
+            "AVAROK_SSM_DECODE_NS={raw:?} bypasses the per-process decode client salt: decode \
              keys are SLOT COORDINATES (not content hashes), so two processes sharing this \
              value on one peer WILL cross-serve and cross-delete each other's rollback state \
              (silent corruption + spurious 'cold MISS on live target'). Ensure a DISTINCT \
-             value per process, or unset it and pin ATLAS_SSM_DECODE_CLIENT_ID instead."
+             value per process, or unset it and pin AVAROK_SSM_DECODE_CLIENT_ID instead."
         );
-        if std::env::var_os("ATLAS_SSM_DECODE_CLIENT_ID").is_some() {
+        if std::env::var_os("AVAROK_SSM_DECODE_CLIENT_ID").is_some() {
             tracing::warn!(
-                "ATLAS_SSM_DECODE_CLIENT_ID is IGNORED while ATLAS_SSM_DECODE_NS is set \
+                "AVAROK_SSM_DECODE_CLIENT_ID is IGNORED while AVAROK_SSM_DECODE_NS is set \
                  (the explicit namespace fully determines the wire keys)"
             );
         }
-        return parse_ns("ATLAS_SSM_DECODE_NS", &raw);
+        return parse_ns("AVAROK_SSM_DECODE_NS", &raw);
     }
     let salt = decode_client_salt()?;
     let ns = derive_decode_ns_salted(fp.get(), salt);
     tracing::info!(
         "SSM decode ns = {ns:#018x} (fp {:#018x} ⊕ DECODE_DOMAIN ⊕ client_salt \
          {salt:#018x}); decode keys are CLIENT-PRIVATE on a shared peer; pin \
-         ATLAS_SSM_DECODE_CLIENT_ID={salt:#x} to reproduce this namespace",
+         AVAROK_SSM_DECODE_CLIENT_ID={salt:#x} to reproduce this namespace",
         fp.get(),
     );
     Ok(ns)

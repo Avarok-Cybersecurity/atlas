@@ -43,7 +43,7 @@ public corrections. These rules would have blocked every wrong claim at the door
    profile AND checkpoint changed, you have two *observations*, not an A/B.
    Say so explicitly.
 6. **Verify engagement, don't assume it.** For speculative-decode comparisons,
-   serve with `ATLAS_MTP_ACCEPT_DEBUG=1` and check the `MTP accept` lines
+   serve with `AVAROK_MTP_ACCEPT_DEBUG=1` and check the `MTP accept` lines
    (`mean_na`, `tok_step`). The 2-minute engagement test:
    one MinHeap-style code prompt, `temperature 0.0, max_tokens 1500,
    reasoning_effort:"none"` → expect `tok_step≈3`; the same request without
@@ -79,7 +79,7 @@ public corrections. These rules would have blocked every wrong claim at the door
     deliverable — prefer it over a confident guess.
 11. **Commit-message gate (Rule 6).** No perf number enters a commit message,
     PR comment, or doc headline unless it satisfies rules 1, 5, and 7 and cites
-    its run-record IDs (`~/.atlas/runs/...`). Otherwise label it
+    its run-record IDs (`~/.avarok/runs/...`). Otherwise label it
     "preliminary, single-harness". The retraction cost is paid at claim time.
 12. **Ledger check (Rule 8).** Before asserting, grep prior session records and
     committed BENCH.toml notes for contradicting numbers. Contradicting a prior

@@ -4,7 +4,7 @@
 //! has, and the shortcut MoE that sublayer 0 computes and sublayer 1 adds.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
@@ -40,7 +40,7 @@ pub(super) fn build_dense_ffn(
     };
     let mut layer = DenseFfnLayer::new(weights, gpu)?;
 
-    // Precision lever, mirroring `ATLAS_NVFP4_MLA=0` on the attention side.
+    // Precision lever, mirroring `AVAROK_NVFP4_MLA=0` on the attention side.
     // LongCat ships plain BF16 with no calibration metadata, so these three
     // projections are runtime-quantized above and lose whatever 4 bits cost.
     // The per-sublayer dense FFN is 2.94 GB of the checkpoint across all 28
@@ -59,9 +59,9 @@ pub(super) fn build_dense_ffn(
     Ok(FfnComponent::Dense(layer))
 }
 
-/// `ATLAS_LONGCAT_BF16_FFN=1` keeps the per-sublayer dense FFN in BF16.
+/// `AVAROK_LONGCAT_BF16_FFN=1` keeps the per-sublayer dense FFN in BF16.
 pub(super) fn bf16_dense_ffn() -> bool {
-    std::env::var("ATLAS_LONGCAT_BF16_FFN").as_deref() == Ok("1")
+    std::env::var("AVAROK_LONGCAT_BF16_FFN").as_deref() == Ok("1")
 }
 
 /// The block's shortcut MoE: `mlp.router.*` + `mlp.experts.{e}.*`. LongCat has
@@ -245,10 +245,10 @@ pub(super) fn build_shortcut_moe(
     Ok(FfnComponent::Moe(moe))
 }
 
-/// `ATLAS_LONGCAT_FP8_EXPERTS=1` runtime-quantizes the routed experts to
+/// `AVAROK_LONGCAT_FP8_EXPERTS=1` runtime-quantizes the routed experts to
 /// block-scaled FP8 instead of NVFP4.
 pub(super) fn fp8_experts() -> bool {
-    std::env::var("ATLAS_LONGCAT_FP8_EXPERTS").as_deref() == Ok("1")
+    std::env::var("AVAROK_LONGCAT_FP8_EXPERTS").as_deref() == Ok("1")
 }
 
 /// One expert projection: BF16 from the store → block-scaled FP8, then free

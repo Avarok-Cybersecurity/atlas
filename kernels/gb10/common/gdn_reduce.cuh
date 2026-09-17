@@ -17,13 +17,13 @@
 // translation unit — no ODR violations when included from multiple .cu
 // files.
 
-#ifndef ATLAS_GDN_REDUCE_CUH
-#define ATLAS_GDN_REDUCE_CUH
+#ifndef AVAROK_GDN_REDUCE_CUH
+#define AVAROK_GDN_REDUCE_CUH
 
 // ── Warp-level tree reduction (32 lanes) ──
 // Pattern: __shfl_down_sync with offsets 16,8,4,2,1. Matches
 // `gated_delta_rule.cu` line 173-177 (baseline).
-static __device__ __forceinline__ float atlas_warp_reduce_sum(float val) {
+static __device__ __forceinline__ float avarok_warp_reduce_sum(float val) {
     val += __shfl_down_sync(0xFFFFFFFF, val, 16);
     val += __shfl_down_sync(0xFFFFFFFF, val,  8);
     val += __shfl_down_sync(0xFFFFFFFF, val,  4);
@@ -35,7 +35,7 @@ static __device__ __forceinline__ float atlas_warp_reduce_sum(float val) {
 // ── Block-level tree reduction for 128-thread blocks (4 warps) ──
 //
 // Matches the per-token baseline at `gated_delta_rule.cu:179-193` exactly:
-//   1. Each warp reduces its 32 lanes via `atlas_warp_reduce_sum`.
+//   1. Each warp reduces its 32 lanes via `avarok_warp_reduce_sum`.
 //   2. Lane 0 of each warp writes to smem_warp[warp_id] (4 slots).
 //   3. Lanes 0..3 of warp 0 do a shuffle-based tree: each lane loads its slot,
 //      then `s += __shfl_down(s, 2)` followed by `s += __shfl_down(s, 1)`.
@@ -48,12 +48,12 @@ static __device__ __forceinline__ float atlas_warp_reduce_sum(float val) {
 // eliminated across the per-token kernel and the wy{2,3,4} fast paths.
 //
 // `smem_warp` must have at least 4 slots and is reused as the return buffer.
-static __device__ __forceinline__ float atlas_block_reduce_sum(
+static __device__ __forceinline__ float avarok_block_reduce_sum(
     float val,
     float* smem_warp,
     unsigned int tid
 ) {
-    val = atlas_warp_reduce_sum(val);
+    val = avarok_warp_reduce_sum(val);
     unsigned int warp_id = tid / 32;
     unsigned int lane_id = tid & 31;
     if (lane_id == 0) smem_warp[warp_id] = val;
@@ -68,4 +68,4 @@ static __device__ __forceinline__ float atlas_block_reduce_sum(
     return smem_warp[0];
 }
 
-#endif // ATLAS_GDN_REDUCE_CUH
+#endif // AVAROK_GDN_REDUCE_CUH

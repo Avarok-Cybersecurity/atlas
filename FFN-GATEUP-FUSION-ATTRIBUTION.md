@@ -4,7 +4,7 @@
 launch.** At `n = 16` the dense FFN issues TWO cuBLASLt W8A8 GEMMs per layer at
 `K = 5120`, `N = 17408`; ONE at `N = 34816` halves the per-launch fixed cost and
 doubles the tile count per wave. Lever `[defaults] ffn_gateup_fused` (hopper
-`true`, gb10/b200 `false`); `ATLAS_FFN_GATEUP_FUSED=0` kills.
+`true`, gb10/b200 `false`); `AVAROK_FFN_GATEUP_FUSED=0` kills.
 
 ## Anchors (given; nsys `--cuda-graph-trace=node`, 1xH100 80GB HBM3, Qwen3.8-27B-FP8, round 13 cell V @ `3717cb05e`, `h100-r13-attribution.md` §§C.2–C.4)
 

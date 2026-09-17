@@ -10,7 +10,7 @@
 //! the two BF16 outputs are identical.
 
 use super::{dequant_cpu, dequant_gpu};
-use crate::cuda_backend::AtlasCudaBackend;
+use crate::cuda_backend::AvarokCudaBackend;
 use crate::gpu::GpuBackend;
 
 /// Safe, varied fp16 scales (finite, no NaN/Inf): 1.0, 0.5, 2.0, 0.25.
@@ -48,7 +48,7 @@ fn bf16_bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
 /// Run one type through CPU + GPU and assert BF16 outputs match exactly.
 #[allow(clippy::too_many_arguments)]
 fn check_type(
-    gpu: &AtlasCudaBackend,
+    gpu: &AvarokCudaBackend,
     label: &str,
     id: u32,
     qk: usize,
@@ -95,10 +95,10 @@ fn check_type(
 }
 
 #[test]
-#[ignore = "requires a real CUDA GB10 device + compiled PTX (no ATLAS_SKIP_BUILD)"]
+#[ignore = "requires a real CUDA GB10 device + compiled PTX (no AVAROK_SKIP_BUILD)"]
 fn gguf_gpu_validate_matches_cpu_oracle() {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())
-        .expect("construct AtlasCudaBackend (needs a CUDA device + real PTX)");
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())
+        .expect("construct AvarokCudaBackend (needs a CUDA device + real PTX)");
 
     let n = 37; // odd, exercises many grid blocks + the 256-thread stride loop
     // Q8_0: QK=32, 34 B, one fp16 scale at offset 0.

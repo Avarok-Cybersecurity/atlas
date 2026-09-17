@@ -8,7 +8,7 @@
 //!
 //! "Is this box being held back right now, and is it steady about it?" A single
 //! cumulative counter cannot answer either — see
-//! `atlas_plugin::hardware::throttle_monitor`. This panel shows the differenced
+//! `avarok_plugin::hardware::throttle_monitor`. This panel shows the differenced
 //! fraction, the flip count that separates a steady hold from unstable clocks,
 //! and the clock-versus-maximum ratio that makes the consequence concrete.
 //!

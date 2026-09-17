@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! GPU oracle for the TENSOR-CORE 5..=32-row native-FP8 dense-FFN decode tier
-//! (`ATLAS_FFN_M16_TC`, #927) — `w8a16_gemm_m16`.
+//! (`AVAROK_FFN_M16_TC`, #927) — `w8a16_gemm_m16`.
 //!
 //! Runs the REAL Qwen/Qwen3.8-27B-FP8 FFN shapes — gate/up `[17408, 5120]` and
 //! down `[5120, 17408]` — at M in {1, 5, 8, 13, 16, 32} and compares against
@@ -33,7 +33,7 @@
 //! NOTHING about the rows the red cell was about. It now takes the same
 //! two-halves route as the contiguous leg, at the padded pitches.
 //!
-//! `w8a16_gemm_m16_n64` — the `ATLAS_FFN_M16_TC_NTILE=64` arm — is measured
+//! `w8a16_gemm_m16_n64` — the `AVAROK_FFN_M16_TC_NTILE=64` arm — is measured
 //! alongside, for numerics AND for GB/s: it is the candidate fix for round 6's
 //! FFN serving regression (+13.7% at bs16 while the attention tiers went
 //! −21.7%), whose leading hypothesis is gate/up's 544 CTAs overrunning the
@@ -53,7 +53,7 @@
 use anyhow::{Result, ensure};
 use spark_model::layers::dense_ffn::m16_tc::oracle::{M16_TC_MAX_ULP, compare_m16_tc_block};
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -210,7 +210,7 @@ fn time_ms(gpu: &dyn GpuBackend, mut run: impl FnMut() -> Result<()>) -> Result<
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let scalar = gpu.kernel("w8a16_gemv", "w8a16_gemv")?;
     let batch16 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16")?;
     let tc = gpu.kernel("w8a16_gemm_m16", "w8a16_gemm_m16")?;

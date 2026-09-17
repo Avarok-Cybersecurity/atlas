@@ -23,7 +23,7 @@ SNAP = ('/tank/hf/hub/models--meituan-longcat--LongCat-Flash-Lite/snapshots/'
 D = '/home/ms/.claude/jobs/5a7bd33d/tmp/opdump'
 cfg = json.load(open(f'{SNAP}/config.json'))
 idx = json.load(open(f'{SNAP}/model.safetensors.index.json'))
-gold = np.load('/home/ms/atlas/.claude/worktrees/nemo-behavior/bench/ngram_ref/'
+gold = np.load('/home/ms/avarok/.claude/worktrees/nemo-behavior/bench/ngram_ref/'
                'longcat_forward_golden.npz')
 
 H, NH = cfg['hidden_size'], cfg['num_attention_heads']
@@ -78,13 +78,13 @@ requests.post('http://127.0.0.1:8895/v1/completions',
 
 n = 1536
 for label, refv, fn in [
-    ('input_norm_in', h[0], 'atlas_op_L0_input_norm_in.bin'),
-    ('input_norm_out', x[0], 'atlas_op_L0_input_norm_out.bin'),
-    ('post_attn_norm_out', post[0], 'atlas_op_L0_post_attn_norm_out.bin'),
+    ('input_norm_in', h[0], 'avarok_op_L0_input_norm_in.bin'),
+    ('input_norm_out', x[0], 'avarok_op_L0_input_norm_out.bin'),
+    ('post_attn_norm_out', post[0], 'avarok_op_L0_post_attn_norm_out.bin'),
 ]:
     a = np.fromfile(f'{D}/{fn}', dtype=np.float32)[:n]
     rv = refv[:n]
     cos = float(rv @ a / (np.linalg.norm(rv) * np.linalg.norm(a) + 1e-9))
     rel = float(np.linalg.norm(a - rv) / (np.linalg.norm(rv) + 1e-9))
-    print(f'{label:22s} |ref|={np.linalg.norm(rv):8.3f} |atlas|={np.linalg.norm(a):8.3f} '
+    print(f'{label:22s} |ref|={np.linalg.norm(rv):8.3f} |avarok|={np.linalg.norm(a):8.3f} '
           f'cos={cos:7.4f} relerr={rel:7.4f}')

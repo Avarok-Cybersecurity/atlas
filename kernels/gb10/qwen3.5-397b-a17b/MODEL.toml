@@ -124,7 +124,7 @@ hidden_size = 4096
 
 # mrope-interleaved MoE checkpoints get their model_type rewritten
 # qwen3_5_moe -> qwen3_6_moe by parse_config
-# (crates/atlas-core/src/config/dispatch.rs:116). The NVFP4 397B trips this
+# (crates/avarok-core/src/config/dispatch.rs:116). The NVFP4 397B trips this
 # rewrite (the 2026-05-21 smoke test reported model_type 'qwen3_6_moe'), so
 # accept both forms at hidden_size 4096 — mirrors qwen3.5-122b-a10b.
 [[model_types]]

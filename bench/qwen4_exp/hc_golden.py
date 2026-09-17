@@ -1,4 +1,4 @@
-"""Golden for the mHC low-rank residual — Avarok #753 item B, PLAN.md phase A.
+"""Golden for the mHC low-rank residual — Atlas #753 item B, PLAN.md phase A.
 
 `kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu` and
 `ops/hyper_connection_lowrank.rs` were written from the reference and compared
@@ -156,7 +156,7 @@ def write_bins(out_dir: str, dump: dict, weights: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument('--bin-dir', default=os.environ.get('ATLAS_HC_TEST_DATA'),
+    ap.add_argument('--bin-dir', default=os.environ.get('AVAROK_HC_TEST_DATA'),
                     help='also emit raw .bin + meta.json for the Rust probe')
     ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--out', default=os.path.join(os.path.dirname(__file__),

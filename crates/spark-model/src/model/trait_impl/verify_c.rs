@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -182,14 +182,14 @@ impl TransformerModel {
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         // Capture the multi-row verify under EP. ON by default since 2026-08-29; set
-        // `ATLAS_GLM_VERIFY_GRAPHS=0` to fall back to eager. Worth ~5 % at K=3
+        // `AVAROK_GLM_VERIFY_GRAPHS=0` to fall back to eager. Worth ~5 % at K=3
         // (open512 22.02 -> 23.11 tok/s, t78 A/B) and the six probes are byte-identical to
         // eager: de4e9745 / 5f16d368 / 090d209c / 2a7c7286 / bc94ba6f / d2ec1a53.
         //
-        // 🪤 This deliberately does NOT read `ATLAS_EP_GRAPHS`. That variable is set by the
+        // 🪤 This deliberately does NOT read `AVAROK_EP_GRAPHS`. That variable is set by the
         // SEALED spec-off launch config, where it gates `decode_a`'s K=1 decode graph. The
         // two paths are gated apart so a change to one cannot move the other's output.
         //
@@ -198,11 +198,11 @@ impl TransformerModel {
         // `verify2_graph`/`verify3_graph`, so request N replayed a graph baking request 1's
         // per-sequence DSA indexer-cache pointers. Fixed in `trait_impl/sequence.rs` — do not
         // add a slot-keyed graph cache without adding it there too.
-        let ep_graphs = std::env::var("ATLAS_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        let ep_graphs = std::env::var("AVAROK_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
         // A56 instrument. Captures every step, never replays, and diffs the ops this step
         // enqueued against the previous step's. A graph bakes grid/block/args, so every
         // difference is a host value a replay would freeze. Implies GRAPHS + NOCACHE.
-        let graph_trace = std::env::var("ATLAS_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
         let ep_graphs = ep_graphs || graph_trace;
         let use_graphs = (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager;
 
@@ -378,13 +378,13 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=3 verify (slot={})", seq.slot_idx);
-                    // BISECT HATCH (ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1): capture-and-run every
+                    // BISECT HATCH (AVAROK_GLM_VERIFY_GRAPH_NOCACHE=1): capture-and-run every
                     // step, never replay. Separates "the capture pass computes something
                     // different from eager" from "the capture is faithful but replay goes
                     // stale" — they need different fixes and look identical from the outside.
                     if let Some(ref mut cache) = graph_cache
                         && !graph_trace
-                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
+                        && !std::env::var("AVAROK_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
                     {
                         cache.insert(seq.slot_idx, graph);
                     }

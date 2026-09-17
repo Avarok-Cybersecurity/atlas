@@ -125,7 +125,7 @@ impl VisionEncoder {
 
         let _sec0 = std::time::Instant::now();
         // 1. Per-image host prep, packed into the SHARED buffers at p_off[i].
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
@@ -156,7 +156,7 @@ impl VisionEncoder {
             self.build_rope_cossin_into(*gh, *gw, cos_dst, sin_dst, gpu, stream)?;
         }
 
-        let timing = std::env::var("ATLAS_VISION_TIMING").is_ok();
+        let timing = std::env::var("AVAROK_VISION_TIMING").is_ok();
         if timing {
             gpu.synchronize(stream).ok();
             tracing::info!(
@@ -288,7 +288,7 @@ impl VisionEncoder {
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
         check_packed_rows(mp_i, mp_off, self.p_max)?;
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (pixels, gh, gw)) in images.iter().enumerate() {

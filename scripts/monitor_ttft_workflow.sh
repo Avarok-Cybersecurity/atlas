@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="/workspace/atlas"
+REPO_ROOT="/workspace/avarok"
 TASK_DIR="$REPO_ROOT/tasks/codex_agent_2026-03-23"
 OPS_LOG="$TASK_DIR/ttft-overnight-ops-2026-03-23.md"
 RUN_LOG="$TASK_DIR/ttft-overnight-codex.log"
 LAST_MSG="$TASK_DIR/ttft-overnight-last-message.txt"
 STATE_FILE="$TASK_DIR/ttft-monitor-state.env"
-MARKER="ATLAS_TTFT_OVERNIGHT_2026_03_23"
+MARKER="AVAROK_TTFT_OVERNIGHT_2026_03_23"
 CUTOFF="2026-03-23 11:00:00"
 
 timestamp() {
@@ -38,7 +38,7 @@ fi
 
 cd "$REPO_ROOT"
 
-codex_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/codex exec --dangerously-bypass-approvals-and-sandbox -C /workspace/atlas' | grep -v grep || true)
+codex_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/codex exec --dangerously-bypass-approvals-and-sandbox -C /workspace/avarok' | grep -v grep || true)
 mcp_lines=$(ps -eo pid,ppid,etime,cmd | grep -E 'npm exec @steipete/claude-code-mcp@latest|claude-code-mcp$' | grep -v grep || true)
 claude_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/workspace/.local/bin/claude( |$)|/workspace/.local/bin/claude-connect( |$)' | grep -v grep || true)
 
@@ -77,7 +77,7 @@ if [ -z "$codex_lines" ]; then
   pid=$("$REPO_ROOT/scripts/start_ttft_workflow.sh")
   action="restarted_codex_pid_$pid"
   sleep 2
-  codex_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/codex exec --dangerously-bypass-approvals-and-sandbox -C /workspace/atlas' | grep -v grep || true)
+  codex_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/codex exec --dangerously-bypass-approvals-and-sandbox -C /workspace/avarok' | grep -v grep || true)
   mcp_lines=$(ps -eo pid,ppid,etime,cmd | grep -E 'npm exec @steipete/claude-code-mcp@latest|claude-code-mcp$' | grep -v grep || true)
   claude_lines=$(ps -eo pid,ppid,etime,cmd | grep -E '/workspace/.local/bin/claude( |$)|/workspace/.local/bin/claude-connect( |$)' | grep -v grep || true)
 elif [ -z "$mcp_lines" ]; then

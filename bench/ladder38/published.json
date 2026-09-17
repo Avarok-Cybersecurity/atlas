@@ -100,7 +100,7 @@
         "64": "vllm_latest_reference.json",
         "128": "vllm_latest_reference.json"
       },
-      "source_note": "Published because it beats vLLM+MTP at C=128 (390.42 vs 358.57): MTP verification costs vLLM more than it gains 128-wide. Quoting only the MTP leg there would overstate our margin, so the headline ratio is taken against whichever vLLM configuration is faster at each rung."
+      "source_note": "Unmatched fingerprint: bf16 KV, ctx 4096, no speculation. It beats vLLM+MTP at C=128 (390.42 vs 358.57) because MTP verification costs vLLM more than it gains 128-wide. Plotted for completeness. The published ratio uses the matched MTP leg, not this one."
     }
   ]
 }

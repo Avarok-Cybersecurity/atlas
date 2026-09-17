@@ -25,9 +25,9 @@ export const STATUS = {
 } as const;
 
 export const LINKS = {
-  atlasRepo: 'https://github.com/Avarok-Cybersecurity/atlas',
-  atlasSite: 'https://atlascybernetics.ai',
-  atlasLicense: 'https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE',
+  avarokRepo: 'https://github.com/Avarok-Cybersecurity/atlas',
+  avarokSite: 'https://atlascybernetics.ai',
+  avarokLicense: 'https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE',
   discord: 'https://discord.gg/RQcGakU2jW',
   webgpu: 'https://www.w3.org/TR/webgpu/'
 } as const;

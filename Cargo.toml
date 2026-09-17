@@ -1,28 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/atlas-core",
-    "crates/atlas-kernels",
-    "crates/atlas-plugin",
-    "crates/atlas-tier",
-    "crates/atlas-rdma",
+    "crates/avarok-core",
+    "crates/avarok-kernels",
+    "crates/avarok-plugin",
+    "crates/avarok-tier",
+    "crates/avarok-rdma",
     "crates/spark-runtime",
     "crates/spark-comm",
     "crates/spark-model",
     "crates/spark-nllb",
     "crates/spark-server",
-    "crates/atlas-spark-bench",
+    "crates/avarok-spark-bench",
     "crates/cufile-sys",
     "crates/spark-storage",
     "crates/xgrammar",
-    "crates/atlas-governance",
-    "crates/atlas-closure",
+    "crates/avarok-governance",
+    "crates/avarok-closure",
 ]
 
 # AMD/SCALE + native-HIP: the vendored cudarc 0.19.2 is byte-identical to
 # crates.io except its driver `Lib` loader resolves CUDA-driver symbols that
 # don't exist on SCALE/gfx1151 (e.g. cuArrayGetMemoryRequirements) to a
-# `__atlas_missing_cuda_sym` stub instead of panicking at init. On NVIDIA all
+# `__avarok_missing_cuda_sym` stub instead of panicking at init. On NVIDIA all
 # symbols resolve normally, so the patch is a no-op there (same version).
 [patch.crates-io]
 cudarc = { path = "vendor/cudarc" }
@@ -80,13 +80,13 @@ sha2 = "0.10"
 parking_lot = "0.12"
 
 # Workspace crates
-# atlas-core: `default-features = false` so each consumer crate forwards the
+# avarok-core: `default-features = false` so each consumer crate forwards the
 # right backend feature explicitly (cuda or metal). Without this, every
-# member would silently pull in cudarc via atlas-core's `cuda` default.
-atlas-core = { path = "crates/atlas-core", default-features = false }
-atlas-kernels = { path = "crates/atlas-kernels" }
-atlas-tier = { path = "crates/atlas-tier" }
-atlas-rdma = { path = "crates/atlas-rdma" }
+# member would silently pull in cudarc via avarok-core's `cuda` default.
+avarok-core = { path = "crates/avarok-core", default-features = false }
+avarok-kernels = { path = "crates/avarok-kernels" }
+avarok-tier = { path = "crates/avarok-tier" }
+avarok-rdma = { path = "crates/avarok-rdma" }
 
 # W7: the `[patch.crates-io] xgrammar-rs` entry was removed — Atlas now
 # depends on the pure-Rust `crates/xgrammar` crate directly (no FFI,

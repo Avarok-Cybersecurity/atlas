@@ -19,7 +19,7 @@
 //!   **D** GPU kernel residual — Atlas `w4a16_gemm` vs A.
 //!   **E** integrated FFN residual — the whole gate/up → clamp → silu·mul → down chain vs A.
 //!
-//!   MOE_PACKET_DIR=/home/msi1/atlas-scratch/moe-family \
+//!   MOE_PACKET_DIR=/home/msi1/avarok-scratch/moe-family \
 //!   cargo run -p spark-model --release --example glm5next_ffn_microtest \
 //!       --features cuda,gpu-examples
 

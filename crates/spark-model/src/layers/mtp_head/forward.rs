@@ -10,7 +10,7 @@ use crate::layer::ForwardContext;
 use crate::layers::mtp_meta::{MTP_META_OFFSET, pack_mtp_attn_meta};
 use crate::layers::ops;
 
-/// MTP-debug (ATLAS_MTP_DEBUG_NORMS=1): L2 norm of a BF16 GPU buffer, for
+/// MTP-debug (AVAROK_MTP_DEBUG_NORMS=1): L2 norm of a BF16 GPU buffer, for
 /// localizing where the MTP forward produces NaN/0. NaN reads back as NaN.
 fn mtp_dbg_l2(gpu: &dyn spark_runtime::gpu::GpuBackend, p: DevicePtr, n: usize) -> f64 {
     let mut b = vec![0u8; n * 2];
@@ -468,7 +468,7 @@ impl MtpHead {
             stream,
         )?;
 
-        // MTP-debug (ATLAS_MTP_DEBUG_NORMS=1): localize the constant-0 draft.
+        // MTP-debug (AVAROK_MTP_DEBUG_NORMS=1): localize the constant-0 draft.
         // A true zero reads as 0.0 regardless of dtype, so these L2 norms
         // pinpoint the first stage to zero out: input_hidden (save bug) →
         // final_normed (forward bug) → logits (lm_head bug).
@@ -498,7 +498,7 @@ impl MtpHead {
             );
         }
 
-        // 13a. Drafter chain confidence (ATLAS_MTP_DRAFT_CONF > 0):
+        // 13a. Drafter chain confidence (AVAROK_MTP_DRAFT_CONF > 0):
         // observational only — token selection below is untouched. D2H the
         // BF16 logits (~200 us, the same cost the grammar-masked path pays)
         // and fold this draft's top-1 softmax prob into the propose-scoped
@@ -534,7 +534,7 @@ impl MtpHead {
             }
         }
 
-        // 13b. Shadow top-k (ATLAS_MTP_SHADOW_TOPK=k): observational only.
+        // 13b. Shadow top-k (AVAROK_MTP_SHADOW_TOPK=k): observational only.
         // Logs this position's top-k candidate ids + softmax probs so an
         // offline join against the verify steps' SHADOW_TGT lines yields
         // per-depth conditional top-k coverage (tree-spec Phase 0 gate).
@@ -685,7 +685,7 @@ impl MtpHead {
         };
 
         state.seq_len += 1;
-        // Pair-key bookkeeping (ATLAS_MTP_CATCHUP gap detection): this call
+        // Pair-key bookkeeping (AVAROK_MTP_CATCHUP gap detection): this call
         // wrote the pair for sequence key `position - 1` at the row above.
         state.last_pair_key = Some(position.saturating_sub(1));
         Ok(token_id)

@@ -4,7 +4,7 @@ Transcribed from `ref/modeling_qwen4_exp.py` (`transformers` main, vendored
 here the way `bench/ngram_ref/` vendors LongCat's). Line numbers refer to that
 file.
 
-The model **loads** today (see Avarok #753); it does not serve because these
+The model **loads** today (see Atlas #753); it does not serve because these
 three are unimplemented. Everything below is the reference's math, not an
 inference from tensor names — which matters, because two of the three had
 plausible-but-wrong readings available.
@@ -133,7 +133,7 @@ second dispatches the wrong math. Both produce output that looks fine.
 
 ## 4. Correction: the n-gram HASH does not transfer from #746
 
-`ARCHITECTURE.md` §2 and Avarok #753 both said the n-gram machinery from
+`ARCHITECTURE.md` §2 and Atlas #753 both said the n-gram machinery from
 PR #746 (LongCat) was reusable for PLE. That is **half right, and the wrong
 half is the one that would fail silently.**
 
@@ -182,7 +182,7 @@ has to be rebuilt for Qwen's scheme before PLE is wired.
 
 ## 5. Correction: PLE runs on model layer 1, not layer 2
 
-§2 above and Avarok #753 both read `ple_layer_ids: [2]` as "model layer 2".
+§2 above and Atlas #753 both read `ple_layer_ids: [2]` as "model layer 2".
 `ple_layer_ids` is **1-indexed**. From the decoder layer's constructor
 (L1202):
 

@@ -20,7 +20,7 @@
 
 use std::collections::BTreeMap;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::layers::ops::lora_delta::LoraPair;
 

@@ -15,7 +15,7 @@
 //! refusal. Clients that need real safety-classification should run their
 //! own moderation pass — `/v1/moderations` is a 501 stub on this server.
 //!
-//! Set `ATLAS_DISABLE_REFUSAL_DETECTION=1` to force `refusal: None` on all
+//! Set `AVAROK_DISABLE_REFUSAL_DETECTION=1` to force `refusal: None` on all
 //! responses, matching pre-PR-4 behavior byte-for-byte.
 
 /// Prefix patterns matched case-insensitively against the stripped leading
@@ -52,7 +52,7 @@ const REFUSAL_PREFIXES: &[&str] = &[
 /// (truncated at `.`, `?`, or `!`) with trailing whitespace trimmed. When
 /// the kill-switch env var is set, always returns `None`.
 pub fn detect(content: &str) -> Option<String> {
-    if std::env::var("ATLAS_DISABLE_REFUSAL_DETECTION").as_deref() == Ok("1") {
+    if std::env::var("AVAROK_DISABLE_REFUSAL_DETECTION").as_deref() == Ok("1") {
         return None;
     }
     let trimmed = content.trim_start();
@@ -94,7 +94,7 @@ mod tests {
 
     // Cargo runs unit tests in parallel threads within a single binary, and
     // env vars are process-wide. `kill_switch_returns_none` mutates
-    // ATLAS_DISABLE_REFUSAL_DETECTION, so every test that calls `detect()`
+    // AVAROK_DISABLE_REFUSAL_DETECTION, so every test that calls `detect()`
     // must hold this lock to avoid observing a transient kill-switch state.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -131,12 +131,12 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // SAFETY: serialized via ENV_LOCK across this module's tests.
         unsafe {
-            std::env::set_var("ATLAS_DISABLE_REFUSAL_DETECTION", "1");
+            std::env::set_var("AVAROK_DISABLE_REFUSAL_DETECTION", "1");
         }
         let got = detect("I cannot help with that.");
         // SAFETY: serialized via ENV_LOCK across this module's tests.
         unsafe {
-            std::env::remove_var("ATLAS_DISABLE_REFUSAL_DETECTION");
+            std::env::remove_var("AVAROK_DISABLE_REFUSAL_DETECTION");
         }
         assert!(got.is_none());
     }

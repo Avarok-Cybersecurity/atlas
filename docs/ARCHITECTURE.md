@@ -35,25 +35,25 @@ Atlas is a single Cargo workspace with 15 crates organized into four layers:
    └────────┬────────┘
             │
    ┌────────┴────────┐
-   │  atlas-kernels  │   PTX bytes embedded at compile time
+   │  avarok-kernels  │   PTX bytes embedded at compile time
    │  (build.rs:     │   per (hardware, model, quant) tuple
    │  compile *.cu   │   from kernels/<hw>/<model>/<quant>/
    │  → PTX → embed) │
    └────────┬────────┘
             │
    ┌────────┴────────┐    Stable types + traits shared across the whole tree
-   │  atlas-core     │    — ModelConfig, registry, hardware capability
+   │  avarok-core     │    — ModelConfig, registry, hardware capability
    │                 │    enums, error types.
    └─────────────────┘
 
    Test/bench crates:
-   atlas-spark-bench  (Criterion microbenchmarks per kernel category)
+   avarok-spark-bench  (Criterion microbenchmarks per kernel category)
    cufile-sys         (FFI for NVIDIA cuFile / GDS — currently dormant on GB10)
 ```
 
 ## Layer-by-layer
 
-### `atlas-core`
+### `avarok-core`
 The shared "vocabulary" crate. Defines:
 - `ModelConfig` — every supported model's HuggingFace `config.json` parsed into a normalized struct, plus per-family overrides (Qwen3.5 / Qwen3.6 / Nemotron / Gemma-4 / Mistral / MiniMax).
 - `LayerType` — `FullAttention | LinearAttention | Mlp | Moe | Dense`.
@@ -62,26 +62,26 @@ The shared "vocabulary" crate. Defines:
 
 Every other crate depends on this. **Keep it stable.** Breaking changes here ripple everywhere.
 
-### `atlas-kernels`
+### `avarok-kernels`
 A pure-build-script crate whose `build.rs` (~915 LoC) does the heavy lifting:
 
 1. Reads `kernels/<hw>/HARDWARE.toml` for arch, sm, fp32-residual flag.
 2. Reads `kernels/<hw>/<model>/MODEL.toml` for model-specific kernel-target metadata, sampling presets, behavior knobs.
-3. For each `(hardware, model, quant)` tuple selected via `ATLAS_TARGET_*` env vars (or `*` wildcard), compiles every `*.cu` under `kernels/<hw>/<model>/<quant>/` and `kernels/<hw>/<quant>/` (shared) to PTX via `nvcc`, deduplicating model-specific overrides over the shared pool.
+3. For each `(hardware, model, quant)` tuple selected via `AVAROK_TARGET_*` env vars (or `*` wildcard), compiles every `*.cu` under `kernels/<hw>/<model>/<quant>/` and `kernels/<hw>/<quant>/` (shared) to PTX via `nvcc`, deduplicating model-specific overrides over the shared pool.
 4. Emits a generated `target_ptx.rs` containing `static PTX_BYTES: &[(&str, &[u8])]` arrays — the kernel modules as PTX strings linked into the binary.
 5. Marks `cargo:rerun-if-changed=` on every `.cu` and `.toml` it touched so incremental builds work.
 
-Skip mode (`ATLAS_SKIP_BUILD=1`): emits a stub registry. Used by CI for GPU-free `cargo check` / `clippy` runs.
+Skip mode (`AVAROK_SKIP_BUILD=1`): emits a stub registry. Used by CI for GPU-free `cargo check` / `clippy` runs.
 
 ### `spark-runtime`
 GPU-side runtime primitives:
-- `cuda_backend.rs` — `GpuBackend` trait + `AtlasCudaBackend` (cudarc-based) impl. Wraps device pointers, kernel handles, streams, allocator.
+- `cuda_backend.rs` — `GpuBackend` trait + `AvarokCudaBackend` (cudarc-based) impl. Wraps device pointers, kernel handles, streams, allocator.
 - `buffers.rs` — pinned-host + device scratch arenas sized per-batch.
 - `kv_cache.rs` — paged KV cache with FP8 / NVFP4 / BF16 dtype variants.
 - `sampler.rs` — host-side sampling (top-k, top-p, temperature, repetition penalty, DRY, Lloyd–Max). The GPU produces logits; host samples.
 - `weights.rs` — safetensors loader with shard streaming + OOM guard.
 
-Hardware-agnostic: the `GpuBackend` trait could be implemented by another vendor backend. Today only `AtlasCudaBackend` exists.
+Hardware-agnostic: the `GpuBackend` trait could be implemented by another vendor backend. Today only `AvarokCudaBackend` exists.
 
 ### `spark-comm`
 NCCL-backed multi-rank communication:
@@ -137,17 +137,17 @@ HTTP + scheduling:
 ## Build pipeline
 
 ```
-$ ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-35b-a3b ATLAS_TARGET_QUANT=nvfp4 \
+$ AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-35b-a3b AVAROK_TARGET_QUANT=nvfp4 \
     cargo build --release -p spark-server
 ```
 
 What happens:
-1. Cargo invokes `atlas-kernels/build.rs`.
+1. Cargo invokes `avarok-kernels/build.rs`.
 2. `build.rs` walks `kernels/gb10/qwen3.6-35b-a3b/nvfp4/*.cu` + `kernels/gb10/common/*.cu` (shared), invokes `nvcc -arch=sm_121 --ptx` on each, and emits `OUT_DIR/target_ptx.rs` with the resulting PTX bytes.
 3. The Rust crates compile, linking the generated module.
 4. At runtime, `spark-runtime::gpu` loads the PTX into the CUDA driver and exposes kernel handles.
 
-For a multi-target binary (sweep mode): `ATLAS_TARGET_MODEL='*' ATLAS_TARGET_QUANT='*'` compiles every kernel target. The binary picks the right target at startup based on the loaded model's `model_type` and `hidden_size`.
+For a multi-target binary (sweep mode): `AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*'` compiles every kernel target. The binary picks the right target at startup based on the loaded model's `model_type` and `hidden_size`.
 
 ## See also
 

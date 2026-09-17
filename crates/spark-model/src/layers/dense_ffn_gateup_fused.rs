@@ -86,7 +86,7 @@
 //! lives in `kernels/hopper/common/silu_mul_strided.cu` — HOPPER-OWNED
 //! (`[kernels] overrides`, an addition), so the two other NVIDIA targets do
 //! not compile a kernel they can never launch and no new cross-hardware
-//! symlink is created. `ATLAS_FFN_GATEUP_FUSED=0` kills it; on gb10/b200
+//! symlink is created. `AVAROK_FFN_GATEUP_FUSED=0` kills it; on gb10/b200
 //! `=1` arms a lever whose kernel lookup returns 0 and the arm declines.
 
 use anyhow::Result;
@@ -101,9 +101,9 @@ use crate::weight_map::Fp8Weight;
 /// Whether the compiled target arms the fused gate+up decode GEMM.
 ///
 /// The target declares it (`kernels/<hw>/HARDWARE.toml` `[defaults]
-/// ffn_gateup_fused`); `ATLAS_FFN_GATEUP_FUSED` overrides it under the
+/// ffn_gateup_fused`); `AVAROK_FFN_GATEUP_FUSED` overrides it under the
 /// 2026-09-11 grammar, so `=0`/`=off`/`=false` turn it off and anything else
-/// turns it on. There is no `ATLAS_NO_*` legacy spelling: the lever is new, so
+/// turns it on. There is no `AVAROK_NO_*` legacy spelling: the lever is new, so
 /// no script predates the grammar and none can be surprised by it.
 pub fn ffn_gateup_fused() -> bool {
     ops::target_defaults::resolved().ffn_gateup_fused.value
@@ -257,12 +257,12 @@ impl DenseFfnLayer {
     fn log_gateup_fused_route(&self, ctx: &ForwardContext, m: u32) {
         if ctx.stats.once("log:ffn_gateup_fused") {
             tracing::info!(
-                "[atlas] dense FFN decode: gate+up FUSED into ONE W8A8 \
+                "[avarok] dense FFN decode: gate+up FUSED into ONE W8A8 \
                  block-scaled GEMM at N=2*intermediate (m={m}, band 5..={max}) \
                  — same weight bytes, one launch instead of two. Round 13 \
                  priced the un-fused pair at 5 730.5 us/step, 59.4% of HBM, \
                  against `down`'s 71.4% for the same bytes in one launch. \
-                 Bit-identical per element; ATLAS_FFN_GATEUP_FUSED=0 restores \
+                 Bit-identical per element; AVAROK_FFN_GATEUP_FUSED=0 restores \
                  the two-GEMM arm (#927).",
                 max = GATEUP_FUSED_MAX_M,
             );

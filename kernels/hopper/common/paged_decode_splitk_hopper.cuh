@@ -32,7 +32,7 @@
 // ── THE DETERMINISM INVARIANT, which these kernels must not break ──────────
 //
 // `num_splits` is a launch parameter derived from CONFIGURATION ONLY
-// (`atlas_kernels::attn_splitk`): target SM count, q-head count, the pinned
+// (`avarok_kernels::attn_splitk`): target SM count, q-head count, the pinned
 // max decode batch. It is never a function of the runtime co-batched count.
 // Inside the kernel the partition of a sequence's KV range is a pure function
 // of THAT SEQUENCE'S OWN `seq_len` and `num_splits` (see `pd_split_bounds`),
@@ -49,8 +49,8 @@
 // KNOWN_BAD control rather than with an equality
 // (`native_attn_decode_splitk_hopper_microtest`).
 
-#ifndef ATLAS_PAGED_DECODE_SPLITK_HOPPER_CUH
-#define ATLAS_PAGED_DECODE_SPLITK_HOPPER_CUH
+#ifndef AVAROK_PAGED_DECODE_SPLITK_HOPPER_CUH
+#define AVAROK_PAGED_DECODE_SPLITK_HOPPER_CUH
 
 #include <cuda_bf16.h>
 
@@ -252,4 +252,4 @@ __device__ __forceinline__ void pd_reduce_body(
     }
 }
 
-#endif  // ATLAS_PAGED_DECODE_SPLITK_HOPPER_CUH
+#endif  // AVAROK_PAGED_DECODE_SPLITK_HOPPER_CUH

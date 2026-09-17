@@ -168,10 +168,10 @@ impl VisionEncoder {
         let mut cos_bf16 = vec![0u16; p * hd];
         let mut sin_bf16 = vec![0u16; p * hd];
 
-        // A/B toggle: when ATLAS_VISION_ROPE=0 we upload cos=1, sin=0 to
+        // A/B toggle: when AVAROK_VISION_ROPE=0 we upload cos=1, sin=0 to
         // make the kernel behave as identity (pre-RoPE). Lets the sweep
         // test pos_embed interpolation and RoPE as two independent bugs.
-        let rope_on = std::env::var("ATLAS_VISION_ROPE")
+        let rope_on = std::env::var("AVAROK_VISION_ROPE")
             .map(|v| v != "0")
             .unwrap_or(true);
         let one_bf16 = f32_to_bf16_bits(1.0);

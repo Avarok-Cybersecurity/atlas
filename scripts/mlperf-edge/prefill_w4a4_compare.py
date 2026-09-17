@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the two ATLAS_FP4_PREFILL legs: prefill speed vs accuracy drift.
+"""Compare the two AVAROK_FP4_PREFILL legs: prefill speed vs accuracy drift.
 
 W4A4 prefill is lossy by construction, so a differing output hash is expected and
 is NOT the gate. The gates are:

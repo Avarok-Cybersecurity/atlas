@@ -128,7 +128,7 @@ impl QsaIndexer {
             ratio > 0 && budget.is_multiple_of(ratio),
             "QSA: budget % ratio != 0"
         );
-        let max_tokens: usize = std::env::var("ATLAS_QSA_MAX_TOKENS")
+        let max_tokens: usize = std::env::var("AVAROK_QSA_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(32768);
@@ -251,7 +251,7 @@ impl QsaIndexer {
         );
         anyhow::ensure!(
             seq_start + num_tokens <= self.max_tokens,
-            "QSA: {} tokens exceeds ATLAS_QSA_MAX_TOKENS={}",
+            "QSA: {} tokens exceeds AVAROK_QSA_MAX_TOKENS={}",
             seq_start + num_tokens,
             self.max_tokens
         );
@@ -340,7 +340,7 @@ impl QsaIndexer {
         );
         anyhow::ensure!(
             pos < self.max_tokens,
-            "QSA: pos {pos} >= ATLAS_QSA_MAX_TOKENS"
+            "QSA: pos {pos} >= AVAROK_QSA_MAX_TOKENS"
         );
 
         let hd = self.hd as usize;

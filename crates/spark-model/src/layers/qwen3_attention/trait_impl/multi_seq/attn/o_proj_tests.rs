@@ -8,7 +8,7 @@ use crate::layers::{FfnComponent, qwen3_attention::Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
 };
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -25,7 +25,7 @@ enum Tier {
     /// `Batch16`, so only the kernel differs.
     Ncol2,
     Ncol4,
-    /// The tensor-core rung (`ATLAS_ATTN_M16_TC`, #927) — same 16-row group as
+    /// The tensor-core rung (`AVAROK_ATTN_M16_TC`, #927) — same 16-row group as
     /// `Batch16`, an m16n8k16 MMA instead of 16 scalar FFMA per weight byte.
     M16Tc,
 }
@@ -56,7 +56,7 @@ const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
 const NCOL2_K: u64 = 0xF0C2;
 const NCOL4_K: u64 = 0xF0C4;
-/// The tensor-core contiguous tier (`ATLAS_ATTN_M16_TC`).
+/// The tensor-core contiguous tier (`AVAROK_ATTN_M16_TC`).
 const M16TC_K: u64 = 0xF08E;
 
 #[test]
@@ -127,7 +127,7 @@ fn check_dispatch_ncol(rows: usize, tier: Tier, ncol: NcolWidth) {
 }
 
 /// `check_dispatch` with the tensor-core tier opted in — injected as the layer
-/// field `ATLAS_ATTN_M16_TC` resolves to, for the same `OnceLock` reason.
+/// field `AVAROK_ATTN_M16_TC` resolves to, for the same `OnceLock` reason.
 /// `handle` is whether the shadow carries `w8a16_gemm_m16`, which is the other
 /// half of the tier's predicate and a separate failure mode from the lever.
 fn check_dispatch_m16_tc(rows: usize, tier: Tier, handle: bool) {
@@ -145,7 +145,7 @@ fn check_dispatch_m16_tc(rows: usize, tier: Tier, handle: bool) {
 
 /// `wide` is the presence of the MAX_M=16 handle, separate from `available`
 /// (the MAX_M=4 one), so the "shadow lacks the new kernel" case is reachable;
-/// `m16_tc` is `None` when `ATLAS_ATTN_M16_TC` is unset and `Some(handle)` when
+/// `m16_tc` is `None` when `AVAROK_ATTN_M16_TC` is unset and `Some(handle)` when
 /// it is, where `handle` is the presence of `w8a16_gemm_m16` on the shadow —
 /// the lever and the entry point are separate failure modes and both are
 /// exercised below.
@@ -380,7 +380,7 @@ fn native_fp8_attention_o_projection_ncol_declines_above_max_m() {
     check_dispatch_ncol(20, Tier::Batch16, NcolWidth::Two);
 }
 
-/// ROUND 6's SPLIT, o_proj side. `ATLAS_ATTN_M16_TC` moves 5..=16 rows onto the
+/// ROUND 6's SPLIT, o_proj side. `AVAROK_ATTN_M16_TC` moves 5..=16 rows onto the
 /// MMA — the tier that measured −21.7% on the H100 — keeping the 16-row group.
 #[test]
 fn native_fp8_o_projection_attn_m16_tc_takes_the_sixteen_row_group() {

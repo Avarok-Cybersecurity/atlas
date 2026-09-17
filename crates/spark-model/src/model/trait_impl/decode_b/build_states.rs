@@ -15,7 +15,7 @@ use anyhow::Result;
 use super::super::super::types::TransformerModel;
 use crate::layer::{LayerState, SsmLayerState};
 use crate::traits::SequenceState;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 
 impl TransformerModel {
     /// Build the decode portion's `(seq_lens, block_tables, all_layer_states)`

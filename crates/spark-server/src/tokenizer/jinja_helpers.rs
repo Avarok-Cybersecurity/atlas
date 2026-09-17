@@ -14,7 +14,7 @@ pub(super) const TEMPLATE_OVERRIDE_DIR: &str = "jinja-templates";
 /// How `{{ x | tojson }}` serializes tool JSON.
 ///
 /// Passed EXPLICITLY rather than read from the process environment inside the
-/// render path. `build_jinja_env` reads `ATLAS_USE_HF_REF_JSON_DUMPS` once and
+/// render path. `build_jinja_env` reads `AVAROK_USE_HF_REF_JSON_DUMPS` once and
 /// forwards the result here; tests that need the spaced form ask for it by
 /// name. That distinction is not cosmetic — see `build_jinja_env`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub(crate) enum ToolJsonStyle {
 /// Production entry point: resolves the serialization style from the
 /// environment, then defers to [`build_jinja_env_with`].
 pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environment<'static>> {
-    let style = if std::env::var("ATLAS_USE_HF_REF_JSON_DUMPS").as_deref() == Ok("1") {
+    let style = if std::env::var("AVAROK_USE_HF_REF_JSON_DUMPS").as_deref() == Ok("1") {
         ToolJsonStyle::HfSpaced
     } else {
         ToolJsonStyle::Compact
@@ -39,7 +39,7 @@ pub(super) fn build_jinja_env(chat_template: &str) -> Result<minijinja::Environm
 /// Build a chat-template environment with an EXPLICIT tool-JSON style.
 ///
 /// Tests must use this, never `set_var`. `build_jinja_env` reads the env var on
-/// every call, so a test that mutates `ATLAS_USE_HF_REF_JSON_DUMPS` around its
+/// every call, so a test that mutates `AVAROK_USE_HF_REF_JSON_DUMPS` around its
 /// own render also changes what EVERY concurrently-running test renders — the
 /// harness runs them as threads in one process. That raced for real: with the
 /// spaced filter briefly installed process-wide, `qwen_dense_parity` rendered
@@ -215,7 +215,7 @@ pub(crate) fn build_jinja_env_with(
     // HF-reference path available behind an opt-in env var for callers that
     // need exact transformers/vLLM byte parity:
     //
-    //   ATLAS_USE_HF_REF_JSON_DUMPS=1   -> spaced, Python-json.dumps byte parity (#90)
+    //   AVAROK_USE_HF_REF_JSON_DUMPS=1   -> spaced, Python-json.dumps byte parity (#90)
     //   unset / anything else (DEFAULT)  -> compact (fixes ST-995 GDN irrelevance)
     //
     // Key order is preserved via the `preserve_order` feature in BOTH modes.
@@ -294,7 +294,7 @@ impl serde_json::ser::Formatter for PythonJsonFormatter {
 
 /// Try loading an override template from jinja-templates/{model_type}.jinja.
 pub(super) fn load_override_template(model_type: &str, repo_root: Option<&Path>) -> Option<String> {
-    // Check relative to repo root (Docker: /build, dev: /workspace/atlas)
+    // Check relative to repo root (Docker: /build, dev: /workspace/avarok)
     let candidates = [
         repo_root.map(|r| {
             r.join(TEMPLATE_OVERRIDE_DIR)

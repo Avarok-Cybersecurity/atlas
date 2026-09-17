@@ -21,8 +21,8 @@ KNOWN-BAD (instrument actually failed, then the formula was kept)
 - `beta_zero_is_sigmoid_half_not_zero`: raw beta=0 still writes delta (`sigmoid(0)=0.5`).
 
 TEST NOTES
-`cargo test -p atlas-core --lib -- kimi_k3::kda --nocapture`
-`cargo test -p atlas-core --lib -- parse_kimi_k3_0_40b_twin parse_kimi_k3_official_config`
+`cargo test -p avarok-core --lib -- kimi_k3::kda --nocapture`
+`cargo test -p avarok-core --lib -- parse_kimi_k3_0_40b_twin parse_kimi_k3_official_config`
 Twin parse: `linear_gate_lower_bound == 0.0` (omitted key, not `-5`). Official: `-5.0`.
 
 Do not copy GDN/Mamba into this directory. `kda_decode.cu` is a new stem.

@@ -13,8 +13,8 @@ use super::{
     preflight_arch, preflight_device_arch, preflight_device_arch_with,
 };
 use anyhow::{Result, bail};
-use atlas_core::target::KernelTarget;
-use atlas_kernels::{ModelBehavior, SamplingPresets, TargetPtxSet};
+use avarok_core::target::KernelTarget;
+use avarok_kernels::{ModelBehavior, SamplingPresets, TargetPtxSet};
 use std::sync::Mutex;
 use std::thread::{self, ThreadId};
 
@@ -84,7 +84,7 @@ fn the_preflight_judges_the_verbatim_arch_not_the_stripped_base_sm() {
 /// A build that compiled nothing records no arch, and the skip branch must
 /// still fire through the selector.
 ///
-/// Oracle: `crates/atlas-kernels/build.rs` under `ATLAS_SKIP_BUILD=1`
+/// Oracle: `crates/avarok-kernels/build.rs` under `AVAROK_SKIP_BUILD=1`
 /// writes a stub whose `all_ptx_sets()` is empty, so nothing carries an
 /// arch at all; an empty `ptx_arch` is the same statement reaching a
 /// consumer that does hold a set.
@@ -125,7 +125,7 @@ fn the_gb10_image_on_a_hopper_device_fails_with_the_operator_message() {
     let msg = format!("{err}");
     assert!(msg.contains("sm_121f"), "{msg}");
     assert!(msg.contains("compute capability 9.0"), "{msg}");
-    assert!(msg.contains("ATLAS_TARGET_HW=hopper"), "{msg}");
+    assert!(msg.contains("AVAROK_TARGET_HW=hopper"), "{msg}");
 }
 
 /// A fake driver reproducing the ONE property of the real one that the
@@ -206,7 +206,7 @@ fn preflight_on_a_fresh_thread(driver: &FakeDriver, ordinal: usize) -> Result<()
 ///
 /// Oracle: the reported call chain. `cuda_host::host` binds only while
 /// initialising its `OnceLock`; a TUI Library swap with no adapters starts
-/// a fresh `atlas-swap` thread and tears the old model down on the
+/// a fresh `avarok-swap` thread and tears the old model down on the
 /// scheduler thread, so nothing binds a context on the swap thread. NVIDIA
 /// documents the thread-current requirement in the context API, and the
 /// driver's answer is `CUDA_ERROR_INVALID_CONTEXT` (201) — which fails the
@@ -220,7 +220,7 @@ fn a_context_addressed_query_fails_on_a_thread_that_did_not_make_the_host() {
     let driver = FakeDriver::new(true);
     // Thread A: the scheduler thread that loaded the previous model.
     driver.init_host(3).expect("thread A creates the host");
-    // Thread B: the fresh `atlas-swap` thread.
+    // Thread B: the fresh `avarok-swap` thread.
     let err = preflight_on_a_fresh_thread(&driver, 3)
         .expect_err("no context is current on the swap thread");
     assert!(
@@ -294,8 +294,8 @@ fn the_real_preflight_runs_on_a_thread_that_did_not_make_the_host() {
 
 /// A build that compiled nothing has nothing to check.
 ///
-/// Oracle: `crates/atlas-kernels/build.rs` writes a stub `target_ptx.rs`
-/// under `ATLAS_SKIP_BUILD=1` whose `all_ptx_sets()` is empty — no arch is
+/// Oracle: `crates/avarok-kernels/build.rs` writes a stub `target_ptx.rs`
+/// under `AVAROK_SKIP_BUILD=1` whose `all_ptx_sets()` is empty — no arch is
 /// recorded anywhere. This branch must return before it touches CUDA, or
 /// every GPU-free `cargo test` host would fail it.
 #[test]
@@ -313,7 +313,7 @@ fn a_matching_sm_count_says_nothing() {
     assert_eq!(check_sm_count(48, 48), None);
 }
 
-/// ★ THE DEFECT, pinned. `atlas_core::device::sm121::NUM_SMS = 48` — a
+/// ★ THE DEFECT, pinned. `avarok_core::device::sm121::NUM_SMS = 48` — a
 /// constant named after ONE part — reaching a build whose kernels were sized
 /// for another is exactly what went unnoticed for a whole campaign, because
 /// nothing on either side ever said a number out loud.

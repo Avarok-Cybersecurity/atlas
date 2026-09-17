@@ -181,7 +181,7 @@ extern "C" __global__ void kda_recurrent_decode_bf16(
 //
 // 🪤 `VPB` must divide `D` and `blockDim.x` must equal `VPB` — the launcher owns both,
 // and a mismatch silently drops or double-counts columns. Kill switch on the Rust side:
-// `ATLAS_GLM_KDA_NO_SMEM=1` restores the 2R+2W kernel.
+// `AVAROK_GLM_KDA_NO_SMEM=1` restores the 2R+2W kernel.
 extern "C" __global__ void kda_recurrent_decode_bf16_smem(
     const __nv_bfloat16* __restrict__ q,   // [H, D] bf16, ALREADY L2-normalised
     const __nv_bfloat16* __restrict__ k,   // [H, D] bf16, ALREADY L2-normalised

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Build an atlas-core [`ModelConfig`] from a bare GGUF file's metadata, so a
+//! Build an avarok-core [`ModelConfig`] from a bare GGUF file's metadata, so a
 //! directory containing only a `.gguf` (no `config.json`) can be served.
 //!
-//! `config_from_gguf` lives in atlas-core (which cannot see this crate's GGUF
-//! parser); this module bridges the two — it impls the atlas-core [`GgufMeta`]
+//! `config_from_gguf` lives in avarok-core (which cannot see this crate's GGUF
+//! parser); this module bridges the two — it impls the avarok-core [`GgufMeta`]
 //! accessor over [`GgufFile`] and supplies the two tensor-section facts the
 //! builder needs (vocab rows + presence of an untied `output.weight`).
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use atlas_core::config::{GgufConfigInputs, GgufMeta, ModelConfig, config_from_gguf};
+use avarok_core::config::{GgufConfigInputs, GgufMeta, ModelConfig, config_from_gguf};
 
 use super::container::GgufFile;
 use super::find_gguf;

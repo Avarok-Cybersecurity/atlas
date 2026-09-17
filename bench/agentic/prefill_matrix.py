@@ -22,7 +22,7 @@ import argparse, json, os, random, statistics as st, string, time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888/v1/chat/completions")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888/v1/chat/completions")
 
 
 def make_prompt(target_tokens, rng):

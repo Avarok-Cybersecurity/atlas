@@ -44,7 +44,7 @@
 // A checker that has never failed has never been tested. If this file starts
 // PASSING for sm_100a, the gate is not checking what it claims to.
 
-extern "C" __global__ void atlas_gate_selftest_bad_sm100(const unsigned int *in,
+extern "C" __global__ void avarok_gate_selftest_bad_sm100(const unsigned int *in,
                                                          float *out) {
   unsigned int a0 = in[0], a1 = in[1], a2 = in[2], a3 = in[3];
   unsigned int b0 = in[4], b1 = in[5];

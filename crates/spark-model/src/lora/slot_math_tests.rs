@@ -5,7 +5,7 @@
 //! routed-prefill predicate + pair selection. Cross-seam bodies resolve types
 //! through the `crate::lora` facade.
 
-use atlas_core::config::{LayerType, PeftAdapterConfig};
+use avarok_core::config::{LayerType, PeftAdapterConfig};
 use spark_runtime::weights::WeightStore;
 
 use crate::lora::test_support::*;

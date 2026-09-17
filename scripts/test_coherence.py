@@ -269,7 +269,7 @@ def test_coherence():
     msgs.append({"role": "user", "content": "What is my name?"})
     r2 = api("/v1/chat/completions", {"model": "test", "messages": msgs, "max_tokens": 50})
     content2 = r2["choices"][0]["message"]["content"]
-    test("Multi-turn remembers context (name)", "Atlas" in content2 or "atlas" in content2, content2[:80])
+    test("Multi-turn remembers context (name)", "Atlas" in content2 or "avarok" in content2, content2[:80])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -389,7 +389,7 @@ def test_tool_reliability():
             "model": "test",
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": "Read /workspace/atlas/Cargo.toml"},
+                {"role": "user", "content": "Read /workspace/avarok/Cargo.toml"},
             ],
             "tools": single_tool,
             "max_tokens": 500,
@@ -853,7 +853,7 @@ def test_opencode_compat():
     })
     # Dump directory for debugging
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
 
     c = r["choices"][0]
@@ -973,7 +973,7 @@ def test_opencode_compat():
 
     # Dump directory for debugging
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
 
     # 14d. Thinking coherence — no gibberish in reasoning_content
@@ -1174,7 +1174,7 @@ def test_anthropic_agent_compat():
     r = anthropic_req({
         "model": "test",
         "system": sys_prompt,
-        "messages": [{"role": "user", "content": "Read the file /workspace/atlas/Cargo.toml and tell me the package name"}],
+        "messages": [{"role": "user", "content": "Read the file /workspace/avarok/Cargo.toml and tell me the package name"}],
         "tools": tools,
         "max_tokens": 1000,
     })
@@ -1246,11 +1246,11 @@ def test_anthropic_agent_compat():
             "model": "test",
             "system": sys_prompt,
             "messages": [
-                {"role": "user", "content": "Read /workspace/atlas/Cargo.toml"},
+                {"role": "user", "content": "Read /workspace/avarok/Cargo.toml"},
                 {"role": "assistant", "content": content_blocks},
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": tb["id"],
-                     "content": '[package]\nname = "atlas"\nversion = "0.1.0"'},
+                     "content": '[package]\nname = "avarok"\nversion = "0.1.0"'},
                 ]},
             ],
             "tools": tools,
@@ -1392,7 +1392,7 @@ def test_e2e_rust_project():
 
     # Dump results
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
     with open(f"{dump_dir}/e2e_turn1.json", "w") as f:
         json.dump(r, f, indent=2, ensure_ascii=False)

@@ -16,10 +16,10 @@ import subprocess
 import time
 import urllib.request
 
-IMAGE = "atlas-gb10:alpha-2.11"
+IMAGE = "avarok-gb10:alpha-2.11"
 HF_CACHE = "/workspace/.cache/huggingface"
 PORT = 8888
-RESULT_PATH = "/workspace/atlas/tests/ab_35b_results.json"
+RESULT_PATH = "/workspace/avarok/tests/ab_35b_results.json"
 
 VARIANTS = [
     {

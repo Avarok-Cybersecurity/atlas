@@ -13,7 +13,7 @@
 //! * a hybrid-SSM model with no usable SSM snapshot
 //!   (`"…but no SSM snapshot — recomputing all KV"`),
 //! * the exact-leaf snapshot shortcut bypass (default ON,
-//!   `ATLAS_MARCONI_EXACT=1` re-enables the shortcut),
+//!   `AVAROK_MARCONI_EXACT=1` re-enables the shortcut),
 //! * a Marconi restore declined below `marconi_min_tokens()` or by the session
 //!   gate.
 //!

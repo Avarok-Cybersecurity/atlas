@@ -26,7 +26,7 @@ Atlas op names → HF module mapping (per layer):
   - router_gate      : output of `mlp.gate`  (pre-softmax router logits)
   - shared_expert    : output of `mlp.shared_expert`  (pre-gate)
   - moe_out          : output of `mlp` (final MoE block output)
-  - layer_out        : output of full layer (already covered by atlas_L*.bin)
+  - layer_out        : output of full layer (already covered by avarok_L*.bin)
 
 For tensors with leading [batch, seq, ...] shape, captures `t[0, -1, ...]`
 flattened.
@@ -47,9 +47,9 @@ from transformers import AutoModelForCausalLM
 
 SNAP = "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
 TOKENS_PATH = pathlib.Path(
-    "/workspace/atlas-mtp/bench/fp8_dgx2_drift/atlas_tokens_dgx2.json"
+    "/workspace/avarok-mtp/bench/fp8_dgx2_drift/avarok_tokens_dgx2.json"
 )
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/op_drift")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/op_drift")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -227,7 +227,7 @@ def main() -> None:
             hooks.append(mlp.shared_expert.register_forward_hook(
                 make_module_hook(OUT_DIR, i, "shared_expert")))
         hooks.append(mlp.register_forward_hook(make_module_hook(OUT_DIR, i, "moe_out")))
-        # Whole-layer output (this matches atlas_L*.bin)
+        # Whole-layer output (this matches avarok_L*.bin)
         hooks.append(layer.register_forward_hook(make_module_hook(OUT_DIR, i, "layer_out")))
 
     print(f"  registered {len(hooks)} hooks across {n_layers} layers", flush=True)

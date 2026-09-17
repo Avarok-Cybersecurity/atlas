@@ -12,6 +12,7 @@
   // cannot drift, because they are one code path.
 
   import { groupsPresent, settingsIn, checkValue, notEditableHere } from '$lib/agent/schema.js';
+  import { CONTROL } from '$lib/data.js';
   import SettingField from './SettingField.svelte';
 
   let { agent, recipeId, onclose, onstarted } = $props();
@@ -25,10 +26,6 @@
   // only arrived after the form was filled in. Say it before the work, not
   // after.
   const controlOnly = $derived(agent.canLaunch === false);
-
-  // `.html`, not `/control`: adapter-static writes this route to control.html
-  // and the deploy target serves files literally. Same reasoning as FleetPill.
-  const CONTROL = '/control.html';
 
   let overrides = $state({});
   let showAdvanced = $state(false);

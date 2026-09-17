@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fast Rust-only iteration loop. Skips the multi-minute PTX compile
-# (ATLAS_SKIP_BUILD=1) and bypasses cudarc's nvcc probe
+# (AVAROK_SKIP_BUILD=1) and bypasses cudarc's nvcc probe
 # (CUDARC_CUDA_VERSION). Use for `cargo check`, `cargo clippy`,
 # `cargo clippy --tests`, etc. when you only care about Rust correctness.
 #
@@ -11,7 +11,7 @@
 #
 # Anything that needs to actually launch a kernel (Docker build, perf
 # tests, runtime smoke) MUST go through the real build path — the stub
-# registry produced under ATLAS_SKIP_BUILD has zero PTX.
+# registry produced under AVAROK_SKIP_BUILD has zero PTX.
 
 set -euo pipefail
 
@@ -21,14 +21,14 @@ set -euo pipefail
 # cannot target it.
 export CUDARC_CUDA_VERSION="${CUDARC_CUDA_VERSION:-13000}"
 
-# ATLAS_SKIP_BUILD is the name the kernel build actually reads
-# (crates/atlas-kernels/build.rs). This script exported only the
-# SKIP_ATLAS_BUILD spelling, which atlas-kernels does NOT match — so the
+# AVAROK_SKIP_BUILD is the name the kernel build actually reads
+# (crates/avarok-kernels/build.rs). This script exported only the
+# SKIP_AVAROK_BUILD spelling, which avarok-kernels does NOT match — so the
 # "fast" wrapper ran the full nvcc PTX compile every time. Both are exported
 # because spark-storage/build.rs accepts either and callers may already have
 # one of them set.
-export ATLAS_SKIP_BUILD="${ATLAS_SKIP_BUILD:-${SKIP_ATLAS_BUILD:-1}}"
-export SKIP_ATLAS_BUILD="${SKIP_ATLAS_BUILD:-$ATLAS_SKIP_BUILD}"
+export AVAROK_SKIP_BUILD="${AVAROK_SKIP_BUILD:-${SKIP_AVAROK_BUILD:-1}}"
+export SKIP_AVAROK_BUILD="${SKIP_AVAROK_BUILD:-$AVAROK_SKIP_BUILD}"
 
 # `cargo` from PATH. An absolute path here worked on one box and on no
 # contributor's machine.

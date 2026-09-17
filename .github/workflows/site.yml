@@ -230,13 +230,13 @@ jobs:
       - name: The advertised recipe exists
         run: bun scripts/check-flagship.mjs
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
 
       - name: Build
         run: bun x --bun vite build
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
-          ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
           GH_TOKEN: ${{ github.token }}
 
       # A page's <title> can vanish while the rest of its head survives: a layout
@@ -328,7 +328,7 @@ jobs:
   # Two publish targets, deliberately two jobs.
   #
   # Cloudflare Pages is what the DNS points at, so it is the one that gates
-  # `verify`. avarok is kept byte-current as a warm standby but must never be
+  # `verify`. atlas is kept byte-current as a warm standby but must never be
   # able to stop a publish: the origin went down entirely once, and with both
   # legs in one job that outage would also have blocked the edge deploy that
   # exists precisely to survive it. Hence a separate job, `continue-on-error`.
@@ -445,7 +445,7 @@ jobs:
     # like the thing serving traffic.
     environment:
       name: production-site
-    name: Mirror to avarok via rsync (standby)
+    name: Mirror to atlas via rsync (standby)
     needs: [build, unit]
     if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
@@ -527,7 +527,7 @@ jobs:
           then
             echo "mirrored the marketing site to ${DEPLOY_SSH_HOST}"
           else
-            echo "::warning title=avarok mirror did not run::rsync of the marketing site to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+            echo "::warning title=atlas mirror did not run::rsync of the marketing site to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
           fi
 
       - name: Mirror blog
@@ -557,7 +557,7 @@ jobs:
           then
             echo "mirrored the blog to ${DEPLOY_SSH_HOST}"
           else
-            echo "::warning title=avarok mirror did not run::rsync of the blog to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+            echo "::warning title=atlas mirror did not run::rsync of the blog to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
           fi
 
 

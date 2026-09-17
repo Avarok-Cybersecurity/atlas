@@ -7,7 +7,7 @@ so row k is P(.|prompt + k+1 generated tokens) and a sampled context
 diverges):
 
   1. greedy_capture.py: engine chat request at temperature 0, max_tokens=8,
-     with ATLAS_DUMP_LOGITS_PATH armed -> greedy token ids (greedy_ids.txt)
+     with AVAROK_DUMP_LOGITS_PATH armed -> greedy token ids (greedy_ids.txt)
      + 7 raw rows (greedy_rows.npy), row k = P(.|prompt + greedy[0..=k]).
   2. forward_ref.py with QWEN4EXP_EXTRA_IDS=<those ids> -> golden logits at
      positions 0..P+7 where position P+k = P(.|prompt + greedy[0..=k]).

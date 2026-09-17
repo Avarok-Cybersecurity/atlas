@@ -245,7 +245,7 @@ fn the_replay_refusal_is_distinguishable_from_the_prefill_one() {
 // phases it may and may not run in, because the earlier gate (`!graph_capture && k > 1`) let
 // an EAGER verify in: `verify_a` builds its context with `graph_capture: false` outright, and
 // `verify_b/c/c2/d/fused` set it from `use_graphs`, which is false under
-// `ATLAS_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under `ATLAS_LORA_EAGER`.
+// `AVAROK_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under `AVAROK_LORA_EAGER`.
 
 use super::super::layer::batch_select_enabled;
 
@@ -270,7 +270,7 @@ fn only_a_multi_row_eager_prefill_takes_the_batched_selector() {
         ("graphed verify K=4", true, false, true, 4, false),
         // 🔴 the regression this table exists for
         (
-            "EAGER verify K=3 (ATLAS_GLM_VERIFY_GRAPHS=0)",
+            "EAGER verify K=3 (AVAROK_GLM_VERIFY_GRAPHS=0)",
             true,
             false,
             false,
@@ -302,7 +302,7 @@ fn only_a_multi_row_eager_prefill_takes_the_batched_selector() {
             false,
         ),
         (
-            "kill-switch ATLAS_DSA_SELECT_ROWS=0, prefill",
+            "kill-switch AVAROK_DSA_SELECT_ROWS=0, prefill",
             false,
             true,
             false,

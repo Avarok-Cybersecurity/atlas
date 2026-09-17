@@ -108,7 +108,7 @@ fn tempdir_like() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let p = std::env::temp_dir().join(format!("atlas-fwp-{pid}-{ns}"));
+    let p = std::env::temp_dir().join(format!("avarok-fwp-{pid}-{ns}"));
     std::fs::create_dir_all(&p).unwrap();
     p
 }

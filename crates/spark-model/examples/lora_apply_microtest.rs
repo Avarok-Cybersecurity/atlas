@@ -23,7 +23,7 @@
 use anyhow::{Result, bail};
 use spark_model::layers::ops::lora_delta::{LoraKernels, LoraPair, apply_lora_delta};
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 const COSINE_GATE: f64 = 0.999;
@@ -144,7 +144,7 @@ fn main() -> Result<()> {
     }
 
     // ── GPU ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let kernels = LoraKernels::new(gpu)?;

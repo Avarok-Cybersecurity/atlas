@@ -23,14 +23,14 @@ use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 /// across CUDA-graph replays.
 pub(super) fn bf16_batchm_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
 }
 
 /// Fused [q|k|v] projection GEMM (one N=14336 launch instead of three).
-/// Kill switch: `ATLAS_NO_FUSED_QKV=1` restores the three separate GEMMs.
+/// Kill switch: `AVAROK_NO_FUSED_QKV=1` restores the three separate GEMMs.
 fn fused_qkv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_FUSED_QKV").ok().as_deref() != Some("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_FUSED_QKV").ok().as_deref() != Some("1"))
 }
 
 impl Qwen3AttentionLayer {
@@ -327,11 +327,11 @@ impl Qwen3AttentionLayer {
         // `per_seq_qkv` apart — exactly the (rows_per_group, num_groups,
         // row_stride) shape `rms_norm_strided` takes. The per-sequence loop below
         // was 516 launches/step across the 16 attention layers (0.76 ms).
-        // Bit-identical: one block per row either way. Kill: ATLAS_NO_QK_NORM_STRIDED=1.
+        // Bit-identical: one block per row either way. Kill: AVAROK_NO_QK_NORM_STRIDED=1.
         fn qk_norm_strided_enabled() -> bool {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ON.get_or_init(|| {
-                std::env::var("ATLAS_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
+                std::env::var("AVAROK_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
             })
         }
         if n > 1
@@ -625,7 +625,7 @@ impl Qwen3AttentionLayer {
             // `w4a16_gemm_t` beats the M128-tile kernels (87% of an M128
             // tile is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K
             // shapes. Mirrors dense_ffn::w4a16_prefill_gemm; same
-            // ATLAS_FFN_SMALLM=0 kill-switch.
+            // AVAROK_FFN_SMALLM=0 kill-switch.
             // The `OnceLock<bool>` static that lived here is now a field on
             // `layers::ops::ModelLevers` — resolved when the model is built and carried
             // on `ForwardContext`, because a static outlives the model whose flags it
@@ -754,7 +754,7 @@ impl Qwen3AttentionLayer {
         // in the model (23.6 GB/s, 9.75x off floor). Bit-identical — same dot
         // products, relocated along N — and the loader only builds the twin when
         // q/k/v share one `weight_scale_2`.
-        // Kill switch: ATLAS_NO_FUSED_QKV=1.
+        // Kill switch: AVAROK_NO_FUSED_QKV=1.
         let fused_n = q_proj_dim as usize + 2 * kv_dim_e;
         // n > 8 is REQUIRED, not an optimisation: `wide_verify_gemm` early-returns
         // on the batched-GEMV arms for m <= 8 using the BASE (non-transposed)

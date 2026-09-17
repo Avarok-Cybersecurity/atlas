@@ -2,7 +2,7 @@
 //! ORACLE for the tensor-core GDN chunked-prefill state spine (#928).
 //!
 //! A/Bs the shipped scalar spine `gated_delta_rule_chunk_delta_h_vfused` against
-//! `..._tcfuse` and `..._tcfuse_x2` (`ATLAS_GDN_PREFILL_TC`) on IDENTICAL inputs
+//! `..._tcfuse` and `..._tcfuse_x2` (`AVAROK_GDN_PREFILL_TC`) on IDENTICAL inputs
 //! at T in {256, 1193, 4593} — the two nsys shapes of GDN-PREFILL-ATTRIBUTION.md
 //! plus a short one. All three are scored against an f64 CPU reference, not each
 //! other: the new arms round S_c and duc to bf16 as MMA operands, so "matches
@@ -25,7 +25,7 @@
 
 use anyhow::{Result, bail};
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -369,7 +369,7 @@ fn report(tag: &str, a: &[f32], r: &[f64]) -> (f64, f64, f64) {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     const FLA: &str = "gated_delta_rule_fla";
     const TC: &str = "gated_delta_rule_chunk_tc";

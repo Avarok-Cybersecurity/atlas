@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Pure tests for the `ATLAS_ATTN_M16_TC` route lines (#927, H100 round 9
+//! Pure tests for the `AVAROK_ATTN_M16_TC` route lines (#927, H100 round 9
 //! cell W).
 //!
 //! What these DO NOT cover: the `tc` arm-selection boolean itself
@@ -69,7 +69,7 @@ fn each_tier_fires_its_own_arm_only() {
 #[test]
 fn qkv_message_names_the_lever_kernel_band_and_off_switch() {
     let msg = QKV_M16_TC_ROUTE_MSG;
-    assert!(msg.contains("ATLAS_ATTN_M16_TC"), "must name the lever");
+    assert!(msg.contains("AVAROK_ATTN_M16_TC"), "must name the lever");
     assert!(
         msg.contains("w8a16_gemm_m16_strided"),
         "must name the kernel this tier actually launches"
@@ -96,7 +96,7 @@ fn qkv_message_names_the_lever_kernel_band_and_off_switch() {
 #[test]
 fn o_proj_message_names_the_lever_kernel_band_and_off_switch() {
     let msg = O_PROJ_M16_TC_ROUTE_MSG;
-    assert!(msg.contains("ATLAS_ATTN_M16_TC"), "must name the lever");
+    assert!(msg.contains("AVAROK_ATTN_M16_TC"), "must name the lever");
     assert!(
         msg.contains("w8a16_gemm_m16") && !msg.contains("w8a16_gemm_m16_strided"),
         "must name the CONTIGUOUS kernel, not the strided one the q/k/v tier uses"

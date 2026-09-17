@@ -22,7 +22,7 @@ fn the_split_silu_arm_is_the_default_on_a_complete_target() {
 
 #[test]
 fn the_kill_switch_restores_the_fused_kernel() {
-    // `ATLAS_NO_DECODE_SPLIT_SILU` clears `decode_split_silu`; the fused
+    // `AVAROK_NO_DECODE_SPLIT_SILU` clears `decode_split_silu`; the fused
     // kernel is still resolved, so the arm must go back to it bit-for-bit
     // rather than fall all the way to the 4-launch path.
     assert_eq!(full(false), Fp8DownArm::FusedSilu);

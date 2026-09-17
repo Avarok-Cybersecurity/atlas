@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Allocation contract for the two ATTENTION prefill projection chains that
-//! `ATLAS_CUBLAS_GEMM=attn` arms: the cache-skip Q/K/V chain
+//! `AVAROK_CUBLAS_GEMM=attn` arms: the cache-skip Q/K/V chain
 //! (`cache_skip_qkv.rs`) and the paged O-projection (`paged_oproj.rs`).
 //!
 //! H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`: both chains used to carry an arm
@@ -17,7 +17,7 @@
 //! 6120 MiB actually consumed before the OOM. #927/#928 deleted both arms in
 //! favour of the W8A8 routes; these tests are what keeps them deleted, because
 //! the serve recipe for the 5..16-row decode projections is
-//! `ATLAS_CUBLAS_GEMM=ffn,ssm,attn` and arming `attn` for decode must not
+//! `AVAROK_CUBLAS_GEMM=ffn,ssm,attn` and arming `attn` for decode must not
 //! re-arm a prefill arm that allocates.
 //!
 //! The assertion is deliberately taken BEFORE the first call, not between the
@@ -41,7 +41,7 @@ use crate::layers::ops::{CublasScope, DerivedWeights, GemmDispatch, ModelLevers,
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
 };
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -129,7 +129,7 @@ fn native_fp8_attention_layer(gpu: &MockGpuBackend, config: &ModelConfig) -> Qwe
     layer
 }
 
-/// `ATLAS_CUBLAS_GEMM=attn` armed, which is what the decode recipe sets.
+/// `AVAROK_CUBLAS_GEMM=attn` armed, which is what the decode recipe sets.
 fn armed_dispatch() -> GemmDispatch {
     GemmDispatch {
         cublas: CublasScope::ALL,

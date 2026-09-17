@@ -4,7 +4,7 @@
 // targets. If THIS fails, the gate's toolchain discovery or flag handling is
 // broken and no result it prints means anything.
 
-extern "C" __global__ void atlas_gate_selftest_good(const float *in, float *out,
+extern "C" __global__ void avarok_gate_selftest_good(const float *in, float *out,
                                                     int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) {

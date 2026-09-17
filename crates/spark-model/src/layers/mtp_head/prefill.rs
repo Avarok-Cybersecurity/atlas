@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Batched MTP drafter context prefill (ATLAS_MTP_DRAFTER_PREFILL).
+//! Batched MTP drafter context prefill (AVAROK_MTP_DRAFTER_PREFILL).
 //!
 //! Why this exists: without it the drafter's KV cache starts EMPTY at decode —
 //! the drafter is blind to the prompt through its own attention, and measured
@@ -60,7 +60,7 @@ impl MtpHead {
     /// decoupled because without drafter prefill the row space is COMPACTED
     /// (slots dense, RoPE sequence-space with gaps — matching `forward_one`).
     /// `row_base = 0, pos_base = 1` is the classic whole-prompt prefill;
-    /// the catch-up feed (ATLAS_MTP_CATCHUP) appends at `row_base = seq_len`
+    /// the catch-up feed (AVAROK_MTP_CATCHUP) appends at `row_base = seq_len`
     /// with the fed pairs' true sequence positions.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn drafter_rows_impl(
@@ -96,7 +96,7 @@ impl MtpHead {
                 (fc, k, v)
             }
             _ => {
-                // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+                // Log-once latch (see `avarok_core::scope`). It holds no model-derived
                 // value — the message is rebuilt from the arguments every call — so a
                 // stale entry cannot produce a wrong answer, only a suppressed duplicate
                 // line after a model swap. Scoping it would thread a logging concern
@@ -130,11 +130,11 @@ impl MtpHead {
             mtp_state.block_table.push(kv_cache.alloc_block()?);
         }
 
-        // ATLAS_MTP_PREFILL_PROFILE=1: per-phase wall clock for this pass, so the
+        // AVAROK_MTP_PREFILL_PROFILE=1: per-phase wall clock for this pass, so the
         // 1136 ms measured over 11,947 rows can be attributed to a phase instead
         // of guessed at. Each phase is synced, so the totals are only meaningful
         // WITH the flag on — never enable it in a timed leg.
-        let profile = std::env::var("ATLAS_MTP_PREFILL_PROFILE").ok().as_deref() == Some("1");
+        let profile = std::env::var("AVAROK_MTP_PREFILL_PROFILE").ok().as_deref() == Some("1");
         let mut t_embed = 0f64;
         let mut t_concat = 0f64;
         let mut t_rest = 0f64;

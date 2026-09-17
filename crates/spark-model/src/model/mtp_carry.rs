@@ -104,11 +104,11 @@ use spark_runtime::gpu::DevicePtr;
 /// and is block-aligned (16 x 16-token blocks). On preamble-only traffic the
 /// penalty was -6.8% at C=1 and -9.2% at C=2, and inert by C=4.
 ///
-/// `ATLAS_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores the previous
+/// `AVAROK_MARCONI_MIN_TOKENS=<n>` overrides; 0 restores the previous
 /// always-restore behaviour.
 pub fn marconi_min_tokens() -> usize {
     *MARCONI_MIN.get_or_init(|| {
-        std::env::var("ATLAS_MARCONI_MIN_TOKENS")
+        std::env::var("AVAROK_MARCONI_MIN_TOKENS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(DEFAULT_MARCONI_MIN_TOKENS)
@@ -125,7 +125,7 @@ static MARCONI_MIN: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 ///
 /// ★ WHY A SETTER AND NOT JUST THE ENV VAR. A KAT gate needs this value to be
 /// part of its RECORD, and only recipe keys reach a record — an env var cannot,
-/// so a run configured by `ATLAS_MARCONI_MIN_TOKENS` could not state that it
+/// so a run configured by `AVAROK_MARCONI_MIN_TOKENS` could not state that it
 /// had been. Issue #936 measured a sharded BFCL draw disagreeing with the same
 /// draw run whole on 12 of 995 samples through cross-request SSM snapshot
 /// reuse; setting this high closes the consumer side and takes that to 2. A
@@ -150,7 +150,7 @@ pub fn set_marconi_min_tokens(v: usize) -> bool {
 /// below, at the boundary.
 ///
 /// ★ CONFIGURED IS NOT ARMED, and conflating the two cost a night of GPU on
-/// 2026-09-07. `ATLAS_MTP_MAX_SEQS` defaults to 32, so `multi_seq` is true on
+/// 2026-09-07. `AVAROK_MTP_MAX_SEQS` defaults to 32, so `multi_seq` is true on
 /// an unconfigured serve and the carry is INERT no matter what
 /// `DrafterContext` says. Anything that reports the carry's state to a human
 /// must report THIS, not `cfg.carry`.
@@ -174,10 +174,10 @@ pub fn mtp_carry_drafter_enabled(levers: &crate::layers::ops::ModelLevers) -> bo
     carry_armed(levers.drafter)
 }
 
-/// `ATLAS_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no
+/// `AVAROK_MTP_CARRY_DEBUG=1` — one line per adopt/carry decision. Cheap (no
 /// device reads, no syncs), but still off by default so timed legs stay quiet.
 pub fn mtp_carry_debug() -> bool {
-    std::env::var("ATLAS_MTP_CARRY_DEBUG").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_MTP_CARRY_DEBUG").ok().as_deref() == Some("1")
 }
 
 /// The drafter KV of a finished turn, held for the next turn of the same

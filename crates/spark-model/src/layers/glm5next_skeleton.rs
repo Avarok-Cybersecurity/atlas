@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 
 /// Which mixer a layer runs. Narrower than [`LayerType`] on purpose: the skeleton refuses the
 /// kinds GLM-5.3 does not have rather than carrying them as unreachable arms.

@@ -61,7 +61,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if let Some(dtype) = &args.ssm_h_dtype {
         check_enum(&mut v, "--ssm-h-dtype", dtype, SSM_H_DTYPES);
     }
-    // Only when it was given: absent means "let ATLAS_MTP_GATE_FORCE decide",
+    // Only when it was given: absent means "let AVAROK_MTP_GATE_FORCE decide",
     // and validating an unwritten value would reject nothing but confuse the
     // reader of this list.
     if let Some(gate) = &args.mtp_gate {

@@ -338,9 +338,9 @@ pub fn w8a16_gemm(
     // other target keeps the original 64×64 / 128-thread kernel
     // (kernels/gb10/common/w8a16_gemm.cu). Keep these two in lockstep with their
     // `.cu` `M_TILE`/`N_TILE`/`THREADS`.
-    #[cfg(atlas_hip)]
+    #[cfg(avarok_hip)]
     let (grid, block) = ([div_ceil(n, 128), div_ceil(m, 256), 1], [512, 1, 1]);
-    #[cfg(not(atlas_hip))]
+    #[cfg(not(avarok_hip))]
     let (grid, block) = ([div_ceil(n, 64), div_ceil(m, 64), 1], [128, 1, 1]);
     KernelLaunch::new(gpu, kernel)
         .grid(grid)
@@ -609,9 +609,9 @@ pub fn moe_fp8_grouped_gemm(
     // Every other target keeps the 8-warp / 256-thread M-only kernel
     // (kernels/gb10/common/moe_fp8_grouped_gemm.cu). Keep this in lockstep with
     // that .cu PM4_THREADS.
-    #[cfg(atlas_hip)]
+    #[cfg(avarok_hip)]
     let block = [512u32, 1, 1];
-    #[cfg(not(atlas_hip))]
+    #[cfg(not(avarok_hip))]
     let block = [256u32, 1, 1];
     KernelLaunch::new(gpu, kernel)
         .grid([grid_ctas, 1, 1])
@@ -728,7 +728,7 @@ pub fn moe_w8a8_grouped_gemm_pm4(
 ///
 /// BF16 activations × BF16 expert weights via pointer table. No scale.
 /// Used when expert weights have been dequanted from FP8 to BF16 at load
-/// time (ATLAS_FP8_DEQUANT_MOE_TO_BF16=1). Eliminates the per-layer 0.989
+/// time (AVAROK_FP8_DEQUANT_MOE_TO_BF16=1). Eliminates the per-layer 0.989
 /// cosine ceiling that comes from FP8 quantization itself.
 ///
 /// Grid: (ceil(N/64), max_m_tiles, num_experts)  Block: (128, 1, 1)

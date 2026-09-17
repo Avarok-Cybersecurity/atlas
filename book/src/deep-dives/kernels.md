@@ -113,7 +113,7 @@ Turning graphs off (`--profile`) disables capture — useful when you are profil
        .arg_f32(eps)
        .launch(stream)
    ```
-6. **Benchmark.** Add a shape in `atlas-spark-bench` or a micro-benchmark in the relevant primitive crate. A kernel without a benchmark is not allowed to claim "faster".
+6. **Benchmark.** Add a shape in `avarok-spark-bench` or a micro-benchmark in the relevant primitive crate. A kernel without a benchmark is not allowed to claim "faster".
 7. **Verify correctness** against a PyTorch reference on a fixture tensor. Numerical diff tolerance: for BF16 outputs, abs-tol 1e-3 / rel-tol 1e-2 is a typical starting point.
 
 ## Anti-patterns

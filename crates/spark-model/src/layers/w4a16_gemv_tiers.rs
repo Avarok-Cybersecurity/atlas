@@ -39,7 +39,7 @@
 //!
 //! # Kill switch
 //!
-//! `ATLAS_NO_GEMV_EXACT_M_TIERS=1` (presence-checked per the house convention;
+//! `AVAROK_NO_GEMV_EXACT_M_TIERS=1` (presence-checked per the house convention;
 //! `=0` is NOT off) hides widths 5/6/7 from the decision, restoring exactly the
 //! batch4/batch8 dispatch that shipped before them. It does not unload the
 //! kernels — it only removes them from selection, so an A/B needs no rebuild.
@@ -61,7 +61,7 @@ pub const W4A16_BATCHM_WIDTHS: [u32; 5] = [4, 5, 6, 7, 8];
 /// hidden by the kill switch.
 const FIRST_EXACT_M: usize = 1;
 
-/// Widths hidden by `ATLAS_NO_GEMV_EXACT_M_TIERS=1`: the tiers added by this
+/// Widths hidden by `AVAROK_NO_GEMV_EXACT_M_TIERS=1`: the tiers added by this
 /// change. 8 is NOT hidden — it is the pre-existing M=5..8 tier.
 const EXACT_M_LAST: usize = 3;
 
@@ -71,7 +71,7 @@ const EXACT_M_LAST: usize = 3;
 /// path and is consulted per projection launch.
 pub fn exact_m_tiers_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GEMV_EXACT_M_TIERS").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_GEMV_EXACT_M_TIERS").is_none())
 }
 
 /// PURE tier decision: index into [`W4A16_BATCHM_WIDTHS`] of the narrowest
@@ -136,7 +136,7 @@ impl W4a16BatchmTiers {
             // Width 8 resolves through the rt2-preferring helper: the
             // register-tiled T=2 variant is bit-exact vs classic batch8
             // (same per-row FMA chain; batchm_bench gate 4) and carries its
-            // own kill switch (`ATLAS_NO_BATCH8_RT=1`). All five tier
+            // own kill switch (`AVAROK_NO_BATCH8_RT=1`). All five tier
             // consumers inherit the preference from this one site.
             *h = if w == 8 {
                 super::batch8_kernel(gpu)

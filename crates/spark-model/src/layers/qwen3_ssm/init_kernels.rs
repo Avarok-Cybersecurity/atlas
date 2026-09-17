@@ -13,7 +13,7 @@ use super::*;
 /// startup audit, so what remains there is what someone has to act on.
 #[track_caller]
 pub(super) fn hc_kernel(
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     gpu: &dyn GpuBackend,
     func: &str,
 ) -> KernelHandle {
@@ -73,7 +73,7 @@ pub(super) fn wyn_f16_kernels(gpu: &dyn GpuBackend) -> [KernelHandle; 12] {
 /// ([`ops::GDN_TC_SPINE_ENTRY`](crate::layers::ops::GDN_TC_SPINE_ENTRY) —
 /// the SAME constant the serve's route line prints, so the log cannot name a
 /// kernel other than the one bound here), GATED on the same bit that
-/// launches it: `[defaults] gdn_prefill_tc`, with `ATLAS_GDN_PREFILL_TC`
+/// launches it: `[defaults] gdn_prefill_tc`, with `AVAROK_GDN_PREFILL_TC`
 /// overriding (`layers::ops::target_defaults`).
 ///
 /// A probe that runs unconditionally asks the kernel audit about a module the
@@ -82,7 +82,7 @@ pub(super) fn wyn_f16_kernels(gpu: &dyn GpuBackend) -> [KernelHandle; 12] {
 /// `ops::gdn_tc_spine_reject` then answers "not requested" — which is what it
 /// would have answered anyway. Since round 13 `kernels/hopper` declares the row
 /// TRUE, so on that target the probe runs by default and
-/// `ATLAS_GDN_PREFILL_TC=0` is what silences it again.
+/// `AVAROK_GDN_PREFILL_TC=0` is what silences it again.
 ///
 /// The `_x2` entry (two bf16 limbs of S_c in Phase A) is the one the lever
 /// ships: the single-limb `..._tcfuse` entry is in the image for the oracle's
@@ -107,7 +107,7 @@ pub(super) fn gdn_prefill_tc_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// `qwen3_ssm::init` prints per layer while binding it.
 ///
 /// DEFAULT is `..._vfused` (SPLIT=2 / 256 threads): 2.01x over ksplit and 12/12
-/// byte-identical on the ssm-poisoning tripwire. `ATLAS_GDN_VTILE=1` swaps in
+/// byte-identical on the ssm-poisoning tripwire. `AVAROK_GDN_VTILE=1` swaps in
 /// the SPLIT=4 / 512-thread build, which is 2.15x but scores 1/12 there and
 /// fails two accuracy gates — kept reachable for whoever diagnoses it, never
 /// default. The two are ABI-identical apart from block size, which the launcher
@@ -129,8 +129,8 @@ pub(super) fn fused_spine_kernel(gpu: &dyn GpuBackend, tc_spine: KernelHandle) -
         GDN_SCALAR_SPINE_PIPE, GDN_SCALAR_SPINE_VFUSED, GDN_SCALAR_SPINE_VTILE, gdn_init_spine_line,
     };
     let scalar = match (
-        std::env::var("ATLAS_GDN_PIPE").ok().as_deref(),
-        std::env::var("ATLAS_GDN_VTILE").ok().as_deref(),
+        std::env::var("AVAROK_GDN_PIPE").ok().as_deref(),
+        std::env::var("AVAROK_GDN_VTILE").ok().as_deref(),
     ) {
         (Some("1"), _) => GDN_SCALAR_SPINE_PIPE,
         (_, Some("1")) => GDN_SCALAR_SPINE_VTILE,

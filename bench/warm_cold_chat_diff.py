@@ -33,8 +33,8 @@ import sys
 import time
 import urllib.request
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888")
-MODEL = os.environ.get("ATLAS_MODEL", "model")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888")
+MODEL = os.environ.get("AVAROK_MODEL", "model")
 T1_MAX = int(os.environ.get("T1_MAX", "400"))
 T2_MAX = int(os.environ.get("T2_MAX", "160"))
 NO_THINK = os.environ.get("NO_THINK", "1") == "1"

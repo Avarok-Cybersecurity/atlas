@@ -38,7 +38,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 
 /// The `OFFICIAL` / `COMMUNITY` badge. A trust signal, so first-party is the
 /// only thing that renders in brand green.
-pub(super) fn origin_badge(meta: &atlas_plugin::PluginMetadata) -> Span<'static> {
+pub(super) fn origin_badge(meta: &avarok_plugin::PluginMetadata) -> Span<'static> {
     if meta.official {
         Span::styled(
             " OFFICIAL ",
@@ -53,7 +53,7 @@ pub(super) fn origin_badge(meta: &atlas_plugin::PluginMetadata) -> Span<'static>
 }
 
 /// Authorship and support links, as label/value rows.
-pub(super) fn metadata_lines(meta: &atlas_plugin::PluginMetadata) -> Vec<Line<'static>> {
+pub(super) fn metadata_lines(meta: &avarok_plugin::PluginMetadata) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         origin_badge(meta),
         Span::styled(format!("  v{}", meta.version), theme::text2()),
@@ -69,8 +69,8 @@ pub(super) fn metadata_lines(meta: &atlas_plugin::PluginMetadata) -> Vec<Line<'s
 
 /// The verdict banner. `Info` is deliberately not green: a benchmark that
 /// measured without gating has not passed anything.
-pub(super) fn verdict_line(verdict: &atlas_plugin::Verdict) -> Line<'static> {
-    use atlas_plugin::VerdictKind as K;
+pub(super) fn verdict_line(verdict: &avarok_plugin::Verdict) -> Line<'static> {
+    use avarok_plugin::VerdictKind as K;
     let (label, style) = match verdict.kind {
         K::Pass => (" PASS ", theme::brand_green()),
         K::Fail => (" FAIL ", theme::error()),
@@ -86,7 +86,7 @@ pub(super) fn verdict_line(verdict: &atlas_plugin::Verdict) -> Line<'static> {
 }
 
 /// The stat tile row above a results table.
-pub(super) fn draw_stats(f: &mut Frame, stats: &[atlas_plugin::Stat], area: Rect) {
+pub(super) fn draw_stats(f: &mut Frame, stats: &[avarok_plugin::Stat], area: Rect) {
     if stats.is_empty() {
         return;
     }
@@ -117,7 +117,7 @@ pub(super) fn draw_stats(f: &mut Frame, stats: &[atlas_plugin::Stat], area: Rect
 /// publish it for its reducer — only this function knows the viewport.
 pub(super) fn draw_table(
     f: &mut Frame,
-    table: &atlas_plugin::ResultTable,
+    table: &avarok_plugin::ResultTable,
     scroll: usize,
     area: Rect,
 ) -> usize {

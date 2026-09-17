@@ -13,7 +13,7 @@ impl Qwen3SsmLayer {
     /// QKVZ projection GEMM (+ deinterleave when QKVZ is interleaved).
     ///
     /// Writes the sequential `[Q|K|V|Z]` projection into the
-    /// `ssm_deinterleaved` buffer. `force_bf16` (= `ATLAS_GDN_BF16_WEIGHTS`)
+    /// `ssm_deinterleaved` buffer. `force_bf16` (= `AVAROK_GDN_BF16_WEIGHTS`)
     /// bypasses both the FP8 and NVFP4 weight-quant paths.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prefill_qkvz_proj(
@@ -45,17 +45,17 @@ impl Qwen3SsmLayer {
             self.qkvz_q2_prefill_gemm(ctx.gpu, normed, proj_dst, scratch, act_q8, k, stream)?;
             return Ok(());
         }
-        // Env override: ATLAS_GDN_BF16_WEIGHTS=1 forces the BF16 dense
+        // Env override: AVAROK_GDN_BF16_WEIGHTS=1 forces the BF16 dense
         // GEMM path for QKVZ — bypassing both FP8 and NVFP4 weight-quant
         // paths. Tests whether weight-quantization noise on qkvz (esp.
         // the W_z slice that feeds gnorm's silu gate) is the dominant
         // source of long-context layer-1+ drift.
         let force_bf16 = matches!(
-            std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+            std::env::var("AVAROK_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
         // PER-ROW FP8 straight from a mixed-precision checkpoint
-        // (`ATLAS_FP8_ROWWISE=1`), dequantised ONCE to BF16 — into the
+        // (`AVAROK_FP8_ROWWISE=1`), dequantised ONCE to BF16 — into the
         // LEDGERED `BufferSizes::ssm_rowwise_w_bf16` slab, see
         // `rowwise_bf16.rs` (#917) — and multiplied by cuBLASLt. Ahead of every arm below because it is the only one that
         // never re-quantises: FP8 E4M3 is exactly representable in BF16, so
@@ -66,11 +66,11 @@ impl Qwen3SsmLayer {
         // NOT the row-wise FP8 GEMM this was first written against —
         // `cublaslt::fp8_gemm_act_weight_t_rowwise` returns NOT_SUPPORTED on
         // sm_121 (measured 2026-08-15, and reproduced through the
-        // block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and
+        // block-scaled path with `AVAROK_CUBLAS_FP8=1`, so it is the GEMM and
         // not the weights). Keeping FP8 all the way needs a kernel that works
         // on this hardware; until then BF16 is what buys the precision back.
         //
-        // `force_bf16` still wins, so the `ATLAS_GDN_BF16_WEIGHTS` A/B lever
+        // `force_bf16` still wins, so the `AVAROK_GDN_BF16_WEIGHTS` A/B lever
         // keeps working.
         if !force_bf16 && let Some(ref fp8w) = self.qkvz_fp8w_rowwise {
             // This arm returns EARLY, so it shadows the CUTLASS / cuBLAS arms
@@ -84,10 +84,10 @@ impl Qwen3SsmLayer {
                     std::sync::atomic::AtomicBool::new(false);
                 if !SHADOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     tracing::warn!(
-                        "ATLAS_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
+                        "AVAROK_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
                          prefill arm: the row-wise arm keeps the checkpoint's precision, \
                          the shadowed arms would consume the re-quantised NVFP4 copy. \
-                         Unset ATLAS_FP8_ROWWISE to get the CUTLASS path back."
+                         Unset AVAROK_FP8_ROWWISE to get the CUTLASS path back."
                     );
                 }
             }
@@ -109,7 +109,7 @@ impl Qwen3SsmLayer {
             return Ok(());
         }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
-        // NO cuBLASLt-BF16 ARM HERE, deliberately. `ATLAS_CUBLAS_GEMM=1` used
+        // NO cuBLASLt-BF16 ARM HERE, deliberately. `AVAROK_CUBLAS_GEMM=1` used
         // to route this projection to `ops::cublas_bf16_proj`, whose cached
         // FP8→BF16 weight dequant cost 167772160 B per layer (~10.3 GiB over 48
         // SSM layers) outside the buffer ledger and killed a 28-token H100

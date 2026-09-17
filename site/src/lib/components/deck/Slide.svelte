@@ -27,7 +27,7 @@
   inert={!active}
   aria-roledescription="slide"
   aria-label={title || `Slide ${n + 1}`}
-  style="--sx: var(--ch-{act})"
+  style="--sx: var(--ch-{act}); --sx-text: var(--ch-{act}-text)"
 >
   <header class="sl-head">
     {#if eyebrow}<p class="sl-eyebrow mono">{eyebrow}</p>{/if}
@@ -79,7 +79,7 @@
     font-weight: 600;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
   }
   .sl-eyebrow::before {
     content: '';

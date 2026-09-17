@@ -6,7 +6,7 @@
 //! `spark benchmark run --pull-request-gate --serve-reuse` does not serve in
 //! its own process. It looks for the LEASED server — one `spark serve`
 //! started by an earlier run of this mode, described in
-//! `<ATLAS_HOME>/serve-lease.json` — and takes it if, and only if, it is the
+//! `<AVAROK_HOME>/serve-lease.json` — and takes it if, and only if, it is the
 //! server this run would have started itself: the same binary bytes, the
 //! same recipe rendering with the same overrides (`GET /serve-config`, two
 //! digests), and `/v1/models` naming the checkpoint. Anything else is
@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::serve_identity::{ServeIdentity, argv_fingerprint, file_sha256};
-use atlas_plugin::{ArtifactStore, TargetEndpoint};
+use avarok_plugin::serve_identity::{ServeIdentity, argv_fingerprint, file_sha256};
+use avarok_plugin::{ArtifactStore, TargetEndpoint};
 
 use super::bench_selfstart::SelfServed;
 use super::bench_serve_plan::ServePlan;
@@ -175,13 +175,13 @@ pub async fn acquire(plan: ServePlan, owner_pid: Option<u32>) -> Result<SelfServ
 /// Ask the leased server what it is and compare.
 async fn probe(target: &TargetEndpoint, lease: &Lease, plan: &ServePlan) -> Result<Option<String>> {
     let doc =
-        atlas_plugin::http::get_json(target, "/serve-config", Duration::from_secs(10)).await?;
+        avarok_plugin::http::get_json(target, "/serve-config", Duration::from_secs(10)).await?;
     let reported: ServeIdentity = serde_json::from_value(doc).context("parsing /serve-config")?;
     let want = expected(plan, lease.port)?;
     if let Some(why) = mismatch(lease, &reported, &want, &plan.model) {
         return Ok(Some(why));
     }
-    let models = atlas_plugin::http::list_models(target, Duration::from_secs(10)).await?;
+    let models = avarok_plugin::http::list_models(target, Duration::from_secs(10)).await?;
     if !models.contains(&plan.model) {
         return Ok(Some(format!(
             "it is serving {models:?}, not {}",
@@ -194,7 +194,7 @@ async fn probe(target: &TargetEndpoint, lease: &Lease, plan: &ServePlan) -> Resu
 /// Start `spark serve` as a child in its own process group, record the
 /// lease, and wait for the model.
 async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result<SelfServed> {
-    let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
+    let port = avarok_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
     super::bench_selfstart::check_box_is_free_enough(
         serve_args.gpu_memory_utilization,
@@ -268,7 +268,7 @@ async fn await_serving(
                 "the leased server exited ({status}) before it began serving {model:?} — see serve-lease.log"
             );
         }
-        let last = match atlas_plugin::http::list_models(target, Duration::from_secs(5)).await {
+        let last = match avarok_plugin::http::list_models(target, Duration::from_secs(5)).await {
             Ok(models) if models.iter().any(|m| m == model) => return Ok(()),
             Ok(models) => format!("the endpoint is serving {models:?}"),
             Err(e) => format!("{e:#}"),

@@ -9,14 +9,14 @@ use crate::*;
 use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::collections::BTreeMap;
 
 pub(crate) fn run() -> Result<()> {
     let dir = std::env::var("MOE_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/moe-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/moe-family".to_string());
     let g = Golden(serde_json::from_str(&GOLDEN)?);
     let hid = g.f("hidden")? as usize;
     let inter = g.f("intermediate")? as usize;
@@ -32,7 +32,7 @@ pub(crate) fn run() -> Result<()> {
          swiglu_limit={limit} group_size={gs} input_scale=NONE (W4A16)"
     );
 
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k_w4a16 = gpu.kernel("w4a16", "w4a16_gemm")?;
     let k_deq = gpu.kernel("dequant_nvfp4_bf16", "dequant_nvfp4_to_bf16")?;
     let k_gemm = gpu.kernel("gemm", "dense_gemm_bf16")?;

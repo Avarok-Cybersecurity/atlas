@@ -25,13 +25,13 @@ and published alongside it.
 
 ## Part III — The Crates
 
-- [atlas-core](https://docs.atlascybernetics.ai/crates/atlas-core.html)
-- [atlas-kernels](https://docs.atlascybernetics.ai/crates/atlas-kernels.html)
+- [avarok-core](https://docs.atlascybernetics.ai/crates/avarok-core.html)
+- [avarok-kernels](https://docs.atlascybernetics.ai/crates/avarok-kernels.html)
 - [spark-runtime](https://docs.atlascybernetics.ai/crates/spark-runtime.html)
 - [spark-comm](https://docs.atlascybernetics.ai/crates/spark-comm.html)
 - [spark-model](https://docs.atlascybernetics.ai/crates/spark-model.html)
 - [spark-server](https://docs.atlascybernetics.ai/crates/spark-server.html)
-- [atlas-spark-bench](https://docs.atlascybernetics.ai/crates/atlas-spark-bench.html)
+- [avarok-spark-bench](https://docs.atlascybernetics.ai/crates/avarok-spark-bench.html)
 
 ## Part IV — Engineering Deep Dives
 

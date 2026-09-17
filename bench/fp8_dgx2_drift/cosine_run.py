@@ -5,8 +5,8 @@ A: HF[FP8->BF16] vs HF[BF16-unquant]   -> FP8 ceiling
 B: Atlas[FP8-native] vs HF[BF16-unquant] -> total drift
 C: Atlas[FP8-native] vs HF[FP8->BF16]    -> Atlas compute drift
 
-Inputs (all in /workspace/atlas-dumps/fp8native_dgx2/):
-  atlas_L{0..39}.bin     - Atlas FP8-native dump (today, 2026-05-25)
+Inputs (all in /workspace/avarok-dumps/fp8native_dgx2/):
+  avarok_L{0..39}.bin     - Atlas FP8-native dump (today, 2026-05-25)
   hf_L{0..39}.bin        - HF[FP8->BF16] reference (hf_dequant_forward.py output)
   hf_bf16_L{0..39}.bin   - HF[BF16-unquant] reference (hf_forward_bf16_unquant.py output)
 
@@ -18,7 +18,7 @@ import pathlib
 
 import numpy as np
 
-OUT = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+OUT = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 N_LAYERS = 40
 
 
@@ -40,16 +40,16 @@ def cmp(a, b):
 def main():
     have_bf16 = all((OUT / f"hf_bf16_L{i}.bin").exists() for i in range(N_LAYERS))
     have_fp8dq = all((OUT / f"hf_L{i}.bin").exists() for i in range(N_LAYERS))
-    have_atlas = all((OUT / f"atlas_L{i}.bin").exists() for i in range(N_LAYERS))
-    print(f"have_atlas={have_atlas} have_hf_fp8dq={have_fp8dq} have_hf_bf16={have_bf16}")
+    have_avarok = all((OUT / f"avarok_L{i}.bin").exists() for i in range(N_LAYERS))
+    print(f"have_avarok={have_avarok} have_hf_fp8dq={have_fp8dq} have_hf_bf16={have_bf16}")
 
     rows = []
     A, B, C = [], [], []
     for i in range(N_LAYERS):
         try:
-            atlas = load(OUT / f"atlas_L{i}.bin")
+            avarok = load(OUT / f"avarok_L{i}.bin")
         except Exception:
-            atlas = None
+            avarok = None
         try:
             hf_fp8 = load(OUT / f"hf_L{i}.bin")
         except Exception:
@@ -62,11 +62,11 @@ def main():
         if hf_fp8 is not None and hf_bf16 is not None:
             row["A"] = cmp(hf_fp8, hf_bf16)
             A.append(row["A"]["cos"])
-        if atlas is not None and hf_bf16 is not None:
-            row["B"] = cmp(atlas, hf_bf16)
+        if avarok is not None and hf_bf16 is not None:
+            row["B"] = cmp(avarok, hf_bf16)
             B.append(row["B"]["cos"])
-        if atlas is not None and hf_fp8 is not None:
-            row["C"] = cmp(atlas, hf_fp8)
+        if avarok is not None and hf_fp8 is not None:
+            row["C"] = cmp(avarok, hf_fp8)
             C.append(row["C"]["cos"])
         rows.append(row)
 

@@ -23,7 +23,7 @@ pub struct Recipe {
     pub id: String,
     pub version: String,
     pub model: String,
-    /// `atlas` or `vllm`. Absent on v1 recipes, which predate the key.
+    /// `avarok` or `vllm`. Absent on v1 recipes, which predate the key.
     pub runtime: Option<String>,
     pub container: String,
     /// Ranks this recipe requires. **Not a `defaults:` key** — the three EP=2
@@ -125,7 +125,7 @@ impl Recipe {
 
     /// Whether this recipe drives Atlas. A `vllm` recipe is listed but cannot
     /// be launched from here.
-    pub fn is_atlas(&self) -> bool {
+    pub fn is_avarok(&self) -> bool {
         self.runtime.as_deref() == Some("atlas")
     }
 
@@ -150,7 +150,7 @@ impl Recipe {
         overrides: &BTreeMap<String, String>,
         removed: &std::collections::BTreeSet<String>,
     ) -> Result<Vec<String>> {
-        if !self.is_atlas() {
+        if !self.is_avarok() {
             bail!(
                 "{} is a {} recipe — only `runtime: atlas` recipes can be served from here",
                 self.id,

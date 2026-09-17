@@ -151,7 +151,7 @@ impl ModelInfo {
             id,
             object: "model".to_string(),
             created: crate::ids::unix_timestamp(),
-            owned_by: "atlas-spark".to_string(),
+            owned_by: "avarok-spark".to_string(),
             max_model_len: Some(max_seq_len),
         }
     }
@@ -170,7 +170,7 @@ impl ChatCompletionResponse {
             object: "chat.completion".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChatChoice {
                 index: 0,
                 message: ChatMessage {
@@ -202,7 +202,7 @@ impl ChatCompletionResponse {
             object: "chat.completion".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChatChoice {
                 index: 0,
                 message: ChatMessage {

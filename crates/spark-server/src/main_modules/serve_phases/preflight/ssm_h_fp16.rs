@@ -7,11 +7,11 @@
 //! time a stage of the FP16 h-state lands.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
-/// `ATLAS_SSM_H_FP16` refuses rather than degrades.
+/// `AVAROK_SSM_H_FP16` refuses rather than degrades.
 ///
 /// The flag narrows the GDN h-state to FP16. Stage 1 shipped twins of the two
 /// NON-speculative decode kernels — `gated_delta_rule_decode_f16_strided_norm_half`
@@ -38,7 +38,7 @@ use crate::cli;
 /// as FP32, not how wide the slot holding them is.
 pub(super) fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConfig) -> Result<()> {
     // SSOT: the same resolution the kernels dispatch on — `--ssm-h-dtype`,
-    // falling back to `ATLAS_SSM_H_FP16`. This check used to decode the
+    // falling back to `AVAROK_SSM_H_FP16`. This check used to decode the
     // environment independently, which is how a preflight could pass on a
     // reading the kernels did not share.
     if !spark_model::layers::qwen3_ssm::ssm_h_fp16_enabled() || config.num_ssm_layers() == 0 {
@@ -123,9 +123,9 @@ pub(super) fn ssm_h_fp16_preconditions(args: &cli::ServeArgs, config: &ModelConf
              (gated_delta_rule_decode, ..._decode_f32_strided) have no FP16 twin in stage 1."
         );
     }
-    if std::env::var("ATLAS_GDN_FUSED_CONV").ok().as_deref() == Some("1") {
+    if std::env::var("AVAROK_GDN_FUSED_CONV").ok().as_deref() == Some("1") {
         anyhow::bail!(
-            "--ssm-h-dtype f16 is incompatible with ATLAS_GDN_FUSED_CONV=1 —              gated_delta_rule_decode_f32_conv_norm has no FP16 twin in stage 1."
+            "--ssm-h-dtype f16 is incompatible with AVAROK_GDN_FUSED_CONV=1 —              gated_delta_rule_decode_f32_conv_norm has no FP16 twin in stage 1."
         );
     }
     if config.linear_key_head_dim != 128 || config.linear_value_head_dim != 128 {

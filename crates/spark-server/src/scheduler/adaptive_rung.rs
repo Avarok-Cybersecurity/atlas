@@ -146,40 +146,40 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const BAND: std::ops::RangeInclusive<usize> = 9..=16;
 
 /// Enter `k=2` above this token ratio. See the module doc for the placement
-/// argument; override with `ATLAS_MTP_RUNG_ENTER`.
+/// argument; override with `AVAROK_MTP_RUNG_ENTER`.
 const ENTER: f64 = 1.32;
 /// Leave `k=2` below this token ratio (dead band 0.02 wide). Override with
-/// `ATLAS_MTP_RUNG_LEAVE`.
+/// `AVAROK_MTP_RUNG_LEAVE`.
 const LEAVE: f64 = 1.30;
 /// EWMA weight for `p1` and `p2_cond` in the DECISION (effective window
-/// `1/ALPHA` = 2 flushes). Override with `ATLAS_MTP_RUNG_ALPHA`.
+/// `1/ALPHA` = 2 flushes). Override with `AVAROK_MTP_RUNG_ALPHA`.
 const ALPHA: f64 = 0.5;
 /// EWMA weight for the `p1` the probe TRIGGER reads (window ~7 flushes).
 /// Deliberately slower than [`ALPHA`]: the decision wants to react, the
-/// trigger wants to not be fooled. Override with `ATLAS_MTP_RUNG_ALPHA_SLOW`.
+/// trigger wants to not be fooled. Override with `AVAROK_MTP_RUNG_ALPHA_SLOW`.
 const ALPHA_SLOW: f64 = 0.15;
 /// BACKSTOP probe interval in flushes, for a `p2_cond` drift at constant
 /// `p1` that the trigger below would never see. Long on purpose: at 1.74 s a
 /// probe and ~1.16 s a flush, 2048 flushes is one probe per ~40 min of n=16
 /// traffic, i.e. ~0.07% — small enough to be invisible on the prose bar.
-/// Override with `ATLAS_MTP_RUNG_PROBE_TICKS`.
+/// Override with `AVAROK_MTP_RUNG_PROBE_TICKS`.
 const PROBE_TICKS: u64 = 2048;
 /// Probe when the SLOW `p1` EWMA has RISEN this far above the `p1` at which
 /// the current state was last confirmed. 0.08 is ~4 sigma of the slow EWMA's
 /// noise (~0.015, from a measured per-flush sigma of 0.053) and half the
 /// measured prose-to-tool gap (0.17). Override with
-/// `ATLAS_MTP_RUNG_P1_TRIGGER`.
+/// `AVAROK_MTP_RUNG_P1_TRIGGER`.
 const P1_TRIGGER: f64 = 0.08;
 
-/// PRESENCE check for `ATLAS_MTP_STATIC_RUNG` (house convention — `=0` is NOT
+/// PRESENCE check for `AVAROK_MTP_STATIC_RUNG` (house convention — `=0` is NOT
 /// off): pins the static ladder, restoring the pre-wave-28 behaviour.
-/// An explicit `ATLAS_MTP_K_LADDER` ALSO disables adaptation: an operator who
+/// An explicit `AVAROK_MTP_K_LADDER` ALSO disables adaptation: an operator who
 /// spells out the rungs is asking for exactly those rungs.
 pub fn adaptation_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OFF.get_or_init(|| {
-        std::env::var_os("ATLAS_MTP_STATIC_RUNG").is_some()
-            || std::env::var_os("ATLAS_MTP_K_LADDER").is_some()
+        std::env::var_os("AVAROK_MTP_STATIC_RUNG").is_some()
+            || std::env::var_os("AVAROK_MTP_K_LADDER").is_some()
     })
 }
 
@@ -194,27 +194,27 @@ fn tunable(var: &str, default: f64) -> f64 {
 
 fn enter_at() -> f64 {
     static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_ENTER", ENTER))
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_ENTER", ENTER))
 }
 fn leave_at() -> f64 {
     static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_LEAVE", LEAVE))
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_LEAVE", LEAVE))
 }
 fn alpha() -> f64 {
     static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_ALPHA", ALPHA).min(1.0))
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_ALPHA", ALPHA).min(1.0))
 }
 fn alpha_slow() -> f64 {
     static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_ALPHA_SLOW", ALPHA_SLOW).min(1.0))
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_ALPHA_SLOW", ALPHA_SLOW).min(1.0))
 }
 fn probe_ticks() -> u64 {
     static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_PROBE_TICKS", PROBE_TICKS as f64) as u64)
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_PROBE_TICKS", PROBE_TICKS as f64) as u64)
 }
 fn p1_trigger() -> f64 {
     static V: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
-    *V.get_or_init(|| tunable("ATLAS_MTP_RUNG_P1_TRIGGER", P1_TRIGGER))
+    *V.get_or_init(|| tunable("AVAROK_MTP_RUNG_P1_TRIGGER", P1_TRIGGER))
 }
 
 /// Expected tokens per verify step at `k=2` relative to `k=1`:
@@ -378,7 +378,7 @@ static WIDTH_FLIPS: AtomicU64 = AtomicU64::new(0);
 ///
 /// What was missing is any way to SEE it. A batch that grows past the cap
 /// stops speculating silently, so throughput alone cannot distinguish an
-/// engaged rung from a disengaged one, and `ATLAS_MTP_ACCEPT_DEBUG`'s flushes
+/// engaged rung from a disengaged one, and `AVAROK_MTP_ACCEPT_DEBUG`'s flushes
 /// simply STOP — an absence, which is indistinguishable from telemetry being
 /// off. This records the transition in the same shape wave 28 used for the
 /// depth decision: atomics, one INFO on CHANGE only (never per step), and a
@@ -399,7 +399,7 @@ pub(super) fn note_width_regime(n_active: usize, engaged: bool) {
     } else {
         tracing::info!(
             "speculation DISENGAGED at width n={n_active} > dispatch cap {cap}: this width \
-             plain-decodes (ATLAS_MTP_MAX_SEQS raises the cap; the verify pools grow with it) \
+             plain-decodes (AVAROK_MTP_MAX_SEQS raises the cap; the verify pools grow with it) \
              — flips={flips}"
         );
     }

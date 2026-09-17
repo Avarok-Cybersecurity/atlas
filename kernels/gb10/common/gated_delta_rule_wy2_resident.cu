@@ -36,7 +36,7 @@
 // for everything else under the 255-reg ISA cap). The Rust selector
 // (`Qwen3SsmLayer::wy2_kernel`) only picks this kernel when
 // k_dim == v_dim == 128 (the production GDN head shape) and falls back to
-// the base wy2 otherwise. Kill switch: ATLAS_NO_GDN_WY2_RESIDENT (presence).
+// the base wy2 otherwise. Kill switch: AVAROK_NO_GDN_WY2_RESIDENT (presence).
 //
 // Pass 2 is deliberately SPLIT into two sequential per-token loops (token 0:
 // H_inter writes + q0_dot; token 1: H writes + q1_dot) instead of the base
@@ -128,7 +128,7 @@ gated_delta_rule_wy2_resident(
     // ── Compute kdot = k_1^T @ k_0 ──
     {
         float partial = (tid < k_dim) ? smem_k1[tid] * smem_k0[tid] : 0.0f;
-        float result = atlas_block_reduce_sum(partial, smem_warp, tid);
+        float result = avarok_block_reduce_sum(partial, smem_warp, tid);
         if (tid == 0) smem_kdot = result;
     }
     __syncthreads();

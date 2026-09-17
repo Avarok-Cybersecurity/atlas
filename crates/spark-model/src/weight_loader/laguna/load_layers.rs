@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{WeightDtype, WeightStore};
@@ -41,7 +41,7 @@ pub(super) fn load_layers(
         DevicePtr::NULL
     };
     let unified_moe_layout =
-        unified_moe_layout_enabled(std::env::var("ATLAS_UNIFIED_MOE_LAYOUT").ok().as_deref());
+        unified_moe_layout_enabled(std::env::var("AVAROK_UNIFIED_MOE_LAYOUT").ok().as_deref());
     if unified_moe_layout {
         tracing::info!(
             "Laguna: using unified transposed MoE layout; prefill uses fused K64 kernels and decode uses transposed experts"
@@ -164,7 +164,7 @@ fn load_moe_ffn(
     if unified_moe_layout {
         layer.transpose_for_prefill_unified(gpu, config)?;
     }
-    // Native NVFP4 CUTLASS grouped MoE (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1).
+    // Native NVFP4 CUTLASS grouped MoE (AVAROK_HOLO_MOE_GROUPED_CUTLASS=1).
     // The routed grouped GEMMs are ~47% of Laguna's C=1 prefill GPU time and
     // otherwise run on the w4a16 kernels, which LUT-dequant NVFP4 to FP8 per
     // tile. The SFB swizzle is built from whichever scale tables exist —
@@ -180,7 +180,7 @@ fn load_moe_ffn(
         // or a CUDA fault, with nothing in the logs to say why.
         anyhow::ensure!(
             !unified_moe_layout,
-            "ATLAS_UNIFIED_MOE_LAYOUT and ATLAS_HOLO_MOE_GROUPED_CUTLASS cannot \
+            "AVAROK_UNIFIED_MOE_LAYOUT and AVAROK_HOLO_MOE_GROUPED_CUTLASS cannot \
              both be set: the unified transpose frees the original expert \
              weights that the grouped-CUTLASS prefill path reads. Pick one."
         );
@@ -373,11 +373,11 @@ fn compute_yarn_inv_freq(config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<D
 /// Computed in f64 and narrowed once, so the stored values are at least as
 /// accurate as the kernel's own FP64 `pow` followed by an f32 store.
 /// Build the CUTLASS grouped-NVFP4 SFB tables at load
-/// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS=1`). Costs ~7.1 GB of device memory for
+/// (`AVAROK_HOLO_MOE_GROUPED_CUTLASS=1`). Costs ~7.1 GB of device memory for
 /// Laguna (256 experts x 47 layers x 3 projections), so it is opt-in.
 fn cutlass_grouped_moe_enabled() -> bool {
     matches!(
-        std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref(),
+        std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS").as_deref(),
         Ok("1") | Ok("true")
     )
 }
@@ -395,9 +395,9 @@ fn compute_plain_inv_freq(theta: f64, dim: usize, gpu: &dyn GpuBackend) -> Resul
 }
 
 /// Opt out of the precomputed sliding-layer RoPE table with
-/// `ATLAS_LAGUNA_ROPE_TABLE=0` (falls back to the on-the-fly rope kernel).
+/// `AVAROK_LAGUNA_ROPE_TABLE=0` (falls back to the on-the-fly rope kernel).
 fn sliding_rope_table_enabled() -> bool {
-    std::env::var("ATLAS_LAGUNA_ROPE_TABLE").as_deref() != Ok("0")
+    std::env::var("AVAROK_LAGUNA_ROPE_TABLE").as_deref() != Ok("0")
 }
 
 #[cfg(test)]

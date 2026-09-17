@@ -27,7 +27,7 @@ fn pool(gpu: &dyn GpuBackend, slots: usize, layers: usize) -> SsmSnapshotPool {
 /// **FOLLOW-UP 1 — the stale tier-key thrash. Expected to FAIL until a tier
 /// miss retires the key.**
 ///
-/// A cap eviction (`ATLAS_SSM_TIER_DISK_GB`) drops a blob, but nothing tells
+/// A cap eviction (`AVAROK_SSM_TIER_DISK_GB`) drops a blob, but nothing tells
 /// the prefix cache: the index entry stays `tiered` and keeps handing out the
 /// same dead `ssm_snapshot_tier_key` on every warm lookup. So every warm turn
 /// on that prefix repeats the whole failed cycle — spill a LIVE snapshot D2H
@@ -48,7 +48,7 @@ fn tier_miss_retires_the_key_instead_of_thrashing() {
     use spark_runtime::radix_tree::RadixTree;
 
     const BLK: usize = 16;
-    /// Every prefix must clear `ATLAS_SSM_SPILL_MIN_TOKENS` (default 1024) so
+    /// Every prefix must clear `AVAROK_SSM_SPILL_MIN_TOKENS` (default 1024) so
     /// victim selection takes the Spill arm — the Drop arm would remove the
     /// entry and there would be no stale key to thrash on.
     const DEEP: u32 = 2048;
@@ -66,7 +66,7 @@ fn tier_miss_retires_the_key_instead_of_thrashing() {
     let p = pool(&gpu, /*slots*/ 2, /*layers*/ 2);
     let blob = p.spill_blob_bytes();
     // Cap = exactly ONE blob: the smallest honest model of a full
-    // ATLAS_SSM_TIER_DISK_GB, where every new record drops the oldest.
+    // AVAROK_SSM_TIER_DISK_GB, where every new record drops the oldest.
     let store = MemBlobStore::new(blob);
     let tree = RadixTree::new();
 

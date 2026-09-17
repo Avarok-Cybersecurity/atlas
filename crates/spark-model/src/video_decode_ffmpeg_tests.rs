@@ -29,7 +29,7 @@ fn make_mp4(seconds: u32, fps: u32, size: &str, codec: &str) -> Option<Vec<u8>> 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "atlas-vid-{}-{n}-{}-{}-{size}-{codec}",
+        "avarok-vid-{}-{n}-{}-{}-{size}-{codec}",
         std::process::id(),
         seconds,
         fps
@@ -232,8 +232,10 @@ fn a_hanging_decoder_is_killed_at_timeout() {
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir =
-        std::env::temp_dir().join(format!("atlas-hanging-ffmpeg-{}-{seq}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "avarok-hanging-ffmpeg-{}-{seq}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let binary = dir.join("hanging-ffmpeg");
     std::fs::write(&binary, "#!/bin/sh\nexec sleep 10\n").unwrap();
@@ -325,7 +327,7 @@ fn a_binary_still_open_for_writing_is_reported_as_etxtbsy() {
 
     static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("atlas-busy-ffmpeg-{}-{seq}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok-busy-ffmpeg-{}-{seq}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let binary = dir.join("busy-ffmpeg");
 

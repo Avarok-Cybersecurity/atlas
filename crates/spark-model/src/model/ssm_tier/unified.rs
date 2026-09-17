@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! TIERED-CACHE-CONSOLIDATION §4 fix, step 3: the `ATLAS_SSM_TIER_UNIFIED`
+//! TIERED-CACHE-CONSOLIDATION §4 fix, step 3: the `AVAROK_SSM_TIER_UNIFIED`
 //! flag and the [`UnifiedSnapshotStore`] it routes the spill stores through.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,8 +10,8 @@ use parking_lot::Mutex;
 
 use super::{BlobStoreStats, SnapshotBlobStore, SnapshotTransport};
 
-/// Opt-in truthy parse for `ATLAS_SSM_TIER_UNIFIED` (style-matching
-/// `ATLAS_HSS_COALESCE_WRITE_RUNS` in spark-storage/high_speed_swap.rs).
+/// Opt-in truthy parse for `AVAROK_SSM_TIER_UNIFIED` (style-matching
+/// `AVAROK_HSS_COALESCE_WRITE_RUNS` in spark-storage/high_speed_swap.rs).
 fn unified_flag_truthy(v: Option<&str>) -> bool {
     matches!(
         v.map(str::trim),
@@ -21,7 +21,7 @@ fn unified_flag_truthy(v: Option<&str>) -> bool {
 
 /// TIERED-CACHE-CONSOLIDATION §4 fix, step 3: whether the client-side SSM
 /// spill stores route through the ONE lifted policy core
-/// ([`atlas_tier::Residency`] — two-level LRU, never rejects) instead of the
+/// ([`avarok_tier::Residency`] — two-level LRU, never rejects) instead of the
 /// per-store policies (MemBlobStore FIFO, RdmaSnapshotStore drop-on-full).
 /// DEFAULT OFF ⇒ the selectors construct exactly today's stores, byte- and
 /// behavior-identical.
@@ -41,8 +41,8 @@ fn unified_flag_truthy(v: Option<&str>) -> bool {
 ///    `MemBlobStore::new(0)` (unbounded host RAM) with only a warn, abandoning the
 ///    connected arena. It should fall through to the legacy `RdmaSnapshotStore`
 ///    instead — the arena is already connected.
-/// 3. **Swap files leak.** Flag-ON swap files (`atlas-ssm-{tag}.{pid}.swap`,
-///    `atlas-decode-ring.{pid}.swap`) are per-PID and never unlinked, and the disk
+/// 3. **Swap files leak.** Flag-ON swap files (`avarok-ssm-{tag}.{pid}.swap`,
+///    `avarok-decode-ring.{pid}.swap`) are per-PID and never unlinked, and the disk
 ///    tier grows unbounded by design. Unlink same-tag stale files on create, or open
 ///    with `O_TMPFILE`.
 ///
@@ -50,11 +50,11 @@ fn unified_flag_truthy(v: Option<&str>) -> bool {
 /// arms are only component-tested, never exercised through `build_tier_store` /
 /// `build_decode_tier_store` with the env set (the host-RAM arm is).
 pub(crate) fn ssm_tier_unified() -> bool {
-    unified_flag_truthy(std::env::var("ATLAS_SSM_TIER_UNIFIED").ok().as_deref())
+    unified_flag_truthy(std::env::var("AVAROK_SSM_TIER_UNIFIED").ok().as_deref())
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// §4 unification (TIERED-CACHE-CONSOLIDATION step 3) — ATLAS_SSM_TIER_UNIFIED
+// §4 unification (TIERED-CACHE-CONSOLIDATION step 3) — AVAROK_SSM_TIER_UNIFIED
 //
 // The SAME logical tier historically got a DIFFERENT eviction policy per
 // backing store: MemBlobStore evicts FIFO by insertion order (latent — the
@@ -65,7 +65,7 @@ pub(crate) fn ssm_tier_unified() -> bool {
 // own victim by insertion order — or silently discards it.
 //
 // Flag ON routes the client-side spill stores through the ONE policy core
-// lifted from the peer (`atlas_tier::Residency`: LRU over a hot arena, spill
+// lifted from the peer (`avarok_tier::Residency`: LRU over a hot arena, spill
 // to a swap tier, NEVER reject, uncapped disk ⇒ nothing ever dropped). Flag
 // OFF (default) constructs exactly today's stores — byte/behavior-identical.
 // The gather/scatter of the ~60 per-layer device regions stays ABOVE this
@@ -75,7 +75,7 @@ pub(crate) fn ssm_tier_unified() -> bool {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Adapts a [`SnapshotTransport`] (flat offset-addressed remote/file arena) to
-/// the [`atlas_tier::SlotArena`] hot-tier seam: slot `i` lives at offset
+/// the [`avarok_tier::SlotArena`] hot-tier seam: slot `i` lives at offset
 /// `i × slot_bytes` — the same fixed-slot geometry [`super::RdmaSnapshotStore`]
 /// uses, so the peer arena layout is unchanged under the flag.
 pub(super) struct TransportSlotArena {
@@ -84,7 +84,7 @@ pub(super) struct TransportSlotArena {
     pub(super) num_slots: usize,
 }
 
-impl atlas_tier::SlotArena for TransportSlotArena {
+impl avarok_tier::SlotArena for TransportSlotArena {
     fn slot_bytes(&self) -> usize {
         self.slot_bytes
     }
@@ -107,7 +107,7 @@ impl atlas_tier::SlotArena for TransportSlotArena {
     }
 }
 
-/// The flag-ON [`SnapshotBlobStore`]: a `Mutex`-shared [`atlas_tier::Residency`]
+/// The flag-ON [`SnapshotBlobStore`]: a `Mutex`-shared [`avarok_tier::Residency`]
 /// (the peer's exact paging core, in-process). PUT never returns `Ok(false)`
 /// for a right-sized blob — a full hot arena LRU-spills its coldest resident
 /// into the swap tier. Whether a spilled blob can then be *dropped* is a
@@ -126,7 +126,7 @@ impl atlas_tier::SlotArena for TransportSlotArena {
 /// `run_paging_loop_shared` documents (map op + one blob memcpy per call).
 pub(crate) struct UnifiedSnapshotStore {
     inner: Mutex<
-        atlas_tier::Residency<Box<dyn atlas_tier::SlotArena>, Box<dyn atlas_tier::SwapStore>>,
+        avarok_tier::Residency<Box<dyn avarok_tier::SlotArena>, Box<dyn avarok_tier::SwapStore>>,
     >,
     blob_bytes: usize,
     /// Mirror of the residency's cap (0 = unbounded), read without the lock for
@@ -141,7 +141,7 @@ pub(crate) struct UnifiedSnapshotStore {
     /// between EXPECTED (the hot arena has absorbed every put so far) and
     /// BROKEN, and this tier has already burned a debugging session on exactly
     /// that ambiguity. Latched in the consumer rather than in `Residency`
-    /// because `atlas-tier`'s dependency budget is `anyhow` (+libc) — no
+    /// because `avarok-tier`'s dependency budget is `anyhow` (+libc) — no
     /// `tracing` — by design.
     disk_engaged: AtomicBool,
     pub stats: BlobStoreStats,
@@ -158,8 +158,8 @@ impl UnifiedSnapshotStore {
     /// decode arm of `build_decode_tier_store` must keep calling `new`, never
     /// `new_capped`. `uncapped_new_never_drops` in the tests is the tripwire.
     pub(super) fn new(
-        arena: Box<dyn atlas_tier::SlotArena>,
-        swap: Box<dyn atlas_tier::SwapStore>,
+        arena: Box<dyn avarok_tier::SlotArena>,
+        swap: Box<dyn avarok_tier::SwapStore>,
         blob_bytes: usize,
     ) -> Result<Self> {
         Self::new_capped(arena, swap, blob_bytes, 0)
@@ -177,12 +177,12 @@ impl UnifiedSnapshotStore {
     /// store built here. Capping is what keeps the O_DIRECT swap file inside an
     /// operator's partition instead of growing without bound.
     pub(super) fn new_capped(
-        arena: Box<dyn atlas_tier::SlotArena>,
-        swap: Box<dyn atlas_tier::SwapStore>,
+        arena: Box<dyn avarok_tier::SlotArena>,
+        swap: Box<dyn avarok_tier::SwapStore>,
         blob_bytes: usize,
         max_disk_slots: usize,
     ) -> Result<Self> {
-        let residency = atlas_tier::Residency::new_capped(arena, swap, max_disk_slots)?;
+        let residency = avarok_tier::Residency::new_capped(arena, swap, max_disk_slots)?;
         Ok(Self {
             inner: Mutex::new(residency),
             blob_bytes,
@@ -292,24 +292,24 @@ pub(super) enum SwapBacking {
     HostRam,
 }
 
-/// The unified stores' swap tier. `ATLAS_SSM_TIER_SWAP_DIR` selects the lifted
+/// The unified stores' swap tier. `AVAROK_SSM_TIER_SWAP_DIR` selects the lifted
 /// O_DIRECT NVMe swap file (needs a 4 KiB-multiple blob — the O_DIRECT
 /// stride); otherwise (or on any setup failure) host-RAM records — still
 /// LRU-ordered and never-reject, just RAM-resident like today's stores.
 pub(super) fn build_unified_swap(
     blob_bytes: usize,
     tag: &str,
-) -> (Box<dyn atlas_tier::SwapStore>, SwapBacking) {
-    if let Some(dir) = std::env::var("ATLAS_SSM_TIER_SWAP_DIR")
+) -> (Box<dyn avarok_tier::SwapStore>, SwapBacking) {
+    if let Some(dir) = std::env::var("AVAROK_SSM_TIER_SWAP_DIR")
         .ok()
         .filter(|s| !s.is_empty())
     {
         if blob_bytes > 0 && blob_bytes.is_multiple_of(4096) {
-            let make = || -> Result<atlas_tier::DirectSwapFile> {
+            let make = || -> Result<avarok_tier::DirectSwapFile> {
                 std::fs::create_dir_all(&dir)?;
                 let path = std::path::Path::new(&dir)
-                    .join(format!("atlas-ssm-{tag}.{}.swap", std::process::id()));
-                atlas_tier::DirectSwapFile::create(&path, blob_bytes)
+                    .join(format!("avarok-ssm-{tag}.{}.swap", std::process::id()));
+                avarok_tier::DirectSwapFile::create(&path, blob_bytes)
             };
             match make() {
                 Ok(f) => {
@@ -329,15 +329,15 @@ pub(super) fn build_unified_swap(
         }
     }
     (
-        Box::new(atlas_tier::MemSwapStore::new(blob_bytes)),
+        Box::new(avarok_tier::MemSwapStore::new(blob_bytes)),
         SwapBacking::HostRam,
     )
 }
 
-/// Hot-arena slot count for the unified stores (`ATLAS_SSM_TIER_SLOTS`,
+/// Hot-arena slot count for the unified stores (`AVAROK_SSM_TIER_SLOTS`,
 /// default 64). The hot arena is allocated up front at `slots × blob_bytes`.
 pub(super) fn unified_hot_slots() -> usize {
-    std::env::var("ATLAS_SSM_TIER_SLOTS")
+    std::env::var("AVAROK_SSM_TIER_SLOTS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(64)
@@ -349,7 +349,7 @@ fn gib(records: usize, blob_bytes: usize) -> f64 {
     (records as f64) * (blob_bytes as f64) / (1024.0 * 1024.0 * 1024.0)
 }
 
-pub(super) const DISK_GB_VAR: &str = "ATLAS_SSM_TIER_DISK_GB";
+pub(super) const DISK_GB_VAR: &str = "AVAROK_SSM_TIER_DISK_GB";
 
 /// Whether the operator asked for a disk budget at all (used to warn when the
 /// budget lands on an arm that cannot honor it).
@@ -371,7 +371,7 @@ pub(super) fn ssm_tier_disk_slots(blob_bytes: usize) -> Result<usize> {
 /// `unified_hot_slots`: a bad slot count only mis-sizes an arena, but a typo
 /// here would mean "unbounded — fill the whole partition", i.e. exactly the
 /// failure this budget exists to prevent. Same reasoning as the strict
-/// `ATLAS_SSM_DECODE_TIER` arm in selectors.rs.
+/// `AVAROK_SSM_DECODE_TIER` arm in selectors.rs.
 ///
 /// The core caps RECORDS, not bytes (`Residency::new_capped`), and validates
 /// that the swap record stride equals the arena slot, so
@@ -457,7 +457,7 @@ pub(super) fn log_unified_tier(
             "SSM spill tier = UNIFIED residency {arm} ({hot_slots} hot slots × {blob_bytes} B); \
              disk cap {DISK_GB_VAR} → {max_disk_slots} records × {blob_bytes} B = {steady:.2} GiB \
              steady, {worst:.2} GiB worst case; bounding: host-RAM swap (O_DIRECT unavailable — \
-             this budget caps RAM, not disk; set ATLAS_SSM_TIER_SWAP_DIR)"
+             this budget caps RAM, not disk; set AVAROK_SSM_TIER_SWAP_DIR)"
         ),
     }
 }

@@ -166,7 +166,7 @@ Room for 5× improvement via better memory access patterns and reduced dequant o
 
 4. **Auto-dispatch**: `dense_gemm_bf16()` checks K≥16 → tensor cores, else scalar fallback.
 
-5. **Global AtlasRegistry (OnceLock)**: All PTX modules, CUDA context, and stream cached in a singleton. First call loads everything (~168ms), subsequent calls are instant.
+5. **Global AvarokRegistry (OnceLock)**: All PTX modules, CUDA context, and stream cached in a singleton. First call loads everything (~168ms), subsequent calls are instant.
 
 6. **Best-only inventory**: Only the fastest version of each kernel is kept. Slower variants are benchmarked, documented, then deleted.
 
@@ -177,7 +177,7 @@ Room for 5× improvement via better memory access patterns and reduced dequant o
 | 2026-02-23 | TC GEMM: mma.sync.m16n8k16 BF16 | Correct tensor core GEMM on SM121 |
 | 2026-02-23 | Fragment mapping fix: swap a[1]↔a[2] | Fixed 80-100% error → bit-exact |
 | 2026-02-23 | Auto-dispatch: dense_gemm_bf16 → TC when K≥16 | All GEMM callers get TC automatically |
-| 2026-02-23 | AtlasRegistry: OnceLock singleton | **2.2-7.8× speedup** across all kernel calls |
+| 2026-02-23 | AvarokRegistry: OnceLock singleton | **2.2-7.8× speedup** across all kernel calls |
 | 2026-02-23 | TC GEMM: K_STEP=64 + double-buffer + vectorized loads | **15-19% speedup** over K_STEP=16 |
 | 2026-02-23 | Confirmed: FP4 `kind::f8f6f4` NOT available on SM121 | Must use W4A16 dequant path |
 | 2026-02-23 | W4A16 fused dequant+GEMM kernel | Correct, bit-exact small, 0.1% MoE scale |

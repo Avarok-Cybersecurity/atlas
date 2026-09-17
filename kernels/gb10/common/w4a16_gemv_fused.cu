@@ -62,9 +62,9 @@ __device__ __constant__ float E2M1_LUT_FUSED_W4[16] = {
 // guessed at, for the same reason the strix-hip batched-prefill argument shift
 // was left to someone with the hardware.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-#define ATLAS_WARP_LUT_STAGED 0
+#define AVAROK_WARP_LUT_STAGED 0
 #else
-#define ATLAS_WARP_LUT_STAGED 1
+#define AVAROK_WARP_LUT_STAGED 1
 #endif
 
 
@@ -79,7 +79,7 @@ __device__ __constant__ float E2M1_LUT_FUSED_W4[16] = {
 // `n >= N`, so __syncthreads() here would be a divergent barrier. Their
 // reduction stays barrier-free, as documented.
 __device__ __forceinline__ void stage_e2m1_lut_fused_warp(float* s_lut, unsigned int lane) {
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     if (lane < 16u) s_lut[lane] = E2M1_LUT_FUSED_W4[lane];
     __syncwarp();
 #else
@@ -302,7 +302,7 @@ extern "C" __global__ void w4a16_gemv_silu_input(
 }
 
 // ════════════════════════════════════════════════════════════════════
-// SINGLE-WARP-PER-OUTPUT variants (lossless; default ON, kill ATLAS_NO_GEMV_SW=1).
+// SINGLE-WARP-PER-OUTPUT variants (lossless; default ON, kill AVAROK_NO_GEMV_SW=1).
 //
 // Dual SW shares `w4a16_dual_partial` with the 64-thread dual kernel.
 // SiLU SW still matches the K8 sequential silu_input kernel (that base is
@@ -342,7 +342,7 @@ extern "C" __global__ void w4a16_gemv_dual_sw(
     // One private copy per warp (8 x 16 floats = 512 B/block); no block barrier.
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_fused_warp(s_lut[local_out], lane);
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     const float* __restrict__ warp_lut = s_lut[local_out];
 #else
     const float* __restrict__ warp_lut = E2M1_LUT_FUSED_W4;
@@ -433,7 +433,7 @@ extern "C" __global__ void w4a16_gemv_silu_input_sw(
     // One private copy per warp (8 x 16 floats = 512 B/block); no block barrier.
     __shared__ float s_lut[N_PER_BLOCK_SW][16];
     stage_e2m1_lut_fused_warp(s_lut[local_out], lane);
-#if ATLAS_WARP_LUT_STAGED
+#if AVAROK_WARP_LUT_STAGED
     const float* __restrict__ warp_lut = s_lut[local_out];
 #else
     const float* __restrict__ warp_lut = E2M1_LUT_FUSED_W4;

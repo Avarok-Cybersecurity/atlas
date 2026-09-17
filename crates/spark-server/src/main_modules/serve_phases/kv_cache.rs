@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -102,7 +102,7 @@ pub(crate) fn resolve_prefill_budget(
         prefill_budget
     };
     // Default: max_batch_tokens = prefill_budget + max_batch_size (decode slots).
-    // ATLAS_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched
+    // AVAROK_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched
     // kernel-dispatch path which requires `arena_cap >= N_streams × chunk_len`.
     // Set to (e.g.) 16384 with max_batch_size=4 to fit 4 stacked 4K chunks.
     // Memory cost: arena buffers scale ~linearly with max_batch_tokens —
@@ -110,11 +110,11 @@ pub(crate) fn resolve_prefill_budget(
     let default_max_batch_tokens = (prefill_budget + args.max_batch_size)
         .max(spec_tokens)
         .max(args.max_batch_size);
-    let max_batch_tokens = match std::env::var("ATLAS_MAX_BATCH_TOKENS") {
+    let max_batch_tokens = match std::env::var("AVAROK_MAX_BATCH_TOKENS") {
         Ok(v) => match v.parse::<usize>() {
             Ok(n) if n >= default_max_batch_tokens => {
                 tracing::info!(
-                    "ATLAS_MAX_BATCH_TOKENS override: {} (default would be {})",
+                    "AVAROK_MAX_BATCH_TOKENS override: {} (default would be {})",
                     n,
                     default_max_batch_tokens
                 );
@@ -122,14 +122,14 @@ pub(crate) fn resolve_prefill_budget(
             }
             Ok(n) => {
                 tracing::warn!(
-                    "ATLAS_MAX_BATCH_TOKENS={} ignored — must be >= default {}",
+                    "AVAROK_MAX_BATCH_TOKENS={} ignored — must be >= default {}",
                     n,
                     default_max_batch_tokens
                 );
                 default_max_batch_tokens
             }
             Err(e) => {
-                tracing::warn!("ATLAS_MAX_BATCH_TOKENS parse error: {e}");
+                tracing::warn!("AVAROK_MAX_BATCH_TOKENS parse error: {e}");
                 default_max_batch_tokens
             }
         },

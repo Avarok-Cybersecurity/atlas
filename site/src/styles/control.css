@@ -87,8 +87,8 @@
   background: rgba(0,0,0,0.12); color: var(--t3); white-space: nowrap;
 }
 .trust-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.trust-paired { color: var(--ch-green); background: color-mix(in srgb, var(--ch-green) 14%, transparent); }
-.trust-this { color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); }
+.trust-paired { color: var(--ch-green-text); background: color-mix(in srgb, var(--ch-green) 14%, transparent); }
+.trust-this { color: var(--ch-cyan-text); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent); }
 .trust-pairing, .trust-unreachable { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
 
 .fl-untrusted { font-size: 0.85rem; color: var(--t2); line-height: 1.6; }
@@ -106,7 +106,7 @@
 .fl-addr-none { color: var(--amber); font-size: 0.8rem; }
 .chip-link {
   font-size: 0.62rem; font-weight: 700; padding: 0.2rem 0.5rem; border-radius: 4px;
-  color: var(--ch-cyan); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent);
+  color: var(--ch-cyan-text); background: color-mix(in srgb, var(--ch-cyan) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--ch-cyan) 30%, transparent);
 }
 .chip-link-warn {
@@ -170,7 +170,7 @@
   margin-top: auto; padding-top: 0.7rem; border-top: 1px solid var(--border);
   font-size: 0.76rem; color: var(--t3);
 }
-.fl-running { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ch-green); font-weight: 650; }
+.fl-running { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--ch-green-text); font-weight: 650; }
 .fl-running .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .fl-stale-note { color: var(--amber); }
 .fl-unpair {
@@ -287,7 +287,7 @@
 }
 .pair-words {
   font-size: 1.5rem; font-weight: 800; letter-spacing: 0.06em;
-  color: var(--ch-cyan); text-align: center;
+  color: var(--ch-cyan-text); text-align: center;
 }
 .pair-fp-note { margin-top: 0.8rem; font-size: 0.82rem; color: var(--t2); line-height: 1.6; }
 .pair-consequence { font-size: 0.86rem; color: var(--t2); line-height: 1.6; }
@@ -659,7 +659,7 @@
 .fs-addr { color: var(--t1); font-size: 0.82rem; }
 .fs-sub {
   padding: 0.05rem 0.4rem; border-radius: 4px;
-  background: var(--bg2); color: var(--ch-cyan); font-size: 0.72rem;
+  background: var(--bg2); color: var(--ch-cyan-text); font-size: 0.72rem;
 }
 .fs-meta { color: var(--t3); font-size: 0.74rem; }
 .fs-note { font-size: 0.76rem; color: var(--t3); line-height: 1.6; margin: 0.5rem 0 0; }
@@ -696,7 +696,7 @@
    chip: the link class is what an operator acts on, the subnet is what they
    check against their own. */
 .fl-subnet {
-  background: var(--bg2); color: var(--ch-cyan);
+  background: var(--bg2); color: var(--ch-cyan-text);
   border: 1px solid var(--border); font-size: 0.68rem; letter-spacing: 0.01em;
 }
 
@@ -750,7 +750,7 @@
    because presenting second-hand knowledge as verified is the one thing this
    provenance work exists to prevent. */
 .fl-card-vouched { border-style: dashed; border-color: color-mix(in srgb, var(--ch-cyan) 45%, var(--border)); }
-.trust-vouched { color: var(--ch-cyan); border-color: color-mix(in srgb, var(--ch-cyan) 45%, var(--border)); }
+.trust-vouched { color: var(--ch-cyan-text); border-color: color-mix(in srgb, var(--ch-cyan) 45%, var(--border)); }
 .fl-prov {
   font-size: 0.72rem; color: var(--t3); line-height: 1.55;
   margin: 0.35rem 0 0.5rem; max-width: 52ch;

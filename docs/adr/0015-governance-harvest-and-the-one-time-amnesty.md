@@ -55,7 +55,7 @@ Rejected first, with the reasons on record:
   is history-independent, so records earned before the fill are invalidated
   by it no matter which order the commits land in.
 
-Chosen: `crates/atlas-plugin/src/gate/amnesty.rs`, a table of exactly two
+Chosen: `crates/avarok-plugin/src/gate/amnesty.rs`, a table of exactly two
 entries — `.github/pr-taxonomy.json` and `check.rs`, the two boundary files
 this PR must touch — each pinning the **blob OID of the file as this PR lands
 it**. `check.rs::invalidating_paths` drops a surviving path only when
