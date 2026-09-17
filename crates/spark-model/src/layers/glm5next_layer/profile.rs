@@ -49,7 +49,15 @@ pub const REDUCE_ATTN_BAR: usize = 17;
 pub const REDUCE_MLP_BAR: usize = 18;
 /// mHC split by kernel: `hc_pre` (the mix + finish pair) vs `hc_post` (+ expand/head).
 pub const MHC_POST: usize = 19;
-const N: usize = 20;
+/// `kda_mixer` split three ways. The parent bucket is 53.5% of prefill — by far the
+/// largest — but it spans three very different things: batched dense projections, a
+/// per-token recurrence that CANNOT be batched in the recurrent arm, and the output
+/// norm + o_proj. Chunking the recurrence measured ~4% SLOWER, which only makes sense
+/// if the recurrence is not the bulk; these say which part to actually attack.
+pub const KDA_FRONT: usize = 20;
+pub const KDA_RECUR: usize = 21;
+pub const KDA_BACK: usize = 22;
+const N: usize = 23;
 
 const NAMES: [&str; N] = [
     "mhc",
@@ -72,6 +80,9 @@ const NAMES: [&str; N] = [
     "reduce_attn_bar",
     "reduce_mlp_bar",
     "mhc_post",
+    "kda_front",
+    "kda_recur",
+    "kda_back",
 ];
 
 static NANOS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
