@@ -123,9 +123,9 @@ fn writable_goes_red_when_the_home_is_a_file() {
 #[test]
 fn recipes_is_green_when_the_index_lists_some() {
     let d = Dir::new("r-ok");
-    std::fs::create_dir_all(d.0.join("avarok-recipes")).expect("mkdir");
+    std::fs::create_dir_all(d.0.join("atlas-recipes")).expect("mkdir");
     std::fs::write(
-        d.0.join("avarok-recipes/index.json"),
+        d.0.join("atlas-recipes/index.json"),
         br#"{"recipes":[1,2,3]}"#,
     )
     .expect("write");
@@ -154,8 +154,8 @@ fn an_unreadable_index_is_not_reported_as_a_missing_one() {
     {
         use std::os::unix::fs::PermissionsExt;
         let d = Dir::new("r-perm");
-        std::fs::create_dir_all(d.0.join("avarok-recipes")).expect("mkdir");
-        let idx = d.0.join("avarok-recipes/index.json");
+        std::fs::create_dir_all(d.0.join("atlas-recipes")).expect("mkdir");
+        let idx = d.0.join("atlas-recipes/index.json");
         std::fs::write(&idx, br#"{"recipes":[1]}"#).expect("write");
         std::fs::set_permissions(&idx, std::fs::Permissions::from_mode(0o000)).expect("chmod");
         let f = with_home(&d.0, check_recipes);
@@ -178,8 +178,8 @@ fn an_unreadable_index_is_not_reported_as_a_missing_one() {
 #[test]
 fn recipes_goes_red_when_the_index_is_empty() {
     let d = Dir::new("r-empty");
-    std::fs::create_dir_all(d.0.join("avarok-recipes")).expect("mkdir");
-    std::fs::write(d.0.join("avarok-recipes/index.json"), br#"{"recipes":[]}"#).expect("write");
+    std::fs::create_dir_all(d.0.join("atlas-recipes")).expect("mkdir");
+    std::fs::write(d.0.join("atlas-recipes/index.json"), br#"{"recipes":[]}"#).expect("write");
     let f = with_home(&d.0, check_recipes);
     assert!(f.problem);
     assert!(f.detail.contains("lists none"), "{}", f.detail);

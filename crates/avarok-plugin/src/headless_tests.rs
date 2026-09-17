@@ -119,7 +119,7 @@ fn a_run_produces_a_record_and_writes_it() {
     assert!(path.exists(), "the file is really on disk");
     assert_eq!(outcome.record.benchmark_id, "concurrency-sweep");
     assert_eq!(outcome.record.source, RunSource::Cli);
-    assert_eq!(outcome.record.avarok_version, "1.0.0-beta-preview");
+    assert_eq!(outcome.record.atlas_version, "1.0.0-beta-preview");
     assert!(!outcome.record.run_id.is_empty(), "stamped by save");
     let reported = reporter.terminal.as_ref().expect("reported terminal frame");
     assert_eq!(reported.status, outcome.record.frame.status);

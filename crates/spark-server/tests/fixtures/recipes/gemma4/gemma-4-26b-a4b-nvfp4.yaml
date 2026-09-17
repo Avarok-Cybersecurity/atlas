@@ -1,15 +1,15 @@
 recipe_version: "2"
 model: bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16
-runtime: avarok
+runtime: atlas
 container: avarok/atlas-gb10:latest
 max_nodes: 1
 
 metadata:
   description: |
     Gemma-4-26B-A4B — Google's hybrid Attention + MoE Gemma-4 with GeGLU
-    activations. ~67 tok/s decode on a single GB10 per the Avarok
+    activations. ~67 tok/s decode on a single GB10 per the Atlas
     performance table (`scripts/sweep_all_models.sh` baseline).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 26B
   model_dtype: nvfp4

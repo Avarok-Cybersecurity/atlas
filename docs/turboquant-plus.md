@@ -3,7 +3,7 @@
 Tracking issue: [#91](https://github.com/Avarok-Cybersecurity/atlas/issues/91)
 (proposal + planned scope).
 
-This document describes the TurboQuant+ (TQ+) integration in Avarok: what
+This document describes the TurboQuant+ (TQ+) integration in Atlas: what
 changed vs upstream, why each piece matters, before/after numbers, and
 exactly how to reproduce them.
 
@@ -33,7 +33,7 @@ symmetric dtypes.
 
 ## Background
 
-Avarok already shipped a TurboQuant variant of the KV cache (Walsh-Hadamard
+Atlas already shipped a TurboQuant variant of the KV cache (Walsh-Hadamard
 rotation + Lloyd-Max codebook with per-group FP8 scales) under
 `--kv-cache-dtype turbo{3,4,8}`. That implementation was a strictly weaker
 form of the TurboQuant paper (Zandieh et al., arXiv:2504.19874, April
@@ -59,16 +59,16 @@ TurboQuant+ ("TQ+") is the beyond-Google research line published as
 across multiple downstream engines) with the llama.cpp engine
 reference at
 [`TheTom/llama-cpp-turboquant`](https://github.com/TheTom/llama-cpp-turboquant).
-The pieces ported into Avarok in this work:
+The pieces ported into Atlas in this work:
 
-| Feature | TQ+ paper | Avarok commit |
+| Feature | TQ+ paper | Atlas commit |
 |---|---|---|
 | Canonical Randomized Hadamard signs | TurboQuant paper (Zandieh et al., arXiv:2504.19874) | kernel commit |
 | Matched-norm L2 correction | `matched-norm-l2.md` | kernel commit |
 | Sparse V dequant (attention-gated row skip) | `sparse-v-dequant.md` | kernel commit |
 | fp16 centroid LUT (halves shmem) | TQ+ optimisation | kernel commit |
 | Turbo2 — 2-bit Lloyd-Max codebook | `low-bit-codebooks.md` | kernel commit |
-| Real Turbo3 prefill (fixes NVFP4 misroute) | (Avarok-specific fix) | kernel commit |
+| Real Turbo3 prefill (fixes NVFP4 misroute) | (Atlas-specific fix) | kernel commit |
 | Bf16K + Turbo3V safer-asym | `asymmetric-kv-compression.md` | kernel commit |
 | InnerQ per-channel Q/K equalisation | `inner-q.md` | both commits |
 | 256/512 sign arrays + weight pre-rotation | TQ+ scaling work | both commits |
@@ -115,16 +115,16 @@ All numbers were measured on:
 
   - **Hardware:** NVIDIA GB10 (ASUS Ascent GX10), 128 GB unified memory
   - **Model:** `Qwen3.6-35B-FP8` at `/home/pidtom/models/qwen3.6-35b-fp8`
-  - **OS:** Ubuntu 24.04 inside the Avarok runtime container
+  - **OS:** Ubuntu 24.04 inside the Atlas runtime container
   - **Driver/CUDA:** NVIDIA driver supporting CUDA 13.0, container base `nvidia/cuda:13.0.0-runtime-ubuntu24.04`
 
 ### 1. Build
 
 ```bash
-git clone <avarok-repo> && cd avarok
+git clone <atlas-repo> && cd atlas
 git checkout feature/tq-plus-clean   # or whichever branch carries the integration
 
-docker build -f docker/gb10/Dockerfile -t avarok-gb10-tqplus .
+docker build -f docker/gb10/Dockerfile -t atlas-gb10-tqplus .
 # ~8 min cold (cargo build --release -p spark-server inside builder stage)
 ```
 
@@ -134,11 +134,11 @@ For each dtype `D` in `{bf16, fp8, turbo2, turbo3, turbo4, turbo8}` (and
 the asym variants below), start a fresh container:
 
 ```bash
-docker stop avarok-bench 2>/dev/null; docker rm avarok-bench 2>/dev/null
-docker run -d --name avarok-bench --gpus all --ipc=host \
+docker stop atlas-bench 2>/dev/null; docker rm atlas-bench 2>/dev/null
+docker run -d --name atlas-bench --gpus all --ipc=host \
   -p 8889:8888 -v /path/to/qwen3.6-35b-fp8:/model \
   -e RUST_LOG=warn \
-  avarok-gb10-tqplus \
+  atlas-gb10-tqplus \
   serve --model-from-path /model \
     --port 8888 --bind 0.0.0.0 --max-seq-len 32768 \
     --kv-cache-dtype $D --kv-high-precision-layers 0
@@ -172,7 +172,7 @@ host and the same code is reproduced here for reviewer convenience) does
 
 ```bash
 python3 tests/test_kv_dtype_smoke.py \
-  --image avarok-gb10-tqplus \
+  --image atlas-gb10-tqplus \
   --model-path /path/to/qwen3.6-35b-fp8
 ```
 
@@ -186,9 +186,9 @@ fit the K-side dtype) from runtime FAIL (kernel dispatch crash). Total
 ```bash
 docker run --rm --entrypoint /bin/bash \
   -e AVAROK_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
-  -v $(pwd):/avarok \
-  avarok-gb10-tqplus-dev \
-  -c "cd /avarok && cargo test -p spark-runtime --tests kv_cache::"
+  -v $(pwd):/atlas \
+  atlas-gb10-tqplus-dev \
+  -c "cd /atlas && cargo test -p spark-runtime --tests kv_cache::"
 ```
 
 Expected: `test result: ok. 32 passed; 0 failed`.
@@ -215,7 +215,7 @@ Reproduce one cell:
 
 ```bash
 python3 tests/avarok_bench_comprehensive.py \
-  --image avarok-gb10-tqplus \
+  --image atlas-gb10-tqplus \
   --model-path /path/to/qwen3.6-35b-fp8 \
   --config-name "tqplus-default" \
   --dtypes turbo3 \
@@ -245,7 +245,7 @@ Two columns to draw your eye to:
   prefill throughput at the cost of PPL sim 0.647 — the expected 2-bit
   Lloyd-Max quality penalty.
 
-### Before/after vs upstream Avarok (`87b7bb3`) — same harness, same model
+### Before/after vs upstream Atlas (`87b7bb3`) — same harness, same model
 
 This is the table that drove the headline framing above. Baseline
 column ran against a clean Docker image built from upstream at
@@ -382,7 +382,7 @@ kernels handle the mixed-dtype layout in a single launch each.
 ### Bench G — Qwen3-VL-30B-A3B-NVFP4 (bf16 attention weights, head_dim=128)
 
 The 3 `bf16k_*` variants exercise the bf16 K-side at the HDIM=128
-kernel — the only HDIM=128 bf16-attn model in Avarok's tested set.
+kernel — the only HDIM=128 bf16-attn model in Atlas's tested set.
 Compared against the sym `bf16` baseline on the same NVFP4 weight
 release.
 
@@ -441,8 +441,8 @@ Run the dispatch tests (no GPU needed):
 ```bash
 docker run --rm --entrypoint /bin/bash --gpus all \
   -e AVAROK_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
-  -v $(pwd):/avarok avarok-gb10-tqplus-dev \
-  -c "cd /avarok && cargo test -p spark-model --tests qwen3_attention::init_kernel_dispatch::"
+  -v $(pwd):/atlas atlas-gb10-tqplus-dev \
+  -c "cd /atlas && cargo test -p spark-model --tests qwen3_attention::init_kernel_dispatch::"
 ```
 
 Expected: `test result: ok. 4 passed; 0 failed`.
@@ -461,7 +461,7 @@ single largest line-item.
 ### Microbench — InnerQ on/off
 
 ```bash
-docker run … -e TURBO_INNERQ=512 -e TURBO_INNERQ_STRENGTH=0.5 avarok-gb10-tqplus serve …
+docker run … -e TURBO_INNERQ=512 -e TURBO_INNERQ_STRENGTH=0.5 atlas-gb10-tqplus serve …
 ```
 
 After 512 calibration tokens (logged at INFO), the post-WHT per-channel
@@ -472,7 +472,7 @@ should match the table above ± noise; deviation indicates a bug.
 ### Microbench — weight pre-rotation on/off
 
 ```bash
-docker run … -e TQ_PLUS_WEIGHT_ROTATION=1 avarok-gb10-tqplus serve …
+docker run … -e TQ_PLUS_WEIGHT_ROTATION=1 atlas-gb10-tqplus serve …
 ```
 
 When active, runtime WHT launches in `write_kv_cache.rs` are skipped
@@ -485,7 +485,7 @@ attention dot product is preserved because the rotation cancels at
 The primary research source is
 [`TheTom/turboquant_plus`](https://github.com/TheTom/turboquant_plus)
 — the umbrella repo Tom Turney uses as a research dumping ground for
-the TQ+ work that spans multiple downstream engines (this Avarok port,
+the TQ+ work that spans multiple downstream engines (this Atlas port,
 the llama.cpp port, the vLLM port, etc.). The ~15 papers in
 `docs/papers/` and the reference quant/dequant implementations live
 there.
@@ -533,4 +533,4 @@ on GB10; the Rust dispatch and tests are AI-generated and reviewed.
 
 See `CITATIONS.md` at the repo root for the full prior-art chain
 (Google TurboQuant paper → `TheTom/turboquant_plus` umbrella → `TheTom/llama-cpp-turboquant` engine reference →
-this Avarok port).
+this Atlas port).

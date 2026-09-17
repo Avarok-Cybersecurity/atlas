@@ -4,7 +4,7 @@ The canonical references are [`CONTRIBUTING.md`](https://github.com/Avarok-Cyber
 
 ## The AI-first policy
 
-Avarok is explicitly an AI-first codebase. From `CONTRIBUTING.md`:
+Atlas is explicitly an AI-first codebase. From `CONTRIBUTING.md`:
 
 > - **All PRs are expected to be AI-generated.** Use the best AI tools available to write your kernels, Rust code, and benchmarks.
 > - **Human-written code must be justified.** Indicate which parts are human-authored and explain why.
@@ -16,7 +16,7 @@ This is not branding — it's the operational consequence of the specialization 
 
 The [README's Contributing](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#contributing) section lists four categories:
 
-- **New `(H, M_q)` targets.** Porting Avarok kernels to new hardware (H100, B200, MI300X, Apple M4, Intel) or new models. Each target is a self-contained body of work. See the [Adding a new hardware target](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-hardware-target) and [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guides.
+- **New `(H, M_q)` targets.** Porting Atlas kernels to new hardware (H100, B200, MI300X, Apple M4, Intel) or new models. Each target is a self-contained body of work. See the [Adding a new hardware target](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-hardware-target) and [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guides.
 - **Kernel optimization.** Profile existing kernels, experiment with tiling strategies, register pressure, shared-memory layouts. If you can beat the numbers in the [Benchmarks](../operations/benchmarks.md) chapter, send the PR.
 - **Benchmark coverage.** Add shapes and configurations not yet tested. More data points sharpen the hypercompiler.
 - **Bug reports.** Include hardware details, repro steps, and kernel timings.
@@ -63,13 +63,13 @@ These are the classes of bug that have burned days. Know them; avoid introducing
 
 ## The cardinal rule
 
-> **Never assume the model is at fault.** Always look for the Avarok bug first.
+> **Never assume the model is at fault.** Always look for the Atlas bug first.
 
-The test matrix has caught many issues that would have looked like "model hallucination" in a lesser codebase. The heuristic is: if the model used to produce coherent output on this input and now doesn't, there's an Avarok bug, not a model bug.
+The test matrix has caught many issues that would have looked like "model hallucination" in a lesser codebase. The heuristic is: if the model used to produce coherent output on this input and now doesn't, there's an Atlas bug, not a model bug.
 
 ## The CLA
 
-By contributing, you agree to the [Contributor License Agreement](https://github.com/Avarok-Cybersecurity/atlas/blob/main/CLA.md). Your work goes out under AGPL-3.0 in the Community Edition, and you grant Avarok the right to relicense for the Enterprise Edition.
+By contributing, you agree to the [Contributor License Agreement](https://github.com/Avarok-Cybersecurity/atlas/blob/main/CLA.md). Your work goes out under AGPL-3.0 in the Community Edition, and you grant Atlas the right to relicense for the Enterprise Edition.
 
 The `CLA Assistant` bot automatically comments on every PR. You must explicitly acknowledge and sign before merge.
 

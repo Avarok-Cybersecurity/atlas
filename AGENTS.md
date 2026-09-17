@@ -1,12 +1,12 @@
 # AGENTS.md
 
-A contributor guide for AI agents (and humans) working on Avarok. Read this
+A contributor guide for AI agents (and humans) working on Atlas. Read this
 alongside [CONTRIBUTING.md](CONTRIBUTING.md). The tone is practical: paths,
 commands, and the invariants that matter.
 
-## What Avarok is
+## What Atlas is
 
-Avarok is an AGPL-3.0 inference stack targeting NVIDIA GB10 / DGX Spark. The
+Atlas is an AGPL-3.0 inference stack targeting NVIDIA GB10 / DGX Spark. The
 moving parts:
 
 - **`crates/spark-server/`** — OpenAI-compatible HTTP server, request
@@ -179,7 +179,7 @@ These aren't abstract — they're the classes of bug that have burned days:
   Verify against the current binary, not your memory.
 
 When you hit a regression, **never assume the model is at fault** — always
-look for the Avarok bug first.
+look for the Atlas bug first.
 
 ## Scope and escalation
 
@@ -190,12 +190,12 @@ it in the PR description so reviewers catch it.
 
 ## Code Principles & Agent Workflow
 
-To ensure high code quality, all agents contributing to Avarok must strictly adhere to these core programming principles:
+To ensure high code quality, all agents contributing to Atlas must strictly adhere to these core programming principles:
 
 ### Core Directives
 - **Minimal Edits:** Make the smallest edit necessary—sufficient but not excessive.
 - **TDD & Testing:** Test-driven development is required. Minimize test mocking; maximize production code coverage. Never add test-specific workarounds to production paths.
-- **File Size:** Keep Rust source files ≤500 LoC — this is the CI-enforced cap (`.github/workflows/file-size-cap.yml` is the SSOT). Split larger files into sub-modules per the Avarok idiom (see `crates/spark-model/src/layers/qwen3_attention/` for the compute-heavy template, `crates/spark-model/src/weight_loader/` for the variant-dispatch template).
+- **File Size:** Keep Rust source files ≤500 LoC — this is the CI-enforced cap (`.github/workflows/file-size-cap.yml` is the SSOT). Split larger files into sub-modules per the Atlas idiom (see `crates/spark-model/src/layers/qwen3_attention/` for the compute-heavy template, `crates/spark-model/src/weight_loader/` for the variant-dispatch template).
 - **Security:** Write secure code adhering to OWASP, CWE, and NIST standards.
 
 ### The "Big Three" Invariants (Always Apply)

@@ -12,7 +12,7 @@
 //!                            modeling file makes the same 2x expansion: each
 //!                            checkpoint layer is a dual-sublayer "shortcut"
 //!                            block = 2 MLA attention + 2 dense MLP + one
-//!                            shortcut MoE. Avarok serves each SUBLAYER as one
+//!                            shortcut MoE. Atlas serves each SUBLAYER as one
 //!                            engine layer, so the engine layer count, the KV
 //!                            sizing and `layer_types` all use 2x; the loader
 //!                            iterates checkpoint layers `num_hidden_layers/2`)

@@ -188,7 +188,7 @@
       </div>
       <p class="fs-note">
         The port is optional — 34334 is assumed. For the code, run
-        <code class="mono">avarokctl agent pair</code> on that machine. If its agent is
+        <code class="mono">atlasctl agent pair</code> on that machine. If its agent is
         already running it holds that port, so use "Show me how" above instead — that
         way round, the code comes from here and you carry one line to it.
       </p>

@@ -217,7 +217,7 @@ impl BlockDiffusionDraftHead {
             // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: write the full 10240-element
             // target_hidden_stack (one ctx slot) to /tmp/avarok_target_hidden.bin
             // so a Python reference can run dflash.py forward on the same
-            // input and compare predicted draft tokens vs Avarok drafts.
+            // input and compare predicted draft tokens vs Atlas drafts.
             // Also dumps last_token + drafter outputs separately for the
             // bisect script. ONE-SHOT: writes only the first propose() call.
             if eff_ctx > 0
@@ -246,7 +246,7 @@ impl BlockDiffusionDraftHead {
                 }
 
                 // Write companion meta JSON for the pyref diff harness.
-                // Shapes/strides Avarok knows but the Python side can't
+                // Shapes/strides Atlas knows but the Python side can't
                 // infer from the .bin alone. Written once alongside the
                 // target_hidden dump so harness runs read a consistent
                 // snapshot.
@@ -393,7 +393,7 @@ impl BlockDiffusionDraftHead {
         // AVAROK_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection
-        // when both Avarok and PyTorch see identical input.
+        // when both Atlas and PyTorch see identical input.
         if levers.force_noise_pattern {
             let mut bytes = Vec::with_capacity(self.gamma * self.hidden_size * 2);
             for t in 0..self.gamma {
@@ -827,15 +827,15 @@ impl BlockDiffusionDraftHead {
             // ── BLOCK-FORWARD INPUT DUMP (Friday 2026-06-11, id251 discriminator) ──
             // The block-parity A/B (joint-vs-split RoPE) came back a TIE, proving
             // the row-1 logit erosion (cos 0.73) is NOT the rope arrangement but an
-            // INPUT the harness RECONSTRUCTS rather than reads from Avarok. This dumps
-            // Avarok's ACTUAL block-forward inputs so the harness can feed THEM to
+            // INPUT the harness RECONSTRUCTS rather than reads from Atlas. This dumps
+            // Atlas's ACTUAL block-forward inputs so the harness can feed THEM to
             // PyTorch instead of reconstructing them:
             //   - the noise/mask embedding rows (stream_buf, γ rows × hidden) — the
             //     embedded [last_token, mask, mask, ...] the layers actually consumed
-            //   - the position_ids array Avarok used
+            //   - the position_ids array Atlas used
             //   - the Option-B ctx args (kv_len / q_offset) the paged attention saw
-            // PyTorch still diverges on Avarok's REAL inputs -> COMPUTE bug (a kernel
-            // erodes it). PyTorch MATCHES on real inputs -> Avarok built the INPUTS
+            // PyTorch still diverges on Atlas's REAL inputs -> COMPUTE bug (a kernel
+            // erodes it). PyTorch MATCHES on real inputs -> Atlas built the INPUTS
             // wrong (position grid / mask embed / fc). Gated AVAROK_DFLASH_BLOCK_DUMP=1
             // (same one-shot gate as the logits dump above, fires same call).
             {
@@ -1118,7 +1118,7 @@ impl BlockDiffusionDraftHead {
         // AVAROK_DSPARK_SHIFT=1: SpecForge drafter convention. The checkpoint's
         // own dflash.py spec_generate maps row j's output to position
         // start+j+1 (the anchor row's output IS draft #1 — nothing is an
-        // echo), where Avarok's z-lab convention reads row j at position j
+        // echo), where Atlas's z-lab convention reads row j at position j
         // with row 0 discarded. Rotating right by one places rows 0..γ-2
         // where the verify path reads drafts 1..γ-1. Row γ-1's output (a
         // prediction past the block) lands in the discarded slot 0.

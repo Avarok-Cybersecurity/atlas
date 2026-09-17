@@ -8,7 +8,7 @@ option — `num_key_value_heads = 2` cannot shard across 4 TP ranks.
 ## 1. Build the image (from the repo root)
 
 ```bash
-docker build -f docker/gb10/qwen3.5-397b-a17b/nvfp4/Dockerfile -t avarok-397b .
+docker build -f docker/gb10/qwen3.5-397b-a17b/nvfp4/Dockerfile -t atlas-397b .
 ```
 
 The builder stage compiles only the `qwen3.5-397b-a17b` kernel target
@@ -21,7 +21,7 @@ nodeN docker load`).
 ## 2. Launch 4-node EP=4
 
 ```bash
-/home/cluster/launch-avarok-ep4.sh          # orchestrates ranks 0..3 across the 4 nodes
+/home/cluster/launch-atlas-ep4.sh          # orchestrates ranks 0..3 across the 4 nodes
 ```
 
 The launcher starts rank 0 (HTTP + scheduler) on the head node and ranks 1-3 as
@@ -54,4 +54,4 @@ throughput on the NVFP4 checkpoint).
 
 - A single-node `docker run` will OOM at the weight-load preflight (weights > 120 GB).
 - Driver must stay on 580.x — 590.x triggers a CUDAGraph deadlock on GB10.
-- vLLM and Avarok are mutually exclusive on the cluster (both reserve unified memory).
+- vLLM and Atlas are mutually exclusive on the cluster (both reserve unified memory).

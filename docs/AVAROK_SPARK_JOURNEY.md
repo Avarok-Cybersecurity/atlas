@@ -1,8 +1,8 @@
-# Avarok Spark: From Zero to 99 tok/s — The Full Story
+# Atlas Spark: From Zero to 99 tok/s — The Full Story
 
-## What Is Avarok Spark?
+## What Is Atlas Spark?
 
-Avarok Spark is a **pure Rust LLM inference server** built entirely from scratch for the **Qwen3-Next-80B-A3B-Instruct-NVFP4** model running on a single **NVIDIA DGX Spark GB10** (Blackwell SM121, 119.7 GB LPDDR5X @ 273 GB/s).
+Atlas Spark is a **pure Rust LLM inference server** built entirely from scratch for the **Qwen3-Next-80B-A3B-Instruct-NVFP4** model running on a single **NVIDIA DGX Spark GB10** (Blackwell SM121, 119.7 GB LPDDR5X @ 273 GB/s).
 
 There is no PyTorch, no Python, no vLLM in the hot path. Every operation — embedding lookup, attention with paged FP8 KV cache, Mamba SSM recurrent state updates, MoE expert routing across 512 experts, NVFP4 weight dequantization, RoPE, RMS norm, argmax — is implemented in Rust with hand-tuned CUDA kernels compiled to SM121 PTX.
 
@@ -36,7 +36,7 @@ The hybrid attention + Mamba architecture is particularly challenging because th
 
 ---
 
-## Phase 1: Avarok Kernel Library (Weeks 1–2)
+## Phase 1: Atlas Kernel Library (Weeks 1–2)
 
 The project started as a CUDA kernel library benchmarked against PyTorch on SM121. The goal was to prove that hand-tuned kernels could beat the existing ecosystem on this new hardware.
 
@@ -52,7 +52,7 @@ The project started as a CUDA kernel library benchmarked against PyTorch on SM12
 
 ### Results
 
-32 benchmarks against PyTorch, Avarok won 25/32:
+32 benchmarks against PyTorch, Atlas won 25/32:
 - Prefill seq=256: **4.95x faster** (0.025ms vs 0.122ms)
 - Decode seq=4096: **6.02x faster** (0.049ms vs 0.292ms)
 - MoE batched GEMM: **3.87x faster** (8.4ms vs 32.6ms)
@@ -69,11 +69,11 @@ With proven kernels, the next step was integrating into vLLM as an attention bac
 
 - **Non-contiguous QKV views**: vLLM's QKV projection splits create non-contiguous tensors. The token-to-token stride is `(Hq + 2*Hkv) * D` instead of the expected `H * D`. Fixed by adding explicit stride parameters to all CUDA kernels.
 - **FP8 KV cache stride mismatch**: vLLM allocates FP8 KV cache with BF16-sized memory, then views as uint8. This creates `key_cache.stride(0) = 2x` the contiguous stride. Writes went to wrong offsets, reads saw zeros. Fixed by passing `cache_stride` from Python.
-- **Selective patching wins**: Patching individual ops (RMSNorm, SiLU, RoPE) with Avarok kernels *broke* torch.compile fusion boundaries. Removing 6 of 7 patches gave **+11% throughput** — only patch attention (the one op that's SM121-specific), let vLLM handle everything else.
+- **Selective patching wins**: Patching individual ops (RMSNorm, SiLU, RoPE) with Atlas kernels *broke* torch.compile fusion boundaries. Removing 6 of 7 patches gave **+11% throughput** — only patch attention (the one op that's SM121-specific), let vLLM handle everything else.
 
 ### Result
 
-**40.5 tok/s** with Avarok attention-only patching, FP8 KV cache, and CUDA graphs in FULL+PIECEWISE mode. Comparable to vLLM's 42 tok/s FlashInfer baseline.
+**40.5 tok/s** with Atlas attention-only patching, FP8 KV cache, and CUDA graphs in FULL+PIECEWISE mode. Comparable to vLLM's 42 tok/s FlashInfer baseline.
 
 ### The realization
 
@@ -81,9 +81,9 @@ The vLLM approach had a ceiling. The Python overhead, the framework abstractions
 
 ---
 
-## Phase 3: Building Avarok Spark from Scratch (Weeks 3–4)
+## Phase 3: Building Atlas Spark from Scratch (Weeks 3–4)
 
-Avarok Spark was a complete rewrite of the inference pipeline in pure Rust.
+Atlas Spark was a complete rewrite of the inference pipeline in pure Rust.
 
 ### Architecture
 
@@ -95,7 +95,7 @@ Avarok Spark was a complete rewrite of the inference pipeline in pure Rust.
 ├── spark-model         Model composition, layer traits, Qwen3 attention + SSM + MoE
 ├── spark-server        HTTP server, tokenizer, integration test
 ├── spark-comm          gRPC stub for future multi-GPU
-└── 9 other support crates (avarok-py, avarok-quant, avarok-gemm, etc.)   [historical; several no longer exist]
+└── 9 other support crates (atlas-py, atlas-quant, atlas-gemm, etc.)   [historical; several no longer exist]
 ```
 
 ### Design principles
@@ -133,7 +133,7 @@ This is where the real work happened. Every commit brought a measurable speedup,
 
 **Stage 1 total: 11.4x speedup** (3.6 → 41.0 tok/s).
 
-At this point, Avarok Spark at 41 tok/s already exceeded vLLM's 36.4 tok/s non-speculative baseline.
+At this point, Atlas Spark at 41 tok/s already exceeded vLLM's 36.4 tok/s non-speculative baseline.
 
 ### Stage 2: The E2M1 LUT Breakthrough (41 → 80 tok/s, 1.95x)
 
@@ -188,13 +188,13 @@ With individual kernels near their bandwidth limits, the remaining gains came fr
 
 | Framework | Quantization | Throughput | Speculative Decoding |
 |-----------|-------------|-----------|---------------------|
-| **Avarok Spark** | **NVFP4** | **99.1 tok/s** | **No** |
+| **Atlas Spark** | **NVFP4** | **99.1 tok/s** | **No** |
 | vLLM v22 + Marlin + MTP | NVFP4 | 59.9 tok/s | Yes (2 draft tokens) |
 | vLLM v22 + Marlin | NVFP4 | 36.4 tok/s | No |
 | TensorRT-LLM v1.3.0rc2 | NVFP4 | 29.6 tok/s | No |
-| Avarok vLLM backend | NVFP4 | 40.5 tok/s | No |
+| Atlas vLLM backend | NVFP4 | 40.5 tok/s | No |
 
-Avarok Spark at 99 tok/s **without speculative decoding** is 65% faster than vLLM's best result **with** speculative decoding (59.9 tok/s with MTP).
+Atlas Spark at 99 tok/s **without speculative decoding** is 65% faster than vLLM's best result **with** speculative decoding (59.9 tok/s with MTP).
 
 ---
 
@@ -224,7 +224,7 @@ Quantizing ALL weights to NVFP4 (including BF16 dense weights that were original
 
 ## What About Speculative Decoding?
 
-**No — speculative decoding has NOT been implemented in Avarok Spark.**
+**No — speculative decoding has NOT been implemented in Atlas Spark.**
 
 It was extensively explored in TensorRT-LLM (19 experiments with NGram self-speculation, versions v3 through v21), but those attempts all failed:
 
@@ -234,14 +234,14 @@ It was extensively explored in TensorRT-LLM (19 experiments with NGram self-spec
 
 ### What would work
 
-The recommended approach for Avarok Spark is **EAGLE-2 or Medusa** with trained draft heads (not n-gram matching):
+The recommended approach for Atlas Spark is **EAGLE-2 or Medusa** with trained draft heads (not n-gram matching):
 
 - A small MLP draft head on top of the last layer's hidden states predicts 2–4 future tokens
 - With a properly trained head, 70–80% acceptance rate is achievable
-- SSM state checkpointing is straightforward in Avarok (just memcpy ~2.3 MB of state buffers before each speculative batch)
+- SSM state checkpointing is straightforward in Atlas (just memcpy ~2.3 MB of state buffers before each speculative batch)
 - **Projected throughput with 3 draft tokens at 80% acceptance: ~160–200 tok/s**
 
-This is the clear next step for Avarok Spark, and it's the one optimization that could deliver another 2x+ improvement.
+This is the clear next step for Atlas Spark, and it's the one optimization that could deliver another 2x+ improvement.
 
 ---
 
@@ -250,8 +250,8 @@ This is the clear next step for Avarok Spark, and it's the one optimization that
 Every step, from the first kernel benchmark to the final shared memory optimization:
 
 ```
-Phase 1: Avarok Kernel Library
-  98a2913  Avarok v0.4.0-sm121: 18/31 benchmark wins, 51/51 tests passing
+Phase 1: Atlas Kernel Library
+  98a2913  Atlas v0.4.0-sm121: 18/31 benchmark wins, 51/51 tests passing
   4373d8e  Step 3: Rewrite prefill attention with tensor core MMA
   9e95cbf  Prefill attention: 4-warp PV + fix bench timing
   f654a34  Phase 0+1: Remove sync overhead + add GDR prefill baseline (18→22/32 wins)
@@ -259,13 +259,13 @@ Phase 1: Avarok Kernel Library
   32477a1  Decode attention v2: batched KV + tree merge (24→25/32 wins)
 
 Phase 2: vLLM Integration
-  098c74b  Full vLLM integration: Avarok attention backend with CUDA graph support
+  098c74b  Full vLLM integration: Atlas attention backend with CUDA graph support
   25f4b8b  Zero-copy attention + FP8 kernel infrastructure + CUDA graph fix
   9a3df32  Fix FP8 KV cache stride mismatch + CUDA graph FULL mode
-  bd88b9b  Avarok attention only: 41 tok/s
+  bd88b9b  Atlas attention only: 41 tok/s
 
-Phase 3: Avarok Spark Infrastructure
-  b1aa889  Avarok Spark: pure Rust inference server for Qwen3-Next-80B
+Phase 3: Atlas Spark Infrastructure
+  b1aa889  Atlas Spark: pure Rust inference server for Qwen3-Next-80B
 
 Phase 4: Performance Optimization (3.6 → 99.1 tok/s)
   0cd54f4  GEMV kernels + async copies + GPU MoE top-K             → 18.6 tok/s  (5.2x)
@@ -314,22 +314,22 @@ Phase 4: Performance Optimization (3.6 → 99.1 tok/s)
 
 ```bash
 # Start build container
-sudo docker run -d --name avarok-build --gpus all --ipc=host --entrypoint bash \
-  -v /workspace/avarok:/workspace/avarok avarok/dgx-vllm-nvfp4-kernel:v22 -c "sleep 86400"
-sudo docker exec avarok-build bash -c \
+sudo docker run -d --name atlas-build --gpus all --ipc=host --entrypoint bash \
+  -v /workspace/atlas:/workspace/atlas atlas/dgx-vllm-nvfp4-kernel:v22 -c "sleep 86400"
+sudo docker exec atlas-build bash -c \
   "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
 
 # Build (clear PTX cache when CUDA sources change)
-sudo docker exec -w /workspace/avarok avarok-build bash -c \
+sudo docker exec -w /workspace/atlas atlas-build bash -c \
   "source /root/.cargo/env && rm -rf target/release/build/avarok-kernels-* && cargo build --release"
 
 # Unit tests (43 tests, no GPU required)
-sudo docker exec -w /workspace/avarok avarok-build bash -c \
+sudo docker exec -w /workspace/atlas atlas-build bash -c \
   "source /root/.cargo/env && cargo test -p spark-model -p spark-runtime -p avarok-kernels \
    -p spark-server -p spark-comm --release"
 
 # Integration benchmark (GPU + weights, 200 tokens)
-sudo docker exec -w /workspace/avarok avarok-build bash -c \
+sudo docker exec -w /workspace/atlas atlas-build bash -c \
   "source /root/.cargo/env && RUST_LOG=info cargo test -p spark-server --release -- --ignored"
 ```
 

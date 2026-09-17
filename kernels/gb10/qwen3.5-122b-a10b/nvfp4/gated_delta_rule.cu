@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Register-Tiled Gated Delta Rule Prefill — 35B model shadow.
+// Atlas Register-Tiled Gated Delta Rule Prefill — 35B model shadow.
 //
 // Each thread holds its H column (128 floats) entirely in registers.
 // Eliminates all shared memory latency for H access (0-cycle vs ~20-cycle).

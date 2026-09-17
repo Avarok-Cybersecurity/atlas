@@ -48,8 +48,8 @@ fn eos_token_id_field<'de, D: serde::Deserializer<'de>>(
 /// meaning, and no consumers). Inferring a semantic from an unrelated knob is the defect this
 /// avoids.
 ///
-/// GLM-scoped on purpose: no other Avarok model has a contested router ladder, and widening this
-/// into a cross-model routing refactor would be scope Avarok has not asked for.
+/// GLM-scoped on purpose: no other Atlas model has a contested router ladder, and widening this
+/// into a cross-model routing refactor would be scope Atlas has not asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Glm5NextRouterMode {
@@ -64,7 +64,7 @@ pub enum Glm5NextRouterMode {
     /// `_get_moe_router_dtype` fires only for `glm_moe_dsa` or an explicit `moe_router_dtype`),
     /// so the gate GEMM runs in the model dtype and `grouped_topk` does no upcast.
     ///
-    /// Exists so Avarok can reproduce the frozen vLLM oracle's routing for A/B work. **Never a
+    /// Exists so Atlas can reproduce the frozen vLLM oracle's routing for A/B work. **Never a
     /// production default.**
     VllmBf16,
 }
@@ -694,7 +694,7 @@ pub struct ModelConfig {
     #[serde(default)]
     pub qk_norm_type: String,
     /// Number of sequential MTP draft modules. 0 = no MTP. 1 = existing
-    /// Avarok MTP path (Qwen3.5). 3 = MiniMax M2 (each module is a single
+    /// Atlas MTP path (Qwen3.5). 3 = MiniMax M2 (each module is a single
     /// transformer layer that predicts one future token).
     #[serde(default)]
     pub num_mtp_modules: usize,

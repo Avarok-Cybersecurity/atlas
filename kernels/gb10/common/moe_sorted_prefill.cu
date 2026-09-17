@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Sorted MoE GEMV — L2-optimized prefill.
+// Atlas Sorted MoE GEMV — L2-optimized prefill.
 //
 // Tokens are pre-sorted by expert assignment so consecutive CUDA blocks
 // process the same expert. This keeps expert weights hot in L2 cache,

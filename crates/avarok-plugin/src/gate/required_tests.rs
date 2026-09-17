@@ -38,7 +38,7 @@ fn set(ids: &[&str]) -> BTreeSet<String> {
 ///
 /// This test previously used `recipes/gb10/…yaml` and an audit caught it:
 /// **this repo tracks zero `recipes/` files** — they live in the separate
-/// `avarok-recipes` repo (`ci.yml`), and `invalidating_paths` diffs *this* one.
+/// `atlas-recipes` repo (`ci.yml`), and `invalidating_paths` diffs *this* one.
 /// So the single case pinned as "the" live case was an input the gate can never
 /// observe. A test over an unreachable input proves nothing while reading as
 /// coverage, which is the same failure this whole module exists to prevent.

@@ -54,7 +54,7 @@ The previously unregistered Python checks now have a GPU-free CI job,
 python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
 ```
 
-The existing gate source was byte-identical on Avarok
+The existing gate source was byte-identical on Atlas
 revision `567b5ebe7` and the initially examined Atlas-Inf revision `6c5f17dab` (SHA256
 `9ff13894aa88633cad00394a281c360a394091df790719d17f6908d615e155a5`). These repairs
 therefore address a surviving harness gap rather than assuming old audit work
@@ -88,7 +88,7 @@ and a successful child writing new evidence. The threshold values are unchanged.
 ## Verification and limits
 
 Original audit observations on macOS arm64 with Python 3.14.6, before the
-September 5 Avarok revalidation below:
+September 5 Atlas revalidation below:
 
 - Original suite: 23 passed, no skips.
 - New scorer checks before repair: 33 checks ran with 39 failing subtest/assertion
@@ -107,20 +107,20 @@ September 5 Avarok revalidation below:
   Rust workspace tests and rustdoc were not run after that build prerequisite
   failed. The Ubuntu CI Rust jobs remain the required owners of that evidence.
 
-### September 5 Avarok revalidation
+### September 5 Atlas revalidation
 
-The complete 40-check suite was first run against unchanged Avarok production
+The complete 40-check suite was first run against unchanged Atlas production
 code at `567b5ebe7`: it reported 54 failing assertions/subtests and 13 errors
 from malformed probe shapes and an unrepresentable integer. With the repairs,
-all 40 checks pass with zero skips. Avarok's existing case-insensitive readiness
-marker and log matching are preserved. The CI job is added to Avarok's current
+all 40 checks pass with zero skips. Atlas's existing case-insensitive readiness
+marker and log matching are preserved. The CI job is added to Atlas's current
 workflow; its other jobs and gating remain unchanged.
 
 Python syntax, workspace Rust formatting, scoped typos, whitespace, and
 actionlint workflow validation pass. Shellcheck additionally reports the same
 three SC2016 findings in unchanged existing workflow code on both base and
 patch. No changed file falls under the repository's SPDX source-header scope.
-The Avarok workspace Clippy attempt stops in unchanged `spark-storage` code
+The Atlas workspace Clippy attempt stops in unchanged `spark-storage` code
 using Linux-only `libc` constants (`O_DIRECT` and `POSIX_FADV_DONTNEED`) on
 macOS. Ubuntu Rust CI remains pending; no local Rust test pass is claimed.
 

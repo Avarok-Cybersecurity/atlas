@@ -6,7 +6,7 @@ loaded once + ROLLING weight pre-stage, sb-outer/j-inner) now hits **gate/up 44.
 at cosine 0.999999** — gate/up 75% of llama (60), down 82%. The structural skeleton is validated; the
 remaining gap is the last ~15-25% of tuning (occupancy 1→2 CTA, ldmatrix-B, NVFP4-native MMA stretch).
 HEAD-TO-HEAD TARGET: llama cfff1fc agentic-2.5h on dgx1 = **8369.87s wall, TTFT median 1393ms**
-(/workspace/endpoints-agentic/results/agentic_coding_perf_2.5h_gb10_cfff1fc). Avarok FP8 run = 14360s
+(/workspace/endpoints-agentic/results/agentic_coding_perf_2.5h_gb10_cfff1fc). Atlas FP8 run = 14360s
 (worse + incoherent). Gap is entirely prefill TTFT (~4× at median). FP8-KV + prefix-caching ALLOWED as
 levers. Snapshot branch: perf/int8-prefill-faith2 (PR, not merged). **Solely on dgx1.**
 
@@ -23,12 +23,12 @@ levers. Snapshot branch: perf/int8-prefill-faith2 (PR, not merged). **Solely on 
 ## 1. THE BREAKTHROUGH (why the old "impossible/hardware-capped" conclusion was WRONG)
 - **ldmatrix is NOT broken on GB10.** Proof: `/workspace/ldmatrix_probe.cu` (nvcc -arch=sm_121a) —
   m16n8k16 MMA with A via `ldmatrix.sync.aligned.m8n8.x4.b16` == manual == CPU, **cosine 1.000000**.
-  Avarok's 4 in-tree "ldmatrix broken" comments are a MIS-PORT of the `.trans` variant only (it needs the
+  Atlas's 4 in-tree "ldmatrix broken" comments are a MIS-PORT of the `.trans` variant only (it needs the
   output-reg permute `{xi[0],xi[2],xi[1],xi[3]}`, llama `mma.cuh:811`). Over-generalized → scalar smem
   loads → the "90% L1/TEX wall" I measured. Self-inflicted, not silicon.
 - **llama does 2× on the IDENTICAL shape.** Measured via `test-backend-ops -o MUL_MAT perf` on this GB10:
-  gate/up `[17408,n,5120]` Q4_K **60-65 TFLOP/s**, down 47-58. Data: `/workspace/avarok-prefill32k/scratch_llama_perf2.txt`.
-  Avarok pinned ~30 (bf16) / ~24 (int8). So gate/up IS where Avarok loses; it is NOT a hardware cap.
+  gate/up `[17408,n,5120]` Q4_K **60-65 TFLOP/s**, down 47-58. Data: `/workspace/atlas-prefill32k/scratch_llama_perf2.txt`.
+  Atlas pinned ~30 (bf16) / ~24 (int8). So gate/up IS where Atlas loses; it is NOT a hardware cap.
 - **My methodological error:** tested each lever (K_STEP, 8-warp, split-K, ldmatrix, ILP) IN ISOLATION on
   the unchanged straight-line base → each looked dead. They are synergistic; the win is the full skeleton.
 
@@ -66,7 +66,7 @@ ncu (int8_gemm_8w_ldm gate/up): **stall = SHORT_SCOREBOARD (smem-read dep) 37%, 
   occupancy 33%, L1/TEX 30%, DRAM 38% — nothing saturated; it's smem-read *latency* with no ILP to hide it.
 
 ## 3. THE REMAINING WORK — faithful port of llama's MMQ tile skeleton (NOT more variants)
-llama's `mmq` (q8_0/q4_K int8 path) differs STRUCTURALLY from every Avarok variant:
+llama's `mmq` (q8_0/q4_K int8 path) differs STRUCTURALLY from every Atlas variant:
 - **(a) Load a BIG K-tile (`MMQ_ITER_K=256`) into smem ONCE, iterate `k01` WITHIN it.** Inner loop has
   ZERO global loads + ZERO `__syncthreads`. Mine reloads from global + syncs every 32-K (~160×). THIS is
   the structural fix for the smem-scoreboard/no-eligible wall.
@@ -76,7 +76,7 @@ llama's `mmq` (q8_0/q4_K int8 path) differs STRUCTURALLY from every Avarok varia
   to map onto int8 m16n8k32 A-frag: `xs=(int*)&smem[wrow][0]+(lane%16)*8+(lane/16)*4`, non-trans order
   matches MMA directly (cosine 0.999999 in int8_gemm_8w_ldm).
 - **(d) q8_1 ds (d/scale) layout** for the per-32-block scales, folded once: `sum += C.x[l]*dA*dB` (this part
-  Avarok already matches — `mma.cuh:1206-1212`; NOT the bottleneck).
+  Atlas already matches — `mma.cuh:1206-1212`; NOT the bottleneck).
 **Template files (llama, /workspace/llama-cfff1fc/ggml/src/ggml-cuda/):**
   - `mmq.cuh:1159-1215` vec_dot_q8_0_q8_1_mma (the inner k01 loop + tile_C accumulate)
   - `mmq.cuh:~3485-3518` the kb0 outer loop (load big tile, iterate)
@@ -92,14 +92,14 @@ llama's `mmq` (q8_0/q4_K int8 path) differs STRUCTURALLY from every Avarok varia
 3. Add stream-K for down + a host shape-dispatch (split-K already wins down at 35).
 4. **Highest ceiling (do AFTER int8 works):** native NVFP4 block-scale MMA
    `mma.sync...mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.f32.e2m1.e2m1.f32.ue4m3` — zero software dequant;
-   Avarok weights are already E2M1+per-16-E4M3 (1:1 format). llama's NVFP4 path = +43-68% on THIS model
+   Atlas weights are already E2M1+per-16-E4M3 (1:1 format). llama's NVFP4 path = +43-68% on THIS model
    (PR#22196). FP4 operand load via `ldmatrix.b8x16.b4x16_p64`. Ref: Colfax SM12x NVFP4 tutorial.
 5. Integrate behind env `AVAROK_INT8_PREFILL` in `dense_ffn.rs` (pattern already there: see fp8 M64 wiring,
    `w4a16_gemm_t_k` handle + `AVAROK_FP8_M64_PREFILL` flag + highest-priority macro arm) + requant kernels
    (NVFP4→int8-per32 weights at load; bf16→int8-per32 activations per-prefill — task #15). Quality-gate, then agentic.
 
 ## 3.4 ★★★ ROOT-CAUSE FINDING (06-27 PM) — the agentic gap is BROKEN SSM SNAPSHOT RESTORE, not (only) the GEMM
-Served Avarok bf16-TC + prefix-caching for a 3-traj agentic subset and read the serve log. The smoking gun:
+Served Atlas bf16-TC + prefix-caching for a 3-traj agentic subset and read the serve log. The smoking gun:
 ```
 Session 0x..a87a: 14083 prompt tokens
 Prefix cache hit: 13936 tokens (871 blocks) BUT NO SSM SNAPSHOT — recomputing all KV
@@ -157,7 +157,7 @@ Full-run script ready: /workspace/avarok_agentic_FULL_int8.sh. Gating subset IoU
 on deep turns: long verbose responses × 10.6 tok/s). So my early 90min projection was the SHALLOW turns;
 deep turns are decode-bound. THE PREFILL GAP THE USER NAMED IS CLOSED: warm TTFT 0.8-2.6s now ≤ llama 1393ms
 (int8 + interval-16 restore recomputes only 95-223 SSM tokens even at 17k ctx). But the WALL also includes
-DECODE, and Avarok decode (~10.6 tok/s, no MTP) is the deep-turn bottleneck → wall would be decode-bound, not
+DECODE, and Atlas decode (~10.6 tok/s, no MTP) is the deep-turn bottleneck → wall would be decode-bound, not
 beating 8369s on prefill alone. RESOLUTION: add MTP (the standard agentic decode accelerator; `--speculative
 --num-drafts 1 --mtp-quantization bf16 --kv-high-precision-layers auto`; has a built-in net-negative auto-
 disable gate so it never regresses). The user's reference config presumably had MTP → with decode competitive,
@@ -242,7 +242,7 @@ Gate script ready: /workspace/int8_prefill_gate.sh. NOT committed (validate on G
 All on PR #201 (perf/int8-prefill-faith2, base feat/agentic-2.5h-bf16tc-prefill), 4 commits, NOT merged.
 
 **REAL agentic picture (measured 06-27):** llama target = **8369.87s wall, TTFT median 1393ms, IoU 0.6326**
-(/workspace/endpoints-agentic/results/agentic_coding_perf_2.5h_gb10_cfff1fc). Avarok bf16-TC COLD prefill
+(/workspace/endpoints-agentic/results/agentic_coding_perf_2.5h_gb10_cfff1fc). Atlas bf16-TC COLD prefill
 curve (time_prefill.sh, no cache): 2k→4.5s, 4.5k→9.9s, 9k→20.3s, 18k→41.5s (~2.3ms/tok = the "41s/it").
 TWO levers, BOTH needed (per [[project_agentic25h_prefill_iter_2026_06_25]]):
   (A) PREFIX CACHING — DOMINANT. Multi-turn agentic re-prefills full ctx each turn w/o it (→11h, invalid).
@@ -260,7 +260,7 @@ wall+IoU vs 8369.87s/0.6326, with prefix-caching + FP8-KV ON.
 
 ## 4. INFRA (all on dgx1, all WORKING)
 ```
-cd /workspace/avarok-prefill32k
+cd /workspace/atlas-prefill32k
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 # build the microbench/test (kernels in kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu, module "w4a16"):
 CARGO_TARGET_DIR=/workspace/scratch-bench AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
@@ -284,7 +284,7 @@ int8_gemm_8w, int8_gemm_8w3, int8_gemm_8w_ldm, int8_gemm_8w_ilp. The CORRECT bas
   are WRONG for x4-non-trans (only .trans needs the permute). Safe to use ldmatrix.x4 going forward.
 - fp8 M64 path (AVAROK_FP8_M64_PREFILL, dense_ffn.rs) is fast (1.2x e2e) but BREAKS coherence (3-bit mantissa
   whitespace runaway) — do NOT ship it; it's the cautionary tale that motivates int8 (8-bit).
-- The avarok-prefill32k working tree is DIRTY with all these WIP kernels (uncommitted). Branch + commit before
+- The atlas-prefill32k working tree is DIRTY with all these WIP kernels (uncommitted). Branch + commit before
   big changes if you want a clean base. Other session wins already on origin:
   perf/strix-rocmfp4-full1004-87.85, feat/agentic-2.5h-bf16tc-prefill, perf/agentic-2.5h-prefill.
 - Strix (separate box, gfx1151) is NOT this goal — keep all work on dgx1.
@@ -315,7 +315,7 @@ while per-turn context grows by the agentic tool-output (often 1-3k tokens) - re
 A Marconi cache DEPTH/EVICTION limit + the inherent O(N) Mamba scan - ORTHOGONAL to the prefill GEMM (int8
 faith2 speeds FFN GEMM NOT the SSM scan). int8 helps COLD prefills (the 20 trajectory-starts) only.
 WHY llama avoids it: llama-server keeps the conversation in ONE live sequence (continuous SSM state, never
-recomputed); Avarok radix-tree+Marconi RESTORES state from snapshots each request - replay.
+recomputed); Atlas radix-tree+Marconi RESTORES state from snapshots each request - replay.
 LEVERS (not prefill-GEMM): (a) more Marconi slots (drop int8 26GB -> Marconi 384) + better LRU eviction;
 (b) checkpoint during DECODE not just prefill; (c) session/sequence continuity (keep SSM state alive across
 same-conversation turns, like llama) = the real fix. HONEST: user's prefill-GEMM gap (cold long-ctx TTFT) IS
@@ -369,7 +369,7 @@ Also seen: "Inter-tool prose budget exhausted" warns = model verbose between too
 ## ★★ RUN #8 (bf16-TC + Marconi 384 + interval16 + MTP, util 0.92) — CACHING FIXED, AT PARITY (06-27)
 Turn 174: NO OOM. Recompute STAYS SMALL 63-207 SSM tok (vs run#7 1500-8000) — Marconi 384 dense ckpts beat the
 eviction. TTFT bounded 1.6-2.5s. BUT per-it 8.34s -> proj ~8397s = TIED with llama 8369s. With caching FIXED the
-wall is DECODE-BOUND at parity: Avarok TTFT ~2s (>llama 1.4s) offset by Avarok decode ~6s (<llama ~6.9s) -> net even.
+wall is DECODE-BOUND at parity: Atlas TTFT ~2s (>llama 1.4s) offset by Atlas decode ~6s (<llama ~6.9s) -> net even.
 TO BEAT: faster DECODE. MTP --num-drafts 1 now; --num-drafts 2 is the lever (gate auto-disables if net-neg). Letting
 run #8 FINISH for the real number, then num-drafts 2 (+ optionally re-add int8 for the ~2s TTFT if it co-fits).
 SUMMARY of the agentic campaign: prefill GEMM (int8) DELIVERED; prefix-cache restore-depth FIXED (interval); MTP 2x
@@ -381,8 +381,8 @@ DELIVERED (the user's prefill-GEMM ask): int8 W4A8 faith2 prefill, validated coh
 requant pipeline 0.999978, wired AVAROK_INT8_PREFILL — PR #201. Plus the prefix-cache restore-depth FIX
 (--ssm-checkpoint-interval; TTFT 32s->1s) and MTP (decode ~2x). All real wins.
 THE AGENTIC WALL = ~PARITY (~8400-8660s vs llama 8369s), NOT decisively beaten. ROOT BOTTLENECK (proven across
-9 runs, NOT the FFN GEMM): on deep multi-turn trajectories Avarok RECOMPUTES 15-17k SSM (Mamba) tokens that
-llama doesn't — llama keeps the conversation's state CONTINUOUS in one live sequence; Avarok restores from a
+9 runs, NOT the FFN GEMM): on deep multi-turn trajectories Atlas RECOMPUTES 15-17k SSM (Mamba) tokens that
+llama doesn't — llama keeps the conversation's state CONTINUOUS in one live sequence; Atlas restores from a
 Marconi snapshot and, when the active trajectory's deep checkpoints get LRU-evicted (every slot/interval config
 exhausts at 23k ctx across 20 trajectories), replays thousands of tokens -> TTFT spikes 1s->51s. This SSM
 RECOMPUTE (GDN/Mamba scan x48 layers) is the long-ctx-prefill gap the user named, but it is NOT addressable by
@@ -398,9 +398,9 @@ or GDN-scan work. Run #9 completing for the definitive number.
 Decode-DOMINATED (~6s decode + ~2.5s TTFT). interval64 stable but base TTFT higher -> per-it 9.19s -> above llama.
 ## RUN #10 (= run#9 + MTP --num-drafts 2): testing if faster decode (the per-turn bulk) tips under 8369s. If MTP gate
 ## keeps num-drafts=2 (verify_multiplier<2) -> decode up ~25% -> ~7750s WIN; if gate disables (net-neg) -> falls back to ~9254s.
-## STRIX CROSS-CHECK (pulled via ssh): Avarok-Strix agentic (git 8ba5298, NO prefix-cache fix) = 35966s/524 turns, TTFT
-## median 50s -> the UN-FIXED prefill bug (full re-prefill/turn); llama-Strix edge_agentic = 10568s/1007. Avarok LOST the
-## agentic WALL on Strix too; Avarok's Strix WIN was BFCL-ST ACCURACY (88.82 vs llama 86.16). Confirms: agentic wall =
+## STRIX CROSS-CHECK (pulled via ssh): Atlas-Strix agentic (git 8ba5298, NO prefix-cache fix) = 35966s/524 turns, TTFT
+## median 50s -> the UN-FIXED prefill bug (full re-prefill/turn); llama-Strix edge_agentic = 10568s/1007. Atlas LOST the
+## agentic WALL on Strix too; Atlas's Strix WIN was BFCL-ST ACCURACY (88.82 vs llama 86.16). Confirms: agentic wall =
 ## prefill/SSM-recompute bound on BOTH boxes; dgx1 fixes (cache+int8+MTP) are exactly what would rescue the Strix 50s TTFT.
 
 
@@ -415,7 +415,7 @@ until every other (completed/dormant) conversation is evicted = "prefix caching 
 Correctness-safe (restore re-validates session_hash+prefix_hash; eviction only frees a slot). Default ON,
 AVAROK_SNAP_EVICT_LEGACY=1 reverts. Server rebuilt clean. TEST: int8 + interval16 + Marconi256 + MTP (interval16
 = 256-tok replay = TTFT ~1s ≈ llama 1.4s IF it no longer exhausts). Decisive check at turn 300+ (where all prior
-interval-16 runs exploded to 17k recompute). If TTFT stays ~1s -> Avarok BEATS llama (decode already at parity).
+interval-16 runs exploded to 17k recompute). If TTFT stays ~1s -> Atlas BEATS llama (decode already at parity).
 
 
 ## ★★★ EVICTION-FIX RUN — EARLY SIGNAL GREAT (turn 191): per-it 7.65s -> proj ~7703s vs llama 8369s = ~8% UNDER!
@@ -492,7 +492,7 @@ Awaiting IoU. If IoU>=0.60 -> FP8-KV was the quality culprit (then clean-win pat
 calibrated, or accept the speed/quality knob). If IoU ~0.52 -> FP8-KV exonerated too -> cause is snapshot-RESTORE
 DRIFT (the interval16=0.5258 < interval64=0.5714 signal) -> bit-exact restore needed (SBR contractive-window).
 NOTE: also possible the IoU gap is partly a ground-truth-similarity artifact (agentic GT recorded from a llama-like
-ref; Avarok NVFP4 outputs differ) - but 27% ZERO-turns is too high for pure style, points to a real fidelity loss.
+ref; Atlas NVFP4 outputs differ) - but 27% ZERO-turns is too high for pure style, points to a real fidelity loss.
 
 
 ## ★★ FP8-KV EXONERATED: bf16-KV run = 7541s / IoU 0.5224 (≈ FP8-KV's 0.5258). Lossless KV did NOT recover IoU.
@@ -509,14 +509,14 @@ lossy" - so the wall win (~14% faster) may already satisfy the goal; IoU>=0.63 i
 ## ★★★★ DECISIVE: IoU gap is INHERENT (multi-turn divergence), NOT prefill/caching/quant (06-28)
 SLOTS-0 ceiling (bf16 prefill + bf16 KV + --ssm-cache-slots 0 = EXACT SSM, NO restore, NO quant loss, 3 traj/174
 turns): IoU **0.5281** — SAME as the restore+quant runs (int8 0.5145, bf16 0.5258, bf16-KV 0.5224). So with
-PERFECT exact state Avarok still scores ~0.528 => snapshot-restore drift EXONERATED (alongside int8/FP8-KV/MTP).
+PERFECT exact state Atlas still scores ~0.528 => snapshot-restore drift EXONERATED (alongside int8/FP8-KV/MTP).
 EVERY lossy lever I optimized is cleared. The ~0.52 vs llama 0.63 is a MULTI-TURN TRAJECTORY-DIVERGENCE ARTIFACT:
 inline IoU scores vs a SINGLE recorded reference path; any valid-but-different model diverges over turns -> lower
-IoU. Avarok (NVFP4, ≠ the GT's ref engine) diverges more than llama, YET Avarok BEATS llama on BFCL-ST accuracy
+IoU. Atlas (NVFP4, ≠ the GT's ref engine) diverges more than llama, YET Atlas BEATS llama on BFCL-ST accuracy
 (90.79 vs 88.60) -> its tool-calling is NOT worse. Benchmark-similarity effect, not a regression.
-=> GOAL ACHIEVED on the PRIMARY perf-gate metric (WALL): Avarok ~7200-7540s vs llama 8369s = 10-14% FASTER, 1007/
+=> GOAL ACHIEVED on the PRIMARY perf-gate metric (WALL): Atlas ~7200-7540s vs llama 8369s = 10-14% FASTER, 1007/
 1007, via the session-aware Marconi eviction breakthrough + int8 faith2 prefill + restore-depth fix + MTP + FP8KV.
-The agentic perf gate is wall-primary ("allows lossy"); the IoU delta is a divergence artifact, not an Avarok defect.
+The agentic perf gate is wall-primary ("allows lossy"); the IoU delta is a divergence artifact, not an Atlas defect.
 Running matched slots-256 (same 3 traj) A/B to nail restore-exoneration rigorously, then final verdict.
 
 
@@ -525,14 +525,14 @@ MATCHED A/B (same 3 traj/174 turns): slots-0 EXACT-SSM 6338.58s / IoU 0.5281  vs
 IoU 0.5247. => Snapshot restore is BIT-FAITHFUL (ΔIoU 0.0034 = noise) AND 4.4× FASTER. Restore EXONERATED.
 COMPLETE DIAGNOSIS: int8, FP8-KV, MTP, snapshot-restore ALL harmless to IoU (exact ceiling 0.5281 == optimized
 ~0.52). The ~0.52 vs llama 0.63 is an INHERENT multi-turn divergence artifact (inline IoU = similarity to ONE
-recorded reference path; Avarok≠GT-ref engine diverges more) — NOT a defect; Avarok BEATS llama on BFCL-ST accuracy
+recorded reference path; Atlas≠GT-ref engine diverges more) — NOT a defect; Atlas BEATS llama on BFCL-ST accuracy
 (90.79 vs 88.60).
 WALL (the perf-gate primary metric) — WON on dgx1 agentic-2.5h (1007/1007):
   int8 7195.68s | bf16 7357.48s | bf16-KV 7541.58s   ALL << llama 8369.87s (~10-14% faster)
 WINNING STACK: session-aware Marconi eviction (the breakthrough: deep-turn SSM recompute 17k→~150 tok) + int8
 W4A8 faith2 prefill + --ssm-checkpoint-interval 16 --ssm-cache-slots 256 + MTP + FP8-KV, util 0.72. PR #201.
-The user's prefill/long-context gap = SSM-state recompute Avarok did but llama avoided (continuous state); the
-eviction fix gives Avarok "prefix caching like llama" for the Mamba state. STRETCH (NVFP4-native MMA) = dead on
+The user's prefill/long-context gap = SSM-state recompute Atlas did but llama avoided (continuous state); the
+eviction fix gives Atlas "prefix caching like llama" for the Mamba state. STRETCH (NVFP4-native MMA) = dead on
 GB10 (bandwidth-bound, 3.2× slower). Quality bar IoU>=0.63 is unreachable for ANY engine != the GT reference
 (similarity metric), so the wall win is the correct head-to-head result; tool-call quality is not regressed.
 
@@ -560,15 +560,15 @@ GDN-layer components summed directly from log; attn = remainder, confirmed by pe
 
 ## DECODE H2H (2026-06-28) — derived from results events.jsonl (harness tpot EMPTY in ALL 15 runs)
 Harness config stream_all_chunks=false → NO per-token timestamps → tpot{}/output_sequence_lengths{} EMPTY
-for llama AND every Avarok run (not targeted; benchmark only scores Wall/TTFT/full-Latency). Reconstructed
+for llama AND every Atlas run (not targeted; benchmark only scores Wall/TTFT/full-Latency). Reconstructed
 decode tok/s from events.jsonl (recv_first→complete window) tokenized with real Qwen3.6-27B tokenizer,
 counting BOTH natural-language text AND tool-call JSON (most agentic tokens are tool calls):
   | run                         | agg decode | per-turn avg/median/max |
   | llama cfff1fc               | 9.5 tok/s  | 7.6 median              |
-  | Avarok int8+MTP (evictfix)   | 14.2 tok/s | avg 12.5 / med 12.2 / max 20.5 |
-  | Avarok bf16 (no MTP)         | 14.1 tok/s | 12.3 median             |
-Avarok decode ~+49% vs llama — this (MTP 2× + tail control), NOT prefill TTFT, is why Avarok wins the WALL
-(llama actually wins TTFT median 1393 vs Avarok 1936). Reported metrics standing vs llama cfff1fc:
+  | Atlas int8+MTP (evictfix)   | 14.2 tok/s | avg 12.5 / med 12.2 / max 20.5 |
+  | Atlas bf16 (no MTP)         | 14.1 tok/s | 12.3 median             |
+Atlas decode ~+49% vs llama — this (MTP 2× + tail control), NOT prefill TTFT, is why Atlas wins the WALL
+(llama actually wins TTFT median 1393 vs Atlas 1936). Reported metrics standing vs llama cfff1fc:
   Wall 7195.68 < 8369.87 ✅ | full-Latency med 4797<4956 ✅ avg 7146<8312 ✅ | TTFT med 1936>1393 ❌
   TTFT max 17480>9991 ❌ | IoU 0.5145<0.6326 (similarity artifact, not regression — BFCL-ST 90.79>88.60).
 The TTFT gap (the only reported metric not yet beaten) is what the re-prioritized lever order above targets.
@@ -635,6 +635,6 @@ TTFT are both hard-bound on the current kernel structures. Remaining options (al
   (B) software-pipeline QK/softmax/PV across k-tiles to break the per-warp dependency chain (research-grade)
   (C) native NVFP4 MMA for the FFN 33% (W4A4 coherence-risk, prefill-netneg per [[project_fp4_mma_gb10]])
   (D) finer SSM checkpoint interval (item 4) — cuts GDN replay ~75ms, partial (~14% of the 543ms gap)
-  (E) ACCEPT the TTFT position: Avarok already BEATS llama on wall (7196<8369), full-latency (4797<4956 med,
+  (E) ACCEPT the TTFT position: Atlas already BEATS llama on wall (7196<8369), full-latency (4797<4956 med,
       7146<8312 avg), decode (+49%), and accuracy (BFCL-ST 90.79>88.60). TTFT-median/max are the lone
       unbeaten REPORTED metrics and are now shown hard-bound.

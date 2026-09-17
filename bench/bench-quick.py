@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick Avarok benchmark — measures TTFT and decode tok/s with minimal overhead."""
+"""Quick Atlas benchmark — measures TTFT and decode tok/s with minimal overhead."""
 
 import requests
 import time

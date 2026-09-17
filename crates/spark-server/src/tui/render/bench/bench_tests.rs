@@ -240,7 +240,7 @@ mod history {
             params: Default::default(),
             serve_overrides: Default::default(),
             source: RunSource::default(),
-            avarok_version: "1.0.0".into(),
+            atlas_version: "1.0.0".into(),
             frame: BenchmarkResult::completed("done", Duration::from_secs(6430))
                 .with_summary(vec![Stat::new("wall", "6430.9", "s")])
                 .with_table(table(9))

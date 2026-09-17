@@ -212,7 +212,7 @@ __global__ void avarok_cutlass_pack_bf16_weight_nvfp4_t(
     float v0 = __bfloat162float(weight[(unsigned long long)col * k + base + i]) * inv_scale;
     float v1 = __bfloat162float(weight[(unsigned long long)col * k + base + i + 1]) * inv_scale;
     // CUTLASS ColumnMajor B(N,K) wants element (n,k) at offset n*K+k -> byte
-    // n*(K/2)+k/2 (K-contiguous, [N,K/2]). NOT Avarok's transposed [K/2,N].
+    // n*(K/2)+k/2 (K-contiguous, [N,K/2]). NOT Atlas's transposed [K/2,N].
     packed_t[(unsigned long long)col * (k / 2) + base / 2 + i / 2] =
         static_cast<unsigned char>(float_to_e2m1(v0) | (float_to_e2m1(v1) << 4));
   }
@@ -383,7 +383,7 @@ extern "C" int avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
   return 0;
 }
 
-// Transpose an Avarok-packed NVFP4 weight from `[K/2, N]` (N-contiguous, the
+// Transpose an Atlas-packed NVFP4 weight from `[K/2, N]` (N-contiguous, the
 // checkpoint/hand-kernel layout) into CUTLASS's `[N, K/2]` (K-contiguous) byte
 // layout. Each byte holds the FP4 pair (k, k+1) in (low, high) nibbles in BOTH
 // layouts, so this is a pure byte transpose that preserves nibble pairing.

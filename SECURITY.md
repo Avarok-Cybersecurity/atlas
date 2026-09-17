@@ -11,7 +11,7 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, please report vulnerabilities privately by emailing **security@avarok.net** with:
+Instead, please report vulnerabilities privately by emailing **security@atlas.net** with:
 
 1. **Description** — What the vulnerability is and its potential impact
 2. **Reproduction steps** — Minimal steps to reproduce the issue
@@ -22,16 +22,16 @@ We will acknowledge receipt within **48 hours** and provide an initial assessmen
 
 ## Scope
 
-Avarok is an inference server that runs locally with GPU access. The primary threat surface includes:
+Atlas is an inference server that runs locally with GPU access. The primary threat surface includes:
 
 - **CUDA kernel safety** — Out-of-bounds memory access, buffer overflows in GPU kernels
 - **HTTP API** — Input validation on the OpenAI-compatible endpoint (`spark-server`)
 - **Weight loading** — Malicious safetensor files, path traversal during model loading
-- **Unsafe Rust** — Avarok uses `unsafe` blocks for CUDA FFI; these are high-priority review targets
+- **Unsafe Rust** — Atlas uses `unsafe` blocks for CUDA FFI; these are high-priority review targets
 
 ## Automated Auditing
 
-Avarok runs one automated security check in CI:
+Atlas runs one automated security check in CI:
 
 - **`cargo deny`** — Audits dependencies for known advisories, license compliance, and banned crates. Runs on every pull request, on pushes to `main` that touch `Cargo.toml`/`Cargo.lock`/`deny.toml`, and weekly. See `.github/workflows/security.yml`.
 

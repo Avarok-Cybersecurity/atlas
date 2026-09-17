@@ -135,7 +135,7 @@ pub fn installed() -> Option<Arc<dyn ServeHost>> {
 ///
 /// `Plugin::load` returns this, so it lands where the Start button would be —
 /// which is why it names the thing that is missing rather than saying no.
-pub const NO_HOST: &str = "the serve matrix needs the Avarok server that hosts this dashboard: it \
+pub const NO_HOST: &str = "the serve matrix needs the Atlas server that hosts this dashboard: it \
                            boots each checkpoint in-process. Run it from `spark serve`'s \
                            dashboard rather than a standalone harness.";
 

@@ -1,5 +1,5 @@
 <!--
-  The ambient Avarok chevron field: one fullscreen triangle, one fragment
+  The ambient Atlas chevron field: one fullscreen triangle, one fragment
   shader. No 3D library, because there is no scene — no graph, no camera
   motion, no materials, no loaders, no picking. ~2.5 KB gzipped including
   the shader; three.js drawing the identical pixels costs ~151 KB. The

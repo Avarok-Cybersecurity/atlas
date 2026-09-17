@@ -340,7 +340,7 @@ async fn a_headless_run_persists_a_record_the_history_pane_can_read() {
     assert_eq!(r.schema, avarok_plugin::history::SCHEMA);
     assert_eq!(r.benchmark_name, "Concurrency Sweep");
     assert_eq!(r.source, avarok_plugin::RunSource::Cli);
-    assert_eq!(r.avarok_version, "1.0.0-beta-preview");
+    assert_eq!(r.atlas_version, "1.0.0-beta-preview");
     assert!(!r.is_legacy());
 
     // 4. The WHOLE configuration, defaults included — not just the overrides.

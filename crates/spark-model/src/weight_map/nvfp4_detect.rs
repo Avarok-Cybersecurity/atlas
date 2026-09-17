@@ -174,7 +174,7 @@ pub fn detect_nvfp4_variant(
 
     // Partial-NVFP4 guard: some upstream checkpoints (notably google/gemma-4-26B-A4B-it)
     // ship `.weight_scale` on KV-cache scale tensors but NOT on the MLP/MoE
-    // projections Avarok actually consumes. If we claim Standard here the
+    // projections Atlas actually consumes. If we claim Standard here the
     // loader will then fail with a cryptic `Weight '...mlp.gate_proj.weight_scale'
     // not found in store` half-way through load (logged against #bugs 2026-04-15
     // by kiiv6565). Sniff the canonical L0 MLP gate_proj — if its `.weight_scale`

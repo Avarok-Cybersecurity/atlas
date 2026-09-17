@@ -2,7 +2,7 @@
 
 //! One call site per mHC entry point, for both variants.
 //!
-//! Avarok now runs two different hyper-connection families over the same
+//! Atlas now runs two different hyper-connection families over the same
 //! `[T, hc_mult, H]` FP32 highway:
 //!
 //! * DeepSeek-V4's — a Sinkhorn-normalized mix over `hc_fn`/`hc_scale`/

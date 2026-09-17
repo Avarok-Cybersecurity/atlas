@@ -242,7 +242,7 @@ impl TransformerModel {
             .expect("claim_guarded returns a guard owning a slot");
         // Zero SSM state to prevent stale h_state/conv_state from prior
         // sequences corrupting the recurrent computation during prefill.
-        // CRITICAL: use Avarok's own stream (not stream 0) because Avarok's stream
+        // CRITICAL: use Atlas's own stream (not stream 0) because Atlas's stream
         // is CU_STREAM_NON_BLOCKING and does NOT synchronize with stream 0.
         // Using stream 0 would race with the subsequent prefill kernel.
         let stream = self.gpu.default_stream();

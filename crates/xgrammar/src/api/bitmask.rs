@@ -4,10 +4,10 @@
 //
 // The vendored `xgrammar-rs` exposed `allocate_token_bitmask`,
 // `get_bitmask_shape` and `reset_token_bitmask` as free functions in
-// its `matcher` module. Avarok's `grammar/state.rs` calls all three.
+// its `matcher` module. Atlas's `grammar/state.rs` calls all three.
 // The pure-Rust port keeps the same logic in `matcher::bitmask`
 // (`bitmask_size`, `TokenBitmask`); these wrappers restore the exact
-// vendored signatures so Avarok compiles unchanged.
+// vendored signatures so Atlas compiles unchanged.
 
 use crate::matcher::bitmask_size;
 

@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Avarok are documented here. The format is based on
+All notable changes to Atlas are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 For per-release deep dives — kernel-level wins, the engineering history
 behind specific subsystems — see the
-[Avarok Spark Journey](docs/AVAROK_SPARK_JOURNEY.md).
+[Atlas Spark Journey](docs/AVAROK_SPARK_JOURNEY.md).
 
 ## [Unreleased]
 
@@ -128,11 +128,11 @@ behind specific subsystems — see the
   20-27 GB when values below the ~0.88 default were used.  This blocked
   multi-service co-residency on shared-memory systems (e.g. DGX Spark
   GB10).  The flag now behaves as documented: `0.50` on a 120 GB device
-  caps Avarok at ~60 GB total.  (#180)
+  caps Atlas at ~60 GB total.  (#180)
 
 ## [0.1.0] — 2026-05-06
 
-Initial public release. Avarok is a pure-Rust LLM inference engine
+Initial public release. Atlas is a pure-Rust LLM inference engine
 targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
 (Hardware × Model × Quantization) targets.
 

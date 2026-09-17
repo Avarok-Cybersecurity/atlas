@@ -72,7 +72,7 @@ question="${ARGS:-}"
 [ -z "$question" ] && question="Give a reviewer's read of this change: what it does, what looks risky, and what you would check before sealing it."
 
 system=$(cat <<'EOF'
-You review pull requests for Avarok, an LLM inference engine written in Rust and
+You review pull requests for Atlas, an LLM inference engine written in Rust and
 CUDA. You are talking to an engineer in a PR comment.
 
 How this repository merges, so your advice fits it: three stages. Stage 1 is

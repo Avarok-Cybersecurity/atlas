@@ -35,7 +35,7 @@ pub struct EmptyLayerState;
 
 /// Attention-layer per-sequence state. KV lives in `PagedKvCache`; the only
 /// resident piece is the QSA indexer carry on the 12 qwen4_exp
-/// full-attention layers (Avarok #753 item B).
+/// full-attention layers (Atlas #753 item B).
 #[derive(Default)]
 pub struct AttnLayerState {
     pub qsa: Option<crate::layers::qsa::QsaSeqState>,
@@ -107,7 +107,7 @@ pub struct SsmLayerState {
     /// of the sequence (see `SsmStatePool::h_prefill_stage`).
     pub h_prefill_stage: Option<DevicePtr>,
     /// PLE per-sequence carry (n-gram history + dilated-conv state), present
-    /// only on the layer that hosts a `PleLayer` (Avarok #753 item B: one per
+    /// only on the layer that hosts a `PleLayer` (Atlas #753 item B: one per
     /// in-flight sequence, lazily created on the sequence's first pass).
     pub ple: Option<crate::layers::ple::PleSeqState>,
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok E2M1 branchless conversion kernel.
+// Atlas E2M1 branchless conversion kernel.
 //
 // Converts FP32 activations to E2M1 (4-bit) using 7 unsigned integer comparisons.
 // Zero branches, zero divergence. Runs entirely on integer ALU.

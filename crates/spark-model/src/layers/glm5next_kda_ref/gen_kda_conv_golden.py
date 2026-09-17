@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Conv contract at GLM-5.3-Flash PRODUCTION geometry, against HF transformers 5.16.1.
 
-Slice 6 gate. Avarok classes `causal_conv1d_update_l2norm` as REUSE for KDA, but it has never
+Slice 6 gate. Atlas classes `causal_conv1d_update_l2norm` as REUSE for KDA, but it has never
 been driven at KDA geometry and it carries hardcoded assumptions (BLOCK=256, head_dim=128 ->
 2 heads/block, `qk_channels % 256 == 0`). This binds it to HF before any layer integration.
 
 Geometry: conv_dim = 3*64*128 = 24576, qk_channels = 2*64*128 = 16384, head_dim = 128,
 kernel = 4, activation = silu (config `hidden_act`).
 
-Two paths are captured because Avarok has two and they are NOT the same kernel:
+Two paths are captured because Atlas has two and they are NOT the same kernel:
   DECODE  — one token, conv + SiLU + L2 fused (`causal_conv1d_update_l2norm`)
   PREFILL — N tokens, conv + SiLU only (`causal_conv1d_update_prefill`), L2 applied
             separately (`l2_norm_bf16`). L2 must therefore happen EXACTLY ONCE on this path.
 
-STATE WIDTH: HF keeps `kernel_size - 1` = 3 slots; Avarok keeps 4 and shifts left before
+STATE WIDTH: HF keeps `kernel_size - 1` = 3 slots; Atlas keeps 4 and shifts left before
 convolving, so the oldest slot is shifted out and never participates. The mapping is
 `HF_state[0..3] == Avarok_state[1..4]` pre-shift. The golden records HF's 3-wide state; the
 Rust side widens it.

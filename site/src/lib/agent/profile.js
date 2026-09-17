@@ -28,7 +28,7 @@
 // their preferences, never their page.
 
 /** Where a profile lives. */
-export const KEY = 'avarok.profile';
+export const KEY = 'atlas.profile';
 
 /** Schema version, so a future shape can migrate instead of exploding. */
 export const VERSION = 1;

@@ -190,7 +190,7 @@ pub struct MoeLayer {
     /// Resolved once at construction.
     unified_layout: bool,
     /// `AVAROK_NVFP4_GATE_UP_M128=1` opts in to the M=128 fused gate+up
-    /// kernel (Block D #3, Avarok tile-shape rewrite). Halves block count
+    /// kernel (Block D #3, Atlas tile-shape rewrite). Halves block count
     /// at large prefill — better SM amortization on GB10's 25-SM budget.
     /// Currently only minimax-m2-229b ships the kernel; other models keep
     /// `moe_fused_gate_up_t_k64_m128 == KernelHandle(0)` and dispatch
@@ -229,7 +229,7 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64_e8m0: KernelHandle,
     moe_fused_gate_up_t_e8m0: KernelHandle,
     moe_fused_gate_up_t_k64_e8m0: KernelHandle,
-    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
+    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Atlas
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
     /// gates on `nvfp4_gate_up_m128` AND handle non-zero.
@@ -259,7 +259,7 @@ pub struct MoeLayer {
     // ── Sigmoid + correction-bias routing (DeepSeek-V3 / MiniMax-M2 style) ──
     /// Device pointer to `[num_experts]` correction bias. Populated from
     /// `MoeWeights.correction_bias` in `new()` when the loader sets it.
-    /// `None` = Avarok's default softmax path. When `Some`, every top-k
+    /// `None` = Atlas's default softmax path. When `Some`, every top-k
     /// dispatch site branches to `moe_topk_sigmoid` with this bias arg.
     correction_bias_dev: Option<DevicePtr>,
     /// Handle to `moe_topk_sigmoid` kernel. Lazy-loaded in `new()` even

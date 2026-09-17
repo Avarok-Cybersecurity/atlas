@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Does every Avarok kernel compile for a given SM architecture? Answered with
+# Does every Atlas kernel compile for a given SM architecture? Answered with
 # nvcc alone — no H100, no B200, no GPU of any kind.
 #
 # Named for the campaign it was written for; it is not Hopper-specific and
@@ -46,7 +46,7 @@
 # evidence.
 #
 # The NEGATIVE fixture is chosen per arch, because no one instruction is absent
-# from every architecture Avarok targets. `redux.sync.max.abs.f32` is absent
+# from every architecture Atlas targets. `redux.sync.max.abs.f32` is absent
 # everywhere EXCEPT sm_100a; the warp-level `mma ... kind::mxf4nvf4
 # .block_scale` is absent on sm_90a and sm_100a and present on sm_120/sm_121.
 # An arch with no registered negative fixture is REFUSED, not waved through:
@@ -542,7 +542,7 @@ with open(out, "w") as f:
 
 md = os.path.splitext(out)[0] + ".md"
 L = []
-L.append(f"# Avarok PTX gate — `{hw}` @ `{arch}`\n")
+L.append(f"# Atlas PTX gate — `{hw}` @ `{arch}`\n")
 L.append(f"* generated: {ledger['generated_utc']} on `{ledger['host']}`")
 L.append(f"* toolchain: {nvcc_version}")
 L.append(f"* strict (`--Werror all-warnings`, as build.rs): {ledger['strict']}")

@@ -166,7 +166,7 @@ jobs:
           # and the step says so and exits 0 rather than guessing an issue and
           # commenting on something arbitrary.
           ISSUE: ${{ vars.PR_TELEMETRY_ISSUE }}
-          MARKER: "<!-- avarok-pr-telemetry:start -->"
+          MARKER: "<!-- atlas-pr-telemetry:start -->"
         run: |
           set -euo pipefail
           if [ -z "${ISSUE:-}" ]; then

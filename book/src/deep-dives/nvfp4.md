@@ -1,6 +1,6 @@
 # NVFP4 Quantization
 
-NVFP4 is Avarok's flagship format on GB10 — 4-bit weights with FP8 block scales. Most Qwen and Nemotron checkpoints ship in it, and it's the KV-cache dtype that hits the best compression/quality balance for the Qwen3.5 family.
+NVFP4 is Atlas's flagship format on GB10 — 4-bit weights with FP8 block scales. Most Qwen and Nemotron checkpoints ship in it, and it's the KV-cache dtype that hits the best compression/quality balance for the Qwen3.5 family.
 
 ## The numeric format
 
@@ -37,7 +37,7 @@ Two reasons that both land on 16:
 
 Later Blackwell parts have a single-instruction conversion: `cvt.rn.satfinite.e2m1x2.f32` takes two floats and emits two E2M1 nibbles. SM121 **does not have this instruction**. It is the headline hardware limitation of GB10 NVFP4.
 
-Avarok's software fix — `e2m1_branchless.cu` — does the conversion in 7 ALU ops using the IEEE-754 bit pattern:
+Atlas's software fix — `e2m1_branchless.cu` — does the conversion in 7 ALU ops using the IEEE-754 bit pattern:
 
 ```cuda
 // Simplified sketch: convert a positive f32 to a 3-bit magnitude nibble.
@@ -71,11 +71,11 @@ uint32_t nibble = sign | idx;  // final 4-bit E2M1
 
 Seven compares, seven adds, one bit shift, one OR. Fully branchless. Two nibbles per byte are produced by running the same sequence on `lo` and `hi` halves of a 64-bit pair and packing.
 
-The payoff: NVFP4 round-trip (`dequant → compute → requant`) runs at full pipeline speed on SM121, *despite* the missing instruction. Exhaustive testing on 19 experiments (logged in `trtllm-ngram-experiments.csv`) established 29.6 tok/s as the TRT-LLM ceiling on the same model; Avarok's vLLM-path approach running NVFP4 through software-E2M1 CUTLASS hits **36.4 tok/s (CUTLASS MoE)** and **59.9 tok/s (Marlin + MTP)** on the same hardware. Software E2M1 is a 32× speedup vs the first "enable E2M1" build.
+The payoff: NVFP4 round-trip (`dequant → compute → requant`) runs at full pipeline speed on SM121, *despite* the missing instruction. Exhaustive testing on 19 experiments (logged in `trtllm-ngram-experiments.csv`) established 29.6 tok/s as the TRT-LLM ceiling on the same model; Atlas's vLLM-path approach running NVFP4 through software-E2M1 CUTLASS hits **36.4 tok/s (CUTLASS MoE)** and **59.9 tok/s (Marlin + MTP)** on the same hardware. Software E2M1 is a 32× speedup vs the first "enable E2M1" build.
 
 ## Dequantization in the GEMM kernel
 
-Avarok does not pre-materialize BF16 from NVFP4. Instead, the GEMM kernel loads NVFP4 directly into shared memory and dequantizes *on the fragment boundary* just before the MMA:
+Atlas does not pre-materialize BF16 from NVFP4. Instead, the GEMM kernel loads NVFP4 directly into shared memory and dequantizes *on the fragment boundary* just before the MMA:
 
 1. `cp.async` a tile of `weight` (packed nibbles) + its `weight_scale` into shared memory.
 2. On the consumer warp, unpack a 16×8 fragment of weights: convert each pair of nibbles to two BF16s using the E2M1 LUT in shared/constant memory, multiply by the block scale (broadcast from the scale tile).
@@ -98,7 +98,7 @@ For coherence at long context, `--kv-high-precision-layers N` keeps the first an
 - **When you have only one GB10 and the model fits in FP8.** FP8 weights require no software-E2M1 path, so the prefill/decode hot loops are slightly simpler and slightly faster per kernel-launch. The trade is the 2× memory increase vs NVFP4.
 - **When you're debugging a coherence regression.** Fall back to BF16 first, then FP8, then NVFP4 — narrows the bug source quickly.
 
-## Why Avarok is not pursuing native FP4 MMA on SM121
+## Why Atlas is not pursuing native FP4 MMA on SM121
 
 Discovering this was the point of a multi-week research dive (logged as the "FP4 MMA GB10" project in the repo). The short version:
 
@@ -107,7 +107,7 @@ Discovering this was the point of a multi-week research dive (logged as the "FP4
 - Every alternate MoE backend (TRTLLM, CuteDSL, DeepGEMM, Triton) fails with `NotImplementedError: SM120 and above` or crashes outright.
 - The community benchmarks that claim native FP4 throughput on "Blackwell" are on SM100a / SM101a parts and do not apply.
 
-Avarok's 131 tok/s on Qwen3.5-35B and 104 tok/s on Qwen3-Next-80B are, in this sense, **the real GB10 ceiling** — achieved through software E2M1, Marlin-style dequant-to-BF16, and MTP speculative decoding. New NVIDIA silicon would unlock another axis of improvement; on today's GB10, the numbers in the README are the answer.
+Atlas's 131 tok/s on Qwen3.5-35B and 104 tok/s on Qwen3-Next-80B are, in this sense, **the real GB10 ceiling** — achieved through software E2M1, Marlin-style dequant-to-BF16, and MTP speculative decoding. New NVIDIA silicon would unlock another axis of improvement; on today's GB10, the numbers in the README are the answer.
 
 ## Files to read
 

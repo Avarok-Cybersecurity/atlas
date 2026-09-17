@@ -131,7 +131,7 @@ impl Qwen3SsmLayer {
         // vs a snapshot-anchored pass) and non-128-dim heads.
         // FlashInfer GDN (opt-in, AVAROK_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. Single-stream only;
-        // takes Avarok's native packed-QKV + interleaved gate/beta directly (see
+        // takes Atlas's native packed-QKV + interleaved gate/beta directly (see
         // ops::gdn_flashinfer). FLA path below is the fallback when the flag/lib is absent.
         if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
             let scale = 1.0f32 / (kd as f32).sqrt();

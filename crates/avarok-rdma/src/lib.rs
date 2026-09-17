@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
-//! avarok-rdma: the one-sided RDMA verbs primitive shared by every Avarok RDMA
+//! avarok-rdma: the one-sided RDMA verbs primitive shared by every Atlas RDMA
 //! tier (experts / KV overflow / weight staging / LoRA / SSM snapshots).
 //!
 //! The C shim's QP/RTR/RTS attribute constants and the handshake wire codecs

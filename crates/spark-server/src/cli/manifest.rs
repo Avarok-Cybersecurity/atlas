@@ -6,7 +6,7 @@
 //! no `Serialize` derive and this does not give it one: nothing here promises
 //! that a flag will keep its name, and a rename shows up as a diff in whatever
 //! consumes the snapshot rather than as a silent break. That is the point —
-//! `avarok-recipes` currently hand-transcribes this surface from a *Python*
+//! `atlas-recipes` currently hand-transcribes this surface from a *Python*
 //! launcher that predates the Rust one, and the drift is invisible until a
 //! launch dies inside a container.
 //!

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Grouped W4A16 GEMM for MoE — 35B model shadow.
+// Atlas Grouped W4A16 GEMM for MoE — 35B model shadow.
 //
 // Optimizations over parent:
 // - Transposed kernel: cp.async 2-stage double-buffered pipeline

@@ -5,7 +5,7 @@
 //!
 //! # The invariant
 //!
-//! Avarok is bitwise-deterministic at batch 1 and temperature 0 — the agentic
+//! Atlas is bitwise-deterministic at batch 1 and temperature 0 — the agentic
 //! gate's design doc pins that property, and the sampler short-circuits to
 //! argmax. Given that, a conversation replayed from scratch against the same
 //! server MUST produce the same bytes whether the server is fresh or has

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Phase 2a three-way cosine comparison.
 
-Decomposes the 0.967 Avarok-vs-HF[BF16-unquant] gap into:
+Decomposes the 0.967 Atlas-vs-HF[BF16-unquant] gap into:
 
   A. HF[FP8->BF16] vs HF[BF16-unquant]  -> inherent FP8 quant loss (the CEILING)
-  B. Avarok[FP8]    vs HF[BF16-unquant]  -> total drift (already known, ~0.967)
-  C. Avarok[FP8]    vs HF[FP8->BF16]     -> Avarok compute-side fidelity
+  B. Atlas[FP8]    vs HF[BF16-unquant]  -> total drift (already known, ~0.967)
+  C. Atlas[FP8]    vs HF[FP8->BF16]     -> Atlas compute-side fidelity
 
 The exit gate:
 
-  If A mean ~= 0.99x and matches B closely => Avarok is at the ceiling, work the
+  If A mean ~= 0.99x and matches B closely => Atlas is at the ceiling, work the
        symptoms downstream (Phase 2d).
-  If A mean >> B (e.g. A=0.998, B=0.967) => Avarok has Compute headroom; close
+  If A mean >> B (e.g. A=0.998, B=0.967) => Atlas has Compute headroom; close
        it via Phase 2b BF16 rounding patch.
 
 Reuses /tmp/cosine_compare.py's cmp_pair() math. Writes a final markdown
@@ -105,8 +105,8 @@ def main() -> None:
         )
 
     sA = summarize("A: HF[FP8->BF16] vs HF[unquant]", cosines_A)
-    sB = summarize("B: Avarok vs HF[unquant]        ", cosines_B)
-    sC = summarize("C: Avarok vs HF[FP8->BF16]      ", cosines_C)
+    sB = summarize("B: Atlas vs HF[unquant]        ", cosines_B)
+    sC = summarize("C: Atlas vs HF[FP8->BF16]      ", cosines_C)
     print()
     print(f"=== Summary (n={sA['n']} layers) ===")
     for s in (sA, sB, sC):
@@ -121,23 +121,23 @@ def main() -> None:
     delta = ceiling - actual
     print(
         f"=== Verdict (ceiling=A mean={ceiling:.5f}, "
-        f"Avarok compute=C mean={actual:.5f}, headroom={delta:+.5f}) ==="
+        f"Atlas compute=C mean={actual:.5f}, headroom={delta:+.5f}) ==="
     )
     if delta < 0.001:
         verdict = (
-            "Avarok is AT the inherent FP8 ceiling. No fixable compute drift; "
+            "Atlas is AT the inherent FP8 ceiling. No fixable compute drift; "
             "proceed to Phase 2d (sampling-side symptom hardening)."
         )
     elif delta < 0.01:
         verdict = (
-            "Avarok is close to the ceiling but has minor headroom. Phase 2b "
+            "Atlas is close to the ceiling but has minor headroom. Phase 2b "
             "rounding patch worth trying; expect modest gain."
         )
     else:
         verdict = (
-            f"Avarok has substantial compute headroom ({delta:.4f} cos). "
+            f"Atlas has substantial compute headroom ({delta:.4f} cos). "
             "Phase 2b BF16 round-to-nearest-even patch is the right next step; "
-            "expect Avarok-vs-ceiling gap to close significantly."
+            "expect Atlas-vs-ceiling gap to close significantly."
         )
     print(verdict)
 
@@ -146,8 +146,8 @@ def main() -> None:
     with md_path.open("w") as f:
         f.write("# Phase 2a Verdict — FP8 Quantization-Loss Ceiling\n\n")
         f.write(f"- **A** mean cosine `HF[FP8->BF16]  vs HF[unquant]` = `{sA['mean']:.6f}` (min L{sA.get('min_layer')}: {sA['min']:.6f})\n")
-        f.write(f"- **B** mean cosine `Avarok[FP8]    vs HF[unquant]`  = `{sB['mean']:.6f}` (min L{sB.get('min_layer')}: {sB['min']:.6f})\n")
-        f.write(f"- **C** mean cosine `Avarok[FP8]    vs HF[FP8->BF16]` = `{sC['mean']:.6f}` (min L{sC.get('min_layer')}: {sC['min']:.6f})\n")
+        f.write(f"- **B** mean cosine `Atlas[FP8]    vs HF[unquant]`  = `{sB['mean']:.6f}` (min L{sB.get('min_layer')}: {sB['min']:.6f})\n")
+        f.write(f"- **C** mean cosine `Atlas[FP8]    vs HF[FP8->BF16]` = `{sC['mean']:.6f}` (min L{sC.get('min_layer')}: {sC['min']:.6f})\n")
         f.write(f"- **Headroom** (A − C) = `{delta:+.6f}`\n\n")
         f.write("## Verdict\n\n")
         f.write(verdict + "\n\n")

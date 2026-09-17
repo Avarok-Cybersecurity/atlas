@@ -7,10 +7,10 @@ is the methodology-sanctioned fallback and is memory-safe (no GPU contention).
 
 Loads the local NVFP4 snapshot, MANUALLY dequantizes every NVFP4 weight to
 BF16 (E2M1 nibble * fp8 block-scale * f32 global-scale), loads the dequantized
-state_dict into a fresh NemotronH model, feeds the EXACT token IDs Avarok
+state_dict into a fresh NemotronH model, feeds the EXACT token IDs Atlas
 prefilled (read from TOKEN_IDS json file), and captures per-block hidden
 states + final norm + logits as headerless little-endian f32 .bin -- the
-format the Avarok AVAROK_NEMO_DUMP hook writes -- so the comparator diffs 1:1.
+format the Atlas AVAROK_NEMO_DUMP hook writes -- so the comparator diffs 1:1.
 
 The dequantized BF16 graph run through `torch_forward` is the canonical
 "intended math" oracle (no fused Triton kernels, no custom CUDA).

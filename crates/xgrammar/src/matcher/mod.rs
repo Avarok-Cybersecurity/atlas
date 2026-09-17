@@ -4,7 +4,7 @@
 //
 // Pure-Rust port of `cpp/grammar_matcher.cc` + `include/xgrammar/
 // matcher.h`. The matcher is the per-request, per-decode-step state
-// Avarok drives: it accepts sampled tokens, fills the next-token accept
+// Atlas drives: it accepts sampled tokens, fills the next-token accept
 // bitmask, supports rollback (for speculative decoding) and detects
 // termination.
 //
@@ -18,7 +18,7 @@
 //   coalesce — Coalescence forced-token fast-path (Tier 3b):
 //              `forced_token` / `next_forced_tokens`.
 //   completion — `find_completion_to_accept`: shortest grammar-legal
-//              close to a stop-legal state (Avarok budget-aware close).
+//              close to a stop-legal state (Atlas budget-aware close).
 //   batch    — `BatchGrammarMatcher`: parallel batched bitmask fill.
 //
 // PORT NOTES / SIMPLIFICATIONS vs C++
@@ -32,7 +32,7 @@
 //    The Rust matcher owns its own `stop_token_accepted` flag, undone
 //    precisely by `rollback` via the zero-length history entry.
 //  * The bitmask is a packed `i32` slice / owned `TokenBitmask` rather
-//    than a `DLTensor` — the W7 API shim adapts it to Avarok's tensor.
+//    than a `DLTensor` — the W7 API shim adapts it to Atlas's tensor.
 //  * `BatchGrammarMatcher`'s parallel path requires the natural
 //    matcher-to-slice mapping (see `batch.rs`); an arbitrary `indices`
 //    permutation falls back to the (always-correct) sequential path.

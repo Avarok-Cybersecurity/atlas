@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Greedy-vs-temp divergence amplification, parameterized by logit margin.
 
-Core question for the ANGLE: at temp 0.3, how much MORE do Avarok and vLLM
+Core question for the ANGLE: at temp 0.3, how much MORE do Atlas and vLLM
 diverge per token than at greedy, and is that the dominant gap driver?
 
 Two-token model: at a decision the relevant competition is top-1 vs top-2 with
@@ -26,7 +26,7 @@ import numpy as np
 
 # --- measured FP8 perturbation on the top-2 logit GAP ---------------------
 # From temp03_sampling_amp.py at the canonical position: vLLM gap=0.2822;
-# Avarok's gap at the same position (recompute below from raw dumps would be
+# Atlas's gap at the same position (recompute below from raw dumps would be
 # ideal, but we use the measured per-logit diff distribution as the noise model).
 # mean|per-logit diff| = 0.1586; the gap is a difference of two logits, so its
 # perturbation std ~ sqrt(2)*sigma_logit. Estimate sigma_logit from mean|diff|:
@@ -50,7 +50,7 @@ def p_greedy_flip(g):
 
 def p_temp_div(g, T, n_mc=4000, rng=None):
     # Monte-Carlo over the FP8 gap perturbation; for each, compute collision-
-    # divergence between the vLLM(g) and Avarok(g+delta) 2-way softmaxes.
+    # divergence between the vLLM(g) and Atlas(g+delta) 2-way softmaxes.
     if rng is None: rng = np.random.default_rng(0)
     deltas = rng.normal(0, sigma_gap, n_mc)
     pv = softmax2(g, T)

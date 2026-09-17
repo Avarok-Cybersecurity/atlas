@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok device-side MoE expert down_proj LoRA fold on SM121 (GB10). Two kernels
+// Atlas device-side MoE expert down_proj LoRA fold on SM121 (GB10). Two kernels
 // — shrink then expand+fold — that together apply, for the SORTED grouped-GEMM
 // output, one installed LoRA per adapted expert:
 //

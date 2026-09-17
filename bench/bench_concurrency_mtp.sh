@@ -1,5 +1,5 @@
 #!/bin/bash
-# Concurrency sweep benchmark for Avarok Spark
+# Concurrency sweep benchmark for Atlas Spark
 PORT=8890
 MAX_TOKENS=150
 PROMPT="Explain the theory of general relativity in detail, covering spacetime curvature, gravitational time dilation, and the equivalence principle."

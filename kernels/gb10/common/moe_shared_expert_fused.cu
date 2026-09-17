@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused MoE Expert+Shared GEMV — shared expert as extra blockIdx.y slot.
+// Atlas Fused MoE Expert+Shared GEMV — shared expert as extra blockIdx.y slot.
 //
 // Same as moe_expert_gemv_fused.cu gate_up_2x / silu_down_2x but with
 // blockIdx.y == top_k serving the shared expert using direct weight pointers.

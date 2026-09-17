@@ -3,13 +3,13 @@
 //!
 //! The plan comes from the same SSOT as the local run and the verdict is
 //! read the same way; what this module adds is a set of nodes (this box
-//! unless `--remote-only`, plus every address that avarokctl reaches and
+//! unless `--remote-only`, plus every address that atlasctl reaches and
 //! [`node::admit`] accepts), one worker per node that keeps taking the
 //! longest eligible unit until nothing is left, a guard tick on the main
 //! thread that cancels every worker on drift, and the Speed-mode decision
 //! that keeps a box-dependent number on one box unless the boxes are one.
 
-pub mod avarokctl;
+pub mod atlasctl;
 pub mod node;
 pub mod place;
 pub mod runner;
@@ -52,9 +52,9 @@ pub struct Fleet {
 /// Ask every address, admit what qualifies, decide the Speed mode.
 ///
 /// # Errors
-/// When avarokctl cannot be run, or no node at all is admitted.
+/// When atlasctl cannot be run, or no node at all is admitted.
 pub fn assemble(
-    avarokctl: &dyn avarokctl::Avarokctl,
+    atlasctl: &dyn atlasctl::Atlasctl,
     addrs: &[String],
     remote_only: bool,
     wanted: &node::Wanted,
@@ -62,7 +62,7 @@ pub fn assemble(
     envelope: Option<ThermalEnvelope>,
     policy: Option<EquivalencePolicy>,
 ) -> Result<Fleet> {
-    let rows = avarokctl.nodes(addrs)?;
+    let rows = atlasctl.nodes(addrs)?;
     let mut nodes = Vec::new();
     let mut rejected = Vec::new();
     if !remote_only {
@@ -78,7 +78,7 @@ pub fn assemble(
             },
             None => rejected.push(node::Rejection {
                 addr: addr.clone(),
-                why: "avarokctl returned no row for it".into(),
+                why: "atlasctl returned no row for it".into(),
             }),
         }
     }
@@ -126,7 +126,7 @@ pub struct Shared<'a> {
 /// One runner per node: this box's child spawner, or a remote driver.
 pub fn runners(
     fleet: &Fleet,
-    avarokctl: Arc<dyn avarokctl::Avarokctl>,
+    atlasctl: Arc<dyn atlasctl::Atlasctl>,
     run_id: &str,
     anchor_full: &str,
     cancel: Arc<AtomicBool>,
@@ -147,7 +147,7 @@ pub fn runners(
                 }))
             } else {
                 Ok(Box::new(runner::RemoteRunner {
-                    avarokctl: avarokctl.clone(),
+                    atlasctl: atlasctl.clone(),
                     node: n.clone(),
                     run_id: run_id.to_owned(),
                     anchor_full: anchor_full.to_owned(),

@@ -2,7 +2,7 @@
 
 //! Phase 7 — the kernel-resolution audit and the fail-closed boot gate.
 //!
-//! Every kernel lookup in Avarok is EAGER: each `.kernel(…)` / `try_kernel(…)`
+//! Every kernel lookup in Atlas is EAGER: each `.kernel(…)` / `try_kernel(…)`
 //! site sits in a constructor on the `build_model` path. By the time this runs,
 //! the audit therefore holds the COMPLETE `(module, func)` set this model asks
 //! for — which is what makes ONE BOOT yield the whole list for a target, and

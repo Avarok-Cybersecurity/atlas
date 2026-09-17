@@ -363,7 +363,7 @@ pub struct SafetensorsLoader {
     /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
     /// projection. On a 512-expert model that is ~74k four-byte allocations,
     /// each taking a full allocation granule — GBs of padding for values
-    /// Avarok never reads, because it serves w4a16 (BF16 activations) and the
+    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
     /// NVFP4 loader already treats the key as optional.
     ///
     /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off

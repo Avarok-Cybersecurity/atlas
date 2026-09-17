@@ -235,7 +235,7 @@ pub(crate) fn build_jinja_env_with(
 /// separators: `", "` between array/object items and `": "` between an
 /// object key and its value. serde_json's `CompactFormatter` (the
 /// default) emits no spaces, while jinja2's `tojson` uses `json.dumps`
-/// defaults. This bridges the two so Avarok's `<tools>` prompt block is
+/// defaults. This bridges the two so Atlas's `<tools>` prompt block is
 /// byte-identical to transformers/vLLM.
 #[derive(Clone, Debug)]
 struct PythonJsonFormatter;

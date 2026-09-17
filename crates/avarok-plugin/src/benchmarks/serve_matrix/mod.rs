@@ -15,7 +15,7 @@
 //!    binding loopback INSIDE a bridged namespace, unreachable from every
 //!    probe. Readiness here is the endpoint ANSWERING, and the round carries a
 //!    bar of its own for identity: `/v1/models` must name the checkpoint this
-//!    round loaded. Avarok answers a completion under whatever model name it is
+//!    round loaded. Atlas answers a completion under whatever model name it is
 //!    sent, so a swap that failed and restored the previous model still passes
 //!    every content probe — only the model list can see it, and only a bar can
 //!    stop it becoming a green row under a checkpoint that never loaded.

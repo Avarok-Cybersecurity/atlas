@@ -40,7 +40,7 @@
 
 {#- Model settings definition #}
 {%- set reasoning_effort = reasoning_effort if reasoning_effort is defined and reasoning_effort is not none else 'high' %}
-{#- Avarok's cross-template unset default is 'medium' (tokenizer/chat_render.rs).
+{#- Atlas's cross-template unset default is 'medium' (tokenizer/chat_render.rs).
     Mistral's ladder is binary (none|high), so the neutral tier maps to its
     standard thinking mode 'high' — byte-identical to the pre-2026-08 render.
     Explicit low/xhigh stay rejected: this model has no such tiers. #}

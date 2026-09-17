@@ -14,7 +14,7 @@ model_type = "mistral"
 # 2026-05-24 empirical band-aid. Mistral docs only call out temp=0.7;
 # kept that for thinking/non_thinking, lowered tools to 0.6 (agentic
 # coding pattern). Added rep_pen=1.1 + dry=0.5 (Mistral historically
-# recommends NO rep penalty but Avarok-team empirical testing on the
+# recommends NO rep penalty but Atlas-team empirical testing on the
 # Qwen3.6 sibling shows light penalty + DRY breaks agentic loops
 # cleanly without hurting quality).
 [sampling.thinking_text]

@@ -49,12 +49,12 @@ LOGO = """  <g transform="translate({x} {y}) scale({s})">
     <g fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
       <path d="M38 38L358 318L38 598" stroke="#BE9DF8"/>
       <path d="M318 38L638 318L318 598" stroke="#49C3DB"/>
-      <path d="M598 38L918 318L598 598" stroke="url(#cert-avarokGoldCut)"/>
+      <path d="M598 38L918 318L598 598" stroke="url(#cert-atlasGoldCut)"/>
     </g>
   </g>
 """
 
-GOLDCUT = ('  <linearGradient id="cert-avarokGoldCut" x1="0" y1="0" x2="0" y2="1">'
+GOLDCUT = ('  <linearGradient id="cert-atlasGoldCut" x1="0" y1="0" x2="0" y2="1">'
            '<stop offset="0.5" stop-color="#12B981"/>'
            '<stop offset="0.5" stop-color="#EFB338"/></linearGradient>\n')
 
@@ -135,8 +135,8 @@ def certificate(authors, **kw):
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
         'viewBox="0 0 1200 675" width="1200" height="675" '
         'font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" '
-        'role="img" aria-label="Avarok certificate of certified merge">\n'
-        '  <title>Avarok — Certificate of Certified Merge</title>\n'
+        'role="img" aria-label="Atlas certificate of certified merge">\n'
+        '  <title>Atlas — Certificate of Certified Merge</title>\n'
         + defs + GOLDCUT
         + '  <rect width="1200" height="675" fill="#0F1216"/>\n'
         + '  <rect x="14" y="14" width="1172" height="647" fill="none" stroke="#2E353F" stroke-width="1.5"/>\n'
@@ -147,7 +147,7 @@ def certificate(authors, **kw):
         + '  </g>\n'
         + corners([(34, 34, 1, 1), (1166, 34, -1, 1), (34, 641, 1, -1), (1166, 641, -1, -1)]) + "\n"
         + LOGO.format(x=64, y=66, s=0.052)
-        + '  <text x="126" y="88" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5">AVAROK ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>\n'
+        + '  <text x="126" y="88" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5">ATLAS ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>\n'
         + '  <text x="64" y="156" font-size="38" fill="#EFB338" font-weight="800" letter-spacing="4">CERTIFIED MERGE</text>\n'
         + '  <line x1="64" y1="172" x2="474" y2="172" stroke="#EFB338" stroke-width="1" opacity="0.5"/>\n'
         + '  <text x="64" y="204" font-size="13.5" fill="#C9CCD4">Verified, stamped, sealed by a codeowner, and merged to main &#8212;</text>\n'
@@ -165,7 +165,7 @@ def certificate(authors, **kw):
         + '  <text x="964" y="612" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">THE MERGED PR</text>\n'
         + G.stamp_group(*o["stamp"], transform="translate(1078 352) rotate(-5) scale(1.15)")
         + G.seal_group(*o["seal"], transform="translate(952 150) rotate(3.5) scale(1.25)")
-        + '  <text x="520" y="642" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Avarok Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
+        + '  <text x="520" y="642" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
         + qr
         + '</svg>\n')
 
@@ -201,8 +201,8 @@ def certificate_square(authors, **kw):
         '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
         'viewBox="0 0 1200 1200" width="1200" height="1200" '
         'font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" '
-        'role="img" aria-label="Avarok certificate of certified merge">\n'
-        '  <title>Avarok — Certificate of Certified Merge</title>\n'
+        'role="img" aria-label="Atlas certificate of certified merge">\n'
+        '  <title>Atlas — Certificate of Certified Merge</title>\n'
         + defs + GOLDCUT
         + '  <rect width="1200" height="1200" fill="#0F1216"/>\n'
         + '  <rect x="14" y="14" width="1172" height="1172" fill="none" stroke="#2E353F" stroke-width="1.5"/>\n'
@@ -215,7 +215,7 @@ def certificate_square(authors, **kw):
         + '  </g>\n'
         + corners([(34, 34, 1, 1), (1166, 34, -1, 1), (34, 1166, 1, -1), (1166, 1166, -1, -1)]) + "\n"
         + LOGO.format(x=576, y=88, s=0.052)
-        + '  <text x="600" y="180" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5" text-anchor="middle">AVAROK ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>\n'
+        + '  <text x="600" y="180" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5" text-anchor="middle">ATLAS ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>\n'
         + '  <text x="600" y="252" font-size="44" fill="#EFB338" font-weight="800" letter-spacing="5" text-anchor="middle">CERTIFIED MERGE</text>\n'
         + '  <line x1="380" y1="272" x2="820" y2="272" stroke="#EFB338" stroke-width="1" opacity="0.5"/>\n'
         + '  <text x="600" y="320" font-size="14.5" fill="#C9CCD4" text-anchor="middle">Verified, stamped, sealed by a codeowner, and merged to main &#8212;</text>\n'
@@ -230,7 +230,7 @@ def certificate_square(authors, **kw):
         + G.stamp_group(*o["stamp"], transform="translate(780 812) rotate(-5) scale(1.25)")
         + cells
         + '  <text x="1148" y="968" font-size="9.5" fill="#82868F" font-weight="600" letter-spacing="1.5" text-anchor="end">SCAN TO READ THE MERGED PR</text>\n'
-        + '  <text x="600" y="1132" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Avarok Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
+        + '  <text x="600" y="1132" font-size="10.5" fill="#82868F" text-anchor="middle">Issued by Atlas Cybernetics Corp &#183; <tspan fill="#49C3DB">atlascybernetics.ai</tspan></text>\n'
         + qr
         + '</svg>\n')
 

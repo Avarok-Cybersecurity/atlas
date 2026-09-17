@@ -1,6 +1,6 @@
 # CUDA Kernel Engineering
 
-This is the chapter you read when you're about to write a kernel. It covers the conventions every Avarok kernel follows, the tools that matter on GB10 SM121, and the workflow that takes an idea from a profile to a merged PR.
+This is the chapter you read when you're about to write a kernel. It covers the conventions every Atlas kernel follows, the tools that matter on GB10 SM121, and the workflow that takes an idea from a profile to a merged PR.
 
 ## The kernel inventory
 
@@ -49,7 +49,7 @@ Grace-Blackwell GB10 / SM121 numbers you will care about when writing kernels:
 
 The **native FP4 MMA** caveat is load-bearing: SM120/SM121 does not expose the `cvt.rn.satfinite.e2m1x2.f32` instruction or native FP4 tensor-core paths. Every NVFP4 kernel on GB10 uses software E2M1 conversion (the "branchless" kernel) and dequantises-to-BF16 for the MMA. This is *not* a performance bug — it is the silicon. The community benchmarks that cite "native FP4 throughput" on newer Blackwell parts do not transfer. The [NVFP4 deep dive](./nvfp4.md) walks the workaround in detail.
 
-## Conventions every Avarok kernel follows
+## Conventions every Atlas kernel follows
 
 - **SPDX header line 1.** `// SPDX-License-Identifier: AGPL-3.0-only`. Enforced by the `license-headers` job in CI.
 - **`extern "C" __global__`** entry points with a stable name. The name is what `GpuBackend::kernel(module, func)` looks up.
@@ -63,10 +63,10 @@ The **native FP4 MMA** caveat is load-bearing: SM120/SM121 does not expose the `
 
 1. **Start with `nsys profile`** against the live server running a benchmark. The first question is always *which kernel is the bottleneck* — do not tune in the abstract.
    ```bash
-   nsys profile --trace=cuda,cudnn,cublas,osrt -o avarok.qdrep \
+   nsys profile --trace=cuda,cudnn,cublas,osrt -o atlas.qdrep \
      /path/to/spark serve <model>
    # in another terminal: drive bench load
-   nsys stats --report cuda_gpu_kern_sum avarok.qdrep | head -20
+   nsys stats --report cuda_gpu_kern_sum atlas.qdrep | head -20
    ```
 2. **For the top 2–3 kernels, drill into `ncu`** (Nsight Compute). The metrics that matter on GB10:
    - `smsp__cycles_active.avg.pct_of_peak_sustained_elapsed` — SM utilisation.
@@ -83,7 +83,7 @@ The **native FP4 MMA** caveat is load-bearing: SM120/SM121 does not expose the `
 
 Things that matter less on GB10 than on an H100:
 - Shared-memory capacity (100 KB is generous for these shapes).
-- Warp specialisation. SM121's scheduler is good enough that explicit producer/consumer warp roles rarely pay back on kernels of the shapes Avarok runs.
+- Warp specialisation. SM121's scheduler is good enough that explicit producer/consumer warp roles rarely pay back on kernels of the shapes Atlas runs.
 - Distributed shared memory. No NVLS / multi-CTA clusters to lean on — `NVLS_ENABLE=0` is forced in the NCCL env.
 
 ## CUDA graphs

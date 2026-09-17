@@ -40,11 +40,11 @@ use super::sanitizer::*;
 
 pub async fn batches_stub() -> Response {
     not_supported(
-        "Batch API is not supported. Submit requests directly to /v1/chat/completions; Avarok serves them synchronously.",
+        "Batch API is not supported. Submit requests directly to /v1/chat/completions; Atlas serves them synchronously.",
     )
 }
 
-/// GET /v1/batches/{id} — Avarok has no batch store.
+/// GET /v1/batches/{id} — Atlas has no batch store.
 pub async fn batch_get_stub() -> Response {
     not_supported("Batch API is not supported. No batches are tracked on this server.")
 }
@@ -54,26 +54,26 @@ pub async fn batch_list_stub() -> Response {
     not_supported("Batch API is not supported. No batches are tracked on this server.")
 }
 
-/// POST/GET/DELETE /v1/files* — Avarok has no file-upload store.
+/// POST/GET/DELETE /v1/files* — Atlas has no file-upload store.
 pub async fn files_stub() -> Response {
     not_supported(
-        "File storage API is not supported. Avarok is an inference-only server; upload-then-reference workflows (batches, vision by file_id) are not available.",
+        "File storage API is not supported. Atlas is an inference-only server; upload-then-reference workflows (batches, vision by file_id) are not available.",
     )
 }
 
-/// POST /v1/audio/* — Avarok has no ASR/TTS model loaded.
+/// POST /v1/audio/* — Atlas has no ASR/TTS model loaded.
 pub async fn audio_stub() -> Response {
-    not_supported("Audio API is not supported. Avarok serves text chat/completion models only.")
+    not_supported("Audio API is not supported. Atlas serves text chat/completion models only.")
 }
 
-/// POST /v1/images/* — Avarok has no image-generation model loaded.
+/// POST /v1/images/* — Atlas has no image-generation model loaded.
 pub async fn images_stub() -> Response {
-    not_supported("Image API is not supported. Avarok serves text chat/completion models only.")
+    not_supported("Image API is not supported. Atlas serves text chat/completion models only.")
 }
 
-/// POST /v1/moderations — Avarok does not run a safety-classifier model.
+/// POST /v1/moderations — Atlas does not run a safety-classifier model.
 pub async fn moderations_stub() -> Response {
     not_supported(
-        "Moderations API is not supported. Avarok does not classify inputs for safety; run your own moderation pass upstream if needed.",
+        "Moderations API is not supported. Atlas does not classify inputs for safety; run your own moderation pass upstream if needed.",
     )
 }

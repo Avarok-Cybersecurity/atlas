@@ -1,6 +1,6 @@
 recipe_version: "2"
 model: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
-runtime: avarok
+runtime: atlas
 container: avarok/atlas-gb10:latest
 max_nodes: 1
 
@@ -8,8 +8,8 @@ metadata:
   description: |
     Nemotron-3-Super-120B (A12B MoE) NVFP4 — NVIDIA's hybrid Mamba-2 +
     MoE + Attention model on a single GB10. Single-node configuration
-    from the Avarok alpha-2.7 release announcement.
-  maintainer: avarok
+    from the Atlas alpha-2.7 release announcement.
+  maintainer: atlas
   category: agent
   model_params: 120B
   model_dtype: nvfp4

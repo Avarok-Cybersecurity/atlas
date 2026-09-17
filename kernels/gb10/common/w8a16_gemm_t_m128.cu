@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 Transposed GEMM — M128 (2-chunk) fast prefill, FP8 E4M3 block-scaled.
+// Atlas W8A16 Transposed GEMM — M128 (2-chunk) fast prefill, FP8 E4M3 block-scaled.
 //
 // C[M,N] = A[M,K] (BF16) * dequant(B_t[K,N] (FP8 E4M3, transposed at load time))
 //

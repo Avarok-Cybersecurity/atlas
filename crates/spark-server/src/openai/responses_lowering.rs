@@ -130,7 +130,7 @@ pub fn lower_responses_to_chat(
                     | "local_shell"
                     | "custom_tool") => {
                         return Err(LowerResponsesError::BadRequest(format!(
-                            "built-in tool '{builtin}' is not supported by this server. Avarok serves inference only and does not ship hosted tools (web search, file search, code interpreter, computer use, image generation, MCP). Provide your own `function`-type tools instead."
+                            "built-in tool '{builtin}' is not supported by this server. Atlas serves inference only and does not ship hosted tools (web search, file search, code interpreter, computer use, image generation, MCP). Provide your own `function`-type tools instead."
                         )));
                     }
                     other => {

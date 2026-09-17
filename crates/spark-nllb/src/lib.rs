@@ -3,7 +3,7 @@
 //! Self-contained CPU reference runtime for NLLB-200 / M2M-100 encoder-decoder
 //! (seq2seq) translation.
 //!
-//! Avarok's production engine is decoder-only and GPU-only, so it cannot run an
+//! Atlas's production engine is decoder-only and GPU-only, so it cannot run an
 //! encoder-decoder model — the marker loader in `spark-model` fails fast for
 //! `model_type = "m2m_100" | "nllb"`. This crate provides a dependency-light,
 //! CPU-only path that actually *loads and runs* the model from the safetensors

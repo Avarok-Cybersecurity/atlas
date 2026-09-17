@@ -2,7 +2,7 @@
 //
 // Minimal CUDA driver FFI for the Phase-0 probe. Intentionally separate from
 // spark-runtime's `cuda_backend.rs` so the probe binary doesn't pull in the
-// full Avarok runtime / kernel registry. Only the symbols the probe needs.
+// full Atlas runtime / kernel registry. Only the symbols the probe needs.
 
 use anyhow::{Result, bail};
 use std::ffi::c_void;
@@ -119,7 +119,7 @@ pub struct PinnedBuffer {
 // `PinnedBuffer` between threads only transfers a pointer + length + the
 // CUcontext handle used by Drop, none of which alias mutable state. The
 // inner pointer never escapes through `&self` accessors; concurrent users
-// of the underlying memory must coordinate externally (Avarok does this
+// of the underlying memory must coordinate externally (Atlas does this
 // via the io_uring submission queue, which is single-threaded per rank).
 unsafe impl Send for PinnedBuffer {}
 unsafe impl Sync for PinnedBuffer {}

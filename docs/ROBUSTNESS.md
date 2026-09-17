@@ -79,7 +79,7 @@ tested only in a scratch repo, by hand.
 **Found.** CI went red on `cargo deny` — the job wave 1 had just added the
 self-test to. Not a flake: the suite's three certificate-rendering checks failed
 on `ubuntu-latest` because `render-certificate.py` imports `segno`, which had
-been installed by hand on this box and on avarok but exists nowhere in CI.
+been installed by hand on this box and on atlas but exists nowhere in CI.
 
 The gate built to catch regressions was itself broken in a way that only CI
 could see. Worth stating plainly: wave 1 reported "19 passed" from a machine
@@ -361,7 +361,7 @@ the system prompt told to treat anything inside as data. Remove the fence and a
 PR title becomes an instruction — and the guard now notices.
 
 **Still open.** The bot's state-comment editing — finding its own comment by the
-`<!-- avarok-certification-state:… -->` marker and PATCHing it in place — has no
+`<!-- atlas-certification-state:… -->` marker and PATCHing it in place — has no
 coverage. That is the last uncovered path.
 
 ---
@@ -379,7 +379,7 @@ was tested. This was the last uncovered path.
 
 **Two hollow assertions, both mine, both found by the checks disagreeing.**
 
-*One.* `certed()` grepped the recorded calls for `avarok-certificate`. The
+*One.* `certed()` grepped the recorded calls for `atlas-certificate`. The
 idempotency **query** contains that literal string inside its `--jq` filter, so
 the helper matched the *lookup* and reported a certificate that was never
 posted. It could not distinguish "asked whether one exists" from "posted one".
@@ -583,7 +583,7 @@ fired*, and the machinery was landing in those very merges.
 
 **Then the verification found a defect.** The certificate comment shipped a
 broken image: `bot-cards/pr-843-112aac4b.png` is a **404**. `rsvg-convert` and
-`segno` are both present on avarok, the branch exists — but it still contains
+`segno` are both present on atlas, the branch exists — but it still contains
 only `README.md`. The upload never happened, almost certainly for want of
 `contents: write`, and the PUT is deliberately non-fatal so that a missing grant
 cannot swallow the certificate itself. Non-fatal made it **silent**.
@@ -716,7 +716,7 @@ The issue notes what this cost: a latching-state regression (#805) reached
 a `.svelte.js` rune module at all.
 
 **Verified.** Three consecutive `site.yml` runs on three different PR branches
-each show `Site unit tests: success` alongside `Deploy to avarok via rsync:
+each show `Site unit tests: success` alongside `Deploy to atlas via rsync:
 skipped` — the suite was demonstrably running and demonstrably not consulted.
 
 **Fixed.** `deploy` now needs `unit` as well as `build`, and `Site unit tests`
@@ -1162,7 +1162,7 @@ is the deliverable, because the alternative is re-digging it later.
 | installer is POSIX, as its `#!/bin/sh` claims | 606 lines | `dash -n` clean — no bashisms |
 | **served installer vs its source of truth** | 2 files | **byte-identical** |
 | committed secrets | 4500 tracked files, 6 patterns | none |
-| security reporting actually reachable | `security@avarok.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
+| security reporting actually reachable | `security@atlas.net` | valid Protonmail MX; private reporting, secret scanning and push protection all enabled |
 | orphaned assets over 500 KB | whole tree | none; the 14 MB demo GIF and 6 MB MP4 are both referenced by the README |
 
 **One scare, resolved by looking.** Neither `install.sh` nor `install.ps1` is in

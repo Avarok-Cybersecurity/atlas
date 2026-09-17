@@ -2,7 +2,7 @@
 
 //! Weight-quantization format abstraction.
 //!
-//! Avarok must load quantized checkpoints produced by several toolchains,
+//! Atlas must load quantized checkpoints produced by several toolchains,
 //! each of which serializes the same fundamental numeric format (e.g. NVFP4)
 //! with a different tensor-name convention. Historically we sniffed those
 //! names at load time via `detect_nvfp4_variant` in `weight_map.rs`, but
@@ -126,7 +126,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
             other if !other.is_empty() => {
                 tracing::warn!(
                     "QuantFormat: config declares unrecognized quant_method={other:?}; \
-                     falling back to tensor-name heuristic. Avarok currently understands \
+                     falling back to tensor-name heuristic. Atlas currently understands \
                      {{compressed-tensors, modelopt, fp8}}. Checkpoint load may fail."
                 );
                 // fall through
@@ -139,7 +139,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
     }
 
     // (2) Heuristic fallback. Reuse the existing detector to preserve
-    // every working checkpoint in Avarok's CI matrix; only the partial-
+    // every working checkpoint in Atlas's CI matrix; only the partial-
     // metadata footgun is patched separately in `weight_map.rs`.
     let variant = crate::weight_map::detect_nvfp4_variant(store, config);
     let ignore = config

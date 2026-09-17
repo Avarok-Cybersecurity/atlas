@@ -6,7 +6,7 @@
 // This is the kernel the C=16 rung runs: the default ladder `4:3,8:3,16:2,32:1`
 // verifies 2 drafts = K=3 rows at widths 9..16, and `wy_resident_min_width()`
 // is 16, so at exactly n=16 the resident twin is dispatched. C=16 is the one
-// rung Avarok already wins (180.11 vs a ~174 bar), so this twin's job is to not
+// rung Atlas already wins (180.11 vs a ~174 bar), so this twin's job is to not
 // give that back while the flag is on — the no-regression gate.
 //
 // STORAGE-ONLY NARROWING and the PER-TOKEN ROUND-TRIP rule are identical to

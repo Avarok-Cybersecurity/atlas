@@ -78,10 +78,10 @@ default_kv_dtype = "bf16"
 # per request; explicit request values always win.
 use_sampling_presets_for_core = true
 max_thinking_budget = 2048
-# `max_thinking_budget` is the SOLE thinking cap — drop Avarok's second,
+# `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
 # 90%-of-max_tokens clamp, which vLLM has no equivalent of. Measured here: a
 # request with max_tokens=30 logged "Thinking enabled, budget=Some(27)", and
-# when that budget is hit Avarok force-closes `</think>`, leaving the model with
+# when that budget is hit Atlas force-closes `</think>`, leaving the model with
 # no natural continuation. The result is the degeneration this model was
 # reported for — prompt content elided ("My dog is named ...?") and
 # `The user asks: "The user asks: ...` repeat loops. Same fix, same reasoning as
@@ -99,7 +99,7 @@ cap_thinking_at_max_tokens = false
 #                     ("SAMPLE INPUT", "sort a list of people")
 #     thinking OFF -> 6/6 correct
 # Not a budget or watchdog artefact: reproduced at temperature 0 through
-# /v1/completions with no template and no Avarok thinking logic, purely by
+# /v1/completions with no template and no Atlas thinking logic, purely by
 # appending `<think>\n` to the prompt (which the model's OWN template does).
 # `<think>` tokenizes correctly as the single special token id 12, and
 # AVAROK_DISABLE_WATCHDOGS=1 does not help. Clients can still opt in per request.

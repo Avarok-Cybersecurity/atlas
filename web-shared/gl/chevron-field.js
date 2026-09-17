@@ -1,5 +1,5 @@
 /**
- * Avarok chevron field — raw WebGL2, no dependencies.
+ * Atlas chevron field — raw WebGL2, no dependencies.
  *
  * Renders one fullscreen triangle with one fragment shader. That is the
  * entire scene, which is why it needs no scene graph, no camera, no

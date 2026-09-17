@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Avarok Spark coherence & API compatibility test suite.
+"""Atlas Spark coherence & API compatibility test suite.
 
 Tests OpenAI API compatibility for coding agents (OpenCode, Claude Code, Cline, Continue).
-Run against a live Avarok server: python3 scripts/test_coherence.py [--url http://localhost:8888]
+Run against a live Atlas server: python3 scripts/test_coherence.py [--url http://localhost:8888]
 """
 
 import argparse
@@ -262,14 +262,14 @@ def test_coherence():
 
     # 4c. Multi-turn coherence
     msgs = [
-        {"role": "user", "content": "My name is Avarok."},
+        {"role": "user", "content": "My name is Atlas."},
     ]
     r1 = api("/v1/chat/completions", {"model": "test", "messages": msgs, "max_tokens": 50})
     msgs.append({"role": "assistant", "content": r1["choices"][0]["message"]["content"]})
     msgs.append({"role": "user", "content": "What is my name?"})
     r2 = api("/v1/chat/completions", {"model": "test", "messages": msgs, "max_tokens": 50})
     content2 = r2["choices"][0]["message"]["content"]
-    test("Multi-turn remembers context (name)", "Avarok" in content2 or "avarok" in content2, content2[:80])
+    test("Multi-turn remembers context (name)", "Atlas" in content2 or "avarok" in content2, content2[:80])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1404,7 +1404,7 @@ def test_e2e_rust_project():
 # Main
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Avarok coherence test suite")
+    parser = argparse.ArgumentParser(description="Atlas coherence test suite")
     parser.add_argument("--url", default="http://localhost:8888", help="Server URL")
     parser.add_argument("--opencode", action="store_true",
                         help="Run OpenCode agent compatibility tests (section 14)")
@@ -1415,7 +1415,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     URL = args.url
 
-    print(f"Testing Avarok at {URL}")
+    print(f"Testing Atlas at {URL}")
 
     t0 = time.time()
     test_basic_api()

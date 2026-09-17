@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent agentic harness — measures how Avarok holds up with C agents at once.
+"""Concurrent agentic harness — measures how Atlas holds up with C agents at once.
 
 The sequential harness (oc_harness.py) can't answer concurrency questions, and its
 Rust/axum task is unusable in parallel: cargo serializes on the shared target dir

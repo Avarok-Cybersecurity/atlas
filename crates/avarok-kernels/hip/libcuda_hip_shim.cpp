@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // libcuda → HIP shim. Re-exports the exact 33 CUDA driver-API symbols the
-// Avarok spark binary imports (via cudarc) and implements each over HIP/ROCm.
+// Atlas spark binary imports (via cudarc) and implements each over HIP/ROCm.
 // Built as `libcuda.so` and placed FIRST on the loader path so the unchanged
 // cudarc runtime drives AMD GPUs natively — no SCALE.
 //

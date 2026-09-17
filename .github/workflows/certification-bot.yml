@@ -124,10 +124,10 @@ jobs:
           # The marker is the lookup key AND the memory. One request, and no
           # second source of truth to drift.
           body=$(gh api "repos/$REPO/issues/$PR/comments?per_page=100" \
-                  --jq '.[] | select(.body | contains("<!-- avarok-certification-state:")) | "\(.id)\t\(.body)"' \
+                  --jq '.[] | select(.body | contains("<!-- atlas-certification-state:")) | "\(.id)\t\(.body)"' \
                 | head -1 || true)
           id=$(printf '%s' "$body" | cut -f1)
-          prev=$(printf '%s' "$body" | grep -o '<!-- avarok-certification-state:[a-z0-9-]*' | sed 's/.*://' || true)
+          prev=$(printf '%s' "$body" | grep -o '<!-- atlas-certification-state:[a-z0-9-]*' | sed 's/.*://' || true)
           echo "comment_id=${id}" >>"$GITHUB_OUTPUT"
           echo "prev=${prev}" >>"$GITHUB_OUTPUT"
 
@@ -167,7 +167,7 @@ jobs:
           # the README, where a relative path is resolved by GitHub itself.
           img="https://raw.githubusercontent.com/$REPO/$DEFAULT_BRANCH/docs/diagrams/states/$STATE.png"
           body=$(cat <<EOF
-          <!-- avarok-certification-state:$STATE -->
+          <!-- atlas-certification-state:$STATE -->
           ### $HEADLINE
 
           <img src="$img" alt="$STATE" width="900">
@@ -210,7 +210,7 @@ jobs:
           # once.
           if [ "$STATE" = "pr-certification-merged" ]; then
             already=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
-                        --jq '[.[] | select(.body | contains("<!-- avarok-certificate -->"))] | length' \
+                        --jq '[.[] | select(.body | contains("<!-- atlas-certificate -->"))] | length' \
                         2>/dev/null) || already=1
             case "$already" in ''|*[!0-9]*) already=1 ;; esac
             if [ "$already" -eq 0 ]; then
@@ -357,11 +357,11 @@ jobs:
               fi
               # An image only when one was actually produced FOR THIS PR.
               if [ -n "$cert" ]; then
-                pic="<img src=\"$cert\" alt=\"Avarok certification for PR #$PR\" width=\"900\">"
+                pic="<img src=\"$cert\" alt=\"Atlas certification for PR #$PR\" width=\"900\">"
               else
                 pic="_(The certificate image could not be rendered for this PR. The gate records themselves are public -- see the checks on the merge commit.)_"
               fi
-              gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- avarok-certificate -->
+              gh api -X POST "repos/$REPO/issues/$PR/comments" -f body="<!-- atlas-certificate -->
           ${who:-@}— merged. Every required benchmark gate was certified against a
           frozen commit before this landed, and the record is public.
 

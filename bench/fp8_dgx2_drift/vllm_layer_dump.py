@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vLLM-FP8 per-layer residual-stream dump for Avarok vs vLLM cosine diff.
+"""vLLM-FP8 per-layer residual-stream dump for Atlas vs vLLM cosine diff.
 
 Runs the NATIVE FP8 Qwen3.6-35B-A3B-FP8 model offline in vLLM with
 enforce_eager=True so torch forward hooks fire during prefill. For each of the

@@ -40,7 +40,7 @@ fn target(gpu: &MockGpuBackend, slot: DevicePtr) -> Fp8KvWriteTarget {
     }
 }
 
-/// Avarok #919, the reported shape: a 13-token readiness probe must NOT end a
+/// Atlas #919, the reported shape: a 13-token readiness probe must NOT end a
 /// 256-token calibration window. Red before the fix — the calibrator froze on
 /// the first observe, so `is_calibrating()` was already false here.
 #[test]

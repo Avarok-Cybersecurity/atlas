@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused MoE Expert GEMV — Gate+Up in one launch, SiLU+Down in one launch.
+// Atlas Fused MoE Expert GEMV — Gate+Up in one launch, SiLU+Down in one launch.
 //
 // Reduces MoE expert kernels from 4 to 2 per layer (saves 96 launches total):
 //   Before: gate (1) + up (1) + silu_mul (1) + down (1) = 4 per layer × 48 = 192

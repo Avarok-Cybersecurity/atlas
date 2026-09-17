@@ -16,7 +16,7 @@ DEST=/usr/lib/x86_64-linux-gnu
 CUDA_STUBS=/usr/local/cuda/targets/x86_64-linux/lib/stubs
 
 cat > /tmp/libcuda_stub.c <<'EOF'
-/* Stub for every CUDA driver API symbol that any Avarok crate
+/* Stub for every CUDA driver API symbol that any Atlas crate
  * links against (spark-storage, avarok-core::registry, cudarc).
  * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
  * Generated for CI link-time only; never exercised at runtime

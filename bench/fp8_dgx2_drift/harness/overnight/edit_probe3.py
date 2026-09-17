@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit-flow probe v3 — push the two paths most likely to surface a real Avarok
+"""Edit-flow probe v3 — push the two paths most likely to surface a real Atlas
 defect (claude-code; opencode down).
 
   bigedit  : ~1000-line file (~13k tokens) with ONE buried todo!() stub near the
@@ -11,7 +11,7 @@ defect (claude-code; opencode down).
              stresses the CC6 envelope fix at far larger scale than L4 (verify no
              truncation: file compiles + 0 'Stuck in tool-call ENVELOPE').
 
-Trivial coding on purpose -> failures point at Avarok mechanics, not competence.
+Trivial coding on purpose -> failures point at Atlas mechanics, not competence.
 """
 from __future__ import annotations
 import json, os, pathlib, subprocess, sys, time

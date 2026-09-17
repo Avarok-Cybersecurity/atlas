@@ -281,7 +281,7 @@ fn absolute_ceiling_bounds_a_pathological_aspect_ratio() {
 
 #[test]
 fn an_aligned_small_image_is_not_scaled_up_to_a_large_declared_bound() {
-    // A tiny image under a huge bound stays tiny. Avarok diverges from HF
+    // A tiny image under a huge bound stays tiny. Atlas diverges from HF
     // here (HF honours shortest_edge/min_pixels by scaling UP); that is
     // deliberate and out of scope, but it must not drift silently.
     let (h, w) = target_size_with_max_pixels(64, 64, GU, Some(16_777_216));

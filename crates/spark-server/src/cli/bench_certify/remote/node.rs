@@ -11,7 +11,7 @@
 use avarok_plugin::hardware::equivalence::{HardwareFingerprint, driver_major};
 use avarok_plugin::hardware::{Hardware, HardwareState};
 
-use super::avarokctl::{NodeInfo, NodeRow};
+use super::atlasctl::{NodeInfo, NodeRow};
 
 /// A node the campaign may run on.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,7 +20,7 @@ pub struct Node {
     pub addr: String,
     /// The node's display name.
     pub name: String,
-    /// Fingerprint of the avarokctl node (empty for local).
+    /// Fingerprint of the atlasctl node (empty for local).
     pub node_id: String,
     /// The signing key its records will carry.
     pub signer: String,
@@ -94,7 +94,7 @@ pub fn admit(row: &NodeRow, wanted: &Wanted) -> Result<Node, Rejection> {
     let Some(info) = &row.info else {
         return Err(reject(match &row.error {
             Some(e) => e.to_string(),
-            None => "no report and no error — avarokctl said nothing about it".into(),
+            None => "no report and no error — atlasctl said nothing about it".into(),
         }));
     };
     let mut why = Vec::new();

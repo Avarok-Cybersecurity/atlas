@@ -28,7 +28,7 @@ fn exports(text: &str) -> Vec<String> {
 #[test]
 fn every_mmq_export_is_inside_the_vendor_capability_guard() {
     let text = source();
-    let marker = "#if defined(BLACKWELL_MMA_AVAILABLE) // Avarok optional module";
+    let marker = "#if defined(BLACKWELL_MMA_AVAILABLE) // Atlas optional module";
     let (before, inside) = text.split_once(marker).expect(
         "Hopper resolves trap-only MMQ symbols: guard exports before handle-based selection",
     );
@@ -36,7 +36,7 @@ fn every_mmq_export_is_inside_the_vendor_capability_guard() {
     assert!(
         inside
             .trim_end()
-            .ends_with("#endif // Avarok optional module")
+            .ends_with("#endif // Atlas optional module")
     );
     assert_eq!(exports(inside).len(), 13);
     // This is the SAME macro used by both quantize_mmq_nvfp4_worker and MMA.

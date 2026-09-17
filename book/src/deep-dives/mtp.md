@@ -15,7 +15,7 @@ MTP does exactly that:
 
 For K=2 (one draft), the best case is 2× throughput: one draft + one verify yields two tokens per verify pass. The expected speedup depends on draft acceptance rate — Qwen3.5 + NVFP4 MTP achieves ~85% acceptance on short-prompt benchmarks, which maps to ~1.8× throughput in practice.
 
-Avarok's numbers:
+Atlas's numbers:
 
 | Model | No spec | MTP | Speedup |
 |---|---:|---:|---:|
@@ -94,13 +94,13 @@ On agentic workloads (Claude Code, OpenCode, Cline), this compounds because a la
 
 `--self-speculative` is the fallback for models without an MTP head: layer-skipping drafts. The "drafter" runs the main model with some attention + FFN layers skipped, producing a fast-but-approximate draft; the full model verifies.
 
-Acceptance rate is lower (~60%) than MTP (~85%), but it works on any model. Avarok ships this for coverage; operators typically use MTP when the checkpoint supports it.
+Acceptance rate is lower (~60%) than MTP (~85%), but it works on any model. Atlas ships this for coverage; operators typically use MTP when the checkpoint supports it.
 
 ## N-gram speculative (CPU-side)
 
 `--ngram-speculative` is the other fallback: an n-gram pattern matcher on recent output. If the model is repeating a token pattern (e.g. verbatim quoting a document), the matcher predicts the continuation directly. Acceptance is binary (0 or 100%), and the average rate on open-ended generation is low, but on certain workloads (summarisation, re-ranking) it's free throughput.
 
-N-gram speculative was experimented with heavily on TRT-LLM (see the `project_ngram_*` notes); Avarok's Rust implementation lives in `spark-server/src/ngram.rs` and is much simpler.
+N-gram speculative was experimented with heavily on TRT-LLM (see the `project_ngram_*` notes); Atlas's Rust implementation lives in `spark-server/src/ngram.rs` and is much simpler.
 
 ## Files to read
 

@@ -4,7 +4,7 @@
 //! has, wired the way HF 5.16.1 wires it, and its structural weight contract closes exactly.
 //!
 //! Both fixtures come from `LibertAIDAI/GLM-5.3-Flash-NVFP4` snapshot `9e0d74e3…`:
-//!   * `…-config.json` — the checkpoint's own config, parsed by Avarok's real `glm5_next` parser.
+//!   * `…-config.json` — the checkpoint's own config, parsed by Atlas's real `glm5_next` parser.
 //!     Not a synthetic fixture: a parser that only ever sees a hand-written config proves nothing
 //!     about the checkpoint.
 //!   * `…-structural.txt` — every non-MLP text tensor name (real layer indices, not the `layers.N.`
@@ -165,7 +165,7 @@ fn mtp_residual_path_has_no_mhc_steps() {
 }
 
 /// 🪤 The final collapse is an UNWEIGHTED MEAN. DeepSeek-V4's `hc_head` is a learned
-/// sigmoid-weighted sum and Avarok's CUDA kernel implements that one; GLM carries zero
+/// sigmoid-weighted sum and Atlas's CUDA kernel implements that one; GLM carries zero
 /// `hc_head` tensors, so reusing the kernel would read weights that do not exist.
 #[test]
 fn final_collapse_is_a_parameterless_mean_then_norm() {

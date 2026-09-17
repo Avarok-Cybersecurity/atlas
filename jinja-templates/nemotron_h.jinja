@@ -207,7 +207,7 @@
            30B, where the model spits out JSON as plain content). For larger
            variants (Super 120B) the prefix causes a <tool_call> emission
            loop because the model wasn't trained on the qwen3_coder XML
-           format — pass `disable_tool_steering=true` to skip. Avarok reads
+           format — pass `disable_tool_steering=true` to skip. Atlas reads
            MODEL.toml `[behavior].disable_tool_steering` to gate this. #}
         {{- '<|im_start|>assistant\n<think></think>\n<tool_call>\n' }}
     {%- elif enable_thinking %}

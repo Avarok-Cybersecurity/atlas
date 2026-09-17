@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Persistent GDN Prefill — L2-Resident H_State Kernel.
+// Atlas Persistent GDN Prefill — L2-Resident H_State Kernel.
 //
 // Eliminates LPDDR5X bandwidth bottleneck for h_state during prefill by
 // keeping the 64 KB h_state matrix in shared memory for the ENTIRE sequence.

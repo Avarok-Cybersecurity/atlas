@@ -1,5 +1,5 @@
 #!/bin/bash
-# Phase A driver: the C=[1,2,4,8,16] synthetic scoreboard, Avarok vs vLLM, one box.
+# Phase A driver: the C=[1,2,4,8,16] synthetic scoreboard, Atlas vs vLLM, one box.
 #
 # SESSION-SURVIVABLE BY DESIGN. This script is launched once via `setsid nohup`
 # and then owns the whole phase: serve -> health -> bench -> teardown -> next
@@ -15,11 +15,11 @@
 #
 # Fairness notes recorded here because they bound what the numbers mean:
 #  - Same box, same bench script, same ISL/OSL regimes, sequential legs.
-#  - Avarok runs its golden env/flags with --max-batch-size 16 and fifo
+#  - Atlas runs its golden env/flags with --max-batch-size 16 and fifo
 #    scheduling (SLAI's should_prefill starves admission whenever any decoder is
 #    >80 ms stale — scheduling_policy.rs:101-113 — so it is the wrong policy for
 #    a throughput sweep).
-#  - vLLM is tried FIRST on the SAME checkpoint Avarok serves (centml W4A4); if
+#  - vLLM is tried FIRST on the SAME checkpoint Atlas serves (centml W4A4); if
 #    it cannot load it, the driver falls back to nvidia/Qwen3.6-27B-NVFP4 and
 #    the leg json + STATE record the substitution — a known caveat, not a
 #    silent one (the July MLPerf comparison carried the same caveat).
@@ -58,7 +58,7 @@ run_bench() { # $1 results file tag
   [ -s "$RESULTS/$1.json" ]
 }
 
-############################ LEG 1: Avarok ############################
+############################ LEG 1: Atlas ############################
 if [ -s "$RESULTS/avarok_synth.json" ]; then
   echo "SKIP avarok_synth (results exist)"
 else

@@ -260,7 +260,7 @@ pub(crate) fn resolve_swap_ns(fp: ModelFingerprint) -> Result<NonZeroU64> {
 fn decode_client_salt() -> Result<u64> {
     use std::sync::OnceLock;
     // STATIC, DELIBERATELY — process lifecycle. The salt IS the process's
-    // identity: it exists so two Avarok processes sharing a tier cannot
+    // identity: it exists so two Atlas processes sharing a tier cannot
     // collide on session keys, and re-drawing it per model would rotate the
     // keyspace mid-run and orphan every SSM snapshot the process had
     // already written. Key material, not configuration.

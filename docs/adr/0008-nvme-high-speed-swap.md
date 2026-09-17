@@ -6,7 +6,7 @@
 ## Context
 
 Long-context inference (>32K tokens) blows out the on-device KV cache.
-Avarok's paged KV cache reserves a fixed fraction of GPU memory at startup
+Atlas's paged KV cache reserves a fixed fraction of GPU memory at startup
 (`--gpu-memory-utilization`); past that point we either:
 
 - Drop the request (fail-fast on cache overflow).
@@ -30,7 +30,7 @@ hardware that supports GDS lands.
 
 ## Decision
 
-Avarok implements **High-Speed Swap (HSS)** in `crates/spark-storage/`
+Atlas implements **High-Speed Swap (HSS)** in `crates/spark-storage/`
 using `io_uring` + a pinned-host bounce buffer:
 
 - Each sequence keeps a fixed number of "hot" KV blocks on-GPU
@@ -71,7 +71,7 @@ context with 8 concurrent sequences.
 - HSS bandwidth is **disk-dominated**. Different NVMe parts give wildly
   different latencies. We document a ≥3 GB/s sequential-write minimum;
   users with consumer SSDs will have a bad time.
-- A single-machine `/mnt/fast-nvme/avarok-kv` directory is the canonical
+- A single-machine `/mnt/fast-nvme/atlas-kv` directory is the canonical
   swap target. Multi-host setups need per-rank distinct directories
   (and a shared filesystem will *not* perform).
 - We will revisit when GDS-capable hardware lands. The `cuFile-sys` FFI

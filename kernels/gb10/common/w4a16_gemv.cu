@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W4A16 GEMV — Fused NVFP4 weight dequant + BF16 GEMV for M=1 decode.
+// Atlas W4A16 GEMV — Fused NVFP4 weight dequant + BF16 GEMV for M=1 decode.
 //
 // out[n] = dot(A[0,:], dequant(B_fp4[n,:]))
 //

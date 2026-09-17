@@ -5,7 +5,7 @@
 > **Dez: The free and open-source IDE for the local inference-first paradigm**
 
 This directory holds the public placeholder site for **Dez**, an IDE built on the
-[Avarok Inference Engine](https://github.com/Avarok-Cybersecurity/atlas), WebGPU, Rust and 100%
+[Atlas Inference Engine](https://github.com/Avarok-Cybersecurity/atlas), WebGPU, Rust and 100%
 WebAssembly. Models run locally in the browser — no server round-trip, no API key, and neither
 your code nor your weights leave your machine.
 
@@ -18,8 +18,8 @@ development" ones. If you edit the copy, keep it that way.
 - A hero carrying the tagline verbatim.
 - An honest "what it is" section, including the in-development status.
 - A four-card grid: local-first, WebGPU, WebAssembly, open source.
-- A "how it works" section describing the Avarok → WebAssembly → WebGPU → editor pipeline.
-- A footer linking to the Avarok repository, site, Discord and licence.
+- A "how it works" section describing the Atlas → WebAssembly → WebGPU → editor pipeline.
+- A footer linking to the Atlas repository, site, Discord and licence.
 
 Every factual claim traces back to this repository. There are no invented benchmark numbers,
 team members, testimonials, funding announcements or launch dates, and none should be added.
@@ -131,4 +131,4 @@ Serve over HTTPS: service workers and the install prompt require a secure contex
 
 ## Licence
 
-AGPL-3.0-only, matching Avarok. Source files carry an SPDX header.
+AGPL-3.0-only, matching Atlas. Source files carry an SPDX header.

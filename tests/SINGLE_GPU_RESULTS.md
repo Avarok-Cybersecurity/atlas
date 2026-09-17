@@ -3,7 +3,7 @@
 **Date**: 2026-04-02
 **Node**: single-GPU node (DGX Spark)
 **GPU**: NVIDIA GB10 (121.7 GB total, 108-116 GB free)
-**Image**: avarok-test:latest (built from spec_ssm + uncommitted fixes)
+**Image**: atlas-test:latest (built from spec_ssm + uncommitted fixes)
 
 ---
 
@@ -28,9 +28,9 @@
 
 ### Launch Command
 ```bash
-sudo docker run -d --name avarok-122b --gpus all --ipc=host --network host \
+sudo docker run -d --name atlas-122b --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-test:latest serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
+  atlas-test:latest serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
     --max-seq-len 65536 --tool-call-parser qwen3_coder --ssm-cache-slots 0
@@ -70,9 +70,9 @@ sudo docker run -d --name avarok-122b --gpus all --ipc=host --network host \
 
 ### Launch Command
 ```bash
-sudo docker run -d --name avarok-mistral --gpus all --ipc=host --network host \
+sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-test:latest serve mistralai/Mistral-Small-4-119B-2603-NVFP4 \
+  atlas-test:latest serve mistralai/Mistral-Small-4-119B-2603-NVFP4 \
     --port 8888 --kv-cache-dtype bf16 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
     --max-seq-len 65536 --tool-call-parser hermes --ssm-cache-slots 0
@@ -100,7 +100,7 @@ sudo docker run -d --name avarok-mistral --gpus all --ipc=host --network host \
 ### Root Cause: YaRN RoPE inv_freq Bug (Fixed)
 
 **Threshold**: ~600–1000 diverse input tokens
-**Confirmed on**: BOTH avarok-test:latest AND avarok/avarok-alpha-2.7 (both built from pre-release code with the bug)
+**Confirmed on**: BOTH atlas-test:latest AND atlas/atlas-alpha-2.7 (both built from pre-release code with the bug)
 **Root cause**: YaRN inv_freq computation in `yarn.rs` used the Llama-3.1 NTK-by-parts
 wavelength-space formula with `llama_4_scaling.beta=0.1` mis-aliased as `low_freq_factor`
 (correct value: 1.0). This corrupted `inv_freq` for the lowest-frequency pairs (j≈25–31,
@@ -141,9 +141,9 @@ Long-context quality expected to be fully restored after the fix.
 
 ### Launch Command
 ```bash
-sudo docker run -d --name avarok-nemotron --gpus all --ipc=host --network host \
+sudo docker run -d --name atlas-nemotron --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
+  atlas-test:latest serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 \
     --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
     --max-seq-len 65536 --tool-call-parser qwen3_coder --ssm-cache-slots 0

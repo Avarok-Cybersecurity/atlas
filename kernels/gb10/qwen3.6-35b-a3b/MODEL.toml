@@ -107,7 +107,7 @@ frequency_penalty = 0.0
 # and FLIPS low-margin greedy picks -> collapsed-newline/`::`-split/wander/runaway.
 # Proven temp=0 A/B: 1.1=mangled TOML finish=length; 1.0=clean newlined code finish=stop.
 # vLLM serves penalty-free greedy. dry_multiplier 0.5->0.0 2026-06-03 (was kept to catch
-# verbatim filename runaway; re-validating at rep=1.0 — see top-of-section note). Avarok-vs-BF16
+# verbatim filename runaway; re-validating at rep=1.0 — see top-of-section note). Atlas-vs-BF16
 # cosine 0.995 > vLLM 0.985 => NOT a precision floor.
 repetition_penalty = 1.0
 dry_multiplier = 0.0
@@ -242,7 +242,7 @@ thinking_in_tools = true
 max_thinking_budget = 768
 # Inter-tool prose budget — max tokens of free CONTENT (not thinking,
 # not tool body) the model can emit between successive tool calls
-# before Avarok truncates with finish_reason=length.
+# before Atlas truncates with finish_reason=length.
 #
 # 2026-05-24: bumped 384 → 2048. The default 384 was killing
 # opencode-style agentic sessions where the model legitimately needs

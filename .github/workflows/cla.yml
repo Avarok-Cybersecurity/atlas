@@ -94,7 +94,7 @@ jobs:
       #
       # The list matches on LOGIN, not email, which is why two entries cover
       # three addresses.
-      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],avarok-governance-harvester[bot],google-labs-jules,claude,tbraun96,cursoragent,TheTom,tturney-psyguardai
+      CLA_ALLOWLIST: dependabot[bot],renovate[bot],google-labs-jules[bot],claude[bot],atlas-governance-harvester[bot],google-labs-jules,claude,tbraun96,cursoragent,TheTom,tturney-psyguardai
     # Scoped to what contributor-assistant actually calls (verified against the
     # action source at the pinned sha):
     #   contents      — git refs/commits that persist signatures/version1/cla.json

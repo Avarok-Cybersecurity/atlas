@@ -1,6 +1,6 @@
 # Qwen3.8-Flash-Next (`qwen4_exp`) — plan of work to first correct token
 
-Written 2026-08-26, after the load milestone (Avarok #753, PR #754). The model
+Written 2026-08-26, after the load milestone (Atlas #753, PR #754). The model
 boots, passes the fail-closed kernel audit, and serves the HTTP API. It does
 not generate: a request reaches model layer 0 and is refused by name.
 
@@ -74,7 +74,7 @@ Neither throws. Both are on the list below as part of phase B.
    For `w ≈ 0` the missing offset is a near-null mix: finite, plausible,
    wrong. Measured against the reference it is `max|diff| = 4.65`.
 
-   Avarok already dispatches this globally through
+   Atlas already dispatches this globally through
    `ships_vanilla_norm_weights`, which correctly leaves `qwen4_exp` on the
    offset-from-1 path — so `q_norm`/`k_norm` were never affected. Only the
    hand-rolled norm inside this kernel was. **The same offset applies to
@@ -111,7 +111,7 @@ files. Three reasons not to.
    the attention half and nothing runs; finish only the GDN half and nothing
    runs. Two workstreams that cannot each be verified are one workstream with
    a merge conflict in the middle.
-2. **One GPU, one Avarok instance.** `--gpu-memory-utilization` reserves its
+2. **One GPU, one Atlas instance.** `--gpu-memory-utilization` reserves its
    whole fraction, and this model fits at 0.80 with ~0.4 GB of KV to spare.
    Any two streams that need to *serve* the model are serialized by the box
    whatever the branch topology says.
@@ -314,8 +314,8 @@ Runs in tandem from the start — it is a reference read, not an edit:
 - [ ] Read `Qwen4ExpTextQSAIndexer` (`ref/modeling_qwen4_exp.py` L611
       onward) and write the selection semantics down beside §3 of
       `ARCHITECTURE.md`, the way §1 and §2 were written down
-- [ ] **Answer the open question: does Avarok's DeepSeek CSA selection match
-      Qwen's?** Avarok has `index_n_heads` / `index_head_dim` / `index_topk`,
+- [ ] **Answer the open question: does Atlas's DeepSeek CSA selection match
+      Qwen's?** Atlas has `index_n_heads` / `index_head_dim` / `index_topk`,
       `csa_compress`, `prefill_attn_compressed` and `prefill/cache_skip_v4.rs`.
       If the block scoring and top-k semantics agree, G is wiring; if they
       differ, G needs its own kernel and that must be known before F lands,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok WY-Chunkwise Gated Delta Rule — K=17 verification (DFlash γ+1).
+// Atlas WY-Chunkwise Gated Delta Rule — K=17 verification (DFlash γ+1).
 //
 // Generalization of gated_delta_rule_wy4.cu to K=17 tokens. DFlash uses
 // γ=16 drafts per step plus 1 prefix-bonus position, so the K=γ verify

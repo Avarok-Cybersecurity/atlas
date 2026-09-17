@@ -1,4 +1,4 @@
-# Avarok Spark — Quickstart Guide
+# Atlas Spark — Quickstart Guide
 
 Run state-of-the-art language models on a single NVIDIA DGX Spark (GB10).
 
@@ -36,7 +36,7 @@ under `target/`.
 
 ## Network exposure
 
-By default Avarok binds the HTTP listener to **`127.0.0.1` (localhost only)**.
+By default Atlas binds the HTTP listener to **`127.0.0.1` (localhost only)**.
 This is the right default for an inference engine that talks to local
 clients (Open WebUI, opencode, an OpenAI SDK pinned to
 `base_url=http://localhost:8888/v1`).
@@ -48,7 +48,7 @@ clients (Open WebUI, opencode, an OpenAI SDK pinned to
 spark serve <model> \
   --bind 0.0.0.0 \
   --require-auth \
-  --auth-tokens-file /etc/avarok/tokens.txt
+  --auth-tokens-file /etc/atlas/tokens.txt
 ```
 
 Where `tokens.txt` is one bearer token per line (`#` comments allowed),
@@ -105,7 +105,7 @@ where throughput is less critical.
 
 ```bash
 sudo docker run -d \
-  --name avarok-27b \
+  --name atlas-27b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -126,7 +126,7 @@ Pure attention (no SSM), no MTP support.
 
 ```bash
 sudo docker run -d \
-  --name avarok-vl-30b \
+  --name atlas-vl-30b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -157,7 +157,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 > **EXIF orientation is applied automatically.** Cameras usually store a photo
 > the way the sensor read it and record which way is up in an EXIF tag, so a
-> phone picture is often held sideways in the file. Avarok rotates on decode, so
+> phone picture is often held sideways in the file. Atlas rotates on decode, so
 > the model sees the image the same way your phone, browser and file manager
 > show it. Images without the tag — and every PNG — are untouched.
 
@@ -165,7 +165,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 > ### ⚠️ VIDEO REQUIRES `ffmpeg` ON THE HOST
 >
-> Avarok does **not** bundle a video decoder. Animated **GIF** decodes
+> Atlas does **not** bundle a video decoder. Animated **GIF** decodes
 > in-process (pure Rust, no dependency). **Every other container — MP4/MOV,
 > WebM/Matroska, AVI, i.e. H.264, H.265, VP9, AV1 — is decoded by running
 > `ffmpeg`**, which must be installed on the host and enabled with
@@ -222,7 +222,7 @@ No MTP support.
 
 ```bash
 sudo docker run -d \
-  --name avarok-nemotron \
+  --name atlas-nemotron \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -243,7 +243,7 @@ baseline. 3B active parameters per token.
 
 ```bash
 sudo docker run -d \
-  --name avarok-35b \
+  --name atlas-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -266,7 +266,7 @@ Largest single-node MoE model with MTP. Hybrid SSM+Attention+MoE architecture.
 
 ```bash
 sudo docker run -d \
-  --name avarok-80b \
+  --name atlas-80b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -286,7 +286,7 @@ sudo docker run -d \
 
 All 256 experts on one GB10. The 122B NVFP4 checkpoint is ~81 GB on disk (65 GB FP4
 experts + 16 GB BF16 modules: Mamba projections, embeddings, MTP, vision); after
-Avarok's buffer arena, dequant scratch, MoE routing state, and CUDA context, you're
+Atlas's buffer arena, dequant scratch, MoE routing state, and CUDA context, you're
 left with ~1.5–2 GB headroom for KV cache. That's why `--max-num-seqs` and
 `--max-seq-len` have to stay tight.
 
@@ -295,7 +295,7 @@ correctly (single-call decode 33.4 tok/s at batch=1), 4-way concurrent requests
 serve cleanly. KV cache holds ~35K tokens (16K per slot × 4 slots, with overlap).
 
 ```bash
-sudo docker run -d --name avarok \
+sudo docker run -d --name atlas \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -339,7 +339,7 @@ or 100GbE+).
 **Node 0 (head, `<HEAD_IP>`):**
 ```bash
 sudo docker run -d \
-  --name avarok-122b-r0 \
+  --name atlas-122b-r0 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -359,7 +359,7 @@ sudo docker run -d \
 **Node 1 (worker):**
 ```bash
 sudo docker run -d \
-  --name avarok-122b-r1 \
+  --name atlas-122b-r1 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -443,7 +443,7 @@ sudo docker stop <container-name> && sudo docker rm <container-name>
 
 ## OpenAI SDK / Open WebUI
 
-Avarok Spark exposes a standard OpenAI-compatible API. Use it with any client:
+Atlas Spark exposes a standard OpenAI-compatible API. Use it with any client:
 
 ```python
 from openai import OpenAI
@@ -495,7 +495,7 @@ Add `--tool-call-parser <FORMAT>` to enable OpenAI-compatible function calling.
 **Example: start 35B with tool calling enabled:**
 ```bash
 sudo docker run -d \
-  --name avarok-35b-tools \
+  --name atlas-35b-tools \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \

@@ -64,7 +64,7 @@ fn detects_short_period_fence_loop() {
 
 #[test]
 fn rejects_fence_body_with_varying_prefixes() {
-    // 2026-05-24: this case was previously detected by Avarok's
+    // 2026-05-24: this case was previously detected by Atlas's
     // scan-anywhere substring-repeat detector. After the switch to
     // vLLM's end-anchored algorithm, the detector intentionally
     // does NOT fire here — the varying connective prefixes mean

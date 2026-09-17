@@ -37,7 +37,7 @@ body:
     id: alternatives
     attributes:
       label: Alternatives considered
-      description: Existing Avarok features, other inference stacks, or workarounds you've ruled out.
+      description: Existing Atlas features, other inference stacks, or workarounds you've ruled out.
 
   - type: textarea
     id: additional

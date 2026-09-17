@@ -1,4 +1,4 @@
-# Avarok Spark — NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 on GB10
+# Atlas Spark — NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/nemotron-3-nano-30b-a3b/nvfp4/Dockerfile -t avarok-nemotron .

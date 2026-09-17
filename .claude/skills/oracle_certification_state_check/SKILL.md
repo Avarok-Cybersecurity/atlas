@@ -26,7 +26,7 @@ reported as one. Everything below either prevents the first or dates the second.
 | can the box write, sign, find recipes? | `./target/release/spark doctor` | `ls -ld ~/.avarok` |
 | what got recorded? | `spark benchmark --pull-request-gate-check --pr <N>` — read the words | the gate's `rc` |
 | what counts as a perf path? | `sed -n '/pub const PERF_PATHS/,/];/p' crates/avarok-plugin/src/gate/coverage.rs` | a list copied here |
-| is another PR mid-certification? | the bot's `<!-- avarok-certification-state: -->` marker, `isInMergeQueue`, added records | a guess from titles |
+| is another PR mid-certification? | the bot's `<!-- atlas-certification-state: -->` marker, `isInMergeQueue`, added records | a guess from titles |
 | were the stamp/seal jobs stale? | `gh api …/actions/runs/<id>/jobs` vs the `Stamp`/`Seal` check-run times | the colour of the check |
 
 The one thing this skill adds is the lockfile, because none of the above remembers that a

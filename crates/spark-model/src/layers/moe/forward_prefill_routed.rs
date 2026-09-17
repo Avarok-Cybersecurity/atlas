@@ -135,7 +135,7 @@ impl MoeLayer {
         let mut cutlass_eoff: Option<Vec<i32>> = None;
         if max_m_tiles > 0 {
             // CUTLASS grouped NVFP4 gate_up reads the ORIGINAL [N,K/2] tables
-            // (CUTLASS B is ColumnMajor = K-contiguous), NOT the Avarok
+            // (CUTLASS B is ColumnMajor = K-contiguous), NOT the Atlas
             // transposed ones, so it must be reachable when gate_ptrs_t is
             // absent — that is exactly the originals-only layout a
             // checkpoint-native model runs in.

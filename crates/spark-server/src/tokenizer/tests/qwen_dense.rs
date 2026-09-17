@@ -242,7 +242,7 @@ fn q38_default_keeps_history_think_and_injects_no_effort_sentence() {
     // NEUTRAL "medium" fallback — no instruction sentence — instead of the
     // old "high" fallback that the template escalated to the most expensive
     // xhigh directive. The template's own `default('xhigh')` must stay
-    // unreachable (Avarok always passes an explicit string), and
+    // unreachable (Atlas always passes an explicit string), and
     // `preserve_thinking` unset must leave the variable UNDEFINED — Jinja
     // `none` would flip the default to strip.
     assert_eq!(r, q38_unset_golden());

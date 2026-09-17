@@ -16,20 +16,20 @@ use std::time::{Duration, Instant};
 
 use super::super::plan::Unit;
 use super::super::runner::{GateRunner, RunCtx, RunOutcome, classify};
-use super::avarokctl::{AttachEnd, Avarokctl, Exit, StreamEvent, SubmitSpec};
+use super::atlasctl::{Atlasctl, AttachEnd, Exit, StreamEvent, SubmitSpec};
 use super::node::Node;
 use super::place::{Expect, place};
 
 /// Re-attaches allowed per unit before the stream is given up on. Each one
-/// is itself a bounded reconnect inside avarokctl; ten of them is a link that
+/// is itself a bounded reconnect inside atlasctl; ten of them is a link that
 /// keeps dying, not a blip.
 pub const MAX_REATTACH: u32 = 10;
 
-/// avarokctl's `JobKey` bound: `[A-Za-z0-9._-]{1,64}`.
+/// atlasctl's `JobKey` bound: `[A-Za-z0-9._-]{1,64}`.
 pub const JOB_KEY_MAX: usize = 64;
 
 pub struct RemoteRunner {
-    pub avarokctl: Arc<dyn Avarokctl>,
+    pub atlasctl: Arc<dyn Atlasctl>,
     pub node: Node,
     /// Distinguishes this campaign's jobs from a previous one's on the node.
     pub run_id: String,
@@ -44,7 +44,7 @@ pub struct RemoteRunner {
 impl RemoteRunner {
     /// `certify-<run>-<node>-<gate>[-s<i>of<n>]`: the same unit on the same
     /// node in the same campaign is the same job, so a retry after a lost
-    /// driver resumes rather than duplicates. avarokctl caps a key at 64
+    /// driver resumes rather than duplicates. atlasctl caps a key at 64
     /// characters; when the whole does not fit, the gate's name is cut from
     /// the FRONT so the shard tail — the part that tells sibling units
     /// apart — always survives.
@@ -73,7 +73,7 @@ impl RemoteRunner {
         &self,
         what: &str,
         exit: Exit,
-        err: Option<super::avarokctl::ErrorObj>,
+        err: Option<super::atlasctl::ErrorObj>,
     ) -> RunOutcome {
         let retryable = matches!(exit, Exit::Unreachable | Exit::StreamLost)
             || err.as_ref().is_some_and(|e| e.retryable);
@@ -82,7 +82,7 @@ impl RemoteRunner {
                 "{} on {}: {}",
                 what,
                 self.node.addr,
-                err.map_or_else(|| format!("avarokctl exited {exit:?}"), |e| e.to_string())
+                err.map_or_else(|| format!("atlasctl exited {exit:?}"), |e| e.to_string())
             ),
             retryable,
         )
@@ -142,7 +142,7 @@ impl GateRunner for RemoteRunner {
             max_run_s: u32::try_from(ctx.deadline.as_secs()).ok(),
             note: format!("spark bench certify run {}", self.run_id),
         };
-        let submitted = match self.avarokctl.submit(&self.node.addr, &spec) {
+        let submitted = match self.atlasctl.submit(&self.node.addr, &spec) {
             Ok(Ok(s)) => s,
             Ok(Err((exit, err))) => return self.refused("submit", exit, err),
             Err(e) => return Self::harness(format!("submit on {}: {e:#}", self.node.addr), true),
@@ -160,7 +160,7 @@ impl GateRunner for RemoteRunner {
         let end = loop {
             let left = ctx.deadline.saturating_sub(started.elapsed());
             if left.is_zero() {
-                let _ = self.avarokctl.cancel(&self.node.addr, &submitted.job_id);
+                let _ = self.atlasctl.cancel(&self.node.addr, &submitted.job_id);
                 return RunOutcome::TimedOut;
             }
             let mut on_event = |ev: &StreamEvent| {
@@ -168,7 +168,7 @@ impl GateRunner for RemoteRunner {
                     on_line(&l);
                 }
             };
-            match self.avarokctl.attach(
+            match self.atlasctl.attach(
                 &self.node.addr,
                 &submitted.job_id,
                 from_seq,
@@ -194,7 +194,7 @@ impl GateRunner for RemoteRunner {
             }
         };
         if self.cancel.load(Ordering::SeqCst) {
-            let _ = self.avarokctl.cancel(&self.node.addr, &submitted.job_id);
+            let _ = self.atlasctl.cancel(&self.node.addr, &submitted.job_id);
             return RunOutcome::Cancelled;
         }
         let exit_code = match end {
@@ -215,7 +215,7 @@ impl GateRunner for RemoteRunner {
                 _ => return Self::harness(format!("{} on {}", detail, self.node.addr), true),
             },
             AttachEnd::Cancelled => {
-                let _ = self.avarokctl.cancel(&self.node.addr, &submitted.job_id);
+                let _ = self.atlasctl.cancel(&self.node.addr, &submitted.job_id);
                 return RunOutcome::Cancelled;
             }
             AttachEnd::StreamLost { last_seq } => {
@@ -233,7 +233,7 @@ impl GateRunner for RemoteRunner {
         // Fetch and place.
         let scratch = self.scratch.join(&submitted.job_id);
         let files = match self
-            .avarokctl
+            .atlasctl
             .fetch(&self.node.addr, &submitted.job_id, &scratch)
         {
             Ok(Ok(f)) => f,

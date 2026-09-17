@@ -460,7 +460,7 @@ extern "C" __global__ void reshape_and_cache_flash_turbo3(
 // 6.4x compression vs bf16. Block layout: 4 bytes data + 1 FP8 scale byte
 // per 16-element group = 5 bytes per 16 elems = 2.5 bits/elem (data) +
 // 0.5 bits/elem (scale) = 3.0 bits/elem total. Pack: 4 indices per byte.
-// Adapted to Avarok's GROUP_SIZE=16 layout to stay NVFP4-compatible (the
+// Adapted to Atlas's GROUP_SIZE=16 layout to stay NVFP4-compatible (the
 // alternative 32-elem grouping would buy q4_0-style parity at the cost of
 // breaking the per-group scale section's NVFP4 alignment).
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused MoE Expert+Shared GEMV — FP8 (E4M3) weight variant.
+// Atlas Fused MoE Expert+Shared GEMV — FP8 (E4M3) weight variant.
 //
 // Same grid layout as moe_shared_expert_fused.cu but with FP8 weight format:
 //   weight: [N, K] uint8 — one byte per weight (FP8 E4M3)

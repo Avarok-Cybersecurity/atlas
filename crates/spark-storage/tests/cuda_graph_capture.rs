@@ -235,7 +235,7 @@ fn graph_replay_speedup() {
     let ctx = CudaCtx::new(0).expect("cuda init");
     let bundle = build(&ctx, 0xBEEF);
 
-    // Real Avarok decode steps span N transformer layers (typical 32-80).
+    // Real Atlas decode steps span N transformer layers (typical 32-80).
     // The plan captures the *per-layer* body, so an N-layer step replays
     // the same graph N times. Graph wins compound across layers because
     // launch overhead is amortised across N×5 kernel calls per step.

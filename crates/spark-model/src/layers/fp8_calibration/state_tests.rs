@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Avarok #919 regression tests for the FP8 KV calibration state machine.
+//! Atlas #919 regression tests for the FP8 KV calibration state machine.
 //!
 //! Red before the fix: pre-#919 `record` froze unconditionally on its first
 //! call, so every `freeze_at_*` case below returned `Freeze` after 13 tokens

@@ -151,7 +151,7 @@ pub struct Glm5NextLayer {
 /// (`dense_gemv_bf16_batchm`) is **bit-identical to M serial GEMVs** and stops at
 /// `DENSE_GEMV_BATCHM_MAX_M`. Past it the same call falls to the tile GEMM, which both
 /// reassociates (so prefill stops being bit-identical to the per-token walk) and is the slower
-/// kernel at these widths — Avarok measured it 3.6x slower than the batched GEMV at M <= 8.
+/// kernel at these widths — Atlas measured it 3.6x slower than the batched GEMV at M <= 8.
 ///
 /// 🔴 WIDENED 8 -> 16 (2026-09-02). The A65 measurement below — "R = 32 is no faster" — was
 /// TRUE AND MISATTRIBUTED. R = 32 lost because it left the batched GEMV for the tile GEMM, not
@@ -1197,7 +1197,7 @@ impl TransformerLayer for Glm5NextLayer {
         // all its rows, so this is reuse, not a new path. What it does NOT yet amortize is the
         // routed MoE: `forward_moe`'s expert-union arm is capped at 4 rows (the union kernel
         // resolves `rows * top_k <= 64` ids in one block), so above that each row still pays its
-        // own 8 experts. That caps the win here at ~5x — Avarok's own sizing note puts KDA at
+        // own 8 experts. That caps the win here at ~5x — Atlas's own sizing note puts KDA at
         // 9,366 MB/token against ~2.1 GB/token of routed-expert traffic, so amortizing the
         // former is most of the prize and the latter needs a grouped MoE GEMM (separate lane).
         //

@@ -2,12 +2,12 @@
 
 //! Opt-in FlashInfer GDN prefill via `dlopen(libatlasgdn.so)` — behind `AVAROK_GDN_FLASHINFER=1`.
 //!
-//! Bridges Avarok's native packed-QKV + interleaved gate/beta buffers to the AOT-exported
+//! Bridges Atlas's native packed-QKV + interleaved gate/beta buffers to the AOT-exported
 //! FlashInfer chunked gated-delta-rule scan (tensor-core, ~11× the scalar FLA `chunk_delta_h`
 //! at the Holo shape — see `3rdparty_patches/gdn_aot/STATUS.md`). The C-ABI shim
-//! (`atlas_gdn_prefill_packed`) takes Avarok's exact native pointers: it deinterleaves
+//! (`atlas_gdn_prefill_packed`) takes Atlas's exact native pointers: it deinterleaves
 //! gate/beta in-shim and reads q/k/v straight out of the packed buffer via `conv_dim`
-//! strides (no copy). Avarok's `gate` is already linear α (the kernel does the `logf`),
+//! strides (no copy). Atlas's `gate` is already linear α (the kernel does the `logf`),
 //! so there is NO gate-space conversion.
 //!
 //! dlopen (not link-time) keeps this fully opt-in: the binary builds and runs without the
@@ -132,7 +132,7 @@ pub fn available() -> bool {
     std::env::var("AVAROK_GDN_FLASHINFER").as_deref() == Ok("1") && lib().is_some()
 }
 
-/// Run one prefill GDN scan through the FlashInfer kernel on Avarok's native buffers.
+/// Run one prefill GDN scan through the FlashInfer kernel on Atlas's native buffers.
 ///
 /// `qkv`: packed `[Q(key_dim)|K(key_dim)|V(value_dim)]` bf16, row stride `conv_dim`.
 /// `gate_beta`: interleaved `[gate(nv)|beta(nv)]` fp32, row stride `gb_stride`.

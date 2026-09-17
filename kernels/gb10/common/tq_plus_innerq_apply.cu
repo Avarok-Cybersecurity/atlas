@@ -17,7 +17,7 @@
 namespace tq_plus {
 
 // InnerQ device state — defined HERE, in the same TU as the only kernels that
-// read/write it. Avarok loads each .cu as its own PTX module (no -rdc device
+// read/write it. Atlas loads each .cu as its own PTX module (no -rdc device
 // linking), so state and its consumers must share one module or the host
 // driver (innerq_driver.rs, module "tq_plus_innerq_apply") uploads into a copy
 // the kernels never see. Scales default to identity (1.0); finalize uploads

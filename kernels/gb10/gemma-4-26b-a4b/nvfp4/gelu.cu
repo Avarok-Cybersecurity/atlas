@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok GELU activation kernels for Gemma-4 (SM121).
+// Atlas GELU activation kernels for Gemma-4 (SM121).
 //
 // Gemma-4 uses GELU with tanh approximation (PyTorch convention) instead
 // of SiLU used by Qwen/Llama models. The FFN computes:

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 Dequant+GEMM — Fused FP8-E4M3 weight dequant + BF16 WMMA GEMM.
+// Atlas W8A16 Dequant+GEMM — Fused FP8-E4M3 weight dequant + BF16 WMMA GEMM.
 // HIP/gfx1151 (AMD WMMA) port of the NVIDIA mma.sync version.
 //
 // C[M,N] = A[M,K] (BF16 activations) * dequant(B[N,K] (FP8 E4M3 weights))

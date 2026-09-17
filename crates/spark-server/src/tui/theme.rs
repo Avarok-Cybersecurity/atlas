@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The Avarok TUI design system.
+//! The Atlas TUI design system.
 //!
 //! Three brand chevron colors with fixed semantic momentum roles:
 //! purple = identity/selection, cyan = activity/focus, green = success/ready.

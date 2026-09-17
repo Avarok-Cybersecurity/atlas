@@ -4,7 +4,7 @@
 //!
 //! Populates `message.refusal` on the blocking chat-completion path so
 //! safety-aware clients (OpenAI Python SDK, Vercel AI SDK) that branch on
-//! `message.refusal != null` see the expected shape. Avarok does **not**
+//! `message.refusal != null` see the expected shape. Atlas does **not**
 //! train safety behavior into its models — this detector only recognizes
 //! the text the underlying model emits when it declines to answer.
 //!

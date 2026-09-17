@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSM State Quality Degradation Profiler v2 for Avarok.
+SSM State Quality Degradation Profiler v2 for Atlas.
 
 Extended version with:
 - Harder questions (needle-in-haystack, multi-step reasoning)

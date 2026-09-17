@@ -4,21 +4,21 @@
 //!
 //! Design artifact, **not** a production path. Nothing here runs on GPU, nothing here is wired
 //! into a forward pass, and no checkpoint tensor is bound. Its only job is to prove the GLM KDA
-//! equations in Avarok-shaped code against golden vectors produced by HuggingFace itself, before a
+//! equations in Atlas-shaped code against golden vectors produced by HuggingFace itself, before a
 //! single CUDA kernel is written.
 //!
 //! # Why this exists
 //!
-//! GLM KDA is **not** a thin parameterization of Avarok's Qwen GDN (`layers::qwen3_ssm`). Four
+//! GLM KDA is **not** a thin parameterization of Atlas's Qwen GDN (`layers::qwen3_ssm`). Four
 //! structural items are genuinely new:
 //!
-//! 1. **Decay is per (head, key-channel)**, not scalar-per-head. Avarok's `compute_gdn_gates`
+//! 1. **Decay is per (head, key-channel)**, not scalar-per-head. Atlas's `compute_gdn_gates`
 //!    writes `gate_out[num_tokens, num_v_heads]`; KDA needs `[T, H, head_dim]`.
 //! 2. **The decay source is a low-rank projection** `f_a: hidden -> head_dim`,
-//!    `f_b: head_dim -> H*head_dim`. Avarok derives its scalar from the fused `BA` projection.
+//!    `f_b: head_dim -> H*head_dim`. Atlas derives its scalar from the fused `BA` projection.
 //! 3. **The gate law is bounded**: `lower_bound * sigmoid(exp(A_log) * (g + dt_bias))`, versus
-//!    Avarok's unbounded `exp(-exp(A_log) * softplus(a + dt_bias))`.
-//! 4. **The output gate is low-rank** `g_a`/`g_b`. Avarok takes a full-rank `Z` out of its fused
+//!    Atlas's unbounded `exp(-exp(A_log) * softplus(a + dt_bias))`.
+//! 4. **The output gate is low-rank** `g_a`/`g_b`. Atlas takes a full-rank `Z` out of its fused
 //!    `QKVZ` projection; the KDA checkpoint has no `Z` tensor at all.
 //!
 //! See `docs/glm5next/KDA-VS-QWEN-GDN.md` for the full REUSE/ADAPT/NEW table.
@@ -38,7 +38,7 @@
 //! `gate_lower_bound`, `rms_norm_eps` and `hidden_act` must all come from the checkpoint config.
 //! vLLM happens to agree with HF on this checkpoint only by coincidence: it looks up the legacy
 //! key `lower_bound` while the checkpoint stores `gate_lower_bound`, and falls back to a default
-//! of `-5.0` that happens to match. Avarok must not inherit that.
+//! of `-5.0` that happens to match. Atlas must not inherit that.
 //!
 //! # Layout conventions
 //!
@@ -125,7 +125,7 @@ pub fn bounded_gate(
 
 /// Unbounded Qwen-GDN gate, kept only so the microtest can show the two laws diverge.
 ///
-/// Avarok's `compute_gdn_gates` stores `exp(g)`; this returns `g` itself, matching the KDA
+/// Atlas's `compute_gdn_gates` stores `exp(g)`; this returns `g` itself, matching the KDA
 /// convention where the exponential is taken inside the recurrence.
 pub fn unbounded_gdn_gate(g_raw: f32, dt_bias: f32, a_log: f32) -> f32 {
     let x = g_raw + dt_bias;
@@ -162,7 +162,7 @@ pub fn kda_recurrent(
 
 /// Same recurrence, but `q`/`k` are **already L2-normalised**.
 ///
-/// This is Avarok's contract, where `causal_conv1d_update_l2norm` fuses conv + SiLU + L2
+/// This is Atlas's contract, where `causal_conv1d_update_l2norm` fuses conv + SiLU + L2
 /// upstream, and it is what the `kda_recurrent` GPU kernel consumes. Keep it separate
 /// rather than passing pre-normalised vectors into [`kda_recurrent`]: re-normalising an
 /// already-unit vector is nearly a no-op in fp32 (it scales by `1/sqrt(1+1e-6)`), but on a
@@ -243,13 +243,13 @@ pub fn kda_chunked(
     kda_chunked_prenorm(&qn, &kn, v, gate, beta, dims, chunk, state)
 }
 
-/// Same chunked formulation, but `q`/`k` are **already L2-normalised** — Avarok's contract, where
+/// Same chunked formulation, but `q`/`k` are **already L2-normalised** — Atlas's contract, where
 /// the conv path (fused on decode, `l2_norm_bf16` on prefill) has already normalised them.
 ///
 /// Split out for the same reason as [`kda_recurrent_prenorm`]: re-normalising an already-unit
 /// vector is nearly a no-op in fp32 but on a bf16-rounded vector it RESTORES the norm the
 /// rounding destroyed, which makes the reference disagree with the kernel and looks exactly
-/// like a kernel bug. Avarok's prefill L2 writes **bf16**, so this path is always the bf16 case.
+/// like a kernel bug. Atlas's prefill L2 writes **bf16**, so this path is always the bf16 case.
 #[allow(clippy::too_many_arguments)]
 pub fn kda_chunked_prenorm(
     qn: &[f32],
@@ -418,8 +418,8 @@ pub fn rms_norm_gated(x: &[f32], weight: &[f32], gate: &[f32], d: usize, eps: f3
 
 /// Weights for one KDA layer, reference-only. Torch `Linear` layout `[out, in]` throughout.
 ///
-/// Note what is **absent** relative to Avarok's Qwen GDN: there is no `Z` tensor. The output gate is
-/// `g_a`/`g_b`, and the decay source is `f_a`/`f_b`. Neither has a slot in Avarok's fused
+/// Note what is **absent** relative to Atlas's Qwen GDN: there is no `Z` tensor. The output gate is
+/// `g_a`/`g_b`, and the decay source is `f_a`/`f_b`. Neither has a slot in Atlas's fused
 /// `QKVZ` + `BA` layout, so weight binding is not a rename map.
 pub struct KdaWeights<'a> {
     pub w_f_a: &'a [f32],
@@ -435,7 +435,7 @@ pub struct KdaWeights<'a> {
 
 /// End-to-end reference for one KDA layer, from post-conv q/k/v to `o_proj` output.
 ///
-/// The short conv is intentionally excluded: it is REUSE against Avarok's existing fused
+/// The short conv is intentionally excluded: it is REUSE against Atlas's existing fused
 /// conv+SiLU+L2 kernel, and folding it in would couple two independent checks.
 #[allow(clippy::too_many_arguments)]
 pub fn kda_reference_layer(

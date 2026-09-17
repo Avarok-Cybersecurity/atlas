@@ -111,6 +111,6 @@ pub async fn get_model(
 pub async fn embeddings_stub() -> Response {
     openai_error_response(
         StatusCode::NOT_IMPLEMENTED,
-        "Embeddings are not supported by this model. Avarok serves generative (chat/completion) models only.".into(),
+        "Embeddings are not supported by this model. Atlas serves generative (chat/completion) models only.".into(),
     )
 }

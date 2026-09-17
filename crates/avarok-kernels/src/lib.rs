@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
-//! Avarok CUDA kernel PTX modules.
+//! Atlas CUDA kernel PTX modules.
 //!
 //! Single source of truth for embedded PTX. The `spark-runtime`
 //! (pure Rust engine) and benchmarks consume these.
@@ -246,7 +246,7 @@ pub struct ModelBehavior {
     /// when the prefix forces them into that structure. Default: false
     /// (keep the existing Nemotron-Nano-correct behavior).
     pub disable_tool_steering: bool,
-    /// Do not append Avarok's derived `<environment>working_directory` block to
+    /// Do not append Atlas's derived `<environment>working_directory` block to
     /// a client system prompt. Native agent clients may already provide the
     /// cwd; duplicating it can become a tool-selection attractor.
     pub disable_cwd_hint_injection: bool,

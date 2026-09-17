@@ -1,4 +1,4 @@
-# LoRA on the Avarok main decoder: embed/vocab overlay + MoE expert deltas — integrated implementation plan
+# LoRA on the Atlas main decoder: embed/vocab overlay + MoE expert deltas — integrated implementation plan
 
 **Date:** 2026-07-16
 **Branch:** `feat/lora-moe-embed` (worktree `ternary-bonsai`)
@@ -195,7 +195,7 @@ Deferred, interfaces pinned: **P2** `ExpertLoraRoute` `a/b_table [max_loras×E]`
 | grouped expert BGMV | F1-P2 | new `.cu` in `common/` | grouped analogue of `apply_lora_bgmv`, `grid.z=expert`, reads `expert_offsets` + `seq_slot` |
 | fused grouped-delta epilogue | F1-P3 | fold into NVFP4/b12x grouped GEMM | folds BF16 delta into grouped-GEMM output stage |
 
-Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every target (dedups to ~1 nvcc call), module name = file stem `token_overlay`, no `KERNEL.toml` edit; all entry points `extern "C" __global__`, SPDX line 1, `(unsigned long long)id*h` indexing to avoid 32-bit overflow at large vocab×h. `AVAROK_KERNEL_SET_HASH` forces the `avarok-kernels` recrate (no stale PTX). Human builds in docker `avarok-gb10:b12x-ready`: `AVAROK_TARGET_MODEL='*' cargo build -p spark-server --release --bin spark --no-default-features --features cuda`. Pure-Rust type-check: `AVAROK_SKIP_BUILD=1 cargo check -p avarok-core -p spark-model`.
+Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every target (dedups to ~1 nvcc call), module name = file stem `token_overlay`, no `KERNEL.toml` edit; all entry points `extern "C" __global__`, SPDX line 1, `(unsigned long long)id*h` indexing to avoid 32-bit overflow at large vocab×h. `AVAROK_KERNEL_SET_HASH` forces the `avarok-kernels` recrate (no stale PTX). Human builds in docker `atlas-gb10:b12x-ready`: `AVAROK_TARGET_MODEL='*' cargo build -p spark-server --release --bin spark --no-default-features --features cuda`. Pure-Rust type-check: `AVAROK_SKIP_BUILD=1 cargo check -p avarok-core -p spark-model`.
 
 ---
 
@@ -209,7 +209,7 @@ Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every ta
 
 **GPU (`#[ignore]` / gated harness, human runs build):**
 - *F2:* `embed_overlay_routed` replaces exactly mapped rows, base rows byte-identical across a **mixed `seq_slot` batch** (the correctness invariant); `lmhead_overlay_routed` matches host dot reference for overridden ids, other columns untouched; fp32 parity.
-- *F1 oracle (reference, not another Avarok path):* dequant base experts→BF16, apply `E_delta=scale·B·A` densely per expert in host/torch, compare full-MoE logits within BF16 tol. Cases: router-only (top-k selection changes as predicted); single-expert (only tokens routed to that expert change, rest bit-identical); all-experts small-rank on 1–2 layers (full match); **prefill vs decode** consistency (guards the two injection sites); **base isolation** (adapter loaded but request routed to base ⇒ bit-identical to no-LoRA).
+- *F1 oracle (reference, not another Atlas path):* dequant base experts→BF16, apply `E_delta=scale·B·A` densely per expert in host/torch, compare full-MoE logits within BF16 tol. Cases: router-only (top-k selection changes as predicted); single-expert (only tokens routed to that expert change, rest bit-identical); all-experts small-rank on 1–2 layers (full match); **prefill vs decode** consistency (guards the two injection sites); **base isolation** (adapter loaded but request routed to base ⇒ bit-identical to no-LoRA).
 
 **E2E (human, `/verify` on GPU):** F2 — serve holo/qwen with a kuku-style `trainable_tokens` adapter; assert the added token's logit + embedding row change and a co-batched base request is bit-identical to no-adapter; confirm ordering by a golden logit. F1 — synthetic per-expert adapter fixture (documented as the P1 vehicle; a real fused export needs P3).
 

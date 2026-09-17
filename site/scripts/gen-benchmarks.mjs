@@ -2,9 +2,9 @@
 // =============================================================================
 // gen-benchmarks.mjs — generate src/lib/benchmarks.generated.json from baselines
 // -----------------------------------------------------------------------------
-// SSOT: the avarok test harness writes throughput baselines to tests/baselines/
+// SSOT: the atlas test harness writes throughput baselines to tests/baselines/
 //   (one *.json per gated model). Those files are the single source of truth for
-//   the "verified" throughput a shipped Avarok image is held to. An EMPTY
+//   the "verified" throughput a shipped Atlas image is held to. An EMPTY
 //   tests/baselines/ (only .gitkeep + README.md) is the EXPECTED "pending"
 //   state before the first gate run — it is NOT a build failure.
 //
@@ -94,7 +94,7 @@ const obj = {
   generated_sha: sha,
   generated_date: date,
   methodology:
-    'An Avarok image ships only after the serve matrix passes: every model ' +
+    'An Atlas image ships only after the serve matrix passes: every model ' +
     'boots, stays coherent (greedy determinism, no token leakage, tool ' +
     'reliability), and holds throughput within 10% of its committed baseline.',
   gate_doc:

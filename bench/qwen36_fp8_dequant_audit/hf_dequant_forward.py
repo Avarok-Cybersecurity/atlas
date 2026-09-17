@@ -2,7 +2,7 @@
 """HF CPU forward on the dequanted FP8->BF16 snapshot.
 
 Phase 2a-step-3. Loads `/workspace/.cache/huggingface/Qwen3.6-35B-A3B-FP8-dequanted-BF16/`
-(produced by dequant_to_bf16.py), runs forward on Avarok's exact 18920-token
+(produced by dequant_to_bf16.py), runs forward on Atlas's exact 18920-token
 prompt (from /tmp/avarok_tokens.json), and dumps per-layer last-token hidden
 states to /workspace/avarok-dumps/fp8dequant/hf_L{0..39}.bin matching the
 Phase alpha layout. Then cosine_compare.py reads these against
@@ -116,7 +116,7 @@ def main() -> None:
     top10 = [(int(i), float(logits[i])) for i in top10_idx]
     print(f"  HF[FP8->BF16] top-10 logits: {top10}", flush=True)
     print(
-        f"  (Avarok reported top-10: [(9764, 21.5), (760, 20.875), (6820, 20.25), ...])",
+        f"  (Atlas reported top-10: [(9764, 21.5), (760, 20.875), (6820, 20.25), ...])",
         flush=True,
     )
 

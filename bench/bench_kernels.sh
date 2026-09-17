@@ -2,7 +2,7 @@
 set -e
 
 echo "=========================================================="
-echo " Running Avarok Kernel Microbenchmarks (Serially)"
+echo " Running Atlas Kernel Microbenchmarks (Serially)"
 echo "=========================================================="
 
 # Ensure CUDA is in PATH for nvcc matching build.rs

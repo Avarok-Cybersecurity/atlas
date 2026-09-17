@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run N opencode probes sequentially against the currently-running Avarok
+# Run N opencode probes sequentially against the currently-running Atlas
 # container (and optionally a remote vLLM via SSH tunnel) and score each one.
-# Intended for statistical comparison of Avarok drift-mitigation tiers
+# Intended for statistical comparison of Atlas drift-mitigation tiers
 # (N≥10 per tier required to overcome the FP8 per-run variance).
 #
 # Usage:
@@ -42,7 +42,7 @@ COSINE_MODE=0
 SKIP_WARMUP=0
 REMOTE_ONLY=0
 BAIL=0
-# --claude-code: drive Claude Code (the `claude` CLI) against Avarok instead of
+# --claude-code: drive Claude Code (the `claude` CLI) against Atlas instead of
 # opencode, via `sudo -u claude env ANTHROPIC_BASE_URL=... claude -p ...`.
 # Reproduces the non-opencode-client looping/garbling failure. Defaults to
 # plan mode (CC_PERMISSION_MODE), the regime in which the failure was reported.
@@ -87,7 +87,7 @@ LOCAL_API="http://localhost:8888/v1"
 # run` use debug while `cargo build --release` uses release.
 #
 # NOTE — this is the SECONDARY cost. Forensics on the moegridfix build showed
-# the slow runs (260-360s) were dominated by an Avarok-side FP8 deep-context
+# the slow runs (260-360s) were dominated by an Atlas-side FP8 deep-context
 # degeneration: once the agentic context passes the 16384 window the model
 # leaks repeated <tool_call> XML as plain text and runs a turn to the max_tokens
 # cap (~8200 tok @ ~31 tok/s ≈ 260s). That is fixed IN THE ENGINE by the
@@ -255,10 +255,10 @@ run_one() {
   # --dir sets opencode's working directory; the model sees only "current
   # working directory" in the prompt, never the absolute path.
   if [[ "${CLAUDE_CODE}" == "1" ]]; then
-    # Drive Claude Code against Avarok. Runs as user `claude` with its real
+    # Drive Claude Code against Atlas. Runs as user `claude` with its real
     # ~/.claude config (model=claude-opus-4-8, alwaysThinking, effort=high) so
     # this faithfully reproduces the reported failure regime. ANTHROPIC_BASE_URL
-    # routes to Avarok; cwd is the target dir (claude has no --dir flag). Default
+    # routes to Atlas; cwd is the target dir (claude has no --dir flag). Default
     # plan mode (CC_PERMISSION_MODE) — the regime in which the loop was reported.
     # Prompt is piped via stdin (NOT a positional): claude's `--add-dir` is
     # variadic and would otherwise swallow a trailing prompt arg. cwd is the
@@ -324,7 +324,7 @@ run_one() {
   # the scorer's curl then hit, producing false positives/negatives. The scorer
   # now uses an ephemeral port (so it is already isolated), but we reap the leak
   # at the source too. Identify victims PRECISELY by working directory == this
-  # run's target dir, so we never touch the Avarok container or anything else.
+  # run's target dir, so we never touch the Atlas container or anything else.
   # Same-user processes (opencode runs as us), no sudo needed.
   if [[ -n "${TARGET}" && -d "${TARGET}" ]]; then
     _tdir_real=$(readlink -f "${TARGET}" 2>/dev/null || echo "${TARGET}")
@@ -336,7 +336,7 @@ run_one() {
     done
   fi
 
-  # Avarok log window for THIS run only (local only).
+  # Atlas log window for THIS run only (local only).
   if [[ "${label}" == "local" ]]; then
     START_TS_INT=${START_TS%.*}
     sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true
@@ -367,7 +367,7 @@ run_one() {
 
   # Claude-Code confirm signal: plan mode writes no files, so the cargo/webserver
   # line is not the loop signal. Report (a) longest run of repeated lines in the
-  # captured assistant text (degeneration fingerprint) and (b) Avarok-side
+  # captured assistant text (degeneration fingerprint) and (b) Atlas-side
   # loop/repetition watchdog fires during this run's window.
   if [[ "${CLAUDE_CODE}" == "1" ]]; then
     local cc_rep cc_wd

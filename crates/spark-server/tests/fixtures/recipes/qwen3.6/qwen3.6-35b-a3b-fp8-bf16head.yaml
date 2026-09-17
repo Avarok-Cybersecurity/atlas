@@ -1,12 +1,12 @@
 recipe_version: "2"
 model: Qwen/Qwen3.6-35B-A3B-FP8
-runtime: avarok
+runtime: atlas
 container: avarok/atlas-gb10:latest
 max_nodes: 1
 
 metadata:
   description: |
-    Qwen3.6-35B-A3B (qwen3_5_moe) native FP8 on Avarok — the SAFE FLAGSHIP
+    Qwen3.6-35B-A3B (qwen3_5_moe) native FP8 on Atlas — the SAFE FLAGSHIP
     default. bf16 lm-head (full-precision 248K-vocab logit projection) and
     bf16 KV at the 32K agentic operating point. This is the configuration
     verified at 10/10 on the opencode webserver_ok harness (N=10, 2026-06-07)
@@ -20,7 +20,7 @@ metadata:
     bf16 is the safest default; nvfp4-head is a near-neutral-wall, lower-VRAM
     sibling. The earlier "lm-head quant collapses quality" claim was opencode
     harness-hang contamination, fully retracted.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: fp8

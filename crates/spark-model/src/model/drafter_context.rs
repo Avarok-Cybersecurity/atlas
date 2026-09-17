@@ -21,7 +21,7 @@
 //!   rebuild the drafter from scratch costs a measured **1136 ms**
 //!   (`fc` GEMM alone 874 ms over 11,947 rows, GB10 2026-07-21) against only
 //!   ~211 ms/turn of decode saving on the scored workload — **−927 ms/turn**,
-//!   spent on TTFT, the metric Avarok wins 1.80x. Carry pays the same context
+//!   spent on TTFT, the metric Atlas wins 1.80x. Carry pays the same context
 //!   as a **~21.5 ms mean append** instead.
 //!
 //! So the only two configurations worth shipping are BOTH ON and BOTH OFF, and

@@ -630,7 +630,7 @@ pub fn sample_first_token(
 #[cfg(test)]
 mod penalty_scope_tests {
     //! #192: the per-tool-call-segment penalty history scope and the in-tool
-    //! opener-bias strip — the two levers that stop Avarok's own sampling
+    //! opener-bias strip — the two levers that stop Atlas's own sampling
     //! machinery from garbling the SECOND parallel tool call (live 2026-07-02,
     //! hermes on Qwen3.6-27B-NVFP4: call 2 scaffold flipped to space-prefixed
     //! BPE variants `Berlin </ parameter >` + a spurious mid-value

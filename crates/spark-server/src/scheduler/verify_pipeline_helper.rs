@@ -275,7 +275,7 @@ pub fn verify_pick_all_with_pipeline(
     // [K, vocab] logits, CPU-dequants 248k BF16→F32 per position, and runs the
     // 8-stage pipeline + argmax — ~1-3 ms/token of host/PCIe serialization on
     // the dominant MTP verify path, the structural reason vLLM (GPU sampling)
-    // out-decodes Avarok on tool/grammar workloads.
+    // out-decodes Atlas on tool/grammar workloads.
     //
     // But when decoding is GREEDY (temp=0 or AVAROK_FORCE_TEMP_ZERO), penalties
     // are neutral, and we're not inside <think>, the masked-greedy pick at each

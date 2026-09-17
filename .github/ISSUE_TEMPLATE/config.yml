@@ -3,7 +3,7 @@ contact_links:
   - name: Security disclosure
     # Must match the canonical repository (Cargo.toml `repository`). The owner
     # is the org `Avarok-Cybersecurity`, not `avarok` — `avarok` is an
-    # unrelated personal account and `avarok/avarok` does not exist, so the old
+    # unrelated personal account and `avarok/atlas` does not exist, so the old
     # link 404'd and a reporter who followed it had nowhere to file.
     url: https://github.com/Avarok-Cybersecurity/atlas/security/advisories/new
     about: Report a vulnerability privately via GitHub Security Advisories. See SECURITY.md.

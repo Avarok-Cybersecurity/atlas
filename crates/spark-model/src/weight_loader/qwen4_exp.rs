@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `Qwen3.8-Flash-Next` (`qwen4_exp`) weight loader. Port tracked in Avarok
+//! `Qwen3.8-Flash-Next` (`qwen4_exp`) weight loader. Port tracked in Atlas
 //! #753.
 //!
 //! **The mHC highway runs; PLE does not.** The low-rank multi-hyperconnection
@@ -35,7 +35,7 @@
 //!    the model-level `hyper_connection_mixer` — which collapses the streams
 //!    back to one before `lm_head` — carries the final norm. A loader that
 //!    "helpfully" defaults these would be inventing weights.
-//! 2. **mHC is 4 residual streams**, mixed low-rank (rank 320). Avarok's mHC
+//! 2. **mHC is 4 residual streams**, mixed low-rank (rank 320). Atlas's mHC
 //!    plumbing is DeepSeek-V4's, whose mixer is Sinkhorn-normalized — same
 //!    stream layout, different math.
 //! 3. **A QSA indexer** on the 12 full-attention layers.
@@ -457,7 +457,7 @@ impl ModelWeightLoader for Qwen4ExpWeightLoader {
     ) -> Result<Option<MtpWeights>> {
         // Dropped for v1 (#753 item I). The MTP block is effectively a second
         // model: its own 512-expert MoE, its own hyper-connection mixer, its
-        // own QSA indexer, and `fc_embedding`/`fc_hidden` where Avarok's
+        // own QSA indexer, and `fc_embedding`/`fc_hidden` where Atlas's
         // `MtpWeights` wants a fused `eh_proj`. Wiring it before the main
         // forward path works would be building on sand.
         Ok(None)

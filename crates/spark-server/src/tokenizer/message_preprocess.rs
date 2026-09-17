@@ -193,7 +193,7 @@ pub(crate) fn autoclose_assistant_think(messages: &mut [Value]) {
 /// model template renders.
 ///
 /// The OpenAI **developer** role (the o1-style system-instruction role) is
-/// accepted across the Avarok API surface, and the now-removed Holo override
+/// accepted across the Atlas API surface, and the now-removed Holo override
 /// handled it in three places. But a model's OWN shipped
 /// `chat_template.jinja` does not know the role and raises
 /// `Unexpected message role.` on it — so a request carrying a developer

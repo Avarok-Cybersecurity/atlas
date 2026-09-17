@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Avarok Gated Delta Rule decode kernel — MSL port of
+// Atlas Gated Delta Rule decode kernel — MSL port of
 // `kernels/gb10/common/gated_delta_rule.cu::gated_delta_rule_decode`.
 // Same math, same arg layout, same kernel name so spark-model's
 // existing `ops::gdn_decode` dispatches through the metal backend

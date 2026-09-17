@@ -7,7 +7,7 @@
 // returned `Result<Self, String>` (the C++ constructor could fail).
 // The pure-Rust core's constructor takes `(&[String], VocabType,
 // Option<usize>, Option<Vec<i32>>, bool)` and is infallible. This
-// newtype restores the vendored signature so Avarok's
+// newtype restores the vendored signature so Atlas's
 // `grammar/engine.rs` compiles unchanged.
 
 use crate::tokenizer::TokenizerInfo as CoreInfo;

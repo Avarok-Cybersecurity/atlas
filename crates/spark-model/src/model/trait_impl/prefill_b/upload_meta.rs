@@ -106,7 +106,7 @@ impl TransformerModel {
             //     After the run, current_pos += max(t_len, gh, gw).
             // This matters because Qwen3-VL/3.6 was trained with T constant
             // across one image and subsequent text tokens shifted by the
-            // image's max spatial extent — Avarok's previous "T=linear over
+            // image's max spatial extent — Atlas's previous "T=linear over
             // all tokens" scheme produced out-of-distribution position IDs
             // for every post-image token.
             //

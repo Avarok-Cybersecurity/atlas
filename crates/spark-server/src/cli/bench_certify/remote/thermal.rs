@@ -111,9 +111,9 @@ pub trait Probe: Send + Sync {
 }
 
 /// The real probe: this box through `HardwareState`, a remote node through
-/// `avarokctl bench nodes`.
+/// `atlasctl bench nodes`.
 pub struct FleetProbe {
-    pub avarokctl: std::sync::Arc<dyn super::avarokctl::Avarokctl>,
+    pub atlasctl: std::sync::Arc<dyn super::atlasctl::Atlasctl>,
 }
 
 impl Probe for FleetProbe {
@@ -129,7 +129,7 @@ impl Probe for FleetProbe {
             chassis_c: None,
             throttled: None,
         };
-        let Ok(rows) = self.avarokctl.nodes(std::slice::from_ref(&node.addr)) else {
+        let Ok(rows) = self.atlasctl.nodes(std::slice::from_ref(&node.addr)) else {
             return blind;
         };
         let Some(info) = rows

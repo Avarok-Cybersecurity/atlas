@@ -42,7 +42,7 @@
     <dd>{sampleCount(r)}</dd>
   {/if}
   <dt>avarok</dt>
-  <dd>{r.avarok_version}</dd>
+  <dd>{r.atlas_version}</dd>
 </dl>
 
 <div class="gpc-section">metrics</div>

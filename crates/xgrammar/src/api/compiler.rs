@@ -7,7 +7,7 @@
 // crate took `&TokenizerInfo` + `i32`/`isize` integers and returned
 // `Result<_, String>`; the pure-Rust core takes the `TokenizerInfo` by
 // value + `usize`/`i64` and returns a typed `CompileError`. This
-// newtype bridges both so Avarok's `grammar/engine.rs` and
+// newtype bridges both so Atlas's `grammar/engine.rs` and
 // `grammar/compile_*.rs` compile unchanged.
 
 use crate::compiler::GrammarCompiler as CoreCompiler;

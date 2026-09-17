@@ -1,5 +1,5 @@
 /* =============================================================================
-   Avarok — deep violet workstation design system.
+   Atlas — deep violet workstation design system.
    One accent (violet), one verify (green), a near-black canvas, monospace
    instruments. The signature element is the gate receipt (.receipt). Boldness
    is spent there; the rest stays disciplined. Theme is committed dark.
@@ -574,7 +574,7 @@ section { padding: 7rem 2rem; }
 /* =============================================================================
    The ledger.
 
-   Avarok generates its numbers from gate output, so the page is a chain of
+   Atlas generates its numbers from gate output, so the page is a chain of
    custody rather than a landing page. Every section is an entry: an index, a
    chevron in that section's colour, the entry name, then the provenance stamp
    that says where the numbers under it came from. The three-chevron mark stops

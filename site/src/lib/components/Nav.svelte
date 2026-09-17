@@ -1,6 +1,6 @@
 <script>
   import { modal } from '$lib/modal.js';
-  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   // Desktop bar + mobile drawer render from the SAME `nav.links` in data.js.
   // Below the drawer breakpoint (styles/mobile.css) the bar hides and the
   // toggle appears, so phones keep every link the desktop has.
@@ -57,8 +57,8 @@
 
 <nav>
   <div class="nav-inner">
-    <a class="nav-logo" href="/" aria-label="Avarok home" data-sveltekit-reload>
-      <AvarokLockup kind="horizontal" width={135} label="Avarok" />
+    <a class="nav-logo" href="/" aria-label="Atlas home" data-sveltekit-reload>
+      <AtlasLockup kind="horizontal" width={122} />
     </a>
     <div class="nav-links">
       {#each nav.links as l}

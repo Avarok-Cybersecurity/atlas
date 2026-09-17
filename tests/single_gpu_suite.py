@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Single-GPU Model Test Suite for Avarok on DGX Spark
+Single-GPU Model Test Suite for Atlas on DGX Spark
 Tests: coherence, tool calling, TPS, long context
 Usage: python3 single_gpu_suite.py --base-url http://localhost:8888/v1 --model MODEL_ID
 """
@@ -494,7 +494,7 @@ def run_fibonacci_test(base_url, model):
              "elapsed": elapsed, "output": stdout[:200], "code": code[:500]}]
 
 
-# Models whose Avarok tool-call parser is a known gap. We score their
+# Models whose Atlas tool-call parser is a known gap. We score their
 # tool-call tests as N/A so a missing structured call doesn't count as a
 # regression in the aggregated table. Lower-case substring match on the
 # model ID.
@@ -513,9 +513,9 @@ def _tool_calls_supported(model: str) -> bool:
 def run_tool_call_tests(base_url, model):
     """Test tool calling capability.
 
-    For models whose Avarok tool-call parser is a known gap (Mistral Small 4
+    For models whose Atlas tool-call parser is a known gap (Mistral Small 4
     uses [TOOL_CALLS][ARGS] format instead of Hermes JSON; Nemotron
-    models have no Avarok parser at all), we emit N/A results that are
+    models have no Atlas parser at all), we emit N/A results that are
     neither PASS nor FAIL. The aggregator counts N/A as skipped.
     """
     print("\n" + "="*60)
@@ -702,17 +702,17 @@ def run_long_context_tests(base_url, model):
                 # Model produced real output but missed the needle.
                 #
                 # Rationale for PASS: the PURPOSE of this long-context
-                # test is to validate that Avarok handles large prefills
+                # test is to validate that Atlas handles large prefills
                 # without crashing, OOM, or producing degenerate output.
                 # A model that generates a coherent response but fails to
                 # retrieve the specific needle phrase is demonstrating
-                # correct Avarok behavior — the miss is a model-level
+                # correct Atlas behavior — the miss is a model-level
                 # retrieval accuracy issue that varies with NVFP4
                 # quantization depth, context length, and architecture.
                 # The same models miss needles on HF/vLLM at the boundary
                 # of their retrieval capability under quantization.
                 #
-                # Real Avarok bugs (crashes, repetition loops, OOM) are
+                # Real Atlas bugs (crashes, repetition loops, OOM) are
                 # still caught by the checks above.
                 #
                 # TODO: add a separate "retrieval accuracy" test tier that
@@ -821,7 +821,7 @@ def run_vision_test(base_url, model):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Avarok Single-GPU Model Test Suite")
+    parser = argparse.ArgumentParser(description="Atlas Single-GPU Model Test Suite")
     parser.add_argument("--base-url", default="http://localhost:8888/v1", help="API base URL")
     parser.add_argument("--model", required=True, help="Model ID")
     parser.add_argument("--skip-longctx", action="store_true", help="Skip long context tests")

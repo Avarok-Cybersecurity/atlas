@@ -1,11 +1,11 @@
 # Workspace Layout
 
-Avarok is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
+Atlas is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
 
 ## Repository tree (top level)
 
 ```
-avarok/
+atlas/
 ├── README.md                     headline, benchmarks, porting guides
 ├── QUICKSTART.md                 per-model Docker recipes
 ├── CONTRIBUTING.md, AGENTS.md    contributor workflow

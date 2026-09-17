@@ -19,7 +19,7 @@ use avarok_plugin::gate;
 /// Two refusals, because they are two different jobs for the operator, and a
 /// single message sends one of them to the wrong one:
 ///
-/// * [`Self::Unknown`] — the id names no box class Avarok recognises. No run
+/// * [`Self::Unknown`] — the id names no box class Atlas recognises. No run
 ///   will ever fix it; the spelling is wrong (or the class needs registering
 ///   in `avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS` first).
 /// * [`Self::NoRecordYet`] — the id is registered and nothing has been
@@ -33,7 +33,7 @@ use avarok_plugin::gate;
 #[derive(Debug, thiserror::Error)]
 pub(super) enum HardwareRefusal {
     #[error(
-        "{hardware:?} is not a box class Avarok knows, so nothing can be scored against it. \
+        "{hardware:?} is not a box class Atlas knows, so nothing can be scored against it. \
          Registered classes are [{registered}]; {benchmark_id} has baselines for [{measured}]."
     )]
     Unknown {
@@ -107,7 +107,7 @@ pub(super) struct Resolved {
 /// A `hardware` the baseline does not carry is classified against the box-class
 /// registry before it is refused — see [`HardwareRefusal`]: a registered class
 /// with no records ("run it and commit one") is a different instruction than an
-/// id Avarok does not know ("fix the spelling").
+/// id Atlas does not know ("fix the spelling").
 ///
 /// `checkpoint` selects the model variant. `None` takes the one the baseline
 /// marks `default = true` — a committed declaration, not a guess (assembly

@@ -2,7 +2,7 @@
 """Temperature-0.3 sampling amplification analysis (ANGLE study).
 
 Apples-to-apples: recompute final-token logits from BOTH the vLLM-FP8 and
-Avarok-FP8 last-layer residual dumps using the SAME BF16 final-norm + lm_head.
+Atlas-FP8 last-layer residual dumps using the SAME BF16 final-norm + lm_head.
 This isolates the question: given the (small) FP8 forward drift that produces
 cos(L39)=0.988, how much does temperature-0.3 sampling amplify it at the
 token-distribution level vs greedy?
@@ -104,7 +104,7 @@ def main():
         pv = softmax_T(Lv, T); pa = softmax_T(La, T)
         t = tvd(pv, pa)
         klva = kl(pv, pa)
-        # prob mass that Avarok places on vLLM's top-1 token (i.e. agreement prob)
+        # prob mass that Atlas places on vLLM's top-1 token (i.e. agreement prob)
         p_agree = float(pa[av])
         p_v_top1 = float(pv[av])
         # probability the two engines sample DIFFERENT tokens in one independent draw

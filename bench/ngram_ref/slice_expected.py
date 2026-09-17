@@ -2,7 +2,7 @@
 """Expected logits for the SLICED (N-layer) LongCat validation checkpoint.
 
 `lm_head(final_norm(layerN-1_out))` computed from the committed golden — the
-target the Avarok serve must reproduce when handed the 16 fixture token ids.
+target the Atlas serve must reproduce when handed the 16 fixture token ids.
 Prints the last token's top-8 ids + logits (what the server reports back via
 logprobs) and writes them as JSON for the comparison script.
 

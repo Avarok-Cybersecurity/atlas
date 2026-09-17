@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Launch Avarok with Expert Parallelism (EP=2) across two GB10 nodes.
+# Launch Atlas with Expert Parallelism (EP=2) across two GB10 nodes.
 #
 # Usage:
 #   ./scripts/start-ep2.sh [MODEL]
@@ -12,7 +12,7 @@
 #   - Passwordless SSH from head (HEAD_IP env) to worker (WORKER_IP env)
 #   - avarok-122b:latest Docker image on both nodes (or avarok-gb10:latest)
 #     Build: docker build -f docker/gb10/qwen3.5-122b-a10b/nvfp4/Dockerfile -t avarok-122b .
-#   - Same image tag on BOTH nodes (mixing Avarok versions across ranks
+#   - Same image tag on BOTH nodes (mixing Atlas versions across ranks
 #     causes NCCL to hang at ncclCommInitRank — see docs/EP2-TROUBLESHOOTING.md#4).
 #   - Model weights cached on both nodes (~/.cache/huggingface)
 #   - RDMA kernel support on host (IB device at /dev/infiniband)
@@ -26,7 +26,7 @@
 # docs/EP2-TROUBLESHOOTING.md#5.
 #
 # For MiniMax M2.x checkpoints: do NOT pass --speculative. The loader's
-# per-module MTP extraction is still a TODO; the Avarok pre-flight will
+# per-module MTP extraction is still a TODO; the Atlas pre-flight will
 # bail with a clear error, but easier to drop the flag up-front.
 # See docs/EP2-TROUBLESHOOTING.md#2.
 
@@ -42,7 +42,7 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.70}"
 MTP_QUANT="${MTP_QUANT:-nvfp4}"
 DEV_BINARY="${DEV_BINARY:-}"
 
-echo "=== Avarok EP=2 Launch (RDMA-enabled) ==="
+echo "=== Atlas EP=2 Launch (RDMA-enabled) ==="
 echo "Model:  $MODEL"
 echo "Head:   $HEAD_IP (rank 0, HTTP on port $PORT)"
 echo "Worker: $WORKER_IP (rank 1)"

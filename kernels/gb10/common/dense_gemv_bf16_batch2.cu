@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Dense BF16 dual-GEMV (batch=2) for SM121 (GB10).
+// Atlas Dense BF16 dual-GEMV (batch=2) for SM121 (GB10).
 //
 // The batch=2 sibling of dense_gemv_bf16: computes two output rows from ONE
 // pass over the BF16 weight matrix, halving weight bandwidth vs two M=1

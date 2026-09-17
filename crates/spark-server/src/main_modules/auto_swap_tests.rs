@@ -25,8 +25,8 @@ fn recipe(id: &str, model: &str, runtime: &str) -> Recipe {
 
 fn catalogue() -> Vec<Recipe> {
     vec![
-        recipe("q/27b", "nvidia/Qwen3.6-27B-NVFP4", "avarok"),
-        recipe("q/35b", "Qwen/Qwen3.6-35B-A3B-FP8", "avarok"),
+        recipe("q/27b", "nvidia/Qwen3.6-27B-NVFP4", "atlas"),
+        recipe("q/35b", "Qwen/Qwen3.6-35B-A3B-FP8", "atlas"),
         recipe("d/vllm", "org/vllm-only", "vllm"),
     ]
 }

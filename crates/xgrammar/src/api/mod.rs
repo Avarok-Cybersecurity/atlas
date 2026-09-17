@@ -6,16 +6,16 @@
 // `regex`, `tokenizer`, `schema`, `earley`, `compiler`,
 // `structural_tag`, `matcher`) has the full functionality but its
 // public names/signatures differ from the vendored C++-backed
-// `xgrammar-rs` crate Avarok was built against. This module restores
+// `xgrammar-rs` crate Atlas was built against. This module restores
 // the exact vendored surface — same type names, same method
-// signatures — so Avarok's `crates/spark-server/src/grammar/*.rs`
+// signatures — so Atlas's `crates/spark-server/src/grammar/*.rs`
 // resolves `use xgrammar::{Grammar, GrammarCompiler, CompiledGrammar,
 // GrammarMatcher, TokenizerInfo, VocabType, ...}` unchanged.
 //
 // Where the vendored and core signatures differ, this façade adds thin
 // newtype wrappers (`GrammarCompiler`, `GrammarMatcher`,
-// `TokenizerInfo`, `Grammar`) rather than touching the core or Avarok.
-// The single unavoidable Avarok edit — `grammar/state.rs` passing its
+// `TokenizerInfo`, `Grammar`) rather than touching the core or Atlas.
+// The single unavoidable Atlas edit — `grammar/state.rs` passing its
 // bitmask buffer as `&mut [i32]` instead of an FFI `DLTensor` — is
 // documented in the W7 report.
 //
@@ -43,7 +43,7 @@ pub use grammar::Grammar;
 pub use matcher::GrammarMatcher;
 pub use tokenizer::TokenizerInfo;
 
-// `CompiledGrammar` is opaque to Avarok (it never calls methods on it —
+// `CompiledGrammar` is opaque to Atlas (it never calls methods on it —
 // only stores and forwards it), so the pure-Rust core type is
 // re-exported directly. `BatchGrammarMatcher` likewise needs no shim.
 pub use crate::compiler::CompiledGrammar;

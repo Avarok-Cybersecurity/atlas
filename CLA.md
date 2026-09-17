@@ -1,6 +1,6 @@
 # Contributor License Agreement (CLA)
 
-Thank you for your interest in contributing to **Avarok** ("We" or "Us"). 
+Thank you for your interest in contributing to **Atlas** ("We" or "Us"). 
 
 This Contributor License Agreement ("Agreement") documents the rights granted by contributors to Us. To make this document effective, please sign it electronically via our automated CLA assistant when opening a Pull Request. This is a legally binding document, so please read it carefully before agreeing to it.
 
@@ -27,4 +27,4 @@ You are not expected to provide support for Your Contributions, except to the ex
 
 ---
 
-**By submitting a Pull Request to the Avarok repository, you agree to the terms of this Contributor License Agreement.**
+**By submitting a Pull Request to the Atlas repository, you agree to the terms of this Contributor License Agreement.**

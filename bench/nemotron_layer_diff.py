@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-layer divergence comparator: Avarok (AVAROK_NEMO_DUMP) vs HF oracle.
+"""Per-layer divergence comparator: Atlas (AVAROK_NEMO_DUMP) vs HF oracle.
 
 Both sides write headerless little-endian f32 .bin of the LAST token's
 post-layer residual-stream hidden vector. This computes flat cosine,

@@ -76,19 +76,19 @@ test('the home page preloads the dark hero when the theme is dark', () => {
   expect(preloads[0].rel).toBe('preload');
   expect(preloads[0].as).toBe('image');
   expect(preloads[0].fetchpriority).toBe('high');
-  expect(preloads[0].href).toBe('/brand/avarok-hero-dark.webp');
+  expect(preloads[0].href).toBe('/brand/atlas-hero-dark.webp');
 });
 
 test('the home page preloads the light hero when the theme is light', () => {
   const { theme, preloads } = runBootScript({ stored: 'light' });
   expect(theme).toBe('light');
   expect(preloads).toHaveLength(1);
-  expect(preloads[0].href).toBe('/brand/avarok-hero.webp');
+  expect(preloads[0].href).toBe('/brand/atlas-hero.webp');
 });
 
 test('an unset preference follows the media query, hero and all', () => {
-  expect(runBootScript({ prefersLight: true }).preloads[0].href).toBe('/brand/avarok-hero.webp');
-  expect(runBootScript({ prefersLight: false }).preloads[0].href).toBe('/brand/avarok-hero-dark.webp');
+  expect(runBootScript({ prefersLight: true }).preloads[0].href).toBe('/brand/atlas-hero.webp');
+  expect(runBootScript({ prefersLight: false }).preloads[0].href).toBe('/brand/atlas-hero-dark.webp');
 });
 
 test('the prerendered /index.html counts as the home page', () => {
@@ -105,5 +105,5 @@ test('when storage is unreadable the page still falls to dark and preloads its h
   const { theme, preloads } = runBootScript({ storageThrows: true });
   expect(theme).toBe('dark');
   expect(preloads).toHaveLength(1);
-  expect(preloads[0].href).toBe('/brand/avarok-hero-dark.webp');
+  expect(preloads[0].href).toBe('/brand/atlas-hero-dark.webp');
 });

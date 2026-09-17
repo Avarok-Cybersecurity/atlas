@@ -244,7 +244,7 @@ extern "C" __global__ void dsa_index_scores(
 //
 // ★ TIEBREAK IS PART OF THE CONTRACT: score DESCENDING, then pool index ASCENDING.
 //   `torch.topk`'s tie order is implementation-defined, so the reference's own pool identities
-//   are not a legal target on a tied row -- Avarok pins a total order instead so it is at least
+//   are not a legal target on a tied row -- Atlas pins a total order instead so it is at least
 //   reproducible, and the oracle compares the selected SET.
 //
 // ★ The tiled result is BIT-IDENTICAL to the old whole-axis sort. The comparator is a total

@@ -45,7 +45,7 @@ Also seen on every run: `Warning: Could not enable debug trap`.
 2. Which HSA runtime is SCALE 1.7.0 built/tested against — does it
    require a specific ROCm version rather than ROCm 7.13?
 3. What does `cuModuleLoadData` accept as a code-object format (relevant
-   once device init works — Avarok loads kernels via `cuModuleLoadData`)?
+   once device init works — Atlas loads kernels via `cuModuleLoadData`)?
 
 ## Backtrace — the SIGSEGV case (SCALE's bundled libhsa-runtime64)
 
@@ -69,7 +69,7 @@ compiler toolchain targets gfx1151 fine, but the runtime does not.
 
 ## Bottom line
 
-Avarok builds and links cleanly on Strix Halo via SCALE 1.7.0 and runs to
+Atlas builds and links cleanly on Strix Halo via SCALE 1.7.0 and runs to
 GPU init. It is blocked entirely on SCALE's runtime failing to bring up
 the gfx1151 device — a 5-line CUDA program reproduces it. Needs a SCALE
 build whose ROCr supports gfx1151.

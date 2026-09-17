@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSM State Quality Degradation Profiler v3 for Avarok.
+SSM State Quality Degradation Profiler v3 for Atlas.
 
 Focused deep-dive:
 1. Needle reliability: repeat needle test 3x at each failing length

@@ -35,7 +35,7 @@ pub enum WeightQuantFormat {
     /// Consumed by `w8a16_gemv` / `w8a16_gemm`.
     Fp8PerRow,
     /// FP8 E4M3 weight + per-block BF16 dequant scale (`[N/BS, K/BS]` BF16).
-    /// Standard Qwen-team FP8 release format (BS=128). NO Avarok kernel
+    /// Standard Qwen-team FP8 release format (BS=128). NO Atlas kernel
     /// currently consumes this directly for SSM — kernels expect either
     /// dequant-to-BF16-then-NVFP4 (current path) or single-scale FP8.
     /// **Block-scaled FP8 GEMV/GEMM is the missing kernel** (open task).

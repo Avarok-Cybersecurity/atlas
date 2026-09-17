@@ -52,10 +52,10 @@ pub struct GgufConfigInputs<'a> {
     pub has_output_weight: bool,
 }
 
-/// Map a GGUF `general.architecture` string to an Avarok `model_type` (must be
+/// Map a GGUF `general.architecture` string to an Atlas `model_type` (must be
 /// a supported loader string) and whether attention Q is gated.
 ///
-/// Plain-decoder GGUFs (llama/qwen2) have no dedicated Avarok arch loader; the
+/// Plain-decoder GGUFs (llama/qwen2) have no dedicated Atlas arch loader; the
 /// closest dense GQA path is the Mistral loader. qwen3 dense maps to `qwen3_5`
 /// with `num_experts == 0` (dense qwen3.5 loader). Returns an error for
 /// unmapped architectures rather than guessing.
@@ -72,7 +72,7 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         // gemma family: GeGLU, ungated Q, embedding scale + logit softcap.
         "gemma" | "gemma2" | "gemma3" | "gemma4" => ("gemma4", false),
         other => bail!(
-            "GGUF general.architecture '{other}' has no Avarok model_type mapping. \
+            "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
              Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4."
         ),
     })
@@ -158,7 +158,7 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 
     // ── Normalization / RoPE / context (documented explicit defaults) ──
     // rms_norm_eps: ggml default is 1e-5 when the key is absent (differs from
-    // Avarok's 1e-6 default — we set it explicitly rather than inherit).
+    // Atlas's 1e-6 default — we set it explicitly rather than inherit).
     let rms_norm_eps = meta
         .get_f64(&k("attention.layer_norm_rms_epsilon"))
         .unwrap_or(1e-5);

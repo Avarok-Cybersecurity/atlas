@@ -162,7 +162,7 @@ fn the_mismatch_message_hints_gb10_for_a_twelve_one_device() {
 /// 10.0 is where BOTH other NVIDIA targets fail (`sm_121f` is a different
 /// major family, `sm_90a` never travels forward), so before `kernels/b200`
 /// existed a B200 got "no shipped target matches compute capability 10.0" from
-/// every image Avarok published.
+/// every image Atlas published.
 #[test]
 fn a_blackwell_datacentre_device_is_pointed_at_the_b200_target() {
     assert_eq!(target_hint((10, 0)), Some("b200"));
@@ -174,7 +174,7 @@ fn a_blackwell_datacentre_device_is_pointed_at_the_b200_target() {
     }
 }
 
-/// B300 / GB300 are SM 10.3 and Avarok compiles nothing for them. The hint must
+/// B300 / GB300 are SM 10.3 and Atlas compiles nothing for them. The hint must
 /// stay silent rather than nominate `b200`: `sm_100a` is architecture-specific
 /// and does not run on 10.3, so pointing an operator at that build would send
 /// them to rebuild an image that fails the same way.

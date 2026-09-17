@@ -1,7 +1,7 @@
-# Avarok Spark — H100 / H200 (sm_90a), all five datacentre models
+# Atlas Spark — H100 / H200 (sm_90a), all five datacentre models
 #
 # WHY THIS FILE EXISTS. Renting an H100/H200 box by the hour and then
-# compiling Avarok on it burns the expensive resource on work that needs no
+# compiling Atlas on it burns the expensive resource on work that needs no
 # GPU: `nvcc --ptx -arch=sm_90a` is a cross-compile, and the kernels ship as
 # PTX embedded in the binary. Everything below runs on any x86_64 Linux host
 # with Docker. The rental box only pulls.
@@ -105,7 +105,7 @@ RUN cargo build --release -p spark-server --bin spark \
 FROM nvidia/cuda:13.0.0-runtime-ubuntu24.04@sha256:95318efecfd68ab3d109da5277863257b06137c84f34a87f38de970d5cd035d3
 
 LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
-LABEL org.opencontainers.image.description="Avarok Spark, kernels compiled for NVIDIA Hopper (sm_90a) — H100 / H200"
+LABEL org.opencontainers.image.description="Atlas Spark, kernels compiled for NVIDIA Hopper (sm_90a) — H100 / H200"
 
 # Stamp the source commit into the image so ":latest" provenance is answerable:
 #   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <tag>

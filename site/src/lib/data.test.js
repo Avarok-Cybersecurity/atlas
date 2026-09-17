@@ -10,7 +10,7 @@ import { flagshipRecipe, runCommandRaw, runCommand, installerUrl } from './data.
 
 test('the command the page shows is built from the flagship recipe, not a copy of it', () => {
   expect(runCommandRaw).toContain(flagshipRecipe);
-  expect(runCommandRaw).toBe(`avarokctl run ${flagshipRecipe}`);
+  expect(runCommandRaw).toBe(`atlasctl run ${flagshipRecipe}`);
 });
 
 test('the same rule holds for the installer URL it already applied to', () => {

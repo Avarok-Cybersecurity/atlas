@@ -6,7 +6,7 @@ translation-focused *encoder-decoder* (seq2seq) transformer.
 
 ## Why a separate crate
 
-Avarok's production engine is **GPU-only** (`GpuBackend` has no CPU
+Atlas's production engine is **GPU-only** (`GpuBackend` has no CPU
 implementation), and its *generic* `TransformerLayer`/paged-KV/scheduler stack
 is decoder-only — it assumes causal autoregressive generation. NLLB is a seq2seq
 model (bidirectional encoder + decoder cross-attention + sinusoidal absolute
@@ -26,7 +26,7 @@ validated bit-faithfully against `transformers` (see `tests/reference.rs`).
 
 ## Weights
 
-NLLB-200 ships as PyTorch `.bin` (pickle), which Avarok's safetensors-only
+NLLB-200 ships as PyTorch `.bin` (pickle), which Atlas's safetensors-only
 loader cannot read. A converted fp32 safetensors copy lives at:
 
 - **`MonumentalSystems/nllb-200-3.3B`** (HuggingFace)

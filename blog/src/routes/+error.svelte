@@ -19,7 +19,7 @@
        from having a description. Lighthouse audits the tag's presence, not the
        page's indexability, so without this the 404 scores below 100 on SEO
        while every other page passes. -->
-  <meta name="description" content="That page is not here. The Avarok blog's writing on kernels, quantisation and measured benchmarks is one link away." />
+  <meta name="description" content="That page is not here. The Atlas blog's writing on kernels, quantisation and measured benchmarks is one link away." />
 </svelte:head>
 
 <NotFound status={page.status} message={page.error?.message ?? ''} />

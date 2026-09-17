@@ -180,7 +180,7 @@ jobs:
           git config user.email "tbraun96@gmail.com"
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): v${NEW_VERSION}"
-          git tag -a "v${NEW_VERSION}" -m "Avarok v${NEW_VERSION}"
+          git tag -a "v${NEW_VERSION}" -m "Atlas v${NEW_VERSION}"
           git push origin HEAD:"${{ github.event.inputs.ref }}"
           git push origin "v${NEW_VERSION}"
 
@@ -195,7 +195,7 @@ jobs:
           # "New Contributors". Hand-rolling either would duplicate data
           # GitHub already derives from the same commits.
           gh release create "v${NEW_VERSION}" \
-            --title "Avarok v${NEW_VERSION}" \
+            --title "Atlas v${NEW_VERSION}" \
             --generate-notes \
             --verify-tag \
             dist/*

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// The front page prints `avarokctl run <flagshipRecipe>` as its headline
+// The front page prints `atlasctl run <flagshipRecipe>` as its headline
 // instruction. Nothing tied that name to the recipe corpus, so retiring or
-// renaming a recipe in avarok-recipes would leave the site confidently
+// renaming a recipe in atlas-recipes would leave the site confidently
 // advertising a command that fails on the visitor's machine — silently, and
 // only for them.
 //
@@ -11,7 +11,7 @@
 // regenerates by hand, which is precisely not the moment a recipe gets
 // retired: the guard would have missed the event it exists for.
 //
-// It reads the corpus CI actually ships against — the avarok-recipes checkout
+// It reads the corpus CI actually ships against — the atlas-recipes checkout
 // the build already makes for install.sh — rather than whatever branch a local
 // mirror happens to be sitting on.
 
@@ -28,7 +28,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = process.env.AVAROK_RECIPES_ROOT;
 if (!root) {
   console.error('AVAROK_RECIPES_ROOT is not set.');
-  console.error('Point it at a checkout of avarok-recipes/recipes — the corpus this');
+  console.error('Point it at a checkout of atlas-recipes/recipes — the corpus this');
   console.error('site is being built against, not whichever one happens to be nearby.');
   process.exit(1);
 }
@@ -57,7 +57,7 @@ try {
   stems = recipeStems(root);
 } catch (e) {
   console.error(`could not read the recipe corpus at ${root}: ${e.message}`);
-  console.error('Set AVAROK_RECIPES_ROOT to a checkout of avarok-recipes/recipes.');
+  console.error('Set AVAROK_RECIPES_ROOT to a checkout of atlas-recipes/recipes.');
   process.exit(1);
 }
 
@@ -71,7 +71,7 @@ if (stems.length === 0) {
 const problems = [];
 if (!stems.includes(flagshipRecipe)) {
   problems.push(
-    `data.js advertises \`avarokctl run ${flagshipRecipe}\`, and no such recipe exists in the corpus.`
+    `data.js advertises \`atlasctl run ${flagshipRecipe}\`, and no such recipe exists in the corpus.`
   );
 }
 // The pasteable command is checked too, because it is a second place the name

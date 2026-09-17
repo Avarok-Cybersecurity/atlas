@@ -110,7 +110,7 @@ pub struct NcclBackend {
 
 // SAFETY: `NcclComm` is an opaque NCCL handle. NCCL guarantees the handle
 // is thread-safe for non-overlapping operations on the same communicator;
-// Avarok serializes access through the inner `Mutex<NcclComm>` (one in-flight
+// Atlas serializes access through the inner `Mutex<NcclComm>` (one in-flight
 // collective per rank at a time) and the host-side completions are bound
 // to the user-supplied CUDA stream. The raw pointer never escapes the
 // backend, so any aliasing is bounded by the Mutex guard's lifetime.

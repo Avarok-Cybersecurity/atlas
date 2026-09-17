@@ -20,7 +20,7 @@
 //!
 //! Performance: the fused kernels (`gemv_silu_gate_resid`,
 //! `gemv_gate_up_with`, `add_rms_norm`) all dispatch through trait
-//! methods that backends override with their fused launches. Avarok's
+//! methods that backends override with their fused launches. Atlas's
 //! Metal backend keeps decode at ~20 tok/s through this path
 //! identically to the inlined version it replaces.
 

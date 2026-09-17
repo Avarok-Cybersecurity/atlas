@@ -31,7 +31,7 @@
   <div class="grid2">
     <Kv
       rows={[
-        ['code', `Avarok ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
+        ['code', `Atlas ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
         ['baseline', 'container digest', 'sha256, not a tag — the same digest across every leg'],
         ['harness', 'sha256 in every output', 'the script hashes its own source into the JSON it writes'],
         ['weights', claim.checkpoint, 'HF repo, pinned revision'],

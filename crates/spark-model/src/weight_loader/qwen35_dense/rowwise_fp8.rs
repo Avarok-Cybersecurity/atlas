@@ -10,7 +10,7 @@
 //! and `lm_head` ship as **FP8 E4M3 with a per-CHANNEL scale** — a `[N,1]`
 //! tensor, one multiplier per output row.
 //!
-//! Avarok cannot feed that to its native FP8 kernels: the whole `w8a16` family
+//! Atlas cannot feed that to its native FP8 kernels: the whole `w8a16` family
 //! indexes `block_scale[n/128, k/128]` (`kernels/gb10/common/w8a16_gemv.cu`),
 //! so a per-row buffer would hand 127 of every 128 rows another row's
 //! multiplier. It is SMALLER than the grid the kernel indexes, so it reads

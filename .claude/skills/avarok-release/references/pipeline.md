@@ -91,8 +91,8 @@ two lines there if you ship a per-model image and want its provenance.)
 
 ### Offline distribution (`docker save`)
 ```bash
-docker save avarok/atlas-gb10:"$SHA" | zstd -T0 -o avarok-gb10-"$SHA".tar.zst
-# receiver:  zstd -dc avarok-gb10-<sha>.tar.zst | docker load
+docker save avarok/atlas-gb10:"$SHA" | zstd -T0 -o atlas-gb10-"$SHA".tar.zst
+# receiver:  zstd -dc atlas-gb10-<sha>.tar.zst | docker load
 ```
 Use this when there's no registry access, or to hand a verified image to a user
 directly (RoCE-copy dgx1→dgx2, or attach to a GitHub Release alongside the distro
@@ -114,7 +114,7 @@ Preconditions the skill enforces before printing this:
 2. The build came from the intended ref — **build from `main` tip**, not whatever
    branch happens to be checked out on the build host (a real past footgun; that
    checkout is often a feature branch). Verify: `git rev-parse --short=7 origin/main == $SHA`.
-3. Docker is logged in as `avarok` on the pushing host.
+3. Docker is logged in as `atlas` on the pushing host.
 
 After push, **record the shipped SHA** so `:latest`'s provenance is durable — append
 to `docs/releases/` or rely on the image label from the ARG fix above.

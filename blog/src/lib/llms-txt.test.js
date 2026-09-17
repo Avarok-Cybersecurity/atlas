@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { readFileSync, existsSync } from 'node:fs';
 
 /**
- * All three Avarok properties publish llms.txt (https://llmstxt.org), and each
+ * All three Atlas properties publish llms.txt (https://llmstxt.org), and each
  * points at the other two. That cross-linking is the whole value: an agent that
  * finds one has no other way to discover the rest — none of the three hosts is
  * derivable from the others.

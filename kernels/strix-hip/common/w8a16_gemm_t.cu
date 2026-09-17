@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 Transposed GEMM — FP8 E4M3 block-scaled, coalesced weight reads.
+// Atlas W8A16 Transposed GEMM — FP8 E4M3 block-scaled, coalesced weight reads.
 // HIP/gfx1151 (AMD WMMA) port of the NVIDIA mma.sync version. Mirrors the
 // proven idiom in w8a16_gemm.cu (the BF16 WMMA GEMM port).
 //

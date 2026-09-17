@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok uint8 matrix transpose kernel.
+// Atlas uint8 matrix transpose kernel.
 //
 // Transposes a [rows, cols] uint8 matrix to [cols, rows]:
 //   out[c * rows + r] = in[r * cols + c]

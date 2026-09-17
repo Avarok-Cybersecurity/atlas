@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Dense BF16 batched GEMV (M rows) for SM121 (GB10).
+// Atlas Dense BF16 batched GEMV (M rows) for SM121 (GB10).
 //
 // The M-row generalisation of dense_gemv_bf16_batch2: computes M output rows
 // from ONE pass over the BF16 weight matrix, so weight bandwidth is paid once

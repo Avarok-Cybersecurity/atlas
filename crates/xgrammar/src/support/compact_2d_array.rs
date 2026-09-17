@@ -4,7 +4,7 @@
 //
 // A Compressed-Sparse-Row (CSR) 2D array: a sequence of variable-length
 // rows packed end-to-end in one backing buffer. Inserted rows are
-// immutable. Avarok's grammar AST already uses this pattern inline; this
+// immutable. Atlas's grammar AST already uses this pattern inline; this
 // is the reusable, standalone version.
 
 use serde::{Deserialize, Serialize};

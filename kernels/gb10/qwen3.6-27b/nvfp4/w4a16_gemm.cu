@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W4A16 GEMM — 35B model shadow.
+// Atlas W4A16 GEMM — 35B model shadow.
 //
 // Optimizations:
 // - w4a16_gemm_t: cp.async 2-stage double-buffered pipeline (overlaps next tile
@@ -5538,7 +5538,7 @@ void int8_gemm_faith6(
 
 // int8 W4A8 FAITH7 — STRUCTURAL: raise the MMA-to-load REUSE ratio (the llama edge).
 // DEFINITIVE measurement (test-backend-ops, GB10): on gate/up (M4096 N17408 K5120)
-// llama MMQ = 65.3 TFLOP/s vs faith2 44.5 (+46% real gap); on down (K17408) Avarok
+// llama MMQ = 65.3 TFLOP/s vs faith2 44.5 (+46% real gap); on down (K17408) Atlas
 // wins (49 vs 41). faith6 proved 44.7 is the *scheduling* ceiling, but llama proves
 // 65 is reachable on this exact shape — so the gap is the MMA-to-load reuse ratio,
 // not the scale-fold. faith2's per-warp tile is 32N×64M: each activation B-fragment
@@ -5957,7 +5957,7 @@ void int8_gemm_faith9(
 // int8 W4A8 FAITH10 — THE isolated lever: widen per-warp weight-reuse to 128 tokens.
 // Ablating llama's OWN MMQ kernel proved it: capping llama mmq_x (token-tile width =
 // tokens each register-resident weight fragment is reused across) from 128->32 drops
-// it 63.8->42.4 TFLOP/s, landing EXACTLY on Avarok's 44 plateau (long_scoreboard
+// it 63.8->42.4 TFLOP/s, landing EXACTLY on Atlas's 44 plateau (long_scoreboard
 // 1.21->1.40, issue-active 43->40%). So faith2 is effectively a ~32-token-wide tile,
 // and faith7's reshape went the WRONG way (cut M/warp to 32, REDUCING reuse).
 // faith10 goes the right way: each of the 8 warps owns ONE 16-N-row minitile and the

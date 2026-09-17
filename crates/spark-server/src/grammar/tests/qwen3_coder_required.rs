@@ -213,7 +213,7 @@ fn qwen3_coder_grammar_accepts_multi_xml_params() {
 
 /// Tier-0 non-empty enforcement (2026-05-25 evening): the qwen3_coder
 /// grammar's regex content type must REJECT a parameter body that is
-/// empty or whitespace-only. This is the Avarok-internal version of
+/// empty or whitespace-only. This is the Atlas-internal version of
 /// llama.cpp#20164's "empty-parameter under long context" failure mode.
 /// Without this, the model's in-tool sampler (which intentionally zeros
 /// rep/DRY/freq/presence penalties because XGrammar usually shapes the

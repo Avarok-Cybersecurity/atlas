@@ -197,7 +197,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let fleet = if args.with_nodes.is_empty() {
         None
     } else {
-        let avarokctl = remote::avarokctl::SubprocessAvarokctl::locate(args.avarokctl.as_deref())?;
+        let atlasctl = remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?;
         let wanted = remote::node::Wanted {
             hardware: &hardware,
             committed_signers: &facts.committed_signers,
@@ -205,7 +205,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             min_free_fraction: limits.memory.min_free_fraction,
         };
         let f = remote::assemble(
-            &avarokctl,
+            &atlasctl,
             &args.with_nodes,
             args.remote_only,
             &wanted,
@@ -302,13 +302,13 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             campaign,
         )?,
         Some(f) => {
-            let avarokctl: Arc<dyn remote::avarokctl::Avarokctl> = Arc::new(
-                remote::avarokctl::SubprocessAvarokctl::locate(args.avarokctl.as_deref())?,
+            let atlasctl: Arc<dyn remote::atlasctl::Atlasctl> = Arc::new(
+                remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
             );
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
             let runners = remote::runners(
                 f,
-                avarokctl.clone(),
+                atlasctl.clone(),
                 &run_id,
                 &anchor_full,
                 cancel.clone(),
@@ -316,7 +316,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
                 args.no_serve_reuse,
             )?;
             let thermal = remote::thermal::FleetProbe {
-                avarokctl: avarokctl.clone(),
+                atlasctl: atlasctl.clone(),
             };
             let envelope = f.envelope;
             let shared = remote::Shared {

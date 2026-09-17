@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Spark — Qwen3-VL Vision Encoder CUDA Kernels
+// Atlas Spark — Qwen3-VL Vision Encoder CUDA Kernels
 //
 // All ops use BF16 storage for weights; computations use f32 accumulators.
 // Kernels run once per prefill (P ≤ 400 patches), so simplicity > performance.

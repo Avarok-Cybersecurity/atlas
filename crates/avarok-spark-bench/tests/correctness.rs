@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! End-to-end correctness tests against a running Avarok server.
+//! End-to-end correctness tests against a running Atlas server.
 //!
 //! Every test in this file calls `require_server()` which panics if no
 //! HTTP listener is reachable on `$AVAROK_SERVER_URL` (default
@@ -25,7 +25,7 @@ use avarok_spark_bench::{require_server, send_blocking, send_streaming};
 static SERIAL: Mutex<()> = Mutex::new(());
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn qa_capital_of_france_blocking() {
     let _lock = SERIAL.lock();
     let url = require_server();
@@ -35,7 +35,7 @@ fn qa_capital_of_france_blocking() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn qa_capital_of_france_streaming() {
     let _lock = SERIAL.lock();
     let url = require_server();
@@ -45,7 +45,7 @@ fn qa_capital_of_france_streaming() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn qa_counting_contains_digits() {
     let _lock = SERIAL.lock();
     let url = require_server();
@@ -58,7 +58,7 @@ fn qa_counting_contains_digits() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn streaming_produces_tokens() {
     let _lock = SERIAL.lock();
     let url = require_server();
@@ -68,7 +68,7 @@ fn streaming_produces_tokens() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn finish_reason_is_valid() {
     let _lock = SERIAL.lock();
     let url = require_server();
@@ -81,7 +81,7 @@ fn finish_reason_is_valid() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn models_endpoint_returns_model() {
     let url = require_server();
     let resp = ureq::get(&format!("{url}/v1/models")).call().unwrap();
@@ -93,7 +93,7 @@ fn models_endpoint_returns_model() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn health_endpoint_ok() {
     let url = require_server();
     let resp = ureq::get(&format!("{url}/health")).call().unwrap();
@@ -101,7 +101,7 @@ fn health_endpoint_ok() {
 }
 
 #[test]
-#[ignore = "requires a running Avarok server at $AVAROK_SERVER_URL"]
+#[ignore = "requires a running Atlas server at $AVAROK_SERVER_URL"]
 fn blocking_streaming_consistency() {
     let _lock = SERIAL.lock();
     let url = require_server();

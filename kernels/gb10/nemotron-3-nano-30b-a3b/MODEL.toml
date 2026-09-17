@@ -87,7 +87,7 @@ max_thinking_budget = 2048
 # Thinking OFF answers the same prompts correctly. Clients can still opt in
 # per request with chat_template_kwargs.enable_thinking.
 thinking_default = false
-# `max_thinking_budget` is the SOLE thinking cap — drop Avarok's second,
+# `max_thinking_budget` is the SOLE thinking cap — drop Atlas's second,
 # 90%-of-max_tokens clamp, which vLLM has no equivalent of and which
 # force-closes `</think>` mid-reasoning. Same fix as the Puzzle/Laguna
 # siblings.

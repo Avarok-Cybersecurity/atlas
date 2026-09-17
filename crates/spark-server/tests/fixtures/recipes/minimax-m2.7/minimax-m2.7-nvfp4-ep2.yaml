@@ -1,6 +1,6 @@
 recipe_version: "2"
 model: lukealonso/MiniMax-M2.7-NVFP4
-runtime: avarok
+runtime: atlas
 container: avarok/atlas-gb10:latest
 min_nodes: 2
 max_nodes: 2
@@ -8,11 +8,11 @@ max_nodes: 2
 metadata:
   description: |
     MiniMax M2.7 NVFP4 with expert parallelism across two GB10 nodes.
-    The validated production EP=2 configuration from Avarok's
+    The validated production EP=2 configuration from Atlas's
     `scripts/start-minimax-ep2.sh` — KV cache stays at BF16 during
     bring-up (FP8/NVFP4 are not yet stable for MiniMax) and `--speculative`
     is OFF because the public checkpoint ships no MTP weights.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 230B
   model_dtype: nvfp4

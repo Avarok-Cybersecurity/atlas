@@ -299,7 +299,7 @@ pub fn sanitize_content_chunk(
 
 // F14 (2026-04-26): raised from 3 → 4. AR2's survey: Gemini-CLI
 // uses 5-consecutive, Anthropic's documented per-turn ceiling is
-// ~10. Avarok at 3 was too aggressive — false-positives on
+// ~10. Atlas at 3 was too aggressive — false-positives on
 // legitimate "build / fix / build" cycles. 4 sits between the
 // production references while still preventing the fix28
 // 7-rewrite scenario.

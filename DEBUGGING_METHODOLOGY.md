@@ -1,6 +1,6 @@
-# Avarok Debugging Methodology
+# Atlas Debugging Methodology
 
-A playbook for tracking down quality regressions in Avarok — distilled from the
+A playbook for tracking down quality regressions in Atlas — distilled from the
 Qwen3.6-27B-FP8 long-code degeneration investigation (commit `3ebc08a`, 2026-05-20)
 that ultimately resolved two loader-side bugs producing a 14.2× improvement in
 `tokens_to_first_degeneration` (1,196 → 16,968) and parity with vLLM behavior.
@@ -15,19 +15,19 @@ the durable lessons — more useful than the fix itself.
 ## 0. The general shape of the bug class
 
 You're here because: the same model checkpoint produces clean output under a
-reference framework (vLLM, HF Transformers) but degrades under Avarok. Same
+reference framework (vLLM, HF Transformers) but degrades under Atlas. Same
 tokenizer, same prompt, same sampler, same hardware. This is the hardest class of
 bug because *nothing obvious is wrong* — the kernels run, the GEMMs return,
 nothing crashes. The output just slowly drifts.
 
 The trap: you start instrumenting at the kernel level too early, before ruling out
-much cheaper explanations. Most "Avarok math is broken" reports turn out to be one
+much cheaper explanations. Most "Atlas math is broken" reports turn out to be one
 of: prompt template drift, tokenizer mismatch, sampler preset, or a loader-side
 data-layout bug. **In this investigation, it was the last one. The kernels were
 innocent.**
 
 Memory rule that frames the whole game: *Never blame the model. Always find the
-Avarok bug.* (See `feedback_never_blame_model.md` in the memory index.)
+Atlas bug.* (See `feedback_never_blame_model.md` in the memory index.)
 
 ---
 
@@ -37,10 +37,10 @@ Run these in order. Stop at the first one that explains the symptom.
 
 | # | Hypothesis to refute | Cost to test | How to test |
 |---|---|---|---|
-| 1 | **Sampler/preset** is different from the reference | 5 min | Run both Avarok and reference under greedy (`temperature=0`). If the gap closes, it's sampling. If not, sampling is innocent — keep going. |
-| 2 | **Prompt template render** differs | 10 min | Diff the rendered prompt strings (Avarok logs the Jinja-rendered output; vLLM has `print_chat_template_result`). One byte of drift is enough. |
+| 1 | **Sampler/preset** is different from the reference | 5 min | Run both Atlas and reference under greedy (`temperature=0`). If the gap closes, it's sampling. If not, sampling is innocent — keep going. |
+| 2 | **Prompt template render** differs | 10 min | Diff the rendered prompt strings (Atlas logs the Jinja-rendered output; vLLM has `print_chat_template_result`). One byte of drift is enough. |
 | 3 | **Tokenization** differs | 5 min | Tokenize the rendered prompt in both engines and diff the token IDs. If even one ID differs, the engines aren't running the same input — fix that first. |
-| 4 | **Termination logic** (stop tokens, length cap) differs | 5 min | Look at `finish_reason`. If reference says `stop` and Avarok says `length`, that's a stop-condition mismatch, not a math bug. |
+| 4 | **Termination logic** (stop tokens, length cap) differs | 5 min | Look at `finish_reason`. If reference says `stop` and Atlas says `length`, that's a stop-condition mismatch, not a math bug. |
 | 5 | **Penalty / repetition / DRY** preset differs | 10 min | Build a "zero-penalty" image and re-run. If degeneration vanishes, the bug is a preset; if it persists, penalties are innocent. |
 | 6 | **Quantization storage path** differs (FP8 vs NVFP4 dispatch) | 30 min | Inspect weight-loader logs; verify both engines load the same on-disk tensors at the same precision. |
 | 7 | **Per-layer numerics** drift | hours | Only after 1-6 are clean. This is where the rest of this document lives. |
@@ -64,7 +64,7 @@ matters less than its *false-negative cost* (accepting degenerate output).
 
 In this investigation, `bench/longcode/harness.py` paired with `analyze.mjs`
 provided the signal. The first version only checked `finish_reason` — and missed
-the early bugs because Avarok was terminating "cleanly" on the lazy-stub loop.
+the early bugs because Atlas was terminating "cleanly" on the lazy-stub loop.
 
 > **Lesson:** Build the quality gate *before* you spend hours chasing numerics.
 > Otherwise you'll declare wins on runs that didn't actually fix anything.
@@ -92,7 +92,7 @@ Critical gotchas this investigation hit:
 2. **Don't hard-code the token-ID list in the oracle script.** Read it back from
    the SUT's `/tokenize` endpoint and pass it through. The investigation lost
    nearly a day to a 52-vs-54-token mismatch because the oracle was hard-coded to
-   a 52-token sequence that no longer matched what Avarok was rendering.
+   a 52-token sequence that no longer matched what Atlas was rendering.
 
 3. **Verify oracle correctness independently.** Before trusting any per-layer
    divergence, confirm `oracle(token_ids) → expected_next_token` matches what the
@@ -143,7 +143,7 @@ cosine first drops materially from ~1.0) localizes the bug. The shape of the
 ## 5. Per-head magnitude as a bug-class fingerprint
 
 This is the diagnostic that ended the investigation. When you compute per-head
-magnitude ratios (Avarok/oracle) across all heads of one layer:
+magnitude ratios (Atlas/oracle) across all heads of one layer:
 
 | Pattern | Mean | Std | Interpretation |
 |---|---|---|---|
@@ -172,7 +172,7 @@ bf16 array.
 
 ## 6. The sister-loader diff (the single highest-ROI lesson)
 
-Avarok supports multiple model families through largely-parallel loader trees:
+Atlas supports multiple model families through largely-parallel loader trees:
 
 - `weight_loader/qwen35_dense.rs` ↔ `weight_map/ssm_qwen35.rs`
 - `weight_loader/mistral.rs` ↔ ...
@@ -268,7 +268,7 @@ By rough leverage-per-hour-invested:
 
 ## 9. Polling discipline for multi-hour reproductions
 
-Background reproductions on Avarok range from minutes (smoke tests) to hours (a
+Background reproductions on Atlas range from minutes (smoke tests) to hours (a
 6000-token greedy completion through a 27B model with degeneration onset). Two
 rules:
 
@@ -336,5 +336,5 @@ the methodology above is built around finding it efficiently.
 
 ---
 
-*Maintained alongside Avarok. Update when you learn something this document
+*Maintained alongside Atlas. Update when you learn something this document
 doesn't already say.*

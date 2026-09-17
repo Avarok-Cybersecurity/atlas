@@ -1,6 +1,6 @@
-# Avarok Docker Guide
+# Atlas Docker Guide
 
-Avarok provides per-model Dockerfiles organized by `(Hardware, Model, Quantization)` tuple.
+Atlas provides per-model Dockerfiles organized by `(Hardware, Model, Quantization)` tuple.
 
 ## Directory Structure
 
@@ -51,10 +51,10 @@ All builds run from the **repository root**:
 
 ```bash
 # 80B model
-docker build -f docker/gb10/qwen3-next-80b-a3b/nvfp4/Dockerfile -t avarok-80b .
+docker build -f docker/gb10/qwen3-next-80b-a3b/nvfp4/Dockerfile -t atlas-80b .
 
 # 35B model
-docker build -f docker/gb10/qwen3.5-35b-a3b/nvfp4/Dockerfile -t avarok-35b .
+docker build -f docker/gb10/qwen3.5-35b-a3b/nvfp4/Dockerfile -t atlas-35b .
 ```
 
 Build takes ~2-3 minutes (Rust compilation + CUDA kernel PTX compilation).
@@ -69,12 +69,12 @@ This is the most portable approach — mount the model directory and pass the pa
 # 80B with speculative decoding (~106 tok/s counting, ~99 tok/s diverse)
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v /models/qwen3-next-80b:/model \
-  avarok-80b serve --model-from-path /model --speculative --num-drafts 1
+  atlas-80b serve --model-from-path /model --speculative --num-drafts 1
 
 # 35B with speculative decoding (~131 tok/s counting, ~127 tok/s diverse)
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v /models/qwen3.5-35b:/model \
-  avarok-35b serve --model-from-path /model --speculative --num-drafts 1
+  atlas-35b serve --model-from-path /model --speculative --num-drafts 1
 ```
 
 ### Non-speculative mode
@@ -83,12 +83,12 @@ docker run --gpus all --ipc=host -p 8888:8888 \
 # 80B (~82 tok/s)
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v /models/qwen3-next-80b:/model \
-  avarok-80b serve --model-from-path /model
+  atlas-80b serve --model-from-path /model
 
 # 35B (~102 tok/s)
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v /models/qwen3.5-35b:/model \
-  avarok-35b serve --model-from-path /model
+  atlas-35b serve --model-from-path /model
 ```
 
 ### Alternative: HuggingFace cache mount
@@ -98,7 +98,7 @@ If you use the default HuggingFace cache (`~/.cache/huggingface/`), mount it and
 ```bash
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-80b serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 --speculative --num-drafts 1
+  atlas-80b serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 --speculative --num-drafts 1
 ```
 
 > **Note:** The 35B model's `extra_weights.safetensors` is a symlink that may break with HF cache mounts. Use `--local-dir` download or `--model-from-path` instead.
@@ -118,8 +118,8 @@ hardware at all. The rented box only pulls.
 From the repository root, on any x86_64 Docker host:
 
 ```bash
-docker build -f docker/hopper/Dockerfile -t avarok-hopper:latest .
-docker build -f docker/b200/Dockerfile   -t avarok-b200:latest .
+docker build -f docker/hopper/Dockerfile -t atlas-hopper:latest .
+docker build -f docker/b200/Dockerfile   -t atlas-b200:latest .
 ```
 
 Roughly an hour cold — the Rust release build plus one nvcc invocation per
@@ -128,7 +128,7 @@ kernel per model target. To build one model instead of all five:
 ```bash
 docker build -f docker/hopper/Dockerfile \
   --build-arg AVAROK_TARGET_MODEL=nemotron-super-120b-a12b \
-  -t avarok-hopper:nemotron .
+  -t atlas-hopper:nemotron .
 ```
 
 Build args: `AVAROK_TARGET_HW` (defaults to `hopper` / `b200` per file),
@@ -152,7 +152,7 @@ binary, prints the ones it cannot resolve, and exits with that count:
 ```bash
 docker run --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-hopper:latest \
+  atlas-hopper:latest \
   serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --check-kernels --no-tui
 ```
 
@@ -172,7 +172,7 @@ Single GPU:
 ```bash
 docker run --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok-hopper:latest \
+  atlas-hopper:latest \
   serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 --no-tui
 ```
 
@@ -192,7 +192,7 @@ an image that would lose them.
 
 ### These images are architecture-locked, on purpose
 
-`avarok-hopper` carries `sm_90a` PTX and nothing else; `avarok-b200` carries
+`atlas-hopper` carries `sm_90a` PTX and nothing else; `atlas-b200` carries
 `sm_100a` and nothing else. Point either at the wrong GPU and `spark`'s arch
 preflight refuses to start, before the driver would. **That is the feature.**
 PTX built for an `a`-suffixed architecture does not run forward, and the two
@@ -215,7 +215,7 @@ See [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#a-prebuilt-binary-for-a-rental-
 
 ## API
 
-Avarok serves an OpenAI-compatible API on the configured port.
+Atlas serves an OpenAI-compatible API on the configured port.
 
 ```bash
 # Check server status
@@ -225,7 +225,7 @@ curl http://localhost:8888/v1/models
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "avarok",
+    "model": "atlas",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 256
   }'
@@ -234,7 +234,7 @@ curl http://localhost:8888/v1/chat/completions \
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "avarok",
+    "model": "atlas",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 256,
     "stream": true

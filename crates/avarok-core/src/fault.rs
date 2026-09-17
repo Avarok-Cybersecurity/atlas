@@ -11,7 +11,7 @@
 //! returns the same status, forever. There is no in-process recovery; the
 //! context cannot be re-created while the primary context is retained.
 //!
-//! Before this module, Avarok treated such a failure as a per-request error.
+//! Before this module, Atlas treated such a failure as a per-request error.
 //! The forward pass returned `Err`, the scheduler failed that batch, the
 //! handler emitted a 500 — and then **kept serving**. `/health` still said
 //! `ready`, because a model was still published, and every following request

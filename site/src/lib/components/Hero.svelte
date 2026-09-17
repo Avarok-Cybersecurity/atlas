@@ -61,7 +61,7 @@
       <h1>{hero.headline[0]} <span class="lede2">{hero.headline[1]}</span></h1>
       <p class="hero-sub">{hero.sub}</p>
 
-      <div class="hero-cmd" role="group" aria-label="Run Avarok">
+      <div class="hero-cmd" role="group" aria-label="Run Atlas">
         <span class="prompt">{install.prompt}</span>
         <code bind:this={cmdEl}>{install.command}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">

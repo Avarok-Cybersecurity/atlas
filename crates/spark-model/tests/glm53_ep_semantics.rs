@@ -2,9 +2,9 @@
 
 //! Slice-12 GATE 4 (algebra leg): **EP=2 MoE semantics, proven without collectives.**
 //!
-//! # What Avarok's EP path actually is
+//! # What Atlas's EP path actually is
 //!
-//! Avarok does NOT dispatch tokens to the owning rank. It runs **masked-local +
+//! Atlas does NOT dispatch tokens to the owning rank. It runs **masked-local +
 //! all-reduce**:
 //!
 //! 1. Every rank runs the router over **all** `num_experts` and takes the same

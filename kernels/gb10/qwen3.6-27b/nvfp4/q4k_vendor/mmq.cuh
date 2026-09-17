@@ -65,7 +65,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_Q2_0:
             // DS4 (not D4 like Q1_0): the `(code-1)*d` dequant has no per-block
             // additive bias, so q8_1's `s` term is never read on the q8_0 vec_dot
-            // path. DS4 lets Q2_0 reuse Avarok's shipping `avarok_q8_1_quantize_ds4_bf16`
+            // path. DS4 lets Q2_0 reuse Atlas's shipping `avarok_q8_1_quantize_ds4_bf16`
             // activation quantizer verbatim (zero new activation code).
             return MMQ_Q8_1_DS_LAYOUT_DS4;
         case GGML_TYPE_Q4_0:
@@ -3651,7 +3651,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     if (fixup) {
         write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(mmq_x*mmq_y), mmq_y, mmq_y, mmq_x);
     } else {
-        // AVAROK: direct MMA writer carries dst_t (float for llama path, bf16 for fused Avarok output). GB10-only kernel ⇒ MMA always live.
+        // AVAROK: direct MMA writer carries dst_t (float for llama path, bf16 for fused Atlas output). GB10-only kernel ⇒ MMA always live.
         mmq_write_back_mma<type, mmq_x, mmq_y, need_check, dst_t>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
     }
 }

@@ -44,7 +44,7 @@ nvcc --ptx -arch=sm_121f -O3 --use_fast_math <file>.cu
 The NVFP4 weights (~200 GB) exceed a single GB10's 120 GB, so this target runs
 **expert-parallel across all four GB10 nodes** (EP=4). Tensor parallelism is not
 an option: `num_key_value_heads = 2` cannot shard across 4 TP ranks. Launch via
-`/home/cluster/launch-avarok-ep4.sh` (`--tp-size 1 --ep-size 4 --world-size 4`).
+`/home/cluster/launch-atlas-ep4.sh` (`--tp-size 1 --ep-size 4 --world-size 4`).
 
 ## Quantization: Mixed NVFP4 + BF16 (ModelOpt)
 

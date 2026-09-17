@@ -1,13 +1,17 @@
-# Avarok — brand guidelines
+# Atlas — brand guidelines
 
-The same rules as `Avarok-Brand-Guidelines.pdf`, in text, for pasting into a wiki
-or a contributor doc. The mark is the three chevrons. The wordmark is Avarok,
-with the signature A (arrow shaft).
+The same rules as `Atlas-Brand-Guidelines.pdf`, in text, for pasting into a wiki
+or a contributor doc.
 
 ## Which lockup
 
-- **`logo-full`** — the default, wherever the tagline has room to be read: 220 px
-  wide and up on screen, 45 mm and up in print.
+- **`logo-full-corp`** — the corporate lockup, mark + wordmark + "Cybernetics
+  Corp". It is what the top left of every property carries, and what signs
+  anything that speaks for the company rather than for the engine. Same 220 px
+  floor as `logo-full`; below it, fall back to `logo-horizontal`.
+- **`logo-full`** — the engine's own lockup, tagline "Inference Engine",
+  wherever the tagline has room to be read: 220 px wide and up on screen, 45 mm
+  and up in print.
 - **`logo-horizontal`** — navigation bars, tight headers, anywhere narrower than
   220 px. Minimum 120 px wide.
 - **`wordmark`** — pages where the mark already appears elsewhere.
@@ -29,6 +33,7 @@ other logos, no edge of the page.
 
 | Asset | Screen | Print |
 | --- | --- | --- |
+| `logo-full-corp` | 220 px wide | 45 mm |
 | `logo-full` | 220 px wide | 45 mm |
 | `logo-horizontal` | 120 px wide | 25 mm |
 | `mark` | 16 px | 5 mm |

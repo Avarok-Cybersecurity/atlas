@@ -44,7 +44,7 @@ fn test_stop_token_exempt_from_grammar_refusal() {
     // matcher, which refused it ("accept_token returned false"), and the
     // caller force-ended the response ("Ending response to prevent cascading
     // grammar-mask corruption") — truncating agentic turns mid-task. That was
-    // the dominant cause of Avarok's opencode webserver_ok gap vs vLLM (which
+    // the dominant cause of Atlas's opencode webserver_ok gap vs vLLM (which
     // never constrains the stop token). `with_stop_tokens` exempts it.
     let vocab = test_vocab();
     let mut engine = GrammarEngine::new(&vocab, &[130i32]).unwrap();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Slice 6 GATE — conv contract at GLM-5.3-Flash production geometry.
 //!
-//! Slice 2 classed Avarok's `causal_conv1d_update_l2norm` as REUSE for KDA. It has never been
+//! Slice 2 classed Atlas's `causal_conv1d_update_l2norm` as REUSE for KDA. It has never been
 //! driven at KDA geometry, and it carries hardcoded structural assumptions:
 //! `BLOCK = 256`, `head_dim = 128` -> exactly 2 L2 groups per block, and
 //! `qk_channels % 256 == 0`. This binds it to HF 5.16.1 BEFORE any layer integration, because
@@ -10,7 +10,7 @@
 //! Geometry: `conv_dim = 3*64*128 = 24576`, `qk_channels = 2*64*128 = 16384`, `head_dim = 128`,
 //! `kernel = 4`, activation `silu` (from config `hidden_act`, not assumed).
 //!
-//! ## Two paths, because Avarok has two and they are different kernels
+//! ## Two paths, because Atlas has two and they are different kernels
 //! * **decode** — `causal_conv1d_update_l2norm`: conv + SiLU + L2, fused.
 //! * **prefill** — `causal_conv1d_update_prefill`: conv + SiLU only. L2 must then be applied
 //!   separately by `l2_norm_bf16`, over the q|k channels ONLY. Getting this wrong in either
@@ -18,9 +18,9 @@
 //!   nearly invisible in fp32 and very visible in bf16.
 //!
 //! ## State-width mapping
-//! HF keeps `kernel_size - 1 = 3` slots. Avarok keeps 4 and shifts LEFT before convolving, so
+//! HF keeps `kernel_size - 1 = 3` slots. Atlas keeps 4 and shifts LEFT before convolving, so
 //! the oldest slot is shifted out and never participates:
-//! `HF_state[0..3] == Avarok_state[1..4]` pre-shift. The Rust side widens HF's 3 into Avarok's 4.
+//! `HF_state[0..3] == Avarok_state[1..4]` pre-shift. The Rust side widens HF's 3 into Atlas's 4.
 //!
 //!   cargo run -p spark-model --release --example kda_conv_contract_microtest \
 //!       --features cuda,gpu-examples
@@ -201,7 +201,7 @@ fn main() -> Result<()> {
     let tok = rng.vec(dim);
     let pre = rng.vec(tpre * dim);
 
-    // HF's 3-wide state -> Avarok's 4-wide: slot 0 is shifted out before the conv, so it is a
+    // HF's 3-wide state -> Atlas's 4-wide: slot 0 is shifted out before the conv, so it is a
     // don't-care. It is filled with a poison value here to PROVE that.
     let widen = |poison: f32| -> Vec<f32> {
         let mut s = vec![0.0f32; dim * ks];
@@ -262,7 +262,7 @@ fn main() -> Result<()> {
     println!("  CPU-ref(bf16) vs HF   max_abs={e_floor:.3e}   <- input-rounding floor");
     println!("  GPU vs HF             max_abs={e_hf:.3e}");
     println!("  GPU vs CPU-ref        max_abs={e_kern:.3e}   <- kernel only");
-    // Avarok keeps 4 slots, HF keeps 3: compare the overlapping window Avarok[1..4] vs HF[0..3].
+    // Atlas keeps 4 slots, HF keeps 3: compare the overlapping window Atlas[1..4] vs HF[0..3].
     let d_state_tail: Vec<f32> = (0..dim)
         .flat_map(|ch| (1..ks).map(move |i| (ch, i)))
         .map(|(ch, i)| d_state[ch * ks + i])
@@ -272,7 +272,7 @@ fn main() -> Result<()> {
         &arr(&v, "decode_state_sample"),
     );
     let s_cpu = maxabs(&d_state_tail, &cpu_state_tail);
-    println!("  state Avarok[1..4] vs HF[0..3] max_abs={s_hf:.3e}   vs CPU-ref {s_cpu:.3e}");
+    println!("  state Atlas[1..4] vs HF[0..3] max_abs={s_hf:.3e}   vs CPU-ref {s_cpu:.3e}");
     ok &= s_hf <= MAX_ABS_BF16;
     ok &= e_hf <= MAX_ABS_BF16 && e_kern <= MAX_ABS_BF16;
 
@@ -351,7 +351,7 @@ fn main() -> Result<()> {
     );
     ok &= po_hf <= MAX_ABS_BF16;
 
-    // Avarok's 4-wide final state vs HF's 3-wide: compare the overlapping window.
+    // Atlas's 4-wide final state vs HF's 3-wide: compare the overlapping window.
     let avarok_tail: Vec<f32> = (0..dim)
         .flat_map(|ch| (1..ks).map(move |i| (ch, i)))
         .map(|(ch, i)| p_state[ch * ks + i])
@@ -360,7 +360,7 @@ fn main() -> Result<()> {
         &sample(&avarok_tail, stride),
         &arr(&v, "prefill_state_sample"),
     );
-    println!("  final conv state (Avarok[1..4] vs HF[0..3]) max_abs={ps_hf:.3e}");
+    println!("  final conv state (Atlas[1..4] vs HF[0..3]) max_abs={ps_hf:.3e}");
     ok &= ps_hf <= MAX_ABS_BF16;
 
     let pqk: Vec<f32> = p_out[..qk]

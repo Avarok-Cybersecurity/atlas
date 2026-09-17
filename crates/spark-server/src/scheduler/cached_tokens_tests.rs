@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Avarok #919 part 2: `usage.prompt_tokens_details.cached_tokens` accounting.
+//! Atlas #919 part 2: `usage.prompt_tokens_details.cached_tokens` accounting.
 //! Logical child of `phase_promote_prefills` via `#[path]`.
-/// Avarok #919: `usage.prompt_tokens_details.cached_tokens` must report the
+/// Atlas #919: `usage.prompt_tokens_details.cached_tokens` must report the
 /// prompt tokens whose KV was REUSED, not the prefix-cache lookup length. The
 /// lookup length lives on `cached_prefix_tokens` and is load-bearing for block
 /// refcounting, so the report sites must read `reused_prefix_tokens` instead.

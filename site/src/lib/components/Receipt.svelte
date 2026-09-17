@@ -31,7 +31,7 @@
     r.baselines.find((b) => b.id === r.best_baseline_id)?.label ?? 'baseline';
 </script>
 
-<div class="receipt receipt-print" role="figure" aria-label="Avarok release-gate receipt">
+<div class="receipt receipt-print" role="figure" aria-label="Atlas release-gate receipt">
   <div class="receipt-body">
     <div class="receipt-head">
       <span class="receipt-title">{isLadder ? 'concurrency ladder' : 'serve matrix'}</span>
@@ -81,7 +81,7 @@
     {/if}
 
     <div class="receipt-foot">
-      <span>avarok {bench.generated_sha}</span>
+      <span>atlas {bench.generated_sha}</span>
       <span>{bench.generated_date}</span>
     </div>
   </div>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Causal Conv1d — Depthwise temporal convolution + SiLU activation.
+// Atlas Causal Conv1d — Depthwise temporal convolution + SiLU activation.
 //
 // For Qwen3-Next Gated Delta Net layers:
 //   Input: [batch, dim, seq_len]  BF16 (dim=8192, d_conv=4)

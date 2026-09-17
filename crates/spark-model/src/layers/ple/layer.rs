@@ -19,7 +19,7 @@ use crate::weight_map::DenseWeight;
 
 /// Per-SEQUENCE carry: the dilated conv's 9 steps and the token history the
 /// id hash needs. Owned by the sequence's [`crate::layer::SsmLayerState`]
-/// (Avarok #753 item B: concurrency needs one of these per in-flight
+/// (Atlas #753 item B: concurrency needs one of these per in-flight
 /// sequence, not a layer singleton).
 pub struct PleSeqState {
     /// `[(k-1)*dilation, channels]` FP32, device.

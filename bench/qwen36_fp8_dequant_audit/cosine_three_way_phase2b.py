@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 2b cosine compare: post-RNE Avarok image vs both references.
+"""Phase 2b cosine compare: post-RNE Atlas image vs both references.
 
 Reads:
   - /workspace/avarok-dumps/numdrift/rne/avarok_L{0..39}.bin    (NEW post-RNE)
@@ -8,10 +8,10 @@ Reads:
   - /workspace/avarok-dumps/fp8dequant/hf_L{0..39}.bin         (FP8->BF16 ref)
 
 Reports four series:
-  B_old: Avarok[truncating] vs HF[unquant]      -- Phase α baseline
-  B_new: Avarok[RNE]        vs HF[unquant]      -- Phase 2b result
-  C_old: Avarok[truncating] vs HF[FP8->BF16]    -- Phase 2a Avarok-fidelity baseline
-  C_new: Avarok[RNE]        vs HF[FP8->BF16]    -- Phase 2b Avarok-fidelity result
+  B_old: Atlas[truncating] vs HF[unquant]      -- Phase α baseline
+  B_new: Atlas[RNE]        vs HF[unquant]      -- Phase 2b result
+  C_old: Atlas[truncating] vs HF[FP8->BF16]    -- Phase 2a Atlas-fidelity baseline
+  C_new: Atlas[RNE]        vs HF[FP8->BF16]    -- Phase 2b Atlas-fidelity result
 
 Plus the ceiling (A) from Phase 2a for reference.
 
@@ -117,10 +117,10 @@ def main() -> None:
         )
 
     sA = summarize("A: HF[FP8->BF16] vs HF[unquant] (ceiling)", cosines_A)
-    sB_old = summarize("B_old: Avarok[trunc] vs HF[unquant]       ", cosines_B_old)
-    sB_new = summarize("B_new: Avarok[RNE]   vs HF[unquant]       ", cosines_B_new)
-    sC_old = summarize("C_old: Avarok[trunc] vs HF[FP8->BF16]      ", cosines_C_old)
-    sC_new = summarize("C_new: Avarok[RNE]   vs HF[FP8->BF16]      ", cosines_C_new)
+    sB_old = summarize("B_old: Atlas[trunc] vs HF[unquant]       ", cosines_B_old)
+    sB_new = summarize("B_new: Atlas[RNE]   vs HF[unquant]       ", cosines_B_new)
+    sC_old = summarize("C_old: Atlas[trunc] vs HF[FP8->BF16]      ", cosines_C_old)
+    sC_new = summarize("C_new: Atlas[RNE]   vs HF[FP8->BF16]      ", cosines_C_new)
 
     print()
     print(f"=== Summary (n={sA['n']} layers) ===")
@@ -135,7 +135,7 @@ def main() -> None:
     print(f"  Gap to ceiling now: A - C_new = {sA['mean']-sC_new['mean']:+.5f}")
     print()
     if sC_new["mean"] >= 0.997:
-        print("RESULT: TARGET MET. C >= 0.997, Avarok compute path at ceiling.")
+        print("RESULT: TARGET MET. C >= 0.997, Atlas compute path at ceiling.")
     elif sC_new["mean"] - sC_old["mean"] >= 0.01:
         print("RESULT: SIGNIFICANT IMPROVEMENT. Some headroom remains; investigate other compute paths.")
     elif sC_new["mean"] - sC_old["mean"] >= 0.001:

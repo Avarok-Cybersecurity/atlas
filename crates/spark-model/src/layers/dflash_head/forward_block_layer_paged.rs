@@ -323,7 +323,7 @@ impl BlockDiffusionDraftHead {
         // 3b-q / 3c-q. Q branch: q_proj then q_norm — faithful to dflash.py:68-70.
         // dflash.py:68  q = self.q_proj(hidden_states)
         // dflash.py:70  q = self.q_norm(q.view(..., head_dim)).transpose(1,2)
-        //   Avarok: [γ, q_dim] tokens-first; q_norm over [γ*num_q_heads, head_dim].
+        //   Atlas: [γ, q_dim] tokens-first; q_norm over [γ*num_q_heads, head_dim].
         gemm_swap(
             &layer.q_proj,
             &layer.q_proj_fp8,
@@ -431,7 +431,7 @@ impl BlockDiffusionDraftHead {
         // dflash.py:79-80  cos, sin = position_embeddings
         //                  q, k = apply_rotary_pos_emb(q, k, cos, sin)
         //   z-lab: Q uses cos[..,-q_len:,:] (last γ noise positions);
-        //          K (full ctx+noise) uses full cos. Avarok equivalent:
+        //          K (full ctx+noise) uses full cos. Atlas equivalent:
         //          ctx K is RoPE-rotated at its fixed slot positions in
         //          precompute_ctx_kv; noise K is rotated here at
         //          [position..position+γ) — same positions as Q.
@@ -479,7 +479,7 @@ impl BlockDiffusionDraftHead {
         // at slots [ctx_count .. ctx_count + γ].
         // dflash.py:75-76  k = cat([k_ctx, k_noise], dim=1)
         //                  v = cat([v_ctx, v_noise], dim=1)
-        //   Avarok equivalent: ctx K/V already at slots [0..ctx_count),
+        //   Atlas equivalent: ctx K/V already at slots [0..ctx_count),
         //   noise K/V written here at slots [ctx_count..ctx_count+γ).
         //   Paged attention then reads the whole kv_len=ctx_count+γ range.
         // Slot mapping is provided by the caller (built once per propose).

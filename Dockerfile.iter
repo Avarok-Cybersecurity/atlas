@@ -1,2 +1,2 @@
-FROM avarok-deepseek-v4:latest
+FROM atlas-deepseek-v4:latest
 COPY target/release/spark /usr/local/bin/spark

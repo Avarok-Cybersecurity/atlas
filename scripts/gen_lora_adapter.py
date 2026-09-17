@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Generate a tiny PEFT-format LoRA adapter for Hcompany/Holo-3.1-0.8B (Avarok LoRA MVP test fixture).
+"""Generate a tiny PEFT-format LoRA adapter for Hcompany/Holo-3.1-0.8B (Atlas LoRA MVP test fixture).
 
 Builds lora_A [r, in] / lora_B [out, r] tensors (NONZERO B — small normal init, unlike PEFT's
 default B=0) for k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj on ONLY the 6
@@ -19,7 +19,7 @@ Key style (--key-style):
                  -- what PEFT 0.19.1 actually saves when wrapping Qwen3_5ForConditionalGeneration
                  (verified via get_peft_model_state_dict on the real class, meta device)
   text           base_model.model.model.layers.{i}....lora_A.weight
-                 -- the text-tower-only form; the Avarok remapper must accept both
+                 -- the text-tower-only form; the Atlas remapper must accept both
 
 Run:
   /home/ms/nemotron-diffusion-playground/.venv/bin/python scripts/gen_lora_adapter.py

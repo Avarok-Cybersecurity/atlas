@@ -3,7 +3,7 @@
 // Runtime BF16 -> FP8 (E4M3) quantization with 128x128 BLOCK scales.
 //
 // This is the load-time weight quantizer for checkpoints that ship plain BF16
-// with no calibration metadata (LongCat-Flash-Lite is the first). Avarok's only
+// with no calibration metadata (LongCat-Flash-Lite is the first). Atlas's only
 // runtime quantizer for that case was BF16 -> NVFP4, which costs real output
 // quality on models whose weights are 90% routed experts; FP8 sits between the
 // two and fits where BF16 does not.
@@ -20,7 +20,7 @@
 //
 // One CTA per tile, 256 threads, two passes over the tile's 16384 elements
 // (absmax, then encode). Partial edge tiles are handled — N and K need not be
-// multiples of 128, though every shape Avarok feeds this today is.
+// multiples of 128, though every shape Atlas feeds this today is.
 //
 // NOTE on `k_blocks`: it is ceil(K/128), matching the consumer's
 // `(K + FP8_BLOCK - 1) / FP8_BLOCK`. Getting this rounding wrong silently

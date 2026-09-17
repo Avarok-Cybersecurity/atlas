@@ -3,7 +3,7 @@ name = "spark-runtime"
 version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
-description = "Avarok Spark runtime — GPU backend, weight loading, KV cache, scheduler"
+description = "Atlas Spark runtime — GPU backend, weight loading, KV cache, scheduler"
 autobenches = false
 
 [features]

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Prometheus metrics for Avarok Spark.
+//! Prometheus metrics for Atlas Spark.
 
 use lazy_static::lazy_static;
 use prometheus::{
@@ -52,7 +52,7 @@ lazy_static! {
             "atlas_decoded_tokens_total",
             "Tokens decoded, counted as they are produced (rate-friendly)"
         ).unwrap();
-    // ── HTTP byte accounting (Avarok TUI Server Stats) ──
+    // ── HTTP byte accounting (Atlas TUI Server Stats) ──
     //
     // Request side counts body bytes as received by the byte-count
     // middleware; response side counts bytes actually written through the

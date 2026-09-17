@@ -143,7 +143,7 @@ pub fn fp8_gemm_act_weight_t_rowwise(
 }
 
 /// Native FP8 (E4M3) `out[M,N] = act[M,K] @ weight[N,K]ᵀ` → BF16, with the
-/// weight per-128×128-block FP32-scaled (matches Avarok's `Fp8Weight.row_scale`
+/// weight per-128×128-block FP32-scaled (matches Atlas's `Fp8Weight.row_scale`
 /// layout exactly) and the activation per-[token,128-of-K] FP32-scaled.
 /// ~1.8× the bf16 path (152 vs 85 TFLOPS on GB10).
 ///

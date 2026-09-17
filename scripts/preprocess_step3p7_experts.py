@@ -4,7 +4,7 @@
 Step 3.7 stores all 288 experts in single fused tensors per projection type:
     model.language_model.layers.3.moe.gate_proj.weight  [288, 1280, 2048]
 
-Avarok EP (Expert Parallelism) filtering works by tensor name — it looks for
+Atlas EP (Expert Parallelism) filtering works by tensor name — it looks for
 `.experts.N.` to decide which expert belongs to which GPU. Fused tensors
 bypass this completely.
 
@@ -14,7 +14,7 @@ This script splits fused expert tensors into per-expert named tensors:
     ...
 
 The output checkpoint is bit-exact with the original — same bytes, just
-reorganised into per-expert tensors. Compatible with Avarok's existing EP
+reorganised into per-expert tensors. Compatible with Atlas's existing EP
 filtering logic (parse_expert_index).
 
 Usage:
@@ -295,7 +295,7 @@ def dry_run(model_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Split Step 3.7 Flash NVFP4 fused expert tensors for Avarok EP support"
+        description="Split Step 3.7 Flash NVFP4 fused expert tensors for Atlas EP support"
     )
     parser.add_argument("input", type=Path, help="Input model directory (HF checkpoint)")
     parser.add_argument("output", type=Path, help="Output directory for split checkpoint")

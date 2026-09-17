@@ -132,7 +132,7 @@ fn bench_prefill_attn_64(c: &mut Criterion) {
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(15));
 
-    // Prefill chunk sizes seen in production: 1024 (one Avarok chunk),
+    // Prefill chunk sizes seen in production: 1024 (one Atlas chunk),
     // 4096 (cold-TTFT-dominant size), 8192 (long-context limit).
     let seq_lens: Vec<u32> = vec![1024, 4096, 8192];
 

@@ -123,7 +123,7 @@ fn assistant_message_substitutes_empty_arguments_with_an_object() {
 
 #[test]
 fn tool_call_ids_are_positional_and_never_the_servers() {
-    // Avarok mints ids from a per-process counter, so the same turn of the same
+    // Atlas mints ids from a per-process counter, so the same turn of the same
     // work carries a different id depending on what that server did earlier —
     // measured: five identical requests, five distinct id sets, identical text.
     // Echoing it wrote a value from outside the run into the model's context.
@@ -155,7 +155,7 @@ fn tool_call_ids_are_positional_and_never_the_servers() {
 #[test]
 fn the_system_prompt_is_the_harness_agent_prompt_plus_the_environment() {
     let p = system_prompt(Path::new("/tmp/run-03"), "Qwen/Qwen3.6-35B-A3B-FP8");
-    assert!(p.starts_with("You are a coding assistant running locally on Avarok Spark."));
+    assert!(p.starts_with("You are a coding assistant running locally on Atlas Spark."));
     // The line that keeps a thinking model from walking the session past the
     // window — the failure the harness header blames for the slow runs.
     assert!(p.contains("Keep thinking short (under 50 words)"));

@@ -22,7 +22,7 @@ checked out at `/workspace/.cargo/xgrammar-rs-cache/xgrammar-v0.1.32/`.
   `thread_safe_cache`→`dashmap`, `json_serializer`+`reflection`→`serde`,
   `logging`→`tracing`/`thiserror`.
 
-## Public API contract (what Avarok's `grammar/` module consumes)
+## Public API contract (what Atlas's `grammar/` module consumes)
 
 These must exist with matching behaviour so `crates/spark-server/src/
 grammar/` needs zero changes:
@@ -73,7 +73,7 @@ W5  grammar compiler           (grammar_compiler.cc,         dep: W1-W4
                                 compiled_grammar.cc)
 W5  structural tag             (structural_tag.cc)           dep: grammar,schema
 W6  grammar matcher            (grammar_matcher.cc)          dep: compiler,earley
-W7  public API + Avarok repoint (lib.rs; Cargo path swap)     dep: all
+W7  public API + Atlas repoint (lib.rs; Cargo path swap)     dep: all
 ```
 
 W1's grammar data model defines the shared types every later wave
@@ -84,7 +84,7 @@ type contract is fixed before parallel work begins.
 
 Each subsystem ports the corresponding C++ unit tests
 (`tests/cpp/` + `tests/python/`) as Rust `#[cfg(test)]` tests. The
-final gate: stand up Avarok with the pure-Rust crate path-swapped in,
+final gate: stand up Atlas with the pure-Rust crate path-swapped in,
 run `tool-eval-bench` and compare tool-call pass rate against the
 C++-xgrammar baseline — must be at parity.
 

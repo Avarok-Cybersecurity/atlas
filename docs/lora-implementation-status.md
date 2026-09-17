@@ -1,4 +1,4 @@
-# Avarok LoRA v0 — Implementation Status (M0 + M1-attention)
+# Atlas LoRA v0 — Implementation Status (M0 + M1-attention)
 
 This is a **working POC**: a served, fine-tuned tiny model on GB10, verified end-to-end.
 
@@ -57,7 +57,7 @@ spark serve Hcompany/Holo-3.1-0.8B \
     correctly inside CUDA graphs.
 
 The test fixture (`test_data/lora-holo-tiny/`) is a **generated** PEFT adapter, deliberately
-strong so its effect is unambiguous — no community adapter exists for Avarok's custom
+strong so its effect is unambiguous — no community adapter exists for Atlas's custom
 NVFP4-packed bases, so a controllable fixture also exercises the reject/parity paths exactly.
 
 ## M2 — multi-adapter rotation over the RDMA weight tier (staged on this branch)
@@ -91,7 +91,7 @@ startup adapter with no rotation env is byte-identical to M1.
   default route).
 - **RDMA slot-staging** (`spark-storage/weight_lora_rdma.rs` +
   `spark-model/lora/rdma_stage.rs`, gated `$AVAROK_LORA_PEER`): stage adapter dirs
-  on `avarok-weight-peer` and RDMA-load a named adapter's A/B straight into a pool
+  on `atlas-weight-peer` and RDMA-load a named adapter's A/B straight into a pool
   SLOT — landing byte-identical to the disk pack (same F16/F32→BF16 host convert
   as the disk adapter loader, same B row-repack). `TransformerModel::
   swap_lora_slot_from_peer` re-zeroes the slot, lands via

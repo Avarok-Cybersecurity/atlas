@@ -37,7 +37,7 @@
         `spark benchmark run concurrency-sweep \\`,
         `  --url http://127.0.0.1:8888 --model ${claim.checkpoint} \\`,
         `  --param concurrencies=1,4,8,16 --param isls=512 --param osl=320 \\`,
-        `  --format json > avarok.json`
+        `  --format json > atlas.json`
       ]}
       note="http:// only. stdout carries the record and stderr the progress, so the redirect gives a clean file. Those --param values are the ones the gate pins; an unknown key is an error, never a silent no-op."
     />
@@ -70,13 +70,13 @@
   <div class="wide2">
     <div class="at" style="--n: 1">
       <Cmd
-        label="the published ladder, Avarok leg"
+        label="the published ladder, Atlas leg"
         lines={[
           `python3 -m venv .venv && .venv/bin/pip install aiohttp`,
           ``,
           `.venv/bin/python ${claim.harnessFile} \\`,
           `  --url http://127.0.0.1:8888 --model ${claim.checkpoint} \\`,
-          `  --label avarok --out avarok_ladder.json \\`,
+          `  --label atlas --out atlas_ladder.json \\`,
           `  --concs ${claim.concsArg} \\`,
           `  --reps ${claim.reps} --isl ${claim.isl} --osl ${claim.osl} --warmup ${claim.warmup}`
         ]}
@@ -87,7 +87,7 @@
       <p class="side-h mono">Check the driver hash first</p>
       <p>
         The driver prints its own <code class="mono">sha256</code> on the first line and writes it
-        into the output as <code class="mono">driver_sha256</code>. The published Avarok legs carry
+        into the output as <code class="mono">driver_sha256</code>. The published Atlas legs carry
         <code class="mono">{claim.harnessShaAvarok}</code>; the copy in the repository today hashes
         <code class="mono">{claim.harnessShaRepo}</code>.
       </p>
@@ -161,7 +161,7 @@
           <tr><th>C=32, same box, same day</th><th>cap 32</th><th>cap 128</th><th>effect</th></tr>
         </thead>
         <tbody>
-          <tr><td>Avarok</td><td class="mono">277.31</td><td class="mono">278.93</td><td>flat</td></tr>
+          <tr><td>Atlas</td><td class="mono">277.31</td><td class="mono">278.93</td><td>flat</td></tr>
           <tr><td>vLLM + MTP</td><td class="mono">284.54</td><td class="mono">277.12</td><td class="up">+2.7% at cap 32</td></tr>
         </tbody>
       </table>
@@ -176,7 +176,7 @@
         A matched cap-32 pair, adopted in good faith to dodge a hardware hazard, produced
         <strong>0.975×</strong> and inverted the true ordering. Measured again at the certified
         cap-128 configuration on the same box the same day: <strong>1.007×</strong>, with
-        non-overlapping distributions — Avarok's worst rep beat vLLM's best.
+        non-overlapping distributions — Atlas's worst rep beat vLLM's best.
       </p>
       <p class="lead">
         The certified table pins cap 128 on both engines at <em>every</em> rung, independently of
@@ -217,8 +217,8 @@
     <article class="at" style="--n: 3">
       <h3>Why C=128 is the widest rung</h3>
       <p>
-        It is not that Avarok gets faster — it is that vLLM's C=128 falls <em>below</em> its own
-        C=64 when speculation stays on at high concurrency. Avarok's ladder has already switched it
+        It is not that Atlas gets faster — it is that vLLM's C=128 falls <em>below</em> its own
+        C=64 when speculation stays on at high concurrency. Atlas's ladder has already switched it
         off. The margin is a scheduling decision, and it is reproducible for that reason.
       </p>
     </article>

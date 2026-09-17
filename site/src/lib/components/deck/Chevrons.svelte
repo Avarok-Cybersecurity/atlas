@@ -11,7 +11,7 @@
   let { id = 'dk-cut' } = $props();
 </script>
 
-<svg viewBox="0 0 956 636" role="img" aria-label="Avarok">
+<svg viewBox="0 0 956 636" role="img" aria-label="Atlas">
   <defs>
     <linearGradient {id} x1="0" y1="0" x2="0" y2="1">
       <stop offset="0.5" stop-color="var(--ch-green)" />

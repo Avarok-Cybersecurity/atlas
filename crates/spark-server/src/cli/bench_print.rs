@@ -177,7 +177,7 @@ pub fn print_record(record: &RunRecord, format: OutputFormat) -> Result<()> {
     println!("  target   {} · {}", record.target_url, record.target_model);
     println!(
         "  source   {:?} · avarok {}",
-        record.source, record.avarok_version
+        record.source, record.atlas_version
     );
     if !record.params.is_empty() {
         println!("  params");

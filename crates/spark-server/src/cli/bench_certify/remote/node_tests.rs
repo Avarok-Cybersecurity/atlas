@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use super::super::avarokctl::NodeRow;
-use super::super::avarokctl::avarokctl_tests::NODE_ROW;
+use super::super::atlasctl::NodeRow;
+use super::super::atlasctl::atlasctl_tests::NODE_ROW;
 use super::*;
 
 fn row() -> NodeRow {
@@ -124,13 +124,13 @@ fn each_admission_rule_refuses_with_its_reason() {
         "{}",
         e.why
     );
-    // No info at all: the error avarokctl gave.
+    // No info at all: the error atlasctl gave.
     let e = admit(
         &NodeRow {
             node: "10.10.10.9".into(),
             ok: false,
             info: None,
-            error: Some(super::super::avarokctl::ErrorObj {
+            error: Some(super::super::atlasctl::ErrorObj {
                 code: "not_paired".into(),
                 message: "peer x is not paired".into(),
                 ..Default::default()

@@ -49,7 +49,7 @@ pub(super) fn run_standard_chunk_loop(
     // requests (Q12: avoids back-to-back chunked prefill monopolising
     // the scheduler).
     let remaining = p.prompt_tokens.len() - p.chunk_offset;
-    // MLA correctness gate: Avarok has no `prefill_attention_paged_mla_*`
+    // MLA correctness gate: Atlas has no `prefill_attention_paged_mla_*`
     // kernel; the existing MLA prefill at qwen3_attention/prefill.rs:1723
     // only attends over the current chunk's K/V, so multi-chunk prefill
     // silently corrupts attention output. Force single-chunk until a

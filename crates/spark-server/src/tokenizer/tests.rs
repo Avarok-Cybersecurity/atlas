@@ -423,7 +423,7 @@ fn deepseek_v4_reasoning_parser_is_registered() {
 /// produce EXACTLY what transformers' jinja2 `tojson` does, which is
 /// `json.dumps(x, ensure_ascii=False, sort_keys=False)` — spaces
 /// after `:`/`,` and keys in insertion/declaration order. Without
-/// this Avarok fed the model a compact, key-sorted `<tools>` block
+/// this Atlas fed the model a compact, key-sorted `<tools>` block
 /// (~26% fewer tokens), diverging from vLLM at the first `:`.
 ///
 /// The fixture and expected string mirror the Python reference:

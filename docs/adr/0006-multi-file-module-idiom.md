@@ -26,7 +26,7 @@ shapes:
 
 ## Decision
 
-Avarok's module idiom is:
+Atlas's module idiom is:
 
 ```
 foo/

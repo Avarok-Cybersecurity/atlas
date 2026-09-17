@@ -256,7 +256,7 @@ fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
         avarok_plugin::RunSource::Tui,
         "tagged as the TUI's"
     );
-    assert_eq!(r.avarok_version, crate::cli::AVAROK_VERSION);
+    assert_eq!(r.atlas_version, crate::cli::AVAROK_VERSION);
     assert_eq!(r.target(), TargetEndpoint::local(9001, "cross-path-model"));
     assert!(!r.is_legacy(), "written in the current schema");
     // Every parameter, not just the ones a user touched.

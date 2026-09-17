@@ -1,6 +1,6 @@
 # Multi-GPU & EP=2
 
-Expert Parallelism across two GB10 nodes is the only way to run the largest MoE models (Qwen3.5-122B-A10B, Mistral-Small-4-119B, MiniMax-M2.7) — their experts don't fit on one node. Avarok's multi-GPU support is specifically EP=2 over RoCEv2; the scheduler and HTTP API run on rank 0.
+Expert Parallelism across two GB10 nodes is the only way to run the largest MoE models (Qwen3.5-122B-A10B, Mistral-Small-4-119B, MiniMax-M2.7) — their experts don't fit on one node. Atlas's multi-GPU support is specifically EP=2 over RoCEv2; the scheduler and HTTP API run on rank 0.
 
 ## What "EP=2" means here
 
@@ -19,7 +19,7 @@ Only rank 0 runs the HTTP server and the scheduler. Rank 1 is a silent compute w
 
 ## Network layer
 
-Avarok's production two-node setup uses InfiniBand RoCE over a Mellanox ConnectX HCA (`mlx5_0`). The two-node network is dedicated — the public/management interface is separate. Canonical IPs:
+Atlas's production two-node setup uses InfiniBand RoCE over a Mellanox ConnectX HCA (`mlx5_0`). The two-node network is dedicated — the public/management interface is separate. Canonical IPs:
 
 - Head: `<head-ip>`
 - Worker: `<worker-ip>`
@@ -45,7 +45,7 @@ On each node, the script does:
 
 1. Cleans any stale containers.
 2. Sets the NCCL + GLOO env vars (see below) for RoCE.
-3. Runs `docker run ... avarok-gb10:latest serve <model> --rank {0|1} --world-size 2 --master-addr <head-ip> --master-port 29500 ...`.
+3. Runs `docker run ... atlas-gb10:latest serve <model> --rank {0|1} --world-size 2 --master-addr <head-ip> --master-port 29500 ...`.
 
 ## Manual launch
 
@@ -54,7 +54,7 @@ If you need custom flags, the manual flow is:
 **Head (rank 0, node 0, <head-ip>):**
 
 ```bash
-sudo docker run -d --name avarok-122b-r0 \
+sudo docker run -d --name atlas-122b-r0 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
@@ -77,7 +77,7 @@ sudo docker run -d --name avarok-122b-r0 \
 **Worker (rank 1, node 1, <worker-ip>):**
 
 ```bash
-sudo docker run -d --name avarok-122b-r1 \
+sudo docker run -d --name atlas-122b-r1 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -e NCCL_SOCKET_IFNAME=enp1s0f0np0 \
@@ -147,10 +147,10 @@ Last known-green run on alpha-2.35: MiniMax-M2.7 EP=2 scored 8/10 on the suite; 
 
 ## Why not tensor parallel?
 
-Tensor parallelism (TP) was the traditional approach for splitting dense models across GPUs. Avarok on GB10 does not use TP because:
+Tensor parallelism (TP) was the traditional approach for splitting dense models across GPUs. Atlas on GB10 does not use TP because:
 
 1. GB10 is unified memory — there's no NVLink island to exploit for intra-node TP.
-2. The models Avarok targets are MoE-dominant beyond a single GB10's memory. EP is the natural split — one expert per rank is cleaner than splitting a weight matrix.
+2. The models Atlas targets are MoE-dominant beyond a single GB10's memory. EP is the natural split — one expert per rank is cleaner than splitting a weight matrix.
 3. TP requires per-layer all-reduces. EP requires per-MoE-layer token dispatch. At the model shapes we care about, EP is lower collective traffic than TP.
 
 TP for dense models on future multi-GPU hardware is on the roadmap; today there's no supported use case where it would win.

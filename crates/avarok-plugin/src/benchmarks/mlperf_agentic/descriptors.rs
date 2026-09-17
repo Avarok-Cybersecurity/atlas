@@ -39,7 +39,7 @@ pub const SUBSET_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     needs_confirmation: false,
     intended_for: Some(crate::benchmark::ModelExpectation {
         families: &["qwen3.6-35b-a3b"],
-        note: "MLCommons specifies Qwen/Qwen3.6-35B-A3B (BF16); Avarok serves the official \
+        note: "MLCommons specifies Qwen/Qwen3.6-35B-A3B (BF16); Atlas serves the official \
                FP8 sibling, which is rules-legal quantization but NOT the named checkpoint \
                — every number needs that caveat until the three-part accuracy gate is \
                cleared. Kimi K2.6 (1T) does not fit a GB10.",

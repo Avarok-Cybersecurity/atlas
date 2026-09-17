@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok RMS Normalization kernel for Gemma-4 (SM121).
+// Atlas RMS Normalization kernel for Gemma-4 (SM121).
 //
 // Gemma-4 uses STANDARD RMS normalization:
 //   RMSNorm(x) = x * weight / sqrt(mean(x^2) + eps)

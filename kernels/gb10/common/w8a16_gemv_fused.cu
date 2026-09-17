@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 GEMV Fused — dual projection + silu-input variants (FP8 E4M3).
+// Atlas W8A16 GEMV Fused — dual projection + silu-input variants (FP8 E4M3).
 //
 // FP8 mirror of w4a16_gemv_fused.cu (which decodes NVFP4 E2M1). The ONLY
 // differences vs the NVFP4 fused kernels are the weight/scale decode:

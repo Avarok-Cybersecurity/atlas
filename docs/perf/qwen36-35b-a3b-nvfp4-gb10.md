@@ -24,7 +24,7 @@ Filing so the decode flags land in the canonical serve config and the perf basel
 
 ## Config (this matrix)
 
-- Model: `unsloth/Qwen3.6-35B-A3B-NVFP4`, GB10, `avarok-gb10:b12x-ready` (CUDA 13.2, CUTLASS).
+- Model: `unsloth/Qwen3.6-35B-A3B-NVFP4`, GB10, `atlas-gb10:b12x-ready` (CUDA 13.2, CUTLASS).
 - Prefill flags: `AVAROK_FLASHINFER_PREFILL AVAROK_GDN_FLASHINFER AVAROK_CUBLAS_GEMM AVAROK_CUTLASS_WORKSPACE_MB=512 AVAROK_PREFILL_VARLEN AVAROK_PREFILL_CODISPATCH(+WINDOW_MS=100) AVAROK_MOE_PREFILL_EXACT_TILES AVAROK_SSM_BATCHED_RECURRENT AVAROK_HOLO_MOE_GROUPED_CUTLASS AVAROK_HOLO_MOE_GROUPED_DOWN AVAROK_HOLO_FAST_MOE_MODE=full AVAROK_HOLO_FAST_MOE_LAYERS=0-39 AVAROK_HOLO_NATIVE_FP8_ATTN AVAROK_HOLO_NATIVE_FP8_SSM AVAROK_HOLO_LOW_MEMORY_MOE AVAROK_Q12_BATCHED(+_FIRST_CHUNK) AVAROK_GDN_TC_VBLOCK=0 AVAROK_FP8_SINGLE_SCALE` (`AVAROK_KV_OVERCOMMIT` dropped — see below)
 - Decode flags: the 5 above + `AVAROK_MOE_BATCHED_DECODE`
 - Serve: `--scheduling-policy slai --tbt-deadline-ms 100 --max-prefill-tokens 16384 --kv-cache-dtype bf16 --max-batch-size 8 --max-num-seqs 8 --gpu-memory-utilization 0.78`

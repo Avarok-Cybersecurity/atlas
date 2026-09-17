@@ -474,7 +474,7 @@ pub fn responses_image_request(model: &str, mime: &str, bytes: &[u8], prompt: &s
         "stream": false,
         "temperature": 0.0,
         // `reasoning.effort` is the OPENAI-STANDARD control for this surface,
-        // and Avarok honors it (responses_lowering passes `reasoning` through
+        // and Atlas honors it (responses_lowering passes `reasoning` through
         // and `client_reasoning_effort` reads it). `chat_template_kwargs` —
         // the vLLM extension the chat-completions legs use — is explicitly
         // dropped by that lowering, so the standard field is the right lever

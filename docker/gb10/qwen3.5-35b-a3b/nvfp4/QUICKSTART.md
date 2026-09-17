@@ -1,4 +1,4 @@
-# Avarok Spark — Qwen3.5-35B-A3B Quick Start
+# Atlas Spark — Qwen3.5-35B-A3B Quick Start
 
 Run Qwen3.5-35B-A3B at **131 tok/s** on a single NVIDIA GB10 GPU.
 
@@ -41,7 +41,7 @@ The server starts on port 8888 after ~90 seconds of model loading.
 ```bash
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"m","messages":[{"role":"user","content":"Why is the Avarok engine now seriously on the map?"}],"max_tokens":256}'
+  -d '{"model":"m","messages":[{"role":"user","content":"Why is the Atlas engine now seriously on the map?"}],"max_tokens":256}'
 ```
 
 ## CLI flags

@@ -5,7 +5,7 @@ Loads nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4, MANUALLY dequantizes every
 NVFP4 weight to BF16 (transformers 5.8 has no NVFP4 backend in this image),
 loads the dequantized state_dict into a fresh NemotronH model, feeds the EXACT
 chat-rendered token IDs, and captures per-block hidden states + final norm +
-logits in headerless little-endian f32 .bin -- the format the Avarok
+logits in headerless little-endian f32 .bin -- the format the Atlas
 AVAROK_NEMO_DUMP hook writes -- so the comparator can diff 1:1.
 
 The dequantized BF16 graph run through `torch_forward` is the canonical

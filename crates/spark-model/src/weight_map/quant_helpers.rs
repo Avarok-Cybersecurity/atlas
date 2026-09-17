@@ -280,7 +280,7 @@ pub(super) fn bf16_bytes_to_f32(bytes: [u8; 2]) -> f32 {
 ///
 /// If the tensor is FP8E4M3 and a `{name_without_.weight}.weight_scale_inv` key exists,
 /// performs block-scaled dequantization to BF16. FP32 dense tensors are converted
-/// to BF16 because Avarok dense kernels consume BF16.
+/// to BF16 because Atlas dense kernels consume BF16.
 pub(crate) fn dense_auto(
     store: &WeightStore,
     name: &str,
@@ -347,11 +347,11 @@ pub(crate) fn dense_auto(
 /// (vs standard: weight, weight_scale, weight_scale_2, input_scale).
 ///
 /// **Scale convention difference**: compressed-tensors stores `weight_global_scale`
-/// as the reciprocal of Avarok/TRT-LLM's `scale2`. Verified empirically:
+/// as the reciprocal of Atlas/TRT-LLM's `scale2`. Verified empirically:
 ///   - nvidia 80B `weight_scale_2` ≈ 7.01e-5 (small)
 ///   - Sehyo 35B `weight_global_scale` = 29568 → `1/29568` ≈ 3.38e-5 (same order)
 ///
-/// Avarok GEMV dequant: `w = E2M1_val * fp8_scale * scale2` requires the small value.
+/// Atlas GEMV dequant: `w = E2M1_val * fp8_scale * scale2` requires the small value.
 pub(crate) fn quantized_v2(
     store: &WeightStore,
     prefix: &str,

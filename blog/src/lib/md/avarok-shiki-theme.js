@@ -30,7 +30,7 @@ export const COLOR_REPLACEMENTS = {
 };
 
 export const avarokTheme = {
-  name: 'avarok',
+  name: 'atlas',
   type: 'dark',
   colors: { 'editor.background': '#000000', 'editor.foreground': '#000001' },
   settings: [

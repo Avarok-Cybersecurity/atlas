@@ -2,7 +2,7 @@
 """TTFT + decode-TPS benchmark for Qwen3.5/3.6-35B-A3B-FP8 on DGX Spark.
 
 Used by the overnight /loop TTFT optimization — establishes a baseline,
-then re-measures after each Avarok change. Fails the run if decode TPS
+then re-measures after each Atlas change. Fails the run if decode TPS
 regresses more than DECODE_GUARD_PCT from the committed baseline.
 
 Usage:
@@ -41,7 +41,7 @@ def _post(url: str, body: dict, timeout: float = 180.0) -> dict:
 
 
 def _count_tokens(url: str, model: str, prompt: str) -> int:
-    # Best-effort: not all Avarok builds expose /v1/tokenize. Fall back to
+    # Best-effort: not all Atlas builds expose /v1/tokenize. Fall back to
     # a rough char/4 estimate.
     try:
         r = _post(f"{url}/v1/tokenize", {"model": model, "prompt": prompt})
@@ -51,7 +51,7 @@ def _count_tokens(url: str, model: str, prompt: str) -> int:
 
 
 def build_prompt(target_tokens: int) -> str:
-    # Avarok's tokenizer is BPE-ish; 4 chars/token is a decent first pass.
+    # Atlas's tokenizer is BPE-ish; 4 chars/token is a decent first pass.
     target_chars = target_tokens * 4
     reps = (target_chars // len(LOREM)) + 1
     prompt = (LOREM * reps)[:target_chars]

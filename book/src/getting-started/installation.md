@@ -1,10 +1,10 @@
 # Installation
 
-Avarok ships as a single Docker image that contains the release binary plus every compiled `(GB10, model, quant)` PTX module — **22 target sets** today, one per `kernels/gb10/<model>/<quant>/` directory. There is no "install Avarok + download kernels" step — the kernels are baked in.
+Atlas ships as a single Docker image that contains the release binary plus every compiled `(GB10, model, quant)` PTX module — **22 target sets** today, one per `kernels/gb10/<model>/<quant>/` directory. There is no "install Atlas + download kernels" step — the kernels are baked in.
 
 ## Hardware prerequisites
 
-Avarok is designed for broad hardware support — the engine is vendor-agnostic above the kernel layer (`ComputeTarget` at build time, `GpuBackend` at runtime, `CommBackend` for collectives) and new hardware plugs in at the trait layer. The first shipped target is **NVIDIA GB10 (SM121)** — the Grace-Blackwell Superchip in the NVIDIA DGX Spark workstation. To run the shipped image you need:
+Atlas is designed for broad hardware support — the engine is vendor-agnostic above the kernel layer (`ComputeTarget` at build time, `GpuBackend` at runtime, `CommBackend` for collectives) and new hardware plugs in at the trait layer. The first shipped target is **NVIDIA GB10 (SM121)** — the Grace-Blackwell Superchip in the NVIDIA DGX Spark workstation. To run the shipped image you need:
 
 - A DGX Spark (or any GB10-based system) with 119.7 GB of unified GPU memory
 - NVIDIA driver supporting CUDA 13.0 or later
@@ -23,7 +23,7 @@ The image contains the Rust release binary, all 22 PTX module sets, tokenizer de
 
 ## Bring your own weights
 
-Avarok loads HuggingFace `safetensors` directly. The image does **not** ship model weights. On first run, the binary resolves a HuggingFace model ID (e.g. `Sehyo/Qwen3.5-35B-A3B-NVFP4`) against `~/.cache/huggingface/hub` — download the weights once with the `hf` CLI or let the server download-on-miss:
+Atlas loads HuggingFace `safetensors` directly. The image does **not** ship model weights. On first run, the binary resolves a HuggingFace model ID (e.g. `Sehyo/Qwen3.5-35B-A3B-NVFP4`) against `~/.cache/huggingface/hub` — download the weights once with the `hf` CLI or let the server download-on-miss:
 
 ```bash
 pip install -U huggingface_hub
@@ -42,14 +42,14 @@ Mount the cache directory into the container:
 
 ## Build from source (optional)
 
-You only need to build from source if you are modifying Avarok. The `rust-toolchain.toml` pins `stable`; CUDA 13.0+ with `nvcc` on `PATH` (or `CUDA_HOME` set) is required for a real build. Clippy and fmt can run without CUDA via `AVAROK_SKIP_BUILD=1`.
+You only need to build from source if you are modifying Atlas. The `rust-toolchain.toml` pins `stable`; CUDA 13.0+ with `nvcc` on `PATH` (or `CUDA_HOME` set) is required for a real build. Clippy and fmt can run without CUDA via `AVAROK_SKIP_BUILD=1`.
 
 ```bash
 git clone https://github.com/Avarok-Cybersecurity/atlas.git
-cd avarok
+cd atlas
 
 # Full build — compiles every (gb10, model, quant) target (~6 min)
-docker build -f docker/gb10/Dockerfile -t avarok-gb10 .
+docker build -f docker/gb10/Dockerfile -t atlas-gb10 .
 
 # Rust-only check (no CUDA). CUDARC_CUDA_VERSION is needed alongside
 # AVAROK_SKIP_BUILD: without it cudarc's build script shells out to

@@ -422,7 +422,7 @@ impl MoeLayer {
         let num = self.weights.experts.len();
         // Swizzled SFB atom size (bytes): round_up(N,128) * round_up(K/16,4).
         let sfb_len = |n: usize, k: usize| n.div_ceil(128) * 128 * (k / 16).div_ceil(4) * 4;
-        // Prefer the Avarok-transposed [K/16,N] scales when they exist. Without
+        // Prefer the Atlas-transposed [K/16,N] scales when they exist. Without
         // them (a checkpoint served straight from its native tables, e.g.
         // Laguna with the unified transpose disabled) fall back to the
         // ORIGINAL [N,K/16] scales and tell the packer to read N-major — the

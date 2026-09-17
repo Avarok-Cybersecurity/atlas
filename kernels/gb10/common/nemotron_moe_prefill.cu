@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Nemotron-H MoE Prefill — N-token batched variant.
+// Atlas Nemotron-H MoE Prefill — N-token batched variant.
 //
 // Generalizes the single-token relu²+down pattern to N tokens by packing
 // (token_idx, expert_slot) into blockIdx.y. Each CTA processes one

@@ -78,7 +78,7 @@ pub(super) fn run_record(metrics: BTreeMap<String, f64>, verdict: Verdict) -> Ru
         target_model: MODEL.to_string(),
         params,
         source: RunSource::Cli,
-        avarok_version: "test".to_string(),
+        atlas_version: "test".to_string(),
         frame: frame(RunStatus::Completed, metrics, verdict),
     }
 }

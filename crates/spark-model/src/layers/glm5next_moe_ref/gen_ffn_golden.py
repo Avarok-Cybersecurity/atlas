@@ -54,13 +54,13 @@ class Lcg:
         return torch.tensor([self.u() for _ in range(n)], dtype=torch.float32).reshape(sh)
 
 
-# ── ModelOpt NVFP4 dequant, written from the OCP MX / ModelOpt spec, not from Avarok ──
+# ── ModelOpt NVFP4 dequant, written from the OCP MX / ModelOpt spec, not from Atlas ──
 E2M1 = torch.tensor([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0,
                      -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0], dtype=torch.float32)
 
 
 def e4m3_decode(u8: torch.Tensor) -> torch.Tensor:
-    """FP8 E4M3 (no infinities; 0xFF/0x7F are NaN) -> fp32. Independent of Avarok's LUT."""
+    """FP8 E4M3 (no infinities; 0xFF/0x7F are NaN) -> fp32. Independent of Atlas's LUT."""
     u = u8.to(torch.int32)
     sign = torch.where((u >> 7) & 1 == 1, -1.0, 1.0)
     exp = (u >> 3) & 0xF

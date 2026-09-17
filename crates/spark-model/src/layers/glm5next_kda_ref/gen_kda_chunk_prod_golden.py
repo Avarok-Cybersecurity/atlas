@@ -66,7 +66,7 @@ def l2(x):
     return x / torch.sqrt((x * x).sum(dim=-1, keepdim=True) + 1e-6)
 
 
-# The Avarok kernels consume ALREADY-normalised q/k (the conv fuses the L2 upstream), so the
+# The Atlas kernels consume ALREADY-normalised q/k (the conv fuses the L2 upstream), so the
 # golden is driven with use_qk_l2norm_in_kernel=False on the normalised tensors.
 qn, kn = l2(q), l2(k)
 

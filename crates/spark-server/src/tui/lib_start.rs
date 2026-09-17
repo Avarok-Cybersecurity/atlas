@@ -76,7 +76,7 @@ fn blank(model: &str) -> Recipe {
         id: "starting-point/avarok-defaults".into(),
         version: "0".into(),
         model: model.to_string(),
-        runtime: Some("avarok".into()),
+        runtime: Some("atlas".into()),
         container: String::new(),
         min_nodes: 1,
         description: "Starting point, not a measurement: no settings pinned, so every \
@@ -97,7 +97,7 @@ fn blank(model: &str) -> Recipe {
 
 /// The recipes whose parameters may be offered for `model`, best match first.
 ///
-/// Donors are Avarok single-node recipes only: a vLLM recipe cannot be
+/// Donors are Atlas single-node recipes only: a vLLM recipe cannot be
 /// launched from here at all, and a multi-node donor carries `ep_size`/
 /// `min_nodes` this dashboard's single-node launcher would refuse — offering
 /// either would be offering settings whose launch is a dead end. Family

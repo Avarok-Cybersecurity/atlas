@@ -398,7 +398,7 @@ pub(super) fn load_layers(
             && layer_sel;
         // Diagnostic: dequant attention Q/K/V/O FP8→BF16 at load and run them
         // through dense BF16 GEMM (isolates the FP8-attention contribution to
-        // the Avarok↔vLLM cosine floor). TP=1 only.
+        // the Atlas↔vLLM cosine floor). TP=1 only.
         let dequant_attn_to_bf16 = native_fp8
             && std::env::var("AVAROK_FP8_DEQUANT_ATTN_TO_BF16")
                 .ok()

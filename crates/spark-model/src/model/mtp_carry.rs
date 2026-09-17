@@ -23,7 +23,7 @@
 //! rig is 1134 ms, so a full warm-turn rebuild roughly DOUBLES TTFT to buy
 //! ~10% of decode. On the scored workload (turns average ~71 output tokens,
 //! ~3.7 s of generation) that trades ~370 ms of decode for ~1136 ms of TTFT —
-//! a net wall-clock LOSS on the metric Avarok currently wins 1.80x. The two
+//! a net wall-clock LOSS on the metric Atlas currently wins 1.80x. The two
 //! per-row loops are only 7.6% of it, so batching them does not rescue it, and
 //! `dense_gemm_tc` measured 21% SLOWER than the scalar kernel at this shape.
 //!

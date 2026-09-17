@@ -1,4 +1,4 @@
-# Avarok Spark — Qwen3-Next-80B-A3B-Instruct-NVFP4 on GB10
+# Atlas Spark — Qwen3-Next-80B-A3B-Instruct-NVFP4 on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/qwen3-next-80b-a3b/nvfp4/Dockerfile -t avarok-80b .

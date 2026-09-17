@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Minimal Avarok client using the OpenAI Python SDK.
+"""Minimal Atlas client using the OpenAI Python SDK.
 
-Avarok exposes an OpenAI-compatible /v1/chat/completions endpoint, so
+Atlas exposes an OpenAI-compatible /v1/chat/completions endpoint, so
 the official `openai` Python package works unchanged. Just point it at
-your Avarok server and use any model that's been loaded.
+your Atlas server and use any model that's been loaded.
 
 Install:
     pip install openai
 
-Run (assuming Avarok is serving on localhost:8888):
+Run (assuming Atlas is serving on localhost:8888):
     python3 examples/python/chat_completions.py
 """
 import os
 
 from openai import OpenAI
 
-# Avarok doesn't enforce auth by default. The SDK still requires an api_key
-# field, so we pass a placeholder. If you've enabled auth in front of Avarok
+# Atlas doesn't enforce auth by default. The SDK still requires an api_key
+# field, so we pass a placeholder. If you've enabled auth in front of Atlas
 # (reverse proxy, etc.), set OPENAI_API_KEY in the environment.
 client = OpenAI(
     base_url=os.environ.get("AVAROK_BASE_URL", "http://localhost:8888/v1"),
@@ -26,7 +26,7 @@ client = OpenAI(
 MODEL = os.environ.get(
     "AVAROK_MODEL",
     # Override via AVAROK_MODEL env var; this default matches the
-    # model-id Avarok reports via /v1/models for the most common
+    # model-id Atlas reports via /v1/models for the most common
     # NVFP4 35B-A3B deployment.
     "Sehyo/Qwen3.5-35B-A3B-NVFP4",
 )
@@ -70,7 +70,7 @@ def streaming_example() -> None:
 
 
 def tool_call_example() -> None:
-    """Tool-calling — Avarok auto-detects the model's tool format."""
+    """Tool-calling — Atlas auto-detects the model's tool format."""
     print("\n=== Tool call ===")
     response = client.chat.completions.create(
         model=MODEL,

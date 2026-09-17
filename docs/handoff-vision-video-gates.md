@@ -6,16 +6,16 @@ Written 2026-08-14, updated 2026-08-15 (ordering fix landed; a new video bug on 
 
 | | |
 |---|---|
-| Branch | `feat/video-support`, pushed to `avarok` |
+| Branch | `feat/video-support`, pushed to `atlas` |
 | PR | #516, **draft**, based on `feat/qwen3.8-27b-support` (#513) |
-| Base sync | merged `avarok/feat/qwen3.8-27b-support` at 2026-08-14; **0 behind** as of the last push |
+| Base sync | merged `atlas/feat/qwen3.8-27b-support` at 2026-08-14; **0 behind** as of the last push |
 | Workspace | 4026 tests pass, clippy 0, fmt clean, typos clean |
 
 Retarget #516 to `main` once #513 lands.
 
 ## ✔ FIXED 2026-08-15 — modality reordering
 
-**Avarok rendered vision markers grouped by modality, not in the order the client sent them.** A request with `video_url` first and `image_url` second rendered `<|image_pad|>` before `<|video_pad|>`.
+**Atlas rendered vision markers grouped by modality, not in the order the client sent them.** A request with `video_url` first and `image_url` second rendered `<|image_pad|>` before `<|video_pad|>`.
 
 The pad runs and the encoder rows agreed with *each other*, so nothing errored and every token count was right. What was wrong is that the model was shown the items in a different order than the caller wrote them, so any prompt referring to "the first" or "the video you sent first" described something else — the same silent-wrong-answer shape as the rest of this branch.
 
@@ -51,7 +51,7 @@ No Jinja change was needed: the bundled template already walks the content array
 * **Not the pipeline.** `qwen3.6-27b` read all four colours through the identical code path, same 240 prompt tokens, and answered *"SECOND segment → GREEN"* where 3.8 said *"blue"*.
 * **Not the KV cache.** `--kv-cache-dtype bf16` changed nothing, byte for byte.
 * **Not the recipe, and not a broadly degraded checkpoint.** Reproduced on both the gate's self-served recipe and the manual serve; `vision-fidelity` passed 14/14 on that same checkpoint.
-* **Not this checkpoint's double-quantisation.** `Qwen/Qwen3.8-27B-FP8` — the same weights in the block-scaled FP8 format Avarok loads natively, with no requant — failed the same way.
+* **Not this checkpoint's double-quantisation.** `Qwen/Qwen3.8-27B-FP8` — the same weights in the block-scaled FP8 format Atlas loads natively, with no requant — failed the same way.
 
 **The cause was the fixture.** Its green was HTML green `#008000`, the one half-bright colour among three full-bright ones, because ffmpeg resolves the *name* "green" that way. With the shade as the only variable, on the same server and the gate's own prompt:
 
@@ -71,7 +71,7 @@ Two things the generator gained, both defects in their own right:
 
 ### ★ Separate finding, NOT fixed — qwen3.8-27b is double-quantised
 
-`unsloth/Qwen3.8-27B-NVFP4` is `format = mixed-precision`: attention q/k/v/o, the GDN projections and lm_head are **FP8 with a per-channel scale**; only the MLP is NVFP4. Avarok's native `w8a16` path needs a `[N/128, K/128]` block grid, so a per-row scale is deliberately refused (it would read another row's multiplier — "silently produces garbage logits") and those tensors are dequantised to BF16 and **re-quantised to NVFP4**. Visible as `quantize_to_nvfp4` lines in the serve log.
+`unsloth/Qwen3.8-27B-NVFP4` is `format = mixed-precision`: attention q/k/v/o, the GDN projections and lm_head are **FP8 with a per-channel scale**; only the MLP is NVFP4. Atlas's native `w8a16` path needs a `[N/128, K/128]` block grid, so a per-row scale is deliberately refused (it would read another row's multiplier — "silently produces garbage logits") and those tensors are dequantised to BF16 and **re-quantised to NVFP4**. Visible as `quantize_to_nvfp4` lines in the serve log.
 
 Measured cost on the old fixture: this checkpoint answered `Red, Blue` where the natively-loaded `Qwen/Qwen3.8-27B-FP8` managed `Red, Blue, Yellow`. Both wrong, so it is not what the red was — but it is real, and the fix is a per-row-scale FP8 path (or keeping those projections BF16 rather than quantising down).
 
@@ -94,7 +94,7 @@ All three vision targets declare both gates.
 
 **`video-fidelity`'s required subject moved from qwen3.8-27b to qwen3.6-27b** (the `default = true` flag). After the fixture fix, 3.8's `video-before-image` leg sits at that checkpoint's capability edge — 13/13 on a manual vision-style serve (util 0.70, no drafts), 12/13 under its own pinned recipe (`[red, green, blue]`, one colour short), and 0 colours with `num_drafts=0`. The leg's outcome moves with serve config while the geometry never does. 27b and the 35B both pass it 13/13 solidly.
 
-Thresholds are unchanged on both entries and 3.8 stays declared — this is a choice of instrument, not a lowered bar. A gate whose required subject is one token from failing reports on a model's edge rather than on the pipeline it guards. Note also that 3.8's only recipe is the AGENTIC profile (thinking on, `num_drafts: 3`, util 0.85), whose own metadata says not to cross-use it with the vision/tool profile; the real fix is a vision-profile recipe upstream in `avarok-recipes`, after which 3.8 can take the default back with a measured run behind it.
+Thresholds are unchanged on both entries and 3.8 stays declared — this is a choice of instrument, not a lowered bar. A gate whose required subject is one token from failing reports on a model's edge rather than on the pipeline it guards. Note also that 3.8's only recipe is the AGENTIC profile (thinking on, `num_drafts: 3`, util 0.85), whose own metadata says not to cross-use it with the vision/tool profile; the real fix is a vision-profile recipe upstream in `atlas-recipes`, after which 3.8 can take the default back with a measured run behind it.
 
 ### Committed gate-proof records
 
@@ -119,7 +119,7 @@ Two things to know before producing more:
   ```
 
 * **`video-fidelity` needs that `--serve-override`.** No serve recipe enables ffmpeg, so the gate's own server refuses every MP4, the run ends Failed and **no record is written at all**. The override is recorded in the record's provenance, which is honest but means these records do not measure the recipe as pinned. The real fix is `video_allow_ffmpeg: true` in the three vision recipes upstream in `Avarok-Cybersecurity/atlas-recipes` — that is a different repo, so it was not done here.
-* The qwen3.8 recipe was missing from the local recipe index (`~/.avarok/avarok-recipes/index.json`, 26 cached vs 28 upstream) and a refresh is only reachable through the interactive TUI Library. Rebuilt by hand from the tree sha; a backup of the old index is not in the repo.
+* The qwen3.8 recipe was missing from the local recipe index (`~/.avarok/atlas-recipes/index.json`, 26 cached vs 28 upstream) and a refresh is only reachable through the interactive TUI Library. Rebuilt by hand from the tree sha; a backup of the old index is not in the repo.
 * Checkpoints on the NFS mount need `HF_HUB_CACHE=/mnt/gx10-hf-hub` — the gate self-serve resolves by HF id, not by path, and qwen3.8-27b is not in `~/.cache`.
 
 ## Running things
@@ -127,7 +127,7 @@ Two things to know before producing more:
 No harness scripts are committed — they lived in the job scratch dir. The essentials:
 
 ```bash
-# Build (ALWAYS all targets — see memory: avarok-build-all-targets)
+# Build (ALWAYS all targets — see memory: atlas-build-all-targets)
 export AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*' \
   CUTLASS_HOME=/home/ms/cutlass FLASHINFER_HOME=/home/ms/flashinfer \
   LIBRARY_PATH=/home/ms/nccl/build/lib LD_LIBRARY_PATH=/home/ms/nccl/build/lib \

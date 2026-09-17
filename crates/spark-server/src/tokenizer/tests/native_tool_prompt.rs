@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! H100 rental reproduction: the same get_weather request reached Avarok as
+//! H100 rental reproduction: the same get_weather request reached Atlas as
 //! 1135 tokens and vLLM as 320. Test the production parser contribution and
 //! render core against the pinned checkpoint template, without loading a GPU.
 

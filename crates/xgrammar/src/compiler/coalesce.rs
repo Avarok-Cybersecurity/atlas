@@ -20,7 +20,7 @@
 // The matcher (`src/matcher/`) owns the stateful half: it computes the
 // bitmask via the normal `compute_partitions` path, hands it here, and
 // — when this reports a forced token — exposes it through
-// `GrammarMatcher::forced_token` / `next_forced_tokens` so Avarok's
+// `GrammarMatcher::forced_token` / `next_forced_tokens` so Atlas's
 // scheduler can skip the model sample for those positions.
 //
 // CORRECTNESS

@@ -3,7 +3,7 @@
 //! Run mailboxes — the observability surfaces that stay process-global on
 //! purpose, and the one call that keeps them honest across a model swap.
 //!
-//! Most model-derived state in Avarok is carried: `SchedCtx`, `ForwardContext`,
+//! Most model-derived state in Atlas is carried: `SchedCtx`, `ForwardContext`,
 //! `ModelLevers`, `OpCache`. A handful of counters cannot be, because their
 //! *readers* cannot be handed a carrier — `/metrics` answers from an HTTP
 //! handler thread and the dashboard polls from the TUI thread, both while the

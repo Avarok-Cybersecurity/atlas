@@ -61,8 +61,8 @@ pub struct GateRecord {
     /// failure `served_by` was added to prevent, one level in.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub serve_overrides: BTreeMap<String, String>,
-    #[serde(alias = "atlas_version")]
-    pub avarok_version: String,
+
+    pub atlas_version: String,
     /// The box that served the model during the run.
     pub hardware: Hardware,
     /// What STATE that box was in, captured before and after the run, with the
@@ -440,7 +440,7 @@ impl GateRecord {
             command,
             served_by,
             serve_overrides,
-            avarok_version: record.avarok_version.clone(),
+            atlas_version: record.atlas_version.clone(),
             hardware,
             // Carried through from the terminal frame the executor stamped it
             // on, rather than probed here: this record is written minutes to

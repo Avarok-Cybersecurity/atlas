@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Emit reference LoRA deltas for the Avarok offline parity test (M0 exit gate).
+"""Emit reference LoRA deltas for the Atlas offline parity test (M0 exit gate).
 
 For every (layer, module) pair in a PEFT adapter dir, loads lora_A [r, in] / lora_B [out, r],
 reads r / lora_alpha / use_rslora from adapter_config.json (per-adapter, NEVER defaulted:

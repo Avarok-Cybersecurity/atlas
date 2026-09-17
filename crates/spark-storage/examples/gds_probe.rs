@@ -51,7 +51,7 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
     let cfg = parse_args()?;
-    eprintln!("== Avarok storage probe ==");
+    eprintln!("== Atlas storage probe ==");
     eprintln!("dir            : {}", cfg.dir.display());
     eprintln!(
         "test file size : {} MiB",

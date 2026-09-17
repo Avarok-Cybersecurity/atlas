@@ -25,7 +25,7 @@
 //! is not waiting on the closure-hash work.
 //!
 //! It also cited `recipes/` as the live case. **This repo tracks no `recipes/`
-//! files** — they live in the separate `avarok-recipes` repo, and
+//! files** — they live in the separate `atlas-recipes` repo, and
 //! `invalidating_paths` diffs *this* one, so that path can never appear in a
 //! diff here. The reachable classes are `docker/`, `docs/`, `.github/`,
 //! `scripts/`, `bench/`, `kernels/**/BENCH.toml`, and the excluded `crates/`

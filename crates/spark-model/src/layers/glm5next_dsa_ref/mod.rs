@@ -2,7 +2,7 @@
 //! GLM-5.3-Flash **DSA (DeepSeek Sparse Attention) + kpool indexer CPU reference** — Slice 8.
 //!
 //! Design artifact, not a production path. Nothing here runs on GPU and no checkpoint tensor is
-//! bound. Its only job is to pin the equations in Avarok-shaped code against goldens produced by
+//! bound. Its only job is to pin the equations in Atlas-shaped code against goldens produced by
 //! HuggingFace `transformers` **5.16.1** itself, before a CUDA kernel is written.
 //!
 //! The indexer is proven **before** the MLA on purpose: a wrong top-k still produces perfectly
@@ -295,7 +295,7 @@ pub fn visible(valid_keys: &[u8], q_pos: usize, key_idx: usize) -> bool {
 /// 🔴 **Deterministic tiebreak: higher score first, then SMALLER pool index.** The reference uses
 /// `torch.topk`, whose tie order is implementation-defined, so the reference's own pool
 /// *identities* are not a legal target on a tied row — only the selected *set*, and only when the
-/// tie does not straddle the cutoff. This function pins a total order so Avarok is reproducible
+/// tie does not straddle the cutoff. This function pins a total order so Atlas is reproducible
 /// regardless.
 pub fn topk_pools(
     scores: &[f32],

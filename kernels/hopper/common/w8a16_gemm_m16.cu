@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 tensor-core DECODE GEMM — 16-row M tile, FP8 E4M3 block-scaled.
+// Atlas W8A16 tensor-core DECODE GEMM — 16-row M tile, FP8 E4M3 block-scaled.
 //
 //   C[M,N] = A[M,K] (BF16) * dequant(B[N,K] (FP8 E4M3)),  1 <= M <= 16
 //

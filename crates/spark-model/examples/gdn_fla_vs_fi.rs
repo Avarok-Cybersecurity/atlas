@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Cross-impl A/B: Avarok FLA gdn_prefill_fla vs FlashInfer chunk_gated_delta_rule.
+//! Cross-impl A/B: Atlas FLA gdn_prefill_fla vs FlashInfer chunk_gated_delta_rule.
 //! Loads the SAME q/k/v/g/beta the FI reference used (/tmp/gdn_ref/*.bin) + FI's output
-//! (o_ref.bin), runs Avarok's full FLA scan on identical input, diffs the two outputs.
+//! (o_ref.bin), runs Atlas's full FLA scan on identical input, diffs the two outputs.
 //! High cos (>0.99) => same math (e2e garbage is elsewhere). Low cos => the GDN math diverges.
 use anyhow::Result;
 use half::{bf16, f16};
@@ -40,7 +40,7 @@ fn main() -> Result<()> {
     let beta = f32s(&rd("/tmp/gdn_ref/beta.bin"));
     let o_ref = f32s(&rd("/tmp/gdn_ref/o_ref.bin"));
 
-    // Pack into Avarok layout: qkv [t, conv_dim] bf16 ([Q|K|V]); gate_beta [t, 2*nv] f32.
+    // Pack into Atlas layout: qkv [t, conv_dim] bf16 ([Q|K|V]); gate_beta [t, 2*nv] f32.
     let mut qkv = vec![0u8; t * conv_dim * 2];
     {
         let put = |buf: &mut [u8], idx: usize, val: f32| {
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
     )?;
     g.synchronize(0)?;
 
-    // Read Avarok output (bf16) -> f32, compare to FI o_ref.
+    // Read Atlas output (bf16) -> f32, compare to FI o_ref.
     let n = t * value_dim;
     let mut ob = vec![0u8; n * 2];
     g.copy_d2h(out_d, &mut ob)?;
@@ -173,7 +173,7 @@ fn main() -> Result<()> {
         sr += b.abs();
     }
     let cos = dot / (nf.sqrt() * nr.sqrt() + 1e-12);
-    println!("=== Avarok FLA vs FlashInfer (same input) ===");
+    println!("=== Atlas FLA vs FlashInfer (same input) ===");
     println!(
         "|o_fla|mean={:.6}  |o_fi|mean={:.6}  norm_ratio(fla/fi)={:.4}",
         sf / n as f64,

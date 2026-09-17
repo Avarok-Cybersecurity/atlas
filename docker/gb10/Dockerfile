@@ -1,4 +1,4 @@
-# Avarok Spark — All models on GB10 (multi-target binary)
+# Atlas Spark — All models on GB10 (multi-target binary)
 #
 # Build from repo root:
 #   docker build -f docker/gb10/Dockerfile -t avarok-gb10 .

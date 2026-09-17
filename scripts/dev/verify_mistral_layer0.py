@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Verify Mistral Small 4 Layer 0 forward pass against Avarok.
+Verify Mistral Small 4 Layer 0 forward pass against Atlas.
 
 Computes: embedding → attention_norm → MLA Q/KV → RoPE → attention → O proj
           → residual → ffn_norm → MoE gate (top-4 routing only).
 
-Reports hidden state norms at each step for comparison with Avarok output.
+Reports hidden state norms at each step for comparison with Atlas output.
 """
 
 import torch
@@ -232,7 +232,7 @@ def main():
     v_heads = v_flat.view(seq_len, N_KV, V_DIM)  # [seq, 32, 128]
 
     # ── 4d. RoPE ──
-    # Avarok uses partial_rotary_factor=1.0 → rotary_dim=128 for GQA fallback
+    # Atlas uses partial_rotary_factor=1.0 → rotary_dim=128 for GQA fallback
     # But for MLA-native, it should really be rotary_dim=64 (only rope portion)
     # Let's compute BOTH and compare
 
@@ -242,16 +242,16 @@ def main():
     q_rope_in = q_heads.permute(1, 0, 2).unsqueeze(0).contiguous()  # [1, 32, seq, 128]
     k_rope_in = k_assembled.permute(1, 0, 2).unsqueeze(0).contiguous()  # [1, 32, seq, 128]
 
-    # --- Full RoPE (rotary_dim=128, what Avarok does) ---
+    # --- Full RoPE (rotary_dim=128, what Atlas does) ---
     q_roped_full = apply_rope_neox(q_rope_in, positions, rotary_dim=128, theta=THETA)
     k_roped_full = apply_rope_neox(k_rope_in, positions, rotary_dim=128, theta=THETA)
 
     # --- Partial RoPE (rotary_dim=64, only rope dims) ---
     # Split Q into nope/rope portions, apply RoPE only to rope
     # This is the "correct" MLA approach where nope dims are left unchanged
-    # But Avarok applies full RoPE due to GQA fallback design
+    # But Atlas applies full RoPE due to GQA fallback design
 
-    print(f"=== Step: RoPE (Avarok: rotary_dim=128, full head_dim) ===")
+    print(f"=== Step: RoPE (Atlas: rotary_dim=128, full head_dim) ===")
     print(f"  Q after RoPE norm (per token): {q_roped_full.squeeze(0).float().norm(dim=(0,2)).tolist()[:4]}...")
     print(f"  K after RoPE norm (per token): {k_roped_full.squeeze(0).float().norm(dim=(0,2)).tolist()[:4]}...")
     print(f"  Q_roped[0,0,0,:8]: {q_roped_full[0,0,0,:8].float().tolist()}")
@@ -325,7 +325,7 @@ def main():
 
     # ── Summary ──
     print("=" * 70)
-    print("SUMMARY OF NORMS (for Avarok comparison)")
+    print("SUMMARY OF NORMS (for Atlas comparison)")
     print("=" * 70)
     print(f"  Embedding[last]:      {hidden[-1].float().norm().item():.6f}")
     print(f"  AttnNorm[last]:       {normed[-1].float().norm().item():.6f}")
@@ -395,8 +395,8 @@ def main():
     # Bug 1: Shared expert is completely missing
     print("BUG #1: SHARED EXPERT NOT LOADED (CRITICAL)")
     print("-" * 50)
-    print("  Avarok sets shared_expert = ExpertWeight::null() in load_moe_mistral()")
-    print("  Avarok sets shared_expert_intermediate_size = 0")
+    print("  Atlas sets shared_expert = ExpertWeight::null() in load_moe_mistral()")
+    print("  Atlas sets shared_expert_intermediate_size = 0")
     print("  But checkpoint HAS shared_experts.w1/w2/w3 weights (432 tensors)")
     print("  shared_experts.w1: [2048, 4096] (gate_proj)")
     print("  shared_experts.w2: [4096, 2048] (down_proj)")
@@ -412,11 +412,11 @@ def main():
     # Bug 2: Full RoPE vs partial RoPE
     print("BUG #2: ROPE APPLIED TO NOPE DIMENSIONS (potential quality issue)")
     print("-" * 50)
-    print("  Avarok uses rotary_dim = head_dim = 128 (partial_rotary_factor=1.0)")
+    print("  Atlas uses rotary_dim = head_dim = 128 (partial_rotary_factor=1.0)")
     print("  Reference (DeepSeek V2): RoPE only on rope dims (64)")
     print("  Q split: q_nope[64] | q_rope[64] — RoPE should only rotate q_rope")
     print("  K split: k_nope[64] | k_rope[64] — RoPE should only rotate k_rope")
-    print("  Since Avarok applies RoPE to BOTH Q and K consistently,")
+    print("  Since Atlas applies RoPE to BOTH Q and K consistently,")
     print("  self-attention still works but position-independent nope features")
     print("  become position-dependent, degrading semantic matching.")
     print(f"  L2 diff vs partial RoPE at last token: {diff_residual:.4f}")

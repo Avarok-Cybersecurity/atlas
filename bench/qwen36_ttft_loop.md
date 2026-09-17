@@ -31,7 +31,7 @@ decode measurement drops more than 3% from the reference baseline.
 
 ### 2026-04-17 06:32 UTC — baseline attempt 1
 
-- Image: `avarok-gb10:alpha-2.43` (pre-existing).
+- Image: `atlas-gb10:alpha-2.43` (pre-existing).
 - Model: Qwen/Qwen3.5-35B-A3B-FP8.
 - Result: **startup failed** with `Kernel lookup moe_topk_sig::moe_topk_sigmoid:
   Module 'moe_topk_sig' not loaded`. Diagnosed as missing-kernel regression
@@ -40,14 +40,14 @@ decode measurement drops more than 3% from the reference baseline.
 
 ### 2026-04-17 06:50 UTC — baseline attempt 2
 
-- Image: `avarok-gb10:overnight` (first build from master, includes 5 OSS-prep
+- Image: `atlas-gb10:overnight` (first build from master, includes 5 OSS-prep
   commits but NOT the moe_topk_sig fix — fix landed after build started).
 - Same failure as attempt 1 (fix not yet in image).
-- Action: trigger rebuild as `avarok-gb10:overnight2`.
+- Action: trigger rebuild as `atlas-gb10:overnight2`.
 
 ### 2026-04-17 06:54 UTC — baseline attempt 3 (pending)
 
-- Image: `avarok-gb10:overnight2` (rebuild in progress, includes moe_topk_sig
+- Image: `atlas-gb10:overnight2` (rebuild in progress, includes moe_topk_sig
   fix 57c0752 + 3 other fixes). Once ready: run `bench/qwen36_ttft.py
   --tag overnight2-baseline` to establish reference TTFT and decode TPS.
 
@@ -59,7 +59,7 @@ No benchmark possible. Pivoting this tick to Mistral Small 4 long-ctx investigat
 
 ### 2026-04-17 07:20 UTC — baseline captured (overnight2)
 
-Image: `avarok-gb10:overnight2`. Flags: FP8 quant + FP8 KV + SLAI scheduler
+Image: `atlas-gb10:overnight2`. Flags: FP8 quant + FP8 KV + SLAI scheduler
 + `--kv-high-precision-layers auto` + `--max-batch-size 1`.
 
 **TTFT baseline**:
@@ -93,7 +93,7 @@ room to close the gap without exotic changes. Likely targets:
 
 ### 2026-04-17 07:20 UTC (cont.) — profiling server starting
 
-Started avarok-profile container on avarok-gb10:overnight2. Shards
+Started atlas-profile container on atlas-gb10:overnight2. Shards
 loading (~3 min total). Will profile a timed request once ready to
 find the first concrete TTFT bottleneck.
 
@@ -263,7 +263,7 @@ Not shipping further automated optimizations this session.
 
 ### 2026-04-17 08:00 UTC — cron tick 4
 
-Build avarok-gb10:overnight3 in flight (1:21 elapsed, ~15 min ETA). This
+Build atlas-gb10:overnight3 in flight (1:21 elapsed, ~15 min ETA). This
 image bundles the new `moe_fp8_grouped_gemm_v2` coalesced kernel behind
 the `AVAROK_FP8_MOE_COALESCED=1` env gate. Tick deferred until image is
 ready — A/B plan for next tick:
@@ -279,7 +279,7 @@ ready — A/B plan for next tick:
 
 ### 2026-04-17 08:10 UTC — A/B result: v1 vs v2 coalesced
 
-**Image**: avarok-gb10:overnight3 (commit 4c999d6, adds `moe_fp8_grouped_gemm_v2`).
+**Image**: atlas-gb10:overnight3 (commit 4c999d6, adds `moe_fp8_grouped_gemm_v2`).
 
 **V1 parity** (env OFF, uses v1 kernel — same codepath as overnight2):
 - TTFT 2359.6 / 4224.7 / 11995.6 ms @ 288 / 1106 / 4377 tokens

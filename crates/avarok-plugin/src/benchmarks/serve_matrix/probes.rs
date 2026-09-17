@@ -53,7 +53,7 @@ pub struct Coherence {
     /// Did `/v1/models` name the checkpoint this round asked for?
     ///
     /// **This is the round's identity, and it has to be a bar of its own.**
-    /// Avarok answers a completion under whatever model name it is sent, so a
+    /// Atlas answers a completion under whatever model name it is sent, so a
     /// swap that failed and auto-restored the previous checkpoint still
     /// answers "4" and "Paris" — it scores a clean 2/2 and the whole round is
     /// recorded under a checkpoint that was never loaded. Only the model list
@@ -252,7 +252,7 @@ pub async fn long_context_probe(
 
 /// Decode tokens/sec on a fixed output budget.
 ///
-/// `None` when the endpoint sent the whole reply in one SSE delta — Avarok
+/// `None` when the endpoint sent the whole reply in one SSE delta — Atlas
 /// batches short replies that way, so there is no inter-token interval to time
 /// and reporting a number derived from end-to-end latency would silently mix
 /// prefill into a decode figure.

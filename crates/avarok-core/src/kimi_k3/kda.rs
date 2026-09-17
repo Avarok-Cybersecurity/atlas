@@ -120,7 +120,7 @@ impl KdaState {
     }
 }
 
-/// Causal depthwise conv + SiLU. Shifts Avarok-width state left, writes `x`
+/// Causal depthwise conv + SiLU. Shifts Atlas-width state left, writes `x`
 /// into the last slot, then `y[c] = silu(dot(w[c], state[c]))`.
 pub fn conv_update(
     state: &mut [f32],

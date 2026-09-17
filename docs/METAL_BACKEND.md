@@ -2,7 +2,7 @@
 
 # Apple Metal Backend
 
-Avarok can build and run on Apple Silicon (M1/M2/M3/M4) under the
+Atlas can build and run on Apple Silicon (M1/M2/M3/M4) under the
 `metal` cargo feature. The build links zero CUDA / NCCL and uses
 `objc2-metal` bindings against the system Metal framework.
 
@@ -177,5 +177,5 @@ are complete. What remains is integration shape:
 |---|---|
 | Metal-side `Model` impl wiring spark-model's layer dispatch through the metal kernels | spark-model currently has CUDA-specific layer impls; a `MetalQwen35Model` parallel implementation is the next big lift |
 | Qwen3.5-VL-specific weight loader handling MLX-int8 + vision_tower | Currently routes to existing `Qwen3VLWeightLoader` via `is_qwen3_vl()` detection — exact tensor-name handling for the MLX-quant trunk is the gap |
-| Token-level parity vs `mlx_lm.generate` reference | Run greedy decode of "The capital of France is" on both Avarok Metal + MLX-LM; first ≥5 tokens must match |
+| Token-level parity vs `mlx_lm.generate` reference | Run greedy decode of "The capital of France is" on both Atlas Metal + MLX-LM; first ≥5 tokens must match |
 EOF

@@ -9,7 +9,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
-//! Avarok Spark — pure Rust LLM inference server.
+//! Atlas Spark — pure Rust LLM inference server.
 //!
 //! Startup sequence:
 //! 1. Parse CLI args

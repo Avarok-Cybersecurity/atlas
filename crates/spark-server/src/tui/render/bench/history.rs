@@ -83,7 +83,7 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         // with.
         //
         // LIMITATION, narrowed but not gone: `serve_overrides` is empty both
-        // when a run was served with no overrides and when Avarok did not
+        // when a run was served with no overrides and when Atlas did not
         // serve it at all (a `--url` attach, every TUI run). Such a run
         // renders as `unpinned` — which claims only that no regime was
         // recorded, never that none was in force. A rule is therefore still

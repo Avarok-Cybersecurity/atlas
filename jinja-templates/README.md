@@ -1,7 +1,7 @@
 # Jinja Template Overrides
 
-By default Avarok renders chat from the **model's OWN** `chat_template.jinja` /
-`tokenizer_config.json`. Avarok's cross-cutting behaviors — auto-closing a
+By default Atlas renders chat from the **model's OWN** `chat_template.jinja` /
+`tokenizer_config.json`. Atlas's cross-cutting behaviors — auto-closing a
 dangling `<think>` before a `<tool_call>` in history, stripping inline
 `<|think_on|>`/`<|think_off|>` control tokens, and mapping `reasoning_effort`
 → thinking — are applied in **Rust message-preprocessing** (see

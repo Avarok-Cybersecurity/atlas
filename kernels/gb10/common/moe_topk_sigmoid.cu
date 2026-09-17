@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok MoE Top-K Sigmoid kernel for Nemotron-H.
+// Atlas MoE Top-K Sigmoid kernel for Nemotron-H.
 //
 // Nemotron-H uses sigmoid routing (NOT softmax like Qwen3/DeepSeek):
 //   scores = sigmoid(logits)

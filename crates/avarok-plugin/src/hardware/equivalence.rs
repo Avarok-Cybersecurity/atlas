@@ -12,7 +12,7 @@
 //! This module is the ONLY place that decision is made. `spark bench certify`
 //! asks it before spreading Speed units across nodes; `gate::agreement` asks
 //! it again over the records that came back, so CI decides from what was
-//! measured, not from what a scheduler believed. avarokctl reports the facts
+//! measured, not from what a scheduler believed. atlasctl reports the facts
 //! and decides nothing.
 //!
 //! A field one side cannot report makes the pair [`Mismatch::Undecidable`],

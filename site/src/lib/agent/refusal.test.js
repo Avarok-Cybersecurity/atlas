@@ -14,11 +14,11 @@ const CTX = { target: DGX3, nodes: NODES };
 describe('each failure names the machine it belongs to', () => {
   test('the target refusing control blames the target, verbatim', () => {
     const r = refusal(
-      { error: { code: 'control_refused', node: DGX3, reason: 'not a controller — run `avarokctl peer grant-control`' } },
+      { error: { code: 'control_refused', node: DGX3, reason: 'not a controller — run `atlasctl peer grant-control`' } },
       CTX
     );
     expect(r.blame).toBe('target');
-    expect(r.text).toBe('dgx3 refused: not a controller — run `avarokctl peer grant-control`');
+    expect(r.text).toBe('dgx3 refused: not a controller — run `atlasctl peer grant-control`');
   });
 
   test('a relay failure blames the relay and names both machines', () => {

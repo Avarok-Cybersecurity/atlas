@@ -1,4 +1,4 @@
-# Avarok Spark — Qwen3.6-27B-FP8 (Dense Hybrid SSM+Attn) on GB10
+# Atlas Spark — Qwen3.6-27B-FP8 (Dense Hybrid SSM+Attn) on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/qwen3.6-27b/nvfp4/Dockerfile -t avarok-gb10:qwen3.6-27b .

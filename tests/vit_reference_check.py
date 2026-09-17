@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Diff Avarok's ViT output against an HF transformers reference.
+"""Diff Atlas's ViT output against an HF transformers reference.
 
 Pipeline:
-  1. Run Avarok serving a vision model with `AVAROK_DUMP_VIT=/tmp/avarok_vit`.
+  1. Run Atlas serving a vision model with `AVAROK_DUMP_VIT=/tmp/avarok_vit`.
      One image request produces `patch_embed.bin`, `block00.bin`,
      `block01.bin`, …, `block26.bin`, `final.bin`. All are BF16.
   2. Run this script. It loads the SAME checkpoint into HF transformers on
      CPU, runs the same Mona Lisa JPEG through HF's vision tower, and
      per-checkpoint dumps parallel .bin files at the same layer names.
   3. For each layer, compute cosine similarity + max-abs-diff against
-     Avarok's dump. Print a table; any layer below cosine 0.90 is the
+     Atlas's dump. Print a table; any layer below cosine 0.90 is the
      first divergence and worth investigating.
 
-The goal is NOT bit-exact match (Avarok does FP8 dequant + BF16 GEMM, HF
-does all-BF16 or FP16); it's to localize the FIRST block where Avarok
+The goal is NOT bit-exact match (Atlas does FP8 dequant + BF16 GEMM, HF
+does all-BF16 or FP16); it's to localize the FIRST block where Atlas
 diverges noticeably from HF, so we can focus on fixing that block's
 kernel rather than guessing.
 
 Usage:
-  # on Avarok host, start server with dump:
+  # on Atlas host, start server with dump:
   sudo docker run -d --name avarok-vit-debug ... \
       -e AVAROK_DUMP_VIT=/tmp/avarok_vit ...
 
@@ -54,7 +54,7 @@ def bf16_bytes_to_f32(data: bytes):
 
 
 def load_avarok_dumps(dump_dir: Path):
-    """Load Avarok's per-layer BF16 dumps; return {label: f32 tensor}."""
+    """Load Atlas's per-layer BF16 dumps; return {label: f32 tensor}."""
     import numpy as np
     out = {}
     for p in sorted(dump_dir.glob("*.bin")):
@@ -80,7 +80,7 @@ def encode_image_for_avarok(max_dim: int = 320) -> tuple[str, int, int]:
 
 
 def trigger_avarok(base_url: str, model_id: str) -> None:
-    """Send one Mona Lisa request to an already-running Avarok server that
+    """Send one Mona Lisa request to an already-running Atlas server that
     was launched with AVAROK_DUMP_VIT set. The dump happens as a side
     effect of the ViT forward pass."""
     data_url, w, h = encode_image_for_avarok()
@@ -100,7 +100,7 @@ def trigger_avarok(base_url: str, model_id: str) -> None:
 
 def compute_hf_reference(hf_id: str, out_dir: Path) -> None:
     """Load HF model on CPU, run Mona Lisa through vision tower, dump
-    per-block outputs so we can diff against Avarok."""
+    per-block outputs so we can diff against Atlas."""
     import numpy as np
     import torch
     from PIL import Image
@@ -175,7 +175,7 @@ def compute_hf_reference(hf_id: str, out_dir: Path) -> None:
 
 
 def diff_dumps(avarok_dir: Path, hf_dir: Path) -> None:
-    """Compare Avarok's BF16 dumps against HF's layer-by-layer. Emit a
+    """Compare Atlas's BF16 dumps against HF's layer-by-layer. Emit a
     cosine-similarity / max-abs-diff table."""
     import numpy as np
     avarok = load_avarok_dumps(avarok_dir)

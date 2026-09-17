@@ -94,9 +94,9 @@ impl MoeLayer {
         // MoE kernel is the dominant cause of low DFlash drafter acceptance.
         //
         // Other (non-capture) layers fall through to the normal scalar decode path,
-        // preserving Avarok's TPS on the bulk of the network. The 5 capture layers
+        // preserving Atlas's TPS on the bulk of the network. The 5 capture layers
         // pay ~250 µs each (microbench), totalling ≈1.25 ms per token (negligible
-        // at Avarok's ~58 ms/token decode latency).
+        // at Atlas's ~58 ms/token decode latency).
         if self.is_dflash_capture_layer && ctx.levers.frankenstein_decode_via_prefill {
             // One-time per-process log so we can verify the env-gated route is hit.
             if ctx.stats.once("log:moe_route") {

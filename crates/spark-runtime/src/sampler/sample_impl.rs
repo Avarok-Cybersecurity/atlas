@@ -31,14 +31,14 @@ pub fn sample_with_params_seeded(
     // Read raw logits into a mutable vec for in-place modifications.
     // Penalties (repetition / presence / frequency / LZ / DRY) and
     // logit_bias are applied to `raw_logits` BEFORE the greedy bypass
-    // below, so they take effect even at `temperature == 0.0`. Avarok
+    // below, so they take effect even at `temperature == 0.0`. Atlas
     // previously short-circuited to `argmax(raw_logits)` for greedy,
     // silently dropping caller-configured penalties — the 2026-05-01
     // sweep showed this caused Gemma-4-31B's haiku to enter a
     // repetition loop ("la... la... laaaL!") even with the model's
     // configured `repetition_penalty=1.1` because the harness uses
     // `temperature=0`. HF Transformers, vLLM, and llama.cpp all run
-    // LogitsProcessor (penalties + bias) before greedy argmax — Avarok
+    // LogitsProcessor (penalties + bias) before greedy argmax — Atlas
     // is the outlier here.
     // Chunked conversion instead of per-element indexed `read_f32`: the
     // indexed form does four bounds-checked byte reads per element through a

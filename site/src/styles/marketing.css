@@ -17,12 +17,6 @@
   --destructive: var(--red);
   --radius: 0.5rem;
 }
-html[data-theme="dark"] .marketing .m-brand img.m-logo-onlight {
-  display: none;
-}
-html[data-theme="dark"] .marketing .m-brand img.m-logo-ondark {
-  display: block;
-}
 /* The hero render sits on a near-white ground and is multiplied onto the
    light theme. No blend mode lifts that ground off a dark page (screen leaves
    white white, multiply goes black), so dark mode shows a re-toned derivative
@@ -35,12 +29,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   mix-blend-mode: normal;
 }
 .marketing .m-dark {
-  --background: var(--avarok-ink);
+  --background: var(--atlas-ink);
   --foreground: #f5f7fb;
-  --primary: var(--avarok-purple);
-  --primary-foreground: var(--avarok-ink);
+  --primary: var(--atlas-purple);
+  --primary-foreground: var(--atlas-ink);
   --border: #30353d;
-  --ring: var(--avarok-purple);
+  --ring: var(--atlas-purple);
   --muted: #20242c;
   --muted-foreground: #a3aab7;
   --card: #181c22;
@@ -48,7 +42,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   --popover: #181c22;
   --popover-foreground: #f5f7fb;
   --accent: #24272d;
-  --accent-foreground: var(--avarok-cyan);
+  --accent-foreground: var(--atlas-cyan);
   --secondary: #20242c;
   --secondary-foreground: #f5f7fb;
   --input: #30353d;
@@ -100,8 +94,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     outline-offset: 5px;
   }
   ::selection {
-    color: var(--avarok-ink);
-    background: var(--avarok-purple);
+    color: var(--atlas-ink);
+    background: var(--atlas-purple);
   }
   .m-skip-link {
     position: fixed;
@@ -132,13 +126,11 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     margin-left: -17px;
     flex-shrink: 0;
   }
-  .m-brand img {
-    display: block;
-    width: 166px;
-    height: auto;
-  }
-  .m-brand img.m-logo-ondark {
-    display: none;
+  /* The lockup carries its own clear-space margin; here the .m-brand padding
+     is the clear space, so the margin is dropped and the width set locally. */
+  .m-brand .logo {
+    margin: 0;
+    width: 236px;
   }
   .m-header-actions {
     display: flex;
@@ -188,12 +180,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     transform: translateY(-2px);
   }
   .m-button-primary {
-    background: var(--avarok-purple);
-    color: var(--avarok-ink);
-    box-shadow: 0 4px 10px color-mix(in srgb, var(--avarok-purple) 15%, transparent);
+    background: var(--atlas-purple);
+    color: var(--atlas-ink);
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--atlas-purple) 15%, transparent);
   }
   .m-button-primary:hover {
-    background: var(--avarok-cyan);
+    background: var(--atlas-cyan);
   }
   .m-button-dark {
     background: var(--t1);
@@ -213,7 +205,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     position: relative;
     overflow: hidden;
     isolation: isolate;
-    background: var(--avarok-paper);
+    background: var(--atlas-paper);
   }
   .m-hero-copy {
     position: relative;
@@ -241,8 +233,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--avarok-green);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--avarok-green) 12%, transparent);
+    background: var(--atlas-green);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--atlas-green) 12%, transparent);
   }
   h1 {
     font-size: clamp(62px, 6.6vw, 104px);
@@ -256,13 +248,13 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: var(--t1);
     font-weight: 450;
     font-style: normal;
-    box-shadow: inset 0 -0.12em 0 var(--avarok-purple);
+    box-shadow: inset 0 -0.12em 0 var(--atlas-purple);
   }
   .m-hero-description {
     font-size: 20px;
     line-height: 1.7;
     max-width: 460px;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     margin: 0 0 30px;
     letter-spacing: -0.02em;
   }
@@ -286,7 +278,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 9px;
     font-family: "SFMono-Regular", monospace;
     font-size: 13px;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
   }
   .m-hero-note span {
     width: 5px;
@@ -440,7 +432,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px/1.7 "SFMono-Regular",
       monospace;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     letter-spacing: 0.045em;
   }
   .m-ecosystem p strong {
@@ -483,7 +475,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 12px;
     max-width: 160px;
     font-size: 16px;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
   }
   @media (min-width: 1700px) {
     .m-header,
@@ -529,8 +521,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
       padding: 0 6%;
       gap: 16px;
     }
-    .m-brand img {
-      width: 138px;
+    .m-brand .logo {
+      width: 196px;
     }
     .m-header nav {
       display: none;
@@ -639,12 +631,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     margin: 0;
   }
   .m-soft-text {
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
   }
   .m-section-intro {
     font-size: 19px;
     line-height: 1.7;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     width: 360px;
     max-width: 40%;
     margin: 0 0 4px;
@@ -655,16 +647,16 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 38px;
   }
   .m-benefits article {
-    border-top: 2px solid var(--avarok-purple);
+    border-top: 2px solid var(--atlas-purple);
     padding-top: 27px;
     display: flex;
     flex-direction: column;
   }
   .m-benefits article:nth-child(2) {
-    border-top-color: var(--avarok-cyan);
+    border-top-color: var(--atlas-cyan);
   }
   .m-benefits article:nth-child(3) {
-    border-top-color: var(--avarok-green);
+    border-top-color: var(--atlas-green);
   }
   .m-benefit-top {
     display: flex;
@@ -676,7 +668,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
   }
   .m-benefits h3 {
     font-size: 25px;
@@ -688,7 +680,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-benefits p {
     font-size: 18px;
     line-height: 1.7;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     max-width: 360px;
     margin: 0 0 25px;
   }
@@ -703,19 +695,19 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: var(--t1);
   }
   .m-possibilities {
-    background: var(--avarok-ink);
+    background: var(--atlas-ink);
     color: #f4f6f9;
     max-width: none;
     padding-bottom: 35px;
   }
   .m-possibilities .m-section-label {
-    color: var(--avarok-purple);
+    color: var(--atlas-purple);
   }
   .m-possibilities .m-soft-text {
-    color: var(--avarok-tagline-dark);
+    color: var(--atlas-tagline-dark);
   }
   .m-possibilities .m-section-intro {
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
   }
   .m-possibility-tabs {
     gap: 0;
@@ -739,7 +731,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     cursor: pointer;
     height: auto;
     flex: none;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     padding: 17px 0;
     font-size: 16px;
     gap: 10px;
@@ -751,7 +743,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     background: transparent !important;
   }
   .m-scenario-tab[aria-selected="true"]:after {
-    background: var(--avarok-purple) !important;
+    background: var(--atlas-purple) !important;
     bottom: -1px !important;
     height: 2px !important;
   }
@@ -779,7 +771,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-scenario-copy p {
     font-size: 18px;
     line-height: 1.75;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     max-width: 410px;
     margin: 0 0 25px;
   }
@@ -799,13 +791,13 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: #c6ceda;
   }
   .m-scenario-copy li svg {
-    color: var(--avarok-green);
+    color: var(--atlas-green);
   }
   .m-scenario-copy .m-text-link {
-    color: var(--avarok-cyan);
+    color: var(--atlas-cyan);
   }
   .m-workflow {
-    background: var(--avarok-ink);
+    background: var(--atlas-ink);
     border: 1px solid #373c45;
     border-radius: 13px;
     padding: 23px;
@@ -819,7 +811,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     letter-spacing: 0.035em;
     margin-bottom: 23px;
   }
@@ -829,11 +821,11 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 8px;
   }
   .m-workflow-top .m-status-dot {
-    background: var(--avarok-green);
+    background: var(--atlas-green);
   }
   .m-prompt-bubble {
     background: #20242a;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     border: 1px solid #373c45;
     display: flex;
     align-items: center;
@@ -855,7 +847,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-engine-dot {
     width: 6px;
     height: 6px;
-    background: var(--avarok-green);
+    background: var(--atlas-green);
     border-radius: 50%;
     margin-left: auto;
   }
@@ -872,7 +864,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     align-items: center;
     gap: 12px;
     font-size: 15px;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
   }
   .m-flow-check {
     display: grid;
@@ -882,14 +874,14 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     width: 19px;
     height: 19px;
     margin-left: -19px;
-    background: var(--avarok-ink);
-    color: var(--avarok-green);
+    background: var(--atlas-ink);
+    color: var(--atlas-green);
   }
   .m-workflow-result {
     display: flex;
     align-items: center;
     gap: 12px;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     background: #20242a;
     border: 1px solid #373c45;
     border-radius: 7px;
@@ -905,7 +897,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     display: flex;
     align-items: center;
     gap: 25px;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     font:
       13px "SFMono-Regular",
       monospace;
@@ -926,7 +918,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-evidence-copy > p:not(.m-eyebrow) {
     font-size: 19px;
     line-height: 1.75;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     max-width: 390px;
     margin: 27px 0;
   }
@@ -941,7 +933,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
   }
   .m-big-number {
     font-size: clamp(74px, 8vw, 120px);
@@ -978,8 +970,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-benchmark-bars b {
     display: block;
     padding: 10px 12px;
-    color: var(--avarok-ink);
-    background: var(--avarok-purple);
+    color: var(--atlas-ink);
+    background: var(--atlas-purple);
     font-size: 13px;
     font-weight: 400;
     border-radius: 2px;
@@ -991,7 +983,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-benchmark-note {
     font-size: 13px;
     line-height: 1.65;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     margin: 20px 0 0;
   }
   .m-benchmark-note a {
@@ -1007,16 +999,16 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     height: 4px;
     background: linear-gradient(
       to right,
-      var(--avarok-purple) 0% 25%,
-      var(--avarok-cyan) 25% 50%,
-      var(--avarok-green) 50% 75%,
-      var(--avarok-gold) 75% 100%
+      var(--atlas-purple) 0% 25%,
+      var(--atlas-cyan) 25% 50%,
+      var(--atlas-green) 50% 75%,
+      var(--atlas-gold) 75% 100%
     );
   }
   .m-start-section {
     margin: 0 3%;
     padding: 42px 4.4% 32px;
-    background: var(--avarok-ink);
+    background: var(--atlas-ink);
     color: #fff;
     border-radius: 11px;
     position: relative;
@@ -1031,10 +1023,10 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   }
   .m-start-top p {
     margin: 0;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
   }
   .m-large-plus {
-    color: var(--avarok-gold);
+    color: var(--atlas-gold);
     font-size: 35px;
     font-weight: 200;
     line-height: 1;
@@ -1047,7 +1039,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     margin: 0 0 40px;
   }
   .m-start-section h2 > span {
-    color: var(--avarok-purple);
+    color: var(--atlas-purple);
   }
   .m-start-bottom {
     display: flex;
@@ -1057,7 +1049,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   }
   .m-start-bottom p {
     font-size: 21px;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     line-height: 1.55;
     margin: 0;
   }
@@ -1067,12 +1059,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 35px;
   }
   .m-button-white {
-    background: var(--avarok-purple);
-    color: var(--avarok-ink);
+    background: var(--atlas-purple);
+    color: var(--atlas-ink);
     padding: 18px 24px;
   }
   .m-button-white:hover {
-    background: var(--avarok-cyan);
+    background: var(--atlas-cyan);
   }
   .m-github-link {
     display: flex;
@@ -1090,7 +1082,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 30px;
     margin-top: 47px;
     padding-top: 23px;
-    color: var(--avarok-wordmark-dark);
+    color: var(--atlas-wordmark-dark);
     font-size: 13px;
   }
   .m-start-fineprint span {
@@ -1099,7 +1091,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 8px;
   }
   .m-footer {
-    background: var(--avarok-paper);
+    background: var(--atlas-paper);
     padding: 65px 7% 24px;
   }
   .m-footer-main {
@@ -1113,7 +1105,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     padding: 26px;
     margin-left: -26px;
   }
-  .m-footer-main .m-brand img {
+  .m-footer-main .m-brand .logo {
     width: 253px;
   }
   .m-workflow-engine img {
@@ -1124,7 +1116,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   }
   .m-footer-main p {
     font-size: 16px;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     margin-top: 8px;
   }
   .m-footer-links {
@@ -1142,7 +1134,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     margin-bottom: 9px;
   }
   .m-footer-links a {
@@ -1160,7 +1152,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 20px;
     border-top: 1px solid var(--border);
     padding-top: 23px;
-    color: var(--avarok-gray-text);
+    color: var(--atlas-gray-text);
     font-size: 13px;
   }
   @media (min-width: 1700px) {
@@ -1430,7 +1422,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-dark button:focus-visible,
   .m-dark [role="tabpanel"]:focus-visible,
   .m-start-section a:focus-visible {
-    outline: 3px solid var(--avarok-cyan);
+    outline: 3px solid var(--atlas-cyan);
     outline-offset: 5px;
   }
 }

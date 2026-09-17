@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""HF[FP8->BF16] forward on Avarok-on-dgx2's freshly-dumped 9780-token prompt.
+"""HF[FP8->BF16] forward on Atlas-on-dgx2's freshly-dumped 9780-token prompt.
 
-Loads /tmp/avarok_tokens_dgx2.json (which contains the EXACT token IDs Avarok
+Loads /tmp/avarok_tokens_dgx2.json (which contains the EXACT token IDs Atlas
 used today on dgx2 under the current chat template), runs CPU forward on the
 HF[FP8->BF16] dequanted snapshot, and dumps per-layer last-token hidden
 states to /workspace/avarok-dumps/fp8native_dgx2/hf_L{0..39}.bin.

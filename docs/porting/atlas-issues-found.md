@@ -1,7 +1,7 @@
-# Avarok issues found during the Strix Halo (gfx1151 / SCALE) port
+# Atlas issues found during the Strix Halo (gfx1151 / SCALE) port
 
-Running log of bugs, waste, and design smells uncovered while bringing Avarok up
-on AMD Strix Halo. "Avarok-side" = our code; "SCALE-side" = Spectral's compiler/
+Running log of bugs, waste, and design smells uncovered while bringing Atlas up
+on AMD Strix Halo. "Atlas-side" = our code; "SCALE-side" = Spectral's compiler/
 runtime. Issues that also affect the GB10/CUDA build are flagged **(also GB10)**.
 
 Status legend: 🔧 fixed · 🩹 worked around · 📋 open · 💭 design question
@@ -58,7 +58,7 @@ fact. Deferred — bigger refactor than the port needs right now.
 
 ---
 
-## #S1 — `ld.lld -shared` produced a module SCALE's loader rejects 🔧 Avarok-side
+## #S1 — `ld.lld -shared` produced a module SCALE's loader rejects 🔧 Atlas-side
 **Where:** `crates/avarok-kernels/build_target.rs` (`ScaleTarget::compile`)
 The AMD path compiled each `.cu` to a relocatable, then ran `ld.lld -shared` to
 make an ELF DYN — on the (untested, no live runtime) assumption that
@@ -68,7 +68,7 @@ relocatable** (load+getFunction+launch all succeed) and **rejects the ld.lld DYN
 with `CUDA_ERROR_INVALID_IMAGE`**. SCALE links the relocatable itself at load.
 **Fix:** drop the `ld.lld -shared` step; emit the relocatable directly.
 
-## #S2 — Stale `common/` kernel silently shadowed the model override 🔧 Avarok-side
+## #S2 — Stale `common/` kernel silently shadowed the model override 🔧 Atlas-side
 **Where:** build kernel-set assembly + `run-build.sh`
 `run-build.sh` set `AVAROK_TARGET_QUANT=fp8`, but `model_kernel_dir =
 model_dir.join(quant)` and **no `qwen3.6-27b/fp8/` dir exists** (only `nvfp4/`;
@@ -82,18 +82,18 @@ gives **no warning** when a requested quant dir is absent or when a `common/`
 file shadows nothing/everything. A missing quant dir should warn or fail fast
 (PCND), not silently fall back to whatever `common/` has.
 
-## #S3 — `cuModuleGetFunction` succeeds for a missing kernel 📋 SCALE-side (+ Avarok hardening)
+## #S3 — `cuModuleGetFunction` succeeds for a missing kernel 📋 SCALE-side (+ Atlas hardening)
 When a module is missing a kernel symbol, SCALE 1.7.1's `cuModuleGetFunction`
 returns **success** with a bogus handle; the failure only surfaces later as
 `CUDA_ERROR_INVALID_IMAGE` at `cuLaunchKernel`, with no kernel name in the error.
-This made #S2 hard to localize. Worth (a) reporting to Spectral, and (b) Avarok
+This made #S2 hard to localize. Worth (a) reporting to Spectral, and (b) Atlas
 hardening: include the `module::func` name in the launch-failure error so a bad
 image is immediately attributable. (NVIDIA returns `CUDA_ERROR_NOT_FOUND` here.)
 
 ## #4 — memlock default too low for large-model pinning 🩹 environment
 Bare-metal Strix default `memlock` = 8 GB; weight-load host pinning needs more.
 The DGX container used `--ulimit memlock=-1`. Worked around with a
-`limits.d` drop-in (`<user> - memlock unlimited`). Not an Avarok bug, but Avarok
+`limits.d` drop-in (`<user> - memlock unlimited`). Not an Atlas bug, but Atlas
 docs should call out the requirement for non-container hosts. (Was not the real
 OOM cause — see #A1 — but would have bitten regardless.)
 
@@ -103,7 +103,7 @@ _Last updated: 2026-06-01 (Strix bring-up session)._
 
 ---
 
-## #A2 — `inferspark_prefill` LDS footprint exceeds RDNA3.5 64 KB cap 📋 Avarok-side **(gfx1151-specific)**
+## #A2 — `inferspark_prefill` LDS footprint exceeds RDNA3.5 64 KB cap 📋 Atlas-side **(gfx1151-specific)**
 **Where:** `kernels/.../inferspark_prefill*.cu`; surfaces at runtime as
 `cuFuncSetAttribute(MAX_DYNAMIC_SHARED=69688) failed: CUDA_ERROR_INVALID_VALUE`
 at prefill layer 0.
@@ -132,7 +132,7 @@ Lowering to `--gpu-memory-utilization 0.70` (with `--max-seq-len 4096
 
 ---
 
-## #A2 — inferspark_prefill LDS footprint exceeds RDNA3.5 64 KB cap (open, Avarok-side, gfx1151-specific)
+## #A2 — inferspark_prefill LDS footprint exceeds RDNA3.5 64 KB cap (open, Atlas-side, gfx1151-specific)
 Where: kernels/.../inferspark_prefill*.cu; surfaces at runtime as
 "cuFuncSetAttribute(MAX_DYNAMIC_SHARED=69688) failed: CUDA_ERROR_INVALID_VALUE"
 at prefill layer 0.
@@ -164,7 +164,7 @@ Notes / follow-ups:
 
 ---
 
-## #A3 — Generation runs but output is gibberish (open, Avarok/SCALE numerics, gfx1151)
+## #A3 — Generation runs but output is gibberish (open, Atlas/SCALE numerics, gfx1151)
 After #A1/#A2/#M1, the full pipeline runs end-to-end on Strix (prefill via the
 global-memory split4 GDN path -> decode -> tokens), 40 tok at 9.7 tok/s,
 TTFT 2.7 s, no crashes. But output is incoherent from token 1

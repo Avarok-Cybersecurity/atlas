@@ -318,7 +318,7 @@ static __device__ __forceinline__ void quantize_mmq_q8_1_worker(
     const int64_t iqs = i0 % (4*QK8_1);                                             // quant index in block
 
     // Load 4 values per thread and calculate max. abs. value between them:
-    // AVAROK: src_t==bf16 reads 4 consecutive bf16 (Avarok activations); float path = original float4 load.
+    // AVAROK: src_t==bf16 reads 4 consecutive bf16 (Atlas activations); float path = original float4 load.
     const int64_t eidx = i03*s03 + i02*s02 + i01*s01 + i00;
     float4 xi;
     if (i0 >= ne00) { xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f); }

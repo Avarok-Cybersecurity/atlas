@@ -135,7 +135,7 @@ pub fn build_model(
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
     // so `TransformerModel::new` allocates the 5×hidden_size capture buffer.
     //
-    // The drafter's `target_layer_ids` are used DIRECTLY as Avarok capture
+    // The drafter's `target_layer_ids` are used DIRECTLY as Atlas capture
     // indices. An earlier implementation subtracted 1 from each id on HF
     // `output_hidden_states` reasoning; measurement on the z-lab drafters
     // shows that adjustment feeds the drafter hidden states one layer early
@@ -304,7 +304,7 @@ pub fn build_model(
     // loaded" two lines under "GLM-5.3 MTP draft module loaded (layers.45)".
     // Every binding path has to be consulted, and when none of them bound
     // anything the checkpoint still has to be asked whether it SHIPS an MTP
-    // head — "Avarok can't read this layout" and "there is no head here" are
+    // head — "Atlas can't read this layout" and "there is no head here" are
     // different faults and want different messages.
     if use_speculative
         && mtp_weights.is_empty()
@@ -320,7 +320,7 @@ pub fn build_model(
             Some(layout) => tracing::error!(
                 "`--speculative` was requested and this checkpoint DOES ship MTP weights \
                  ({layout:?}), but no loader bound them for model_type '{}' — speculative \
-                 decoding will be disabled. This is an Avarok capability gap, not a \
+                 decoding will be disabled. This is an Atlas capability gap, not a \
                  checkpoint problem.",
                 config.model_type,
             ),
@@ -495,7 +495,7 @@ pub fn build_model(
     // co-tenants against our --gpu-memory-utilization budget, so a low util
     // needlessly starves the KV pool (vs vLLM, whose util is self-relative).
     //
-    // We want the KV pool sized against Avarok's OWN footprint (weights +
+    // We want the KV pool sized against Atlas's OWN footprint (weights +
     // buffers), excluding co-tenants. Two ways to find that footprint:
     //
     //   1. AUTO via LEDGER (default, preferred): the alloc ledger's live
@@ -503,7 +503,7 @@ pub fn build_model(
     //      (issue #740). The former free-memory delta (baseline-at-init
     //      minus free-now) counted OS page cache against us on unified
     //      memory: streaming ~20 GB of safetensors depresses MemFree
-    //      without being an allocation Avarok owns, inflating "Avarok-own"
+    //      without being an allocation Atlas owns, inflating "Atlas-own"
     //      by tens of GB on a cold-cache boot and refusing serves with
     //      >100 GB actually available. The ledger is immune to page-cache
     //      noise, co-tenant churn, and mid-load sampling by construction.
@@ -533,7 +533,7 @@ pub fn build_model(
         tracing::info!(
             "AVAROK_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
              external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
-             Avarok-own {:.1} GB",
+             Atlas-own {:.1} GB",
             gib(used_so_far),
             gib(discounted),
         );
@@ -546,7 +546,7 @@ pub fn build_model(
         // disagree — fall through to raw rather than oversize the pool.
         if ledger_live > 0 && ledger_live <= used_so_far {
             tracing::info!(
-                "KV budget self-relative (ledger): Avarok-own {:.1} GB live in \
+                "KV budget self-relative (ledger): Atlas-own {:.1} GB live in \
                  the alloc ledger; {:.1} GB of co-tenant/page-cache use \
                  excluded (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(ledger_live),
@@ -618,7 +618,7 @@ pub fn build_model(
         if settled > 0 && settled <= used_so_far {
             tracing::info!(
                 "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
-                 {:.1} GB = {:.1} GB measured; charging settled Avarok-own {:.1} GB \
+                 {:.1} GB = {:.1} GB measured; charging settled Atlas-own {:.1} GB \
                  (weights {:.1} GB + build allocs {:.1} GB, loader transient \
                  {:.1} GB released from the charge); co-tenants {:.1} GB excluded \
                  (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",

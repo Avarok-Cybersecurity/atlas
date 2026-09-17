@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Server initialization and runtime: phases 0-11 of the Avarok startup sequence.
+//! Server initialization and runtime: phases 0-11 of the Atlas startup sequence.
 //!
 //! Refactor wave-4f extracted the bulk of each phase to `serve_phases.rs`
 //! (resolve_topology, preflight_reserve, load_weight_store,
@@ -108,7 +108,7 @@ fn startup(
     tui_progress: Option<std::sync::mpsc::Receiver<crate::tui::capture_layer::ProgressEvent>>,
     host: Arc<crate::main_modules::model_host::ModelHost>,
 ) -> Result<Startup> {
-    tracing::info!("Avarok Spark starting...");
+    tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
     // Before anything writes: a nearly-full disk shows up later as a download
     // that dies mid-shard or as page-cache thrashing that reads like a
@@ -445,7 +445,7 @@ pub(super) fn canonicalize_model_quant(config: &avarok_core::config::ModelConfig
         return "fp8".into();
     }
     // compressed-tensors with no FP8/NVFP4 marker is usually GPTQ/AWQ —
-    // we don't currently dispatch those on Avarok; report verbatim so
+    // we don't currently dispatch those on Atlas; report verbatim so
     // the bail message is precise.
     if !algo.is_empty() {
         return algo;
@@ -472,7 +472,7 @@ pub(super) fn describe_quant_source(config: &avarok_core::config::ModelConfig) -
 /// QV1: returns `true` iff the kernel target's declared quant string is
 /// known to handle the model's canonicalized quant.
 ///
-/// The current Avarok build emits one bundle per (hw, model) regardless
+/// The current Atlas build emits one bundle per (hw, model) regardless
 /// of how many quant variants it dispatches at runtime: the bundle
 /// label is whichever `AVAROK_TARGET_QUANT` value the build script
 /// happened to record first (today: always `"nvfp4"`). Each bundle

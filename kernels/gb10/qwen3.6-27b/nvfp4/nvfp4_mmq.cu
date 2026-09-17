@@ -22,7 +22,7 @@
 // A symbol must not resolve to the vendor's NO_DEVICE_CODE trap. Use its
 // capability predicate (SM 12.x, not datacentre Blackwell SM 10.x). Absent
 // handles keep DenseFfn's W4A16 fallback and its transposed weights intact.
-#if defined(BLACKWELL_MMA_AVAILABLE) // Avarok optional module
+#if defined(BLACKWELL_MMA_AVAILABLE) // Atlas optional module
 
 // Conventional-tiling setup mirroring mul_mat_q's pre-VOLTA path, specialized: no ids,
 // nchannels_y=nsamples_y=1 (blockIdx.z==0). Calls the existing __device__ process_tile.
@@ -78,7 +78,7 @@ extern "C" __global__ void __launch_bounds__(256, 1) avarok_nvfp4_mmq128_wc(
 // SMALL-M entries. `mmq_x` is the M (token) tile and is a free template parameter --
 // the vendored MMA path's granularity is 8 (mmq_get_granularity_device), and the
 // hardware quantum is the m16n8k64 B-fragment's 8 columns, so any multiple of 8 is
-// legal. Avarok only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
+// legal. Atlas only ever instantiated 128, which meant DECODE at M=16 issued MMAs for
 // all 128 tile columns and threw away 112 of them in the write-back predicate --
 // 87.5% of the MMA issue slots. Predicted cost of that padding at n=16 across the 48
 // SSM layers was 41.1 ms against a 42.0 ms measurement, so it is the dominant term.
@@ -162,7 +162,7 @@ extern "C" __global__ void avarok_nvfp4_repack(
     // tile loader had to issue NINE 4-byte loads per block (8 qs + 1 d). With qs
     // contiguous, the same 32 bytes are TWO 16-byte loads, and `d` is one more —
     // 9 global ops -> 3. The consumer is `load_tiles_nvfp4_nvfp4` in
-    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Avarok exposes
+    // q4k_vendor/mmq.cuh, which is the ONLY reader of this buffer (Atlas exposes
     // no MMVQ entry point, so vecdotq.cuh's nvfp4 path is unreachable).
     //
     // The SHARED-memory tile layout is unchanged, so `vec_dot` and the MMA path
@@ -316,4 +316,4 @@ extern "C" __global__ void avarok_nvfp4_silu_mul_quant(
 #endif
 }
 
-#endif // Avarok optional module
+#endif // Atlas optional module

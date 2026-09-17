@@ -3,7 +3,7 @@ name = "spark-model"
 version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
-description = "Avarok Spark model — Qwen3 forward pass orchestration"
+description = "Atlas Spark model — Qwen3 forward pass orchestration"
 
 [features]
 default = ["cuda"]

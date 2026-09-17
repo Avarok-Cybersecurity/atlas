@@ -190,7 +190,7 @@ pub fn emit_token(
             // refused token (root cause of the opencode webserver_ok gap).
             // Instead, DISENGAGE the grammar for the remainder of this response
             // and continue decoding UNCONSTRAINED — exactly what vLLM (the 10/10
-            // reference) does by parsing tools post-hoc. Avarok's server-side
+            // reference) does by parsing tools post-hoc. Atlas's server-side
             // tool parser still extracts tool calls from the emitted text, so
             // the structural guarantee is gracefully traded for turn survival.
             tracing::warn!(

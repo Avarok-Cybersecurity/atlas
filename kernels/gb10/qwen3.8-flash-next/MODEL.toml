@@ -1,7 +1,7 @@
 # Qwen3.8-Flash-Next — hybrid GDN + QSA sparse attention, multi-hyperconnection
 # streams, PLE n-gram injection, 512-expert MoE, ViT tower, 1 MTP layer.
 #
-# Port tracked in Avarok #753. Serving is NOT complete: this target exists so
+# Port tracked in Atlas #753. Serving is NOT complete: this target exists so
 # the model can RESOLVE and LOAD. The hyper-connection mixer, the QSA indexer
 # and the PLE n-gram injection are not wired yet and refuse by name.
 #
@@ -50,7 +50,7 @@ mrope_interleaved = true
 mrope_section = [11, 11, 10]
 
 # Multi-hyperconnection: the residual is 4 parallel streams of hidden_dim
-# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Avarok's mHC
+# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Atlas's mHC
 # plumbing comes from DeepSeek-V4, whose mixer is Sinkhorn-normalized instead
 # — same stream layout, different mixing math.
 hc_count = 4
@@ -243,7 +243,7 @@ tool_call_parser = "qwen3_coder"
 # Qwen3.8-Flash-Next is a THINKING model whose chat template gates
 # EVERYTHING on `enable_thinking is undefined or true`: the default render
 # carries a reasoning-effort system preamble ("Reasoning effort is set to
-# xhigh...") and opens the assistant turn with `<think>\n`. Avarok always
+# xhigh...") and opens the assistant turn with `<think>\n`. Atlas always
 # passes enable_thinking as a DEFINED boolean, and with thinking_default
 # unset (= false) it rendered a bare 13-token prompt the model was never
 # trained on — which collapsed chat to a 2-token EOS while raw completions
@@ -253,7 +253,7 @@ tool_call_parser = "qwen3_coder"
 thinking_default = true
 thinking_in_tools = true
 # Card sampling presets ([sampling.*] above) apply to core chat/completions
-# requests too — without this a plain request gets Avarok's generic CLI
+# requests too — without this a plain request gets Atlas's generic CLI
 # defaults (incl. min_p 0.08 + top_n_sigma 1.0, which gut the card's
 # temp-1.0 thinking distribution). NOTE this key lives in [behavior]; placed
 # after a [sampling.*] header it silently becomes a preset key and does

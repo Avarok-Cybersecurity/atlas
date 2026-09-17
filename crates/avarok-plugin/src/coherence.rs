@@ -89,7 +89,7 @@ pub struct Report {
     /// for and still be the wrong model for this particular gate.
     pub wrong_family: Option<String>,
     /// What `/v1/models` says it is serving, when the requested model is not
-    /// among them. **This is the check that catches a wrong `--model`:** Avarok
+    /// among them. **This is the check that catches a wrong `--model`:** Atlas
     /// answers a completion whatever name you send, so the questions below
     /// cannot see the mistake — only the model list can.
     pub served_instead: Option<Vec<String>>,
@@ -140,7 +140,7 @@ impl Report {
             }
             return Some(format!(
                 "{} is serving {} — not {:?}, which this benchmark is set to request. \
-                 Avarok answers whatever model name it is sent, so the run WILL produce \
+                 Atlas answers whatever model name it is sent, so the run WILL produce \
                  numbers; they will just be for a different model than the one named.",
                 target.base_url,
                 served.join(", "),

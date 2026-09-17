@@ -272,7 +272,7 @@ pub(super) fn build_msg_entries(
         // Wave 3 (2026-05-26): `AVAROK_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
-        // whose PR description matches Avarok's Wave-1 failure mode
+        // whose PR description matches Atlas's Wave-1 failure mode
         // verbatim: echoing prior `<think>` traces makes the next turn
         // emit `<|im_end|>` prematurely AND seeds loop-attractor drift
         // on prior-failed-attempt token patterns (the `lean://` loop
@@ -371,7 +371,7 @@ pub(super) fn build_msg_entries(
     // bare label `User Context:`). Models react to a content-free system
     // directive by producing terse / prematurely-terminated output
     // (isolated 2026-05-17: removing it 3x'd generation length on the
-    // 3D-chess prompt). We can't fix the client, so Avarok adapts: treat
+    // 3D-chess prompt). We can't fix the client, so Atlas adapts: treat
     // such a message as absent so a degenerate client prompt can't poison
     // generation. Conservative — only an empty body or a single short
     // bare `Label:` line qualifies; any substantive prompt is untouched.

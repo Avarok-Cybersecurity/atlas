@@ -75,7 +75,7 @@ Rough numbers for the default multi-model build at `avarok/atlas-gb10:latest`:
 | GB10 / Gemma-4 / NVFP4 (×2 flavors) | 29 | ~4.0 MB ea |
 | GB10 / Qwen3-VL / NVFP4 | 40 (incl. ViT) | ~6.6 MB |
 
-Total embedded PTX in the default multi-model binary: ~65 MB. The binary itself lands at ~200 MB in release builds. This is why the Docker image is ~8 GB once you add the CUDA userspace (`libcudart`, `libnvrtc`), tokenizer deps, and Ubuntu base — the actual Avarok footprint is small.
+Total embedded PTX in the default multi-model binary: ~65 MB. The binary itself lands at ~200 MB in release builds. This is why the Docker image is ~8 GB once you add the CUDA userspace (`libcudart`, `libnvrtc`), tokenizer deps, and Ubuntu base — the actual Atlas footprint is small.
 
 ## What gets added to this crate when you…
 

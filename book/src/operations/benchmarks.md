@@ -1,6 +1,6 @@
 # Benchmarking
 
-Avarok's performance claims are measurable. This chapter shows what the benchmarks measure, how to reproduce them, and how to read the numbers.
+Atlas's performance claims are measurable. This chapter shows what the benchmarks measure, how to reproduce them, and how to read the numbers.
 
 ## The headline numbers
 
@@ -15,11 +15,11 @@ From the repo README, distilled:
 | Nemotron-3-Nano-30B | FP8 | 88 | |
 | Gemma-4-26B | NVFP4 | 67 | |
 
-And the kernel micro-benchmark summary: **Avarok wins 32/32** against PyTorch on attention, GEMM, SSM, RMSNorm, RoPE, SiLU×Mul, and conv1d, with speedups from 1.04× up to 18.2×.
+And the kernel micro-benchmark summary: **Atlas wins 32/32** against PyTorch on attention, GEMM, SSM, RMSNorm, RoPE, SiLU×Mul, and conv1d, with speedups from 1.04× up to 18.2×.
 
 ## Two kinds of benchmark
 
-Avarok has two benchmark surfaces:
+Atlas has two benchmark surfaces:
 
 1. **End-to-end HTTP throughput** — `avarok-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
 2. **Per-kernel micro-benchmarks** — Criterion benches in each primitive crate, run with `cargo bench`. This is where "4.95× prefill attention" comes from.
@@ -31,7 +31,7 @@ Different things; both are meaningful. The E2E number is what an operator sees. 
 Start a server:
 
 ```bash
-sudo docker run -d --name avarok-35b \
+sudo docker run -d --name atlas-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   avarok/atlas-gb10:latest \
@@ -45,7 +45,7 @@ Wait for `listening`. Then:
 
 ```bash
 export AVAROK_BENCH_URL=http://localhost:8888
-cd /path/to/avarok
+cd /path/to/atlas
 cargo bench -p avarok-spark-bench
 ```
 
@@ -64,7 +64,7 @@ Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Q
 
 The full kernel numbers table:
 
-| Kernel | Benchmark | Avarok | PyTorch | Speedup |
+| Kernel | Benchmark | Atlas | PyTorch | Speedup |
 |---|---|---:|---:|---:|
 | Prefill Attn | seq=32 | 0.0062 ms | 0.0077 | 1.26× |
 | Prefill Attn | seq=128 | 0.0184 ms | 0.0205 | 1.11× |
@@ -127,12 +127,12 @@ Run a request, note the TTFT. Run the same request again — with `--enable-pref
 
 ## Apples-to-apples notes
 
-When comparing Avarok to vLLM or TensorRT-LLM:
+When comparing Atlas to vLLM or TensorRT-LLM:
 
 - **Same hardware.** GB10 SM121 numbers do not transfer to H100 / B200 / MI300X.
 - **Same model.** "Qwen3.5-35B-A3B at 36 tok/s" is vLLM's NVIDIA GB10 benchmark on the NVFP4 CUTLASS MoE path, same HF checkpoint.
 - **Same prompt shape.** The 131 tok/s number is on a short prompt (`"What is the capital of France?"`, `max_tokens ≤ 30`). Longer prompts show slightly different numbers because prefill cost amortizes differently.
-- **Same precision.** Avarok NVFP4 vs vLLM NVFP4; Avarok FP8 vs vLLM FP8. Never compare across quant schemes.
+- **Same precision.** Atlas NVFP4 vs vLLM NVFP4; Atlas FP8 vs vLLM FP8. Never compare across quant schemes.
 
 The headline "3.6× faster than NVIDIA's 36 tok/s" is apples-to-apples against NVIDIA's own vLLM numbers on the same `(GB10, Qwen3.5-35B-A3B, NVFP4)` target.
 
@@ -279,7 +279,7 @@ collecting numbers rather than gating on them.
 
 Every run — from the CLI *or* the dashboard — is recorded under
 `~/.avarok/runs/<benchmark-id>/`, carrying the result, every parameter used (not
-just the ones you overrode), the target, the source, and the Avarok version. So
+just the ones you overrode), the target, the source, and the Atlas version. So
 a stored run says what it measured and can be reproduced.
 
 ```

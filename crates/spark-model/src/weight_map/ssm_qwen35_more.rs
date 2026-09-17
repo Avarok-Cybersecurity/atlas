@@ -43,7 +43,7 @@ pub(crate) fn load_moe_minimax(
     let p = format!("{layer_prefix}.block_sparse_moe");
 
     // Gate weight ships as F32 in the real MiniMax 229B checkpoint and
-    // BF16 in tiny-random. Avarok's gate GEMM wants BF16 input, so
+    // BF16 in tiny-random. Atlas's gate GEMM wants BF16 input, so
     // convert when F32.
     let gate = dense_f32_safe(store, &format!("{p}.gate.weight"), gpu)?;
     // Correction bias: F32 in the real 229B checkpoint (shape [256]),
@@ -120,7 +120,7 @@ pub(crate) fn load_moe_minimax(
         weight: alloc_zero(h * 2)?,
     };
 
-    // Per-expert w1/w2/w3 → gate/down/up in Avarok naming. Dispatch by
+    // Per-expert w1/w2/w3 → gate/down/up in Atlas naming. Dispatch by
     // variant + what's actually on disk:
     //   * Pre-quantized NVFP4 (weight_packed + weight_scale) → zero-copy
     //     via `quantized_auto`.

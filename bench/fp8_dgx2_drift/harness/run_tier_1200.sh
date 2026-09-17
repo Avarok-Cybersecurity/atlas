@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run N opencode probes sequentially against the currently-running Avarok
+# Run N opencode probes sequentially against the currently-running Atlas
 # container (and optionally a remote vLLM via SSH tunnel) and score each one.
-# Intended for statistical comparison of Avarok drift-mitigation tiers
+# Intended for statistical comparison of Atlas drift-mitigation tiers
 # (N≥10 per tier required to overcome the FP8 per-run variance).
 #
 # Usage:
@@ -154,7 +154,7 @@ run_one() {
     "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
   END_TS=$(date +%s.%N)
 
-  # Avarok log window for THIS run only (local only).
+  # Atlas log window for THIS run only (local only).
   if [[ "${label}" == "local" ]]; then
     START_TS_INT=${START_TS%.*}
     sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true

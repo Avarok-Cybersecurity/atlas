@@ -10,7 +10,7 @@
 //!
 //! ## Scope
 //!
-//! Avarok's residual stream lives on the GPU; exposing it for a
+//! Atlas's residual stream lives on the GPU; exposing it for a
 //! per-token linear probe needs (a) the kernel to dump the last-
 //! layer hidden state to host every step, OR (b) the probe weights
 //! cooperate with a fused GPU kernel. Either is a kernel change.

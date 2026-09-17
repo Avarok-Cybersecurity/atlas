@@ -15,19 +15,19 @@ export const brandStyle = Object.entries({
   "wordmark-dark": wordmark.onDark,
   "tagline-dark": tagline.onDark,
 })
-  .map(([name, value]) => `--avarok-${name}:${value}`)
+  .map(([name, value]) => `--atlas-${name}:${value}`)
   .join(";");
 
 export const legacySections = [
   { id: "proof", label: "Project milestones" },
-  { id: "news", label: "Avarok news" },
+  { id: "news", label: "Atlas news" },
   { id: "hardware", label: "Verified hardware" },
   { id: "community", label: "Community" },
   { id: "contribute", label: "Contribute" },
   { id: "roadmap", label: "Roadmap" },
   { id: "mission", label: "Mission" },
   { id: "faq", label: "Frequently asked questions" },
-  { id: "reach", label: "Contact Avarok" },
+  { id: "reach", label: "Contact Atlas" },
 ];
 
 export function legacyEngineDestination(hash, search) {
@@ -47,18 +47,18 @@ export function benchmarkHighlight(ladder) {
     throw new Error("Missing benchmark rows");
   const row = [...ladder.rows].sort((a, b) => b.c - a.c)[0];
   const baseline = row.baselines?.find((item) => item.id === row.best_baseline_id);
-  if (![row.c, row.avarok, baseline?.tok_s].every((value) => Number.isFinite(value) && value > 0)) {
+  if (![row.c, row.atlas, baseline?.tok_s].every((value) => Number.isFinite(value) && value > 0)) {
     throw new Error("Invalid benchmark evidence");
   }
-  const max = Math.max(row.avarok, baseline.tok_s);
+  const max = Math.max(row.atlas, baseline.tok_s);
   return {
     concurrency: row.c,
-    avarok: row.avarok,
+    atlas: row.atlas,
     baseline: baseline.tok_s,
     baselineLabel: baseline.label,
-    ratio: row.avarok / baseline.tok_s,
-    improved: row.avarok > baseline.tok_s,
-    avarokWidth: (row.avarok / max) * 100,
+    ratio: row.atlas / baseline.tok_s,
+    improved: row.atlas > baseline.tok_s,
+    atlasWidth: (row.atlas / max) * 100,
     baselineWidth: (baseline.tok_s / max) * 100,
   };
 }

@@ -21,7 +21,7 @@ fn lower_with_tools(
 fn responses_flat_function_tool_accepted() {
     // OpenAI's official Python SDK sends function tools in the flat
     // shape `{type, name, description, parameters}` — no nested
-    // `function` object. Avarok must accept both shapes.
+    // `function` object. Atlas must accept both shapes.
     let chat = lower_with_tools(serde_json::json!([
         {
             "type": "function",

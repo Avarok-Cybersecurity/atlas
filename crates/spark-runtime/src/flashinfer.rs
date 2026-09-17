@@ -3,7 +3,7 @@
 //!
 //! ★ REFERENCE IMPLEMENTATION — A BENCHMARK TARGET, NOT A DEPENDENCY.
 //!
-//! Avarok ships its OWN kernels. FlashInfer is wrapped here for exactly one
+//! Atlas ships its OWN kernels. FlashInfer is wrapped here for exactly one
 //! purpose: to be the opponent we measure against and beat. **Nothing in a
 //! default build or a default serve calls a single line of it.**
 //!
@@ -15,7 +15,7 @@
 //!   2. RUNTIME — the dispatch arms are opt-in behind `AVAROK_FLASHINFER_PREFILL=1`.
 //!      The default is OFF.
 //!
-//! So the honest reading of an Avarok performance number is that Avarok kernels
+//! So the honest reading of an Atlas performance number is that Atlas kernels
 //! produced it, because a default binary cannot reach this code. Export the
 //! env var and you are measuring FlashInfer — label the number that way.
 //!
@@ -38,7 +38,7 @@
 //!
 //! Purpose: batch N requests' attention into ONE varlen launch (q_indptr/
 //! kv_indptr ragged offsets) so cross-request prefill scales — the missing
-//! piece behind Avarok's flat ~3880 tok/s prefill at any concurrency.
+//! piece behind Atlas's flat ~3880 tok/s prefill at any concurrency.
 
 use anyhow::{Result, bail};
 

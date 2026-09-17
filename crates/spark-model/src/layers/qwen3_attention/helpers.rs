@@ -252,7 +252,7 @@ impl Qwen3AttentionLayer {
 }
 
 /// The QSA per-seq carry from a sequence's [`crate::layer::AttnLayerState`],
-/// lazily created on first use (Avarok #753 item B).
+/// lazily created on first use (Atlas #753 item B).
 pub(in crate::layers::qwen3_attention) fn qsa_seq_state<'a>(
     qsa: &crate::layers::qsa::QsaIndexer,
     state: &'a mut dyn crate::layer::LayerState,

@@ -5,7 +5,7 @@
 //
 // Reads 3-bit packed K/V from paged cache (8 values packed in 3 bytes),
 // dequantizes to BF16 in shared memory, then runs Flash Attention with
-// contiguous BF16 Q. Replaces upstream Avarok behavior of routing turbo3
+// contiguous BF16 Q. Replaces upstream Atlas behavior of routing turbo3
 // through the NVFP4_64 prefill kernel (which read 3-bit data as 4-bit
 // nibbles — silently wrong values, partly responsible for pre-signs
 // turbo3 PPL collapse).

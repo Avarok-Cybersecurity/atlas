@@ -3,7 +3,7 @@
 //! Host-side dequantization of paged KV cache blocks → BF16.
 //!
 //! Used by `--high-speed-swap` Phase 6.2.c to produce BF16 source data for
-//! the orchestrator's tile-streaming attention kernel from any of Avarok's
+//! the orchestrator's tile-streaming attention kernel from any of Atlas's
 //! quantized KV layouts. The kernel-side packing/scale layouts mirrored
 //! here:
 //!

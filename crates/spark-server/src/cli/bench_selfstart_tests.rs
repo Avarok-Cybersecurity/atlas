@@ -64,7 +64,7 @@ fn a_clean_box_serves_at_the_recipes_utilisation() {
 
 #[test]
 fn a_co_tenanted_box_is_refused_with_the_remedies() {
-    // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Avarok 32 %
+    // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Atlas 32 %
     // at C=16 while costing vLLM ~0, so this corrupts the measurement long
     // before it OOM-freezes the box.
     let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b", 0.85).expect_err("refused");
@@ -206,7 +206,7 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
 
     // Render through a committed recipe fixture that pins the same `defaults:`
     // keys the real qwen3.8 agentic recipe does (the real yaml lives in the
-    // avarok-recipes repo, not in this tree; the fixture stands in for the
+    // atlas-recipes repo, not in this tree; the fixture stands in for the
     // RENDERING only — which entry carries the pin is asserted on the real
     // BENCH.toml above and in gate::bench_tests).
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

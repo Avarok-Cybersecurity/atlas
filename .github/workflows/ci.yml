@@ -643,7 +643,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # scripts/launch-avarok-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
+      # scripts/launch-atlas-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
       # remote shell command. The contract it documents -- simple
       # space-separated tokens -- was never enforced, so a value carrying `;`,
       # `$(...)`, a glob or a newline reached the remote shell as syntax. The
@@ -655,10 +655,10 @@ jobs:
         run: |
           set -euo pipefail
           bash -n \
-            scripts/launch-avarok-glm53-tp2ep2.sh \
+            scripts/launch-atlas-glm53-tp2ep2.sh \
             scripts/lib/glm53-launch-safety.sh \
-            scripts/test-launch-avarok-glm53-safety.sh
-          scripts/test-launch-avarok-glm53-safety.sh
+            scripts/test-launch-atlas-glm53-safety.sh
+          scripts/test-launch-atlas-glm53-safety.sh
 
   test:
     name: cargo test --workspace
@@ -1064,7 +1064,7 @@ jobs:
         #      context: a sibling repo normally refuses it. Tried anyway,
         #      because "normally" is org policy, not physics — a 200 is a 200,
         #      and the check below believes responses, not documentation.
-        #   3. anonymous — works because avarok-recipes is public
+        #   3. anonymous — works because atlas-recipes is public
         #      (`"private": false`); rate-limited to 60/hr per IP, shared
         #      across the runner fleet, hence last.
         # The first rung answering HTTP 200 with parseable JSON wins. When
@@ -1104,7 +1104,7 @@ jobs:
             printf '%s' "$names" > recipes.txt
           else
             : > recipes.txt
-            echo "::notice::avarok-recipes not readable on any rung of the token chain; classifying without recipe context"
+            echo "::notice::atlas-recipes not readable on any rung of the token chain; classifying without recipe context"
           fi
           echo "count=$(wc -l < recipes.txt)" >> "$GITHUB_OUTPUT"
           # Randomized marker, same reason as the diff step: recipe names come

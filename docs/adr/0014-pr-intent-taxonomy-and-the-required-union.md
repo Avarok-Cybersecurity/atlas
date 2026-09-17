@@ -82,7 +82,7 @@ required only once it is.
 
 The classifier reads PR title, body, changed paths, and — where
 `GH_ORGANIZATION_READ_TOKEN` is available — recipe content from the separate
-public `avarok-recipes` repository. That means **text in another repository can
+public `atlas-recipes` repository. That means **text in another repository can
 influence this repository's gate**.
 
 This is safe for exactly one reason, and it is the same reason as everything
@@ -122,7 +122,7 @@ was never waiting on the closure-hash narrowing.
 pins both halves of the corrected claim.
 
 **2. The `recipes/` "live case" is unreachable from this repository.** This
-repo tracks zero `recipes/` files — they live in the separate `avarok-recipes`
+repo tracks zero `recipes/` files — they live in the separate `atlas-recipes`
 repo, and `invalidating_paths` diffs *this* one, so a `recipes/` path can
 never appear in the diff the gate filters. The reachable
 off-the-floor classes are `docker/`, `docs/`, `.github/`, `scripts/`,

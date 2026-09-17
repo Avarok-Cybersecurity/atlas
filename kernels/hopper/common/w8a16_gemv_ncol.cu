@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W8A16 batched GEMV, N-COLUMN BLOCKED — block-scaled FP8 weight, BF16
+// Atlas W8A16 batched GEMV, N-COLUMN BLOCKED — block-scaled FP8 weight, BF16
 // activations. Computes exactly what `w8a16_gemv_batch4.cu` computes:
 //
 //   C[t, n] = sum_k A[t, k] * E4M3_LUT[B[n, k]] * block_scale[n/128, k/128]

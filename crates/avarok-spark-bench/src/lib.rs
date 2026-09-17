@@ -3,10 +3,10 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
-//! Avarok Spark HTTP benchmark client.
+//! Atlas Spark HTTP benchmark client.
 //!
 //! Shared utilities for Criterion benchmarks and correctness tests.
-//! Expects a running Avarok Spark server (default: `http://localhost:8888`).
+//! Expects a running Atlas Spark server (default: `http://localhost:8888`).
 
 // `gpu` wraps `cudarc` + raw CUDA driver FFI, so it's only available when
 // the cuda feature is on. The HTTP-level benchmarks below are platform-
@@ -32,7 +32,7 @@ pub fn require_server() -> String {
     match ureq::get(&format!("{url}/health")).call() {
         Ok(resp) if resp.status() == 200 => url,
         Ok(resp) => panic!("Server at {url} returned status {}", resp.status()),
-        Err(e) => panic!("Server not reachable at {url}: {e}. Start Avarok Spark first."),
+        Err(e) => panic!("Server not reachable at {url}: {e}. Start Atlas Spark first."),
     }
 }
 

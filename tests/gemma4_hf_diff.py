@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Gemma-4 HuggingFace reference dump for Avarok divergence diagnosis.
+Gemma-4 HuggingFace reference dump for Atlas divergence diagnosis.
 
 Purpose
 -------
-Avarok-Spark's Gemma-4-31B (NVFP4) produces degenerate output starting around
+Atlas-Spark's Gemma-4-31B (NVFP4) produces degenerate output starting around
 token 3 on the Creative haiku prompt (e.g. "Crystals a a a a a ..."). Root
 cause remains unknown after multiple diagnostic passes. This script produces
 a reference forward pass from HuggingFace transformers (BF16) for the same
 prompt so per-layer hidden states and next-token logits can be diff'd against
-Avarok to isolate the first divergent layer.
+Atlas to isolate the first divergent layer.
 
 How to run
 ----------
@@ -28,14 +28,14 @@ Arguments:
     --device   cpu | cuda. Default: cpu (safe when GPUs are busy; warns slow).
     --dtype    Default: bfloat16.
 
-How to diff against Avarok
+How to diff against Atlas
 -------------------------
-Avarok has a diagnostic env var `AVAROK_DIAG_GEMMA4_HIDDEN=1` that logs per-layer
-hidden-state norms during decode. Run Avarok with that env var on the same
+Atlas has a diagnostic env var `AVAROK_DIAG_GEMMA4_HIDDEN=1` that logs per-layer
+hidden-state norms during decode. Run Atlas with that env var on the same
 prompt, then compare layer-by-layer norms / first-8 values / abs-max indices
 against the JSON this script writes.
 
-Relevant Avarok files:
+Relevant Atlas files:
     /workspace/avarok/crates/spark-model/src/layers/qwen3_attention/trait_impl.rs
         - decode forward + `gemma4_diag_enabled()` instrumentation
     /workspace/avarok/crates/spark-model/src/weight_loader/gemma4.rs
@@ -121,7 +121,7 @@ def main() -> int:
     )
     model.eval()
 
-    # Apply chat template to match how Avarok serves the prompt.
+    # Apply chat template to match how Atlas serves the prompt.
     templated = tokenizer.apply_chat_template(
         [{"role": "user", "content": args.prompt}],
         tokenize=False,

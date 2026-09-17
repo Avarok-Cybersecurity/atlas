@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok MoE hash-routing kernel for DeepSeek-V4 (first `num_hash_layers` MoE
+// Atlas MoE hash-routing kernel for DeepSeek-V4 (first `num_hash_layers` MoE
 // layers, paper §2.1).
 //
 // Unlike the learned-gate path (moe_topk_sqrtsoftplus), expert SELECTION here

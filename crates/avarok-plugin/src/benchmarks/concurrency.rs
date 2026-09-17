@@ -46,8 +46,8 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
     detail: "Fires N concurrent streaming requests per (input-length × concurrency) cell and \
              reports client TTFT, TPOT and end-to-end latency as p50/p90/p99, plus the batch's \
              aggregate output throughput. This is the curve the GB10 concurrency campaign is \
-             measured on — C=1 is where Avarok leads, C=32 is where time-to-answer starts \
-             inverting in Avarok's favour, and C=128 is the widest rung the published ladder \
+             measured on — C=1 is where Atlas leads, C=32 is where time-to-answer starts \
+             inverting in Atlas's favour, and C=128 is the widest rung the published ladder \
              quotes. Requests pin temperature 0.0 / \
              seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
              thinking. A cell where any request delivers under 80% of the output budget is \
@@ -875,9 +875,9 @@ impl Benchmark for ConcurrencySweep {
                 "How many requests are in flight at once, one sweep column each.",
                 ParamKind::IntList { min: 1, max: 256 },
                 // 32 is the top rung on purpose: it is where the campaign
-                // measured time-to-answer INVERTING in Avarok's favour (C=32
+                // measured time-to-answer INVERTING in Atlas's favour (C=32
                 // -4.47% vs vLLM, C=128 -10.84%), so a sweep that stops at 16
-                // reports the regime where Avarok trails and omits the one
+                // reports the regime where Atlas trails and omits the one
                 // where it wins. C=64/128 are deliberately NOT default — they
                 // need bs=64 preflight headroom that not every recipe has.
                 ParamValue::IntList(vec![1, 2, 4, 8, 16, 32]),
@@ -1030,7 +1030,7 @@ impl Benchmark for ConcurrencySweep {
             // A "—" in the TPOT column is a measurement limit, not a broken
             // number, and it is worth saying which: the endpoint delivered the
             // whole reply in ONE SSE delta, so there is no inter-token interval
-            // to time. Avarok batches short replies that way, so this is common
+            // to time. Atlas batches short replies that way, so this is common
             // at small output budgets and reads like a bug if left unexplained.
             let unmeasured = self.rows.iter().filter(|r| r.tpot.p50.is_none()).count();
             if unmeasured > 0 {

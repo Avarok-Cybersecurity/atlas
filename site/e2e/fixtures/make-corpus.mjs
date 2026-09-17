@@ -25,7 +25,7 @@ const COMMIT = 'a3f9c1e7b2d84056917e2c3a4b5d6f7089abcde1';
 const GENERATED_AT = '2026-08-16T00:00:00Z';
 const MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
 
-// ~20 realistic Avarok-flavored chunks (Rust engine + CUDA kernels + docs).
+// ~20 realistic Atlas-flavored chunks (Rust engine + CUDA kernels + docs).
 // path / language / start_line / body.
 const CHUNKS = [
   ['src/scheduler/batch.rs', 'rust', 41, `impl BatchScheduler {
@@ -158,7 +158,7 @@ fn encode_e2m1(x: f32) -> u8 {
     let mag = f32::from_bits(bits & 0x7fff_ffff);
     sign | E2M1_TABLE.partition_point(|t| *t < mag).min(7) as u8
 }`],
-  ['src/engine/mod.rs', 'rust', 1, `//! Avarok engine core: request lifecycle from tokenize -> prefill -> decode
+  ['src/engine/mod.rs', 'rust', 1, `//! Atlas engine core: request lifecycle from tokenize -> prefill -> decode
 //! -> detokenize. The engine owns the scheduler, the KV pool, and the model
 //! runner; everything above it (HTTP, metrics) is stateless.
 pub mod runner;
@@ -173,9 +173,9 @@ pub struct Engine {
 pub fn sample_batch(logits: &Tensor, params: &[SamplingParams]) -> Vec<TokenId> {
     fused_sample_kernel(logits, params)
 }`],
-  ['docs/architecture.md', 'markdown', 1, `# Avarok architecture
+  ['docs/architecture.md', 'markdown', 1, `# Atlas architecture
 
-Avarok is a single-node inference engine for DGX Spark (GB10). The serving
+Atlas is a single-node inference engine for DGX Spark (GB10). The serving
 path is: HTTP front door -> tokenizer -> batch scheduler (continuous
 batching, chunked prefill) -> model runner (CUDA graphs per batch shape) ->
 sampler -> SSE stream. NVFP4 weights ride CUTLASS SM120 kernels with a
@@ -243,7 +243,7 @@ const header = {
   format: 'lattice-jsonl',
   version: 1,
   config: {
-    name: 'avarok-code',
+    name: 'atlas-code',
     vectors: { size: DIM, distance: 'Cosine' },
     hnsw: { m: 16, m0: 32, ml: 0.36067376022224085, ef: 50, ef_construction: 200 },
     relations: {},

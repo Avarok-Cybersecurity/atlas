@@ -124,7 +124,7 @@ is running measures a dead tree; **exit 2 = could not answer, which is a stop, n
 
 **T10 — no other PR is mid-certification.** For every other open PR whose diff touches
 `$paths`: it is mid-certification if it adds `.benchmarks/` records at a sha not on main, its
-bot comment carries `<!-- avarok-certification-state:` with `stage-2`, `stage-3` or `queued`,
+bot comment carries `<!-- atlas-certification-state:` with `stage-2`, `stage-3` or `queued`,
 or `isInMergeQueue` is true. Two record-bearing PRs cannot share a queue group. Overridable
 when the owner is serialising by hand — name the other PR.
 

@@ -67,8 +67,8 @@ v_steps = [rng.tensor(1, 1, H, D) for _ in range(STEPS)]
 gate_steps = [LOWER_BOUND * torch.sigmoid(rng.tensor(1, 1, H, D) * 3.0) for _ in range(STEPS)]
 beta_steps = [torch.sigmoid(rng.tensor(1, 1, H)) for _ in range(STEPS)]
 
-# HF's kernel L2-normalises q/k internally. The Avarok kernel consumes ALREADY-normalised
-# q/k (its conv fuses the L2), so the golden records the normalised tensors that Avarok
+# HF's kernel L2-normalises q/k internally. The Atlas kernel consumes ALREADY-normalised
+# q/k (its conv fuses the L2), so the golden records the normalised tensors that Atlas
 # will be fed, and HF is driven with use_qk_l2norm_in_kernel=False on those same values.
 def l2(x):
     return x / torch.sqrt((x * x).sum(dim=-1, keepdim=True) + 1e-6)

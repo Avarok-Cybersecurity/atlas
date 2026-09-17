@@ -1,4 +1,4 @@
-"""Golden for PLE n-gram injection — Avarok #753 item C, PLAN.md phase D.
+"""Golden for PLE n-gram injection — Atlas #753 item C, PLAN.md phase D.
 
 PLE is the top correctness risk in this port, for two reasons that both fail
 SILENTLY:

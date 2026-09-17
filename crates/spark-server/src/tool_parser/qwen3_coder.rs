@@ -122,11 +122,11 @@ multiple lines\n\
         );
         // #211 option-B A/B (off-policy hypothesis): Qwen3.6 was RL-tuned
         // against the SHORT official <IMPORTANT> reminder (chat_template.jinja
-        // line 53). Avarok's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
+        // line 53). Atlas's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
         // diverges from that trained distribution and correlates with
         // malformed tool calls (empty {filePath,content} scaffolds, mixed
         // <function_calls> tags). AVAROK_OFFICIAL_TOOL_PROMPT=1 swaps in the
-        // verbatim official 4-bullet reminder. Default = current Avarok block.
+        // verbatim official 4-bullet reminder. Default = current Atlas block.
         if std::env::var("AVAROK_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
             prompt.push_str("\
 <IMPORTANT>\n\
@@ -197,7 +197,7 @@ Example:\n\
         // tool call from those tags across BPE boundaries and depends on
         // the raw fragments reaching it.
         //
-        // `<tool_response>` is a SERVER-internal wrapper that Avarok renders
+        // `<tool_response>` is a SERVER-internal wrapper that Atlas renders
         // around role=tool messages when they enter the prompt (see the
         // qwen3_5_moe.jinja chat template). The model should NEVER emit
         // it in content — when it does, it's hallucinating a simulated

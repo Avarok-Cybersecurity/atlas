@@ -150,7 +150,7 @@ fn sub_op_3_lowrank_decay_projection() {
 // ---------------------------------------------------------------- 4. per-channel dt_bias
 
 /// `dt_bias` has length `H * head_dim`, not `H`. This is the load-bearing shape difference against
-/// Avarok's Qwen GDN, where `dt_bias` is one scalar per head.
+/// Atlas's Qwen GDN, where `dt_bias` is one scalar per head.
 #[test]
 fn sub_op_4_dt_bias_is_per_channel() {
     let g = Golden::load();

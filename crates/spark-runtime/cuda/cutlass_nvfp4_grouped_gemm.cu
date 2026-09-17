@@ -254,7 +254,7 @@ __global__ void pack_act_grouped_batched(
 }
 
 // ─── per-{n,k} SFB swizzle pack (load-time helper) ───
-// Reads Avarok-transposed E4M3 weight scale [K/16, N] (the pack_bf16_weight_to_nvfp4_t
+// Reads Atlas-transposed E4M3 weight scale [K/16, N] (the pack_bf16_weight_to_nvfp4_t
 // layout) and writes it into the grouped/dense SFB atom for one expert. SFB depends
 // ONLY on N,K (not M), so a single load-time call is valid for all per-group M.
 template <class LayoutSFB_t>
@@ -263,7 +263,7 @@ __global__ void pack_weight_sfb_group(
     unsigned char* __restrict__ cutlass_scales,      // swizzled SFB out
     int n,
     int k,
-    int src_n_major,  // 0 = Avarok-transposed [K/16,N]; 1 = checkpoint-native [N,K/16]
+    int src_n_major,  // 0 = Atlas-transposed [K/16,N]; 1 = checkpoint-native [N,K/16]
     LayoutSFB_t layout_sfb) {
   int col = blockIdx.x;
   int group = blockIdx.y * blockDim.x + threadIdx.x;
@@ -273,7 +273,7 @@ __global__ void pack_weight_sfb_group(
   }
   // SFB output layout is unchanged; only the SOURCE indexing differs. N-major
   // lets a checkpoint that ships [N,K/16] scales (Laguna) build SFB without
-  // materialising an Avarok-transposed copy first.
+  // materialising an Atlas-transposed copy first.
   unsigned char avarok_scale =
       src_n_major ? avarok_scales[(unsigned long long)col * groups + group]
                   : avarok_scales[(unsigned long long)group * n + col];
@@ -288,11 +288,11 @@ __global__ void pack_weight_sfb_group(
 
 // ════════════════════════════════════════════════════════════════════════════
 // Load-time SFB swizzle pack — produces the grouped/dense SFB atom for one expert
-// from the Avarok-transposed [K/16,N] E4M3 weight scale. SFB is M-independent, so
+// from the Atlas-transposed [K/16,N] E4M3 weight scale. SFB is M-independent, so
 // this is a one-time-per-expert call (gated by FAST_MOE_MODE at the Rust layer).
 // ════════════════════════════════════════════════════════════════════════════
 extern "C" int avarok_cutlass_pack_weight_sfb(
-    const void* scale_in,  // [K/16,N] E4M3 (Avarok transposed) or [N,K/16] when src_n_major
+    const void* scale_in,  // [K/16,N] E4M3 (Atlas transposed) or [N,K/16] when src_n_major
     void* scale_out,       // swizzled SFB (ue4m3)
     int n,
     int k,

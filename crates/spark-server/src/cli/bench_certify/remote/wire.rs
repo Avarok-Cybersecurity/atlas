@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The shapes `avarokctl bench … --json` writes, as this side reads them
-//! (avarok-recipes `docs/BENCH.md`). Every optional fact defaults, so an
-//! avarokctl one version away still parses — and admission treats an absent
+//! The shapes `atlasctl bench … --json` writes, as this side reads them
+//! (atlas-recipes `docs/BENCH.md`). Every optional fact defaults, so an
+//! atlasctl one version away still parses — and admission treats an absent
 //! fact as a refusal, never as a pass.
 
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
-/// avarokctl's exit codes, by name.
+/// atlasctl's exit codes, by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
     Done,
@@ -41,7 +41,7 @@ impl Exit {
     }
 }
 
-/// avarokctl's error document.
+/// atlasctl's error document.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Default)]
 pub struct ErrorObj {
     pub code: String,
@@ -136,7 +136,7 @@ pub struct BuiltSha {
 }
 
 /// What a node says about itself. Every field defaults, so a newer or older
-/// avarokctl that adds or drops one still parses — and the admission rules
+/// atlasctl that adds or drops one still parses — and the admission rules
 /// treat an absent fact as a refusal, never as a pass.
 #[derive(Clone, Debug, Deserialize, PartialEq, Default)]
 pub struct NodeInfo {
@@ -157,10 +157,9 @@ pub struct NodeInfo {
     #[serde(default)]
     pub hardware_class: Option<String>,
     #[serde(default)]
-    #[serde(alias = "atlas_repo")]
-    pub avarok_repo: Option<RepoInfo>,
-    #[serde(default, alias = "atlas_home")]
-    pub avarok_home: Option<String>,
+    pub atlas_repo: Option<RepoInfo>,
+    #[serde(default)]
+    pub atlas_home: Option<String>,
     #[serde(default)]
     pub signer_fp: Option<String>,
     #[serde(default)]
@@ -255,7 +254,7 @@ pub enum AttachEnd {
     Cancelled,
     /// Exit 7: the stream could not be re-established; resume from here.
     StreamLost { last_seq: u64 },
-    /// avarokctl refused, or could not reach or authenticate.
+    /// atlasctl refused, or could not reach or authenticate.
     Failed { exit: Exit, error: Option<ErrorObj> },
 }
 

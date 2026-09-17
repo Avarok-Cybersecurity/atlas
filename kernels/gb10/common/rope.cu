@@ -127,7 +127,7 @@ extern "C" __global__ void rope_forward(
 // Only the first `rope_angles` pairs get a non-zero frequency, the rest
 // are passthrough.
 //
-// Avarok's `rope_forward` pairs (i, i + rotary_dim/2) and uses the wrong
+// Atlas's `rope_forward` pairs (i, i + rotary_dim/2) and uses the wrong
 // frequency denominator (`rotary_dim` instead of `head_dim`) — correct
 // for Qwen3-style partial RoPE but incorrect for Gemma-4 proportional.
 //
@@ -250,7 +250,7 @@ extern "C" __global__ void rope_forward_strided(
 // Only the first `rope_angles` pairs get a non-zero frequency, the rest
 // are passthrough.
 //
-// Avarok's `rope_forward` pairs (i, i + rotary_dim/2) and uses the wrong
+// Atlas's `rope_forward` pairs (i, i + rotary_dim/2) and uses the wrong
 // frequency denominator (`rotary_dim` instead of `head_dim`) — correct
 // for Qwen3-style partial RoPE but incorrect for Gemma-4 proportional.
 //

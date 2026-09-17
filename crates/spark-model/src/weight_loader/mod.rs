@@ -155,7 +155,7 @@ impl QuantFormat {
 /// Checkpoint weight format, detected from safetensors metadata.
 ///
 /// Determines how raw weight bytes are interpreted and transformed into
-/// the runtime NVFP4 format used by Avarok GEMM kernels.
+/// the runtime NVFP4 format used by Atlas GEMM kernels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightFormat {
     /// NVFP4 E2M1 on disk (nvidia ModelOpt or compressed-tensors).
@@ -286,7 +286,7 @@ pub trait ModelWeightLoader {
     /// `gpu` is passed so model-specific loaders can do on-device weight
     /// transforms at load time (e.g. Gemma-4 shifts the learned absolute-
     /// scale weight by -1 into the offset-from-1 convention expected by
-    /// Avarok's rms_norm kernel). Loaders that don't need it should ignore
+    /// Atlas's rms_norm kernel). Loaders that don't need it should ignore
     /// the argument.
     fn load_final_norm(
         &self,

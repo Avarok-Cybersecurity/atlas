@@ -20,7 +20,7 @@
   const top = headroom(ladder.rows);
 
   const mlperfLine = mlperfCopy[mlperf.status] ?? mlperfCopy.preparing;
-  const stamp = `avarok ${bench.generated_sha} · ${bench.generated_date}`;
+  const stamp = `atlas ${bench.generated_sha} · ${bench.generated_date}`;
 
   let copyState = $state('idle'); // idle | copied | manual | blocked
   let copyTimer;
@@ -53,8 +53,8 @@
         <h3>{verified.scale.title}</h3>
         <p>{verified.scale.lead}</p>
         <p class="scale-figure">
-          From C={top.from} to C={top.to}, Avarok adds
-          <strong class="scale-up">{signed(top.avarok)}</strong> throughput while
+          From C={top.from} to C={top.to}, Atlas adds
+          <strong class="scale-up">{signed(top.atlas)}</strong> throughput while
           {top.label} adds <strong class="scale-flat">{signed(top.baseline)}</strong>.
         </p>
         <p>{verified.scale.tail}</p>
@@ -79,7 +79,7 @@
           <button type="button" class="copy-btn" onclick={copyRepro} aria-label="Copy reproduce command">{copyLabel(copyState)}</button>
         </div>
         <p class="mlperf-note" style="font-weight:650;color:var(--t1)">{verified.challengeLine}</p>
-        <p class="mlperf-note" style="font-size:0.84rem">Every model card comes from a recipe in <a class="link" href={recipesUrl} target="_blank" rel="noopener">avarok-recipes</a>.</p>
+        <p class="mlperf-note" style="font-size:0.84rem">Every model card comes from a recipe in <a class="link" href={recipesUrl} target="_blank" rel="noopener">atlas-recipes</a>.</p>
       </div>
 
       <Receipt source="gate" />

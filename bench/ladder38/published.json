@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
-  "subtitle": "Avarok vs vLLM 0.27.1, C=1..128, every workload axis matched",
+  "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
   "results_doc": "bench/ladder38/RESULTS.md",
 
@@ -35,9 +35,9 @@
   "series": [
     {
       "id": "atlas",
-      "label": "Avarok",
+      "label": "Atlas",
       "role": "subject",
-      "engine": "Avarok 1.0.0-beta-preview",
+      "engine": "Atlas 1.0.0-beta-preview",
       "build": "bce152b18",
       "build_public": "4012c9b7e1",
       "build_public_note": "The sha to check out. bce152b18 was a local merge on test/ladder-stack and was never pushed, so `git checkout bce152b18` fails on a fresh public clone (verified 2026-08-26). 4012c9b7e1 is the certified sha, is reachable from origin/test/ladder-stack, and differs from the measured tree only in doc comments and gate machinery. 60370b9532 is the same work as merged to main.",

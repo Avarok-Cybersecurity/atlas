@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Dense FP8-Weight dual-GEMV (batch=2) kernel for SM121 (GB10).
+// Atlas Dense FP8-Weight dual-GEMV (batch=2) kernel for SM121 (GB10).
 //
 // Computes two output rows from ONE pass over the FP8 weight matrix:
 //   C[t, n] = dot(A[t, :], dequant(B_fp8[n, :])) * row_scale[n]   for t in {0,1}

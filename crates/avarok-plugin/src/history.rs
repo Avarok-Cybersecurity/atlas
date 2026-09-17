@@ -9,7 +9,7 @@
 //! * **No configuration.** A number with no parameters and no target is not a
 //!   result — you cannot tell what was measured, against which endpoint, or
 //!   reproduce it. So a record now carries every parameter (defaults included,
-//!   not just overrides), the target, the source, and the Avarok version.
+//!   not just overrides), the target, the source, and the Atlas version.
 //! * **One-second filenames.** Two runs of the same benchmark in the same
 //!   second overwrote each other. The second one just vanished. Records are now
 //!   keyed by nanosecond with an explicit collision guard, so that is
@@ -96,8 +96,8 @@ pub struct RunRecord {
     pub serve_overrides: BTreeMap<String, String>,
     #[serde(default)]
     pub source: RunSource,
-    #[serde(default, alias = "atlas_version")]
-    pub avarok_version: String,
+    #[serde(default)]
+    pub atlas_version: String,
     /// The terminal frame, byte-identical to what the run pane rendered.
     pub frame: BenchmarkResult,
 }
@@ -113,7 +113,7 @@ impl RunRecord {
         target: &TargetEndpoint,
         serve_overrides: BTreeMap<String, String>,
         source: RunSource,
-        avarok_version: &str,
+        atlas_version: &str,
         frame: BenchmarkResult,
     ) -> Self {
         Self {
@@ -127,7 +127,7 @@ impl RunRecord {
             params: values.to_strings(),
             serve_overrides,
             source,
-            avarok_version: avarok_version.to_string(),
+            atlas_version: atlas_version.to_string(),
             frame,
         }
     }
@@ -139,7 +139,7 @@ impl RunRecord {
 
     /// Rehydrate the stored parameters against a live schema.
     ///
-    /// Routed through each spec's `ParamKind`, so a value from an older Avarok
+    /// Routed through each spec's `ParamKind`, so a value from an older Atlas
     /// whose bounds have since tightened is reported rather than accepted.
     pub fn values(&self, specs: &[ParamSpec]) -> Result<ParamValues> {
         let pairs = self
@@ -187,7 +187,7 @@ impl RunRecord {
             // answer, and `RunSource::Unknown` beside it says why.
             serve_overrides: BTreeMap::new(),
             source: RunSource::Unknown,
-            avarok_version: String::new(),
+            atlas_version: String::new(),
             frame,
         }
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Agentic test harness driving OpenCode (`opencode run`) against a locally-served Avarok
+Agentic test harness driving OpenCode (`opencode run`) against a locally-served Atlas
 model (OpenAI-compatible endpoint on :8888). Mirrors pool_harness.py's tasks +
 verification + scoring, OpenCode variant of omp_harness.py — IDENTICAL tasks/verification/scoring so the
 two harnesses are directly comparable. Vanilla stdlib only.
@@ -15,7 +15,7 @@ Tasks:
 Prereqs:
   - omp on PATH (~/.bun/bin) with provider 'openai-custom' -> :8888/v1 and the
     model id present in ~/.omp/agent/models.yml (laguna-s-2.1 / laguna-xs-2.1).
-  - Avarok server up on :8888.
+  - Atlas server up on :8888.
 Usage:
   python3 omp_harness.py                         # all tasks, laguna-s-2.1
   python3 omp_harness.py --model laguna-xs-2.1

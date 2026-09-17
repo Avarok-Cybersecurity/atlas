@@ -56,7 +56,7 @@
 //! Both new terms are ESTIMATES and neither is allowed to be a guess:
 //!
 //! * `weights` is the checkpoint's on-disk byte count. That equals resident
-//!   bytes only for checkpoints Avarok loads verbatim; a BF16 checkpoint
+//!   bytes only for checkpoints Atlas loads verbatim; a BF16 checkpoint
 //!   requantised to NVFP4 at load is a different number entirely.
 //! * `derived` is `predicted_residency::predicted_derived_bytes`, which
 //!   answers only for the native-FP8 dense route.

@@ -10,10 +10,10 @@ Enumerates model×quant as **hand-authored `TestSpec` rounds** (not a cross-prod
 `EP4_ROUNDS` (397B, skipped by default). Per spec it:
 
 ```bash
-AVAROK_IMAGE=<tag> AVAROK_HEAD_IP=127.0.0.1 python3 tests/run_all_models.py 2>&1 | tee /tmp/avarok-full-run.log
+AVAROK_IMAGE=<tag> AVAROK_HEAD_IP=127.0.0.1 python3 tests/run_all_models.py 2>&1 | tee /tmp/atlas-full-run.log
 ```
 
-1. **Boot:** `sudo docker run -d --name avarok-test-<label> --gpus all --ipc=host
+1. **Boot:** `sudo docker run -d --name atlas-test-<label> --gpus all --ipc=host
    -p PORT:PORT -v <hf>:/root/.cache/huggingface <IMAGE> serve <model>
    --scheduling-policy slai --max-seq-len 32768 --kv-cache-dtype <fp8|nvfp4>
    [--speculative --mtp-quantization <q>]`.

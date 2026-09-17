@@ -37,7 +37,7 @@ fn minimax_test_tool_defs() -> Vec<ToolDefinition> {
 }
 
 /// Replays `is_grammar_accept_string` from upstream
-/// `xgrammar/tests/test_utils.rs:126` against an Avarok-compiled
+/// `xgrammar/tests/test_utils.rs:126` against an Atlas-compiled
 /// grammar. Each call builds a fresh matcher (the matcher is
 /// stateful), feeds the byte string, and checks both that no byte
 /// was rejected AND that the grammar reached an accepting
@@ -102,7 +102,7 @@ fn test_minimax_xml_grammar_accepts_canonical() {
 /// that the closing token is masked. The fix40 / fix41 live failure
 /// shows the close token is being SAMPLED — so either it's allowed
 /// in the bitmask (xgrammar bug) or the bitmask isn't being applied
-/// (Avarok bug). This unit test pins down which.
+/// (Atlas bug). This unit test pins down which.
 #[test]
 fn test_minimax_xml_grammar_token_level_close_after_open_rejected() {
     // Build a vocab that includes the multi-byte single-token
@@ -229,13 +229,13 @@ fn test_minimax_xml_grammar_masks_trigger_breaking_multibyte_token() {
         // Not yet a hard failure — xgrammar's pre-trigger policy
         // is "non-anchored" by design, but we want to surface
         // that as a known limitation rather than silently broken.
-        // Avarok applies a runtime backstop (F70) at the prompt /
+        // Atlas applies a runtime backstop (F70) at the prompt /
         // bias layer; the assertion below documents the
         // limitation explicitly.
         eprintln!(
             "F70 NOTE: xgrammar TagDispatch allows trigger-breaking \
              multi-byte token `:_` (id 131) after partial `<minimax` \
-             match. Avarok adds a runtime backstop because the matcher \
+             match. Atlas adds a runtime backstop because the matcher \
              alone can't anchor partial triggers across BPE merges."
         );
     } else {

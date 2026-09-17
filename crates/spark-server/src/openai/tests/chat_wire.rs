@@ -44,7 +44,7 @@ fn with_token_ids_stamps_first_choice() {
 // ── reasoning wire format: exactly one field ────────────────────────
 // A response carrying BOTH `reasoning_content` and a `reasoning` mirror is
 // rejected by strict OpenAI-compatible clients (they assert exactly one).
-// Avarok emits only `reasoning_content` — these lock that contract in.
+// Atlas emits only `reasoning_content` — these lock that contract in.
 
 #[test]
 fn reasoning_delta_emits_only_reasoning_content() {

@@ -5,7 +5,7 @@ Runs the real `Glm5NextTextHyperConnection` on real per-layer `hc_{attn,ffn}_{fn
 weights and records every stage, plus the decoder layer's own residual-write expression and the
 final `Glm5NextTextHyperHead` collapse.
 
-Why this exists: Slice 2 down-graded mHC to REUSE because Avarok's `hc_mult`/`hc_sinkhorn_iters`
+Why this exists: Slice 2 down-graded mHC to REUSE because Atlas's `hc_mult`/`hc_sinkhorn_iters`
 matched GLM's config. That is a config match, not an arithmetic one. This golden is the
 arithmetic.
 

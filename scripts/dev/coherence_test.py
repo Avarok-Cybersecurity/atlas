@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-coherence_test.py — Avarok Spark API correctness & coherence test suite.
+coherence_test.py — Atlas Spark API correctness & coherence test suite.
 
 Verifies that the server:
   1. factual accuracy   2+2=4, capital of France
@@ -252,7 +252,7 @@ class TestRunner:
              tokens; the server must cut it short, i.e. finish_reason must
              be 'length' (proves the explicit cap is applied, not ignored).
              The exact completion_tokens count is intentionally NOT asserted
-             — Avarok counts reasoning/thinking tokens into completion_tokens
+             — Atlas counts reasoning/thinking tokens into completion_tokens
              while max_tokens caps content, so the two need not be equal;
              finish_reason='length' is the thinking-agnostic signal.
           B. No silent low default cap — omit max_tokens; the response must
@@ -372,7 +372,7 @@ class TestRunner:
             self.test_korean_emoji_streaming,
         ]
 
-        print("Avarok Spark — Coherence Test Suite")
+        print("Atlas Spark — Coherence Test Suite")
         print(f"  Model : {self.model}")
         print(f"  URL   : {self.url}")
         print()

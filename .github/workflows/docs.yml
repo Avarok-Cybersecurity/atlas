@@ -33,7 +33,7 @@ env:
   # Skip CUDA/nvcc in build.rs so rustdoc can run on hosts without a GPU.
   # - AVAROK_SKIP_BUILD=1: avarok-kernels emits a stub target_ptx.rs
   # - CUDARC_CUDA_VERSION=13000: short-circuits cudarc's `nvcc --version`
-  #   probe. Format is {major}0{minor}0 — 13000 == CUDA 13.0, Avarok's minimum.
+  #   probe. Format is {major}0{minor}0 — 13000 == CUDA 13.0, Atlas's minimum.
   AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
   CARGO_TERM_COLOR: always
@@ -198,7 +198,7 @@ jobs:
           cat > book/output/api/index.html <<'EOF'
           <!DOCTYPE html>
           <html><head><meta charset="utf-8">
-          <title>Avarok API Reference</title>
+          <title>Atlas API Reference</title>
           <meta http-equiv="refresh" content="0; url=avarok_core/index.html">
           </head><body>
           <p>Redirecting to <a href="avarok_core/index.html">avarok_core</a>…</p>
@@ -214,7 +214,7 @@ jobs:
           if-no-files-found: error
 
   # Cloudflare Pages is what docs.atlascybernetics.ai resolves to, so this is the
-  # job that publishes. The rsync to avarok follows as its own job and cannot
+  # job that publishes. The rsync to atlas follows as its own job and cannot
   # block it: the origin went down once and took the docs with it, and with both
   # legs in one job that outage would also have stopped the edge deploy that
   # exists to survive it.
@@ -271,7 +271,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy docs-site \
-            --project-name=avarok-docs \
+            --project-name=atlas-docs \
             --branch=main \
             --commit-dirty=true
 
@@ -289,7 +289,7 @@ jobs:
     # like the thing serving traffic.
     environment:
       name: production-docs
-    name: Mirror docs to avarok (standby)
+    name: Mirror docs to atlas (standby)
     needs: build
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
@@ -361,5 +361,5 @@ jobs:
           then
             echo "mirrored the docs to ${DEPLOY_SSH_HOST}"
           else
-            echo "::warning title=avarok mirror did not run::rsync of the docs to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+            echo "::warning title=atlas mirror did not run::rsync of the docs to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
           fi

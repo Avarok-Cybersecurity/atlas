@@ -2,7 +2,7 @@
 
 //! Does the PTX this binary carries run on the GPU it was handed?
 //!
-//! Avarok compiles ONE SM architecture per build — `kernels/<hw>/HARDWARE.toml`
+//! Atlas compiles ONE SM architecture per build — `kernels/<hw>/HARDWARE.toml`
 //! `[hardware].arch` picks it, there is no fatbin and no multi-`-gencode`. So a
 //! binary and a GPU can simply disagree, and until this module existed nothing
 //! checked: the mismatch surfaced as an opaque driver failure inside
@@ -74,7 +74,7 @@ pub fn parse_sm_arch(arch: &str) -> Option<SmArch> {
 ///
 /// Deliberately tiny and explicit — it exists so the mismatch message can tell
 /// an operator what to rebuild instead of leaving them to guess. `None` means
-/// Avarok ships nothing for that GPU, and is the honest answer for every CC not
+/// Atlas ships nothing for that GPU, and is the honest answer for every CC not
 /// listed: naming a target that cannot run either would send someone to
 /// rebuild an image that fails the same way (SM 10.3 Blackwell Ultra against
 /// the 10.0 `sm_100a` build is the live example).

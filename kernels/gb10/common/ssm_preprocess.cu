@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok SSM Preprocessing Kernels for Qwen3-Next linear attention.
+// Atlas SSM Preprocessing Kernels for Qwen3-Next linear attention.
 //
 // 1. deinterleave_qkvz: Scatter interleaved QKVZ projection output
 //    from [num_groups × group_dim] to sequential [Q | K | V | Z].

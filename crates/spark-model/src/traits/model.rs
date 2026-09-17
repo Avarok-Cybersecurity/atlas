@@ -995,7 +995,7 @@ pub trait Model: Send + Sync {
     }
 
     /// Multi-head Latent Attention guard. When true, chunked prefill MUST run
-    /// as a single chunk — Avarok has no paged-MLA prefill kernel and
+    /// as a single chunk — Atlas has no paged-MLA prefill kernel and
     /// multi-chunk MLA silently corrupts attention output (see Mistral-Small-4
     /// 2026-05-01 sweep: 8K collapses to "The\nThe…").
     fn is_mla(&self) -> bool {
@@ -1006,7 +1006,7 @@ pub trait Model: Send + Sync {
     /// the batched GDN decode paths are UNWIRED for this model (they carry
     /// their own residual, which the highway replaces — see
     /// `qwen3_ssm::hc::refuse_batched_under_hc`); the scheduler must clamp
-    /// concurrency to 1 until the batched highway lands (Avarok #753 item B).
+    /// concurrency to 1 until the batched highway lands (Atlas #753 item B).
     fn hc_mult(&self) -> usize {
         0
     }

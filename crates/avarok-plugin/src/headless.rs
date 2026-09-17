@@ -34,7 +34,7 @@ pub struct HeadlessOptions {
     pub save: bool,
     pub source: RunSource,
     /// Recorded on the run so a result can be traced to the build.
-    pub avarok_version: String,
+    pub atlas_version: String,
     /// Whether to require a coherent endpoint before measuring.
     pub coherence: CoherencePolicy,
     /// The box class's temperature ceilings for the hardware pre-check
@@ -44,12 +44,12 @@ pub struct HeadlessOptions {
 }
 
 impl HeadlessOptions {
-    pub fn cli(avarok_version: impl Into<String>) -> Self {
+    pub fn cli(atlas_version: impl Into<String>) -> Self {
         Self {
             poll: Duration::from_millis(250),
             save: true,
             source: RunSource::Cli,
-            avarok_version: avarok_version.into(),
+            atlas_version: atlas_version.into(),
             coherence: CoherencePolicy::Probe,
             temp_ceilings: None,
         }
@@ -183,7 +183,7 @@ pub fn run_blocking(
         &request.target,
         request.target.serve_overrides.clone(),
         request.options.source,
-        &request.options.avarok_version,
+        &request.options.atlas_version,
         frame,
     );
     let saved_to = if request.options.save {

@@ -137,7 +137,7 @@ function slim(raw, branch) {
     recorded_at: raw.recorded_at,
     target_model: raw.target_model,
     served_by: raw.served_by,
-    avarok_version: raw.avarok_version,
+    atlas_version: raw.atlas_version,
     hardware: raw.hardware,
     perf_class: raw.hardware_state?.perf_class ?? '',
     machine_id:

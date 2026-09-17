@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to Avarok! A few reminders:
+Thanks for contributing to Atlas! A few reminders:
 
 - Read CONTRIBUTING.md if you haven't yet.
 - CI runs cargo fmt, cargo clippy -Dwarnings, the SPDX-header check, typos,

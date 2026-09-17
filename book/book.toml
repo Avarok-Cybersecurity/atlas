@@ -1,7 +1,7 @@
 [book]
-title = "The Avarok Book"
-authors = ["Avarok Contributors"]
-description = "A comprehensive guide to Avarok — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
+title = "The Atlas Book"
+authors = ["Atlas Contributors"]
+description = "A comprehensive guide to Atlas — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
 language = "en"
 multilingual = false
 src = "src"
@@ -23,7 +23,7 @@ no-section-label = false
 # the three properties cannot drift. mdBook reads through the link and copies
 # the CONTENT into the output.
 additional-css = ["theme/css/avarok-tokens.css", "theme/css/avarok.css"]
-# Avarok uses system font stacks (--font-sans / --font-mono), so mdBook's
+# Atlas uses system font stacks (--font-sans / --font-mono), so mdBook's
 # bundled Open Sans and Source Code Pro are ~100 KB of unused payload.
 copy-fonts = false
 

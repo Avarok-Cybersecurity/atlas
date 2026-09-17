@@ -48,7 +48,7 @@ pub struct BenchEntry {
     pub checkpoint: String,
     /// Benchmark id, e.g. `bfcl-subset`.
     pub gate: String,
-    /// `<family>/<stem>` in `avarok-recipes`, when one serves this.
+    /// `<family>/<stem>` in `atlas-recipes`, when one serves this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe: Option<String>,
     /// Human name for this variant, for the TUI's variant list. Optional —

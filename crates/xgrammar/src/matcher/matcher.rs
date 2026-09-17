@@ -60,7 +60,7 @@ pub(super) struct FillScratch {
 /// grammar — the core of grammar-guided generation.
 ///
 /// One `GrammarMatcher` tracks one request's decoding state. Each
-/// decode step Avarok calls [`Self::fill_next_token_bitmask`] to learn
+/// decode step Atlas calls [`Self::fill_next_token_bitmask`] to learn
 /// which tokens are legal, samples one, then [`Self::accept_token`].
 /// [`Self::rollback`] undoes accepted tokens (e.g. for speculative
 /// decoding); [`Self::reset`] returns to the initial state.

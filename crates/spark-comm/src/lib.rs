@@ -79,7 +79,7 @@ pub trait CommBackend: Send + Sync {
     ///   2. Device-side communication API (kernels invoke collectives in-kernel),
     ///      which TokenWeave-style fused AR+RMSNorm+Residual builds on.
     ///
-    /// On Avarok's 2-rank Spark over RoCE, the copy-engine offload itself does
+    /// On Atlas's 2-rank Spark over RoCE, the copy-engine offload itself does
     /// not apply (RoCE is not NVLink), but the symmetric windows are still
     /// required for future device-API fusions and to reduce per-call setup.
     /// Returns an error if the linked NCCL is < 2.28; backends that don't

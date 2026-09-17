@@ -3,7 +3,7 @@
 #include <cuda_bf16.h>
 #include <assert.h>   // device-side assert() for the work-list packing guard
 
-// Avarok MoE token permutation kernels.
+// Atlas MoE token permutation kernels.
 //
 // Reorders tokens by expert assignment for batched GEMM,
 // and scatters results back with weighted accumulation.

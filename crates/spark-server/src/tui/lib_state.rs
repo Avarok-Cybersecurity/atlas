@@ -327,7 +327,7 @@ impl LibState {
             return Err(format!(
                 "{} is a {} recipe and cannot be configured here",
                 recipe.id,
-                recipe.runtime.as_deref().unwrap_or("non-avarok")
+                recipe.runtime.as_deref().unwrap_or("non-atlas")
             ));
         }
         self.overrides.clear();
@@ -427,7 +427,7 @@ impl LibState {
 /// Reduce a validation report to the one line a form field can show.
 ///
 /// The validator's report is a header, then `  [1] <what>` / `why:` / `fix:`.
-/// Taking the FIRST line yields only "Avarok CLI: 1 invalid flag combination",
+/// Taking the FIRST line yields only "Atlas CLI: 1 invalid flag combination",
 /// which tells the reader nothing they did not already know — the actionable
 /// part is `what`, and `fix` when it fits. clap's own errors have no `[1]`
 /// block, so those fall back to their first `error:` line.
@@ -446,7 +446,7 @@ pub(crate) fn problem_line(s: &str) -> String {
         (Some(what), None) => what.to_string(),
         (None, _) => lines
             .iter()
-            .find(|l| !l.is_empty() && !l.starts_with("Avarok CLI:"))
+            .find(|l| !l.is_empty() && !l.starts_with("Atlas CLI:"))
             .unwrap_or(&"invalid")
             .to_string(),
     }

@@ -9,13 +9,13 @@
     <div class="col">
       <Wordmark size={22} />
       <p class="note">
-        {NAME} is an in-development IDE built on the Avarok Inference Engine. Nothing on this page
+        {NAME} is an in-development IDE built on the Atlas Inference Engine. Nothing on this page
         is a shipping product.
       </p>
     </div>
 
     <nav class="col links" aria-label="Project links">
-      <h2 class="eyebrow">Avarok</h2>
+      <h2 class="eyebrow">Atlas</h2>
       <a href={LINKS.avarokRepo} rel="noopener noreferrer">GitHub repository</a>
       <a href={LINKS.avarokSite} rel="noopener noreferrer">atlascybernetics.ai</a>
       <a href={LINKS.discord} rel="noopener noreferrer">Community Discord</a>
@@ -29,7 +29,7 @@
   </div>
 
   <div class="container legal">
-    <p>Licensed AGPL-3.0-only, like Avarok. No trackers, no analytics, no third-party requests.</p>
+    <p>Licensed AGPL-3.0-only, like Atlas. No trackers, no analytics, no third-party requests.</p>
   </div>
 </footer>
 

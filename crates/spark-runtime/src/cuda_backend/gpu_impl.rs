@@ -124,7 +124,7 @@ impl GpuBackend for AvarokCudaBackend {
         // aligned (cuMemAlloc is 256-byte aligned; padding the TAIL keeps that). The pad is
         // poisoned at birth and read back by `scan_redzones`.
         //
-        // This is the detector compute-sanitizer could not be: Avarok suballocates from pools,
+        // This is the detector compute-sanitizer could not be: Atlas suballocates from pools,
         // so an overrun that stays inside a pooled block is invisible to memcheck but lands
         // squarely in a red zone here.
         let seq = super::ALLOC_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -399,7 +399,7 @@ impl GpuBackend for AvarokCudaBackend {
         // explicit wait rather than let ~90 call sites that drop their source
         // immediately turn into use-after-frees the day a buffer gets pinned.
         //
-        // Costs nothing on the path everything takes today: no Avarok call site
+        // Costs nothing on the path everything takes today: no Atlas call site
         // reaches here with a pinned source (the ones that own pinned staging
         // use `copy_h2d_async_retained`), so `is_pinned` is a lock-free-ish read
         // of a three-entry table that says "no".

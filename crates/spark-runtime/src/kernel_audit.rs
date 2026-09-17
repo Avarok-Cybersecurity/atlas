@@ -15,7 +15,7 @@
 //!     pipelined-GEMM regression where `w8a16_gemm_pipelined` resolved to 0
 //!     and QKVZ fell back to the ~4.6× slower `w8a16_gemm`).
 //!
-//! Every kernel lookup in Avarok is EAGER: each one sits in a constructor on the
+//! Every kernel lookup in Atlas is EAGER: each one sits in a constructor on the
 //! `serve_phases::build_model` path, so by the time the model is built the
 //! audit holds the COMPLETE `(module, func)` set this model asks for. That is
 //! what makes [`seal`] meaningful — after it, a lookup is by definition a late

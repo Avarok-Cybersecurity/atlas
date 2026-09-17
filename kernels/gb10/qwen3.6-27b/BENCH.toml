@@ -241,7 +241,7 @@ tokens) -- token \
 count is a property of the preprocessor rather than the checkpoint, so agreement \
 across a dense NVFP4, an unsloth NVFP4 and an FP8 MoE is evidence the arithmetic is \
 right rather than a coincidence. * THIS is the checkpoint that exposed the resolver \
-defect. It ships processor_config.json and NO preprocessor_config.json, and Avarok read \
+defect. It ships processor_config.json and NO preprocessor_config.json, and Atlas read \
 only the latter -- so it declared 16777216 px under image_processor.size and was \
 served at the 1280px fallback with a 6400-patch encoder anyway. An earlier record here \
 said this checkpoint declared no bound; that was the missing reader, not the \

@@ -7,7 +7,7 @@
 //! why it gets its own parser rather than another arm of `dispatch.rs`:
 //!
 //!   1. **Hyper-connections.** The residual is `hc_count` (4) parallel
-//!      streams, mixed by a LOW-RANK pair of rank `hc_lowrank` (320). Avarok
+//!      streams, mixed by a LOW-RANK pair of rank `hc_lowrank` (320). Atlas
 //!      already carries the stream-major `[T, hc_mult, H]` plumbing for
 //!      DeepSeek-V4, whose mixer is Sinkhorn-normalized instead — so
 //!      `hc_mult` maps straight across and `hc_lowrank` selects the variant.
@@ -19,7 +19,7 @@
 //!   4. **`layer_types`** interleaving GDN and full attention 3:1.
 //!
 //! Everything else — 512-expert MoE with a shared expert, mRoPE, the ViT
-//! tower, gated attention — lands on fields Avarok already has.
+//! tower, gated attention — lands on fields Atlas already has.
 //!
 //! Reference: `transformers` 5.8.0.dev0 `modeling_qwen4_exp.py`. The HF
 //! repos ship no `.py`, so the modeling code is the transformers tree.
@@ -106,7 +106,7 @@ pub(crate) fn parse_qwen4_exp(raw: &Value) -> Result<ModelConfig> {
 
     // ...and the SAME field drives the GDN gated-norm's activation: the
     // reference passes `output_gate_type or hidden_act` into `RMSNormGated`.
-    // SiLU is the family default Avarok's kernels hardcode; "sigmoid" here
+    // SiLU is the family default Atlas's kernels hardcode; "sigmoid" here
     // selects the sigmoid twins at layer init.
     config.gdn_norm_sigmoid = text
         .get("output_gate_type")

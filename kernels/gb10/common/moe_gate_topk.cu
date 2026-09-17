@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused Gate Logit GEMV + Top-K Selection + Softmax.
+// Atlas Fused Gate Logit GEMV + Top-K Selection + Softmax.
 //
 // Replaces 2 separate kernels (gate GEMV + topk) with 1 fused kernel.
 // Eliminates 48 kernel launches per decode step (one per MoE layer).

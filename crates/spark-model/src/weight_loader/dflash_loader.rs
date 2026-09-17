@@ -138,7 +138,7 @@ pub fn parse_dflash_config(json: &str) -> Result<DflashConfig> {
 ///
 /// The drafter ships its weights at the **root** of the safetensors file
 /// (no `model.` prefix), in the same naming convention as a vanilla Qwen3
-/// transformer minus `embed_tokens` and `lm_head`. Avarok's runtime fills
+/// transformer minus `embed_tokens` and `lm_head`. Atlas's runtime fills
 /// those two from the *target* model's embedding / LM head at construction
 /// time — exactly mirroring vLLM's "absent in checkpoint → skip_substrs →
 /// share with parent" flow.

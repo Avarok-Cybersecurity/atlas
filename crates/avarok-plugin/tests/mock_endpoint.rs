@@ -97,7 +97,7 @@ async fn start_inner(reply: Reply, tokens: usize, ttft: Duration, gap: Duration)
                 }
                 let head = String::from_utf8_lossy(&request).to_string();
                 if head.starts_with("GET /v1/models") {
-                    // CHUNKED, like Avarok — not Content-Length. A reader that
+                    // CHUNKED, like Atlas — not Content-Length. A reader that
                     // parses from the first `{` to the end of the buffer trips
                     // over the trailing `0\r\n\r\n`, which is exactly how the
                     // model check came to be silently useless on a real server.

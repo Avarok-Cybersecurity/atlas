@@ -13,7 +13,7 @@ trees and filter for `PERF_PATHS`.
 
 The first step is unsound in this repository, and it took main down.
 
-**Avarok squash-merges.** A record is always written on a PR branch, against a
+**Atlas squash-merges.** A record is always written on a PR branch, against a
 commit on that branch — it cannot be written *at* `HEAD`, because committing
 it moves `HEAD`. The squash then lands a brand-new commit on main with a
 different sha and no parent link back to the branch. So every record a PR

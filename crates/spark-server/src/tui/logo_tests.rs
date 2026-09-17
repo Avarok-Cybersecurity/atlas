@@ -199,7 +199,7 @@ fn the_three_row_logo_is_exactly_three_rows_of_equal_chevron_width() {
 fn the_one_line_logo_is_three_chevrons_and_the_name() {
     let line = one_line(None);
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-    assert_eq!(text, "❯❯❯ Avarok");
+    assert_eq!(text, "❯❯❯ Atlas");
 }
 
 /// Pin the color mode before reading any color.

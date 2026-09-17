@@ -2,15 +2,15 @@
 """Three-way cosine analysis adapted for the dgx2 study.
 
 A: HF[FP8->BF16] vs HF[BF16-unquant]   -> FP8 ceiling
-B: Avarok[FP8-native] vs HF[BF16-unquant] -> total drift
-C: Avarok[FP8-native] vs HF[FP8->BF16]    -> Avarok compute drift
+B: Atlas[FP8-native] vs HF[BF16-unquant] -> total drift
+C: Atlas[FP8-native] vs HF[FP8->BF16]    -> Atlas compute drift
 
 Inputs (all in /workspace/avarok-dumps/fp8native_dgx2/):
-  avarok_L{0..39}.bin     - Avarok FP8-native dump (today, 2026-05-25)
+  avarok_L{0..39}.bin     - Atlas FP8-native dump (today, 2026-05-25)
   hf_L{0..39}.bin        - HF[FP8->BF16] reference (hf_dequant_forward.py output)
   hf_bf16_L{0..39}.bin   - HF[BF16-unquant] reference (hf_forward_bf16_unquant.py output)
 
-If hf_bf16_*.bin is missing, runs only the C comparison (Avarok vs HF[FP8->BF16]).
+If hf_bf16_*.bin is missing, runs only the C comparison (Atlas vs HF[FP8->BF16]).
 """
 from __future__ import annotations
 
@@ -104,18 +104,18 @@ def main():
 
     print(f"\n=== Summary ===")
     sA = stats("A (HF[FP8->BF16] vs HF[BF16-unquant])", A)
-    sB = stats("B (Avarok[FP8-native] vs HF[BF16-unquant])", B)
-    sC = stats("C (Avarok[FP8-native] vs HF[FP8->BF16])", C)
+    sB = stats("B (Atlas[FP8-native] vs HF[BF16-unquant])", B)
+    sC = stats("C (Atlas[FP8-native] vs HF[FP8->BF16])", C)
 
     if sA and sC:
         delta = sA["mean"] - sC["mean"]
         print(f"\nHeadroom (A_mean - C_mean) = {delta:+.6f}")
         if delta < 0.001:
-            verdict = "Avarok FP8-native is AT the FP8 ceiling — drift NOT in SSM dispatch."
+            verdict = "Atlas FP8-native is AT the FP8 ceiling — drift NOT in SSM dispatch."
         elif delta < 0.01:
-            verdict = f"Avarok has minor compute headroom of {delta:.4f} below the FP8 ceiling."
+            verdict = f"Atlas has minor compute headroom of {delta:.4f} below the FP8 ceiling."
         else:
-            verdict = f"Avarok has substantial compute headroom ({delta:.4f}) — kernel-level drift remains."
+            verdict = f"Atlas has substantial compute headroom ({delta:.4f}) — kernel-level drift remains."
         print("Verdict:", verdict)
 
 

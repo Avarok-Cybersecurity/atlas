@@ -58,7 +58,7 @@ impl TensorRole {
     /// Norm-family roles. Used by the RMSNorm sanity pass: a tensor whose name
     /// says "norm" must land in one of these, or the classifier is lying about
     /// something. (Hazard carried from `notavault-avarok`: RMSNorm weights have
-    /// silently corrupted Avarok numbers before.)
+    /// silently corrupted Atlas numbers before.)
     pub fn is_norm(self) -> bool {
         matches!(
             self,
@@ -71,7 +71,7 @@ impl TensorRole {
         )
     }
 
-    /// Text-model roles Avarok must eventually implement. Vision is excluded.
+    /// Text-model roles Atlas must eventually implement. Vision is excluded.
     pub fn is_text_model(self) -> bool {
         !matches!(self, TensorRole::Vision)
     }

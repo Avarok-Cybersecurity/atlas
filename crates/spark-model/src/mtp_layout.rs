@@ -2,7 +2,7 @@
 
 //! Checkpoint-level detection of MTP / next-token-prediction weights.
 //!
-//! Avarok binds MTP through three unrelated loader paths — the Qwen-shaped
+//! Atlas binds MTP through three unrelated loader paths — the Qwen-shaped
 //! `MtpWeights` vec, DeepSeek-V4's `mtp.0.*` module, and GLM-5.3's
 //! `layers.{num_hidden_layers}` block — but the "did the user get what they
 //! asked for" check read only the first of them. On GLM-5.3 that produced

@@ -46,7 +46,7 @@
 // from the checkpoint's `linear_attn_config.gate_lower_bound`. It happens to be
 // -5.0 for GLM-5.3-Flash, and vLLM happens to arrive at the same number only
 // because it looks up a legacy key that is absent and falls back to a matching
-// default. Avarok must not inherit that coincidence.
+// default. Atlas must not inherit that coincidence.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // LAUNCH GEOMETRY
@@ -70,7 +70,7 @@ __device__ __forceinline__ float kda_gate_scalar(float g_raw, float dt_bias,
 }
 
 // Production entry point: `g_raw` is the bf16 output of the low-rank `f_b`
-// projection, matching Avarok's convention for GDN staging buffers.
+// projection, matching Atlas's convention for GDN staging buffers.
 extern "C" __global__ void kda_gate_bf16(
     const __nv_bfloat16* __restrict__ g_raw,   // [num_tokens, H, D] bf16
     const float* __restrict__ dt_bias,         // [H, D]             fp32, PER CHANNEL

@@ -12,7 +12,7 @@ fn recipe(id: &str, model: &str, runtime: &str) -> Recipe {
         container: "c".into(),
         min_nodes: 1,
         description: "d".into(),
-        maintainer: "avarok".into(),
+        maintainer: "atlas".into(),
         category: "agent".into(),
         model_params: "27B".into(),
         quantization: "nvfp4".into(),
@@ -44,8 +44,8 @@ fn local(id: &str, has_weights: bool, optimized: bool) -> LibraryEntry {
 fn a_recipe_with_local_weights_is_runnable_and_sorts_first() {
     let rows = join(
         &[
-            recipe("a/no-weights", "org/absent", "avarok"),
-            recipe("b/here", "org/present", "avarok"),
+            recipe("a/no-weights", "org/absent", "atlas"),
+            recipe("b/here", "org/present", "atlas"),
         ],
         &[local("org/present", true, true)],
     );
@@ -69,7 +69,7 @@ fn a_local_checkpoint_without_a_recipe_is_still_listed() {
 #[test]
 fn local_only_rows_sort_last() {
     let rows = join(
-        &[recipe("a/x", "org/with-recipe", "avarok")],
+        &[recipe("a/x", "org/with-recipe", "atlas")],
         &[
             local("org/orphan", true, false),
             local("org/with-recipe", true, false),
@@ -85,7 +85,7 @@ fn optimized_is_independent_of_having_a_recipe() {
     // A recipe with no compiled kernel target still serves, on generic
     // kernels. Conflating the badges would report it as unsupported.
     let rows = join(
-        &[recipe("a/x", "org/m", "avarok")],
+        &[recipe("a/x", "org/m", "atlas")],
         &[local("org/m", true, false)],
     );
     assert!(rows[0].has_recipe());
@@ -120,8 +120,8 @@ fn several_recipes_for_one_model_become_one_row() {
     // One row; the cards behind it carry the choice, with room for the why.
     let rows = join(
         &[
-            recipe("q/nvfp4", "org/m", "avarok"),
-            recipe("q/fp8", "org/m", "avarok"),
+            recipe("q/nvfp4", "org/m", "atlas"),
+            recipe("q/fp8", "org/m", "atlas"),
         ],
         &[local("org/m", true, true)],
     );
@@ -136,11 +136,11 @@ fn several_recipes_for_one_model_become_one_row() {
 #[test]
 fn the_primary_recipe_prefers_one_that_can_actually_run() {
     // The row is described by a recipe; a vLLM one cannot be launched here, so
-    // an Avarok sibling describes the row instead.
+    // an Atlas sibling describes the row instead.
     let rows = join(
         &[
             recipe("a/vllm", "org/m", "vllm"),
-            recipe("b/avarok", "org/m", "avarok"),
+            recipe("b/avarok", "org/m", "atlas"),
         ],
         &[local("org/m", true, true)],
     );
@@ -168,14 +168,14 @@ fn partial_weights_are_named_rather_than_shown_as_a_size() {
     assert_eq!(rows[0].size_text(), "partial");
     assert!(!rows[0].has_weights());
 
-    let rows = join(&[recipe("a/x", "org/absent", "avarok")], &[]);
+    let rows = join(&[recipe("a/x", "org/absent", "atlas")], &[]);
     assert_eq!(rows[0].size_text(), "—", "absent weights are not 0 B");
 }
 
 #[test]
 fn the_filter_matches_id_recipe_and_architecture() {
     let rows = join(
-        &[recipe("qwen3.6/flagship", "Qwen/Qwen3.6-27B", "avarok")],
+        &[recipe("qwen3.6/flagship", "Qwen/Qwen3.6-27B", "atlas")],
         &[local("Qwen/Qwen3.6-27B", true, true)],
     );
     let row = &rows[0];
@@ -195,7 +195,7 @@ fn the_filter_matches_id_recipe_and_architecture() {
 #[test]
 fn the_subtitle_does_not_repeat_itself() {
     let rows = join(
-        &[recipe("a/x", "org/m", "avarok")],
+        &[recipe("a/x", "org/m", "atlas")],
         &[local("org/m", true, true)],
     );
     let subtitle = rows[0].subtitle();

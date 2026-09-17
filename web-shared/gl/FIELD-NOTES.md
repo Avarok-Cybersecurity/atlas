@@ -1,6 +1,6 @@
 # Ambient chevron field — what it is, what it costs, how to ship it
 
-The background is a field of the Avarok mark drifting left to right, in depth,
+The background is a field of the Atlas mark drifting left to right, in depth,
 behind the masthead. The chevron geometry is the real one — arm 320×280,
 stroke 76, gap 280 straight out of `BRAND-GUIDELINES.md` — drawn as a signed
 distance function, so the motif in the background and the logo in the header

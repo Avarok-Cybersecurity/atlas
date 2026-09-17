@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Avarok Spark Concurrency Sweep Benchmark — Latency-Throughput Curve
+Atlas Spark Concurrency Sweep Benchmark — Latency-Throughput Curve
 
 Same methodology as bench-nvfp4-concurrency.py (vLLM benchmark):
   6 ISL/OSL configs x 7 concurrency levels = 42 runs
@@ -308,7 +308,7 @@ async def run_benchmark():
     import aiohttp
 
     print("=" * 90)
-    print("  Avarok Spark — Concurrency Sweep (SLAI Scheduling)")
+    print("  Atlas Spark — Concurrency Sweep (SLAI Scheduling)")
     print("  6 configs x 7 concurrency levels = 42 runs")
     print("=" * 90)
     print(f"\n  Server: {SERVER_HOST}:{PORT}  |  Concurrency: {CONCURRENCY_LEVELS}")
@@ -366,7 +366,7 @@ async def run_benchmark():
 def compare_results(vllm_path: str):
     avarok_path = RESULTS_FILE
     if not os.path.exists(avarok_path):
-        print(f"ERROR: Avarok results not found at {avarok_path}")
+        print(f"ERROR: Atlas results not found at {avarok_path}")
         print("Run the benchmark first, then use --compare.")
         sys.exit(1)
     if not os.path.exists(vllm_path):
@@ -379,7 +379,7 @@ def compare_results(vllm_path: str):
         vllm = json.load(f)
 
     print("=" * 110)
-    print("  Avarok Spark (SLAI) vs vLLM — Side-by-Side Comparison")
+    print("  Atlas Spark (SLAI) vs vLLM — Side-by-Side Comparison")
     print("=" * 110)
     print()
 
@@ -391,9 +391,9 @@ def compare_results(vllm_path: str):
         regime = avarok_data["regime"]
         isl, osl = avarok_data["isl"], avarok_data["osl"]
         print(f"  === {regime.upper()} ({isl}/{osl}) ===")
-        print(f"  {'Conc':>4} | {'Avarok tok/s':>11} {'vLLM tok/s':>11} {'Ratio':>7} | "
-              f"{'Avarok TPOT p50':>14} {'vLLM TPOT p50':>14} {'Lat Ratio':>10} | "
-              f"{'Avarok TTFT p50':>14} {'vLLM TTFT p50':>14}")
+        print(f"  {'Conc':>4} | {'Atlas tok/s':>11} {'vLLM tok/s':>11} {'Ratio':>7} | "
+              f"{'Atlas TPOT p50':>14} {'vLLM TPOT p50':>14} {'Lat Ratio':>10} | "
+              f"{'Atlas TTFT p50':>14} {'vLLM TTFT p50':>14}")
         print(f"  {'-'*4}-+-{'-'*11}-{'-'*11}-{'-'*7}-+-"
               f"{'-'*14}-{'-'*14}-{'-'*10}-+-{'-'*14}-{'-'*14}")
 
@@ -443,14 +443,14 @@ def compare_results(vllm_path: str):
                 avarok_wins += 1
             else:
                 vllm_wins += 1
-    print(f"    Avarok: {avarok_wins} wins  |  vLLM: {vllm_wins} wins  (aggregate throughput)")
+    print(f"    Atlas: {avarok_wins} wins  |  vLLM: {vllm_wins} wins  (aggregate throughput)")
     print()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Avarok Spark Concurrency Sweep Benchmark")
+    parser = argparse.ArgumentParser(description="Atlas Spark Concurrency Sweep Benchmark")
     parser.add_argument("--compare", metavar="VLLM_JSON",
-                        help="Compare Avarok results with vLLM results JSON file")
+                        help="Compare Atlas results with vLLM results JSON file")
     args = parser.parse_args()
 
     if args.compare:

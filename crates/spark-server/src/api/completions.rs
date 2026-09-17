@@ -52,7 +52,7 @@ fn resolve_prompts(
         }
         PromptInput::TextArray(parts) => {
             // OpenAI spec: each array element is an INDEPENDENT prompt
-            // yielding its own choice. (Earlier Avarok joined the array
+            // yielding its own choice. (Earlier Atlas joined the array
             // into one prompt — that silently corrupted batched eval
             // harnesses like lm-eval at batch_size > 1.)
             parts
@@ -130,7 +130,7 @@ pub async fn completions(
     // Range-validate sampling params, mirroring the chat path (which returns
     // 400 for out-of-spec values). Without this, a negative temperature is
     // silently reinterpreted as greedy decoding and out-of-range penalties are
-    // applied verbatim, both diverging from OpenAI (and Avarok's own chat
+    // applied verbatim, both diverging from OpenAI (and Atlas's own chat
     // endpoint), which reject with HTTP 400.
     if let Some(t) = req.temperature
         && !(0.0..=2.0).contains(&t)

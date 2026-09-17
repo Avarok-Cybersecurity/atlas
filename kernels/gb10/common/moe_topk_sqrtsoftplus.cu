@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok MoE Top-K sqrtsoftplus kernel for DeepSeek-V4.
+// Atlas MoE Top-K sqrtsoftplus kernel for DeepSeek-V4.
 //
 // DeepSeek-V4 uses sqrtsoftplus routing (NOT sigmoid like Nemotron-H):
 //   scores = sqrtsoftplus(logits) = sqrt(log(1 + exp(logits)))

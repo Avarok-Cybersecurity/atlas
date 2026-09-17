@@ -12,7 +12,7 @@ Measured on dgx-00, 2026-08-15.
 | group_0 | FP8 E4M3, `strategy = channel` (per-row) | `self_attn.{q,k,v,o}_proj`, `linear_attn.{in_proj_qkv,in_proj_z,out_proj}`, `lm_head`, layers 56-63 MLP |
 | group_1 | NVFP4, `tensor_group` | `mlp.{gate,up,down}_proj` |
 
-Avarok serves the FP8 group by **dequantising to BF16 and re-quantising to NVFP4** —
+Atlas serves the FP8 group by **dequantising to BF16 and re-quantising to NVFP4** —
 8-bit weights served at 4 bits. Visible as `quantize_to_nvfp4` lines in the serve log.
 
 That fallback is deliberate and correct as far as it goes: the native `w8a16` kernels

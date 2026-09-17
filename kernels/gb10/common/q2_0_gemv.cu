@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok native ternary Q2_0 decode GEMV — keep-packed W2A16 for M=1..8 decode.
+// Atlas native ternary Q2_0 decode GEMV — keep-packed W2A16 for M=1..8 decode.
 //
 //   out[m,n] = sum_k A[m,k] * (code(n,k) - 1) * d(n, k/group)
 //
 // The weight NEVER expands to BF16: each 34-byte (group-128) / 18-byte
 // (group-64) PrismML `block_q2_0` stays packed in VRAM and is dequantized
 // inside the dot-product, exactly like `w4a16_gemv.cu`/`w8a16_gemv.cu` do for
-// NVFP4/FP8. Activation is plain BF16 (weight-only quant), matching Avarok's
+// NVFP4/FP8. Activation is plain BF16 (weight-only quant), matching Atlas's
 // decode-GEMV convention (there is no activation-quant step on this path).
 //
 // Q2_0 block layout (PrismML id 42, validated in `dequant_gguf_bf16.cu`):

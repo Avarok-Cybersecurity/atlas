@@ -137,7 +137,7 @@ fn lm_head_m16_tc_env() -> (bool, u32) {
 /// cp.async pipeline advances 64 elements per step and its 16-byte weight-row
 /// chunks need `k % 8 == 0` anyway, so a K that is not a whole number of steps
 /// has no correct route and the tier must decline rather than launch and be
-/// wrong. Every Avarok BF16 head satisfies it (Qwen3.8-27B: K=5120).
+/// wrong. Every Atlas BF16 head satisfies it (Qwen3.8-27B: K=5120).
 ///
 /// Returns the launcher, its handle and the CTA width that will actually run —
 /// a shadow built before the wide arm existed has no `_n64`, so a `=64` request

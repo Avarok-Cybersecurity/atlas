@@ -276,7 +276,7 @@ impl TransformerModel {
         // first and `mixed_forward` runs decode+prefill fused. 64KB offset
         // leaves room for the largest known shared-expert scratch
         // (shared_expert_intermediate_size × 2 ≤ 32KB observed for any
-        // current Avarok model — 64KB is 2× safety margin).
+        // current Atlas model — 64KB is 2× safety margin).
         let decode_meta_base = self.buffers.logits().offset(65536);
 
         // Derived fit (wave-14a): the widened decode-meta block (24R +

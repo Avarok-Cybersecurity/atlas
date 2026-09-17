@@ -69,7 +69,7 @@ pub fn fp8_e4m3_to_f32(bits: u8) -> f32 {
 /// Convert f32 to BF16 with IEEE-754 round-to-nearest-even.
 ///
 /// Must stay byte-identical to PyTorch's `torch.float32 -> torch.bfloat16`
-/// cast: reference activations and the dequanted-weight snapshots Avarok is
+/// cast: reference activations and the dequanted-weight snapshots Atlas is
 /// scored against are produced that way, so any drift here shows up as an
 /// accuracy regression with no other symptom.
 ///
@@ -149,7 +149,7 @@ mod tests {
     #[allow(clippy::if_same_then_else)]
     fn fp8_lut_matches_ocp_values_and_avarok_nan_policy_for_all_bytes() {
         // Re-derived from the OCP finite-value definition with float math,
-        // independently of the table's bit assembly. Avarok deliberately maps
+        // independently of the table's bit assembly. Atlas deliberately maps
         // the two OCP NaN encodings to signed zero, matching its CUDA decoder.
         for i in 0u16..256 {
             let bits = i as u8;

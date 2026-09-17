@@ -2,7 +2,7 @@
 
 //! SSOT for what `usage.prompt_tokens_details.cached_tokens` reports.
 //!
-//! Avarok #919 (part 2): a chat completion reported `cached_tokens: 48` while
+//! Atlas #919 (part 2): a chat completion reported `cached_tokens: 48` while
 //! the server log for the same request showed a full prefill and no reuse.
 //! The field was stamped from `PrefixMatch::matched_tokens` — the LOOKUP
 //! result — at `prefix_lookup.rs` / `prefill_a.rs` / `prefill_c.rs`, before the

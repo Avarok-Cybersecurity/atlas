@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok fused K=2 MTP-verify GDN epilogue — STAGE 1 (conv1d+L2norm fused
+// Atlas fused K=2 MTP-verify GDN epilogue — STAGE 1 (conv1d+L2norm fused
 // across both draft positions, gated-RMS-norm fused across both positions).
 //
 // K=2 MTP verify currently runs the projection epilogue as PER-TOKEN loops:

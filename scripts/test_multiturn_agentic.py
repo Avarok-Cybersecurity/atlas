@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-turn agentic coherence test for Avarok.
+"""Multi-turn agentic coherence test for Atlas.
 Simulates a real coding agent session: write code → save → execute → modify → verify.
 Each turn carries the FULL conversation history (system prompt + all prior turns).
 Usage: python3 test_multiturn_agentic.py [host:port]

@@ -6,7 +6,7 @@
   // mobile.css is the SSOT for every viewport rule and must land last.
   import '../app.css';
   import ChevronField from '$shared/components/ChevronField.svelte';
-  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import '../styles/news.css';
   import '../styles/dashboard.css';
   import '../styles/chat.css';
@@ -55,7 +55,7 @@
       {
         '@type': 'Organization',
         '@id': `${SITE}#org`,
-        name: 'Avarok Inference',
+        name: 'Atlas Inference',
         url: SITE,
         logo: `${SITE}icon-512.png`,
         description: tagline,
@@ -65,7 +65,7 @@
         '@type': 'WebSite',
         '@id': `${SITE}#site`,
         url: SITE,
-        name: 'Avarok Inference',
+        name: 'Atlas Inference',
         description: tagline,
         inLanguage: 'en',
         publisher: { '@id': `${SITE}#org` }
@@ -73,8 +73,8 @@
       {
         '@type': 'SoftwareApplication',
         '@id': `${SITE}#app`,
-        name: 'Avarok Inference Engine',
-        alternateName: 'Avarok',
+        name: 'Atlas Inference Engine',
+        alternateName: 'Atlas',
         applicationCategory: 'DeveloperApplication',
         applicationSubCategory: 'LLM inference engine',
         operatingSystem: 'Linux',
@@ -136,7 +136,7 @@
 {#if !marketingPage}<ChevronField />{/if}
 
 <!-- The brand vector, defined once and <use>d by the nav and the footer. -->
-<AvarokLockup kind="defs" />
+<AtlasLockup kind="defs" />
 
 <!-- Everything else goes above the canvas. Without this wrapper, only the
      POSITIONED elements would: a fixed canvas at z-index 0 paints above the

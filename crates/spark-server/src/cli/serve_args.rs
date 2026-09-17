@@ -483,7 +483,7 @@ pub struct ServeArgs {
     /// Fraction of total GPU memory this process may consume (0.0-1.0).
     /// Weights, buffers, KV cache, and reserves all count against this cap.
     /// Matches vLLM / sparkrun semantics: 0.50 on a 120 GB device means
-    /// Avarok will use at most ~60 GB in total.
+    /// Atlas will use at most ~60 GB in total.
     #[arg(long, default_value_t = 0.90)]
     pub gpu_memory_utilization: f64,
 
@@ -565,7 +565,7 @@ pub struct ServeArgs {
     /// Ignore the `jinja-templates/` override directory and render every
     /// model off its OWN chat template (`chat_template.jinja` /
     /// `tokenizer_config.json`), relying on the Rust message-preprocessing
-    /// (`tokenizer/message_preprocess.rs`) for Avarok's cross-cutting chat
+    /// (`tokenizer/message_preprocess.rs`) for Atlas's cross-cutting chat
     /// behaviors. Default off: an override file's presence is the opt-in
     /// signal that a model needs a template fix Rust preprocessing can't
     /// express (see `jinja-templates/README.md`).
@@ -620,7 +620,7 @@ pub struct ServeArgs {
     pub dflash_gamma: Option<usize>,
 
     /// DFlash drafter sliding-window size for long context. The drafter
-    /// runs full-prefix attention by default; at Avarok's typical 16K
+    /// runs full-prefix attention by default; at Atlas's typical 16K
     /// `--max-seq-len`, drafter attention dominates per-step cost. The
     /// upstream sglang / vLLM default is 4096. Set to 0 to disable
     /// (full attention).
@@ -1028,7 +1028,7 @@ pub struct ServeArgs {
     /// rejecting them.
     ///
     /// OFF by default, and deliberately not default-ON-with-a-kill-switch
-    /// like most Avarok features. Enabling it makes the inference server issue
+    /// like most Atlas features. Enabling it makes the inference server issue
     /// outbound HTTP to addresses chosen by anyone who can send it a chat
     /// request — a server-side request forgery primitive. A deployment that
     /// never wanted that must not acquire it by upgrading. With the flag off,
@@ -1072,7 +1072,7 @@ pub struct ServeArgs {
     /// Decode video content parts with ffmpeg.
     ///
     /// ★ VIDEO SUPPORT REQUIRES FFMPEG ON THE HOST for every container except
-    /// animated GIF. Avarok does not bundle a video decoder: GIF is decoded
+    /// animated GIF. Atlas does not bundle a video decoder: GIF is decoded
     /// in-process in pure Rust, and MP4/MOV, WebM/Matroska and AVI — that is,
     /// H.264, H.265, VP9 and AV1 — are decoded by running `ffmpeg`. Without
     /// this flag a video part is refused with a 400 naming the flag; with it
@@ -1128,7 +1128,7 @@ pub struct ServeArgs {
     /// via `--auth-tokens-file` or `--auth-token`. `/health`, `/health/live`,
     /// and `/metrics` stay open as scrape targets.
     ///
-    /// Defaults to off — Avarok is local-by-default, so most users can
+    /// Defaults to off — Atlas is local-by-default, so most users can
     /// skip this. Turn on whenever the server is reachable from anywhere
     /// other than `localhost` (i.e. whenever you've passed `--bind 0.0.0.0`
     /// or are running behind an exposed port-forward).

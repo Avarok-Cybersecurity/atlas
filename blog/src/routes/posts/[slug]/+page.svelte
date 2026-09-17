@@ -51,7 +51,7 @@
       description: post.dek,
       datePublished: post.date,
       author: { '@type': 'Person', name: author.name },
-      publisher: { '@type': 'Organization', name: 'Avarok Inference', url: 'https://atlascybernetics.ai/' },
+      publisher: { '@type': 'Organization', name: 'Atlas Inference', url: 'https://atlascybernetics.ai/' },
       mainEntityOfPage: url,
       url,
       dateModified: post.updated ?? post.date,

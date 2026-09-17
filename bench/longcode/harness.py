@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""N>=10 statistical long-code degeneration harness for Avarok.
+"""N>=10 statistical long-code degeneration harness for Atlas.
 
 Drives the canonical 3D-three.js-chess stress prompt N times at a FIXED
 list of seeds (paired comparison: the same N stochastic trajectories

@@ -3,7 +3,7 @@
 //! Downloading a model from HuggingFace, and telling whether the local copy is
 //! current.
 //!
-//! Avarok could previously only *consume* a model that was already in the HF
+//! Atlas could previously only *consume* a model that was already in the HF
 //! cache; a recipe naming a checkpoint you did not have dead-ended with advice
 //! to go and run `huggingface-cli`. This is the missing half.
 //!
@@ -95,7 +95,7 @@ pub enum DownloadError {
         need: u64,
         free: u64,
     },
-    /// The repo publishes nothing Avarok can load.
+    /// The repo publishes nothing Atlas can load.
     NoSafetensors {
         repo: String,
     },
@@ -137,7 +137,7 @@ impl DownloadError {
                 *free as f64 / 1e9
             ),
             Self::NoSafetensors { repo } => {
-                format!("{repo} publishes no safetensors — Avarok cannot load it")
+                format!("{repo} publishes no safetensors — Atlas cannot load it")
             }
             Self::Http { repo, status } => format!("the Hub answered {status} for {repo}"),
             Self::Io(e) => format!("could not write to the cache: {e}"),

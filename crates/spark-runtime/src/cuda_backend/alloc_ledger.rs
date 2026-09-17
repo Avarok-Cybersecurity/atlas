@@ -5,7 +5,7 @@
 //!
 //! On GB10 every `cuMemAlloc` consumes host RAM, so an allocation outside the
 //! util pledge is how the box ends up in swap — and before this existed the
-//! KV budget inferred "Avarok-own" bytes from a free-memory delta, which counts
+//! KV budget inferred "Atlas-own" bytes from a free-memory delta, which counts
 //! a co-tenant's pages as ours. The ledger replaces that inference with a
 //! measurement.
 //!

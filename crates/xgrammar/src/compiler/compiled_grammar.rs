@@ -306,7 +306,7 @@ impl CompiledGrammar {
     /// Eagerly compute the `k` most-expensive adaptive-token masks,
     /// populating the lazy JIT cache before the matcher needs them. Uses
     /// at most the compiler's `max_threads`, including the caller, and
-    /// joins all workers before returning. Avarok calls this synchronously
+    /// joins all workers before returning. Atlas calls this synchronously
     /// before prompt prefill; no GPU overlap is implied.
     ///
     /// COST RANKING. A state's mask cost is dominated by the breadth of

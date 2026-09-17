@@ -53,7 +53,7 @@ use super::Recipe;
 use super::fetch_github::{self, try_refresh};
 
 pub(super) const REPO: &str = "Avarok-Cybersecurity/atlas-recipes";
-pub(super) const CACHE: &str = "avarok-recipes";
+pub(super) const CACHE: &str = "atlas-recipes";
 /// The cache directory this held before the ATLAS to AVAROK rename.
 ///
 /// Every box that synced before the rename already has its index here, and
@@ -133,7 +133,7 @@ impl Index {
         {
             "This machine has no route to github.com. Set HTTPS_PROXY to a host \
              that does — recipes are then fetched through it — or copy the \
-             cached index (~/.avarok/avarok-recipes/index.json, or \
+             cached index (~/.avarok/atlas-recipes/index.json, or \
              ~/.atlas/atlas-recipes/index.json on a box that predates the \
              rename) from a machine that can reach it."
         } else if lowered.contains("403") || lowered.contains("rate") {
@@ -156,9 +156,9 @@ pub(super) fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The recipe cache under `root`, which is the Avarok home.
+/// The recipe cache under `root`, which is the Atlas home.
 ///
-/// `<root>/avarok-recipes` normally. A box that synced before the rename has
+/// `<root>/atlas-recipes` normally. A box that synced before the rename has
 /// its index under `<root>/atlas-recipes` instead, so that directory is
 /// returned while the current one does not exist yet. Reads and writes then
 /// both stay on the legacy path, which keeps one cache rather than splitting
@@ -279,7 +279,7 @@ pub fn refresh_in_background(root: &Path) -> (std::sync::mpsc::Receiver<Index>, 
     let owned = root.to_path_buf();
     let cancel = Arc::new(AtomicBool::new(false));
     let rx = crate::tui::worker::spawn(
-        "avarok-recipes",
+        "atlas-recipes",
         {
             let cancel = Arc::clone(&cancel);
             move || refresh(&owned, &cancel)

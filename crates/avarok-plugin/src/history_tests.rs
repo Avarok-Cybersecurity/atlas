@@ -97,7 +97,7 @@ fn a_saved_record_reads_back_through_the_public_reader() {
     assert_eq!(b.schema, SCHEMA);
     assert_eq!(b.source, RunSource::Cli);
     assert_eq!(b.benchmark_name, "Concurrency Sweep");
-    assert_eq!(b.avarok_version, "1.0.0-beta-preview");
+    assert_eq!(b.atlas_version, "1.0.0-beta-preview");
     assert_eq!(
         b.target(),
         TargetEndpoint::new("http://127.0.0.1:8888", "m")
@@ -158,7 +158,7 @@ fn params_are_recorded_whole_and_rehydrate() {
 #[test]
 fn a_legacy_bare_frame_still_appears_in_history() {
     // Files written before this module exist as a bare BenchmarkResult. They
-    // must keep showing up, or upgrading Avarok would appear to delete history.
+    // must keep showing up, or upgrading Atlas would appear to delete history.
     let (store, _d) = store();
     let dir = store.runs_dir("concurrency-sweep").expect("dir");
     let legacy = serde_json::to_string(&frame("legacy")).expect("serializes");

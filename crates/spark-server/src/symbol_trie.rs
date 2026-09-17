@@ -24,7 +24,7 @@
 //!     overlaps there. It's most useful for **argument values** typed
 //!     as path/symbol where XGrammar treats them as plain strings.
 //!   - Workspace symbol enforcement requires the client to declare
-//!     the allowed set (no standard API today). Avarok exposes the
+//!     the allowed set (no standard API today). Atlas exposes the
 //!     primitive so MCP servers / opencode / Claude Code can adopt it
 //!     once a convention emerges.
 //!

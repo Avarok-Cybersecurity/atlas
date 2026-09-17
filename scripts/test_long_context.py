@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Long-context coherence test for Avarok.
+"""Long-context coherence test for Atlas.
 Tests fibonacci generation with realistic agentic system prompts.
 Usage: python3 test_long_context.py [host:port]
 """

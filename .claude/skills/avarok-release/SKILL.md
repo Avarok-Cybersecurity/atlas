@@ -1,11 +1,11 @@
 ---
 name: avarok-release
-description: The Avarok build → verify → image → publish pipeline, plus the upstream-sync PR automation. Turns a merged commit into a serve-matrix-verified `avarok/atlas-gb10` image that users can pull. Use when cutting an image, closing the main→:latest staleness gap, wiring the release gate, or auto-syncing the fork and opening a MODEL.toml enablement PR. Codifies the REAL commands, containers, tags, and gates already in-tree — it does not invent a new release system.
+description: The Atlas build → verify → image → publish pipeline, plus the upstream-sync PR automation. Turns a merged commit into a serve-matrix-verified `avarok/atlas-gb10` image that users can pull. Use when cutting an image, closing the main→:latest staleness gap, wiring the release gate, or auto-syncing the fork and opening a MODEL.toml enablement PR. Codifies the REAL commands, containers, tags, and gates already in-tree — it does not invent a new release system.
 argument-hint: <build | verify | image | publish | gate | sync-pr> [target]
 allowed-tools: Bash, Read, Write, Grep, Glob, Agent, Edit
 ---
 
-# /avarok-release — Avarok build → verify → ship pipeline
+# /avarok-release — Atlas build → verify → ship pipeline
 
 One entry point for turning **merged code into a pullable, verified image**. The
 gap this closes: today `avarok/atlas-gb10:latest` is cut by hand on a GB10 build
@@ -59,7 +59,7 @@ AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*' \
   cargo build --release -p spark-server
 
 # Or inside the pinned builder image (what the Docker image does):
-docker build -f docker/gb10/Dockerfile -t avarok-gb10:build .
+docker build -f docker/gb10/Dockerfile -t atlas-gb10:build .
 ```
 
 - `AVAROK_TARGET_MODEL` selects which `kernels/gb10/<model>/<quant>/` PTX + which
@@ -104,7 +104,7 @@ SHA=$(git rev-parse --short=7 HEAD)
 docker build -f docker/gb10/Dockerfile \
   --build-arg AVAROK_GIT_SHA="$SHA" \
   -t avarok/atlas-gb10:"$SHA" .
-docker save avarok/atlas-gb10:"$SHA" | zstd -o avarok-gb10-"$SHA".tar.zst   # offline distribution
+docker save avarok/atlas-gb10:"$SHA" | zstd -o atlas-gb10-"$SHA".tar.zst   # offline distribution
 ```
 
 - Tag with the **git SHA first** — it is the only identifier that answers "is
@@ -143,7 +143,7 @@ that must be green before `publish`. `references/verify-matrix.md` is its spec.
 
 ### `/avarok-release sync-pr`
 The upstream→fork automation. Watch `monumental/main` (upstream) for merges →
-fast-forward `origin` (Avarok fork) → build → verify → **if** the merge enables a
+fast-forward `origin` (Atlas fork) → build → verify → **if** the merge enables a
 new model (new `kernels/gb10/<model>/MODEL.toml` or loader), open the enablement
 PR. AI-attributed, CLA-clean, CI-green **before** submit. Full runbook incl. the
 remotes, the CLA allowlist cleanup, and the CI-green preflight: `references/pr-and-ci.md`.
@@ -151,7 +151,7 @@ remotes, the CLA allowlist cleanup, and the CI-green preflight: `references/pr-a
 ---
 
 ## Operating principles
-- **SSOT:** serve config is owned by `avarok-recipes` recipe `defaults:` (not
+- **SSOT:** serve config is owned by `atlas-recipes` recipe `defaults:` (not
   hand-copied into every doc); the model registry is `kernels/gb10/<model>/MODEL.toml`;
   the CI cap is `file-size-cap.yml` (≤500 LoC). Derive from these — never
   restate a value that lives in one of them.
@@ -175,7 +175,7 @@ remotes, the CLA allowlist cleanup, and the CI-green preflight: `references/pr-a
   question and owns the operational "does it boot and stay sane" question.
 - **`/hypercompile`** produces the kernels this pipeline ships. A hypercompile
   iteration isn't done until `/avarok-release verify` passes on the resulting image.
-- **`avarok-recipes`** is where a winning serve config lands as a recipe; this
+- **`atlas-recipes`** is where a winning serve config lands as a recipe; this
   pipeline ships the *engine* those recipes pin
   (`container: avarok/atlas-gb10:latest`). Keeping the image fresh is what keeps
-  every `sparkrun run @avarok/*` honest.
+  every `sparkrun run @atlas/*` honest.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Apples-to-apples per-layer cosine: Avarok-FP8 vs vLLM-FP8.
+"""Apples-to-apples per-layer cosine: Atlas-FP8 vs vLLM-FP8.
 
 Both engines run the SAME FP8 model (Qwen3.6-35B-A3B-FP8) on the SAME ~10378-token
-prompt. vLLM passes the opencode harness 10/10; Avarok drifts. This finds the layer
-where Avarok's residual stream first diverges from vLLM's (the FP8 implementation gap,
+prompt. vLLM passes the opencode harness 10/10; Atlas drifts. This finds the layer
+where Atlas's residual stream first diverges from vLLM's (the FP8 implementation gap,
 isolated from FP8 quant noise itself — both engines have the same quant noise).
 
 Inputs in /workspace/avarok-dumps/fp8native_dgx2/:
   vllm_L{0..39}.bin   - vLLM-FP8 per-layer last-token residual (f32 LE, 2048)
-  avarok_L{0..39}.bin  - Avarok-FP8 per-layer last-token residual (f32 LE, 2048)
+  avarok_L{0..39}.bin  - Atlas-FP8 per-layer last-token residual (f32 LE, 2048)
   (optional) vllm_logits.bin / avarok_logits.bin - final logits over vocab
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ def main():
     if not have("vllm"):
         print("MISSING vllm_L*.bin — run the vLLM dump first"); sys.exit(1)
     if not have("avarok"):
-        print("MISSING avarok_L*.bin — run the Avarok dump (AVAROK_NEMO_DUMP) next"); sys.exit(1)
+        print("MISSING avarok_L*.bin — run the Atlas dump (AVAROK_NEMO_DUMP) next"); sys.exit(1)
     print(f"{'layer':>5} {'type':>5} {'cos':>9} {'rel_l2':>9} {'|vllm|':>9} {'|avarok|':>9}")
     print("-"*52)
     onset = None
@@ -59,7 +59,7 @@ def main():
     if onset is not None:
         print(f"DIVERGENCE ONSET: L{onset} — inspect this layer's ops (attn/SSM/MoE/norm) next")
     else:
-        print("No layer below cos 0.999 — Avarok-FP8 matches vLLM-FP8; gap is NON-numerical (sampler/parser/scheduler)")
+        print("No layer below cos 0.999 — Atlas-FP8 matches vLLM-FP8; gap is NON-numerical (sampler/parser/scheduler)")
     # final logits / argmax overlap
     if (OUT/"vllm_logits.bin").exists() and (OUT/"avarok_logits.bin").exists():
         vl = load(OUT/"vllm_logits.bin"); al = load(OUT/"avarok_logits.bin")

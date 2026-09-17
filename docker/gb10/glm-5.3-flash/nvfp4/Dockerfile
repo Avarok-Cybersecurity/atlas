@@ -1,4 +1,4 @@
-# Avarok Spark — GLM-5.3-Flash-NVFP4 on GB10 (2-node, TP=2 + EP=2)
+# Atlas Spark — GLM-5.3-Flash-NVFP4 on GB10 (2-node, TP=2 + EP=2)
 #
 # Build from repo root:
 #   docker build -f docker/gb10/glm-5.3-flash/nvfp4/Dockerfile -t avarok-glm53:<sha> .

@@ -4,7 +4,7 @@ use crate::dtype::DType;
 
 /// A zero-copy reference to a GPU tensor, typically from PyTorch via data_ptr().
 ///
-/// Avarok never allocates or copies tensor data — it receives raw CUDA device
+/// Atlas never allocates or copies tensor data — it receives raw CUDA device
 /// pointers from Python and wraps them for kernel launches.
 #[derive(Debug, Clone)]
 pub struct TensorRef {

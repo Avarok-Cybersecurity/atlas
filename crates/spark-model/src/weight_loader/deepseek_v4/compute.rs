@@ -322,7 +322,7 @@ pub fn ensure_yarn_inv_freq(
 
 /// Plain θ=10000 inv_freq (NO YaRN) for the raw-arm rope on `sliding_attention`
 /// layers. The reference's "main" rope: θ=10000 (config `rope_theta`, which
-/// Avarok's dispatch overrides to compress_rope_theta=160000 for the shared yarn
+/// Atlas's dispatch overrides to compress_rope_theta=160000 for the shared yarn
 /// table — so the 10000 base is hardcoded here to match the reference). Cheap
 /// (~32 floats); computed per compressor-less layer, no shared cache needed.
 fn main_inv_freq_values(rope: usize) -> Vec<f32> {

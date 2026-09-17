@@ -48,7 +48,7 @@ vision = false
 # max_tokens wandering on agentic clients (lesson from Qwen3.6).
 # Lowered temp=0.6 thinking, 0.7 non-thinking, kept temp=0.4 coding/tools
 # (MiniMax's own benchmark value). Kept top_k=40 (MiniMax convention).
-# Renamed from `[sampling.default]`/`[coding]` to Avarok-standard
+# Renamed from `[sampling.default]`/`[coding]` to Atlas-standard
 # {thinking_text, thinking_coding, non_thinking, tools} so the parser
 # actually picks up these values.
 [sampling.thinking_text]
@@ -86,7 +86,7 @@ dry_multiplier = 0.5
 
 [behavior]
 # MiniMax M2's native HF chat_template.jinja appends `<think>\n`
-# unconditionally at `add_generation_prompt`. Avarok uses an OpenAI-
+# unconditionally at `add_generation_prompt`. Atlas uses an OpenAI-
 # variant template that gates this generation prompt on the resolved
 # per-request thinking setting. `max_thinking_budget` still caps explicit
 # or spontaneous thinking: when the scheduler detects `<think>` without

@@ -3,7 +3,7 @@
 // Widen an FP8 block-scale tensor (`weight_scale_inv`) to FP32 on the GPU.
 //
 // FP8 block-scaled checkpoints (Qwen3.x / DeepSeek-V3 store the scale BF16;
-// MiniMax-M2 stores it FP32) carry a per-128x128-block scale. Avarok applies
+// MiniMax-M2 stores it FP32) carry a per-128x128-block scale. Atlas applies
 // this scale in the FP32 epilogue of its W8A8 / W8A16 GEMM kernels — to match
 // vLLM / DeepGEMM / HF block-FP8 numerics the scale must be held in FP32 end
 // to end, not BF16. This kernel materialises a genuine FP32 device buffer once

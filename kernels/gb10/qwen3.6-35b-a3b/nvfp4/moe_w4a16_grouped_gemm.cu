@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Grouped W4A16 GEMM for MoE — 35B model shadow.
+// Atlas Grouped W4A16 GEMM for MoE — 35B model shadow.
 //
 // Optimizations over parent:
 // - Transposed kernel: cp.async 2-stage double-buffered pipeline
@@ -1710,7 +1710,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
 // place they may be written is where they are true.
 #ifndef AVAROK_NO_WARP_BLOCKSCALE_MMA
 // Both instructions below exist on consumer/GB10 Blackwell (sm_120/sm_121)
-// and NOWHERE ELSE Avarok targets:
+// and NOWHERE ELSE Atlas targets:
 //
 //   sm_90a  (H100/H200): no NVFP4 datapath.
 //           ptxas: Instruction 'cvt with .e2m1x2' not supported

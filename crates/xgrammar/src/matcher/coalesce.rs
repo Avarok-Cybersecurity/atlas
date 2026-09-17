@@ -9,7 +9,7 @@
 // IDEA. In a constrained grammar many states admit exactly one legal
 // token — after `{` in a JSON object, while spelling a literal key,
 // inside a fixed enum value. When the grammar forces the token the
-// model sampling step is redundant: the token is determined. Avarok's
+// model sampling step is redundant: the token is determined. Atlas's
 // scheduler can call `forced_token` / `next_forced_tokens`, emit the
 // forced token(s) directly, and skip the GPU sample for those
 // positions. dottxt reports up to 5x on nested structures.

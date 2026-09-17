@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Avarok TUI — the ratatui dashboard for `spark serve`.
+//! Atlas TUI — the ratatui dashboard for `spark serve`.
 //!
 //! Activation is strictly opt-out-safe: [`plain_mode`] must return `false`
 //! before any TUI machinery is touched, and when it returns `true` the caller
@@ -65,7 +65,7 @@
 //! There is no second idiom to learn and no third place to look.
 //!
 //! The threads, all named so a stack dump during an incident is attributable:
-//! `avarok-tui` (this render loop) · `avarok-recipes` · `avarok-recipe-date` ·
+//! `avarok-tui` (this render loop) · `atlas-recipes` · `avarok-recipe-date` ·
 //! `avarok-libscan` · `avarok-download` · `avarok-freshness` · `avarok-swap` ·
 //! `avarok-report` (GitHub device flow + issue submit).
 //!

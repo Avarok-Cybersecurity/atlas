@@ -2,9 +2,9 @@
 precision highp float;
 
 /* ============================================================
-   Avarok chevron field
+   Atlas chevron field
    ------------------------------------------------------------
-   A depth-stacked field of the Avarok chevron, drifting slowly
+   A depth-stacked field of the Atlas chevron, drifting slowly
    left-to-right — the direction the mark itself points, and the
    direction a token moves through the engine.
 

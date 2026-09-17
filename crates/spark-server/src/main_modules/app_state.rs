@@ -95,7 +95,7 @@ pub struct AppState {
     /// when the request didn't ask for it. MiniMax M2's chat template
     /// always appends `<think>\n` at `add_generation_prompt`, so the
     /// model is implicitly inside thinking from token 1; without this
-    /// detection Avarok would never enforce `max_thinking_budget` and
+    /// detection Atlas would never enforce `max_thinking_budget` and
     /// the model can ramble for the full `max_tokens`.
     pub think_start_token_id: Option<u32>,
     /// Max output tokens for tool-calling requests (CLI --tool-max-tokens).

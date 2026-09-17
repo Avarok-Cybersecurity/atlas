@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Cross-request BLEED + corruption detector for a running Avarok server.
+Cross-request BLEED + corruption detector for a running Atlas server.
 
 WHY THIS EXISTS
 ---------------
@@ -99,7 +99,7 @@ MAXTOK = int(os.environ.get("MAXTOK", "200"))
 # prefix-cache contamination at all. ~2000 words is ~2600 tokens, ~160 blocks
 # at block_size 16. PREFIX_WORDS=0 reverts to the (weaker) no-sharing shape.
 #
-# MUST EXCEED THE MARCONI CHECKPOINT INTERVAL. Avarok writes an intermediate SSM
+# MUST EXCEED THE MARCONI CHECKPOINT INTERVAL. Atlas writes an intermediate SSM
 # checkpoint every 256 blocks (4096 tokens at block_size 16). A shared prefix
 # SHORTER than that produces "Prefix cache hit: N tokens but no SSM snapshot —
 # recomputing all KV": the KV radix hits but NO snapshot exists at or below the
@@ -131,7 +131,7 @@ ALL_TOPICS = [w[1].split()[0] for w in WORKERS]
 # that plain chat never touches — a bleed that only manifests there would be
 # invisible without this.
 TOOLS = os.environ.get("TOOLS") == "1"
-# STREAM=1 uses the SSE streaming endpoint. This is NOT cosmetic: Avarok's
+# STREAM=1 uses the SSE streaming endpoint. This is NOT cosmetic: Atlas's
 # streaming and blocking paths are separate code with documented divergences
 # (a known case cut generation at 141 tokens streaming vs 248 blocking), and
 # agentic clients like opencode ALWAYS stream. A bleed that only manifests on

@@ -9,10 +9,10 @@ host went down and took both properties with it.
 | Project | Serves | pages.dev |
 | --- | --- | --- |
 | `avarok-site` | `atlascybernetics.ai` | `avarok-site-80h.pages.dev` |
-| `avarok-blog` | `blog.atlascybernetics.ai` | `avarok-blog-3ja.pages.dev` |
+| `atlas-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
-`.github/workflows/site.yml` needs an `avarok-recipes` checkout and a GitHub
+`.github/workflows/site.yml` needs an `atlas-recipes` checkout and a GitHub
 token, and it carries four gates a Pages-native build would bypass — the
 flagship-recipe check, the per-route `<title>` checks on both properties, and
 the blog/site cross-link check. CI builds, CI uploads the gated output.

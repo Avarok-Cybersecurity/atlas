@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare a live Avarok serve of the SLICED LongCat checkpoint against the
+"""Compare a live Atlas serve of the SLICED LongCat checkpoint against the
 golden-derived expectation (see slice_expected.py).
 
 Sends the 16 fixture token ids as a RAW TOKEN-ID prompt (the completions API

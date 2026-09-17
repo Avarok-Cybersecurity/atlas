@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This directory captures the major design decisions behind Avarok in the
+This directory captures the major design decisions behind Atlas in the
 [MADR](https://adr.github.io/madr/) lite format. Each record is a single
 markdown file with **Status**, **Context**, **Decision**, **Consequences**.
 ADRs are append-only — when a decision is revisited, write a new ADR that

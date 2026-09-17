@@ -3,11 +3,11 @@
 The per-sublayer cosine in `full_forward_cmp.py` says the port is wired
 correctly. It does NOT say what the output distribution costs, because a
 0.995 hidden-state cosine can still reorder the top of a 131072-way softmax.
-This script closes that: it compares Avarok's FINAL logits against the HF
+This script closes that: it compares Atlas's FINAL logits against the HF
 reference's, which is what actually decides the emitted token.
 
 Reference: `longcat_forward_golden.npz['logits_last']`, f32, full vocab.
-Avarok:     `$AVAROK_NEMO_DUMP/avarok_logits.bin`, f32, full vocab, written by
+Atlas:     `$AVAROK_NEMO_DUMP/avarok_logits.bin`, f32, full vocab, written by
            prefill_b/finalize_last.rs step 7.
 
 Why the dump and not the API: `/v1/completions` logprobs are keyed by decoded
@@ -72,7 +72,7 @@ ov = {k: len(set(o_ref[:k].tolist()) & set(o_got[:k].tolist())) for k in (1, 5, 
 cos = float(ref @ got / (np.linalg.norm(ref) * np.linalg.norm(got)))
 # Full-vocab KL(ref || avarok) in nats — the honest distribution distance.
 kl = float((p_ref * (lp_ref - lp_got)).sum())
-# How much probability mass the reference's own top-1 keeps under Avarok.
+# How much probability mass the reference's own top-1 keeps under Atlas.
 p_ref_top1 = float(p_ref[o_ref[0]])
 p_got_at_ref_top1 = float(np.exp(lp_got[o_ref[0]]))
 

@@ -1,4 +1,4 @@
-# Avarok Spark — Qwen3-VL-30B-A3B-Instruct-NVFP4 on GB10
+# Atlas Spark — Qwen3-VL-30B-A3B-Instruct-NVFP4 on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/qwen3-vl-30b-a3b/nvfp4/Dockerfile -t avarok-vl-30b .

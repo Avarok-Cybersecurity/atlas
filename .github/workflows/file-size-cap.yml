@@ -209,7 +209,7 @@ jobs:
             # The overnight coherence-debugging work grew these past 500 LoC
             # (19 newly over-cap + impl_a2/compile_tools inherited from main).
             # Allow-listed to unblock the PR; clean splits tracked as follow-up
-            # (per-file Ctx/State or sub-module extraction, Avarok idiom).
+            # (per-file Ctx/State or sub-module extraction, Atlas idiom).
             "crates/avarok-kernels/build.rs"
             "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
             "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
@@ -465,7 +465,7 @@ jobs:
             # ── GLM-5.3-Flash (`glm5_next`) native port — 2026-09-06 ──
             #
             # SHARED RATIONALE for the 25 entries below. Every one of them is on
-            # the execution path of `avarok-glm53:integ1`, the image that passed
+            # the execution path of `atlas-glm53:integ1`, the image that passed
             # the ten-phase GB10 qualification of integration candidate
             # 4d0fef93 on 2026-09-06: six-probe byte-identity against the sealed
             # reference (6/6 EXACT), a bracketed control-candidate-control A/B
@@ -653,7 +653,7 @@ jobs:
               if [[ $allowed -eq 1 ]]; then
                 echo "::warning file=$normalized::Allow-listed: $lines LoC (>500). Reduce when feasible."
               else
-                echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Avarok idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
+                echo "::error file=$normalized::$lines LoC exceeds 500-line cap. Split into sub-modules per Atlas idiom (see crates/spark-model/src/layers/qwen3_attention/ for compute-heavy template, crates/spark-model/src/weight_loader/ for variant-dispatch template)."
                 violations=$((violations + 1))
               fi
             fi
@@ -661,7 +661,7 @@ jobs:
 
           if [[ $violations -gt 0 ]]; then
             echo ""
-            echo "❌ $violations file(s) exceed the 500-line cap. Split them per Avarok idiom."
+            echo "❌ $violations file(s) exceed the 500-line cap. Split them per Atlas idiom."
             echo ""
             echo "Quick fix: extract a cohesive cluster (impl block, related fns, tests)"
             echo "to a sibling file:"

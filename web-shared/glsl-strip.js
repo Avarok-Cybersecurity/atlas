@@ -31,7 +31,7 @@ export function stripGlsl(src) {
  */
 export function glslStrip() {
   return {
-    name: 'avarok-glsl-strip',
+    name: 'atlas-glsl-strip',
     enforce: 'pre',
     async load(id) {
       const m = /^(.*\.glsl)\?raw$/.exec(id);

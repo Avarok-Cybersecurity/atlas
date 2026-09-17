@@ -209,7 +209,7 @@ fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
     assert_eq!(lw.slot_ref_count(99), 0);
 }
 
-/// An adapter naming a module Avarok cannot apply must REFUSE by default,
+/// An adapter naming a module Atlas cannot apply must REFUSE by default,
 /// rather than apply a fraction of itself and let the user think they got the
 /// whole thing. `in_proj_qkv` is such a module: it feeds the GDN recurrence
 /// and has no delta path.

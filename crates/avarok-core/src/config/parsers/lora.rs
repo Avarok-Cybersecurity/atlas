@@ -6,7 +6,7 @@
 //! [`super::quantization`]. Unlike that parser (which returns `Option` so
 //! callers fall through to tensor-name heuristics), this one is **hard-fail**:
 //! the adapter is explicitly requested via `--lora-adapter`, so anything
-//! Avarok cannot faithfully apply must error with a named reason — never be
+//! Atlas cannot faithfully apply must error with a named reason — never be
 //! silently skipped (wrong output).
 //!
 //! NAMING DISCIPLINE: everything here is `peft_*` / `adapter_*`.
@@ -37,7 +37,7 @@ pub const PEFT_SUPPORTED_TARGET_MODULES: &[&str] = &[
     "out_proj",
 ];
 
-/// Parsed subset of a PEFT `adapter_config.json` that Avarok consumes.
+/// Parsed subset of a PEFT `adapter_config.json` that Atlas consumes.
 ///
 /// `lora_dropout` is intentionally ignored (train-time only, inference
 /// no-op). Everything else PEFT can emit that would change inference
@@ -79,7 +79,7 @@ pub struct PeftAdapterConfig {
     /// `trainable_token_indices` list, or the common order declared for
     /// `embed_tokens` and `lm_head`. Empty ⇒ no `trainable_tokens` overlay.
     pub trainable_token_indices: Vec<u32>,
-    /// Accepted `modules_to_save` leaves — the subset Avarok can apply as a
+    /// Accepted `modules_to_save` leaves — the subset Atlas can apply as a
     /// token overlay (`embed_tokens` / `lm_head` full-row replacement).
     /// Anything else is still a hard `REJECT(modules_to_save)`. Empty ⇒
     /// no full-module overlay.
@@ -118,7 +118,7 @@ struct RawPeftAdapterConfig {
     peft_type: Option<String>,
     r: usize,
     lora_alpha: f64,
-    /// Array of strings, or the string "all-linear" (rejected — Avarok
+    /// Array of strings, or the string "all-linear" (rejected — Atlas
     /// cannot enumerate "all linear" against fused/quantized layouts).
     /// Absent/null is tolerated for pure token-overlay adapters.
     #[serde(default)]
@@ -347,7 +347,7 @@ fn parse_trainable_tokens(v: &Option<serde_json::Value>) -> Result<Vec<u32>> {
                 {
                     bail!(
                         "REJECT(trainable_token_indices): per-module token lists differ; \
-                         Avarok requires one shared embed_tokens/lm_head order"
+                         Atlas requires one shared embed_tokens/lm_head order"
                     );
                 }
                 shared = Some(module_ids);
@@ -390,11 +390,11 @@ fn parse_target_modules(v: &serde_json::Value) -> Result<(Vec<String>, Option<St
         // equally safe — its GDN tensors meet the same per-tensor reject they
         // always did.
         // `all-linear` is a PEFT KEYWORD, not a regex: it means "every linear
-        // layer", which Avarok cannot enumerate against fused/quantized layouts
+        // layer", which Atlas cannot enumerate against fused/quantized layouts
         // (a fused qkv or a packed MoE expert is one tensor here and several
         // `nn.Linear`s there). It stays a named reject, as it always was.
         serde_json::Value::String(s) if s == "all-linear" => bail!(
-            "REJECT(target_modules): string form '{s}' is unsupported — Avarok cannot \
+            "REJECT(target_modules): string form '{s}' is unsupported — Atlas cannot \
              enumerate 'all linear' against fused/quantized layouts; re-export the \
              adapter with an explicit module list or a regex"
         ),
@@ -430,7 +430,7 @@ fn parse_target_modules(v: &serde_json::Value) -> Result<(Vec<String>, Option<St
 /// validate on the final `.`-segment. Per-`LayerType` enforcement (deltas
 /// land on full-attention layers only) is the weight loader's job — this is
 /// the name-level gate.
-/// `AVAROK_LORA_ALLOW_PARTIAL=1` — load an adapter naming target modules Avarok
+/// `AVAROK_LORA_ALLOW_PARTIAL=1` — load an adapter naming target modules Atlas
 /// cannot apply, skipping those and applying the rest.
 ///
 /// THE canonical definition; `spark_model::lora::env::allow_partial_targets`

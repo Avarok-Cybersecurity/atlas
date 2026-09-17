@@ -2,7 +2,7 @@
 
 //! Safetensors weight store for the NLLB CPU runtime.
 //!
-//! NLLB-200 ships as PyTorch `.bin` (pickle) which Avarok cannot read; this
+//! NLLB-200 ships as PyTorch `.bin` (pickle) which Atlas cannot read; this
 //! store consumes the safetensors conversion (e.g.
 //! `MonumentalSystems/nllb-200-3.3B`). All tensors are held as `f32` on the
 //! host — the reference runtime is fp32.

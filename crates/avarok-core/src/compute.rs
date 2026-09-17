@@ -5,7 +5,7 @@
 //! Defines the [`ComputeTarget`] trait: the contract that any GPU compilation
 //! and runtime target must satisfy (NVIDIA/PTX, AMD/HSACO, Apple/Metal, etc.).
 //!
-//! Avarok is designed so that:
+//! Atlas is designed so that:
 //! - **Build time**: kernel source files are compiled by a target-specific
 //!   compiler into a target-specific binary format (PTX, SPIR-V, metallib).
 //! - **Runtime**: the binary modules are loaded via `GpuBackend::kernel()`

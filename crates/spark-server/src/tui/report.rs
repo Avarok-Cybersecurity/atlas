@@ -373,7 +373,7 @@ pub struct Composed {
 /// no commit stamp, not wonder whether the reporter deleted the line.
 pub fn env_line(model: &str, engine_ready: bool) -> String {
     format!(
-        "Avarok {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
+        "Atlas {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
         crate::cli::AVAROK_VERSION,
         option_env!("AVAROK_BUILD_COMMIT").unwrap_or("commit unknown"),
         std::env::consts::OS,

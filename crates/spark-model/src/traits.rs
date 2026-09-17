@@ -148,7 +148,7 @@ pub struct SequenceState {
     /// read by the scheduler to populate
     /// `usage.prompt_tokens_details.cached_tokens`.
     ///
-    /// Avarok #919: this used to be `cached_prefix_tokens`, which reports the
+    /// Atlas #919: this used to be `cached_prefix_tokens`, which reports the
     /// lookup result — so a request that matched 48 tokens and then recomputed
     /// all of them (no SSM snapshot / exact-leaf bypass / declined Marconi
     /// restore) advertised `cached_tokens: 48` next to a full-prefill log line.

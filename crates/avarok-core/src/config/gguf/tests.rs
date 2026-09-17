@@ -434,7 +434,7 @@ fn mamba_architecture_is_rejected_before_dimension_parsing() {
     };
     let err = config_from_gguf(&inp).unwrap_err().to_string();
     assert!(
-        err.contains("GGUF general.architecture 'mamba' has no Avarok model_type mapping"),
+        err.contains("GGUF general.architecture 'mamba' has no Atlas model_type mapping"),
         "unexpected: {err}"
     );
 }

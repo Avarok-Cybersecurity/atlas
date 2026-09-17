@@ -9,7 +9,7 @@ a loop/garble, or a crash. Each stub is trivial so failure points at multi-turn
 mechanics, not competence.
 
 Runs N times (default 2) to separate model temp-variance (stochastic no-op) from
-a real Avarok defect. Writes /workspace/editprobe4_run<i>.json.
+a real Atlas defect. Writes /workspace/editprobe4_run<i>.json.
 """
 from __future__ import annotations
 import json, os, pathlib, subprocess, sys, time

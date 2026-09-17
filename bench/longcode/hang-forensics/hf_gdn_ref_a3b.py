@@ -35,7 +35,7 @@ SNAP = os.environ.get("SNAP")
 OUT  = pathlib.Path(os.environ.get("OUT", "/home/claude/gdnref_a3b"))
 LAYERS = [int(x) for x in os.environ.get("GDN_LAYERS", "0").split(",")]
 
-# Token IDs captured from Avarok /tokenize for the probe prompt. 31 tokens.
+# Token IDs captured from Atlas /tokenize for the probe prompt. 31 tokens.
 TOK = [248045, 846, 198, 3710, 369, 220, 16, 22, 2942, 220, 17, 18, 30, 17308, 440, 279, 1324, 1132, 11, 874, 58655, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271]
 L   = len(TOK)               # 31
 NUM_V_HEADS = 32

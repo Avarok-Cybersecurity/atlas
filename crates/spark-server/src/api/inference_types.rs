@@ -325,7 +325,7 @@ pub struct InferenceResponse {
     /// path, `RequestAccept::accepted_total`). Reported to clients as
     /// `usage.completion_tokens_details.accepted_prediction_tokens` — the
     /// OpenAI field's meaning (predicted tokens that matched generation),
-    /// carried by Avarok's self-drafted MTP predictions. 0 when speculation is
+    /// carried by Atlas's self-drafted MTP predictions. 0 when speculation is
     /// off or nothing was accepted.
     pub accepted_prediction_tokens: usize,
     /// Prompt-token logprobs (legacy /v1/completions `logprobs` + `echo`):

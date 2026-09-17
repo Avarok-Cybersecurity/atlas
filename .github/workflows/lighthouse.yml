@@ -76,11 +76,11 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Checkout avarok-recipes (model SSOT)
+      - name: Checkout atlas-recipes (model SSOT)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: Avarok-Cybersecurity/atlas-recipes
-          path: avarok-recipes-src
+          path: atlas-recipes-src
 
       - name: Install dependencies
         working-directory: site
@@ -89,19 +89,25 @@ jobs:
       # Mirrors the deploy build, including the installer the front page's
       # headline command is served from — auditing a page that differs from
       # what ships would measure the wrong thing.
-      - name: Copy the installer from avarok-recipes
+      - name: Copy the installer from atlas-recipes
         working-directory: site
         run: |
-          src="${{ github.workspace }}/avarok-recipes-src/scripts/install.sh"
+          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
           if [ -f "$src" ]; then cp "$src" static/install.sh; chmod 0755 static/install.sh; fi
 
       - name: Build
         working-directory: site
         run: bun x --bun vite build
         env:
-          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/avarok-recipes-src/recipes
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
           AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
 
+      # 100 in all four categories, on every page the site ships — the same
+      # contract the blog has held since it was audited at all. The aggregation
+      # is what makes a 100 a gate rather than a coin flip: the three DOM
+      # categories score identically every run, so their median is exact, while
+      # performance takes the best of five, which a real regression depresses in
+      # every run and runner contention depresses in only some.
       - name: Audit
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:

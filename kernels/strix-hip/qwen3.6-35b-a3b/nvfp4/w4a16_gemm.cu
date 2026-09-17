@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok W4A16 GEMM — 35B/27B model shadow. HIP/gfx1151 (AMD WMMA) port.
+// Atlas W4A16 GEMM — 35B/27B model shadow. HIP/gfx1151 (AMD WMMA) port.
 //
 // Ported from the NVIDIA/SCALE mma.sync version. Key transforms:
 //   * mma.sync.m16n8k16.bf16  → __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32

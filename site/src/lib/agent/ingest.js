@@ -47,7 +47,7 @@ export function sanitize(raw, max = NAME_MAX) {
  * it is a message this agent did not send.
  *
  * Mirrors the serde `snake_case` spelling of PairingState, Severity and
- * LinkClass in avarokctl-protocol.
+ * LinkClass in atlasctl-protocol.
  */
 /**
  * How many nodes this page will hold.

@@ -86,7 +86,7 @@ fn the_pane_decides_which_of_a_models_recipes_gets_the_request() {
     let mut first = recipe_with("fam/aaa", "");
     let mut second = recipe_with("fam/zzz", "");
     first.runtime = Some("vllm".into());
-    second.runtime = Some("avarok".into());
+    second.runtime = Some("atlas".into());
     let mut s = state(vec![first, second]);
 
     s.view = View::List;

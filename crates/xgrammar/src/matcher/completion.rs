@@ -2,7 +2,7 @@
 //
 // GrammarMatcher — grammar-legal completion to a stop-legal state.
 //
-// Powers budget-aware graceful close of structured outputs (Avarok #144):
+// Powers budget-aware graceful close of structured outputs (Atlas #144):
 // when a length-limited response would otherwise stop with the stop token
 // forbidden mid-structure (e.g. inside an open JSON string), this finds a
 // byte sequence that drives the grammar to a state where the root rule can
@@ -17,7 +17,7 @@
 // which a breadth-first search would never reach before exhausting its
 // budget on content branches.
 //
-// There is no C++ upstream for this; it is an Avarok addition built on the
+// There is no C++ upstream for this; it is an Atlas addition built on the
 // same byte-level Earley primitives as `find_jump_forward_string`
 // (`advance` / `pop_last_states` / `is_completed`).
 

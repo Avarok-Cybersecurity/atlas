@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok RMS Normalization kernel for Qwen3-VL (SM121).
+// Atlas RMS Normalization kernel for Qwen3-VL (SM121).
 //
 // Qwen3-VL uses STANDARD RMS normalization (NOT offset-from-1):
 //   RMSNorm(x) = x * weight / sqrt(mean(x^2) + eps)

@@ -233,7 +233,7 @@ pub(crate) enum M16TcPlan {
 /// `k` is part of the rule and not an `ensure!` at the call site: the kernel
 /// indexes `block_scale[n_block * (K/128) + k/128]`, so a K that is not a whole
 /// number of 128-wide scale blocks has no correct scale to fold and the tier
-/// must DECLINE rather than launch and be wrong. Every Avarok FP8 FFN shape
+/// must DECLINE rather than launch and be wrong. Every Atlas FP8 FFN shape
 /// satisfies it (Qwen3.8-27B: 5120 and 17408), but a model whose hidden size is
 /// not a multiple of 128 would otherwise fall off this cliff silently.
 pub(crate) fn m16_tc_plan(m: u32, k: u32, loaded: bool, enabled: bool) -> Option<M16TcPlan> {

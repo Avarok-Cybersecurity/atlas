@@ -1,5 +1,5 @@
 /* =============================================================================
-   Avarok design tokens — the single authoritative copy.
+   Atlas design tokens — the single authoritative copy.
 
    Imported by BOTH web properties:
      site/src/app.css   -> atlascybernetics.ai
@@ -29,6 +29,14 @@
   --t2: #C9CCD4;          /* body */
   --t3: #82868F;          /* metadata. The tightest token on the page: the
                              chevron field's amplitude is solved against it. */
+  /* Logo greys. The lockup's own colours, not the text ramp: the brand
+     guidelines call the light-ground greys logo colours (2.93:1 and 1.82:1 on
+     white — a logo is exempt from the text floor, a paragraph is not), so the
+     artwork cannot read --t2/--t3, which the light theme darkens to clear WCAG
+     AA. On the dark ground the two ramps happen to coincide; on paper they must
+     not. lockup-artwork.test.js pins all four to assets/brand/. */
+  --logo-word: #C9CCD4;
+  --logo-tagline: #82868F;
   /* accent + signals
      One accent hue, three tokens, because a single violet cannot be optimal
      both as text on a dark canvas and as a fill under white. --accent is the
@@ -97,6 +105,11 @@
      4.2 on white, which the accessibility gate reads as a failure wherever it
      lands on small text. */
   --t3: #696C72;
+  /* The light-ground logo greys, straight from the guidelines' colour table.
+     These are the values the -ondark twins differ by, and the reason the
+     artwork has its own tokens at all. */
+  --logo-word: #9397A0;
+  --logo-tagline: #BDC0C5;
   /* Chevron text. Lightness lowered, hue and saturation held, so the mark's
      colour survives the move to paper. Each clears 4.6:1 on white, on --bg2
      and on --card-2. The fill hues above are untouched: on a fill the ink is

@@ -39,7 +39,7 @@ impl Entry {
 
     /// The recipe to describe the row by, when only one can be shown.
     ///
-    /// The first Avarok recipe, falling back to the first of any kind: a vLLM
+    /// The first Atlas recipe, falling back to the first of any kind: a vLLM
     /// recipe still carries the description and params worth rendering, it just
     /// cannot be launched from here.
     pub fn primary(&self) -> Option<&Recipe> {

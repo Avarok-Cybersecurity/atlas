@@ -332,7 +332,7 @@ async fn run(args: RunArgs) -> Result<i32> {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
             source: avarok_plugin::RunSource::Cli,
-            avarok_version: super::AVAROK_VERSION.to_string(),
+            atlas_version: super::AVAROK_VERSION.to_string(),
             coherence: if args.skip_coherence_probe {
                 avarok_plugin::CoherencePolicy::Skip
             } else {

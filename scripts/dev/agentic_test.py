@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Avarok Agentic Multi-Turn Session Tester
+Atlas Agentic Multi-Turn Session Tester
 
 Simulates a Claude Code / OpenCode style agentic session:
 - Multi-turn tool calling (write_file, read_file, run_command)
@@ -216,7 +216,7 @@ def main():
     results = []
 
     print(f"{'='*60}")
-    print(f"Avarok Agentic Multi-Turn Session Tester")
+    print(f"Atlas Agentic Multi-Turn Session Tester")
     print(f"Duration: {args.hours}h, Test cases: {len(test_cases)}")
     print(f"{'='*60}\n")
 

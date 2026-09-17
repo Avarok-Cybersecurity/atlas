@@ -2,7 +2,7 @@
 """GLM-5.3-Flash KDA golden-vector generator.
 
 Runs the REAL HuggingFace ``transformers`` 5.16.1 ``glm5_next`` implementation on a tiny
-deterministic fixture and emits every intermediate tensor as JSON, so an Avarok-side reference
+deterministic fixture and emits every intermediate tensor as JSON, so an Atlas-side reference
 implementation can be checked sub-op by sub-op without a GPU.
 
 Source of truth
@@ -94,7 +94,7 @@ golden = {"fixture": {"hidden": HIDDEN, "heads": H, "head_dim": D, "tokens": T,
 hidden_states = _fixed((B, T, HIDDEN), 0)
 
 # Post-conv q/k/v. The short conv is deliberately OUT of scope here: it is classed REUSE against
-# Avarok's existing fused conv+SiLU+L2 kernel, and folding it in would couple two independent checks.
+# Atlas's existing fused conv+SiLU+L2 kernel, and folding it in would couple two independent checks.
 q_in = _fixed((B, T, H, D), 1)
 k_in = _fixed((B, T, H, D), 2)
 v_in = _fixed((B, T, H, D), 3)

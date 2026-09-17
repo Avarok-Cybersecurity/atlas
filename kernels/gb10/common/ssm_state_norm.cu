@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused SSM State Normalization kernel.
+// Atlas Fused SSM State Normalization kernel.
 //
 // Normalizes the Frobenius norm of each head's h_state matrix across ALL
 // SSM layers in a single kernel launch to prevent catastrophic state

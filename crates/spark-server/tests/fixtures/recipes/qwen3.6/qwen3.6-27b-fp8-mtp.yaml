@@ -1,6 +1,6 @@
 recipe_version: "2"
 model: Qwen/Qwen3.6-27B-FP8
-runtime: avarok
+runtime: atlas
 # :dev, NOT :latest — load-bearing, see description. On :latest this model
 # serves at 5 tok/s no matter what num_drafts says (MTP buys nothing there).
 container: avarok/atlas-gb10:dev
@@ -8,7 +8,7 @@ max_nodes: 1
 
 metadata:
   description: |
-    Qwen3.6-27B (dense, native FP8) on the Avarok runtime, with the
+    Qwen3.6-27B (dense, native FP8) on the Atlas runtime, with the
     upstream-bundled MTP draft head (mtp.safetensors, FP8 e4m3 linear +
     BF16 norms) enabled at K=1. KV stays BF16 (FP8/NVFP4 KV breaks dense
     attention — request timeouts + CUDA graph thrash). max_model_len
@@ -47,7 +47,7 @@ metadata:
     fused FP8 dual-GEMV decode kernel would raise the no-spec floor and
     change every number in that table. Do not read 15.6 as "this model's
     speed".
-  maintainer: avarok
+  maintainer: atlas
   category: chat
   model_params: 27B
   model_dtype: fp8

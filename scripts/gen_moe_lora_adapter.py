@@ -4,12 +4,12 @@
 router) for a Qwen3.6-style MoE base — the Feature-1 GPU validation fixture.
 
 Real unfused per-expert adapters are near-absent on the hub (fine-tunes export
-the fused `gate_up_proj` via `target_parameters`, which Avarok rejects), so this
+the fused `gate_up_proj` via `target_parameters`, which Atlas rejects), so this
 builds a tiny loadable one: a few layers × a few experts of `mlp.experts.E.
 down_proj` + the `mlp.gate` router, with NONZERO B (small normal) so the delta
 is non-trivial. Shapes are read from the base config (never assumed).
 
-Keys (PEFT save_pretrained form Avarok classify_key accepts):
+Keys (PEFT save_pretrained form Atlas classify_key accepts):
   base_model.model.model.layers.{L}.mlp.experts.{E}.down_proj.lora_{A,B}.weight
   base_model.model.model.layers.{L}.mlp.gate.lora_{A,B}.weight
 

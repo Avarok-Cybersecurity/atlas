@@ -26,7 +26,7 @@
     </h1>
 
     <p class="lede">
-      An editor built on the Avarok Inference Engine, WebGPU and Rust compiled to WebAssembly. The
+      An editor built on the Atlas Inference Engine, WebGPU and Rust compiled to WebAssembly. The
       model runs in your browser, on your GPU. No server round-trip. No API key. Your code and your
       weights never leave the machine.
     </p>
@@ -39,7 +39,7 @@
     </div>
 
     <ul class="stack" aria-label="Built on">
-      <li>Avarok Inference Engine</li>
+      <li>Atlas Inference Engine</li>
       <li>Rust</li>
       <li>WebGPU</li>
       <li>100% WebAssembly</li>

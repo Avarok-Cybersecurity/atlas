@@ -4,11 +4,11 @@
 // replacing the C++ implementation and the `cxx` FFI bridge. No C/C++
 // /header/Python files; builds with plain `cargo build`.
 //
-// PORT STATUS: COMPLETE (wave W7 — public API + Avarok repoint). The
+// PORT STATUS: COMPLETE (wave W7 — public API + Atlas repoint). The
 // `api` module exposes the exact public surface the vendored
 // `xgrammar-rs` crate provided, so this crate is a drop-in replacement.
 // The algorithmic core lives in the modules below; `api` is the
-// vendored-signature façade Avarok's `spark-server` links against.
+// vendored-signature façade Atlas's `spark-server` links against.
 
 // Index-based loops and same-named submodules (`fsm::fsm`,
 // `compiler::compiler`) are kept where they mirror the C++ source's
@@ -31,7 +31,7 @@ mod api;
 
 // ── Public API façade (vendored `xgrammar-rs` surface) ─────────────
 //
-// These are the names Avarok's `use xgrammar::{...}` resolves against.
+// These are the names Atlas's `use xgrammar::{...}` resolves against.
 // The façade types shadow the core's same-named types at the crate
 // root; the core types remain reachable via their module paths
 // (`xgrammar::compiler::GrammarCompiler`, etc.) for the crate's own
@@ -63,7 +63,7 @@ pub use structural_tag::{
 // The vendored C++ `enum class VocabType` surfaced through autocxx as
 // SCREAMING_SNAKE variants (`VocabType::RAW`, `BYTE_FALLBACK`,
 // `BYTE_LEVEL`). The pure-Rust port follows Rust convention
-// (`Raw`/`ByteFallback`/`ByteLevel`). Avarok's `grammar/engine.rs`
+// (`Raw`/`ByteFallback`/`ByteLevel`). Atlas's `grammar/engine.rs`
 // writes the SCREAMING form, so we add associated constants that map
 // onto the new variants — both spellings now resolve.
 impl VocabType {

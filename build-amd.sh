@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Avarok for AMD GPUs via SCALE (recompiles the unmodified CUDA kernels).
+# Build Atlas for AMD GPUs via SCALE (recompiles the unmodified CUDA kernels).
 # Verified: gfx1151 / Strix Halo, SCALE 1.7.1, native Ubuntu. See
 # docs/porting/amd-strix-halo-scale.md.
 set -euo pipefail

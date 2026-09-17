@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run N opencode probes sequentially against the currently-running Avarok
+# Run N opencode probes sequentially against the currently-running Atlas
 # container and score each one. Intended for statistical comparison of
-# Avarok drift-mitigation tiers (N≥10 per tier required to overcome the
+# Atlas drift-mitigation tiers (N≥10 per tier required to overcome the
 # FP8 per-run variance).
 #
 # Usage:
@@ -77,7 +77,7 @@ for i in $(seq 1 "${N}"); do
     "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
   END_TS=$(date +%s.%N)
 
-  # Avarok log window for THIS run only. Docker logs --since accepts
+  # Atlas log window for THIS run only. Docker logs --since accepts
   # epoch-seconds (truncate decimals).
   START_TS_INT=${START_TS%.*}
   sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true

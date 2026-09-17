@@ -160,7 +160,7 @@
                  so the answer is the fix, not a second machine. The reported
                  case was a DGX Spark owner outside the `docker` group being
                  handed a pairing code — asked to add hardware to work around
-                 hardware that was fine. These are the same commands avarokctl
+                 hardware that was fine. These are the same commands atlasctl
                  prints; nothing here runs them. -->
             {#if /docker/i.test(launch.placement.detail ?? '')}
               <p class="ld-place-lead">Fix it once on this machine:</p>
@@ -168,7 +168,7 @@
               <CommandRow command="newgrp docker" extra="ld-place-cmd" />
               <p class="ld-place-sub">
                 Then reopen this dialog. The agent re-checks on its own, so there is
-                nothing to restart. Do not use <code>sudo avarokctl</code> — it runs
+                nothing to restart. Do not use <code>sudo atlasctl</code> — it runs
                 the model as root and leaves root-owned files in <code>~/.avarok</code>
                 that your normal user cannot read.
               </p>
@@ -239,7 +239,7 @@
 
         {:else if launch.phase === 'guide'}
           <p>
-            Avarok runs on your hardware, not ours. This page can start a model for
+            Atlas runs on your hardware, not ours. This page can start a model for
             you once a small local agent is listening.
           </p>
           <InstallSteps />
@@ -257,7 +257,7 @@
             The agent prints a token when it starts. Paste it once so it knows
             this browser is yours.
           </p>
-          <CommandRow command="avarokctl agent token" />
+          <CommandRow command="atlasctl agent token" />
           <form onsubmit={submitToken}>
             <input
               class="mono ld-token"

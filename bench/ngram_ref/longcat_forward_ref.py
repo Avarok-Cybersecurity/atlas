@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Streaming numpy reference forward for LongCat-Flash-Lite (the backbone
-behind the n-gram embeddings) — golden generator for the Avarok port.
+behind the n-gram embeddings) — golden generator for the Atlas port.
 
 Line-faithful port of transformers' modeling_longcat_flash.py (v4.57):
 dual-sublayer decoder layers (2x MLA + 2x dense MLP + shortcut MoE whose

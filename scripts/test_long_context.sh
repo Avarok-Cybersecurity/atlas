@@ -1,5 +1,5 @@
 #!/bin/bash
-# Long-context coherence test for Avarok.
+# Long-context coherence test for Atlas.
 # Tests fibonacci generation with realistic agentic system prompts.
 # Usage: ./test_long_context.sh [host:port] [model_hf_id]
 

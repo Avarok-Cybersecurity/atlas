@@ -330,7 +330,7 @@ fn the_dataset_fingerprint_survives_into_a_gate_record() {
         target_model: "m".into(),
         params: Default::default(),
         source: crate::history::RunSource::Cli,
-        avarok_version: "test".into(),
+        atlas_version: "test".into(),
         frame,
     };
     let gate = crate::gate::GateRecord::from_run(

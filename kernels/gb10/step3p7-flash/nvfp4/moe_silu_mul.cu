@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok MoE element-wise SiLU activation + multiply, WITH a SwiGLU clamp.
+// Atlas MoE element-wise SiLU activation + multiply, WITH a SwiGLU clamp.
 // Shadows `common/moe_silu_mul.cu` for Step-3.7-Flash only.
 //
 // This file PRESERVES TODAY'S BEHAVIOUR; it does not claim to be correct.

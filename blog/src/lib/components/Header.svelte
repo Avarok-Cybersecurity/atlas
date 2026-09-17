@@ -2,7 +2,7 @@
   import { page } from '$app/state';
   import { nav, githubUrl, MAIN_SITE, navCurrent } from '$lib/content.js';
   import GithubIcon from './GithubIcon.svelte';
-  import AvarokLockup from '$shared/components/AvarokLockup.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   const current = (href) => navCurrent(page.url.pathname, href);
@@ -13,8 +13,8 @@
 <header class="hdr">
   <div class="hdr-in">
     <div class="brand">
-      <a class="brand-mark" href={landing} aria-label="Avarok home">
-        <AvarokLockup kind="horizontal" label="Avarok" />
+      <a class="brand-mark" href={landing} aria-label="Atlas home">
+        <AtlasLockup kind="horizontal" />
       </a>
       <span class="brand-div" aria-hidden="true"></span>
       <a class="brand-sub" href="/" aria-current={current('/') ? 'page' : undefined}>Blog</a>
@@ -38,7 +38,7 @@
           <path d="M7 17L17 7M17 7H8M17 7v9" />
         </svg>
       </a>
-      <a class="btn-ghost" href={githubUrl} target="_blank" rel="noopener" aria-label="Avarok on GitHub">
+      <a class="btn-ghost" href={githubUrl} target="_blank" rel="noopener" aria-label="Atlas on GitHub">
         <GithubIcon size={14} />
       </a>
     </div>

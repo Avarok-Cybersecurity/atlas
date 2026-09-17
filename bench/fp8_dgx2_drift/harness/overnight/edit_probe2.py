@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edit-flow probe v2 — harder, Avarok-bug-seeking scenarios (claude-code only;
+"""Edit-flow probe v2 — harder, Atlas-bug-seeking scenarios (claude-code only;
 opencode is currently down with the known stale-cache hang).
 
 Scenarios:
@@ -8,13 +8,13 @@ Scenarios:
                      an Edit whose old_string must EXACTLY match a line deep in
                      context — if drift corrupts the model's reproduction of
                      old_string, the Edit fails to match -> retries / multi-turn
-                     degradation. Highest Avarok-bug yield.
+                     degradation. Highest Atlas-bug yield.
   S2 multifile_rename: rename a fn across 2 files + its call site. Stresses
                      multiple Edit calls across files in one session.
 
 Each: seed -> run claude-code (Read+Edit+Bash) -> cargo test -> inspect.
 Writes /workspace/editprobe2_<scenario>.json. Coding is trivial on purpose so a
-failure points at Avarok mechanics, not model competence.
+failure points at Atlas mechanics, not model competence.
 """
 from __future__ import annotations
 import json, os, pathlib, subprocess, sys, time

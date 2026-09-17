@@ -213,7 +213,7 @@ impl TransformerModel {
     /// their independent local prefix caches disagree. Implemented via
     /// `world_size` rooted broadcasts (one rooted at each rank), each
     /// rank min-reducing the values it observes. NCCL has a native
-    /// allreduce-MIN but Avarok's spark-comm trait only exposes SUM
+    /// allreduce-MIN but Atlas's spark-comm trait only exposes SUM
     /// allreduce; the rooted-broadcast loop is portable and adds at
     /// most 2 NCCL ops per chunk-0 cache hit (negligible vs the prefill
     /// compute it unblocks).

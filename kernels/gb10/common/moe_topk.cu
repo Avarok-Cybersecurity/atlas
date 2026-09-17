@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok MoE Top-K Softmax kernel for SM121 (GB10).
+// Atlas MoE Top-K Softmax kernel for SM121 (GB10).
 //
 // GPU-side replacement for CPU top-K routing.
 // Eliminates D2H copy of gate logits + CPU sort + CPU softmax.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSM State Quality Degradation Profiler for Avarok.
+SSM State Quality Degradation Profiler for Atlas.
 
 Sends increasing context lengths to find the exact threshold where SSM state
 quality breaks down (garbled output, failure to stop at EOS, etc).

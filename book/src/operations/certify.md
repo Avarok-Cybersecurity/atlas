@@ -24,8 +24,8 @@ spark bench certify --with-nodes 10.10.10.2 --remote-only # from a laptop: nodes
 ## `--with-nodes`
 
 The same campaign, on several machines at once. Every address is asked
-through `avarokctl bench nodes` (`ip[:port]`, `[v6]:port`, `host.local`,
-`dns.name`; port omitted → avarokctl's peer port), and a node is **admitted**
+through `atlasctl bench nodes` (`ip[:port]`, `[v6]:port`, `host.local`,
+`dns.name`; port omitted → atlasctl's peer port), and a node is **admitted**
 only when it can sign records this repository will accept: bench enabled, the
 box class being certified, a signer committed in `.github/record-signers/`,
 not busy, nothing queued, memory and disk above the floors, a GPU it can
@@ -105,11 +105,11 @@ key. A record that fails any of those is removed again and never retried on
 that node. A node that fails twice in a row is retired for the campaign.
 Ctrl-C or a drift on the guarded branch cancels every node's job.
 
-**What avarokctl must have.** Each node runs an `avarokctl agent` with a
-`bench.yaml` (avarok-recipes `docs/BENCH.md`) and has granted this machine
-`bench` (`avarokctl peer grant-bench <fingerprint>` there); this machine
-needs `avarokctl` on `PATH` or `--avarokctl PATH`, paired with each node.
-`avarokctl` is run with this process's environment, so a submitter identity
+**What atlasctl must have.** Each node runs an `atlasctl agent` with a
+`bench.yaml` (atlas-recipes `docs/BENCH.md`) and has granted this machine
+`bench` (`atlasctl peer grant-bench <fingerprint>` there); this machine
+needs `atlasctl` on `PATH` or `--atlasctl PATH`, paired with each node.
+`atlasctl` is run with this process's environment, so a submitter identity
 kept outside the default directory is selected with
 `AVAROKCTL_CONFIG_DIR=/path spark bench certify …`.
 

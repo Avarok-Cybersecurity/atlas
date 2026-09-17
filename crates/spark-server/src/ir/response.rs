@@ -61,7 +61,7 @@ pub struct TokenLogprob {
 }
 
 /// Token accounting, including the detail counters the wire formats
-/// surface (prefix-cache hits, reasoning tokens) and Avarok's
+/// surface (prefix-cache hits, reasoning tokens) and Atlas's
 /// performance extensions.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Usage {
@@ -77,9 +77,9 @@ pub struct Usage {
     /// Speculative-decode draft tokens the verify step ACCEPTED (MTP path)
     /// (OpenAI `completion_tokens_details.accepted_prediction_tokens` — the
     /// field's meaning is "predicted tokens that matched generation", which
-    /// Avarok's self-drafted MTP predictions are). 0 when speculation is off.
+    /// Atlas's self-drafted MTP predictions are). 0 when speculation is off.
     pub accepted_prediction_tokens: usize,
-    /// Avarok perf extensions; encoders may ignore.
+    /// Atlas perf extensions; encoders may ignore.
     pub time_to_first_token_ms: f64,
     pub response_tokens_per_second: f64,
 }

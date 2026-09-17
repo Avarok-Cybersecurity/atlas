@@ -8,7 +8,7 @@
 // is constrained to emit a stream where, between *trigger* points,
 // free text is allowed, and once a trigger prefix appears the model
 // must produce a tagged body — `begin <schema-conforming content> end`
-// — i.e. `<tool_call>{json}</tool_call>` style enforcement. Avarok's
+// — i.e. `<tool_call>{json}</tool_call>` style enforcement. Atlas's
 // `grammar/compile_tools.rs` calls into this for every tool request.
 //
 // PIPELINE (mirrors `StructuralTagToGrammar`)
@@ -89,7 +89,7 @@ pub fn structural_tag_to_grammar(structural_tag_json: &str) -> StructuralTagResu
 ///
 /// Each item becomes a `tag` (`begin`, a `json_schema` body, `end`)
 /// inside a single `triggered_tags` format whose triggers are
-/// `triggers`. This is the exact shape Avarok's tool-call compiler
+/// `triggers`. This is the exact shape Atlas's tool-call compiler
 /// uses: one tag per tool, one trigger per opening marker.
 ///
 /// Port of `StructuralTag::from_legacy_structural_tag` followed by

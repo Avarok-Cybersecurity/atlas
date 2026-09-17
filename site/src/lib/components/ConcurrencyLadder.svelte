@@ -1,5 +1,5 @@
 <script>
-  // Avarok vs vLLM across the published concurrency ladder, C=1..128.
+  // Atlas vs vLLM across the published concurrency ladder, C=1..128.
   //
   // Everything rendered here comes from ladder.generated.json, which
   // gen-ladder.mjs computes from the raw harness output in bench/ladder38/.
@@ -28,8 +28,8 @@
   const baselines = ladder.series.filter((s) => s.role === 'baseline');
   // `variant`: another configuration of the SUBJECT engine, drawn but never
   // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
-  // the published claim is Avarok against the matched vLLM baseline, and
-  // letting a second Avarok configuration into that comparison would change
+  // the published claim is Atlas against the matched vLLM baseline, and
+  // letting a second Atlas configuration into that comparison would change
   // what the headline means rather than adding evidence for it.
   const variants = ladder.series.filter((s) => s.role === 'variant');
   const plotted = [subject, ...variants, ...baselines];
@@ -78,12 +78,12 @@
       {#if ladder.summary.all_won}
         Faster than vLLM at every concurrency, C=1 to 128
       {:else}
-        Avarok vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
+        Atlas vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
       {/if}
     </svelte:element>
     <p class="cl-sub">
       {ladder.workload.checkpoint} on one GB10. {ladder.aggregate}. The matched baseline
-      runs vLLM's own MTP speculative decoding at K=4, same as Avarok, on the same box,
+      runs vLLM's own MTP speculative decoding at K=4, same as Atlas, on the same box,
       checkpoint, client and prompts. Margin ranges
       {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against that
       matched configuration at each rung.
@@ -105,7 +105,7 @@
       </figcaption>
 
       <svg viewBox="0 0 {W} {H}" role="img"
-        aria-label="Throughput in tokens per second versus concurrency, Avarok compared with two vLLM configurations">
+        aria-label="Throughput in tokens per second versus concurrency, Atlas compared with two vLLM configurations">
         {#each yTicks as t}
           <line class="gc-grid" x1={PL} y1={y(t)} x2={W - PR} y2={y(t)} />
           <text class="gc-axis" x={PL - 8} y={y(t) + 3.5} text-anchor="end">{Math.round(t)}</text>
@@ -137,13 +137,13 @@
     <div class="cl-tablewrap">
       <table class="cl-table">
         <caption class="cl-caption">
-          Throughput in tok/s. Ratio is Avarok over the matched vLLM + MTP configuration
+          Throughput in tok/s. Ratio is Atlas over the matched vLLM + MTP configuration
           at that rung. The unmatched no-speculation vLLM leg is shown, not scored.
         </caption>
         <thead>
           <tr>
             <th scope="col">C</th>
-            <th scope="col">Avarok</th>
+            <th scope="col">Atlas</th>
             {#each baselines as b}<th scope="col">{b.label}</th>{/each}
             <th scope="col">Ratio</th>
           </tr>
@@ -152,7 +152,7 @@
           {#each ladder.rows as row}
             <tr>
               <th scope="row" class="mono">{row.c}</th>
-              <td class="mono cl-win">{fmtV(row.avarok)}</td>
+              <td class="mono cl-win">{fmtV(row.atlas)}</td>
               {#each row.baselines as b}
                 <td class="mono" class:cl-best={b.id === row.best_baseline_id}>{fmtV(b.tok_s)}</td>
               {/each}
@@ -185,7 +185,7 @@
             <h3>{s.label} <span class="cl-eng">{s.engine}</span></h3>
             {#if s.parity === 'unmatched'}
               <p class="cl-warn">
-                Not matched to Avarok: {s.parity_deltas.join('; ')}. Shown for
+                Not matched to Atlas: {s.parity_deltas.join('; ')}. Shown for
                 completeness. It is not the published denominator.
               </p>
             {/if}

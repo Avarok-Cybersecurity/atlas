@@ -4,7 +4,7 @@ Qwen3.8-Flash-Next family (see bench/ngram_ref/modeling_longcat_ngram.py,
 fetched from meituan-longcat/LongCat-Flash-Lite @ main).
 
 This is a line-faithful numpy port of `NgramEmbedding.forward` plus the
-`NgramCache` decode contract. It is the golden reference the Avarok
+`NgramCache` decode contract. It is the golden reference the Atlas
 implementation must match bit-for-bit on the integer id math and to BF16
 tolerance on the fused embedding.
 
@@ -16,7 +16,7 @@ Three layers of assurance, in order of availability:
      context cache. This exercises the exact seams a serving engine has
      (prefill chunking, decode steps, cache truncation);
   3. golden-vector dump against the real checkpoint's tables (--dump,
-     needs the downloaded snapshot) for the Avarok loader/kernel to match.
+     needs the downloaded snapshot) for the Atlas loader/kernel to match.
 
 Usage:
   python3 ngram_parity.py            # property + consistency tests (synthetic)
@@ -87,7 +87,7 @@ def precompute_vocab_mods(cfg):
     """vocab_mods[(i, j)] = [V^1 mod T, ..., V^(i-1) mod T] for the table at
     index (i-2)*k + j. Python ints — the products overflow i64 for real
     table sizes (V ~ 2^17, T ~ 2^23; id accumulation fits i64 but the
-    Avarok kernel must do the mod reduction per term, not at the end)."""
+    Atlas kernel must do the mod reduction per term, not at the end)."""
     mods = {}
     for i in range(2, cfg.emb_neighbor_num + 1):
         for j in range(cfg.emb_split_num):
@@ -239,7 +239,7 @@ def test_real_dims():
 def dump_golden(snapshot_dir):
     """Read the needed embedder/proj rows straight from the safetensors
     index for a fixed token sequence and write golden fused embeddings to
-    ngram_golden.npz for the Avarok implementation to match."""
+    ngram_golden.npz for the Atlas implementation to match."""
     import glob
     import os
     idx = json.load(open(os.path.join(snapshot_dir,

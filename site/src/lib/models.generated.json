@@ -15,7 +15,7 @@
             "recipeStem": "qwen3-coder-next-fp8",
             "recipeId": "qwen3-coder-next-fp8",
             "runnable": true,
-            "command": "avarokctl run qwen3-coder-next-fp8"
+            "command": "atlasctl run qwen3-coder-next-fp8"
           }
         ]
       },
@@ -31,7 +31,7 @@
             "recipeStem": "qwen3-next-80b-a3b-nvfp4",
             "recipeId": "qwen3-next-80b-a3b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3-next-80b-a3b-nvfp4"
+            "command": "atlasctl run qwen3-next-80b-a3b-nvfp4"
           }
         ]
       },
@@ -47,7 +47,7 @@
             "recipeStem": "qwen3-vl-30b-a3b-nvfp4",
             "recipeId": "qwen3-vl-30b-a3b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3-vl-30b-a3b-nvfp4"
+            "command": "atlasctl run qwen3-vl-30b-a3b-nvfp4"
           }
         ]
       },
@@ -55,15 +55,15 @@
         "name": "Qwen3.5",
         "recipes": [
           {
-            "displayName": "Qwen3.5 0.8B BF16",
+            "displayName": "Qwen3.5 0.8B BF16 Atlas",
             "hfId": "Qwen/Qwen3.5-0.8B",
             "params": "0.8B",
             "quant": "none",
             "topology": "single",
-            "recipeStem": "qwen3.5-0.8b-bf16-avarok",
-            "recipeId": "qwen3.5-0.8b-bf16-avarok",
+            "recipeStem": "qwen3.5-0.8b-bf16-atlas",
+            "recipeId": "qwen3.5-0.8b-bf16-atlas",
             "runnable": true,
-            "command": "avarokctl run qwen3.5-0.8b-bf16-avarok"
+            "command": "atlasctl run qwen3.5-0.8b-bf16-atlas"
           },
           {
             "displayName": "Qwen3.5 122B A10B NVFP4 EP=2",
@@ -74,7 +74,7 @@
             "recipeStem": "qwen3.5-122b-a10b-nvfp4-ep2",
             "recipeId": "qwen3.5-122b-a10b-nvfp4-ep2",
             "runnable": false,
-            "command": "avarokctl run qwen3.5-122b-a10b-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
+            "command": "atlasctl run qwen3.5-122b-a10b-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           },
           {
             "displayName": "Qwen3.5 122B A10B NVFP4 Single",
@@ -85,7 +85,7 @@
             "recipeStem": "qwen3.5-122b-a10b-nvfp4-single",
             "recipeId": "qwen3.5-122b-a10b-nvfp4-single",
             "runnable": true,
-            "command": "avarokctl run qwen3.5-122b-a10b-nvfp4-single"
+            "command": "atlasctl run qwen3.5-122b-a10b-nvfp4-single"
           },
           {
             "displayName": "Qwen3.5 27B Dense NVFP4",
@@ -96,7 +96,7 @@
             "recipeStem": "qwen3.5-27b-dense-nvfp4",
             "recipeId": "qwen3.5-27b-dense-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3.5-27b-dense-nvfp4"
+            "command": "atlasctl run qwen3.5-27b-dense-nvfp4"
           },
           {
             "displayName": "Qwen3.5 35B A3B NVFP4",
@@ -107,7 +107,7 @@
             "recipeStem": "qwen3.5-35b-a3b-nvfp4",
             "recipeId": "qwen3.5-35b-a3b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3.5-35b-a3b-nvfp4"
+            "command": "atlasctl run qwen3.5-35b-a3b-nvfp4"
           }
         ]
       },
@@ -123,7 +123,7 @@
             "recipeStem": "qwen3.6-27b-fp8",
             "recipeId": "qwen3.6-27b-fp8",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-27b-fp8"
+            "command": "atlasctl run qwen3.6-27b-fp8"
           },
           {
             "displayName": "Qwen3.6 27B FP8 MTP",
@@ -134,7 +134,7 @@
             "recipeStem": "qwen3.6-27b-fp8-mtp",
             "recipeId": "qwen3.6-27b-fp8-mtp",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-27b-fp8-mtp"
+            "command": "atlasctl run qwen3.6-27b-fp8-mtp"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4",
@@ -145,7 +145,7 @@
             "recipeStem": "qwen3.6-27b-nvfp4",
             "recipeId": "qwen3.6-27b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-27b-nvfp4"
+            "command": "atlasctl run qwen3.6-27b-nvfp4"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4 Prefill Record",
@@ -156,7 +156,7 @@
             "recipeStem": "qwen3.6-27b-nvfp4-prefill-record",
             "recipeId": "qwen3.6-27b-nvfp4-prefill-record",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-27b-nvfp4-prefill-record"
+            "command": "atlasctl run qwen3.6-27b-nvfp4-prefill-record"
           },
           {
             "displayName": "Qwen3.6 27B NVFP4 Unsloth",
@@ -167,7 +167,7 @@
             "recipeStem": "qwen3.6-27b-nvfp4-unsloth",
             "recipeId": "qwen3.6-27b-nvfp4-unsloth",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-27b-nvfp4-unsloth"
+            "command": "atlasctl run qwen3.6-27b-nvfp4-unsloth"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 Bf16head",
@@ -178,7 +178,7 @@
             "recipeStem": "qwen3.6-35b-a3b-fp8-bf16head",
             "recipeId": "qwen3.6-35b-a3b-fp8-bf16head",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-35b-a3b-fp8-bf16head"
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-bf16head"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 MTP",
@@ -189,7 +189,7 @@
             "recipeStem": "qwen3.6-35b-a3b-fp8-mtp",
             "recipeId": "qwen3.6-35b-a3b-fp8-mtp",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-35b-a3b-fp8-mtp"
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-mtp"
           },
           {
             "displayName": "Qwen3.6 35B A3B FP8 Nvfp4head",
@@ -200,7 +200,7 @@
             "recipeStem": "qwen3.6-35b-a3b-fp8-nvfp4head",
             "recipeId": "qwen3.6-35b-a3b-fp8-nvfp4head",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-35b-a3b-fp8-nvfp4head"
+            "command": "atlasctl run qwen3.6-35b-a3b-fp8-nvfp4head"
           },
           {
             "displayName": "Qwen3.6 35B A3B NVFP4",
@@ -211,7 +211,7 @@
             "recipeStem": "qwen3.6-35b-a3b-nvfp4",
             "recipeId": "qwen3.6-35b-a3b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3.6-35b-a3b-nvfp4"
+            "command": "atlasctl run qwen3.6-35b-a3b-nvfp4"
           }
         ]
       },
@@ -227,7 +227,7 @@
             "recipeStem": "qwen3.8-27b-nvfp4-dflash2",
             "recipeId": "qwen3.8-27b-nvfp4-dflash2",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-27b-nvfp4-dflash2"
+            "command": "atlasctl run qwen3.8-27b-nvfp4-dflash2"
           },
           {
             "displayName": "Qwen3.8 27B NVFP4 Latency",
@@ -238,7 +238,7 @@
             "recipeStem": "qwen3.8-27b-nvfp4-latency",
             "recipeId": "qwen3.8-27b-nvfp4-latency",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-27b-nvfp4-latency"
+            "command": "atlasctl run qwen3.8-27b-nvfp4-latency"
           },
           {
             "displayName": "Qwen3.8 27B NVFP4 Throughput",
@@ -249,7 +249,7 @@
             "recipeStem": "qwen3.8-27b-nvfp4-throughput",
             "recipeId": "qwen3.8-27b-nvfp4-throughput",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-27b-nvfp4-throughput"
+            "command": "atlasctl run qwen3.8-27b-nvfp4-throughput"
           },
           {
             "displayName": "Qwen3.8 27B NVFP4 Unsloth",
@@ -260,7 +260,7 @@
             "recipeStem": "qwen3.8-27b-nvfp4-unsloth",
             "recipeId": "qwen3.8-27b-nvfp4-unsloth",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-27b-nvfp4-unsloth"
+            "command": "atlasctl run qwen3.8-27b-nvfp4-unsloth"
           },
           {
             "displayName": "Qwen3.8 27B NVFP4 Unsloth Bfcl",
@@ -271,7 +271,7 @@
             "recipeStem": "qwen3.8-27b-nvfp4-unsloth-bfcl",
             "recipeId": "qwen3.8-27b-nvfp4-unsloth-bfcl",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-27b-nvfp4-unsloth-bfcl"
+            "command": "atlasctl run qwen3.8-27b-nvfp4-unsloth-bfcl"
           },
           {
             "displayName": "Qwen3.8 Flash Next NVFP4",
@@ -282,7 +282,7 @@
             "recipeStem": "qwen3.8-flash-next-nvfp4",
             "recipeId": "qwen3.8-flash-next-nvfp4",
             "runnable": true,
-            "command": "avarokctl run qwen3.8-flash-next-nvfp4"
+            "command": "atlasctl run qwen3.8-flash-next-nvfp4"
           }
         ]
       }
@@ -304,7 +304,7 @@
             "recipeStem": "diffusion-gemma-bf16",
             "recipeId": "diffusion-gemma-bf16",
             "runnable": true,
-            "command": "avarokctl run diffusion-gemma-bf16"
+            "command": "atlasctl run diffusion-gemma-bf16"
           },
           {
             "displayName": "Diffusion Gemma FP8 Dynamic",
@@ -315,7 +315,7 @@
             "recipeStem": "diffusion-gemma-fp8-dynamic",
             "recipeId": "diffusion-gemma-fp8-dynamic",
             "runnable": true,
-            "command": "avarokctl run diffusion-gemma-fp8-dynamic"
+            "command": "atlasctl run diffusion-gemma-fp8-dynamic"
           }
         ]
       },
@@ -331,7 +331,7 @@
             "recipeStem": "gemma-4-26b-a4b-nvfp4",
             "recipeId": "gemma-4-26b-a4b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run gemma-4-26b-a4b-nvfp4"
+            "command": "atlasctl run gemma-4-26b-a4b-nvfp4"
           },
           {
             "displayName": "Gemma 4 31B NVFP4",
@@ -342,7 +342,7 @@
             "recipeStem": "gemma-4-31b-nvfp4",
             "recipeId": "gemma-4-31b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run gemma-4-31b-nvfp4"
+            "command": "atlasctl run gemma-4-31b-nvfp4"
           }
         ]
       }
@@ -364,7 +364,7 @@
             "recipeStem": "nemotron-3-nano-30b-a3b-nvfp4",
             "recipeId": "nemotron-3-nano-30b-a3b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run nemotron-3-nano-30b-a3b-nvfp4"
+            "command": "atlasctl run nemotron-3-nano-30b-a3b-nvfp4"
           }
         ]
       },
@@ -380,7 +380,7 @@
             "recipeStem": "nemotron-3-super-120b-a12b-nvfp4",
             "recipeId": "nemotron-3-super-120b-a12b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run nemotron-3-super-120b-a12b-nvfp4"
+            "command": "atlasctl run nemotron-3-super-120b-a12b-nvfp4"
           }
         ]
       }
@@ -402,7 +402,7 @@
             "recipeStem": "mistral-small-4-119b-nvfp4",
             "recipeId": "mistral-small-4-119b-nvfp4",
             "runnable": true,
-            "command": "avarokctl run mistral-small-4-119b-nvfp4"
+            "command": "atlasctl run mistral-small-4-119b-nvfp4"
           }
         ]
       }
@@ -424,7 +424,7 @@
             "recipeStem": "minimax-m2.7-nvfp4-ep2",
             "recipeId": "minimax-m2.7-nvfp4-ep2",
             "runnable": false,
-            "command": "avarokctl run minimax-m2.7-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
+            "command": "atlasctl run minimax-m2.7-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           }
         ]
       }
@@ -446,7 +446,7 @@
             "recipeStem": "deepseek-v4-flash-nvfp4-ep2",
             "recipeId": "deepseek-v4-flash-nvfp4-ep2",
             "runnable": false,
-            "command": "avarokctl run deepseek-v4-flash-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
+            "command": "atlasctl run deepseek-v4-flash-nvfp4-ep2 --rank 0 --world-size 2 --master-addr <spark-1>"
           }
         ]
       }

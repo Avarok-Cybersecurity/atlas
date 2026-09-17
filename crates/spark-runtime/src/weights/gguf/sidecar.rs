@@ -149,7 +149,7 @@ pub fn load_pass(
             Some(t) => t,
         };
 
-        // GGUF dims are ggml-order; Avarok/HF shape is the reverse.
+        // GGUF dims are ggml-order; Atlas/HF shape is the reverse.
         let hf_shape: Vec<usize> = tensor.dims.iter().rev().copied().collect();
 
         // ── Native keep-packed Q2_0 short-circuit ──

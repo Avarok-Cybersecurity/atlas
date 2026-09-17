@@ -2,7 +2,7 @@
 
 //! Kernel target descriptor for (Hardware, Model_quantization) tuples.
 //!
-//! Every set of Avarok kernels is hyperoptimized for a specific target.
+//! Every set of Atlas kernels is hyperoptimized for a specific target.
 //! This module provides the `KernelTarget` type that serves as the
 //! indexing key for PTX module sets, benchmarks, and kernel dispatch.
 

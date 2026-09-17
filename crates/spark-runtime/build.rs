@@ -91,7 +91,7 @@ fn main() {
     // ★ Both objects below are REFERENCE IMPLEMENTATIONS we benchmark against
     // and intend to beat — never dependencies. Leaving `CUTLASS_HOME` /
     // `FLASHINFER_HOME` unset is the NORMAL build: it emits no third-party
-    // kernel object, and the binary serves entirely on Avarok's own kernels.
+    // kernel object, and the binary serves entirely on Atlas's own kernels.
     // Setting them only makes the opponent available behind its runtime
     // opt-in (`AVAROK_CUTLASS_GEMM=1` / `AVAROK_FLASHINFER_PREFILL=1`), which
     // stays OFF by default. Canonical rationale: the module docs on
@@ -240,7 +240,7 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
 /// The SM architecture the CUTLASS / FlashInfer reference objects compile for.
 ///
 /// SSOT is `kernels/<hw>/HARDWARE.toml` `[hardware].arch` — the same file
-/// `avarok-kernels/build.rs` compiles Avarok's own kernels from. Hard-coding
+/// `avarok-kernels/build.rs` compiles Atlas's own kernels from. Hard-coding
 /// `sm_121f` here meant a build for any other hardware silently produced
 /// reference objects for GB10, which is a benchmark comparing two different
 /// GPUs' code. `AVAROK_CUDA_ARCH` still wins when set explicitly.

@@ -49,7 +49,7 @@ pub async fn cancel_response(axum::extract::Path(id): axum::extract::Path<String
     openai_error_response_with_param(
         StatusCode::BAD_REQUEST,
         format!(
-            "Response '{id}' cannot be cancelled: Avarok completes responses synchronously. Cancel only applies when the request was created with `background: true`, which this server does not support."
+            "Response '{id}' cannot be cancelled: Atlas completes responses synchronously. Cancel only applies when the request was created with `background: true`, which this server does not support."
         ),
         Some("id"),
         Some("response_not_cancellable"),

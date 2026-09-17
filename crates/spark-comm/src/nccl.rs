@@ -2,7 +2,7 @@
 
 //! Raw NCCL FFI bindings (minimal surface for EP all-reduce + broadcast).
 //!
-//! Only the functions Avarok actually calls are bound here — no attempt
+//! Only the functions Atlas actually calls are bound here — no attempt
 //! at complete coverage. Type sizes match NCCL 2.28+ on aarch64
 //! (symmetric memory `ncclMemAlloc`/`ncclMemFree` require NCCL ≥ 2.28).
 //!
@@ -182,7 +182,7 @@ unsafe extern "C" {
     //      directly without host round-trip), which is the substrate for
     //      fused AllReduce+RMSNorm+Residual kernels (TokenWeave-style).
     //
-    // For Avarok's 2-rank Spark over RoCE, the copy-engine path doesn't
+    // For Atlas's 2-rank Spark over RoCE, the copy-engine path doesn't
     // apply (RoCE is not NVLink), but the symmetric-memory windows are
     // still needed to compose with future device-API fusions and reduce
     // NCCL setup overhead via pre-registered handles.
@@ -315,7 +315,7 @@ pub fn sync_stream(stream: u64) -> anyhow::Result<()> {
 /// communicator. NCCL 2.28+ only — older NCCL returns `InvalidArgument`.
 ///
 /// Buffers from `ncclMemAlloc` enable copy-engine collectives over NVLink
-/// and the device-side communication API. On Avarok's 2-rank Spark over
+/// and the device-side communication API. On Atlas's 2-rank Spark over
 /// RoCE, the copy-engine offload is unavailable (RoCE != NVLink), but the
 /// symmetric windows are required to compose with device-API fused kernels
 /// (TokenWeave-style AR+RMSNorm).

@@ -64,7 +64,7 @@ The mid-sweep snapshot it replaced, kept for the reasoning:
 | `ttft-warm-gate` | PASS — median −0.2 %, p90 +0.2 % |
 | `ttft-cold-gate` | PASS — median +0.3 %, p90 +0.5 % |
 | `bfcl-subset-echolp` | ran clean earlier at **85.76 / 86.00, n=1004**; re-running at the frozen sha |
-| `bfcl-subset` | **BLOCKED** — needs `qwen3.6/qwen3.6-27b-nvfp4-unsloth` PRed to `avarok-recipes`; fails loudly (exit 1) meanwhile |
+| `bfcl-subset` | **BLOCKED** — needs `qwen3.6/qwen3.6-27b-nvfp4-unsloth` PRed to `atlas-recipes`; fails loudly (exit 1) meanwhile |
 
 ★ **Freeze code before a gate sweep.** `record_covers` invalidates on ANY
 `crates/` change, including TUI edits that cannot affect a server benchmark.
@@ -96,7 +96,7 @@ internalising: *the value that reads correct is not the value that runs*, and
 
 ### Owed
 
-- ~~**PR `qwen3.6-27b-nvfp4-unsloth` to `avarok-recipes`** — unblocks `bfcl-subset`.~~ **Done**: `bfcl-subset` has a passing record at `cc1ebf27` (88.04 / 88.74, n=995). The upstream recipe PR (branch `feat/qwen3.6-27b-nvfp4-unsloth`) is still an outward action needing owner sign-off, but it no longer blocks a gate.
+- ~~**PR `qwen3.6-27b-nvfp4-unsloth` to `atlas-recipes`** — unblocks `bfcl-subset`.~~ **Done**: `bfcl-subset` has a passing record at `cc1ebf27` (88.04 / 88.74, n=995). The upstream recipe PR (branch `feat/qwen3.6-27b-nvfp4-unsloth`) is still an outward action needing owner sign-off, but it no longer blocks a gate.
 - **Remaining UX findings** (audit in the transcript): GPU renders a fabricated `0.0 GB` when NVML is absent; `{:?}` Debug reaches the screen twice; no ETA on downloads or benchmark runs; `NO_COLOR` unhonoured; three different byte units under one roof; `q` still needs a confirmation while a run is in flight, and `/detach` is missing from the key map.
 - **One Lighthouse pass on dez.rs** — no Chromium on the build box, so its a11y/contrast claims are computed and reviewed, not machine-audited.
 - **`.webmanifest` missing from avarok2's global `/etc/nginx/mime.types`** — patched for dez.rs only; every other PWA on that host has the same latent bug.
@@ -165,7 +165,7 @@ baseline. The gate that does clear it is the later `d2800e3e` record
 (85.56 / 85.69) in §0. Comparing to a control run rather than to
 `BASELINE.json` is the mistake to avoid repeating — the JSON is the bar.
 
-Gate C's control was built fresh from `c19481aa` as `avarok-gb10:mainctl388` (do **not** reuse `mainctl-tui` — it predates main's tip by two days).
+Gate C's control was built fresh from `c19481aa` as `atlas-gb10:mainctl388` (do **not** reuse `mainctl-tui` — it predates main's tip by two days).
 
 ★ **Gate C's load-bearing evidence** is not the TTFT delta, it is: control serve compiles **158 modules** for `(sm_121, qwen3.6-27b, nvfp4)`, PR compiles **167**. The ported kernels are provably compiled in *and routed to* — that is the #296 silent-disable class excluded by evidence rather than assumed.
 
@@ -245,12 +245,12 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 
 | box | ip | at time of writing |
 |---|---|---|
-| dgx1 | 10.10.10.1 (local) | full C=1..128 Avarok-vs-vLLM sweep on the final image |
+| dgx1 | 10.10.10.1 (local) | full C=1..128 Atlas-vs-vLLM sweep on the final image |
 | dgx2 | 10.10.10.2 | **owner's interactive TUI session — do not touch** |
 | dgx3 | 10.10.10.3 | compile verification |
 
 **Rules that are not negotiable:**
-- **ONE bench per box.** Co-tenancy does not add noise, it **shifts the mean** — 16.3 GB of co-tenants cost Avarok **32% at C=16** while costing vLLM ~0%.
+- **ONE bench per box.** Co-tenancy does not add noise, it **shifts the mean** — 16.3 GB of co-tenants cost Atlas **32% at C=16** while costing vLLM ~0%.
 - **Parallelize ACROSS boxes**, never within one.
 - **Never kill/stop/signal another session's processes** or touch their worktrees (`/workspace/w55` on dgx3 belongs to another session). Move your own work instead.
 - **A cargo build is host-CPU load** that sails past `nvidia-smi` and `docker ps` and corrupts any timing leg. Never build on a box running a benchmark.
@@ -274,11 +274,11 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 7. ★ **SM clock: run the probe.** A **513 MHz clamp under load** makes every number 2.5–2.9× low while **every gate stays green**. Low variance is not health. Healthy is ~2400 MHz.
 
 ### Configuration
-8. ★ **`auto` is a DEFERRAL, not a value.** The 27B checkpoint declares `kv_cache_quant_algo: FP8`, so vLLM's `auto` resolved to fp8 while Avarok ran bf16 — confounding both a speed and an accuracy result.
+8. ★ **`auto` is a DEFERRAL, not a value.** The 27B checkpoint declares `kv_cache_quant_algo: FP8`, so vLLM's `auto` resolved to fp8 while Atlas ran bf16 — confounding both a speed and an accuracy result.
 9. ★ **`{"thinking": false}` is SILENTLY IGNORED.** The working key is `chat_template_kwargs:{"enable_thinking": false}`. No error, it just does nothing.
 10. ★ **`--num-drafts 1` is a NO-OP.** `config.rs:93` treats `1` as "unset", so MODEL.toml's `default_num_drafts=3` (K=4) wins. Every gate in the benchmark-pr skill passes `--num-drafts 1` believing it means K=2.
 11. ★ **A BFCL number is meaningless without its draw.** Always record `category_sample_pct` + N + the ordered-`sample_id` SHA. `echolp_subset27` (n=1004) vs the golden MLPerf draw (n=995) differ by ~1.8 on *normalized* while *overall* coincidentally matches to two decimals.
-12. ★ **Use recipes.** An unpinned config does not fail loudly — it produces a plausible number. `avarok-recipes/.../qwen3.6-27b-nvfp4.yaml` already pins `disable_thinking: true`; the owner's serve deviated from it, which is exactly why no gate ever saw the 18 s.
+12. ★ **Use recipes.** An unpinned config does not fail loudly — it produces a plausible number. `atlas-recipes/.../qwen3.6-27b-nvfp4.yaml` already pins `disable_thinking: true`; the owner's serve deviated from it, which is exactly why no gate ever saw the 18 s.
 13. ★ **The gates have never exercised grammar-constrained generation** — all five pass `--disable-tool-grammar true`. That path is untested by the suite.
 
 ### Kernels
@@ -315,12 +315,12 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | finding | verdict |
 |---|---|
 | 18 s TTFT on nvidia 27B | **TUI clock bug**, not kernels, not grammar. True TTFT 410–493 ms (§5) |
-| BFCL "regression" to ~83 | **Not a regression** — Avarok +0.37 ahead on a common basis; 87.24 was inflated by a 4096-context sample exclusion |
+| BFCL "regression" to ~83 | **Not a regression** — Atlas +0.37 ahead on a common basis; 87.24 was inflated by a 4096-context sample exclusion |
 | C=1 "regression" | **The prompt**, +17.66%, not code |
 | Class-1 GEMV dispatch gap | **REFUTED** — −14.4% at C=16 / −29.4% at C=32; the fallback was faster |
 | 16.40 ms/step down_proj prize | **Never existed** — MMQ already owned it |
 | FP16 verbosity (Nemotron +37-40%) | **Did not reproduce** — +3.17% spec-ON, 0% spec-OFF |
-| Matched-KV C=64/128 inversion | −2% to −6%, not −4.5% to −11%; Avarok wins tok/s at all four points, loses purely on token count |
+| Matched-KV C=64/128 inversion | −2% to −6%, not −4.5% to −11%; Atlas wins tok/s at all four points, loses purely on token count |
 
 ### 8c. Remaining — immediate (blocks merging §4 work)
 
@@ -341,7 +341,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | #86 | **Re-gate** wave 46's k64_n64 +1.60% — a single spec-ON pair drifts ±2% | rigor debt |
 | #89 | 4 shadow-dropped kernels are **candidates to measure**, not confirmed losses (Class-1 precedent) | measure |
 | #90 | Serve non-determinism is **concurrency-dependent** — bitwise output gating is valid at C=1 and only at C=1 | method |
-| #92 | Avarok **over-calls tools** where vLLM abstains — the whole BFCL gap is hallucination/irrelevance, not construction | accuracy lever |
+| #92 | Atlas **over-calls tools** where vLLM abstains — the whole BFCL gap is hallucination/irrelevance, not construction | accuracy lever |
 | #93 | Re-run wave 54's BFCL under **matched 16-bit KV** — the accuracy verdict is confounded the same way the speed one was | rigor debt |
 | #94 | Wave 56 refactor is **not neutral**: −0.67% spec-OFF at C=16, likely `ModelLevers` +8 bytes riding `ForwardContext` to every dispatch site | perf regression |
 | #95 | `sparkrun` silently drops all five GDN CLI flags — the recipe path is broken | bug |
@@ -423,7 +423,7 @@ its parser maps sliding→FullAttention.
 
 ### 9b. Fleet model-cache hygiene (owner instruction 2026-08-04)
 
-Matrix = `kernels/gb10/*/MODEL.toml` `hf_id` ∪ `avarok-recipes` `model:` fields (+ z-lab DFlash drafters). Script: `/tmp/sweep_models2.py` (matrix EMBEDDED — it must be, `/workspace` is not shared). Deleted across all three boxes: unsloth 27B/35B re-uploads (broken per #327), Qwen/Qwen3.6-35B-A3B (BF16), Ornith-1.0-35B-FP8, gpt-oss-120b-awq, Q4_K gguf 27B, Laguna, AgentWorld, diffusiongemma-NVFP4/FP8-nondynamic variants, Qwen3-1.7B — ~600 GiB freed. **Kept**: the w55 campaign's own checkpoints (nvidia 27B/35B NVFP4, centml W4A4, Puzzle-75B) and everything matrix-listed.
+Matrix = `kernels/gb10/*/MODEL.toml` `hf_id` ∪ `atlas-recipes` `model:` fields (+ z-lab DFlash drafters). Script: `/tmp/sweep_models2.py` (matrix EMBEDDED — it must be, `/workspace` is not shared). Deleted across all three boxes: unsloth 27B/35B re-uploads (broken per #327), Qwen/Qwen3.6-35B-A3B (BF16), Ornith-1.0-35B-FP8, gpt-oss-120b-awq, Q4_K gguf 27B, Laguna, AgentWorld, diffusiongemma-NVFP4/FP8-nondynamic variants, Qwen3-1.7B — ~600 GiB freed. **Kept**: the w55 campaign's own checkpoints (nvidia 27B/35B NVFP4, centml W4A4, Puzzle-75B) and everything matrix-listed.
 
 Downloads landed (spread across dgx1/dgx3, ≤3 in flight): Kbenkhaled-27B, VL-30B, DeepSeek-V4-Flash(157G), Super-120B, Coder-Next, 122B, Sehyo-35B, Gemma-4×2, Holo-4B (dgx1); Holo-35B, Mistral-119B, MiniMax-M2.7-NVFP4, Step-3.7 (dgx3). dgx1 disk is now at 98% — next sweep wave needs the 397B skipped or more freed first.
 

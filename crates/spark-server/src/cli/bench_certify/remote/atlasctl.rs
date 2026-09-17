@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `avarokctl bench … --json`, as a trait, and the subprocess that speaks it.
+//! `atlasctl bench … --json`, as a trait, and the subprocess that speaks it.
 //!
-//! The wire contract is avarokctl's (avarok-recipes `docs/BENCH.md`): every
+//! The wire contract is atlasctl's (atlas-recipes `docs/BENCH.md`): every
 //! subcommand writes exactly one JSON document to stdout (one event per line
 //! for `attach`), errors are an `ErrorObj` on stdout, and the exit code says
 //! which class of failure it was. Nothing here parses prose. The shapes are
@@ -20,12 +20,12 @@ pub use super::wire::{
     AttachEnd, ErrorObj, Exit, FetchedFile, NodeInfo, NodeRow, StreamEvent, SubmitSpec, Submitted,
 };
 
-/// What avarokctl answered when it did not do the thing: the exit class and
+/// What atlasctl answered when it did not do the thing: the exit class and
 /// the error document, if it wrote one.
 pub type Refusal = (Exit, Option<ErrorObj>);
 
 /// The five verbs the driver needs.
-pub trait Avarokctl: Send + Sync {
+pub trait Atlasctl: Send + Sync {
     fn nodes(&self, addrs: &[String]) -> Result<Vec<NodeRow>>;
     fn submit(&self, node: &str, spec: &SubmitSpec) -> Result<Result<Submitted, Refusal>>;
     /// Stream events from `from_seq` until the job ends or the link is lost
@@ -49,17 +49,17 @@ pub trait Avarokctl: Send + Sync {
     ) -> Result<Result<Vec<FetchedFile>, Refusal>>;
 }
 
-/// The real thing: `avarokctl` on PATH or as named.
-pub struct SubprocessAvarokctl {
+/// The real thing: `atlasctl` on PATH or as named.
+pub struct SubprocessAtlasctl {
     pub exe: PathBuf,
 }
 
-impl SubprocessAvarokctl {
-    /// Find the binary. Absent → an error naming `--avarokctl`.
+impl SubprocessAtlasctl {
+    /// Find the binary. Absent → an error naming `--atlasctl`.
     pub fn locate(explicit: Option<&Path>) -> Result<Self> {
         let exe = match explicit {
             Some(p) => p.to_path_buf(),
-            None => PathBuf::from("avarokctl"),
+            None => PathBuf::from("atlasctl"),
         };
         let probe = Command::new(&exe)
             .arg("--version")
@@ -75,7 +75,7 @@ impl SubprocessAvarokctl {
                 String::from_utf8_lossy(&o.stderr).trim()
             ),
             Err(e) => bail!(
-                "cannot run {} ({e}); install avarokctl or pass --avarokctl PATH",
+                "cannot run {} ({e}); install atlasctl or pass --atlasctl PATH",
                 exe.display()
             ),
         }
@@ -110,7 +110,7 @@ fn error_of(line: &str) -> Option<ErrorObj> {
     serde_json::from_str(line).ok()
 }
 
-impl Avarokctl for SubprocessAvarokctl {
+impl Atlasctl for SubprocessAtlasctl {
     fn nodes(&self, addrs: &[String]) -> Result<Vec<NodeRow>> {
         let joined = addrs.join(",");
         let out = self
@@ -118,7 +118,7 @@ impl Avarokctl for SubprocessAvarokctl {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .context("running avarokctl bench nodes")?;
+            .context("running atlasctl bench nodes")?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         // Rows are one array on one line; any exit code still carries them
         // (a partial failure exits non-zero with every row present).
@@ -127,12 +127,12 @@ impl Avarokctl for SubprocessAvarokctl {
             .find(|l| l.trim_start().starts_with('['))
             .with_context(|| {
                 format!(
-                    "avarokctl bench nodes wrote no rows (exit {:?}): {}",
+                    "atlasctl bench nodes wrote no rows (exit {:?}): {}",
                     out.status.code(),
                     stdout.trim()
                 )
             })?;
-        serde_json::from_str(rows_line).context("parsing avarokctl bench nodes output")
+        serde_json::from_str(rows_line).context("parsing atlasctl bench nodes output")
     }
 
     fn submit(&self, node: &str, spec: &SubmitSpec) -> Result<Result<Submitted, Refusal>> {
@@ -192,7 +192,7 @@ impl Avarokctl for SubprocessAvarokctl {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .context("spawning avarokctl bench attach")?;
+            .context("spawning atlasctl bench attach")?;
         let stdout = child.stdout.take().context("no stdout")?;
         // Reader thread: the main thread watches the cancel flag, so a cancel
         // interrupts a blocked read by killing the child.
@@ -232,7 +232,7 @@ impl Avarokctl for SubprocessAvarokctl {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
-        let status = child.wait().context("waiting for avarokctl bench attach")?;
+        let status = child.wait().context("waiting for atlasctl bench attach")?;
         let _ = reader.join();
         if killed.load(Ordering::SeqCst) {
             return Ok(AttachEnd::Cancelled);
@@ -269,7 +269,7 @@ impl Avarokctl for SubprocessAvarokctl {
             return Ok(());
         }
         bail!(
-            "avarokctl bench cancel {node} {job} exited {exit:?}: {}",
+            "atlasctl bench cancel {node} {job} exited {exit:?}: {}",
             error_of(&line).map_or(line.clone(), |e| e.to_string())
         )
     }
@@ -292,5 +292,5 @@ impl Avarokctl for SubprocessAvarokctl {
 }
 
 #[cfg(test)]
-#[path = "avarokctl_tests.rs"]
-pub(super) mod avarokctl_tests;
+#[path = "atlasctl_tests.rs"]
+pub(super) mod atlasctl_tests;

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bench_concurrency.py — Avarok Spark concurrency + latency benchmark.
+bench_concurrency.py — Atlas Spark concurrency + latency benchmark.
 
 Fires concurrent streaming requests and measures per-request and aggregate
 metrics across ISL / concurrency sweeps.
@@ -359,7 +359,7 @@ def main() -> None:
         print(f"ERROR: server not reachable at {args.url}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print("Avarok Spark — Concurrency Benchmark")
+    print("Atlas Spark — Concurrency Benchmark")
     print(f"  Model  : {args.model}")
     print(f"  URL    : {args.url}")
     print(f"  OSL    : {args.osl} max output tokens per request")

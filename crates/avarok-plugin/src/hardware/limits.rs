@@ -3,7 +3,7 @@
 //! record policies judge a box class by, declared per hardware class in
 //! `kernels/<hw>/HARDWARE.toml` under `[benchmarks.limits]`.
 //!
-//! Every number here is a fact about a box class, not about Avarok — a GB10's
+//! Every number here is a fact about a box class, not about Atlas — a GB10's
 //! `acpitz` zones read 55-76 °C under load and 89 °C in the throttled
 //! 0.66 tok/s incident; its unified 121 GB pool freezes under co-tenancy at
 //! ~15 % held by others; a 27B NVFP4 checkpoint loads in ~40 s from its page

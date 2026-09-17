@@ -6,7 +6,7 @@
 //!
 //! # The outage these pin
 //!
-//! Avarok squash-merges. A gate record is written on a PR branch against a
+//! Atlas squash-merges. A gate record is written on a PR branch against a
 //! commit on that branch; the squash lands a NEW commit on main with a
 //! different sha and no parent link back. Under the old
 //! `merge-base --is-ancestor` guard, every record a PR paid GPU hours for

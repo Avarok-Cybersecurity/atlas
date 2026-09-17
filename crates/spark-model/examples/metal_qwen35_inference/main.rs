@@ -54,7 +54,7 @@ fn main() -> Result<()> {
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
 
-    println!("=== Avarok Metal · Qwen3.5-4B-MLX-8bit inference ===");
+    println!("=== Atlas Metal · Qwen3.5-4B-MLX-8bit inference ===");
     println!("model dir: {model_dir}");
     println!("prompt:    {prompt:?}");
     println!();

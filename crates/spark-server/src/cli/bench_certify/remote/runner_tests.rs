@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The remote runner over a scripted avarokctl: what each way a node can
+//! The remote runner over a scripted atlasctl: what each way a node can
 //! answer turns into, in the campaign's own outcome vocabulary.
 use super::super::super::plan::{Estimate, Unit};
-use super::super::avarokctl::{
-    AttachEnd, Avarokctl, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
+use super::super::atlasctl::{
+    Atlasctl, AttachEnd, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
     Submitted,
 };
 use super::*;
@@ -144,7 +144,7 @@ impl Script {
     }
 }
 
-impl Avarokctl for Script {
+impl Atlasctl for Script {
     fn nodes(&self, _: &[String]) -> Result<Vec<NodeRow>> {
         unreachable!()
     }
@@ -222,7 +222,7 @@ fn run(
     built: bool,
 ) -> (RunOutcome, Vec<String>) {
     let mut r = RemoteRunner {
-        avarokctl: script.clone(),
+        atlasctl: script.clone(),
         node: node(built),
         run_id: "r1".into(),
         // The record names the commit abbreviated; the wire wants the full
@@ -446,7 +446,7 @@ fn the_deadline_pays_for_a_build_only_on_a_cold_node() {
     );
     // The job key is bounded and names the campaign, the node and the gate.
     let r = RemoteRunner {
-        avarokctl: Arc::new(Script::new(vec![], vec![])),
+        atlasctl: Arc::new(Script::new(vec![], vec![])),
         node: node(true),
         run_id: "1a0dc88a8c-1757770000".into(),
         anchor_full: "1a0dc88a8c9083bb956bd84cafa2cccbdb8e6e18".into(),
@@ -456,7 +456,7 @@ fn the_deadline_pays_for_a_build_only_on_a_cold_node() {
     let k = r.job_key(&unit());
     assert_eq!(k, "certify-1a0dc88a8c-1757770000-1730e1be-decode-floor");
     // A shard's key carries its slice; when the whole does not fit in
-    // avarokctl's 64, the gate name loses its front, never the shard tail —
+    // atlasctl's 64, the gate name loses its front, never the shard tail —
     // two shards of one group must never share a key.
     let shard = |i, n| Unit {
         id: "bfcl-subset-echolp",

@@ -358,7 +358,7 @@ pub(crate) fn load_model(
     // Text-only kernel target + a checkpoint that ships a vision tower: honor the
     // TARGET spec and serve text-only rather than failing the build at
     // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
-    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Avarok
+    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Atlas
     // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
     // vision tower to text-only; image inputs are unsupported until the target
     // is rebuilt with vision.
@@ -846,7 +846,7 @@ pub(crate) fn load_model(
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see
-    // decode_logits_seq.rs / compile_tools.rs; `lean` was an Avarok-only
+    // decode_logits_seq.rs / compile_tools.rs; `lean` was an Atlas-only
     // decode artifact, now fixed at the grammar `first_char` rule.)
 
     // Tokenizer-derived runtime: vocab cap, reasoning parser, think tokens,

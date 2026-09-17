@@ -8,7 +8,7 @@
 //! | FP8 payload       | `.weight`             | float8_e4m3    |
 //! | block scales      | `.weight_scale_inv`   | bf16 [N/BS,K/BS] |
 //!
-//! Avarok consumes these via runtime BF16→NVFP4 re-quantization inside
+//! Atlas consumes these via runtime BF16→NVFP4 re-quantization inside
 //! [`crate::weight_map::quantized_from_fp8`]. The `ignore_modules` list,
 //! when present, flags modules that should stay BF16 after dequant
 //! (skipping the NVFP4 step).

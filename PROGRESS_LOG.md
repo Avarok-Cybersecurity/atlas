@@ -58,7 +58,7 @@ docker run -d --name combo27 --gpus all --ipc=host --network host \
   -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
   -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 -e AVAROK_SSM_TAIL_PROTECT=1 \
   -e AVAROK_SSM_TAIL_LEASE_TTL=128 \
-  avarok-gb10:gdnf32-build \
+  atlas-gb10:gdnf32-build \
   /spark serve <centml-snapshot> --model-name qwen3.6-27b --host 0.0.0.0 --port 8888 \
     --max-seq-len 131072 --max-batch-size 8 --max-num-seqs 8 --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.80 --scheduling-policy slai \
@@ -263,7 +263,7 @@ sizing it from `max_seq_len` looks cheap. Also: it logs at `ERROR` per step.
 **8192 is the sweet spot.** Both 4K and 16K were worse.
 
 **And #379's benchmark cannot reach this cap by construction.**
-`bench/bench-avarok-concurrency.py` defines 6 ISL/OSL regimes but then filters
+`bench/bench-atlas-concurrency.py` defines 6 ISL/OSL regimes but then filters
 `[... if isl + osl <= MAX_SEQ_LEN]` with `MAX_SEQ_LEN` defaulting to 4096. At the
 config of record that silently drops the only two long-context regimes:
 
@@ -377,7 +377,7 @@ Options, unresolved:
 - warn at startup when `interval * block_size < spill_min`, i.e. when the config
   can never spill. **This one looks unambiguously worth doing.**
 
-### 5.7 `bench-avarok-concurrency.py` measures PREFIX-CACHE HITS, not prefill
+### 5.7 `bench-atlas-concurrency.py` measures PREFIX-CACHE HITS, not prefill
 
 `make_prompt(target_tokens)` is **deterministic** — the same filler text for every
 request at a given ISL, no per-request uniqueness. With `--enable-prefix-caching`
@@ -582,7 +582,7 @@ Two side findings:
 
 ### 6.6b Second wave of picks (2026-07-30, late session)
 
-Prompted by a survey of `wip-laguna-lora` / `port/lora-moe-avarok` for
+Prompted by a survey of `wip-laguna-lora` / `port/lora-moe-atlas` for
 transferable work (user-directed):
 
 * `a1d889f2` (= 4046dcad, LoRA-branch peel-off): **rayon host sampling**
@@ -692,7 +692,7 @@ vLLM bars (treated as fixed; NOT re-measured):
 
 | | C=8 | C=16 |
 |---|---|---|
-| Avarok decode_short | 108.5 | 124-138 |
+| Atlas decode_short | 108.5 | 124-138 |
 | vLLM bar | 98.8 | 168.9 |
 | ratio | **1.10x — parity MET honestly** | **0.73-0.82x** |
 
@@ -746,7 +746,7 @@ config change. Root-caused in layers, each verified by a serve+bench probe
      oc_harness quality gate before adoption.
    The remaining ~16 s is the non-FFN prefill cost — on this SSM-hybrid the
    prime suspect is the SSM-layer prefill scan (cf. the Holo measurement:
-   Avarok chunk_delta_h 11-13x slower than FlashInfer GDN at matched shape).
+   Atlas chunk_delta_h 11-13x slower than FlashInfer GDN at matched shape).
    Needs an nsys decomposition to confirm; the structural fix is the
    FI-GDN-class kernel program, not a scheduler or config change.
 
@@ -922,7 +922,7 @@ drafter launch chain.
 
 decode_short, canonical 4K, binary at 8075c2c6:
 
-| C | Avarok | vLLM bar | ratio | #379 published |
+| C | Atlas | vLLM bar | ratio | #379 published |
 |---|---|---|---|---|
 | 1 | 30.2 | 14.2 | **2.13x** | 25.6 |
 | 2 | 44.0 | 27.8 | **1.58x** | 35.2 |
@@ -1077,7 +1077,7 @@ Ordered by what I would pick up first.
    probe; it needs a SMALL resident pool (`--ssm-cache-slots 1..2`) so 2-3
    requests force eviction, NOT the 48-request/21 GB shape I first built.
 
-Deliberately parked: `put_with` (evaluated and rejected in avarok#382 — only 2 of
+Deliberately parked: `put_with` (evaluated and rejected in atlas#382 — only 2 of
 4 `SnapshotBlobStore` implementors could support it, and it holds the residency
 `Mutex` across 60 async enqueues; a better hypothesis is that the 17-19 ms
 `store.put` is lazily-faulted calloc pages, measurable as put wall time vs put
@@ -1087,24 +1087,24 @@ ordinal 1..128).
 
 ## 8. State at handoff (2026-07-29)
 
-**Branch** `perf/enterprise-concurrency-v3` on `avarok`, all commits signed:
+**Branch** `perf/enterprise-concurrency-v3` on `atlas`, all commits signed:
 
 ```
 30839cb7  test(bench): agentic + correctness harnesses
 5c9f9672  docs(progress): #379's benchmark cannot reach the meta-stride cap
 299c47e5  docs: PROGRESS_LOG
 1810854e  chore(ssm-tier): LoC cap
-aa233714  fix(ssm-tier): reap dead tier keys            <- avarok#382
+aa233714  fix(ssm-tier): reap dead tier keys            <- atlas#382
 6e68fa8b  chore(ssm-tier): clippy + LoC cap
-a91390e4  perf(ssm-tier): 22x cheaper eviction          <- avarok#381
-2848205c  perf(mtp): D-Cut depth pruning                <- avarok#379 head
+a91390e4  perf(ssm-tier): 22x cheaper eviction          <- atlas#381
+2848205c  perf(mtp): D-Cut depth pruning                <- atlas#379 head
 ```
 
-Worktree `/home/ms/avarok/.claude/worktrees/combo`, tracking the remote.
+Worktree `/home/ms/atlas/.claude/worktrees/combo`, tracking the remote.
 
-**Related PRs** (all draft, all green): avarok#381 (spill tier),
-avarok#382 (reaping, stacked on #381), avarok-recipes#13 (Holo-3.1-35B recipe,
-from a fork — no write access to avarok-recipes). Review comment on avarok#379:
+**Related PRs** (all draft, all green): atlas#381 (spill tier),
+atlas#382 (reaping, stacked on #381), atlas-recipes#13 (Holo-3.1-35B recipe,
+from a fork — no write access to atlas-recipes). Review comment on atlas#379:
 `#issuecomment-5112240223`.
 
 **Local scratch** `/home/ms/.claude/jobs/c91b191d/tmp/`: serve scripts
@@ -1116,7 +1116,7 @@ from a fork — no write access to avarok-recipes). Review comment on avarok#379
 * `CUTLASS_HOME=/home/ms/cutlass` at build ONLY to make the CUTLASS
   reference path available for benchmarking. It is NOT required to serve:
   the default build sets neither `CUTLASS_HOME` nor `FLASHINFER_HOME`, and
-  the binary serves on Avarok's own kernels. (Corrected 2026-08-31 — the
+  the binary serves on Atlas's own kernels. (Corrected 2026-08-31 — the
   earlier "or the binary refuses to serve" was never true of `spark-server`.)
 * `RUSTFLAGS="-L <dir with libnccl.so>"`; symlink `libnccl.so -> libnccl.so.2`.
 * The binary is `target/release/spark`, not `spark-server`.
@@ -1131,8 +1131,8 @@ from a fork — no write access to avarok-recipes). Review comment on avarok#379
 Commits added on top of the stack above (newest first):
 
 ```
-52222db9..75d1398e  8 commits: full avarok#373 (prefix-cache refcount family)
-d36a54b8..2fe52169  3 commits: full avarok#375 (KV-exhaustion preempt)
+52222db9..75d1398e  8 commits: full atlas#373 (prefix-cache refcount family)
+d36a54b8..2fe52169  3 commits: full atlas#375 (KV-exhaustion preempt)
 493df3ea  fix(kv): exhaustion wedge (= wip-laguna-lora d27ec6fd)
 8a07a672  bench: BENCH_LEVELS env
 de129a3c  fix(scheduler): mixed-step logits aliasing (= 1e85cb94 ported)

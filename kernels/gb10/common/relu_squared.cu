@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok ReLU² (ReLU-squared) activation.
+// Atlas ReLU² (ReLU-squared) activation.
 //
 // output[i] = max(0, input[i])^2
 //

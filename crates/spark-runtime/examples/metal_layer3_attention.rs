@@ -18,7 +18,7 @@
 //! This is essentially the integration-test code from
 //! `metal_real_model_full_attention_block_layer3` lifted into a
 //! standalone binary so anyone with the model on disk can confirm
-//! their Apple Silicon Avarok build runs real kernels on real
+//! their Apple Silicon Atlas build runs real kernels on real
 //! weights — no `cargo test --include-ignored` invocation needed.
 
 use anyhow::{Context, Result};

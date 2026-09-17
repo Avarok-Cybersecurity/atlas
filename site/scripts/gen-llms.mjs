@@ -5,11 +5,11 @@
 // llms.txt is what an answer engine reads when it wants the short version of a
 //   site. That makes it a claim surface, so it is generated rather than typed:
 //   the model list comes from models.generated.json (itself generated from
-//   avarok-recipes), the competitive numbers from ladder.generated.json, and the
+//   atlas-recipes), the competitive numbers from ladder.generated.json, and the
 //   MLPerf status from mlperf.json. Nothing here can drift from the page,
 //   because there is no second copy to drift.
 //
-// Prose that is genuinely editorial (what Avarok is, what it is not) is read out
+// Prose that is genuinely editorial (what Atlas is, what it is not) is read out
 //   of src/lib/data.js, the same file the page renders — so a copy change lands
 //   in both places at once.
 //
@@ -52,7 +52,7 @@ const lines = [];
 const push = (...l) => lines.push(...l);
 
 push(
-  '# Avarok Inference Engine',
+  '# Atlas Inference Engine',
   '',
   `> ${tagline}`,
   '',
@@ -78,15 +78,15 @@ push(
   `Workload: ISL ${w.isl_tokens} / OSL ${w.osl_tokens} tokens, temperature ${w.temperature},`,
   `seed ${w.seed}, ${w.reps} timed reps after ${w.warmup} warmup. ${w.sampling_parity}.`,
   '',
-  `Result: Avarok wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
+  `Result: Atlas wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
   'against the matched vLLM + MTP configuration at each concurrency.',
   '',
-  '| concurrency | Avarok tok/s | matched vLLM tok/s | ratio |',
+  '| concurrency | Atlas tok/s | matched vLLM tok/s | ratio |',
   '| --- | --- | --- | --- |'
 );
 for (const r of ladder.rows) {
   const best = r.baselines.find((b) => b.id === r.best_baseline_id);
-  push(`| ${r.c} | ${r.avarok.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
+  push(`| ${r.c} | ${r.atlas.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
 }
 push(
   '',
@@ -102,8 +102,8 @@ push('## Install', '', '```sh', data.runCommand, '```', '', 'Or without piping t
 push(
   `## Models (${recipes.length} recipes)`,
   '',
-  'Every model below maps to one recipe in avarok-recipes; the site cannot list a',
-  'model that has no recipe. Run any of them with `avarokctl run <id>`.',
+  'Every model below maps to one recipe in atlas-recipes; the site cannot list a',
+  'model that has no recipe. Run any of them with `atlasctl run <id>`.',
   ''
 );
 for (const vendor of [...new Set(recipes.map((r) => r.vendor))]) {

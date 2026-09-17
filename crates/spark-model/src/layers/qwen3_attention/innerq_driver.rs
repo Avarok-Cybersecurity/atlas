@@ -5,7 +5,7 @@
 //! Triggers via `TURBO_INNERQ=N` env var (N = calibration token count). The
 //! kernel-side state lives in `kernels/gb10/common/tq_plus_innerq_apply.cu`
 //! as `__device__` globals inside `namespace tq_plus` — deliberately in the
-//! SAME translation unit (= same PTX module; Avarok has no `-rdc` device
+//! SAME translation unit (= same PTX module; Atlas has no `-rdc` device
 //! linking) as the apply/accumulate kernels that read it. This driver
 //! manipulates that state directly via the CUDA Driver API:
 //!

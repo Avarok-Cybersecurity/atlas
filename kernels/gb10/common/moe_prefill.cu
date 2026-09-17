@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Avarok Fused MoE Expert+Shared GEMV — N-token prefill batch variant.
+// Atlas Fused MoE Expert+Shared GEMV — N-token prefill batch variant.
 //
 // Generalizes the batch2/batch3 pattern to arbitrary num_tokens by packing
 // (token_idx, expert_slot) into blockIdx.y. Each CTA processes one

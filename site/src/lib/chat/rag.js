@@ -24,7 +24,7 @@ function contextBlock(n, { path, startLine, endLine, language, text }) {
 
 function systemPrompt(repo, commit, context) {
   return (
-    `You are the code assistant for the Avarok inference engine codebase ` +
+    `You are the code assistant for the Atlas inference engine codebase ` +
     `(GitHub repository ${repo}, commit ${commit}). Answer questions about this ` +
     `codebase using ONLY the numbered code context below.\n\n` +
     `Rules:\n` +
