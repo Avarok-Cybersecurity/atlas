@@ -445,7 +445,35 @@ ATLAS_PLE_CUBLAS = "1"
 # degrade to the shipped token-sequential recurrence rather than to anything
 # unvalidated — `gdn_exact_replay_for_prefill` requires the library before it
 # honours the lever, so this pair is safe to ship on a box without it.
-ATLAS_GDN_FLASHINFER = "1"
+# ★ SHIPS OFF: IT COSTS A VIDEO-FIDELITY LEG, AND FIDELITY WINS BY DEFAULT.
+#
+# FlashInfer and Atlas's FLA scan are equivalent MATH, not identical
+# arithmetic -- the canonical cross-impl A/B (examples/gdn_fla_vs_fi.rs)
+# measured cos=0.999993, and FI gets there with bf16 tensor-core inner
+# matmuls where FLA accumulates in f32 scalar FFMA. Over 36 GDN layers that
+# ~1e-5 is enough to change a temp-0 answer.
+#
+# It does, measurably. `video-fidelity/video-before-image` reads a 4-colour
+# clip followed by a still and reports only three colours with FI on. The
+# model is not missing the group -- asked directly it still answers "4
+# segments" and "final segment: yellow" -- it garbles the ORDERED LIST, which
+# is what a small perturbation to a borderline decode looks like. Measured
+# 2026-09-17 on 2x GB10, TP=2 EP=2, both arms a full gate run:
+#
+#     ATLAS_GDN_FLASHINFER=1   video-fidelity 13/14   prefill 2435 / 2472
+#     ATLAS_GDN_FLASHINFER=0   video-fidelity 14/14   prefill 2187 / 2214
+#                                                     (8K / 32K tok/s)
+#
+# That is the whole trade: ~10% prefill for one gate leg. Off is the default
+# because a wrong answer is worse than a slower right one, and 2187 still
+# clears the 2K floor. It also explains a "regression" that was never a code
+# defect: this flag was baked on in 41639c138 (2026-09-15 10:53), between the
+# last passing record (09:40) and the first failing run (16:39).
+#
+# THROUGHPUT-FIRST SERVES SHOULD TURN IT BACK ON -- `ATLAS_GDN_FLASHINFER=1`
+# in the environment, which overrides this -- when ~10% prefill is worth more
+# than the last few percent of decode fidelity. Set it on EVERY rank.
+ATLAS_GDN_FLASHINFER = "0"
 # Frees BOTH sides of a Marconi restore boundary onto the chunked kernel. Not
 # one side: freeing only the cold pass is the cross-kernel boundary that
 # measured a 3.045e-03 layer-0 step, and it also left warm hits with no SSM
