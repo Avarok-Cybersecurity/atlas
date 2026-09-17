@@ -130,6 +130,59 @@ memory_gb = 32
 #     content collapse on that silicon), copied here with the tree. They are
 #     not RDNA 4 measurements and must be re-harvested.
 #
+# ── OPEN QUESTIONS, RANKED: fitting qwen3.8-27b in 32 GB ─────────────────
+# First serve of `unsloth/Qwen3.8-27B-NVFP4` on this board loaded all 21.81 GiB
+# of the checkpoint and then died in model build at layer 28 of 64:
+# `cuMemAlloc_v2 failed: status 2, requested 167772160 bytes`, ledger 33.73 GB
+# live across 2631 allocations, sysfs VRAM peak 34.1 GB. The full accounting,
+# with every site of that ledger sweep reproduced to the tenth of a MiB from
+# the shapes, is `docs/porting/r9700-residency.md`. The steady-state resident
+# set the 64 layers would have reached is 47.07 GiB (50.54 GB).
+#
+# `ATLAS_LOAD_RELEASE_SOURCES` (default ON here, OFF on NVIDIA) takes 9.94 GiB
+# of that back by freeing the FP8 projections the loader has already
+# requantised. It is NECESSARY AND NOT SUFFICIENT: 37.78 GB still does not load
+# on a 31.9 GB board. What is left, in the order it should be attempted:
+#
+#   1. Route `qwen35_dense.rs:1479`/`:1693` and `nvfp4_detect.rs:332` through
+#      `WeightStore::release_tensor`. No residency change; it removes a
+#      teardown double free that fires on every `Bf16Raw` checkpoint. First
+#      because it is a correctness fix and costs nothing.
+#   2. Release the FP8 `lm_head` (1.18 GiB), guarded on `!config.lm_head_fp8`
+#      and no speculative decoding — `lm_head_setup::native_fp8_lm_head_share`
+#      and the DFlash drafter tail bind those bytes ZERO-COPY.
+#   3. Do not build the transposed dense-FFN twins: 8.96 GiB, the largest item
+#      left. `DenseFfnWeights::{gate,up,down}_proj_t` are already `Option` and
+#      `weight_loader/gemma4/loader_a.rs:30-52` is a working precedent
+#      (`ffn_transpose_fits`, `ATLAS_GEMMA4_FFN_TRANSPOSE=0`). The cost is
+#      written down there and it is large: with all three `None` every fast arm
+#      of `w4_gemm!` is skipped and prefill lands on plain `w4a16_gemm`, which
+#      the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 for
+#      `t_m128`. A knob with a measured A/B, never a silent default.
+#   4. Do not build the transposed SSM twins: 2.90 GiB, plus the 1.41 GiB FP8
+#      `out_proj` predequant that `init_fp8.rs:110` gates on
+#      `out_proj_nvfp4_t.is_some()`. Unmeasured cost.
+#   5. Do not build the transposed attention twins: 0.88 GiB. (The fused
+#      `[q|k|v]` twin is not built at all on this checkpoint — the runtime
+#      requant gives each projection its own per-tensor `scale2`, so the
+#      `scales_equal` test declines.)
+#   6. A per-ROW `w8a16` GEMV/GEMM, which is the correct answer and the one
+#      blocked on kernel work. This checkpoint's FP8 scale is per-CHANNEL
+#      `[N,1]`; every `w8a16` kernel indexes `block_scale[n/128, k/128]`, and
+#      the row-wise cuBLASLt FP8 path is dead on this class (SCALE has no e4m3
+#      MMA codegen on gfx1201 at all, which is the same gap that pins
+#      `ATLAS_W4A16_VARIANT=v1`). Worth 6.72 GiB of FP8 store plus the 9.6 GiB
+#      of NVFP4 the requant produces.
+#   7. Serve `Qwen/Qwen3.8-27B-FP8` instead. Block-scaled FP8 is the layout
+#      this loader is smallest and fastest on, and `qwen3.8-27b/MODEL.toml`
+#      already records that the mixed-precision checkpoint measured worse on
+#      the video benchmark's hardest leg.
+#
+# Also unverified: whether the attention BF16 dequant leak this work found
+# (`qwen35_dense.rs`, the `CompressedTensors` arm, 3.12 GiB on the 27B) can be
+# freed UNCONDITIONALLY. It is a plain bug on every target, but the fix sits
+# behind `ATLAS_LOAD_RELEASE_SOURCES` until an NVIDIA serve says so.
+
 # No `[benchmarks.limits]` table: campaigning or self-serving a gate on this
 # class needs measured thermal/memory/timing/equivalence facts, and nobody
 # has measured them. A target that declares none cannot be campaigned, which

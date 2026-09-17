@@ -11,6 +11,32 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **`ATLAS_LOAD_RELEASE_SOURCES`, release-on-consume for checkpoint tensors a
+  loader has finished requantising.** `WeightStore::release_tensor` frees one
+  entry's device allocation during the layer loop and marks it consumed;
+  `prune_after_load`, the existing answer to this shape, runs after the whole
+  load and is thirty-six layers too late on a 32 GB board. `1`/`0`, defaulting
+  to `cfg!(atlas_scale)`: ON for SCALE/AMD, OFF for NVIDIA, where an unset
+  variable leaves every path byte-identical. Wired into the Qwen3.5-dense
+  loader at three sites (attention q/k/v/o, the GDN projections, the FP8 tail
+  MLPs), which is **9.94 GiB** on `unsloth/Qwen3.8-27B-NVFP4`. A release
+  claims a tensor only when its `.weight` is FP8 E4M3, which is the proof
+  rather than a heuristic: `dense_auto` returns the store's own pointer for a
+  BF16 tensor and allocates for an FP8 one, so an FP8 projection cannot reach
+  a layer except through a fresh allocation. A read after release is reported
+  as released, naming the knob, instead of as a missing key or a pointer to
+  freed memory.
+- **`docs/porting/r9700-residency.md`, the measured weight residency of
+  `unsloth/Qwen3.8-27B-NVFP4` on a 32 GB R9700.** Every site of the allocation
+  ledger from the failing serve (2631 allocations, 33.73 GB live, dead at layer
+  28 of 64 on a 167,772,160-byte request) reproduces to the tenth of a MiB from
+  shape arithmetic over `MODEL.toml` plus the GDN head geometry, which is what
+  makes the extrapolation trustworthy: the steady-state resident set is
+  **47.07 GiB (50.54 GB)**, of which 12.74 GiB is the transposed second layout
+  and 9.94 GiB is dead store. The verdict is stated rather than hedged.
+  Release-on-consume is necessary and NOT sufficient; the ranked list of what
+  else would have to change is in the doc and in
+  `kernels/r9700/HARDWARE.toml`'s new open-questions block.
 - **Two small models on `kernels/r9700`: `ornith-1.0-9b` and `holo-3.1-4b`,
   both through `kernel_source = "qwen3.6-27b"`.** Qwen3.8-27B does not fit the
   R9700's 32 GB under Atlas's two-layout residency (measured 2026-09-17), so
@@ -71,6 +97,26 @@ behind specific subsystems — see the
   receipt from this card now names its class instead of keying itself by the
   punctuation-stripped GPU string while the registered `r9700` baseline slot
   sits unused. Strix stays unmapped on purpose.
+
+### Fixed
+- **The `CompressedTensors` attention arm of the Qwen3.5-dense loader leaked
+  its BF16 dequant intermediate.** Every sibling site frees its own — the
+  `Standard | Fp8Dequanted` attention arm, the SSM path, `quantized_from_fp8`,
+  the `Bf16Raw` arm of `quantized_any` — and this one never did. It is
+  200 MiB per full-attention layer and **3.12 GiB** across the sixteen of
+  `unsloth/Qwen3.8-27B-NVFP4`, on every target including NVIDIA, and it is
+  visible in the R9700 ledger as 28 stale `quant_helpers.rs:98` allocations
+  belonging to layers that finished building up to twenty-four layers earlier.
+  The free is behind `ATLAS_LOAD_RELEASE_SOURCES` rather than unconditional
+  ONLY because this change was not allowed to move NVIDIA behaviour; it should
+  become unconditional once an NVIDIA serve confirms it.
+- **`detect_nvfp4_variant` probes `checkpoint_dtype`, not `get`.** It runs both
+  before the layer loop and again after it (`load_mtp_weights`,
+  `prune_after_load`, `detect_quant_format`) and has to give the same answer
+  both times. Under release-on-consume it would otherwise detect a block-FP8
+  compressed-tensors checkpoint as `Fp8Dequanted` on the way in and `Standard`
+  on the way out, because its dtype probe reads the very projections the
+  loader releases.
 
 ### Changed
 - **`kernels/r9700` compiles gb10's whole kernel set, minus what SCALE cannot
