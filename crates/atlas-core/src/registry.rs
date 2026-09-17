@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_void};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig};
 use cudarc::nvrtc::Ptx;
@@ -133,6 +133,17 @@ pub struct AtlasRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+    /// Raw CUfunction handle -> `"module::kernel"`, for every function this
+    /// registry has resolved.
+    ///
+    /// A `RawCudaFunc` is a bare driver pointer: once it reaches
+    /// [`AtlasRegistry::launch_on_stream`] there is nothing left in it that
+    /// says what the kernel was, which is why a failed launch used to report
+    /// only a grid and a CUresult. This is the reverse map, and it is written
+    /// exactly once per kernel in [`AtlasRegistry::raw_function_cached`] (model
+    /// init) and read ONLY from a failure path, so a launch pays nothing for
+    /// it: no lookup, no lock, no branch on the hot path.
+    func_names: Mutex<HashMap<u64, String>>,
 }
 
 impl Drop for AtlasRegistry {
@@ -157,9 +168,11 @@ impl Drop for AtlasRegistry {
 // SAFETY: Same rationale as `RawCudaFunc`: the `raw_modules` map holds
 // CUmodule handles obtained at startup from a single CUcontext. The map is
 // populated once during registry init and is read-only from that point on,
-// so concurrent reads are race-free at the Rust level. CUDA itself
-// serializes kernel launches via the stream the caller supplies — this impl
-// only asserts that the *handle metadata* is shareable across threads.
+// so concurrent reads are race-free at the Rust level. `func_names` IS
+// written after init (once per kernel lookup) and is a `Mutex` for exactly
+// that reason. CUDA itself serializes kernel launches via the stream the
+// caller supplies, so this impl only asserts that the *handle metadata* is
+// shareable across threads.
 unsafe impl Send for AtlasRegistry {}
 unsafe impl Sync for AtlasRegistry {}
 
@@ -241,6 +254,7 @@ impl AtlasRegistry {
             host,
             modules,
             raw_modules,
+            func_names: Mutex::new(HashMap::new()),
         })
     }
 
@@ -308,6 +322,13 @@ impl AtlasRegistry {
             )));
         }
         let raw = RawCudaFunc(func);
+        // Remember what this handle IS, while the names are still in scope.
+        // This is the only place the registry mints one, so the map covers
+        // every handle any launch can later fail on.
+        self.func_names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(func as u64, format!("{module_name}::{func_name}"));
         let _ = cache.set(raw);
         Ok(raw)
     }
@@ -321,6 +342,12 @@ impl AtlasRegistry {
     /// that no raw handle survives its module: the maps are torn down
     /// together, raw side first.
     pub(crate) fn unload_raw(&mut self) -> Vec<String> {
+        // The names describe handles that are about to become stale; they go
+        // with them.
+        self.func_names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
         self.raw_modules.drain().for_each(drop);
         self.modules.drain().for_each(drop);
         Vec::new()
@@ -447,10 +474,10 @@ impl AtlasRegistry {
                 )
             };
             if attr_status != 0 {
-                return Err(AtlasError::KernelLaunch(format!(
-                    "cuFuncSetAttribute(MAX_DYNAMIC_SHARED={}) failed: {}",
+                return Err(AtlasError::KernelLaunch(func_attribute_failure_message(
+                    &self.func_label(raw_func),
                     cfg.shared_mem_bytes,
-                    cuda_error_text(attr_status)
+                    &cuda_error_text(attr_status),
                 )));
             }
         }
@@ -470,18 +497,121 @@ impl AtlasRegistry {
             )
         };
         if status != 0 {
-            return Err(AtlasError::KernelLaunch(format!(
-                "cuLaunchKernel failed: {} (grid=[{},{},{}], block=[{},{},{}], shared_mem={})",
-                cuda_error_text(status),
-                cfg.grid_dim.0,
-                cfg.grid_dim.1,
-                cfg.grid_dim.2,
-                cfg.block_dim.0,
-                cfg.block_dim.1,
-                cfg.block_dim.2,
-                cfg.shared_mem_bytes
+            return Err(AtlasError::KernelLaunch(launch_failure_message(
+                &self.func_label(raw_func),
+                &cuda_error_text(status),
+                [cfg.grid_dim.0, cfg.grid_dim.1, cfg.grid_dim.2],
+                [cfg.block_dim.0, cfg.block_dim.1, cfg.block_dim.2],
+                cfg.shared_mem_bytes,
             )));
         }
         Ok(())
+    }
+
+    /// How a raw handle should be named in a diagnostic: the
+    /// `module::kernel` it was resolved as, plus the pointer itself.
+    ///
+    /// Error paths only. It takes the `func_names` lock and allocates, which
+    /// is free where it is used (a launch has already failed) and would not
+    /// be on the launch itself.
+    pub fn func_label(&self, raw_func: RawCudaFunc) -> String {
+        let handle = raw_func.0 as u64;
+        let guard = self
+            .func_names
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        kernel_label(guard.get(&handle).map(String::as_str), handle)
+    }
+}
+
+/// Name a kernel handle for a diagnostic.
+///
+/// `name` is `None` for a handle this registry never minted (nothing in Atlas
+/// produces one today, but `RawCudaFunc` is a public tuple struct anyone can
+/// construct), in which case the pointer is all there is to report.
+///
+/// Pure: no driver call, so the wording is unit-testable on a host with no GPU.
+pub fn kernel_label(name: Option<&str>, handle: u64) -> String {
+    match name {
+        Some(name) => format!("{name} (fn@{handle:#x})"),
+        None => format!("<unregistered kernel> (fn@{handle:#x})"),
+    }
+}
+
+/// The text of a `cuLaunchKernel` failure. `label` comes from
+/// [`AtlasRegistry::func_label`] and `err_text` from [`cuda_error_text`], both
+/// of which are resolved by the caller so this stays pure and testable.
+pub fn launch_failure_message(
+    label: &str,
+    err_text: &str,
+    grid: [u32; 3],
+    block: [u32; 3],
+    shared_mem: u32,
+) -> String {
+    format!(
+        "cuLaunchKernel failed for {label}: {err_text} \
+         (grid=[{},{},{}], block=[{},{},{}], shared_mem={shared_mem})",
+        grid[0], grid[1], grid[2], block[0], block[1], block[2]
+    )
+}
+
+/// The text of a `cuFuncSetAttribute(MAX_DYNAMIC_SHARED=..)` failure. Same
+/// division of labour as [`launch_failure_message`].
+pub fn func_attribute_failure_message(label: &str, shared_mem: u32, err_text: &str) -> String {
+    format!("cuFuncSetAttribute(MAX_DYNAMIC_SHARED={shared_mem}) failed for {label}: {err_text}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{func_attribute_failure_message, kernel_label, launch_failure_message};
+
+    #[test]
+    fn launch_failure_names_the_kernel() {
+        let msg = launch_failure_message(
+            &kernel_label(
+                Some("qwen3.6-27b_nvfp4::dense_gemv_bf16_batch2"),
+                0x7f0c_1234_5678,
+            ),
+            "CUDA_ERROR_INVALID_IMAGE (200): invalid image",
+            [5440, 1, 1],
+            [256, 1, 1],
+            0,
+        );
+        assert_eq!(
+            msg,
+            "cuLaunchKernel failed for qwen3.6-27b_nvfp4::dense_gemv_bf16_batch2 \
+             (fn@0x7f0c12345678): CUDA_ERROR_INVALID_IMAGE (200): invalid image \
+             (grid=[5440,1,1], block=[256,1,1], shared_mem=0)"
+        );
+    }
+
+    #[test]
+    fn unregistered_handle_still_reports_the_pointer() {
+        let msg = launch_failure_message(
+            &kernel_label(None, 0x42),
+            "CUDA_ERROR_INVALID_VALUE (1): invalid argument",
+            [1, 2, 3],
+            [64, 1, 1],
+            8192,
+        );
+        assert_eq!(
+            msg,
+            "cuLaunchKernel failed for <unregistered kernel> (fn@0x42): \
+             CUDA_ERROR_INVALID_VALUE (1): invalid argument \
+             (grid=[1,2,3], block=[64,1,1], shared_mem=8192)"
+        );
+    }
+
+    #[test]
+    fn attribute_failure_names_the_kernel() {
+        assert_eq!(
+            func_attribute_failure_message(
+                &kernel_label(Some("common::prefill_paged"), 0xabc),
+                65536,
+                "CUDA_ERROR_INVALID_VALUE (1): invalid argument"
+            ),
+            "cuFuncSetAttribute(MAX_DYNAMIC_SHARED=65536) failed for common::prefill_paged \
+             (fn@0xabc): CUDA_ERROR_INVALID_VALUE (1): invalid argument"
+        );
     }
 }
