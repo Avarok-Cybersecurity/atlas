@@ -462,11 +462,13 @@ gfx1201 facts rather than carry-overs:
 **What the first bring-up must still probe.** Coherent generation above all;
 nothing has been served on this board. Beyond that:
 
-* **The two runtime knobs** `serve-amd.sh` exports:
-  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_GDN_FP8_PREFILL=1`. Both are pinned
-  by the missing e4m3 codegen above, so neither is a candidate to probe OFF
-  until SCALE grows that path; what is still open is whether `v1` alone is
-  enough for a coherent run. `ATLAS_FORCE_GLOBAL_GDN` and
+* **The two runtime knobs** `serve-amd.sh` exports for r9700:
+  `ATLAS_W4A16_VARIANT=v1` is pinned by the missing e4m3 codegen above and is
+  not a candidate to probe OFF until SCALE grows that path.
+  `ATLAS_NO_GDN_FP8_PREFILL=1` is only a conservative first-serve default:
+  strix never set it and serves coherently with the native FP8 SSM prefill on,
+  so on r9700 it is the first knob to bisect OFF once a coherent baseline
+  exists. `ATLAS_FORCE_GLOBAL_GDN` and
   `ATLAS_NO_FP8_PREDEQUANT`, which the script used to export, have no reader
   anywhere in the tree and were dropped rather than carried here.
 * **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
@@ -502,10 +504,10 @@ export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
 # serve: SCALE libs FIRST so /opt/rocm cannot shadow the bundled ROCm, then
-# the two runtime knobs that have readers in this tree (see above).
+# the required knob and the conservative first-serve default (see above).
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
 export ATLAS_W4A16_VARIANT=v1
-export ATLAS_NO_GDN_FP8_PREFILL=1
+export ATLAS_NO_GDN_FP8_PREFILL=1   # bisect candidate, not a pin
 target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
 ```
 

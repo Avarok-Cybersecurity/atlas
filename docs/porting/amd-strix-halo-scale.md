@@ -39,9 +39,11 @@ export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRAR
 export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — two runtime knobs are required on gfx1151 (see §4):
+# Serve — one runtime knob is required on gfx1151 (see §4). ATLAS_FORCE_GLOBAL_GDN
+# and ATLAS_NO_FP8_PREDEQUANT used to be exported here; neither has a reader in
+# the tree any more. ATLAS_NO_GDN_FP8_PREFILL exists but is NOT set on strix:
+# the coherent gfx1151 runs never set it (see kernels/strix/HARDWARE.toml).
 export ATLAS_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
-export ATLAS_NO_GDN_FP8_PREFILL=1   # keep GDN/SSM prefill off the native-FP8 path (same reason, plus the 64KB LDS cap)
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64:
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:$PATH"
@@ -308,8 +310,8 @@ export CUDARC_CUDA_VERSION=12080
 rm -rf target/release/build/atlas-kernels-*      # stale-cache guard on .cu change
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — gfx1151 runtime knobs (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
-export ATLAS_W4A16_VARIANT=v1 ATLAS_NO_GDN_FP8_PREFILL=1
+# Serve — the gfx1151 runtime knob (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
+export ATLAS_W4A16_VARIANT=v1
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
   --port 8081 --max-seq-len 4096 --gpu-memory-utilization 0.70 \

@@ -76,11 +76,15 @@ fi
 # while BF16 mma.sync m16n8k16 compiles, which is exactly what v1 uses.
 export ATLAS_W4A16_VARIANT=v1
 # ATLAS_NO_GDN_FP8_PREFILL=1 (spark-model/src/weight_loader/qwen35_dense.rs)
-# keeps GDN/SSM prefill off the native-FP8 path, for that same missing e4m3
-# codegen and for the 64 KB per-workgroup LDS cap, re-verified on gfx1201: a
-# 73728-byte request is rejected there ("local memory (73728) exceeds limit
-# (65536)"), which is also why the `BR64 32` prefill pin under __SCALE__ stays.
-export ATLAS_NO_GDN_FP8_PREFILL=1
+# keeps GDN/SSM prefill off the native-FP8 path. It is NOT set for strix: the
+# gfx1151 config that produced coherent output never set it, and the native
+# FP8 SSM prefill is on by default there (kernels/strix/HARDWARE.toml calls
+# that an open question, not a settled shim). On r9700 it is set as the
+# conservative first-serve default until the runtime bisect on gfx1201 says
+# which way is correct; whichever wins gets recorded in kernels/r9700.
+case "$ATLAS_TARGET_HW" in
+  r9700) export ATLAS_NO_GDN_FP8_PREFILL=1 ;;
+esac
 # Removed here: ATLAS_FORCE_GLOBAL_GDN and ATLAS_NO_FP8_PREDEQUANT. Neither
 # name has a reader anywhere in this tree as of this commit, so exporting them
 # only suggested a control that does not exist.
