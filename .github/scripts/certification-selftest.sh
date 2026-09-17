@@ -1554,7 +1554,8 @@ want_rc_msg 1 "is missing hardware tree(s)" \
 # instead — which would make this control pass on the wrong error.
 mkdir -p "$TMP/ks/live/gb10/common" "$TMP/ks/live/gb10/m1/q" \
          "$TMP/ks/live/hopper/common" "$TMP/ks/live/b200/common" \
-         "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip"
+         "$TMP/ks/live/metal" "$TMP/ks/live/strix" "$TMP/ks/live/strix-hip" \
+         "$TMP/ks/live/r9700"
 printf '__global__ void k() {}\n' > "$TMP/ks/live/gb10/common/k.cu"
 cp "$TMP/ks/live/gb10/common/k.cu" "$TMP/ks/live/gb10/m1/q/k.cu"
 want_rc_msg 1 "RULE1" "control: the kernel-shadow check still catches a dead override" \

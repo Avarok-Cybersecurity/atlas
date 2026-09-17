@@ -11,6 +11,29 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **`kernels/r9700`, an AMD Radeon AI PRO R9700 (gfx1201, RDNA 4) SCALE
+  target.** A structural mirror of `kernels/strix` — same SCALE 1.7.1
+  toolchain through `targets/gfx1201`, same curated 99-entry `common/` reached
+  by relative symlink, same `qwen3.6-27b` kernel tree — plus `qwen3.8-27b`
+  through `kernel_source`. **UNVERIFIED ON SILICON**, and the file comments
+  say so: it inherits strix's gfx1151 bring-up decisions (the 64 KB LDS
+  `BR64 32` prefill pin and the three `serve-amd.sh` runtime shims) unexamined,
+  and RDNA 4's native FP8 WMMA and LDS cap are exactly what the first bring-up
+  must probe. No `BENCH.toml` and no `[benchmarks.limits]`: nothing about this
+  class has been measured, so it cannot be campaigned.
+
+### Changed
+- **`atlas_scale` and `atlas_hip` are driven by `[hardware].vendor`, not by
+  the target's name.** `spark-model/build.rs` and `spark-runtime/build.rs`
+  tested `ATLAS_TARGET_HW.starts_with("strix")`, which was correct only while
+  every SCALE target was named strix-something. The kernel side is not name-
+  keyed — `prefill_paged_compute.cuh` pins `BR64 32` under `__SCALE__` for
+  every SCALE target — so a second one under another name would have compiled
+  32-row prefill kernels and launched them with the 64-row host grid stride,
+  silently dropping query rows 32..63 of every band with no build error.
+  Behaviour is byte-identical for `strix` (`amd`), `strix-hip` (`hip`), the
+  NVIDIA targets and an unset `ATLAS_TARGET_HW`.
+
 - `spark benchmark <list|run|history>` — the dashboard's benchmark suite as a
   headless subcommand, driving the same executor. Machine-readable output on
   stdout, progress on stderr; exit codes separate a broken harness (1) from a

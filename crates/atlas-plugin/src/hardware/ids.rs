@@ -37,7 +37,8 @@
 /// TWO KINDS OF ID LIVE HERE, and the difference is worth stating because it
 /// is not visible from the strings:
 ///
-/// * **architecture classes** — `gb10`, `hopper`, `b200`, `metal`, `strix`.
+/// * **architecture classes** — `gb10`, `hopper`, `b200`, `metal`, `strix`,
+///   `r9700`.
 ///   These are `kernels/<hw>/` directory names. One kernel set is compiled per
 ///   architecture, so this is the unit a `-arch=` and a PTX artefact exist for.
 /// * **bench SKUs** — `h100`, `h200`, `gh200`, `b200`, `gb200`, `mi300x`.
@@ -50,7 +51,7 @@
 /// 43%. Both kinds must be registered: the arch classes because
 /// `every_kernel_hardware_dir_is_registered` demands it, the SKUs because
 /// `--hardware` validates against this list.
-pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
+pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
     // NVIDIA GB10 / DGX Spark — the box every committed record was measured on.
     // Architecture class and SKU at once.
     "gb10",
@@ -83,6 +84,13 @@ pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
     // interchangeable numbers.
     "strix",
     "strix-hip",
+    // AMD Radeon AI PRO R9700 — gfx1201, RDNA 4, discrete PCIe. `kernels/r9700/`,
+    // compiled through the same SCALE toolchain as `strix` and a separate class
+    // for the same reason `strix` and `strix-hip` are separate from each other:
+    // different silicon, and in this case a different memory system entirely
+    // (32 GB of dedicated GDDR6 at ~640 GB/s against strix's unified LPDDR5X at
+    // ~256 GB/s), so no number measured on one describes the other.
+    "r9700",
     // AMD Instinct. No kernels in the tree yet; registered because it is the id
     // `hardware_id_from_gpu_name` maps the SKU onto, and the resolver fixtures
     // already use it as a second box class.

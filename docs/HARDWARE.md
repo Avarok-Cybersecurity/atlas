@@ -105,7 +105,7 @@ variant, etc.), you'll also need to:
 
 Atlas's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
 (H100/H200, sm_90a)** and **B200 (B200/GB200, sm_100a)**; `strix`/`strix-hip`
-(AMD gfx1151) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
+(AMD gfx1151), `r9700` (AMD gfx1201) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
 for a consumer Blackwell board, or sm_103 for Blackwell Ultra (B300/GB300) —
 requires:
 
@@ -415,6 +415,86 @@ B300 and GB300 are **sm_103a** and are NOT this target. `sm_100a` PTX does not
 run on CC 10.3, `atlas_core::arch::target_hint` returns `None` for it on
 purpose, and `hardware_id_from_gpu_name` maps neither part — a B300 gets "no
 shipped target" rather than a rebuild instruction that would fail the same way.
+
+## The r9700 (gfx1201) target
+
+`kernels/r9700/` is the **AMD Radeon AI PRO R9700** — 64 CU RDNA 4 on a
+discrete PCIe board with 32 GB of dedicated GDDR6 (~640 GB/s). Like `strix`
+it declares `vendor = "amd"`, so `build_target.rs` compiles it with SCALE
+(scale-lang.com) through `targets/gfx1201/bin/nvcc`; unlike `strix` it is not
+an APU, so none of that target's unified-memory sizing notes carry over.
+
+**UNVERIFIED ON SILICON.** Nothing in this target has run on an R9700. It
+exists so the tree, the build and the registries are ready for one, and it is
+a structural mirror of `strix`: the same curated 99-entry `common/` (97
+relative symlinks into `kernels/gb10/common/`, plus the two entries strix
+holds as regular files, reached by relative symlink into
+`kernels/strix/common/`), the same four `qwen3.6-27b/nvfp4` shadows, and real
+`HARDWARE.toml` / `MODEL.toml` files because those must stay editable per
+hardware. `qwen3.8-27b` is gb10's `MODEL.toml` with `kernel_source =
+"qwen3.6-27b"` kept, so it compiles this target's own 3.6 tree. There is no
+`BENCH.toml` and no `[benchmarks.limits]` — a target nobody has measured
+cannot be campaigned, which is the correct state for it.
+
+**What the first bring-up must probe.** The mirror inherits strix's gfx1151
+decisions unexamined, and RDNA 4 is not RDNA 3.5:
+
+* **The `BR64 32` prefill pin.** `kernels/gb10/common/prefill_paged_compute.cuh`
+  halves the block-row tile under `#if defined(__SCALE__)` — for every SCALE
+  target, not for gfx1151 specifically — and `ops/prefill_attn_main_{a,b}.rs`
+  selects the matching 32-row host grid stride from `cfg!(atlas_scale)`. The
+  pin was measured against RDNA 3.5's 64 KB/workgroup LDS cap. Measure RDNA
+  4's cap; if it is larger, the pin is costing prefill throughput for nothing.
+  Relaxing it is a kernel-side change to a `__SCALE__` gate that strix also
+  compiles, so it needs its own measurement there.
+* **The three runtime shims** in `serve-amd.sh`: `ATLAS_FORCE_GLOBAL_GDN=1`
+  (GDN prefill to the global-memory kernel, the same LDS cap),
+  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_FP8_PREDEQUANT=1` (both because
+  SCALE's device-side FP8 encode is broken on gfx1151). RDNA 4 has native FP8
+  WMMA, so the FP8 pair may be unnecessary here — and `v1` is not free, it
+  buys correctness with a BF16-MMA NVFP4 GEMM instead of the native path.
+  Probe each shim OFF, one at a time, against a coherence run.
+* **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
+  retuned sampling block, which are gfx1151 observations (a post-`</think>`
+  content collapse on that silicon) carried over with the tree.
+
+**Build and serve.** Same shape as `docs/porting/amd-strix-halo-scale.md`,
+with the arch and hardware swapped:
+
+```bash
+export SCALE_HOME=$HOME/scale171/scale-1.7.1-Linux
+export CUDA_PATH="$SCALE_HOME/targets/gfx1201"
+export CUDA_HOME="$CUDA_PATH"
+export PATH="$SCALE_HOME/targets/gfx1201/bin:/opt/rocm/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1201/lib:$LD_LIBRARY_PATH"
+export ATLAS_TARGET_HW=r9700
+export ATLAS_TARGET_MODEL=qwen3.8-27b   # or qwen3.6-27b
+export ATLAS_TARGET_QUANT=nvfp4
+cargo build --release -p spark-server --no-default-features --features cuda
+
+# serve: SCALE libs FIRST so /opt/rocm cannot shadow the bundled ROCm, then
+# the three inherited shims, each of which should be probed OFF (see above).
+export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
+export ATLAS_FORCE_GLOBAL_GDN=1
+export ATLAS_W4A16_VARIANT=v1
+export ATLAS_NO_FP8_PREDEQUANT=1
+target/release/spark serve Qwen/Qwen3.8-27B-FP8
+```
+
+`build-amd.sh` and `serve-amd.sh` still default to `strix`/gfx1151 and are NOT
+parameterised for this target; the commands above are the r9700 form of what
+they do.
+
+**`atlas_scale` is vendor-driven.** `spark-model/build.rs` and
+`spark-runtime/build.rs` set `atlas_scale` (and `atlas_hip`) from
+`kernels/<hw>/HARDWARE.toml` `[hardware].vendor`, not from the target's name.
+They used to test `hw.starts_with("strix")`, which was correct only for as
+long as every SCALE target was called strix-something: the kernel side pins
+`BR64 32` under `__SCALE__` for EVERY SCALE target, so a second one under any
+other name would have compiled 32-row kernels and launched them with a 64-row
+stride — silently, with no build error and no failing test, just dropped query
+rows. Vendor is the same signal `atlas-kernels/build.rs` already picks the
+compiler with.
 
 ## Adding a new quantization scheme
 

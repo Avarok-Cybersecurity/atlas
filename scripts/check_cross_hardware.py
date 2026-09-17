@@ -4,8 +4,9 @@
 
 `kernels/<hw>/` LOOKS like one tree per hardware. It is not. strix is 7 real files and
 105 symlinks, 97 of them into `kernels/gb10/common/`; strix-hip is 22 real and 87
-symlinks. So an edit to a gb10 file silently changes what AMD compiles, and the only
-signal has ever been a compile failure:
+symlinks; r9700 is 4 real and 103 symlinks, two of which land in `kernels/strix/common/`
+rather than gb10's, so a strix edit reaches it too. So an edit to a gb10 file silently
+changes what AMD compiles, and the only signal has ever been a compile failure:
 
   d584c0c50  `__syncwarp()` added to gb10/common/w4a16_gemv.cu, which is symlinked into
              strix and strix-hip; hipcc rejects it. Caught ONLY because the windows-hip
@@ -32,7 +33,8 @@ harm is not.
 import argparse, json, os, subprocess, sys, tempfile
 from pathlib import Path
 
-HW_SOURCE_EXT = {"gb10": ".cu", "metal": ".metal", "strix": ".cu", "strix-hip": ".cu"}
+HW_SOURCE_EXT = {"gb10": ".cu", "metal": ".metal", "r9700": ".cu", "strix": ".cu",
+                 "strix-hip": ".cu"}
 CONFIG_NAMES = {"HARDWARE.toml", "KERNEL.toml", "MODEL.toml"}
 AMD_TOKENS = ("__SCALE__", "__HIPCC__", "__HIP_DEVICE_COMPILE__", "__HIP_PLATFORM")
 
@@ -315,7 +317,7 @@ def selftest():
         (k / "gb10" / "common" / "shared.cu").write_text("// shared\n")
         (k / "strix" / "common" / "shared.cu").symlink_to("../../gb10/common/shared.cu")
         (k / "gb10" / "common" / "own.cu").write_text("// gb10 only\n")
-        for hw in ("metal", "strix-hip"):
+        for hw in ("metal", "strix-hip", "r9700"):
             (k / hw / "common").mkdir(parents=True)
             (k / hw / "HARDWARE.toml").write_text(f'[hardware]\nname="{hw}"\nvendor="x"\narch="y"\n')
         cons, _ = build_index(r)

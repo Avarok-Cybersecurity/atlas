@@ -211,7 +211,7 @@ fn b200_declares_the_conservative_table_not_hoppers() {
 /// explicitly so adding a hardware tree makes someone decide.
 #[test]
 fn the_silent_targets_resolve_to_the_baseline() {
-    for hw in ["metal", "strix", "strix-hip"] {
+    for hw in ["metal", "strix", "strix-hip", "r9700"] {
         assert_eq!(
             declared(hw),
             baseline(hw),
@@ -284,7 +284,7 @@ fn every_target_declares_the_sm_count_of_its_own_part() {
     assert_eq!(read_sm_count(&root, "b200"), 148, "GB100, 148 SMs enabled");
     // The non-CUDA trees say nothing and must therefore keep the frozen GB10
     // value — a target that declares nothing is a target nothing changed for.
-    for hw in ["metal", "strix", "strix-hip"] {
+    for hw in ["metal", "strix", "strix-hip", "r9700"] {
         assert_eq!(read_sm_count(&root, hw), BASELINE_SM_COUNT, "{hw}");
     }
     // A target the tree does not have at all falls back rather than panicking,

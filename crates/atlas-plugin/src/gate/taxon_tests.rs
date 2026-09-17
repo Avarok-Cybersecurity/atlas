@@ -109,6 +109,12 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "hopper/qwen3.8-27b/nvfp4",
             "metal/nllb-200-3.3b/bf16",
             "metal/qwen3-5-4b-vlm-mlx-int8/mlx_int8",
+            // r9700 (gfx1201). Same shape as the strix rows below: sources are
+            // symlinks into gb10's and `sources()` follows them, and qwen3.8-27b
+            // resolves through `kernel_source = "qwen3.6-27b"` to this target's
+            // own 3.6 tree, exactly as gb10's and hopper's 3.8 rows do.
+            "r9700/qwen3.6-27b/nvfp4",
+            "r9700/qwen3.8-27b/nvfp4",
             "strix/qwen3.6-27b/nvfp4",
             "strix/qwen3.6-35b-a3b/nvfp4",
             "strix-hip/qwen3.6-27b/nvfp4",

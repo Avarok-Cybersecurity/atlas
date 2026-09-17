@@ -281,7 +281,7 @@ mod tests {
             (l.equivalence.clock_spread, l.equivalence.mem_spread),
             (0.01, 0.05)
         );
-        for hw in ["hopper", "b200", "strix", "strix-hip", "metal"] {
+        for hw in ["hopper", "b200", "strix", "strix-hip", "r9700", "metal"] {
             assert_eq!(limits(root, hw).unwrap(), None, "{hw}");
         }
     }
