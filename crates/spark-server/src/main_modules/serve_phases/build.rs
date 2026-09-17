@@ -375,7 +375,10 @@ mod prefix_cache_tests {
     #[test]
     fn an_open_predicate_without_the_flag_still_installs_no_prefix_caching() {
         let args = ServeArgs::parse_from(["spark"]);
-        assert!(!args.enable_prefix_caching, "clap default must stay false");
+        assert!(
+            !args.prefix_caching_enabled(),
+            "clap default must stay false"
+        );
 
         let config = ModelConfig::qwen3_next_80b_nvfp4();
         assert!(
