@@ -41,6 +41,58 @@ pub type LoadFn<'a> = &'a dyn Fn(&str) -> Result<Vec<f32>>;
 /// cannot express without a transpose, so it runs on the host once at load.
 ///
 /// 🪤 `q_b_proj` and `kv_b_proj` carry **different per-head widths** (`qk_head_dim` = 256
+/// Worker count for the absorb loops. Shared spelling with
+/// `mistral_loader::loader_impl::phase_qk_absorbed`, including the
+/// `ATLAS_MLA_ABSORB_THREADS` override, so one lever tunes both.
+fn absorb_threads(rows: usize) -> usize {
+    let want = std::env::var("ATLAS_MLA_ABSORB_THREADS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        });
+    want.clamp(1, rows.max(1))
+}
+
+/// A disjoint span of `absorb_q` output rows, row `row0` onward.
+///
+/// 🔴 The accumulation order over `r` is IDENTICAL to the original nest, so
+/// every output element is the same f32 sequence of adds — this is a memory
+/// layout and threading change, not a numerics one. The original indexed
+/// `kv_b[(kv_base+r)*kvl + c]` inside the `k` loop, re-loading a strided scalar
+/// `ql` times; hoisting it makes the inner loop a contiguous walk of `q_b`'s
+/// row and cuts `kv_b` loads per output row from `nope*ql` to `nope`.
+#[allow(clippy::too_many_arguments)]
+fn absorb_q_rows(
+    out: &mut [f32],
+    row0: usize,
+    kv_b: &[f32],
+    q_b: &[f32],
+    kvl: usize,
+    ql: usize,
+    nope: usize,
+    vd: usize,
+) {
+    for (i, acc) in out.chunks_exact_mut(ql).enumerate() {
+        let row = row0 + i;
+        let h = row / kvl;
+        let c = row % kvl;
+        let kv_base = h * (nope + vd);
+        let qb_base = h * nope;
+        acc.fill(0.0);
+        for r in 0..nope {
+            let w = kv_b[(kv_base + r) * kvl + c];
+            let q_row = &q_b[(qb_base + r) * ql..][..ql];
+            for (a, &q) in acc.iter_mut().zip(q_row.iter()) {
+                *a += q * w;
+            }
+        }
+    }
+}
+
 /// vs `nope + v_head_dim` = 512). Using one stride for the other still yields a
 /// well-formed 2-D tensor of plausible values.
 pub fn absorb_q(
@@ -79,19 +131,21 @@ pub fn absorb_q(
         );
     }
 
-    let mut out = vec![0f32; full_heads * kvl * ql];
-    for h in 0..full_heads {
-        let kv_base = h * (nope + vd);
-        let qb_base = h * nope;
-        for c in 0..kvl {
-            for k in 0..ql {
-                let mut acc = 0f32;
-                for r in 0..nope {
-                    acc += kv_b[(kv_base + r) * kvl + c] * q_b[(qb_base + r) * ql + k];
-                }
-                out[(h * kvl + c) * ql + k] = acc;
+    let rows = full_heads * kvl;
+    let mut out = vec![0f32; rows * ql];
+    let threads = absorb_threads(rows);
+    if threads <= 1 {
+        absorb_q_rows(&mut out, 0, kv_b, q_b, kvl, ql, nope, vd);
+    } else {
+        let rows_per = rows.div_ceil(threads);
+        std::thread::scope(|scope| {
+            for (chunk_idx, chunk) in out.chunks_mut(rows_per * ql).enumerate() {
+                let row0 = chunk_idx * rows_per;
+                scope.spawn(move || {
+                    absorb_q_rows(chunk, row0, kv_b, q_b, kvl, ql, nope, vd);
+                });
             }
-        }
+        });
     }
     Ok(out)
 }
