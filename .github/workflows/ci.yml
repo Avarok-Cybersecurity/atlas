@@ -1763,6 +1763,42 @@ jobs:
           # earlier sha still covers HEAD, so a shallow clone would make every
           # record look uncovered.
           fetch-depth: 0
+      - name: Fetch the queue entry's originating PR head (merge_group only)
+        # Failure mode (measured on #1103, run 35250645035): under
+        # `merge_group` this job's checkout above is the queue's synthetic
+        # merge commit, and `fetch-depth: 0` only walks ancestry already
+        # reachable in THIS clone -- the base repo's own refs. A
+        # fork-originated PR's head commit is never one of those, so when
+        # `record_covers` (crates/avarok-plugin/src/gate/check_paths.rs) runs
+        # `git diff --name-only <record_sha> HEAD` to ask whether a committed
+        # `.benchmarks/**` record still covers this tree, the record's
+        # `git_sha` -- the fork PR's head -- is absent from the clone and the
+        # diff comes back None, which every gate reads as NONE ("git cannot
+        # diff that commit … is it in this clone?"). The same job's
+        # `pull_request`-event run passed because the PR ref is present
+        # there. This step makes that commit reachable by fetching it
+        # straight from the PR ref, exactly like the PR-number derivation the
+        # `seal` job already does for the same `gh-readonly-queue/**` head
+        # ref shape (see the `seal` job above, ~line 345).
+        #
+        # `continue-on-error: true`: a failed fetch (rate limit, ref already
+        # gone, unparseable head ref) must leave today's behavior exactly as
+        # it was, never turn a best-effort fetch into a new way to fail the
+        # gate.
+        if: github.event_name == 'merge_group'
+        continue-on-error: true
+        env:
+          MQ_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          set -uo pipefail
+          # refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>
+          branch="${MQ_HEAD_REF#refs/heads/}"
+          num="$(printf '%s' "$branch" | sed -n 's|.*/pr-\([0-9][0-9]*\)-.*|\1|p')"
+          if [ -z "$num" ]; then
+            echo "could not parse a PR number out of '$MQ_HEAD_REF' — leaving today's behavior unchanged."
+            exit 0
+          fi
+          git fetch --no-tags origin "+refs/pull/${num}/head:refs/remotes/origin/pr-${num}-head"
       - name: Generate no-GPU library stubs
         run: bash scripts/ci_gpu_stubs.sh
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
@@ -1878,18 +1914,21 @@ jobs:
           # this gate through the flag within the PR's own run.
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: cargo run --locked -p spark-server --bin spark -- benchmark --pull-request-gate-check ${PR_NUMBER:+--pr "$PR_NUMBER"}
-      # ── Queue-composition diagnosis ──────────────────────────────────────
+      # ── Queue-bounce diagnosis ───────────────────────────────────────────
       # A record-bearing perf PR can be GREEN at its head and still bounce
-      # here: the queue tests the MERGE tree, and records cannot compose
-      # across PRs — a campaign that covered this PR's tree does not cover a
-      # tree with another perf PR's kernels placed under it (observed
-      # 2026-08-23: #732 bounced behind #731, then behind post-#733 main; then
-      # #731 bounced behind post-#733 main — every head was green).
-      # When that is what happened, say so instead of ten bare NONEs.
-      - name: Name the failure if it is queue composition
+      # here, and TWO different conditions produce that identical symptom:
+      # another queued PR composed beneath it, or `main` moving on a perf path
+      # after its records were measured. They have different fixes.
+      #
+      # This step used to assert the first one unconditionally. On 2026-09-17
+      # #941 was the second -- eleven groups, base = main's tip, nothing
+      # beneath it -- and the annotation sent its reader hunting a composition
+      # that did not exist while an enqueue loop burned 95 minutes and eleven
+      # merge-group CI runs. The script separates them from the group's own
+      # git shape, and says "could not look" rather than guessing.
+      - name: Name the failure if it is a queue condition
         if: failure() && github.event_name == 'merge_group'
-        run: |
-          echo "::error title=Queue-composition failure::This PR's benchmark records were valid at its head; the MERGE GROUP composed other performance changes underneath them, which invalidates records by design (unmeasured interaction). Retrying will not help. Apply the serialized-landing protocol (scripts/queue-perf-pr.sh): update the branch to current main, FREEZE that sha, run the ten gates against exactly that tree, commit the records, and queue with no other performance PR ahead. See docs/gate-queue-protocol.md."
+        run: .github/scripts/diagnose-queue-bounce.sh '${{ github.event.merge_group.base_sha }}'
 
   # ── Rename transition shim ───────────────────────────────────────────────
   # `main`'s branch protection requires the context "PR benchmark gate" BY NAME.

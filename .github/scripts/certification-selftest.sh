@@ -2576,6 +2576,84 @@ want_rc 2 "control: unreadable input is refused, not passed" \
 want_rc 2 "control: a payload with no threshold is refused" \
   sh -c "printf '%s' '{\"runs\":[]}' | python3 $STUCK"
 
+echo "== queue-bounce diagnosis =="
+# Two conditions give the identical symptom -- green at the PR head, red in the
+# merge group -- and the old step asserted the first one unconditionally. #941
+# was the second and the annotation named the wrong cause for eleven groups.
+# So the assertion here is DISCRIMINATION: each shape must produce ITS OWN
+# verdict, which is exactly what a diagnostic that always prints one answer
+# fails.
+QB_COV=crates/avarok-plugin/src/gate/coverage.rs
+# A fake repo root, because the script reads the perf-path list from its own
+# ../.. -- copying the const in is what makes the SSOT parse part of the test.
+qb_repo() {
+  local r="$TMP/qb-$1"; mkdir -p "$r/.github/scripts" "$r/$(dirname "$QB_COV")" "$r/crates" "$r/docs"
+  cp "$ROOT/.github/scripts/diagnose-queue-bounce.sh" "$r/.github/scripts/"
+  cp "$ROOT/$QB_COV" "$r/$QB_COV"
+  git -C "$r" -c init.defaultBranch=main init -q
+  git -C "$r" config user.email t@example.invalid; git -C "$r" config user.name t
+  echo base > "$r/crates/base.rs"; git -C "$r" add -A; git -C "$r" commit -qm M0
+  echo "$r"
+}
+# One word per outcome, so a wrong verdict is a diff and not a reading exercise.
+qb() {
+  local r=$1 base=$2 head=$3 out
+  out=$(bash "$r/.github/scripts/diagnose-queue-bounce.sh" "$base" "$head" 2>&1)
+  case "$out" in
+    *"could not look"*)       echo CANNOTLOOK ;;
+    *"composed beneath you"*) case "$out" in *"main moved under you"*) echo BOTH;; *) echo BENEATH;; esac ;;
+    *"main moved under you"*) echo MOVED ;;
+    *"not a queue condition"*) echo NEITHER ;;
+    *) echo "UNRECOGNISED:$out" ;;
+  esac
+}
+# Shape B: nothing beneath, main took a perf commit after the records.
+qbB=$(qb_repo b)
+git -C "$qbB" checkout -q -b pr
+echo p > "$qbB/crates/p.rs"; git -C "$qbB" add -A; git -C "$qbB" commit -qm "the PR's own perf commit"
+qbBP=$(git -C "$qbB" rev-parse HEAD); git -C "$qbB" checkout -q main
+echo y > "$qbB/crates/y.rs"; git -C "$qbB" add -A; git -C "$qbB" commit -qm "main: a perf commit landing after the campaign"
+qbBM=$(git -C "$qbB" rev-parse HEAD)
+git -C "$qbB" checkout -q -b grp "$qbBM"; git -C "$qbB" merge -q --no-ff "$qbBP" -m "merge group"
+want_out MOVED "a moved main is named as a moved main" qb "$qbB" "$qbBM" HEAD
+# Shape A: another entry composed beneath, main unchanged.
+qbA=$(qb_repo a); qbAM=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b e1; echo a > "$qbA/crates/a.rs"; git -C "$qbA" add -A; git -C "$qbA" commit -qm "entry1 perf commit"
+qbAE1=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b e2 "$qbAM"; echo b > "$qbA/crates/b.rs"; git -C "$qbA" add -A; git -C "$qbA" commit -qm "entry2 perf commit"
+qbAE2=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b g "$qbAM"; git -C "$qbA" merge -q --no-ff "$qbAE1" -m "group: entry1"
+git -C "$qbA" merge -q --no-ff "$qbAE2" -m "group: entry2"
+want_out BENEATH "a PR composed beneath another is named as composition" qb "$qbA" "$qbAM" HEAD
+# CONTROL: main moved, but on docs only. Records survive that, so neither
+# condition holds -- and a verdict here would mean the perf-path filter is
+# decorative.
+qbC=$(qb_repo c)
+git -C "$qbC" checkout -q -b pr; echo p > "$qbC/crates/p.rs"; git -C "$qbC" add -A; git -C "$qbC" commit -qm own
+qbCP=$(git -C "$qbC" rev-parse HEAD); git -C "$qbC" checkout -q main
+echo d > "$qbC/docs/d.md"; git -C "$qbC" add -A; git -C "$qbC" commit -qm "main: docs only"
+qbCM=$(git -C "$qbC" rev-parse HEAD)
+git -C "$qbC" checkout -q -b grp "$qbCM"; git -C "$qbC" merge -q --no-ff "$qbCP" -m mg
+want_out NEITHER "control: a docs-only move on main is not a queue condition" qb "$qbC" "$qbCM" HEAD
+# CONTROL: the perf-path list is the gate's, not a copy. Truncate the const and
+# the script must refuse to answer -- a short list would report "main moved on
+# nothing" for the shape that just tested MOVED, which is a false all-clear.
+qbD=$(qb_repo d)
+git -C "$qbD" checkout -q -b pr; echo p > "$qbD/crates/p.rs"; git -C "$qbD" add -A; git -C "$qbD" commit -qm own
+qbDP=$(git -C "$qbD" rev-parse HEAD); git -C "$qbD" checkout -q main
+echo y > "$qbD/crates/y.rs"; git -C "$qbD" add -A; git -C "$qbD" commit -qm "main perf"
+qbDM=$(git -C "$qbD" rev-parse HEAD)
+git -C "$qbD" checkout -q -b grp "$qbDM"; git -C "$qbD" merge -q --no-ff "$qbDP" -m mg
+: > "$qbD/$QB_COV"
+want_out CANNOTLOOK "control: an unparseable PERF_PATHS refuses to answer" qb "$qbD" "$qbDM" HEAD
+# CONTROL: a base sha the clone does not have is "could not look", never
+# "nothing happened" -- the distinction this whole file exists to keep.
+qbE=$(qb_repo e)
+want_out CANNOTLOOK "control: an absent base sha is could-not-look, not all-clear" \
+  qb "$qbE" 0000000000000000000000000000000000000000 HEAD
+# CONTROL: no base sha at all.
+want_out CANNOTLOOK "control: a missing base argument refuses" qb "$qbE" "" HEAD
+
 echo
 echo "  $PASS passed, $FAIL failed"
 REACHED_SUMMARY=1
