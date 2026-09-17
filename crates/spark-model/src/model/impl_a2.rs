@@ -377,6 +377,9 @@ impl TransformerModel {
     /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
     /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
+    /// - 0xFFFFFFF5: MTP propose → last_token, position, num_drafts, hidden_idx
+    /// - 0xFFFFFFF6: decode Marconi checkpoint (A109) → 6-word payload, one
+    ///   bulk broadcast; saves the same (slot, token, session) rank 0 saved
     /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
     pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
         // 🔴 The RECEIVE is the only fatal half. If it fails the link to the head is gone
@@ -500,6 +503,16 @@ impl TransformerModel {
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
+            }
+            crate::model::trait_impl::decode_checkpoint::EP_CMD_DECODE_CKPT => {
+                // A109: rank 0 saved a decode-time Marconi checkpoint and told
+                // us where. Save the SAME (slot, token, session) one here, so
+                // the A100 rank-agreed restore has something every rank can
+                // serve. The slot is the preamble's; the rest is the payload.
+                let words = self.ep_broadcast_tokens(
+                    &[0u32; crate::model::trait_impl::decode_checkpoint::EP_CKPT_WORDS],
+                )?;
+                self.decode_marconi_checkpoint_worker(seq, &words)?;
             }
             crate::speculative::EP_CMD_MTP_PROPOSE => {
                 // Run the SAME drafter forward rank 0 is running, so its collectives have a
