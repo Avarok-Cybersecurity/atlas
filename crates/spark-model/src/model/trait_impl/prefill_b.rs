@@ -216,7 +216,7 @@ impl TransformerModel {
         let bs = kv_cache.block_size();
         let end_pos = chunk_start + chunk_len;
         let blocks_needed = (end_pos - 1) / bs + 1;
-        super::super::block_mgmt::ensure_blocks_through_prefill(
+        let alloc = super::super::block_mgmt::ensure_blocks_through_prefill(
             seq,
             blocks_needed - 1,
             &mut kv_cache,
@@ -224,7 +224,37 @@ impl TransformerModel {
             self.gpu.as_ref(),
             stream,
             self.levers.kv_poison,
-        )?;
+        );
+
+        // ── A KV EXHAUSTION MUST BE AGREED, OR IT WEDGES THE PAIR ──
+        //
+        // The KV pool and the prefix cache are PER-RANK, so their occupancy
+        // diverges: on 2026-09-17 rank 1 ran out of blocks mid-BFCL while
+        // rank 0 had room and logged nothing at all.
+        //
+        // That asymmetry is what turns a recoverable error into a hang. The
+        // worker deliberately STAYS UP on a failed command (serve_phases/
+        // build.rs, anomalies A60/A62) because a command that executed and
+        // failed is request-scoped: the head raises the same error, answers
+        // HTTP 500, and both keep serving. That reasoning holds only while
+        // the failure is SYMMETRIC. Here it was not, so rank 1 skipped the
+        // rest of the step while rank 0 sat in the next collective with no
+        // peer — both ranks at 96% GPU util and ~15 W, logs frozen 43 ms
+        // apart, every health endpoint still answering 200.
+        //
+        // 🪤 THE COLLECTIVE RUNS BEFORE THE `?`. Propagating the local error
+        // first would make the failing rank skip this all-reduce and
+        // reintroduce exactly the mismatch it exists to prevent — the same
+        // lesson F83 learned for `ep_min_u32` and #1074 for the Marconi
+        // anchor: never gate a collective on a rank-local condition.
+        let all_ranks_allocated = self.ep_min_u32(u32::from(alloc.is_ok()))? == 1;
+        alloc?;
+        anyhow::ensure!(
+            all_ranks_allocated,
+            "KV cache exhausted on a PEER rank (this rank allocated fine) — declining on \
+             every rank so the head raises it, answers the client, and keeps serving \
+             rather than blocking forever in a collective the peer already left"
+        );
 
         // ── Phase 2b: compute effective processing range (may early-return) ──
         let (proc_start, proc_count, effective_seq_len_start) = match self.prefill_b_proc_range(

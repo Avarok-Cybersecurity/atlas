@@ -428,7 +428,11 @@ impl Qwen3AttentionLayer {
                     kv_cache,
                     row_metas[t],
                 )?;
-                let dst = if t == 0 { stash } else { attn_out.offset(t * q_row) };
+                let dst = if t == 0 {
+                    stash
+                } else {
+                    attn_out.offset(t * q_row)
+                };
                 ctx.gpu.copy_d2d_async(out, dst, q_row, stream)?;
             }
             ctx.gpu.copy_d2d_async(stash, attn_out, q_row, stream)?;

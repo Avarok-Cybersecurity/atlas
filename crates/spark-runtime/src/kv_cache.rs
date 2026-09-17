@@ -10,6 +10,45 @@ use anyhow::{Result, bail};
 
 pub(crate) const NVFP4_GROUP_SIZE: usize = 16;
 
+/// KV block-pool occupancy, published for `/metrics`.
+///
+/// ★ THE POOL HAD NO GAUGE AT ALL UNTIL 2026-09-17.
+///
+/// `/metrics` carried prefix-cache hit counters and nothing about blocks, so
+/// the one resource a long run actually exhausts was invisible right up to the
+/// moment it ran out — a BFCL shard wedged two ranks and the only evidence was
+/// a bare "no free blocks". A gauge turns that into something you can watch
+/// climb and alert on before it bites.
+///
+/// Published from the few places that change the free list, so it costs two
+/// relaxed stores on paths that were already mutating a Vec.
+pub mod stats {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TOTAL: AtomicUsize = AtomicUsize::new(0);
+    static FREE: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn publish(total: usize, free: usize) {
+        TOTAL.store(total, Ordering::Relaxed);
+        FREE.store(free, Ordering::Relaxed);
+    }
+
+    /// Blocks in the pool. 0 before any KV cache is built.
+    pub fn total_blocks() -> usize {
+        TOTAL.load(Ordering::Relaxed)
+    }
+
+    /// Blocks currently on the free list.
+    pub fn free_blocks() -> usize {
+        FREE.load(Ordering::Relaxed)
+    }
+
+    /// Blocks held by a sequence or the prefix cache.
+    pub fn used_blocks() -> usize {
+        total_blocks().saturating_sub(free_blocks())
+    }
+}
+
 /// KV cache quantization dtype.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvCacheDtype {

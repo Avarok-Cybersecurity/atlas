@@ -87,6 +87,7 @@ impl PagedKvCache {
             self.trace
                 .record(idx as usize, "alloc", 1, std::panic::Location::caller());
         }
+        self.publish_stats();
         Ok(idx)
     }
 
@@ -160,6 +161,7 @@ impl PagedKvCache {
             self.trace
                 .record(idx as usize, "try_alloc", 1, std::panic::Location::caller());
         }
+        self.publish_stats();
         Some(idx)
     }
 
@@ -214,6 +216,7 @@ impl PagedKvCache {
         }
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(block_idx);
+            self.publish_stats();
             true
         } else {
             false
@@ -281,12 +284,20 @@ impl PagedKvCache {
         }
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(idx as u32);
+            self.publish_stats();
         }
     }
 
     /// Current reference count for a block.
     pub fn ref_count(&self, block_idx: u32) -> u32 {
         self.block_ref_counts[block_idx as usize]
+    }
+
+    /// Publish pool occupancy to the `/metrics` gauge. Called from every site
+    /// that changes the free list, so the gauge cannot silently drift.
+    #[inline]
+    fn publish_stats(&self) {
+        crate::kv_cache::stats::publish(self.num_blocks, self.free_blocks.len());
     }
 
     /// Number of free blocks.
