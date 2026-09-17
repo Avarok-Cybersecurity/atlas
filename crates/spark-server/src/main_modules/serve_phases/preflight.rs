@@ -284,19 +284,32 @@ pub(crate) fn preflight_reserve(
             },
         ));
     }
+    // The reserve's ARITHMETIC, not just its total: `inference_reserve` is
+    // `fixed_reserve + slots x ring_slot_bytes`, and on a 32 GB board the ring
+    // term is the one that decides whether batch 4 has room. Printing the two
+    // addends next to the sum means the next person can answer "why is the
+    // reserve 2.0 GB" from the log rather than from `preflight.rs`.
     tracing::info!(
-        "Preflight reserve: inference={} MB, buffer_arena={} MB (pre-load free: {:.1} GB); {}",
+        "Preflight reserve: inference={} MB = fixed {} MB + ring {} MB, \
+         buffer_arena={} MB (pre-load free: {:.1} GB); {}",
         inference_reserve / (1024 * 1024),
+        fixed_reserve / (1024 * 1024),
+        (fit.slots * ring_slot_bytes) / (1024 * 1024),
         buffer_arena_bytes / (1024 * 1024),
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
         decode_ring::formula(fit.slots, args.max_batch_size, per_seq_blob),
     );
     // Q09: per-component breakdown so future MTP/spec-decode reserve
-    // jumps are diagnosable from the log alone. Each line is dropped at
-    // debug to avoid noise on hot startup paths; flip to info if you
-    // need to trace a specific deployment's reserve.
+    // jumps are diagnosable from the log alone.
+    //
+    // At INFO since 2026-09-17, not debug. It was dropped to debug "to avoid
+    // noise on hot startup paths", but this is a once-per-serve line and the
+    // noise it avoided cost real time: on the R9700 the 2.05 GB reserve at
+    // batch 1 was the thing standing between the 27B and a larger batch, and
+    // reading which of its six terms that was meant re-running the serve with
+    // RUST_LOG=debug. One line per serve is the right price for that.
     let spec_on = spec_on_pool;
-    tracing::debug!(
+    tracing::info!(
         "Preflight reserve breakdown: \
          ssm_pool={} MB ({} max_batch blobs + {} MTP-covered slots × {} verify blobs, \
          {} ssm_layers × (h+conv)), \

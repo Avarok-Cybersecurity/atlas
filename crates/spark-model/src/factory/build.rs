@@ -342,6 +342,7 @@ pub fn build_model(
     // was built, `vision_encoder` is `Some` and nothing is touched — including
     // the loaders that bind zero-copy from these very pointers. The day a GLM
     // vision encoder lands, this stops firing on its own.
+    let mut vision_released_bytes = 0usize;
     if vision_encoder.is_none() {
         // The predicate is `fast_weights::is_vision_tensor`, not a copy of it.
         // It used to be a copy, and the copy had drifted: neither spelling list
@@ -352,6 +353,7 @@ pub fn build_model(
         let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
             spark_runtime::fast_weights::is_vision_tensor(name)
         })?;
+        vision_released_bytes = bytes;
         if n > 0 {
             tracing::info!(
                 "Vision tower: {n} tensors ({:.2} GiB) released — this serve binds no vision \
@@ -413,7 +415,7 @@ pub fn build_model(
     // are in `lm_head_source_is_dead`; the DFlash one matters at exactly this
     // point, because the drafter's own `native_fp8_lm_head_share` call is
     // several hundred lines further down and has not run yet.
-    super::lm_head_setup::release_lm_head_source(
+    let lm_head_released_bytes = super::lm_head_setup::release_lm_head_source(
         &store,
         &config,
         gpu.as_ref(),
@@ -883,6 +885,43 @@ pub fn build_model(
             n
         }
     };
+    // ── The budget, itemised, so the next person does not need a calculator ──
+    //
+    // The line above says "N GB pre-KV + M GB reserve". Neither term is
+    // inspectable from it: "pre-KV" is `total - free`, a subtraction that lumps
+    // the weights, the buffer arena, the CUDA context and any co-tenant into
+    // one number, and the reserve arrives from `serve_phases::preflight` as a
+    // single usize. When batch 4 does not fit on a 32 GB board, the first
+    // question is WHICH of those grew, and answering it used to mean reading
+    // two crates and multiplying by hand.
+    //
+    // So: name every term this side of the boundary knows, and print the
+    // remainder rather than hiding it. `other` is the CUDA context, the driver,
+    // the allocator's granule padding and anything else on the device —
+    // typically a few hundred MB, and worth looking at when it is not. The
+    // reserve's own components are itemised by `preflight.rs`'s "Preflight
+    // reserve" / "reserve breakdown" pair, which is where the ring slots live.
+    {
+        let weights = store.total_bytes();
+        let arena = buffers.total_bytes();
+        let named = weights.saturating_add(arena);
+        tracing::info!(
+            "KV budget itemised: pre-KV {:.2} GB = weights {:.2} (store, resident now) \
+             + buffer arena {:.2} + other {:.2} (CUDA context, driver, co-tenants); \
+             already released before this point: vision {:.2}, lm_head source {:.2}; \
+             reserve {:.2} GB (itemised by the `Preflight reserve` lines above) \
+             + DFlash {:.2} GB -> KV {:.2} GB",
+            gib(used_so_far),
+            gib(weights),
+            gib(arena),
+            gib(used_so_far.saturating_sub(named)),
+            gib(vision_released_bytes),
+            gib(lm_head_released_bytes),
+            gib(inference_reserve),
+            gib(dflash_reserve),
+            gib(kv_budget),
+        );
+    }
     let _max_kv_tokens = num_kv_blocks * kv_block_size;
     // Phase 6.1.f / 6.2.c — when --high-speed-swap is on with HBM-shrink, the
     // production KV cache only has to fit the per-seq HBM window, not the full

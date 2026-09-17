@@ -676,6 +676,30 @@ exists to feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with
 them, because it is residency-neutral only while there are `_t` copies for it to
 free.
 
+**Reading the memory budget off the serve log.** Three INFO lines now carry the
+whole arithmetic, so a serve that will not fit batch 4 can be diagnosed without
+re-running it under `RUST_LOG=debug`:
+
+```
+Preflight reserve: inference=2098 MB = fixed 886 MB + ring 1212 MB, buffer_arena=1945 MB ...;
+  ring: 8 slots x 1 seqs x 151.5 MB/seq = 1.18 GB
+Preflight reserve breakdown: ssm_pool=... ssm_snapshot=... gdn_two_phase=... cuda_headroom=...
+KV cache: 31.9 GB total x 90% util = 28.7 GB budget; 23.0 GB pre-KV + 2.0 GB reserve -> 3.7 GB for KV ...
+KV budget itemised: pre-KV 23.00 GB = weights 19.42 (store, resident now) + buffer arena 1.90
+  + other 1.68 (CUDA context, driver, co-tenants); already released before this point:
+  vision 1.65, lm_head source 1.18; reserve 2.05 GB ... + DFlash 0.00 GB -> KV 3.70 GB
+```
+
+The two terms that used to be opaque are the ones that matter here. **"pre-KV"**
+is `total - free`, a subtraction that lumps the weights, the buffer arena, the
+CUDA context and any desktop co-tenant into one number — the itemised line names
+each and prints the remainder as `other` rather than hiding it. **The reserve**
+arrives at the KV sizer as a single `usize` from a different crate; the preflight
+line now prints it as `fixed + ring`, and the ring is `slots x seqs x bytes`,
+which at batch 1 on this board is 8 x 1 x 151.5 MiB = 1.18 GB of a 2.05 GB
+reserve. That is the term to attack for more batching headroom, not the KV
+arithmetic.
+
 **The checkpoint's `lm_head`, once the heads are built.** `unsloth/Qwen3.8-27B-NVFP4`
 ships `lm_head.weight` as FP8 E4M3 with a per-channel BF16 scale. `load_lm_head`
 dequantises it into a fresh BF16 allocation and every head — NVFP4, FP8 or the

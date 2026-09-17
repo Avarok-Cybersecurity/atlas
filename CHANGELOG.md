@@ -11,6 +11,20 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **The memory budget is itemised in the serve log.** Two of the numbers the KV
+  sizer prints were not inspectable from it. "Pre-KV" is `total - free`, a
+  subtraction that lumps the weights, the buffer arena, the CUDA context and any
+  co-tenant into one figure; the reserve arrives from `serve_phases::preflight`
+  as a single `usize`. Diagnosing a serve that will not fit a larger batch meant
+  reading two crates and multiplying by hand. Now: a `KV budget itemised` INFO
+  line names the weights (`WeightStore::resident_bytes` at that moment), the
+  buffer arena (new `BufferArena::total_bytes`), the bytes already released
+  (vision tower, `lm_head` source) and prints the unattributed remainder as
+  `other` rather than hiding it; and `Preflight reserve` prints the reserve as
+  `fixed + ring` beside the existing `slots x seqs x bytes` formula. The
+  per-component `Preflight reserve breakdown` line moves from `debug` to `info`
+  — it is once per serve, and the noise it was avoiding cost a serve re-run
+  under `RUST_LOG=debug` every time the reserve was the thing in the way.
 - **The checkpoint's FP8 `lm_head` is released once the heads are built.**
   `unsloth/Qwen3.8-27B-NVFP4` ships `lm_head.weight` as FP8 E4M3 with a
   per-channel BF16 scale; `load_lm_head` dequantises it into a fresh BF16

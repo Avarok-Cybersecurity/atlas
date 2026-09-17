@@ -6,6 +6,16 @@ use super::{BufferArena, sizes::BufferSizes};
 use crate::gpu::{DevicePtr, GpuBackend};
 
 impl BufferArena {
+    /// Every byte this arena allocated, as `BufferSizes` priced them.
+    ///
+    /// The serve's memory ledger has to be able to name the arena separately
+    /// from the weights: both land inside "pre-KV" as far as the KV sizer's
+    /// `total - free` is concerned, and an operator reading a shrinking KV
+    /// budget cannot tell which one grew without this.
+    pub fn total_bytes(&self) -> usize {
+        self.sizes.total_bytes()
+    }
+
     pub fn hidden_states(&self) -> DevicePtr {
         self.hidden_states
     }
