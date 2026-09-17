@@ -558,6 +558,44 @@ fn main() {
         });
     }
 
+    // ── Name the modules that compiled to an EMPTY code object ──
+    // An optional module whose whole body sits behind a capability guard
+    // (`nvfp4_mmq.cu` inside `#if defined(BLACKWELL_MMA_AVAILABLE)`) still
+    // compiles, successfully, to an object with no kernels in it. The build log
+    // said nothing about that, and on SCALE 1.7.1 / gfx1201 the first sign of it
+    // was a CUDA_ERROR_INVALID_IMAGE (200) at the first launch, because that
+    // driver answers `cuModuleGetFunction` for a name the object does not
+    // define. `atlas_core::registry` now refuses those lookups at load time;
+    // this is the same reading, done here, so the names are in the build log
+    // BEFORE anyone serves the target.
+    //
+    // The symbol reader is the registry's, included by path rather than copied,
+    // so the build and the runtime can never disagree about what an object
+    // defines. It parses ELF64 LE only, and returns None for anything else
+    // (PTX text, a metallib, a clang offload bundle), so only the binary
+    // (SCALE/HIP) targets are reported on and no NVIDIA build changes.
+    // Never fatal: an empty optional module is a legitimate state, the one the
+    // runtime guard is built to serve through.
+    // This build script emits `rerun-if-changed` directives, which switches off
+    // cargo's default "any file in the package" trigger, and the reader is not
+    // in this package at all, so it needs saying.
+    println!("cargo:rerun-if-changed=../atlas-core/src/elf_symbols.rs");
+    for (idx, modules) in all_target_modules.iter().enumerate() {
+        for (stem, module_name) in modules {
+            let obj = out_dir.join(format!("t{idx}__{stem}.{output_ext}"));
+            let Ok(bytes) = std::fs::read(&obj) else {
+                continue;
+            };
+            if elf_symbols::defined_function_symbols(&bytes).is_some_and(|k| k.is_empty()) {
+                println!(
+                    "cargo:warning=atlas-kernels: {module_name} compiled to a code object with \
+                     no kernels on {} (optional module compiled out)",
+                    targets[idx].arch,
+                );
+            }
+        }
+    }
+
     // ── HIP: build the libcuda→HIP shim (libcuda.so) ──
     // The runtime is unchanged (cudarc links `-lcuda`); on AMD the CUDA driver
     // symbols it imports are re-exported by libcuda_hip_shim.cpp mapped onto HIP
@@ -1392,6 +1430,16 @@ mod build_parse;
 // with no test that could have noticed.
 #[path = "build_shadow.rs"]
 mod build_shadow;
+
+// THE SAME symbol reader `atlas_core::registry` guards kernel lookups with,
+// included by path rather than copied: a build warning that disagreed with the
+// runtime refusal would be worse than no warning at all. atlas-core is not a
+// build-dependency of this crate (and making it one, for one dependency-free
+// std-only file, would drag cudarc into every build script run), so the file is
+// shared as a file. `crates/atlas-core/src/elf_symbols.rs` documents the format
+// subset and why it exists.
+#[path = "../atlas-core/src/elf_symbols.rs"]
+mod elf_symbols;
 use build_parse::{
     parse_behavior, parse_dflash, parse_expected_absent, parse_kernel_source, parse_kernel_toml,
     parse_match_names, parse_model_types, parse_sampling_presets, parse_shadow_exempt,

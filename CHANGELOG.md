@@ -147,6 +147,25 @@ behind specific subsystems — see the
   version it was not packaged as.
 
 ### Fixed
+- **A kernel module that compiled to nothing no longer takes the first launch
+  down on SCALE.** `spark serve` on the R9700 (gfx1201, SCALE 1.7.1) loaded
+  21.8 GB of weights and died at its first kernel with
+  `CUDA_ERROR_INVALID_IMAGE (200)` on `nvfp4_mmq::atlas_nvfp4_repack`.
+  `nvfp4_mmq.cu` is entirely inside `#if defined(BLACKWELL_MMA_AVAILABLE)`, so
+  on a non-Blackwell target it compiles to a code object with no kernel symbols
+  at all. NVIDIA answers `cuModuleGetFunction` for such a name with "not
+  found", `try_kernel` folds that into `KernelHandle(0)`, and the guarded use
+  site takes another path. SCALE answers SUCCESS and returns a handle backed by
+  no code, so the guard never fires and the launch is the first thing that
+  notices. The registry now reads each binary module's ELF symbol table at load
+  time, through `crates/atlas-core/src/elf_symbols.rs` (a dependency-free
+  ELF64 walk over `STT_FUNC` symbols and AMDGPU `<kernel>.kd` descriptors,
+  bounds-checked throughout, declining anything it cannot parse), and refuses
+  a lookup the object provably cannot satisfy with `<module>::<kernel>: not defined in this
+  target's code object (optional module compiled out?)`. That error degrades to
+  handle 0 through the same probe NVIDIA uses. Unparsable objects and the PTX
+  path are untouched. `atlas-kernels`' build script reads the same objects with
+  the same code and names every empty module in the build log.
 - **Benchmark runs no longer overwrite each other.** History files were named by
   whole seconds, so two runs of the same benchmark within the same second
   silently destroyed the first. Records are now keyed by nanosecond with an

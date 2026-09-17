@@ -106,6 +106,17 @@ memory_gb = 32
 #     32624, and native HIP in the same loop is honest. The driver's TOTAL
 #     is correct (32624 MiB) and stays in use.
 #
+#   * An optional module that compiles to an EMPTY code object is a LAUNCH
+#     failure here, not a missed lookup. `nvfp4_mmq.cu` is entirely inside
+#     `#if defined(BLACKWELL_MMA_AVAILABLE)`, so gfx1201 builds it to an
+#     object with no kernels; SCALE's `cuModuleGetFunction` then returns
+#     SUCCESS for `atlas_nvfp4_repack` and the first launch dies with
+#     CUDA_ERROR_INVALID_IMAGE (200). NVIDIA answers "not found" and the
+#     optional-kernel probe absorbs it. The registry therefore reads each
+#     binary module's ELF symbol table and refuses names the object does not
+#     define (`crates/atlas-core/src/elf_symbols.rs`); the build log names the
+#     empty modules too. See the r9700 section of docs/HARDWARE.md.
+#
 # ── STILL UNVERIFIED ON SILICON ───────────────────────────────────
 # The build is green. Nothing below it has been observed RUNNING, and "it
 # compiles and links" is not evidence about any of it:

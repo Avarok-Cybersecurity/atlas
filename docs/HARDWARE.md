@@ -567,6 +567,31 @@ Nothing about this reaches an NVIDIA build, which resolves to the driver
 without even scanning `/sys`. See
 `crates/spark-runtime/src/cuda_backend/meminfo_source.rs`.
 
+**Optional modules on SCALE targets.** Atlas carries kernel modules that only
+some targets compile: `kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu` is
+entirely inside `#if defined(BLACKWELL_MMA_AVAILABLE)`, so on anything that is
+not Blackwell it compiles, successfully, to a code object with no kernels in
+it. On NVIDIA that costs nothing: `cuModuleGetFunction` answers "not found",
+`spark-model`'s `try_kernel` folds the error into `KernelHandle(0)`, and every
+use site is already guarded. Observed on SCALE 1.7.1 / gfx1201 the driver does
+not answer that way. It returns SUCCESS for a name the object does not define,
+hands back a handle backed by no code, and the first launch through it dies
+with `CUDA_ERROR_INVALID_IMAGE (200)`, which is how `spark serve` on the
+R9700 died at its very first kernel, `nvfp4_mmq::atlas_nvfp4_repack`, with
+21.8 GB of weights already resident. So the registry no longer takes the
+driver's word for it: at load time it reads each binary module's ELF symbol
+table (`crates/atlas-core/src/elf_symbols.rs`, a dependency-free ELF64 walk
+that counts `STT_FUNC` symbols and the AMDGPU `<kernel>.kd` descriptors) and
+refuses a lookup the object provably cannot satisfy, with
+`<module>::<kernel>: not defined in this target's code object (optional module
+compiled out?)`. That is an ordinary error, so the optional kernel degrades to
+handle 0 exactly as it does on NVIDIA. A module whose bytes do not parse as
+ELF64 is not guarded at all (the driver still decides), and the PTX path is
+untouched. `atlas-kernels`' build script reads the same objects with the same
+code and prints `cargo:warning=atlas-kernels: <module> compiled to a code
+object with no kernels on <arch> (optional module compiled out)`, so the empty
+modules are named in the build log before anyone serves the target.
+
 **Build and serve.** `build-amd.sh` and `serve-amd.sh` take the hardware
 target from `ATLAS_TARGET_HW` (default `strix`) and read the SCALE arch from
 `kernels/$ATLAS_TARGET_HW/HARDWARE.toml`, so this target needs no separate
