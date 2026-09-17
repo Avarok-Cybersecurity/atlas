@@ -112,7 +112,7 @@ impl ChatTokenizer {
                 tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
                 super::jinja_helpers::build_jinja_env(&tmpl).ok()
             });
-        let chat_encoding = if model_type == "deepseek_v4" {
+        let chat_encoding = if model_type == "deepseek_v4" || model_type == "deepseek_v41" {
             tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
             ChatEncoding::DeepseekV4
         } else {
