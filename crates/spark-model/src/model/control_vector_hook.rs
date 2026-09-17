@@ -4,7 +4,7 @@
 //!
 //! See `docs/design/qwen4exp-control-vectors.md`. Two entry points:
 //!
-//! * [`TransformerModel::install_control_vector`] — boot-time, once.
+//! * [`TransformerModel::load_control_vector`] — boot-time, once.
 //! * [`TransformerModel::cvec_after_layer`] — called from EVERY model-level
 //!   layer loop, immediately after `layer.prefill()` / `layer.decode()`
 //!   returns.
@@ -40,7 +40,7 @@ impl TransformerModel {
     /// scope gate: the intervention site is `hc_streams`, which only exists
     /// when `hc_mult > 0`, so a non-mHC architecture has nowhere to put this
     /// and would otherwise accept the flag and do nothing.
-    pub fn install_control_vector(&mut self, spec: &ControlVectorSpec) -> Result<()> {
+    pub fn load_control_vector(&mut self, spec: &ControlVectorSpec) -> Result<()> {
         anyhow::ensure!(
             self.config.hc_mult > 0,
             "control vectors need an mHC highway to act on, and model_type \

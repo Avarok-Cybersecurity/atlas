@@ -349,6 +349,23 @@ pub trait Model: Send + Sync {
         bail!("this model does not support LoRA adapter rotation")
     }
 
+    /// Install a boot-time control vector (activation steering on the residual
+    /// highway). See `crate::control_vector`.
+    ///
+    /// Default: unsupported. It BAILS rather than ignoring the request —
+    /// accepting `--control-vector` and then not steering would serve a model
+    /// the operator believes was steered, and unlike a perf regression there
+    /// is no counter that would ever show it.
+    fn install_control_vector(
+        &mut self,
+        _spec: &crate::control_vector::ControlVectorSpec,
+    ) -> Result<()> {
+        bail!(
+            "this model does not support control vectors (they need an mHC \
+             residual highway to act on)"
+        )
+    }
+
     /// Task #24: stable adapter_id (KV/prefix-cache identity) for a per-request
     /// pool-slot selector. `slot` follows `SequenceState.adapter_slot`: `>= 0`
     /// picks that resident slot, `-1` defers to the installed active adapter.

@@ -224,6 +224,12 @@ impl Model for TransformerModel {
     fn set_active_lora(&mut self, name: &str) -> Result<()> {
         self.rotate_lora_to(name)
     }
+    fn install_control_vector(
+        &mut self,
+        spec: &crate::control_vector::ControlVectorSpec,
+    ) -> Result<()> {
+        self.load_control_vector(spec)
+    }
     fn adapter_id_for(&self, slot: i32) -> u64 {
         self.adapter_id_for_slot(slot)
     }

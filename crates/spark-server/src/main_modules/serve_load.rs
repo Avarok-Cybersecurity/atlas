@@ -828,7 +828,7 @@ pub(crate) fn load_model(
     } else {
         None
     };
-    let model = serve_phases::build_model(
+    let mut model = serve_phases::build_model(
         &args,
         &config,
         // Moved, not borrowed: the model keeps the ledger so it can free the
@@ -847,6 +847,42 @@ pub(crate) fn load_model(
         nllb_lang,
         nllb_lora_dir,
     )?;
+
+    // Control vectors. BEFORE `maybe_run_ep_worker`, so rank > 0 installs the
+    // same vectors before it enters its command loop — a rank serving an
+    // un-steered highway while its peer steers would diverge mid-sequence,
+    // and nothing downstream would attribute that to the vector. Each load
+    // logs the file's SHA-256, so comparing the two ranks' boot logs settles
+    // it in one grep.
+    let cvec_specs = cli::control_vector_args::resolve(
+        &args.control_vector,
+        &args.control_vector_layers,
+        &args.control_vector_scale,
+        &args.control_vector_mode,
+        config.num_hidden_layers,
+    )?;
+    if cvec_specs.len() > 1 {
+        // The model holds ONE vector and the hook applies it to the whole
+        // highway, so a second would silently replace the first. Refuse
+        // rather than serve the last-listed one under every name. Lifting
+        // this needs the per-request registry — see §8 of
+        // docs/design/qwen4exp-control-vectors.md.
+        anyhow::bail!(
+            "--control-vector given {} times ({}); only one can be active at a \
+             time until per-request selection lands",
+            cvec_specs.len(),
+            cvec_specs
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    for (name, spec) in &cvec_specs {
+        model
+            .install_control_vector(spec)
+            .with_context(|| format!("--control-vector {name}"))?;
+    }
 
     // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
     // by here the audit holds this model's COMPLETE lookup set — see
