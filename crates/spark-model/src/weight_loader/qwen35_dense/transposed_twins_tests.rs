@@ -155,10 +155,18 @@ fn the_ffn_width_falls_back_the_way_the_loader_does() {
     assert_eq!(projected_bytes(&c, &c.layer_types).ffn, 9180 * MIB);
 }
 
+/// ★ SCALE's unset default is `Never`, not the probe. The R9700 measurement of
+/// 2026-09-17 has the twin GEMM arm SLOWER than the untransposed one on gfx1201
+/// (~1 TFLOP/s against ~4), so there is no residency-versus-speed trade left for
+/// `auto` to weigh — the twins are only 12.74 GiB. Every non-SCALE target is
+/// untouched and still builds them.
 #[test]
 fn the_default_follows_the_target_and_the_knob_overrides_it() {
-    // Unset: SCALE probes, everything else keeps today's behaviour.
-    assert_eq!(decide(None, true), TwinPolicy::Auto);
+    assert_eq!(
+        decide(None, true),
+        TwinPolicy::Never,
+        "the twin arm measured slower than the plain one on gfx1201"
+    );
     assert_eq!(
         decide(None, false),
         TwinPolicy::Always,
@@ -171,7 +179,7 @@ fn the_default_follows_the_target_and_the_knob_overrides_it() {
     assert_eq!(decide(Some("auto"), true), TwinPolicy::Auto);
     // Anything else is "unset", never a silent skip.
     assert_eq!(decide(Some("true"), false), TwinPolicy::Always);
-    assert_eq!(decide(Some("yes"), true), TwinPolicy::Auto);
+    assert_eq!(decide(Some("yes"), true), TwinPolicy::Never);
     assert_eq!(decide(Some(""), false), TwinPolicy::Always);
 }
 

@@ -592,9 +592,9 @@ nothing has been served on this board. Beyond that:
   strix never set it and serves coherently with the native FP8 SSM prefill on,
   so on r9700 it is the first knob to bisect OFF once a coherent baseline
   exists. `ATLAS_NO_FP8_PREDEQUANT=1` is a belt over a probe, not a pin; see
-  "The FP8 prefill predequant" below. `ATLAS_LOAD_TRANSPOSED_TWINS=auto` is the
-  residency lever, and what it costs is in "The transposed second weight
-  layout" below. `ATLAS_FORCE_GLOBAL_GDN`, which the script used to export, has
+  "The FP8 prefill predequant" below. `ATLAS_LOAD_TRANSPOSED_TWINS=0` was the
+  residency lever and is now simply the faster arm as well; see "The transposed
+  second weight layout" below. `ATLAS_FORCE_GLOBAL_GDN`, which the script used to export, has
   no reader anywhere in the tree and was dropped rather than carried here.
 * **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
   retuned sampling block, which are gfx1151 observations (a post-`</think>`
@@ -638,12 +638,15 @@ and not. `docs/porting/r9700-residency.md` has the measured ledger; the summary:
 | ... and the attention BF16 dequant leak fixed | 35.18 | no |
 | ... and no transposed twins | 21.25 | **yes** |
 
-`ATLAS_LOAD_TRANSPOSED_TWINS` is `1` (build them; today's behaviour byte for
-byte, and the default on every non-SCALE target), `0` (build none) or `auto`
+`ATLAS_LOAD_TRANSPOSED_TWINS` is `1` (build them; the pre-lever behaviour byte
+for byte, and the default on every non-SCALE target), `0` (build none) or `auto`
 (build them only if free VRAM after the checkpoint is resident exceeds their
 projected bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the
-vision encoder's working set). Unset takes `cfg!(atlas_scale)`, so SCALE
-probes and NVIDIA does not. The decision is made ONCE, before any layer
+vision encoder's working set). **Unset takes `cfg!(atlas_scale)`, and as of
+2026-09-17 that means `0` on SCALE**, not `auto` — see "What skipping costs"
+below: on gfx1201 the twin arm measured SLOWER than the arm it replaces, so
+there is no residency-versus-speed trade for the probe to weigh. NVIDIA is
+untouched and still builds them. The decision is made ONCE, before any layer
 allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives:
 `free_memory()` shrinks as layers load, so a per-layer probe transposes the
 early layers and skips the late ones and leaves prefill straddling two dispatch
@@ -657,12 +660,17 @@ reproduces the measured ledger, pinned by `transposed_twins_tests.rs`):
 | `qwen3.8-27b` / `qwen3.6-27b` | 8.96 GiB | 2.90 GiB | 0.88 GiB | **12.74 GiB** |
 | `ornith-1.0-9b` | 2.53 GiB | 0.84 GiB | 0.25 GiB | **3.62 GiB** |
 
-So `auto` will normally build them for the small models and skip them for the
-27B. **What skipping costs**: every fast arm of `w4_gemm!` is skipped and FFN
-prefill lands on the plain `w4a16_gemm`, at ~7.0 TFLOP/s against ~51 for
-`w4a16_gemm_t_m128` on the Gemma-4-31B measurement, call it a 7x slower FFN
-prefill. The SSM and attention sides are the same shape of trade and are
-unmeasured. Decode is untouched: it reads the packed original either way.
+**What skipping costs, measured on this board rather than inherited.** Nothing;
+it pays. The R9700 prefill measurement of 2026-09-17 (Ornith-1.0-9B with the
+twins against Qwen3.8-27B without) puts `w4a16_gemm_t_m128` at **~1 TFLOP/s and
+the plain `w4a16_gemm` at ~4 TFLOP/s** on gfx1201. The twin arm is the slower
+one here.
+
+⚠️ The **~7.0 vs ~51 TFLOP/s** figures this section used to quote are the
+Gemma-4-31B numbers from **GB10** and were never measured on SCALE. They are why
+every non-SCALE target still builds the twins by default, and they must not be
+quoted for gfx1201. The SSM and attention sides remain unmeasured on both.
+Decode is untouched on every target: it reads the packed original either way.
 Dropping the SSM twin also drops the 1.41 GiB `out_proj` FP8 predequant, which
 exists to feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with
 them, because it is residency-neutral only while there are `_t` copies for it to
@@ -774,7 +782,7 @@ export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
 export ATLAS_W4A16_VARIANT=v1
 export ATLAS_NO_GDN_FP8_PREFILL=1     # bisect candidate, not a pin
 export ATLAS_NO_FP8_PREDEQUANT=1      # belt; the loader probes for this anyway
-export ATLAS_LOAD_TRANSPOSED_TWINS=auto  # fits 32 GB, prefill on the plain arm
+export ATLAS_LOAD_TRANSPOSED_TWINS=0  # fits 32 GB; the plain arm is also faster here
 target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
 ```
 

@@ -122,12 +122,13 @@ a single-layout prefill kernel) closes the gap.
 ### The lever that closes it, and what it costs
 
 `ATLAS_LOAD_TRANSPOSED_TWINS` (`weight_loader/qwen35_dense/transposed_twins.rs`)
-is `1` (build every twin; today's behaviour byte for byte, and the default on
-every non-SCALE target), `0` (build none) or `auto` (build them only if
+is `1` (build every twin; the pre-lever behaviour byte for byte, and the default
+on every non-SCALE target), `0` (build none) or `auto` (build them only if
 `gpu.free_memory()` after the checkpoint is resident exceeds their projected
 bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the vision
-encoder's working set). Unset takes `cfg!(atlas_scale)`. `serve-amd.sh` exports
-`auto` for r9700.
+encoder's working set). Unset takes `cfg!(atlas_scale)`, which since 2026-09-17
+is **`0`** on SCALE rather than `auto` — see "The cost" below. `serve-amd.sh`
+exports `0` for r9700.
 
 The projection is the SAME arithmetic that reproduces the measured ledger above,
 and `transposed_twins_tests.rs` pins it to the whole MiB against these numbers,
@@ -144,10 +145,20 @@ when q/k/v share one `weight_scale_2`, which this checkpoint's per-projection
 absmax makes false (see item 4 of the ranked list), and pricing a copy that is
 usually absent would make `auto` refuse room it does not need.
 
-**The cost.** With the twins absent every fast arm of `w4_gemm!` is skipped and
-FFN prefill lands on the plain `w4a16_gemm`: ~7.0 TFLOP/s against ~51 for
-`w4a16_gemm_t_m128` on the Gemma-4-31B measurement, a 7x slower FFN prefill.
-The SSM and attention sides are the same shape of trade and are unmeasured.
+**The cost, and the measurement that reversed its sign on this board.** With the
+twins absent every fast arm of `w4_gemm!` is skipped and FFN prefill lands on
+the plain `w4a16_gemm`. That was expected to be expensive: on **GB10**,
+`w4a16_gemm` measured ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on
+Gemma-4-31B, a 7x slower FFN prefill, and that is still why every non-SCALE
+target builds the twins.
+
+⚠️ **On gfx1201 it is the opposite.** The R9700 prefill measurement of
+2026-09-17 — Ornith-1.0-9B with the twins against Qwen3.8-27B without — puts
+`w4a16_gemm_t_m128` at **~1 TFLOP/s and the plain `w4a16_gemm` at ~4 TFLOP/s**.
+The twin arm is the slower one here, so the 12.74 GiB buys nothing back and the
+SCALE default is now `0`. The 7-vs-51 figures were never measured on SCALE and
+this document should not have carried them forward as if they were. The SSM and
+attention sides remain unmeasured on both targets.
 Decode is untouched: it reads the packed original either way. Two further
 consequences are deliberate: dropping the SSM twin also drops the 1.41 GiB
 `out_proj` FP8 predequant (`qwen3_ssm/init_fp8.rs:110` keys off
@@ -158,8 +169,9 @@ free.
 **This is not the fix.** The fix is item 5's sibling: a prefill GEMM that reads
 the packed `[N, K/2]` layout directly with a transposed tile walk, with the
 128x128 `cp.async` tiling the `_t` kernels have. Then there is no second layout
-to build or skip, on any target, and the 27B fits without paying 7x. This lever
-buys a serve.
+to build or skip, on any target. On GB10 that removes the 7x; on gfx1201, where
+the `_t` arm is the slower of the two, it removes a copy that was buying nothing
+back. This lever buys a serve.
 
 ## DEAD versus ALIVE: the per-site argument
 
@@ -372,8 +384,12 @@ the same pointer and records it, so both become correct by substitution.
    measured A/B, not a silent default. **DONE**, as
    `ATLAS_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one lever
    for all three families rather than three, because a build that skips one and
-   builds the others has no state anyone measured. The A/B is still owed: the
-   7x is inherited from Gemma-4-31B on GB10, not measured here.
+   builds the others has no state anyone measured. **The A/B is now RUN, and it
+   went the other way**: on gfx1201 `w4a16_gemm_t_m128` measures ~1 TFLOP/s and
+   the plain `w4a16_gemm` ~4 (R9700 prefill, 2026-09-17, 9B with the twins
+   against 27B without). The 7x above is GB10's and was never SCALE's, so the
+   SCALE default moved from `auto` to `0`: dropping the twins is not a trade
+   here, it is free.
 3. **Do not build the transposed SSM twins.** 2.90 GiB. `qkvz_nvfp4_t` and
    `out_proj_nvfp4_t` are `Option` and every consumer is guarded
    (`trait_prefill_proj.rs:120`, `:327`, `trait_decode_batched.rs:424`, `:483`),

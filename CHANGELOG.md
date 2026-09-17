@@ -19,16 +19,22 @@ behind specific subsystems — see the
   SSM, 0.88 attention), which is the difference between loading the model and
   not: release-on-consume and the attention dequant-leak fix take that serve
   from 47.07 GiB to 35.18, and dropping the twins takes it to 21.25. `1` builds
-  them (today's behaviour byte for byte, and the default on every non-SCALE
-  target), `0` builds none, `auto` builds them only if free VRAM after the
-  checkpoint is resident clears their projected bytes plus a 4 GiB serve
-  reserve; unset takes `cfg!(atlas_scale)`. Decided ONCE before any layer
+  them (the pre-lever behaviour byte for byte, and the default on every
+  non-SCALE target), `0` builds none, `auto` builds them only if free VRAM after
+  the checkpoint is resident clears their projected bytes plus a 4 GiB serve
+  reserve; unset takes `cfg!(atlas_scale)`, which is `0` on SCALE and `1`
+  elsewhere. Decided ONCE before any layer
   allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives.
-  **The cost is written down rather than discovered**: with the twins absent
-  every fast arm of `w4_gemm!` is skipped and FFN prefill lands on the plain
-  `w4a16_gemm`, ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on the
-  Gemma-4-31B measurement, a 7x slower FFN prefill, with decode untouched. The
-  load line says which way it went and a warn repeats the trade. Every consumer
+  **The cost is written down rather than discovered**, and it is not the same
+  cost on every target. On GB10 the twins are a large prefill win: `w4a16_gemm`
+  measured ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on Gemma-4-31B, so
+  skipping them is a 7x slower FFN prefill and every non-SCALE target still
+  builds them. **On gfx1201 the sign is reversed** — the R9700 prefill
+  measurement of 2026-09-17 puts the twin arm at ~1 TFLOP/s against ~4 for the
+  plain `w4a16_gemm` — so the SCALE default is `0` rather than `auto`: the
+  second layout costs 12.74 GiB *and* throughput there, and there is no trade
+  left for the probe to weigh. The GB10 figures were never measured on SCALE.
+  Decode is untouched on every target. The load line says which way it went. Every consumer
   already tolerated a `None` twin and the per-site proof is tabulated in
   `transposed_twins.rs`; nothing needed a new fallback. Dropping the SSM twin
   also drops the 1.41 GiB `out_proj` FP8 predequant and the NVFP4-MMQ finalize,

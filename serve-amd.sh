@@ -120,20 +120,24 @@ esac
 case "$ATLAS_TARGET_HW" in
   r9700) export ATLAS_NO_FP8_PREDEQUANT=1 ;;
 esac
-# ATLAS_LOAD_TRANSPOSED_TWINS=auto (spark-model/src/weight_loader/qwen35_dense/
-# transposed_twins.rs) lets the loader decide, once and before any layer
-# allocates, whether this board can hold the transposed second copy of every
-# quantised weight. THE TRADE, stated plainly: without the twins a 27B NVFP4
-# model fits 32 GB, and FFN prefill falls off w4a16_gemm_t_m128 onto the plain
-# w4a16_gemm, at ~7 TFLOP/s against ~51 on the Gemma-4-31B measurement, 7x
-# slower prefill. Decode is untouched. The twins are 12.74 GiB on
-# unsloth/Qwen3.8-27B-NVFP4 and 3.62 GiB on Ornith-1.0-9B, so `auto` will
-# normally BUILD them for the small models and skip them for the 27B; the serve
-# log says which way it went and why. `=1` forces them on (and forces the 27B
-# back to not loading), `=0` forces them off unconditionally.
+# ATLAS_LOAD_TRANSPOSED_TWINS=0 (spark-model/src/weight_loader/qwen35_dense/
+# transposed_twins.rs) declines the transposed second copy of every quantised
+# weight. On GB10 that copy is a large prefill win and declining it is a
+# residency trade; ON THIS BOARD IT IS NOT A TRADE AT ALL. The R9700 prefill
+# measurement of 2026-09-17 puts the twin arm w4a16_gemm_t_m128 at about
+# 1 TFLOP/s against about 4 for the plain w4a16_gemm it replaces (Ornith-1.0-9B
+# with the twins, Qwen3.8-27B without), so on gfx1201 the second layout is
+# SLOWER as well as 12.74 GiB larger on unsloth/Qwen3.8-27B-NVFP4 (3.62 GiB on
+# Ornith-1.0-9B). The 7-vs-51 TFLOP/s figures that used to be quoted here are
+# the Gemma-4-31B numbers from GB10 and were never measured on SCALE.
+# Decode is untouched either way: it reads the packed original.
+# `0` is also the loader's own unset default under cfg(atlas_scale), so this
+# export only makes the recipe say out loud which path it is on. `=1` builds
+# them anyway and `=auto` restores the free-VRAM probe, which is how the A/B
+# above gets re-run.
 # See the r9700 section of docs/HARDWARE.md and docs/porting/r9700-residency.md.
 case "$ATLAS_TARGET_HW" in
-  r9700) export ATLAS_LOAD_TRANSPOSED_TWINS=auto ;;
+  r9700) export ATLAS_LOAD_TRANSPOSED_TWINS=0 ;;
 esac
 # Removed here: ATLAS_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
 # tree as of this commit, so exporting it only suggested a control that does not

@@ -91,10 +91,12 @@ memory_gb = 32
 #     hoped-for saving is not available. `serve-amd.sh` also sets
 #     `ATLAS_NO_GDN_FP8_PREFILL=1` on this target only, as a conservative
 #     first-serve default (strix never set it and serves coherently with the
-#     native FP8 SSM prefill on); it is the first knob to bisect OFF. The two other
-#     names the old list carried, ATLAS_FORCE_GLOBAL_GDN and
-#     ATLAS_NO_FP8_PREDEQUANT, have no reader anywhere in the tree and are
-#     no longer exported.
+#     native FP8 SSM prefill on); it is the first knob to bisect OFF.
+#     ATLAS_NO_FP8_PREDEQUANT IS READ, contrary to what this note said until
+#     2026-09-17: `spark-model/src/layers/fp8_predequant.rs` reads it (the
+#     `PredequantSkip::Env` arm) and `serve-amd.sh` exports it on r9700. Only
+#     ATLAS_FORCE_GLOBAL_GDN has no reader anywhere in the tree, and only that
+#     one is no longer exported.
 #
 #   * SCALE's cuMemGetInfo FREE figure is not truthful here, so Atlas takes
 #     free VRAM from /sys/class/drm/card*/device/mem_info_vram_{total,used}

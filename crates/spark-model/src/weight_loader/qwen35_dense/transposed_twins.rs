@@ -14,15 +14,24 @@
 //! which still does not load on a 32 GB board. Dropping the twins takes it to
 //! 21.25 GiB, which does.
 //!
-//! **What it costs, stated before the knob rather than after it.** With the
-//! twins absent every fast arm of `dense_ffn.rs`'s `w4_gemm!` is skipped and
-//! prefill lands on the plain `w4a16_gemm`. The Gemma-4-31B measurement that
-//! `gemma4/loader_a.rs:30-52` was written against puts that at **~7.0 TFLOP/s
-//! against ~51 TFLOP/s for `t_m128`**, so call it a 7x slower FFN prefill; the
-//! SSM and attention sides are the same shape of trade and are unmeasured.
-//! Decode is untouched — it reads the packed original either way. This is a
-//! trade that is only worth taking on a board that otherwise cannot load the
-//! model at all, which is why the default everywhere is "build them".
+//! **What it costs, and on which board.** With the twins absent every fast arm
+//! of `dense_ffn.rs`'s `w4_gemm!` is skipped and prefill lands on the plain
+//! `w4a16_gemm`. On GB10 that is a large loss: the Gemma-4-31B measurement
+//! `gemma4/loader_a.rs:30-52` was written against puts `w4a16_gemm` at
+//! **~7.0 TFLOP/s against ~51 TFLOP/s for `t_m128`**, a 7x slower FFN prefill,
+//! and that is why the default on every non-SCALE target is still "build them".
+//!
+//! ⚠️ **On gfx1201 the sign is reversed.** The R9700 prefill measurement of
+//! 2026-09-17 (Ornith-1.0-9B with the twins, Qwen3.8-27B without) puts
+//! `w4a16_gemm_t_m128` at **~1 TFLOP/s against ~4 TFLOP/s for the plain
+//! `w4a16_gemm`**. The 7-vs-51 figures above were never measured on SCALE and
+//! must not be quoted for it. So on this target the twins cost 12.74 GiB AND
+//! prefill throughput, and `decide` defaults SCALE to `Never` rather than to
+//! the `auto` probe: there is no residency trade left to weigh. The lever is
+//! kept so the A/B stays runnable.
+//!
+//! Decode is untouched on every target — it reads the packed original either
+//! way.
 //!
 //! **The precedent.** `weight_loader/gemma4/loader_a.rs::ffn_transpose_fits`
 //! already does exactly this for the Gemma-4 dense FFN, under
@@ -121,7 +130,13 @@ pub(super) fn decide(env: Option<&str>, is_scale: bool) -> TwinPolicy {
         Some("1") => TwinPolicy::Always,
         Some("0") => TwinPolicy::Never,
         Some("auto") => TwinPolicy::Auto,
-        _ if is_scale => TwinPolicy::Auto,
+        // SCALE defaults to NEVER, not to the probe. On gfx1201 the twin arm
+        // `w4a16_gemm_t_m128` measures ~1 TFLOP/s against ~4 TFLOP/s for the
+        // plain `w4a16_gemm` it replaces (R9700 prefill, 9B and 27B, 2026-09-17),
+        // so the second layout is a SLOWDOWN here as well as 12.74 GiB — there
+        // is nothing for `auto` to weigh. `=auto` and `=1` both still work, so
+        // the A/B that produced that measurement can be re-run.
+        _ if is_scale => TwinPolicy::Never,
         _ => TwinPolicy::Always,
     }
 }
@@ -274,13 +289,27 @@ impl TwinPlan {
             if build { "on" } else { "off" },
         );
         if !build {
-            tracing::warn!(
-                "transposed prefill twins skipped: FFN prefill falls back to the \
-                 untransposed w4a16_gemm (~7 TFLOP/s against ~51 for w4a16_gemm_t_m128 \
-                 on the Gemma-4-31B measurement). Decode is unaffected. \
-                 ATLAS_LOAD_TRANSPOSED_TWINS=1 restores them. \
-                 See docs/porting/r9700-residency.md."
-            );
+            // Two different facts depending on the target, so say which one
+            // this build is looking at rather than printing the GB10 number on
+            // a board where it is not true.
+            if cfg!(atlas_scale) {
+                tracing::info!(
+                    "transposed prefill twins skipped: FFN prefill runs the untransposed \
+                     w4a16_gemm, which on gfx1201 measured FASTER than the twin arm \
+                     (~4 TFLOP/s against ~1 for w4a16_gemm_t_m128, R9700 2026-09-17) \
+                     as well as 12.74 GiB smaller on Qwen3.8-27B. Decode is unaffected. \
+                     ATLAS_LOAD_TRANSPOSED_TWINS=1 builds them anyway for an A/B. \
+                     See docs/porting/r9700-residency.md."
+                );
+            } else {
+                tracing::warn!(
+                    "transposed prefill twins skipped: FFN prefill falls back to the \
+                     untransposed w4a16_gemm (~7 TFLOP/s against ~51 for w4a16_gemm_t_m128 \
+                     on the Gemma-4-31B measurement). Decode is unaffected. \
+                     ATLAS_LOAD_TRANSPOSED_TWINS=1 restores them. \
+                     See docs/porting/r9700-residency.md."
+                );
+            }
         }
         Self { build }
     }
