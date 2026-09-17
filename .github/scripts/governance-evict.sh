@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # Decide which per-PR ledger files fall out of the bounded window.
 #
 # `governance/` holds one `pr-<n>.jsonl` per classified PR and has never had a

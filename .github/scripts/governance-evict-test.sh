@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
 # Table-driven test for governance-evict.sh. The ledger is a real record and
 # eviction is the only operation that removes anything from it, so every row
 # here is a case where getting it wrong deletes a file that was still needed.

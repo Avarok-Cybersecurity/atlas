@@ -173,6 +173,11 @@ wht_stride = "wht_stride"
 # CUTLASS FP8 unsigned-E4M3 scale-factor type (float_ue4m3_t) — "ue" is not a typo.
 float_ue4m3_t = "float_ue4m3_t"
 ue4m3 = "ue4m3"
+# Record-signer fingerprints are hex, and `daa4bc7c19f25eda` starts with a run
+# the checker reads as `daa` -> `data`. They appear verbatim in the AutoMerger
+# trace and in .github/record-signers/ filenames, where they are the identity
+# of a key: mangling one silently points a record at a different signer.
+daa4bc7c19f25eda = "daa4bc7c19f25eda"
 
 [files]
 extend-exclude = [
