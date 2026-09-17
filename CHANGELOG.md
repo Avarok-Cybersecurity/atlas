@@ -15,14 +15,38 @@ behind specific subsystems — see the
   target.** A structural mirror of `kernels/strix` — same SCALE 1.7.1
   toolchain through `targets/gfx1201`, same curated 99-entry `common/` reached
   by relative symlink, same `qwen3.6-27b` kernel tree — plus `qwen3.8-27b`
-  through `kernel_source`. **UNVERIFIED ON SILICON**, and the file comments
-  say so: it inherits strix's gfx1151 bring-up decisions (the 64 KB LDS
-  `BR64 32` prefill pin and the three `serve-amd.sh` runtime shims) unexamined,
-  and RDNA 4's native FP8 WMMA and LDS cap are exactly what the first bring-up
-  must probe. No `BENCH.toml` and no `[benchmarks.limits]`: nothing about this
-  class has been measured, so it cannot be campaigned.
+  through `kernel_source`. It landed **UNVERIFIED ON SILICON**, inheriting
+  strix's gfx1151 bring-up decisions (the 64 KB LDS `BR64 32` prefill pin and
+  the `serve-amd.sh` runtime knobs) unexamined, with RDNA 4's native FP8 WMMA
+  and LDS cap named as the first thing to probe. No `BENCH.toml` and no
+  `[benchmarks.limits]`: nothing about this class has been measured, so it
+  cannot be campaigned. The kernel set has since compiled on real gfx1201
+  silicon (97/97 `.cu`, 94-kernel
+  `spark-server` build green), which settled two of those inherited
+  decisions as gfx1201 facts rather than carry-overs: RDNA 4 has the same
+  64 KB per-workgroup LDS cap, so the `BR64 32` prefill pin is required, and
+  SCALE emits no e4m3 MMA codegen there, so `ATLAS_W4A16_VARIANT=v1` is
+  required. Coherent generation is still unobserved.
+- **An `r9700` entry in `hardware_id_from_gpu_name`**, reached both by the
+  `gfx1201` arch string and by the `Radeon AI PRO R9700` marketing name,
+  because `lspci` on that board reports only a numeric device id. A bench
+  receipt from this card now names its class instead of keying itself by the
+  punctuation-stripped GPU string while the registered `r9700` baseline slot
+  sits unused. Strix stays unmapped on purpose.
 
 ### Changed
+- **`build-amd.sh` and `serve-amd.sh` take their hardware from
+  `ATLAS_TARGET_HW`** (default `strix`, so an unset environment builds and
+  serves what it always did) and read the SCALE arch from
+  `kernels/$ATLAS_TARGET_HW/HARDWARE.toml` rather than hardcoding `gfx1151`
+  in four places each, so `ATLAS_TARGET_HW=r9700 ./build-amd.sh` and
+  `ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` drive the
+  gfx1201 board with the same two scripts. `ATLAS_TARGET_MODEL`, the served
+  model and `GPU_UTIL` follow the hardware. `serve-amd.sh` now exports
+  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_GDN_FP8_PREFILL=1` only:
+  `ATLAS_FORCE_GLOBAL_GDN` and `ATLAS_NO_FP8_PREDEQUANT` have no reader
+  anywhere in the tree, so exporting them advertised a control that does not
+  exist.
 - **`atlas_scale` and `atlas_hip` are driven by `[hardware].vendor`, not by
   the target's name.** `spark-model/build.rs` and `spark-runtime/build.rs`
   tested `ATLAS_TARGET_HW.starts_with("strix")`, which was correct only while
