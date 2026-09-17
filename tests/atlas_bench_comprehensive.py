@@ -12,14 +12,14 @@ to compute their own variance).
 
 Usage:
   python3 atlas_bench_comprehensive.py \\
-    --image atlas-gb10-tqplus \\
+    --image avarok-gb10-tqplus \\
     --model-path /home/pidtom/models/qwen3.6-35b-fp8 \\
     --config-name "tqplus-default" \\
     --dtypes fp8,nvfp4,bf16,turbo2,turbo3,turbo4,turbo8 \\
     --out /tmp/bench_tqplus_default.json
 
   python3 atlas_bench_comprehensive.py \\
-    --image atlas-gb10-tqplus \\
+    --image avarok-gb10-tqplus \\
     --model-path /home/pidtom/models/qwen3.6-35b-fp8 \\
     --config-name "tqplus-innerq" \\
     --dtypes turbo3 \\
@@ -35,10 +35,10 @@ import time
 import urllib.request
 
 PORT = 8889
-CONTAINER = "atlas-bench"
+CONTAINER = "avarok-bench"
 HOST = "localhost"
 
-# Single Manhattan-Project PPL prompt (matches /tmp/atlas_matrix_no_hp.py and
+# Single Manhattan-Project PPL prompt (matches /tmp/avarok_matrix_no_hp.py and
 # the prior baseline JSONs so before/after deltas are apples-to-apples).
 PPL_PROMPT = (
     "Continue this WikiText passage exactly, verbatim:\n\n"

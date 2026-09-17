@@ -14,7 +14,7 @@
 //!
 //! GPU test: `#[ignore]` per repo convention. Run with
 //! ```text
-//! ATLAS_QSA_TEST_DATA=/tank/atlas-testdata/qwen4exp_qsa/qsa_golden_bins \
+//! AVAROK_QSA_TEST_DATA=/tank/avarok-testdata/qwen4exp_qsa/qsa_golden_bins \
 //!   cargo test -p spark-model --release qsa_matches -- --ignored --nocapture
 //! ```
 
@@ -22,8 +22,8 @@ use super::*;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 fn bins_dir() -> String {
-    std::env::var("ATLAS_QSA_TEST_DATA").expect(
-        "set ATLAS_QSA_TEST_DATA — generate with \
+    std::env::var("AVAROK_QSA_TEST_DATA").expect(
+        "set AVAROK_QSA_TEST_DATA — generate with \
          `bench/qwen4_exp/qsa_golden.py --out .../qsa_golden.npz`",
     )
 }
@@ -117,10 +117,10 @@ fn qsa_matches_reference() {
     // q_post/block_keys compares immediately, so it is self-checking.
     let theta = 1.0e7f32;
 
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*'");
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*'");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
 

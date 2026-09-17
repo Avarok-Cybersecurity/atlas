@@ -43,7 +43,7 @@
 //!   all-reduce. Column-slicing it instead yields a plausible, wrong output.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// How one KDA tensor maps onto TP ranks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

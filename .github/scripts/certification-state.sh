@@ -14,7 +14,7 @@
 # conclusions on the head sha, the PR's mergeable state, its merge-queue entry.
 # Nothing is remembered in a file a job could write.
 #
-# That is the same property `atlas-governance` guards for the ledger — a verdict
+# That is the same property `avarok-governance` guards for the ledger — a verdict
 # must not depend on something the PR's own CI can append to. A stamp stored in
 # the repo would be settable by the branch it is meant to gate.
 #

@@ -4,13 +4,13 @@
 //! Compares the batched kernel against M independent `w8a16_gemv` (M=1) calls —
 //! the batch4 path is meant to be bit-identical per row (same K accumulation
 //! order). Uses an SSM-out-proj-like shape. Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=holo-3.1-35b-a3b ATLAS_TARGET_QUANT=nvfp4 \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=holo-3.1-35b-a3b AVAROK_TARGET_QUANT=nvfp4 \
 //!     cargo run -p spark-model --release --features cuda,gpu-examples \
 //!     --example w8a16_gemv_batch4_microtest
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -94,7 +94,7 @@ fn launch_m1(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     let batch4_k = g.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch4")?;

@@ -95,7 +95,7 @@ fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
     .into_iter()
     .flatten()
     .collect();
-    let resolved = atlas_kernels::ptx_for_config(
+    let resolved = avarok_kernels::ptx_for_config(
         &config.model_type,
         config.hidden_size,
         &model_refs,
@@ -108,7 +108,7 @@ fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
              (available: {:?}) — the running model is untouched",
             config.model_type,
             config.hidden_size,
-            atlas_kernels::available_targets()
+            avarok_kernels::available_targets()
                 .iter()
                 .map(|t| &t.target.model)
                 .collect::<Vec<_>>()

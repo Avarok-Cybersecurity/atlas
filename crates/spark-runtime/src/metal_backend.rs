@@ -117,7 +117,7 @@ impl MetalGpuBackend {
     /// Initialize the Metal backend with the embedded metallib modules.
     ///
     /// `kernel_modules` is the `metallib_modules()` slice produced by
-    /// `atlas-kernels`' build script — `(module_name, metallib_bytes)`.
+    /// `avarok-kernels`' build script — `(module_name, metallib_bytes)`.
     /// Each entry is loaded into its own `MTLLibrary` via
     /// `newLibraryWithData_error:`. The default stream (handle 0) is
     /// materialized eagerly so the first launch doesn't pay queue-

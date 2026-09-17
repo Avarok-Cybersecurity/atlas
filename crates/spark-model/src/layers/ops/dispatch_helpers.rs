@@ -25,14 +25,14 @@ use spark_runtime::gpu::GpuBackend;
 
 /// Whether chunk-zero streams may use the paged batched-prefill path.
 ///
-/// `ATLAS_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
+/// `AVAROK_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
 /// keep the older Q12 spelling as a compatibility alias for existing recipes.
 pub fn prefill_batched_first_chunk_enabled() -> bool {
     prefill_batched_first_chunk_from_values([
-        std::env::var("ATLAS_Q12_BATCHED_FIRST_CHUNK")
+        std::env::var("AVAROK_Q12_BATCHED_FIRST_CHUNK")
             .ok()
             .as_deref(),
-        std::env::var("ATLAS_PREFILL_CODISPATCH").ok().as_deref(),
+        std::env::var("AVAROK_PREFILL_CODISPATCH").ok().as_deref(),
     ])
 }
 
@@ -49,14 +49,14 @@ static PREFILL_VARLEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// value IN FORCE, which differs from `enabled` when something already
 /// resolved the cell (then the command line did NOT take effect — the caller
 /// warns, mirroring `gdn_flags::set_from_cli`). Absent flag ⇒ never called ⇒
-/// the documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
+/// the documented `AVAROK_PREFILL_VARLEN` fallback stays reachable.
 pub fn set_prefill_varlen_from_cli(enabled: bool) -> bool {
     let _ = PREFILL_VARLEN.set(enabled);
     *PREFILL_VARLEN.get().expect("just set")
 }
 
 /// VARLEN (ragged) batched prefill enabled? (`--prefill-varlen-batch`,
-/// legacy `ATLAS_PREFILL_VARLEN=1`; default OFF).
+/// legacy `AVAROK_PREFILL_VARLEN=1`; default OFF).
 ///
 /// SSOT for the admission predicate (`check_kernel_batched_eligible`), the
 /// batched-attention layer's chunk-0 guard, and the scheduler's prefill wave
@@ -65,7 +65,7 @@ pub fn set_prefill_varlen_from_cli(enabled: bool) -> bool {
 /// the per-stream fallback re-runs setup on dirty state.
 pub fn prefill_varlen_enabled() -> bool {
     *PREFILL_VARLEN
-        .get_or_init(|| bool_value_enabled(std::env::var("ATLAS_PREFILL_VARLEN").ok().as_deref()))
+        .get_or_init(|| bool_value_enabled(std::env::var("AVAROK_PREFILL_VARLEN").ok().as_deref()))
 }
 
 fn bool_value_enabled(value: Option<&str>) -> bool {
@@ -92,10 +92,10 @@ pub fn log_cutlass_nvfp4_route(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32,
 }
 
 /// Roofline instrumentation: log each unique (kernel, M, N, K) GEMM shape once,
-/// gated by `ATLAS_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
+/// gated by `AVAROK_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
 /// durations → achieved TFLOPS/bandwidth vs GB10 peak.
 pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
-    if std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
+    if std::env::var("AVAROK_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
         return;
     }
     if gpu.op_cache().first_shape(name, m, n, k) {

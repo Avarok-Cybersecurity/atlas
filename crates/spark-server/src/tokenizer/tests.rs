@@ -469,7 +469,7 @@ fn tojson_filter_default_compact_hf_ref_opt_in() {
         "default tojson must be COMPACT (ST-995 GDN irrelevance fix)\ngot:\n{got_default}\n"
     );
 
-    // OPT-IN (ATLAS_USE_HF_REF_JSON_DUMPS=1 in production): spaced, byte-parity
+    // OPT-IN (AVAROK_USE_HF_REF_JSON_DUMPS=1 in production): spaced, byte-parity
     // with Python `json.dumps(..., ensure_ascii=False, sort_keys=False)` — the
     // #90 / HF reference serialization (len 234).
     //
@@ -493,6 +493,6 @@ fn tojson_filter_default_compact_hf_ref_opt_in() {
         .expect("tojson render");
     assert_eq!(
         got_hf, spaced,
-        "ATLAS_USE_HF_REF_JSON_DUMPS=1 must restore Python json.dumps byte parity\ngot:\n{got_hf}\n"
+        "AVAROK_USE_HF_REF_JSON_DUMPS=1 must restore Python json.dumps byte parity\ngot:\n{got_hf}\n"
     );
 }

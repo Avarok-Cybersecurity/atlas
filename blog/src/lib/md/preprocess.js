@@ -21,7 +21,7 @@ import { makeHighlighter } from './highlight.js';
  * @param {object} [opts]
  * @param {string} [opts.staticDir] where `/images/...` resolves from
  */
-export function atlasMarkdown({ staticDir = 'static' } = {}) {
+export function avarokMarkdown({ staticDir = 'static' } = {}) {
   let highlighter = null;
 
   /**

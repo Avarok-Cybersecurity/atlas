@@ -13,7 +13,7 @@
 
 ## A. Reconciliation & ordering
 
-Both features touch the same four choke files: `atlas-core/src/config/parsers/lora.rs`, `spark-model/src/lora/loading.rs` (`audit_adapter`), `spark-model/src/lora/types.rs`, and `spark-model/src/lora/key.rs`. Uncoordinated they will merge-conflict and double-edit the accept/reject ladder. The plan therefore front-loads a **single shared-foundation step** (§C) that lands with Feature 2's first PR (it is pure and ships first), after which each feature only edits its own new modules plus a small, disjoint set of already-reserved insertion points.
+Both features touch the same four choke files: `avarok-core/src/config/parsers/lora.rs`, `spark-model/src/lora/loading.rs` (`audit_adapter`), `spark-model/src/lora/types.rs`, and `spark-model/src/lora/key.rs`. Uncoordinated they will merge-conflict and double-edit the accept/reject ladder. The plan therefore front-loads a **single shared-foundation step** (§C) that lands with Feature 2's first PR (it is pure and ships first), after which each feature only edits its own new modules plus a small, disjoint set of already-reserved insertion points.
 
 **Ordering:**
 
@@ -38,7 +38,7 @@ Both features touch the same four choke files: `atlas-core/src/config/parsers/lo
 
 ## C. Shared foundation (step S — lands in F2's first PR)
 
-### S.1 `atlas-core/src/config/parsers/lora.rs` (~266 → ~340 LoC)
+### S.1 `avarok-core/src/config/parsers/lora.rs` (~266 → ~340 LoC)
 
 `PeftAdapterConfig` gains:
 ```rust
@@ -195,13 +195,13 @@ Deferred, interfaces pinned: **P2** `ExpertLoraRoute` `a/b_table [max_loras×E]`
 | grouped expert BGMV | F1-P2 | new `.cu` in `common/` | grouped analogue of `apply_lora_bgmv`, `grid.z=expert`, reads `expert_offsets` + `seq_slot` |
 | fused grouped-delta epilogue | F1-P3 | fold into NVFP4/b12x grouped GEMM | folds BF16 delta into grouped-GEMM output stage |
 
-Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every target (dedups to ~1 nvcc call), module name = file stem `token_overlay`, no `KERNEL.toml` edit; all entry points `extern "C" __global__`, SPDX line 1, `(unsigned long long)id*h` indexing to avoid 32-bit overflow at large vocab×h. `ATLAS_KERNEL_SET_HASH` forces the `atlas-kernels` recrate (no stale PTX). Human builds in docker `atlas-gb10:b12x-ready`: `ATLAS_TARGET_MODEL='*' cargo build -p spark-server --release --bin spark --no-default-features --features cuda`. Pure-Rust type-check: `ATLAS_SKIP_BUILD=1 cargo check -p atlas-core -p spark-model`.
+Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every target (dedups to ~1 nvcc call), module name = file stem `token_overlay`, no `KERNEL.toml` edit; all entry points `extern "C" __global__`, SPDX line 1, `(unsigned long long)id*h` indexing to avoid 32-bit overflow at large vocab×h. `AVAROK_KERNEL_SET_HASH` forces the `avarok-kernels` recrate (no stale PTX). Human builds in docker `atlas-gb10:b12x-ready`: `AVAROK_TARGET_MODEL='*' cargo build -p spark-server --release --bin spark --no-default-features --features cuda`. Pure-Rust type-check: `AVAROK_SKIP_BUILD=1 cargo check -p avarok-core -p spark-model`.
 
 ---
 
 ## G. Test plan (consolidated)
 
-**Host-only unit (CI, CUDA-free — `atlas-core` + `spark-model`):**
+**Host-only unit (CI, CUDA-free — `avarok-core` + `spark-model`):**
 - *Parser (step S):* `trainable_token_indices` list+dict; `modules_to_save:[lm_head]` now accepts (flip `dora_bias_rank_pattern_rejected_named`); empty-`target_modules`-with-overlay accepts; `modules_to_save:[q_proj]` rejects; `target_parameters` present → named reject; `router_gate_accepted`; `--max-lora-expert-rank` overflow reject.
 - *F2 overlay:* `clamp_trainable_to_vocab` (idx≥R error, vocab≤idx<R skip+count, tail-order violation error, happy); `build_override_set` union/sort/dedup; `override_source` delta-wins; `classify_overlay_key` for all 4 tensor spellings + `.language_model.` multimodal segment + bare `modules_to_save` `.weight`, `None` for ordinary `.lora_A.weight`.
 - *F1 classifier:* `…mlp.experts.7.gate_proj.lora_A.weight → Expert{7,Gate}` on FullAttention layer; `…mlp.gate.lora_A.weight → Router`; named rejects for `n>=num_experts`, fused `experts.gate_up_proj`, `num_experts==0`, `experts.7.foo_proj`.
@@ -213,7 +213,7 @@ Build notes (per `moe-kernel-build`): a new `common/*.cu` compiles into every ta
 
 **E2E (human, `/verify` on GPU):** F2 — serve holo/qwen with a kuku-style `trainable_tokens` adapter; assert the added token's logit + embedding row change and a co-batched base request is bit-identical to no-adapter; confirm ordering by a golden logit. F1 — synthetic per-expert adapter fixture (documented as the P1 vehicle; a real fused export needs P3).
 
-Repo rules for every new file: SPDX line 1, ≤500 LoC/.rs, tests in own `*_tests.rs`, clippy deny-warnings, no `cargo fmt --all`, add unit tests alongside each edit, run `cargo test` on `atlas-core`+`spark-model` before commit, **push origin only**, do not build/deploy while a sibling subagent runs.
+Repo rules for every new file: SPDX line 1, ≤500 LoC/.rs, tests in own `*_tests.rs`, clippy deny-warnings, no `cargo fmt --all`, add unit tests alongside each edit, run `cargo test` on `avarok-core`+`spark-model` before commit, **push origin only**, do not build/deploy while a sibling subagent runs.
 
 ---
 

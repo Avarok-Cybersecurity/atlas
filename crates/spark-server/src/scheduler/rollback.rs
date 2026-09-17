@@ -6,7 +6,7 @@
 //! inter-tool prose budget) historically *hard-stopped* a sequence —
 //! `finished = true` — which kills the response, often mid-tool-call.
 //!
-//! Per arXiv:2603.27905 (ATLAS-RTC) and ROM boundary-truncation
+//! Per arXiv:2603.27905 (AVAROK-RTC) and ROM boundary-truncation
 //! (arXiv:2603.22016), the principled recovery is to **roll back to the
 //! last well-formed boundary and let generation re-steer**, rather than
 //! discarding the whole turn. [`rollback_to_boundary`] implements that.
@@ -161,7 +161,7 @@ pub fn find_last_boundary_with_snapshot(
 ///
 /// Steps:
 /// 1. Honor the `[behavior].rollback_resteer` flag and the per-sequence
-///    [`atlas_kernels::ROLLBACK_RESTEER_CAP`].
+///    [`avarok_kernels::ROLLBACK_RESTEER_CAP`].
 /// 2. Find the last boundary token in `output_tokens`
 ///    ([`find_last_boundary`]); decline if none.
 /// 3. Truncate `output_tokens` back to and including that boundary.
@@ -215,7 +215,7 @@ pub fn rollback_to_boundary(
     if a.cancel_flag.is_some() {
         return RollbackOutcome::Fallback(RollbackFallback::StreamUnsafe);
     }
-    if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
+    if a.rollback_count >= avarok_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
     }
     let mask = match sched.masks.boundary.as_ref() {

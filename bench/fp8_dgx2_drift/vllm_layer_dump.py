@@ -38,7 +38,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 REF_TOKENS = OUT_DIR / "ref_tokens.json"
 MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 

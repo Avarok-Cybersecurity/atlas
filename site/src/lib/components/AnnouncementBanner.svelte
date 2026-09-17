@@ -1,5 +1,5 @@
 <script>
-  import { announcement } from '$lib/data.js';
+  import { announcement, CONTROL } from '$lib/data.js';
 </script>
 
 <div class="ann">
@@ -25,7 +25,7 @@
     <div class="ann-inner ann-note">
       <span class="ann-tag">New</span>
       <span class="ann-sub">{announcement.note}</span>
-      <a class="ann-cta" href="/control.html">Control plane →</a>
+      <a class="ann-cta" href={CONTROL}>Control plane →</a>
     </div>
   {/if}
   {#if announcement.pwa}

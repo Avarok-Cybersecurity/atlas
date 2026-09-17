@@ -31,12 +31,12 @@ pub(super) fn start_new_requests(
     active: &mut Vec<ActiveSeq>,
     prefilling: &mut Vec<PrefillInProgress>,
 ) {
-    // Co-dispatch (ATLAS_PREFILL_CODISPATCH=1): when >=2 non-vision requests are
+    // Co-dispatch (AVAROK_PREFILL_CODISPATCH=1): when >=2 non-vision requests are
     // co-admitted this tick with no active decode to starve, DEFER their chunk-0
     // prefill so they batch into one forward via run_batched_prefill_step (which
     // sees prefilling.len() >= 2 → can_batch_prefill_only). Vision excluded: a
     // shared prepare_vision_embed buffer would cross-contaminate stacked streams.
-    let want_codispatch = std::env::var("ATLAS_PREFILL_CODISPATCH")
+    let want_codispatch = std::env::var("AVAROK_PREFILL_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
         && chunked
@@ -59,7 +59,7 @@ pub(super) fn start_new_requests(
         && active.is_empty()
         && (new_reqs.len() >= 2 || !prefilling.is_empty())
         && spark_model::layers::ops::prefill_varlen_enabled();
-    // Always-mixed chunk-0 fuse: when decodes are active and ATLAS_HOLO_ALWAYS_MIXED
+    // Always-mixed chunk-0 fuse: when decodes are active and AVAROK_HOLO_ALWAYS_MIXED
     // is on, DEFER a new request's chunk-0 (admit it to `prefilling` with
     // chunk_offset=0, skip the inline blocking prefill) so it runs this SAME tick
     // in continue_in_progress_prefills via the FUSED mixed path. Otherwise chunk-0
@@ -69,7 +69,7 @@ pub(super) fn start_new_requests(
     // request, below) — same constraints as the fused mixed path.
     let mixed_defer = always_mixed && chunked && !active.is_empty() && !model.is_ep();
 
-    // ── Vision co-dispatch pre-pass (ATLAS_VISION_CODISPATCH, default on) ──
+    // ── Vision co-dispatch pre-pass (AVAROK_VISION_CODISPATCH, default on) ──
     // Batch every single-chunk-fit image request's ViT encode into ONE
     // forward_batched call so each block's GEMM weights are read once over
     // Σpatches instead of N× — the concurrent-image win (serialized ViT made
@@ -81,7 +81,7 @@ pub(super) fn start_new_requests(
     // only ~6% of the ViT) and adds gather/fence overhead. Kept as opt-in
     // infrastructure — it correctly slices vision per-request, which is the
     // prerequisite for admitting image requests into LLM-prefill co-dispatch.
-    let vision_codispatch = std::env::var("ATLAS_VISION_CODISPATCH")
+    let vision_codispatch = std::env::var("AVAROK_VISION_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     const VISION_P_MAX: usize = 6400; // VisionEncoder scratch cap (Σ pre-merge patches)
@@ -166,7 +166,7 @@ pub(super) fn start_new_requests(
         }
     }
 
-    // ── Beam co-dispatch pre-pass (ATLAS_BEAM_CODISPATCH, default on) ──
+    // ── Beam co-dispatch pre-pass (AVAROK_BEAM_CODISPATCH, default on) ──
     // Fuse this tick's beam requests (num_beams>1) into ONE generate_beam_batch
     // call so their Σ beams decode as a single batched forward per step — beam
     // aggregate throughput then scales with concurrency instead of serializing
@@ -179,7 +179,7 @@ pub(super) fn start_new_requests(
     // is rejected upstream, so every beam request here is Blocking.
     let mut beam_hyps: Vec<Option<Vec<u32>>> = (0..new_reqs.len()).map(|_| None).collect();
     let beam_codispatch = model.supports_beam()
-        && std::env::var("ATLAS_BEAM_CODISPATCH")
+        && std::env::var("AVAROK_BEAM_CODISPATCH")
             .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
     if beam_codispatch {

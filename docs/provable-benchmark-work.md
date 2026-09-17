@@ -93,7 +93,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 ## 5. Concrete Implementation Plan for This Repo
 
-**Phase 0 (bug fixes, `crates/atlas-plugin/src/gate/check.rs`):**
+**Phase 0 (bug fixes, `crates/avarok-plugin/src/gate/check.rs`):**
 1. Reject `Verified::Exempt` for any record *added in the PR diff* regardless of `recorded_at` (grandfather only pre-existing committed records).
 2. Cross-check filename date (`YYYY-MM-DD-<sha>.json`) against `recorded_at` (±48 h).
 3. Change `record_is_for` mismatch from *skipped* to *failed* for records added in the diff.

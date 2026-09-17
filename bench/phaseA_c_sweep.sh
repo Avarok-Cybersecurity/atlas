@@ -29,8 +29,8 @@ CS=$WT/conc_sweep
 RESULTS=$CS/results
 STATE=$WT/docs/campaigns/gb10-concurrency-2026-07/STATE.md
 BENCH=$WT/bench/bench-atlas-concurrency.py
-ATLAS_BIN=$WT/conc_sweep/spark_phaseA_baseline
-MODEL_ATLAS=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
+AVAROK_BIN=$WT/conc_sweep/spark_phaseA_baseline
+MODEL_AVAROK=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 VLLM_IMAGE=sparkrun-eugr-vllm:latest
 PORT=8888
 mkdir -p "$RESULTS"
@@ -40,7 +40,7 @@ note() { # append one line to STATE.md's Log section AND the driver log
   echo "STATE: $*"
 }
 
-teardown() { sudo docker rm -f atlas-csweep vllm-csweep >/dev/null 2>&1; sleep 3; }
+teardown() { sudo docker rm -f avarok-csweep vllm-csweep >/dev/null 2>&1; sleep 3; }
 
 wait_health() { # $1 container, $2 grep pattern, $3 max tries (x5s)
   for _ in $(seq 1 "$3"); do
@@ -59,48 +59,48 @@ run_bench() { # $1 results file tag
 }
 
 ############################ LEG 1: Atlas ############################
-if [ -s "$RESULTS/atlas_synth.json" ]; then
-  echo "SKIP atlas_synth (results exist)"
+if [ -s "$RESULTS/avarok_synth.json" ]; then
+  echo "SKIP avarok_synth (results exist)"
 else
   teardown
-  sudo docker run -d --name atlas-csweep --network host --gpus all --ipc=host \
-    -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-    -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+  sudo docker run -d --name avarok-csweep --network host --gpus all --ipc=host \
+    -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+    -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+    -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
-    -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \
-    atlas-gb10:followups serve "$MODEL_ATLAS" \
-    --host 0.0.0.0 --port $PORT --model-name "$MODEL_ATLAS" \
+    -v "$AVAROK_BIN:/usr/local/bin/spark:ro" \
+    avarok-gb10:followups serve "$MODEL_AVAROK" \
+    --host 0.0.0.0 --port $PORT --model-name "$MODEL_AVAROK" \
     --max-seq-len 4096 --max-batch-size 16 --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.70 \
     --enable-prefix-caching --ssm-cache-slots 32 --ssm-checkpoint-interval 32 \
     --speculative --num-drafts 3 --mtp-quantization bf16 \
     --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking >/dev/null 2>&1
-  if wait_health atlas-csweep Qwen 200; then
-    echo "=== LEG atlas_synth: serve up, benching ==="
-    if run_bench atlas_synth; then
-      note "LEG atlas_synth DONE -> results/atlas_synth.json"
+  if wait_health avarok-csweep Qwen 200; then
+    echo "=== LEG avarok_synth: serve up, benching ==="
+    if run_bench avarok_synth; then
+      note "LEG avarok_synth DONE -> results/avarok_synth.json"
     else
-      note "LEG atlas_synth BENCH FAILED (no results written)"
+      note "LEG avarok_synth BENCH FAILED (no results written)"
     fi
     # Slot-leak check (known server bug: pool exhaustion leaks slots).
-    sudo docker logs atlas-csweep 2>&1 | grep -aic "pool exhausted" \
-      | xargs -I{} echo "pool-exhausted lines: {}" | tee -a "$CS/atlas_synth.notes"
+    sudo docker logs avarok-csweep 2>&1 | grep -aic "pool exhausted" \
+      | xargs -I{} echo "pool-exhausted lines: {}" | tee -a "$CS/avarok_synth.notes"
   else
     # Preserve the evidence BEFORE teardown destroys it (first death lost its log).
-    sudo docker logs atlas-csweep 2>&1 | tail -60 > "$CS/atlas_synth.deathlog" || true
-    note "LEG atlas_synth SERVE_DIED (deathlog: conc_sweep/atlas_synth.deathlog)"
-    echo "SERVE_DIED atlas_synth"
+    sudo docker logs avarok-csweep 2>&1 | tail -60 > "$CS/avarok_synth.deathlog" || true
+    note "LEG avarok_synth SERVE_DIED (deathlog: conc_sweep/avarok_synth.deathlog)"
+    echo "SERVE_DIED avarok_synth"
   fi
   teardown
-  echo "LEG_DONE atlas_synth"
+  echo "LEG_DONE avarok_synth"
 fi
 
 ############################ LEG 2: vLLM ############################
 if [ -s "$RESULTS/vllm_synth.json" ]; then
   echo "SKIP vllm_synth (results exist)"
 else
-  for VM in "$MODEL_ATLAS" "nvidia/Qwen3.6-27B-NVFP4"; do
+  for VM in "$MODEL_AVAROK" "nvidia/Qwen3.6-27B-NVFP4"; do
     teardown
     echo "=== LEG vllm_synth: trying checkpoint $VM ==="
     sudo docker run -d --name vllm-csweep --network host --gpus all --ipc=host \
@@ -135,8 +135,8 @@ PY
 fi
 
 ############################ Compare ############################
-if [ -s "$RESULTS/atlas_synth.json" ] && [ -s "$RESULTS/vllm_synth.json" ]; then
-  BENCH_RESULTS_FILE="$RESULTS/atlas_synth.json" \
+if [ -s "$RESULTS/avarok_synth.json" ] && [ -s "$RESULTS/vllm_synth.json" ]; then
+  BENCH_RESULTS_FILE="$RESULTS/avarok_synth.json" \
     python3 -u "$BENCH" --compare "$RESULTS/vllm_synth.json" \
     > "$RESULTS/compare.txt" 2>&1 || true
   note "PHASE A compare written -> results/compare.txt"

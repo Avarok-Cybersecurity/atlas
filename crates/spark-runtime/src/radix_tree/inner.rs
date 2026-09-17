@@ -186,7 +186,7 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        // ATLAS_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
+        // AVAROK_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
         //
         // The sub-block arms below return a `matched_tokens` that is NOT
         // block-aligned, and they do it by reusing a block whose KV was
@@ -199,7 +199,7 @@ impl RadixTreeInner {
         // not change that, since nothing mutates the environment after start.
         static SUBBLOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let subblock_ok =
-            *SUBBLOCK.get_or_init(|| std::env::var("ATLAS_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
+            *SUBBLOCK.get_or_init(|| std::env::var("AVAROK_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
         if subblock_ok
             && remainder > 0
             && remainder < block_size

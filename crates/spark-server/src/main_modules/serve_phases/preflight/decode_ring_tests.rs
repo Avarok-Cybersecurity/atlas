@@ -6,7 +6,7 @@
 //!
 //! The numbers are the 2026-09-05 rental-H100 boot from issue #915
 //! (Qwen/Qwen3.8-27B-FP8, one 80 GB H100, hopper recipe, evidence cell
-//! `qwen38.atlas.a.lat.c1`): 48 GDN layers, 151.5 MiB of SSM state per
+//! `qwen38.avarok.a.lat.c1`): 48 GDN layers, 151.5 MiB of SSM state per
 //! sequence, `--max-batch-size 32`, inference reserve 45,823 MiB of which
 //! 37.88 GiB was ring, 57.2 GiB of weights inside a 71.3 GiB budget.
 use super::*;

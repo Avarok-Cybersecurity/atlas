@@ -49,10 +49,11 @@
         vLLM badly, so it was replaced and the old column kept in view rather than deleted.
       </p>
       <p class="lead">
-        The published table therefore carries two baselines: the matched one we claim against, and
-        the unmatched one, labelled as such. At C=128 the unmatched configuration is actually
-        <em>faster</em> than the matched one — vLLM's speculation costs it throughput at high
-        concurrency — so we claim against whichever is stronger at each rung.
+        The published table therefore carries two baselines: the matched MTP configuration we
+        claim against, and the unmatched no-speculation leg, labelled as such. At C=128 the
+        unmatched configuration is actually <em>faster</em> than the matched one (vLLM's
+        speculation costs it throughput at high concurrency), so it is plotted, not scored.
+        The headline ratio stays against the matched fingerprint.
       </p>
     </div>
     <aside class="quote at" style="--n: 2">
@@ -138,7 +139,7 @@
       />
       <p class="after">
         The gate's self-start also reads a cached recipe index at
-        <code class="mono">~/.atlas/atlas-recipes/index.json</code>. Open the TUI library once to
+        <code class="mono">~/.avarok/atlas-recipes/index.json</code>. Open the TUI library once to
         populate it, or Step 6 stops with exactly that message.
       </p>
     </div>
@@ -196,7 +197,7 @@
     font-size: 0.74em;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.6em;
   }
   .side p {

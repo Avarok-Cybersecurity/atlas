@@ -53,12 +53,12 @@ jobs:
           # private prefix entirely and installed to ~/.local/bin, which is on a
           # runner's PATH, so the next step found *a* binary and the job passed.
           # The isolation this prefix exists to provide was never in effect.
-          export ATLASCTL_INSTALL_DIR="$prefix"
+          export AVAROKCTL_INSTALL_DIR="$prefix"
           curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
             https://atlascybernetics.ai/install.sh | sh
           # Prove it landed where we asked, rather than inferring it from PATH.
           [ -x "$prefix/atlasctl" ] || {
-            echo "::error::the installer did not honour ATLASCTL_INSTALL_DIR=$prefix"
+            echo "::error::the installer did not honour AVAROKCTL_INSTALL_DIR=$prefix"
             ls -la "$prefix" || true
             exit 1
           }
@@ -102,7 +102,7 @@ jobs:
             exit 1
           }
 
-          export ATLASCTL_INSTALL_DIR="$prefix"
+          export AVAROKCTL_INSTALL_DIR="$prefix"
           curl --fail --silent --show-error --location --retry 3 --retry-delay 5 \
             https://atlascybernetics.ai/install.sh | sh
 

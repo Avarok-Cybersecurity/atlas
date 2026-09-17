@@ -45,17 +45,17 @@ impl QsaIndexer {
         if total <= bound {
             return Ok(());
         }
-        // Kill switch: ATLAS_QSA_NO_PREFILL_SELECT=1 keeps stage-1 behavior
+        // Kill switch: AVAROK_QSA_NO_PREFILL_SELECT=1 keeps stage-1 behavior
         // (dense prefill past the bound; decode still selects).
         static S2_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *S2_OFF
-            .get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
+            .get_or_init(|| std::env::var("AVAROK_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
         {
             return Ok(());
         }
         let diag = {
             static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *D.get_or_init(|| std::env::var("ATLAS_QSA_S2_DIAG").as_deref() == Ok("1"))
+            *D.get_or_init(|| std::env::var("AVAROK_QSA_S2_DIAG").as_deref() == Ok("1"))
         };
         // Diagnostic: park the DENSE context of the LAST row before the
         // overwrite; log cosine(dense, selected) after. Selected attends
@@ -190,11 +190,11 @@ impl QsaIndexer {
             // the production shape with IDENTICAL top-k selection (the bar
             // that matters — this feeds a top-k, and the scalar path's own
             // tree reduction is not bit-reproducible either).
-            // ATLAS_QSA_SCORE_SCALAR=1 forces the original.
+            // AVAROK_QSA_SCORE_SCALAR=1 forces the original.
             let tc = self.k_score_rows_tc_k.0 != 0
                 && self.n_heads == 4
                 && self.hd == 128
-                && std::env::var("ATLAS_QSA_SCORE_SCALAR").as_deref() != Ok("1");
+                && std::env::var("AVAROK_QSA_SCORE_SCALAR").as_deref() != Ok("1");
             if tc {
                 ops::qsa_score_rows_tc(
                     gpu,

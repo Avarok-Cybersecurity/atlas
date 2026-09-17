@@ -83,7 +83,7 @@ impl TransformerModel {
                     stream,
                 )?;
             }
-            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_DUMP_EMBED").ok().as_deref() == Some("1") {
                 self.gpu.synchronize(stream)?;
                 let offset = (chunk_len - 1) * h * 2;
                 let mut buf = vec![0u8; h * 2];
@@ -97,7 +97,7 @@ impl TransformerModel {
                     .collect();
                 let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                 tracing::info!(
-                    "ATLAS_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
+                    "AVAROK_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
                     chunk_start,
                     tokens[chunk_start + chunk_len - 1],
                     n,
@@ -117,7 +117,7 @@ impl TransformerModel {
                 stream,
             )?;
             self.scale_embeddings(hidden_dst, chunk_len, stream)?;
-            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_DUMP_EMBED").ok().as_deref() == Some("1") {
                 self.gpu.synchronize(stream)?;
                 let offset = (chunk_len - 1) * h * 2;
                 let mut buf = vec![0u8; h * 2];
@@ -131,7 +131,7 @@ impl TransformerModel {
                     .collect();
                 let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                 tracing::info!(
-                    "ATLAS_EMBED post-scale_embeddings: |x|={:.4} first5={:?}",
+                    "AVAROK_EMBED post-scale_embeddings: |x|={:.4} first5={:?}",
                     n,
                     &v[..5]
                 );

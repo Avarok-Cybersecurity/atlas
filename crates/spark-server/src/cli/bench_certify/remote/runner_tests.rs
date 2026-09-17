@@ -8,8 +8,8 @@ use super::super::atlasctl::{
 };
 use super::*;
 use anyhow::Result;
-use atlas_plugin::hardware::equivalence::HardwareFingerprint;
-use atlas_plugin::hardware::policy::Sensitivity;
+use avarok_plugin::hardware::equivalence::HardwareFingerprint;
+use avarok_plugin::hardware::policy::Sensitivity;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Mutex;
@@ -96,7 +96,7 @@ fn scratch(tag: &str) -> Scratch {
         .join(format!("{name}.sig"));
     std::fs::copy(&newest, &rec).unwrap();
     std::fs::copy(format!("{}.sig", newest.display()), &sig).unwrap();
-    let sha = atlas_plugin::gate::read_record(&newest).unwrap().git_sha;
+    let sha = avarok_plugin::gate::read_record(&newest).unwrap().git_sha;
     let f = |n: String, rel: String, path: PathBuf| FetchedFile {
         name: n,
         relative_path: rel,

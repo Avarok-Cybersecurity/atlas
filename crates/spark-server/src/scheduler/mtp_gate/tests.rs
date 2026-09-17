@@ -295,7 +295,7 @@ fn entry_pin_steps_do_not_touch_arbitration_state() {
     assert!(g.in_serial_mode(), "pin must not flip the gate's mode");
 }
 
-/// `ATLAS_SPEC_ENTRY_PIN` parsing: strict integer, default 8, `0` disables.
+/// `AVAROK_SPEC_ENTRY_PIN` parsing: strict integer, default 8, `0` disables.
 #[test]
 fn entry_pin_env_parse() {
     assert_eq!(parse_entry_pin_tokens(None), 8);

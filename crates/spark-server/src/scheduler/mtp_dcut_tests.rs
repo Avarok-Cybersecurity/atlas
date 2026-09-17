@@ -115,7 +115,7 @@ fn chunk_ranges_respect_the_row_budget_when_ragged() {
 }
 
 // Env-independent as long as the test process does not set
-// ATLAS_MTP_DCUT_MAX_SEQS (CI does not) — same pattern as the ladder
+// AVAROK_MTP_DCUT_MAX_SEQS (CI does not) — same pattern as the ladder
 // default-shape test.
 #[test]
 fn dcut_width_cap_default_is_the_measured_win_regime() {

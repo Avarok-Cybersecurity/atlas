@@ -3,7 +3,7 @@
 #
 # Serves Qwen3.6-35B-A3B-FP8 with MTP ON (--force-speculative) at temp=0 and
 # captures greedy token streams for N prompts (incl. tool-call prompts). Run
-# once with ATLAS_SSM_INPLACE_VERIFY unset (baseline) and once with =1; diff
+# once with AVAROK_SSM_INPLACE_VERIFY unset (baseline) and once with =1; diff
 # the two output JSONs. Identical => byte-identical losslessness.
 #
 # Usage:
@@ -14,7 +14,7 @@ set -euo pipefail
 TAG="${1:?tag required}"
 MODE="${2:-inplace0}"
 PORT="${PORT:-8891}"
-SPARK="${SPARK:-/workspace/atlas-mtp/target/release/spark}"
+SPARK="${SPARK:-/workspace/avarok-mtp/target/release/spark}"
 MODEL="${MODEL:-Qwen/Qwen3.6-35B-A3B-FP8}"
 OUT="/tmp/lossless_${TAG}.json"
 LOG="/tmp/serve_${TAG}.log"
@@ -23,9 +23,9 @@ export PATH=/usr/local/cuda/bin:$PATH
 export CUDA_HOME=/usr/local/cuda
 export HF_HOME=/workspace/.cache/huggingface
 if [[ "$MODE" == "inplace1" ]]; then
-  export ATLAS_SSM_INPLACE_VERIFY=1
+  export AVAROK_SSM_INPLACE_VERIFY=1
 else
-  unset ATLAS_SSM_INPLACE_VERIFY || true
+  unset AVAROK_SSM_INPLACE_VERIFY || true
 fi
 
 echo "[$TAG] starting server (MODE=$MODE) ..."

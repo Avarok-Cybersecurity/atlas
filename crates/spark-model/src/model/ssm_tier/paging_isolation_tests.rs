@@ -18,7 +18,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use parking_lot::Mutex;
 
 use super::super::fingerprint::{ModelFingerprint, derive_decode_ns_salted, mix64};
@@ -146,7 +146,7 @@ fn distinct_fingerprints_do_not_cross_serve() {
 }
 
 // ── T2: pin the OLD bug so it cannot come back ────────────────────────────
-// OLD behavior: with ATLAS_TARGET_MODEL unset both models derived ns=0 and
+// OLD behavior: with AVAROK_TARGET_MODEL unset both models derived ns=0 and
 // wire() passed the key through unchanged — i.e. both folded ONE equal
 // effective namespace (the decode tier likewise shared the bare
 // DECODE_DOMAIN constant). ns=0 is now unrepresentable (NonZeroU64), so the
@@ -157,7 +157,7 @@ fn distinct_fingerprints_do_not_cross_serve() {
 fn equal_namespaces_cross_serve_the_old_default_bug() {
     let peer = Arc::new(MockPagingPeer::new(BLOB, 8));
     // e.g. the old shared decode default: DECODE_DOMAIN for EVERY model.
-    let shared = NonZeroU64::new(atlas_kernels::DECODE_DOMAIN).unwrap();
+    let shared = NonZeroU64::new(avarok_kernels::DECODE_DOMAIN).unwrap();
     let a = store(&peer, shared);
     let b = store(&peer, shared);
     a.put(K, &[0xAA; BLOB]).unwrap();
@@ -245,7 +245,7 @@ fn wire_fold_is_deterministic_per_store_instance() {
 ///
 /// It also pins the SSOT identity `wire(key) == mix64(key, ns)`: `wire()` used to
 /// be a third hand-transcription of the splitmix64 constants and now delegates to
-/// `atlas_tier::hash::mix64`. If those ever diverge, this fails.
+/// `avarok_tier::hash::mix64`. If those ever diverge, this fails.
 ///
 /// DO NOT update the literal to make this pass — a change here is a deliberate
 /// fleet-wide cache flush and must be versioned.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // FP16 h-state twin of `gated_delta_rule_wy2_resident` (K=2 MTP-verify GDN,
-// register-resident Pass 2). Stage 2 of `ATLAS_SSM_H_FP16`.
+// register-resident Pass 2). Stage 2 of `AVAROK_SSM_H_FP16`.
 //
 // This is the kernel the C=32 rung runs: the default ladder is
 // `4:3,8:3,16:2,32:1`, so a width in 17..32 verifies 1 draft = K=2 rows, and
@@ -134,7 +134,7 @@ gated_delta_rule_wy2_resident_f16(
     // ── Compute kdot = k_1^T @ k_0 ──
     {
         float partial = (tid < k_dim) ? smem_k1[tid] * smem_k0[tid] : 0.0f;
-        float result = atlas_block_reduce_sum(partial, smem_warp, tid);
+        float result = avarok_block_reduce_sum(partial, smem_warp, tid);
         if (tid == 0) smem_kdot = result;
     }
     __syncthreads();

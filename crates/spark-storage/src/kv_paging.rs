@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! KV as a first-class paging kind (part of the tiered-cache
-//! consolidation, DEFAULT-OFF behind `ATLAS_KV_PAGING`).
+//! consolidation, DEFAULT-OFF behind `AVAROK_KV_PAGING`).
 //!
 //! The flag-OFF KV overflow tier (`rdma_kv_backend`) takes the "dumb
 //! one-sided path": the peer registers ONE RW MR and the CLIENT owns a static
@@ -19,26 +19,26 @@
 //!
 //! Layout: the paging RECORD is one whole KV block (`GroupLayout::
 //! block_bytes()` = `2·num_kv_heads·group_stride`) — exactly the fixed-size
-//! record `atlas_tier::Residency` demands, one contiguous blob at one pointer
+//! record `avarok_tier::Residency` demands, one contiguous blob at one pointer
 //! on both ends, and 1 control RTT per block instead of `2·num_kv_heads`.
 //! Keys fold the per-model fingerprint + full layout identity + a per-client
 //! salt (see [`ns`]); `PagingKind::KV` in the handshake plus the
 //! [`ns::KV_DOMAIN`] fold domain-separate KV from SSM.
 //!
-//! FLAG OFF (`ATLAS_KV_PAGING` unset/0) the selection helper returns the raw
+//! FLAG OFF (`AVAROK_KV_PAGING` unset/0) the selection helper returns the raw
 //! one-sided `RdmaKvBackend` — identical data plane (v2 RAW handshake since
 //! the v2 handshake), so any regression bisects on this single flag.
 
 pub mod ns;
 
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 mod backend;
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 mod connect;
 
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 pub use backend::{KvPagingBackend, KvPagingConnect};
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 pub use connect::connect_kv_peer_backend;
 
 /// The hard-error a KV paging GET miss maps to. `StorageBackend::read` has no
@@ -51,7 +51,7 @@ pub fn kv_miss_error(layer: u32, block: u32) -> anyhow::Error {
         "kv-paging: block (layer {layer}, disk block {block}) is not on the peer — an \
          evicted KV block is unrecoverable (silent KV loss would corrupt long-context \
          output). Run the peer with --swap-cap-gb-kv 0 (unbounded KV disk) and size \
-         --max-blade-gb / ATLAS_KV_PAGING_ARENA_GB for the working set"
+         --max-blade-gb / AVAROK_KV_PAGING_ARENA_GB for the working set"
     )
 }
 

@@ -144,7 +144,7 @@ fn dynamic_linking(major: usize, minor: usize) {
         println!("cargo:rustc-link-search=native={}", path.display());
     }
 
-    // Atlas-vendored trim: only `driver` + `nvrtc` backends remain.
+    // Avarok-vendored trim: only `driver` + `nvrtc` backends remain.
     #[cfg(feature = "driver")]
     println!("cargo:rustc-link-lib=dylib=cuda");
     #[cfg(feature = "nvrtc")]
@@ -158,7 +158,7 @@ fn static_linking(major: usize, minor: usize) {
     }
 
     println!("cargo:rustc-link-lib=static:+whole-archive=stdc++");
-    // Atlas-vendored trim: only `driver` + `nvrtc` backends remain.
+    // Avarok-vendored trim: only `driver` + `nvrtc` backends remain.
     #[cfg(feature = "driver")]
     {
         println!("cargo:rustc-link-lib=dylib=cuda");

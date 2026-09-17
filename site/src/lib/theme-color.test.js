@@ -10,11 +10,14 @@ import { readFileSync } from 'node:fs';
  * It did: the palette move swept every stylesheet and missed both app.html
  * files, leaving the chrome the old violet #14111f above a #0F1216 page.
  */
-const tokens = readFileSync(new URL('../../../web-shared/atlas-tokens.css', import.meta.url), 'utf8');
-const bg = tokens.match(/--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
+const tokens = readFileSync(new URL('../../../web-shared/avarok-tokens.css', import.meta.url), 'utf8');
+const bg = tokens.match(/:root\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
+const lightBg = tokens.match(/\[data-theme="light"\]\s*\{[\s\S]*?--bg:\s*(#[0-9a-fA-F]{6})/)?.[1];
 
 test('the token file defines --bg (so the comparisons below are not vacuous)', () => {
   expect(bg).toMatch(/^#[0-9a-fA-F]{6}$/);
+  expect(lightBg).toMatch(/^#[0-9a-fA-F]{6}$/);
+  expect(lightBg.toLowerCase()).not.toBe(bg.toLowerCase());
 });
 
 test('the PWA manifest agrees with the page it frames', () => {
@@ -38,5 +41,11 @@ for (const [label, rel] of [
     const m = html.match(/<meta\s+name="theme-color"\s+content="(#[0-9a-fA-F]{6})"/);
     expect(m, `${label}: no theme-color meta found`).not.toBeNull();
     expect(m[1].toLowerCase()).toBe(bg.toLowerCase());
+  });
+  test(`${label}: light theme-color equals light --bg`, () => {
+    const html = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    const m = html.match(/<meta\s+name="theme-color"\s+content="(#[0-9a-fA-F]{6})"\s+media="\(prefers-color-scheme: light\)"/);
+    expect(m, `${label}: no light theme-color meta found`).not.toBeNull();
+    expect(m[1].toLowerCase()).toBe(lightBg.toLowerCase());
   });
 }

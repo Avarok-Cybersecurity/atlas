@@ -212,12 +212,12 @@ impl VisionEncoder {
             h,
             stream,
         )?;
-        // 4. Attention. GEMM-based SDPA by default; ATLAS_VISION_ATTN_LEGACY=1
+        // 4. Attention. GEMM-based SDPA by default; AVAROK_VISION_ATTN_LEGACY=1
         //    restores the warp-per-query kernel for A/B / fallback. Also auto-
         //    falls back when the GEMM-ViT kernels aren't in this model's vision
         //    tree (null handle — qwen3-vl-30b / gemma-4 ship only the legacy
         //    `vision_attention_rope`); without this they'd launch a null kernel.
-        if std::env::var("ATLAS_VISION_ATTN_LEGACY").is_ok() || self.k_rope_deint.0 == 0 {
+        if std::env::var("AVAROK_VISION_ATTN_LEGACY").is_ok() || self.k_rope_deint.0 == 0 {
             KernelLaunch::new(gpu, self.k_attn)
                 .grid([p32, self.num_heads as u32, 1])
                 .block([32, 1, 1])
@@ -386,14 +386,14 @@ impl VisionEncoder {
         )?;
         // 4. Attention PER IMAGE over its disjoint slice. buf_wide (QKV) is
         //    read-only here; each image writes a disjoint buf_h1 row range.
-        // ATLAS_VISION_NOATTN: skip the attention loop (WRONG output) to measure
+        // AVAROK_VISION_NOATTN: skip the attention loop (WRONG output) to measure
         // its share of block time vs the batched GEMMs. Diagnostic only.
-        let skip_attn = std::env::var("ATLAS_VISION_NOATTN").is_ok();
+        let skip_attn = std::env::var("AVAROK_VISION_NOATTN").is_ok();
         // Legacy when explicitly requested OR when the GEMM-ViT kernels are
         // absent from this model's vision tree (null handle — qwen3-vl-30b /
         // gemma-4 ship only `vision_attention_rope`).
         let legacy_attn =
-            std::env::var("ATLAS_VISION_ATTN_LEGACY").is_ok() || self.k_rope_deint.0 == 0;
+            std::env::var("AVAROK_VISION_ATTN_LEGACY").is_ok() || self.k_rope_deint.0 == 0;
         for (i, &p) in p_i.iter().enumerate() {
             if skip_attn {
                 break;

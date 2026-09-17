@@ -90,9 +90,9 @@ impl TransformerModel {
         // whatever follows, which is strictly worse than the aliasing this
         // shift avoids — so clamp back to the old behavior and say so.
         // Kill switch for A/B against the pre-fix aliasing behavior. Set
-        // ATLAS_NO_PREFILL_ROW_SHIFT=1 to put prefill back on rows
+        // AVAROK_NO_PREFILL_ROW_SHIFT=1 to put prefill back on rows
         // 0..n (i.e. back on top of the decode lanes).
-        let shift_disabled = std::env::var("ATLAS_NO_PREFILL_ROW_SHIFT")
+        let shift_disabled = std::env::var("AVAROK_NO_PREFILL_ROW_SHIFT")
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false);
         let row_base = if shift_disabled { 0 } else { row_base };
@@ -109,9 +109,9 @@ impl TransformerModel {
         };
         // Q12 diagnostic: dispatch entry. Useful to confirm scheduler is
         // funneling concurrent prefills here. Debug-level by default;
-        // promote with `RUST_LOG=atlas::q12=debug`.
+        // promote with `RUST_LOG=avarok::q12=debug`.
         tracing::debug!(
-            target: "atlas::q12",
+            target: "avarok::q12",
             n = n,
             "prefill_batch_chunk_dispatch entry"
         );
@@ -161,16 +161,16 @@ impl TransformerModel {
         // the streams in a partially-mutated state — we propagate that Err
         // so the caller can retry single-stream or surface to the user.
         //
-        // Runtime kill switch: set `ATLAS_Q12_BATCHED=0` to force-disable
+        // Runtime kill switch: set `AVAROK_Q12_BATCHED=0` to force-disable
         // the kernel-batched path without rebuilding. Default is enabled
         // (any unset / non-"0" value). Useful for the kernel-validation
         // session when isolating a regression to the batched path.
-        let q12_batched_enabled = std::env::var("ATLAS_Q12_BATCHED")
+        let q12_batched_enabled = std::env::var("AVAROK_Q12_BATCHED")
             .map(|v| v != "0" && v.to_lowercase() != "false")
             .unwrap_or(true);
         if q12_batched_enabled && self.kernel_batched_eligible(streams) {
             tracing::debug!(
-                target: "atlas::q12",
+                target: "avarok::q12",
                 n = n,
                 chunk_len = streams[0].chunk_len,
                 is_last_chunk = streams[0].is_last_chunk,
@@ -183,7 +183,7 @@ impl TransformerModel {
                     // GEMM launched at. One line per admitted wave.
                     let total: usize = streams.iter().map(|s| s.chunk_len).sum();
                     tracing::info!(
-                        target: "atlas::q12",
+                        target: "avarok::q12",
                         n = n,
                         total_tokens = total,
                         "Q12 kernel-batched prefill dispatched (fused large-M)"
@@ -192,7 +192,7 @@ impl TransformerModel {
                 }
                 Ok(KernelBatchResult::NotAdmitted) => {
                     tracing::info!(
-                        target: "atlas::q12",
+                        target: "avarok::q12",
                         "Q12 kernel-batched cache plan not admitted → falling back to per-stream"
                     );
                 }
@@ -203,8 +203,8 @@ impl TransformerModel {
             }
         } else if !q12_batched_enabled {
             tracing::trace!(
-                target: "atlas::q12",
-                "Q12 kernel-batched disabled via ATLAS_Q12_BATCHED=0"
+                target: "avarok::q12",
+                "Q12 kernel-batched disabled via AVAROK_Q12_BATCHED=0"
             );
         } else {
             // Observability: eligibility failed. Surface why so operators
@@ -218,7 +218,7 @@ impl TransformerModel {
             let total: usize = chunk_lens.iter().sum();
             if super::batch_kernel::varlen_prefill_enabled() {
                 tracing::info!(
-                    target: "atlas::q12",
+                    target: "avarok::q12",
                     n = n,
                     chunk_lens = ?chunk_lens,
                     chunk_starts = ?chunk_starts,
@@ -230,7 +230,7 @@ impl TransformerModel {
                 );
             } else {
                 tracing::debug!(
-                    target: "atlas::q12",
+                    target: "avarok::q12",
                     n = n,
                     chunk_lens = ?chunk_lens,
                     chunk_starts = ?chunk_starts,

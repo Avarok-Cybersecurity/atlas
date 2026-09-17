@@ -10,7 +10,7 @@ Four kinds of I/O happen at runtime. Each goes through a dedicated trait:
 
 | I/O surface | Trait | Crate | Real impl | Mock impl |
 |---|---|---|---|---|
-| GPU memory, kernel launch, streams, events, graphs | `GpuBackend` (27 methods) | `spark-runtime` | `AtlasCudaBackend` (via `cudarc`) | `MockGpuBackend` — records launches, does not execute |
+| GPU memory, kernel launch, streams, events, graphs | `GpuBackend` (27 methods) | `spark-runtime` | `AvarokCudaBackend` (via `cudarc`) | `MockGpuBackend` — records launches, does not execute |
 | Collective comms (all-reduce, broadcast, send/recv) | `CommBackend` | `spark-comm` | `NcclBackend` | `SingleGpuBackend` — every op is a no-op |
 | Weight-blob loading | `WeightStore` (implicit — wraps safetensors) | `spark-runtime::weights` | `fast_weights` (`O_DIRECT` + pipelined) or mmap fallback | `WeightStore` directly against an in-memory map |
 | HTTP | `axum::Router` handlers | `spark-server` | `axum::serve(...)` over TCP | `axum::Router::into_make_service()` tested via `tower::ServiceExt::oneshot` |
@@ -52,7 +52,7 @@ pub trait GpuBackend: Send + Sync {
 }
 ```
 
-A layer's forward pass calls `gpu.launch(...)`. It does not know, and cannot know, whether `gpu` is `AtlasCudaBackend` or `MockGpuBackend`. That opacity is the whole point.
+A layer's forward pass calls `gpu.launch(...)`. It does not know, and cannot know, whether `gpu` is `AvarokCudaBackend` or `MockGpuBackend`. That opacity is the whole point.
 
 ## The mock backend
 
@@ -109,13 +109,13 @@ The SBIO pattern makes the following blocks fully testable on CI without any GPU
 
 The things that still require a GPU:
 
-- Kernel correctness vs a PyTorch/reference implementation (covered by `atlas-spark-bench` and the integration tests in `tests/`).
+- Kernel correctness vs a PyTorch/reference implementation (covered by `avarok-spark-bench` and the integration tests in `tests/`).
 - End-to-end model coherence (covered by `tests/run_all_models.py`).
 - Multi-node collective ops (covered by `scripts/test-minimax-ep2.sh` and the EP=2 test harness).
 
-## The `ATLAS_SKIP_BUILD` gate
+## The `AVAROK_SKIP_BUILD` gate
 
-The matching idea at build time: `ATLAS_SKIP_BUILD=1` makes `atlas-kernels/build.rs` emit a stub `target_ptx.rs` with empty constants. The workspace compiles, `cargo clippy` and `cargo fmt` both work, unit tests run. `nvcc` is not on the `PATH` of the GHA runner that runs the `ci.yml` workflow, and that is on purpose — CI catches type and lint regressions without needing a GPU CI pool.
+The matching idea at build time: `AVAROK_SKIP_BUILD=1` makes `avarok-kernels/build.rs` emit a stub `target_ptx.rs` with empty constants. The workspace compiles, `cargo clippy` and `cargo fmt` both work, unit tests run. `nvcc` is not on the `PATH` of the GHA runner that runs the `ci.yml` workflow, and that is on purpose — CI catches type and lint regressions without needing a GPU CI pool.
 
 The only test category that *requires* CUDA is the ones marked `#[ignore]` in the `cargo test` run, which the integration CI (not currently in this repo) would run on a real GB10 host.
 

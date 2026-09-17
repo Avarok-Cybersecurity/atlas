@@ -6,9 +6,9 @@ The right metric is NOT "do two draws differ" (that's just sampling), but
 draws from the SAME engine would?" That excess is what FP8 + temp contributes
 beyond what vLLM-vs-vLLM at the same temp already has.
 
-For a 2-token decision with gap g (vLLM) and g+delta (atlas):
+For a 2-token decision with gap g (vLLM) and g+delta (avarok):
   intrinsic  = 1 - sum pv_i^2          (vLLM self-collision complement)
-  cross      = 1 - sum pv_i * pa_i     (vLLM-vs-atlas)
+  cross      = 1 - sum pv_i * pa_i     (vLLM-vs-avarok)
   excess     = cross - intrinsic       (FP8-attributable extra divergence)
 
 We also report the TVD between pv and pa (pure distribution shift, no sampling

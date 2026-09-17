@@ -30,7 +30,7 @@
 //! by construction. Anything that does not collapse (a fragmented pool, a
 //! ragged plan, a single-layer model) runs the original loop verbatim.
 //!
-//! Kill switch: `ATLAS_NO_BATCHED_SSM_ROLLBACK=1` forces the loop everywhere.
+//! Kill switch: `AVAROK_NO_BATCHED_SSM_ROLLBACK=1` forces the loop everywhere.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
@@ -105,7 +105,7 @@ pub(crate) fn copy_plan_as_strided_run(plan: &[StateCopy]) -> Option<StridedRun>
     })
 }
 
-/// Kill switch for the batched form: `ATLAS_NO_BATCHED_SSM_ROLLBACK=1`
+/// Kill switch for the batched form: `AVAROK_NO_BATCHED_SSM_ROLLBACK=1`
 /// restores the per-layer `copy_d2d_async` loop everywhere.
 ///
 /// PRESENCE check per the house convention (`=0` is NOT off), read once per
@@ -113,7 +113,7 @@ pub(crate) fn copy_plan_as_strided_run(plan: &[StateCopy]) -> Option<StridedRun>
 /// per decode step.
 pub(crate) fn batched_ssm_copy_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_BATCHED_SSM_ROLLBACK").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_BATCHED_SSM_ROLLBACK").is_none())
 }
 
 /// Issue `plan` on `stream`, batched when it collapses.

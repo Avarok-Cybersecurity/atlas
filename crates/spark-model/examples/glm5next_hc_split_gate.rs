@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 use spark_model::layers::ops::{
     Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX_TOKENS, glm_hc_pre,
 };
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -102,7 +102,7 @@ fn time_us(g: &dyn GpuBackend, reps: usize, mut f: impl FnMut() -> Result<()>) -
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = Glm5NextMhcKernels::resolve(&gpu)?;
     println!(
         "glm5next hc split gate — fused glm5next_hc_pre is the ORACLE, split must be byte-identical\n"

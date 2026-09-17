@@ -25,8 +25,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::signing;
-use atlas_plugin::hardware::{Hardware, HardwareState};
+use avarok_plugin::gate::signing;
+use avarok_plugin::hardware::{Hardware, HardwareState};
 
 use super::guard;
 use super::lockfile::LockGuard;
@@ -34,8 +34,8 @@ use super::plan::Unit;
 use super::runner::{GateRunner, LocalChild, RepoRecords, RunCtx, RunOutcome};
 use super::state::{Campaign, Phase};
 use super::{Emit, GUARD_EVERY};
-use atlas_plugin::hardware::equivalence::EquivalencePolicy;
-use atlas_plugin::hardware::limits::ThermalEnvelope;
+use avarok_plugin::hardware::equivalence::EquivalencePolicy;
+use avarok_plugin::hardware::limits::ThermalEnvelope;
 use node::Node;
 use schedule::SpeedMode;
 
@@ -160,8 +160,8 @@ pub fn runners(
 }
 
 /// This machine's signing fingerprint, for the local node.
-pub fn local_signer(atlas_home: &std::path::Path) -> Result<String> {
-    Ok(signing::load_or_create(atlas_home)?
+pub fn local_signer(avarok_home: &std::path::Path) -> Result<String> {
+    Ok(signing::load_or_create(avarok_home)?
         .fingerprint()
         .to_owned())
 }

@@ -6,7 +6,7 @@ pieces from profiling. Started 2026-07-24 03:21 EDT, deadline +6h (~09:21).
 
 ## Target (validated basis — see DECODE_FOLD_LEDGER.md "RE-BASELINE")
 Real vLLM (concise, confirmed by user): perf wall 5361s, qps 0.188, tps 14.6, IoU 0.6269;
-accuracy 995 BFCL 86.43. Atlas already ≥ on tps/qps/wall/BFCL, ties IoU. **Pure decode gap:**
+accuracy 995 BFCL 86.43. Avarok already ≥ on tps/qps/wall/BFCL, ties IoU. **Pure decode gap:**
 K=3 spec step ~112ms → 40ms/tok effective vs vLLM ~87ms → 31ms/tok. **~25ms/step to eliminate.**
 Base non-spec decode ~63ms (memory floor, shared). Extending the lead, not surviving.
 
@@ -22,10 +22,10 @@ Base non-spec decode ~63ms (memory floor, shared). Extending the lead, not survi
    (an output-neutral decode change → ~0; a numeric change is quantified here).
 4. **Barebones regression** — BFCL subset (>=50) not below baseline; + measured TPOT A/B N>=3.
 5. qwen adversarial review of raw diff + numbers before fold.
-Win → commit immediately (tbraun96 author, Atlas co-author, no Claude attribution) → push.
+Win → commit immediately (tbraun96 author, Avarok co-author, no Claude attribution) → push.
 
 ## Exact reproduce commands
-Build: `cd <worktree> && PATH=/usr/local/cuda/bin:$PATH ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b cargo build --release -p spark-server --bin spark --features cuda`
+Build: `cd <worktree> && PATH=/usr/local/cuda/bin:$PATH AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b cargo build --release -p spark-server --bin spark --features cuda`
 Serve (frozen c2final, K=3): see DECODE_FOLD_LEDGER.md "Serve config".
 Gate: `python3 scripts/mlperf-edge/kl_coherence_gate.py <baseline_port> <cand_port>` ; A/B: `bash scripts/mlperf-edge/draft_sweep.sh`-style.
 e2e: endpoints-fresh edge-agentic-full-run config (temp0/seed42), 1007 perf + 995 BFCL.
@@ -141,7 +141,7 @@ Candidates measured (A/B M=3, cold, N=3):
   was pre-DP4A). Also hit the __constant__-LUT-serializes trap (5× slower until moved to __shared__).
 - C3 NVFP4 the FP8 GDN in/out proj (w8a16, ~24% of step, 2× NVFP4 bytes): NOT built (assess). ~halve
   bytes → ~2× on those proj ≈ ~12ms/step. **THE remaining lever.** Deviates from mandated FP8-GDN ckpt.
-INSIGHT: vLLM runs all-NVFP4 nvidia ckpt; Atlas mandated ckpt keeps GDN FP8 → Atlas streams MORE bytes.
+INSIGHT: vLLM runs all-NVFP4 nvidia ckpt; Avarok mandated ckpt keeps GDN FP8 → Avarok streams MORE bytes.
 C3 = match vLLM byte budget. Owner authorized ("as long as it clears IoU+accuracy"). → PURSUE C3, hard
 KL+IoU+BFCL gate. Structural note: batch3 M=3 = 75% vs M=1 84% (3× compute/byte, occupancy/reg-bound) —
 not fixable by prefetch/DP4A. Agent files uncommitted on worktree .wt-w4a4 (C1/C2 kernels + bench).
@@ -155,18 +155,18 @@ w8a16_gemv_batch4 → w4a16_gemv_batchm. Loader: weight_loader/qwen3.rs (native_
 PENDING (auto-notify): qwen C3 risk verdict (bvr5smtz4) → go/no-go on the build; dgx2 baseline e2e
 (blz3264q2) → frees e2e box (~04:30) + baseline numbers for the C3 accuracy comparison.
 Reality check: if C3 fails IoU/BFCL, the decode gap is a MANDATED-CHECKPOINT byte-budget constraint
-(Atlas FP8-GDN vs vLLM all-NVFP4), not an engineering miss — will document honestly either way.
+(Avarok FP8-GDN vs vLLM all-NVFP4), not an engineering miss — will document honestly either way.
 
 ## 03:53 — qwen C3 VERDICT: partial (~2-5ms/tok), accuracy-gated, GDN in-proj risky
 NVFP4 GDN proj: ~38-44% fewer bytes (0.5625 vs 1.0 B/wt) × 24% of step → ~10-12ms/step → ~2-5ms/tok
 (40→~35-38ms). NOT the full 8.56ms fix alone. Accuracy: vLLM all-NVFP4 PASSES (IoU 0.6269/BFCL 86.43)
 = evidence NVFP4 GDN CAN hold; but naive re-quant of centml FP8→NVFP4 is moderate-HIGH risk, esp. the
-GDN IN-proj (feeds recurrent state). IoU more at risk than BFCL. qwen's decisive experiment: Atlas
+GDN IN-proj (feeds recurrent state). IoU more at risk than BFCL. qwen's decisive experiment: Avarok
 FP8-GDN vs NVFP4-GDN, trajectory-pinned → TPOT + E + IoU/BFCL.
 ⚠ CAVEAT to verify: mandated recipe = GDN **FP8** (mandated_nvidia_ckpt: GDN FP8+MLP NVFP4+MTP BF16).
 If vLLM also runs FP8 GDN, C3 DEVIATES from mandate (not "matching vLLM"). → C3 is an engineering
 decode lever, accuracy-gated; flag the recipe deviation for owner.
-⚠ Also unresolved: confirmed vLLM's REAL TPOT unknown (31.39 = weak run). On tps/qps basis Atlas
+⚠ Also unresolved: confirmed vLLM's REAL TPOT unknown (31.39 = weak run). On tps/qps basis Avarok
 already BEATS confirmed vLLM (15.9 vs 14.6 tps). Raw-TPOT gap likely real (decode speed ∝ output-len-
 independent) but exact target uncertain.
 DECISION: build C3 STAGED (out-proj NVFP4 first = safer, then in-proj), A/B TPOT + coherence/KL, full
@@ -174,19 +174,19 @@ IoU/BFCL e2e gate on dgx2 when free. Fold only if faster AND IoU/BFCL clear.
 
 ## 03:55 — C3 build DISPATCHED (last decode lever)
 Agent (worktree .wt-c3, branch c3-nvfp4-gdn) building NVFP4 GDN out-proj (stage1, out_proj_nvfp4_t
-dispatch already scaffolded init.rs:371; loader linear_attn_arms.rs re-quant behind ATLAS_GDN_OUT_NVFP4=1),
+dispatch already scaffolded init.rs:371; loader linear_attn_arms.rs re-quant behind AVAROK_GDN_OUT_NVFP4=1),
 then in-proj (stage2, riskier). Fast gates on dgx1: coherence + KL drift + TPOT A/B (FP8-GDN vs NVFP4).
 Full IoU/BFCL e2e gate on dgx2 when it frees (~04:30). PROCEED only if faster + coherent + small KL;
 FOLD only if IoU/BFCL also clear.
 LIVE SIGNALS (auto-notify): C3 agent (a5776bb4) · dgx2 baseline e2e done (blz3264q2, frees e2e box).
 HONEST OUTLOOK: easy decode levers exhausted (GEMVs near-roofline; act-quant/prefetch DEAD-measured).
 C3 is partial (~2-5ms/tok) + accuracy-risky + deviates from mandated FP8-GDN. Likely deliverable:
-confirmed e2e (Atlas already ≥ vLLM on tps/qps/wall/BFCL/IoU) + C3 folded IF it passes + honest
+confirmed e2e (Avarok already ≥ vLLM on tps/qps/wall/BFCL/IoU) + C3 folded IF it passes + honest
 memory-bound-floor documentation for the residual raw-TPOT.
 
 ## ★★★★★ 04:20 — C3 DEAD + CHECKPOINT REFRAME (the honest answer on decode)
 Kernel agent: the GATE model **centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf is DENSE and already ships NVFP4
-GDN** (U8-packed on disk, decodes w4a16 not FP8 w8a16). So ATLAS_GDN_OUT_NVFP4 is INERT on the gate
+GDN** (U8-packed on disk, decodes w4a16 not FP8 w8a16). So AVAROK_GDN_OUT_NVFP4 is INERT on the gate
 model (byte-identical, KL=0, +0.3ms noise). The FP8-GDN (24% of step) the dgx3 phase-split saw was on
 the **nvidia** ckpt (mandated), NOT the centml gate model → phase-split's GDN slice doesn't transfer.
 On nvidia (where C3 applies) NVFP4-out made decode **SLOWER +4.6%** (w4a16 M=3 ~75% < w8a16 ~85%). C3
@@ -194,7 +194,7 @@ DEAD both ways. C3 impl correct+live but not folded (worktree .wt-c3, qwen35_den
 **CONCLUSION: on the real gate model, decode is already all-NVFP4 (best byte budget) AND GEMVs are
 near-roofline. Every weight/kernel decode lever is now MEASURED-DEAD** (GEMV-tune, prefetch, W4A8
 act-quant, NVFP4-GDN). The raw-TPOT vs the WEAK vLLM ref (31.39, verbose) is a near-hardware-floor gap;
-on the CONFIRMED vLLM's reported metrics (tps/qps/wall/BFCL/IoU) Atlas already WINS.
+on the CONFIRMED vLLM's reported metrics (tps/qps/wall/BFCL/IoU) Avarok already WINS.
 Remaining decode levers = ACTIVATION/KV precision only: (A) fp8 KV cache (attn ~13% of step, halve KV
 reads, prev-passed 86.33) ← testing now, FREE flag. (B) NVFP4 MTP head (drafter 9%, forced bf16 ~3.1%).
 
@@ -210,16 +210,16 @@ NEXT: run CONGLOMERATE e2e with fp8-KV (serve flag) → confirm IoU/BFCL + measu
 
 ## 05:03 — CONGLOMERATE e2e LAUNCHED (fp8-KV) on dgx1 — e2e-level A/B
 dgx1: full MLCommons e2e (1007 perf + 995 BFCL, temp0/seed42) with **--kv-cache-dtype fp8** (the fold
-candidate) — report_dir endpoints-fresh/results/fp8kv_conglom_20260724_050249, serve atlas-fp8kv-conglom.
+candidate) — report_dir endpoints-fresh/results/fp8kv_conglom_20260724_050249, serve avarok-fp8kv-conglom.
 dgx2: the bf16-KV baseline e2e (main 011bee65) finishing → the control leg.
 → e2e-level A/B: fp8-KV vs bf16-KV on wall/TPOT/IoU/BFCL. FOLD fp8-KV iff it improves wall/TPOT AND
 IoU≥0.6269 (confirmed vLLM) AND BFCL≥floor (83.64/85.32). Both runs ~2.5h; done ~07:30. Deadline 09:21.
 
-## ★★★★ 07:39 — dgx2 bf16 BASELINE e2e PERF (fresh main 011bee65) — Atlas CRUSHES confirmed vLLM
+## ★★★★ 07:39 — dgx2 bf16 BASELINE e2e PERF (fresh main 011bee65) — Avarok CRUSHES confirmed vLLM
 1007/1007 complete. **wall 4551.86s · TPOT median 38.18ms · TTFT median 1264ms · qps 0.221 · tps 17.56 ·
 out-tok median 45.** (Fresh main is FASTER than the golden 5023s/39.95ms/15.67tps I'd quoted — #356
 prefill smem fix.) Warm accept p1 0.89-0.90, mean-accepted 1.84 (E~2.84).
-vs CONFIRMED vLLM (5361s/14.6tps/0.188qps/IoU 0.6269): **Atlas wall −15%, tps +20%, qps +18%.**
+vs CONFIRMED vLLM (5361s/14.6tps/0.188qps/IoU 0.6269): **Avarok wall −15%, tps +20%, qps +18%.**
 Raw-TPOT 38.18 vs vLLM weak-run 31.39 = residual at the hardware roofline (per FINDINGS).
 NOTE: BFCL accuracy phase ERRORS on both boxes — `bfcl-eval` dep missing (bfcl_v4_scorer.py:110). Perf
 metrics (wall/TPOT/TTFT/tps) valid; BFCL/IoU from THIS run blocked. fp8-KV accuracy rests on prior
@@ -247,18 +247,18 @@ costs accuracy (86.33<87). DO-NOT-FOLD. (Correcting an earlier wrong "−9% wall
 bf16-KV main 011bee65 baseline IS the optimum. Raw-TPOT 38.18ms is at the GB10 memory roofline for the
 all-NVFP4 checkpoint.**
 ### FINAL SCORECARD vs CONFIRMED vLLM (5361s / 14.6tps / 0.188qps / IoU 0.6269 / BFCL 86.43)
-| metric | Atlas (main, bf16) | conf. vLLM | winner |
+| metric | Avarok (main, bf16) | conf. vLLM | winner |
 |---|---|---|---|
-| wall (1007) | **4551.9s** | 5361s | **Atlas −15%** |
-| tps | **17.56** | 14.6 | **Atlas +20%** |
-| qps | **0.222** | 0.188 | **Atlas +18%** |
-| TTFT median | **1264ms** | (higher) | **Atlas** |
+| wall (1007) | **4551.9s** | 5361s | **Avarok −15%** |
+| tps | **17.56** | 14.6 | **Avarok +20%** |
+| qps | **0.222** | 0.188 | **Avarok +18%** |
+| TTFT median | **1264ms** | (higher) | **Avarok** |
 | raw TPOT median | 38.18ms | ~31 (WEAK ref only) | vLLM on weak ref; residual = hardware roofline |
-| BFCL | ~87 (prior) | 86.43 | Atlas |
+| BFCL | ~87 (prior) | 86.43 | Avarok |
 | IoU | ~0.625 (prior) | 0.6269 | tie |
-Atlas WINS the real comparison on every throughput+quality axis. The only "gap" (raw per-token TPOT) is
+Avarok WINS the real comparison on every throughput+quality axis. The only "gap" (raw per-token TPOT) is
 vs a WEAK/verbose vLLM reference AND is at the hardware floor. GOAL OUTCOME: the raw-TPOT gap is NOT
-closable by kernel work (proven, roofline); Atlas already beats confirmed vLLM end-to-end.
+closable by kernel work (proven, roofline); Avarok already beats confirmed vLLM end-to-end.
 
 ## ★★★ 07:50 — CORRECTION: fp8-KV DO-NOT-FOLD (control-leg refuted it)
 dgx2 bf16-KV baseline (SAME fresh main binary) = wall 4551.9 / TPOT 38.18 / TTFT 1264 / TPS 17.56.
@@ -274,11 +274,11 @@ runs (~87/0.625); dgx1 fp8 scored 87.54/0.6223.
 ## ★★★★★ 09:00 — vLLM RE-RUN (owner-requested): TPOT is TUNING-DEPENDENT, no acceptance edge
 Served nvidia/Qwen3.6-27B-NVFP4 on dgx3 (sparkrun-eugr-vllm img, Triton/FLA GDN, MTP qwen3_next_mtp
 2-tok, fp8-KV), warmed 10×. **Steady-state MTP TPOT = 104.86ms** (min 104.6 / p90 106.3, n=10 — stable,
-not JIT). MTP acceptance: mean-len ~2.5, p1 0.83 / p2 0.65 = **≈ Atlas (p1 0.90, E~2.84), NO edge**.
-→ vLLM TPOT swings 3.4×: **31.39ms tuned (07-16 Marlin+CUDA-graph) vs 104.86ms out-of-box.** Atlas
+not JIT). MTP acceptance: mean-len ~2.5, p1 0.83 / p2 0.65 = **≈ Avarok (p1 0.90, E~2.84), NO edge**.
+→ vLLM TPOT swings 3.4×: **31.39ms tuned (07-16 Marlin+CUDA-graph) vs 104.86ms out-of-box.** Avarok
 38-43ms BEATS untuned vLLM 2.5×, trails best-tuned vLLM only ~1.2×. The confirmed vLLM run (5361/86.43)
 NEVER reported a TPOT and I couldn't reproduce its tuned state in-window. So the "gap" is conditional on
-vLLM's single best config; Atlas wins every confirmed e2e metric. FINAL raw-TPOT answer: config-dependent,
+vLLM's single best config; Avarok wins every confirmed e2e metric. FINAL raw-TPOT answer: config-dependent,
 not a fixed vLLM number.
 
 ## CHAIN-WIDENING: part B may ALREADY EXIST (discovery, post-Phase-0)

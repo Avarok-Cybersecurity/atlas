@@ -167,7 +167,7 @@ impl std::fmt::Debug for DerivedWeights {
 /// The KEYS are the original weight pointers — owned by the `WeightStore` and
 /// freed by it. Only the VALUES are derivations this cache allocated, so only
 /// those are freed here. Freeing a key would be a double-free of a weight.
-impl atlas_core::scope::ModelResource<dyn spark_runtime::gpu::GpuBackend> for DerivedWeights {
+impl avarok_core::scope::ModelResource<dyn spark_runtime::gpu::GpuBackend> for DerivedWeights {
     fn label(&self) -> &'static str {
         "derived weights"
     }
@@ -204,7 +204,7 @@ impl atlas_core::scope::ModelResource<dyn spark_runtime::gpu::GpuBackend> for De
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_core::scope::ModelResource;
+    use avarok_core::scope::ModelResource;
     use spark_runtime::gpu::GpuBackend;
     use spark_runtime::gpu::mock::MockGpuBackend;
     use std::sync::atomic::{AtomicUsize, Ordering};

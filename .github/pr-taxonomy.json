@@ -4,7 +4,7 @@
     "",
     "One path per PR, descended ONE LEVEL AT A TIME. This is NOT the hardware",
     "taxonomy — that one is kernels/<hw>/<model>/<quant>/, derived from paths by",
-    "atlas-plugin::gate::taxon and needing no model at all. This tree covers",
+    "avarok-plugin::gate::taxon and needing no model at all. This tree covers",
     "what a change is FOR, which cannot be read off a directory.",
     "",
     "★★ THE SAFETY PROPERTY, and it is the whole design:",

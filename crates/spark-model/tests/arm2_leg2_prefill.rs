@@ -12,7 +12,7 @@
 //!
 //! `#[ignore]`d: requires a GB10 GPU. CI builds+links this against the libcuda
 //! stubs (catches kernel-signature drift) but never runs it. On a GB10 host:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=deepseek-v4-flash ATLAS_TARGET_QUANT=nvfp4 \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=deepseek-v4-flash AVAROK_TARGET_QUANT=nvfp4 \
 //!     cargo test -p spark-model --test arm2_leg2_prefill -- --ignored --nocapture
 //! For CHECK 5, wrap under: compute-sanitizer --tool memcheck --report-api-errors no <bin>.
 
@@ -26,7 +26,7 @@ use support::*;
 const BMOD: &str = "moe_w4a16";
 const SEED: u64 = 0x_ADA2_1E62_5EED_0002;
 
-// ONE `#[test]` per binary: the CUDA context lives on the AtlasRegistry
+// ONE `#[test]` per binary: the CUDA context lives on the AvarokRegistry
 // singleton and is current only on the thread that first initialized it. cargo
 // runs each `#[test]` on its own thread, so a per-check backend init would break
 // (only the first thread has a current context). Mirror the original single-

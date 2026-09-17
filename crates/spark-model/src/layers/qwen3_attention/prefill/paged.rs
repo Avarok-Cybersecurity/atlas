@@ -132,14 +132,14 @@ impl Qwen3AttentionLayer {
         // (it's written by FA later) and sized for `num_tokens * num_q_heads
         // * head_dim * 2`, plenty for our `num_tokens * num_kv_heads *
         // head_dim * 2` raw-K save. Gated on:
-        //   - ATLAS_FUSED_KV=1  (opt-in during dev; expected default later)
+        //   - AVAROK_FUSED_KV=1  (opt-in during dev; expected default later)
         //   - mrope_interleaved kernel handle loaded
         //   - BF16 KV cache (FP8 path has its own quantization noise that
         //     masks the cliff; not the workload that needs this fix)
         let fused_kv_enabled = self.mrope_interleaved
             && self.fused_k_norm_rope_mrope_cache_write_bf16_k.0 != 0
             && self.reshape_and_cache_flash_v_only_k.0 != 0
-            && std::env::var("ATLAS_FUSED_KV").ok().as_deref() == Some("1");
+            && std::env::var("AVAROK_FUSED_KV").ok().as_deref() == Some("1");
         let raw_k_scratch = if fused_kv_enabled {
             let scratch = ctx.buffers.attn_output();
             ctx.gpu
@@ -527,7 +527,7 @@ impl Qwen3AttentionLayer {
         }
         if let Some(bmeta) = batched_meta {
             // Cross-request prefill via FlashInfer ragged/varlen attention
-            // (ATLAS_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
+            // (AVAROK_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
             // Q/K/V already match FlashInfer's [rows, heads, 256] layout, so ONE
             // varlen launch runs all N co-dispatched requests' causal
             // self-attention — replacing the slow paged batched kernel (the
@@ -545,7 +545,7 @@ impl Qwen3AttentionLayer {
                 && !k_is_turbo
                 && !v_is_turbo
                 && spark_runtime::flashinfer::available()
-                && std::env::var("ATLAS_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
+                && std::env::var("AVAROK_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
             if use_flashinfer {
                 // VARLEN: real per-request cu_seqlens from the staged metadata
                 // (host + device copies) — works for both uniform and varied
@@ -669,7 +669,7 @@ impl Qwen3AttentionLayer {
                 .launch(stream)?;
         }
 
-        // ATLAS_OP_DUMP: attn_out BEFORE sigmoid gate (raw attention-kernel output).
+        // AVAROK_OP_DUMP: attn_out BEFORE sigmoid gate (raw attention-kernel output).
         // Compares 1:1 against vLLM's "attn_out" dump in qwen3_next.py:_dump_op.
         // Use last-token slice n_elements = num_heads * head_dim.
         if num_tokens > 0 {
@@ -791,7 +791,7 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
+        // AVAROK_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
             super::super::op_dump::dump_bf16(

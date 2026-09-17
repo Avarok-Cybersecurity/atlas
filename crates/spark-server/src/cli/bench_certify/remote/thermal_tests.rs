@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use super::*;
-use atlas_plugin::hardware::equivalence::HardwareFingerprint;
-use atlas_plugin::hardware::limits::ThermalEnvelope;
+use avarok_plugin::hardware::equivalence::HardwareFingerprint;
+use avarok_plugin::hardware::limits::ThermalEnvelope;
 use std::sync::Mutex;
 
 /// The committed GB10 envelope.

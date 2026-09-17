@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -152,7 +152,7 @@ pub(crate) fn build_high_speed_swap_config(
     let dir = args
         .high_speed_swap_dir
         .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp/atlas-hsw"));
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp/avarok-hsw"));
     let bytes_gb = args.high_speed_swap_gb.unwrap_or(64);
     let resident_blocks = args.high_speed_swap_resident_blocks.unwrap_or(8192);
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -184,14 +184,14 @@ pub(crate) fn validate_head_high_speed_swap(
     };
     if swap_space_gb > 0
         && cfg.dir.canonicalize().ok().as_deref()
-            == std::path::Path::new("/tmp/atlas-swap")
+            == std::path::Path::new("/tmp/avarok-swap")
                 .canonicalize()
                 .ok()
                 .as_deref()
     {
         let _ = args;
         anyhow::bail!(
-            "--high-speed-swap-dir must not be /tmp/atlas-swap (already used \
+            "--high-speed-swap-dir must not be /tmp/avarok-swap (already used \
              by --swap-space-gb sequence-level fallback)"
         );
     }
@@ -228,7 +228,7 @@ pub(crate) fn maybe_run_ep_worker(
         args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     if !worker_spec && model_has_proposer {
         let override_set = matches!(
-            std::env::var("ATLAS_ALLOW_SPEC_MISMATCH").as_deref(),
+            std::env::var("AVAROK_ALLOW_SPEC_MISMATCH").as_deref(),
             Ok("1") | Ok("true")
         );
         if !override_set {
@@ -236,13 +236,13 @@ pub(crate) fn maybe_run_ep_worker(
                 "EP worker (rank {rank}) started WITHOUT any --speculative flag, \
                  but this checkpoint has MTP weights and the head will likely use them. \
                  Mirror the head's --speculative / --mtp-quantization / --num-drafts \
-                 flags here, or set ATLAS_ALLOW_SPEC_MISMATCH=1 if the head is also \
+                 flags here, or set AVAROK_ALLOW_SPEC_MISMATCH=1 if the head is also \
                  non-speculative."
             );
         }
         tracing::warn!(
             "EP worker (rank {rank}) running WITHOUT speculative flags but \
-             ATLAS_ALLOW_SPEC_MISMATCH=1 — head must NOT issue MTP commands."
+             AVAROK_ALLOW_SPEC_MISMATCH=1 — head must NOT issue MTP commands."
         );
     } else if !model_has_proposer && !worker_spec {
         tracing::info!(
@@ -345,7 +345,7 @@ pub(crate) fn maybe_run_ep_worker(
 
 #[cfg(test)]
 mod prefix_cache_tests {
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use clap::Parser;
 
     use super::build_prefix_cache;
@@ -383,7 +383,7 @@ mod prefix_cache_tests {
 
 #[cfg(test)]
 mod swap_space_tests {
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use clap::Parser;
 
     use super::resolve_swap_space_gb;

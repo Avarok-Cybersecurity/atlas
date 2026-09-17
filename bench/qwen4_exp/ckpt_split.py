@@ -23,7 +23,7 @@ files = sorted(set(idx['weight_map'].values()))
 def remote_size(name):
     url = f'https://huggingface.co/{REPO}/resolve/main/{name}'
     req = urllib.request.Request(url, method='HEAD',
-                                 headers={'User-Agent': 'atlas-sizing'})
+                                 headers={'User-Agent': 'avarok-sizing'})
     r = urllib.request.urlopen(req, timeout=120)
     n = r.headers.get('X-Linked-Size') or r.headers.get('Content-Length')
     return int(n)

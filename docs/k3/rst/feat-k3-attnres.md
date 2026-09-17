@@ -15,7 +15,7 @@ KNOWN-BAD
 `mix_zero_vs_mix_one_diverges` — mix=0 ≠ mix=1, max-abs > 0.5.
 
 TEST NOTES
-`cargo test -p atlas-core --lib -- kimi_k3::attnres`
+`cargo test -p avarok-core --lib -- kimi_k3::attnres`
 Umbrella twin: mix=1 first id 1459, mix=0 moves it.
 
 BUGS

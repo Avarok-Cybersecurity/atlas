@@ -3,10 +3,10 @@ name = "gb10"
 vendor = "nvidia"
 arch = "sm_121f"
 compute_capability = "12.1"
-# Streaming multiprocessors — the GB10 value that `atlas_core::device::sm121`
+# Streaming multiprocessors — the GB10 value that `avarok_core::device::sm121`
 # has always carried, stated here so grid-sizing rules can read it from the
 # TARGET instead of from a constant named after one card. Declaring it changes
-# nothing on GB10; `atlas_core::device::sm121::NUM_SMS` stays for the gb10
+# nothing on GB10; `avarok_core::device::sm121::NUM_SMS` stays for the gb10
 # callers that are genuinely about this part.
 sm_count = 48
 memory_bandwidth_gbps = 273
@@ -16,7 +16,7 @@ memory_gb = 120
 # ── Benchmark limits ───────────────────────────────────────────────────────
 #
 # What a certification campaign and the record policies judge a GB10 by
-# (`atlas_plugin::hardware::limits`). Facts about THIS box class — its
+# (`avarok_plugin::hardware::limits`). Facts about THIS box class — its
 # `acpitz` chassis zones, its unified 121 GB pool, its checkpoint load times —
 # an H100 SXM has other sensors, another memory model and another disk, and
 # declares its own tables when someone measures them. Every sub-table is
@@ -40,7 +40,7 @@ memory_gb = 120
 # * gpu_ceiling_c: die temperature above which a Speed record's pre-run
 #   capture is suspect. 75 is the midpoint between dgx1's healthy 52-66 and
 #   dgx2's 70-89 on 2026-08-15 — a hypothesis awaiting a third box, gating
-#   only under ATLAS_HW_TEMP_GATE=1 and recorded on every run meanwhile.
+#   only under AVAROK_HW_TEMP_GATE=1 and recorded on every run meanwhile.
 [benchmarks.limits.thermal]
 chassis_park_c = 80
 chassis_resume_c = 70
@@ -81,8 +81,8 @@ mem_spread = 0.05
 
 # ── Serving defaults for this target ───────────────────────────────────────
 #
-# SSOT for the per-target serving levers, baked into `atlas_kernels` by
-# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# SSOT for the per-target serving levers, baked into `avarok_kernels` by
+# build.rs (`build_defaults.rs`) as `avarok_kernels::TARGET_DEFAULTS` and read
 # by every resolver in spark-model BEFORE the environment.
 #
 # WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
@@ -102,7 +102,7 @@ mem_spread = 0.05
 # else" problem the table replaces.
 #
 # GB10's values are TODAY'S HARDCODED DEFAULTS, unchanged, and
-# `crates/atlas-kernels/tests/target_defaults.rs` asserts exactly that by
+# `crates/avarok-kernels/tests/target_defaults.rs` asserts exactly that by
 # equality against `build_defaults::baseline`: a GB10 serve with no
 # environment set behaves as it did before this table existed.
 [defaults]
@@ -165,7 +165,7 @@ decode_split_silu = true
 # — restated, not changed. Hopper's `auto` fills 132 SMs at the single-stream
 # shape; a 48-SM GB10 is the part that rule was written for and there is no
 # GB10 A/B, so this row does not move until there is one.
-# `ATLAS_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
+# `AVAROK_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
 attn_decode_splitk = "legacy"
 # `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: the kernel is not
 # in this target's tree at all (`kernels/hopper/HARDWARE.toml [kernels]
@@ -215,7 +215,7 @@ ffn_gateup_fused = false
 #     no cap  (W8A8)   3343.3 ms
 #     capped  (W8A16)  2560.4 ms      -23.4%
 #
-# Override per shape with ATLAS_W8A8_PREFILL_MAX_M_WIDENING / _NARROWING; 0
+# Override per shape with AVAROK_W8A8_PREFILL_MAX_M_WIDENING / _NARROWING; 0
 # means "never take W8A8 on this shape" and is honoured, not ignored.
 w8a8_prefill_max_m_widening = 64
 w8a8_prefill_max_m_narrowing = 384

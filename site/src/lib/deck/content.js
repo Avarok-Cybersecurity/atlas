@@ -50,7 +50,7 @@ export const claim = {
   // The driver hash the published Atlas legs carry, beside the one a reader will
   // actually get from the tree. Both derived: the first is the manifest key whose
   // note names the Atlas legs, the second is hashed from the file at build time.
-  harnessShaAtlas: Object.keys(ladder.harness_shas).find((k) =>
+  harnessShaAvarok: Object.keys(ladder.harness_shas).find((k) =>
     /Atlas legs/i.test(ladder.harness_shas[k])
   ),
   harnessShaRepo: ladder.harness_repo_sha256.slice(0, 10),

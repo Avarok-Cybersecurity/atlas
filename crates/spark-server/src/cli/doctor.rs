@@ -5,10 +5,10 @@
 //! one of them used to present as the same useless symptom: `recipe "..." is
 //! not in the local index (0 cached)`.
 //!
-//! * `~/.atlas` owned by uid 1000 while the process was uid 996, so the recipe
+//! * `~/.avarok` owned by uid 1000 while the process was uid 996, so the recipe
 //!   index was unwritable. Nothing in the tree checked ownership.
 //! * `sync-recipes` never run on a fresh box.
-//! * A signing identity minted into a scratch `ATLAS_HOME`, so a campaign's
+//! * A signing identity minted into a scratch `AVAROK_HOME`, so a campaign's
 //!   records carried a key nobody had committed — discovered only in CI, after
 //!   the GPU-hours.
 //!
@@ -17,8 +17,8 @@
 //! fail, and this repo has shipped four of those before.
 
 use anyhow::Result;
-use atlas_plugin::artifacts::{AtlasHome, HomeFault};
-use atlas_plugin::gate;
+use avarok_plugin::artifacts::{AvarokHome, HomeFault};
+use avarok_plugin::gate;
 
 /// One line of the report.
 pub struct Finding {
@@ -50,11 +50,11 @@ impl Finding {
 
 /// Where the home is, and whether it came from the environment or the default.
 pub fn check_home() -> Finding {
-    match AtlasHome::resolve() {
+    match AvarokHome::resolve() {
         Err(e) => Finding::bad(
             "home",
             format!("cannot be resolved: {e:#}"),
-            "set ATLAS_HOME, or ensure HOME is set and non-empty.",
+            "set AVAROK_HOME, or ensure HOME is set and non-empty.",
         ),
         Ok(h) => Finding::ok("home", h.describe()),
     }
@@ -62,7 +62,7 @@ pub fn check_home() -> Finding {
 
 /// Can this process write there? Probed by writing, not by reading a mode bit.
 pub fn check_writable() -> Finding {
-    let Ok(h) = AtlasHome::resolve() else {
+    let Ok(h) = AvarokHome::resolve() else {
         return Finding::bad(
             "writable",
             "skipped — the home could not be resolved",
@@ -81,7 +81,7 @@ pub fn check_writable() -> Finding {
         Some(f) => Finding::bad(
             "writable",
             format!("{} {f}", h.root.display()),
-            "point ATLAS_HOME at a directory this user can create and write.",
+            "point AVAROK_HOME at a directory this user can create and write.",
         ),
     }
 }
@@ -93,7 +93,7 @@ pub fn check_writable() -> Finding {
 /// worth asking, and asking the filesystem instead is the mistake that hid a
 /// three-box campaign's problem until CI.
 pub fn check_identity(repo_root: Option<&std::path::Path>) -> Finding {
-    let Ok(h) = AtlasHome::resolve() else {
+    let Ok(h) = AvarokHome::resolve() else {
         return Finding::bad(
             "identity",
             "skipped — the home could not be resolved",
@@ -111,7 +111,7 @@ pub fn check_identity(repo_root: Option<&std::path::Path>) -> Finding {
         return Finding::bad(
             "identity",
             format!("{} exists, but this is not a git repo", key.display()),
-            "run from inside the atlas checkout so the committed signer list \
+            "run from inside the avarok checkout so the committed signer list \
              can be read.",
         );
     };
@@ -147,14 +147,18 @@ pub fn check_identity(repo_root: Option<&std::path::Path>) -> Finding {
 /// Has the recipe index been populated? An empty index is the single most
 /// common cause of a gate dying seconds after it starts.
 pub fn check_recipes() -> Finding {
-    let Ok(h) = AtlasHome::resolve() else {
+    let Ok(h) = AvarokHome::resolve() else {
         return Finding::bad(
             "recipes",
             "skipped — the home could not be resolved",
             "fix `home` first.",
         );
     };
-    let index = h.root.join("atlas-recipes").join("index.json");
+    // Through `cache_dir`, not a hardcoded name: on a box that predates the
+    // rename the index is under `atlas-recipes`, and doctor reporting "no
+    // recipe index" for a machine that has a complete one is precisely the
+    // false alarm this command exists to eliminate.
+    let index = crate::recipe::fetch::cache_dir(&h.root).join("index.json");
     match std::fs::read_to_string(&index) {
         Ok(text) => match serde_json::from_str::<serde_json::Value>(&text) {
             Ok(v) => {

@@ -130,13 +130,13 @@ impl App {
     /// locally-scanned weights the recipe index is joined against.
     ///
     /// The failure path is a DEAD END, and says so by setting
-    /// `recipes_unavailable`. `discover()` reads `ATLAS_HOME`/`HOME` and
+    /// `recipes_unavailable`. `discover()` reads `AVAROK_HOME`/`HOME` and
     /// nothing else, so a second call in the same process answers the same way;
     /// the tick used to retry it at 10 Hz on `!attached()` alone, warning into
     /// the log ring every 100 ms. The local scan still renders — that is what
     /// the `rebuild` is for.
     pub(super) fn attach_recipes(&mut self) {
-        match atlas_plugin::ArtifactStore::discover() {
+        match avarok_plugin::ArtifactStore::discover() {
             Ok(store) => {
                 self.lib.attach(store.root().to_path_buf(), &self.library);
                 self.lib.refresh();

@@ -41,7 +41,7 @@ use anyhow::Result;
 use half::bf16;
 use spark_model::layers::ops;
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 /// Qwen3.8-27B: `num_v_heads = 48`, `vheads_per_group = 2`, `hidden = 5120`,
@@ -283,7 +283,7 @@ fn leg(g: &dyn GpuBackend, parent: KernelHandle, twin: KernelHandle, m: usize) -
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     let parent = g.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?;

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -47,7 +47,7 @@ impl TransformerModel {
         }
         // Block-count between decode checkpoints. Env-tunable (no rebuild) so
         // the cadence/drift tradeoff can be swept; default 4 blocks = 64 tok.
-        let interval = std::env::var("ATLAS_DECODE_CKPT_BLOCKS")
+        let interval = std::env::var("AVAROK_DECODE_CKPT_BLOCKS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v > 0)
@@ -180,7 +180,7 @@ impl TransformerModel {
             seq.block_table.len(),
             snap_tokens - end_token,
         );
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -267,7 +267,7 @@ impl TransformerModel {
                 id,
                 seq.tokens.len(),
             );
-            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(
                     seq.slot_idx,
                     self.gpu.as_ref(),

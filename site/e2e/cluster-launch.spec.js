@@ -20,10 +20,10 @@
 
 import { expect, test } from '@playwright/test';
 
-const TOKEN = process.env.ATLASCTL_TOKEN ?? '';
+const TOKEN = process.env.AVAROKCTL_TOKEN ?? '';
 
 test.describe('@live cluster launch', () => {
-  test.skip(!TOKEN, 'needs ATLASCTL_TOKEN and a running agent');
+  test.skip(!TOKEN, 'needs AVAROKCTL_TOKEN and a running agent');
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {

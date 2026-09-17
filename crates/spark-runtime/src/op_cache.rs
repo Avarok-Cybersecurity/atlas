@@ -7,7 +7,7 @@
 //! were being cached in function-local `static OnceLock` / `static Mutex`, and
 //! both are **owned by the model**:
 //!
-//! * A `KernelHandle` is a raw `CUfunction` from an `AtlasRegistry` module.
+//! * A `KernelHandle` is a raw `CUfunction` from an `AvarokRegistry` module.
 //!   The registry unloads its modules on drop, so a handle cached in a static
 //!   outlives the module it points into — a launch after a swap is a
 //!   use-after-unload, not a stale value.
@@ -159,9 +159,9 @@ impl std::fmt::Debug for OpCache {
 /// Release the scratch allocations.
 ///
 /// The kernel handles are not freed here: they are module-scoped and die with
-/// the `AtlasRegistry` the backend holds, which `cuda_host::release` unloads
+/// the `AvarokRegistry` the backend holds, which `cuda_host::release` unloads
 /// once every handle to it is gone. Freeing them here would be a double-unload.
-impl atlas_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for OpCache {
+impl avarok_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for OpCache {
     fn label(&self) -> &'static str {
         "op scratch"
     }

@@ -344,7 +344,7 @@ fn moving_in_an_empty_form_is_a_no_op_rather_than_a_panic() {
 }
 
 #[test]
-fn enter_on_a_non_atlas_card_explains_instead_of_opening_the_form() {
+fn enter_on_a_non_avarok_card_explains_instead_of_opening_the_form() {
     let mut r = recipe();
     r.runtime = Some("vllm".into());
     let weights = vec![local(&r.model)];

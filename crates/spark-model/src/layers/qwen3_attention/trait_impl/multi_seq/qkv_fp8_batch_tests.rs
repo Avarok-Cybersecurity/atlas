@@ -15,7 +15,7 @@ use crate::layers::{FfnComponent, qwen3_attention::Qwen3AttentionLayer};
 use crate::weight_map::{
     AttentionWeights, DenseWeight, Fp8Weight, QuantWeight, QuantizedWeight, WeightQuantFormat,
 };
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -26,7 +26,7 @@ const BATCH4_K: u64 = 0xF084;
 const BATCH16_K: u64 = 0xF08C;
 const NCOL2_K: u64 = 0xF0C2;
 const NCOL4_K: u64 = 0xF0C4;
-/// The tensor-core strided tier (`ATLAS_ATTN_M16_TC`).
+/// The tensor-core strided tier (`AVAROK_ATTN_M16_TC`).
 const M16TC_STRIDED_K: u64 = 0xF08E;
 const WIDTH: usize = 128;
 
@@ -45,14 +45,14 @@ struct Case {
     handles: bool,
     format: WeightQuantFormat,
     enabled: bool,
-    /// `ATLAS_ATTN_NCOL_GEMV` as the layer caches it — injected as a field so
+    /// `AVAROK_ATTN_NCOL_GEMV` as the layer caches it — injected as a field so
     /// the test drives the rule and not the process-global `OnceLock`.
     ncol: Option<NcolWidth>,
     /// Whether the shadow carries the `_ncol*_strided` entry points.
     ncol_handles: bool,
-    /// `ATLAS_ATTN_M16_TC` as the layer caches it — a field for the same reason
+    /// `AVAROK_ATTN_M16_TC` as the layer caches it — a field for the same reason
     /// `ncol` is one: the production accessor is a process-global `OnceLock`.
-    /// Round 6 split this from `ATLAS_FFN_M16_TC`, which no longer reaches here.
+    /// Round 6 split this from `AVAROK_FFN_M16_TC`, which no longer reaches here.
     m16_tc: bool,
     /// Whether the shadow carries `w8a16_gemm_m16_strided`.
     m16_tc_handles: bool,
@@ -144,7 +144,7 @@ fn native_fp8_qkv_retains_scalar_for_unaligned_dims() {
     check_dispatch(&case, Expect::Scalar);
 }
 
-/// Kill switch: `ATLAS_NO_FP8_QKV_BATCH` present ⇒ tier off. Driven through the
+/// Kill switch: `AVAROK_NO_FP8_QKV_BATCH` present ⇒ tier off. Driven through the
 /// injected flag rather than the env var so the test does not race the
 /// process-global `OnceLock` that caches it in production.
 #[test]
@@ -185,8 +185,8 @@ fn native_fp8_qkv_ncol_declines_without_its_entry_points() {
 }
 
 /// The kill switch reaches the layer as `attn_ncol: None` (SSOT:
-/// `attn_ncol_gemv::ncol_gemv_enabled`, where `ATLAS_NO_ATTN_DECODE_BATCH`
-/// wins over `ATLAS_ATTN_NCOL_GEMV`).
+/// `attn_ncol_gemv::ncol_gemv_enabled`, where `AVAROK_NO_ATTN_DECODE_BATCH`
+/// wins over `AVAROK_ATTN_NCOL_GEMV`).
 #[test]
 fn native_fp8_qkv_ncol_off_keeps_batch16() {
     check_dispatch(&Case::new(16), Expect::Batched(BATCH16_K));
@@ -428,7 +428,7 @@ fn u32_arg(v: u32) -> MockArg {
     MockArg::Bytes(v.to_ne_bytes().to_vec())
 }
 
-/// ROUND 6's SPLIT. `ATLAS_ATTN_M16_TC` turns THIS tier on — the one that
+/// ROUND 6's SPLIT. `AVAROK_ATTN_M16_TC` turns THIS tier on — the one that
 /// measured −21.7% on the H100 — and it takes exactly the band
 /// `w8a16_gemv_batch16_strided` owns: one strided launch per projection, same
 /// argument layout, a different kernel.
@@ -440,7 +440,7 @@ fn native_fp8_qkv_attn_m16_tc_takes_the_batch16_band() {
 }
 
 /// The tensor-core tier sits AHEAD of the bit-exact N-column tier: an operator
-/// who sets `ATLAS_ATTN_M16_TC` is asking for the MMA route explicitly.
+/// who sets `AVAROK_ATTN_M16_TC` is asking for the MMA route explicitly.
 #[test]
 fn native_fp8_qkv_attn_m16_tc_outranks_the_ncol_tier() {
     let mut case = Case::m16_tc(16);

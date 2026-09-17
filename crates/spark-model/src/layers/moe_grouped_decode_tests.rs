@@ -3,7 +3,7 @@
 //! The grouped-GEMM MoE decode arm is a WIDTH trade, and the gate that
 //! decides it is the whole fix (#415 follow-up).
 //!
-//! Before this, the arm was gated on `ATLAS_MOE_GROUPED_DECODE=1` alone —
+//! Before this, the arm was gated on `AVAROK_MOE_GROUPED_DECODE=1` alone —
 //! width-blind. That is wrong in both directions and each direction has a
 //! measurement behind it:
 //!
@@ -88,7 +88,7 @@ fn the_kill_switch_wins_over_any_width() {
 fn the_force_override_reaches_below_the_threshold() {
     assert!(
         moe_grouped_decode_decide(4, true, true),
-        "ATLAS_MOE_GROUPED_DECODE=1 exists so a below-threshold width can be \
+        "AVAROK_MOE_GROUPED_DECODE=1 exists so a below-threshold width can be \
          measured; if it cannot reach n=4 it cannot measure the loss it was \
          used to find"
     );

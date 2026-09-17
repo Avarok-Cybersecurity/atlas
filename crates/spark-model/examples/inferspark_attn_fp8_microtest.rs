@@ -2,7 +2,7 @@
 
 //! Correctness + occupancy gate for the FP8-smem prefill kernel
 //! `inferspark_prefill_paged_fp8` (BR=32) — the kernel changed by the
-//! `ATLAS_ATTN_FP8_SMEM` optimization (K/V kept in shared memory as raw E4M3
+//! `AVAROK_ATTN_FP8_SMEM` optimization (K/V kept in shared memory as raw E4M3
 //! bytes, dequantized in-register before each MMA so 2 CTAs/SM fit).
 //!
 //! This is the FP8-KV sibling of `inferspark_attn_microtest` (which gates the
@@ -23,7 +23,7 @@
 //! Exit 0 = PASS (cosine >= gate), 1 = FAIL.
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -94,7 +94,7 @@ fn main() -> Result<()> {
         u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x51A7)
     });
     // Warm-shape override (the real agentic case: small q suffix, large paged KV).
-    // ATLAS_QLEN/ATLAS_KVLEN/ATLAS_QOFF default to self-attention (qlen=kvlen=seq,
+    // AVAROK_QLEN/AVAROK_KVLEN/AVAROK_QOFF default to self-attention (qlen=kvlen=seq,
     // qoff=0). When set, q attends causally over [0, qoff+i].
     let env_usize = |k: &str, d: usize| {
         std::env::var(k)
@@ -102,9 +102,9 @@ fn main() -> Result<()> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(d)
     };
-    let qlen = env_usize("ATLAS_QLEN", seq);
-    let kvlen = env_usize("ATLAS_KVLEN", seq);
-    let qoff = env_usize("ATLAS_QOFF", 0);
+    let qlen = env_usize("AVAROK_QLEN", seq);
+    let kvlen = env_usize("AVAROK_KVLEN", seq);
+    let qoff = env_usize("AVAROK_QOFF", 0);
     let hd = HDIM;
     let inv_sqrt_d = 1.0f32 / (hd as f32).sqrt();
     let k_scale = 0.25f32;
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     let k_fp8: Vec<u8> = (0..kvlen * nkv * hd).map(|_| rng.e4m3_byte()).collect();
     let v_fp8: Vec<u8> = (0..kvlen * nkv * hd).map(|_| rng.e4m3_byte()).collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 
@@ -166,10 +166,10 @@ fn main() -> Result<()> {
     gpu.synchronize(stream)?;
 
     // Optional timing loop (A/B harness for the ldmatrix lever). Gated by
-    // ATLAS_BENCH_ITERS so the correctness gate stays the default behaviour.
+    // AVAROK_BENCH_ITERS so the correctness gate stays the default behaviour.
     // Re-launches the SAME kernel path (SSOT) — warmup then N timed launches
     // with a single trailing sync; reports avg per-launch GPU time.
-    if let Ok(iters_s) = std::env::var("ATLAS_BENCH_ITERS") {
+    if let Ok(iters_s) = std::env::var("AVAROK_BENCH_ITERS") {
         let iters: usize = iters_s.parse().unwrap_or(50);
         let relaunch = || -> Result<()> {
             KernelLaunch::new(gpu, handle)

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! §4 unification (`ATLAS_SSM_TIER_UNIFIED`) store contract tests.
+//! §4 unification (`AVAROK_SSM_TIER_UNIFIED`) store contract tests.
 
 use super::super::MockSnapshotTransport;
 use super::*;
@@ -21,8 +21,8 @@ fn unified_flag_accepts_only_documented_truthy_values() {
 
 fn unified_store(slots: usize) -> UnifiedSnapshotStore {
     UnifiedSnapshotStore::new(
-        Box::new(atlas_tier::VecSlotArena::new(BLOB, slots)),
-        Box::new(atlas_tier::MemSwapStore::new(BLOB)),
+        Box::new(avarok_tier::VecSlotArena::new(BLOB, slots)),
+        Box::new(avarok_tier::MemSwapStore::new(BLOB)),
         BLOB,
     )
     .unwrap()
@@ -30,15 +30,15 @@ fn unified_store(slots: usize) -> UnifiedSnapshotStore {
 
 fn unified_store_capped(slots: usize, max_disk: usize) -> UnifiedSnapshotStore {
     UnifiedSnapshotStore::new_capped(
-        Box::new(atlas_tier::VecSlotArena::new(BLOB, slots)),
-        Box::new(atlas_tier::MemSwapStore::new(BLOB)),
+        Box::new(avarok_tier::VecSlotArena::new(BLOB, slots)),
+        Box::new(avarok_tier::MemSwapStore::new(BLOB)),
         BLOB,
         max_disk,
     )
     .unwrap()
 }
 
-// ─────────────── ATLAS_SSM_TIER_DISK_GB: the bounded Marconi tier ───────────
+// ─────────────── AVAROK_SSM_TIER_DISK_GB: the bounded Marconi tier ───────────
 
 /// A cap bounds the disk tier but NEVER converts into a reject: the store's
 /// "never full" contract is what keeps the bounded-tier warn in
@@ -236,7 +236,7 @@ fn unified_over_transport_never_drops_where_bounded_store_did() {
         slot_bytes: BLOB,
         num_slots: SLOTS,
     });
-    let s = UnifiedSnapshotStore::new(hot, Box::new(atlas_tier::MemSwapStore::new(BLOB)), BLOB)
+    let s = UnifiedSnapshotStore::new(hot, Box::new(avarok_tier::MemSwapStore::new(BLOB)), BLOB)
         .unwrap();
     let mut o = [0u8; BLOB];
     for k in 0..16u64 {

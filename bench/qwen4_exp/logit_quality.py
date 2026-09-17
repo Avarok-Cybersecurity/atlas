@@ -3,7 +3,7 @@
 
 Reference: qwen4exp_forward_golden.npz (forward_ref.py) — f32 logits at
 every fixture position, vocab 248320.
-Engine:    a raw row from ATLAS_DUMP_LOGITS_PATH/logits_seq.bin captured by
+Engine:    a raw row from AVAROK_DUMP_LOGITS_PATH/logits_seq.bin captured by
            sending the SAME rendered fixture prompt to /v1/completions with
            max_tokens=1 at a sampling temperature (the dump fires on the
            stochastic path only). Row width is model.vocab_size() = 248077,
@@ -13,7 +13,7 @@ Reports, at the last fixture position: KL(ref || engine) and reverse,
 p(top1) both sides, top-20 overlap, and the ids where they disagree most.
 
 Usage:
-    1. serve with ATLAS_DUMP_LOGITS_PATH=<dir>; rm <dir>/logits_seq.bin
+    1. serve with AVAROK_DUMP_LOGITS_PATH=<dir>; rm <dir>/logits_seq.bin
     2. logit_quality.py [golden.npz] [dumpdir] [port]
 """
 import os

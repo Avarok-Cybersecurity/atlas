@@ -2,7 +2,7 @@
 # A/B for re-enabling MID-CHUNK SSM tail capture on the GB10 golden config.
 #
 # THE SITUATION
-# `ATLAS_SSM_TAIL_MIDCHUNK` is DEFAULT-ON in the code
+# `AVAROK_SSM_TAIL_MIDCHUNK` is DEFAULT-ON in the code
 # (spark-runtime/src/lib.rs: `!matches!(var.as_deref(), Ok("0"))`). The frozen
 # MLPerf-edge config overrides it to `0`, i.e. OFF. That override dates from the
 # 2026-07-16 regression where midchunk tail capture corrupted CROSS-REQUEST SSM
@@ -30,7 +30,7 @@
 #
 # It also makes two flags in the frozen config STOP BEING INERT: with
 # MIDCHUNK=0 nothing is ever marked `is_tail`, so and
-# ATLAS_SSM_TAIL_LEASE_TTL=128 currently govern an empty set (snapshot.rs says
+# AVAROK_SSM_TAIL_LEASE_TTL=128 currently govern an empty set (snapshot.rs says
 # so in as many words).
 #
 # WHY THIS NEEDS AN ACCURACY GATE, NOT A SPEED GATE
@@ -42,10 +42,10 @@
 #
 # TRAP: the flag is strict-`"0"` opt-out, NOT a presence flag. To ENABLE midchunk
 # the variable must be ABSENT or set to anything that is not "0"; leaving
-# `-e ATLAS_SSM_TAIL_MIDCHUNK=0` in place keeps it OFF. The two legs below differ
+# `-e AVAROK_SSM_TAIL_MIDCHUNK=0` in place keeps it OFF. The two legs below differ
 # only by whether that -e line is emitted.
 #
-# Usage: ab_midchunk.sh <atlas_bin> <outdir> [bfcl_subset_n]
+# Usage: ab_midchunk.sh <avarok_bin> <outdir> [bfcl_subset_n]
 set -u
 BIN="${1:?path to the built spark binary}"
 OUT="${2:?output dir}"
@@ -57,18 +57,18 @@ mkdir -p "$OUT"
 
 for leg in mc_off mc_on; do
   case $leg in
-    mc_off) MC="-e ATLAS_SSM_TAIL_MIDCHUNK=0" ;;   # today's frozen config
+    mc_off) MC="-e AVAROK_SSM_TAIL_MIDCHUNK=0" ;;   # today's frozen config
     mc_on)  MC="" ;;                               # the code's actual default
   esac
-  sudo docker rm -f atlas-mc >/dev/null 2>&1; sleep 3
+  sudo docker rm -f avarok-mc >/dev/null 2>&1; sleep 3
   # shellcheck disable=SC2086
-  sudo docker run -d --name atlas-mc --network host --gpus all --ipc=host \
-    -e ATLAS_NO_FFN_NVFP4_MMQ=1 $MC -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-    -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+  sudo docker run -d --name avarok-mc --network host --gpus all --ipc=host \
+    -e AVAROK_NO_FFN_NVFP4_MMQ=1 $MC -e AVAROK_MTP_CATCHUP=0 \
+    -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+    -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \
-    atlas-gb10:followups serve "$MODEL" \
+    avarok-gb10:followups serve "$MODEL" \
     --host 0.0.0.0 --port $PORT --model-name "$MODEL" \
     --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
     --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -78,10 +78,10 @@ for leg in mc_off mc_on; do
   ok=0
   for _ in $(seq 1 180); do
     curl -sf -m4 http://localhost:$PORT/v1/models 2>/dev/null | grep -q Qwen && { ok=1; break; }
-    sudo docker ps --format '{{.Names}}' | grep -q atlas-mc || { echo "SERVE_DIED leg=$leg"; break; }
+    sudo docker ps --format '{{.Names}}' | grep -q avarok-mc || { echo "SERVE_DIED leg=$leg"; break; }
     sleep 5
   done
-  [ $ok -eq 1 ] || { sudo docker logs atlas-mc 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
+  [ $ok -eq 1 ] || { sudo docker logs avarok-mc 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
   echo "=== leg=$leg serve up (midchunk env: ${MC:-<absent => ON>}) ==="
 
   # Gate C2 first — an NVFP4 build can pass timing while emitting garbage, and
@@ -97,10 +97,10 @@ for leg in mc_off mc_on; do
 
   # is_tail entries only ever exist with midchunk ON; their count is the proof
   # the flag took effect (and that TAIL_PROTECT/LEASE_TTL stopped being inert).
-  sudo docker logs atlas-mc 2>&1 \
+  sudo docker logs avarok-mc 2>&1 \
     | grep -aiE 'midchunk|is_tail|tail snapshot|tail lease' | sort -u | head -20 \
     | tee "$OUT/$leg.tail_evidence.txt"
-  sudo docker rm -f atlas-mc >/dev/null 2>&1
+  sudo docker rm -f avarok-mc >/dev/null 2>&1
 done
 echo "MIDCHUNK_AB_DONE out=$OUT"
 echo

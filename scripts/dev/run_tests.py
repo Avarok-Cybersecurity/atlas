@@ -19,8 +19,8 @@ LONG_CONTEXT = "--long-context" in raw_extra
 raw_extra = [a for a in raw_extra if a != "--long-context"]
 EXTRA = " ".join(raw_extra)
 
-IMAGE = "atlas-gb10:latest"
-CONTAINER = f"atlas-test-{PORT}"
+IMAGE = "avarok-gb10:latest"
+CONTAINER = f"avarok-test-{PORT}"
 HF_CACHE = "/workspace/.cache/huggingface/hub"
 
 is_mistral = "mistral" in MODEL.lower()

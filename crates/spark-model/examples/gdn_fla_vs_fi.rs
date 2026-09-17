@@ -7,7 +7,7 @@
 use anyhow::Result;
 use half::{bf16, f16};
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 fn rd(p: &str) -> Vec<u8> {
@@ -25,7 +25,7 @@ fn f32s(b: &[u8]) -> Vec<f32> {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let (t, nk, nv, kd, vd) = (2048usize, 16usize, 32usize, 128usize, 128usize);
     let key_dim = nk * kd;

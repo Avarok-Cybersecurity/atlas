@@ -32,7 +32,7 @@ import { execFileSync } from 'node:child_process';
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const BASELINES_ROOT =
-  process.env.ATLAS_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
+  process.env.AVAROK_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
 const OUT = resolve(here, '..', 'src', 'lib', 'benchmarks.generated.json');
 
 // --- git stamp (sha + committer date) ---------------------------------------

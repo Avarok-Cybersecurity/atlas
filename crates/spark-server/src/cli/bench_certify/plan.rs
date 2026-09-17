@@ -10,17 +10,17 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use atlas_plugin::gate::{self, GateStatus};
-use atlas_plugin::hardware::limits::TimingLimits;
-use atlas_plugin::hardware::policy::Sensitivity;
-use atlas_plugin::registry;
+use avarok_plugin::gate::{self, GateStatus};
+use avarok_plugin::hardware::limits::TimingLimits;
+use avarok_plugin::hardware::policy::Sensitivity;
+use avarok_plugin::registry;
 
 /// Where a unit's duration estimate came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Estimate {
     /// The descriptor's `expected_secs`.
     Declared(u64),
-    /// The newest completed run in `~/.atlas/runs`.
+    /// The newest completed run in `~/.avarok/runs`.
     Measured { secs: u64, recorded_at: u64 },
 }
 

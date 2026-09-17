@@ -69,7 +69,7 @@ pub fn verdict(
 /// If the artifact store cannot be located, or the fetch did not reach the
 /// network.
 pub fn run() -> Result<()> {
-    let store = atlas_plugin::ArtifactStore::discover()
+    let store = avarok_plugin::ArtifactStore::discover()
         .context("locating the artifact store that holds the recipe cache")?;
     let root = store.root();
 
@@ -91,8 +91,10 @@ pub fn run() -> Result<()> {
     }
 
     println!(
-        "recipe index written to {}/atlas-recipes/index.json",
-        root.display()
+        "recipe index written to {}",
+        crate::recipe::fetch::cache_dir(root)
+            .join("index.json")
+            .display()
     );
     println!(
         "  {} recipe(s), tree {}",

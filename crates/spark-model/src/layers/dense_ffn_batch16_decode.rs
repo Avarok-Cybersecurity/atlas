@@ -34,8 +34,8 @@
 //! ARM ORDER in `w8_gemm!` (see `dense_ffn.rs`) is deliberate and this module
 //! owns the 4th and 5th rungs:
 //!   1. `m <= 4`     -> `w8a16_gemv_batch4`
-//!   2. `m` 5..=16   -> `w8a16_gemm_m16`                (ATLAS_FFN_M16_TC only)
-//!   3. `m` 17..=32  -> `w8a16_gemm_m16` x2 halves      (ATLAS_FFN_M16_TC only)
+//!   2. `m` 5..=16   -> `w8a16_gemm_m16`                (AVAROK_FFN_M16_TC only)
+//!   3. `m` 17..=32  -> `w8a16_gemm_m16` x2 halves      (AVAROK_FFN_M16_TC only)
 //!   4. `m` 5..=16   -> `w8a16_gemv_batch16`            (here)
 //!   5. `m` 17..=32  -> `w8a16_gemv_batch16` x2 halves  (here)
 //!   6. W8A8 block-scaled prefill (#917/#928)
@@ -55,7 +55,7 @@
 //! prefill) takes the GEMV too. That consequence is what the serving A/B below
 //! caught, and it is why this tier ships disarmed.
 //!
-//! 🔴 DEFAULT OFF — OPT-IN VIA `ATLAS_FFN_BATCH16=1`. The cliff above is
+//! 🔴 DEFAULT OFF — OPT-IN VIA `AVAROK_FFN_BATCH16=1`. The cliff above is
 //! real and this kernel is the right shape for it, but on the one target where
 //! the tier has been A/B'd end to end it is a net LOSS in serving. H100 round
 //! 5, 2026-09-11, Qwen/Qwen3.8-27B-FP8, single variable — same binary, same
@@ -67,7 +67,7 @@
 //! | TPOT p50            | 107.4 ms | **102.0 ms** |
 //! | 28-token smoke TTFT | 150 ms   | **101 ms**   |
 //!
-//! Per-phase at n=16 (`ATLAS_MS_PROFILE=1`, so eager — read the ratios): with
+//! Per-phase at n=16 (`AVAROK_MS_PROFILE=1`, so eager — read the ratios): with
 //! the tier OFF the step goes 86.80 -> 82.32 ms, `ssm` 63.31 -> 59.91 ms and
 //! `attn` 19.90 -> 18.82 ms (-5.2% to -5.4% each); `head` does not move. `ssm`
 //! per layer returns to 1248 us against a pre-#927 1252 us — the tier's cost
@@ -104,13 +104,13 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::Fp8Weight;
 
-/// `ATLAS_FFN_BATCH16` opt-in: the value `1` — and only `1` — arms the
+/// `AVAROK_FFN_BATCH16` opt-in: the value `1` — and only `1` — arms the
 /// 5..=32-row tier. Anything else, absence included, leaves those widths on
 /// the pre-#927 arms.
 ///
 /// VALUE rather than the house PRESENCE convention (`ffn_w8a16_only` next
 /// door) because the polarity is the other way round: for a switch that ARMS
-/// an arm, it is `ATLAS_FFN_BATCH16=0` meaning "on" that would be the trap.
+/// an arm, it is `AVAROK_FFN_BATCH16=0` meaning "on" that would be the trap.
 /// Same shape as `moe_grouped_decode_forced` in `layers/mod.rs`, the other
 /// lever in this crate that arms rather than disarms.
 ///
@@ -119,7 +119,7 @@ use crate::weight_map::Fp8Weight;
 /// and `std::env::var` walks the environment block on every call.
 pub fn ffn_batch16_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_FFN_BATCH16").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_FFN_BATCH16").as_deref() == Ok("1"))
 }
 
 /// How the batch16 tier serves `m` rows, or `None` when it does not claim them.
@@ -222,9 +222,9 @@ impl DenseFfnLayer {
                 Batch16Plan::Halves { .. } => "two launches on contiguous row halves",
             };
             tracing::info!(
-                "[atlas] dense FFN decode: native FP8 w8a16_gemv_batch16 ({how}) \
+                "[avarok] dense FFN decode: native FP8 w8a16_gemv_batch16 ({how}) \
                  for 5..=32 rows — one weight pass, bit-identical per row to the \
-                 M=1 w8a16_gemv. ARMED BY ATLAS_FFN_BATCH16=1, off by default: it \
+                 M=1 w8a16_gemv. ARMED BY AVAROK_FFN_BATCH16=1, off by default: it \
                  measured -5.4% aggregate and +50 ms TTFT on H100, and has never \
                  been measured on GB10 (#927)."
             );

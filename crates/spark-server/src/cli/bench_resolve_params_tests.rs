@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 /// An entry carrying only param pins — the shape the concurrency gate's
 /// BENCH.toml entry adds.
@@ -32,7 +32,7 @@ fn entry_with_pins(pins: &[(&str, &str)]) -> gate::ModelBaseline {
 /// their schema defaults. All three precedence arms in one place.
 #[test]
 fn param_overrides_pin_the_instrument_and_yield_to_an_explicit_param() {
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     let specs = descriptor.build().parameters();
     let entry = entry_with_pins(&[
         ("concurrencies", "1,4,8,16"),
@@ -41,7 +41,7 @@ fn param_overrides_pin_the_instrument_and_yield_to_an_explicit_param() {
     ]);
 
     // Pinned: the ladder replaces the schema default.
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let applied =
         apply_param_overrides(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
     assert_eq!(applied.len(), 3, "{applied:?}");
@@ -54,7 +54,7 @@ fn param_overrides_pin_the_instrument_and_yield_to_an_explicit_param() {
     // Explicit --param wins untouched.
     let explicit = vec![("osl".to_string(), "512".to_string())];
     let mut values =
-        atlas_plugin::ParamValues::from_overrides(&specs, vec![("osl", "512")]).unwrap();
+        avarok_plugin::ParamValues::from_overrides(&specs, vec![("osl", "512")]).unwrap();
     let applied =
         apply_param_overrides(descriptor, &specs, &mut values, &entry, &explicit).expect("applies");
     assert!(
@@ -74,10 +74,10 @@ fn param_overrides_pin_the_instrument_and_yield_to_an_explicit_param() {
 /// loud error naming the key.
 #[test]
 fn a_param_override_for_an_unknown_key_is_a_loud_error() {
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     let specs = descriptor.build().parameters();
     let entry = entry_with_pins(&[("no_such_knob", "7")]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let err = apply_param_overrides(descriptor, &specs, &mut values, &entry, &[])
         .expect_err("must refuse");
     let msg = format!("{err:#}");
@@ -90,10 +90,10 @@ fn a_param_override_for_an_unknown_key_is_a_loud_error() {
 /// it silently.
 #[test]
 fn a_param_override_cannot_name_a_threshold_coupled_param() {
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     let specs = descriptor.build().parameters();
     let entry = entry_with_pins(&[("min_c16", "94.0")]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let err = apply_param_overrides(descriptor, &specs, &mut values, &entry, &[])
         .expect_err("must refuse");
     let msg = format!("{err:#}");
@@ -105,10 +105,10 @@ fn a_param_override_cannot_name_a_threshold_coupled_param() {
 /// typed --param — the kind's bounds cannot be bypassed by this path.
 #[test]
 fn a_param_override_goes_through_the_kinds_own_parser() {
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     let specs = descriptor.build().parameters();
     let entry = entry_with_pins(&[("osl", "0")]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let err = apply_param_overrides(descriptor, &specs, &mut values, &entry, &[])
         .expect_err("must refuse");
     assert!(format!("{err:#}").contains("osl=0"), "{err:#}");

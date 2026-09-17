@@ -22,7 +22,7 @@ use crate::tool_parser;
 /// Bump the per-response tool-call counter and trip
 /// `stop_string_triggered` when the cap is exceeded. Catches
 /// pathological responses emitting dozens of tool calls. Default
-/// cap = 12 (env override `ATLAS_MAX_TOOL_CALLS_PER_RESPONSE`).
+/// cap = 12 (env override `AVAROK_MAX_TOOL_CALLS_PER_RESPONSE`).
 pub fn bump_f12_tool_call_count(count: &mut usize, max: usize, stop: &mut bool) {
     *count += 1;
     if *count > max && !*stop {

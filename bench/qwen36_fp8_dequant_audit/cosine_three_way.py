@@ -15,7 +15,7 @@ The exit gate:
        it via Phase 2b BF16 rounding patch.
 
 Reuses /tmp/cosine_compare.py's cmp_pair() math. Writes a final markdown
-verdict under /workspace/atlas-dumps/fp8dequant/PHASE2A_VERDICT.md.
+verdict under /workspace/avarok-dumps/fp8dequant/PHASE2A_VERDICT.md.
 """
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ import pathlib
 
 import numpy as np
 
-NUMDRIFT = pathlib.Path("/workspace/atlas-dumps/numdrift")
-DEQUANT = pathlib.Path("/workspace/atlas-dumps/fp8dequant")
+NUMDRIFT = pathlib.Path("/workspace/avarok-dumps/numdrift")
+DEQUANT = pathlib.Path("/workspace/avarok-dumps/fp8dequant")
 N_LAYERS = 40
 
 
@@ -64,12 +64,12 @@ def main() -> None:
     cosines_C: list[float] = []
 
     for i in range(N_LAYERS):
-        atlas_p = NUMDRIFT / f"atlas_L{i}.bin"
+        avarok_p = NUMDRIFT / f"avarok_L{i}.bin"
         hf_unquant_p = NUMDRIFT / f"hf_L{i}.bin"
         hf_fp8dq_p = DEQUANT / f"hf_L{i}.bin"
         missing: list[str] = []
-        if not atlas_p.exists():
-            missing.append("atlas")
+        if not avarok_p.exists():
+            missing.append("avarok")
         if not hf_unquant_p.exists():
             missing.append("hf[unquant]")
         if not hf_fp8dq_p.exists():
@@ -77,12 +77,12 @@ def main() -> None:
         if missing:
             print(f"L{i:2d}: MISSING {missing}")
             continue
-        atlas = load(atlas_p)
+        avarok = load(avarok_p)
         hf_unquant = load(hf_unquant_p)
         hf_fp8dq = load(hf_fp8dq_p)
         rA = cmp_pair(hf_fp8dq, hf_unquant)
-        rB = cmp_pair(atlas, hf_unquant)
-        rC = cmp_pair(atlas, hf_fp8dq)
+        rB = cmp_pair(avarok, hf_unquant)
+        rC = cmp_pair(avarok, hf_fp8dq)
         cosines_A.append(rA["cos"])
         cosines_B.append(rB["cos"])
         cosines_C.append(rC["cos"])

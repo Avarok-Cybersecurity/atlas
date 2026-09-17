@@ -14,7 +14,7 @@
 //   (see gen-stars.mjs for the bug that rule comes from).
 //
 // The registered benchmark list is derived from the descriptor SSOT
-// (crates/atlas-plugin/src/benchmarks/**: `id: "<bench-id>"`), so the UI can
+// (crates/avarok-plugin/src/benchmarks/**: `id: "<bench-id>"`), so the UI can
 // name gated-but-not-yet-published benchmarks without hardcoding them.
 //
 // Records are slimmed for the page: `closure` (per-kernel hashes, ~10x the
@@ -35,7 +35,7 @@ import { assignTrendPredecessors } from '../src/lib/gate-lineage.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const RECORDS_ROOT = resolve(REPO, '.benchmarks');
-const DESCRIPTOR_ROOT = resolve(REPO, 'crates', 'atlas-plugin', 'src', 'benchmarks');
+const DESCRIPTOR_ROOT = resolve(REPO, 'crates', 'avarok-plugin', 'src', 'benchmarks');
 const OUT = resolve(here, '..', 'src', 'lib', 'gates.generated.json');
 
 function git(args, opts = {}) {

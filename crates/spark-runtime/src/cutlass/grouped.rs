@@ -3,10 +3,10 @@
 
 use anyhow::{Result, bail};
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::ffi::c_void;
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use super::*;
 
 /// Validate every host array a grouped launch hands to C++ as a bare pointer.
@@ -20,7 +20,7 @@ use super::*;
 /// happened to build them all from one `num_experts`. This function is where
 /// that rule lives now, so a wrapper cannot check some of its arrays.
 ///
-/// Deliberately OUTSIDE the `#[cfg(atlas_cutlass)]` arms: the guard has to run
+/// Deliberately OUTSIDE the `#[cfg(avarok_cutlass)]` arms: the guard has to run
 /// (and be testable) on a build without CUTLASS, which is what CI builds.
 ///
 /// `offsets` is additionally checked for the one property that is complete
@@ -104,11 +104,11 @@ pub fn nvfp4_grouped_gate_up(
         ],
         expert_offsets,
     )?;
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let ctx = ctx()?;
         let status = unsafe {
-            atlas_cutlass_nvfp4_grouped_gate_up(
+            avarok_cutlass_nvfp4_grouped_gate_up(
                 a as *const c_void,
                 gate_packed_ptrs.as_ptr(),
                 gate_scale_ptrs.as_ptr(),
@@ -132,7 +132,7 @@ pub fn nvfp4_grouped_gate_up(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (
             a,
@@ -194,11 +194,11 @@ pub fn nvfp4_grouped_gate_up_fused(
         ],
         expert_offsets_host,
     )?;
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let ctx = ctx()?;
         let status = unsafe {
-            atlas_cutlass_nvfp4_grouped_gate_up_fused(
+            avarok_cutlass_nvfp4_grouped_gate_up_fused(
                 a as *const c_void,
                 sorted_token_ids as *const i32,
                 gate_packed_ptrs.as_ptr(),
@@ -223,7 +223,7 @@ pub fn nvfp4_grouped_gate_up_fused(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (
             a,
@@ -245,7 +245,7 @@ pub fn nvfp4_grouped_gate_up_fused(
     }
 }
 
-/// Single-launch grouped NVFP4 DOWN projection (`atlas_cutlass_nvfp4_grouped_down`).
+/// Single-launch grouped NVFP4 DOWN projection (`avarok_cutlass_nvfp4_grouped_down`).
 /// `a` is the post-SiLU bf16 intermediate `[M_total, K=inter]`, ALREADY
 /// expert-contiguous (no gather). `packed_ptrs`/`sfb_ptrs` are device-pointer
 /// arrays into the `[N=hidden,K/2]` packed + swizzled-SFB down tables; `scale2_vals`
@@ -272,11 +272,11 @@ pub fn nvfp4_grouped_down(
         ],
         expert_offsets_host,
     )?;
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let ctx = ctx()?;
         let status = unsafe {
-            atlas_cutlass_nvfp4_grouped_down(
+            avarok_cutlass_nvfp4_grouped_down(
                 a as *const c_void,
                 packed_ptrs.as_ptr(),
                 sfb_ptrs.as_ptr(),
@@ -296,7 +296,7 @@ pub fn nvfp4_grouped_down(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (
             a,

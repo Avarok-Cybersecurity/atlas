@@ -57,10 +57,10 @@ pub fn exact_leaf(
     }
 }
 
-/// `ATLAS_MARCONI_EXACT=1` re-enables the exact full-prompt shortcut. Read
+/// `AVAROK_MARCONI_EXACT=1` re-enables the exact full-prompt shortcut. Read
 /// here and nowhere else.
 pub fn marconi_exact_enabled() -> bool {
-    std::env::var("ATLAS_MARCONI_EXACT").as_deref() == Ok("1")
+    std::env::var("AVAROK_MARCONI_EXACT").as_deref() == Ok("1")
 }
 
 #[cfg(test)]

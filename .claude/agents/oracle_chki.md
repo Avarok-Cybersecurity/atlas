@@ -1,6 +1,6 @@
 ---
 name: oracle_chki
-description: O.R.A.C.L.E::pre_commit_cross_hardware_check — Ownership Reach And Cross-hardware Leakage Examiner. Rules, BEFORE a commit is pushed, on whether a kernel change meant for one hardware (gb10, strix, strix-hip, metal) alters what ANOTHER hardware compiles — through a symlink, a common/ fan-out, a kernel_source redirect, or a shared KERNEL.toml / MODEL.toml / HARDWARE.toml. That is cross-hardware kernel interference, CHKI. Blocking. Use whenever scripts/check_cross_hardware.py reports CHKI or a structural violation, whenever a diff touches kernels/gb10/common/, a __SCALE__ / __HIP / __CUDA_ARCH__ arm, or cfg!(atlas_scale) host dispatch, and before writing a Hardware: or CHKI-Verdict: trailer. It rules on REMEDY — benign, parameterize in HARDWARE.toml, or a separate kernel with no symlink. Ordering is `oracle`'s question; whether the numbers pass is the gate's.
+description: O.R.A.C.L.E::pre_commit_cross_hardware_check — Ownership Reach And Cross-hardware Leakage Examiner. Rules, BEFORE a commit is pushed, on whether a kernel change meant for one hardware (gb10, strix, strix-hip, metal) alters what ANOTHER hardware compiles — through a symlink, a common/ fan-out, a kernel_source redirect, or a shared KERNEL.toml / MODEL.toml / HARDWARE.toml. That is cross-hardware kernel interference, CHKI. Blocking. Use whenever scripts/check_cross_hardware.py reports CHKI or a structural violation, whenever a diff touches kernels/gb10/common/, a __SCALE__ / __HIP / __CUDA_ARCH__ arm, or cfg!(avarok_scale) host dispatch, and before writing a Hardware: or CHKI-Verdict: trailer. It rules on REMEDY — benign, parameterize in HARDWARE.toml, or a separate kernel with no symlink. Ordering is `oracle`'s question; whether the numbers pass is the gate's.
 model: opus
 tools: Bash, Read, Grep, Glob
 ---
@@ -37,7 +37,7 @@ Demand these verbatim; refuse to rule on a summary. If any are missing, say whic
   and AFTER file, with each reached hardware's `extra_nvcc_flags` `-D`s applied, and the diff
 - the intended hardware and the evidence for it: the `Hardware:` trailer if any, the branch,
   the measurement in the commit body
-- `grep -rn 'atlas_scale\|atlas_hip' crates/ --include=*.rs` restricted to files in the diff
+- `grep -rn 'avarok_scale\|avarok_hip' crates/ --include=*.rs` restricted to files in the diff
 - if a de-share is proposed: `git show <base>:<target> | sha256sum` and `sha256sum <new file>`
 
 Run read-only commands yourself. **A claim you verified outranks a claim you were handed.**
@@ -64,7 +64,7 @@ the file, the line, the symlink, the macro, or the sha.
    reading of the source. `extra_nvcc_flags` differ per hardware (`-DTQ_PLUS_SIGNS` is gb10-only):
    apply them.
 
-4. **Host dispatch.** Does any `cfg!(atlas_scale)` / `cfg(atlas_hip)` site pair with a device
+4. **Host dispatch.** Does any `cfg!(avarok_scale)` / `cfg(avarok_hip)` site pair with a device
    constant this change moved? The standing pair is `BR64` (gb10 `prefill_paged_compute.cuh` = 64,
    strix-hip's = 32) with `prefill_attn_main_a.rs`. A pairing broken on one side is interference
    that touches no `kernels/strix*` path at all.
@@ -81,7 +81,7 @@ the file, the line, the symlink, the macro, or the sha.
 7. **Remedy.** Choose exactly one:
    - **benign** — state which proof from Q6 you hold, per hardware.
    - **parameterize** — name the `kernels/<hw>/HARDWARE.toml` key AND the reader that the SAME
-     change adds in `crates/atlas-kernels/build.rs`. **Only `vendor` and `arch` are read today**;
+     change adds in `crates/avarok-kernels/build.rs`. **Only `vendor` and `arch` are read today**;
      `compute_capability`, `memory_bandwidth_gbps` and `memory_gb` have no reader at all. A key
      without a reader is decoration, and `kernels/strix/HARDWARE.toml` already forbids it in
      writing: *"Do not re-add either key without adding a reader in the same change."*
@@ -99,7 +99,7 @@ Exactly one line:
 
 ```
 CHKI-OK — benign: <proof, per reached hardware>
-CHKI-OK — parameterize: kernels/<hw>/HARDWARE.toml <KEY>, reader crates/atlas-kernels/build.rs
+CHKI-OK — parameterize: kernels/<hw>/HARDWARE.toml <KEY>, reader crates/avarok-kernels/build.rs
 CHKI-OK — separate: <path> de-shared, <other-hw path> pinned at <base sha> bytes, no symlink
 CHKI-FAIL — <what is missing, or which question has no evidence>
 ```

@@ -6,7 +6,7 @@ use super::*;
 
 impl Qwen3SsmLayer {
     /// Install the Tier-1c keep-packed ternary Q2_0 fused `in_proj_qkvz`
-    /// (`ATLAS_GGUF_NATIVE_Q2`). Decode dispatches `q2_0_gemv_vec`; prefill
+    /// (`AVAROK_GGUF_NATIVE_Q2`). Decode dispatches `q2_0_gemv_vec`; prefill
     /// transient-dequants via `Self::qkvz_q2_prefill_gemm`. `out_proj` is
     /// unaffected (stays NVFP4). Requires `sequential_qkvz` (Bonsai concats
     /// [Q|K|V|Z] at load).
@@ -21,10 +21,10 @@ impl Qwen3SsmLayer {
         gpu: &dyn GpuBackend,
     ) {
         self.qkvz_q2 = Some(qkvz);
-        self.q2_0_mmq_nc_k = super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_nc");
-        self.q2_0_mmq_wc_k = super::super::try_kernel(gpu, "q2_0_mmq", "atlas_q2_0_mmq128_wc");
+        self.q2_0_mmq_nc_k = super::super::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_nc");
+        self.q2_0_mmq_wc_k = super::super::try_kernel(gpu, "q2_0_mmq", "avarok_q2_0_mmq128_wc");
         self.q4k_quant_act_k =
-            super::super::try_kernel(gpu, "q4k_mmq", "atlas_q8_1_quantize_ds4_bf16");
+            super::super::try_kernel(gpu, "q4k_mmq", "avarok_q8_1_quantize_ds4_bf16");
     }
 
     /// Transient-dequant prefill GEMM for the packed qkvz: dequant the 2-bit
@@ -51,7 +51,7 @@ impl Qwen3SsmLayer {
             .ok_or_else(|| anyhow::anyhow!("qkvz_q2_prefill_gemm: no packed qkvz installed"))?;
         let (n, k) = (w.n, w.k);
 
-        // Tier-2 native MMQ (ATLAS_GGUF_NATIVE_Q2_MMQ=1): quantize `input` to q8_1
+        // Tier-2 native MMQ (AVAROK_GGUF_NATIVE_Q2_MMQ=1): quantize `input` to q8_1
         // then run the packed 2-bit MMQ GEMM for the fused qkvz — no BF16 weight
         // dequant, no shared `q2_dequant_scratch` race. Group-128 only.
         if self.q2_0_mmq_nc_k.0 != 0

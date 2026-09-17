@@ -39,22 +39,22 @@ fn hopper_arms_the_fp8_act_quant_twin_and_gb10_does_not() {
 /// `=0` means OFF, and it is the kill switch round 16 did not have: the twin
 /// was selected by kernel PRESENCE, so an operator watching a decode step take
 /// the 0.76× arm had no way to decline it short of rebuilding without the
-/// file. There is no `ATLAS_NO_FP8_ACT_QUANT_HOPPER` — the lever is new, so no
+/// file. There is no `AVAROK_NO_FP8_ACT_QUANT_HOPPER` — the lever is new, so no
 /// script predates the grammar and none can be surprised by it.
 #[test]
 fn the_environment_overrides_the_row_in_both_directions() {
     for off in ["0", "false", "off", "no", "OFF", " 0 "] {
         assert_eq!(
-            with(&HOPPER, &[("ATLAS_FP8_ACT_QUANT_HOPPER", off)]).fp8_act_quant_hopper,
+            with(&HOPPER, &[("AVAROK_FP8_ACT_QUANT_HOPPER", off)]).fp8_act_quant_hopper,
             Resolved::env(false),
-            "ATLAS_FP8_ACT_QUANT_HOPPER={off:?} must kill the twin",
+            "AVAROK_FP8_ACT_QUANT_HOPPER={off:?} must kill the twin",
         );
     }
     for on in ["1", "true", "on", "yes", ""] {
         assert_eq!(
-            with(&GB10, &[("ATLAS_FP8_ACT_QUANT_HOPPER", on)]).fp8_act_quant_hopper,
+            with(&GB10, &[("AVAROK_FP8_ACT_QUANT_HOPPER", on)]).fp8_act_quant_hopper,
             Resolved::env(true),
-            "ATLAS_FP8_ACT_QUANT_HOPPER={on:?} must arm the A/B on a target \
+            "AVAROK_FP8_ACT_QUANT_HOPPER={on:?} must arm the A/B on a target \
              that declares it off",
         );
     }
@@ -75,6 +75,6 @@ fn the_serve_line_names_the_row_and_marks_an_override() {
     assert!(!line.contains("fp8_act_quant_hopper=on (env)"), "{line}");
     let line = format_levers(&empty(&GB10));
     assert!(line.contains("fp8_act_quant_hopper=off"), "{line}");
-    let line = format_levers(&with(&HOPPER, &[("ATLAS_FP8_ACT_QUANT_HOPPER", "0")]));
+    let line = format_levers(&with(&HOPPER, &[("AVAROK_FP8_ACT_QUANT_HOPPER", "0")]));
     assert!(line.contains("fp8_act_quant_hopper=off (env)"), "{line}");
 }

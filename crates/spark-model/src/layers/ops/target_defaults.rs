@@ -17,7 +17,7 @@
 //! script nobody in this repository could see, review or test, and "GB10 is
 //! unaffected" was a promise about which prefixes people remembered to type.
 //!
-//! Now the fallback is [`atlas_kernels::TARGET_DEFAULTS`], baked by
+//! Now the fallback is [`avarok_kernels::TARGET_DEFAULTS`], baked by
 //! `build.rs` from the ONE `kernels/<hw>/HARDWARE.toml` this binary compiled
 //! (`[defaults]`). A GB10 build cannot carry Hopper's numbers, an H100 serve
 //! needs no prefixes, and every value is reviewable beside the arch it
@@ -39,9 +39,9 @@
 //! gone in the direction that matters: `VAR=0` now means what it reads as.
 //! `VAR=1` is unchanged everywhere.
 //!
-//! The legacy `ATLAS_NO_*` kill switches stay PRESENCE-gated and still force
+//! The legacy `AVAROK_NO_*` kill switches stay PRESENCE-gated and still force
 //! their lever OFF, so no script that predates this file changes meaning.
-//! `ATLAS_NO_DECODE_SPLIT_SILU` is the one in this table.
+//! `AVAROK_NO_DECODE_SPLIT_SILU` is the one in this table.
 //!
 //! # One resolution, one log line
 //!
@@ -53,8 +53,8 @@
 //! # Adding a lever — the contract
 //!
 //! ONE commit touches all of: the field in
-//! `atlas_kernels::TargetDefaults`, the parse arm in
-//! `atlas-kernels/build_defaults.rs`, the row in EVERY
+//! `avarok_kernels::TargetDefaults`, the parse arm in
+//! `avarok-kernels/build_defaults.rs`, the row in EVERY
 //! `kernels/<hw>/HARDWARE.toml` that has a `[defaults]` table, the
 //! [`TargetLevers`] field and its arm in [`resolve`], the field in
 //! [`format_levers`]'s line, and a test. `parse_defaults` panics on an
@@ -68,7 +68,7 @@
 //! PR brings its own row; this module ships only the rows whose arms are
 //! already here.
 
-use atlas_kernels::attn_splitk::{self, SplitkPolicy};
+use avarok_kernels::attn_splitk::{self, SplitkPolicy};
 
 use super::gemm_quant::{DENSE_GEMV_BATCHM_DECODE_MAX_M, DENSE_GEMV_BATCHM_MAX_M};
 
@@ -77,7 +77,7 @@ use super::gemm_quant::{DENSE_GEMV_BATCHM_DECODE_MAX_M, DENSE_GEMV_BATCHM_MAX_M}
 pub enum Source {
     /// `kernels/<hw>/HARDWARE.toml` `[defaults]`.
     Target,
-    /// An `ATLAS_*` variable in the process environment.
+    /// An `AVAROK_*` variable in the process environment.
     Env,
 }
 
@@ -120,7 +120,7 @@ impl<T> Resolved<T> {
 /// The override grammar for a boolean lever, as a pure function.
 ///
 /// `raw` is the positive variable's value (`None` = absent). `legacy_off` is
-/// the presence of the matching `ATLAS_NO_*` kill switch, which wins over
+/// the presence of the matching `AVAROK_NO_*` kill switch, which wins over
 /// everything: it is the escape hatch an operator reaches for while a serve
 /// misbehaves, and a hatch that a stale positive variable can veto is not one.
 pub fn resolve_toggle(default_on: bool, raw: Option<&str>, legacy_off: bool) -> Resolved<bool> {
@@ -206,26 +206,26 @@ pub struct TargetLevers {
 /// lookup — so the resolution is testable for ANY target from a CPU test, on
 /// any host, without touching the process environment.
 pub fn resolve(
-    defaults: &atlas_kernels::TargetDefaults,
+    defaults: &avarok_kernels::TargetDefaults,
     mut var: impl FnMut(&str) -> Option<String>,
 ) -> TargetLevers {
-    let split_silu_off = var("ATLAS_NO_DECODE_SPLIT_SILU").is_some();
+    let split_silu_off = var("AVAROK_NO_DECODE_SPLIT_SILU").is_some();
 
     TargetLevers {
         hw: defaults.hw,
         lm_head_batchm_max: resolve_batchm_max(
             defaults.lm_head_batchm_max,
-            var("ATLAS_LM_HEAD_BATCHM_MAX").as_deref(),
+            var("AVAROK_LM_HEAD_BATCHM_MAX").as_deref(),
         ),
         w8a8_prefill_max_m_widening: resolve_max_m(
             defaults.w8a8_prefill_max_m_widening,
-            var("ATLAS_W8A8_PREFILL_MAX_M_WIDENING").as_deref(),
+            var("AVAROK_W8A8_PREFILL_MAX_M_WIDENING").as_deref(),
         ),
         w8a8_prefill_max_m_narrowing: resolve_max_m(
             defaults.w8a8_prefill_max_m_narrowing,
-            var("ATLAS_W8A8_PREFILL_MAX_M_NARROWING").as_deref(),
+            var("AVAROK_W8A8_PREFILL_MAX_M_NARROWING").as_deref(),
         ),
-        // `ATLAS_SSM_BATCHED_RECURRENT` was `== "1"` in `gdn_flags::from_env`;
+        // `AVAROK_SSM_BATCHED_RECURRENT` was `== "1"` in `gdn_flags::from_env`;
         // under the 2026-09-11 grammar `=0` now turns it OFF instead of
         // reading as absent. Everything that ever set it set it to `1`, so no
         // existing recipe changes meaning. The DEFAULT is the target's:
@@ -234,49 +234,49 @@ pub fn resolve(
         // script. `--ssm-batched-recurrent` on the CLI still outranks both.
         ssm_batched_recurrent: resolve_toggle(
             defaults.ssm_batched_recurrent,
-            var("ATLAS_SSM_BATCHED_RECURRENT").as_deref(),
+            var("AVAROK_SSM_BATCHED_RECURRENT").as_deref(),
             false,
         ),
-        // ⚠️ `ATLAS_GDN_PREFILL_TC` was PRESENCE-gated and is now grammar-gated
+        // ⚠️ `AVAROK_GDN_PREFILL_TC` was PRESENCE-gated and is now grammar-gated
         // like its neighbours, so `=0` turns it OFF instead of on. Everything
         // that ever set it set it to `1`; the A/B recipes in
         // `GDN-PREFILL-ATTRIBUTION.md` are unaffected.
         gdn_prefill_tc: resolve_toggle(
             defaults.gdn_prefill_tc,
-            var("ATLAS_GDN_PREFILL_TC").as_deref(),
+            var("AVAROK_GDN_PREFILL_TC").as_deref(),
             false,
         ),
         // The Hopper BA-gates twin (#928). Hopper declares it ON; the twin is
         // BIT-IDENTICAL to its gb10 parent by construction, so unlike every
         // other Hopper-owned row this one carries no accuracy question and no
-        // `ATLAS_NO_*` legacy spelling — `ATLAS_SSM_BA_GATES_HOPPER=0` is the
+        // `AVAROK_NO_*` legacy spelling — `AVAROK_SSM_BA_GATES_HOPPER=0` is the
         // whole A/B, under the 2026-09-11 grammar above.
         ssm_ba_gates_hopper: resolve_toggle(
             defaults.ssm_ba_gates_hopper,
-            var("ATLAS_SSM_BA_GATES_HOPPER").as_deref(),
+            var("AVAROK_SSM_BA_GATES_HOPPER").as_deref(),
             false,
         ),
         // The Hopper FP8 activation-quant twin (#928, round-16 receipt § 2.1).
         // Hopper declares it ON. The twin is BIT-IDENTICAL to its gb10 parent,
-        // so the row carries no accuracy question and no `ATLAS_NO_*` legacy
+        // so the row carries no accuracy question and no `AVAROK_NO_*` legacy
         // spelling — the lever is new, so there is no older script for a
         // presence rule to keep faith with. It is also not the whole rule: the
         // twin is 0.76x-0.95x at M <= 25 for K in {5120, 6144}, so it passes a
         // CTA-count floor (`layers/ops/fp8_act_quant_floor.rs`) before it takes
-        // a launch. `ATLAS_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
+        // a launch. `AVAROK_FP8_ACT_QUANT_HOPPER=0` declines the twin at EVERY
         // width, which is the A/B.
         fp8_act_quant_hopper: resolve_toggle(
             defaults.fp8_act_quant_hopper,
-            var("ATLAS_FP8_ACT_QUANT_HOPPER").as_deref(),
+            var("AVAROK_FP8_ACT_QUANT_HOPPER").as_deref(),
             false,
         ),
         // DECLARATION plus the legacy kill switch, and no positive variable:
-        // `decode_split_silu` never had one. `ATLAS_NO_DECODE_SPLIT_SILU`
+        // `decode_split_silu` never had one. `AVAROK_NO_DECODE_SPLIT_SILU`
         // stays PRESENCE-gated and unchanged, so every script that predates
         // this file means what it meant.
         decode_split_silu: resolve_toggle(defaults.decode_split_silu, None, split_silu_off),
         // The paged-decode split-K policy (#928). The RULE is
-        // `atlas_kernels::attn_splitk::resolve_policy`, not a fourth copy of
+        // `avarok_kernels::attn_splitk::resolve_policy`, not a fourth copy of
         // the rung order here: `spark-runtime`'s buffer arena has to reach the
         // same answer to size the split-K workspace, and it sits BELOW this
         // crate. One pure function, two callers — a second spelling is how the
@@ -285,7 +285,7 @@ pub fn resolve(
         attn_decode_splitk: {
             let (policy, from_env) = attn_splitk::resolve_policy(
                 defaults.attn_decode_splitk,
-                var("ATLAS_ATTN_DECODE_SPLITK").as_deref(),
+                var("AVAROK_ATTN_DECODE_SPLITK").as_deref(),
             );
             if from_env {
                 Resolved::env(policy)
@@ -295,50 +295,50 @@ pub fn resolve(
         },
         // Two rows for ONE kernel family, because round 6 measured the FFN
         // arm and the attention arms moving in opposite directions on the same
-        // serve. `ATLAS_M16_TC` is the round-6 umbrella that arms both; it is
+        // serve. `AVAROK_M16_TC` is the round-6 umbrella that arms both; it is
         // folded in HERE rather than in the consumer so that an umbrella can
         // never DISARM a target's declaration, which would make the recipe
         // depend on export order.
         ffn_m16_tc: resolve_toggle(
             defaults.ffn_m16_tc,
-            var("ATLAS_FFN_M16_TC")
-                .or_else(|| var("ATLAS_M16_TC"))
+            var("AVAROK_FFN_M16_TC")
+                .or_else(|| var("AVAROK_M16_TC"))
                 .as_deref(),
             false,
         ),
         attn_m16_tc: resolve_toggle(
             defaults.attn_m16_tc,
-            var("ATLAS_ATTN_M16_TC")
-                .or_else(|| var("ATLAS_M16_TC"))
+            var("AVAROK_ATTN_M16_TC")
+                .or_else(|| var("AVAROK_M16_TC"))
                 .as_deref(),
             false,
         ),
-        // NOT under `ATLAS_M16_TC`. The umbrella is round 6's, which predates
+        // NOT under `AVAROK_M16_TC`. The umbrella is round 6's, which predates
         // this arm and never measured it; folding the head in would silently
         // widen what an old recipe means. Its own variable, or the target's
         // declaration.
         lm_head_m16_tc: resolve_toggle(
             defaults.lm_head_m16_tc,
-            var("ATLAS_LM_HEAD_M16_TC").as_deref(),
+            var("AVAROK_LM_HEAD_M16_TC").as_deref(),
             false,
         ),
-        // `ATLAS_NO_ATTN_DECODE_BATCH` is the pre-existing kill switch for the
+        // `AVAROK_NO_ATTN_DECODE_BATCH` is the pre-existing kill switch for the
         // whole batched attention-decode family, and it OUTRANKS both the
         // declaration and the positive variable: a switch that turns a family
         // off must not be silently narrowed by a new row underneath it.
         attn_ncol_gemv: resolve_toggle(
             defaults.attn_ncol_gemv,
-            var("ATLAS_ATTN_NCOL_GEMV").as_deref(),
-            var("ATLAS_NO_ATTN_DECODE_BATCH").is_some(),
+            var("AVAROK_ATTN_NCOL_GEMV").as_deref(),
+            var("AVAROK_NO_ATTN_DECODE_BATCH").is_some(),
         ),
-        // DECLARATION plus `ATLAS_FFN_GATEUP_FUSED`, which is the A/B a Hopper
+        // DECLARATION plus `AVAROK_FFN_GATEUP_FUSED`, which is the A/B a Hopper
         // round runs against the new default. `=0` kills the arm and returns
         // the layer to two cuBLASLt calls; there is no positive spelling that
         // arms it on a target whose tree lacks `silu_mul_strided.cu`, because
         // the handle probe would then fail the boot audit closed.
         ffn_gateup_fused: resolve_toggle(
             defaults.ffn_gateup_fused,
-            var("ATLAS_FFN_GATEUP_FUSED").as_deref(),
+            var("AVAROK_FFN_GATEUP_FUSED").as_deref(),
             false,
         ),
     }
@@ -355,7 +355,7 @@ pub fn resolve(
 pub fn resolved() -> &'static TargetLevers {
     static LEVERS: std::sync::OnceLock<TargetLevers> = std::sync::OnceLock::new();
     LEVERS.get_or_init(|| {
-        resolve(&atlas_kernels::TARGET_DEFAULTS, |name| {
+        resolve(&avarok_kernels::TARGET_DEFAULTS, |name| {
             std::env::var(name).ok()
         })
     })
@@ -363,8 +363,8 @@ pub fn resolved() -> &'static TargetLevers {
 
 /// The baked declaration this binary carries, for the serve log's header and
 /// for callers that must stay pure over their own inputs (`ModelLevers`).
-pub fn declared() -> &'static atlas_kernels::TargetDefaults {
-    &atlas_kernels::TARGET_DEFAULTS
+pub fn declared() -> &'static avarok_kernels::TargetDefaults {
+    &avarok_kernels::TARGET_DEFAULTS
 }
 
 /// `target defaults (<hw>): …` — one line naming every resolved value and
@@ -407,7 +407,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
         // at boot against the driver. Printed on this line because the levers
         // that will read it (grid sizing) are on it, and a reader comparing
         // two campaign logs needs both in one grep.
-        sms = atlas_kernels::TARGET_SM_COUNT,
+        sms = avarok_kernels::TARGET_SM_COUNT,
         batchm = l.lm_head_batchm_max.value,
         batchm_src = l.lm_head_batchm_max.source.tag(),
         recurrent = onoff(l.ssm_batched_recurrent),
@@ -431,7 +431,7 @@ pub fn format_levers(l: &TargetLevers) -> String {
 }
 
 /// The declaration a target that says nothing gets — kept in sync with
-/// `atlas-kernels/build_defaults.rs::baseline` by
+/// `avarok-kernels/build_defaults.rs::baseline` by
 /// `target_defaults_tests::the_baseline_band_is_the_frozen_one`.
 pub const BASELINE_BATCHM_MAX: u32 = DENSE_GEMV_BATCHM_DECODE_MAX_M;
 

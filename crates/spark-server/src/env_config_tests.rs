@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Tests for [`super`] (strict `ATLAS_*` parsing).
+//! Tests for [`super`] (strict `AVAROK_*` parsing).
 //!
 //! Every case here is driven through the PURE entry points — `parse_min` and
 //! `RateLimitConfig::from_raw` — never `set_var`. The environment is
@@ -19,7 +19,7 @@ fn a_typo_in_the_rate_limit_is_refused_instead_of_disabling_the_limit() {
     let err = crate::rate_limiter::RateLimitConfig::from_raw(Some("1oo"), None, None, None)
         .expect_err("a malformed rate limit must not be accepted");
     assert!(
-        err.contains("ATLAS_RATE_LIMIT_RPM"),
+        err.contains("AVAROK_RATE_LIMIT_RPM"),
         "the message must name the key the operator has to fix: {err}"
     );
     assert!(
@@ -59,10 +59,10 @@ fn a_valid_rate_limit_still_parses_and_burst_still_defaults_to_the_rate() {
 #[test]
 fn every_rate_limit_key_is_checked_not_just_the_first() {
     for (i, name) in [
-        "ATLAS_RATE_LIMIT_RPM",
-        "ATLAS_RATE_LIMIT_TPM",
-        "ATLAS_RATE_LIMIT_BURST_RPM",
-        "ATLAS_RATE_LIMIT_BURST_TPM",
+        "AVAROK_RATE_LIMIT_RPM",
+        "AVAROK_RATE_LIMIT_TPM",
+        "AVAROK_RATE_LIMIT_BURST_RPM",
+        "AVAROK_RATE_LIMIT_BURST_TPM",
     ]
     .iter()
     .enumerate()
@@ -87,14 +87,14 @@ fn surrounding_whitespace_is_tolerated() {
     assert_eq!(parse_min::<u64>("K", Some(" 42 "), 0, "m"), Ok(Some(42)));
 }
 
-/// The bound has to be enforced, not just the syntax: `ATLAS_STORE_MAX_ENTRIES=0`
+/// The bound has to be enforced, not just the syntax: `AVAROK_STORE_MAX_ENTRIES=0`
 /// used to be filtered back to the 10 000 default, so an operator asking for a
 /// disabled store silently got a full one.
 #[test]
 fn a_value_below_the_minimum_is_refused_and_the_minimum_is_named() {
-    let err = parse_min::<usize>("ATLAS_STORE_MAX_ENTRIES", Some("0"), 1, "entries kept")
+    let err = parse_min::<usize>("AVAROK_STORE_MAX_ENTRIES", Some("0"), 1, "entries kept")
         .expect_err("0 is below the stated minimum of 1");
-    assert!(err.contains("ATLAS_STORE_MAX_ENTRIES"), "{err}");
+    assert!(err.contains("AVAROK_STORE_MAX_ENTRIES"), "{err}");
     assert!(err.contains(">= 1"), "must name the bound: {err}");
     assert!(err.contains("fix:"), "{err}");
 }
@@ -102,14 +102,14 @@ fn a_value_below_the_minimum_is_refused_and_the_minimum_is_named() {
 /// A negative value must not be read as "unset" or wrap into a huge unsigned.
 #[test]
 fn a_negative_value_is_refused_for_an_unsigned_setting() {
-    assert!(parse_min::<u64>("ATLAS_STORE_TTL_SECONDS", Some("-1"), 1, "seconds").is_err());
+    assert!(parse_min::<u64>("AVAROK_STORE_TTL_SECONDS", Some("-1"), 1, "seconds").is_err());
 }
 
 /// The unit suffix an operator actually types. `1h` used to become the 86 400
 /// default — a 24-hour TTL for someone who asked for one hour.
 #[test]
 fn a_duration_with_a_unit_suffix_is_refused_rather_than_read_as_the_default() {
-    let err = parse_min::<u64>("ATLAS_STORE_TTL_SECONDS", Some("1h"), 1, "seconds")
+    let err = parse_min::<u64>("AVAROK_STORE_TTL_SECONDS", Some("1h"), 1, "seconds")
         .expect_err("`1h` is not a number of seconds");
     assert!(err.contains("1h"), "{err}");
     assert!(
@@ -122,8 +122,8 @@ fn a_duration_with_a_unit_suffix_is_refused_rather_than_read_as_the_default() {
 /// must not depend on a `why:`-less rendering somewhere else.
 #[test]
 fn the_message_carries_what_why_and_fix() {
-    let err = parse_min::<u64>("ATLAS_X", Some("bad"), 0, "what X controls").unwrap_err();
-    assert!(err.contains("ATLAS_X=\"bad\""), "{err}");
+    let err = parse_min::<u64>("AVAROK_X", Some("bad"), 0, "what X controls").unwrap_err();
+    assert!(err.contains("AVAROK_X=\"bad\""), "{err}");
     assert!(err.contains("why: what X controls"), "{err}");
     assert!(err.contains("fix:"), "{err}");
 }

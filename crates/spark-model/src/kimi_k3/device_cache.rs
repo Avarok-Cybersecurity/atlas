@@ -4,7 +4,7 @@
 //! only. Decode must not D2H/H2D conv, recurrent, or the growing MLA KV.
 
 use anyhow::Result;
-use atlas_core::kimi_k3::{HybridCache, KdaConfig, LayerCache};
+use avarok_core::kimi_k3::{HybridCache, KdaConfig, LayerCache};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::kda_cuda::KdaDeviceState;
@@ -77,8 +77,8 @@ impl DeviceHybridCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_core::config::parse_config;
-    use atlas_core::kimi_k3::{K3Graph, MixerKind};
+    use avarok_core::config::parse_config;
+    use avarok_core::kimi_k3::{K3Graph, MixerKind};
     use spark_runtime::gpu::mock::MockGpuBackend;
 
     #[test]

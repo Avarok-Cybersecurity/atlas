@@ -287,7 +287,7 @@ pub fn sanitize_content_chunk(
 //
 // ── F7 (2026-04-26): cross-turn tool-arg-path stall guard ──
 //
-// Live evidence from `/workspace/atlas-opencode-dump-fix28.jsonl`
+// Live evidence from `/workspace/avarok-opencode-dump-fix28.jsonl`
 // showed the model writing the same `Cargo.toml` 7 times across 17
 // turns when cargo wasn't installed and F6 (is_error capture) made
 // it correctly recognise but futilely retry. F1-F5 catch per-

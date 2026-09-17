@@ -7,7 +7,7 @@ use super::*;
 use std::fs::{File, OpenOptions};
 // Positional I/O via the shared helper rather than `std::os::unix::fs::FileExt`:
 // the only thing that made this 328-line module unix-only was the trait import.
-use atlas_tier::pio;
+use avarok_tier::pio;
 use std::path::{Path, PathBuf};
 
 /// Offline writer: creates the manifest + one file per MoE layer and places
@@ -157,7 +157,7 @@ mod fs_tests {
 
     fn tmpdir(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
-            "atlas-xpr-{}-{}-{}",
+            "avarok-xpr-{}-{}-{}",
             tag,
             std::process::id(),
             // cheap unique-ish suffix without pulling in rand here

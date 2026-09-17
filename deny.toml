@@ -90,8 +90,8 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # ★ One entry, and `unknown-git` stays "deny".
 #
-# `atlas-governance` depends on LatticeDB for the PR journey ledger's
-# materialised graph. It is a first-party Avarok repository, and the dependency
+# `avarok-governance` depends on LatticeDB for the PR journey ledger's
+# materialised graph. It is a first-party Atlas repository, and the dependency
 # is pinned to an exact `rev` in that crate's manifest — a git source without a
 # pin is a moving target that can change under a committed Cargo.lock, which is
 # the actual hazard this check exists to catch.

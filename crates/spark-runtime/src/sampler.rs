@@ -163,7 +163,7 @@ impl Sampler {
         for i in 0..self.vocab_size {
             self.logits_f32[i] = bf16_to_f32(self.logits_host[i * 2], self.logits_host[i * 2 + 1]);
         }
-        // Raw-logits dump for numerics triage (`ATLAS_DUMP_LOGITS_PATH=/dir`):
+        // Raw-logits dump for numerics triage (`AVAROK_DUMP_LOGITS_PATH=/dir`):
         // appends each stochastic-sample step's FP32 logits as one row of a
         // flat binary file. The reporting APIs only expose post-softmax
         // values, which cannot distinguish a genuinely flat distribution
@@ -176,7 +176,7 @@ impl Sampler {
         // different file names (`logits_fetch.bin` here,
         // `logits_seq.bin` there) precisely so one flag arms both views.
         static DUMP_DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        if let Some(dir) = DUMP_DIR.get_or_init(|| std::env::var("ATLAS_DUMP_LOGITS_PATH").ok()) {
+        if let Some(dir) = DUMP_DIR.get_or_init(|| std::env::var("AVAROK_DUMP_LOGITS_PATH").ok()) {
             use std::io::Write;
             let path = std::path::Path::new(&dir).join("logits_fetch.bin");
             if let Ok(mut f) = std::fs::OpenOptions::new()

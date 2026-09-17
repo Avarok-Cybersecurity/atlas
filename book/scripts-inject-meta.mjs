@@ -104,7 +104,7 @@ for (const file of pages) {
   // checking output locally — silently appends a SECOND og:url and canonical,
   // and duplicate metadata is worse than none because scrapers pick
   // arbitrarily. The self-check below caught exactly that.
-  html = html.replace(/\n?<!-- atlas:meta -->[\s\S]*?<!-- \/atlas:meta -->/g, '');
+  html = html.replace(/\n?<!-- avarok:meta -->[\s\S]*?<!-- \/avarok:meta -->/g, '');
 
   const injected = [
     `<link rel="canonical" href="${canonical}">`,
@@ -114,7 +114,7 @@ for (const file of pages) {
     `<meta name="twitter:description" content="${esc(description)}">`,
     `<script type="application/ld+json">${ld}</script>`
   ];
-  const block = `<!-- atlas:meta -->\n${injected.join('\n')}\n<!-- /atlas:meta -->`;
+  const block = `<!-- avarok:meta -->\n${injected.join('\n')}\n<!-- /avarok:meta -->`;
 
   html = html.replace('</head>', `${block}\n</head>`);
   writeFileSync(file, html);

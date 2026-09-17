@@ -78,7 +78,7 @@ fn a_no_recipe_row_opens_on_starting_points_instead_of_refusing() {
     // The blank fallback is always last, so the set is never empty.
     assert_eq!(
         cards.last().expect("blank").id,
-        "starting-point/atlas-defaults"
+        "starting-point/avarok-defaults"
     );
 }
 
@@ -116,7 +116,7 @@ fn donors_the_dashboard_cannot_launch_are_never_offered() {
     // Only the blank card remains: a vLLM donor cannot be launched from here
     // at all, and a multi-node donor's config would be refused at Enter.
     assert_eq!(cards.len(), 1);
-    assert_eq!(cards[0].id, "starting-point/atlas-defaults");
+    assert_eq!(cards[0].id, "starting-point/avarok-defaults");
 }
 
 #[test]
