@@ -468,7 +468,7 @@ Counts after the change: `common/` holds 178 entries (169 `.cu`, 8 `.cuh`, and
 gb10: the files are byte-identical (`cmp` clean), and a link through a third
 target's tree only hid which tree an edit would land in.
 
-`HARDWARE.toml` and the two `MODEL.toml` files stay real files, because
+`HARDWARE.toml` and the four `MODEL.toml` files stay real files, because
 sampling, behaviour and the per-hardware `[expected_absent]` harvest must stay
 editable per hardware. Both `KERNEL.toml`s are now symlinks into gb10 instead:
 the model one was a strix copy whose `[modules]` map had fallen behind gb10's
@@ -481,6 +481,68 @@ whose KERNEL.tomls are all symlinks. `qwen3.8-27b` is gb10's `MODEL.toml` with
 `kernel_source = "qwen3.6-27b"` kept, so it compiles this target's own 3.6
 tree. There is no `BENCH.toml` and no `[benchmarks.limits]`: a target nobody
 has measured cannot be campaigned, which is the correct state for it.
+
+**Models served: four, and all four compile one kernel tree.**
+
+| model | `[[model_types]]` | kernel tree | why |
+|---|---|---|---|
+| `qwen3.6-27b` | (`qwen3_5`, 5120), (`qwen3_6_moe`, 5120) | its own `nvfp4/`, the subtractive gb10 mirror | the only target here that owns a kernel directory |
+| `qwen3.8-27b` | (`qwen3_5`, 5120) | `kernel_source = "qwen3.6-27b"` | bit-identical config to 3.6; carries `match_names` because the two collide on that exact pair |
+| `ornith-1.0-9b` | (`qwen3_5`, 4096) | `kernel_source = "qwen3.6-27b"` | added 2026-09-17; see below |
+| `holo-3.1-4b` | (`qwen3_5`, 2560) | `kernel_source = "qwen3.6-27b"` | added 2026-09-17; see below |
+
+Qwen3.8-27B does not fit this board's 32 GB under Atlas's two-layout residency
+(measured 2026-09-17), so coherent generation on gfx1201 has to be proved on a
+smaller model of the same architecture family first.
+[Ornith-1.0-9B](https://huggingface.co/deepreinforce-ai/Ornith-1.0-9B) and
+[Holo-3.1-4B](https://huggingface.co/Hcompany/Holo-3.1-4B) are that family at
+9B and 4B: Gated DeltaNet plus full attention plus a dense FFN plus a Qwen3-VL
+ViT, which is `qwen3.6-27b`'s trunk.
+
+Both **redirect** rather than mirror their own gb10 directory, and that choice
+is load-bearing enough to state here. gb10's `ornith-1.0-9b/nvfp4/`,
+`holo-3.1-4b/nvfp4/`, `holo-3.1-0.8b/nvfp4/` and `holo-3.1-35b-a3b/nvfp4/` are
+**one byte-identical directory** (`diff -rq` is silent between all four), an
+older six-file fork of gb10's `qwen3.6-27b/nvfp4/`. Two of those six,
+`w4a16_gemm.cu` and `moe_w4a16_grouped_gemm.cu`, fail the gfx1201 census on
+e4m3 because the fork carries only some of the `#if defined(__SCALE__)` shims
+the `qwen3.6-27b` copies have.
+
+The sources are shape-generic, so compiling the 3.6 tree for a 4096-wide and a
+2560-wide model is sound rather than a shape mismatch: one unchanged source
+set already serves `hidden_dim` 1024, 2048, 2560 and 4096, `q_heads` 8 and 16,
+`kv_heads` 2 and 4, dense FFN and MoE, on gb10 today. The only `-D` naming a
+model dimension anywhere under `kernels/` is `-DHDIM=128`, in eight gb10 model
+`KERNEL.toml`s, none of them these; all four models involved declare
+`head_dim = 256`. `[build] extra_nvcc_flags` is `["--fmad=false"]` on both
+sides, character for character, and the two `KERNEL.toml`s otherwise differ
+only in `[modules]` renames, almost all of them modules `qwen3.6-27b` has and
+the fork does not ship.
+
+The redirect drops one file, `fp4_mma_microtest.cu`, which the fork has and
+`qwen3.6-27b` does not. It is not a serving kernel: its only reader is
+`crates/spark-model/examples/fp4_mma_microproof.rs`, a proof of a hand-written
+sm_120 block-scaled `mma.sync` against the CUTLASS collective, and that PTX has
+no gfx1201 lowering either way.
+
+Neither needs `match_names`. `validate_collision_match_names` demands needles
+only from a `(model_type, hidden_size)` pair that two differently-named targets
+both declare, and 4096 and 2560 collide with nothing on this hardware. Their
+`[expected_absent]` tables are `qwen3.8-27b`'s, verbatim: same silicon, same
+compiled tree through the same `kernel_source`, therefore the same thirteen
+absences. gb10's copies declare a different set, harvested against the fork,
+and those nine tables are dropped rather than merged because eight of them
+name families that resolve in the tree this target actually compiles: the
+`gated_delta_rule` f16 arms, the `w4a16` p3/k64/m128 twins,
+`gated_delta_rule_wy17`, `q4k_mmq`, `q2_0_mmq`, `q4k_quantize`, `nvfp4_mmq`,
+`gated_delta_rule_snap` and `gdn_verify_fused_conv_kn_f32`. The ninth,
+`w4a4`, is genuinely absent here for the unrelated reason that
+`w4a4_gemm.cu` does not compile for gfx1201, and the replacement set carries
+it with that reason.
+
+**UNVERIFIED, like everything else here.** Neither model has been loaded on
+this board, and no loader work is claimed by this entry: what is registered is
+the kernel target.
 
 **Kernels absent on gfx1201.** Thirteen sources, 16 entry points, all declared:
 
@@ -605,6 +667,15 @@ ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
 
 `ATLAS_TARGET_MODEL` defaults to `qwen3.8-27b` for `r9700` (and stays
 `qwen3.6-27b` for `strix`); `ATLAS_TARGET_QUANT` defaults to `nvfp4` for both.
+The two small models are named the same way, and the 27B not fitting the
+board's 32 GB is the reason they exist:
+
+```bash
+ATLAS_TARGET_HW=r9700 ATLAS_TARGET_MODEL=ornith-1.0-9b \
+  ATLAS_TARGET_QUANT=nvfp4 ./build-amd.sh
+# or ATLAS_TARGET_MODEL=holo-3.1-4b
+```
+
 `GPU_UTIL` defaults to 0.75 here against strix's 0.70, because this is a
 discrete board that may also be driving a desktop session. What the scripts do
 by hand:

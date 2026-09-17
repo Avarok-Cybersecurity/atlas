@@ -11,6 +11,42 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **Two small models on `kernels/r9700`: `ornith-1.0-9b` and `holo-3.1-4b`,
+  both through `kernel_source = "qwen3.6-27b"`.** Qwen3.8-27B does not fit the
+  R9700's 32 GB under Atlas's two-layout residency (measured 2026-09-17), so
+  coherent generation on gfx1201 has to be proved on a smaller model of the
+  same architecture family first, and these two are that family at 9B and 4B
+  (Gated DeltaNet plus full attention plus a dense FFN plus a Qwen3-VL ViT,
+  which is `qwen3.6-27b`'s trunk). Neither mirrors its own gb10 kernel
+  directory, because there is no such thing: gb10's `ornith-1.0-9b/nvfp4/`,
+  `holo-3.1-4b/nvfp4/`, `holo-3.1-0.8b/nvfp4/` and `holo-3.1-35b-a3b/nvfp4/`
+  are ONE byte-identical six-file fork of `qwen3.6-27b/nvfp4/` shared by four
+  models spanning `hidden_dim` 1024 to 4096 and dense to MoE, and two of its
+  six files (`w4a16_gemm.cu`, `moe_w4a16_grouped_gemm.cu`) fail the gfx1201
+  census on e4m3 for want of the `#if defined(__SCALE__)` shims the
+  `qwen3.6-27b` copies carry. That the one source set already serves four
+  shapes is also the evidence that redirecting across a shape boundary is
+  sound; the only `-D` naming a model dimension anywhere under `kernels/` is
+  `-DHDIM=128`, in eight gb10 `KERNEL.toml`s and none of these, and all four
+  models involved declare `head_dim = 256`. `[build] extra_nvcc_flags` is
+  `["--fmad=false"]` on both sides character for character, and the two
+  `KERNEL.toml`s otherwise differ only in `[modules]` renames, almost all of
+  them modules `qwen3.6-27b` has and the fork does not ship. The redirect
+  drops `fp4_mma_microtest.cu`, whose only reader in the tree is a
+  `gpu-examples` sm_120 MMA microproof that has no gfx1201 lowering either
+  way. No `match_names`: `validate_collision_match_names` demands needles only
+  from a `(model_type, hidden_size)` pair two differently-named targets both
+  declare, and `("qwen3_5", 4096)` and `("qwen3_5", 2560)` collide with
+  nothing on this hardware. Their `[expected_absent]` tables are
+  `qwen3.8-27b`'s verbatim, because same silicon plus same compiled tree means
+  the same thirteen absences; gb10's copies declare a different set, harvested
+  against the fork, and eight of its nine tables name families that resolve in
+  the tree this target compiles (the `gated_delta_rule` f16 arms among them,
+  which gb10's own honesty note flags as dispatched un-probed). The ninth,
+  `w4a4`, really is absent here, for the unrelated reason that `w4a4_gemm.cu`
+  does not compile for gfx1201, and the replacement set carries it with that
+  reason. **UNVERIFIED**, like everything else on this board: nothing
+  has been served, and this registers kernel targets, not loader support.
 - **`kernels/r9700`, an AMD Radeon AI PRO R9700 (gfx1201, RDNA 4) SCALE
   target.** A structural mirror of `kernels/strix` — same SCALE 1.7.1
   toolchain through `targets/gfx1201`, same curated 99-entry `common/` reached
