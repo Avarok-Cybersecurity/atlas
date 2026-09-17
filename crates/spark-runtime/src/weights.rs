@@ -169,6 +169,11 @@ pub struct WeightStore {
     /// twins, requants. Owned here so teardown RELEASES them instead of the
     /// backend sweep reclaiming them unowned (#736, #915); see `derived.rs`.
     derived: DerivedStore,
+    /// Names whose device allocation a loader released as soon as it had
+    /// finished converting them (`release_tensor`). The map entry STAYS so a
+    /// read after release is a named error rather than a missing key; see
+    /// `weights/release.rs` for why this is beside the map and not in it.
+    released: ReleasedSet,
     /// Tensors deliberately NOT uploaded, with where they live on disk.
     ///
     /// The n-gram embedding tables of the LongCat / Qwen3.8-Flash-Next family
@@ -201,6 +206,7 @@ impl WeightStore {
             weights: HashMap::new(),
             deferred: HashMap::new(),
             derived: DerivedStore::default(),
+            released: ReleasedSet::default(),
         }
     }
 
@@ -232,40 +238,113 @@ impl WeightStore {
             weights,
             deferred: HashMap::new(),
             derived: DerivedStore::default(),
+            released: ReleasedSet::default(),
         }
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
+    ///
+    /// A tensor released on consume is reported as SUCH, not as missing: the
+    /// two faults want different fixes (a release site that is too eager
+    /// versus a name that does not exist), and the pointer behind a released
+    /// entry is freed memory, so handing it out would be a use-after-free with
+    /// no diagnostic.
     pub fn get(&self, name: &str) -> Result<&WeightTensor> {
+        if self.released.contains(name) {
+            bail!(
+                "Weight '{name}' was RELEASED on consume and its device memory is gone. \
+                 A loader converted it into a layer-owned allocation and freed the source \
+                 (ATLAS_LOAD_RELEASE_SOURCES; see weights/release.rs). Either this reader \
+                 must run before that release site, or the release site must not claim \
+                 this tensor. Set ATLAS_LOAD_RELEASE_SOURCES=0 to serve while that is \
+                 diagnosed."
+            )
+        }
         self.weights
             .get(name)
             .ok_or_else(|| anyhow::anyhow!("Weight '{name}' not found in store"))
     }
 
-    /// Check if a weight exists.
+    /// Check if a weight exists AND still has its device allocation.
+    ///
+    /// A released tensor answers `false`, because every caller of this is
+    /// deciding whether to go and read the thing.
     pub fn contains(&self, name: &str) -> bool {
-        self.weights.contains_key(name)
+        !self.released.contains(name) && self.weights.contains_key(name)
     }
 
-    /// Number of loaded weights.
+    /// Number of loaded weights that still hold device memory.
     pub fn len(&self) -> usize {
-        self.weights.len()
+        self.weights.len() - self.released.len()
     }
 
     /// True if no weights are loaded.
     pub fn is_empty(&self) -> bool {
-        self.weights.is_empty()
+        self.len() == 0
+    }
+
+    /// Free ONE tensor's device allocation and mark the entry consumed.
+    ///
+    /// Returns the bytes freed, or `Ok(0)` when the name is unknown or was
+    /// already released (both are no-ops, so a loader may call this from a
+    /// per-layer loop over a fixed name list without checking first).
+    ///
+    /// 🪤 The CALLER owns the "is it dead?" question, exactly as
+    /// [`Self::free_matching`] says: a tensor a layer bound zero-copy is still
+    /// live, and freeing it here is a use-after-free with no diagnostic. The
+    /// caller also owns the ORDERING: this does not synchronize, because the
+    /// store has no stream, so the caller must have synchronized the stream
+    /// the consuming kernel ran on. `dequant_fp8_blockscaled_to_bf16`
+    /// deliberately does not sync per call, so "the requant returned" is not
+    /// on its own enough.
+    ///
+    /// Sound to free per entry for the same reason [`Self::free_matching`] is:
+    /// the loaders allocate one `gpu.alloc` per tensor and no loader inserts
+    /// an `.offset()` view of a shared block into this map.
+    pub fn release_tensor(&self, gpu: &dyn GpuBackend, name: &str) -> Result<usize> {
+        let Some(t) = self.weights.get(name) else {
+            return Ok(0);
+        };
+        let bytes = t.byte_size();
+        // Mark BEFORE freeing: if the free fails, the pointer may or may not
+        // have been reclaimed, and a second attempt is the worse of the two
+        // outcomes. `mark` returning false means someone already released this
+        // name, so there is nothing left to free.
+        if !self.released.mark(name, bytes) {
+            return Ok(0);
+        }
+        gpu.free(t.ptr)
+            .map_err(|e| e.context(format!("releasing consumed weight {name}")))?;
+        Ok(bytes)
+    }
+
+    /// Bytes freed by [`Self::release_tensor`] over this store's lifetime.
+    pub fn released_bytes(&self) -> usize {
+        self.released.bytes()
+    }
+
+    /// Tensors freed by [`Self::release_tensor`] over this store's lifetime.
+    pub fn released_count(&self) -> usize {
+        self.released.len()
     }
 
     /// Device bytes the store still holds. Not the on-disk load estimate:
     /// this shrinks as `free_matching` drops tensors the binders replaced.
     pub fn resident_bytes(&self) -> usize {
-        self.weights.values().map(|t| t.byte_size()).sum()
+        self.live().map(|(_, t)| t.byte_size()).sum()
     }
 
-    /// Iterator over all weight names.
+    /// Iterator over the names that still hold device memory.
     pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.weights.keys().map(|s| s.as_str())
+        self.live().map(|(n, _)| n.as_str())
+    }
+
+    /// Every entry whose allocation is still live. The one place the released
+    /// set is filtered, so a new accessor cannot forget to.
+    fn live(&self) -> impl Iterator<Item = (&String, &WeightTensor)> {
+        self.weights
+            .iter()
+            .filter(|(n, _)| !self.released.contains(n.as_str()))
     }
 
     /// Free and forget every tensor whose name matches `pred`. Returns
@@ -289,7 +368,16 @@ impl WeightStore {
         gpu: &dyn GpuBackend,
         pred: impl Fn(&str) -> bool,
     ) -> Result<(usize, usize)> {
-        let doomed: Vec<String> = self.weights.keys().filter(|n| pred(n)).cloned().collect();
+        // Released names are skipped: their pointer is already gone, and a
+        // predicate written against the checkpoint's names has no way to know
+        // that. Freeing one here is the double-free `release_tensor` exists to
+        // make impossible.
+        let doomed: Vec<String> = self
+            .weights
+            .keys()
+            .filter(|n| !self.released.contains(n.as_str()) && pred(n))
+            .cloned()
+            .collect();
         let (mut count, mut bytes) = (0usize, 0usize);
         for name in doomed {
             // `remove` before `free`: the map must never hold a pointer to
@@ -316,14 +404,13 @@ impl WeightStore {
 
     /// Total bytes across all weight tensors on the GPU.
     pub fn total_bytes(&self) -> usize {
-        self.weights.values().map(|w| w.byte_size()).sum()
+        self.resident_bytes()
     }
 
     /// Check if any tensor has FP8 dtype.
     pub fn has_fp8_weights(&self) -> bool {
-        self.weights
-            .values()
-            .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
+        self.live()
+            .any(|(_, w)| matches!(w.dtype, WeightDtype::FP8E4M3))
     }
 
     /// Number of per-layer FP8 KV-cache scale tensors (`*.k_scale`) the
@@ -485,6 +572,9 @@ pub use name_utils::{is_ngram_table, parse_expert_index};
 mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
+mod release;
+pub(crate) use release::ReleasedSet;
+pub use release::release_sources_enabled;
 
 /// Release every weight tensor.
 ///
@@ -508,6 +598,12 @@ impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
         // `drain` rather than iterate: the map must not be left holding
         // pointers to memory that is gone, and it makes this idempotent.
         for (name, tensor) in self.weights.drain() {
+            // Released on consume: the pointer is gone and the entry was kept
+            // only so a stray reader got a named error instead of freed
+            // memory. Freeing it here is a double free.
+            if self.released.contains(&name) {
+                continue;
+            }
             if let Err(e) = gpu.free(tensor.ptr)
                 && first_error.is_none()
             {
