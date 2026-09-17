@@ -31,13 +31,24 @@ export ATLAS_TARGET_HW="${ATLAS_TARGET_HW:-strix}"
 case "$ATLAS_TARGET_HW" in
   r9700)
     default_model="unsloth/Qwen3.8-27B-NVFP4"
-    # 32 GB of dedicated GDDR6, but this is a discrete board that may also be
-    # driving a desktop session; the compositor and its surfaces want VRAM the
-    # KV sizer must not have already taken.
-    default_gpu_util="0.75"
+    # Measured 2026-09-17 on an R9700 that was also driving a desktop
+    # session: the 27B loads to 19.42 GB of weights (twins skipped, 9.35 GB
+    # released on consume) and 23.0 GB pre-KV. At 0.75 or 0.80 the KV sizer
+    # refused; at 0.90 with --max-batch-size 1 it booted with a 3.7 GB KV
+    # budget (4128 tokens) and 29.1 GB of VRAM in use, and answered
+    # coherently. A 9B (ornith-1.0-9b) fits at 0.75 with batch 4.
+    default_gpu_util="0.90"
+    default_max_batch="1"
+    # The fast loader's OOM pre-flight is on-disk bytes x 1.3 plus this
+    # guard; the 4 GB default refuses a 21.8 GB checkpoint on a 32 GB board
+    # before touching the card (measured: 28.35 GB projected peak + 4 GB
+    # against 31.6 GB free). 1 GB is enough here; the load itself is bounded.
+    default_oom_guard_mb="1024"
     ;;
   *)
     default_model="Qwen/Qwen3.6-27B-FP8"
+    default_max_batch="4"
+    default_oom_guard_mb="4096"
     # Strix shares one LPDDR5X pool with the host, and CUDA-graph capture
     # allocates on top during warmup; above 0.70 the OOM watchdog fires
     # mid-warmup. A desktop session on the same silicon needs that headroom too.
@@ -137,4 +148,6 @@ echo "serving $MODEL on $(/opt/rocm/bin/rocminfo 2>/dev/null | grep -m1 -o 'gfx[
 exec target/release/spark serve "$MODEL" \
   --port "${PORT:-8081}" --max-seq-len "${MAX_SEQ_LEN:-4096}" \
   --gpu-memory-utilization "${GPU_UTIL:-$default_gpu_util}" \
-  --kv-cache-dtype bf16 --kv-high-precision-layers max --max-batch-size 4
+  --kv-cache-dtype bf16 --kv-high-precision-layers max \
+  --max-batch-size "${MAX_BATCH:-$default_max_batch}" \
+  --oom-guard-mb "${OOM_GUARD_MB:-$default_oom_guard_mb}"
