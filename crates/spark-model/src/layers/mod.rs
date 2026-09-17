@@ -312,6 +312,9 @@ mod moe_grouped_decode_tests;
 
 mod kernel_probe;
 pub use kernel_probe::{try_kernel, try_target_kernel};
+// Whether this build may pre-dequantise NVFP4 to FP8 for prefill at all: the
+// load-time guard for a target whose FP8 prefill GEMM does not exist.
+pub mod fp8_predequant;
 
 /// FFN component: MoE (expert routing), dense SwiGLU, or None (standalone attention).
 #[allow(clippy::large_enum_variant)]

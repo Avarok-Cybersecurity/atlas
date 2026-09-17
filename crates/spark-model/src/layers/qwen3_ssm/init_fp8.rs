@@ -96,6 +96,15 @@ impl Qwen3SsmLayer {
         config: &atlas_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
+        // Do not build a copy no kernel on this target can read. The prefill
+        // dispatch PREFERS `out_proj_fp8` over both NVFP4 arms
+        // (`trait_prefill_helper.rs`), and on gfx1201 the GEMM it then launches
+        // is a module that is not in the tree — the whole failure
+        // `layers/fp8_predequant.rs` documents. Leaving the field `None` sends
+        // that same dispatch to `w4a16_gemm_n128` and then to `w4a16_gemm`.
+        if crate::layers::fp8_predequant::skip_reason_logged(gpu, "SSM out_proj").is_some() {
+            return Ok(());
+        }
         let predequant_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;
         let h = config.hidden_size;
         let qkvz_size = config.ssm_qkvz_size();

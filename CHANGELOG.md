@@ -99,6 +99,26 @@ behind specific subsystems — see the
   sits unused. Strix stays unmapped on purpose.
 
 ### Fixed
+- **The FP8 prefill predequant is no longer built on a target whose FP8 prefill
+  GEMM does not exist.** Measured on an R9700 (gfx1201, SCALE 1.7.1):
+  `Ornith-1.0-9B` loads, builds and boots, then every request dies at layer 0
+  with `ssm prefill: out_proj GEMM failed: Kernel lookup
+  w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab: Module load failed: Module
+  'w4a16_fp8_ldmab' not loaded`. `predequant_for_prefill` built `out_proj_fp8`
+  (and, on the loaders that call it, `q_fp8`..`o_fp8` and the MoE's gate and
+  shared-expert copies) without asking whether anything could read them, and
+  the prefill dispatch PREFERS those copies over both NVFP4 arms — so one
+  absent module turned a working fallback chain into a hard error.
+  `layers/fp8_predequant.rs` is now the load-time guard: it probes every arm
+  `ops::fp8_gemm_n128` and `fp8_gemm_n128_m128` can take, not just the
+  preferred one, and it restores a reader for `ATLAS_NO_FP8_PREDEQUANT`, which
+  the Strix recipe carried until the variable was dropped as unread. With the
+  copies absent the SSM falls to `w4a16_gemm_n128` and then `w4a16_gemm`,
+  attention's `use_fp8_act` goes false, and the MoE's three `if let Some` arms
+  take their NVFP4 branch. NVIDIA is unchanged: with the kernels present and
+  the variable unset the guard returns "build them". `ATLAS_NO_FP8_PREDEQUANT=0`
+  forces the copies back where an operator's environment sets the variable
+  globally; it cannot override a kernel that is genuinely absent.
 - **The `CompressedTensors` attention arm of the Qwen3.5-dense loader leaked
   its BF16 dequant intermediate.** Every sibling site frees its own — the
   `Standard | Fp8Dequanted` attention arm, the SSM path, `quantized_from_fp8`,

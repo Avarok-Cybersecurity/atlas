@@ -15,6 +15,17 @@ impl MoeLayer {
         config: &atlas_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
+        // Same guard as the SSM and attention sites
+        // (`layers/fp8_predequant.rs`): the router gate and the three
+        // shared-expert copies are read by `forward_prefill.rs:182` and
+        // `forward_prefill_phase.rs:63`/`:146`, each behind an `if let Some`,
+        // so declining to build them routes those GEMMs back to NVFP4 rather
+        // than launching a kernel this target does not define.
+        if crate::layers::fp8_predequant::skip_reason_logged(gpu, "MoE gate + shared expert")
+            .is_some()
+        {
+            return Ok(());
+        }
         let h = config.hidden_size;
         let shared_inter = config.shared_expert_intermediate_size;
         let num_experts = config.num_experts;

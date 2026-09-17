@@ -91,9 +91,27 @@ export ATLAS_W4A16_VARIANT=v1
 case "$ATLAS_TARGET_HW" in
   r9700) export ATLAS_NO_GDN_FP8_PREFILL=1 ;;
 esac
-# Removed here: ATLAS_FORCE_GLOBAL_GDN and ATLAS_NO_FP8_PREDEQUANT. Neither
-# name has a reader anywhere in this tree as of this commit, so exporting them
-# only suggested a control that does not exist.
+# ATLAS_NO_FP8_PREDEQUANT=1 (spark-model/src/layers/fp8_predequant.rs) stops the
+# loader building NVFP4-to-FP8 prefill copies of the SSM out_proj, the attention
+# q/k/v/o and the MoE gate + shared expert. The prefill dispatch PREFERS those
+# copies over both NVFP4 arms, and the GEMM it then launches is
+# w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab, a module gfx1201 does not compile — which
+# on 2026-09-17 made every Ornith-1.0-9B request on this board die at layer 0
+# with `Module 'w4a16_fp8_ldmab' not loaded`. The Strix recipe carried this
+# variable historically; it was dropped from this script when its reader was
+# lost, and the reader is back.
+#
+# BELT, NOT THE FIX: the guard probes the kernels itself and skips the copies on
+# any target that cannot launch them, so a serve without this export is correct
+# too. It is exported here so the r9700 recipe says out loud which path it is
+# on, and so an operator reading the serve log sees `ATLAS_NO_FP8_PREDEQUANT is
+# set` rather than having to infer it from a kernel name.
+case "$ATLAS_TARGET_HW" in
+  r9700) export ATLAS_NO_FP8_PREDEQUANT=1 ;;
+esac
+# Removed here: ATLAS_FORCE_GLOBAL_GDN. That name has no reader anywhere in this
+# tree as of this commit, so exporting it only suggested a control that does not
+# exist.
 
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64 (the
 # gfx1151 queue-create fix lives in SCALE 1.7.1's bundled ROCm 7.2.3):
