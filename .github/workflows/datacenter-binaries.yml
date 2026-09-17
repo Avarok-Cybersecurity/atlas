@@ -36,7 +36,7 @@ on:
       model:
         description: >-
           Kernel model target: '*' for every model under kernels/<hw>/, or one
-          of deepseek-v4-flash, nemotron-3-nano-30b-a3b,
+          of deepseek-v4-flash, deepseek-v4.1-flash, nemotron-3-nano-30b-a3b,
           nemotron-super-120b-a12b, qwen3.6-35b-a3b, qwen3-next-80b-a3b
         type: string
         default: "*"

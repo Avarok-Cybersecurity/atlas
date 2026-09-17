@@ -73,9 +73,14 @@ impl Inherited {
     }
 }
 
-/// The five P0 models shared by the Hopper/B200 campaign.
+/// The five P0 models shared by the Hopper/B200 campaign, plus the
+/// DeepSeek-V4.1 Flash target, which owns no quant dir: its MODEL.toml
+/// redirects to deepseek-v4-flash's mirror with `kernel_source`, so the
+/// V4.1-only kernels (attn_v41, engram_v41, hc_v41, kquant_moe, moe_v41)
+/// reach this hardware through that mirror.
 pub const P0_MODELS: &[&str] = &[
     "deepseek-v4-flash",
+    "deepseek-v4.1-flash",
     "nemotron-3-nano-30b-a3b",
     "nemotron-super-120b-a12b",
     "qwen3-next-80b-a3b",
@@ -86,6 +91,7 @@ pub const P0_MODELS: &[&str] = &[
 /// the same-hardware source target its kernel_source redirect requires.
 pub const HOPPER_MODELS: &[&str] = &[
     "deepseek-v4-flash",
+    "deepseek-v4.1-flash",
     "nemotron-3-nano-30b-a3b",
     "nemotron-super-120b-a12b",
     "qwen3-next-80b-a3b",
