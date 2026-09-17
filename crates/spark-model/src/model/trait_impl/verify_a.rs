@@ -52,9 +52,9 @@ impl TransformerModel {
         // rewinds a rejected draft needs are implemented.
         if self.verify_needs_hc_path() {
             anyhow::ensure!(
-                std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1"),
+                std::env::var("AVAROK_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1"),
                 "K-row verify under an mHC highway needs the mini-prefill path \
-                 (ATLAS_QWEN4EXP_MTP_VERIFY=1). It is off by default because a \
+                 (AVAROK_QWEN4EXP_MTP_VERIFY=1). It is off by default because a \
                  REJECTED draft still has no QSA/PLE rewind, so a partial accept \
                  would leave those carries ahead of the sequence."
             );
