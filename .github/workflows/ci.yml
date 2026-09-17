@@ -565,6 +565,12 @@ jobs:
       #
       # Passing honestly costs one trailer pair, written after running
       # /oracle_pre_commit_cross_hardware_check. Stdlib python3, no GPU, no cargo.
+      # The table's own rules, on every PR. Without this the renderer is only
+      # exercised on a merge, which is the one moment its failure cannot be
+      # fixed before it matters.
+      - name: The reach table's rules still fire
+        run: python3 scripts/chki_reach_table.py
+
       - name: Cross-hardware reach of changed kernel paths
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -595,12 +601,6 @@ jobs:
               python3 scripts/check_cross_hardware.py --paths ;;
           esac
 
-      # The table's own rules, on every PR. Without this the renderer is only
-      # exercised on a merge, which is the one moment its failure cannot be
-      # fixed before it matters.
-      - name: The reach table's rules still fire
-        run: python3 scripts/chki_reach_table.py
-
       # The verdict is advisory and scrolls away with the run; the BACKLOG does
       # not. On a merge to main, append one row to the single comment that is
       # the reach table -- which kernels landed, which hardware consumed them,
@@ -612,7 +612,12 @@ jobs:
       # table it would have written is printed to the run summary, so a token
       # or permission problem loses a comment edit, never the record.
       - name: Append this merge to the CHKI reach table
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        # `always()`, and this is the whole point: the verdict step above is red
+        # on every merge that touches a shared kernel path, because a push event
+        # carries no PR body and so no `Hardware:` trailer to satisfy it. Without
+        # `always()` the backlog is written only when there is nothing to write,
+        # which is how this shipped and why #1101 left no row.
+        if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
           # PCND: no default comment id. Unset means "not configured", and the
