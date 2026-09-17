@@ -266,7 +266,7 @@ impl EngramV41 {
         max_tokens: usize,
     ) -> Result<Self> {
         ensure!(
-            hc >= 1 && hc <= 4,
+            (1..=4).contains(&hc),
             "engram gate supports hc_mult 1..=4, got {hc}"
         );
         let n_rows = max_tokens * cols;

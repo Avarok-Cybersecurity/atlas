@@ -250,7 +250,7 @@ fn run_case(tokens: usize) {
     // group sizes decide the arm: <= 8 rows = the decode GEMV (q8 block 32
     // everywhere), larger = the MMQ arm (D2S6: block 64 for the Q2_K gate/up,
     // D4: block 32 for the Q3_K down)
-    let mut group_size = vec![0usize; N_ROUTED];
+    let mut group_size = [0usize; N_ROUTED];
     for &e in &indices {
         group_size[e] += 1;
     }

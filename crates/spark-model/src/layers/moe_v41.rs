@@ -196,7 +196,7 @@ pub fn route_from_logits(
 impl MoeV41 {
     pub fn new(gpu: &dyn GpuBackend, cfg: MoeV41Cfg) -> Result<Self> {
         ensure!(
-            cfg.dim % 256 == 0 && cfg.inter % 256 == 0,
+            cfg.dim.is_multiple_of(256) && cfg.inter.is_multiple_of(256),
             "K-quant experts need dim and inter to be multiples of 256 (got {} / {})",
             cfg.dim,
             cfg.inter

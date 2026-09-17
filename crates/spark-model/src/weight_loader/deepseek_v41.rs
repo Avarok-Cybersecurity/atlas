@@ -175,7 +175,7 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
         let n_layers = config.num_hidden_layers;
         let (dim, hc) = (config.hidden_size, config.hc_mult);
         ensure!(
-            hc >= 1 && hc <= 4,
+            (1..=4).contains(&hc),
             "deepseek-v4.1: hc_mult {hc} outside 1..=4"
         );
         let head_dim = config.head_dim;

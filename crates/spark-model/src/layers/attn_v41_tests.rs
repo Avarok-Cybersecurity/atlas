@@ -314,7 +314,7 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
         "no capturable decode layer was exercised (all layers are kv/index sources?)"
     );
     println!("  captured decode step == eager forward on {captured_layers} layer-steps");
-    for s in states {
+    for mut s in states {
         s.free(g).unwrap();
     }
     attn.free(g).unwrap();
