@@ -438,6 +438,7 @@ pub fn is_keep_packed_proj(hf: &str) -> bool {
 ///     layers even in this text-only quant (the file is tagged
 ///     `image-text-to-text`). It is mapped rather than dropped so a later
 ///     multimodal path does not have to re-convert the checkpoint.
+///
 /// DeepSeek-V4.1 tensors that are NEVER uploaded: the routed expert stacks
 /// (40 x 3 x 384 x 12.22 MiB) and the two ~30 GiB engram tables. They are
 /// recorded as deferred with their on-disk location and served by

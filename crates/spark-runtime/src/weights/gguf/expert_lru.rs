@@ -108,6 +108,10 @@ struct SlotPtr(*mut u8);
 unsafe impl Send for SlotPtr {}
 unsafe impl Sync for SlotPtr {}
 
+/// One byte range of one missed expert's fetch, as the reader threads take
+/// it: `(slot, key, slot pointer, byte offset, byte length)`.
+type MissPart = (u32, (u32, u32), SlotPtr, usize, usize);
+
 pub struct ExpertLru {
     host: *mut u8,
     dev: u64,
@@ -364,7 +368,7 @@ impl ExpertLru {
                 .clamp(1, threads)
                 .min((bytes / (1 << 20)).max(1));
             let per_part = bytes.div_ceil(parts);
-            let work: Vec<(u32, (u32, u32), SlotPtr, usize, usize)> = misses
+            let work: Vec<MissPart> = misses
                 .iter()
                 .flat_map(|&(i, k)| {
                     let p = self.slot_ptr(i);
