@@ -10,7 +10,7 @@
 //! MoE — can never populate them. Before this gate, an SSM tier env var on
 //! such a model was swallowed silently (the `num_ssm_layers > 0` arms in
 //! `impl_a1` just skipped construction WITHOUT reading the vars, hiding even
-//! hard misconfigurations like `ATLAS_SSM_DECODE_TIER=nvme` with no dir).
+//! hard misconfigurations like `AVAROK_SSM_DECODE_TIER=nvme` with no dir).
 //! "Works on Holo, mysteriously does nothing on X" is exactly the failure
 //! mode PCND forbids: require explicit config or fail fast.
 //!
@@ -19,18 +19,18 @@
 //! default path is preserved.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// Every env var that requests an SSM snapshot tier. Any of these set on a
-/// model with no recurrent state is a startup error. (`ATLAS_SSM_SWAP_NS` /
-/// `ATLAS_SSM_DECODE_NS` are namespace *overrides*, not tier selectors, and
+/// model with no recurrent state is a startup error. (`AVAROK_SSM_SWAP_NS` /
+/// `AVAROK_SSM_DECODE_NS` are namespace *overrides*, not tier selectors, and
 /// are deliberately absent.)
 const SSM_TIER_VARS: [&str; 5] = [
-    "ATLAS_SSM_TIER",
-    "ATLAS_SSM_RDMA_TIER",
-    "ATLAS_SSM_SWAP",
-    "ATLAS_SSM_DECODE_TIER",
-    "ATLAS_SSM_DECODE_RING_ROLL",
+    "AVAROK_SSM_TIER",
+    "AVAROK_SSM_RDMA_TIER",
+    "AVAROK_SSM_SWAP",
+    "AVAROK_SSM_DECODE_TIER",
+    "AVAROK_SSM_DECODE_RING_ROLL",
 ];
 
 /// Fail fast when an SSM tier is requested on a model that cannot populate

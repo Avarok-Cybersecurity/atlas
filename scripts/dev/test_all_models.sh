@@ -10,8 +10,8 @@ PORT="${2:-8888}"
 shift 2
 EXTRA_ARGS="$*"
 
-IMAGE="atlas-gb10:latest"
-CONTAINER="atlas-test-$$"
+IMAGE="avarok-gb10:latest"
+CONTAINER="avarok-test-$$"
 HF_CACHE="/workspace/.cache/huggingface/hub"
 
 # Clean up on exit

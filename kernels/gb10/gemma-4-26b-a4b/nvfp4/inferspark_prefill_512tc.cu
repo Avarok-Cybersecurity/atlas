@@ -22,6 +22,6 @@
 // (22.02 ms -> 0.34 ms). The residual is bf16 accumulation order, not error.
 #define HDIM 512
 #define BC 16
-#define ATLAS_PREFILL_ENTRY inferspark_prefill_512tc
-#define ATLAS_SKIP_PREFILL_64 1
+#define AVAROK_PREFILL_ENTRY inferspark_prefill_512tc
+#define AVAROK_SKIP_PREFILL_64 1
 #include "../../common/inferspark_prefill.cu"

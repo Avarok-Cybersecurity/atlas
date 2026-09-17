@@ -314,7 +314,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill(gpu, config)?;
@@ -328,7 +328,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_gate_up_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_gate_up_for_prefill(gpu, config)?;
@@ -367,7 +367,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_unified(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_unified(gpu, config)?;
@@ -381,7 +381,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_hybrid(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_hybrid(gpu, config)?;

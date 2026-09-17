@@ -39,7 +39,7 @@ const GUARDED: [(&str, &[&str]); 21] = [
     ),
     // ── MoE routed prefill: once per layer per prefill chunk ──
     ("layers/moe/forward_prefill_routed.rs", &[]),
-    // ── The decode step itself. `ATLAS_SSM_SAVE_DUMP` was asked THREE times
+    // ── The decode step itself. `AVAROK_SSM_SAVE_DUMP` was asked THREE times
     //    per token here, each read only to decide whether to do nothing. ──
     (
         "model/trait_impl/decode_a.rs",
@@ -80,7 +80,7 @@ const GUARDED: [(&str, &[&str]); 21] = [
         "model/trait_impl/decode_a2.rs",
         &[
             // `OnceLock`ed, so the read is paid once per process — and its
-            // own doc explains why it is strict `== "1"` on an `ATLAS_NO_*`
+            // own doc explains why it is strict `== "1"` on an `AVAROK_NO_*`
             // name rather than a presence check: the presence-checked flags
             // in this file are ENABLED by `=0`.
             "multiseq_graphs_enabled",

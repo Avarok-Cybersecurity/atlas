@@ -9,7 +9,7 @@ metadata:
     Nemotron-3-Super-120B (A12B MoE) NVFP4 — NVIDIA's hybrid Mamba-2 +
     MoE + Attention model on a single GB10. Single-node configuration
     from the Atlas alpha-2.7 release announcement.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 120B
   model_dtype: nvfp4

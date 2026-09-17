@@ -12,7 +12,7 @@ use half::bf16;
 use serde_json::Value;
 use spark_model::layers::glm5next_dsa_ref as dref;
 use spark_model::layers::glm5next_dsa_ref::{DsaDims, INVALID};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::collections::{BTreeMap, BTreeSet};

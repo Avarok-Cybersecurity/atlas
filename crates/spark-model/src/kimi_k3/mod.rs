@@ -2,7 +2,7 @@
 
 //! Kimi K3 host graph. This slice is **KDA only**.
 //!
-//! Math lives in `atlas_core::kimi_k3` so Mac unit tests compile without
+//! Math lives in `avarok_core::kimi_k3` so Mac unit tests compile without
 //! spark-storage. CUDA launch: [`kda_cuda`].
 
 pub mod device_cache;
@@ -14,7 +14,7 @@ pub mod mla_cuda;
 pub mod moe_cuda;
 pub mod tp;
 
-pub use atlas_core::kimi_k3::{
+pub use avarok_core::kimi_k3::{
     AttnResHub, HybridCache, K3Graph, KDA_L2_EPS, KdaConfig, KdaState, LatentMoeConfig, LayerCache,
     MixerKind, MlaConfig, MlaKv, MlpKind, attnres_blend, attnres_mix, attnres_softmax_mix,
     cuda_kda_enabled, cuda_mla_enabled, gated_mla_attend, kda_decode_token, kda_from,

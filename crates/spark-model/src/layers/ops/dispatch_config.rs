@@ -2,7 +2,7 @@
 
 //! GEMM-path selection, resolved once and then **carried**.
 //!
-//! These flags used to be nine `OnceLock` statics that read `ATLAS_*` at first
+//! These flags used to be nine `OnceLock` statics that read `AVAROK_*` at first
 //! touch. A static is the wrong home for them twice over:
 //!
 //! * **It outlives the model whose flags it encodes.** Swap to a model whose
@@ -24,7 +24,7 @@
 ///
 /// WHY a set and not a `bool` — H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`
 /// native FP8, tip `5f78270dc`, "config B" of the round-3 receipt.
-/// `ATLAS_CUBLAS_GEMM=1` resolved to ONE global boolean, so the variable that
+/// `AVAROK_CUBLAS_GEMM=1` resolved to ONE global boolean, so the variable that
 /// arms #917's dense-FFN W8A8 fast path ALSO armed the SSM `in_proj_qkvz` arm,
 /// which materialised a cached BF16 dequant of the fused QKVZ weight
 /// (`[10240,5120] + [6144,5120]` x 2 B = `167772160` bytes per layer, ~10.3
@@ -32,11 +32,11 @@
 /// 6120 MiB and died at layer 36 with `cuMemAlloc_v2 ... status 2`. The FFN arm
 /// under test could not be exercised end-to-end on an 80 GB card, and no knob
 /// separated the two. The CUTLASS family next door already spells its
-/// projections out (`ATLAS_CUTLASS_NVFP4_QKVZ`, `..._ATTN_Q`, `..._ATTN_KV`,
+/// projections out (`AVAROK_CUTLASS_NVFP4_QKVZ`, `..._ATTN_Q`, `..._ATTN_KV`,
 /// `..._ATTN_O`, `..._SSM_OUT`); this gives cuBLASLt the same property in one
 /// variable instead of five.
 ///
-/// GRAMMAR — `ATLAS_CUBLAS_GEMM=<token>[,<token>]*`, ASCII-case-insensitive,
+/// GRAMMAR — `AVAROK_CUBLAS_GEMM=<token>[,<token>]*`, ASCII-case-insensitive,
 /// whitespace around a token ignored:
 ///
 /// | token | meaning |
@@ -69,7 +69,7 @@ pub struct CublasScope {
 }
 
 impl CublasScope {
-    /// No family armed — the shape an absent or `off` `ATLAS_CUBLAS_GEMM`
+    /// No family armed — the shape an absent or `off` `AVAROK_CUBLAS_GEMM`
     /// resolves to, and the default for every build.
     pub const OFF: Self = Self {
         ffn: false,
@@ -127,10 +127,10 @@ pub struct GemmDispatch {
     /// single-scale path, whose collapse of per-block dynamic range pushed
     /// long-context tool-arg decode into the FP8 argmax-flip regime (B1 drift
     /// gauge ~1400 → ~100 once block-scaled prefill is on).
-    /// Opt out with `ATLAS_FP8_SINGLE_SCALE=1` — diagnostic/fallback only.
+    /// Opt out with `AVAROK_FP8_SINGLE_SCALE=1` — diagnostic/fallback only.
     pub fp8_blockscaled_prefill: bool,
     /// Which projection families take a cuBLASLt GEMM arm
-    /// (`ATLAS_CUBLAS_GEMM`). The hand-written mma.sync projection GEMMs reach
+    /// (`AVAROK_CUBLAS_GEMM`). The hand-written mma.sync projection GEMMs reach
     /// only ~30% of the cuBLAS bf16 ceiling on GB10, which is why the arms
     /// exist; [`CublasScope`] is why they are no longer all one switch.
     pub cublas: CublasScope,
@@ -148,7 +148,7 @@ pub struct GemmDispatch {
     pub cutlass_nvfp4_attn_kv: bool,
     pub cutlass_nvfp4_attn_o: bool,
     pub cutlass_nvfp4_ssm_out: bool,
-    /// `ATLAS_W4A16_VARIANT` — 1/2/3 pin a kernel variant, 0 = auto (v2).
+    /// `AVAROK_W4A16_VARIANT` — 1/2/3 pin a kernel variant, 0 = auto (v2).
     /// A dispatch decision like every other field here, so it belongs on the
     /// struct the forward pass already carries rather than in a `OnceLock`
     /// that would pin the first model's choice.
@@ -160,39 +160,39 @@ fn from_values(mut value: impl FnMut(&str) -> Option<String>) -> GemmDispatch {
         value(var).as_deref() == Some("1")
     }
 
-    let all_nvfp4 = on(&mut value, "ATLAS_CUTLASS_NVFP4_GEMM");
+    let all_nvfp4 = on(&mut value, "AVAROK_CUTLASS_NVFP4_GEMM");
     GemmDispatch {
-        w4a16_variant: match value("ATLAS_W4A16_VARIANT").as_deref() {
+        w4a16_variant: match value("AVAROK_W4A16_VARIANT").as_deref() {
             Some("v1") => 1,
             Some("v2") => 2,
             Some("v3") => 3,
             _ => 0,
         },
-        fp8_blockscaled_prefill: !on(&mut value, "ATLAS_FP8_SINGLE_SCALE"),
-        cublas: parse_cublas_scope(value("ATLAS_CUBLAS_GEMM").as_deref()).0,
-        cublas_fp8: on(&mut value, "ATLAS_CUBLAS_FP8"),
-        cutlass_gemm: on(&mut value, "ATLAS_CUTLASS_GEMM"),
+        fp8_blockscaled_prefill: !on(&mut value, "AVAROK_FP8_SINGLE_SCALE"),
+        cublas: parse_cublas_scope(value("AVAROK_CUBLAS_GEMM").as_deref()).0,
+        cublas_fp8: on(&mut value, "AVAROK_CUBLAS_FP8"),
+        cutlass_gemm: on(&mut value, "AVAROK_CUTLASS_GEMM"),
         cutlass_nvfp4_gemm: all_nvfp4,
-        cutlass_nvfp4_qkvz: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_QKVZ"),
-        cutlass_nvfp4_attn_q: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_Q"),
-        cutlass_nvfp4_attn_kv: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_KV"),
-        cutlass_nvfp4_attn_o: all_nvfp4 || on(&mut value, "ATLAS_CUTLASS_NVFP4_ATTN_O"),
+        cutlass_nvfp4_qkvz: all_nvfp4 || on(&mut value, "AVAROK_CUTLASS_NVFP4_QKVZ"),
+        cutlass_nvfp4_attn_q: all_nvfp4 || on(&mut value, "AVAROK_CUTLASS_NVFP4_ATTN_Q"),
+        cutlass_nvfp4_attn_kv: all_nvfp4 || on(&mut value, "AVAROK_CUTLASS_NVFP4_ATTN_KV"),
+        cutlass_nvfp4_attn_o: all_nvfp4 || on(&mut value, "AVAROK_CUTLASS_NVFP4_ATTN_O"),
         // Deliberately NOT implied by the umbrella flag.
-        cutlass_nvfp4_ssm_out: on(&mut value, "ATLAS_CUTLASS_NVFP4_SSM_OUT"),
+        cutlass_nvfp4_ssm_out: on(&mut value, "AVAROK_CUTLASS_NVFP4_SSM_OUT"),
     }
 }
 
 impl GemmDispatch {
     /// Resolve from the environment. Called once, when the model is built.
     pub fn from_env() -> Self {
-        let raw = std::env::var("ATLAS_CUBLAS_GEMM").ok();
+        let raw = std::env::var("AVAROK_CUBLAS_GEMM").ok();
         let resolved = from_values(|var| std::env::var(var).ok());
         log_cublas_scope(raw.as_deref(), resolved.cublas);
         resolved
     }
 
     /// Everything off, block-scaled FP8 prefill on — the shape a build with no
-    /// `ATLAS_*` set in the environment resolves to. Tests construct a context
+    /// `AVAROK_*` set in the environment resolves to. Tests construct a context
     /// with this instead of mutating the process environment.
     pub fn defaults() -> Self {
         Self {
@@ -220,7 +220,7 @@ impl GemmDispatch {
     }
 }
 
-/// Say once, at model build, which cuBLASLt arms an `ATLAS_CUBLAS_GEMM` value
+/// Say once, at model build, which cuBLASLt arms an `AVAROK_CUBLAS_GEMM` value
 /// actually armed.
 ///
 /// A scoped lever is only an improvement if the operator can SEE the scope it
@@ -234,13 +234,13 @@ fn log_cublas_scope(raw: Option<&str>, scope: CublasScope) {
     let (_, unknown) = parse_cublas_scope(Some(raw));
     if !unknown.is_empty() {
         tracing::warn!(
-            "ATLAS_CUBLAS_GEMM={raw:?}: ignoring unknown families [{}]. The grammar is a \
+            "AVAROK_CUBLAS_GEMM={raw:?}: ignoring unknown families [{}]. The grammar is a \
              comma-separated subset of all|ffn|attn|ssm|head|off (1/true = all).",
             unknown.join(", ")
         );
     }
     tracing::info!(
-        "[atlas] ATLAS_CUBLAS_GEMM={raw:?} -> cuBLASLt arms ffn={} attn={} ssm={} head={} \
+        "[avarok] AVAROK_CUBLAS_GEMM={raw:?} -> cuBLASLt arms ffn={} attn={} ssm={} head={} \
          (head has no consumer yet){}",
         scope.ffn,
         scope.attn,
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn the_umbrella_flag_implies_the_per_projection_ones() {
-        let d = resolve(&[("ATLAS_CUTLASS_NVFP4_GEMM", "1")]);
+        let d = resolve(&[("AVAROK_CUTLASS_NVFP4_GEMM", "1")]);
         assert!(d.cutlass_nvfp4_gemm);
         assert!(d.cutlass_nvfp4_qkvz);
         assert!(d.cutlass_nvfp4_attn_qkv("q_proj"));
@@ -313,23 +313,23 @@ mod tests {
     fn per_projection_flags_are_independent() {
         let cases = [
             (
-                "ATLAS_CUTLASS_NVFP4_QKVZ",
+                "AVAROK_CUTLASS_NVFP4_QKVZ",
                 [true, false, false, false, false],
             ),
             (
-                "ATLAS_CUTLASS_NVFP4_ATTN_Q",
+                "AVAROK_CUTLASS_NVFP4_ATTN_Q",
                 [false, true, false, false, false],
             ),
             (
-                "ATLAS_CUTLASS_NVFP4_ATTN_KV",
+                "AVAROK_CUTLASS_NVFP4_ATTN_KV",
                 [false, false, true, false, false],
             ),
             (
-                "ATLAS_CUTLASS_NVFP4_ATTN_O",
+                "AVAROK_CUTLASS_NVFP4_ATTN_O",
                 [false, false, false, true, false],
             ),
             (
-                "ATLAS_CUTLASS_NVFP4_SSM_OUT",
+                "AVAROK_CUTLASS_NVFP4_SSM_OUT",
                 [false, false, false, false, true],
             ),
         ];
@@ -352,9 +352,9 @@ mod tests {
     #[test]
     fn non_nvfp4_flags_map_independently_and_single_scale_is_inverted() {
         let cases = [
-            ("ATLAS_CUBLAS_GEMM", [true, false, false]),
-            ("ATLAS_CUBLAS_FP8", [false, true, false]),
-            ("ATLAS_CUTLASS_GEMM", [false, false, true]),
+            ("AVAROK_CUBLAS_GEMM", [true, false, false]),
+            ("AVAROK_CUBLAS_FP8", [false, true, false]),
+            ("AVAROK_CUTLASS_GEMM", [false, false, true]),
         ];
         for (name, expected) in cases {
             let d = resolve(&[(name, "1")]);
@@ -365,13 +365,13 @@ mod tests {
             );
             assert!(d.fp8_blockscaled_prefill);
         }
-        assert!(!resolve(&[("ATLAS_FP8_SINGLE_SCALE", "1")]).fp8_blockscaled_prefill);
+        assert!(!resolve(&[("AVAROK_FP8_SINGLE_SCALE", "1")]).fp8_blockscaled_prefill);
     }
 
-    // ───────────────── ATLAS_CUBLAS_GEMM scope grammar ─────────────────
+    // ───────────────── AVAROK_CUBLAS_GEMM scope grammar ─────────────────
 
     fn scope(raw: &str) -> CublasScope {
-        resolve(&[("ATLAS_CUBLAS_GEMM", raw)]).cublas
+        resolve(&[("AVAROK_CUBLAS_GEMM", raw)]).cublas
     }
 
     /// The whole table, in one place, as the doc comment on [`CublasScope`]
@@ -401,7 +401,7 @@ mod tests {
             ("ffn,attn", f(true, true, false, false)),
         ];
         for (raw, expected) in cases {
-            assert_eq!(scope(raw), expected, "ATLAS_CUBLAS_GEMM={raw:?}");
+            assert_eq!(scope(raw), expected, "AVAROK_CUBLAS_GEMM={raw:?}");
         }
         // Whitespace is an operator typing a list, not a new family.
         assert_eq!(scope(" ffn , ssm "), f(true, false, true, false));
@@ -412,7 +412,7 @@ mod tests {
 
     /// A typo must not widen the set. The whole point of the change is that
     /// arming an unintended family costs 10.3 GiB of unledgered weight copies;
-    /// `ATLAS_CUBLAS_GEMM=fnn` resolving to `all` would reintroduce it.
+    /// `AVAROK_CUBLAS_GEMM=fnn` resolving to `all` would reintroduce it.
     #[test]
     fn unknown_families_are_dropped_and_reported_never_widening_the_set() {
         assert_eq!(scope("junk"), CublasScope::OFF);
@@ -463,7 +463,7 @@ mod tests {
             ("unknown", 0),
         ] {
             assert_eq!(
-                resolve(&[("ATLAS_W4A16_VARIANT", value)]).w4a16_variant,
+                resolve(&[("AVAROK_W4A16_VARIANT", value)]).w4a16_variant,
                 expected,
                 "value {value}"
             );

@@ -34,7 +34,7 @@
 //! "unsupported" and the caller falls back to the per-seq `propose` loop.
 //!
 //! Reachability: only from the scheduler's batched K=4 verify step
-//! (`ATLAS_MTP_MAX_SEQS > 1`); C=1 and the default cap never enter.
+//! (`AVAROK_MTP_MAX_SEQS > 1`); C=1 and the default cap never enter.
 
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::DevicePtr;
@@ -62,7 +62,7 @@ impl MtpHead {
     /// * **pipelined tensor-core GEMM** at the wider propose widths and for
     ///   large N, where the batched-GEMV family measured negative;
     /// * **per-row GEMV** for small N where the 128-wide tile under-fills the
-    ///   grid, and as the `ATLAS_MTP_KV_GEMV` arm.
+    ///   grid, and as the `AVAROK_MTP_KV_GEMV` arm.
     ///
     /// All three see the same `[m, k]` contiguous `input` and write m
     /// contiguous `[n]` output rows, so `out_stride == n`.
@@ -337,7 +337,7 @@ impl MtpHead {
             // = 448 entries = 7,168 tokens, the 4K-era layout that made 10-20K
             // agentic contexts fall back permanently — PROGRESS_LOG 5.2/6.17),
             // so an overflow is only reachable under an
-            // ATLAS_PROPOSE_META_STRIDE override or a sequence past
+            // AVAROK_PROPOSE_META_STRIDE override or a sequence past
             // max_seq_len.
             let meta_base = self.propose_meta.offset(i * self.propose_meta_stride);
             let block_idx = state.block_table[state.seq_len / bs];
@@ -516,7 +516,7 @@ impl MtpHead {
         // so per-n propose graphs never see it flip. Drafter logits shift
         // bitwise vs the GEMV (tile accumulation order); drafts are verified
         // by the main head, so accepted output is unaffected — only the
-        // accept rate can move. Kill: ATLAS_NO_MTP_LMHEAD_TGEMM (presence).
+        // accept rate can move. Kill: AVAROK_NO_MTP_LMHEAD_TGEMM (presence).
         if n >= 5
             && self.w4a16_gemm_t_k.0 != 0
             && let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t
@@ -626,12 +626,12 @@ impl MtpHead {
     /// propose width — logged once per distinct `n` so a 0-handle or
     /// kill-switch fallback cannot hide behind a green "propose_batch active"
     /// line. The N=1024 K/V pair follows the same arm except under
-    /// `ATLAS_MTP_KV_GEMV`.
+    /// `AVAROK_MTP_KV_GEMV`.
     fn propose_proj_arm(&self, n: usize, h: usize) -> &'static str {
         // Probed at the `fc` shape (N = h, K = 2h) — the first weight-bearing
         // projection of every draft position. All the other large-N ones
         // route identically; only the N < 4096 K/V pair can split off, and
-        // only under `ATLAS_MTP_KV_GEMV`.
+        // only under `AVAROK_MTP_KV_GEMV`.
         match row_dispatch::drafter_row_kernel(
             n,
             h as u32,
@@ -685,7 +685,7 @@ impl MtpHead {
                 tracing::info!(
                     "MTP propose_batch active: n={n} proj={} pipelined_gemm={:#x} \
                      gemv_batchm={:#x} lm_head=TILE-TWIN (handle {:#x}, ldb={ldb}) \
-                     — kill switch ATLAS_NO_MTP_LMHEAD_TGEMM (presence)",
+                     — kill switch AVAROK_NO_MTP_LMHEAD_TGEMM (presence)",
                     self.propose_proj_arm(n, ctx.config.hidden_size),
                     self.dense_gemm_pipelined_k.0,
                     self.dense_gemv_batchm_k.0,

@@ -1,18 +1,18 @@
 # Atlas Spark — Qwen3.6-27B-FP8 (Dense Hybrid SSM+Attn) on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/qwen3.6-27b/nvfp4/Dockerfile -t atlas-gb10:qwen3.6-27b .
+#   docker build -f docker/gb10/qwen3.6-27b/nvfp4/Dockerfile -t avarok-gb10:qwen3.6-27b .
 #
 # Run (target only, no DFlash):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-gb10:qwen3.6-27b serve Qwen/Qwen3.6-27B-FP8 \
+#     avarok-gb10:qwen3.6-27b serve Qwen/Qwen3.6-27B-FP8 \
 #       --max-seq-len 16384
 #
 # Run (with DFlash drafter pairing):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-gb10:qwen3.6-27b serve Qwen/Qwen3.6-27B-FP8 \
+#     avarok-gb10:qwen3.6-27b serve Qwen/Qwen3.6-27B-FP8 \
 #       --dflash --draft-model z-lab/Qwen3.6-27B-DFlash --max-seq-len 16384
 
 # ── Build stage ──────────────────────────────────────────────────
@@ -33,9 +33,9 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=qwen3.6-27b
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=qwen3.6-27b
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

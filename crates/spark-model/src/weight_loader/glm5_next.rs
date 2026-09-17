@@ -57,7 +57,7 @@ pub enum TensorRole {
 impl TensorRole {
     /// Norm-family roles. Used by the RMSNorm sanity pass: a tensor whose name
     /// says "norm" must land in one of these, or the classifier is lying about
-    /// something. (Hazard carried from `notavault-atlas`: RMSNorm weights have
+    /// something. (Hazard carried from `notavault-avarok`: RMSNorm weights have
     /// silently corrupted Atlas numbers before.)
     pub fn is_norm(self) -> bool {
         matches!(

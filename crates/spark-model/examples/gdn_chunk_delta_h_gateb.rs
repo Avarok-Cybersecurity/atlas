@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -69,10 +69,10 @@ fn cmp(a: &[f32], b: &[f32]) -> (f32, f64) {
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
+    let set = avarok_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
         .expect("unambiguous")
         .expect("no ptx set");
-    let backend = AtlasCudaBackend::new(0, &set.modules)?;
+    let backend = AvarokCudaBackend::new(0, &set.modules)?;
     let g: &dyn GpuBackend = &backend;
     let k_wu: KernelHandle = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
     // `_ksplit`, NOT the bare `gated_delta_rule_chunk_delta_h`: production

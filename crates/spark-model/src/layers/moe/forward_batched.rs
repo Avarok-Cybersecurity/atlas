@@ -148,7 +148,7 @@ impl MoeLayer {
                     stream,
                 )?;
             }
-            // Last-token routing dump (no-op unless ATLAS_DUMP_EXPERT_IDS=1):
+            // Last-token routing dump (no-op unless AVAROK_DUMP_EXPERT_IDS=1):
             // the token whose top-K determines the next prediction.
             if t == num_tokens - 1 {
                 super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, 1, top_k)?;

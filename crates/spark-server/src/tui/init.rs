@@ -100,10 +100,10 @@ pub fn tee_raw_fd() -> Option<i32> {
     }
 }
 
-/// Where the tee file lives: `$ATLAS_TUI_LOG_FILE` or
-/// `~/.cache/atlas/logs/spark-serve-<pid>-<ts>.log`.
+/// Where the tee file lives: `$AVAROK_TUI_LOG_FILE` or
+/// `~/.cache/avarok/logs/spark-serve-<pid>-<ts>.log`.
 fn tee_path() -> PathBuf {
-    if let Ok(p) = std::env::var("ATLAS_TUI_LOG_FILE") {
+    if let Ok(p) = std::env::var("AVAROK_TUI_LOG_FILE") {
         return PathBuf::from(p);
     }
     let base = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
@@ -112,7 +112,7 @@ fn tee_path() -> PathBuf {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     PathBuf::from(base)
-        .join(".cache/atlas/logs")
+        .join(".cache/avarok/logs")
         .join(format!("spark-serve-{}-{ts}.log", std::process::id()))
 }
 

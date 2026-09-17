@@ -57,7 +57,7 @@ Implementation:
 
 The EP+TP overlap case (TP=2, EP=2) shipped in `project_tp_phase8a_complete`
 with the unified-layout MoE rewrite, gated behind
-`ATLAS_UNIFIED_MOE_LAYOUT=1` until decode regression is closed.
+`AVAROK_UNIFIED_MOE_LAYOUT=1` until decode regression is closed.
 
 ## Consequences
 

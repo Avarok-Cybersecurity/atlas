@@ -104,13 +104,13 @@ pub(super) fn build_sampling(
     } else {
         &state.sampling_presets.non_thinking
     };
-    // ATLAS_FORCE_TEMP_ZERO=1 — diagnostic override that forces fully greedy
+    // AVAROK_FORCE_TEMP_ZERO=1 — diagnostic override that forces fully greedy
     // deterministic decoding, ignoring client params AND MODEL.toml presets.
     // Used for layer-by-layer cosine comparison against vLLM (same env-var
     // contract on the vLLM side, VLLM_FORCE_TEMP_ZERO). At T=0 with identical
     // weights+tokens, two engines should produce bit-identical token streams;
     // any divergence localises a numerical bug.
-    let force_temp_zero = std::env::var("ATLAS_FORCE_TEMP_ZERO")
+    let force_temp_zero = std::env::var("AVAROK_FORCE_TEMP_ZERO")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
@@ -261,7 +261,7 @@ pub(super) fn build_sampling(
         req.logit_bias.clone()
     };
 
-    // Exponential `<tool_call>` bias decay. Skipped under ATLAS_FORCE_TEMP_ZERO
+    // Exponential `<tool_call>` bias decay. Skipped under AVAROK_FORCE_TEMP_ZERO
     // so the argmax is determined purely by raw logits (matches vLLM's path).
     if !force_temp_zero
         && tools_active

@@ -6,7 +6,7 @@ NVMe gather is bit-exact. The model still does not produce coherent text. That
 combination says the fault is in the COMPOSITION, which per-kernel probes
 cannot see.
 
-So reproduce the same taps Atlas writes (`ATLAS_QWEN4EXP_DUMP`) and diff.
+So reproduce the same taps Atlas writes (`AVAROK_QWEN4EXP_DUMP`) and diff.
 
 WHAT MAKES THIS AFFORDABLE. The obvious blocker is the 512-expert MoE on every
 layer. Two things get around it:
@@ -79,7 +79,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--dump-dir', required=True,
-                    help='directory ATLAS_QWEN4EXP_DUMP wrote')
+                    help='directory AVAROK_QWEN4EXP_DUMP wrote')
     ap.add_argument('--tokens', default='',
                     help='comma-separated prompt token ids (must match the serve request)')
     args = ap.parse_args()
@@ -160,7 +160,7 @@ def main() -> int:
         compare('L00 hc_pre mixed', got, mixed.numpy())
     got = tap('L00_hc_pre_inj.bin')
     if got is not None:
-        print(f'    atlas inj = {np.round(got[:hc], 6).tolist()}')
+        print(f'    avarok inj = {np.round(got[:hc], 6).tolist()}')
         print(f'    ref   inj = {np.round(inj[0].numpy(), 6).tolist()}  (token 0)')
         compare('L00 hc_pre inj', got, inj.numpy())
 

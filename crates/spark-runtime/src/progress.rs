@@ -19,27 +19,27 @@
 
 /// Tracing target the TUI capture layer filters on. Keep in sync with
 /// `spark-server/src/tui/capture_layer.rs`.
-pub const TARGET: &str = "atlas::tui::progress";
+pub const TARGET: &str = "avarok::tui::progress";
 
 /// A named startup phase has begun. `phase` is the serve() phase index.
 pub fn phase(phase: u8, name: &str) {
-    tracing::debug!(target: "atlas::tui::progress", ev = "phase", phase, name);
+    tracing::debug!(target: "avarok::tui::progress", ev = "phase", phase, name);
 }
 
 /// Weight-load preflight: total on-disk GB (the overall-bar denominator).
 pub fn preflight(disk_gb: f64, free_gb: f64) {
-    tracing::debug!(target: "atlas::tui::progress", ev = "preflight", disk_gb, free_gb);
+    tracing::debug!(target: "avarok::tui::progress", ev = "preflight", disk_gb, free_gb);
 }
 
 /// A safetensors shard load has started.
 pub fn shard_start(shard: usize, total: usize, name: &str) {
-    tracing::debug!(target: "atlas::tui::progress", ev = "shard_start", shard, total, name);
+    tracing::debug!(target: "avarok::tui::progress", ev = "shard_start", shard, total, name);
 }
 
 /// A shard finished; GPU memory snapshot alongside.
 pub fn shard_done(shard: usize, total: usize, used_gb: f64, free_gb: f64) {
     tracing::debug!(
-        target: "atlas::tui::progress",
+        target: "avarok::tui::progress",
         ev = "shard_done",
         shard,
         total,
@@ -50,10 +50,10 @@ pub fn shard_done(shard: usize, total: usize, used_gb: f64, free_gb: f64) {
 
 /// Layer-build progress (sampled by the weight loaders).
 pub fn layer(layer: usize, total: usize) {
-    tracing::debug!(target: "atlas::tui::progress", ev = "layer", layer, total);
+    tracing::debug!(target: "avarok::tui::progress", ev = "layer", layer, total);
 }
 
 /// The server is listening; startup is complete.
 pub fn ready(port: u16) {
-    tracing::debug!(target: "atlas::tui::progress", ev = "ready", port);
+    tracing::debug!(target: "avarok::tui::progress", ev = "ready", port);
 }

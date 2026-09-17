@@ -23,7 +23,7 @@ fn unreadable_dirty_state_aborts_provenance_capture() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock after epoch")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("atlas-provenance-{unique}"));
+    let root = std::env::temp_dir().join(format!("avarok-provenance-{unique}"));
     std::fs::create_dir_all(&root).unwrap();
     git(&root, &["init", "-q"]);
     std::fs::write(root.join("README.md"), "fixture").unwrap();

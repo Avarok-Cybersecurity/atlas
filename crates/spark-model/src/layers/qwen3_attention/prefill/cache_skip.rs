@@ -162,7 +162,7 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Standard Q/K/V projection (non-MLA models) ──
-        let ht = std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1");
+        let ht = std::env::var("AVAROK_PREFILL_HOST_TIMING").as_deref() == Ok("1");
         let tp0 = ht.then(std::time::Instant::now);
         if self.mla.is_none() {
             self.prefill_attention_cache_skip_qkv(
@@ -195,7 +195,7 @@ impl Qwen3AttentionLayer {
             && !self.attn.q_norm.weight.is_null()
             && self.mrope_interleaved
             && !self.rope_proportional
-            && std::env::var("ATLAS_ATTN_PREFILL_FUSED_QROPE")
+            && std::env::var("AVAROK_ATTN_PREFILL_FUSED_QROPE")
                 .ok()
                 .as_deref()
                 == Some("1")
@@ -357,7 +357,7 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // ATLAS_OP_DUMP: k AFTER k_norm, BEFORE RoPE. Matches vLLM's "k_proj"
+        // AVAROK_OP_DUMP: k AFTER k_norm, BEFORE RoPE. Matches vLLM's "k_proj"
         // dump point in qwen3_next.py (which is post-k_norm pre-RoPE).
         if num_tokens > 0 {
             let kv_dim_e = (nkv * hd) as usize;
@@ -482,7 +482,7 @@ impl Qwen3AttentionLayer {
             .map_err(|e| anyhow::anyhow!("rope failed: {e}"))?;
         }
 
-        // ATLAS_OP_DUMP: k AFTER RoPE (final K that gets written to KV cache).
+        // AVAROK_OP_DUMP: k AFTER RoPE (final K that gets written to KV cache).
         if num_tokens > 0 {
             let kv_dim_e = (nkv * hd) as usize;
             let q_dim_e = (nq * hd) as usize;
@@ -716,7 +716,7 @@ impl Qwen3AttentionLayer {
             None
         };
 
-        // ATLAS_OP_DUMP: attn_out BEFORE sigmoid gate (raw FlashAttention output).
+        // AVAROK_OP_DUMP: attn_out BEFORE sigmoid gate (raw FlashAttention output).
         // Compares 1:1 against vLLM's "attn_out" dump in qwen3_next.py.
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
@@ -844,7 +844,7 @@ impl Qwen3AttentionLayer {
             None
         };
 
-        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
+        // AVAROK_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
             super::super::op_dump::dump_bf16(

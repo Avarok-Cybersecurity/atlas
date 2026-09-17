@@ -6,7 +6,7 @@
     <polyline points="340,110 500,250 340,390" stroke="#12B981"/>
   </g>
 
-  <!-- Avarok signature "A" — embedded reference paths.
+  <!-- Atlas signature "A" — embedded reference paths.
        Reference viewBox is 85x114. Scale ~2.2x and translate so the A's baseline lands at y=320
        and the A starts at x=620.
        Translation: x=620, y=320 - 114*2.2 = 320 - 251 = 69

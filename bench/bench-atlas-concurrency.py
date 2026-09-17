@@ -31,7 +31,7 @@ MODEL = None
 WARMUP_REQUESTS = 3
 REQUESTS_PER_LEVEL = int(os.environ.get("BENCH_REQUESTS_PER_LEVEL", "0"))
 RESULTS_FILE = os.environ.get("BENCH_RESULTS_FILE",
-                              "/workspace/atlas/bench-atlas-concurrency-results.json")
+                              "/workspace/avarok/bench-atlas-concurrency-results.json")
 
 # SSM state pool = 32 slots. Slots leak when pool is exhausted (server bug),
 # so cap concurrency well below pool size. conc=16 leaves headroom.
@@ -348,7 +348,7 @@ async def run_benchmark():
     print_summary(all_results)
 
     output = {
-        "label": "atlas-slai",
+        "label": "avarok-slai",
         "model": MODEL,
         "server": f"{SERVER_HOST}:{PORT}",
         "concurrency_levels": CONCURRENCY_LEVELS,
@@ -364,17 +364,17 @@ async def run_benchmark():
 
 
 def compare_results(vllm_path: str):
-    atlas_path = RESULTS_FILE
-    if not os.path.exists(atlas_path):
-        print(f"ERROR: Atlas results not found at {atlas_path}")
+    avarok_path = RESULTS_FILE
+    if not os.path.exists(avarok_path):
+        print(f"ERROR: Atlas results not found at {avarok_path}")
         print("Run the benchmark first, then use --compare.")
         sys.exit(1)
     if not os.path.exists(vllm_path):
         print(f"ERROR: vLLM results not found at {vllm_path}")
         sys.exit(1)
 
-    with open(atlas_path) as f:
-        atlas = json.load(f)
+    with open(avarok_path) as f:
+        avarok = json.load(f)
     with open(vllm_path) as f:
         vllm = json.load(f)
 
@@ -383,13 +383,13 @@ def compare_results(vllm_path: str):
     print("=" * 110)
     print()
 
-    for config_key, atlas_data in atlas["results"].items():
+    for config_key, avarok_data in avarok["results"].items():
         vllm_data = vllm["results"].get(config_key)
         if not vllm_data:
             continue
 
-        regime = atlas_data["regime"]
-        isl, osl = atlas_data["isl"], atlas_data["osl"]
+        regime = avarok_data["regime"]
+        isl, osl = avarok_data["isl"], avarok_data["osl"]
         print(f"  === {regime.upper()} ({isl}/{osl}) ===")
         print(f"  {'Conc':>4} | {'Atlas tok/s':>11} {'vLLM tok/s':>11} {'Ratio':>7} | "
               f"{'Atlas TPOT p50':>14} {'vLLM TPOT p50':>14} {'Lat Ratio':>10} | "
@@ -397,7 +397,7 @@ def compare_results(vllm_path: str):
         print(f"  {'-'*4}-+-{'-'*11}-{'-'*11}-{'-'*7}-+-"
               f"{'-'*14}-{'-'*14}-{'-'*10}-+-{'-'*14}-{'-'*14}")
 
-        a_sweep = {sp["concurrency"]: sp for sp in atlas_data["concurrency_sweep"]}
+        a_sweep = {sp["concurrency"]: sp for sp in avarok_data["concurrency_sweep"]}
         v_sweep = {sp["concurrency"]: sp for sp in vllm_data["concurrency_sweep"]}
 
         for conc in CONCURRENCY_LEVELS:
@@ -426,13 +426,13 @@ def compare_results(vllm_path: str):
 
     # Overall wins summary
     print("  WINS SUMMARY:")
-    atlas_wins = 0
+    avarok_wins = 0
     vllm_wins = 0
-    for config_key, atlas_data in atlas["results"].items():
+    for config_key, avarok_data in avarok["results"].items():
         vllm_data = vllm["results"].get(config_key)
         if not vllm_data:
             continue
-        for sp_a in atlas_data["concurrency_sweep"]:
+        for sp_a in avarok_data["concurrency_sweep"]:
             if sp_a.get("status") != "ok":
                 continue
             sp_v = next((s for s in vllm_data["concurrency_sweep"]
@@ -440,10 +440,10 @@ def compare_results(vllm_path: str):
             if not sp_v:
                 continue
             if sp_a["aggregate_throughput_tok_s"] > sp_v["aggregate_throughput_tok_s"]:
-                atlas_wins += 1
+                avarok_wins += 1
             else:
                 vllm_wins += 1
-    print(f"    Atlas: {atlas_wins} wins  |  vLLM: {vllm_wins} wins  (aggregate throughput)")
+    print(f"    Atlas: {avarok_wins} wins  |  vLLM: {vllm_wins} wins  (aggregate throughput)")
     print()
 
 

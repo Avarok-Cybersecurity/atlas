@@ -4,7 +4,7 @@
 //! ChatML im_start hard-stop, reflection suppression, tool-call open/close
 //! tokens, and the XGrammar engine.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -228,7 +228,7 @@ pub(crate) fn resolve_tokenizer_runtime(
     // single token id. NOT added to `eos_tokens` — that would alter behavior
     // even with the kill-switch OFF (the id would be treated as a stop token on
     // the always-on EOS path); registration stays inert until the decode-time
-    // gate `tool_response_stop_enabled()` (ATLAS_TOOL_RESPONSE_STOP=1, default
+    // gate `tool_response_stop_enabled()` (AVAROK_TOOL_RESPONSE_STOP=1, default
     // OFF) consults `SchedLimits::tool_response_hard_stop`.
     let tool_response_id: Option<u32> = tokenizer
         .encode("<tool_response>")

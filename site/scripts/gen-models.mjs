@@ -26,7 +26,7 @@ import { readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const RECIPES_ROOT = process.env.ATLAS_RECIPES_ROOT || '/workspace/atlas-recipes/recipes';
+const RECIPES_ROOT = process.env.AVAROK_RECIPES_ROOT || '/workspace/atlas-recipes/recipes';
 const SSOT_URL = 'https://github.com/Avarok-Cybersecurity/atlas-recipes';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -189,7 +189,7 @@ function inferTopology(stem, top) {
 // --- per-recipe display label ------------------------------------------------
 function recipeDisplay(stem) {
   // humanize the file stem into a short variant label
-  const parts = stem.replace(/-atlas$/, '').split('-');
+  const parts = stem.replace(/-avarok$/, '').split('-');
   const out = parts.map((p) => {
     const lp = p.toLowerCase();
     if (lp === 'nvfp4a16' || lp === 'nvfp4') return 'NVFP4';

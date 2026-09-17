@@ -15,7 +15,7 @@ THE ORACLE CONTRACT (what the Rust/CUDA fold must equal, per adapted surface):
 SCALE CONVENTION (read from adapter_config.json, NEVER defaulted):
     scale = lora_alpha / r                 (use_rslora == false)
     scale = lora_alpha / sqrt(r)           (use_rslora == true)
-  Source: crates/atlas-core/src/config/parsers/lora.rs:85-91
+  Source: crates/avarok-core/src/config/parsers/lora.rs:85-91
   (`PeftAdapterConfig::scaling()`); `use_rslora` is HARD-REQUIRED by the parser
   (lora.rs:200-205) and is hard-required here too. The scale is uniform across
   every surface of one adapter (attn q/k/v/o, dense/expert gate/up/down,

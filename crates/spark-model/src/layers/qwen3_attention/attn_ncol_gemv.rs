@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The N-column-blocked W8A16 decode tier for the ATTENTION projections —
-//! `w8a16_gemv_batch16_ncol{2,4}`, behind `ATLAS_ATTN_NCOL_GEMV` (#927).
+//! `w8a16_gemv_batch16_ncol{2,4}`, behind `AVAROK_ATTN_NCOL_GEMV` (#927).
 //!
 //! WHY. Measured on 1xH100, 2026-09-11, Qwen/Qwen3.8-27B-FP8, serve H
-//! (`ATLAS_FFN_NO_BATCH16=1`, graphs off, batch 16): the step is 82.3 ms, of
+//! (`AVAROK_FFN_NO_BATCH16=1`, graphs off, batch 16): the step is 82.3 ms, of
 //! which the 16 attention layers are 18.8 ms = **1177 µs/layer**. The full
 //! split is `ATTN-DECODE-ATTRIBUTION.md`; the part this module acts on:
 //!
@@ -25,7 +25,7 @@
 //! ~36 -> ~27 ops/byte at N_COLS=2, ~23 at N_COLS=4, floor 18.
 //!
 //! 🟢 BIT-EXACT, and that is the whole reason this tier exists next to
-//! `ATLAS_FFN_M16_TC`. The lane -> k16 map, the per-accumulator operand order
+//! `AVAROK_FFN_M16_TC`. The lane -> k16 map, the per-accumulator operand order
 //! and the reduction tree are the single-column kernel's, element for element
 //! (argument in `kernels/gb10/common/w8a16_gemv_ncol.cu`); the convert is
 //! hoisted out of the column loop and a BF16->FP32 widening is exact. So each
@@ -88,14 +88,14 @@ impl NcolWidth {
     }
 }
 
-/// `ATLAS_ATTN_NCOL_GEMV`: PRESENCE (any value, including empty) opts the
-/// attention projections into the tier. `ATLAS_NO_ATTN_DECODE_BATCH`
+/// `AVAROK_ATTN_NCOL_GEMV`: PRESENCE (any value, including empty) opts the
+/// attention projections into the tier. `AVAROK_NO_ATTN_DECODE_BATCH`
 /// (presence) wins over it and forces the tier off — the operator escape hatch
 /// that stays meaningful if this ever becomes the default.
 ///
-/// Presence rather than `=1` for both, matching `ATLAS_FFN_M16_TC` and
-/// `ATLAS_FFN_NO_BATCH16` next door: `ATLAS_ATTN_NCOL_GEMV=0` meaning "on" is
-/// a trap, and so is `ATLAS_NO_..._=0` meaning "off".
+/// Presence rather than `=1` for both, matching `AVAROK_FFN_M16_TC` and
+/// `AVAROK_FFN_NO_BATCH16` next door: `AVAROK_ATTN_NCOL_GEMV=0` meaning "on" is
+/// a trap, and so is `AVAROK_NO_..._=0` meaning "off".
 ///
 /// `OnceLock`-cached for the reason every hot-path lever here is: the selector
 /// runs per projection per layer per step, and a per-call `var_os` could change
@@ -103,8 +103,8 @@ impl NcolWidth {
 pub fn ncol_gemv_enabled() -> bool {
     // ★ THE TARGET'S DECLARATION, environment second. `attn_ncol_gemv` is a
     // `[defaults]` row and is FALSE on every target, including hopper, because
-    // no target has a serving A/B for it. `ATLAS_ATTN_NCOL_GEMV` is how that
-    // A/B gets run; `ATLAS_NO_ATTN_DECODE_BATCH` still outranks both. The
+    // no target has a serving A/B for it. `AVAROK_ATTN_NCOL_GEMV` is how that
+    // A/B gets run; `AVAROK_NO_ATTN_DECODE_BATCH` still outranks both. The
     // resolver owns all three (`ops::target_defaults::resolve`) and caches the
     // result, for the reason every hot-path lever here was cached: the
     // selector runs per projection per layer per step, and a per-call `var_os`
@@ -114,16 +114,18 @@ pub fn ncol_gemv_enabled() -> bool {
         .value
 }
 
-/// `ATLAS_ATTN_NCOL_WIDTH=4` picks the 4-column instantiation; anything else
+/// `AVAROK_ATTN_NCOL_WIDTH=4` picks the 4-column instantiation; anything else
 /// (including unset) keeps 2, the conservative register choice. A separate
 /// variable from the on/off lever on purpose: folding the width into the
-/// presence lever would make `ATLAS_ATTN_NCOL_GEMV=0` mean "on, 2 columns".
+/// presence lever would make `AVAROK_ATTN_NCOL_GEMV=0` mean "on, 2 columns".
 pub fn ncol_gemv_width() -> NcolWidth {
     static W: std::sync::OnceLock<NcolWidth> = std::sync::OnceLock::new();
-    *W.get_or_init(|| match std::env::var("ATLAS_ATTN_NCOL_WIDTH").as_deref() {
-        Ok("4") => NcolWidth::Four,
-        _ => NcolWidth::Two,
-    })
+    *W.get_or_init(
+        || match std::env::var("AVAROK_ATTN_NCOL_WIDTH").as_deref() {
+            Ok("4") => NcolWidth::Four,
+            _ => NcolWidth::Two,
+        },
+    )
 }
 
 /// The whole selection rule, as a pure function of the row count, the resolved
@@ -162,7 +164,7 @@ pub(crate) fn log_route_once(width: NcolWidth, site: &str) {
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
         tracing::info!(
-            "ATLAS_ATTN_NCOL_GEMV: decode attention projections via \
+            "AVAROK_ATTN_NCOL_GEMV: decode attention projections via \
              w8a16_gemv_batch16_ncol{} (bit-exact; first site: {site})",
             width.cols(),
         );

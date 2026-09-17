@@ -118,24 +118,24 @@ fn fp8_calibration_requires_fp8_kv() {
 fn an_absent_lever_flag_parses_as_unspecified() {
     // `None` is not the same as the default VALUE, and the difference is
     // load-bearing: publishing a default seals the cell these two flags
-    // write to, which turned `ATLAS_SSM_TAIL_MIDCHUNK=0` and
-    // `ATLAS_MTP_GATE_FORCE=1` into documented, echoed, silent no-ops under
+    // write to, which turned `AVAROK_SSM_TAIL_MIDCHUNK=0` and
+    // `AVAROK_MTP_GATE_FORCE=1` into documented, echoed, silent no-ops under
     // `spark serve`. Absent has to stay absent all the way to
     // `publish_kernel_flags` for the fallback to be reachable.
     let a = parse(&[]);
-    assert!(a.ssm_tail_midchunk.is_none(), "ATLAS_SSM_TAIL_MIDCHUNK");
-    assert!(a.mtp_gate.is_none(), "ATLAS_MTP_GATE_FORCE");
-    assert!(a.ssm_h_dtype.is_none(), "ATLAS_SSM_H_FP16");
-    assert!(a.gdn_fused_norm.is_none(), "ATLAS_GDN_FUSED_NORM");
+    assert!(a.ssm_tail_midchunk.is_none(), "AVAROK_SSM_TAIL_MIDCHUNK");
+    assert!(a.mtp_gate.is_none(), "AVAROK_MTP_GATE_FORCE");
+    assert!(a.ssm_h_dtype.is_none(), "AVAROK_SSM_H_FP16");
+    assert!(a.gdn_fused_norm.is_none(), "AVAROK_GDN_FUSED_NORM");
     assert!(
         a.ssm_batched_recurrent.is_none(),
-        "ATLAS_SSM_BATCHED_RECURRENT"
+        "AVAROK_SSM_BATCHED_RECURRENT"
     );
     // #435: absent must stay absent so publish_kernel_flags does not seal
     // the GDN cell; the resolved default (the legacy WY arms — exact verify
     // is OPT-IN) is asserted in gdn_flags' own tests.
     assert!(a.exact_verify.is_none(), "--exact-verify");
-    assert!(a.prefill_varlen_batch.is_none(), "ATLAS_PREFILL_VARLEN");
+    assert!(a.prefill_varlen_batch.is_none(), "AVAROK_PREFILL_VARLEN");
 
     let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
     assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");

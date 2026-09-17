@@ -30,7 +30,7 @@ use crate::gpu::{DevicePtr, GpuBackend, KernelArg};
 fn metal_real_model_chain_norm_then_qproj() {
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
@@ -253,7 +253,7 @@ fn metal_real_model_chain_norm_then_qproj() {
 fn metal_mlx_int8_dequant_real_model() {
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });

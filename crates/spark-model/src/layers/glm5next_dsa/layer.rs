@@ -151,15 +151,15 @@ pub struct Glm5NextDsaWeights {
 }
 
 /// The PREFILL selector runs once for the whole row group instead of once per token.
-/// ON by default; `ATLAS_DSA_SELECT_ROWS=0` is the kill-switch back to per-row selection.
+/// ON by default; `AVAROK_DSA_SELECT_ROWS=0` is the kill-switch back to per-row selection.
 ///
 /// 🔴 EXPLICIT PREFILL ONLY. The batched pass runs when — and only when — the caller states
 /// `is_prefill`; see [`batch_select_enabled`] for the whole table. Nothing in
 /// `ForwardContext` implies it. `decode_step` is false for prefill AND for a speculative
 /// verify, and `graph_capture` is false for prefill AND for an EAGER verify: `verify_a`
 /// hard-codes `graph_capture: false`, and `verify_b/c/c2/d/fused` take it from `use_graphs`,
-/// which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under
-/// `ATLAS_LORA_EAGER`. **Both eager and graphed verification keep the original per-row
+/// which is false under `AVAROK_GLM_VERIFY_GRAPHS=0`, under high-speed swap, and under
+/// `AVAROK_LORA_EAGER`. **Both eager and graphed verification keep the original per-row
 /// path.**
 ///
 /// `!graph_capture` is required SEPARATELY, for its own reason rather than as a proxy for
@@ -211,12 +211,12 @@ pub struct Glm5NextDsaWeights {
 /// in a 300-line function. Every term is load-bearing:
 ///
 /// * `workspace_ready` — the four `[max_rows]` twins exist. False under
-///   `ATLAS_DSA_SELECT_ROWS=0`, which is what keeps that arm's heap layout byte for byte.
+///   `AVAROK_DSA_SELECT_ROWS=0`, which is what keeps that arm's heap layout byte for byte.
 /// * `is_prefill` — stated by the caller. NOTHING in `ForwardContext` implies it:
 ///   `decode_step` is false for prefill AND verify, and `graph_capture` is false for prefill
 ///   AND for an eager verify (`verify_a` hard-codes it; `verify_b/c/c2/d/fused` take it from
-///   `use_graphs`, false under `ATLAS_GLM_VERIFY_GRAPHS=0`, high-speed swap, or
-///   `ATLAS_LORA_EAGER`).
+///   `use_graphs`, false under `AVAROK_GLM_VERIFY_GRAPHS=0`, high-speed swap, or
+///   `AVAROK_LORA_EAGER`).
 /// * `!graph_capture` — independent of the above, and kept for its own reason:
 ///   `select_rows_batched` issues a host `copy_h2d`, which is
 ///   `CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED` inside a recording stream.
@@ -231,7 +231,7 @@ pub(crate) fn batch_select_enabled(
 }
 
 pub(crate) fn dsa_select_rows_enabled() -> bool {
-    std::env::var("ATLAS_DSA_SELECT_ROWS").as_deref() != Ok("0")
+    std::env::var("AVAROK_DSA_SELECT_ROWS").as_deref() != Ok("0")
 }
 
 /// Scratch reused across decode steps. Allocated once per layer.
@@ -245,7 +245,7 @@ pub struct Glm5NextDsaWorkspace {
     q_pos: DevicePtr,
     q_mask: DevicePtr,
     /// `[max_rows, ...]` twins of `q_idx` / `head_weights` / `q_pos` / `q_mask`, used only
-    /// by the batched prefill selector. NULL when `ATLAS_DSA_SELECT_ROWS=0` — see
+    /// by the batched prefill selector. NULL when `AVAROK_DSA_SELECT_ROWS=0` — see
     /// [`dsa_select_rows_enabled`] for why they are not allocated unconditionally.
     q_idx_rows: DevicePtr,
     head_weights_rows: DevicePtr,
@@ -291,7 +291,7 @@ impl Glm5NextDsaWorkspace {
         let geom =
             super::select::DsaSelectGeometry::plan(cfg, super::state::max_dsa_context(cfg), rows)?;
         let bt_cap = super::state::max_dsa_context(cfg).max(1);
-        let persist = std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
+        let persist = std::env::var("AVAROK_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1");
         let batch_select = dsa_select_rows_enabled();
         Ok(Self {
             q_a: gpu.alloc(rows * (cfg.q_lora_rank * 2))?,
@@ -339,7 +339,7 @@ impl Glm5NextDsaWorkspace {
             // One entry per cached token is the worst case (block_size == 1), so the
             // DSA context cap bounds it for every block size.
             //
-            // 🔴 Allocated ONLY when `ATLAS_GLM_DSA_PERSIST_BT=1`. Not a micro-optimisation:
+            // 🔴 Allocated ONLY when `AVAROK_GLM_DSA_PERSIST_BT=1`. Not a micro-optimisation:
             // making these two allocations UNCONDITIONALLY — even leaving them unused —
             // is by itself enough to change the model's sampled output (measured t27,
             // 2026-08-28). See A55 and the note at the use site.
@@ -386,7 +386,7 @@ pub struct Glm5NextDsaLayer {
     /// FP8 latent-cache scale. Reads and writes must agree; the write takes `1/scale`.
     pub kv_scale: f32,
     /// Persistent block-table buffers instead of a `gpu.alloc`/`gpu.free` per DSA layer per
-    /// token. ON by default; `ATLAS_GLM_DSA_ALLOC_PER_STEP=1` restores the old path.
+    /// token. ON by default; `AVAROK_GLM_DSA_ALLOC_PER_STEP=1` restores the old path.
     pub persist_bt: bool,
 }
 
@@ -600,7 +600,7 @@ impl Glm5NextDsaLayer {
     }
 
     /// The selection for ALL `k` query rows in ONE pass — the prefill twin of
-    /// [`Self::attend_rows`]. On by default; disabled by `ATLAS_DSA_SELECT_ROWS=0`.
+    /// [`Self::attend_rows`]. On by default; disabled by `AVAROK_DSA_SELECT_ROWS=0`.
     ///
     /// Per 9,000-token prefill this replaces 4 x 9,000 x 11 single-row launches. Measured
     /// at `6228baa2` (nsys s3-candcap, n3+n4): `dsa_topk_pools` and `dsa_expand_selection`
@@ -862,8 +862,8 @@ impl Glm5NextDsaLayer {
         // is NOT inferable from the context. `decode_step` is false for prefill AND for a
         // speculative verify, and `graph_capture` is false for prefill AND for an EAGER
         // verify — `verify_a` hard-codes `graph_capture: false`, and `verify_b/c/c2/d` set
-        // it from `use_graphs`, which is false under `ATLAS_GLM_VERIFY_GRAPHS=0`, under
-        // high-speed swap, and under `ATLAS_LORA_EAGER`. See `select_rows_batched`.
+        // it from `use_graphs`, which is false under `AVAROK_GLM_VERIFY_GRAPHS=0`, under
+        // high-speed swap, and under `AVAROK_LORA_EAGER`. See `select_rows_batched`.
         is_prefill: bool,
     ) -> Result<()> {
         use crate::layers::glm5next_layer::profile;
@@ -996,7 +996,7 @@ impl Glm5NextDsaLayer {
         // 🔴 PREFILL ONLY, and said so EXPLICITLY. `!ctx.graph_capture` does NOT mean
         // "prefill": `verify_a` builds its context with `graph_capture: false` outright, and
         // `verify_b/c/c2/d/fused` set it from `use_graphs`, which is false whenever
-        // `ATLAS_GLM_VERIFY_GRAPHS=0`, high-speed swap is engaged, or `ATLAS_LORA_EAGER` is
+        // `AVAROK_GLM_VERIFY_GRAPHS=0`, high-speed swap is engaged, or `AVAROK_LORA_EAGER` is
         // set. `!ctx.decode_step` does not separate them either — a verify sets it false too.
         // So the caller states it. An eager K-row verify would otherwise silently take a path
         // that was measured and qualified on prefill alone.
@@ -1005,7 +1005,7 @@ impl Glm5NextDsaLayer {
         // replaced: `select_rows_batched` does a host `copy_h2d` of `q_pos`, which is
         // CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED inside a recording stream. Both must hold.
         //
-        // The buffers are NULL under `ATLAS_DSA_SELECT_ROWS=0`, so this is false on that arm
+        // The buffers are NULL under `AVAROK_DSA_SELECT_ROWS=0`, so this is false on that arm
         // and the heap layout is unchanged there.
         let batch_select =
             batch_select_enabled(w.q_idx_rows.0 != 0, is_prefill, ctx.graph_capture, k);
@@ -1138,7 +1138,7 @@ impl Glm5NextDsaLayer {
                     }
                     // Persistent `w.bt`/`w.sl` instead of a `gpu.alloc` + `gpu.free` per DSA layer per
                     // token: worth a measured 1.1 ms/token (nsys 2026-08-28 — 11 x ~98 us of GPU idle
-                    // for the alloc/copy/free cluster). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1`.
+                    // for the alloc/copy/free cluster). Kill switch `AVAROK_GLM_DSA_ALLOC_PER_STEP=1`.
                     //
                     // 🪤 This was gated OFF for most of a day because turning it on changed the model's
                     // output — which turned out to be ANOMALIES A55 and not this code at all: the DSA

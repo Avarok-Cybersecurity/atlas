@@ -12,7 +12,7 @@ use super::types::TransformerModel;
 use crate::layers::ops;
 
 impl TransformerModel {
-    /// RDMA-swap the adapter named `adapter_name` (staged on `$ATLAS_LORA_PEER`
+    /// RDMA-swap the adapter named `adapter_name` (staged on `$AVAROK_LORA_PEER`
     /// at `adapter_id`) INTO pool `slot`, in place, then make it that slot's
     /// resident adapter. Byte-identical to a disk pack (the loader does the same
     /// F16/F32→BF16 convert + B row-repack). MUST be called at a scheduler
@@ -20,7 +20,7 @@ impl TransformerModel {
     /// sub-region first (a reused slot may hold the prior adapter's bytes), then
     /// rebuilds the slot's `LoraLayerWeights` with the NEW adapter's r/scale —
     /// re-installing if the swapped slot is currently active. Requires rotation
-    /// armed (`ATLAS_LORA_ROTATE`/`$ATLAS_LORA_PEER`) so decode is eager.
+    /// armed (`AVAROK_LORA_ROTATE`/`$AVAROK_LORA_PEER`) so decode is eager.
     #[cfg(feature = "cuda")]
     // Peer staging pulls adapter tensors over RDMA (rdma-core), so this half
     // is unix-only. The `_from_disk` twins below are plain file I/O and are
@@ -32,7 +32,7 @@ impl TransformerModel {
         adapter_id: &str,
         adapter_name: &str,
         slot: usize,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<()> {
         use crate::lora::rdma_stage;
 
@@ -45,8 +45,8 @@ impl TransformerModel {
         };
         if !self.lora_rotatable {
             anyhow::bail!(
-                "LoRA RDMA swap needs rotation armed (set $ATLAS_LORA_PEER or \
-                 ATLAS_LORA_ROTATE=1 so decode runs eager)"
+                "LoRA RDMA swap needs rotation armed (set $AVAROK_LORA_PEER or \
+                 AVAROK_LORA_ROTATE=1 so decode runs eager)"
             );
         }
         if slot >= max_loras {
@@ -150,7 +150,7 @@ impl TransformerModel {
         peer_addr: &str,
         adapter_id: &str,
         adapter_name: &str,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         // 1) Snapshot the cache region + pick a victim (pure policy).
         let (slot, evicted) = {
@@ -222,7 +222,7 @@ impl TransformerModel {
     /// `adapter_config.json` (so no `peft` arg), re-checks `ref_count>0` as a
     /// backstop, and bumps the slot generation so #24 KV stays correct. Runs on
     /// the scheduler thread at a QUIESCENT point; requires rotation armed
-    /// (`ATLAS_LORA_ROTATE=1`) — the inner swap enforces it.
+    /// (`AVAROK_LORA_ROTATE=1`) — the inner swap enforces it.
     pub fn promote_lora_slot_from_disk(
         &mut self,
         adapter_dir: &std::path::Path,
@@ -293,7 +293,7 @@ impl TransformerModel {
     /// This is the pool-size-1 dynamic-load path: load a DIFFERENT adapter into
     /// the single slot at runtime (per-request weight change). MUST be called at
     /// a scheduler QUIESCENT point (no in-flight decode reading `slot`) and needs
-    /// rotation armed (`ATLAS_LORA_ROTATE=1`/`$ATLAS_LORA_PEER`) so decode is
+    /// rotation armed (`AVAROK_LORA_ROTATE=1`/`$AVAROK_LORA_PEER`) so decode is
     /// eager and no captured graph replays the swapped slot's stale pointers.
     pub fn swap_lora_slot_from_disk(
         &mut self,
@@ -303,7 +303,7 @@ impl TransformerModel {
     ) -> Result<()> {
         if !self.lora_rotatable {
             anyhow::bail!(
-                "LoRA disk swap needs rotation armed (set ATLAS_LORA_ROTATE=1 so \
+                "LoRA disk swap needs rotation armed (set AVAROK_LORA_ROTATE=1 so \
                  decode runs eager); a single startup adapter with no rotation env \
                  is baked into the decode graph and a re-point would replay stale"
             );
@@ -326,7 +326,7 @@ impl TransformerModel {
         let cfg_path = adapter_dir.join("adapter_config.json");
         let raw = std::fs::read_to_string(&cfg_path)
             .with_context(|| format!("read {}", cfg_path.display()))?;
-        let peft = atlas_core::config::parse_peft_adapter_config(&raw)
+        let peft = avarok_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("parse {}", cfg_path.display()))?;
         // Load the adapter's A/B into a device WeightStore (host F16/F32→BF16),
         // then pack it into the slot (same layout as a startup pack).

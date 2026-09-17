@@ -54,7 +54,7 @@ pub struct SpecStats {
     /// neither, and the periodic WARN would name a number belonging to both.
     pub b1_low_margin: AtomicU64,
 
-    // ── Decode timing (ATLAS_DECODE_TIMING) ──
+    // ── Decode timing (AVAROK_DECODE_TIMING) ──
     pub decode_copy_us: AtomicU64,
     pub decode_sample_us: AtomicU64,
     pub decode_count: AtomicU64,

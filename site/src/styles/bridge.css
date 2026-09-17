@@ -100,7 +100,7 @@
 .cmd-count { white-space: nowrap; }
 .cmd-count-paired { color: var(--green); }
 /* Second-hand identity never wears a verified pin's green. */
-.cmd-count-vouched { color: var(--ch-cyan); }
+.cmd-count-vouched { color: var(--ch-cyan-text); }
 .cmd-count-unreachable { color: var(--amber); }
 .cmd-center { flex: 1; min-width: 0; display: flex; justify-content: center; }
 .cmd-alert {
@@ -175,7 +175,7 @@
   color: var(--t3); white-space: nowrap;
 }
 .rr-trust-local, .rr-trust-paired { color: var(--green); }
-.rr-trust-vouched { color: var(--ch-cyan); }
+.rr-trust-vouched { color: var(--ch-cyan-text); }
 .rr-trust-unreachable { color: var(--amber); }
 .rr-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .rr-dot-warning, .rr-dot-info { background: var(--amber); }
@@ -188,7 +188,7 @@
 .rr-col { width: 3.2rem; text-align: right; font-size: 0.74rem; color: var(--t2); }
 .rr-pair {
   align-self: center; margin-right: 0.6rem; padding: 0.3rem 0.6rem; flex-shrink: 0;
-  font-size: 0.72rem; font-family: inherit; color: var(--ch-cyan);
+  font-size: 0.72rem; font-family: inherit; color: var(--ch-cyan-text);
   background: none; border: 1px solid var(--border-strong); border-radius: 6px; cursor: pointer;
 }
 .roster-foot { display: flex; align-items: center; padding: 0 0.8rem; border-top: 1px solid var(--border); }

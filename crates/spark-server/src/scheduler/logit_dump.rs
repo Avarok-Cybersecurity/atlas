@@ -2,7 +2,7 @@
 
 //! Complete per-decode-step logit dump for Atlas↔vLLM divergence analysis.
 //!
-//! Gated by `ATLAS_LOGIT_DUMP=<file>`. When set, every decode step appends
+//! Gated by `AVAROK_LOGIT_DUMP=<file>`. When set, every decode step appends
 //! one JSONL record capturing the FULL pre/post-processor picture:
 //!   - `raw_topk`:  top-K (id, logit) of the raw model logits, BEFORE Atlas's
 //!                  additive logit-bias stack (WS mask, attractor, A4 think
@@ -49,7 +49,7 @@ fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
     top
 }
 
-/// Append one per-step record. No-op unless `ATLAS_LOGIT_DUMP` is set.
+/// Append one per-step record. No-op unless `AVAROK_LOGIT_DUMP` is set.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record(
     sink: &std::sync::Mutex<std::io::BufWriter<std::fs::File>>,

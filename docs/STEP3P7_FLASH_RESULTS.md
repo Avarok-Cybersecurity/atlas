@@ -160,7 +160,7 @@ Six iterative builds to reach clean compilation:
 | 3 | `eos_token_id` is JSON array, not scalar | Array-aware parser |
 | 4 | `sliding_attention` unknown `LayerType` | Pre-process `layer_types` → `FullAttention` + set `sliding_window` |
 | 5 | Layer count mismatch (48 vs 45, MTP included) | Fixed `layer_types` to exclude MTP entries |
-| 6 | `tracing` crate unavailable in `atlas-core` | Removed tracing call |
+| 6 | `tracing` crate unavailable in `avarok-core` | Removed tracing call |
 
 **Final build**: Clean. 90 kernel modules compiled. Docker image
 `atlas-step3p7:latest` (2.79 GB).
@@ -185,7 +185,7 @@ sudo docker run --name atlas-step3p7 --gpus all --ipc=host --network host \
 |-------|--------|---------|
 | Config parse | **PASS** | `Step3p7ForConditionalGeneration` → `step3p7` model type |
 | Kernel target | **PASS** | `(sm_121, step3p7-flash, nvfp4)` selected, 90 PTX modules loaded |
-| GPU backend | **PASS** | `AtlasCudaBackend` initialized |
+| GPU backend | **PASS** | `AvarokCudaBackend` initialized |
 | Weight format | **PASS** | ModelOpt NVFP4 detected, 138 non-weight tensors ignored |
 | EP topology | **PASS** | EP=1: local experts [0, 288), all experts assigned |
 | OOM pre-flight | **FAIL** | 120 GB on-disk exceeds ~115 GB available after CUDA init |
@@ -279,15 +279,15 @@ falls back to the fused tensor and indexes by expert ID.
 ## Files Changed
 
 ### New files (4)
-- `crates/atlas-core/src/config/parsers/step3p7.rs` — config parser (287 lines)
+- `crates/avarok-core/src/config/parsers/step3p7.rs` — config parser (287 lines)
 - `crates/spark-model/src/weight_loader/step3p7.rs` — weight loader (439 lines)
 - `kernels/gb10/step3p7-flash/MODEL.toml` — kernel target + sampling defaults
 - `scripts/preprocess_step3p7_experts.py` — fused→per-expert tensor splitter (318 lines)
 
 ### Modified files (4)
-- `crates/atlas-core/src/config.rs` — re-export `parse_step3p7`
-- `crates/atlas-core/src/config/dispatch.rs` — `"step3p7"` dispatch arm
-- `crates/atlas-core/src/config/parsers/mod.rs` — module + re-export
+- `crates/avarok-core/src/config.rs` — re-export `parse_step3p7`
+- `crates/avarok-core/src/config/dispatch.rs` — `"step3p7"` dispatch arm
+- `crates/avarok-core/src/config/parsers/mod.rs` — module + re-export
 - `crates/spark-model/src/factory.rs` — `Step3p7WeightLoader` registration
 
 ### Kernel reuse

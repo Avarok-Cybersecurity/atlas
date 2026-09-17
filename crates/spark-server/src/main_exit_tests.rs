@@ -2,7 +2,7 @@
 
 //! The exit status of a faulted process is a COMPOSITION property (issue #429).
 //!
-//! `atlas_core::fault::exit_code` is a pure function with its own positive and
+//! `avarok_core::fault::exit_code` is a pure function with its own positive and
 //! negative unit tests. Those prove the mapping is right; they cannot prove
 //! `main` calls it. That gap is not theoretical — this campaign has already
 //! shipped two fixes that were provably correct and entirely INERT because a

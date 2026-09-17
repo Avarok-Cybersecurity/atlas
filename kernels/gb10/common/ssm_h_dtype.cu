@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// SSM h-state storage-dtype converters (ATLAS_SSM_H_FP16).
+// SSM h-state storage-dtype converters (AVAROK_SSM_H_FP16).
 //
 // The GDN decode scan is state-traffic bound, so storing h as FP16 instead of
 // FP32 halves its time. Prefill is left entirely FP32 — it writes h through 6

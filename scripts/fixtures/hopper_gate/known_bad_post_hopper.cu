@@ -25,7 +25,7 @@
 // A checker that has never failed has never been tested. If this file starts
 // PASSING for sm_90a, the gate is not checking what it claims to.
 
-extern "C" __global__ void atlas_gate_selftest_bad(float *inout) {
+extern "C" __global__ void avarok_gate_selftest_bad(float *inout) {
   float v = inout[0];
   float r;
   asm volatile("redux.sync.max.abs.f32 %0, %1, 0xffffffff;" : "=f"(r) : "f"(v));

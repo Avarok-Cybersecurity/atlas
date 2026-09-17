@@ -2,7 +2,7 @@
 
 //! `Glm5NextMlpConfig` derivation and refusals. No GPU.
 
-use atlas_core::config::{Glm5NextRouterMode, ModelConfig, parse_config};
+use avarok_core::config::{Glm5NextRouterMode, ModelConfig, parse_config};
 
 use super::*;
 

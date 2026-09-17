@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::{TargetEndpoint, gate};
+use avarok_plugin::{TargetEndpoint, gate};
 
 const POLL: Duration = Duration::from_millis(500);
 
@@ -153,7 +153,7 @@ pub async fn serve_for(
     overrides: BTreeMap<String, String>,
 ) -> Result<SelfServed> {
     let plan = super::bench_serve_plan::plan_serve(benchmark_id, hardware, checkpoint, overrides)?;
-    let port = atlas_plugin::benchmarks::agentic::score::free_port()?;
+    let port = avarok_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
     check_box_is_free_enough(
         serve_args.gpu_memory_utilization,
@@ -354,7 +354,7 @@ async fn await_serving(
         // checkpoint". The second is the case this function exists to refuse,
         // and reporting it as a bare timeout would send the reader hunting a
         // slow load instead.
-        let last = match atlas_plugin::http::list_models(target, Duration::from_secs(5)).await {
+        let last = match avarok_plugin::http::list_models(target, Duration::from_secs(5)).await {
             Ok(models) if models.iter().any(|m| m == model) => return Ok(()),
             Ok(models) => format!("the endpoint is serving {models:?}"),
             Err(e) => format!("{e:#}"),

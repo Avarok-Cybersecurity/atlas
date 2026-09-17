@@ -20,7 +20,7 @@
 //!
 //! The PrismML `Q2_0` (id 42) group size is not encoded in the type id. It
 //! defaults to group-128 (the shipped Ternary-Bonsai layout); set
-//! `ATLAS_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
+//! `AVAROK_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
 
 mod config;
 mod container;
@@ -187,18 +187,18 @@ pub fn find_gguf_shards(first: &Path) -> Result<GgufShardSet> {
 }
 
 /// True when the native keep-packed Q2_0 decode path is enabled
-/// (`ATLAS_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
+/// (`AVAROK_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
 /// tensor to BF16 exactly as before, so the default path is byte-identical.
 /// When on, the "big" transform-free FFN projections (see
 /// [`names::is_keep_packed_proj`]) are uploaded as raw `block_q2_0` blocks and
 /// tagged [`WeightDtype::PackedQ2_0`] for in-kernel dequant at decode.
 fn native_q2_enabled() -> bool {
-    std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
 }
 
-/// The id-42 PrismML group size, from `ATLAS_GGUF_Q2_GROUP` (default 128).
+/// The id-42 PrismML group size, from `AVAROK_GGUF_Q2_GROUP` (default 128).
 fn q2_group_usize() -> usize {
-    match std::env::var("ATLAS_GGUF_Q2_GROUP").ok().as_deref() {
+    match std::env::var("AVAROK_GGUF_Q2_GROUP").ok().as_deref() {
         Some("64") => 64,
         _ => 128,
     }
@@ -385,13 +385,13 @@ impl super::WeightLoader for GgufLoader {
             .with_context(|| format!("No .gguf file found in {}", model_dir.display()))?;
         tracing::info!("Loading GGUF weights from {}", path.display());
 
-        let force_cpu = std::env::var("ATLAS_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
+        let force_cpu = std::env::var("AVAROK_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
         let native_q2 = native_q2_enabled();
         let q2_group = q2_group_usize();
         let q2_variant = q2_group_variant(q2_group);
         if native_q2 {
             tracing::info!(
-                "ATLAS_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
+                "AVAROK_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
             );
         }
 

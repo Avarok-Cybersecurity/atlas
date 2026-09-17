@@ -5,7 +5,7 @@
 # FP8 per-run variance).
 #
 # Usage:
-#   ./run_tier.sh <tier-name> <N> [--container atlas-qwen-final]
+#   ./run_tier.sh <tier-name> <N> [--container avarok-qwen-final]
 #
 # Outputs:
 #   bench/fp8_dgx2_drift/harness/runs/run_<tier>_<i>.json   (per run)
@@ -25,7 +25,7 @@ TIER="$1"
 N="$2"
 shift 2
 
-CONTAINER="atlas-qwen-final"
+CONTAINER="avarok-qwen-final"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --container) CONTAINER="$2"; shift 2 ;;
@@ -37,17 +37,17 @@ HARNESS_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNS_DIR="${HARNESS_DIR}/runs"
 mkdir -p "${RUNS_DIR}"
 
-# Verify atlas container is up + responsive before burning time on probes.
+# Verify avarok container is up + responsive before burning time on probes.
 if ! sudo docker ps --filter "name=${CONTAINER}" --format '{{.Names}}' | grep -q "${CONTAINER}"; then
   echo "FATAL: container '${CONTAINER}' is not running" >&2
   exit 3
 fi
 if ! curl -sS -m 5 http://localhost:8888/v1/models >/dev/null 2>&1; then
-  echo "FATAL: atlas /v1/models not responding on localhost:8888" >&2
+  echo "FATAL: avarok /v1/models not responding on localhost:8888" >&2
   exit 3
 fi
 
-# Capture the atlas startup-log marker so per-run windows can offset
+# Capture the avarok startup-log marker so per-run windows can offset
 # correctly. Each probe captures docker logs --since the start ts of
 # that probe.
 
@@ -60,10 +60,10 @@ for i in $(seq 1 "${N}"); do
   TARGET="/tmp/harness-${TIER}-r${i}"
   OC_JSON="/tmp/harness-${TIER}-r${i}.json"
   OC_ERR="/tmp/harness-${TIER}-r${i}.err"
-  ATLAS_LOG="/tmp/harness-${TIER}-r${i}.atlas.log"
+  AVAROK_LOG="/tmp/harness-${TIER}-r${i}.avarok.log"
   OUT_JSON="${RUNS_DIR}/run_${TIER}_${i}.json"
 
-  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${ATLAS_LOG}"
+  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${AVAROK_LOG}"
   mkdir -p "/tmp/harness-${TIER}-r${i}-cwd"
   cd "/tmp/harness-${TIER}-r${i}-cwd"
 
@@ -80,7 +80,7 @@ for i in $(seq 1 "${N}"); do
   # Atlas log window for THIS run only. Docker logs --since accepts
   # epoch-seconds (truncate decimals).
   START_TS_INT=${START_TS%.*}
-  sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${ATLAS_LOG}" || true
+  sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true
 
   python3 "${HARNESS_DIR}/score_run.py" \
     --tier "${TIER}" \
@@ -88,7 +88,7 @@ for i in $(seq 1 "${N}"); do
     --target "${TARGET}" \
     --opencode-json "${OC_JSON}" \
     --opencode-stderr "${OC_ERR}" \
-    --atlas-log-window "${ATLAS_LOG}" \
+    --avarok-log-window "${AVAROK_LOG}" \
     --probe-start-ts "${START_TS}" \
     --probe-end-ts "${END_TS}" \
     --out "${OUT_JSON}"

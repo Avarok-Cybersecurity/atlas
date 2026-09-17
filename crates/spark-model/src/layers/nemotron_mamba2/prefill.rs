@@ -68,7 +68,7 @@ impl NemotronMamba2Layer {
         // their original NVFP4 form (no FP8 copies read) and activations are
         // dynamically quantized to NVFP4 (packed E2M1 + per-16 E4M3 scales) in one
         // pass. Halves B traffic vs the FP8 path and doubles per-MMA throughput.
-        // W4A4 changes activation numerics -- ATLAS_NO_SSM_W4A4=1 falls back to the
+        // W4A4 changes activation numerics -- AVAROK_NO_SSM_W4A4=1 falls back to the
         // FP8 path (same-binary A/B + quality escape hatch). Scratch: packed A at
         // fp8_act[0], scales at fp8_act[n*K/2]; total n*K*9/16 <= fp8_act's n*K.
         let w4a4 = n >= 512
@@ -128,7 +128,7 @@ impl NemotronMamba2Layer {
         // SSD chunked scan: the recurrence becomes tensor-core matmuls with only
         // ceil(T/64) sequential links instead of T. Falls back to the sequential
         // kernels if the SSD kernels are unavailable, the shapes do not divide, or
-        // ATLAS_NO_SSD=1 (same-binary A/B + escape hatch).
+        // AVAROK_NO_SSD=1 (same-binary A/B + escape hatch).
         let ssd_ok = self.ssd_cumsum_k.0 != 0
             && self.ssd_bmm_k.0 != 0
             && self.ssd_scan_k.0 != 0

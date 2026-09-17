@@ -3,7 +3,7 @@
 # is HURTING (fix spec overhead, not acceptance). If > 31.39ms, base decode is the floor.
 # Also a --num-drafts 1 (K=2) leg to see the spec-scaling from K=1->K=2->K=3.
 set -u
-IMG=atlas-gb10:followups
+IMG=avarok-gb10:followups
 BIN=/workspace/.wt-decode-fold/target/release/spark
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 HFCACHE=/workspace/.cache/huggingface
@@ -11,16 +11,16 @@ PORT=8888
 OUTDIR=/workspace/.wt-decode-fold/measc
 mkdir -p "$OUTDIR"
 BASE_ENV=(
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1
 )
 COMMON="--host 0.0.0.0 --port $PORT --model-name qwen --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 --mtp-quantization bf16 --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking"
 
 leg() {  # tag  <spec-flags>
   local tag="$1"; shift
-  local CN="atlas-measc-$tag"
-  for c in $(sudo docker ps -q --filter "name=atlas-measc-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
+  local CN="avarok-measc-$tag"
+  for c in $(sudo docker ps -q --filter "name=avarok-measc-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
   sleep 4
   sudo docker run -d --name "$CN" --network host --gpus all --ipc=host \
     "${BASE_ENV[@]}" -v "$HFCACHE:/root/.cache/huggingface:ro" -v "$BIN:/usr/local/bin/spark:ro" \

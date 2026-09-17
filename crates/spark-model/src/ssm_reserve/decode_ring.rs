@@ -43,17 +43,17 @@
 //!
 //! Env contract (read HERE and nowhere else):
 //!
-//! * `ATLAS_SSM_DECODE_RING=1` force-allocates the ring even under spec
+//! * `AVAROK_SSM_DECODE_RING=1` force-allocates the ring even under spec
 //!   (mixed workloads whose grammar-bound sequences fall to plain decode and
 //!   should keep loop re-steer); `=0` force-disables it even without spec.
-//! * `ATLAS_DISABLE_WATCHDOGS=1|true` (trimmed, case-insensitive — mirrors
+//! * `AVAROK_DISABLE_WATCHDOGS=1|true` (trimmed, case-insensitive — mirrors
 //!   spark-server's `parse_disable_watchdogs`): the ring's only reader can
 //!   never fire, so the ring is skipped.
 
 /// Outcome of the ring-depth decision.
 ///
 /// `skip_reason` is `Some` only for the IMPLICIT skip (speculative decode /
-/// watchdogs off) — never for an explicit `ATLAS_SSM_DECODE_RING=0`
+/// watchdogs off) — never for an explicit `AVAROK_SSM_DECODE_RING=0`
 /// override, a published `--ssm-decode-ring-slots N` or the #915 auto-fit —
 /// so the allocating call site can log the savings once.
 pub struct DecodeRingDecision {
@@ -69,7 +69,7 @@ pub struct DecodeRingDecision {
 /// `(next_slot + 1) % capacity` (`SsmDecodeRing::record`), which is exact at
 /// any capacity but wraps most evenly at these.
 ///
-/// 8 is [`atlas_kernels::DECODE_ROLLBACK_RING_SLOTS`] and covers the
+/// 8 is [`avarok_kernels::DECODE_ROLLBACK_RING_SLOTS`] and covers the
 /// 3-repeat fuzzy loop detector with margin; 1 still anchors a single clean
 /// boundary; 0 means the sequence hard-stops instead of re-steering
 /// (`RollbackFallback::NoSsmSnapshot` — an honest decline, never a partial
@@ -82,7 +82,7 @@ pub const DECODE_RING_FIT_LADDER: [usize; 5] = [8, 4, 2, 1, 0];
 /// [`super::set_ssm_rollback_mode`].
 ///
 /// Absent is NOT a value: `--ssm-decode-ring-slots auto` publishes nothing,
-/// so the documented `ATLAS_SSM_DECODE_RING` fallback stays reachable and
+/// so the documented `AVAROK_SSM_DECODE_RING` fallback stays reachable and
 /// preflight can publish the auto-fit depth later in the same boot.
 static DECODE_RING_SLOTS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
@@ -117,10 +117,10 @@ pub fn parse_decode_ring_slots(s: &str) -> Result<Option<usize>, String> {
     let n: usize = s
         .parse()
         .map_err(|_| format!("unknown ssm-decode-ring-slots '{s}' (valid: auto, 0..=8)"))?;
-    if n > atlas_kernels::DECODE_ROLLBACK_RING_SLOTS {
+    if n > avarok_kernels::DECODE_ROLLBACK_RING_SLOTS {
         return Err(format!(
             "ssm-decode-ring-slots {n} exceeds the {} the ring is sized for",
-            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
+            avarok_kernels::DECODE_ROLLBACK_RING_SLOTS
         ));
     }
     Ok(Some(n))
@@ -135,9 +135,9 @@ pub fn decode_rollback_ring_slots(
     num_ssm_layers: usize,
     use_speculative: bool,
 ) -> DecodeRingDecision {
-    let watchdogs_value = std::env::var("ATLAS_DISABLE_WATCHDOGS").ok();
+    let watchdogs_value = std::env::var("AVAROK_DISABLE_WATCHDOGS").ok();
     let watchdogs_disabled = watchdogs_disabled_from_value(watchdogs_value.as_deref());
-    let ring_override = std::env::var("ATLAS_SSM_DECODE_RING").ok();
+    let ring_override = std::env::var("AVAROK_SSM_DECODE_RING").ok();
     decode_rollback_ring_slots_with(
         num_ssm_layers,
         use_speculative,
@@ -147,7 +147,7 @@ pub fn decode_rollback_ring_slots(
     )
 }
 
-/// `ATLAS_DISABLE_WATCHDOGS` truthiness — trimmed, case-insensitive, `1` or
+/// `AVAROK_DISABLE_WATCHDOGS` truthiness — trimmed, case-insensitive, `1` or
 /// `true` only (mirrors spark-server's `parse_disable_watchdogs`).
 pub fn watchdogs_disabled_from_value(value: Option<&str>) -> bool {
     value
@@ -165,10 +165,10 @@ pub fn watchdogs_disabled_from_value(value: Option<&str>) -> bool {
 /// 1. no SSM layers — there is no recurrent state to snapshot;
 /// 2. `published` — `--ssm-decode-ring-slots N`, or the depth preflight's
 ///    auto-fit chose. It outranks the env override AND the implicit skips for
-///    the same reason `ATLAS_SSM_DECODE_RING=1` always has: an operator (or a
+///    the same reason `AVAROK_SSM_DECODE_RING=1` always has: an operator (or a
 ///    reserve that has already been sized against free memory) asking for a
 ///    specific depth must get that depth on BOTH sides, or the two diverge;
-/// 3. `ATLAS_SSM_DECODE_RING=1|0` — the legacy spelling of "8" and "0";
+/// 3. `AVAROK_SSM_DECODE_RING=1|0` — the legacy spelling of "8" and "0";
 /// 4. the implicit skips (speculative decode, watchdogs off);
 /// 5. the default depth.
 pub fn decode_rollback_ring_slots_with(
@@ -192,7 +192,7 @@ pub fn decode_rollback_ring_slots_with(
     }
     match ring_override {
         Some("1") => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+            slots: avarok_kernels::DECODE_ROLLBACK_RING_SLOTS,
             skip_reason: None,
         },
         Some("0") => DecodeRingDecision {
@@ -208,7 +208,7 @@ pub fn decode_rollback_ring_slots_with(
             }),
         },
         _ => DecodeRingDecision {
-            slots: atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+            slots: avarok_kernels::DECODE_ROLLBACK_RING_SLOTS,
             skip_reason: None,
         },
     }

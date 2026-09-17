@@ -26,7 +26,7 @@ fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
     f32::from_bits(bits << 16)
 }
 use crate::traits::SequenceState;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};

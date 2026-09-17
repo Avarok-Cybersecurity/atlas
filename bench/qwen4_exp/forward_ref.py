@@ -16,7 +16,7 @@ experts) instead of 102 GB. Three checkpoint-specific adaptations:
 
 Output npz: fixture tokens + f32 logits at EVERY position + per-layer
 hyper-stream RMS (debug trail). Compare against the engine with
-ATLAS_DUMP_LOGITS_PATH rows (vocab width = model.vocab_size() = 248077 —
+AVAROK_DUMP_LOGITS_PATH rows (vocab width = model.vocab_size() = 248077 —
 NOT config vocab_size 248320; see b7b7bcf3).
 
 Usage: forward_ref.py [SNAPSHOT_DIR] [OUT_NPZ]
@@ -305,7 +305,7 @@ def main():
         print(f'layer {i:2d}: hyper rms {rms:.4f}', flush=True)
         # QWEN4EXP_SAVE_HIGHWAY=n: keep the full post-layer highway tensors
         # for the first n layers (diffable against the engine's
-        # ATLAS_QWEN4EXP_DUMP taps: post-layer-i == L{i}_post_moe ==
+        # AVAROK_QWEN4EXP_DUMP taps: post-layer-i == L{i}_post_moe ==
         # L{i+1}_in).
         if i < int(os.environ.get('QWEN4EXP_SAVE_HIGHWAY', '0')):
             saved_highway[f'highway_L{i:02d}'] = (

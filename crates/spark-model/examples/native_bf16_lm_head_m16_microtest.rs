@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! GPU oracle for the TENSOR-CORE 5..=16-row BF16 LM-head arm
-//! (`ATLAS_LM_HEAD_M16_TC`, #927/#928) — `dense_gemm_m16_bf16`.
+//! (`AVAROK_LM_HEAD_M16_TC`, #927/#928) — `dense_gemm_m16_bf16`.
 //!
 //! Runs the REAL head shape — `[N = 248077, K = 5120]` BF16, 2.54 GB — at
 //! M in {5, 8, 13, 16} and compares against the scalar `dense_gemv_bf16` that
@@ -8,7 +8,7 @@
 //!
 //! WHY THIS SHAPE AND NOT A SAMPLED ONE. nsys round 7 (1xH100, 2026-09-11,
 //! Qwen/Qwen3.8-27B-FP8 with `--lm-head-dtype bf16` and
-//! `ATLAS_LM_HEAD_BATCHM_MAX=16`, decode batch 16) puts `dense_gemv_bf16_batchm`
+//! `AVAROK_LM_HEAD_BATCHM_MAX=16`, decode batch 16) puts `dense_gemv_bf16_batchm`
 //! at **3,571 µs in ONE launch = 8.19% of the 43.6 ms step** — ~710 GB/s, where
 //! the SAME kernel reads the SAME 2.54 GB at 3.2 TB/s-class for a single row
 //! (798 µs at C=1). The thing under test is what happens to a kernel that is
@@ -80,7 +80,7 @@ use spark_model::layers::dense_ffn::m16_tc::oracle::{
 };
 use spark_model::layers::ops;
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -189,7 +189,7 @@ struct Arm {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let scalar = gpu.kernel("gemv", "dense_gemv_bf16")?;
     let batchm = gpu.kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")?;
     let tc = gpu.kernel("dense_gemm_m16_bf16", "dense_gemm_m16_bf16")?;

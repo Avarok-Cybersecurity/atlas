@@ -123,7 +123,7 @@ __device__ __forceinline__ float fp8_e4m3_to_float(unsigned char byte) {
 }
 
 template <class Layout>
-__global__ void atlas_cutlass_pack_bf16_act_nvfp4(
+__global__ void avarok_cutlass_pack_bf16_act_nvfp4(
     const __nv_bfloat16* __restrict__ act,
     unsigned char* __restrict__ packed,
     unsigned char* __restrict__ scales,
@@ -161,8 +161,8 @@ __global__ void atlas_cutlass_pack_bf16_act_nvfp4(
 }
 
 template <class Layout>
-__global__ void atlas_cutlass_pack_nvfp4_weight_scales_t(
-    const unsigned char* __restrict__ atlas_scales_t,
+__global__ void avarok_cutlass_pack_nvfp4_weight_scales_t(
+    const unsigned char* __restrict__ avarok_scales_t,
     unsigned char* __restrict__ cutlass_scales,
     float scale2,
     int n,
@@ -174,13 +174,13 @@ __global__ void atlas_cutlass_pack_nvfp4_weight_scales_t(
   if (col >= n || group >= groups) {
     return;
   }
-  unsigned char atlas_scale = atlas_scales_t[(unsigned long long)group * n + col];
-  float scale = fp8_e4m3_to_float(atlas_scale);
+  unsigned char avarok_scale = avarok_scales_t[(unsigned long long)group * n + col];
+  float scale = fp8_e4m3_to_float(avarok_scale);
   cutlass::float_ue4m3_t sf(scale);
   cutlass_scales[layout_sfb(col, group * 16, 0)] = byte_of(sf);
 }
 
-__global__ void atlas_cutlass_pack_bf16_weight_nvfp4_t(
+__global__ void avarok_cutlass_pack_bf16_weight_nvfp4_t(
     const __nv_bfloat16* __restrict__ weight,
     unsigned char* __restrict__ packed_t,
     unsigned char* __restrict__ scale_t,
@@ -289,7 +289,7 @@ static int nvfp4_gemm_single_tile(
 
   dim3 block(256);
   dim3 grid_act(m, (k / 16 + block.x - 1) / block.x);
-  atlas_cutlass_pack_bf16_act_nvfp4<<<grid_act, block, 0, stream>>>(
+  avarok_cutlass_pack_bf16_act_nvfp4<<<grid_act, block, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(act_bf16),
       static_cast<unsigned char*>(workspace),
       static_cast<unsigned char*>(workspace) + a_bytes,
@@ -302,7 +302,7 @@ static int nvfp4_gemm_single_tile(
   }
 
   dim3 grid_sfb(n, (k / 16 + block.x - 1) / block.x);
-  atlas_cutlass_pack_nvfp4_weight_scales_t<<<grid_sfb, block, 0, stream>>>(
+  avarok_cutlass_pack_nvfp4_weight_scales_t<<<grid_sfb, block, 0, stream>>>(
       static_cast<const unsigned char*>(weight_scale_t),
       static_cast<unsigned char*>(workspace) + a_bytes + sfa_bytes,
       weight_scale_2,
@@ -351,7 +351,7 @@ static int nvfp4_gemm_single_tile(
 // across tiles, only the activation rows and output rows are sliced. Bit-identical to
 // a single call for m≤4096; for larger m the partials are independent rows (no cross-
 // tile reduction), so the result is exact.
-extern "C" int atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
+extern "C" int avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
     const void* act_bf16,
     const void* weight_packed_t,
     const void* weight_scale_t,
@@ -387,7 +387,7 @@ extern "C" int atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
 // checkpoint/hand-kernel layout) into CUTLASS's `[N, K/2]` (K-contiguous) byte
 // layout. Each byte holds the FP4 pair (k, k+1) in (low, high) nibbles in BOTH
 // layouts, so this is a pure byte transpose that preserves nibble pairing.
-__global__ void atlas_cutlass_transpose_nvfp4_packed(
+__global__ void avarok_cutlass_transpose_nvfp4_packed(
     const unsigned char* __restrict__ src,
     unsigned char* __restrict__ dst,
     int n,
@@ -402,7 +402,7 @@ __global__ void atlas_cutlass_transpose_nvfp4_packed(
   dst[(unsigned long long)c * half + h] = src[(unsigned long long)h * n + c];
 }
 
-extern "C" int atlas_cutlass_transpose_nvfp4_packed_kton(
+extern "C" int avarok_cutlass_transpose_nvfp4_packed_kton(
     const void* src_packed_t,
     void* dst_packed,
     int n,
@@ -413,7 +413,7 @@ extern "C" int atlas_cutlass_transpose_nvfp4_packed_kton(
   }
   dim3 block(32, 8);
   dim3 grid((n + block.x - 1) / block.x, (k / 2 + block.y - 1) / block.y);
-  atlas_cutlass_transpose_nvfp4_packed<<<grid, block, 0, stream>>>(
+  avarok_cutlass_transpose_nvfp4_packed<<<grid, block, 0, stream>>>(
       static_cast<const unsigned char*>(src_packed_t),
       static_cast<unsigned char*>(dst_packed),
       n,
@@ -444,7 +444,7 @@ extern "C" int atlas_cutlass_transpose_nvfp4_packed_kton(
 //   C_gate/C_up: bf16 [M_total, N] each (gate and up written separately).
 // The CUTLASS collective requires M-tile alignment that it carves internally; we
 // pass the exact per-expert M (it handles M not a multiple of the CTA tile).
-extern "C" int atlas_cutlass_nvfp4_grouped_gate_up(
+extern "C" int avarok_cutlass_nvfp4_grouped_gate_up(
     const void* A_bf16,                         // [M_total, K]
     const unsigned long long* gate_packed_ptrs, // [num_experts] device ptrs -> [N,K/2]
     const unsigned long long* gate_scale_ptrs,  // [num_experts] device ptrs -> [K/16,N]
@@ -478,7 +478,7 @@ extern "C" int atlas_cutlass_nvfp4_grouped_gate_up(
     }
     const __nv_bfloat16* A_e = A + (size_t)m_start * k;
     // gate
-    int rc = atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
+    int rc = avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
         A_e,
         reinterpret_cast<const void*>(gate_packed_ptrs[e]),
         reinterpret_cast<const void*>(gate_scale_ptrs[e]),
@@ -489,7 +489,7 @@ extern "C" int atlas_cutlass_nvfp4_grouped_gate_up(
       return 100000 + rc;
     }
     // up
-    rc = atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
+    rc = avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
         A_e,
         reinterpret_cast<const void*>(up_packed_ptrs[e]),
         reinterpret_cast<const void*>(up_scale_ptrs[e]),
@@ -510,7 +510,7 @@ extern "C" int atlas_cutlass_nvfp4_grouped_gate_up(
 #endif
 }
 
-extern "C" int atlas_cutlass_pack_bf16_weight_to_nvfp4_t(
+extern "C" int avarok_cutlass_pack_bf16_weight_to_nvfp4_t(
     const void* weight_bf16,
     void* packed_t,
     void* scale_t,
@@ -523,7 +523,7 @@ extern "C" int atlas_cutlass_pack_bf16_weight_to_nvfp4_t(
   }
   dim3 block(256);
   dim3 grid(n, (k / 16 + block.x - 1) / block.x);
-  atlas_cutlass_pack_bf16_weight_nvfp4_t<<<grid, block, 0, stream>>>(
+  avarok_cutlass_pack_bf16_weight_nvfp4_t<<<grid, block, 0, stream>>>(
       static_cast<const __nv_bfloat16*>(weight_bf16),
       static_cast<unsigned char*>(packed_t),
       static_cast<unsigned char*>(scale_t),

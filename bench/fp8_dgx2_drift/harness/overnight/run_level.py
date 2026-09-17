@@ -10,7 +10,7 @@ Exit:   0 = level passed (both clients completed); 1 = failed; 2 = setup error.
 Reads the ladder from prompts/graduated.jsonl. Each level:
   {level, name, prompt, completion_check, is_server}
 
-Client invocation (both run in a fresh /tmp target dir, ATLAS at :8888):
+Client invocation (both run in a fresh /tmp target dir, AVAROK at :8888):
   opencode    : opencode run --dangerously-skip-permissions --dir T --format json <prompt>
   claude-code : (cwd=T) sudo -u claude env ANTHROPIC_BASE_URL=http://localhost:8888
                 ANTHROPIC_AUTH_TOKEN=dummy timeout -k10 T claude -p
@@ -25,7 +25,7 @@ HARNESS = pathlib.Path(__file__).resolve().parent.parent
 LADDER = HARNESS / "prompts" / "graduated.jsonl"
 RESULTS = HARNESS / "overnight" / "results.jsonl"
 BUG_SENTINEL = pathlib.Path("/workspace/overnight_BUG.json")
-ATLAS_PORT = os.environ.get("ATLAS_HARNESS_PORT", "3001")
+AVAROK_PORT = os.environ.get("AVAROK_HARNESS_PORT", "3001")
 # claude-code (opus + alwaysThinking/high-effort) systematically hit the old
 # 360s wall mid-write on multi-file server tasks (L2 360.6s barely done, L3/L4
 # truncated → unclosed delimiter) while opencode finishes in ~190s. 360s tested
@@ -88,7 +88,7 @@ def run_opencode(prompt: str, target: pathlib.Path) -> None:
             ["timeout", "-k", "10", str(AGENT_TIMEOUT), "opencode", "run",
              "--dangerously-skip-permissions", "--dir", str(target), "--format", "json", prompt],
             timeout=AGENT_TIMEOUT + 20,
-            env={"ATLAS_HARNESS_PORT": ATLAS_PORT, "CARGO_TARGET_DIR": SHARED_TARGET},
+            env={"AVAROK_HARNESS_PORT": AVAROK_PORT, "CARGO_TARGET_DIR": SHARED_TARGET},
         )
     finally:
         kill_opencode()                  # reap leaked instances on done/timeout
@@ -101,7 +101,7 @@ def run_claude(prompt: str, target: pathlib.Path) -> None:
         ["sudo", "-n", "-u", "claude",
          "timeout", "-k", "10", str(AGENT_TIMEOUT),
          "env", "ANTHROPIC_BASE_URL=http://localhost:8888", "ANTHROPIC_AUTH_TOKEN=dummy",
-         f"ATLAS_HARNESS_PORT={ATLAS_PORT}", f"CARGO_TARGET_DIR={SHARED_TARGET}",
+         f"AVAROK_HARNESS_PORT={AVAROK_PORT}", f"CARGO_TARGET_DIR={SHARED_TARGET}",
          CLAUDE_BIN, "-p", "--output-format", "json",
          "--permission-mode", "bypassPermissions"],
         cwd=str(target), stdin=prompt, timeout=AGENT_TIMEOUT + 30,
@@ -110,7 +110,7 @@ def run_claude(prompt: str, target: pathlib.Path) -> None:
 
 def completion_check(check: str, target: pathlib.Path) -> tuple[bool, str]:
     rc, out, err = run(["bash", "-lc", check], cwd=str(target), timeout=CHECK_TIMEOUT,
-                       env={"ATLAS_HARNESS_PORT": ATLAS_PORT, "CARGO_TARGET_DIR": SHARED_TARGET})
+                       env={"AVAROK_HARNESS_PORT": AVAROK_PORT, "CARGO_TARGET_DIR": SHARED_TARGET})
     tail = (out[-1500:] + "\n" + err[-1500:]).strip()
     return rc == 0, tail
 
@@ -166,7 +166,7 @@ def main() -> int:
 
 
 def _deployed_image() -> str:
-    rc, out, _ = run(["sudo", "docker", "inspect", "atlas-camp", "--format", "{{.Config.Image}}"])
+    rc, out, _ = run(["sudo", "docker", "inspect", "avarok-camp", "--format", "{{.Config.Image}}"])
     return out.strip() if rc == 0 else "?"
 
 

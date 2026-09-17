@@ -107,7 +107,7 @@
 <svelte:window {onkeydown} />
 <svelte:head><title>{title} · Atlas</title></svelte:head>
 
-<div class="dk" style="--sx: var(--ch-{act})">
+<div class="dk" style="--sx: var(--ch-{act}); --sx-text: var(--ch-{act}-text)">
   <p class="dk-live" aria-live="polite">Slide {index + 1} of {total}</p>
 
   <div class="dk-stage" style="--step: {step}">

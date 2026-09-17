@@ -1,7 +1,7 @@
 # qwen4_exp (Qwen3.8-Flash-Next) port tools
 
 Checkpoint-inspection tools for the port tracked in
-[Avarok #753](https://github.com/Avarok-Cybersecurity/atlas/issues/753).
+[Atlas #753](https://github.com/Avarok-Cybersecurity/atlas/issues/753).
 Both read `RadixArk/Qwen3.8-Flash-Next-NVFP4` off disk; set `SNAP` at the top
 of each if your snapshot path differs.
 

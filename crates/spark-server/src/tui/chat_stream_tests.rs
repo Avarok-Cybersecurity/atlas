@@ -347,5 +347,5 @@ fn an_empty_conversation_still_produces_a_well_formed_body() {
     let body: serde_json::Value =
         serde_json::from_str(&request_body(&[], ThinkingRequest::On)).expect("valid JSON");
     assert_eq!(body["messages"], serde_json::json!([]));
-    assert_eq!(body["model"], serde_json::json!("atlas-tui"));
+    assert_eq!(body["model"], serde_json::json!("avarok-tui"));
 }

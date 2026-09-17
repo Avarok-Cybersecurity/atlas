@@ -36,7 +36,7 @@ pub struct Campaign {
     pub pr: Option<u64>,
     pub branch: String,
     pub anchor_sha: String,
-    pub atlas_home: String,
+    pub avarok_home: String,
     pub driver_pid: Option<u32>,
     pub driver_cmdline: Option<String>,
     pub started_at: Option<String>,

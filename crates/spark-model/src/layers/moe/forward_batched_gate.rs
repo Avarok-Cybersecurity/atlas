@@ -22,16 +22,16 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<(DevicePtr, bool, usize)> {
-        // FP32 gate path (ATLAS_FP32_GATE): keep the router GEMM accumulator in
+        // FP32 gate path (AVAROK_FP32_GATE): keep the router GEMM accumulator in
         // FP32 through top-K so two experts whose logits differ by less than a
         // BF16 ULP no longer flip routing (the cross-compiler routing-cascade
         // trigger on gfx1151). Only the softmax-routed dense-gate path is
         // covered — the NVFP4 gate and the sigmoid+bias path keep BF16. Falls
         // back to BF16 if the f32 kernels are absent on this target.
-        // ATLAS_FP32_ROUTING: the SSM-side norm already wrote an FP32 router_in
+        // AVAROK_FP32_ROUTING: the SSM-side norm already wrote an FP32 router_in
         // (residual_add_rms_norm_gatef32 → moe_router_in_f32); the gate GEMM
         // reads it at full precision via dense_gemm_f32in. Supersedes the
-        // gate-only ATLAS_FP32_GATE (which keeps the BF16 router_in but f32 gate
+        // gate-only AVAROK_FP32_GATE (which keeps the BF16 router_in but f32 gate
         // accumulation). Either way the gate logits + top-K run in FP32.
         let fp32_routing = self.fp32_routing_active(ctx.levers);
         let fp32_gate = fp32_routing
@@ -92,7 +92,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
-        // Routing-divergence diagnostic (no-op unless ATLAS_DUMP_EXPERT_IDS=1):
+        // Routing-divergence diagnostic (no-op unless AVAROK_DUMP_EXPERT_IDS=1):
         // last-token gate logits, so the batched path can be compared to gb10
         // the same way the grouped paths are (HIP MoE routing-flip bisection).
         // The dump reads BF16; skip it on the FP32-gate path.

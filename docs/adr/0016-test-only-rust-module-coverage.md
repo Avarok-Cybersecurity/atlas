@@ -10,8 +10,8 @@ The performance boundary contains the whole `crates/` tree. That is safe for
 unknown host code, but it also treats a change to a Rust test assertion as a
 change to the release program. Twelve open test-audit PRs demonstrate the
 result: their only changed files are either
-`crates/atlas-core/src/config/tests.rs` or
-`crates/atlas-core/src/config/gguf/tests.rs`, yet all ten GPU records are
+`crates/avarok-core/src/config/tests.rs` or
+`crates/avarok-core/src/config/gguf/tests.rs`, yet all ten GPU records are
 invalidated.
 
 The files are not merely named like tests. Their parent modules declare them

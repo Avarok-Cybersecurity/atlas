@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The cuBLASLt half of the attention **prefill** W8A8 block-scaled arm — the
-//! `ATLAS_CUBLAS_GEMM=attn` route that replaced an off-ledger BF16 dequant.
+//! `AVAROK_CUBLAS_GEMM=attn` route that replaced an off-ledger BF16 dequant.
 //!
 //! WHY THIS EXISTS (#917 round 3 / #927). `ctx.dispatch.cublas.attn` used to
 //! route the FP8 attention projections to `ops::cublas_bf16_proj`, which
@@ -12,7 +12,7 @@
 //! prefill died at layer 36 with `cuMemAlloc_v2 ... status 2`.
 //!
 //! It matters again now because the serve recipe for the 5..16-row decode
-//! projections is `ATLAS_CUBLAS_GEMM=ffn,ssm,attn` — arming `attn` for decode
+//! projections is `AVAROK_CUBLAS_GEMM=ffn,ssm,attn` — arming `attn` for decode
 //! must not re-arm a prefill arm that allocates a BF16 twin of every
 //! attention weight. So the BF16 arm is GONE, and this is what stands in its
 //! place: the same W8A8 block-scaled arithmetic the prefill path already
@@ -71,9 +71,9 @@ impl Qwen3AttentionLayer {
         if ctx.stats.once("log:attn_w8a8_prefill") {
             let how = if cublas { "cuBLASLt" } else { "kernel" };
             tracing::info!(
-                "[atlas] attention prefill: W8A8 block-scaled via {how} \
+                "[avarok] attention prefill: W8A8 block-scaled via {how} \
                  (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue). \
-                 ATLAS_CUBLAS_GEMM=attn selects cuBLASLt; neither arm allocates."
+                 AVAROK_CUBLAS_GEMM=attn selects cuBLASLt; neither arm allocates."
             );
         }
         if cublas {

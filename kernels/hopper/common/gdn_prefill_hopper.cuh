@@ -26,8 +26,8 @@
 // that has four warps idle for every one that is working, and the gb10 sources
 // must not be edited to serve that (maintainer rule, 2026-09-11).
 
-#ifndef ATLAS_GDN_PREFILL_HOPPER_CUH
-#define ATLAS_GDN_PREFILL_HOPPER_CUH
+#ifndef AVAROK_GDN_PREFILL_HOPPER_CUH
+#define AVAROK_GDN_PREFILL_HOPPER_CUH
 
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -134,4 +134,4 @@ __device__ __forceinline__ void gdnh_split(float x, __nv_bfloat16& hi, __nv_bflo
     lo = __float2bfloat16(x - (float)hi);
 }
 
-#endif // ATLAS_GDN_PREFILL_HOPPER_CUH
+#endif // AVAROK_GDN_PREFILL_HOPPER_CUH

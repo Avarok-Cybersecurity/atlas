@@ -55,7 +55,7 @@ fn the_hint_survives_a_round_trip_through_a_real_response_body() {
     })
     .to_string();
 
-    let seen = atlas_plugin::http::message_from_body(&body).expect("a well-formed body parses");
+    let seen = avarok_plugin::http::message_from_body(&body).expect("a well-formed body parses");
     assert!(
         seen.contains("Library"),
         "hint must survive the round trip: {seen}"

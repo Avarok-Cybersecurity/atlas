@@ -19,7 +19,7 @@ test('homepage possibilities work by pointer and keyboard', async ({ page }) => 
 test('developers can reach the complete engine and return home', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('link', { name: 'Developers', exact: true }).click();
-  await expect(page).toHaveURL(/\/engine\.html$/);
+  await expect(page).toHaveURL(/\/engine$/);
   await expect(page.locator('#verified')).toBeVisible();
   await page.getByRole('link', { name: 'Atlas home', exact: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Intelligence, on your terms.' })).toBeVisible();
@@ -28,7 +28,7 @@ test('developers can reach the complete engine and return home', async ({ page }
 test('technical bookmarks keep their section while homepage summaries stay on home', async ({ page }) => {
   await page.goto('/?ref=bookmark');
   await page.evaluate(() => { window.location.hash = 'faq'; });
-  await expect(page).toHaveURL(/\/engine\.html\?ref=bookmark#faq$/);
+  await expect(page).toHaveURL(/\/engine\?ref=bookmark#faq$/);
   await expect(page.locator('#faq')).toBeInViewport();
   await page.goto('/#verified');
   await expect(page).toHaveURL(/\/#verified$/);

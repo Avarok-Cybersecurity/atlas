@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! History: past runs, read back from `~/.atlas/runs`.
+//! History: past runs, read back from `~/.avarok/runs`.
 //!
 //! A stored run is the same `BenchmarkResult` the live pane rendered, so the
 //! table and the stat tiles come from the shared helpers — a past run and a
@@ -41,7 +41,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
                 Line::default(),
                 Line::from(Span::styled("  No runs recorded yet.", theme::text2())),
                 Line::from(Span::styled(
-                    "  Every completed run is written to ~/.atlas/runs and appears here.",
+                    "  Every completed run is written to ~/.avarok/runs and appears here.",
                     theme::dim(),
                 )),
             ]),
@@ -103,8 +103,8 @@ fn draw_list(f: &mut Frame, app: &App, area: Rect) {
         prev_basis = Some(basis);
         let selected = i == app.bench.history_row;
         let mark = match entry.frame.verdict.as_ref().map(|v| v.kind) {
-            Some(atlas_plugin::VerdictKind::Pass) => Span::styled("✓", theme::brand_green()),
-            Some(atlas_plugin::VerdictKind::Fail) => Span::styled("✗", theme::error()),
+            Some(avarok_plugin::VerdictKind::Pass) => Span::styled("✓", theme::brand_green()),
+            Some(avarok_plugin::VerdictKind::Fail) => Span::styled("✗", theme::error()),
             _ => Span::styled("·", theme::dim()),
         };
         let mut line = Line::from(vec![

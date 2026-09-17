@@ -51,7 +51,7 @@ impl App {
             // without moving the cursor would leave the two out of step.
             Section::Library => self.lib.move_selection(rows as isize),
             Section::Benchmarks => {
-                let n = atlas_plugin::registry::all().len();
+                let n = avarok_plugin::registry::all().len();
                 if n > 0 {
                     let cur = self.bench.selected as i32;
                     let next = (cur + rows).clamp(0, n as i32 - 1);

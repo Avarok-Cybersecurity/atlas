@@ -6,7 +6,7 @@ use super::{DenseFfnLayer, DenseFfnWeights};
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};

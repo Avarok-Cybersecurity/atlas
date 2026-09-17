@@ -21,13 +21,13 @@
 
 use anyhow::Result;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
 /// Init the CUDA backend + a stream. `#[ignore]`d tests only; needs a GB10 GPU.
-pub fn setup() -> Result<(AtlasCudaBackend, u64)> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+pub fn setup() -> Result<(AvarokCudaBackend, u64)> {
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let st = backend.create_stream()?;
     Ok((backend, st))
 }

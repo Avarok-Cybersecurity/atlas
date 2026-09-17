@@ -100,7 +100,7 @@ sudo docker run -d --name atlas-mistral --gpus all --ipc=host --network host \
 ### Root Cause: YaRN RoPE inv_freq Bug (Fixed)
 
 **Threshold**: ~600–1000 diverse input tokens
-**Confirmed on**: BOTH atlas-test:latest AND avarok/atlas-alpha-2.7 (both built from pre-release code with the bug)
+**Confirmed on**: BOTH atlas-test:latest AND atlas/atlas-alpha-2.7 (both built from pre-release code with the bug)
 **Root cause**: YaRN inv_freq computation in `yarn.rs` used the Llama-3.1 NTK-by-parts
 wavelength-space formula with `llama_4_scaling.beta=0.1` mis-aliased as `low_freq_factor`
 (correct value: 1.0). This corrupted `inv_freq` for the lowest-frequency pairs (j≈25–31,

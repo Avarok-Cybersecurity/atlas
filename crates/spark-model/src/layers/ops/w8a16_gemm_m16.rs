@@ -20,7 +20,7 @@
 //! `examples/native_fp8_ffn_m16_tc_microtest.rs`). This is not a new seam: the
 //! arm the FFN used at these widths BEFORE #927 (`w8a16_gemm_n128_m128` /
 //! `w8a16_gemm_pipelined`) reassociates identically. It is why every call site
-//! sits behind `ATLAS_FFN_M16_TC`, default OFF.
+//! sits behind `AVAROK_FFN_M16_TC`, default OFF.
 //!
 //! The 128-K block scale is folded ONCE per block onto an FP32 outer
 //! accumulator (two-level fold, preserved exactly from `w8a16_gemm_pipelined`),
@@ -40,7 +40,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 pub const W8A16_GEMM_M16_N_TILE: u32 = 32;
 
 /// The wide instantiation's N tile (`w8a16_gemm_m16_n64`, kernel
-/// `M16_N_TILE_WIDE`) — opt-in via `ATLAS_FFN_M16_TC_NTILE=64`. Halves the CTA
+/// `M16_N_TILE_WIDE`) — opt-in via `AVAROK_FFN_M16_TC_NTILE=64`. Halves the CTA
 /// count for a given N and doubles the reuse of each staged A fragment. WHY it
 /// exists and what it is meant to settle: `dense_ffn_m16_tc.rs`.
 pub const W8A16_GEMM_M16_N_TILE_WIDE: u32 = 64;

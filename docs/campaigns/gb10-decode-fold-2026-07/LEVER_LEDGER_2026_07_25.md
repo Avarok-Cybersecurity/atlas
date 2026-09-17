@@ -24,13 +24,13 @@ Median output is only **45 tokens**, so per-request overhead competes directly w
 |---|---|---|
 | **fp8 KV cache** at K=4 | **DO NOT FOLD** | +8.1% TPOT p50 / +13.4% p90; token match 0.9954, mean KL 0.0526. Frees **0 GB** — the KV budget is derived, so fp8 only buys 2x KV *tokens* (323k→651k) that 32k/batch-1 never uses. Hypothesis dies on its own premise: **bf16 TPOT is flat 3k→13k context (42.58→42.91 ms), so decode is not KV-bandwidth-bound.** Closes the ledger's last `[pending A/B]`. |
 | **`--ssm-cache-slots 192`** | **NULL — keep 128** | Full e2e: wall +11.4 s, TTFT p90/p99 −0.8%/−1.6%, IoU −0.0021, BFCL −0.20. All inside the noise floor. See `SSM_SLOTS_AB.md`. |
-| **`ATLAS_DECODE_GRAPHS_MULTISEQ`** | **DEAD — not applicable** | Advertises "the dominant lever for n>=2 decode (~1500 kernel launches/step)", but `decode_a2.rs` iterates over concurrent *sequences*, not the K verify tokens; at `--max-batch-size 1` with MTP gated to `active.len()==1` the path is never entered. Independently, the serve log shows `Captured CUDA graph for K=4 verify (slot=0)` — the verify path already graphs by default (`verify_c.rs:170`). Rejected without spending a leg. |
-| **`ATLAS_SSM_TAIL_MIDCHUNK` re-enable** | **DO NOT FOLD (cost/benefit)** | The `=0` in the frozen config IS a stale workaround — the 2026-07-16 fix is present verbatim in `snapshot.rs::lookup`. But N=3: warm TTFT **median unchanged** (894.1 both), mean −2.7%, sd 107.5→72.5. ~26 s = 0.6% of wall. Not worth re-opening a silent cross-request corruption path. |
+| **`AVAROK_DECODE_GRAPHS_MULTISEQ`** | **DEAD — not applicable** | Advertises "the dominant lever for n>=2 decode (~1500 kernel launches/step)", but `decode_a2.rs` iterates over concurrent *sequences*, not the K verify tokens; at `--max-batch-size 1` with MTP gated to `active.len()==1` the path is never entered. Independently, the serve log shows `Captured CUDA graph for K=4 verify (slot=0)` — the verify path already graphs by default (`verify_c.rs:170`). Rejected without spending a leg. |
+| **`AVAROK_SSM_TAIL_MIDCHUNK` re-enable** | **DO NOT FOLD (cost/benefit)** | The `=0` in the frozen config IS a stale workaround — the 2026-07-16 fix is present verbatim in `snapshot.rs::lookup`. But N=3: warm TTFT **median unchanged** (894.1 both), mean −2.7%, sd 107.5→72.5. ~26 s = 0.6% of wall. Not worth re-opening a silent cross-request corruption path. |
 | **GEMM tile padding at M≈187** | **NOT WORTH IT** | At the real delta distribution (p50 210 / mean 331 tok), M128→M64 cuts padded rows only 7.4% = 57 s = **1.4% of wall**. |
 | **W4A4 prefill + decode** | **DEAD (both axes)** | Prior: 0.995-1.011x speed, 70.6% token match, 7.64 mean KL. See `W4A4_PREFILL_AB.md`. |
-| **`ATLAS_BF16_TC_PROJ`** | **no speed case** | Monotonic warm TTFT 990.8 → 1016.5 ms (+2.6%), TPOT ~neutral, tool call fine. Its motivation is accuracy (removes FP8 E4M3 activation crushing on attention QKV/o, which we already avoid on the FFN via `ATLAS_BF16_TC_PREFILL=1`), so it would need an accuracy run to justify — but it does not pay for itself on speed. |
+| **`AVAROK_BF16_TC_PROJ`** | **no speed case** | Monotonic warm TTFT 990.8 → 1016.5 ms (+2.6%), TPOT ~neutral, tool call fine. Its motivation is accuracy (removes FP8 E4M3 activation crushing on attention QKV/o, which we already avoid on the FFN via `AVAROK_BF16_TC_PREFILL=1`), so it would need an accuracy run to justify — but it does not pay for itself on speed. |
 | **SSM snapshot storage dtype** (h_state FP32→BF16/FP16) | **DO NOT FOLD** | Implemented on dgx3 with compute left FP32. Both narrowings FAIL the >=0.99 token-match bar: bf16 0.880, fp16 0.889, ~19% of responses diverge, mean KL ~3. Coherence and tool-call smoke PASS on both, so it is silent trajectory drift. **fp16's two extra mantissa bits buy nothing (0.880→0.889) — the sensitivity is not mantissa-limited**: `h_state` is a recurrent accumulator, so any rounding at restore perturbs everything downstream. And the payoff was already null, since more slots are worth nothing here (see `SSM_SLOTS_AB.md`) — both sides of the trade are dead. |
-| **`ATLAS_GDN_REGRESIDENT`** | **FOLD — the one win of the sweep** | Full e2e: **wall 4134.01 → 3834.44 s (−7.25%)**, TTFT p50/p90/p99 −11.4%/−18.0%/−15.8%, **BFCL identical at 87.24**, IoU −0.0048 (exactly on the noise floor). Attribution shows decode is provably untouched, so the defensible win is ~219 s = **5.3% of wall, all TTFT**. Full detail in the RESULT section at the end of this file. |
+| **`AVAROK_GDN_REGRESIDENT`** | **FOLD — the one win of the sweep** | Full e2e: **wall 4134.01 → 3834.44 s (−7.25%)**, TTFT p50/p90/p99 −11.4%/−18.0%/−15.8%, **BFCL identical at 87.24**, IoU −0.0048 (exactly on the noise floor). Attribution shows decode is provably untouched, so the defensible win is ~219 s = **5.3% of wall, all TTFT**. Full detail in the RESULT section at the end of this file. |
 
 ## The biggest claimed lever, measured and refuted
 
@@ -108,12 +108,12 @@ regresident magnitude and produced a bogus "+6 ms for 310 new tokens" on dgx2.
   the latency legs completed.
 - The GDN path banners (`FLA chunked` / `REGISTER-RESIDENT`) fire on the first prefill or replay,
   **not at startup**, so they must be read after the probes. They are the only proof a flag engaged.
-- `ATLAS_*` presence-flags treat `=0` as ENABLED; only `ATLAS_SSM_TAIL_MIDCHUNK` and
-  `ATLAS_DECODE_GRAPHS_MULTISEQ` are strict-string tests. Control legs must OMIT the variable.
+- `AVAROK_*` presence-flags treat `=0` as ENABLED; only `AVAROK_SSM_TAIL_MIDCHUNK` and
+  `AVAROK_DECODE_GRAPHS_MULTISEQ` are strict-string tests. Control legs must OMIT the variable.
 
-## RESULT: ATLAS_GDN_REGRESIDENT — FOLD (full e2e, 2026-07-25)
+## RESULT: AVAROK_GDN_REGRESIDENT — FOLD (full e2e, 2026-07-25)
 
-`results/regres_e2e_20260725_071238`, frozen golden config + `ATLAS_GDN_REGRESIDENT=1` only,
+`results/regres_e2e_20260725_071238`, frozen golden config + `AVAROK_GDN_REGRESIDENT=1` only,
 both phases 1007/1007 + 995/995, MLPerf runtime seed lock, Gate C2 passed, traceback count 2
 (identical to the reference run's benign `apply_chat_template` fallback).
 

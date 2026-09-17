@@ -60,7 +60,7 @@ impl Qwen3AttentionLayer {
         let n = num_tokens as u32;
         let bf16 = 2usize;
 
-        // ATLAS_OP_DUMP hook: pre-input-norm hidden state (input to layer).
+        // AVAROK_OP_DUMP hook: pre-input-norm hidden state (input to layer).
         if num_tokens > 0 {
             super::super::op_dump::dump_bf16(
                 ctx.gpu,
@@ -88,7 +88,7 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("rms_norm_residual failed: {e}"))?;
-        // ATLAS_OP_DUMP hook: post-input-norm (input to Q/K/V GEMM).
+        // AVAROK_OP_DUMP hook: post-input-norm (input to Q/K/V GEMM).
         if num_tokens > 0 {
             super::super::op_dump::dump_bf16(
                 ctx.gpu,
@@ -296,7 +296,7 @@ impl Qwen3AttentionLayer {
             stream,
         )
         .map_err(|e| anyhow::anyhow!("residual_add_rms_norm failed: n={n} h={h}: {e}"))?;
-        // ATLAS_OP_DUMP hook: post-attn-norm output = input to MoE FFN.
+        // AVAROK_OP_DUMP hook: post-attn-norm output = input to MoE FFN.
         if num_tokens > 0 {
             super::super::op_dump::dump_bf16(
                 ctx.gpu,
@@ -309,10 +309,10 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
-        // HOST-TIME split (ATLAS_PREFILL_HOST_TIMING=1): isolate the FFN/MoE
+        // HOST-TIME split (AVAROK_PREFILL_HOST_TIMING=1): isolate the FFN/MoE
         // half of this layer from the attention half. No synchronize — see
         // prefill_b/forward_layers.rs for why.
-        let t_ffn = (std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1"))
+        let t_ffn = (std::env::var("AVAROK_PREFILL_HOST_TIMING").as_deref() == Ok("1"))
             .then(std::time::Instant::now);
         // LongCat shortcut MoE (producer): run BEFORE the dense FFN (both
         // write moe_output), fold zero-experts, stash into the carry buffer.
@@ -336,7 +336,7 @@ impl Qwen3AttentionLayer {
                     stream,
                 )?;
             }
-            // ATLAS_OP_DUMP hook: the SHORTCUT MoE output (zero-experts already
+            // AVAROK_OP_DUMP hook: the SHORTCUT MoE output (zero-experts already
             // folded in), captured before the dense FFN reuses this buffer.
             // Distinct from "moe_out" below, which is the dense FFN delta.
             if num_tokens > 0 {
@@ -361,7 +361,7 @@ impl Qwen3AttentionLayer {
         }
 
         let dense_out = ctx.buffers.moe_output();
-        // ATLAS_OP_DUMP hook: MoE output (sum of all weighted expert outputs).
+        // AVAROK_OP_DUMP hook: MoE output (sum of all weighted expert outputs).
         // For Qwen3.6-A3B at full-attention layers, dense_out holds the
         // post-FFN delta to add to the residual. This is the "MoE block
         // output" comparable against HF `mlp.forward` last-token output.
@@ -570,7 +570,7 @@ impl Qwen3AttentionLayer {
         // on decode it silently invalidated CUDA graph capture — see
         // decode_inner.rs).
         let diag_all =
-            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+            std::env::var("AVAROK_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
         let diag_this = diag_all;
 
         if is_first_layer {
@@ -586,7 +586,7 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
-        // Bisect taps (ATLAS_QWEN4EXP_DUMP): the GDN ladder verifies clean,
+        // Bisect taps (AVAROK_QWEN4EXP_DUMP): the GDN ladder verifies clean,
         // so the attention layers are the remaining unverified compute. On
         // the 3:1 interleave attention layer k is MODEL layer 4k+3.
         let model_layer = self.attn_layer_idx * 4 + 3;

@@ -96,7 +96,7 @@ pub trait CommBackend: Send + Sync {
     /// Provide a kernel handle for the BF16 in-place addition kernel.
     ///
     /// Used by the 2-rank send/recv all-reduce path. The kernel is loaded
-    /// by the model layer (which has access to AtlasRegistry) and passed
+    /// by the model layer (which has access to AvarokRegistry) and passed
     /// to the comm backend at init time.
     fn set_add_kernel(&self, _handle: u64) {
         // Default: no-op (single GPU or backends that don't need it)

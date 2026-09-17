@@ -9,7 +9,7 @@
 //! repeatedly cost more time than a hard failure would have.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 /// What the store holds, per family the loader cares about.

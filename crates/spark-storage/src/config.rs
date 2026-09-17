@@ -73,7 +73,7 @@ mod tests {
 
     fn cfg() -> HighSpeedSwapConfig {
         HighSpeedSwapConfig {
-            dir: PathBuf::from("/tmp/atlas-hss-cfg"),
+            dir: PathBuf::from("/tmp/avarok-hss-cfg"),
             bytes: 64 << 30,
             resident_blocks: 8192,
             rank: 32,

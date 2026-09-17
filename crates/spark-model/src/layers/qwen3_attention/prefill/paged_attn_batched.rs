@@ -106,7 +106,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_nvfp4_batched_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_nvfp4_batched kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_nvfp4_batched(
@@ -138,7 +138,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_nvfp4_batched_64_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_nvfp4_batched_64 kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_nvfp4_batched_64(
@@ -170,7 +170,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_fp8_batched_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_fp8_batched kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_fp8_batched(
@@ -203,7 +203,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_fp8_batched_64_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_fp8_batched_64 kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_fp8_batched_64(
@@ -236,7 +236,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_batched_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_batched kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_batched(
@@ -266,7 +266,7 @@ impl Qwen3AttentionLayer {
                 if self.prefill_attn_paged_batched_64_k.0 == 0 {
                     anyhow::bail!(
                         "prefill_attn_paged_batched_64 kernel not loaded — \
-                         rebuild atlas-kernels (commit 4ec2cf2)."
+                         rebuild avarok-kernels (commit 4ec2cf2)."
                     );
                 }
                 ops::prefill_attention_paged_batched_64(

@@ -30,10 +30,10 @@ fn qsa_prefill_select_sets_match_reference() {
     let rot = meta["rotary_dim"].as_u64().unwrap() as usize;
     let eps = meta["rms_norm_eps"].as_f64().unwrap() as f32;
 
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*'");
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*'");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
 
@@ -178,10 +178,10 @@ fn qsa_prefill_select_sets_match_reference() {
 #[test]
 #[ignore]
 fn qsa_prefill_attn_matches_cpu() {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*'");
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*'");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let k = g.kernel("qsa_indexer", "qsa_prefill_attn").unwrap();
@@ -305,10 +305,10 @@ fn qsa_prefill_attn_matches_cpu() {
 #[test]
 #[ignore]
 fn flash64_long_seq_rows_repro() {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*'");
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*'");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let k = g

@@ -39,7 +39,7 @@
 }
 .ih-stale { color: var(--amber); }
 .ih-prov {
-  font-size: 0.68rem; color: var(--ch-cyan); white-space: nowrap;
+  font-size: 0.68rem; color: var(--ch-cyan-text); white-space: nowrap;
   min-width: 4ch; overflow: hidden; text-overflow: ellipsis; flex: 0 4 auto;
 }
 .ih-reason {
@@ -95,7 +95,7 @@
 .io-note { font-size: 0.56rem; color: var(--t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.2; }
 .io-paused .io-val { color: var(--t3); }
 .io-wide-body { display: flex; align-items: center; gap: 0.6rem; min-width: 0; flex: 1; }
-.io-spark { flex: 1; min-width: 0; height: 30px; color: var(--ch-cyan); }
+.io-spark { flex: 1; min-width: 0; height: 30px; color: var(--ch-cyan-text); }
 .io-off {
   height: 100%; display: flex; align-items: center; justify-content: center;
   font-size: 0.86rem; color: var(--t3);
@@ -157,7 +157,7 @@
 .dt-problem { font-size: 0.78rem; color: var(--red); margin: 0.4rem 0; overflow-wrap: anywhere; }
 .dt-warn { font-size: 0.76rem; color: var(--amber); margin: 0.5rem 0; line-height: 1.5; }
 .dt-h { font-size: 0.8rem; font-weight: 700; color: var(--t1); display: flex; align-items: baseline; gap: 0.5rem; }
-.dt-route-badge { font-size: 0.66rem; font-weight: 400; color: var(--ch-cyan); }
+.dt-route-badge { font-size: 0.66rem; font-weight: 400; color: var(--ch-cyan-text); }
 
 /* logs */
 .dt-log {
@@ -168,7 +168,7 @@
 .dt-line { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--t2); }
 .dt-follow {
   margin-top: 0.4rem; padding: 0.25rem 0.6rem; font-size: 0.72rem; font-family: inherit;
-  color: var(--ch-cyan); background: none; border: 1px solid var(--border-strong);
+  color: var(--ch-cyan-text); background: none; border: 1px solid var(--border-strong);
   border-radius: 6px; cursor: pointer;
 }
 
@@ -198,7 +198,7 @@
 .dt-started { border: 1px solid var(--border-strong); border-radius: 8px; padding: 0.6rem 0.8rem; margin-top: 0.6rem; font-size: 0.8rem; color: var(--t2); }
 .dt-endpoint { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.4rem; overflow-wrap: anywhere; }
 .dt-copy {
-  padding: 0.2rem 0.5rem; font-size: 0.68rem; font-family: inherit; color: var(--ch-cyan);
+  padding: 0.2rem 0.5rem; font-size: 0.68rem; font-family: inherit; color: var(--ch-cyan-text);
   background: none; border: 1px solid var(--border-strong); border-radius: 6px; cursor: pointer; flex-shrink: 0;
 }
 
@@ -225,13 +225,13 @@
 .dt-logwhen { font-size: 0.64rem; color: var(--t3); }
 .dt-logverb { font-weight: 700; color: var(--t1); }
 .dt-logtarget { color: var(--t2); }
-.dt-logroute { font-size: 0.66rem; color: var(--ch-cyan); }
+.dt-logroute { font-size: 0.66rem; color: var(--ch-cyan-text); }
 .dt-logoutcome { color: var(--t2); overflow-wrap: anywhere; }
 .dt-logbad .dt-logoutcome { color: var(--red); }
 .dt-audit { margin-top: 0.7rem; }
 
 /* ---- B1: aggregate sparkline ------------------------------------------------ */
-.fa-spark { flex: 1; min-width: 0; height: 22px; align-self: center; color: var(--ch-cyan); }
+.fa-spark { flex: 1; min-width: 0; height: 22px; align-self: center; color: var(--ch-cyan-text); }
 
 /* Skeleton shimmer is meaning-carrying motion (a first sample in flight) and
    is therefore the only animation here, guarded exactly as the spec asks. */

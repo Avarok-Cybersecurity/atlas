@@ -10,7 +10,7 @@ q_proj is deliberately excluded: attn_output_gate=true makes it gated/interleave
 Per-module shapes are read from the base checkpoint's safetensors header (never assumed) and
 asserted against the expected hidden=1024 / kv=512 / q-out=2048 / intermediate=3584 geometry.
 
-Output (default /home/ms/atlas/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny):
+Output (default /home/ms/avarok/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny):
   adapter_model.safetensors   BF16 A/B pairs, PEFT save_pretrained key format
   adapter_config.json         written by peft.LoraConfig.save_pretrained (guaranteed PEFT-valid)
 
@@ -69,7 +69,7 @@ def main() -> None:
     ap.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("/home/ms/atlas/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny"),
+        default=Path("/home/ms/avarok/.claude/worktrees/lora-mvp-e0877873/test_data/lora-holo-tiny"),
     )
     ap.add_argument("--rank", type=int, default=8)
     ap.add_argument("--alpha", type=float, default=16.0)

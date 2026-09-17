@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! W8A8 block-scaled cuBLASLt arm for the **cache-skip Q/K/V PREFILL** chain —
-//! the `ATLAS_CUBLAS_GEMM=attn` route for chunk 0 of a prefill, which
+//! the `AVAROK_CUBLAS_GEMM=attn` route for chunk 0 of a prefill, which
 //! `prefill_w8a8.rs` (o_proj) and `paged_qkv.rs` (later chunks) left behind.
 //!
 //! WHY THIS EXISTS (#917 / #928). nsys on 1xH100, 2026-09-11 round 9,
-//! `Qwen/Qwen3.8-27B-FP8`, recipe `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`
+//! `Qwen/Qwen3.8-27B-FP8`, recipe `AVAROK_CUBLAS_GEMM=ffn,ssm,attn`
 //! (`nsys-r9-prefill`). In the 368.263 ms GPU-busy union of a 1193-token
 //! prefill, `w8a16_gemm_pipelined` is 100.582 ms over 112 launches and
 //! `w8a16_gemm_t_m128` a further 12.012 ms over 32. Resolving them by launch
@@ -57,7 +57,7 @@
 //! SSM and dense-FFN prefills already made.
 //! `native_fp8_prefill_proj_w8a8_microtest` gates it at cosine >= 0.999 /
 //! rel_rms <= 3e-2 against the W8A16 reference at these shapes.
-//! `ATLAS_ATTN_QKV_W8A16_ONLY` (presence) restores W8A16.
+//! `AVAROK_ATTN_QKV_W8A16_ONLY` (presence) restores W8A16.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
@@ -67,13 +67,13 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{Fp8Weight, WeightQuantFormat};
 
-/// `ATLAS_ATTN_QKV_W8A16_ONLY` kill switch: PRESENCE (any value, including
+/// `AVAROK_ATTN_QKV_W8A16_ONLY` kill switch: PRESENCE (any value, including
 /// empty) keeps the cache-skip Q/K/V prefill on the W8A16 kernels. Presence
-/// rather than `=1`, matching `ATLAS_FFN_W8A16_ONLY` — an escape hatch whose
+/// rather than `=1`, matching `AVAROK_FFN_W8A16_ONLY` — an escape hatch whose
 /// `=0` spelling must not mean "on".
 pub(super) fn attn_qkv_w8a16_only() -> bool {
     static ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ONLY.get_or_init(|| std::env::var_os("ATLAS_ATTN_QKV_W8A16_ONLY").is_some())
+    *ONLY.get_or_init(|| std::env::var_os("AVAROK_ATTN_QKV_W8A16_ONLY").is_some())
 }
 
 /// The three destination extents this chain writes, in BF16 elements, given
@@ -100,8 +100,8 @@ pub(super) fn cache_skip_qkv_extents(m: u32, q_proj_dim: u32, kv_dim: u32) -> (u
 /// Clauses, each load-bearing:
 ///
 /// * `!w8a16_only` — the kill switch above.
-/// * `cublas_attn` — `ATLAS_CUBLAS_GEMM` must name the `attn` family.
-/// * `fp8_blockscaled_prefill` — the `ATLAS_FP8_SINGLE_SCALE` kill switch.
+/// * `cublas_attn` — `AVAROK_CUBLAS_GEMM` must name the `attn` family.
+/// * `fp8_blockscaled_prefill` — the `AVAROK_FP8_SINGLE_SCALE` kill switch.
 /// * `m >= 16` — the covering argument for `k`'s phantom rows (header). It is
 ///   stricter than the `m > 4` floor the other prefill arms use, and it is the
 ///   clause that makes the shared-buffer overlap safe rather than merely
@@ -274,17 +274,17 @@ impl Qwen3AttentionLayer {
         if ctx.stats.once("log:attn_cache_skip_qkv_prefill") {
             if cublas {
                 tracing::info!(
-                    "[atlas] attention Q/K/V prefill (chunk 0, cache-skip): W8A8 block-scaled \
+                    "[avarok] attention Q/K/V prefill (chunk 0, cache-skip): W8A8 block-scaled \
                      via cuBLASLt, activation quantized once for all three \
                      (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue). \
-                     ATLAS_CUBLAS_GEMM=attn selected it; ATLAS_ATTN_QKV_W8A16_ONLY restores \
+                     AVAROK_CUBLAS_GEMM=attn selected it; AVAROK_ATTN_QKV_W8A16_ONLY restores \
                      W8A16. This arm allocates nothing."
                 );
             } else {
                 tracing::info!(
-                    "[atlas] attention Q/K/V prefill (chunk 0, cache-skip): W8A16 \
+                    "[avarok] attention Q/K/V prefill (chunk 0, cache-skip): W8A16 \
                      (BF16 act x FP8 weight). W8A8 cuBLASLt not selected — add `attn` to \
-                     ATLAS_CUBLAS_GEMM; see #917/#928."
+                     AVAROK_CUBLAS_GEMM; see #917/#928."
                 );
             }
         }

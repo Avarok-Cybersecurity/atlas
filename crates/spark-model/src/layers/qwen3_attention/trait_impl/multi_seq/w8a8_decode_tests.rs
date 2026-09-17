@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Which `ATLAS_CUBLAS_GEMM` families arm the attention decode W8A8 arm, and —
+//! Which `AVAROK_CUBLAS_GEMM` families arm the attention decode W8A8 arm, and —
 //! the part with teeth — that its STRIDED Q/K/V write can never leave the QKV
 //! buffer (#927).
 //!
@@ -74,20 +74,20 @@ fn all_selected(raw: &str, rows: usize, disabled: bool, capacity: usize) -> bool
 }
 
 /// `attn` (alone or in a list) and `all`/`1`/`true` arm it; NOTHING else does.
-/// `ATLAS_CUBLAS_GEMM=ffn` reaching the attention projections is the #917
+/// `AVAROK_CUBLAS_GEMM=ffn` reaching the attention projections is the #917
 /// failure the family set was introduced to prevent.
 #[test]
 fn only_the_attn_family_arms_the_attention_decode_arm() {
     for raw in ["attn", "ffn,attn", "attn,ssm", "all", "1", "true"] {
         assert!(
             all_selected(raw, 16, false, QKV_CAPACITY),
-            "ATLAS_CUBLAS_GEMM={raw:?}"
+            "AVAROK_CUBLAS_GEMM={raw:?}"
         );
     }
     for raw in ["ffn", "ssm", "head", "ffn,ssm", "off", "", "junk"] {
         assert!(
             !all_selected(raw, 16, false, QKV_CAPACITY),
-            "ATLAS_CUBLAS_GEMM={raw:?}"
+            "AVAROK_CUBLAS_GEMM={raw:?}"
         );
     }
     // And the bit read is the `attn` one, stated directly.
@@ -122,7 +122,7 @@ fn the_attention_decode_arm_takes_five_to_sixteen_rows_only() {
     }
 }
 
-/// `ATLAS_NO_W8A8_DECODE_PROJ` wins over an armed family, at every rung.
+/// `AVAROK_NO_W8A8_DECODE_PROJ` wins over an armed family, at every rung.
 #[test]
 fn the_kill_switch_beats_an_armed_attn_family() {
     for rows in [5, 8, 16] {

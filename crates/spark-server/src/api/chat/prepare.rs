@@ -16,7 +16,7 @@ use crate::ir::ChatRequest;
 use super::{msg_entry, template, thinking};
 
 // Opt-in per-request phase timing for the chat request path
-// (`ATLAS_CHAT_PHASE_TIMING=1`, strict `== "1"`).
+// (`AVAROK_CHAT_PHASE_TIMING=1`, strict `== "1"`).
 //
 // Exists to localize a measured ~205 ms that `/v1/chat/completions` costs over
 // `/v1/completions` for identical content on a SHORT, TOOL-LESS prompt. It is

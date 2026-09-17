@@ -7,7 +7,7 @@
 
 use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 mod accessors;
 pub mod decode_meta;
@@ -50,9 +50,9 @@ pub struct BufferArena {
     attn_output: DevicePtr,
     /// MoE gate logits: [M, num_experts] in BF16.
     gate_logits: DevicePtr,
-    /// MoE gate logits: [M, num_experts] in FP32 (ATLAS_FP32_GATE path).
+    /// MoE gate logits: [M, num_experts] in FP32 (AVAROK_FP32_GATE path).
     gate_logits_f32: DevicePtr,
-    /// MoE-input norm output: [M, hidden_size] in FP32 (ATLAS_FP32_ROUTING).
+    /// MoE-input norm output: [M, hidden_size] in FP32 (AVAROK_FP32_ROUTING).
     moe_router_in_f32: DevicePtr,
     /// MoE output: [M, hidden_size] in BF16.
     moe_output: DevicePtr,
@@ -95,7 +95,7 @@ pub struct BufferArena {
     hc_lowrank_scratch: DevicePtr,
     qsa_select_scratch: DevicePtr,
     /// GDN FLA chunked-prefill scratch (W|U|S|uc sub-divided). NULL unless the
-    /// model is a 128-dim-linear-head GDN model (ATLAS_GDN_FLA path).
+    /// model is a 128-dim-linear-head GDN model (AVAROK_GDN_FLA path).
     gdn_fla_scratch: DevicePtr,
     /// Mamba-2 SSD chunked-scan scratch (dt | dA_cumsum | CB). NULL unless the model
     /// has Mamba-2 SSM layers.
@@ -139,10 +139,10 @@ pub struct BufferArena {
     /// adapter SLOT index per prefilling token). NULL when no adapter.
     lora_seq_slot: DevicePtr,
     /// Persistent q8_1_mmq activation scratch for native Q2_0 MMQ prefill
-    /// (`ATLAS_GGUF_NATIVE_Q2_MMQ`). Shared by every kept-packed projection;
+    /// (`AVAROK_GGUF_NATIVE_Q2_MMQ`). Shared by every kept-packed projection;
     /// each seam quantizes its activation here then runs the packed MMQ GEMM.
     q2_act_q8: DevicePtr,
-    /// Row-wise FP8 GDN prefill BF16-weight slab (`ATLAS_FP8_ROWWISE`). One
+    /// Row-wise FP8 GDN prefill BF16-weight slab (`AVAROK_FP8_ROWWISE`). One
     /// allocation for EVERY GDN layer's dequanted `in_proj_qkvz` + `out_proj`;
     /// `take_ssm_rowwise_w_bf16` bump-carves a layer's slice on its first
     /// prefill. NULL unless the lever is armed. See `sizes_rowwise.rs` for the
@@ -229,7 +229,7 @@ impl BufferArena {
         let hc_lowrank_scratch = gpu.alloc(sizes.hc_lowrank_scratch)?;
         let qsa_select_scratch = gpu.alloc(sizes.qsa_select_scratch)?;
         // GDN FLA scratch: only allocate for the 128-dim-linear-head GDN path
-        // (size 0 → NULL → ATLAS_GDN_FLA dispatch stays disabled).
+        // (size 0 → NULL → AVAROK_GDN_FLA dispatch stays disabled).
         let ssd_scratch = if sizes.ssd_scratch > 0 {
             gpu.alloc(sizes.ssd_scratch)?
         } else {
@@ -271,7 +271,7 @@ impl BufferArena {
         let fp8_act = gpu.alloc(sizes.fp8_act)?;
         let fp8_act_scale = gpu.alloc(sizes.fp8_act_scale)?;
         let fp8_act_scale_kmajor = gpu.alloc(sizes.fp8_act_scale_kmajor)?;
-        // Q2_0 prefill dequant scratch. 0 → NULL unless ATLAS_GGUF_NATIVE_Q2.
+        // Q2_0 prefill dequant scratch. 0 → NULL unless AVAROK_GGUF_NATIVE_Q2.
         let q2_dequant_scratch = if sizes.q2_dequant_scratch > 0 {
             gpu.alloc(sizes.q2_dequant_scratch)?
         } else {
@@ -299,13 +299,13 @@ impl BufferArena {
         } else {
             DevicePtr::NULL
         };
-        // Q2_0 MMQ prefill q8_1 activation scratch. 0 → NULL unless ATLAS_GGUF_NATIVE_Q2_MMQ.
+        // Q2_0 MMQ prefill q8_1 activation scratch. 0 → NULL unless AVAROK_GGUF_NATIVE_Q2_MMQ.
         let q2_act_q8 = if sizes.q2_act_q8 > 0 {
             gpu.alloc(sizes.q2_act_q8)?
         } else {
             DevicePtr::NULL
         };
-        // Row-wise GDN prefill BF16 weights. 0 → NULL unless ATLAS_FP8_ROWWISE.
+        // Row-wise GDN prefill BF16 weights. 0 → NULL unless AVAROK_FP8_ROWWISE.
         let ssm_rowwise_w_bf16 = if sizes.ssm_rowwise_w_bf16 > 0 {
             gpu.alloc(sizes.ssm_rowwise_w_bf16)?
         } else {
@@ -382,7 +382,7 @@ impl BufferArena {
 /// next model failing to fit, so the compiler is made to refuse the addition
 /// instead. If this line stops compiling, the fix is to free the new field, not
 /// to add a wildcard.
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for BufferArena {
     fn label(&self) -> &'static str {
         "buffer arena"
     }

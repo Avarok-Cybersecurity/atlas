@@ -37,7 +37,7 @@
 
 use anyhow::{Result, bail};
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -53,10 +53,10 @@ const DV_BLK: usize = 64;
 const NUM_DV_BLK: usize = VD / DV_BLK; // 2
 
 // ksplit reference smem (99336 B): 2×{W,K,U} db (bf16) + 2×gc + 2×decay(CHUNK+1).
-/// Challenger under test, overridable (`ATLAS_GDN_CHALLENGER`) so a new candidate
+/// Challenger under test, overridable (`AVAROK_GDN_CHALLENGER`) so a new candidate
 /// can be A/B'd against the same ksplit reference without forking this harness.
 fn challenger_name() -> String {
-    match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
+    match std::env::var("AVAROK_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => "gated_delta_rule_chunk_delta_h_dvsplit".to_string(),
         Some(v) if v.starts_with('v') => format!("gated_delta_rule_chunk_delta_h_{v}"),
         _ => "gated_delta_rule_chunk_delta_h_tc_vblock".to_string(),
@@ -65,7 +65,7 @@ fn challenger_name() -> String {
 
 /// smem for the selected challenger (dvsplit/vtile are single-buffered).
 fn challenger_smem() -> u32 {
-    match std::env::var("ATLAS_GDN_CHALLENGER").ok().as_deref() {
+    match std::env::var("AVAROK_GDN_CHALLENGER").ok().as_deref() {
         Some("dvsplit") => (C * KD * 2 + C * KD * 2 + C * DV_BLK * 2 + (C + 1) * 4) as u32,
         Some(v) if v.starts_with('v') => (C * (KD * 4 + VD * 2) + (C + 1) * 4) as u32,
         _ => TC_VBLOCK_SMEM,
@@ -428,7 +428,7 @@ fn cmp_f32(new: &[u8], reference: &[u8]) -> (f64, f64) {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let k_wu = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
     let k_ref = g.kernel(

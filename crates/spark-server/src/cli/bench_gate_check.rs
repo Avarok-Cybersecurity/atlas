@@ -6,7 +6,7 @@
 //! boundary; it shares only `repo_root` with the run path and touches no GPU.
 
 use anyhow::Result;
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 use super::bench_run::repo_root;
 
@@ -53,7 +53,7 @@ pub(super) fn gate_check_cmd(pr: Option<u64>) -> Result<i32> {
     // intent stays advisory until it is proven stable; this is the reporting
     // half of it.
     //
-    // `atlas-governance`'s own doctrine says the ledger is advisory
+    // `avarok-governance`'s own doctrine says the ledger is advisory
     // "permanently — adding a ledger read would make [the gate] depend on a
     // file any job can append to". Reading it to PRINT is not that; reading it
     // to DECIDE would be, and would need that paragraph rewritten first.

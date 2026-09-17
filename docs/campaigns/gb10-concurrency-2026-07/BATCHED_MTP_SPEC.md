@@ -7,7 +7,7 @@ Everything below is grounded in measurements taken 2026-07-27/28 or in the vendo
 
 Measured position after five shipped kernel wins (+15% at C=16):
 
-| C | Atlas | vLLM | ratio | MTP |
+| C | Avarok | vLLM | ratio | MTP |
 |---|---|---|---|---|
 | 1 | 25.45 | 14.2 | **1.792x** | **ON** |
 | 2 | 26.20 | 27.8 | 0.942x | off |
@@ -25,7 +25,7 @@ regression. Five wins totalled +15%. C=8/16 need **+29-32%**.
 
 ## Why it is not a constant change (measured)
 
-`ATLAS_MTP_MAX_SEQS` is a GUARD, not a knob:
+`AVAROK_MTP_MAX_SEQS` is a GUARD, not a knob:
 - cap=2 at C=2: **25.45** vs cap=1 (MTP off) **26.35** => enabling it LOSES 3.4%. Default is now 1.
 - cap=4 at C=4: **25.8** vs 48.5 => **HALVES** throughput. Output coherent and identical, so this is
   SERIALIZATION, not corruption.
@@ -86,7 +86,7 @@ batch, so k+1 tokens per weight-read is nearly free).
 Applied to 130.75 at C=16 => **170-222 tok/s**, i.e. clearing vLLM's 168.9 and the campaign goal.
 
 ★ It is UNKNOWN whether the vLLM 168.9 reference itself ran with speculation. If it did not, this
-does not merely close the gap — it is how Atlas passes it.
+does not merely close the gap — it is how Avarok passes it.
 
 ## Gates
 
@@ -113,7 +113,7 @@ sequential loop is untouched; only base addresses move.
 ## NEXT — step 2: batch the recurrent scan
 Consumer of the conv is `qwen3_ssm/trait_decode_batched_conv_gdn_wyn.rs:89` (`fused_conv` gate).
 The recurrent/WY side needs the SAME `gridDim.y = n_seq` treatment plus per-sequence state strides.
-★ Check `ATLAS_GDN_FUSED_CONV17` (`:92`) — the fused path is gated by it; do not assume it is on.
+★ Check `AVAROK_GDN_FUSED_CONV17` (`:92`) — the fused path is gated by it; do not assume it is on.
 ★ Memory records GDN multi-token VERIFY is SUPERLINEAR in K on strix (85/249/623 ms at K=1/2/3).
    Batching across sequences does NOT fix superlinearity in K — it fixes the n-fold WEIGHT re-read.
    Size the two separately.
@@ -132,7 +132,7 @@ The recurrent/WY side needs the SAME `gridDim.y = n_seq` treatment plus per-sequ
    before 1-4 land** — measured, it HALVES C=4.
 
 ## Gate before believing any of it
-`ATLAS_MTP_MAX_SEQS=4` at C=4 must go from 25.8 (today's serialized number) to >48.5 (today's
+`AVAROK_MTP_MAX_SEQS=4` at C=4 must go from 25.8 (today's serialized number) to >48.5 (today's
 MTP-off number) before the lever is real.
 
 ## DONE — steps 3+4 v1: batched verify + batched propose (fixer round 1, 2026-07-28)
@@ -151,12 +151,12 @@ Three fixes landed on top of the eb85ce41 scheduler/model wiring:
    4x-GEMV loop at M=4), LM head on `w4a16_gemv_batch4`, small per-row ops loop per seq with
    `forward_one`'s exact kernels. `mtp_head/forward_batch.rs`; scheduler defers the verdict
    propose (`K4Hidden::DeferPropose`) and batches it in Phase 4 of `verify_k4_batch_step.rs`.
-   Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE`. Measured alone: 46.3-46.8 vs 42.9-43.6 control.
+   Kill switch `AVAROK_NO_MTP_BATCH_PROPOSE`. Measured alone: 46.3-46.8 vs 42.9-43.6 control.
 2. **out_proj M>8 dispatch fix** (m_dispatch class): the R=16 verify rows fell into the
    pre-dequanted-FP8 PREFILL arm (2x the weight bytes of NVFP4) — 379 us vs 182 us per call,
    x48 layers = ~9.5 ms/step at C=4. New arm routes M>8 to the NVFP4 transposed-twin tile GEMM
    via `deep_k_gemm` (same kernel the multi-seq decode out_proj uses). Kill switch
-   `ATLAS_NO_VERIFY_OUTPROJ_TGEMM`.
+   `AVAROK_NO_VERIFY_OUTPROJ_TGEMM`.
 3. **Batched argmax** in the R-row verify and the batched propose (1 launch vs R serial one-CTA
    scans; ~2 ms/step).
 
@@ -186,7 +186,7 @@ slot-vector stability argument):
    — all into FIXED addresses (decode_a2 pattern); post-graph = the argmax D2H.
    Key = each sequence's ssm-pool slot in batch order + a wy-tables sentinel;
    cache capped at 32 (overflow runs eager). Kill switch
-   `ATLAS_NO_MTP_VERIFY_GRAPHS` (PRESENCE). ATLAS_K4_DIAG still forces eager.
+   `AVAROK_NO_MTP_VERIFY_GRAPHS` (PRESENCE). AVAROK_K4_DIAG still forces eager.
 2. **Cross-sequence batched GDN conv+WY** (`trait_decode_batched_conv_gdn_multi.rs`):
    the shipped-but-uncalled `gdn_verify_fused_conv_kn_batched` now has its call
    site (one launch, gridDim.y = n, snapshots inline — kills the n×(4 conv +
@@ -198,7 +198,7 @@ slot-vector stability argument):
    0..3 intra-slot contiguous) are checked on the ACTUAL pointers per layer;
    any failure falls back to the per-seq loop (engage/decline logged once +
    counted — grep serve logs for "batched-verify GDN conv+WY"). Kill switch
-   `ATLAS_NO_VERIFY_GDN_BATCH` (PRESENCE). Contract delta: the batched conv
+   `AVAROK_NO_VERIFY_GDN_BATCH` (PRESENCE). Contract delta: the batched conv
    also writes the dead t=K-1 snapshot (pool has num_intermediates = K slots;
    verified before launch).
 
@@ -208,7 +208,7 @@ secondary stream), Phase-4 batched propose (3 per-position host syncs), the
 argmax D2H. NOT ported: table-form wy2/wy3 (K<4 batched verify still refuses
 batch>1 — irrelevant for the K=4 path).
 
-Validation still owed (validator): serve + `ATLAS_MTP_MAX_SEQS` sweep vs the
+Validation still owed (validator): serve + `AVAROK_MTP_MAX_SEQS` sweep vs the
 two kill switches, coherence + tool-call smoke, PROOF the batched conv kernel
 resolves (the "ENGAGED" log line / nsys instance count), and the accept-rate
 telemetry unchanged.

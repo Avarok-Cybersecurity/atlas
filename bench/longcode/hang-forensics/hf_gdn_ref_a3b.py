@@ -20,7 +20,7 @@ EXACT shapes (B=1, L=31):
   norm  (norm forward-hook out) : [B*L*32, 128]   same rows, flat                                (4096)
   out_proj     hook out         : [B, L, 2048]                          last tok [0, L-1, :]     (2048)
 
-Token IDs were captured from atlas-35b-a3b-fix via POST /tokenize for the
+Token IDs were captured from avarok-35b-a3b-fix via POST /tokenize for the
 rendered chat-template-wrapped prompt:
   "<|im_start|>user\nWhat is 17 times 23? Reply with the number only, no prose.<|im_end|>\n"
   "<|im_start|>assistant\n<think>\n\n</think>\n\n"

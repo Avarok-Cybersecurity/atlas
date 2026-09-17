@@ -6,9 +6,9 @@
    that trap live: anyone whose stored value is `light` gets the stock light
    palette on a site that has no light mode. So all five classes map to the
    SAME Atlas values, and any stored choice renders the brand by construction.
-   The picker is then a control with no effect, and atlas.css removes it.
+   The picker is then a control with no effect, and avarok.css removes it.
 
-   Every value here is a `var()` into web-shared/atlas-tokens.css — the single
+   Every value here is a `var()` into web-shared/avarok-tokens.css — the single
    authoritative copy, linked just before this file. Nothing is restated.
 
    ★ `--bg` is deliberately absent. mdBook's `--bg` and the Atlas token `--bg`

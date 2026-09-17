@@ -22,7 +22,7 @@ use parking_lot::Mutex;
 
 /// Transport seam for the RDMA snapshot tier: a flat remote byte arena addressed
 /// by absolute offset. The RDMA implementation (behind
-/// `atlas_rdma_verbs`) ships each contiguous spill blob to a peer RAM blade over
+/// `avarok_rdma_verbs`) ships each contiguous spill blob to a peer RAM blade over
 /// CX7; `MockSnapshotTransport` is an in-process arena for unit tests. Snapshots
 /// must NOT reuse the KV `RdmaKvBackend` `GroupKey`/`group_stride` addressing
 /// (wrong layout — would corrupt live KV); this arena is offset-addressed only.
@@ -147,7 +147,7 @@ impl FileSnapshotArena {
     pub(crate) fn create(dir: &str, capacity: u64) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = std::path::Path::new(dir)
-            .join(format!("atlas-decode-ring.{}.arena", std::process::id()));
+            .join(format!("avarok-decode-ring.{}.arena", std::process::id()));
         let file = std::fs::OpenOptions::new()
             .create(true)
             .read(true)

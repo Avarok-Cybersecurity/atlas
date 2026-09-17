@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn nothing_on_disk_is_missing_not_stale() {
-    let dir = std::env::temp_dir().join("atlas-stale-empty");
+    let dir = std::env::temp_dir().join("avarok-stale-empty");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     assert_eq!(

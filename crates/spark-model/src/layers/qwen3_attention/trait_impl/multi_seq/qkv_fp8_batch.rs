@@ -44,13 +44,13 @@ type StridedBatchGemv = fn(
     u64,
 ) -> Result<()>;
 
-/// Kill switch for this tier: PRESENCE of `ATLAS_NO_FP8_QKV_BATCH` (any value)
+/// Kill switch for this tier: PRESENCE of `AVAROK_NO_FP8_QKV_BATCH` (any value)
 /// restores the per-sequence scalar loop. Read ONCE, never per layer per step,
 /// so it cannot vary across CUDA-graph replays — same contract as
 /// `qkv::bf16_batchm_enabled`.
 pub(super) fn fp8_batchm_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_FP8_QKV_BATCH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_FP8_QKV_BATCH").is_none())
 }
 
 impl Qwen3AttentionLayer {
@@ -180,7 +180,7 @@ impl Qwen3AttentionLayer {
     }
 
     /// The unchanged one-strided-launch-per-projection GEMV tier: `batch4`
-    /// below 5 rows, then the `ATLAS_FFN_M16_TC` MMA arm, the bit-exact
+    /// below 5 rows, then the `AVAROK_FFN_M16_TC` MMA arm, the bit-exact
     /// N-column arm, and `batch16`.
     #[allow(clippy::too_many_arguments)]
     fn ms_qkv_batchm_fp8_gemv(
@@ -216,8 +216,8 @@ impl Qwen3AttentionLayer {
         // scalar FFMA per weight byte with one m16n8k16 MMA lane-slot, which is
         // what the H100 measured as the difference between 342 GB/s and the
         // HBM3 roofline (SSOT + numbers: `layers::dense_ffn::m16_tc`). It
-        // REASSOCIATES the K reduction, so it is behind `ATLAS_ATTN_M16_TC`
-        // (or the `ATLAS_M16_TC` umbrella) and off by default; `h % 128 == 0`
+        // REASSOCIATES the K reduction, so it is behind `AVAROK_ATTN_M16_TC`
+        // (or the `AVAROK_M16_TC` umbrella) and off by default; `h % 128 == 0`
         // is already guaranteed by `dims_ok` in the selector, and the row pitch
         // guard by `strides_ok`. That lever is SEPARATE from the FFN's since
         // round 6: this tier measured -21.7% on the H100 in the same serve
@@ -238,7 +238,7 @@ impl Qwen3AttentionLayer {
             // output columns, so the 32 `uint4` activation loads and 256
             // BF16->FP32 converts it pays per 16 weight bytes amortise over
             // N_COLS of them. BELOW the `tc` arm on purpose: an operator who
-            // sets `ATLAS_FFN_M16_TC` is asking for the MMA route explicitly,
+            // sets `AVAROK_FFN_M16_TC` is asking for the MMA route explicitly,
             // and that lever reaches the FFN too.
             route
         } else {

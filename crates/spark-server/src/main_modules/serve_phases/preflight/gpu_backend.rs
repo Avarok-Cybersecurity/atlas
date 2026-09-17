@@ -14,7 +14,7 @@ use crate::cli;
 /// Initialize the GPU backend for the active feature.
 ///
 /// Compile-time dispatch:
-/// - `cuda` feature → `AtlasCudaBackend` loading PTX modules from `ptx_set`.
+/// - `cuda` feature → `AvarokCudaBackend` loading PTX modules from `ptx_set`.
 /// - `metal` feature → `MetalGpuBackend` loading metallib modules from
 ///   `ptx_set` as well. Both arms register the RESOLVED target's modules;
 ///   `metallib_modules()` is a plain alias of target 0, so registering from
@@ -22,12 +22,12 @@ use crate::cli;
 #[cfg(feature = "cuda")]
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
 ) -> Result<(Box<dyn spark_runtime::gpu::GpuBackend>, usize)> {
     super::super::kernel_gate::gate_device_arch(args.check_kernels, ptx_set, args.gpu_ordinal)?;
 
     let backend =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(args.gpu_ordinal, &ptx_set.modules)
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(args.gpu_ordinal, &ptx_set.modules)
             .context("Failed to initialize CUDA backend")?;
 
     let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(backend);
@@ -49,7 +49,7 @@ pub(crate) fn init_gpu_backend(
 #[cfg(all(feature = "metal", not(feature = "cuda")))]
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
 ) -> Result<(Box<dyn spark_runtime::gpu::GpuBackend>, usize)> {
     // The RESOLVED target's modules, exactly like the CUDA arm above.
     // `metallib_modules()` is an alias of `ptx_modules()`, which build-codegen

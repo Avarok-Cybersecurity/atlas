@@ -19,7 +19,7 @@
 //! * `cumemgetinfo` — the driver leg alone, no `max(.., MemAvailable)` (A73).
 //! * `memavailable` — the host leg, for continuity with the older measurements.
 //!
-//! Off unless `ATLAS_SEQ_MEMTRACE` is set (presence — `=0` is NOT "off"), so the
+//! Off unless `AVAROK_SEQ_MEMTRACE` is set (presence — `=0` is NOT "off"), so the
 //! serving path pays one `OnceLock` read per sequence when it is off.
 
 use std::sync::OnceLock;
@@ -31,7 +31,7 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 static SEQ_NO: AtomicU64 = AtomicU64::new(0);
 
 pub fn enabled() -> bool {
-    *ENABLED.get_or_init(|| std::env::var("ATLAS_SEQ_MEMTRACE").is_ok())
+    *ENABLED.get_or_init(|| std::env::var("AVAROK_SEQ_MEMTRACE").is_ok())
 }
 
 fn mem_available_bytes() -> Option<usize> {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The `ATLAS_*_M16_TC` LEVER GRAMMAR (#927, split in round 6) and the CTA-tile
+//! The `AVAROK_*_M16_TC` LEVER GRAMMAR (#927, split in round 6) and the CTA-tile
 //! choice it carries — the pure resolver only. Which arm a row count then takes
 //! is `dense_ffn_m16_tc_tests.rs`; the numerics are the GPU oracle's.
 
@@ -30,14 +30,14 @@ fn no_lever_set_leaves_every_tier_off() {
     assert_eq!(l.ffn_n_tile, W8A16_GEMM_M16_N_TILE, "default tile is 32");
 }
 
-/// THE POINT OF THE SPLIT: `ATLAS_FFN_M16_TC` must no longer reach attention.
+/// THE POINT OF THE SPLIT: `AVAROK_FFN_M16_TC` must no longer reach attention.
 #[test]
 fn the_ffn_lever_reaches_the_ffn_arm_only() {
     let l = resolve_m16_tc_levers(true, false, None);
     assert!(l.ffn);
     assert!(
         !l.attn,
-        "ATLAS_FFN_M16_TC must leave the attention tiers alone"
+        "AVAROK_FFN_M16_TC must leave the attention tiers alone"
     );
 }
 
@@ -47,11 +47,11 @@ fn the_ffn_lever_reaches_the_ffn_arm_only() {
 fn the_attn_lever_reaches_the_attention_tiers_only() {
     let l = resolve_m16_tc_levers(false, true, None);
     assert!(l.attn);
-    assert!(!l.ffn, "ATLAS_ATTN_M16_TC must leave the dense FFN alone");
+    assert!(!l.ffn, "AVAROK_ATTN_M16_TC must leave the dense FFN alone");
 }
 
 /// The two families are INDEPENDENT inputs here: this function is the shape of
-/// the pair, and the umbrella that can set both (`ATLAS_M16_TC`) is folded in
+/// the pair, and the umbrella that can set both (`AVAROK_M16_TC`) is folded in
 /// one layer up, by `ops::target_defaults::resolve`, so that an umbrella can
 /// never DISARM a target's declaration. Its own cases live beside that
 /// resolver; what is pinned here is that neither input leaks into the other.
@@ -76,7 +76,7 @@ fn the_n_tile_lever_selects_the_wide_instantiation() {
         assert_eq!(
             resolve_m16_tc_levers(true, false, Some(raw)).ffn_n_tile,
             W8A16_GEMM_M16_N_TILE,
-            "ATLAS_FFN_M16_TC_NTILE={raw:?} must fall back to 32"
+            "AVAROK_FFN_M16_TC_NTILE={raw:?} must fall back to 32"
         );
     }
 }

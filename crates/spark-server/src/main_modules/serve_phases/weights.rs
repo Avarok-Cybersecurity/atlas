@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -67,7 +67,7 @@ pub(crate) fn load_weight_store(
     }
 
     let use_fast_load =
-        !args.no_fast_load && std::env::var("ATLAS_FAST_LOAD").ok().as_deref() != Some("0");
+        !args.no_fast_load && std::env::var("AVAROK_FAST_LOAD").ok().as_deref() != Some("0");
     let store = if use_fast_load {
         #[cfg(unix)]
         {
@@ -98,7 +98,7 @@ pub(crate) fn load_weight_store(
                 );
             }
             loader.prefetch_shards = args.fast_load_prefetch_shards
-                || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
+                || std::env::var("AVAROK_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
                     .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
             if loader.prefetch_shards {
@@ -131,7 +131,7 @@ pub(crate) fn load_weight_store(
 
 pub(crate) fn load_dflash_drafter(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     gpu: &dyn spark_runtime::gpu::GpuBackend,
 ) -> Result<
     Option<(
@@ -176,7 +176,7 @@ pub(crate) fn load_dflash_drafter(
     //   * head fixed costs: scratch (~250 MB), fused_kv, drafter KV cache
     //     (max_seq_len x layers x 2 x kv_dim x BF16), DFlash2 selector host
     //     copies (~2 x vocab x rank BF16 — unified memory, so host counts)
-    //   * ATLAS_DFLASH_DRAFTER_FP8: FP8 mirrors of the dense weights
+    //   * AVAROK_DFLASH_DRAFTER_FP8: FP8 mirrors of the dense weights
     //     (~0.5x store) + the lm_head mirror (vocab x hidden FP8) + an
     //     equal transient for the quantize staging
     let store_bytes: u64 = std::fs::read_dir(&drafter_dir)
@@ -210,7 +210,7 @@ pub(crate) fn load_dflash_drafter(
     // weights are DEFAULT-ON, so testing "is the variable set" counted
     // the mirrors as zero on exactly the default path — the pre-flight
     // printed `fp8-mirrors 0.00` while the mirrors were resident.
-    let fp8_mirrors = if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
+    let fp8_mirrors = if std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
         let lm_head = (c.vocab_size as u64) * (c.hidden_size as u64);
         store_bytes / 2 + 2 * lm_head
     } else {
@@ -226,7 +226,7 @@ pub(crate) fn load_dflash_drafter(
     let headroom = (total as f64 * (1.0 - args.gpu_memory_utilization)) as u64;
     if free < estimate + headroom {
         anyhow::bail!(
-            "DFlash drafter would over-commit unified memory: estimated footprint {:.2} GB              (weights {:.2} + drafter-KV {:.2} + fused_kv {:.2} + selector-host {:.2} +              fp8-mirrors {:.2} + scratch {:.2}) but only {:.2} GB free with {:.2} GB              headroom pledged by --gpu-memory-utilization {:.2}. On GB10 this would SWAP              the host, not error. Lower --max-seq-len, lower --gpu-memory-utilization              pressure elsewhere, or drop ATLAS_DFLASH_DRAFTER_FP8.",
+            "DFlash drafter would over-commit unified memory: estimated footprint {:.2} GB              (weights {:.2} + drafter-KV {:.2} + fused_kv {:.2} + selector-host {:.2} +              fp8-mirrors {:.2} + scratch {:.2}) but only {:.2} GB free with {:.2} GB              headroom pledged by --gpu-memory-utilization {:.2}. On GB10 this would SWAP              the host, not error. Lower --max-seq-len, lower --gpu-memory-utilization              pressure elsewhere, or drop AVAROK_DFLASH_DRAFTER_FP8.",
             estimate as f64 / 1e9,
             store_bytes as f64 / 1e9,
             drafter_kv as f64 / 1e9,
@@ -319,7 +319,7 @@ fn target_ships_native_fp8_lm_head(args: &cli::ServeArgs) -> bool {
 /// one resident pool slot. A single adapter is byte-identical to the v0 path.
 pub(crate) struct LoraAdapterState {
     pub name: String,
-    pub peft_config: atlas_core::config::PeftAdapterConfig,
+    pub peft_config: avarok_core::config::PeftAdapterConfig,
     pub store: spark_runtime::weights::WeightStore,
 }
 
@@ -336,7 +336,7 @@ pub(crate) fn load_lora_adapters(
     if args.lora_adapter.len() > args.max_loras {
         anyhow::bail!(
             "--lora-adapter given {} times but --max-loras={} (pool has {} slots); \
-             raise --max-loras or stage the extras on an $ATLAS_LORA_PEER",
+             raise --max-loras or stage the extras on an $AVAROK_LORA_PEER",
             args.lora_adapter.len(),
             args.max_loras,
             args.max_loras,
@@ -354,9 +354,9 @@ pub(crate) fn load_lora_adapters(
         let cfg_path = adapter_dir.join("adapter_config.json");
         let raw = std::fs::read_to_string(&cfg_path)
             .with_context(|| format!("Failed to read {}", cfg_path.display()))?;
-        // Hard-error parser (atlas-core config/parsers/lora.rs) — scaling is read
+        // Hard-error parser (avarok-core config/parsers/lora.rs) — scaling is read
         // per adapter (alpha/r, alpha/sqrt(r) under use_rslora), NEVER defaulted.
-        let peft_config = atlas_core::config::parse_peft_adapter_config(&raw)
+        let peft_config = avarok_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("Failed to parse {}", cfg_path.display()))?;
         let rank_ceiling = args.max_lora_rank.unwrap_or(64);
         if peft_config.r > rank_ceiling {
@@ -423,7 +423,7 @@ fn skip_mtp(config: &ModelConfig) -> bool {
 /// Will the model's weight loader bind a vision encoder?
 ///
 /// Unresolvable model types answer `true`: never skip weights on a guess.
-fn binds_vision(config: &atlas_core::config::ModelConfig) -> bool {
+fn binds_vision(config: &avarok_core::config::ModelConfig) -> bool {
     spark_model::factory::loader_for_config(config)
         .map(|l| l.binds_vision_encoder())
         .unwrap_or(true)

@@ -56,18 +56,18 @@ pub mod w4a16_gemv_tiers;
 /// launches per step to the slowest variant. Both variants accumulate K
 /// sequentially, so moving between them is byte-identical.
 ///
-/// `ATLAS_NO_W4A16_K64=1` restores the pre-session 8192 threshold.
+/// `AVAROK_NO_W4A16_K64=1` restores the pre-session 8192 threshold.
 pub(crate) fn w4a16_k64_min_k() -> u32 {
     static MIN_K: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *MIN_K.get_or_init(|| {
         // Explicit override so an A/B can pin a previous threshold exactly.
-        if let Some(n) = std::env::var("ATLAS_W4A16_K64_MIN_K")
+        if let Some(n) = std::env::var("AVAROK_W4A16_K64_MIN_K")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
         {
             return n;
         }
-        if std::env::var("ATLAS_NO_W4A16_K64").ok().as_deref() == Some("1") {
+        if std::env::var("AVAROK_NO_W4A16_K64").ok().as_deref() == Some("1") {
             8192
         } else {
             6144
@@ -100,35 +100,35 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 /// given feature: e.g. Qwen3-Coder-Next (GDN+attention) never calls MLA
 /// kernels, but the layer builder still probes them. Warning on expected
 /// misses drowned out genuine problems in startup logs.
-/// Resolve the `w4a16_gemm_t_m128_v2` handle honoring `ATLAS_W4A16_VARIANT`.
+/// Resolve the `w4a16_gemm_t_m128_v2` handle honoring `AVAROK_W4A16_VARIANT`.
 ///
 /// One resolver for the THREE sites that dispatch on this handle (attention
 /// projections, dense-FFN prefill, SSM batched decode), so variant policy and
 /// rollback live in exactly one place. Default (unset) resolves to a ZERO
 /// handle — v1 everywhere — because the 27B port measured SLOWER than v1
-/// (see body). `ATLAS_W4A16_VARIANT=v2` opts in on all three sites at once;
+/// (see body). `AVAROK_W4A16_VARIANT=v2` opts in on all three sites at once;
 /// requesting it on a target without the kernel is a HARD startup error
 /// (fail fast, not a silent fallback discovered in a perf regression).
 #[track_caller]
 pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
-    let variant = std::env::var("ATLAS_W4A16_VARIANT").ok();
+    let variant = std::env::var("AVAROK_W4A16_VARIANT").ok();
     // DEFAULT OFF on the qwen3 layer stack: the 27B port of the 8-warp v2
     // crush kernel is bit-identical to v1 (microtest 100% on 8 shapes) but
     // MEASURED SLOWER on the 27B FFN shapes — 0.78-0.82x of v1 standalone
     // (w4a16_bf16_v2_bench, 2026-07-30; v1 58-74 TFLOP/s). The kernel stays
     // in the PTX set for A/B and for shape regimes where the extra warps
-    // might pay; nothing auto-activates it. `ATLAS_W4A16_VARIANT=v2` opts in
+    // might pay; nothing auto-activates it. `AVAROK_W4A16_VARIANT=v2` opts in
     // (hard error if the target lacks the kernel).
     if !matches!(variant.as_deref(), Some("v2") | Some("v3")) {
         if variant.as_deref() == Some("v1") {
-            tracing::debug!("ATLAS_W4A16_VARIANT=v1: w4a16 m128 v2 suppressed (explicit)");
+            tracing::debug!("AVAROK_W4A16_VARIANT=v1: w4a16 m128 v2 suppressed (explicit)");
         }
         return KernelHandle(0);
     }
     let h = try_kernel(gpu, "w4a16_v2", "w4a16_gemm_t_m128_v2");
     if h.0 == 0 {
         panic!(
-            "ATLAS_W4A16_VARIANT={} requested but w4a16_v2::w4a16_gemm_t_m128_v2 is not in this \
+            "AVAROK_W4A16_VARIANT={} requested but w4a16_v2::w4a16_gemm_t_m128_v2 is not in this \
              target's kernel set — refusing to start with a silently-degraded config",
             variant.unwrap()
         );
@@ -141,7 +141,7 @@ pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 }
 
 /// Resolve the W4A16 m128 **v3** GEMM. Opt-in ONLY, same contract as
-/// [`w4a16_v2_kernel`]: `ATLAS_W4A16_VARIANT=v3` selects it, anything else
+/// [`w4a16_v2_kernel`]: `AVAROK_W4A16_VARIANT=v3` selects it, anything else
 /// resolves to a ZERO handle WITHOUT issuing a lookup.
 ///
 /// Not issuing the lookup is the point. `prefill_weights` dispatches on
@@ -151,13 +151,13 @@ pub fn w4a16_v2_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// target is a HARD error, not a silent fallback discovered in a perf report.
 #[track_caller]
 pub fn w4a16_v3_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
-    if std::env::var("ATLAS_W4A16_VARIANT").as_deref() != Ok("v3") {
+    if std::env::var("AVAROK_W4A16_VARIANT").as_deref() != Ok("v3") {
         return KernelHandle(0);
     }
     let h = try_kernel(gpu, "w4a16_v3", "w4a16_gemm_t_m128_v3");
     if h.0 == 0 {
         panic!(
-            "ATLAS_W4A16_VARIANT=v3 requested but w4a16_v3::w4a16_gemm_t_m128_v3 is not in this \
+            "AVAROK_W4A16_VARIANT=v3 requested but w4a16_v3::w4a16_gemm_t_m128_v3 is not in this \
              target's kernel set — refusing to start with a silently-degraded config"
         );
     }
@@ -165,7 +165,7 @@ pub fn w4a16_v3_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 }
 
 /// Resolve the N128/M64 tile GEMM, preferring the 3-deep weight-pipeline variant.
-/// **ON by default**; `ATLAS_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
+/// **ON by default**; `AVAROK_NO_TGEMM_PIPELINE3` (presence — `=0` is NOT "off")
 /// falls back to the 2-stage parent. Falls back automatically on any target that
 /// does not ship `_p3`.
 ///
@@ -175,7 +175,7 @@ pub fn w4a16_v3_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// band of the grid.x-vs-efficiency curve. Bit-identical.
 #[track_caller]
 pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
-    if std::env::var("ATLAS_NO_TGEMM_PIPELINE3").is_err() {
+    if std::env::var("AVAROK_NO_TGEMM_PIPELINE3").is_err() {
         let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_p3");
         if h.0 != 0 {
             return h;
@@ -185,7 +185,7 @@ pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 }
 
 /// Resolve the k64 deep-K tile GEMM, preferring the 3-deep weight-pipeline
-/// variant. **ON by default**; `ATLAS_NO_K64_PIPELINE3` (presence — `=0` is NOT
+/// variant. **ON by default**; `AVAROK_NO_K64_PIPELINE3` (presence — `=0` is NOT
 /// "off") falls back to the 2-stage parent.
 ///
 /// The parent issues one cp.async group then `wait_all`s it before the dequant
@@ -196,7 +196,7 @@ pub fn tgemm_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
 /// `_p3` keeps step i+2's loads in flight across dequant(i+1). Bit-identical.
 #[track_caller]
 pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
-    let want_p3 = std::env::var("ATLAS_NO_K64_PIPELINE3").is_err();
+    let want_p3 = std::env::var("AVAROK_NO_K64_PIPELINE3").is_err();
     if want_p3 {
         let h = try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64_p3");
         if h.0 != 0 {
@@ -207,12 +207,12 @@ pub fn k64_kernel(gpu: &dyn GpuBackend) -> Result<KernelHandle> {
 }
 
 /// Resolve the NARROW-N (N_TILE=64) deep-K twin. `KernelHandle(0)` when the
-/// kernel is absent or the presence kill switch `ATLAS_NO_K64_N64` is set
+/// kernel is absent or the presence kill switch `AVAROK_NO_K64_N64` is set
 /// (`=0` is NOT "off"). Callers must store the handle — `kernel()` is an
 /// init-time lookup, not a per-launch one.
 #[track_caller]
 pub fn k64_n64_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
-    if std::env::var("ATLAS_NO_K64_N64").is_ok() {
+    if std::env::var("AVAROK_NO_K64_N64").is_ok() {
         return KernelHandle(0);
     }
     try_kernel(gpu, "w4a16", "w4a16_gemm_t_k64_n64_p3")
@@ -282,12 +282,12 @@ pub fn moe_grouped_decode_min_rows() -> usize {
 }
 
 /// Kill switch for the grouped-GEMM MoE decode arm. PRESENCE check per the
-/// house convention (`ATLAS_NO_MOE_GROUPED_DECODE=0` is NOT off), read once
+/// house convention (`AVAROK_NO_MOE_GROUPED_DECODE=0` is NOT off), read once
 /// per process — this predicate sits in the decode path, and the `env::var`
 /// it replaces ran on every dispatch for MoE models.
 pub fn moe_grouped_decode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MOE_GROUPED_DECODE").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MOE_GROUPED_DECODE").is_none())
 }
 
 /// Force the grouped arm BELOW `moe_grouped_decode_min_rows()`. Diagnostic
@@ -296,7 +296,7 @@ pub fn moe_grouped_decode_enabled() -> bool {
 /// Never a production setting: if forcing wins at a width, move the THRESHOLD.
 pub fn moe_grouped_decode_forced() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MOE_GROUPED_DECODE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MOE_GROUPED_DECODE").as_deref() == Ok("1"))
 }
 
 /// Whether the grouped-GEMM MoE decode arm should run for `n` rows —
@@ -355,7 +355,7 @@ impl FfnComponent {
         }
     }
 
-    /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
+    /// AVAROK_FP32_ROUTING active for this FFN (MoE only; false otherwise).
     pub fn fp32_routing_active(&self, levers: &ops::ModelLevers) -> bool {
         match self {
             Self::Moe(m) => m.fp32_routing_active(levers),

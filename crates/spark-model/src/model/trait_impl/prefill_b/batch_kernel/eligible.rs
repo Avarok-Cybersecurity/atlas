@@ -11,7 +11,7 @@
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::super::super::super::types::TransformerModel;
 use crate::traits::PrefillSlice;
@@ -28,17 +28,20 @@ pub(in crate::model) fn config_is_mla(config: &ModelConfig) -> bool {
 }
 
 /// Whether chunk-0 streams may use the batched (paged) prefill path. Enabled by
-/// `ATLAS_Q12_BATCHED_FIRST_CHUNK=1` or `ATLAS_PREFILL_CODISPATCH=1` (the latter
+/// `AVAROK_Q12_BATCHED_FIRST_CHUNK=1` or `AVAROK_PREFILL_CODISPATCH=1` (the latter
 /// is the single end-to-end flag for cross-request co-dispatch of fresh prompts,
 /// whose every stream starts at chunk_start==0).
 pub(super) fn first_chunk_batched_enabled() -> bool {
-    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
-        .iter()
-        .any(|k| {
-            std::env::var(k)
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-        })
+    [
+        "AVAROK_Q12_BATCHED_FIRST_CHUNK",
+        "AVAROK_PREFILL_CODISPATCH",
+    ]
+    .iter()
+    .any(|k| {
+        std::env::var(k)
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
 }
 
 impl TransformerModel {
@@ -148,9 +151,9 @@ pub(in crate::model) fn batched_reserve_hybrid_ssm_ok(
 impl TransformerModel {
     /// DIAG: detect cross-stream physical-block sharing (co-dispatch KV
     /// double-issue hypothesis for the n>=5 decode-bleed bug). Gated behind
-    /// `ATLAS_CODISPATCH_BTCHECK=1`; no-op otherwise.
+    /// `AVAROK_CODISPATCH_BTCHECK=1`; no-op otherwise.
     pub(super) fn codispatch_btcheck(&self, streams: &[PrefillSlice<'_>], n: usize) {
-        if std::env::var("ATLAS_CODISPATCH_BTCHECK").ok().as_deref() != Some("1") {
+        if std::env::var("AVAROK_CODISPATCH_BTCHECK").ok().as_deref() != Some("1") {
             return;
         }
         let mut owner: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
@@ -169,7 +172,7 @@ impl TransformerModel {
             if let Some(gs) = guard_slot {
                 if let Some(&prev) = slot_owner.get(&gs) {
                     tracing::warn!(
-                        "ATLAS_GUARDSHARE n={n}: GUARD slot {gs} SHARED by stream {prev} and {b}"
+                        "AVAROK_GUARDSHARE n={n}: GUARD slot {gs} SHARED by stream {prev} and {b}"
                     );
                 } else {
                     slot_owner.insert(gs, b);
@@ -178,7 +181,7 @@ impl TransformerModel {
             for &blk in &bt {
                 if let Some(&prev) = owner.get(&blk) {
                     tracing::warn!(
-                        "ATLAS_BTSHARE n={n}: KV block {blk} SHARED by stream {prev} and {b}"
+                        "AVAROK_BTSHARE n={n}: KV block {blk} SHARED by stream {prev} and {b}"
                     );
                 } else {
                     owner.insert(blk, b);
@@ -186,11 +189,11 @@ impl TransformerModel {
             }
             dump.push((b, slot, guard_slot, ptoks, tok0));
         }
-        tracing::warn!("ATLAS_BTDUMP n={n} (stream,slot_idx,guard_slot,ptoks,tok0): {dump:?}");
+        tracing::warn!("AVAROK_BTDUMP n={n} (stream,slot_idx,guard_slot,ptoks,tok0): {dump:?}");
     }
 }
 
-/// VARLEN batched prefill enabled? (`ATLAS_PREFILL_VARLEN=1`). Co-admits
+/// VARLEN batched prefill enabled? (`AVAROK_PREFILL_VARLEN=1`). Co-admits
 /// varied-length concurrent prefills into one forward (cu_seqlens geometry,
 /// FlashInfer ragged attention). Requires a FLASHINFER_HOME build.
 pub(in crate::model) fn varlen_prefill_enabled() -> bool {
@@ -300,7 +303,7 @@ where
     scratch_needed <= scratch_cap
 }
 
-/// `ATLAS_Q12_EFFECTIVE_ARENA=1` — charge the Q12 batched-prefill arena budget
+/// `AVAROK_Q12_EFFECTIVE_ARENA=1` — charge the Q12 batched-prefill arena budget
 /// by the tokens each stream will actually stage (chunk minus the cached
 /// prefix) instead of its raw chunk length.
 ///
@@ -309,5 +312,5 @@ where
 /// the per-stream path if a mid-batch eviction shrinks a match after the probe.
 pub(in crate::model) fn effective_arena_charge_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_Q12_EFFECTIVE_ARENA").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_Q12_EFFECTIVE_ARENA").as_deref() == Ok("1"))
 }

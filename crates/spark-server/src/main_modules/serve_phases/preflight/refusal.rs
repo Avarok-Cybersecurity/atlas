@@ -12,7 +12,7 @@
 //! the text load-bearing — it is the only thing an operator has to act on —
 //! which is why it carries the ring formula as well as a suggested batch.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 

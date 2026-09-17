@@ -21,7 +21,7 @@ And the kernel micro-benchmark summary: **Atlas wins 32/32** against PyTorch on 
 
 Atlas has two benchmark surfaces:
 
-1. **End-to-end HTTP throughput** — `atlas-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
+1. **End-to-end HTTP throughput** — `avarok-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
 2. **Per-kernel micro-benchmarks** — Criterion benches in each primitive crate, run with `cargo bench`. This is where "4.95× prefill attention" comes from.
 
 Different things; both are meaningful. The E2E number is what an operator sees. The per-kernel number is what tells the kernel engineer where effort is paying back.
@@ -44,9 +44,9 @@ sudo docker run -d --name atlas-35b \
 Wait for `listening`. Then:
 
 ```bash
-export ATLAS_BENCH_URL=http://localhost:8888
+export AVAROK_BENCH_URL=http://localhost:8888
 cd /path/to/atlas
-cargo bench -p atlas-spark-bench
+cargo bench -p avarok-spark-bench
 ```
 
 Criterion saves results to `target/criterion/`. The stable JSON snapshots that the README quotes are pinned under `bench/`.
@@ -57,7 +57,7 @@ The `scripts/sweep_all_models.sh` helper boots each model in turn, runs the cano
 
 ```bash
 cargo bench -p spark-runtime        # KV cache ops, sampler micro
-cargo bench -p atlas-spark-bench    # end-to-end client benchmarks
+cargo bench -p avarok-spark-bench    # end-to-end client benchmarks
 ```
 
 Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
@@ -278,7 +278,7 @@ collecting numbers rather than gating on them.
 ### Run history
 
 Every run — from the CLI *or* the dashboard — is recorded under
-`~/.atlas/runs/<benchmark-id>/`, carrying the result, every parameter used (not
+`~/.avarok/runs/<benchmark-id>/`, carrying the result, every parameter used (not
 just the ones you overrode), the target, the source, and the Atlas version. So
 a stored run says what it measured and can be reproduced.
 
@@ -292,9 +292,9 @@ History pane, and a dashboard run appears in `spark benchmark history` marked
 `tui`.
 
 Machine-readable output goes to **stdout**, progress to **stderr**, so
-`--format json > run.json` is a clean file. `ATLAS_HOME` relocates the store.
+`--format json > run.json` is a clean file. `AVAROK_HOME` relocates the store.
 
-- `crates/atlas-spark-bench/src/lib.rs` — E2E harness.
+- `crates/avarok-spark-bench/src/lib.rs` — E2E harness.
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.
 - `scripts/sweep_all_models.sh`, `scripts/run_conc_benchmark.sh` — automation.

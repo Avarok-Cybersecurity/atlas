@@ -42,7 +42,7 @@ use spark_model::layers::glm5next_kda::{
     Glm5NextKdaConfig, Glm5NextKdaKernels, Glm5NextKdaLayer, Glm5NextKdaWeights,
     Glm5NextKdaWorkspace,
 };
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 #[path = "common/kda_layer_cpu.rs"]
@@ -159,7 +159,7 @@ pub(crate) fn checksum(s: &[f32]) -> f64 {
 // ────────────────────────────────────────────────────────────── comparison table
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let v: Value = serde_json::from_str(&GOLDEN)?;
     let f = &v["fixture"];
@@ -272,7 +272,7 @@ fn main() -> Result<()> {
 
     // ── PART 2 — bind EVERY KDA block in the checkpoint ──────────────────────
     let dir = std::env::var("KDA_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/kda-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/kda-family".to_string());
     let audit: Value = serde_json::from_str(&std::fs::read_to_string(format!(
         "{dir}/kda_family_audit.json"
     ))?)?;

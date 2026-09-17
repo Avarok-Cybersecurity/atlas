@@ -16,13 +16,13 @@ use super::super::stream_guards::{bump_f12_tool_call_count, check_loop_watchdog}
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 
-/// `ATLAS_SIMHASH_LOOP=0` disables the F4 SimHash semantic-loop guard.
+/// `AVAROK_SIMHASH_LOOP=0` disables the F4 SimHash semantic-loop guard.
 /// Default ON — see the comment at the check site for why an operator would
 /// turn it off (one-strike near-duplicate detection kills streams over
 /// legitimately repetitive structured output).
 fn simhash_loop_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_SIMHASH_LOOP").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_SIMHASH_LOOP").as_deref() != Ok("0"))
 }
 use super::strip::{
     maybe_log_decode_trace, strip_all_preserving_boundary, strip_preserving_boundary,
@@ -355,7 +355,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                                 tail = %tail,
                                 "in-think tool-call leak: opener threshold reached; cancelling \
                                  sequence (finish_reason \"length\", guard in_think_tool_leak). \
-                                 Raise/disable via ATLAS_INTHINK_TOOL_LEAK_OPENERS (0 = strip-only)"
+                                 Raise/disable via AVAROK_INTHINK_TOOL_LEAK_OPENERS (0 = strip-only)"
                             );
                             return deltas;
                         }
@@ -374,7 +374,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                             hits = state.reasoning_xml_opener_hits,
                             threshold,
                             "in-think tool-call opener observed in reasoning; below \
-                             ATLAS_INTHINK_TOOL_LEAK_OPENERS threshold, not cancelling"
+                             AVAROK_INTHINK_TOOL_LEAK_OPENERS threshold, not cancelling"
                         );
                     }
                 }
@@ -653,8 +653,8 @@ fn process_detector_content(
     // post-sanitizer text in both call sites.
     let sanitized = sanitized_or_raw;
 
-    // F4 SimHash guard. `ATLAS_SIMHASH_LOOP=0` disables it (house watchdog
-    // convention, same shape as ATLAS_TOOL_ENVELOPE_WATCHDOG): the guard is
+    // F4 SimHash guard. `AVAROK_SIMHASH_LOOP=0` disables it (house watchdog
+    // convention, same shape as AVAROK_TOOL_ENVELOPE_WATCHDOG): the guard is
     // ONE-STRIKE at Jaccard 0.55 over a 16-sentence ring, which legitimate
     // structured output crosses easily — per-method docstrings, enumerations,
     // boilerplate-heavy code all produce >=0.55 bigram overlap between

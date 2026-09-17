@@ -24,7 +24,7 @@
 use super::super::decode_ring::{fit_ring, slot_bytes};
 use super::*;
 
-use atlas_core::config::{LayerType, QuantizationConfig};
+use avarok_core::config::{LayerType, QuantizationConfig};
 use clap::Parser as _;
 
 const GIB_F: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -347,7 +347,7 @@ fn an_unpredictable_route_falls_back_to_pre_load_free_memory_and_says_so() {
         gib(3.5),
     );
     // The exact reason depends on which gate declines FIRST, and one of them
-    // (`ATLAS_DENSE_FP8`) is process environment this test must not pin — the
+    // (`AVAROK_DENSE_FP8`) is process environment this test must not pin — the
     // reason STRINGS are pinned in
     // `spark_model::weight_loader::predicted_residency`'s own tests. What
     // matters here is that an unpredictable route never reaches the post-load

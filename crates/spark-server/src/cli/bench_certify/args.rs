@@ -112,10 +112,10 @@ impl CertifyArgs {
             return Err("--shards must be at least 1".into());
         }
         for g in &self.gates {
-            if !atlas_plugin::gate::REQUIRED_GATES.contains(&g.as_str()) {
+            if !avarok_plugin::gate::REQUIRED_GATES.contains(&g.as_str()) {
                 return Err(format!(
                     "--gates names {g}, which is not a required gate ({})",
-                    atlas_plugin::gate::REQUIRED_GATES.join(", ")
+                    avarok_plugin::gate::REQUIRED_GATES.join(", ")
                 ));
             }
         }

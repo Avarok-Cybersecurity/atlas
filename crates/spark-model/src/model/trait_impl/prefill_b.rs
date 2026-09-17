@@ -134,11 +134,11 @@ impl TransformerModel {
             // cold and warm identical by construction, at the cost of one extra pass
             // on cold prefills that cross the cut.
             //
-            // `ATLAS_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
+            // `AVAROK_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
             // That is the OTHER way to satisfy the invariant — always one pass — and
             // it keeps the single-pass numerics, at the cost of the warm-turn tail
             // checkpoint this split exists to create.
-            let split_disabled = std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1");
+            let split_disabled = std::env::var("AVAROK_NO_TAIL_SPLIT").as_deref() == Ok("1");
             if !split_disabled && cut > chunk_start && cut < total {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -202,7 +202,7 @@ impl TransformerModel {
             None,
         )?;
 
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),

@@ -178,9 +178,9 @@ pub fn forward_full_attention<Q: QuantWeights>(
         }
         let num_groups = cfg.kv_dim() / 16;
         let append_grid = [num_groups.div_ceil(64), 1, 1];
-        // Sparse-V gate threshold (0.0 disables). ATLAS_SPARSE_V_THRESHOLD
+        // Sparse-V gate threshold (0.0 disables). AVAROK_SPARSE_V_THRESHOLD
         // overrides the default 1e-3 from the attention-gated dequant work.
-        let sparse_v: f32 = std::env::var("ATLAS_SPARSE_V_THRESHOLD")
+        let sparse_v: f32 = std::env::var("AVAROK_SPARSE_V_THRESHOLD")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1e-3);

@@ -7,9 +7,9 @@
 #
 set -euo pipefail
 
-IMAGE="${IMAGE:-atlas-gb10:latest}"
-EP_IMAGE="${EP_IMAGE:-atlas-gb10:latest}"
-RESULTS_DIR="/workspace/atlas/conc-bench-results"
+IMAGE="${IMAGE:-avarok-gb10:latest}"
+EP_IMAGE="${EP_IMAGE:-avarok-gb10:latest}"
+RESULTS_DIR="/workspace/avarok/conc-bench-results"
 mkdir -p "$RESULTS_DIR"
 HF_CACHE="${HOME}/.cache/huggingface"
 # IP of the EP-rank-1 node. Single-node default: localhost. For multi-
@@ -126,7 +126,7 @@ echo ""
 # 1. 27B Dense — conc=1 only
 run_model "27B-Dense" \
     "Kbenkhaled/Qwen3.5-27B-NVFP4" \
-    "atlas-bench" \
+    "avarok-bench" \
     "" \
     "$ISLS_27B" \
     "1" \
@@ -136,7 +136,7 @@ run_model "27B-Dense" \
 # 2. VL-30B — no MTP, full concs
 run_model "VL-30B" \
     "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4" \
-    "atlas-bench" \
+    "avarok-bench" \
     "" \
     "$ISLS_FULL" \
     "$CONCS_FULL" \
@@ -146,7 +146,7 @@ run_model "VL-30B" \
 # 3. 35B MoE — MTP, full concs
 run_model "35B-MoE" \
     "Kbenkhaled/Qwen3.5-35B-A3B-NVFP4" \
-    "atlas-bench" \
+    "avarok-bench" \
     "--speculative --mtp-quantization nvfp4" \
     "$ISLS_FULL" \
     "$CONCS_FULL" \
@@ -156,7 +156,7 @@ run_model "35B-MoE" \
 # 4. 80B MoE — MTP, full concs
 run_model "80B-MoE" \
     "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4" \
-    "atlas-bench" \
+    "avarok-bench" \
     "--speculative --mtp-quantization nvfp4" \
     "$ISLS_FULL" \
     "$CONCS_FULL" \
@@ -166,7 +166,7 @@ run_model "80B-MoE" \
 # 5. Nemotron-H 30B — no MTP, full concs
 run_model "Nemotron-H" \
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4" \
-    "atlas-bench" \
+    "avarok-bench" \
     "" \
     "$ISLS_FULL" \
     "$CONCS_FULL" \
@@ -183,17 +183,17 @@ echo "  MODEL: 122B EP=2"
 echo "  EP forced max-batch-size=1, conc=1 only"
 echo "================================================================"
 
-sudo docker rm -f atlas-ep0 2>/dev/null || true
-ssh "$EP_RANK1_HOST" "sudo docker rm -f atlas-ep1 2>/dev/null" 2>/dev/null || true
+sudo docker rm -f avarok-ep0 2>/dev/null || true
+ssh "$EP_RANK1_HOST" "sudo docker rm -f avarok-ep1 2>/dev/null" 2>/dev/null || true
 sleep 2
 
 GPU_MEM_UTIL=0.55 IMAGE="$EP_IMAGE" bash scripts/start-ep2.sh
 
 if ! wait_for_server "http://localhost:8888" 600; then
     echo "  SKIPPED — EP=2 server did not start" | tee "$RESULTS_DIR/122B-EP2.txt"
-    sudo docker logs atlas-ep0 2>&1 | tail -30 >> "$RESULTS_DIR/122B-EP2.txt"
-    sudo docker rm -f atlas-ep0 2>/dev/null
-    ssh "$EP_RANK1_HOST" "sudo docker rm -f atlas-ep1 2>/dev/null" 2>/dev/null
+    sudo docker logs avarok-ep0 2>&1 | tail -30 >> "$RESULTS_DIR/122B-EP2.txt"
+    sudo docker rm -f avarok-ep0 2>/dev/null
+    ssh "$EP_RANK1_HOST" "sudo docker rm -f avarok-ep1 2>/dev/null" 2>/dev/null
 else
     # Smoke test
     echo "  Running smoke test..."
@@ -222,8 +222,8 @@ else
         --concs 1 \
         2>&1 | tee "$RESULTS_DIR/122B-EP2-bench.txt"
 
-    sudo docker rm -f atlas-ep0 2>/dev/null
-    ssh "$EP_RANK1_HOST" "sudo docker rm -f atlas-ep1 2>/dev/null" 2>/dev/null
+    sudo docker rm -f avarok-ep0 2>/dev/null
+    ssh "$EP_RANK1_HOST" "sudo docker rm -f avarok-ep1 2>/dev/null" 2>/dev/null
     echo "  Done: 122B EP=2"
 fi
 

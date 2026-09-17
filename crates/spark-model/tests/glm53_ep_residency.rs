@@ -74,7 +74,7 @@ fn layer_of(name: &str) -> Option<usize> {
 /// Load the index, or `None` when the fixture is absent (skip, loudly).
 fn load_index() -> Option<Vec<Row>> {
     let path = std::env::var("GLM53_TENSOR_INDEX")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/ep-residency/glm53_tensor_index.tsv".into());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/ep-residency/glm53_tensor_index.tsv".into());
     let text = std::fs::read_to_string(&path).ok()?;
     let rows: Vec<Row> = text
         .lines()

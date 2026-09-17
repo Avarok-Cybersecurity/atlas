@@ -10,7 +10,7 @@
 # the generated tokens never reappear, so that explanation may not transfer.
 # The server logs the answer, so measure instead of arguing.
 #
-# Usage: run_replay_distance.sh <atlas_bin> <outdir> [conversation_id] [max_turns]
+# Usage: run_replay_distance.sh <avarok_bin> <outdir> [conversation_id] [max_turns]
 set -u
 BIN="${1:?path to the built spark binary}"
 OUT="${2:?output dir}"
@@ -22,14 +22,14 @@ MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 PORT=8888
 mkdir -p "$OUT"
 
-sudo docker rm -f atlas-replaydist >/dev/null 2>&1; sleep 3
-sudo docker run -d --name atlas-replaydist --network host --gpus all --ipc=host \
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+sudo docker rm -f avarok-replaydist >/dev/null 2>&1; sleep 3
+sudo docker run -d --name avarok-replaydist --network host --gpus all --ipc=host \
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
   -v "$BIN:/usr/local/bin/spark:ro" \
-  atlas-gb10:followups serve "$MODEL" \
+  avarok-gb10:followups serve "$MODEL" \
   --host 0.0.0.0 --port $PORT --model-name "$MODEL" \
   --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
   --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -38,7 +38,7 @@ sudo docker run -d --name atlas-replaydist --network host --gpus all --ipc=host 
 
 for _ in $(seq 1 180); do
   curl -sf -m4 http://localhost:$PORT/v1/models 2>/dev/null | grep -q Qwen && break
-  sudo docker ps --format '{{.Names}}' | grep -q atlas-replaydist || { echo SERVE_DIED; exit 1; }
+  sudo docker ps --format '{{.Names}}' | grep -q avarok-replaydist || { echo SERVE_DIED; exit 1; }
   sleep 5
 done
 echo "=== serve up; replaying real conversation $CID ==="
@@ -47,7 +47,7 @@ python3 -u "$HERE/replay_distance_probe.py" $PORT "$EVENTS" "$CID" "$OUT/turns.j
     --max-turns "$NT" 2>&1 | tee "$OUT/probe.log"
 
 # The measurement. Keep the raw lines AND a parsed histogram of the replay field.
-sudo docker logs atlas-replaydist 2>&1 | grep -a "Marconi" > "$OUT/marconi.log" || true
+sudo docker logs avarok-replaydist 2>&1 | grep -a "Marconi" > "$OUT/marconi.log" || true
 wc -l < "$OUT/marconi.log" | xargs echo "Marconi log lines:"
 python3 - "$OUT/marconi.log" <<'PY'
 import re, sys, statistics
@@ -67,5 +67,5 @@ print("\nINTERPRETATION: replay p50 ~0-32 => the re-prefill lever does NOT exist
 print("this workload and the 879 ms intercept is something else. replay p50 in the")
 print("hundreds => it does, and end-of-generation checkpointing is worth pursuing.")
 PY
-sudo docker rm -f atlas-replaydist >/dev/null 2>&1
+sudo docker rm -f avarok-replaydist >/dev/null 2>&1
 echo "REPLAY_DISTANCE_DONE out=$OUT"

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """HF[FP8->BF16] forward on Atlas-on-dgx2's freshly-dumped 9780-token prompt.
 
-Loads /tmp/atlas_tokens_dgx2.json (which contains the EXACT token IDs Atlas
+Loads /tmp/avarok_tokens_dgx2.json (which contains the EXACT token IDs Atlas
 used today on dgx2 under the current chat template), runs CPU forward on the
 HF[FP8->BF16] dequanted snapshot, and dumps per-layer last-token hidden
-states to /workspace/atlas-dumps/fp8native_dgx2/hf_L{0..39}.bin.
+states to /workspace/avarok-dumps/fp8native_dgx2/hf_L{0..39}.bin.
 
 This produces a fresh reference matching the new token sequence, replacing
-the stale 18920-token reference at /workspace/atlas-dumps/fp8dequant/hf_L*.bin.
+the stale 18920-token reference at /workspace/avarok-dumps/fp8dequant/hf_L*.bin.
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ import torch
 from transformers import AutoModelForCausalLM
 
 SNAP = "/workspace/.cache/huggingface/Qwen3.6-35B-A3B-FP8-dequanted-BF16"
-TOKENS_PATH = pathlib.Path("/tmp/atlas_tokens_dgx2.json")
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+TOKENS_PATH = pathlib.Path("/tmp/avarok_tokens_dgx2.json")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

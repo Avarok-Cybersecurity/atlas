@@ -18,7 +18,7 @@ use spark_model::layers::glm5next_kda::{
 };
 use spark_model::layers::glm5next_kda_ref as kref;
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::collections::BTreeMap;
 
