@@ -17,6 +17,29 @@ pub const KQUANT_MODULE: &str = "kquant_moe";
 /// Bytes per 256-value super-block on disk.
 pub const Q2K_BLOCK_BYTES: usize = 84;
 pub const Q3K_BLOCK_BYTES: usize = 110;
+
+/// A resident `[N, K]` row-major projection as the GGUF path left it on the
+/// device: expanded bf16, or the raw `Q2_K` / `Q3_K` blocks
+/// (`WeightDtype::Q2K` / `Q3K`) for the K-quant GEMV (m <= 8, q8_1 rows) and
+/// MMQ (tensor cores, D2S6 / D4 tiles) kernels.
+#[derive(Clone, Copy, Debug)]
+pub enum ResidentMat {
+    Bf16(DevicePtr),
+    Q2K(DevicePtr),
+    Q3K(DevicePtr),
+}
+
+impl ResidentMat {
+    /// The sub-matrix starting `rows` rows in (each row `k` weights long).
+    pub fn at_rows(self, rows: usize, k: usize) -> ResidentMat {
+        let at = |p: DevicePtr, off: usize| DevicePtr(p.0 + off as u64);
+        match self {
+            ResidentMat::Bf16(p) => ResidentMat::Bf16(at(p, rows * k * 2)),
+            ResidentMat::Q2K(p) => ResidentMat::Q2K(at(p, rows * (k / 256) * Q2K_BLOCK_BYTES)),
+            ResidentMat::Q3K(p) => ResidentMat::Q3K(at(p, rows * (k / 256) * Q3K_BLOCK_BYTES)),
+        }
+    }
+}
 /// Dynamic shared memory for the 128x128 MMQ tile on the MMA path (`mmq_get_nbytes_shared`
 /// with MMQ_TILE_NE_K = 32): ids 512 B + tile_x (128 rows x tile_x_k ints) + tile_y (128 x 144 B).
 /// Q2_K tile_x_k = 2*32 + 32 + 4 = 100; Q3_K = 2*32 + 16 + 4 = 84.
@@ -108,6 +131,107 @@ pub fn kquant_mmvq(
 /// `out[m][n]` (bf16) = `A_q8[m][k]` x `W[n][k]`. `a_q8` must be in the type's MMQ
 /// q8_1 layout (D2S6 for Q2_K, D4 for Q3_K); `smem` is the matching `*_MMQ_SMEM`.
 #[allow(clippy::too_many_arguments)]
+/// `kquant_mmvq_*_experts`: one launch over `n_experts` experts whose block
+/// pointers sit in the device table `vxs` (`n_experts` pointers). The
+/// activation for expert `e` is `y_q8 + e * y_stride_bytes` (0 = shared), its
+/// output `out_bf16 + e * m * n`. Same per-row math as [`kquant_mmvq`].
+pub fn kquant_mmvq_experts(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    vxs: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(m >= 1 && m <= 8, "kquant_mmvq_experts: m={m} outside 1..=8");
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_experts: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([n, n_experts, 1])
+        .block([32, 4, 1])
+        .arg_ptr(vxs)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
+        .launch(stream)
+}
+
+/// `kquant_mmvq_*_w`: the warp-per-row GEMV (four rows a block, no shared
+/// memory), same arguments as [`kquant_mmvq`].
+pub fn kquant_mmvq_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    w_blocks: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(m >= 1 && m <= 8, "kquant_mmvq_w: m={m} outside 1..=8");
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_w: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), 1, 1])
+        .block([32, 4, 1])
+        .arg_ptr(w_blocks)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .launch(stream)
+}
+
+/// `kquant_mmvq_*_experts_w`: the warp-per-row expert batch, same arguments
+/// as [`kquant_mmvq_experts`].
+pub fn kquant_mmvq_experts_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    vxs: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        m >= 1 && m <= 8,
+        "kquant_mmvq_experts_w: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k % QK_K == 0,
+        "kquant_mmvq_experts_w: k={k} is not a multiple of {QK_K}"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), n_experts, 1])
+        .block([32, 4, 1])
+        .arg_ptr(vxs)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
+        .launch(stream)
+}
+
 pub fn kquant_mmq_gemm(
     gpu: &dyn GpuBackend,
     kernel_nc: KernelHandle,

@@ -101,6 +101,11 @@ impl ShardFiles {
         &self.shards[shard].file
     }
 
+    /// The parsed header of `shard` (shard 0 carries the model metadata).
+    pub fn header(&self, shard: usize) -> &GgufFile {
+        &self.shards[shard].gguf
+    }
+
     /// `(shard, tensor, absolute byte offset)` of a tensor by GGUF name.
     pub fn locate(&self, name: &str) -> Option<(usize, &TensorInfo, u64)> {
         self.shards.iter().enumerate().find_map(|(i, s)| {
@@ -193,6 +198,15 @@ pub trait ExpertSource: Sync {
     /// Fill `dst` (exactly `slot_layout().bytes` long) with expert `expert` of
     /// layer `layer`, in slot layout.
     fn read_expert(&self, layer: u32, expert: u32, dst: &mut [u8]) -> Result<()>;
+    /// Fill `dst` with bytes `off..off + dst.len()` of the expert's slot
+    /// image, so one miss can be read by several threads at once. The
+    /// default reads the whole expert into scratch; the on-disk map seeks.
+    fn read_expert_range(&self, layer: u32, expert: u32, off: usize, dst: &mut [u8]) -> Result<()> {
+        let mut whole = vec![0u8; self.slot_layout().bytes];
+        self.read_expert(layer, expert, &mut whole)?;
+        dst.copy_from_slice(&whole[off..off + dst.len()]);
+        Ok(())
+    }
 }
 
 /// The stacked expert tensors of every MoE layer, located once.
@@ -349,6 +363,44 @@ impl ExpertSource for ExpertSliceMap {
             let (shard, at) = self.slice_at(loc, expert as usize);
             pread(self.files.file(shard), at, &mut dst[off..off + len])
                 .with_context(|| format!("layer {layer} expert {expert} shard {shard}"))?;
+        }
+        Ok(())
+    }
+
+    fn read_expert_range(&self, layer: u32, expert: u32, off: usize, dst: &mut [u8]) -> Result<()> {
+        let l = self
+            .layer(layer as usize)
+            .with_context(|| format!("layer {layer} has no routed experts"))?;
+        ensure!(
+            (expert as usize) < self.num_experts,
+            "expert {expert} >= {}",
+            self.num_experts
+        );
+        let lay = self.layout;
+        let (lo, hi) = (off, off + dst.len());
+        ensure!(
+            hi <= lay.bytes,
+            "range {lo}..{hi} exceeds the {} byte slot",
+            lay.bytes
+        );
+        for (loc, s_off, s_len) in [
+            (&l.gate, lay.gate_off, lay.gate_bytes),
+            (&l.up, lay.up_off, lay.up_bytes),
+            (&l.down, lay.down_off, lay.down_bytes),
+        ] {
+            let (a, b) = (lo.max(s_off), hi.min(s_off + s_len));
+            if a >= b {
+                continue;
+            }
+            let (shard, at) = self.slice_at(loc, expert as usize);
+            pread(
+                self.files.file(shard),
+                at + (a - s_off) as u64,
+                &mut dst[a - lo..b - lo],
+            )
+            .with_context(|| {
+                format!("layer {layer} expert {expert} shard {shard} range {a}..{b}")
+            })?;
         }
         Ok(())
     }

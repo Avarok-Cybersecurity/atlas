@@ -437,17 +437,31 @@ impl super::WeightLoader for GgufLoader {
                 .to_lowercase()
         });
 
-        // Pre-flight: combined BF16 footprint of both files.
+        // Every shard of a split file: shard 0 is already open; the rest are
+        // parsed for the estimate now and re-opened one at a time below.
+        let shard_paths: Vec<std::path::PathBuf> = match find_gguf_shards(&path) {
+            Ok(set) => set.paths,
+            Err(e) => {
+                tracing::warn!("GGUF shard set: {e:#}; loading the single file");
+                vec![path.clone()]
+            }
+        };
+        // Pre-flight: combined BF16 footprint of every shard plus the sidecar.
         let mut est = sidecar::est_bf16(&bb_gguf, &arch);
+        for p in shard_paths.iter().skip(1) {
+            let (_f, _m, g) = sidecar::open_gguf(p)?;
+            est += sidecar::est_bf16(&g, &arch);
+        }
         if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
             est += sidecar::est_bf16(mm_gguf, mm_arch);
         }
         preflight_oom(gpu, est, oom_reserve_bytes, self.peak_memory_multiplier)?;
 
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
+        let mut deferred: HashMap<String, crate::weights::DeferredTensor> = HashMap::new();
         let mut skipped = 0usize;
 
-        // Pass 1: backbone → weights.
+        // Pass 1: backbone → weights, shard 0 first, then every other shard.
         sidecar::load_pass(
             self,
             gpu,
@@ -461,10 +475,35 @@ impl super::WeightLoader for GgufLoader {
             q2_variant,
             &mut weights,
             &mut skipped,
+            &path,
+            &mut deferred,
         )?;
         drop(bb_gguf);
         drop(bb_mmap);
         evict_page_cache(&bb_file);
+        for p in shard_paths.iter().skip(1) {
+            tracing::info!("Loading GGUF shard {}", p.display());
+            let (f, m, g) = sidecar::open_gguf(p)?;
+            sidecar::load_pass(
+                self,
+                gpu,
+                &g,
+                &m,
+                &arch,
+                gdn,
+                force_cpu,
+                native_q2,
+                q2_group,
+                q2_variant,
+                &mut weights,
+                &mut skipped,
+                p,
+                &mut deferred,
+            )?;
+            drop(g);
+            drop(m);
+            evict_page_cache(&f);
+        }
 
         // Pass 2: mmproj sidecar → SAME weights map (clip names land under
         // `model.visual.*`, disjoint from the backbone's `model.layers.*`).
@@ -486,6 +525,8 @@ impl super::WeightLoader for GgufLoader {
                 q2_variant,
                 &mut weights,
                 &mut skipped,
+                &path,
+                &mut deferred,
             )?;
             tracing::info!(
                 "Merged {} mmproj tensors (arch '{}') into the weight store",
@@ -502,7 +543,11 @@ impl super::WeightLoader for GgufLoader {
         }
         check_oom_guard(gpu, oom_reserve_bytes, "weight loading (GGUF)")?;
         tracing::info!("Loaded {} weight tensors (GGUF → BF16)", weights.len());
-        Ok(WeightStore::from_map(weights))
+        let mut store = WeightStore::from_map(weights);
+        for (name, t) in deferred {
+            store.defer(name, t);
+        }
+        Ok(store)
     }
 }
 

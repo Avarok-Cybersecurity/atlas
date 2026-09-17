@@ -380,6 +380,22 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 ///     `!value_transform::needs(hf)` as a belt-and-suspenders guard.
 ///
 /// Pure + name-only, so it is unit-testable without a GPU or a real GGUF.
+/// DeepSeek-V4.1 projections that stay K-quant on the device
+/// (`WeightDtype::Q2K` / `Q3K`) instead of expanding to bf16 on load: the
+/// attention projections and the shared expert, which the layers run on the
+/// K-quant GEMV (decode) and MMQ (prefill) kernels, 0.33-0.43 instead of 2
+/// bytes a weight resident and read every token.
+pub fn is_v41_kquant_resident(hf: &str) -> bool {
+    hf.ends_with(".attn.wq_a.weight")
+        || hf.ends_with(".attn.wq_b.weight")
+        || hf.ends_with(".attn.wkv.weight")
+        || hf.ends_with(".attn.wo_a.weight")
+        || hf.ends_with(".attn.wo_b.weight")
+        || hf.ends_with(".ffn.shared_experts.w1")
+        || hf.ends_with(".ffn.shared_experts.w2")
+        || hf.ends_with(".ffn.shared_experts.w3")
+}
+
 pub fn is_keep_packed_proj(hf: &str) -> bool {
     hf.ends_with(".mlp.gate_proj.weight")
         || hf.ends_with(".mlp.up_proj.weight")
@@ -422,6 +438,25 @@ pub fn is_keep_packed_proj(hf: &str) -> bool {
 ///     layers even in this text-only quant (the file is tagged
 ///     `image-text-to-text`). It is mapped rather than dropped so a later
 ///     multimodal path does not have to re-convert the checkpoint.
+/// DeepSeek-V4.1 tensors that are NEVER uploaded: the routed expert stacks
+/// (40 x 3 x 384 x 12.22 MiB) and the two ~30 GiB engram tables. They are
+/// recorded as deferred with their on-disk location and served by
+/// `expert_stream` (pread into a device-visible cache / rows on demand).
+/// Returns the store name the loader looks them up under.
+pub fn deepseek41_deferred_name(gguf_name: &str) -> Option<String> {
+    let rest = gguf_name.strip_prefix("blk.")?;
+    let (layer, tail) = rest.split_once('.')?;
+    let layer: usize = layer.parse().ok()?;
+    let lp = format!("{HF_PREFIX}.layers.{layer}");
+    Some(match tail {
+        "ffn_gate_exps.weight" => format!("{lp}.ffn.experts_stack.gate"),
+        "ffn_up_exps.weight" => format!("{lp}.ffn.experts_stack.up"),
+        "ffn_down_exps.weight" => format!("{lp}.ffn.experts_stack.down"),
+        "engram_embd.weight" => format!("{lp}.engram.embd"),
+        _ => return None,
+    })
+}
+
 fn translate_deepseek41(gguf_name: &str) -> Option<GgufName> {
     // Top-level tensors.
     match gguf_name {

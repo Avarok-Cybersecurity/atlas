@@ -49,6 +49,11 @@ pub enum WeightDtype {
     PackedQ2_0 {
         group: u16,
     },
+    /// Raw GGUF `Q2_K` blocks kept on the device (84 bytes per 256 weights,
+    /// `[N, K]` row-major in blocks) for the K-quant GEMV/MMQ kernels.
+    Q2K,
+    /// Raw GGUF `Q3_K` blocks kept on the device (110 bytes per 256 weights).
+    Q3K,
 }
 
 impl WeightDtype {
@@ -64,6 +69,8 @@ impl WeightDtype {
             Self::UInt8 => 1,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
+            Self::Q2K => 0,
+            Self::Q3K => 0,
         }
     }
 
@@ -144,6 +151,8 @@ impl WeightTensor {
                 let n_blocks = self.num_elements() / g.max(1);
                 n_blocks * (2 + g / 4)
             }
+            WeightDtype::Q2K => self.num_elements() / 256 * 84,
+            WeightDtype::Q3K => self.num_elements() / 256 * 110,
             d => self.num_elements() * d.byte_size(),
         }
     }

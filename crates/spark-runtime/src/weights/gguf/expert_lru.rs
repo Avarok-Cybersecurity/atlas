@@ -34,6 +34,10 @@ pub struct PinnedArena {
     bytes: usize,
 }
 
+// SAFETY: a page-locked region with no thread affinity; the owner serialises access.
+unsafe impl Send for PinnedArena {}
+unsafe impl Sync for PinnedArena {}
+
 impl PinnedArena {
     /// `alloc_host_pinned` zero-fills, so a large arena costs one memset at
     /// load. The device alias is what the kernels are handed.
@@ -96,9 +100,11 @@ struct SlotMeta {
 
 /// A raw slot address that may cross into a scoped reader thread: every miss
 /// in one `fetch_many` owns a distinct slot, so the regions never overlap.
+#[derive(Clone, Copy)]
 struct SlotPtr(*mut u8);
 // SAFETY: see above; the pointer is only dereferenced as a disjoint `&mut [u8]`
-// by the one thread whose chunk names it.
+// by the one thread whose chunk names it (or, split into byte ranges, by
+// several threads on disjoint ranges of it).
 unsafe impl Send for SlotPtr {}
 unsafe impl Sync for SlotPtr {}
 
@@ -340,7 +346,7 @@ impl ExpertLru {
         }
         let bytes = self.layout.bytes;
         let mut failures: Vec<(u32, anyhow::Error)> = Vec::new();
-        if misses.len() <= 1 || threads <= 1 {
+        if threads <= 1 {
             for &(i, (l, e)) in &misses {
                 let p = self.slot_ptr(i);
                 // SAFETY: as in `fetch`.
@@ -349,10 +355,25 @@ impl ExpertLru {
                     failures.push((i, err));
                 }
             }
-        } else {
-            let work: Vec<(u32, (u32, u32), SlotPtr)> = misses
+        } else if !misses.is_empty() {
+            // A layer's decode step misses one or two experts: one thread
+            // per expert leaves the other readers idle, so every miss is
+            // cut into `parts` byte ranges and the ranges are spread over
+            // the threads (>= 1 MiB a range, up to `threads` per expert).
+            let parts = (threads / misses.len())
+                .clamp(1, threads)
+                .min((bytes / (1 << 20)).max(1));
+            let per_part = bytes.div_ceil(parts);
+            let work: Vec<(u32, (u32, u32), SlotPtr, usize, usize)> = misses
                 .iter()
-                .map(|&(i, k)| (i, k, self.slot_ptr(i)))
+                .flat_map(|&(i, k)| {
+                    let p = self.slot_ptr(i);
+                    (0..parts).map(move |j| {
+                        let off = j * per_part;
+                        (i, k, p, off, per_part.min(bytes - off))
+                    })
+                })
+                .filter(|w| w.4 > 0)
                 .collect();
             let per = work.len().div_ceil(threads.min(work.len()));
             let results: Vec<Vec<(u32, anyhow::Error)>> = std::thread::scope(|s| {
@@ -361,10 +382,12 @@ impl ExpertLru {
                     .map(|chunk| {
                         s.spawn(move || {
                             let mut errs = Vec::new();
-                            for (i, (l, e), p) in chunk {
-                                // SAFETY: each miss owns a distinct slot; regions are disjoint.
-                                let dst = unsafe { std::slice::from_raw_parts_mut(p.0, bytes) };
-                                if let Err(err) = src.read_expert(*l, *e, dst) {
+                            for (i, (l, e), p, off, len) in chunk {
+                                // SAFETY: each miss owns a distinct slot and
+                                // the ranges of one slot are disjoint.
+                                let dst =
+                                    unsafe { std::slice::from_raw_parts_mut(p.0.add(*off), *len) };
+                                if let Err(err) = src.read_expert_range(*l, *e, *off, dst) {
                                     errs.push((*i, err));
                                 }
                             }
@@ -377,7 +400,14 @@ impl ExpertLru {
                     .map(|h| h.join().expect("expert reader thread panicked"))
                     .collect()
             });
-            failures = results.into_iter().flatten().collect();
+            // one failure per slot: a slot whose ranges failed twice is
+            // unmapped once
+            let mut seen = std::collections::HashSet::new();
+            failures = results
+                .into_iter()
+                .flatten()
+                .filter(|(i, _)| seen.insert(*i))
+                .collect();
         }
         let n_ok = misses.len() - failures.len();
         self.stats.misses += n_ok as u64;

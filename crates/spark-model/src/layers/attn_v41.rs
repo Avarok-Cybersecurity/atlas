@@ -38,7 +38,15 @@ use crate::layers::deepseek_v41_ref::compress::{
     FP4_BLOCK, LATENT_BLOCK, select_candidate_blocks, torch_cpu_topk_set, yarn_freqs_cis,
 };
 use crate::layers::ops;
+use crate::layers::ops::{
+    KQUANT_MODULE, Q2K_MMQ_SMEM, kquant_mmq_act_bytes, kquant_mmq_gemm, kquant_mmvq_w,
+    kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+};
 use crate::weight_map::DenseWeight;
+
+/// An attention projection on the device: bf16 or the GGUF's raw `Q2_K`
+/// blocks (`Q3_K` is never an attention type here and is refused).
+pub use crate::layers::ops::ResidentMat as AttnMat;
 
 const MODULE: &str = "attn_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -114,17 +122,17 @@ pub struct AttnV41LayerWeights {
     pub role: LayerRole,
     /// f32 `[n_heads]`
     pub sink: DevicePtr,
-    pub wq_a: DevicePtr,
+    pub wq_a: AttnMat,
     /// f32 `[q_rank]`
     pub q_norm: DevicePtr,
-    pub wq_b: DevicePtr,
-    pub wkv: DevicePtr,
+    pub wq_b: AttnMat,
+    pub wkv: AttnMat,
     /// f32 `[hd]`
     pub kv_norm: DevicePtr,
     /// `[groups * o_rank, gw]`
-    pub wo_a: DevicePtr,
+    pub wo_a: AttnMat,
     /// `[dim, groups * o_rank]`
-    pub wo_b: DevicePtr,
+    pub wo_b: AttnMat,
     pub comp: Option<CompressorWeightsGpu>,
     pub idx: Option<IndexerWeightsGpu>,
 }
@@ -227,6 +235,17 @@ pub struct AttnV41Run {
 
 struct Kernels {
     gemm: KernelHandle,
+    /// `dense_gemv_bf16` for the single-token step: the tiled GEMM spends
+    /// 15 of its 16 rows idle at m = 1 (326 us a launch on GB10 vs the
+    /// GEMV's bandwidth-bound pass over the same `[N, K]` weight)
+    gemv: KernelHandle,
+    /// the K-quant path for `AttnMat::Q2K`: q8_1 row quant + GEMV at m <= 8,
+    /// D2S6 tile quant + MMQ above
+    q8_rows: KernelHandle,
+    mmvq_q2k_w: KernelHandle,
+    quant_d2s6: KernelHandle,
+    mmq_q2k_nc: KernelHandle,
+    mmq_q2k_wc: KernelHandle,
     rmsnorm_bf16: KernelHandle,
     rmsnorm_f32: KernelHandle,
     rope: KernelHandle,
@@ -249,6 +268,8 @@ pub struct AttnV41 {
     fc_plain: DevicePtr,
     fc_yarn: DevicePtr,
     // workspaces
+    /// q8_1 activations for the Q2_K projections (plain rows or MMQ tiles)
+    a_q8: DevicePtr,
     qr_raw: DevicePtr,
     qr: DevicePtr,
     q: DevicePtr,
@@ -311,6 +332,12 @@ impl AttnV41 {
         );
         let k = Kernels {
             gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
+            gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
+            mmvq_q2k_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
+            quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
+            mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
+            mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,
             rmsnorm_bf16: gpu.kernel(MODULE, "attn_v41_rmsnorm_bf16")?,
             rmsnorm_f32: gpu.kernel(MODULE, "attn_v41_rmsnorm_f32")?,
             rope: gpu.kernel(MODULE, "attn_v41_rope")?,
@@ -342,7 +369,16 @@ impl AttnV41 {
         let max_width = cfg.max_seq;
         let max_topk = cfg.window + cfg.index_topk;
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
+        let kmax = cfg
+            .dim
+            .max(cfg.q_rank)
+            .max(cfg.gw())
+            .max(cfg.groups * cfg.o_rank);
         Ok(AttnV41 {
+            a_q8: alloc(
+                kquant_q8_1_rows_bytes(8, kmax as u32)
+                    .max(kquant_mmq_act_bytes(m as u32, kmax as u32)),
+            )?,
             qr_raw: alloc(m * cfg.q_rank * 2)?,
             qr: alloc(m * cfg.q_rank * 2)?,
             q: alloc(m * nh * hd * 2)?,
@@ -381,13 +417,60 @@ impl AttnV41 {
         &self,
         gpu: &dyn GpuBackend,
         a: DevicePtr,
-        w: DevicePtr,
+        w: AttnMat,
         c: DevicePtr,
         m: usize,
         n: usize,
         kk: usize,
         stream: u64,
     ) -> Result<()> {
+        let w = match w {
+            AttnMat::Bf16(p) => p,
+            AttnMat::Q3K(_) => anyhow::bail!("attention projections are never Q3_K"),
+            AttnMat::Q2K(blocks) => {
+                let (m, n, kk) = (m as u32, n as u32, kk as u32);
+                if m <= 8 {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, self.a_q8, m, kk, stream)?;
+                    return kquant_mmvq_w(
+                        gpu,
+                        self.k.mmvq_q2k_w,
+                        blocks,
+                        self.a_q8,
+                        c,
+                        n,
+                        kk,
+                        m,
+                        stream,
+                    );
+                }
+                ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, self.a_q8, m, kk, stream)?;
+                return kquant_mmq_gemm(
+                    gpu,
+                    self.k.mmq_q2k_nc,
+                    self.k.mmq_q2k_wc,
+                    self.a_q8,
+                    blocks,
+                    c,
+                    m,
+                    n,
+                    kk,
+                    Q2K_MMQ_SMEM,
+                    stream,
+                );
+            }
+        };
+        if m == 1 {
+            return ops::dense_gemv(
+                gpu,
+                self.k.gemv,
+                a,
+                &DenseWeight { weight: w },
+                c,
+                n as u32,
+                kk as u32,
+                stream,
+            );
+        }
         ops::dense_gemm(
             gpu,
             self.k.gemm,
@@ -521,7 +604,16 @@ impl AttnV41 {
         let hd = c.head_dim;
         let ratio = w.role.ratio;
         if ratio == 1 {
-            self.gemm(gpu, x, comp.kv, self.latent_raw, m, hd, c.dim, stream)?;
+            self.gemm(
+                gpu,
+                x,
+                AttnMat::Bf16(comp.kv),
+                self.latent_raw,
+                m,
+                hd,
+                c.dim,
+                stream,
+            )?;
             self.rmsnorm(
                 gpu,
                 false,
@@ -555,9 +647,18 @@ impl AttnV41 {
             let remainder = m % ratio;
             let cutoff = m - remainder;
             if remainder > 0 {
-                gpu.synchronize(stream)?;
-                gpu.copy_d2d(at(self.ckv, cutoff * row), kv_state, remainder * row)?;
-                gpu.copy_d2d(at(self.cscore, cutoff * row), score_state, remainder * row)?;
+                gpu.copy_d2d_async(
+                    at(self.ckv, cutoff * row),
+                    kv_state,
+                    remainder * row,
+                    stream,
+                )?;
+                gpu.copy_d2d_async(
+                    at(self.cscore, cutoff * row),
+                    score_state,
+                    remainder * row,
+                    stream,
+                )?;
             }
             if m < ratio {
                 return Ok(None);
@@ -565,9 +666,8 @@ impl AttnV41 {
             (self.ckv, self.cscore, cutoff / ratio)
         } else {
             let slot = start_pos % ratio;
-            gpu.synchronize(stream)?;
-            gpu.copy_d2d(self.ckv, at(kv_state, slot * row), row)?;
-            gpu.copy_d2d(self.cscore, at(score_state, slot * row), row)?;
+            gpu.copy_d2d_async(self.ckv, at(kv_state, slot * row), row, stream)?;
+            gpu.copy_d2d_async(self.cscore, at(score_state, slot * row), row, stream)?;
             if !(start_pos + 1).is_multiple_of(ratio) {
                 return Ok(None);
             }
@@ -633,7 +733,16 @@ impl AttnV41 {
         if let (Some(groups), Some(cache)) = (latent_groups, st.index_k) {
             let wk = iw.wk.context("kv source without index wk")?;
             let k_norm = iw.k_norm.context("kv source without index k_norm")?;
-            self.gemm(gpu, self.latent, wk, self.ik_raw, groups, ihd, hd, stream)?;
+            self.gemm(
+                gpu,
+                self.latent,
+                AttnMat::Bf16(wk),
+                self.ik_raw,
+                groups,
+                ihd,
+                hd,
+                stream,
+            )?;
             self.rmsnorm(
                 gpu,
                 false,
@@ -651,11 +760,11 @@ impl AttnV41 {
             )?;
             self.rope(gpu, self.ik, self.grp_pos, groups, ihd, true, false, stream)?;
             self.fp4_quant(gpu, self.ik, groups * ihd, FP4_BLOCK, false, stream)?;
-            gpu.synchronize(stream)?;
-            gpu.copy_d2d(
+            gpu.copy_d2d_async(
                 self.ik,
                 at(cache, (start_pos / ratio) * ihd * 2),
                 groups * ihd * 2,
+                stream,
             )?;
             shared.index_k = Some(cache);
         }
@@ -666,7 +775,7 @@ impl AttnV41 {
         self.gemm(
             gpu,
             self.qr,
-            iw.wq_b,
+            AttnMat::Bf16(iw.wq_b),
             self.iq,
             m,
             nhi * ihd,
@@ -689,7 +798,16 @@ impl AttnV41 {
         )?;
         self.fp4_quant(gpu, self.iq, m * nhi * ihd, FP4_BLOCK, false, stream)?;
         // head weights: bf16(bf16(x . wproj) * ihd^-0.5 * nh^-0.5)
-        self.gemm(gpu, x, iw.weights_proj, self.iw_raw, m, nhi, c.dim, stream)?;
+        self.gemm(
+            gpu,
+            x,
+            AttnMat::Bf16(iw.weights_proj),
+            self.iw_raw,
+            m,
+            nhi,
+            c.dim,
+            stream,
+        )?;
         let wscale = (ihd as f32).powf(-0.5) * (nhi as f32).powf(-0.5);
         KernelLaunch::new(gpu, self.k.scale_bf16)
             .grid([((m * nhi) as u32).div_ceil(256), 1, 1])
@@ -829,24 +947,33 @@ impl AttnV41 {
         self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
         self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
         self.act_quant(gpu, self.kv, m * hd, stream)?;
-        gpu.synchronize(stream)?;
 
-        // the window ring
+        // the window ring (stream-ordered copies, no host sync)
         let win = c.window;
         let row = hd * 2;
         let (rows_a, rows_a_len) = if start_pos == 0 {
             if m <= win {
-                gpu.copy_d2d(self.kv, st.window, m * row)?;
+                gpu.copy_d2d_async(self.kv, st.window, m * row, stream)?;
             } else {
                 let cutoff = m % win;
                 let tail = at(self.kv, (m - win) * row);
-                gpu.copy_d2d(tail, at(st.window, cutoff * row), (win - cutoff) * row)?;
-                gpu.copy_d2d(at(tail, (win - cutoff) * row), st.window, cutoff * row)?;
+                gpu.copy_d2d_async(
+                    tail,
+                    at(st.window, cutoff * row),
+                    (win - cutoff) * row,
+                    stream,
+                )?;
+                gpu.copy_d2d_async(
+                    at(tail, (win - cutoff) * row),
+                    st.window,
+                    cutoff * row,
+                    stream,
+                )?;
             }
             (self.kv, m)
         } else {
             let slot = start_pos % win;
-            gpu.copy_d2d(self.kv, at(st.window, slot * row), row)?;
+            gpu.copy_d2d_async(self.kv, at(st.window, slot * row), row, stream)?;
             (st.window, win)
         };
         let (mut idx, mut topk) = window_topk_idxs(win, m, start_pos);
@@ -902,11 +1029,11 @@ impl AttnV41 {
                     stream,
                 )?;
                 self.fp4_quant(gpu, self.latent, groups * hd, LATENT_BLOCK, true, stream)?;
-                gpu.synchronize(stream)?;
-                gpu.copy_d2d(
+                gpu.copy_d2d_async(
                     self.latent,
                     at(cache, (start_pos / ratio) * row),
                     groups * row,
+                    stream,
                 )?;
                 shared.compress_kv = Some(cache);
                 shared.compress_len = shared.compress_len.max(start_pos / ratio + groups);
@@ -955,9 +1082,8 @@ impl AttnV41 {
             .launch(stream)?;
         // `run.o` is the pre-rotation output (the reference's `sa_o`); the
         // inverse rotation runs on a copy
-        gpu.synchronize(stream)?;
         let o_copy = self.o_rot;
-        gpu.copy_d2d(self.o, o_copy, m * nh * hd * 2)?;
+        gpu.copy_d2d_async(self.o, o_copy, m * nh * hd * 2, stream)?;
         self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
 
         // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
@@ -975,7 +1101,7 @@ impl AttnV41 {
             self.gemm(
                 gpu,
                 self.slice_in,
-                at(w.wo_a, g * c.o_rank * gw * 2),
+                w.wo_a.at_rows(g * c.o_rank, gw),
                 self.slice_out,
                 m,
                 c.o_rank,
@@ -1002,7 +1128,9 @@ impl AttnV41 {
             c.groups * c.o_rank,
             stream,
         )?;
-        gpu.synchronize(stream)?;
+        // no host sync here: everything downstream runs on the same stream,
+        // and the routing download in the MoE block drains it before any
+        // expert slot can be rewritten
         Ok(AttnV41Run {
             q: self.q,
             rows_a,

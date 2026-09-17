@@ -132,15 +132,14 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // missing. Falling through to the catch-all below would report
         // "Unsupported model type", which is false and sends the reader looking
         // for a config problem.
-        "deepseek_v41" => bail!(
-            "DeepSeek-V4.1 Flash: the checkpoint loads (config + all shards + tensor names \
-             all resolve) but the V4.1 GRAPH is not implemented yet — engram, shared \
-             compressed attention and the reworked indexer are stage S2. This is an Atlas \
-             capability gap, not a checkpoint problem."
-        ),
+        // DeepSeek-V4.1 Flash: the seven-shard Q2_K GGUF, routed experts and the
+        // engram tables streamed from disk (see weight_loader/deepseek_v41.rs).
+        "deepseek_v41" => Ok(Box::new(
+            crate::weight_loader::deepseek_v41::DeepSeekV41WeightLoader,
+        )),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100 (deepseek_v41: ingestion only, graph pending)",
+             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100, deepseek_v41",
             config.model_type,
             normalized,
         ),

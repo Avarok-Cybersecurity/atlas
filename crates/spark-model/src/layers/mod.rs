@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod attn_v41;
+pub mod deepseek_v41_layer;
 pub mod deepseek_v41_ref;
 pub mod deepseek_v4_mtp;
 pub mod dense_ffn;
@@ -24,6 +25,7 @@ pub mod glm5next_mtp_head;
 /// GLM-5.3-Flash 45-layer text-model skeleton (Slice 9 -- topology, wiring, structural binding).
 pub mod glm5next_skeleton;
 pub mod moe;
+pub mod moe_v41;
 pub mod mtp_head;
 pub(crate) mod mtp_meta;
 pub mod mtp_multi;
