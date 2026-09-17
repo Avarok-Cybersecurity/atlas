@@ -18,7 +18,7 @@ impl BlockDiffusionDraftHead {
         last_token: u32,
         _target_hidden: DevicePtr,
         position: usize,
-        _num_drafts: usize,
+        num_drafts: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         _stream: u64,
@@ -33,6 +33,11 @@ impl BlockDiffusionDraftHead {
         // single-sequence paths cannot drift apart if only one of them exists.
         collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
+        // Gamma resolver: the block this propose runs is the scheduler's draft
+        // count + 1 (anchor row), never wider than the head was sized for.
+        // The batched entry armed the same value before its prep loop; the
+        // store is idempotent.
+        self.set_block_g(num_drafts);
         let dstate = state
             .as_any_mut()
             .downcast_mut::<DflashProposerState>()
@@ -371,7 +376,12 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_committed.min(dstate.ctx_len)
             };
             let new_count = dstate.ctx_len - committed;
-            if dstate.ctx_len > 0 && new_count > 0 {
+            // Batched propose: the tail is precomputed ONCE for the whole
+            // batch by `precompute_ctx_kv_batched` after every sequence's
+            // prep (weights streamed once, not n times). Leave
+            // `ctx_committed` where it is so that pass sees the same tail.
+            let defer_to_batch = collect_prep.is_some() && super::batched_precompute_enabled();
+            if !defer_to_batch && dstate.ctx_len > 0 && new_count > 0 {
                 // Ctx-holes follow-up (2026-07-08): the precompute scratch
                 // (fc_proj / fused_kv_out / slot_mapping_dev) is sized for
                 // ctx_window rows. A serial-append stretch (think-gated /
@@ -521,7 +531,11 @@ impl BlockDiffusionDraftHead {
         // and the WY17 strided layout (inter_stride_floats = h_bytes/4) maps
         // 1:1 to ssm_pool.h_intermediate(layer, slot, i). Override with
         // AVAROK_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
-        let cap = self.levers.draft_cap.unwrap_or(self.gamma);
+        // Defaults to the block width IN FLIGHT, not the fixed gamma: the
+        // resolver arms block_g() per propose (#845), and defaulting to gamma
+        // would cap every narrow block at the widest one the head was sized
+        // for. Read through levers so the variable has exactly one reader.
+        let cap = self.levers.draft_cap.unwrap_or(self.block_g());
 
         // AVAROK_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across

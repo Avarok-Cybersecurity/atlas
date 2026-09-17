@@ -251,6 +251,12 @@ pub(crate) fn ssm_m128_min_m() -> Option<u32> {
     })
 }
 
+/// Write-on-accept K=4 batched verify (default ON). `AVAROK_NO_GDN_WOA=1`
+/// restores the parent wy4 kernel (writes every intermediate).
+pub(super) fn gdn_woa_enabled() -> bool {
+    std::env::var("AVAROK_NO_GDN_WOA").ok().as_deref() != Some("1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GdnFlags, ssm_h_dtype_bits};

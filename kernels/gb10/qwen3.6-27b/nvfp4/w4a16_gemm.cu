@@ -6950,6 +6950,265 @@ extern "C" __global__ void fp8_gemm_t_row_scaled(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// fp8_gemm_t_row_scaled_p4 — the row-scaled FP8 GEMM above with a 4-stage
+// cp.async ring instead of the 2-stage buffer + full drain per K step.
+//
+// Why (2026-09-03, C=16 gamma-4 prose profile): at the drafter's M=64 the
+// 2-stage kernel ran at 26-39% of DRAM peak (99 GB/s on gate/up, 107 GB/s
+// on lm_head). Compute per 32-wide K step is 16 mma per warp, far shorter
+// than LPDDR5X latency, and `cp.async.wait_group 0` after every step
+// leaves ONE tile in flight per CTA; with 40-136 CTAs that is < 1 MB in
+// flight across the chip — a latency-bound signature. Four stages with
+// wait_group 2 keep three tiles in flight per CTA. The K loop visits the
+// same 32-wide slabs in the same order with the same MMA sequence, so
+// every accumulator sees the identical rounding: output is byte-identical
+// to fp8_gemm_t_row_scaled (verified by sha on the record bench).
+//
+// smem: A 4x64x40x2 = 20 KB, B 4x128x32 = 16 KB (36 KB, fits static).
+// Grid/Block unchanged: (ceil(N/128), ceil(M/64), 1) x (128, 1, 1).
+// provenance-id: 526f6e616c6420522e205374657369616b
+// ═══════════════════════════════════════════════════════════════════
+#define FP8_RS_STAGES 4
+extern "C" __global__ void fp8_gemm_t_row_scaled_p4(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_fp8,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_m = blockIdx.y * M_TILE;
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    __shared__ __nv_bfloat16 smem_A[FP8_RS_STAGES][M_TILE][K_STEP_T + PAD_T];
+    __shared__ unsigned char smem_B[FP8_RS_STAGES][N_TILE_LG][K_STEP_T];
+
+    float acc[16][4];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        acc[i][0] = 0.0f; acc[i][1] = 0.0f;
+        acc[i][2] = 0.0f; acc[i][3] = 0.0f;
+    }
+
+    const unsigned int a_stride = K_STEP_T + PAD_T;
+    const unsigned int num_k = (K + K_STEP_T - 1) / K_STEP_T;
+
+    #define FP8_LOADS_P4(buf, kb) do { \
+        { \
+            unsigned int a_row_base = threadIdx.x >> 2; \
+            unsigned int a_col = (threadIdx.x & 3) << 3; \
+            unsigned int gc = (kb) + a_col; \
+            _Pragma("unroll") \
+            for (int rnd = 0; rnd < 2; rnd++) { \
+                unsigned int row = rnd * 32 + a_row_base; \
+                unsigned int gr = cta_m + row; \
+                cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                    &A[(unsigned long long)gr * K + gc], \
+                    (gr < M) && (gc + 7 < K)); \
+            } \
+        } \
+        { \
+            unsigned int my_n = threadIdx.x; \
+            unsigned int gn = cta_n + my_n; \
+            bool valid = (gn < N) && ((kb) + 31 < K); \
+            cp_async_pred_16(&smem_B[(buf)][my_n][0], \
+                &B_fp8[(unsigned long long)gn * K + (kb)], valid); \
+            cp_async_pred_16(&smem_B[(buf)][my_n][16], \
+                &B_fp8[(unsigned long long)gn * K + (kb) + 16], valid); \
+        } \
+    } while(0)
+
+    #define FP8_COMPUTE_P4(buf) do { \
+        const unsigned short* sA = (const unsigned short*)smem_A[(buf)]; \
+        unsigned int fr0 = warp_m_offset + group_id, fr1 = fr0 + 8; \
+        unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + tid * 4]); \
+        unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + tid * 4]); \
+        unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + 16 + tid * 4]); \
+        unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + 16 + tid * 4]); \
+        _Pragma("unroll") \
+        for (int nt = 0; nt < 16; nt++) { \
+            unsigned int nc = nt * 8 + group_id; \
+            unsigned int b0 = *(const unsigned int*)&smem_B[(buf)][nc][4 * tid]; \
+            unsigned int b1 = *(const unsigned int*)&smem_B[(buf)][nc][16 + 4 * tid]; \
+            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+        } \
+    } while(0)
+
+    // Prologue: stages 0..S-2 in flight (one commit group each; an
+    // out-of-range stage commits an empty group so the group count is
+    // uniform and wait_group arithmetic stays exact).
+    #pragma unroll
+    for (int s = 0; s < FP8_RS_STAGES - 1; s++) {
+        if ((unsigned int)s < num_k) FP8_LOADS_P4(s, (unsigned int)s * K_STEP_T);
+        cp_async_commit();
+    }
+
+    for (unsigned int kt = 0; kt < num_k; kt++) {
+        // Issue stage kt + S-1 into the buffer consumed at kt-1 (freed by the
+        // trailing __syncthreads of the previous iteration).
+        {
+            unsigned int kn = kt + FP8_RS_STAGES - 1;
+            if (kn < num_k) FP8_LOADS_P4(kn % FP8_RS_STAGES, kn * K_STEP_T);
+            cp_async_commit();
+        }
+        // Groups in flight now: kt+1 .. kt+S-1 (S-1 groups) plus kt's. Wait
+        // until at most S-2 remain => stage kt has landed for this thread.
+        cp_async_wait_group<FP8_RS_STAGES - 2>();
+        __syncthreads();
+        FP8_COMPUTE_P4(kt % FP8_RS_STAGES);
+        __syncthreads();
+    }
+
+    #undef FP8_LOADS_P4
+    #undef FP8_COMPUTE_P4
+
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt*8 + tid*2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        float sc0 = (c0 < N) ? row_scale[c0] : 0.0f;
+        float sc1 = (c1 < N) ? row_scale[c1] : 0.0f;
+        if (r0 < M && c0 < N) C[r0*N+c0] = __float2bfloat16(acc[nt][0] * sc0);
+        if (r0 < M && c1 < N) C[r0*N+c1] = __float2bfloat16(acc[nt][1] * sc1);
+        if (r1 < M && c0 < N) C[r1*N+c0] = __float2bfloat16(acc[nt][2] * sc0);
+        if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3] * sc1);
+    }
+}
+#undef FP8_RS_STAGES
+
+// ═══════════════════════════════════════════════════════════════════
+// fp8_gemm_t_row_scaled_k64 — deep-K (64) twin of fp8_gemm_t_row_scaled.
+//
+// B_fp8 is [N, K] with K contiguous, so a 32-wide K step opens 128 weight
+// rows for 32 bytes each; the DRAM cost is per row-open, not per byte. This
+// twin reads 64 bytes per row per step (half the row-opens per byte), the
+// same lever the W4A16 family's `_k64` twins use. The two m16n8k32 MMAs per
+// step run at k-offsets 0 then 32, i.e. the identical accumulate order per
+// output element as two 32-wide steps: byte-identical output.
+//
+// smem: A 2x64x72x2 = 18.4 KB, B 2x128x64 = 16 KB. Grid/Block unchanged.
+// provenance-id: 526f6e616c6420522e205374657369616b
+// ═══════════════════════════════════════════════════════════════════
+#define FP8_K64 64
+#define FP8_K64_PAD 8
+extern "C" __global__ void fp8_gemm_t_row_scaled_k64(
+    const __nv_bfloat16* __restrict__ A,
+    const unsigned char* __restrict__ B_fp8,
+    const float* __restrict__ row_scale,
+    __nv_bfloat16* __restrict__ C,
+    unsigned int M, unsigned int N, unsigned int K
+) {
+    const unsigned int cta_n = blockIdx.x * N_TILE_LG;
+    const unsigned int cta_m = blockIdx.y * M_TILE;
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    __shared__ __align__(16) __nv_bfloat16 smem_A[2][M_TILE][FP8_K64 + FP8_K64_PAD];
+    __shared__ __align__(16) unsigned char smem_B[2][N_TILE_LG][FP8_K64];
+
+    float acc[16][4];
+    #pragma unroll
+    for (int i = 0; i < 16; i++) {
+        acc[i][0] = 0.0f; acc[i][1] = 0.0f;
+        acc[i][2] = 0.0f; acc[i][3] = 0.0f;
+    }
+
+    const unsigned int a_stride = FP8_K64 + FP8_K64_PAD;
+    const unsigned int num_k = (K + FP8_K64 - 1) / FP8_K64;
+
+    // A: 64 rows x 128 B = 512 x 16 B chunks, 4 per thread.
+    // B: 128 rows x 64 B = 512 x 16 B chunks, 4 per thread (one row each).
+    #define FP8_LOADS_K64(buf, kb) do { \
+        _Pragma("unroll") \
+        for (int c = 0; c < 4; c++) { \
+            unsigned int chunk = c * 128 + threadIdx.x; \
+            unsigned int row = chunk >> 3; \
+            unsigned int a_col = (chunk & 7) << 3; \
+            unsigned int gr = cta_m + row; \
+            unsigned int gc = (kb) + a_col; \
+            cp_async_pred_16(&smem_A[(buf)][row][a_col], \
+                &A[(unsigned long long)gr * K + gc], \
+                (gr < M) && (gc + 7 < K)); \
+        } \
+        { \
+            unsigned int my_n = threadIdx.x; \
+            unsigned int gn = cta_n + my_n; \
+            const unsigned char* brow = &B_fp8[(unsigned long long)gn * K + (kb)]; \
+            _Pragma("unroll") \
+            for (int c = 0; c < 4; c++) { \
+                bool valid = (gn < N) && ((kb) + c * 16 + 15 < K); \
+                cp_async_pred_16(&smem_B[(buf)][my_n][c * 16], brow + c * 16, valid); \
+            } \
+        } \
+    } while(0)
+
+    #define FP8_COMPUTE_K64(buf) do { \
+        const unsigned short* sA = (const unsigned short*)smem_A[(buf)]; \
+        unsigned int fr0 = warp_m_offset + group_id, fr1 = fr0 + 8; \
+        _Pragma("unroll") \
+        for (int sub = 0; sub < 2; sub++) { \
+            unsigned int ko = sub * 32; \
+            unsigned int a0 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + ko + tid * 4]); \
+            unsigned int a1 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + ko + tid * 4]); \
+            unsigned int a2 = bf16x4_to_e4m3x4(&sA[fr0 * a_stride + ko + 16 + tid * 4]); \
+            unsigned int a3 = bf16x4_to_e4m3x4(&sA[fr1 * a_stride + ko + 16 + tid * 4]); \
+            _Pragma("unroll") \
+            for (int nt = 0; nt < 16; nt++) { \
+                unsigned int nc = nt * 8 + group_id; \
+                unsigned int b0 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 4 * tid]; \
+                unsigned int b1 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 16 + 4 * tid]; \
+                atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+            } \
+        } \
+    } while(0)
+
+    FP8_LOADS_K64(0, 0);
+    cp_async_commit();
+    cp_async_wait_all();
+    __syncthreads();
+
+    int cur = 0;
+    for (unsigned int kt = 1; kt < num_k; kt++) {
+        int nxt = 1 - cur;
+        FP8_LOADS_K64(nxt, kt * FP8_K64);
+        cp_async_commit();
+        FP8_COMPUTE_K64(cur);
+        cp_async_wait_all();
+        __syncthreads();
+        cur = nxt;
+    }
+    FP8_COMPUTE_K64(cur);
+
+    #undef FP8_LOADS_K64
+    #undef FP8_COMPUTE_K64
+
+    #pragma unroll
+    for (int nt = 0; nt < 16; nt++) {
+        unsigned int c0 = cta_n + nt*8 + tid*2;
+        unsigned int c1 = c0 + 1;
+        unsigned int r0 = cta_m + warp_m_offset + group_id;
+        unsigned int r1 = r0 + 8;
+        float sc0 = (c0 < N) ? row_scale[c0] : 0.0f;
+        float sc1 = (c1 < N) ? row_scale[c1] : 0.0f;
+        if (r0 < M && c0 < N) C[r0*N+c0] = __float2bfloat16(acc[nt][0] * sc0);
+        if (r0 < M && c1 < N) C[r0*N+c1] = __float2bfloat16(acc[nt][1] * sc1);
+        if (r1 < M && c0 < N) C[r1*N+c0] = __float2bfloat16(acc[nt][2] * sc0);
+        if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3] * sc1);
+    }
+}
+#undef FP8_K64
+#undef FP8_K64_PAD
+
+// ═══════════════════════════════════════════════════════════════════
 // Small-M row-scaled FP8 GEMM: same as fp8_gemm_t_row_scaled but with
 // M_TILE=16 instead of 64. Designed for the DFlash drafter lm_head
 // where M=γ=16 (one CTA per N-tile covers all M rows without waste).

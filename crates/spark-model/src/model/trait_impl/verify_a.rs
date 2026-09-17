@@ -67,7 +67,19 @@ impl TransformerModel {
         for (i, layer) in self.layers.iter().enumerate() {
             let layer_type = self.config.layer_type(i);
 
-            if layer_type == avarok_core::config::LayerType::FullAttention {
+            // BOTH attention flavors take the per-token path. SlidingAttention
+            // previously fell into the decode_batched fallback below, whose
+            // default per-token decode() loop reuses the caller's ONE
+            // attn_metadata upload -- every one of the K tokens then attends
+            // and writes KV at the SAME position, and the verify commits one
+            // token repeated (Laguna-XS DFlash 'ToToTo...' degeneration,
+            // 2026-08-25; Laguna is the first spec target with sliding
+            // layers, so no earlier model could hit this).
+            if matches!(
+                layer_type,
+                avarok_core::config::LayerType::FullAttention
+                    | avarok_core::config::LayerType::SlidingAttention
+            ) {
                 // Attention layers: sequential per-token (need per-token metadata)
                 for t in 0..k {
                     let pos = seq.seq_len + t;
@@ -318,8 +330,14 @@ impl TransformerModel {
 
     pub(super) fn rollback_ssm_states_dispatch(
         &self,
+        layer: &dyn TransformerLayer,
+        layer_idx: usize,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        k: usize,
         seq: &mut SequenceState,
-        num_accepted: usize,
+        kv_cache: &mut PagedKvCache,
+        stream: u64,
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
@@ -352,6 +370,103 @@ impl TransformerModel {
                     );
                 }
             }
+        };
+        // +4 blocks of slack: ensure_blocks_through_decode below may grow the
+        // table by up to ceil(k/block_size)+1 entries before the upload.
+        anyhow::ensure!(
+            256 + (seq.block_table.len() + 4) * 4 <= PTOK_META_BYTES,
+            "verify_attention_per_token: block table ({} blocks) exceeds the \
+             16 KB per-token metadata staging",
+            seq.block_table.len(),
+        );
+        for t in 0..k {
+            let pos = seq.seq_len + t;
+            let bs = kv_cache.block_size();
+            let blocks_needed = (pos / bs) + 1;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+                self.levers.kv_poison,
+            )?;
+
+            let max_blocks = seq.block_table.len() as u32;
+            let pos_val = pos as u32;
+            self.gpu
+                .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
+            let block_idx = seq
+                .physical_block_for(pos / bs)
+                .unwrap_or(self.dummy_kv_block);
+            let global_slot = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
+            self.gpu
+                .copy_h2d_async(&global_slot.to_le_bytes(), meta_base.offset(8), stream)?;
+            let actual_seq_len = (pos + 1) as i32;
+            self.gpu
+                .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
+            let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+            // SAFETY: length derived from `bt_i32` itself (`len() * 4`), a
+            // fresh `collect()` above; i32 is POD; `bt_i32` outlives the
+            // H2D enqueue.
+            let bt_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4)
+            };
+            self.gpu
+                .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
+
+            let seq_slot =
+                self.upload_seq_slot_uniform(seq.adapter_slot, 1, meta_base.offset(128), stream)?;
+
+            let attn_metadata = AttnMetadataDev {
+                positions: meta_base,
+                positions_h: meta_base,
+                positions_w: meta_base,
+                slot: meta_base.offset(8),
+                seq_len: meta_base.offset(16),
+                block_table: meta_base.offset(256),
+                max_blocks_per_seq: max_blocks,
+                num_seqs: 1,
+                seq_slot,
+                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
+            };
+
+            let ctx = ForwardContext {
+                buffers: &self.buffers,
+                gpu: self.gpu.as_ref(),
+                config: &self.config,
+                dispatch: &self.dispatch,
+                derived: &self.derived,
+                levers: &self.levers,
+                stats: &self.stats,
+                attn_metadata: Some(attn_metadata),
+                profile: false,
+                comm: self.comm_ref(),
+                graph_capture: false,
+                gdn_exact_replay: false,
+                token_ids: None,
+                hc_row_offset: 0,
+                host_token_ids: None,
+                routed_lora_layers: None,
+                midchunk_capture: None,
+                moe_lora_route: self.decode_moe_route(),
+            };
+
+            let h_t = hidden.offset(t * h * bf16);
+            let r_t = residual.offset(t * h * bf16);
+            layer.decode(
+                h_t,
+                r_t,
+                seq.layer_states[layer_idx].as_mut(),
+                kv_cache,
+                pos,
+                &mut seq.block_table,
+                &mut seq.disk_block_ids,
+                &mut seq.disk_last_offloaded_per_layer,
+                &ctx,
+                stream,
+            )?;
         }
 
         let stream = self.gpu.default_stream();
@@ -433,54 +548,146 @@ impl TransformerModel {
         Ok(())
     }
 
-    /// Phase-C decode-time boundary snapshot save.
-    ///
-    /// Copies the sequence's live SSM state (the active `SsmStatePool`
-    /// slot `seq.slot_idx`) into the decode-rollback ring slot
-    /// `(seq.slot_idx, ring_slot)` of [`SsmSnapshotPool`]. Reuses the
-    /// same D2D copy primitive Marconi and MTP verify use (SSOT). The
-    /// copies run on the default stream so they are ordered after the
-    /// decode that produced this boundary token and before any later
-    /// decode that would overwrite the pool slot.
-    pub(super) fn save_decode_ssm_snapshot_dispatch(
-        &self,
-        seq: &SequenceState,
-        ring_slot: usize,
-    ) -> Result<()> {
-        if !self.ssm_snapshots.decode_rollback_enabled() {
-            anyhow::bail!("save_decode_ssm_snapshot: decode-rollback region not allocated");
-        }
-        let stream = self.gpu.default_stream();
-        self.ssm_snapshots.save_decode(
-            seq.slot_idx,
-            ring_slot,
-            &self.ssm_pool,
-            self.gpu.as_ref(),
-            stream,
-        )
-    }
 
-    /// Phase-C decode-time boundary snapshot restore.
+    /// Sequential per-token attention decode over K verify rows, uploading
+    /// CORRECT per-token metadata (position, KV slot, seq_len, block table)
+    /// before each `decode()` — the same pattern this file's eager verify
+    /// uses inline for its attention arm.
     ///
-    /// Inverse of [`Self::save_decode_ssm_snapshot_dispatch`]: copies the
-    /// ring snapshot `(seq.slot_idx, ring_slot)` back into the live
-    /// `SsmStatePool` slot, undoing every recurrent update the dropped
-    /// degenerate tail applied.
-    pub(super) fn restore_decode_ssm_snapshot_dispatch(
+    /// Exists for SLIDING-WINDOW attention layers inside the K=2 / K=γ
+    /// verify bodies: those routes send non-FullAttention layers to
+    /// `decode_batched`, whose default per-token loop reuses the caller's
+    /// single multi-row metadata upload — every token then attends and
+    /// writes KV at the SAME position, and verify commits one token
+    /// repeated (Laguna-XS DFlash 'ToToTo…' degeneration, 2026-08-25;
+    /// `decode_multi_seq` is no alternative — it has no sliding-window
+    /// handling at all). Eager H2D uploads per token: callers must run
+    /// OUTSIDE CUDA-graph capture (the verify bodies drop graphs when the
+    /// model has sliding layers).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn verify_attention_per_token(
         &self,
-        seq: &SequenceState,
-        ring_slot: usize,
+        layer: &dyn TransformerLayer,
+        layer_idx: usize,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        k: usize,
+        seq: &mut SequenceState,
+        kv_cache: &mut PagedKvCache,
+        stream: u64,
     ) -> Result<()> {
-        if !self.ssm_snapshots.decode_rollback_enabled() {
-            anyhow::bail!("restore_decode_ssm_snapshot: decode-rollback region not allocated");
+        let h = self.config.hidden_size;
+        let bf16 = 2usize;
+        // Dedicated staging — NOT `scratch + 32768`: the verify bodies'
+        // multi-seq metadata overlay lives there and can span the entire
+        // scratch buffer, and the interleaved FullAttention layers'
+        // decode_multi_seq still reads it between our per-token calls
+        // (clobbering it was a sticky CUDA-700 on Laguna-XS, 2026-08-25).
+        const PTOK_META_BYTES: usize = 16 * 1024;
+        let meta_base = match self.verify_ptok_meta.get() {
+            Some(&p) => p,
+            None => {
+                let p = self.gpu.alloc(PTOK_META_BYTES)?;
+                *self.verify_ptok_meta.get_or_init(|| p)
+            }
+        };
+        // +4 blocks of slack: ensure_blocks_through_decode below may grow the
+        // table by up to ceil(k/block_size)+1 entries before the upload.
+        anyhow::ensure!(
+            256 + (seq.block_table.len() + 4) * 4 <= PTOK_META_BYTES,
+            "verify_attention_per_token: block table ({} blocks) exceeds the \
+             16 KB per-token metadata staging",
+            seq.block_table.len(),
+        );
+        for t in 0..k {
+            let pos = seq.seq_len + t;
+            let bs = kv_cache.block_size();
+            let blocks_needed = (pos / bs) + 1;
+            ensure_blocks_through_decode(
+                seq,
+                blocks_needed - 1,
+                kv_cache,
+                self.prefix_cache.as_ref(),
+                self.gpu.as_ref(),
+                stream,
+                self.levers.kv_poison,
+            )?;
+
+            let max_blocks = seq.block_table.len() as u32;
+            let pos_val = pos as u32;
+            self.gpu
+                .copy_h2d_async(&pos_val.to_le_bytes(), meta_base, stream)?;
+            let block_idx = seq
+                .physical_block_for(pos / bs)
+                .unwrap_or(self.dummy_kv_block);
+            let global_slot = (block_idx as i64) * (bs as i64) + ((pos % bs) as i64);
+            self.gpu
+                .copy_h2d_async(&global_slot.to_le_bytes(), meta_base.offset(8), stream)?;
+            let actual_seq_len = (pos + 1) as i32;
+            self.gpu
+                .copy_h2d_async(&actual_seq_len.to_le_bytes(), meta_base.offset(16), stream)?;
+            let bt_i32: Vec<i32> = seq.block_table.iter().map(|&b| b as i32).collect();
+            // SAFETY: length derived from `bt_i32` itself (`len() * 4`), a
+            // fresh `collect()` above; i32 is POD; `bt_i32` outlives the
+            // H2D enqueue.
+            let bt_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(bt_i32.as_ptr() as *const u8, bt_i32.len() * 4)
+            };
+            self.gpu
+                .copy_h2d_async(bt_bytes, meta_base.offset(256), stream)?;
+
+            let seq_slot =
+                self.upload_seq_slot_uniform(seq.adapter_slot, 1, meta_base.offset(128), stream)?;
+
+            let attn_metadata = AttnMetadataDev {
+                positions: meta_base,
+                positions_h: meta_base,
+                positions_w: meta_base,
+                slot: meta_base.offset(8),
+                seq_len: meta_base.offset(16),
+                block_table: meta_base.offset(256),
+                max_blocks_per_seq: max_blocks,
+                num_seqs: 1,
+                seq_slot,
+                moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
+            };
+
+            let ctx = ForwardContext {
+                buffers: &self.buffers,
+                gpu: self.gpu.as_ref(),
+                config: &self.config,
+                dispatch: &self.dispatch,
+                derived: &self.derived,
+                levers: &self.levers,
+                stats: &self.stats,
+                attn_metadata: Some(attn_metadata),
+                profile: false,
+                comm: self.comm_ref(),
+                graph_capture: false,
+                gdn_exact_replay: false,
+                token_ids: None,
+                hc_row_offset: 0,
+                host_token_ids: None,
+                routed_lora_layers: None,
+                midchunk_capture: None,
+                moe_lora_route: self.decode_moe_route(),
+            };
+
+            let h_t = hidden.offset(t * h * bf16);
+            let r_t = residual.offset(t * h * bf16);
+            layer.decode(
+                h_t,
+                r_t,
+                seq.layer_states[layer_idx].as_mut(),
+                kv_cache,
+                pos,
+                &mut seq.block_table,
+                &mut seq.disk_block_ids,
+                &mut seq.disk_last_offloaded_per_layer,
+                &ctx,
+                stream,
+            )?;
         }
-        let stream = self.gpu.default_stream();
-        self.ssm_snapshots.restore_decode(
-            seq.slot_idx,
-            ring_slot,
-            &self.ssm_pool,
-            self.gpu.as_ref(),
-            stream,
-        )
+        Ok(())
     }
 }
