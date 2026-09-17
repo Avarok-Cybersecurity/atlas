@@ -447,22 +447,38 @@ decisions unexamined, and RDNA 4 is not RDNA 3.5:
   4's cap; if it is larger, the pin is costing prefill throughput for nothing.
   Relaxing it is a kernel-side change to a `__SCALE__` gate that strix also
   compiles, so it needs its own measurement there.
-* **The three runtime shims** in `serve-amd.sh`: `ATLAS_FORCE_GLOBAL_GDN=1`
-  (GDN prefill to the global-memory kernel, the same LDS cap),
-  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_FP8_PREDEQUANT=1` (both because
-  SCALE's device-side FP8 encode is broken on gfx1151). RDNA 4 has native FP8
-  WMMA, so the FP8 pair may be unnecessary here — and `v1` is not free, it
-  buys correctness with a BF16-MMA NVFP4 GEMM instead of the native path.
-  Probe each shim OFF, one at a time, against a coherence run.
+* **The two runtime knobs** `serve-amd.sh` exports:
+  `ATLAS_W4A16_VARIANT=v1` (the BF16-MMA NVFP4 GEMM instead of the FP8 path)
+  and `ATLAS_NO_GDN_FP8_PREFILL=1` (GDN/SSM prefill off the native-FP8 path),
+  both because SCALE's device-side FP8 encode is unavailable on this
+  toolchain. RDNA 4 has native FP8 WMMA in hardware, so the question is
+  whether SCALE can reach it — and `v1` is not free, it buys correctness with
+  a BF16-MMA NVFP4 GEMM instead of the native path. Probe each knob OFF, one
+  at a time, against a coherence run. `ATLAS_FORCE_GLOBAL_GDN` and
+  `ATLAS_NO_FP8_PREDEQUANT`, which the script used to export, have no reader
+  anywhere in the tree and were dropped rather than carried here.
 * **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
   retuned sampling block, which are gfx1151 observations (a post-`</think>`
   content collapse on that silicon) carried over with the tree.
 
-**Build and serve.** Same shape as `docs/porting/amd-strix-halo-scale.md`,
-with the arch and hardware swapped:
+**Build and serve.** `build-amd.sh` and `serve-amd.sh` take the hardware
+target from `ATLAS_TARGET_HW` (default `strix`) and read the SCALE arch from
+`kernels/$ATLAS_TARGET_HW/HARDWARE.toml`, so this target needs no separate
+script:
 
 ```bash
 export SCALE_HOME=$HOME/scale171/scale-1.7.1-Linux
+ATLAS_TARGET_HW=r9700 ./build-amd.sh
+ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
+```
+
+`ATLAS_TARGET_MODEL` defaults to `qwen3.8-27b` for `r9700` (and stays
+`qwen3.6-27b` for `strix`); `ATLAS_TARGET_QUANT` defaults to `nvfp4` for both.
+`GPU_UTIL` defaults to 0.75 here against strix's 0.70, because this is a
+discrete board that may also be driving a desktop session. What the scripts do
+by hand:
+
+```bash
 export CUDA_PATH="$SCALE_HOME/targets/gfx1201"
 export CUDA_HOME="$CUDA_PATH"
 export PATH="$SCALE_HOME/targets/gfx1201/bin:/opt/rocm/bin:$PATH"
@@ -470,20 +486,16 @@ export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1201/lib:$LD_LIBRAR
 export ATLAS_TARGET_HW=r9700
 export ATLAS_TARGET_MODEL=qwen3.8-27b   # or qwen3.6-27b
 export ATLAS_TARGET_QUANT=nvfp4
+export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
 # serve: SCALE libs FIRST so /opt/rocm cannot shadow the bundled ROCm, then
-# the three inherited shims, each of which should be probed OFF (see above).
+# the two runtime knobs that have readers in this tree (see above).
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
-export ATLAS_FORCE_GLOBAL_GDN=1
 export ATLAS_W4A16_VARIANT=v1
-export ATLAS_NO_FP8_PREDEQUANT=1
-target/release/spark serve Qwen/Qwen3.8-27B-FP8
+export ATLAS_NO_GDN_FP8_PREFILL=1
+target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
 ```
-
-`build-amd.sh` and `serve-amd.sh` still default to `strix`/gfx1151 and are NOT
-parameterised for this target; the commands above are the r9700 form of what
-they do.
 
 **`atlas_scale` is vendor-driven.** `spark-model/build.rs` and
 `spark-runtime/build.rs` set `atlas_scale` (and `atlas_hip`) from
