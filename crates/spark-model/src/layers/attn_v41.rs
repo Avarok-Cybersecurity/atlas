@@ -297,16 +297,16 @@ fn at(p: DevicePtr, byte_off: usize) -> DevicePtr {
 impl AttnV41 {
     pub fn new(gpu: &dyn GpuBackend, cfg: AttnV41Cfg) -> Result<Self> {
         ensure!(
-            cfg.rope_dim % 2 == 0 && cfg.rope_dim / 2 <= 256,
+            cfg.rope_dim.is_multiple_of(2) && cfg.rope_dim / 2 <= 256,
             "rope_dim {} not supported",
             cfg.rope_dim
         );
         ensure!(
-            (cfg.head_dim * cfg.n_heads) % cfg.groups == 0,
+            (cfg.head_dim * cfg.n_heads).is_multiple_of(cfg.groups),
             "n_heads * hd not divisible by groups"
         );
         ensure!(
-            cfg.head_dim % 32 == 0 && cfg.index_hd % 32 == 0,
+            cfg.head_dim.is_multiple_of(32) && cfg.index_hd.is_multiple_of(32),
             "head dims must be multiples of the 32-block"
         );
         let k = Kernels {
@@ -568,7 +568,7 @@ impl AttnV41 {
             gpu.synchronize(stream)?;
             gpu.copy_d2d(self.ckv, at(kv_state, slot * row), row)?;
             gpu.copy_d2d(self.cscore, at(score_state, slot * row), row)?;
-            if (start_pos + 1) % ratio != 0 {
+            if !(start_pos + 1).is_multiple_of(ratio) {
                 return Ok(None);
             }
             (kv_state, score_state, 1)
