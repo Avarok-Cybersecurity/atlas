@@ -129,6 +129,15 @@ impl AtlasCudaBackend {
         Ok(())
     }
 
+    /// Total device memory, from the DRIVER, deliberately not routed through
+    /// `meminfo_source`.
+    ///
+    /// The SCALE defect that moved the free leg to amdgpu sysfs does not touch
+    /// this one: measured 2026-09-17 on gfx1201 (SCALE 1.7.1, ROCm 7.2.0), the
+    /// driver's total read 32624 MiB, which is the board's true capacity and
+    /// the same figure `mem_info_vram_total` reports. It is also the hint
+    /// `meminfo_source::resolve` matches a sysfs node against, so sourcing it
+    /// from sysfs would make the detection circular.
     pub(super) fn total_memory_cu(&self) -> Result<usize> {
         let mut free: usize = 0;
         let mut total: usize = 0;
@@ -162,8 +171,14 @@ impl AtlasCudaBackend {
         Ok(count as u32)
     }
 
-    /// The driver leg alone — `cuMemGetInfo` with no `max(.., MemAvailable)`.
-    /// A73: `free_memory_cu` is not a driver query; this one is.
+    /// The DEVICE leg alone, with no `max(.., MemAvailable)` host substitution.
+    /// A73: `free_memory_cu` is not a device query; this one is.
+    ///
+    /// "Device leg" rather than "driver leg" since `meminfo_source` landed:
+    /// on a SCALE build that found its board in amdgpu sysfs, the kernel's
+    /// TTM counter IS the device figure and `cuMemGetInfo`'s is the fiction.
+    /// The distinction this function exists to draw, device memory versus
+    /// reclaimable host page cache, is unchanged.
     pub(super) fn device_free_memory_cu(&self) -> Result<usize> {
         let mut free: usize = 0;
         let mut total: usize = 0;
@@ -171,7 +186,7 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        Ok(free)
+        Ok(super::meminfo_source::device_free(free, total).bytes)
     }
 
     pub(super) fn free_memory_cu(&self) -> Result<usize> {
@@ -181,8 +196,17 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        // RULE: host `MemAvailable` substitutes for the driver's device-free
-        // figure ONLY on an integrated GPU.
+        // RULE 1: the DEVICE figure is not necessarily the driver's. See
+        // `meminfo_source`: on a SCALE build that found its board in amdgpu
+        // sysfs, the kernel's TTM counters replace `cuMemGetInfo`'s free leg,
+        // because SCALE's runtime charges ~16 MiB of phantom usage per
+        // allocation and a 1953-tensor load drove this call to 0.05 GB with
+        // 9 GB genuinely free (measured 2026-09-17, gfx1201 / SCALE 1.7.1 /
+        // ROCm 7.2.0). Unchanged on NVIDIA, where the driver IS the source.
+        let device = super::meminfo_source::device_free(free, total);
+        // RULE 2: host `MemAvailable` substitutes for the device-free
+        // figure ONLY on an integrated GPU. A no-op on any discrete board,
+        // AMD included, so rule 1 decides the answer there.
         //
         // On integrated memory (GB10 / DGX Spark, unified LPDDR5X) device and
         // host share one physical pool and `cuMemGetInfo` reports Linux
@@ -204,10 +228,19 @@ impl AtlasCudaBackend {
         // wins and host frees are invisible; on the next the MemAvailable leg
         // wins and the reading tracks host state exactly. Both were observed
         // and separately mis-attributed to "unified-memory semantics". Log the
-        // two legs and which one the integrated verdict let through, so the
+        // legs and which one the integrated verdict let through, so the
         // question cannot be re-opened from a single reading. (A68 is OPEN and
         // this line is its evidence surface — `device_free_memory_cu` above is
-        // the pure driver leg to compare it against.)
+        // the device leg alone to compare it against.)
+        //
+        // The log now carries THREE legs, because the SCALE finding added a
+        // second way for this number to be a fiction and the two are told
+        // apart only by seeing them side by side: `cuMemGetInfo` is always the
+        // raw driver figure, `sysfs` is the amdgpu TTM figure when one is
+        // sourced, and `MemAvailable` is the host pool. On the R9700 load that
+        // prompted this the first read 0.05 GB and the second 9 GB, on the
+        // same board in the same second. Anyone re-opening the question needs
+        // both numbers from one line, not two readings from two boots.
         //
         // It is also why an explicit host floor is required rather than
         // optional: MemAvailable counts RECLAIMABLE page cache as available, so
@@ -218,20 +251,31 @@ impl AtlasCudaBackend {
         if let Some(avail) = mem_available {
             let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
             tracing::debug!(
-                "free_memory legs: cuMemGetInfo={:.3} GiB, MemAvailable={:.3} GiB, \
-                 integrated={}, winner={}, spread={:.3} GiB",
-                gib(free),
+                "free_memory legs: cuMemGetInfo={:.3} GiB, sysfs={}, \
+                 MemAvailable={:.3} GiB, integrated={}, winner={}, \
+                 spread={:.3} GiB",
+                gib(device.driver),
+                match device.sysfs {
+                    Some(bytes) => format!("{:.3} GiB", gib(bytes)),
+                    None => "n/a".to_string(),
+                },
                 gib(avail),
                 integrated,
-                if integrated && avail > free {
+                if integrated && avail > device.bytes {
                     "MemAvailable"
+                } else if device.sysfs.is_some() {
+                    "amdgpu sysfs"
                 } else {
                     "cuMemGetInfo"
                 },
-                gib(avail.abs_diff(free)),
+                gib(avail.abs_diff(device.bytes)),
             );
         }
-        Ok(super::effective_free_bytes(free, mem_available, integrated))
+        Ok(super::effective_free_bytes(
+            device.bytes,
+            mem_available,
+            integrated,
+        ))
     }
 
     pub(super) fn create_stream_cu(&self) -> Result<u64> {

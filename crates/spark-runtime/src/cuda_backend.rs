@@ -18,6 +18,7 @@ mod fault_probe;
 mod gpu_copy;
 mod gpu_impl;
 mod gpu_impl_graph;
+mod meminfo_source;
 pub mod tensormap;
 
 // ── Raw CUDA driver API for memory operations ──
@@ -492,13 +493,23 @@ impl Drop for AtlasCudaBackend {
 /// Query GPU free memory without requiring a GpuBackend reference.
 /// Safe to call from any thread that shares the CUDA context.
 ///
-/// Applies the same rule as `AtlasCudaBackend`'s `free_memory`: host
-/// `MemAvailable` stands in for the driver's figure ONLY on an INTEGRATED
-/// GPU (GB10 and friends), where `cuMemGetInfo` reports Linux MemFree and so
-/// omits reclaimable buff/cache. On a discrete card host RAM is a different
-/// pool and the substitution reports many times the card's capacity — which
-/// pinned the watchdog's reading near total host RAM, so it could never cross
-/// its threshold, and put the same fiction on the TUI's memory gauge.
+/// Two rules, in this order, and both are also applied by
+/// `AtlasCudaBackend`'s `free_memory`. This is the same question asked from
+/// a thread that holds no backend:
+///
+/// 1. The DEVICE leg comes from `meminfo_source`, which is the driver
+///    everywhere except a SCALE build that found its board's amdgpu sysfs
+///    node. SCALE's `cuMemGetInfo` charges ~16 MiB of phantom usage per
+///    allocation, so on the R9700 this poll read 0.05 GB free with 9 GB
+///    actually free: a watchdog reading that would have killed a healthy
+///    server, and a TUI gauge pinned at empty.
+/// 2. Host `MemAvailable` stands in for that figure ONLY on an INTEGRATED
+///    GPU (GB10 and friends), where `cuMemGetInfo` reports Linux MemFree and
+///    so omits reclaimable buff/cache. On a discrete card host RAM is a
+///    different pool and the substitution reports many times the card's
+///    capacity, which pinned the watchdog's reading near total host RAM, so
+///    it could never cross its threshold, and put the same fiction on the
+///    TUI's memory gauge. A no-op on every AMD discrete board.
 pub fn cuda_free_memory_bytes() -> Option<usize> {
     let mut free: usize = 0;
     let mut total: usize = 0;
@@ -506,8 +517,9 @@ pub fn cuda_free_memory_bytes() -> Option<usize> {
     if status != 0 {
         return None;
     }
+    let device = meminfo_source::device_free(free, total);
     Some(polled_free_bytes(
-        free,
+        device.bytes,
         system_available_memory_bytes(),
         current_device_is_integrated(),
     ))
