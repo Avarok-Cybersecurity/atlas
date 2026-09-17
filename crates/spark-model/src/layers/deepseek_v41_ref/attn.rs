@@ -249,7 +249,7 @@ pub fn attention(
     let mut q = linear_bf16(&qr, w.wq_b, seqlen, c.q_rank, nh * hd);
     let head_pos: Vec<usize> = pos
         .iter()
-        .flat_map(|&p| std::iter::repeat(p).take(nh))
+        .flat_map(|&p| std::iter::repeat_n(p, nh))
         .collect();
     apply_rotary(&mut q, hd, rd, &head_pos, fc, false);
 
