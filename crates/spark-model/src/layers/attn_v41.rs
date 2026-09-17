@@ -175,16 +175,27 @@ impl AttnV41LayerState {
         })
     }
 
-    pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
-        gpu.free(self.window)?;
-        if let Some((a, b)) = self.comp_state {
+    /// The window ring, bf16 `[window, hd]`: a pointer a captured decode step bakes.
+    pub fn window(&self) -> DevicePtr {
+        self.window
+    }
+
+    /// Free the four device buffers this sequence owns and clear the
+    /// pointers. Idempotent: `gpu.free` is null-safe and the taken options
+    /// stay `None`, so a second call frees nothing. Takes `&mut self` because
+    /// the state reaches `release_state` as `&mut dyn LayerState` and cannot
+    /// be moved out of the box.
+    pub fn free(&mut self, gpu: &dyn GpuBackend) -> Result<()> {
+        let window = std::mem::replace(&mut self.window, DevicePtr::NULL);
+        gpu.free(window)?;
+        if let Some((a, b)) = self.comp_state.take() {
             gpu.free(a)?;
             gpu.free(b)?;
         }
-        if let Some(p) = self.compress_kv {
+        if let Some(p) = self.compress_kv.take() {
             gpu.free(p)?;
         }
-        if let Some(p) = self.index_k {
+        if let Some(p) = self.index_k.take() {
             gpu.free(p)?;
         }
         Ok(())
