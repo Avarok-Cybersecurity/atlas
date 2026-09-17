@@ -356,8 +356,8 @@ pub(crate) fn load_model(
     );
 
     // --text-only: the OPERATOR asking for the same thing the kernel-target check
-    // below asks for on the target's behalf. Both reach it the same way — clear
-    // `config.vision` before the weight store is built — because that one field
+    // below asks for on the target's behalf. Both reach it the same way, by
+    // clearing `config.vision` before the weight store is built, because that field
     // is what `load_vision_encoder` reads, what `skip_vision` is derived from
     // and what the API's image-input check consults. Setting it here means the
     // tower is never read from disk rather than read, ignored and reclaimed.

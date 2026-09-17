@@ -475,7 +475,7 @@ pub struct ServeArgs {
     /// Serve a multimodal checkpoint TEXT-ONLY: do not load its vision tower.
     ///
     /// The tower is resident for the life of the process and is charged against
-    /// the same budget as the weights, the buffer arena and the KV cache — on
+    /// the same budget as the weights, the buffer arena and the KV cache. On
     /// `unsloth/Qwen3.8-27B-NVFP4` it is ~1.65 GiB of a 32 GB board, which on
     /// that board is several batch slots' worth of KV. A deployment that only
     /// ever sends text pays that for nothing.

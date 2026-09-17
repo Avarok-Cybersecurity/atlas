@@ -88,7 +88,7 @@ pub(crate) fn load_weight_store(
             // independent reasons, and the second was missing until 2026-09-17:
             //
             //   * the LOADER is a text-only port (`binds_vision`), or
-            //   * this SERVE has no vision config — either the checkpoint ships
+            //   * this SERVE has no vision config: either the checkpoint ships
             //     none, or `--text-only` cleared it, or the kernel target has no
             //     `vision_encoder` module and `serve_load` cleared it. All three
             //     make `load_vision_encoder` return `None`, so the bytes are
@@ -101,7 +101,7 @@ pub(crate) fn load_weight_store(
             loader.skip_vision = !binds_vision(config) || text_only_serve;
             if loader.skip_vision {
                 tracing::info!(
-                    "Vision tower: not loaded — {}.",
+                    "Vision tower: not loaded, {}.",
                     if text_only_serve {
                         "this serve has no vision config (text-only checkpoint, --text-only, \
                          or a kernel target without the vision_encoder module)"

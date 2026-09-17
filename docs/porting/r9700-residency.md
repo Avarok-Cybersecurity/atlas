@@ -127,7 +127,7 @@ on every non-SCALE target), `0` (build none) or `auto` (build them only if
 `gpu.free_memory()` after the checkpoint is resident exceeds their projected
 bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the vision
 encoder's working set). Unset takes `cfg!(atlas_scale)`, which since 2026-09-17
-is **`0`** on SCALE rather than `auto` — see "The cost" below. `serve-amd.sh`
+is **`0`** on SCALE rather than `auto`. See "The cost" below. `serve-amd.sh`
 exports `0` for r9700.
 
 The projection is the SAME arithmetic that reproduces the measured ledger above,
@@ -153,7 +153,7 @@ Gemma-4-31B, a 7x slower FFN prefill, and that is still why every non-SCALE
 target builds the twins.
 
 ⚠️ **On gfx1201 it is the opposite.** The R9700 prefill measurement of
-2026-09-17 — Ornith-1.0-9B with the twins against Qwen3.8-27B without — puts
+2026-09-17 (Ornith-1.0-9B with the twins against Qwen3.8-27B without) puts
 `w4a16_gemm_t_m128` at **~1 TFLOP/s and the plain `w4a16_gemm` at ~4 TFLOP/s**.
 The twin arm is the slower one here, so the 12.74 GiB buys nothing back and the
 SCALE default is now `0`. The 7-vs-51 figures were never measured on SCALE and
@@ -298,7 +298,7 @@ the consuming kernel has completed on the load stream.
 
 NOT released, deliberately:
 
-* **`lm_head` when a consumer binds it zero-copy — which the default serve does
+* **`lm_head` when a consumer binds it zero-copy, which the default serve does
   NOT.** `lm_head_setup.rs::native_fp8_lm_head_share` binds the store's FP8
   `lm_head.weight` ZERO-COPY, but it is only reached from two places:
   `setup_lm_heads` under `--lm-head-dtype fp8` (`config.lm_head_fp8`), and
@@ -385,7 +385,7 @@ the same pointer and records it, so both become correct by substitution.
    learn about the LM-head route after all: `build_model` already holds the
    store, the config and `dflash_args` at the point `setup_lm_heads` returns,
    and that point is also the last one BEFORE the KV sizer reads
-   `free_memory()` — which matters, because a release the sizer cannot see is a
+   `free_memory()`, which matters, because a release the sizer cannot see is a
    release the KV cache does not get. `prune_after_load` would have been too
    late for exactly that reason. The guard grew a fourth term the list did not
    name: the checkpoint's `lm_head` must actually be FP8, because that is what

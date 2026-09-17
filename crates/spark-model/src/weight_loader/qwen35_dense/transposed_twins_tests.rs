@@ -158,7 +158,7 @@ fn the_ffn_width_falls_back_the_way_the_loader_does() {
 /// ★ SCALE's unset default is `Never`, not the probe. The R9700 measurement of
 /// 2026-09-17 has the twin GEMM arm SLOWER than the untransposed one on gfx1201
 /// (~1 TFLOP/s against ~4), so there is no residency-versus-speed trade left for
-/// `auto` to weigh — the twins are only 12.74 GiB. Every non-SCALE target is
+/// `auto` to weigh: the twins are only 12.74 GiB. Every non-SCALE target is
 /// untouched and still builds them.
 #[test]
 fn the_default_follows_the_target_and_the_knob_overrides_it() {

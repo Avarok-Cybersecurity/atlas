@@ -30,7 +30,7 @@
 //! the `auto` probe: there is no residency trade left to weigh. The lever is
 //! kept so the A/B stays runnable.
 //!
-//! Decode is untouched on every target — it reads the packed original either
+//! Decode is untouched on every target: it reads the packed original either
 //! way.
 //!
 //! **The precedent.** `weight_loader/gemma4/loader_a.rs::ffn_transpose_fits`
@@ -133,7 +133,7 @@ pub(super) fn decide(env: Option<&str>, is_scale: bool) -> TwinPolicy {
         // SCALE defaults to NEVER, not to the probe. On gfx1201 the twin arm
         // `w4a16_gemm_t_m128` measures ~1 TFLOP/s against ~4 TFLOP/s for the
         // plain `w4a16_gemm` it replaces (R9700 prefill, 9B and 27B, 2026-09-17),
-        // so the second layout is a SLOWDOWN here as well as 12.74 GiB — there
+        // so the second layout is a SLOWDOWN here as well as 12.74 GiB, and there
         // is nothing for `auto` to weigh. `=auto` and `=1` both still work, so
         // the A/B that produced that measurement can be re-run.
         _ if is_scale => TwinPolicy::Never,

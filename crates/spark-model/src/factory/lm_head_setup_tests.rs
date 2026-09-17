@@ -19,7 +19,7 @@ fn the_default_serve_of_an_fp8_checkpoint_releases() {
     assert!(lm_head_source_is_dead(true, false, false, false));
 }
 
-/// `load_lm_head` returns the STORE's pointer for anything that is not FP8 —
+/// `load_lm_head` returns the STORE's pointer for anything that is not FP8:
 /// `dense()` for BF16, and `weight_map::quantized` binds the packed bytes for
 /// an NVFP4-prepacked head. Releasing either frees memory the model is about
 /// to read.

@@ -356,7 +356,7 @@ pub fn build_model(
         vision_released_bytes = bytes;
         if n > 0 {
             tracing::info!(
-                "Vision tower: {n} tensors ({:.2} GiB) released — this serve binds no vision \
+                "Vision tower: {n} tensors ({:.2} GiB) released: this serve binds no vision \
                  encoder for model_type '{}' (a text-only port, a kernel target without the \
                  vision_encoder module, or --text-only), so the tower was resident and \
                  unreachable. Text capability is unchanged; image input is refused at the API.",
@@ -897,7 +897,7 @@ pub fn build_model(
     //
     // So: name every term this side of the boundary knows, and print the
     // remainder rather than hiding it. `other` is the CUDA context, the driver,
-    // the allocator's granule padding and anything else on the device —
+    // the allocator's granule padding and anything else on the device,
     // typically a few hundred MB, and worth looking at when it is not. The
     // reserve's own components are itemised by `preflight.rs`'s "Preflight
     // reserve" / "reserve breakdown" pair, which is where the ring slots live.

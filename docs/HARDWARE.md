@@ -643,7 +643,7 @@ for byte, and the default on every non-SCALE target), `0` (build none) or `auto`
 (build them only if free VRAM after the checkpoint is resident exceeds their
 projected bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the
 vision encoder's working set). **Unset takes `cfg!(atlas_scale)`, and as of
-2026-09-17 that means `0` on SCALE**, not `auto` — see "What skipping costs"
+2026-09-17 that means `0` on SCALE**, not `auto`. See "What skipping costs"
 below: on gfx1201 the twin arm measured SLOWER than the arm it replaces, so
 there is no residency-versus-speed trade for the probe to weigh. NVIDIA is
 untouched and still builds them. The decision is made ONCE, before any layer
@@ -692,7 +692,7 @@ KV budget itemised: pre-KV 23.00 GB = weights 19.42 (store, resident now) + buff
 
 The two terms that used to be opaque are the ones that matter here. **"pre-KV"**
 is `total - free`, a subtraction that lumps the weights, the buffer arena, the
-CUDA context and any desktop co-tenant into one number — the itemised line names
+CUDA context and any desktop co-tenant into one number, and the itemised line names
 each and prints the remainder as `other` rather than hiding it. **The reserve**
 arrives at the KV sizer as a single `usize` from a different crate; the preflight
 line now prints it as `fixed + ring`, and the ring is `slots x seqs x bytes`,
@@ -702,8 +702,8 @@ arithmetic.
 
 **The checkpoint's `lm_head`, once the heads are built.** `unsloth/Qwen3.8-27B-NVFP4`
 ships `lm_head.weight` as FP8 E4M3 with a per-channel BF16 scale. `load_lm_head`
-dequantises it into a fresh BF16 allocation and every head — NVFP4, FP8 or the
-BF16 skip — is built from that copy, so the checkpoint's own bytes have no
+dequantises it into a fresh BF16 allocation and every head (NVFP4, FP8 or the
+BF16 skip) is built from that copy, so the checkpoint's own bytes have no
 reader. **1.18 GiB**, released since 2026-09-17 by
 `lm_head_setup::release_lm_head_source`, on the same `ATLAS_LOAD_RELEASE_SOURCES`
 knob as the loader's other release sites (ON under `cfg!(atlas_scale)`).
@@ -721,7 +721,7 @@ reaches the KV budget rather than being freed after it was already spent.
 `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it,
 because the checkpoint declares a `vision_config`. That is **~1.65 GiB** of the
 store, resident for the life of the process, charged against the same budget as
-the weights, the buffer arena and the KV cache — and on this board a sequence's
+the weights, the buffer arena and the KV cache, and on this board a sequence's
 KV at 4096 tokens is only ~0.3 GB, so the tower is worth several batch slots.
 `--text-only` clears `config.vision` before the weight store is built, so the
 tower's bytes are never read from disk, never bound and never resident (the load

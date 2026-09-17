@@ -23,19 +23,19 @@ behind specific subsystems — see the
   `other` rather than hiding it; and `Preflight reserve` prints the reserve as
   `fixed + ring` beside the existing `slots x seqs x bytes` formula. The
   per-component `Preflight reserve breakdown` line moves from `debug` to `info`
-  — it is once per serve, and the noise it was avoiding cost a serve re-run
-  under `RUST_LOG=debug` every time the reserve was the thing in the way.
+  (it is once per serve, and the noise it was avoiding cost a serve re-run
+  under `RUST_LOG=debug` every time the reserve was the thing in the way).
 - **The checkpoint's FP8 `lm_head` is released once the heads are built.**
   `unsloth/Qwen3.8-27B-NVFP4` ships `lm_head.weight` as FP8 E4M3 with a
   per-channel BF16 scale; `load_lm_head` dequantises it into a fresh BF16
-  allocation and every head — NVFP4, runtime FP8, or the BF16 skip — is built
+  allocation and every head (NVFP4, runtime FP8, or the BF16 skip) is built
   from that copy, so the checkpoint's own bytes have no reader. **1.18 GiB**,
   item 1 of the ranked list in `docs/porting/r9700-residency.md`. Released by
   `lm_head_setup::release_lm_head_source` on the existing
   `ATLAS_LOAD_RELEASE_SOURCES` knob (ON under `cfg!(atlas_scale)`, so an NVIDIA
-  build with the variable unset frees exactly what it froze before). Four
+  build with the variable unset frees exactly what it freed before). Four
   guards, each a consumer that would otherwise still hold the pointer: the
-  checkpoint's head must actually be FP8 (the proof a copy was made — on a BF16
+  checkpoint's head must actually be FP8 (the proof a copy was made: on a BF16
   or NVFP4-prepacked head the loader returns the store's own pointer and
   releasing it is a use-after-free), and none of `--lm-head-dtype fp8`,
   `--dflash` or `--speculative` may be set, because the first two bind those
@@ -44,12 +44,12 @@ behind specific subsystems — see the
   reason it is not in `prune_after_load`: a release the sizer cannot see is a
   release the KV cache does not get.
 - **`--text-only`: serve a multimodal checkpoint without its vision tower.**
-  `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it
-  because the checkpoint declares a `vision_config` — ~1.65 GiB resident for the
-  life of the process, charged against the same budget as the weights, the
-  buffer arena and the KV cache. On a 32 GB R9700, where one sequence's KV at
-  4096 tokens is ~0.3 GB, that is several batch slots for a deployment that only
-  ever sends text. The flag clears `config.vision` before the weight store is
+  `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it,
+  because the checkpoint declares a `vision_config`. That is ~1.65 GiB resident
+  for the life of the process, charged against the same budget as the weights,
+  the buffer arena and the KV cache. On a 32 GB R9700, where one sequence's KV
+  at 4096 tokens is ~0.3 GB, that is several batch slots for a deployment that
+  only ever sends text. The flag clears `config.vision` before the weight store is
   built, so the tower's bytes are never read from disk, never bound and never
   resident; the load log prints the GB it did not read. Image and video inputs
   are refused with a 400 naming the reason instead of being silently dropped.
@@ -78,12 +78,13 @@ behind specific subsystems — see the
   cost on every target. On GB10 the twins are a large prefill win: `w4a16_gemm`
   measured ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on Gemma-4-31B, so
   skipping them is a 7x slower FFN prefill and every non-SCALE target still
-  builds them. **On gfx1201 the sign is reversed** — the R9700 prefill
+  builds them. **On gfx1201 the sign is reversed**: the R9700 prefill
   measurement of 2026-09-17 puts the twin arm at ~1 TFLOP/s against ~4 for the
-  plain `w4a16_gemm` — so the SCALE default is `0` rather than `auto`: the
+  plain `w4a16_gemm`, so the SCALE default is `0` rather than `auto`. The
   second layout costs 12.74 GiB *and* throughput there, and there is no trade
   left for the probe to weigh. The GB10 figures were never measured on SCALE.
-  Decode is untouched on every target. The load line says which way it went. Every consumer
+  Decode is untouched on every target. The load line says which way it went.
+  Every consumer
   already tolerated a `None` twin and the per-site proof is tabulated in
   `transposed_twins.rs`; nothing needed a new fallback. Dropping the SSM twin
   also drops the 1.41 GiB `out_proj` FP8 predequant and the NVFP4-MMQ finalize,

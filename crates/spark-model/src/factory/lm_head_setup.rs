@@ -260,20 +260,20 @@ pub(super) fn native_fp8_lm_head_share(
 /// The four terms, each of which is a consumer that would otherwise still hold
 /// the store's device pointer:
 ///
-/// * `source_is_fp8` — the checkpoint ships `lm_head.weight` as FP8 E4M3, so
+/// * `source_is_fp8`: the checkpoint ships `lm_head.weight` as FP8 E4M3, so
 ///   `load_lm_head` (`qwen35_dense/loaders_b.rs`) routed it through
 ///   `dense_auto_fp8_or_bf16` and every downstream head was built from that
 ///   FRESH BF16 allocation. On a BF16 or NVFP4-packed checkpoint `load_lm_head`
 ///   / `weight_map::quantized` hand the STORE's pointer straight through, and
 ///   releasing it is a use-after-free on the first token. This term is the
 ///   proof that a copy was made, not a preference.
-/// * `lm_head_fp8` — `--lm-head-dtype fp8`. [`native_fp8_lm_head_share`] binds
+/// * `lm_head_fp8`: `--lm-head-dtype fp8`. [`native_fp8_lm_head_share`] binds
 ///   `w.ptr` ZERO-COPY for the main head, deliberately (it is the whole point
 ///   of that path: no requantize, no second copy).
-/// * `dflash` — `--dflash`. `build.rs` calls the same share again for the
+/// * `dflash`: `--dflash`. `build.rs` calls the same share again for the
 ///   drafter tail, and that call has not happened yet when the release site
 ///   runs.
-/// * `speculative` — `--speculative`. Clap makes it exclusive with `--dflash`,
+/// * `speculative`: `--speculative`. Clap makes it exclusive with `--dflash`,
 ///   so this is belt rather than braces; it is spelled out because the two
 ///   flags reach different code and a future drafter could use either.
 ///
@@ -329,7 +329,7 @@ pub(super) fn release_lm_head_source(
     if !lm_head_source_is_dead(source_is_fp8, config.lm_head_fp8, dflash, speculative) {
         return Ok(0);
     }
-    // `release_tensor` does NOT synchronize — it documents that the caller owns
+    // `release_tensor` does NOT synchronize. It documents that the caller owns
     // stream ordering. The producer here is `load_lm_head`'s dequant, and the
     // `skip_lm_head_quantization()` branch of `setup_lm_heads` neither
     // requantizes nor synchronizes after it, so do not assume a sibling did it.
@@ -340,7 +340,7 @@ pub(super) fn release_lm_head_source(
     bytes += store.release_tensor(gpu, &format!("{key}_scale"))?;
     if bytes > 0 {
         tracing::info!(
-            "LM head source released: {:.2} GiB of `{key}` (+ its per-row scale) — the \
+            "LM head source released: {:.2} GiB of `{key}` (+ its per-row scale). The \
              checkpoint ships it FP8 E4M3, `load_lm_head` dequantised it into a fresh \
              BF16 allocation that every head was then built from, and neither \
              --lm-head-dtype fp8 nor --dflash is binding the store's bytes zero-copy.",
