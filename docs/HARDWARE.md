@@ -195,8 +195,12 @@ a target that ships **no kernels of its own**.
 
 **Kernel set: inherited from gb10 by symlink.** `kernels/hopper/common/` is 188
 relative symlinks into `kernels/gb10/common/` (all 178 `.cu`, the 9 `.cuh`
-headers, and `KERNEL.toml`), and each of the seven model targets mirrors gb10's
-`nvfp4/` directory file by file the same way. The mirror is a whole-directory
+headers, and `KERNEL.toml`), and each of the model targets that owns a quant
+dir mirrors gb10's `nvfp4/` directory file by file the same way. A target whose
+MODEL.toml redirects with `[model] kernel_source` (qwen3.8-27b, and
+deepseek-v4.1-flash, whose V4.1-only kernels live in deepseek-v4-flash's tree)
+carries the real MODEL.toml and no quant dir at all: the redirect resolves to
+this hardware set's mirror of the source. The mirror is a whole-directory
 rule, not a list: a kernel added to `kernels/gb10/common/` needs a link here
 or this target silently compiles a smaller inventory than GB10 does. Git stores them as symlinks
 (mode 120000); nothing is copied. This works because the gb10 kernels are
@@ -331,9 +335,10 @@ tree before it. Reproduce with
 ## The B200 (sm_100a) target
 
 `kernels/b200/` is B200 and GB200 — both SM 10.0, datacenter Blackwell. It is
-built exactly like `kernels/hopper/`: 225 relative symlinks into
+built exactly like `kernels/hopper/`: relative symlinks into
 `kernels/gb10/` (the 188-entry `common/` plus each of the five P0 models'
-`nvfp4/`), with a real `MODEL.toml` per model whose header records that its
+`nvfp4/`; deepseek-v4.1-flash redirects to deepseek-v4-flash's mirror by
+`kernel_source`, as on Hopper), with a real `MODEL.toml` per model whose header records that its
 `[expected_absent]` tables were harvested on GB10 and **not** re-harvested on a
 B200. `crates/avarok-kernels/tests/inherited_targets.rs` holds both trees to the
 same assertions.
