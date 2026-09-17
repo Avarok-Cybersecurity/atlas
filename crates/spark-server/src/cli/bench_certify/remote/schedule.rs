@@ -16,8 +16,8 @@
 //!
 //! Nothing here starts anything; the driver asks [`next_for`] and runs it.
 
-use atlas_plugin::hardware::equivalence::{EquivalencePolicy, equivalent};
-use atlas_plugin::hardware::policy::Sensitivity;
+use avarok_plugin::hardware::equivalence::{EquivalencePolicy, equivalent};
+use avarok_plugin::hardware::policy::Sensitivity;
 
 use super::super::plan::Unit;
 use super::node::Node;

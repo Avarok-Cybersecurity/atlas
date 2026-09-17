@@ -49,14 +49,14 @@ __device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
 // the NVIDIA codegen is byte-identical (zero NVFP4/FP8 regression). SCALE
 // defines __SCALE__ (not __HIP_PLATFORM_AMD__) in the device pass.
 // PTX `cvt.e4m3x2.f32 d,a,b`: d hi-byte = e4m3(a), lo-byte = e4m3(b).
-__device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float b_lo) {
+__device__ __forceinline__ unsigned short avarok_cvt_e4m3x2_f32(float a_hi, float b_lo) {
 #if defined(__SCALE__)
     unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
     unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
     return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
 #elif defined(__HIP_PLATFORM_AMD__)
     // gfx1151 has no e4m3x2.f32 PTX; same software bit-math as SCALE / the
-    // port's strix-hip-real atlas_cvt_e4m3x2_f32 (numerically exact SATFINITE E4M3).
+    // port's strix-hip-real avarok_cvt_e4m3x2_f32 (numerically exact SATFINITE E4M3).
     unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
     unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
     return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
@@ -85,19 +85,19 @@ __device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float
 // bodies below also is not hipcc-compilable. This whole .cu therefore HIP-compiles
 // only via the strix-hip-real WMMA rewrite (symlinked in the follow-up stage),
 // NOT through this shared gb10 source. The HIP-portable helper above
-// (atlas_cvt_e4m3x2_f32) IS guarded, since elementwise kernels that use it
+// (avarok_cvt_e4m3x2_f32) IS guarded, since elementwise kernels that use it
 // (predequant_nvfp4_to_fp8, bf16_to_fp8) have no mma.sync/cp.async.
 #if defined(__SCALE__)
-__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) {
+__device__ __forceinline__ float avarok_e4m3_to_f32(unsigned char b) {
     return scl_fp8(b);  // standard E4M3, matches quantizer (SCALE __NV_E4M3 is non-standard)
 }
-__device__ __forceinline__ unsigned atlas_bf2(float lo, float hi) {
+__device__ __forceinline__ unsigned avarok_bf2(float lo, float hi) {
     unsigned short l = __bfloat16_as_ushort(__float2bfloat16(lo));
     unsigned short h = __bfloat16_as_ushort(__float2bfloat16(hi));
     return ((unsigned)h << 16) | l;
 }
 #endif
-__device__ __forceinline__ void atlas_mma_e4m3(float* acc,
+__device__ __forceinline__ void avarok_mma_e4m3(float* acc,
     unsigned a0, unsigned a1, unsigned a2, unsigned a3,
     unsigned b0, unsigned b1) {
 #if defined(__SCALE__)
@@ -105,17 +105,17 @@ __device__ __forceinline__ void atlas_mma_e4m3(float* acc,
     #pragma unroll
     for (int half = 0; half < 2; half++) {
         unsigned A_g = half ? a2 : a0, A_g8 = half ? a3 : a1, B_g = half ? b1 : b0;
-        #define ATLAS_GA(reg, j) atlas_e4m3_to_f32((unsigned char)( \
+        #define AVAROK_GA(reg, j) avarok_e4m3_to_f32((unsigned char)( \
             __shfl_sync(0xffffffffu, (reg), base + ((unsigned)(j) >> 2)) \
             >> (8 * ((j) & 3))))
         int j0 = 2 * (int)tig, j1 = 8 + 2 * (int)tig;
-        unsigned A0 = atlas_bf2(ATLAS_GA(A_g, j0),  ATLAS_GA(A_g, j0 + 1));
-        unsigned A1 = atlas_bf2(ATLAS_GA(A_g8, j0), ATLAS_GA(A_g8, j0 + 1));
-        unsigned A2 = atlas_bf2(ATLAS_GA(A_g, j1),  ATLAS_GA(A_g, j1 + 1));
-        unsigned A3 = atlas_bf2(ATLAS_GA(A_g8, j1), ATLAS_GA(A_g8, j1 + 1));
-        unsigned B0 = atlas_bf2(ATLAS_GA(B_g, j0),  ATLAS_GA(B_g, j0 + 1));
-        unsigned B1 = atlas_bf2(ATLAS_GA(B_g, j1),  ATLAS_GA(B_g, j1 + 1));
-        #undef ATLAS_GA
+        unsigned A0 = avarok_bf2(AVAROK_GA(A_g, j0),  AVAROK_GA(A_g, j0 + 1));
+        unsigned A1 = avarok_bf2(AVAROK_GA(A_g8, j0), AVAROK_GA(A_g8, j0 + 1));
+        unsigned A2 = avarok_bf2(AVAROK_GA(A_g, j1),  AVAROK_GA(A_g, j1 + 1));
+        unsigned A3 = avarok_bf2(AVAROK_GA(A_g8, j1), AVAROK_GA(A_g8, j1 + 1));
+        unsigned B0 = avarok_bf2(AVAROK_GA(B_g, j0),  AVAROK_GA(B_g, j0 + 1));
+        unsigned B1 = avarok_bf2(AVAROK_GA(B_g, j1),  AVAROK_GA(B_g, j1 + 1));
+        #undef AVAROK_GA
         asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
             "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
             : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
@@ -336,8 +336,8 @@ __device__ __forceinline__ unsigned int bf16x4_to_e4m3x4(const unsigned short* s
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f2) : "h"(bf2));
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f3) : "h"(bf3));
     unsigned short h0, h1;
-    h0 = atlas_cvt_e4m3x2_f32(f1, f0);
-    h1 = atlas_cvt_e4m3x2_f32(f3, f2);
+    h0 = avarok_cvt_e4m3x2_f32(f1, f0);
+    h1 = avarok_cvt_e4m3x2_f32(f3, f2);
     return ((unsigned int)h1 << 16) | (unsigned int)h0;
 }
 
@@ -580,7 +580,7 @@ extern "C" __global__ void w4a16_gemm_t(
 // smem: A 2×64×40×2=10240B, B_fp8 2×128×32=8192B = ~18.4KB
 // ═══════════════════════════════════════════════════════════════════
 // `w4a16_gemm_t` with a 3-deep WEIGHT pipeline (`w4a16_gemm_t_p3`).
-// Kill switch: ATLAS_NO_TGEMM_PIPELINE3 (presence).
+// Kill switch: AVAROK_NO_TGEMM_PIPELINE3 (presence).
 // ═══════════════════════════════════════════════════════════════════
 extern "C" __global__ void w4a16_gemm_t_p3(
     const __nv_bfloat16* __restrict__ A,
@@ -882,7 +882,7 @@ extern "C" __global__ void fp8_gemm_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -960,7 +960,7 @@ extern "C" __global__ void predequant_nvfp4_to_fp8(
     float val_hi = E2M1_LUT[packed >> 4] * sv;
 
     unsigned short fp8_pair;
-    fp8_pair = atlas_cvt_e4m3x2_f32(val_hi, val_lo);
+    fp8_pair = avarok_cvt_e4m3x2_f32(val_hi, val_lo);
 
     *(unsigned short*)&B_fp8[(unsigned long long)n * K + k_even] = fp8_pair;
 }
@@ -986,7 +986,7 @@ extern "C" __global__ void bf16_to_fp8(
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f0) : "h"(bf0));
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f1) : "h"(bf1));
     unsigned short fp8_pair;
-    fp8_pair = atlas_cvt_e4m3x2_f32(f1, f0);
+    fp8_pair = avarok_cvt_e4m3x2_f32(f1, f0);
     *(unsigned short*)&dst[idx] = fp8_pair;
 }
 
@@ -1063,7 +1063,7 @@ extern "C" __global__ void fp8_fp8_gemm_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -1208,7 +1208,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv0; \
             float hi = smem_LUT_k64[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1217,7 +1217,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv1; \
             float hi = smem_LUT_k64[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1226,7 +1226,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv2; \
             float hi = smem_LUT_k64[packed >> 4] * sv2; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1235,7 +1235,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv3; \
             float hi = smem_LUT_k64[packed >> 4] * sv3; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1305,7 +1305,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = bf16x4_to_e4m3x4(&sA[fr0 * ast64 + 32 + tid * 4]); \
         unsigned int a5 = bf16x4_to_e4m3x4(&sA[fr1 * ast64 + 32 + tid * 4]); \
@@ -1316,7 +1316,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][48 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -1362,7 +1362,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
 
 // ═══════════════════════════════════════════════════════════════════
 // K64 with a 3-deep WEIGHT pipeline (`w4a16_gemm_t_k64_p3`).
-// Kill switch: ATLAS_NO_K64_PIPELINE3 (presence).
+// Kill switch: AVAROK_NO_K64_PIPELINE3 (presence).
 // ═══════════════════════════════════════════════════════════════════
 #define K_STEP_T64 64
 #define PAD_T64    8
@@ -1456,7 +1456,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             float lo = smem_LUT_k64p3[packed & 0xF] * sv0; \
             float hi = smem_LUT_k64p3[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64p3[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1465,7 +1465,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             float lo = smem_LUT_k64p3[packed & 0xF] * sv1; \
             float hi = smem_LUT_k64p3[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64p3[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1474,7 +1474,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             float lo = smem_LUT_k64p3[packed & 0xF] * sv2; \
             float hi = smem_LUT_k64p3[packed >> 4] * sv2; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64p3[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1483,7 +1483,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             float lo = smem_LUT_k64p3[packed & 0xF] * sv3; \
             float hi = smem_LUT_k64p3[packed >> 4] * sv3; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64p3[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1553,7 +1553,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64p3[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64p3[nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = bf16x4_to_e4m3x4(&sA[fr0 * ast64 + 32 + tid * 4]); \
         unsigned int a5 = bf16x4_to_e4m3x4(&sA[fr1 * ast64 + 32 + tid * 4]); \
@@ -1564,7 +1564,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_p3(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64p3[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64p3[nc][48 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -1728,7 +1728,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_n64_p3(
             float lo = smem_LUT_n64[packed & 0xF] * sva; \
             float hi = smem_LUT_n64[packed >> 4] * sva; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_n64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -1738,7 +1738,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_n64_p3(
             float lo = smem_LUT_n64[packed & 0xF] * svb; \
             float hi = smem_LUT_n64[packed >> 4] * svb; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_n64[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1788,7 +1788,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_n64_p3(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_n64[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_n64[nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = bf16x4_to_e4m3x4(&sA[fr0 * ast64 + 32 + tid * 4]); \
         unsigned int a5 = bf16x4_to_e4m3x4(&sA[fr1 * ast64 + 32 + tid * 4]); \
@@ -1799,7 +1799,7 @@ extern "C" __global__ void w4a16_gemm_t_k64_n64_p3(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_n64[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_n64[nc][48 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -2814,7 +2814,7 @@ void fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
         } \
         /* Chunk 1: smem rows 64..127 */ \
         fr0 = M_TILE + warp_m_offset + group_id; \
@@ -2828,7 +2828,7 @@ void fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -2957,7 +2957,7 @@ void fp8_fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
         } \
         /* Chunk 1: smem rows 64..127 */ \
         fr0 = M_TILE + warp_m_offset + group_id; \
@@ -2971,7 +2971,7 @@ void fp8_fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -3033,7 +3033,7 @@ void fp8_fp8_gemm_t_m128(
 // m16n8k32 fragment: thread owns (r0=gid,r1=gid+8)×(c0=2·tid,c1=2·tid+1).
 // SMEM: A_i8 2×128×32 + B_i8 2×128×32 ≈ 16KB. Grid (N/128,M/128), block 128.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3107,8 +3107,8 @@ void int8_gemm_t_m128(
             float bs0 = smem_Bs[(buf)][nt*8 + tid*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + tid*2 + 1]; \
             int s0[4] = {0,0,0,0}, s1[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
-            ATLAS_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
+            AVAROK_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
+            AVAROK_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
             acc0[nt][0] += (float)s0[0]*as00*bs0; acc0[nt][1] += (float)s0[1]*as00*bs1; \
             acc0[nt][2] += (float)s0[2]*as01*bs0; acc0[nt][3] += (float)s0[3]*as01*bs1; \
             acc1[nt][0] += (float)s1[0]*as10*bs0; acc1[nt][1] += (float)s1[1]*as10*bs1; \
@@ -3155,7 +3155,7 @@ void int8_gemm_t_m128(
         if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc1[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8 prefill, M64 single-chunk (`int8_gemm_t_m64`). Same per-block
@@ -3163,7 +3163,7 @@ void int8_gemm_t_m128(
 // accumulators/registers → higher occupancy (the lever that took fp8 27→44).
 // Grid: (ceil(N/128), ceil(M/64), 1)  Block: (128,1,1)
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3226,7 +3226,7 @@ void int8_gemm_t_m64(
             float bs0 = smem_Bs[(buf)][nt*8+tid*2]; \
             float bs1 = smem_Bs[(buf)][nt*8+tid*2+1]; \
             int s[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
             acc[nt][0]+=(float)s[0]*as0*bs0; acc[nt][1]+=(float)s[1]*as0*bs1; \
             acc[nt][2]+=(float)s[2]*as1*bs0; acc[nt][3]+=(float)s[3]*as1*bs1; \
         } \
@@ -3255,7 +3255,7 @@ void int8_gemm_t_m64(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8 SPLIT-K prefill (`int8_gemm_splitk` + `int8_splitk_reduce`).
@@ -3269,7 +3269,7 @@ void int8_gemm_t_m64(
 // Grid: (ceil(N/128), ceil(M/128), ksplits)  Block: (128,1,1)
 // K must be a multiple of 32*ksplits.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3347,8 +3347,8 @@ void int8_gemm_splitk(
             float bs0 = smem_Bs[(buf)][nt*8 + tid*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + tid*2 + 1]; \
             int s0[4] = {0,0,0,0}, s1[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
-            ATLAS_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
+            AVAROK_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
+            AVAROK_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
             acc0[nt][0] += (float)s0[0]*as00*bs0; acc0[nt][1] += (float)s0[1]*as00*bs1; \
             acc0[nt][2] += (float)s0[2]*as01*bs0; acc0[nt][3] += (float)s0[3]*as01*bs1; \
             acc1[nt][0] += (float)s1[0]*as10*bs0; acc1[nt][1] += (float)s1[1]*as10*bs1; \
@@ -3394,7 +3394,7 @@ void int8_gemm_splitk(
         if (r1 < M && c1 < N) Cp[zoff + (unsigned long long)r1*N+c1] = acc1[nt][3];
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // Reduce ksplits fp32 partials [ksplits,M,N] → C [M,N] bf16.
 extern "C" __global__ void int8_splitk_reduce(
@@ -3418,7 +3418,7 @@ extern "C" __global__ void int8_splitk_reduce(
 // Two m16n8k32 sub-MMAs per N-tile (K 0..32 with blk0 scale, 32..64 with blk1).
 // Grid (ceil(N/128), ceil(M/128), 1)  Block 128.  K multiple of 64.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3496,8 +3496,8 @@ void int8_gemm_t_m128_k64(
             float bs0 = smem_Bs[(buf)][nt*8 + tid*2][sb]; \
             float bs1 = smem_Bs[(buf)][nt*8 + tid*2 + 1][sb]; \
             int s0[4] = {0,0,0,0}, s1[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
-            ATLAS_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
+            AVAROK_MMA_S8(s0, a0c0,a1c0,a2c0,a3c0, b0,b1); \
+            AVAROK_MMA_S8(s1, a0c1,a1c1,a2c1,a3c1, b0,b1); \
             acc0[nt][0] += (float)s0[0]*as00*bs0; acc0[nt][1] += (float)s0[1]*as00*bs1; \
             acc0[nt][2] += (float)s0[2]*as01*bs0; acc0[nt][3] += (float)s0[3]*as01*bs1; \
             acc1[nt][0] += (float)s1[0]*as10*bs0; acc1[nt][1] += (float)s1[1]*as10*bs1; \
@@ -3544,7 +3544,7 @@ void int8_gemm_t_m128_k64(
         if (r1 < M && c1 < N) C[r1*N+c1] = __float2bfloat16(acc1[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8 prefill, 8-WARP (`int8_gemm_8w`). MMQ-class structural fix #1:
@@ -3556,7 +3556,7 @@ void int8_gemm_t_m128_k64(
 // float FMA on the int32 partial (llama mmq.cuh:1212). Scales staged in smem.
 // SMEM: A 2x128x32 + B 2x128x32 + scales ~17KB. Grid (N/128, M/128), block 256.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3618,7 +3618,7 @@ void int8_gemm_8w(
             float bs0 = smem_Bs[(buf)][nt*8 + t4*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + t4*2 + 1]; \
             int s[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
             acc[nt][0] += (float)s[0]*as0*bs0; acc[nt][1] += (float)s[1]*as0*bs1; \
             acc[nt][2] += (float)s[2]*as1*bs0; acc[nt][3] += (float)s[3]*as1*bs1; \
         } \
@@ -3647,7 +3647,7 @@ void int8_gemm_8w(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8, 8-warp + 3-STAGE staged-drain cp.async pipeline (int8_gemm_8w3).
@@ -3658,7 +3658,7 @@ void int8_gemm_8w(
 // of a full stall per K-step. Same int32 + per-block-scale math (correct).
 // SMEM: 3x(A 128x32 + B 128x32) + 3x scales ~25.5KB. Grid (N/128,M/128) blk 256.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3723,7 +3723,7 @@ void int8_gemm_8w3(
             float bs0 = smem_Bs[(buf)][nt*8 + t4*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + t4*2 + 1]; \
             int s[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
             acc[nt][0] += (float)s[0]*as0*bs0; acc[nt][1] += (float)s[1]*as0*bs1; \
             acc[nt][2] += (float)s[2]*as1*bs0; acc[nt][3] += (float)s[3]*as1*bs1; \
         } \
@@ -3758,7 +3758,7 @@ void int8_gemm_8w3(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef CP_WAIT_GROUP
 
 // ═══════════════════════════════════════════════════════════════════
@@ -3771,7 +3771,7 @@ void int8_gemm_8w3(
 // mmq.cuh:1433 load_generic). Cuts the smem-load instruction count that pins
 // the inner loop. Grid (N/128,M/128) block 256.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -3832,7 +3832,7 @@ void int8_gemm_8w_ldm(
             float bs0 = smem_Bs[(buf)][nt*8 + t4*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + t4*2 + 1]; \
             int s[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
             acc[nt][0] += (float)s[0]*as0*bs0; acc[nt][1] += (float)s[1]*as0*bs1; \
             acc[nt][2] += (float)s[2]*as1*bs0; acc[nt][3] += (float)s[3]*as1*bs1; \
         } \
@@ -3931,8 +3931,8 @@ void int8_gemm_8w_ldmab(
             float b00 = smem_Bs[(buf)][nt0*8 + t4*2]; float b10 = smem_Bs[(buf)][nt0*8 + t4*2 + 1]; \
             float b01 = smem_Bs[(buf)][nt1*8 + t4*2]; float b11 = smem_Bs[(buf)][nt1*8 + t4*2 + 1]; \
             int s0[4]={0,0,0,0}, s1[4]={0,0,0,0}; \
-            ATLAS_MMA_S8(s0, a0,a1,a2,a3, q0,q1); \
-            ATLAS_MMA_S8(s1, a0,a1,a2,a3, q2,q3); \
+            AVAROK_MMA_S8(s0, a0,a1,a2,a3, q0,q1); \
+            AVAROK_MMA_S8(s1, a0,a1,a2,a3, q2,q3); \
             acc[nt0][0]+=(float)s0[0]*as0*b00; acc[nt0][1]+=(float)s0[1]*as0*b10; \
             acc[nt0][2]+=(float)s0[2]*as1*b00; acc[nt0][3]+=(float)s0[3]*as1*b10; \
             acc[nt1][0]+=(float)s1[0]*as0*b01; acc[nt1][1]+=(float)s1[1]*as0*b11; \
@@ -3963,7 +3963,7 @@ void int8_gemm_8w_ldmab(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8, 8-warp + ldmatrix.x4 A-fragment load (int8_gemm_8w_ilp).
@@ -3975,7 +3975,7 @@ void int8_gemm_8w_ldmab(
 // mmq.cuh:1433 load_generic). Cuts the smem-load instruction count that pins
 // the inner loop. Grid (N/128,M/128) block 256.
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4035,7 +4035,7 @@ void int8_gemm_8w_ilp(
             unsigned b0 = *(const unsigned*)&smem_Bi[(buf)][nc][4*t4]; \
             unsigned b1 = *(const unsigned*)&smem_Bi[(buf)][nc][16+4*t4]; \
             sv[nt][0]=0; sv[nt][1]=0; sv[nt][2]=0; sv[nt][3]=0; \
-            ATLAS_MMA_S8(sv[nt], a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(sv[nt], a0,a1,a2,a3, b0,b1); \
         } \
         _Pragma("unroll") for (int nt = 0; nt < 16; nt++) { \
             float bs0 = smem_Bs[(buf)][nt*8 + t4*2]; \
@@ -4068,7 +4068,7 @@ void int8_gemm_8w_ilp(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8 MMQ-tile (`int8_gemm_mmq`). The structural fix none of the 12
@@ -4082,7 +4082,7 @@ void int8_gemm_8w_ilp(
 // Grid (N/128, M/128), block 256.  BK=128 (K multiple of 128).
 // ═══════════════════════════════════════════════════════════════════
 #define MMQ_BK 128
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4160,7 +4160,7 @@ void int8_gemm_mmq(
                 float bs0 = sBs[nt*8 + t4*2][sb];
                 float bs1 = sBs[nt*8 + t4*2 + 1][sb];
                 int s[4] = {0,0,0,0};
-                ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1);
+                AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1);
                 acc[nt][0] += (float)s[0]*as0*bs0; acc[nt][1] += (float)s[1]*as0*bs1;
                 acc[nt][2] += (float)s[2]*as1*bs0; acc[nt][3] += (float)s[3]*as1*bs1;
             }
@@ -4178,7 +4178,7 @@ void int8_gemm_mmq(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef MMQ_BK
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4190,7 +4190,7 @@ void int8_gemm_mmq(
 // 512), 2 warp-cols over N. Goal: 2 CTAs x 512 = 32 warps/SM (~66% occ) to
 // hide the latency. ldmatrix.x4 for A and B (both proven). Grid (N/128,M/128).
 // ═══════════════════════════════════════════════════════════════════
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4257,8 +4257,8 @@ void int8_gemm_8w_pipe(
             float b00 = smem_Bs[(buf)][ncol0 + nt0*8 + t4*2]; float b10 = smem_Bs[(buf)][ncol0 + nt0*8 + t4*2 + 1]; \
             float b01 = smem_Bs[(buf)][ncol0 + nt1*8 + t4*2]; float b11 = smem_Bs[(buf)][ncol0 + nt1*8 + t4*2 + 1]; \
             int s0[4]={0,0,0,0}, s1[4]={0,0,0,0}; \
-            ATLAS_MMA_S8(s0, a0,a1,a2,a3, q0,q1); \
-            ATLAS_MMA_S8(s1, a0,a1,a2,a3, q2,q3); \
+            AVAROK_MMA_S8(s0, a0,a1,a2,a3, q0,q1); \
+            AVAROK_MMA_S8(s1, a0,a1,a2,a3, q2,q3); \
             acc[nt0][0]+=(float)s0[0]*as0*b00; acc[nt0][1]+=(float)s0[1]*as0*b10; \
             acc[nt0][2]+=(float)s0[2]*as1*b00; acc[nt0][3]+=(float)s0[3]*as1*b10; \
             acc[nt1][0]+=(float)s1[0]*as0*b01; acc[nt1][1]+=(float)s1[1]*as0*b11; \
@@ -4289,7 +4289,7 @@ void int8_gemm_8w_pipe(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 
 // ═══════════════════════════════════════════════════════════════════
 // int8 W4A8 BANK-CONFLICT FIX (int8_gemm_padA). llama-MMQ spec (mmq.cuh:222,
@@ -4303,7 +4303,7 @@ void int8_gemm_8w_pipe(
 // ═══════════════════════════════════════════════════════════════════
 #define PADI 12                // int32 per A smem row (32B data + 16B pad); 16B-aligned for
                                // ldmatrix AND r*3 mod 8 = all-distinct 16B bank groups (llama's =12)
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4364,7 +4364,7 @@ void int8_gemm_padA(
             float bs0 = smem_Bs[(buf)][nt*8 + t4*2]; \
             float bs1 = smem_Bs[(buf)][nt*8 + t4*2 + 1]; \
             int s[4] = {0,0,0,0}; \
-            ATLAS_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
+            AVAROK_MMA_S8(s, a0,a1,a2,a3, b0,b1); \
             acc[nt][0] += (float)s[0]*as0*bs0; acc[nt][1] += (float)s[1]*as0*bs1; \
             acc[nt][2] += (float)s[2]*as1*bs0; acc[nt][3] += (float)s[3]*as1*bs1; \
         } \
@@ -4393,7 +4393,7 @@ void int8_gemm_padA(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef PADI
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4412,7 +4412,7 @@ void int8_gemm_padA(
 #define FK_TILE 64
 #define FK_SB   (FK_TILE/32)        // 2 sub-blocks of 32-K
 #define FW_STRIDE 36                // int32/row of weight smem (64 data int? no: see below)
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4508,7 +4508,7 @@ void int8_gemm_faith(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][sb][0],WA[n][sb][1],WA[n][sb][2],WA[n][sb][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][sb][0],WA[n][sb][1],WA[n][sb][2],WA[n][sb][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0][sb]*asc[0][sb];
                     acc[n][j][1]+=(float)s[1]*wsc[n][0][sb]*asc[1][sb];
                     acc[n][j][2]+=(float)s[2]*wsc[n][1][sb]*asc[0][sb];
@@ -4536,7 +4536,7 @@ void int8_gemm_faith(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef FK_TILE
 #undef FK_SB
 #undef FW_STRIDE
@@ -4559,7 +4559,7 @@ void int8_gemm_faith(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36                  // weight/act smem int32 row stride (128-K=32 data +4 pad)
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4645,7 +4645,7 @@ void int8_gemm_faith2(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -4670,7 +4670,7 @@ void int8_gemm_faith2(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -4697,7 +4697,7 @@ void int8_gemm_faith2(
 #define I32A_TILE 128
 #define I32A_SB   (I32A_TILE/32)
 #define I32AW     36
-#define ATLAS_MMA_S8_I32A(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8_I32A(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4793,7 +4793,7 @@ void int8_gemm_i32acc(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8_I32A(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8_I32A(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     // INT32 accumulate — no float chain, MMAs pipeline freely.
                     iacc[n][j][0] += s[0];
                     iacc[n][j][1] += s[1];
@@ -4837,7 +4837,7 @@ void int8_gemm_i32acc(
         }
     }
 }
-#undef ATLAS_MMA_S8_I32A
+#undef AVAROK_MMA_S8_I32A
 #undef I32A_TILE
 #undef I32A_SB
 #undef I32AW
@@ -4852,7 +4852,7 @@ void int8_gemm_i32acc(
 #define F3_TILE 128
 #define F3_SB   (F3_TILE/32)
 #define F3W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -4941,7 +4941,7 @@ void int8_gemm_faith3(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], bb[j][0],bb[j][1]);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], bb[j][0],bb[j][1]);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*aa[j][0];
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*aa[j][1];
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*aa[j][0];
@@ -4966,7 +4966,7 @@ void int8_gemm_faith3(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F3_TILE
 #undef F3_SB
 #undef F3W
@@ -4985,7 +4985,7 @@ void int8_gemm_faith3(
 #define F4_TILE 128
 #define F4_SB   (F4_TILE/32)
 #define F4W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5069,7 +5069,7 @@ void int8_gemm_faith4(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -5094,7 +5094,7 @@ void int8_gemm_faith4(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F4_TILE
 #undef F4_SB
 #undef F4W
@@ -5113,7 +5113,7 @@ void int8_gemm_faith4(
 #define M2_TILE 128
 #define M2_SB   (M2_TILE/32)
 #define M2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5216,7 +5216,7 @@ void int8_gemm_mmq2(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -5243,7 +5243,7 @@ void int8_gemm_mmq2(
     }
 }
 #endif  // !__SCALE__
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef M2_TILE
 #undef M2_SB
 #undef M2W
@@ -5265,7 +5265,7 @@ void int8_gemm_mmq2(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5351,7 +5351,7 @@ void int8_gemm_faith5(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -5376,7 +5376,7 @@ void int8_gemm_faith5(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -5409,7 +5409,7 @@ void int8_gemm_faith5(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5499,7 +5499,7 @@ void int8_gemm_faith6(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     si[j][n][0]=0; si[j][n][1]=0; si[j][n][2]=0; si[j][n][3]=0;
-                    ATLAS_MMA_S8(si[j][n], WA[n][0],WA[n][1],WA[n][2],WA[n][3], bb[j][0],bb[j][1]);
+                    AVAROK_MMA_S8(si[j][n], WA[n][0],WA[n][1],WA[n][2],WA[n][3], bb[j][0],bb[j][1]);
                 }
             }
             // Phase 2: scale-fold FFMAs from registers (smem-scale latency now hidden).
@@ -5531,7 +5531,7 @@ void int8_gemm_faith6(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -5552,7 +5552,7 @@ void int8_gemm_faith6(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5639,7 +5639,7 @@ void int8_gemm_faith7(
                 #pragma unroll
                 for (int tc=0;tc<4;tc++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[nm][0],WA[nm][1],WA[nm][2],WA[nm][3], bb[tc][0],bb[tc][1]);
+                    AVAROK_MMA_S8(s, WA[nm][0],WA[nm][1],WA[nm][2],WA[nm][3], bb[tc][0],bb[tc][1]);
                     acc[nm][tc][0]+=(float)s[0]*wsc[nm][0]*asc[tc][0];
                     acc[nm][tc][1]+=(float)s[1]*wsc[nm][0]*asc[tc][1];
                     acc[nm][tc][2]+=(float)s[2]*wsc[nm][1]*asc[tc][0];
@@ -5664,7 +5664,7 @@ void int8_gemm_faith7(
         }
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -5686,7 +5686,7 @@ void int8_gemm_faith7(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5791,7 +5791,7 @@ void int8_gemm_faith8(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -5817,7 +5817,7 @@ void int8_gemm_faith8(
     }
 }
 #endif  // !__SCALE__
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F8_LOAD_TILE
 #undef F2_TILE
 #undef F2_SB
@@ -5834,7 +5834,7 @@ void int8_gemm_faith8(
 #define F2_TILE 256
 #define F2_SB   (F2_TILE/32)
 #define F2W     68
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -5923,7 +5923,7 @@ void int8_gemm_faith9(
                 #pragma unroll
                 for (int n=0;n<2;n++){
                     int s[4]={0,0,0,0};
-                    ATLAS_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
+                    AVAROK_MMA_S8(s, WA[n][0],WA[n][1],WA[n][2],WA[n][3], b0,b1);
                     acc[n][j][0]+=(float)s[0]*wsc[n][0]*asc0;
                     acc[n][j][1]+=(float)s[1]*wsc[n][0]*asc1;
                     acc[n][j][2]+=(float)s[2]*wsc[n][1]*asc0;
@@ -5949,7 +5949,7 @@ void int8_gemm_faith9(
     }
 }
 #endif  // !__SCALE__
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -5969,7 +5969,7 @@ void int8_gemm_faith9(
 #define F2_TILE 128
 #define F2_SB   (F2_TILE/32)
 #define F2W     36
-#define ATLAS_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_S8(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=r"((d)[0]), "=r"((d)[1]), "=r"((d)[2]), "=r"((d)[3]) \
@@ -6045,7 +6045,7 @@ void int8_gemm_faith10(
                 unsigned b0 = abase[lane%4];
                 unsigned b1 = abase[lane%4 + 4];
                 int s[4]={0,0,0,0};
-                ATLAS_MMA_S8(s, WA[0],WA[1],WA[2],WA[3], b0,b1);
+                AVAROK_MMA_S8(s, WA[0],WA[1],WA[2],WA[3], b0,b1);
                 acc[tc][0]+=(float)s[0]*wsc0*asc0;
                 acc[tc][1]+=(float)s[1]*wsc0*asc1;
                 acc[tc][2]+=(float)s[2]*wsc1*asc0;
@@ -6066,7 +6066,7 @@ void int8_gemm_faith10(
         if (mcol+1<M && cN1<N) C[(unsigned long long)(mcol+1)*N + cN1] = __float2bfloat16(acc[tc][3]);
     }
 }
-#undef ATLAS_MMA_S8
+#undef AVAROK_MMA_S8
 #undef F2_TILE
 #undef F2_SB
 #undef F2W
@@ -6695,7 +6695,7 @@ void int8_gemm_mmqf3(
 // Layout matches faith2's A_i8[M,K]/B_i8[N,K] + A_scale[M,K/32]/B_scale[N,K/32].
 // ═══════════════════════════════════════════════════════════════════
 // Portable E4M3 decode: standard on real NVIDIA (__nv_fp8_e4m3), software on SCALE/HIP.
-__device__ __forceinline__ float atlas_e4m3_decode_any(unsigned char b) {
+__device__ __forceinline__ float avarok_e4m3_decode_any(unsigned char b) {
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
     return scl_fp8(b);
 #else
@@ -6727,7 +6727,7 @@ void requant_w_nvfp4_int8(
         unsigned int k = kb + i;
         unsigned char pb = W_packed[(unsigned long long)n * (K>>1) + (k>>1)];
         unsigned int nib = (k & 1) ? (pb >> 4) : (pb & 0xF);
-        float s16 = atlas_e4m3_decode_any(W_e4m3[(unsigned long long)n * (K>>4) + (k>>4)]) * scale2;
+        float s16 = avarok_e4m3_decode_any(W_e4m3[(unsigned long long)n * (K>>4) + (k>>4)]) * scale2;
         float v = E2M1_LUT[nib] * s16;
         vals[i] = v;
         float a = fabsf(v);
@@ -6909,7 +6909,7 @@ extern "C" __global__ void fp8_gemm_t_row_scaled(
              * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
              * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
              * what made this .cu uncompilable for AMD. */ \
-            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 
@@ -7048,7 +7048,7 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_m16(
              * SCALE/gfx1151 it is the validated __shfl-repack -> 2x \
              * mma.m16n8k16.bf16 replacement. Emitting the PTX inline here is \
              * what made this .cu uncompilable for AMD. */ \
-            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 

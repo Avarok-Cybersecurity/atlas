@@ -20,7 +20,7 @@ pub struct ModelDims {
     /// the KV paging namespace folds (`kv_paging::ns::derive_kv_ns`) so two
     /// models sharing one paging peer can never collide. `None` when the
     /// loader could not derive one (or in geometry-only tests/benches);
-    /// `ATLAS_KV_PAGING=1` then fails fast at connect unless
-    /// `ATLAS_KV_PAGING_NS` is set explicitly. Unread on every other path.
+    /// `AVAROK_KV_PAGING=1` then fails fast at connect unless
+    /// `AVAROK_KV_PAGING_NS` is set explicitly. Unread on every other path.
     pub model_fp: Option<std::num::NonZeroU64>,
 }

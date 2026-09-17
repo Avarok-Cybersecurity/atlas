@@ -15,7 +15,7 @@ Two paths are captured because Atlas has two and they are NOT the same kernel:
 
 STATE WIDTH: HF keeps `kernel_size - 1` = 3 slots; Atlas keeps 4 and shifts left before
 convolving, so the oldest slot is shifted out and never participates. The mapping is
-`HF_state[0..3] == Atlas_state[1..4]` pre-shift. The golden records HF's 3-wide state; the
+`HF_state[0..3] == Avarok_state[1..4]` pre-shift. The golden records HF's 3-wide state; the
 Rust side widens it.
 
 Inputs come from the integer LCG the microtest reproduces bit for bit; only outputs are

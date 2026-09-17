@@ -168,7 +168,7 @@ pub fn needs(hf_name: &str) -> bool {
     classify(hf_name).is_some()
 }
 
-/// For the native keep-packed Q2_0 path (`ATLAS_GGUF_NATIVE_Q2=1`): tensors whose
+/// For the native keep-packed Q2_0 path (`AVAROK_GGUF_NATIVE_Q2=1`): tensors whose
 /// value transform is a *pure whole-row* value-head reorder ([`Op::ReorderRows`]
 /// with `head_dim_rows = true`) can stay 2-bit — the permutation moves whole
 /// `value_head_dim`-row blocks, and one row is an integer number of `block_q2_0`

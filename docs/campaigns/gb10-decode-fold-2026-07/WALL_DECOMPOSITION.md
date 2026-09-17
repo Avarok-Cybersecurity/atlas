@@ -68,8 +68,8 @@ Each ruled out from source or from the data, not by assertion:
   7.4% = 57 s = **1.4% of wall**. Bounded and not worth chasing.
 
 Remaining candidates are transport/HTTP, request admission/scheduling, per-request graph capture, and
-streaming first-flush. **vLLM's min TTFT on this same harness and box is 616 ms** (best Atlas run 650,
-golden 782), which bounds how much of the constant can be Atlas-specific — plausibly ~260 ms/turn
+streaming first-flush. **vLLM's min TTFT on this same harness and box is 616 ms** (best Avarok run 650,
+golden 782), which bounds how much of the constant can be Avarok-specific — plausibly ~260 ms/turn
 (~6.4% of wall), but that split is **not yet proven** and is the highest-value open measurement.
 Probe: `scratchpad/ttft_floor_probe.py` (crosses prompt length x delta so the two effects separate).
 

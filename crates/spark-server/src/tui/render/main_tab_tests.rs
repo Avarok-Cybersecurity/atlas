@@ -233,15 +233,15 @@ mod kernels {
     fn a_module_reports_whether_it_was_used_never_looked_up_or_failed() {
         let a = with_kernels(KernelTableModel {
             rows: vec![
-                row("atlas_gdn_decode", Some(true)),
-                row("atlas_ssm_tail", Some(false)),
-                row("atlas_moe_bf16", None),
+                row("avarok_gdn_decode", Some(true)),
+                row("avarok_ssm_tail", Some(false)),
+                row("avarok_moe_bf16", None),
             ],
             ..Default::default()
         });
         let rows = screen(&a, 160, 48);
         assert!(has(&rows, "KERNELS ─ 3 modules"), "{rows:#?}");
-        assert!(has(&rows, "atlas_gdn_decode"));
+        assert!(has(&rows, "avarok_gdn_decode"));
         assert!(has(&rows, "used"));
         assert!(has(&rows, "** lookup FAILED **"), "{rows:#?}");
         assert!(has(&rows, "PTX-HASH"), "the header stays put");
@@ -252,14 +252,14 @@ mod kernels {
         // Expected-absent kernels are declared with a reason; alarming on them
         // trains people to ignore the one time it matters.
         let a = with_kernels(KernelTableModel {
-            rows: vec![row("atlas_gdn_decode", Some(true))],
+            rows: vec![row("avarok_gdn_decode", Some(true))],
             missing_required: vec![MissingKernel {
-                module: "atlas_ssm_tail".into(),
+                module: "avarok_ssm_tail".into(),
                 func: "tail_midchunk".into(),
                 site: "ops/ssm.rs:214".into(),
             }],
             missing_expected: vec![MissingKernel {
-                module: "atlas_fp4_mma".into(),
+                module: "avarok_fp4_mma".into(),
                 func: "mma_e2m1".into(),
                 site: "ops/fp4.rs:31".into(),
             }],
@@ -270,11 +270,11 @@ mod kernels {
             "{rows:#?}"
         );
         assert!(
-            has(&rows, "atlas_ssm_tail::tail_midchunk  at ops/ssm.rs:214"),
+            has(&rows, "avarok_ssm_tail::tail_midchunk  at ops/ssm.rs:214"),
             "the banner points at the dispatch site:\n{rows:#?}"
         );
         assert!(
-            !has(&rows, "atlas_fp4_mma"),
+            !has(&rows, "avarok_fp4_mma"),
             "a declared absence is not an alarm:\n{rows:#?}"
         );
     }
@@ -283,15 +283,15 @@ mod kernels {
     fn a_filter_narrows_the_table_and_its_own_count() {
         let mut a = with_kernels(KernelTableModel {
             rows: vec![
-                row("atlas_gdn_decode", Some(true)),
-                row("atlas_moe_bf16", Some(true)),
+                row("avarok_gdn_decode", Some(true)),
+                row("avarok_moe_bf16", Some(true)),
             ],
             ..Default::default()
         });
         a.kernel_filter = "gdn".into();
         let rows = screen(&a, 160, 48);
         assert!(has(&rows, "KERNELS ─ 1 modules"), "{rows:#?}");
-        assert!(!has(&rows, "atlas_moe_bf16"));
+        assert!(!has(&rows, "avarok_moe_bf16"));
     }
 
     #[test]

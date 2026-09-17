@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Launchers for the vendored llama Q4_K MMQ FFN prefill GEMM (ATLAS_FFN_MMQ).
+// Launchers for the vendored llama Q4_K MMQ FFN prefill GEMM (AVAROK_FFN_MMQ).
 // Kernels in kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu + q4k_quantize.cu (verified
 // 54.9/53.7 TFLOP/s gate/up·down, +25%/+10% vs faith2, rel_err 6-7e-3).
 // Pipeline: weights NVFP4 -> dequant_nvfp4_to_bf16 -> q4k_quantize (at load); per-prefill
@@ -77,7 +77,7 @@ pub fn quantize_weight_q4k(
 /// Quantize bf16 activations [m, k] -> q8_1_mmq (DS4 layout) into `out_q8`.
 pub fn quantize_act_q8_1(
     gpu: &dyn GpuBackend,
-    kernel: KernelHandle, // atlas_q8_1_quantize_ds4_bf16
+    kernel: KernelHandle, // avarok_q8_1_quantize_ds4_bf16
     input_bf16: DevicePtr,
     out_q8: DevicePtr,
     m: u32,
@@ -101,8 +101,8 @@ pub fn quantize_act_q8_1(
 /// Q4_K MMQ GEMM: C\[m,n\] (bf16) = A_q8\[m,k\] x W_q4k\[n,k\]. Fused bf16 store.
 pub fn q4k_mmq_gemm(
     gpu: &dyn GpuBackend,
-    kernel_nc: KernelHandle, // atlas_q4k_mmq128_nc
-    kernel_wc: KernelHandle, // atlas_q4k_mmq128_wc
+    kernel_nc: KernelHandle, // avarok_q4k_mmq128_nc
+    kernel_wc: KernelHandle, // avarok_q4k_mmq128_wc
     a_q8: DevicePtr,         // q8_1_mmq activations
     w_q4k: DevicePtr,        // block_q4_K weights [n, k]
     out_bf16: DevicePtr,

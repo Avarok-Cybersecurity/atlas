@@ -5,24 +5,24 @@ measured, every lever tried with its verdict, and the honest conclusion. Full re
 CAMPAIGN_LOG.md + DECODE_FOLD_LEDGER.md (git-committed on `perf/decode-fold-2026-07-24`).
 
 ## Headline conclusion (measured, not asserted)
-**On the real gate model (centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf, which is already all-NVFP4), Atlas's
+**On the real gate model (centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf, which is already all-NVFP4), Avarok's
 boosted-MTP decode is at its optimization limit on GB10 — the projection GEMVs are memory-roofline-
 bound (74–88% of 273 GB/s peak, cold) and acceptance is near its K=3 ceiling (E≈2.8 of max 3.0).
 Every weight/kernel lever to cut the ~112ms K=3 verify step was measured DEAD.** The residual raw-TPOT
 gap is against a *weak/verbose* vLLM reference (31.39ms); against the **confirmed** well-configured
-vLLM, **Atlas already wins every reported metric.**
+vLLM, **Avarok already wins every reported metric.**
 
 ## Competitive picture (confirmed vLLM, same ~78 tok/turn, apples-to-apples)
-| metric | confirmed vLLM | Atlas best (dpcarry) | winner |
+| metric | confirmed vLLM | Avarok best (dpcarry) | winner |
 |---|---|---|---|
-| perf wall (1007) | 5361 s | 4984 s | **Atlas −7%** |
-| tps | 14.6 | 15.91 | **Atlas +9%** |
-| qps | 0.188 | 0.20 | **Atlas +6%** |
-| 1/tps (agg ms/tok) | 68.5 | 62.9 | **Atlas −8%** |
-| IoU | 0.6269 | 0.6285 | Atlas (tie+) |
-| BFCL | 86.43 | 87.04 | **Atlas +0.6** |
+| perf wall (1007) | 5361 s | 4984 s | **Avarok −7%** |
+| tps | 14.6 | 15.91 | **Avarok +9%** |
+| qps | 0.188 | 0.20 | **Avarok +6%** |
+| 1/tps (agg ms/tok) | 68.5 | 62.9 | **Avarok −8%** |
+| IoU | 0.6269 | 0.6285 | Avarok (tie+) |
+| BFCL | 86.43 | 87.04 | **Avarok +0.6** |
 | steady-state TPOT | ~31 (WEAK run) / unknown (confirmed) | ~40 | vLLM (weak ref only) |
-Atlas wins because TTFT is ~2× better (1557 vs 2985ms), and the agentic turns are prefill-heavy
+Avarok wins because TTFT is ~2× better (1557 vs 2985ms), and the agentic turns are prefill-heavy
 (~26k ctx, ~78 decode tok) so TTFT dominates the wall. The per-token decode gap is real but outweighed.
 
 ## Where the K=3 step goes (dgx3 nsys phase-split, 96% GPU-busy, no bubbles)

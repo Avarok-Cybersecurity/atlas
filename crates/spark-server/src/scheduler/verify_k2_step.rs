@@ -176,7 +176,7 @@ pub fn step_verify_k2(
         Vec::new()
     };
 
-    // ATLAS_MTP_CATCHUP: ring the target's true hidden for the positions this step
+    // AVAROK_MTP_CATCHUP: ring the target's true hidden for the positions this step
     // committed, so the next propose's catch-up feed can write the pair key a K=2 ACCEPT
     // skips. Mirrors the K=3 hook (`verify_k3_step`), same label convention: label n holds
     // the hidden that PRODUCED the token at position n, i.e. hidden_{n-1}.
@@ -244,7 +244,7 @@ pub fn step_verify_k2(
         }
         sched.timing.record(Phase::Commit, t_commit);
 
-        // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
+        // EAGLE-fix (AVAROK_DFLASH_EAGLE_FIX=1, K=2 accept only): append row 0 @ N
         // then row 1 @ N+1 BEFORE propose so forward_block conditions on row 1
         // (the hidden that generated bonus). This also sets the proposer's
         // skip-flag so propose does NOT re-append row 0.

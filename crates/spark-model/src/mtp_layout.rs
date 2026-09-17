@@ -17,7 +17,7 @@
 //! predicate the check should have been asking, kept separate from any one
 //! loader so a new architecture only has to be named here once.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 /// The MTP weight layout a checkpoint ships, if any.

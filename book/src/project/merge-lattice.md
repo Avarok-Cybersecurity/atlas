@@ -197,7 +197,7 @@ system. This one owed — and paid — the full bill.
 
 ```
 NONE  bfcl-subset — latest record is for fe99349724 (2026-08-08-fe99349724.json)
-      — invalidated by crates/atlas-kernels/tests/kernel_arity.rs,
+      — invalidated by crates/avarok-kernels/tests/kernel_arity.rs,
         crates/spark-model/src/layers/mtp_head.rs, … and 16 more
 ```
 

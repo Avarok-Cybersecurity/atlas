@@ -143,7 +143,7 @@ fn insert_tail_sibling_over_a_spilled_entry_hands_back_no_slot() {
 /// falls straight past the sweep into the overwrite. Reverting only the sweep
 /// line left all six green — verified, not assumed.
 ///
-/// The sweep is reachable in the DEFAULT configuration: `ATLAS_SSM_TAIL_MIDCHUNK`
+/// The sweep is reachable in the DEFAULT configuration: `AVAROK_SSM_TAIL_MIDCHUNK`
 /// is default-ON, so `is_tail` entries exist; `session_aware_victim` will spill
 /// a tail once its lease lapses or its session goes dormant; and the next
 /// `finalize_midchunk_capture` for that session runs the sweep — i.e. every

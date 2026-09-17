@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -326,7 +326,7 @@ impl TransformerModel {
             }
         }
 
-        // ATLAS_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
+        // AVAROK_MTP_CARRY_DRAFTER: hand this turn's drafter KV to the model's
         // single carry slot BEFORE `free_state`, so the next turn of the same
         // session can adopt it instead of starting blind. `take_drafter_kv`
         // empties the proposer state, so the `free_state` below then releases
@@ -369,7 +369,7 @@ impl TransformerModel {
 
         self.free_chunked_prefill_meta(seq)?;
 
-        // ATLAS_SEQ_MEMTRACE: the closing half of this sequence's memory bracket.
+        // AVAROK_SEQ_MEMTRACE: the closing half of this sequence's memory bracket.
         // Last statement on purpose — everything this sequence owns has now been
         // handed back, so `live` here is the number a leak moves.
         crate::model::seq_memtrace::trace(self.gpu.as_ref(), "free");

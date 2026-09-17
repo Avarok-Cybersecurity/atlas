@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::PERF_PATHS;
+use avarok_plugin::gate::PERF_PATHS;
 
 /// The two git questions the guard asks, behind a trait so the decision is
 /// testable without a repository.

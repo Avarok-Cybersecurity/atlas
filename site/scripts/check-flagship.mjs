@@ -25,9 +25,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 // on — the exact failure its own header disclaims, reached by forgetting an
 // env var rather than by intent. CI sets it (site.yml); a human running this by
 // hand should have to say which corpus they mean.
-const root = process.env.ATLAS_RECIPES_ROOT;
+const root = process.env.AVAROK_RECIPES_ROOT;
 if (!root) {
-  console.error('ATLAS_RECIPES_ROOT is not set.');
+  console.error('AVAROK_RECIPES_ROOT is not set.');
   console.error('Point it at a checkout of atlas-recipes/recipes — the corpus this');
   console.error('site is being built against, not whichever one happens to be nearby.');
   process.exit(1);
@@ -57,7 +57,7 @@ try {
   stems = recipeStems(root);
 } catch (e) {
   console.error(`could not read the recipe corpus at ${root}: ${e.message}`);
-  console.error('Set ATLAS_RECIPES_ROOT to a checkout of atlas-recipes/recipes.');
+  console.error('Set AVAROK_RECIPES_ROOT to a checkout of atlas-recipes/recipes.');
   process.exit(1);
 }
 

@@ -27,7 +27,7 @@ def main() -> int:
     out.append("")
     out.append("## Test setup")
     out.append("- Prompt: canonical 10382-token chat probe (last 5 prompt tokens = [248045, 74455, 198, 248068, 198])")
-    out.append("- Atlas image: `atlas-gb10:op-drift` (built today from `atlas-gb10:fp8-much-better` lineage, commit 8d2cc87, native FP8 SSM dispatch)")
+    out.append("- Atlas image: `avarok-gb10:op-drift` (built today from `avarok-gb10:fp8-much-better` lineage, commit 8d2cc87, native FP8 SSM dispatch)")
     out.append("- HF reference: `Qwen/Qwen3.6-35B-A3B` (BF16, original unquantized weights — the absolute reference)")
     out.append("- Compute device: dgx2 GPU (Atlas) + dgx1 CPU (HF reference forward)")
     out.append("- Layer indexing: Qwen3.6-35B-A3B-FP8 has 40 layers; full-attention at L3,7,11,15,19,23,27,31,35,39 (10); linear-attention (SSM/GDN) at the rest (30).")
@@ -121,7 +121,7 @@ def main() -> int:
     for layer in sorted(by_layer.keys()):
         layer_rows = sorted(by_layer[layer], key=lambda r: op_order_hint.get(r["op"], 50))
         for r in layer_rows:
-            shape = r.get("shape", r.get("atlas_shape", "n/a"))
+            shape = r.get("shape", r.get("avarok_shape", "n/a"))
             if r["status"] in ("ok", "ok_warn_layout"):
                 cos = f"{r['cos_sim']:.5f}"
                 ma = f"{r['max_abs']:.4f}"
@@ -243,8 +243,8 @@ def main() -> int:
     out.append("## Reproducibility")
     out.append("")
     out.append("```bash")
-    out.append("# Atlas op-drift image (commit 8d2cc87 lineage + ATLAS_OP_DUMP hooks)")
-    out.append("docker build -f docker/gb10/Dockerfile -t atlas-gb10:op-drift .")
+    out.append("# Atlas op-drift image (commit 8d2cc87 lineage + AVAROK_OP_DUMP hooks)")
+    out.append("docker build -f docker/gb10/Dockerfile -t avarok-gb10:op-drift .")
     out.append("")
     out.append("# Run on dgx2 with all dump env vars enabled:")
     out.append("./bench/fp8_dgx2_drift/dgx2_op_dump.sh")
@@ -257,12 +257,12 @@ def main() -> int:
     out.append("")
     out.append("# Compute cosines and render master table:")
     out.append("python3 bench/fp8_dgx2_drift/op_cosine.py \\")
-    out.append("    --atlas-dir /workspace/atlas-dumps/op_drift_atlas/ \\")
-    out.append("    --hf-dir /workspace/atlas-dumps/op_drift/ \\")
-    out.append("    --out /workspace/atlas-mtp/bench/fp8_dgx2_drift/op_drift.json")
+    out.append("    --avarok-dir /workspace/avarok-dumps/op_drift_avarok/ \\")
+    out.append("    --hf-dir /workspace/avarok-dumps/op_drift/ \\")
+    out.append("    --out /workspace/avarok-mtp/bench/fp8_dgx2_drift/op_drift.json")
     out.append("python3 bench/fp8_dgx2_drift/render_master_table.py \\")
-    out.append("    --json /workspace/atlas-mtp/bench/fp8_dgx2_drift/op_drift.json \\")
-    out.append("    --out /workspace/atlas-mtp/bench/fp8_dgx2_drift/MASTER_DRIFT_TABLE.md")
+    out.append("    --json /workspace/avarok-mtp/bench/fp8_dgx2_drift/op_drift.json \\")
+    out.append("    --out /workspace/avarok-mtp/bench/fp8_dgx2_drift/MASTER_DRIFT_TABLE.md")
     out.append("```")
     out.append("")
 

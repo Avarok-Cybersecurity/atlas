@@ -5,7 +5,7 @@
 
 /// Deadline for a scheduler-thread send into a FULL stream channel.
 ///
-/// Default 5000 ms; override `ATLAS_STREAM_SEND_DEADLINE_MS` (strict integer).
+/// Default 5000 ms; override `AVAROK_STREAM_SEND_DEADLINE_MS` (strict integer).
 /// Rationale for a default at all (PCND): the pre-existing behaviour was an
 /// UNBOUNDED `blocking_send`, i.e. an implicit deadline of infinity — the most
 /// dangerous possible default. 5 s is >5000x the per-token cadence and only
@@ -20,7 +20,7 @@ fn stream_send_deadline() -> std::time::Duration {
     // emit path to configure a socket timeout.
     static MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     std::time::Duration::from_millis(*MS.get_or_init(|| {
-        std::env::var("ATLAS_STREAM_SEND_DEADLINE_MS")
+        std::env::var("AVAROK_STREAM_SEND_DEADLINE_MS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(5000)

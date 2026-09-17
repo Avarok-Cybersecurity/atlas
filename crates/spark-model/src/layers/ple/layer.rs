@@ -19,7 +19,7 @@ use crate::weight_map::DenseWeight;
 
 /// Per-SEQUENCE carry: the dilated conv's 9 steps and the token history the
 /// id hash needs. Owned by the sequence's [`crate::layer::SsmLayerState`]
-/// (Avarok #753 item B: concurrency needs one of these per in-flight
+/// (Atlas #753 item B: concurrency needs one of these per in-flight
 /// sequence, not a layer singleton).
 pub struct PleSeqState {
     /// `[(k-1)*dilation, channels]` FP32, device.
@@ -200,7 +200,7 @@ impl PleLayer {
         anyhow::ensure!(
             num_tokens <= self.max_tokens,
             "PLE: {num_tokens} tokens exceeds the {} this layer was sized for. \
-             Raise ATLAS_PLE_MAX_TOKENS (costs tokens*10240*14 bytes of \
+             Raise AVAROK_PLE_MAX_TOKENS (costs tokens*10240*14 bytes of \
              scratch) or lower the prefill chunk size.",
             self.max_tokens
         );

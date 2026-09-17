@@ -20,7 +20,7 @@ use super::WeightStore;
 /// production does.
 pub fn auto_detect_weight_prefix(
     store: &WeightStore,
-    config: &mut atlas_core::config::ModelConfig,
+    config: &mut avarok_core::config::ModelConfig,
 ) {
     if config.weight_prefix.is_empty() && config.nested_config {
         config.weight_prefix = if store.contains("language_model.model.embed_tokens.weight") {

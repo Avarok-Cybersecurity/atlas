@@ -5,7 +5,7 @@
 // Replaces the CPU dequant loop in
 // `crates/spark-model/src/weight_map/quant_helpers.rs::dequant_fp8_blockscaled_to_bf16`
 // which dominates load time for FP8-MoE models when
-// ATLAS_FP8_DEQUANT_MOE_TO_BF16=1 (256 experts × 3 projs × 40 layers =
+// AVAROK_FP8_DEQUANT_MOE_TO_BF16=1 (256 experts × 3 projs × 40 layers =
 // ~30k dequant calls, each a D2H + single-threaded CPU loop + H2D).
 //
 // Math (matches the CPU version 1:1):

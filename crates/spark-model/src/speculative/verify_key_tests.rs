@@ -344,7 +344,7 @@ fn at_the_threshold_the_gate_selects_the_canonical_arm() {
     assert_ne!(key_for(&a, false), key_for(&b, false));
 }
 
-/// `ATLAS_CANONICAL_KEY_MIN_WIDTH` parsing, as a pure function of the raw
+/// `AVAROK_CANONICAL_KEY_MIN_WIDTH` parsing, as a pure function of the raw
 /// value — the sweep knob must not silently ignore what it is handed.
 #[test]
 fn min_width_override_parses() {
@@ -361,7 +361,7 @@ fn min_width_override_parses() {
 }
 
 /// The override MOVES the boundary, end to end in key bytes: at
-/// `ATLAS_CANONICAL_KEY_MIN_WIDTH=4` the n=4 batch that is legacy-keyed by
+/// `AVAROK_CANONICAL_KEY_MIN_WIDTH=4` the n=4 batch that is legacy-keyed by
 /// default becomes canonical, and at `=16` the n=8 batch that is canonical
 /// by default falls back to legacy.
 #[test]

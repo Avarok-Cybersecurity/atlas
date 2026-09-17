@@ -5,8 +5,8 @@
 //! | [CUDA driver](https://docs.nvidia.com/cuda/cuda-driver-api/index.html) | ✅ | ✅ | ❌ |
 //! | [NVRTC](https://docs.nvidia.com/cuda/nvrtc/index.html) | ✅ | ✅ | ✅ |
 //!
-//! NOTE: This is the Atlas-vendored copy of cudarc, trimmed to the only two
-//! backends Atlas uses (`driver` + `nvrtc`). The upstream crate also wraps
+//! NOTE: This is the Avarok-vendored copy of cudarc, trimmed to the only two
+//! backends Avarok uses (`driver` + `nvrtc`). The upstream crate also wraps
 //! cuRAND, cuBLAS, cuBLASLt, NCCL, cuDNN, cuSPARSE, cuSOLVER, cuFILE, CUPTI,
 //! nvtx, cuTENSOR and the CUDA runtime; those modules have been removed here.
 //!
@@ -89,10 +89,10 @@ extern crate alloc;
 #[cfg(feature = "no-std")]
 extern crate no_std_compat as std;
 
-// Atlas-vendored trim: only the `driver` and `nvrtc` backends are kept. The
+// Avarok-vendored trim: only the `driver` and `nvrtc` backends are kept. The
 // upstream cublas/cublaslt/cudnn/cufft/cufile/cupti/curand/cusolver/cusolvermg/
 // cusparse/cutensor/nccl/nvtx/runtime modules (and their generated `sys/mod.rs`
-// FFI bindings) have been removed — Atlas never references them.
+// FFI bindings) have been removed — Avarok never references them.
 #[cfg(feature = "driver")]
 pub mod driver;
 #[cfg(feature = "nvrtc")]

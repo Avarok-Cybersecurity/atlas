@@ -37,7 +37,7 @@
 // (`Qwen3SsmLayer::wy3_kernel`) only picks this kernel when
 // k_dim == v_dim == 128 (the production GDN head shape) and the launch is
 // wide enough to carry 1-block/SM occupancy (n >= wy_resident_min_width());
-// base wy3 otherwise. Kill switch: ATLAS_NO_GDN_WY3_RESIDENT (presence).
+// base wy3 otherwise. Kill switch: AVAROK_NO_GDN_WY3_RESIDENT (presence).
 //
 // Pass 2 is deliberately SPLIT into three sequential per-token loops
 // (token 0: Hi0 writes + qd0; token 1: Hi1 writes + qd1; token 2: H writes
@@ -127,19 +127,19 @@ gated_delta_rule_wy3_resident(
     // ── Compute 3 k_dot products via block reduction (verbatim) ──
     {
         float p = (tid<k_dim) ? sk1[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd10 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd20 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk1[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd21 = r;
     }
     __syncthreads();

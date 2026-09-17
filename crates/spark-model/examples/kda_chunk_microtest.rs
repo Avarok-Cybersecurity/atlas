@@ -24,7 +24,7 @@
 
 use anyhow::{Result, bail};
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -326,7 +326,7 @@ impl Gpu<'_> {
 // ───────────────────────────────────────────────────────────────── main
 
 fn main() -> Result<()> {
-    let g = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &g;
     let d = Gpu {
         g: gpu,

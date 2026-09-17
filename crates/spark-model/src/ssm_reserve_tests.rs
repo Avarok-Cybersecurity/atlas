@@ -28,7 +28,7 @@ fn legacy_pool_bytes(bs: usize, spec_on: bool) -> usize {
 
 /// The DEFAULT ladder shape (`4:3,8:3,16:1,32:1`), spelled out so these
 /// tests do not depend on process env (CI sets neither
-/// ATLAS_MTP_K_LADDER nor ATLAS_NO_MTP_K_LADDER; the env-reading
+/// AVAROK_MTP_K_LADDER nor AVAROK_NO_MTP_K_LADDER; the env-reading
 /// wrappers are covered by the ladder's own tests).
 fn default_ladder(n: usize) -> usize {
     if n <= 8 { 3 } else { 1 }
@@ -66,7 +66,7 @@ fn tiered_pool_bytes_f16(bs: usize, spec_on: bool) -> usize {
 #[test]
 fn cap_identity_at_or_below_32_every_config() {
     // bs<=32 slot COUNT must be identical to the legacy sizing for every
-    // dispatch-cap value (incl. ATLAS_NO_MTP_K_LADDER's 4) because the
+    // dispatch-cap value (incl. AVAROK_NO_MTP_K_LADDER's 4) because the
     // floor is VERIFY_WY_TABLE_SEQS = 32.
     for bs in 1..=32 {
         for cap in [1, 4, 16, 32, 64] {
@@ -123,7 +123,7 @@ fn k_minus_1_shrink_and_kill_switch_shape() {
         // Spec off: base only, unchanged from the historical formula.
         assert_eq!(tiered_pool_bytes(bs, false), legacy_pool_bytes(bs, false));
     }
-    // uniform_verify (DFlash-γ pools / ATLAS_MTP_POOL_FULL_WIDTH /
+    // uniform_verify (DFlash-γ pools / AVAROK_MTP_POOL_FULL_WIDTH /
     // ladder disabled): same dead-slot removal, no tiers, at every bs.
     for bs in 1..=32 {
         for spec_on in [false, true] {
@@ -151,9 +151,9 @@ fn k_minus_1_shrink_and_kill_switch_shape() {
 fn cap_bites_above_32_and_kill_switch_restores() {
     // Default dispatch cap 32 ⇒ 64-slot pool covers 32 verify slots.
     assert_eq!(mtp_state_slots_with(64, 32, false), 32);
-    // ATLAS_MTP_MAX_SEQS=48 widens the pools with the dispatch cap.
+    // AVAROK_MTP_MAX_SEQS=48 widens the pools with the dispatch cap.
     assert_eq!(mtp_state_slots_with(64, 48, false), 48);
-    // ATLAS_NO_MTP_K_LADDER (cap 4) still floors at 32 — defense in depth.
+    // AVAROK_NO_MTP_K_LADDER (cap 4) still floors at 32 — defense in depth.
     assert_eq!(mtp_state_slots_with(64, 4, false), 32);
     // Kill switch / EP-v2: full width.
     assert_eq!(mtp_state_slots_with(64, 32, true), 64);
@@ -425,7 +425,7 @@ mod marconi_gate {
     #[test]
     fn full_reserve_kill_switch_restores_the_old_behaviour() {
         let d = marconi_snapshot_slots_with(16, false, true);
-        assert_eq!(d.slots, 16, "ATLAS_SSM_MARCONI_FULL must over-reserve");
+        assert_eq!(d.slots, 16, "AVAROK_SSM_MARCONI_FULL must over-reserve");
         assert!(
             d.skip_reason.is_none(),
             "an explicit override is not a skip"

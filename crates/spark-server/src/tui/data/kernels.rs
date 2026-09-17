@@ -6,7 +6,7 @@
 //!
 //! The module set has to come from the target serve actually resolved
 //! (published here, looked up via `ptx_for_exact_target`).
-//! `atlas_kernels::ptx_modules()` is emitted as a
+//! `avarok_kernels::ptx_modules()` is emitted as a
 //! plain alias of TARGET 0 in a multi-target build (`build_codegen.rs`), and
 //! targets are sorted by directory name — so on every model except
 //! `deepseek-v4-flash` it rendered another architecture's modules: phantom
@@ -103,7 +103,7 @@ pub fn build() -> KernelTableModel {
     // EMPTY table is the honest answer. Falling back to some other target's
     // module list is the bug this function was rewritten to fix.
     let Some(ptx) = loaded_target()
-        .and_then(|(model, quant)| atlas_kernels::ptx_for_exact_target(&model, &quant))
+        .and_then(|(model, quant)| avarok_kernels::ptx_for_exact_target(&model, &quant))
     else {
         return KernelTableModel::default();
     };

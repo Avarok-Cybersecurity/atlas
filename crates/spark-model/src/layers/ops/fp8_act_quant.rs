@@ -23,7 +23,7 @@
 //! `fp8_act_quant_floor.rs`; this file owns the PAIR and the two grids.
 //!
 //! There is still no numeric A/B to arm — the two kernels emit the same bytes
-//! — so `ATLAS_FP8_ACT_QUANT_HOPPER=0` is a SPEED kill switch, and the control
+//! — so `AVAROK_FP8_ACT_QUANT_HOPPER=0` is a SPEED kill switch, and the control
 //! for the GB/s claim remains a build without the file.
 //!
 //! [`Fp8ActQuant`] is a PAIR rather than a single resolved handle because the
@@ -122,7 +122,7 @@ impl Fp8ActQuant {
             super::fp8_act_quant_hopper_enabled(),
             m,
             k,
-            atlas_kernels::TARGET_SM_COUNT,
+            avarok_kernels::TARGET_SM_COUNT,
         )
     }
 

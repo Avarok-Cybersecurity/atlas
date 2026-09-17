@@ -107,7 +107,7 @@ impl DeepseekV4MtpHead {
         module: DeepseekV4MtpModule,
         embed_tokens: DenseWeight,
         lm_head: DenseWeight,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         mtp_vocab_size: u32,
         max_seq_len: usize,
@@ -376,7 +376,7 @@ impl DeepseekV4MtpHead {
             // kernel name, so a low-rank head arriving here would be
             // dispatched as Sinkhorn and read `hc_fn`/`hc_scale`/`hc_base`,
             // which are NULL on that variant. Qwen's MTP is dropped for v1
-            // (Avarok #753 item I); if it is ever revived this becomes a
+            // (Atlas #753 item I); if it is ever revived this becomes a
             // dispatch, not an assert.
             anyhow::ensure!(
                 head.lowrank.is_none(),

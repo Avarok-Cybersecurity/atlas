@@ -123,7 +123,7 @@ pub enum QuantWeight {
     /// BF16 dense (unquantized). Kernel: dense_gemv / dense_gemm
     Dense(DenseWeight),
 
-    /// Keep-packed ternary Q2_0 (`ATLAS_GGUF_NATIVE_Q2`): raw `block_q2_0` bytes,
+    /// Keep-packed ternary Q2_0 (`AVAROK_GGUF_NATIVE_Q2`): raw `block_q2_0` bytes,
     /// 2-bit resident. Decode dispatches `q2_0_gemv_vec`; prefill transient-
     /// dequants to BF16 then runs `dense_gemm`. Tier-1c attention path.
     PackedQ2(PackedQ2Weight),

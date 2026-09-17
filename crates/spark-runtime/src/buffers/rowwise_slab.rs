@@ -5,7 +5,7 @@
 //! `accessors.rs` (≤500 LoC cap) rather than wedged into it, because the carve
 //! is a tiny allocator and not a getter.
 //!
-//! **WHY IT EXISTS (#917 H100 receipt, 2026-09-11).** The `ATLAS_FP8_ROWWISE`
+//! **WHY IT EXISTS (#917 H100 receipt, 2026-09-11).** The `AVAROK_FP8_ROWWISE`
 //! GDN arms used to get their BF16 weight from a lazy `gpu.alloc` memoised by
 //! weight pointer — `167772160` B for the fused `[QKV|Z]` weight per layer,
 //! with no `BufferSizes` entry, so `--gpu-memory-utilization` could not see it
@@ -18,7 +18,7 @@ use crate::gpu::DevicePtr;
 
 impl BufferArena {
     /// Allocated byte size of the row-wise GDN prefill BF16-weight slab.
-    /// 0 when `ATLAS_FP8_ROWWISE` was not armed at boot.
+    /// 0 when `AVAROK_FP8_ROWWISE` was not armed at boot.
     pub fn ssm_rowwise_w_bf16_bytes(&self) -> usize {
         self.sizes.ssm_rowwise_w_bf16
     }
@@ -40,7 +40,7 @@ impl BufferArena {
         use std::sync::atomic::Ordering;
         if self.ssm_rowwise_w_bf16 == DevicePtr::NULL {
             anyhow::bail!(
-                "row-wise GDN prefill BF16-weight slab is absent: the arena was sized without                  ATLAS_FP8_ROWWISE=1 but a row-wise prefill arm asked for {bytes} B. Both the                  loader's weight install and this ledger entry read the same lever, so they                  cannot legitimately disagree"
+                "row-wise GDN prefill BF16-weight slab is absent: the arena was sized without                  AVAROK_FP8_ROWWISE=1 but a row-wise prefill arm asked for {bytes} B. Both the                  loader's weight install and this ledger entry read the same lever, so they                  cannot legitimately disagree"
             );
         }
         let base = self

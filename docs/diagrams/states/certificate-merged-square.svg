@@ -58,7 +58,7 @@
       <stop offset="0.85" stop-color="#000000" stop-opacity="1"/>
     </linearGradient>
   </defs>
-  <linearGradient id="cert-atlasGoldCut" x1="0" y1="0" x2="0" y2="1"><stop offset="0.5" stop-color="#12B981"/><stop offset="0.5" stop-color="#EFB338"/></linearGradient>
+  <linearGradient id="cert-avarokGoldCut" x1="0" y1="0" x2="0" y2="1"><stop offset="0.5" stop-color="#12B981"/><stop offset="0.5" stop-color="#EFB338"/></linearGradient>
   <rect width="1200" height="1200" fill="#0F1216"/>
   <rect x="14" y="14" width="1172" height="1172" fill="none" stroke="#2E353F" stroke-width="1.5"/>
   <rect x="24" y="24" width="1152" height="1152" fill="none" stroke="#EFB338" stroke-width="0.8" opacity="0.55"/>
@@ -76,10 +76,10 @@
     <g fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
       <path d="M38 38L358 318L38 598" stroke="#BE9DF8"/>
       <path d="M318 38L638 318L318 598" stroke="#49C3DB"/>
-      <path d="M598 38L918 318L598 598" stroke="url(#cert-atlasGoldCut)"/>
+      <path d="M598 38L918 318L598 598" stroke="url(#cert-avarokGoldCut)"/>
     </g>
   </g>
-  <text x="600" y="180" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5" text-anchor="middle">ATLAS ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>
+  <text x="600" y="180" font-size="11" fill="#82868F" font-weight="600" letter-spacing="3.5" text-anchor="middle">AVAROK ENGINEERING &#183; PULL REQUEST CERTIFICATION</text>
   <text x="600" y="252" font-size="44" fill="#EFB338" font-weight="800" letter-spacing="5" text-anchor="middle">CERTIFIED MERGE</text>
   <line x1="380" y1="272" x2="820" y2="272" stroke="#EFB338" stroke-width="1" opacity="0.5"/>
   <text x="600" y="320" font-size="14.5" fill="#C9CCD4" text-anchor="middle">Verified, stamped, sealed by a codeowner, and merged to main &#8212;</text>

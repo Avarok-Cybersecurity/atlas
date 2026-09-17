@@ -30,7 +30,7 @@ pub struct NemotronMamba2Layer {
     in_proj_fp8: Option<Fp8Weight>,
     out_proj_fp8: Option<Fp8Weight>,
     // Whether PREFILL may use the native FP8 weights above. False in the
-    // `ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode` bisect mode, where the native
+    // `AVAROK_NEMOTRON_NATIVE_FP8_SSM=decode` bisect mode, where the native
     // weights are installed for decode only and the legacy NVFP4 copies are
     // still built and used by prefill. Prefill must key off this flag, not off
     // `in_proj_fp8.is_some()`.
@@ -101,7 +101,7 @@ impl NemotronMamba2Layer {
     pub fn new(
         input_norm: DenseWeight,
         ssm: NemotronSsmWeights,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         layer_idx: usize,
     ) -> Result<Self> {
@@ -192,7 +192,7 @@ impl NemotronMamba2Layer {
     /// here at load, not deref NULL on the first token.
     ///
     /// `prefill` selects whether the prefill GEMMs may use these weights. When
-    /// false (`ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode`) only `w8a16_gemv` reads
+    /// false (`AVAROK_NEMOTRON_NATIVE_FP8_SSM=decode`) only `w8a16_gemv` reads
     /// them and prefill stays on the legacy NVFP4 / pre-dequantized copies,
     /// which the loader still builds in that mode.
     pub fn set_fp8_weights(

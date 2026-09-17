@@ -67,7 +67,7 @@ impl Records for RepoRecords {
         shard: Option<(usize, usize)>,
         since: u64,
     ) -> Option<RecordFacts> {
-        use atlas_plugin::gate;
+        use avarok_plugin::gate;
         gate::records_newest_first(root, id)
             .into_iter()
             .filter_map(|path| gate::read_record(&path).ok().map(|r| (path, r)))
@@ -77,9 +77,9 @@ impl Records for RepoRecords {
 }
 
 /// The facts the classifier reads, from a parsed record.
-pub fn facts_of(path: PathBuf, r: &atlas_plugin::gate::GateRecord) -> RecordFacts {
+pub fn facts_of(path: PathBuf, r: &avarok_plugin::gate::GateRecord) -> RecordFacts {
     let tallies =
-        atlas_plugin::benchmarks::bfcl::aggregate::tallies_from_metrics(&r.metrics).is_some();
+        avarok_plugin::benchmarks::bfcl::aggregate::tallies_from_metrics(&r.metrics).is_some();
     RecordFacts {
         is_shard_with_tallies: r.shard().is_some() && tallies,
         verdict_passes: r.verdict_passes(),

@@ -127,14 +127,14 @@ kernel per model target. To build one model instead of all five:
 
 ```bash
 docker build -f docker/hopper/Dockerfile \
-  --build-arg ATLAS_TARGET_MODEL=nemotron-super-120b-a12b \
+  --build-arg AVAROK_TARGET_MODEL=nemotron-super-120b-a12b \
   -t atlas-hopper:nemotron .
 ```
 
-Build args: `ATLAS_TARGET_HW` (defaults to `hopper` / `b200` per file),
-`ATLAS_TARGET_MODEL` (`*` by default — `deepseek-v4-flash`,
+Build args: `AVAROK_TARGET_HW` (defaults to `hopper` / `b200` per file),
+`AVAROK_TARGET_MODEL` (`*` by default — `deepseek-v4-flash`,
 `nemotron-3-nano-30b-a3b`, `nemotron-super-120b-a12b`, `qwen3.6-35b-a3b`,
-`qwen3-next-80b-a3b`), `ATLAS_TARGET_QUANT` (`nvfp4`), and `ATLAS_GIT_SHA`
+`qwen3-next-80b-a3b`), `AVAROK_TARGET_QUANT` (`nvfp4`), and `AVAROK_GIT_SHA`
 (stamped into `org.opencontainers.image.revision`).
 
 Neither image builds the optional CUTLASS or FlashInfer side objects

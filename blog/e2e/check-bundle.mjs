@@ -38,7 +38,7 @@ const FORBIDDEN = [
   ['blockTokens', 'marked internals'],
   ['inlineTokens', 'marked internals'],
   ['compileMarkdown', 'the blog’s own compiler'],
-  ['atlasMarkdown', 'the blog’s own preprocessor']
+  ['avarokMarkdown', 'the blog’s own preprocessor']
 ];
 
 /** Total client JavaScript. A leak that survives minification still shows here. */

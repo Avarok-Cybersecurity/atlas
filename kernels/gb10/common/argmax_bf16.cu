@@ -117,7 +117,7 @@ extern "C" __global__ void argmax_bf16_batch(
 // log softmax(logits)[argmax]` computed by ONLINE softmax in the SAME pass — no
 // second read of the row, so the kernel costs what the plain batched argmax costs.
 //
-// Consumer: D-Cut adaptive verification-depth pruning (ATLAS_MTP_DCUT). The
+// Consumer: D-Cut adaptive verification-depth pruning (AVAROK_MTP_DCUT). The
 // drafter's per-position top-1 log-probability is the confidence whose prefix
 // SUM (= log of the prefix PRODUCT of survival probabilities) ranks candidate
 // verify positions across the batch. A separate kernel (rather than an extra

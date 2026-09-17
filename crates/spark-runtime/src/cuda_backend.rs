@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Real CUDA GPU backend using AtlasRegistry.
+//! Real CUDA GPU backend using AvarokRegistry.
 //!
 //! SBIO IORouter: all CUDA operations flow through `GpuBackend`.
-//! Uses `AtlasRegistry` for kernel loading/launching and raw CUDA
+//! Uses `AvarokRegistry` for kernel loading/launching and raw CUDA
 //! driver API for memory management.
 
 use std::ffi::c_void;
@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use anyhow::{Result, bail};
 use std::sync::Arc;
 
-use atlas_core::registry::AtlasRegistry;
+use avarok_core::registry::AvarokRegistry;
 
 pub mod arch_preflight;
 mod fault_probe;
@@ -65,21 +65,21 @@ unsafe extern "C" {
     // Capture-status query (telemetry taps must not sync/copy inside an
     // active capture). Not declared under SCALE — its libcuda export set is
     // minimal and an unresolved extern would break the gfx1151 link.
-    #[cfg(not(atlas_scale))]
+    #[cfg(not(avarok_scale))]
     pub(super) fn cuStreamIsCapturing(hStream: u64, captureStatus: *mut u32) -> i32;
     pub(super) fn cuStreamEndCapture(hStream: u64, phGraph: *mut u64) -> i32;
     // CUDA-graph instantiate. NVIDIA's libcuda exports the 3-arg
     // `cuGraphInstantiateWithFlags`; SCALE's libcuda (gfx1151) exports only
     // `cuGraphInstantiate` — same ABI `(CUgraphExec*, CUgraph, u64)`, no
-    // `WithFlags` alias. `atlas_scale` (set by build.rs from ATLAS_TARGET_HW)
+    // `WithFlags` alias. `avarok_scale` (set by build.rs from AVAROK_TARGET_HW)
     // picks the symbol that exists so the binary links on both targets.
-    #[cfg(not(atlas_scale))]
+    #[cfg(not(avarok_scale))]
     pub(super) fn cuGraphInstantiateWithFlags(
         phGraphExec: *mut u64,
         hGraph: u64,
         flags: u64,
     ) -> i32;
-    #[cfg(atlas_scale)]
+    #[cfg(avarok_scale)]
     pub(super) fn cuGraphInstantiate(phGraphExec: *mut u64, hGraph: u64, flags: u64) -> i32;
     pub(super) fn cuGraphLaunch(hGraphExec: u64, hStream: u64) -> i32;
     pub(super) fn cuGraphExecDestroy(hGraphExec: u64) -> i32;
@@ -100,17 +100,17 @@ unsafe extern "C" {
     pub(super) fn cuEventDestroy_v2(hEvent: u64) -> i32;
 }
 
-/// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.
+/// Production GPU backend wrapping AvarokRegistry + raw CUDA driver API.
 ///
 /// **Owns this model's kernel modules.** The registry used to be a process
-/// singleton reached through `AtlasRegistry::get()`; it is now loaded per model
+/// singleton reached through `AvarokRegistry::get()`; it is now loaded per model
 /// and propagated from here, so a swapped-in model cannot run the previous
 /// model's kernels. Dropping the last backend unloads them.
-pub struct AtlasCudaBackend {
+pub struct AvarokCudaBackend {
     /// This model's kernel modules. `Arc` because the backend is cloned into
     /// the layers that launch kernels.
-    registry: Arc<AtlasRegistry>,
-    /// `ATLAS_DEBUG_SYNC_KERNELS=1` — sync after every launch. Read once here
+    registry: Arc<AvarokRegistry>,
+    /// `AVAROK_DEBUG_SYNC_KERNELS=1` — sync after every launch. Read once here
     /// rather than per launch, and carried rather than cached in a static.
     debug_sync_kernels: bool,
     /// This model's kernel handles and op scratch. Dropped with the backend,
@@ -146,12 +146,12 @@ pub struct AtlasCudaBackend {
     /// free (the caller passes it to `cuMemAlloc_v2` already) and the site is
     /// free (`#[track_caller]`), so anonymity here was never buying anything.
     live_allocs: parking_lot::Mutex<std::collections::HashMap<u64, AllocRecord>>,
-    /// `ATLAS_REDZONE=<bytes>` — every live allocation's trailing guard band.
+    /// `AVAROK_REDZONE=<bytes>` — every live allocation's trailing guard band.
     ///
     /// Diagnostic for ANOMALIES A55. Each entry is
     /// `(user_ptr, user_bytes, pad_bytes, creation_index)`; the pad occupies
     /// `[user_ptr + user_bytes, user_ptr + user_bytes + pad_bytes)` and is filled with
-    /// `ATLAS_REDZONE_FILL` at birth. [`AtlasCudaBackend::scan_redzones`] reads them back and
+    /// `AVAROK_REDZONE_FILL` at birth. [`AvarokCudaBackend::scan_redzones`] reads them back and
     /// reports any that changed — i.e. a kernel that wrote past the end of its buffer, which
     /// is invisible to compute-sanitizer when the buffer is a pooled suballocation.
     redzones: parking_lot::Mutex<Vec<RedZone>>,
@@ -161,7 +161,7 @@ pub struct AtlasCudaBackend {
     cuda_ctx: u64,
 }
 
-/// One allocation's trailing guard band. See [`AtlasCudaBackend::scan_redzones`].
+/// One allocation's trailing guard band. See [`AvarokCudaBackend::scan_redzones`].
 #[derive(Clone, Copy)]
 pub(crate) struct RedZone {
     user_ptr: u64,
@@ -170,11 +170,11 @@ pub(crate) struct RedZone {
     idx: usize,
 }
 
-/// `ATLAS_REDZONE=<bytes>` — guard-band size, 0 (default) disables. Rounded up to 16.
+/// `AVAROK_REDZONE=<bytes>` — guard-band size, 0 (default) disables. Rounded up to 16.
 pub(crate) fn redzone_bytes() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_REDZONE")
+        std::env::var("AVAROK_REDZONE")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(|n| if n == 0 { 0 } else { n.next_multiple_of(16) })
@@ -182,33 +182,33 @@ pub(crate) fn redzone_bytes() -> usize {
     })
 }
 
-/// `ATLAS_REDZONE_MIN_IDX=<n>` — pad only allocations whose creation index is `>= n`.
+/// `AVAROK_REDZONE_MIN_IDX=<n>` — pad only allocations whose creation index is `>= n`.
 ///
 /// 🔴 Not a memory optimisation, a targeting decision. GLM-5.3 loads **57,346 weight tensors**
 /// through this allocator before a single arena buffer exists; padding all of them costs ~4 GB
 /// once `cuMemAlloc`'s page granularity rounds each one up, which does not fit. It is also the
 /// wrong set: weights are READ-ONLY to every kernel, so an out-of-bounds WRITE cannot originate
 /// from one. The arena/workspace allocations that kernels write into all come after the load,
-/// so `ATLAS_REDZONE_MIN_IDX=57346` guards exactly the plausible set for ~1 MB.
+/// so `AVAROK_REDZONE_MIN_IDX=57346` guards exactly the plausible set for ~1 MB.
 ///
 /// (An out-of-bounds READ past a weight would be missed by that choice. Widen it only after
 /// the write detector comes back clean.)
 pub(crate) fn redzone_min_idx() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_REDZONE_MIN_IDX")
+        std::env::var("AVAROK_REDZONE_MIN_IDX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(0)
     })
 }
 
-/// `ATLAS_REDZONE_TRACE_IDX=<n>` — dump a Rust backtrace at the allocation with this creation
+/// `AVAROK_REDZONE_TRACE_IDX=<n>` — dump a Rust backtrace at the allocation with this creation
 /// index, which is how a bisected index becomes a source line.
 pub(crate) fn redzone_trace_idx() -> Option<usize> {
     static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_REDZONE_TRACE_IDX")
+        std::env::var("AVAROK_REDZONE_TRACE_IDX")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
     })
@@ -218,7 +218,7 @@ pub(crate) fn redzone_trace_idx() -> Option<usize> {
 pub(crate) static ALLOC_SEQ: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// `ATLAS_REDZONE_FILL=<decimal byte>` — the poison value, default `0xEE`.
+/// `AVAROK_REDZONE_FILL=<decimal byte>` — the poison value, default `0xEE`.
 ///
 /// 🔴 The VALUE is itself an experiment. If the defect is an out-of-bounds READ rather than a
 /// write, the guard band is never modified but its CONTENTS reach the model, so running the
@@ -227,18 +227,18 @@ pub(crate) static ALLOC_SEQ: std::sync::atomic::AtomicUsize =
 pub(crate) fn redzone_fill() -> u8 {
     static F: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
     *F.get_or_init(|| {
-        std::env::var("ATLAS_REDZONE_FILL")
+        std::env::var("AVAROK_REDZONE_FILL")
             .ok()
             .and_then(|v| v.parse::<u8>().ok())
             .unwrap_or(0xEE)
     })
 }
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///
     /// Loads the provided PTX modules for THIS model. Use
-    /// `atlas_kernels::ptx_for_model()` or `ptx_modules()` to obtain the
+    /// `avarok_kernels::ptx_for_model()` or `ptx_modules()` to obtain the
     /// correct module set. Each call produces an independent module set — the
     /// CUDA context and stream are shared, nothing else is.
     pub fn new(ordinal: usize, ptx_modules: &[(&'static str, &'static [u8])]) -> Result<Self> {
@@ -246,8 +246,8 @@ impl AtlasCudaBackend {
         // clean — upstream of the first kernel lookup, so the kernel audit
         // records only this model's modules. See `crate::run_metrics`.
         crate::run_metrics::reset_for_new_run();
-        let registry = AtlasRegistry::load(ordinal, ptx_modules)
-            .map_err(|e| anyhow::anyhow!("AtlasRegistry load failed: {e}"))?;
+        let registry = AvarokRegistry::load(ordinal, ptx_modules)
+            .map_err(|e| anyhow::anyhow!("AvarokRegistry load failed: {e}"))?;
         let default_stream = registry.raw_stream();
 
         // Capture current CUDA context for cross-thread binding.
@@ -258,7 +258,7 @@ impl AtlasCudaBackend {
         }
 
         tracing::info!(
-            "AtlasCudaBackend initialized on GPU {ordinal} with {} PTX modules",
+            "AvarokCudaBackend initialized on GPU {ordinal} with {} PTX modules",
             ptx_modules.len()
         );
 
@@ -266,7 +266,7 @@ impl AtlasCudaBackend {
             live_allocs: parking_lot::Mutex::new(std::collections::HashMap::new()),
             redzones: parking_lot::Mutex::new(Vec::new()),
             registry,
-            debug_sync_kernels: std::env::var("ATLAS_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
+            debug_sync_kernels: std::env::var("AVAROK_DEBUG_SYNC_KERNELS").as_deref() == Ok("1"),
             op_cache: crate::op_cache::OpCache::new(),
             default_stream,
             cuda_ctx,
@@ -429,14 +429,14 @@ impl AtlasCudaBackend {
             // Bypass `free`: the ledger is already drained, and a failure here
             // must not abort the rest of the sweep.
             let status = unsafe { cuMemFree_v2(raw) };
-            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+            if status != 0 && !avarok_core::registry::is_teardown_noop(status) {
                 tracing::warn!("sweep: cuMemFree failed for {raw:#x}: status {status}");
             }
         }
         count
     }
 
-    pub fn registry(&self) -> &Arc<AtlasRegistry> {
+    pub fn registry(&self) -> &Arc<AvarokRegistry> {
         &self.registry
     }
 
@@ -457,9 +457,9 @@ impl AtlasCudaBackend {
 ///
 /// On the normal path this frees nothing: `Model::teardown` drains the ledger
 /// first, so the sweep finds an empty set. Freeing here is the safe case
-/// described in `atlas_core::scope` — nothing is allocating against a backend
+/// described in `avarok_core::scope` — nothing is allocating against a backend
 /// that is being dropped.
-impl Drop for AtlasCudaBackend {
+impl Drop for AvarokCudaBackend {
     fn drop(&mut self) {
         let swept = self.sweep_unreleased();
         if swept > 0 {
@@ -492,7 +492,7 @@ impl Drop for AtlasCudaBackend {
 /// Query GPU free memory without requiring a GpuBackend reference.
 /// Safe to call from any thread that shares the CUDA context.
 ///
-/// Applies the same rule as `AtlasCudaBackend`'s `free_memory`: host
+/// Applies the same rule as `AvarokCudaBackend`'s `free_memory`: host
 /// `MemAvailable` stands in for the driver's figure ONLY on an INTEGRATED
 /// GPU (GB10 and friends), where `cuMemGetInfo` reports Linux MemFree and so
 /// omits reclaimable buff/cache. On a discrete card host RAM is a different

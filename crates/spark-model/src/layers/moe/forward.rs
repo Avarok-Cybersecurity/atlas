@@ -5,7 +5,7 @@
 use super::*;
 
 impl MoeLayer {
-    /// True when the ATLAS_FP32_ROUTING path is active: the SSM-side MoE-input
+    /// True when the AVAROK_FP32_ROUTING path is active: the SSM-side MoE-input
     /// norm should emit an FP32 `router_in` (residual_add_rms_norm_gatef32) which
     /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
     /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
@@ -87,7 +87,7 @@ impl MoeLayer {
         // intermediates — no bail. A `Refuse`/mixed batch still bails inside each
         // fold's `moe_route_gate`, preserving per-row adapter-identity protection.
         // ── Phase 2.7 Tier C: Frankenstein decode-via-prefill dispatch ──
-        // For DFlash capture layers only, when `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1`
+        // For DFlash capture layers only, when `AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL=1`
         // is set, route this layer's single-token MoE through `forward_prefill(M=1)`,
         // which uses the tensor-core grouped GEMM kernel (E2M1→E4M3 MMA) instead of
         // the scalar FP32 FMA decode path. Tests whether the numerical recipe of the

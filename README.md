@@ -1,8 +1,8 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-ondark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full.svg">
-    <img src="assets/brand/logo-full-ondark.svg" alt="Atlas Inference Engine" width="660">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-corp-ondark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full-corp.svg">
+    <img src="assets/brand/logo-full-corp-ondark.svg" alt="Atlas Cybernetics Corp" width="660">
   </picture>
 </h1>
 
@@ -88,7 +88,7 @@ Omit the model ID and `serve` boots into the Library — pick a model and recipe
 ```bash
 docker run -it --rm --network host --gpus all --ipc=host \
   -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
-  -v "${HOME}/.atlas:/root/.atlas" \
+  -v "${HOME}/.avarok:/root/.avarok" \
   avarok/atlas-gb10:latest serve
 ```
 
@@ -98,7 +98,7 @@ docker run -it --rm --network host --gpus all --ipc=host \
 - `--gpus all` — hands the GB10 to the container.
 - `--ipc=host` — host-sized shared memory; the Docker default 64 MB `/dev/shm` is too small for CUDA.
 - `-v ~/.cache/huggingface` — reuse the host's model cache instead of re-downloading weights.
-- `-v ~/.atlas` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
+- `-v ~/.avarok` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
 
 <a id="run-atlas"></a>
 
@@ -444,7 +444,7 @@ flowchart TB
 1. **HTTP** → `spark-server` receives OpenAI/Anthropic requests, tokenizes, and enqueues
 2. **Scheduler** → batches sequences, orchestrates prefill/decode/speculative-verify steps
 3. **Model** → generic loop: `embed → [layer₀ … layerₙ] → norm → lm_head`
-4. **Layers** → each layer dispatches through `GpuBackend` to launch kernels from `AtlasRegistry`
+4. **Layers** → each layer dispatches through `GpuBackend` to launch kernels from `AvarokRegistry`
 5. **Kernels** → pre-compiled PTX selected by `(hardware × model × quant)` target at build time
 6. **EP** → `CommBackend` handles cross-GPU all-reduce after MoE expert computation
 7. **Storage** → `StorageBackend` spills/restores KV blocks to NVMe for long-context sequences
@@ -520,20 +520,20 @@ Atlas exposes a focused set of **environment-gated diagnostic dumps** for tracki
 
 **For the full diagnostic playbook** — including the cheapest-signal-first elimination ladder, how to build a byte-exact HF CPU oracle, the per-layer divergence comparator, and the methodological reversals that cost us hours — see [**`DEBUGGING_METHODOLOGY.md`**](DEBUGGING_METHODOLOGY.md). What follows is the env-var reference.
 
-### MoE-path dumps — `ATLAS_DUMP_EXPERT_IDS=1`
+### MoE-path dumps — `AVAROK_DUMP_EXPERT_IDS=1`
 
-Set `-e ATLAS_DUMP_EXPERT_IDS=1` on the container. The markers themselves live in one place — `crates/spark-model/src/layers/moe/dump.rs` — and every MoE path calls into it (`forward_prefill.rs`, `forward_prefill_fp8.rs`, `forward_prefill_bf16.rs`, `forward_prefill_routed.rs`, `forward_batched.rs`). They emit the following per-fire log lines, scoped to the **last token of the chunk** so the values are directly comparable to a single-pass reference forward at the same position:
+Set `-e AVAROK_DUMP_EXPERT_IDS=1` on the container. The markers themselves live in one place — `crates/spark-model/src/layers/moe/dump.rs` — and every MoE path calls into it (`forward_prefill.rs`, `forward_prefill_fp8.rs`, `forward_prefill_bf16.rs`, `forward_prefill_routed.rs`, `forward_batched.rs`). They emit the following per-fire log lines, scoped to the **last token of the chunk** so the values are directly comparable to a single-pass reference forward at the same position:
 
 | Log marker | Fires | What it captures | Use it to localize |
 |---|---|---|---|
-| `ATLAS_EXPERT_LOAD` | once / server | Per-expert histogram + `truncated=true/false` flag | Spot `max_m_tiles` truncation against actual routing skew |
-| `ATLAS_GATE_INPUT` | per layer × chunk | post-norm router input (`\|x\|` + `first5`) | Verify the MoE block input matches the reference |
-| `ATLAS_GATE_LOGITS` | per layer × chunk | top-10 `(idx, val)` + mean + std of raw gate logits | Catch gate-matmul drift before softmax/topK |
-| `ATLAS_EXPERT_IDS` | per layer × chunk | top-K indices + renormalized weights + sum | Confirm routing decisions match HF |
-| `ATLAS_ROUTED_ONLY` | per layer × chunk | routed sum **before** shared blend | Isolate the routed-expert contribution |
-| `ATLAS_SHARED_OUT` | per layer × chunk | shared-expert output (pre-sigmoid) | Verify the dense FFN branch independently |
-| `ATLAS_SHARED_GATE` | per layer × chunk | `dot(input, gate_weight)` + sigmoid value | Confirm shared-expert attenuation matches |
-| `ATLAS_MOE_OUT` | per layer × chunk | final MoE block output (routed + blended) | The full-block ground truth vs the reference |
+| `AVAROK_EXPERT_LOAD` | once / server | Per-expert histogram + `truncated=true/false` flag | Spot `max_m_tiles` truncation against actual routing skew |
+| `AVAROK_GATE_INPUT` | per layer × chunk | post-norm router input (`\|x\|` + `first5`) | Verify the MoE block input matches the reference |
+| `AVAROK_GATE_LOGITS` | per layer × chunk | top-10 `(idx, val)` + mean + std of raw gate logits | Catch gate-matmul drift before softmax/topK |
+| `AVAROK_EXPERT_IDS` | per layer × chunk | top-K indices + renormalized weights + sum | Confirm routing decisions match HF |
+| `AVAROK_ROUTED_ONLY` | per layer × chunk | routed sum **before** shared blend | Isolate the routed-expert contribution |
+| `AVAROK_SHARED_OUT` | per layer × chunk | shared-expert output (pre-sigmoid) | Verify the dense FFN branch independently |
+| `AVAROK_SHARED_GATE` | per layer × chunk | `dot(input, gate_weight)` + sigmoid value | Confirm shared-expert attenuation matches |
+| `AVAROK_MOE_OUT` | per layer × chunk | final MoE block output (routed + blended) | The full-block ground truth vs the reference |
 
 ### SSM-path dumps
 
@@ -541,9 +541,9 @@ The SSM (GDN / Mamba-2) prefill in `qwen3_ssm/trait_prefill.rs` adds three pre-n
 
 | Log marker | What it captures |
 |---|---|
-| `ATLAS_PRENORM_HIDDEN` | Residual stream entering this layer (= previous layer's output) |
-| `ATLAS_PRENORM_OUTPROJ` | SSM `out_proj` output before residual add |
-| `ATLAS_PRENORM_SUM` | hidden + out_proj (the input to `post_attention_layernorm`) |
+| `AVAROK_PRENORM_HIDDEN` | Residual stream entering this layer (= previous layer's output) |
+| `AVAROK_PRENORM_OUTPROJ` | SSM `out_proj` output before residual add |
+| `AVAROK_PRENORM_SUM` | hidden + out_proj (the input to `post_attention_layernorm`) |
 
 Together, those plus the MoE dumps above give a complete trace of the residual stream at every layer boundary for any token in any chunk.
 
@@ -553,17 +553,17 @@ For bisecting *which* code path is at fault, one override toggle lets you swap t
 
 | Env var | Effect |
 |---|---|
-| `ATLAS_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path. Read at `weight_loader/qwen35/load_layers.rs`, so it applies to the Qwen3.5/3.6 loader family, not to every FP8 checkpoint |
+| `AVAROK_FORCE_NVFP4_MOE=1` | Routes an FP8 model's MoE through the NVFP4 path — useful for cross-validating that the bug is in one specific quant path. Read at `weight_loader/qwen35/load_layers.rs`, so it applies to the Qwen3.5/3.6 loader family, not to every FP8 checkpoint |
 
-There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is a single grid-compaction kernel ([`kernels/gb10/common/moe_fp8_grouped_gemm.cu`](kernels/gb10/common/moe_fp8_grouped_gemm.cu)), and the `ATLAS_FP8_MOE_COALESCED` gate that once chose between them has no read site in the tree.
+There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is a single grid-compaction kernel ([`kernels/gb10/common/moe_fp8_grouped_gemm.cu`](kernels/gb10/common/moe_fp8_grouped_gemm.cu)), and the `AVAROK_FP8_MOE_COALESCED` gate that once chose between them has no read site in the tree.
 
 ### How we use these in practice — 3-step workflow
 
 The order matters; this is the same workflow that found and fixed three compounding MoE bugs (commits `6a5fd3d`, `34626d3`, `adf39ce`, `ffdb41d`) on the Qwen3.6-A3B long-context investigation:
 
 1. **Build an HF reference oracle.** A single-precision forward pass through HF Transformers on the same token IDs (read them back from Atlas's `/tokenize` — *do not* re-render the chat template), with `output_hidden_states=True` and per-layer hooks on `mlp.gate`, `mlp.shared_expert`, and `mlp.shared_expert_gate`. Record `\|x\|` + `first5` per layer for the last token.
-2. **Spin up Atlas with `-e ATLAS_DUMP_EXPERT_IDS=1`.** Fire the same prompt. The MoE markers above give you per-layer Atlas values comparable to the oracle.
-3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Atlas| / |HF|` and `overlap = |top-K_Atlas ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
+2. **Spin up Atlas with `-e AVAROK_DUMP_EXPERT_IDS=1`.** Fire the same prompt. The MoE markers above give you per-layer Atlas values comparable to the oracle.
+3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Atlas| / |HF|` and `overlap = |top-K_Avarok ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
 
 For the 2026-05-20 MoE bug hunt this localized the issue from "16K context produces gibberish" to "L0 MoE output magnitude 3.4× too large because of three compounding bugs: v1 grouped-GEMM, missing zero-init, broken `max_m_tiles` heuristic" within a few iterations. After all three fixes, all 40 layers landed in `[0.977, 1.021]` of HF baseline — at the FP8 quantization noise floor.
 

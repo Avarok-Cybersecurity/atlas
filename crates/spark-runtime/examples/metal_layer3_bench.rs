@@ -11,10 +11,10 @@
 //!
 //! Run with:
 //!
-//!     ATLAS_TARGET_HW=metal \
-//!     ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-//!     ATLAS_TARGET_QUANT=mlx_int8 \
-//!     ATLAS_METAL_BENCH_ITERS=200 \
+//!     AVAROK_TARGET_HW=metal \
+//!     AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+//!     AVAROK_TARGET_QUANT=mlx_int8 \
+//!     AVAROK_METAL_BENCH_ITERS=200 \
 //!     cargo run --release --example metal_layer3_bench \
 //!         --features metal --no-default-features
 //!
@@ -36,13 +36,13 @@ fn bf16_slice_to_bytes(values: &[half::bf16]) -> Vec<u8> {
 }
 
 fn main() -> Result<()> {
-    let n_iters: usize = std::env::var("ATLAS_METAL_BENCH_ITERS")
+    let n_iters: usize = std::env::var("AVAROK_METAL_BENCH_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(100);
     let n_warmup: usize = (n_iters / 10).max(5);
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("$HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
@@ -54,12 +54,12 @@ fn main() -> Result<()> {
     let mmap = unsafe { memmap2::Mmap::map(&file).context("mmap")? };
     let st = SafeTensors::deserialize(&mmap).context("parse safetensors")?;
 
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     if modules.is_empty() {
         anyhow::bail!(
             "metal kernel registry empty — re-build with \
-             ATLAS_TARGET_HW=metal ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-             ATLAS_TARGET_QUANT=mlx_int8"
+             AVAROK_TARGET_HW=metal AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+             AVAROK_TARGET_QUANT=mlx_int8"
         );
     }
     let backend = MetalGpuBackend::new(0, &modules)?;

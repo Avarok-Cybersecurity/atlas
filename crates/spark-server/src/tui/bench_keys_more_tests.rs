@@ -32,7 +32,7 @@ fn press(s: &mut BenchState, code: KeyCode) {
 
 #[test]
 fn g_and_home_jump_to_the_first_benchmark_and_clamp_there() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let mut s = state();
     s.select(n - 1);
     press(&mut s, KeyCode::Char('g'));
@@ -48,7 +48,7 @@ fn g_and_home_jump_to_the_first_benchmark_and_clamp_there() {
 
 #[test]
 fn shift_g_and_end_jump_to_the_last_benchmark_and_clamp_there() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let mut s = state();
     press(&mut s, KeyCode::Char('G'));
     assert_eq!(s.selected, n - 1);
@@ -62,7 +62,7 @@ fn shift_g_and_end_jump_to_the_last_benchmark_and_clamp_there() {
 
 #[test]
 fn page_keys_move_by_the_renderer_published_viewport() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     assert!(n > 4, "paging is only meaningful past one 80x24 screen");
     let mut s = state();
     s.suite_page.set(4);
@@ -74,7 +74,7 @@ fn page_keys_move_by_the_renderer_published_viewport() {
 
 #[test]
 fn page_keys_clamp_at_both_ends() {
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let mut s = state();
     // A page larger than the registry: the terminal grew mid-session.
     s.suite_page.set(n + 3);

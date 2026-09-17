@@ -21,8 +21,8 @@
 //! `spark_server::scheduler::adaptive_rung` — a static value cannot be right
 //! for both traffic regimes, because the second-token conditional accept is
 //! bimodal (~0.54 prose / 0.877 tool-shaped) and moves the break-even across
-//! the rung. `ATLAS_MTP_STATIC_RUNG` (PRESENCE) pins the static value here;
-//! so does an explicit `ATLAS_MTP_K_LADDER`.
+//! the rung. `AVAROK_MTP_STATIC_RUNG` (PRESENCE) pins the static value here;
+//! so does an explicit `AVAROK_MTP_K_LADDER`.
 //!
 //! ★ The depth step-down that used to sit at n>4 was an artifact of the
 //! `mtp_step` chunk cap, NOT of GDN depth cost: `rows=4` was capped at 4
@@ -68,23 +68,23 @@
 //! (vs 0.780 / 2.301 at 8:2).
 //!
 //! Overrides:
-//! * `ATLAS_MTP_K_LADDER="4:3,8:2,16:1"` — comma-separated `n_max:drafts`
+//! * `AVAROK_MTP_K_LADDER="4:3,8:2,16:1"` — comma-separated `n_max:drafts`
 //!   steps, VALUE-parsed once per process. Draft counts clamp to
 //!   `[1, num_drafts]` (the CLI `--num-drafts` remains the ceiling, so
 //!   `"4:4,..."` parses to the full configured draft count).
-//! * `ATLAS_NO_MTP_K_LADDER` — PRESENCE check (house convention, `=0` is
+//! * `AVAROK_NO_MTP_K_LADDER` — PRESENCE check (house convention, `=0` is
 //!   NOT off): disables the ladder entirely (fixed `num_drafts` at every n)
 //!   AND drops the [`super::mtp_max_seqs`] default back to 4, restoring the
 //!   pre-ladder adaptive policy (batched K=4 MTP at C<=4, MTP-off above).
 
-/// PRESENCE check for `ATLAS_NO_MTP_K_LADDER`. Read once per process.
+/// PRESENCE check for `AVAROK_NO_MTP_K_LADDER`. Read once per process.
 pub fn mtp_ladder_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_K_LADDER").is_some())
+    *OFF.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_K_LADDER").is_some())
 }
 
 /// Parsed ladder steps `(n_max, drafts)`, ascending by `n_max`. Falls back
-/// to the default ladder when `ATLAS_MTP_K_LADDER` is unset or unparseable
+/// to the default ladder when `AVAROK_MTP_K_LADDER` is unset or unparseable
 /// (a malformed value must not silently disable speculation).
 fn parse_ladder(value: &str) -> Option<Vec<(usize, usize)>> {
     let mut steps = Vec::new();
@@ -102,7 +102,7 @@ fn parse_ladder(value: &str) -> Option<Vec<(usize, usize)>> {
 fn mtp_ladder_steps() -> &'static [(usize, usize)] {
     static STEPS: std::sync::OnceLock<Vec<(usize, usize)>> = std::sync::OnceLock::new();
     STEPS.get_or_init(|| {
-        let parsed = std::env::var("ATLAS_MTP_K_LADDER")
+        let parsed = std::env::var("AVAROK_MTP_K_LADDER")
             .ok()
             .and_then(|value| parse_ladder(&value));
         // Default ladder: 3 drafts up to the n=8 rung, then TWO drafts at
@@ -124,7 +124,7 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
         //
         // 24:2 / 32:2 (wave 11): the 96-row verify envelope makes depth at
         // n<=32 a SINGLE chunk (24 x 3 = 72 rows, 32 x 3 = 96 rows), so
-        // `ATLAS_MTP_K_LADDER="4:3,8:3,16:2,24:2,32:2"` is now a measurable
+        // `AVAROK_MTP_K_LADDER="4:3,8:3,16:2,24:2,32:2"` is now a measurable
         // shape. NOT default: 32:2 is a PROJECTION so far (~277 tok/s at
         // C=32 from the measured n=16 K=3 verify cost — +50% rows for
         // +26.5% step time — vs the 269.3 bar); the default flips only on a
@@ -137,7 +137,7 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
         // with NO MTP multiplier while every C<=16 level enjoys one. R =
         // 32 x 2 = 64 rows = the widened VERIFY_ROW_CAP/meta/logits/stash
         // envelope (verify_e). Explicit rung (not last-step fallthrough) so
-        // the shape is visible in `ATLAS_MTP_K_LADDER` terms; dispatch above
+        // the shape is visible in `AVAROK_MTP_K_LADDER` terms; dispatch above
         // 16 additionally needs the `mtp_max_seqs` default raised to 32
         // (below).
         //
@@ -195,8 +195,8 @@ fn mtp_ladder_steps() -> &'static [(usize, usize)] {
         // `spark_server::scheduler::adaptive_rung`, which reads this rung as
         // its floor and may lift n in 9..=16 to 2 drafts. This entry stays
         // the static default (and the value under
-        // `ATLAS_MTP_STATIC_RUNG`). Restore the old static rung with
-        // `ATLAS_MTP_K_LADDER="4:3,8:3,16:2,32:1"` — an explicit ladder also
+        // `AVAROK_MTP_STATIC_RUNG`). Restore the old static rung with
+        // `AVAROK_MTP_K_LADDER="4:3,8:3,16:2,32:1"` — an explicit ladder also
         // pins adaptation off — and re-run the grid after any accept lift.
         //
         // ★ The per-row term DOMINATES at n=16 — 129.5 of the 197.3 ms at
@@ -238,8 +238,8 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
     ladder_drafts_from_steps(mtp_ladder_steps(), n_active, num_drafts)
 }
 
-/// SSOT for the multi-sequence MTP cap (`ATLAS_MTP_MAX_SEQS`; default 32
-/// with the K-vs-batch ladder, 4 under `ATLAS_NO_MTP_K_LADDER`).
+/// SSOT for the multi-sequence MTP cap (`AVAROK_MTP_MAX_SEQS`; default 32
+/// with the K-vs-batch ladder, 4 under `AVAROK_NO_MTP_K_LADDER`).
 /// Value-parsed, not presence-checked. Lives beside the ladder (moved from
 /// `speculative.rs`, originally `scheduler/mod.rs`) because the two are one
 /// policy: the model-side single-sequence MTP structures (catchup ring,
@@ -255,20 +255,20 @@ pub fn mtp_ladder_drafts(n_active: usize, num_drafts: usize) -> usize {
 /// ranges — the wave-11 grid's 16:2 lead does not survive the drop in p1
 /// from 0.859 to ~0.72), then 1 draft through n=32 (2026-07-30, the
 /// native-bs32 rung — R = 64 verify rows).
-/// `ATLAS_NO_MTP_K_LADDER` (presence) restores fixed K=4 + cap 4 — the
-/// dafd990d adaptive policy. Set `ATLAS_MTP_MAX_SEQS=1` to restore
+/// `AVAROK_NO_MTP_K_LADDER` (presence) restores fixed K=4 + cap 4 — the
+/// dafd990d adaptive policy. Set `AVAROK_MTP_MAX_SEQS=1` to restore
 /// single-sequence-only.
 pub fn mtp_max_seqs() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_MTP_MAX_SEQS")
+        std::env::var("AVAROK_MTP_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
             // Default 32 (2026-07-30, spec at n=32 — the 32:1 ladder rung).
             // The raise is inert at n<=16: the cap only gates dispatch
             // above 16 and the `32:1` rung only matches above 16, so every
             // measured C<=16 code path is unchanged. Set
-            // `ATLAS_MTP_MAX_SEQS=16` to restore the wave-9 cap (spec off
+            // `AVAROK_MTP_MAX_SEQS=16` to restore the wave-9 cap (spec off
             // above n=16).
             // History: default 16 (finalizer matrix 2026-07-29) — it was 8
             // for three rounds because spec at n=16 measured a LOSS (128.4
@@ -292,7 +292,7 @@ mod tests {
     use super::*;
 
     // Default-ladder shape (env-independent as long as the test process
-    // does not set ATLAS_MTP_K_LADDER / ATLAS_NO_MTP_K_LADDER — CI does not).
+    // does not set AVAROK_MTP_K_LADDER / AVAROK_NO_MTP_K_LADDER — CI does not).
     #[test]
     fn default_ladder_holds_depth_to_the_cap() {
         assert_eq!(mtp_ladder_drafts(1, 3), 3);
@@ -304,7 +304,7 @@ mod tests {
         // re-measured on one binary with env-toggled arms, 16:1 reads
         // 181.27-182.50 against 16:2's 171.50-173.36 (+5.4%, disjoint), and
         // clears the 178.72 vLLM bar. Restore 16:2 with
-        // ATLAS_MTP_K_LADDER="4:3,8:3,16:2,32:1".
+        // AVAROK_MTP_K_LADDER="4:3,8:3,16:2,32:1".
         assert_eq!(mtp_ladder_drafts(9, 3), 1);
         assert_eq!(mtp_ladder_drafts(16, 3), 1);
         // The 32:1 rung (2026-07-30): ONE draft (K=2) through n=32 — the
@@ -331,7 +331,7 @@ mod tests {
     }
 
     // A step-down ladder must still be honored when asked for explicitly
-    // (the 8:2 shape stays reachable via ATLAS_MTP_K_LADDER).
+    // (the 8:2 shape stays reachable via AVAROK_MTP_K_LADDER).
     #[test]
     fn explicit_steps_are_honored() {
         let steps = parse_ladder("4:3,8:2").unwrap();

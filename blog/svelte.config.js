@@ -1,5 +1,5 @@
 import adapter from '@sveltejs/adapter-static';
-import { atlasMarkdown } from './src/lib/md/preprocess.js';
+import { avarokMarkdown } from './src/lib/md/preprocess.js';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
@@ -12,7 +12,7 @@ const config = {
   // browser receives HTML; `e2e/check-bundle.mjs` fails the build if any of it
   // ever reaches the client bundle, which is what keeps the trade honest.
   extensions: ['.svelte', '.md'],
-  preprocess: [atlasMarkdown()],
+  preprocess: [avarokMarkdown()],
   kit: {
     // Both web properties render the same chevron field and the same design
     // tokens. They live in web-shared/ at the repo root — one copy, imported

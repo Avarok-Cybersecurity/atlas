@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -54,7 +54,7 @@ pub(crate) struct SamplingDefaults {
 pub(crate) fn load_sampling_defaults(
     model_dir: &Path,
     args: &cli::ServeArgs,
-    preset: &atlas_kernels::SamplingCategory,
+    preset: &avarok_kernels::SamplingCategory,
 ) -> SamplingDefaults {
     let gen_config_path = model_dir.join("generation_config.json");
     let gen_cfg = std::fs::read_to_string(&gen_config_path)
@@ -101,7 +101,7 @@ pub(crate) fn load_sampling_defaults(
 pub(crate) fn resolve_sampling_defaults(
     gen_cfg: Option<&serde_json::Value>,
     args: &cli::ServeArgs,
-    preset: &atlas_kernels::SamplingCategory,
+    preset: &avarok_kernels::SamplingCategory,
 ) -> SamplingDefaults {
     let temperature = gen_cfg
         .and_then(|v| v.get("temperature")?.as_f64())
@@ -187,7 +187,7 @@ pub(crate) fn log_response_store_audit(
     }
 }
 
-pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels::TargetPtxSet) {
+pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &avarok_kernels::TargetPtxSet) {
     if !ptx_set.behavior.thinking_in_tools {
         tracing::info!("Model behavior: thinking disabled when tools active (MODEL.toml)");
     }
@@ -232,15 +232,15 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             crate::scheduler::CONTENT_LOOP_PERIOD_MAX,
         );
     }
-    // 2026-05-24: ATLAS_DISABLE_WATCHDOGS env var disables ALL
+    // 2026-05-24: AVAROK_DISABLE_WATCHDOGS env var disables ALL
     // auto-watchdogs (content-loop, inter-tool prose, F2 confidence,
     // mid-word </think>, thinking-loop). Empirical test toggle —
     // surface its state prominently at boot.
     if crate::scheduler::parse_disable_watchdogs(
-        std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+        std::env::var("AVAROK_DISABLE_WATCHDOGS").ok().as_deref(),
     ) {
         tracing::warn!(
-            "Model behavior: ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1 \
+            "Model behavior: ALL auto-watchdogs DISABLED via AVAROK_DISABLE_WATCHDOGS=1 \
              (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think> \
              defer, thinking-loop). User-set max_thinking_budget and safety masks unaffected. \
              Use only for empirical-test runs — re-enable for production."
@@ -257,7 +257,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     if b.rollback_resteer {
         tracing::info!(
             "Model behavior: watchdog rollback+re-steer ENABLED (cap {} per sequence)",
-            atlas_kernels::ROLLBACK_RESTEER_CAP,
+            avarok_kernels::ROLLBACK_RESTEER_CAP,
         );
     } else {
         tracing::info!("Model behavior: watchdog rollback+re-steer DISABLED (legacy hard-stop)");
@@ -318,7 +318,7 @@ pub(crate) fn resolve_model_name(
 
 pub(crate) fn resolve_tool_call_parser(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     config: &ModelConfig,
 ) -> Result<Option<std::sync::Arc<dyn crate::tool_parser::ToolCallParser>>> {
     use crate::tool_parser;
@@ -391,8 +391,8 @@ mod sampling_defaults_tests {
     /// A preset with values distinct from both the old hard-coded constants
     /// (0.6 / 20 / 0.95) and the CLI defaults, so a wrong fallback source is
     /// unmistakable in every assertion below.
-    fn preset() -> atlas_kernels::SamplingCategory {
-        atlas_kernels::SamplingCategory {
+    fn preset() -> avarok_kernels::SamplingCategory {
+        avarok_kernels::SamplingCategory {
             temperature: 0.7,
             top_p: 0.8,
             top_k: 40,
@@ -485,7 +485,7 @@ mod sampling_defaults_tests {
 
 #[cfg(test)]
 mod eos_tests {
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
 
     use super::load_eos_tokens;
 

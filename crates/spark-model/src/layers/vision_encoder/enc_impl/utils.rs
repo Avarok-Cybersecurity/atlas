@@ -30,7 +30,7 @@ impl VisionEncoder {
             .launch(stream)
     }
 
-    /// Debug hook: when `ATLAS_DUMP_VIT=<dir>` is set, snapshot a GPU BF16
+    /// Debug hook: when `AVAROK_DUMP_VIT=<dir>` is set, snapshot a GPU BF16
     /// buffer of `n` elements to `<dir>/<label>.bin`. Each file is plain
     /// little-endian BF16 with no header — python loader reads with
     /// `np.frombuffer(f.read(), dtype=np.uint16).view(np.float32[:8]>>16)`.
@@ -42,7 +42,7 @@ impl VisionEncoder {
         label: &str,
         stream: u64,
     ) -> Result<()> {
-        let Ok(dir) = std::env::var("ATLAS_DUMP_VIT") else {
+        let Ok(dir) = std::env::var("AVAROK_DUMP_VIT") else {
             return Ok(());
         };
         if dir.is_empty() {
@@ -56,7 +56,7 @@ impl VisionEncoder {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(&path, &buf).with_context(|| format!("write {}", path.display()))?;
         tracing::info!(
-            "ATLAS_DUMP_VIT: wrote {} ({} elements)",
+            "AVAROK_DUMP_VIT: wrote {} ({} elements)",
             path.display(),
             n_elements
         );

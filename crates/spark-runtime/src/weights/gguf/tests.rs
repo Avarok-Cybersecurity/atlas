@@ -41,12 +41,12 @@ fn build_single_f32_gguf(name: &str, vals: &[f32]) -> Vec<u8> {
 #[test]
 fn loads_single_tensor_cpu_fallback() {
     // Mock cannot execute kernels, so force the CPU reference dequant path.
-    unsafe { std::env::set_var("ATLAS_GGUF_FORCE_CPU", "1") };
+    unsafe { std::env::set_var("AVAROK_GGUF_FORCE_CPU", "1") };
 
     let vals = [1.0f32, -2.0, 3.5, 0.0, 7.0, -0.25];
     let bytes = build_single_f32_gguf("token_embd.weight", &vals);
 
-    let dir = std::env::temp_dir().join(format!("atlas_gguf_test_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok_gguf_test_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("model.gguf"), &bytes).unwrap();
 
@@ -70,12 +70,12 @@ fn loads_single_tensor_cpu_fallback() {
     assert_eq!(got, vals.to_vec());
 
     std::fs::remove_dir_all(&dir).ok();
-    unsafe { std::env::remove_var("ATLAS_GGUF_FORCE_CPU") };
+    unsafe { std::env::remove_var("AVAROK_GGUF_FORCE_CPU") };
 }
 
 #[test]
 fn find_gguf_picks_first() {
-    let dir = std::env::temp_dir().join(format!("atlas_gguf_find_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok_gguf_find_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("b.gguf"), b"x").unwrap();
     std::fs::write(dir.join("a.gguf"), b"x").unwrap();
@@ -87,7 +87,7 @@ fn find_gguf_picks_first() {
 
 #[test]
 fn find_gguf_skips_mmproj_and_find_mmproj_pairs() {
-    let dir = std::env::temp_dir().join(format!("atlas_gguf_mmproj_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok_gguf_mmproj_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     // The mmproj sorts lexicographically FIRST ('B' < 'T'), so a naive
     // first-file pick would wrongly select the sidecar as the backbone.
@@ -106,7 +106,7 @@ fn find_gguf_skips_mmproj_and_find_mmproj_pairs() {
     );
 
     // A text-only dir yields no sidecar.
-    let dir2 = std::env::temp_dir().join(format!("atlas_gguf_textonly_{}", std::process::id()));
+    let dir2 = std::env::temp_dir().join(format!("avarok_gguf_textonly_{}", std::process::id()));
     std::fs::create_dir_all(&dir2).unwrap();
     std::fs::write(dir2.join("model-Q2_0.gguf"), b"x").unwrap();
     let bb2 = find_gguf(&dir2).unwrap();

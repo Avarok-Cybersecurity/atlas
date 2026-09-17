@@ -6,7 +6,7 @@
 //! This is the grounding ORACLE for the Fix-E pipelined BF16-GEMM rewrite:
 //! every kernel iteration is validated here (seconds) against an independent
 //! CPU reference BEFORE any full build→deploy cycle. It launches the real
-//! kernel via the production `GpuBackend`/`AtlasRegistry` path (SBIO/SSOT) and
+//! kernel via the production `GpuBackend`/`AvarokRegistry` path (SBIO/SSOT) and
 //! compares the BF16 output to a CPU recompute.
 //!
 //! Math (matches `dense_gemm_bf16.cu`):
@@ -27,7 +27,7 @@
 //! Exit code 0 = PASS (cosine >= threshold), 1 = FAIL — so it is scriptable.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -221,7 +221,7 @@ fn main() -> Result<()> {
         .collect();
 
     // ── GPU ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

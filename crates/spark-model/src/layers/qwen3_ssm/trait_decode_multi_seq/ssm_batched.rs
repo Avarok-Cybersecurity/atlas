@@ -5,7 +5,7 @@
 use super::super::*;
 
 /// Tensor-core mixer projections for wide decode batches. **ON by default at
-/// n>=9**; `ATLAS_SSM_TC_PROJ=&lt;n&gt;` moves the threshold, `=0` disables.
+/// n>=9**; `AVAROK_SSM_TC_PROJ=&lt;n&gt;` moves the threshold, `=0` disables.
 ///
 /// WHY: the mixer's qkvz/out_proj run through `w4a16_gemv_batchm`, a SCALAR-FMA
 /// kernel. It reads the weights once for all n rows, but its arithmetic scales
@@ -33,7 +33,7 @@ use super::super::*;
 pub(super) fn ssm_tc_proj_min_n() -> Option<usize> {
     static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *N.get_or_init(
-        || match std::env::var("ATLAS_SSM_TC_PROJ").ok().as_deref() {
+        || match std::env::var("AVAROK_SSM_TC_PROJ").ok().as_deref() {
             None => Some(9),
             Some("0") => None,
             Some("1") => Some(9),
@@ -294,7 +294,7 @@ impl Qwen3SsmLayer {
                 .map(|(label, us)| format!("{label}={us}us"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            tracing::info!("ATLAS_SSM_DETAIL n={n}: {summary}");
+            tracing::info!("AVAROK_SSM_DETAIL n={n}: {summary}");
         }
 
         Ok(true)

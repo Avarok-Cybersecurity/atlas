@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Strict parsing for the process-scoped `ATLAS_*` configuration variables.
+//! Strict parsing for the process-scoped `AVAROK_*` configuration variables.
 //!
 //! ## What this exists to stop
 //!
@@ -8,23 +8,23 @@
 //! conversation store — was read like this:
 //!
 //! ```ignore
-//! let rpm = std::env::var("ATLAS_RATE_LIMIT_RPM")
+//! let rpm = std::env::var("AVAROK_RATE_LIMIT_RPM")
 //!     .ok()
 //!     .and_then(|s| s.parse().ok())   // ← a typo lands here
 //!     .unwrap_or(0);                  // ← and silently becomes "off"
 //! ```
 //!
-//! `ATLAS_RATE_LIMIT_RPM=1oo` (letter o) parses as nothing, falls through to
+//! `AVAROK_RATE_LIMIT_RPM=1oo` (letter o) parses as nothing, falls through to
 //! the default, and the default for a rate limit is **0, which means the limit
 //! is not enforced at all**. The operator set a limit, the server started
 //! cleanly, printed nothing, and served unlimited. Every variable in this
-//! family had the same shape: `ATLAS_STORE_TTL_SECONDS=1h` is a 24-hour TTL,
-//! `ATLAS_CONVERSATION_MAX_ENTRIES=10_000` (the spelling the doc comment uses!)
+//! family had the same shape: `AVAROK_STORE_TTL_SECONDS=1h` is a 24-hour TTL,
+//! `AVAROK_CONVERSATION_MAX_ENTRIES=10_000` (the spelling the doc comment uses!)
 //! is the default 10 000 by luck rather than by parse.
 //!
 //! This is the repo's PCND rule — production code must not silently default; it
 //! must require explicit config or fail fast naming the key — and the repo
-//! already applies it elsewhere: `ATLAS_VISION_MAX_PIXELS` hard-errors with
+//! already applies it elsewhere: `AVAROK_VISION_MAX_PIXELS` hard-errors with
 //! "must be a positive integer, got …". These variables did not.
 //!
 //! ## Shape
@@ -35,7 +35,7 @@
 //! binary. Each `from_env` does the reading and hands the strings here.
 //!
 //! Empty and whitespace-only are treated as unset, not as errors: exporting
-//! `ATLAS_STORE_DIR=` to mean "off" is an established habit, and the previous
+//! `AVAROK_STORE_DIR=` to mean "off" is an established habit, and the previous
 //! code already fell back for them.
 
 use std::fmt::Display;

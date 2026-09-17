@@ -9,7 +9,7 @@ what the negative control proved. Newest entries at the bottom.
 runs in CI) — for each of `site/` and `blog/`:
 
 1. `bun test src/lib` — unit tests
-2. `bun x --bun vite build` — the SvelteKit build, with `ATLAS_RECIPES_ROOT`
+2. `bun x --bun vite build` — the SvelteKit build, with `AVAROK_RECIPES_ROOT`
    pointed at a local `atlas-recipes` checkout
 3. the chevron-field contrast check (`.contrast-check.mjs`), which re-derives the
    field's luminance budget against the ground it is actually painted on
@@ -62,7 +62,7 @@ ground, so this is not a rounding concern. That re-derivation is the
 ## Wave 2 — the origin vhost
 
 **Changed.** `blog/deploy/nginx/blog.atlasinference.io.conf` is the SSOT for the
-vhost; it is installed on the avarok origin as
+vhost; it is installed on the atlas origin as
 `/etc/nginx/sites-available/00-blog.atlasinference.io.conf` and symlinked into
 `sites-enabled`. Docroot `/var/www/blog.atlasinference.io/html`, owned
 `ubuntu:ubuntu` — the same user the marketing-site deploy already rsyncs as
@@ -125,7 +125,7 @@ been easy to go debugging server_name matching for an hour.
 (adapter-static, bun, Vite 8, Svelte 5 runes), prerendered to static files.
 
 **Design system: one, not two.** The `:root` token block moved out of
-`site/src/app.css` into `web-shared/atlas-tokens.css`, which both apps now
+`site/src/app.css` into `web-shared/avarok-tokens.css`, which both apps now
 import. This is the SSOT the brief implies when it says "the same colour
 scheme" — with two copies, "the same" survives exactly until the first edit.
 `blog/src/app.css` defines only editorial structure (reading column, chevron
@@ -262,7 +262,7 @@ artwork. Two things were wrong:
    `#0F1216`.
 2. The blog's header and footer used `favicon.svg` plus the word "Atlas" set in
    the UI font. The reference uses the **real lockup**: the mark, the wordmark
-   outlines including the Avarok signature "A" with its arrow shaft, and the
+   outlines including the Atlas signature "A" with its arrow shaft, and the
    tagline. Confirmed by the user: *"the Atlas 'A' does not have an arrow on the
    current blog, yet the inputted reference does use it."*
 
@@ -271,7 +271,7 @@ there is one palette rather than two.
 
 ### The palette move
 
-`web-shared/atlas-tokens.css` now holds the reference ramp under the marketing
+`web-shared/avarok-tokens.css` now holds the reference ramp under the marketing
 site's token names, so nothing downstream had to be renamed. The work that was
 not a hex swap:
 
@@ -806,7 +806,7 @@ by it.
 
 | asked for | state |
 |---|---|
-| nginx vhost on the avarok server | **live**, in-repo as SSOT, security headers proved by request |
+| nginx vhost on the atlas server | **live**, in-repo as SSOT, security headers proved by request |
 | `blog/` SvelteKit site from `etc/site-blog` | **live**, index / post / tag / author / RSS / sitemap / 404 |
 | raw WebGL chevron field, **not** three.js | raw WebGL2, 2.52 KB brotli; the three.js variant was never wired in |
 | per-merge deploy inside the existing `site.yml` job | wired into `unit`, `build` and `deploy`; the live check is its own job so it can actually run |

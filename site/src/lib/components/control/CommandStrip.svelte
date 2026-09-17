@@ -23,6 +23,7 @@
   import { CADENCES } from '$lib/agent/cadence.js';
   import { placeholdersFor } from '$lib/agent/placeholders.js';
   import ComingSoon from './ComingSoon.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   let { fleet, onselect, cadence, oncadence, vitals = true, onvitals, onhelp } = $props();
 
@@ -61,7 +62,7 @@
 
 <header class="cmd" aria-label="Fleet command strip">
   <div class="cmd-left">
-    <a class="cmd-mark" href="/" aria-label="Atlas home">
+    <a class="cmd-mark" href="/" aria-label="Atlas home" data-sveltekit-reload>
       <img src="/favicon.svg" alt="" width="20" height="20" />
       <span>Atlas</span>
     </a>
@@ -145,6 +146,7 @@
 
     <!-- The keyboard map's click-and-touch door: keys are a faster way in,
          never the only one. -->
+    <ThemeToggle />
     <button
       type="button"
       class="cmd-help mono"

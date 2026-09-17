@@ -15,28 +15,28 @@ use super::{
     SnapshotBlobStore, UnifiedSnapshotStore, ssm_tier_unified,
 };
 
-/// Whether the SSM spill tier is engaged (`ATLAS_SSM_TIER`). Default off ⇒
+/// Whether the SSM spill tier is engaged (`AVAROK_SSM_TIER`). Default off ⇒
 /// eviction drops exactly as before ⇒ byte-identical to a pre-tier build.
 pub(crate) fn ssm_tier_enabled() -> bool {
-    std::env::var_os("ATLAS_SSM_TIER").is_some()
+    std::env::var_os("AVAROK_SSM_TIER").is_some()
 }
 
 /// Build the SSM spill-tier store (called only when `ssm_tier_enabled()`).
-/// `ATLAS_SSM_RDMA_TIER=host:port` selects the RDMA arena
-/// ([`RdmaSnapshotStore`] over a peer blade, `ATLAS_SSM_RDMA_ARENA_SLOTS` slots,
+/// `AVAROK_SSM_RDMA_TIER=host:port` selects the RDMA arena
+/// ([`RdmaSnapshotStore`] over a peer blade, `AVAROK_SSM_RDMA_ARENA_SLOTS` slots,
 /// default 512); otherwise the host-RAM [`MemBlobStore`]. A connect failure (or
 /// a build without RDMA verbs) LOGS and falls back to host-RAM — the tier is
-/// optional, never a hard model-init error. With `ATLAS_SSM_RDMA_TIER` unset the
+/// optional, never a hard model-init error. With `AVAROK_SSM_RDMA_TIER` unset the
 /// result is exactly `MemBlobStore::new(0)` as before ⇒ byte-identical.
 ///
-/// `ATLAS_SSM_TIER_DISK_GB` bounds the UNIFIED arms' swap file (see
+/// `AVAROK_SSM_TIER_DISK_GB` bounds the UNIFIED arms' swap file (see
 /// [`ssm_tier_disk_slots`]); unset = unbounded = today's behavior. It is inert
 /// on every other arm: the legacy stores have no disk tier, and under
-/// `ATLAS_SSM_SWAP=1` the PEER owns residency and applies its own
+/// `AVAROK_SSM_SWAP=1` the PEER owns residency and applies its own
 /// `--swap-cap-gb` budget instead.
 ///
-/// `Err` is reserved for CONFIG errors (a bad `ATLAS_SSM_SWAP_NS` override or
-/// `ATLAS_SSM_TIER_DISK_GB` — PCND fail-fast, resolved BEFORE any connect
+/// `Err` is reserved for CONFIG errors (a bad `AVAROK_SSM_SWAP_NS` override or
+/// `AVAROK_SSM_TIER_DISK_GB` — PCND fail-fast, resolved BEFORE any connect
 /// attempt); connectivity failures keep the non-fatal fallback chain paging →
 /// bounded RDMA → host-RAM.
 pub(crate) fn build_tier_store(
@@ -49,25 +49,25 @@ pub(crate) fn build_tier_store(
     // cap only exists on the unified arms.
     if disk_gb_requested() && !ssm_tier_unified() {
         tracing::warn!(
-            "{DISK_GB_VAR} is set but ATLAS_SSM_TIER_UNIFIED is not — the disk budget is \
+            "{DISK_GB_VAR} is set but AVAROK_SSM_TIER_UNIFIED is not — the disk budget is \
              INERT (the legacy spill stores have no disk tier to bound)"
         );
     }
-    if let Some(peer) = std::env::var("ATLAS_SSM_RDMA_TIER")
+    if let Some(peer) = std::env::var("AVAROK_SSM_RDMA_TIER")
         .ok()
         .filter(|s| !s.is_empty())
     {
-        let slots: usize = std::env::var("ATLAS_SSM_RDMA_ARENA_SLOTS")
+        let slots: usize = std::env::var("AVAROK_SSM_RDMA_ARENA_SLOTS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(512);
         let arena_bytes = slots as u64 * blob_bytes as u64;
-        // WS-A: ATLAS_SSM_SWAP=1 selects PAGING mode — the peer (started with
+        // WS-A: AVAROK_SSM_SWAP=1 selects PAGING mode — the peer (started with
         // --swap-dir) owns residency and backs the RAM arena with an NVMe swap
         // file, giving infinite depth (never drops) shared across clients. Falls
         // through to the bounded RDMA store / host-RAM on any connect failure.
-        if std::env::var("ATLAS_SSM_SWAP").ok().as_deref() == Some("1") {
-            // Namespace = ATLAS_SSM_SWAP_NS (explicit u64 override, strict) or
+        if std::env::var("AVAROK_SSM_SWAP").ok().as_deref() == Some("1") {
+            // Namespace = AVAROK_SSM_SWAP_NS (explicit u64 override, strict) or
             // the config-derived model fingerprint, so different models sharing
             // one peer can never collide. Resolved BEFORE the connect attempt:
             // a bad override is a config error, not a connectivity error.
@@ -152,7 +152,7 @@ pub(crate) fn build_tier_store(
         // into the swap tier. NOTE: unlike today's lazily-growing unbounded
         // store, the hot arena is allocated up front (slots × blob_bytes).
         let hot_slots = unified_hot_slots();
-        let hot = Box::new(atlas_tier::VecSlotArena::new(blob_bytes, hot_slots));
+        let hot = Box::new(avarok_tier::VecSlotArena::new(blob_bytes, hot_slots));
         let (swap, backing) = build_unified_swap(blob_bytes, "marconi-host");
         let max_disk_slots = ssm_tier_disk_slots(blob_bytes)?;
         match UnifiedSnapshotStore::new_capped(hot, swap, blob_bytes, max_disk_slots) {
@@ -175,7 +175,7 @@ pub(crate) fn build_tier_store(
 }
 
 /// Build the **decode rolling-tier** cold store (a SEPARATE instance from the
-/// Marconi `build_tier_store`, its own `ATLAS_SSM_DECODE_*` env namespace so keys
+/// Marconi `build_tier_store`, its own `AVAROK_SSM_DECODE_*` env namespace so keys
 /// and budgets never collide). Non-dropping is a HARD requirement: a dropped
 /// decode blob is a lost rollback target = corrupt restore (unlike Marconi's
 /// miss→recompute). `min_slots` = `(ring_slots − hot_lanes) × max_batch_size` is
@@ -183,7 +183,7 @@ pub(crate) fn build_tier_store(
 /// undersizing is a preflight ERROR, never a warn.
 ///
 /// THE ASYMMETRY WITH `build_tier_store`: the Marconi tier accepts
-/// `ATLAS_SSM_TIER_DISK_GB` because a dropped blob there is a clean miss →
+/// `AVAROK_SSM_TIER_DISK_GB` because a dropped blob there is a clean miss →
 /// recompute (`ssm_snapshot_spill.rs` `fault_in_slot`, "the correct miss
 /// degradation"); this tier can NEVER be capped, because a dropped blob is a
 /// lost rollback target = corrupt restore. The enforcement is the constructor
@@ -191,12 +191,12 @@ pub(crate) fn build_tier_store(
 /// construction) and must never be moved to `new_capped`; `uncapped_new_never_drops`
 /// in unified_tests is the tripwire.
 ///
-/// Selection (`ATLAS_SSM_DECODE_TIER`):
-///   - `nvme` + `ATLAS_SSM_DECODE_NVME_DIR=<dir>` → [`FileSnapshotArena`] behind
+/// Selection (`AVAROK_SSM_DECODE_TIER`):
+///   - `nvme` + `AVAROK_SSM_DECODE_NVME_DIR=<dir>` → [`FileSnapshotArena`] behind
 ///     [`ArenaSnapshotStore`], provably sized ≥ `min_slots`.
-///   - `peer`  + `ATLAS_SSM_DECODE_RDMA_TIER=host:port` → the never-dropping
+///   - `peer`  + `AVAROK_SSM_DECODE_RDMA_TIER=host:port` → the never-dropping
 ///     [`PagingSnapshotStore`] (peer LRU-spills to its own NVMe), own
-///     `ATLAS_SSM_DECODE_NS` namespace fold.
+///     `AVAROK_SSM_DECODE_NS` namespace fold.
 ///   - unset / anything else → unbounded host-RAM [`MemBlobStore::new(0)`].
 pub(crate) fn build_decode_tier_store(
     fp: ModelFingerprint,
@@ -204,14 +204,14 @@ pub(crate) fn build_decode_tier_store(
     min_slots: usize,
 ) -> Result<std::sync::Arc<dyn SnapshotBlobStore>> {
     use std::sync::Arc;
-    match std::env::var("ATLAS_SSM_DECODE_TIER").ok().as_deref() {
+    match std::env::var("AVAROK_SSM_DECODE_TIER").ok().as_deref() {
         Some("nvme") => {
-            let dir = std::env::var("ATLAS_SSM_DECODE_NVME_DIR")
+            let dir = std::env::var("AVAROK_SSM_DECODE_NVME_DIR")
                 .ok()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "ATLAS_SSM_DECODE_TIER=nvme requires ATLAS_SSM_DECODE_NVME_DIR=<dir>"
+                        "AVAROK_SSM_DECODE_TIER=nvme requires AVAROK_SSM_DECODE_NVME_DIR=<dir>"
                     )
                 })?;
             if ssm_tier_unified() && blob_bytes > 0 && blob_bytes.is_multiple_of(4096) {
@@ -219,17 +219,17 @@ pub(crate) fn build_decode_tier_store(
                 // file. `new` (uncapped, max_disk_slots = 0) makes NON-DROPPING
                 // hold BY CONSTRUCTION instead of by arena sizing — a decode
                 // rollback target can never be refused or dropped. Deliberately
-                // NOT `new_capped`: ATLAS_SSM_TIER_DISK_GB bounds the Marconi
+                // NOT `new_capped`: AVAROK_SSM_TIER_DISK_GB bounds the Marconi
                 // tier only, where a drop degrades to recompute. Here it would
                 // let make_disk_room silently discard a live rollback target,
                 // i.e. corrupt a restore, so this arm's swap file stays
                 // unbounded and must be sized by the operator's NVMe dir.
                 std::fs::create_dir_all(&dir)?;
                 let path = std::path::Path::new(&dir)
-                    .join(format!("atlas-decode-ring.{}.swap", std::process::id()));
-                let swap = atlas_tier::DirectSwapFile::create(&path, blob_bytes)?;
+                    .join(format!("avarok-decode-ring.{}.swap", std::process::id()));
+                let swap = avarok_tier::DirectSwapFile::create(&path, blob_bytes)?;
                 let hot_slots = unified_hot_slots().min(min_slots + 1);
-                let hot = Box::new(atlas_tier::VecSlotArena::new(blob_bytes, hot_slots));
+                let hot = Box::new(avarok_tier::VecSlotArena::new(blob_bytes, hot_slots));
                 let store = UnifiedSnapshotStore::new(hot, Box::new(swap), blob_bytes)?;
                 tracing::info!(
                     "SSM decode cold tier = UNIFIED residency ({hot_slots} hot RAM slots + \
@@ -240,7 +240,7 @@ pub(crate) fn build_decode_tier_store(
             }
             if ssm_tier_unified() {
                 tracing::info!(
-                    "SSM decode cold tier: ATLAS_SSM_TIER_UNIFIED set but blob_bytes \
+                    "SSM decode cold tier: AVAROK_SSM_TIER_UNIFIED set but blob_bytes \
                      {blob_bytes} is not a 4 KiB multiple (O_DIRECT stride); keeping the \
                      sized arena store"
                 );
@@ -263,15 +263,15 @@ pub(crate) fn build_decode_tier_store(
             )))
         }
         Some("peer") => {
-            let peer = std::env::var("ATLAS_SSM_DECODE_RDMA_TIER")
+            let peer = std::env::var("AVAROK_SSM_DECODE_RDMA_TIER")
                 .ok()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "ATLAS_SSM_DECODE_TIER=peer requires ATLAS_SSM_DECODE_RDMA_TIER=host:port"
+                        "AVAROK_SSM_DECODE_TIER=peer requires AVAROK_SSM_DECODE_RDMA_TIER=host:port"
                     )
                 })?;
-            // Namespace = ATLAS_SSM_DECODE_NS (explicit u64 override, strict)
+            // Namespace = AVAROK_SSM_DECODE_NS (explicit u64 override, strict)
             // or mix64(mix64(fingerprint, DECODE_DOMAIN), client_salt): the
             // DOMAIN separator keeps decode spills off the same model's Marconi
             // keys (both tiers share ONE peer residency whenever blob_bytes
@@ -311,7 +311,7 @@ pub(crate) fn build_decode_tier_store(
         // variable, the bad value, and the accepted values — mirroring the strict
         // `parse_ns` this chunk introduced one match arm away.
         Some(other) => bail!(
-            "ATLAS_SSM_DECODE_TIER={other:?} is not recognized (accepted: \"nvme\", \"peer\", or \
+            "AVAROK_SSM_DECODE_TIER={other:?} is not recognized (accepted: \"nvme\", \"peer\", or \
              unset for unbounded host-RAM). Refusing to silently fall back to host-RAM."
         ),
     }

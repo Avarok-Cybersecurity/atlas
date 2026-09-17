@@ -79,7 +79,7 @@ pub enum BenchmarkCommand {
     /// the same aggregation the gate does, so an operator can see the group's
     /// number — and WHICH shard is missing — without waiting for CI to say so.
     Aggregate(AggregateArgs),
-    /// Past runs, from `~/.atlas/runs`.
+    /// Past runs, from `~/.avarok/runs`.
     History(HistoryArgs),
     /// Stop the server a `run --pull-request-gate --serve-reuse` left running
     /// on this box, if any.
@@ -160,7 +160,7 @@ pub struct RunArgs {
     /// rather than a guess.
     ///
     /// The value must be a registered box class
-    /// (`atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS`). A registered class
+    /// (`avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS`). A registered class
     /// this benchmark has never been measured on is refused by saying exactly
     /// that — it is the state every hardware port is in until its first record
     /// lands, and it must not read as a misspelling.
@@ -194,7 +194,7 @@ pub struct RunArgs {
     /// How often to drain the run's channels, in milliseconds.
     #[arg(long, default_value_t = 250)]
     pub poll_ms: u64,
-    /// Do not write the run to `~/.atlas/runs`.
+    /// Do not write the run to `~/.avarok/runs`.
     #[arg(long)]
     pub no_save: bool,
     /// Confirm a benchmark with side effects beyond load on the endpoint.
@@ -218,7 +218,7 @@ pub struct RunArgs {
     ///
     /// The record carries the metrics, verdict, hardware fingerprint, the
     /// exact command and the current commit sha, so the branch itself can
-    /// answer "did this pass" — no `~/.atlas` state required.
+    /// answer "did this pass" — no `~/.avarok` state required.
     #[arg(long)]
     pub pull_request_gate: bool,
     /// Override one SERVE key from the benchmark's recipe, e.g.
@@ -301,7 +301,7 @@ impl RunArgs {
             );
         }
         if let Some(raw) = &self.output_image_args {
-            atlas_plugin::gate::card::parse_args(raw)
+            avarok_plugin::gate::card::parse_args(raw)
                 .map_err(|e| format!("--output-image-args: {e}"))?;
         }
         Ok(())

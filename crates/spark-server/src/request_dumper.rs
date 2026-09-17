@@ -90,7 +90,7 @@ impl DumpHandle {
         let (tx, rx) = sync_channel::<String>(DUMP_QUEUE_DEPTH);
         let thread_path = path.clone();
         let handle = std::thread::Builder::new()
-            .name("atlas-dump".into())
+            .name("avarok-dump".into())
             .spawn(move || writer_loop(rx, file, thread_path))?;
         Ok(Self {
             inner: Arc::new(DumpInner {
@@ -243,7 +243,7 @@ pub fn resolve_path(arg: &str) -> std::path::PathBuf {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        std::env::temp_dir().join(format!("atlas-dump-{ts}.jsonl"))
+        std::env::temp_dir().join(format!("avarok-dump-{ts}.jsonl"))
     } else {
         std::path::PathBuf::from(arg)
     }
@@ -261,7 +261,7 @@ mod tests {
             p.file_name()
                 .unwrap()
                 .to_string_lossy()
-                .starts_with("atlas-dump-")
+                .starts_with("avarok-dump-")
         );
     }
 
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn dump_writes_pair_with_shared_seq() {
         let tmp =
-            std::env::temp_dir().join(format!("atlas-dump-test-{}.jsonl", std::process::id()));
+            std::env::temp_dir().join(format!("avarok-dump-test-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&tmp);
         let h = DumpHandle::open(tmp.clone()).expect("open");
 

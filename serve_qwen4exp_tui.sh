@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve Qwen3.8-Flash-Next (model_type qwen4_exp) — port tracked in Avarok #753.
+# Serve Qwen3.8-Flash-Next (model_type qwen4_exp) — port tracked in Atlas #753.
 #
 # ⚠ SERVING IS NOT WIRED YET. This currently gets as far as LOADING: the
 # hyper-connection residual, the QSA indexer and the PLE n-gram injection are
@@ -49,7 +49,7 @@ if [ -z "${REASONING_KWARGS:-}" ]; then
   REASONING_KWARGS='{"reasoning_effort":"low"}'
 fi
 
-# Routed-MoE GEMM variants (ATLAS_MOE_GROUPED_K32 / _M256) default OFF —
+# Routed-MoE GEMM variants (AVAROK_MOE_GROUPED_K32 / _M256) default OFF —
 # both MEASURED AS NON-WINS on 2026-08-27 and left opt-in for the record.
 # Controlled four-arm sweep at 28K prefill, one box, back-to-back:
 #   baseline 272 | +QSA-TC 286 | +QSA-TC+k32 289 | +QSA-TC+m256 290 tok/s
@@ -58,7 +58,7 @@ fi
 # is ~20% SLOWER PER CALL than the base kernel (31.30 vs 26.17 ms avg) — the
 # DRAM-bound microbenchmark that predicted 1.43x does NOT model production.
 # The whole +5.1% comes from the QSA tensor-core scorer, not from MoE.
-export ATLAS_MOE_GROUPED_K32="${ATLAS_MOE_GROUPED_K32:-0}"
+export AVAROK_MOE_GROUPED_K32="${AVAROK_MOE_GROUPED_K32:-0}"
 
 exec target/release/spark serve \
   --model-from-path "$SNAP" \

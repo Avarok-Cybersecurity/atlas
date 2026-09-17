@@ -38,7 +38,7 @@ pub fn to_e2m1_rne(y: f32) -> f32 {
     }
     let hi = (lo + 1).min(7);
     let (dlo, dhi) = (a - E2M1[lo], E2M1[hi] - a);
-    let pick_hi = dhi < dlo || (dhi == dlo && hi % 2 == 0 && lo % 2 == 1);
+    let pick_hi = dhi < dlo || (dhi == dlo && hi.is_multiple_of(2) && lo % 2 == 1);
     let v = if pick_hi { E2M1[hi] } else { E2M1[lo] };
     v.copysign(y)
 }
@@ -205,7 +205,7 @@ pub fn compressor(
         let slot = start_pos % ratio;
         st.kv_state[slot * hd..(slot + 1) * hd].copy_from_slice(&kv);
         st.score_state[slot * hd..(slot + 1) * hd].copy_from_slice(&score);
-        if (start_pos + 1) % ratio != 0 {
+        if !(start_pos + 1).is_multiple_of(ratio) {
             return None;
         }
         pool(&st.kv_state, &st.score_state)
@@ -354,7 +354,7 @@ pub fn select_candidate_blocks(
     topk_blocks: usize,
     block: usize,
 ) -> Vec<bool> {
-    let nb = (width + block - 1) / block;
+    let nb = width.div_ceil(block);
     let mut keep = vec![false; queries * width];
     for q in 0..queries {
         let row = &logits[q * width..(q + 1) * width];
@@ -426,7 +426,7 @@ pub fn indexer(
 
     let mut q = linear_bf16(qr, w.wq_b, seqlen, c.q_rank, nh * ihd);
     let head_pos: Vec<usize> = (0..seqlen)
-        .flat_map(|t| std::iter::repeat(start_pos + t).take(nh))
+        .flat_map(|t| std::iter::repeat_n(start_pos + t, nh))
         .collect();
     apply_rotary(&mut q, ihd, rd, &head_pos, fc, false);
     fp4_quant_e8m0_inplace(&mut q, FP4_BLOCK);
@@ -575,7 +575,7 @@ pub fn attention_any(
     let pos: Vec<usize> = (0..seqlen).map(|t| start_pos + t).collect();
     let head_pos: Vec<usize> = pos
         .iter()
-        .flat_map(|&p| std::iter::repeat(p).take(nh))
+        .flat_map(|&p| std::iter::repeat_n(p, nh))
         .collect();
 
     let qr = rms_norm(

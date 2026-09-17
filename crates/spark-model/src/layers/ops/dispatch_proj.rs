@@ -8,7 +8,7 @@
 
 use super::*;
 
-/// `ATLAS_CUBLAS_SCALE_LAYOUT` — which VEC128 activation-scale layout the
+/// `AVAROK_CUBLAS_SCALE_LAYOUT` — which VEC128 activation-scale layout the
 /// cuBLASLt block-scaled arm feeds the library.
 ///
 /// * `kmajor` (DEFAULT) — `[K/128, ceil16(M)]`, tokens contiguous. What the
@@ -28,7 +28,7 @@ pub fn cublas_scale_layout_kmajor() -> bool {
     static KMAJOR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *KMAJOR.get_or_init(|| {
         !matches!(
-            std::env::var("ATLAS_CUBLAS_SCALE_LAYOUT").as_deref(),
+            std::env::var("AVAROK_CUBLAS_SCALE_LAYOUT").as_deref(),
             Ok("rowmajor")
         )
     })
@@ -130,7 +130,7 @@ pub fn cublas_fp8_proj(
 /// writes — cuBLAS "Scaling factors layouts", and the reason this helper needs
 /// `act_scale_kmajor` at all. Handing the quantizer's buffer over directly is
 /// what the 2026-09-11 H100 run measured at rel_rms 7.7e-2 / ~33 000 BF16 ULP
-/// against the in-tree kernel on identical FP8 bytes; `ATLAS_CUBLAS_SCALE_LAYOUT
+/// against the in-tree kernel on identical FP8 bytes; `AVAROK_CUBLAS_SCALE_LAYOUT
 /// =rowmajor` reproduces that reading deliberately.
 ///
 /// ⚠ PADDED-M EXTENTS. cuBLASLt is handed `ceil16(M)`, so:
@@ -198,7 +198,7 @@ pub fn cublas_fp8_proj_prequant(
         )?;
         act_scale_kmajor
     } else {
-        // Measurement control only (`ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor`): the
+        // Measurement control only (`AVAROK_CUBLAS_SCALE_LAYOUT=rowmajor`): the
         // pad rows are a contiguous tail in THIS layout, so zero them here.
         if m_pad > m {
             gpu.memset_async(
@@ -355,7 +355,7 @@ pub fn cublas_bf16_proj_dense(
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through CUTLASS BF16.
 ///
 /// ★ A REFERENCE PATH FOR BENCHMARKING, NOT A SHIPPING ONE. Opt-in behind
-/// `ATLAS_CUTLASS_GEMM=1` and OFF by default; a build without `CUTLASS_HOME`
+/// `AVAROK_CUTLASS_GEMM=1` and OFF by default; a build without `CUTLASS_HOME`
 /// cannot reach it at all. It exists so a shape can be A/B'd against the
 /// industry reference on the same box — if CUTLASS wins a shape, the fix is
 /// a faster Atlas kernel, not a promotion. See the module docs on

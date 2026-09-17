@@ -16,7 +16,7 @@ import json
 from tokenizers import Tokenizer
 
 TK_PATH = '/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0/tokenizer.json'
-OUT_PATH = '/workspace/atlas-mtp/bench/fp8_dgx2_drift/qwen36_whitespace_tokens.json'
+OUT_PATH = '/workspace/avarok-mtp/bench/fp8_dgx2_drift/qwen36_whitespace_tokens.json'
 
 WS_CHARS = set(' \t\n\r\x0b\x0c   ')
 

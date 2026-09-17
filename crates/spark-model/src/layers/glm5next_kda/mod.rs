@@ -54,7 +54,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
-/// Dynamic shared memory available with no `cuFuncSetAttribute` opt-in in `AtlasCudaBackend`.
+/// Dynamic shared memory available with no `cuFuncSetAttribute` opt-in in `AvarokCudaBackend`.
 /// GB10 reports `sharedMemPerBlockOptin = 101376`, real but unreachable from Atlas today.
 pub const SMEM_CEILING: usize = 49_152;
 
@@ -161,11 +161,11 @@ const KDA_V_PER_BLOCK: usize = 32;
 /// Shared memory the launcher will request without opting in past the default limit.
 const KDA_SMEM_BUDGET: usize = 48 * 1024;
 
-/// `ATLAS_GLM_KDA_NO_SMEM=1` restores the 2R+2W recurrent kernel. Read once — this is on
+/// `AVAROK_GLM_KDA_NO_SMEM=1` restores the 2R+2W recurrent kernel. Read once — this is on
 /// the per-layer decode path.
 fn kda_no_smem() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var("ATLAS_GLM_KDA_NO_SMEM").as_deref() == Ok("1"))
+    *F.get_or_init(|| std::env::var("AVAROK_GLM_KDA_NO_SMEM").as_deref() == Ok("1"))
 }
 
 #[derive(Clone, Copy)]

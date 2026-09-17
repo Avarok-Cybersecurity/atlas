@@ -38,7 +38,7 @@ impl BenchState {
     }
 
     fn list_key(&mut self, key: KeyEvent) -> Outcome {
-        let n = atlas_plugin::registry::all().len();
+        let n = avarok_plugin::registry::all().len();
         match key.code {
             KeyCode::Down | KeyCode::Char('j') if n > 0 => {
                 self.select((self.selected + 1).min(n - 1));
@@ -118,8 +118,8 @@ impl BenchState {
             // latency target.
             KeyCode::Char('p') => {
                 self.coherence = match self.coherence {
-                    atlas_plugin::CoherencePolicy::Probe => atlas_plugin::CoherencePolicy::Skip,
-                    atlas_plugin::CoherencePolicy::Skip => atlas_plugin::CoherencePolicy::Probe,
+                    avarok_plugin::CoherencePolicy::Probe => avarok_plugin::CoherencePolicy::Skip,
+                    avarok_plugin::CoherencePolicy::Skip => avarok_plugin::CoherencePolicy::Probe,
                 };
             }
             KeyCode::Char('s') => return self.request_start(),

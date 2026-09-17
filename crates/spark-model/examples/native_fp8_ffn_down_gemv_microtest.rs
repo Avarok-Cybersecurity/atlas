@@ -36,7 +36,7 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -264,7 +264,7 @@ fn bit_identity_gate(gpu: &dyn GpuBackend, kern: &Kernels, c: &Case) -> Result<u
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let kern = Kernels {
         gemv: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
         silu_input: gpu.kernel("w8a16_gemv_fused", "w8a16_gemv_silu_input")?,

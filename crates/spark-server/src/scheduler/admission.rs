@@ -24,7 +24,7 @@
 //! (0/unlimited ⇒ no clamp), i.e. the reservation is the request's own
 //! `max_tokens` — the honest conservative bound, since a request can never
 //! generate past it. Operators who prefer overcommit (betting that real
-//! generations stop early) set `ATLAS_KV_ADMIT_WATERMARK=<tokens>` lower;
+//! generations stop early) set `AVAROK_KV_ADMIT_WATERMARK=<tokens>` lower;
 //! `0` reserves prompt-only, which is the pre-gate legacy behavior, and any
 //! override below the honest bound keeps a WARN so the C=128 failure mode
 //! is at least attributable. The boot-time `KV OVERCOMMIT` warning in
@@ -40,13 +40,13 @@ pub(super) fn resolve_admit_watermark(max_seq_len: usize) -> usize {
     } else {
         usize::MAX
     };
-    match std::env::var("ATLAS_KV_ADMIT_WATERMARK") {
+    match std::env::var("AVAROK_KV_ADMIT_WATERMARK") {
         Err(_) => default,
         Ok(v) => match v.parse::<usize>() {
             Ok(w) => {
                 if w < default {
                     tracing::warn!(
-                        "ATLAS_KV_ADMIT_WATERMARK={w} < the honest bound ({default}): \
+                        "AVAROK_KV_ADMIT_WATERMARK={w} < the honest bound ({default}): \
                          admission may OVERCOMMIT the KV pool; sequences past the \
                          watermark depth will hit decode-time preemption (resume, \
                          not kill — but pure overhead). 0 = legacy prompt-only \
@@ -57,7 +57,7 @@ pub(super) fn resolve_admit_watermark(max_seq_len: usize) -> usize {
             }
             Err(_) => {
                 tracing::warn!(
-                    "ATLAS_KV_ADMIT_WATERMARK={v:?} is not an integer; using default {default}"
+                    "AVAROK_KV_ADMIT_WATERMARK={v:?} is not an integer; using default {default}"
                 );
                 default
             }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cold-prefill A/B probe for ATLAS_FP4_PREFILL (W4A4 native FP4 MMA dense-FFN prefill).
+"""Cold-prefill A/B probe for AVAROK_FP4_PREFILL (W4A4 native FP4 MMA dense-FFN prefill).
 
 Prefill is the regime where FP4 activations can pay: M = seqlen >> 8, tiles are full
 and the GEMM is compute-bound, unlike decode at M<=8 where activations are <1% of

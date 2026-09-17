@@ -2,12 +2,12 @@
 
 //! The Serve Matrix's [`ServeHost`], backed by this process's model host.
 //!
-//! `atlas-plugin` must stay GPU-free and server-free, so the benchmark declares
+//! `avarok-plugin` must stay GPU-free and server-free, so the benchmark declares
 //! the seam and this supplies it. Two things it owes the benchmark, and both
 //! are the fix for a defect in `tests/run_all_models.py`:
 //!
 //! * **The roster is derived.** `library::scan` reports what is in the HF cache
-//!   and `atlas_kernels::ptx_for_config` decides whether this build compiled
+//!   and `avarok_kernels::ptx_for_config` decides whether this build compiled
 //!   kernels for it. Nothing here lists a model. The Python's `ROUNDS` is a
 //!   hand-maintained Qwen3.5-era list of twelve checkpoints, not one of which
 //!   is in this box's cache — a second roster that went stale silently.
@@ -25,8 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use atlas_plugin::TargetEndpoint;
-use atlas_plugin::benchmarks::serve_matrix::host::{
+use avarok_plugin::TargetEndpoint;
+use avarok_plugin::benchmarks::serve_matrix::host::{
     Absence, ServeCandidate, ServeHost, ServeOptions,
 };
 use futures::future::BoxFuture;
@@ -135,7 +135,7 @@ impl TuiServeHost {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut last = String::new();
         while Instant::now() < deadline {
-            match atlas_plugin::http::list_models(target, Duration::from_secs(10)).await {
+            match avarok_plugin::http::list_models(target, Duration::from_secs(10)).await {
                 Ok(served) if served.iter().any(|m| m == &target.model) => return Ok(()),
                 Ok(served) => last = format!("serving {:?}", served),
                 Err(e) => last = format!("{e:#}"),

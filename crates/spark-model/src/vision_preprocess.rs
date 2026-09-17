@@ -7,7 +7,7 @@
 //! and produces a flat `f32` tensor ready for the GPU vision encoder.
 
 use anyhow::{Context, Result, bail};
-use atlas_core::config::VisionConfig;
+use avarok_core::config::VisionConfig;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 
 /// SigLIP normalization — matches HF's Qwen2VLImageProcessor

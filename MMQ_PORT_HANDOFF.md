@@ -56,9 +56,9 @@ gate/up M=4096: bf16-v2 **30** | int8 M128 24 | M64 12(spill) | K64 18 | split-K
   pipeline (cp.async depth≥2 + q8_1 INTERLEAVED weight layout so B loads via ldmatrix, llama's actual
   trick) OR the native NVFP4 block-scale MMA (Colfax SM12x, mma...mxf4nvf4.block_scale.m16n8k64 — 2× K/instr,
   zero software dequant, weights already E2M1+per-16-E4M3). Those are the two ceiling-breakers.
-  INTEGRATION INSIGHT: dense_ffn.rs ALREADY has an FP8-M64 prefill path (w4a16_gemm_t_k, ATLAS_FP8_M64_PREFILL)
+  INTEGRATION INSIGHT: dense_ffn.rs ALREADY has an FP8-M64 prefill path (w4a16_gemm_t_k, AVAROK_FP8_M64_PREFILL)
   at ~44 TFLOP/s — but LOSSY (FP8 E4M3 cosine 0.9997, breaks coherence). int8 faith2 = SAME 44 TFLOP/s at
-  cosine 0.999999 → it is the COHERENT version of that win. Wire faith2 behind ATLAS_INT8_PREFILL mirroring
+  cosine 0.999999 → it is the COHERENT version of that win. Wire faith2 behind AVAROK_INT8_PREFILL mirroring
   the FP8-M64 dispatch + add int8 requant (NVFP4 w→int8/per32 at load; bf16 act→int8/per32 per-prefill,
   ~1.4% of GEMM time). Then coherence-gate (N≥10) + ST subset + agentic-2.5h wall vs llama 8369.87s.
 down M=4096: int8 split-K **sk8 35** (beats bf16 30 — the one int8 win; few base CTAs + big K).
@@ -94,8 +94,8 @@ llama's `mmq` (q8_0/q4_K int8 path) differs STRUCTURALLY from every Atlas varian
    `mma.sync...mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.f32.e2m1.e2m1.f32.ue4m3` — zero software dequant;
    Atlas weights are already E2M1+per-16-E4M3 (1:1 format). llama's NVFP4 path = +43-68% on THIS model
    (PR#22196). FP4 operand load via `ldmatrix.b8x16.b4x16_p64`. Ref: Colfax SM12x NVFP4 tutorial.
-5. Integrate behind env `ATLAS_INT8_PREFILL` in `dense_ffn.rs` (pattern already there: see fp8 M64 wiring,
-   `w4a16_gemm_t_k` handle + `ATLAS_FP8_M64_PREFILL` flag + highest-priority macro arm) + requant kernels
+5. Integrate behind env `AVAROK_INT8_PREFILL` in `dense_ffn.rs` (pattern already there: see fp8 M64 wiring,
+   `w4a16_gemm_t_k` handle + `AVAROK_FP8_M64_PREFILL` flag + highest-priority macro arm) + requant kernels
    (NVFP4→int8-per32 weights at load; bf16→int8-per32 activations per-prefill — task #15). Quality-gate, then agentic.
 
 ## 3.4 ★★★ ROOT-CAUSE FINDING (06-27 PM) — the agentic gap is BROKEN SSM SNAPSHOT RESTORE, not (only) the GEMM
@@ -151,7 +151,7 @@ keeps the SSM-replay window tiny at depth, the key win over interval 64's ~1024-
 **Per-it 5.60s/it @ turn 33** (vs bf16-TC cachefix ~6.6s) → benchmark's naive 1007-turn projection ≈ 90min
 (~5640s) = WELL BELOW llama 8369s. Caveat: early/subset, may climb on deep turns; the FULL 20-traj run is
 the definitive test. Best config = int8 + caching interval 16 + FP8-KV + util 0.68 + Marconi 128.
-Full-run script ready: /workspace/atlas_agentic_FULL_int8.sh. Gating subset IoU first, then launch full.
+Full-run script ready: /workspace/avarok_agentic_FULL_int8.sh. Gating subset IoU first, then launch full.
 
 ★ HONEST UPDATE (per-it climbs): int8+interval16 subset per-it 5.6s@turn33 → 17.2s@turn98 (DECODE-bound
 on deep turns: long verbose responses × 10.6 tok/s). So my early 90min projection was the SHALLOW turns;
@@ -162,7 +162,7 @@ beating 8369s on prefill alone. RESOLUTION: add MTP (the standard agentic decode
 --num-drafts 1 --mtp-quantization bf16 --kv-high-precision-layers auto`; has a built-in net-negative auto-
 disable gate so it never regresses). The user's reference config presumably had MTP → with decode competitive,
 my prefill wins (caching interval16 + int8) tip the wall below llama. LAUNCHED FULL 20-traj MTP run
-(atlas_agentic_FULL_int8_mtp.sh: int8 + interval16 + FP8-KV + MTP, util 0.66 + Marconi 96). Measuring wall vs 8369s.
+(avarok_agentic_FULL_int8_mtp.sh: int8 + interval16 + FP8-KV + MTP, util 0.66 + Marconi 96). Measuring wall vs 8369s.
 
 ★★★ MTP FULL-RUN EARLY SIGNALS (06-27, turn 3) — ALL GREEN, on track to BEAT llama:
   - MTP ENABLED, net-POSITIVE (mtp_gate verify_multiplier=1.11 << max 2.0). No OOM (util 0.66 + Marconi 96 fits).
@@ -200,11 +200,11 @@ my prefill wins (caching interval16 + int8) tip the wall below llama. LAUNCHED F
   Per-it 7.72s/it → **projected total ~7770s (2:09:32) vs llama 8369s (2:19m) = ~7% WIN.** TTFT no longer
   climbs (caching holds depth) so per-it is decode-bound but MTP-fast (~7-8s steady, NOT the 17s of no-MTP).
   Awaiting full completion for the definitive wall + IoU (coherence). WINNING STACK (all dgx1):
-  ATLAS_INT8_PREFILL int8 W4A8 faith2 + Marconi prefix-cache (--ssm-checkpoint-interval 32 --ssm-cache-slots 128)
+  AVAROK_INT8_PREFILL int8 W4A8 faith2 + Marconi prefix-cache (--ssm-checkpoint-interval 32 --ssm-cache-slots 128)
   + --kv-cache-dtype fp8 + MTP (--speculative --num-drafts 1 --mtp-quantization bf16), --gpu-memory-utilization 0.70.
 
 ## 3.45 ★ int8 AGENTIC RUN #1 — FAST (1834s<1965s) but FAILED: OOM (lazy-int8-after-greedy-KV)
-int8 full-stack subset (ATLAS_INT8_PREFILL + interval64 + cache, util 0.90, Marconi 256): Duration 1834s
+int8 full-stack subset (AVAROK_INT8_PREFILL + interval64 + cache, util 0.90, Marconi 256): Duration 1834s
 (7% faster wall than bf16-TC 1965s — int8 prefill IS faster e2e) BUT **IoU 0.0, 116/116 FAILED**:
 first turn TurnTimeout@600s → cascade. Root cause (serve log): `cuMemAlloc_v2 failed: status 2, requested
 89MB (607MB free / 121.7GB)` at prefill layer 56. NOT a correctness bug — OOM. The int8 weight buffers
@@ -229,7 +229,7 @@ llama's full wall also needs MTP (decode 2×) + a FULL 20-traj run (2-traj subse
 those are the deepest trajs; llama's 8369s is the 20-traj average = 8.31s/turn).
 
 ## 3.5 INTEGRATION STATE (06-27 PM) — requant pipeline VALIDATED, model wiring DONE (compiles), gate next
-ATLAS_INT8_PREFILL wired in dense_ffn.rs (+217) + ops/gemm_dense.rs (+90): load-time requant_w → cached
+AVAROK_INT8_PREFILL wired in dense_ffn.rs (+217) + ops/gemm_dense.rs (+90): load-time requant_w → cached
 int8 weight buffers (OnceLock per gate/up/down, from non-transposed NVFP4); per-prefill requant_a → shared
 scratch; faith2 dispatch (highest-priority arm). Server bin REBUILT clean. NOT yet GPU-coherence-gated.
 Gate script ready: /workspace/int8_prefill_gate.sh. NOT committed (validate on GPU first).
@@ -249,11 +249,11 @@ TWO levers, BOTH needed (per [[project_agentic25h_prefill_iter_2026_06_25]]):
       spark flags EXIST: `--enable-prefix-caching --ssm-cache-slots 128 --kv-cache-dtype fp8`. 128 slots
       (19GB @ util 0.90) avoids exhaustion; Marconi SSM snapshot = full prefix skip on hit (5s vs 43s).
   (B) PREFILL GEMM SPEED — secondary 1.49×. bf16-TC 30 (lossless ceiling) → int8 faith2 44.7 (coherent)
-      or FP8 1.35× (lossy, IoU-risk). int8 is the coherent upgrade over the existing ATLAS_FP8_PREFILL.
+      or FP8 1.35× (lossy, IoU-risk). int8 is the coherent upgrade over the existing AVAROK_FP8_PREFILL.
 **llama uses int8 MMQ k32 (= what faith2 ports) AND prefix caching.** Win = (A)+(B) together.
 
-REMAINING (model integration, multi-file): wire faith2 behind ATLAS_INT8_PREFILL in dense_ffn.rs
-mirroring ATLAS_FP8_PREFILL (commit 3adf30dc): (1) load-time requant_w → int8 weight+scale buffers on
+REMAINING (model integration, multi-file): wire faith2 behind AVAROK_INT8_PREFILL in dense_ffn.rs
+mirroring AVAROK_FP8_PREFILL (commit 3adf30dc): (1) load-time requant_w → int8 weight+scale buffers on
 the layer (from ORIGINAL NVFP4 [N,K/2], no transpose); (2) per-prefill requant_a on the activation;
 (3) faith2 launcher in ops/gemm_dense.rs; (4) handles. Then: coherence N≥10 + ST subset + agentic-2.5h
 wall+IoU vs 8369.87s/0.6326, with prefix-caching + FP8-KV ON.
@@ -263,14 +263,14 @@ wall+IoU vs 8369.87s/0.6326, with prefix-caching + FP8-KV ON.
 cd /workspace/atlas-prefill32k
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 # build the microbench/test (kernels in kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu, module "w4a16"):
-CARGO_TARGET_DIR=/workspace/scratch-bench ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
-  ATLAS_TARGET_QUANT=nvfp4 cargo build --release -p spark-model --example int8_gemm_test   # ~15s
+CARGO_TARGET_DIR=/workspace/scratch-bench AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
+  AVAROK_TARGET_QUANT=nvfp4 cargo build --release -p spark-model --example int8_gemm_test   # ~15s
 LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64 /workspace/scratch-bench/release/examples/int8_gemm_test
 # ncu (needs sudo -E): sudo -E /usr/local/cuda-13.0/bin/ncu --target-processes all \
 #   --kernel-name "regex:int8_gemm_..." --launch-count 1 --section WarpStateStats --section SpeedOfLight <bin>
 # standalone ldmatrix probe: nvcc -arch=sm_121a -o ldmatrix_probe /workspace/ldmatrix_probe.cu && ./ldmatrix_probe
 # server build (native, for end-to-end): same env, cargo build --release -p spark-server --bin spark
-#   serve flags + ATLAS_BF16_TC_PREFILL etc: see /workspace/time_prefill.sh, /workspace/fp8m64_gate.sh
+#   serve flags + AVAROK_BF16_TC_PREFILL etc: see /workspace/time_prefill.sh, /workspace/fp8m64_gate.sh
 # llama per-shape ref: test-backend-ops in /workspace/llama-cfff1fc-pin/bin (see scratch_llama_perf2.txt)
 ```
 In-tree int8 kernels (module w4a16): int8_gemm_t_m128, _m64, _m128_k64, int8_gemm_splitk + int8_splitk_reduce,
@@ -282,7 +282,7 @@ int8_gemm_8w, int8_gemm_8w3, int8_gemm_8w_ldm, int8_gemm_8w_ilp. The CORRECT bas
   /workspace/.claude/projects/-workspace/memory/project_prefill_bubble_bound_not_mma_2026_06_26.md
 - The bf16/fp8 "ldmatrix broken" comments in inferspark_prefill.cu / dense_gemm_tc.cu / gated_delta_rule_fla.cu
   are WRONG for x4-non-trans (only .trans needs the permute). Safe to use ldmatrix.x4 going forward.
-- fp8 M64 path (ATLAS_FP8_M64_PREFILL, dense_ffn.rs) is fast (1.2x e2e) but BREAKS coherence (3-bit mantissa
+- fp8 M64 path (AVAROK_FP8_M64_PREFILL, dense_ffn.rs) is fast (1.2x e2e) but BREAKS coherence (3-bit mantissa
   whitespace runaway) — do NOT ship it; it's the cautionary tale that motivates int8 (8-bit).
 - The atlas-prefill32k working tree is DIRTY with all these WIP kernels (uncommitted). Branch + commit before
   big changes if you want a clean base. Other session wins already on origin:
@@ -338,7 +338,7 @@ Turn 189: per-it 7.77s/it (vs run#6 interval64 8.6s) -> proj ~7819s vs llama 836
 Marconi 256 @ 64 ckpts/traj = 4 trajectories coexist -> no exhaustion-climb, the run#4 failure at 128 slots).
 interval 32 = the sweet spot: low-enough replay (TTFT ~1.5s) AND enough slots to stay stable. MUST confirm it
 holds past turn ~300 (where interval16/32-with-128 broke) + final wall. If it holds -> WIN. THE WINNING RECIPE:
-ATLAS_INT8_PREFILL int8 W4A8 faith2 + --enable-prefix-caching --ssm-checkpoint-interval 32 --ssm-cache-slots 256
+AVAROK_INT8_PREFILL int8 W4A8 faith2 + --enable-prefix-caching --ssm-checkpoint-interval 32 --ssm-cache-slots 256
 + --kv-cache-dtype fp8 + --speculative --num-drafts 1 --mtp-quantization bf16, --gpu-memory-utilization 0.72.
 
 
@@ -378,7 +378,7 @@ decode; Marconi 384 FIXED the deep eviction. Result = PARITY (~8400s). The last 
 
 ## ★★★ CAMPAIGN CONCLUSION (06-27, after 9 runs) — HONEST, DATA-BACKED
 DELIVERED (the user's prefill-GEMM ask): int8 W4A8 faith2 prefill, validated coherent + 10-12% faster,
-requant pipeline 0.999978, wired ATLAS_INT8_PREFILL — PR #201. Plus the prefix-cache restore-depth FIX
+requant pipeline 0.999978, wired AVAROK_INT8_PREFILL — PR #201. Plus the prefix-cache restore-depth FIX
 (--ssm-checkpoint-interval; TTFT 32s->1s) and MTP (decode ~2x). All real wins.
 THE AGENTIC WALL = ~PARITY (~8400-8660s vs llama 8369s), NOT decisively beaten. ROOT BOTTLENECK (proven across
 9 runs, NOT the FFN GEMM): on deep multi-turn trajectories Atlas RECOMPUTES 15-17k SSM (Mamba) tokens that
@@ -413,7 +413,7 @@ FIX: evict the STALEST CONVERSATION first — rank candidates by (session_freshn
 session's entries, then per-entry score). The active conversation's ENTIRE deep checkpoint chain stays resident
 until every other (completed/dormant) conversation is evicted = "prefix caching like llama" for SSM state.
 Correctness-safe (restore re-validates session_hash+prefix_hash; eviction only frees a slot). Default ON,
-ATLAS_SNAP_EVICT_LEGACY=1 reverts. Server rebuilt clean. TEST: int8 + interval16 + Marconi256 + MTP (interval16
+AVAROK_SNAP_EVICT_LEGACY=1 reverts. Server rebuilt clean. TEST: int8 + interval16 + Marconi256 + MTP (interval16
 = 256-tok replay = TTFT ~1s ≈ llama 1.4s IF it no longer exhausts). Decisive check at turn 300+ (where all prior
 interval-16 runs exploded to 17k recompute). If TTFT stays ~1s -> Atlas BEATS llama (decode already at parity).
 
@@ -536,11 +536,11 @@ eviction fix gives Atlas "prefix caching like llama" for the Mamba state. STRETC
 GB10 (bandwidth-bound, 3.2× slower). Quality bar IoU>=0.63 is unreachable for ANY engine != the GT reference
 (similarity metric), so the wall win is the correct head-to-head result; tool-call quality is not regressed.
 
-## ★★★★★ TTFT DECOMPOSITION (2026-06-28, ATLAS_PROFILE on winning config, dgx1) — RE-PRIORITIZES THE GOAL
+## ★★★★★ TTFT DECOMPOSITION (2026-06-28, AVAROK_PROFILE on winning config, dgx1) — RE-PRIORITIZES THE GOAL
 Measured WHERE prefill TTFT actually goes, to gate the multi-day GEMM rewrite. Served winning config
-(ATLAS_INT8_PREFILL=1 int8 faith2 CONFIRMED active, interval-16, FP8-KV, util 0.80, slots 64).
+(AVAROK_INT8_PREFILL=1 int8 faith2 CONFIRMED active, interval-16, FP8-KV, util 0.80, slots 64).
 Cold 19.4k prefill = 46s (256-tok chunks ~593ms; attn layers L3,7,..63 ~18ms TOP, GDN ~6ms).
-WARM 238-tok suffix prefill (representative of TTFT-MEDIAN turns) = 738.9ms, per-component (ATLAS_PROFILE):
+WARM 238-tok suffix prefill (representative of TTFT-MEDIAN turns) = 738.9ms, per-component (AVAROK_PROFILE):
   | component                     | time    | % TTFT | targeted by |
   | ATTENTION (16 layers, 19k ctx)| ~289ms  | **39%**| (NOT in plan — inferspark_prefill.cu) |
   | FFN GEMM moe_ffn (64 layers)  | ~245ms  | **33%**| Step1 faith2→60 (ALREADY int8, 44.7) |
@@ -573,7 +573,7 @@ Atlas decode ~+49% vs llama — this (MTP 2× + tail control), NOT prefill TTFT,
   TTFT max 17480>9991 ❌ | IoU 0.5145<0.6326 (similarity artifact, not regression — BFCL-ST 90.79>88.60).
 The TTFT gap (the only reported metric not yet beaten) is what the re-prioritized lever order above targets.
 
-## ★★★★★★ ATTENTION PREFILL = THE LEVER (2026-06-28, gated by arithmetic from ATLAS_PROFILE)
+## ★★★★★★ ATTENTION PREFILL = THE LEVER (2026-06-28, gated by arithmetic from AVAROK_PROFILE)
 Config (MODEL.toml): q_heads=24, kv_heads=4, **head_dim=256**, 16 full-attn layers (interval 4).
 Warm attn ~18ms/layer (289ms/16). FLOP/layer = 4·Nq·Nk·hd·q_heads = 4·238·19000·256·24 = 111 GFLOP
 → **~6.2 TFLOP/s** (vs GB10 BF16-TC peak ~hundreds; proper flash-attn 50-100+). KV-BW floor (FP8 K+V,
@@ -609,11 +609,11 @@ at ~6.5 TFLOP/s effective and is 39% of TTFT. ATTACKABLE: smem_K/smem_V are stor
 FP8 KV cache on load). Keeping smem K/V in FP8 (1 byte) and dequant-in-register at MMA time HALVES attn smem
 → fits 2 CTAs/SM → ~2× occupancy → hides the QK/PV latency. THE concrete attention lever (vs the dead FFN GEMM).
 NEXT: retile inferspark_prefill HDIM=256 with FP8 smem K/V (or smaller BC tile) for 2 CTAs/SM; gate cosine
-(microtest) + per-attn-layer ms (ATLAS_PROFILE) + agentic TTFT. This targets the 39% — the real path to
+(microtest) + per-attn-layer ms (AVAROK_PROFILE) + agentic TTFT. This targets the 39% — the real path to
 TTFT-median 1936→<1393 and TTFT-max 17480→<9991. FFN GEMM (33%, faith2) and SSM interval (GDN 19%) secondary.
 
 ## ★★★ ATTENTION FP8-smem retile — BUILT+GATED 2026-06-28: bit-identical, occupancy 2× — but SPEED-NEUTRAL
-Implemented FP8-smem K/V (store raw E4M3 in smem, dequant-in-register at MMA) behind ATLAS_ATTN_FP8_SMEM
+Implemented FP8-smem K/V (store raw E4M3 in smem, dequant-in-register at MMA) behind AVAROK_ATTN_FP8_SMEM
 (prefill_paged_compute.cuh + fp8/fp8_batched wrappers + new inferspark_attn_fp8_microtest). GATED on dgx1:
 - Correctness: microtest cosine **1.000000** (bit-identical — same fp8→bf16 + scales, only smem storage moved).
   Server coherence PASS ("capital of France is Paris...", batched path).

@@ -147,19 +147,19 @@ moe_w4a16_fused_gate_up_t_k64_m128 = "M=128 Block-D variant shipped only in mini
 # LongCat ships no drafter (no [dflash] section), so none of these are on a
 # path this target executes; every dispatch site is handle-gated.
 [expected_absent.nvfp4_mmq]
-atlas_nvfp4_mmq16_nc = "W4A4 MMQ drafter propose family; no drafter on this target."
-atlas_nvfp4_mmq16_wc = "Same family."
-atlas_nvfp4_mmq32_nc = "Same family."
-atlas_nvfp4_mmq32_wc = "Same family."
-atlas_nvfp4_mmq64_nc = "Same family."
-atlas_nvfp4_mmq64_wc = "Same family."
-atlas_nvfp4_mmq128_nc = "Same family."
-atlas_nvfp4_mmq128_wc = "Same family."
-atlas_nvfp4_quantize_bf16 = "MMQ activation quantizer; only used by the W4A4 propose path."
-atlas_nvfp4_repack = "MMQ weight repack; load-time helper for the W4A4 path only."
-atlas_nvfp4_scale_bf16 = "MMQ scale helper; W4A4 path only."
-atlas_nvfp4_silu_mul_quant = "MMQ fused SiLU+quant; W4A4 MoE propose path only."
-atlas_nvfp4_silu_mul_scaled = "Same MMQ SiLU family."
+avarok_nvfp4_mmq16_nc = "W4A4 MMQ drafter propose family; no drafter on this target."
+avarok_nvfp4_mmq16_wc = "Same family."
+avarok_nvfp4_mmq32_nc = "Same family."
+avarok_nvfp4_mmq32_wc = "Same family."
+avarok_nvfp4_mmq64_nc = "Same family."
+avarok_nvfp4_mmq64_wc = "Same family."
+avarok_nvfp4_mmq128_nc = "Same family."
+avarok_nvfp4_mmq128_wc = "Same family."
+avarok_nvfp4_quantize_bf16 = "MMQ activation quantizer; only used by the W4A4 propose path."
+avarok_nvfp4_repack = "MMQ weight repack; load-time helper for the W4A4 path only."
+avarok_nvfp4_scale_bf16 = "MMQ scale helper; W4A4 path only."
+avarok_nvfp4_silu_mul_quant = "MMQ fused SiLU+quant; W4A4 MoE propose path only."
+avarok_nvfp4_silu_mul_scaled = "Same MMQ SiLU family."
 
 [expected_absent.w4a4]
 w4a4_gemm = "W4A4 drafter GEMM; no drafter on this target."
@@ -167,9 +167,9 @@ w4a4_gemm_mfast = "Shipped only in nemotron-labs-3-puzzle's shadow; falls back t
 
 # GGUF Q4_K keep-packed path — not a format this target serves.
 [expected_absent.q4k_mmq]
-atlas_q4k_mmq128_nc = "GGUF Q4_K_M keep-packed path; this target serves NVFP4/BF16."
-atlas_q4k_mmq128_wc = "Same Q4_K family."
-atlas_q8_1_quantize_ds4_bf16 = "Q8_1 activation quantizer for the Q4_K path."
+avarok_q4k_mmq128_nc = "GGUF Q4_K_M keep-packed path; this target serves NVFP4/BF16."
+avarok_q4k_mmq128_wc = "Same Q4_K family."
+avarok_q8_1_quantize_ds4_bf16 = "Q8_1 activation quantizer for the Q4_K path."
 
 [expected_absent.q4k_quantize]
 q4k_quantize = "Q4_K load-time quantizer; not a format this target serves."

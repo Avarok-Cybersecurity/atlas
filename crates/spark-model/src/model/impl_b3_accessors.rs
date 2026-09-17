@@ -3,7 +3,7 @@
 //! Post-construction proposer-wiring accessors for [`TransformerModel`].
 //! Split out of `impl_b3.rs` (500-LoC cap) — borrow/install hooks only.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 
 use super::types::TransformerModel;
@@ -116,9 +116,9 @@ impl TransformerModel {
     /// prefix caching stays on and correct — block reuse and the decode path
     /// still benefit — and prefill pays full price.
     ///
-    /// ATLAS_MLA_PREFIX_SKIP=1 opts back in once `paged_mla` attends the cache.
+    /// AVAROK_MLA_PREFIX_SKIP=1 opts back in once `paged_mla` attends the cache.
     pub(crate) fn mla_prefill_needs_full_recompute(&self) -> bool {
-        if std::env::var("ATLAS_MLA_PREFIX_SKIP").as_deref() == Ok("1") {
+        if std::env::var("AVAROK_MLA_PREFIX_SKIP").as_deref() == Ok("1") {
             return false;
         }
         self.layers.iter().any(|l| l.uses_local_mla_prefill())

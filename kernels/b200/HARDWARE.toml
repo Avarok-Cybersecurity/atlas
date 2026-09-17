@@ -20,7 +20,7 @@ memory_gb = 180
 # Flags added to EVERY kernel compiled for this hardware, under
 # common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
 #
-# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# AVAROK_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
 # qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Datacentre Blackwell DOES
 # have NVFP4, but issues block-scaled MMA through tcgen05; the warp-level
 # `mma.sync ... .kind::mxf4nvf4.block_scale` is a consumer/GB10 Blackwell
@@ -35,12 +35,12 @@ memory_gb = 180
 # kernels/gb10 — saying it per model would fork a shared file once per
 # model, which tests/inherited_targets.rs forbids.
 [build]
-extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+extra_nvcc_flags = ["-DAVAROK_NO_WARP_BLOCKSCALE_MMA"]
 
 # ── Serving defaults for this target ───────────────────────────────────────
 #
-# SSOT for the per-target serving levers, baked into `atlas_kernels` by
-# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# SSOT for the per-target serving levers, baked into `avarok_kernels` by
+# build.rs (`build_defaults.rs`) as `avarok_kernels::TARGET_DEFAULTS` and read
 # by every resolver in spark-model BEFORE the environment.
 #
 # WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch

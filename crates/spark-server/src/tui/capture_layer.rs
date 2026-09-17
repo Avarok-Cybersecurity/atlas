@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Decodes `atlas::tui::progress` events into typed [`ProgressEvent`]s.
+//! Decodes `avarok::tui::progress` events into typed [`ProgressEvent`]s.
 //!
 //! Attached with an always-on per-layer filter for exactly that target, so
 //! progress flows regardless of `RUST_LOG` (the events are `debug!` level and

@@ -18,7 +18,7 @@
 //! 4-bit ULP wider than that spread cannot tell them apart.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -63,7 +63,7 @@ pub(super) fn build_moe(
 
     let mut moe = MoeLayer::new(weights, config.num_experts, gate_nvfp4, gpu, config)?;
 
-    // CUTLASS grouped NVFP4 gate_up/down (ATLAS_HOLO_MOE_GROUPED_CUTLASS).
+    // CUTLASS grouped NVFP4 gate_up/down (AVAROK_HOLO_MOE_GROUPED_CUTLASS).
     // qwen4_exp serves from the checkpoint-native ORIGINAL [N,K/16] scales — it
     // never builds the transposed gate_ptrs_t/up_ptrs_t that qwen35 gates this
     // on — so it takes build_cutlass_grouped_sfb's n-major fallback, which
@@ -76,7 +76,7 @@ pub(super) fn build_moe(
     // projection, x512 experts x3 projections x48 layers ~ 7 GB resident, which
     // comes straight out of the KV budget. Read the alloc ledger before
     // adopting it as a default.
-    if std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
+    if std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS")
         .ok()
         .as_deref()
         == Some("1")

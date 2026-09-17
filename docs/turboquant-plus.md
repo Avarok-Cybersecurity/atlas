@@ -147,11 +147,11 @@ docker run -d --name atlas-bench --gpus all --ipc=host \
 Wait for `/v1/models` to respond, then run the bench harness:
 
 ```bash
-python3 tests/atlas_matrix_no_hp.py --dtypes $D --out /tmp/$D.json
+python3 tests/avarok_matrix_no_hp.py --dtypes $D --out /tmp/$D.json
 ```
 
-The harness (in `tests/atlas_matrix_no_hp.py`; the script started life as
-ad-hoc local tooling at `/tmp/atlas_matrix_no_hp.py` on the original test
+The harness (in `tests/avarok_matrix_no_hp.py`; the script started life as
+ad-hoc local tooling at `/tmp/avarok_matrix_no_hp.py` on the original test
 host and the same code is reproduced here for reviewer convenience) does
 4 things per dtype:
 
@@ -185,7 +185,7 @@ fit the K-side dtype) from runtime FAIL (kernel dispatch crash). Total
 
 ```bash
 docker run --rm --entrypoint /bin/bash \
-  -e ATLAS_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
+  -e AVAROK_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
   -v $(pwd):/atlas \
   atlas-gb10-tqplus-dev \
   -c "cd /atlas && cargo test -p spark-runtime --tests kv_cache::"
@@ -208,7 +208,7 @@ prompts that produce ≈ 405 / 1595 / 3177 input tokens respectively.
 `dec_short` is 256-token completion after a short prompt.
 `dec_after_8K` is 128-token completion after an 8K-token prefill —
 wall-time including the prefill, **not** steady-state decode rate.
-It's retained because it's what `tests/atlas_matrix_no_hp.py` in the
+It's retained because it's what `tests/avarok_matrix_no_hp.py` in the
 existing repo already reports.
 
 Reproduce one cell:
@@ -440,7 +440,7 @@ Run the dispatch tests (no GPU needed):
 
 ```bash
 docker run --rm --entrypoint /bin/bash --gpus all \
-  -e ATLAS_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
+  -e AVAROK_SKIP_BUILD=1 -e CUDARC_CUDA_VERSION=13000 \
   -v $(pwd):/atlas atlas-gb10-tqplus-dev \
   -c "cd /atlas && cargo test -p spark-model --tests qwen3_attention::init_kernel_dispatch::"
 ```

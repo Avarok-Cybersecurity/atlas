@@ -6,7 +6,7 @@
     <polyline points="340,110 500,250 340,390" stroke="#12B981"/>
   </g>
 
-  <!-- Avarok signature "A" — embedded reference paths.
+  <!-- Atlas signature "A" — embedded reference paths.
        Reference viewBox is 85x114. Scale ~2.2x and translate so the A's baseline lands at y=320
        and the A starts at x=620.
        Translation: x=620, y=320 - 114*2.2 = 320 - 251 = 69
@@ -22,9 +22,9 @@
     <path d="m18.8 74.3h46.9v6h-46.9z"/>
   </g>
 
-  <!-- "tlas" wordmark continuing from the A.
-       A occupies x=620 to x=620+85*2.2=807. tlas starts at x=815 with a small gap. -->
-  <text x="815" y="320" font-size="260" font-weight="400" fill="#9397A0" letter-spacing="-4">tlas</text>
+  <!-- "varok" wordmark continuing from the A.
+       A occupies x=620 to x=620+85*2.2=807. varok starts at x=815 with a small gap. -->
+  <text x="815" y="320" font-size="260" font-weight="400" fill="#9397A0" letter-spacing="-4">varok</text>
 
   <!-- Subtitle -->
   <text x="620" y="445" font-size="88" font-weight="300" fill="#BDC0C5" letter-spacing="1">Inference Engine</text>

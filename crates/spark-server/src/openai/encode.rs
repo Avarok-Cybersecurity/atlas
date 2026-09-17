@@ -87,7 +87,7 @@ pub(crate) fn encode_chat_response(
         object: "chat.completion".to_string(),
         created: ir.created,
         model: ir.model.clone(),
-        system_fingerprint: Some("fp_atlas".to_string()),
+        system_fingerprint: Some("fp_avarok".to_string()),
         choices,
         usage,
         service_tier: echo.service_tier.clone(),

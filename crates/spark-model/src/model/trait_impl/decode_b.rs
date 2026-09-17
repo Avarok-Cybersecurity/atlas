@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -47,7 +47,7 @@ impl TransformerModel {
     ) -> Result<crate::traits::MixedForwardResult> {
         let n_decode = decode_tokens.len();
         let n_prefill = prefill_chunk_len;
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         // The PREFILL sequence is deliberately excluded: it is still FP32 and
         // stays FP32 until it is promoted to decode.
@@ -568,7 +568,7 @@ impl TransformerModel {
             // keeps its own same-stream (prefill_stream) every-chunk normalize.
             self.normalize_ssm_states_dispatch(prefill_seq, stream)?;
 
-            // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+            // AVAROK_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
             // rows for the whole-prompt drafter prefill — the standard prefill
             // paths have always done this, the mixed path never did, so requests
             // 3..n of a concurrent group (which take this path, since

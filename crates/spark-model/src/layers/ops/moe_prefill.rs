@@ -187,7 +187,7 @@ pub fn w4a16_gemv_dual(
 
 /// Single-warp-per-output variant of `w4a16_gemv_dual` (8 outputs/block → N/8
 /// grid). Bit-identical output (see w4a16_gemv_fused.cu). Default ON via
-/// `ModelLevers::gemv_sw`; kill with `ATLAS_NO_GEMV_SW=1`.
+/// `ModelLevers::gemv_sw`; kill with `AVAROK_NO_GEMV_SW=1`.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_gemv_dual_sw(
     gpu: &dyn GpuBackend,

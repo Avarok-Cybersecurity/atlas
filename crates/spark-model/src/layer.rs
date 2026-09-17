@@ -9,7 +9,7 @@
 
 use std::any::Any;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
@@ -35,7 +35,7 @@ pub struct EmptyLayerState;
 
 /// Attention-layer per-sequence state. KV lives in `PagedKvCache`; the only
 /// resident piece is the QSA indexer carry on the 12 qwen4_exp
-/// full-attention layers (Avarok #753 item B).
+/// full-attention layers (Atlas #753 item B).
 #[derive(Default)]
 pub struct AttnLayerState {
     pub qsa: Option<crate::layers::qsa::QsaSeqState>,
@@ -107,7 +107,7 @@ pub struct SsmLayerState {
     /// of the sequence (see `SsmStatePool::h_prefill_stage`).
     pub h_prefill_stage: Option<DevicePtr>,
     /// PLE per-sequence carry (n-gram history + dilated-conv state), present
-    /// only on the layer that hosts a `PleLayer` (Avarok #753 item B: one per
+    /// only on the layer that hosts a `PleLayer` (Atlas #753 item B: one per
     /// in-flight sequence, lazily created on the sequence's first pass).
     pub ple: Option<crate::layers::ple::PleSeqState>,
 }
@@ -364,7 +364,7 @@ pub struct ForwardContext<'a> {
     /// the installed-active-pair path byte-identical. Prefill runs eager
     /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
     pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
-    /// Default-ON mid-chunk SSM tail capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+    /// Default-ON mid-chunk SSM tail capture (opt-out `AVAROK_SSM_TAIL_MIDCHUNK=0`).
     ///
     /// `Some` only on the single prefill pass whose local token range spans
     /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then

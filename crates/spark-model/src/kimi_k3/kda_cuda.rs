@@ -3,11 +3,11 @@
 //! Host launch for K3 CUDA KDA decode (`kda_decode` PTX module).
 //!
 //! Two kernels, one token: conv-4 + SiLU, then L2 q/k + delta-rule.
-//! CPU oracle: [`atlas_core::kimi_k3::kda_decode_token`]. BoundLayer serve
+//! CPU oracle: [`avarok_core::kimi_k3::kda_decode_token`]. BoundLayer serve
 //! LinearAttention default is this launch (`K3_CUDA_KDA=0` keeps CPU).
 
 use anyhow::{Context, Result, bail};
-use atlas_core::kimi_k3::{KDA_L2_EPS, KdaConfig, KdaState};
+use avarok_core::kimi_k3::{KDA_L2_EPS, KdaConfig, KdaState};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -245,7 +245,7 @@ fn launch_k3_kda_decode_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_core::kimi_k3::kda_decode_token;
+    use avarok_core::kimi_k3::kda_decode_token;
     use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 
     #[test]

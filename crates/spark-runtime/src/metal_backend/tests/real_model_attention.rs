@@ -44,7 +44,7 @@ fn metal_real_model_full_attention_block_layer3() {
     use crate::weights::mlx_int8::MlxInt8Weight;
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });

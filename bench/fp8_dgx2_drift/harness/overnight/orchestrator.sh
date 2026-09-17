@@ -15,7 +15,7 @@ set -uo pipefail
 
 H="$(cd "$(dirname "$0")/.." && pwd)"           # harness dir
 OVN="$H/overnight"
-REPO=/workspace/atlas-mtp
+REPO=/workspace/avarok-mtp
 LOG=/workspace/overnight.log
 RESULTS="$OVN/results.jsonl"
 BUG=/workspace/overnight_BUG.json

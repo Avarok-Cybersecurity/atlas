@@ -35,7 +35,7 @@
   {#if featured}
     <a class="featured" href={featured.href}>
       <div class="feat-kicker">
-        <span class="mono-label" style="color: {tags[featured.tag].color}">{tags[featured.tag].name}</span>
+        <span class="mono-label" style="color: {tags[featured.tag].textColor}">{tags[featured.tag].name}</span>
         <span class="sep" aria-hidden="true"></span>
         <span class="mono-label">Featured</span>
       </div>

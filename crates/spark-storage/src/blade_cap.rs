@@ -9,7 +9,7 @@
 // rejected before any memory is registered when it would push the running
 // total past the configured ceiling.
 //
-// This lives entirely OUTSIDE `cfg(atlas_rdma_verbs)` so the arithmetic is
+// This lives entirely OUTSIDE `cfg(avarok_rdma_verbs)` so the arithmetic is
 // unit-testable on the metal/skip build with no RDMA hardware — the verbs
 // handshake body that consumes it is gated, but the ledger is not.
 

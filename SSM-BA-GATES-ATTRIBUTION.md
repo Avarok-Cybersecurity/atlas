@@ -52,7 +52,7 @@ accumulator chains per thread pay for that.
 
 ## Round-15 measurement — MEASURED, 1xH100 80GB HBM3, tip `8a6f50b61`
 
-The prediction below landed. Cell B0 (`ATLAS_SSM_BA_GATES_HOPPER=0`) against
+The prediction below landed. Cell B0 (`AVAROK_SSM_BA_GATES_HOPPER=0`) against
 cell A15 (`auto`), same binary, one variable:
 
 | rung | B0 (twin off) | **A15 (twin on)** | Δ | predicted |

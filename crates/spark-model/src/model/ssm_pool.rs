@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -352,7 +352,7 @@ impl SsmStatePool {
                     "SSM MTP pools (conv {ni}/slot, h tiered {:?}..{:?} + checkpoints): \
                      {mtp_mb} MB, covering {mtp_slots}/{max_slots} slots (spec dispatch \
                      width; saves {saved_mb} MB vs full-width uniform; kill switch \
-                     ATLAS_MTP_POOL_FULL_WIDTH)",
+                     AVAROK_MTP_POOL_FULL_WIDTH)",
                     h_inter_counts.iter().min(),
                     h_inter_counts.iter().max(),
                 );
@@ -571,13 +571,13 @@ impl SsmStatePool {
             g_c_ssq += c_ssq;
             g_c_sabs += c_sabs;
             tracing::warn!(
-                "ATLAS_SSM_CKSUM[{tag}] slot={slot} L{i} \
+                "AVAROK_SSM_CKSUM[{tag}] slot={slot} L{i} \
                  h_sum={h_sum:.6} h_ssq={h_ssq:.6} h_sabs={h_sabs:.6} \
                  c_sum={c_sum:.6} c_ssq={c_ssq:.6} c_sabs={c_sabs:.6}"
             );
         }
         tracing::warn!(
-            "ATLAS_SSM_CKSUM[{tag}] slot={slot} GLOBAL \
+            "AVAROK_SSM_CKSUM[{tag}] slot={slot} GLOBAL \
              h_sum={g_h_sum:.6} h_ssq={g_h_ssq:.6} h_sabs={g_h_sabs:.6} \
              c_sum={g_c_sum:.6} c_ssq={g_c_ssq:.6} c_sabs={g_c_sabs:.6}"
         );
@@ -850,7 +850,7 @@ impl Drop for SlotGuard {
 ///
 /// The intermediate and checkpoint pools are only allocated when MTP is on, so
 /// the vectors are empty otherwise — draining handles both without a branch.
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for SsmStatePool {
     fn label(&self) -> &'static str {
         "ssm state pool"
     }
@@ -913,8 +913,8 @@ mod h_inter_layout_tests {
 #[cfg(test)]
 mod h_stored_geometry_tests {
     use super::*;
-    use atlas_core::config::ModelConfig;
-    use atlas_core::scope::ModelResource;
+    use avarok_core::config::ModelConfig;
+    use avarok_core::scope::ModelResource;
     use spark_runtime::gpu::mock::MockGpuBackend;
 
     /// Claimable slots in the test pool (the pool allocates `SLOTS + 1`,

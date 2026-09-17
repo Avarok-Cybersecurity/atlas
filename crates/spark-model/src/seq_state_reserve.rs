@@ -35,7 +35,7 @@
 //! per-rank bytes directly and callers must not divide again.
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 
 use crate::layers::glm5next_dsa::state::{dsa_capacity, indexer_state_bytes};
 use crate::layers::glm5next_skeleton::{Glm5NextTextSkeleton, Mixer};

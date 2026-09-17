@@ -29,7 +29,7 @@ fn decode_ring_decision_matrix() {
             decode_rollback_ring_slots_with(layers, spec, None, override_value, watchdogs);
         (decision.slots, decision.skip_reason)
     };
-    let ring = atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+    let ring = avarok_kernels::DECODE_ROLLBACK_RING_SLOTS;
 
     for value in ["1", "true", " TRUE "] {
         assert!(
@@ -64,7 +64,7 @@ fn decode_ring_decision_matrix() {
 /// anything else re-opens the divergence this module exists to close.
 #[test]
 fn a_published_depth_outranks_the_default_the_env_and_the_skips() {
-    let ring = atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+    let ring = avarok_kernels::DECODE_ROLLBACK_RING_SLOTS;
     let d = decode_rollback_ring_slots_with(48, false, Some(2), None, false);
     assert_eq!((d.slots, d.skip_reason), (2, None));
     // Against the legacy env spelling of "8" ...
@@ -72,7 +72,7 @@ fn a_published_depth_outranks_the_default_the_env_and_the_skips() {
         decode_rollback_ring_slots_with(48, false, Some(2), Some("1"), false).slots,
         2
     );
-    // ... and against BOTH implicit skips, exactly as ATLAS_SSM_DECODE_RING=1
+    // ... and against BOTH implicit skips, exactly as AVAROK_SSM_DECODE_RING=1
     // already did: an explicit depth is an explicit depth.
     assert_eq!(
         decode_rollback_ring_slots_with(48, true, Some(4), None, true).slots,
@@ -96,7 +96,7 @@ fn parse_accepts_auto_and_zero_through_eight() {
     assert_eq!(parse_decode_ring_slots("0"), Ok(Some(0)));
     assert_eq!(
         parse_decode_ring_slots("8"),
-        Ok(Some(atlas_kernels::DECODE_ROLLBACK_RING_SLOTS))
+        Ok(Some(avarok_kernels::DECODE_ROLLBACK_RING_SLOTS))
     );
     // Above the ceiling the ring is sized for, and anything non-numeric, is a
     // startup refusal — never a silent clamp to 8.
@@ -161,7 +161,7 @@ fn autofit_is_zero_when_even_a_ringless_reserve_does_not_fit() {
 fn the_fit_ladder_is_descending_and_starts_at_the_wired_default() {
     assert_eq!(
         DECODE_RING_FIT_LADDER[0],
-        atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
+        avarok_kernels::DECODE_ROLLBACK_RING_SLOTS
     );
     assert_eq!(*DECODE_RING_FIT_LADDER.last().unwrap(), 0);
     assert!(

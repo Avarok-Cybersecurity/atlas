@@ -149,8 +149,8 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 ## Rate limiting and auth
 
 - `--require-auth` (with `--auth-token <key>` or `--auth-tokens-file <path>`) — requires an `Authorization: Bearer <key>` header on write endpoints. The presented token must match one of the loaded tokens (constant-time compare); there is no "accept any key" mode.
-- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `ATLAS_RATE_LIMIT_RPM` (requests/min) and/or `ATLAS_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `ATLAS_RATE_LIMIT_BURST_RPM` / `ATLAS_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
-- Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default **32 MiB** — `main_modules/serve_router.rs`).
+- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `AVAROK_RATE_LIMIT_RPM` (requests/min) and/or `AVAROK_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `AVAROK_RATE_LIMIT_BURST_RPM` / `AVAROK_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
+- Body-size limit env-configurable via `AVAROK_MAX_BODY_BYTES` (default **32 MiB** — `main_modules/serve_router.rs`).
 
 ## Changing the model without restarting
 

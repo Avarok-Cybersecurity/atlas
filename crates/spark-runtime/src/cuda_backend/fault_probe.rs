@@ -3,8 +3,8 @@
 //! Detect a destroyed CUDA context after a failed GPU operation (issue #429).
 //!
 //! This is the one place that turns a driver failure into the process-wide
-//! verdict held by [`atlas_core::fault`]. The decision itself is that module's
-//! pure [`classify`](atlas_core::fault::classify); everything here is the
+//! verdict held by [`avarok_core::fault`]. The decision itself is that module's
+//! pure [`classify`](avarok_core::fault::classify); everything here is the
 //! probe it needs.
 //!
 //! # The probe
@@ -26,7 +26,7 @@
 //! One sync, and only on an error path. Once the latch is set the probe is
 //! skipped entirely, so a dead context does not pay a sync per doomed call.
 
-use atlas_core::fault::{self, Fatality};
+use avarok_core::fault::{self, Fatality};
 
 use super::cuStreamSynchronize;
 
@@ -40,7 +40,7 @@ fn probe() -> Result<(), String> {
     if status == 0 {
         Ok(())
     } else {
-        Err(atlas_core::registry::cuda_error_text(status))
+        Err(avarok_core::registry::cuda_error_text(status))
     }
 }
 
@@ -66,6 +66,6 @@ pub(super) fn note_failure(op: &str, err: &str) {
         // ERROR, not WARN: this is terminal. The server can no longer serve
         // any request, and the log line is the operator's only explanation
         // for the shutdown that follows.
-        tracing::error!(target: "atlas::fault", "{reason}");
+        tracing::error!(target: "avarok::fault", "{reason}");
     }
 }

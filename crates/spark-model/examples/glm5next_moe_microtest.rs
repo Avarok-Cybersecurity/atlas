@@ -13,7 +13,7 @@
 //! therefore expected to be BIT-IDENTICAL across the two router modes — it does not depend on
 //! routing at all — and that is asserted as a built-in control.
 //!
-//!   MOE_PACKET_DIR=/home/msi1/atlas-scratch/moe-family \
+//!   MOE_PACKET_DIR=/home/msi1/avarok-scratch/moe-family \
 //!   cargo run -p spark-model --release --example glm5next_moe_microtest \
 //!       --features cuda,gpu-examples -- 3
 

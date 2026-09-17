@@ -42,7 +42,7 @@ impl TransformerModel {
         }
         let _vt0 = std::time::Instant::now();
         let per_image = ve.forward_batched(&img_refs, self.gpu.as_ref(), stream)?;
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+        if std::env::var("AVAROK_VISION_TIMING").is_ok() {
             self.gpu.synchronize(stream).ok();
             tracing::info!(
                 "VIT_TIMING self-encode {} imgs: {:.1}ms",

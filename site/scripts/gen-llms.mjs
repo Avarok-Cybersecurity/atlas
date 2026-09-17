@@ -79,9 +79,9 @@ push(
   `seed ${w.seed}, ${w.reps} timed reps after ${w.warmup} warmup. ${w.sampling_parity}.`,
   '',
   `Result: Atlas wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
-  'against whichever vLLM configuration is faster at that concurrency.',
+  'against the matched vLLM + MTP configuration at each concurrency.',
   '',
-  '| concurrency | Atlas tok/s | best vLLM tok/s | ratio |',
+  '| concurrency | Atlas tok/s | matched vLLM tok/s | ratio |',
   '| --- | --- | --- | --- |'
 );
 for (const r of ladder.rows) {
@@ -124,6 +124,7 @@ push(
   `- Discord: ${discordUrl}`,
   `- X: ${xUrl}`,
   '- Site: https://atlascybernetics.ai',
+  `- Developer page: https://atlascybernetics.ai${data.ENGINE}`,
   '- Documentation: https://docs.atlascybernetics.ai — full book, also at /llms.txt',
   '- Engineering blog: https://blog.atlascybernetics.ai — also at /llms.txt',
   '',

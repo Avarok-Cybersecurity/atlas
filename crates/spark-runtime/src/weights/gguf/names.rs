@@ -363,7 +363,7 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 }
 
 /// True if a mapped HF tensor name is a "big" dense projection that the native
-/// keep-packed Q2_0 decode path (`ATLAS_GGUF_NATIVE_Q2=1`) can serve without
+/// keep-packed Q2_0 decode path (`AVAROK_GGUF_NATIVE_Q2=1`) can serve without
 /// dequantizing — i.e. its weight stays a raw `block_q2_0` buffer in VRAM.
 ///
 /// Scoped for Tier-1 (decode) to the dense **FFN** projections only

@@ -87,7 +87,7 @@ impl MoeLayer {
         };
 
         // ── Shared expert ──
-        // ATLAS_FP8_W8A8 path: per-token FP8 quant on activations +
+        // AVAROK_FP8_W8A8 path: per-token FP8 quant on activations +
         // fp8_gemm_t_blockscaled with both scales in the FP32 epilogue.
         // The shared expert is dense (every token), so we reuse the same
         // dense W8A8 GEMM that attention QKV/O proj already use.
@@ -470,7 +470,7 @@ impl MoeLayer {
                 stream,
             )?;
         }
-        // ATLAS_FP8_W8A8: pre-quant input/intermediate to FP8 with per-token-
+        // AVAROK_FP8_W8A8: pre-quant input/intermediate to FP8 with per-token-
         // per-128 FP32 scale, use new W8A8 grouped GEMM (vLLM-equivalent).
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill
             && self.moe_w8a8_grouped_gemm_k.0 != 0

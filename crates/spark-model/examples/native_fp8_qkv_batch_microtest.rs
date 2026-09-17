@@ -20,7 +20,7 @@
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 const K: usize = 5120; // hidden_dim
@@ -169,7 +169,7 @@ fn run_scalar(
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let scalar = gpu.kernel("w8a16_gemv", "w8a16_gemv")?;
     let batch4 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch4_strided")?;
     let batch16 = gpu.kernel("w8a16_gemv_batch4", "w8a16_gemv_batch16_strided")?;

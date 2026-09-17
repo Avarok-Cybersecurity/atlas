@@ -144,7 +144,7 @@ impl Qwen3AttentionLayer {
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
         let diag_this =
-            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+            std::env::var("AVAROK_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
 
         if is_first_layer {
             ops::hc_expand(

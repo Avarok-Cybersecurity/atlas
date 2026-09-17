@@ -1,8 +1,8 @@
 # Release notes & shipped-image record
 
 One file per shipped image so `:latest`'s provenance is answerable at a glance.
-When `/atlas-release publish` promotes a verified image (see
-[`.claude/skills/atlas-release`](../../.claude/skills/atlas-release/SKILL.md)),
+When `/avarok-release publish` promotes a verified image (see
+[`.claude/skills/avarok-release`](../../.claude/skills/avarok-release/SKILL.md)),
 record it here as `docs/releases/<git-sha>.md` with:
 
 - the **git SHA** the image was built from (also stamped into the image as

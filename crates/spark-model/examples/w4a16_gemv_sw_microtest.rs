@@ -17,7 +17,7 @@
 //! Exit 0 = all PASS (100% bit-identical), 1 = any FAIL.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -349,7 +349,7 @@ fn main() -> Result<()> {
         u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x51A7)
     });
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let base_h = gpu.kernel("w4a16_gemv", "w4a16_gemv")?;

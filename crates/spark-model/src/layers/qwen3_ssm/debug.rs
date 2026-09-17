@@ -4,8 +4,8 @@
 //! per-layer numerical comparison vs an HF CPU oracle. See
 //! DEBUGGING_METHODOLOGY.md §3-§5 + bench/longcode/hang-forensics/.
 //!
-//! Set `ATLAS_GDN_DUMP=<dir>` to enable, and optionally
-//! `ATLAS_GDN_DUMP_LAYERS=0,15,29` (comma-list of SSM-layer indices) to
+//! Set `AVAROK_GDN_DUMP=<dir>` to enable, and optionally
+//! `AVAROK_GDN_DUMP_LAYERS=0,15,29` (comma-list of SSM-layer indices) to
 //! pick which layers to capture (default: `0`).
 //!
 //! Filenames: `gdnsub_step0_L{idx}_{stage}.bin` where stage ∈
@@ -45,7 +45,7 @@ pub(super) static DUMP_GDN: [AtomicBool; MAX_SSM_LAYERS] = atomic_bool_array!();
 pub(super) static DUMP_GNORM: [AtomicBool; MAX_SSM_LAYERS] = atomic_bool_array!();
 
 fn dump_layers_from_env() -> Vec<usize> {
-    std::env::var("ATLAS_GDN_DUMP_LAYERS")
+    std::env::var("AVAROK_GDN_DUMP_LAYERS")
         .unwrap_or_else(|_| "0".to_string())
         .split(',')
         .filter_map(|s| s.trim().parse().ok())
@@ -53,9 +53,9 @@ fn dump_layers_from_env() -> Vec<usize> {
 }
 
 /// Snapshot `n_elements` BF16 values starting at `ptr + byte_offset` to
-/// `<ATLAS_GDN_DUMP>/gdnsub_step0_L{layer_idx}_{stage}.bin`. Skips
-/// when `ATLAS_GDN_DUMP` is unset or `layer_idx` not in
-/// `ATLAS_GDN_DUMP_LAYERS`. Latches per-(layer, stage) so each pair
+/// `<AVAROK_GDN_DUMP>/gdnsub_step0_L{layer_idx}_{stage}.bin`. Skips
+/// when `AVAROK_GDN_DUMP` is unset or `layer_idx` not in
+/// `AVAROK_GDN_DUMP_LAYERS`. Latches per-(layer, stage) so each pair
 /// dumps at most once across the process lifetime.
 pub(super) fn maybe_dump_gdn_buf(
     gpu: &dyn GpuBackend,
@@ -75,14 +75,14 @@ pub(super) fn maybe_dump_gdn_buf(
     // the first chunk). The `layer_idx` modulo num-SSM-layers handles
     // the monotonic SSM_LAYER_CALL_COUNTER wrapping across multiple
     // scheduler chunks so each chunk re-dumps the same layers.
-    let dir = match std::env::var("ATLAS_GDN_DUMP") {
+    let dir = match std::env::var("AVAROK_GDN_DUMP") {
         Ok(d) if !d.is_empty() => d,
         _ => return Ok(()),
     };
     // Resolve layer_idx % num_linear_attention_layers via env hint
     // (default 30 for A3B; 48 for dense 27B). Set via
-    // ATLAS_GDN_DUMP_N_SSM=<count> if needed.
-    let n_ssm: usize = std::env::var("ATLAS_GDN_DUMP_N_SSM")
+    // AVAROK_GDN_DUMP_N_SSM=<count> if needed.
+    let n_ssm: usize = std::env::var("AVAROK_GDN_DUMP_N_SSM")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(30);
@@ -103,7 +103,7 @@ pub(super) fn maybe_dump_gdn_buf(
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(&path, &buf)?;
     tracing::info!(
-        "ATLAS_GDN_DUMP: wrote {} ({} bf16 elements, raw_idx={layer_idx}, effective_layer={effective_layer})",
+        "AVAROK_GDN_DUMP: wrote {} ({} bf16 elements, raw_idx={layer_idx}, effective_layer={effective_layer})",
         path.display(),
         n_elements
     );
