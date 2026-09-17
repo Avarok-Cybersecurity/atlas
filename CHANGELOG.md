@@ -43,7 +43,8 @@ behind specific subsystems — see the
   `ATLAS_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` drive the
   gfx1201 board with the same two scripts. `ATLAS_TARGET_MODEL`, the served
   model and `GPU_UTIL` follow the hardware. `serve-amd.sh` now exports
-  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_GDN_FP8_PREFILL=1` only:
+  `ATLAS_W4A16_VARIANT=v1` (every target) and, for r9700 only as a
+  first-serve default pending the gfx1201 bisect, `ATLAS_NO_GDN_FP8_PREFILL=1`:
   `ATLAS_FORCE_GLOBAL_GDN` and `ATLAS_NO_FP8_PREDEQUANT` have no reader
   anywhere in the tree, so exporting them advertised a control that does not
   exist.
