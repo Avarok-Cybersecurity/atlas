@@ -2,7 +2,7 @@
 set -e
 
 echo "=========================================================="
-echo " Running Atlas Kernel Microbenchmarks (Serially)"
+echo " Running Avarok Kernel Microbenchmarks (Serially)"
 echo "=========================================================="
 
 # Ensure CUDA is in PATH for nvcc matching build.rs
@@ -14,31 +14,31 @@ export PATH="$CUDA_HOME/bin:$PATH"
 
 echo ""
 echo "=> Benchmarking: Normalization (RMSNorm, Gated RMSNorm)"
-cargo bench -p atlas-spark-bench --bench norm
+cargo bench -p avarok-spark-bench --bench norm
 
 echo ""
 echo "=> Benchmarking: Activations (SiLUxMul)"
-cargo bench -p atlas-spark-bench --bench activation
+cargo bench -p avarok-spark-bench --bench activation
 
 echo ""
 echo "=> Benchmarking: GEMM (Dense TC, W4A16)"
-cargo bench -p atlas-spark-bench --bench gemm
+cargo bench -p avarok-spark-bench --bench gemm
 
 echo ""
 echo "=> Benchmarking: RoPE (Rotary Position Embeddings)"
-cargo bench -p atlas-spark-bench --bench rope
+cargo bench -p avarok-spark-bench --bench rope
 
 echo ""
 echo "=> Benchmarking: MoE (Grouped W4A16 GEMM)"
-cargo bench -p atlas-spark-bench --bench moe
+cargo bench -p avarok-spark-bench --bench moe
 
 echo ""
 echo "=> Benchmarking: Attention (Paged Decode FP8)"
-cargo bench -p atlas-spark-bench --bench attention
+cargo bench -p avarok-spark-bench --bench attention
 
 echo ""
 echo "=> Benchmarking: SSM (Causal Conv1d, Gated Delta Rule)"
-cargo bench -p atlas-spark-bench --bench ssm
+cargo bench -p avarok-spark-bench --bench ssm
 
 echo ""
 echo "=========================================================="

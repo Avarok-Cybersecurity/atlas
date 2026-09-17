@@ -31,7 +31,7 @@
 //! and recapture an identical slot-vector graph for the next occupant.
 //!
 //! Multi-seq decode graphs are DEFAULT-ON since 2026-07-27
-//! (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
+//! (`AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
 //! 65.75 -> 67.6 (+2.8%), C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA
 //! unchanged, 2 reps/cell. That measurement RETIRED a planned rewrite: the
 //! attention branch has ~2,300 per-sequence launches/step and hand-batching
@@ -93,14 +93,14 @@ pub(super) fn lru_insert_graph(
 
 /// Graph the batches the padded_n-keyed cache could not legally cover — the
 /// MTP bootstrap's slot SUBSET and any `n < padded_n` batch: **ON** by
-/// default, disabled by PRESENCE of `ATLAS_NO_MTP_BOOT_GRAPH` (house
+/// default, disabled by PRESENCE of `AVAROK_NO_MTP_BOOT_GRAPH` (house
 /// convention — `=0` is NOT off). Disabled, those batches run EAGER and only
 /// the canonical `slots == [0..n)` with `n == padded_n` batch is graphed,
 /// which is the pre-slot-key behaviour minus its unsound replays.
 /// Read once per process.
 pub(super) fn boot_graph_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BOOT_GRAPH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_BOOT_GRAPH").is_none())
 }
 
 impl TransformerModel {

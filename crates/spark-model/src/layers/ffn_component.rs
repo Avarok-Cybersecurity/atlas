@@ -33,7 +33,7 @@ impl FfnComponent {
         }
     }
 
-    /// ATLAS_FP32_ROUTING active for this FFN (MoE only; false otherwise).
+    /// AVAROK_FP32_ROUTING active for this FFN (MoE only; false otherwise).
     pub fn fp32_routing_active(&self, levers: &ops::ModelLevers) -> bool {
         match self {
             Self::Moe(m) => m.fp32_routing_active(levers),
@@ -42,7 +42,7 @@ impl FfnComponent {
     }
 
     /// True when this FFN's routed experts are served natively from EXL3
-    /// trellis (`ATLAS_EXL3_NATIVE_MOE=1`). Every mgemm in that arm is a
+    /// trellis (`AVAROK_EXL3_NATIVE_MOE=1`). Every mgemm in that arm is a
     /// COOPERATIVE launch — not CUDA-graph-capturable — so each layer kind's
     /// `decode_graph_unsupported` (and the verify-path `use_graphs` terms)
     /// must include this, exactly like the `lm_head_exl3` veto.

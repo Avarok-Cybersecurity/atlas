@@ -1,7 +1,7 @@
 # Benchmarks for Qwen3.8-Flash-Next, and the thresholds its gate records must
 # meet. Sibling of MODEL.toml so the numbers sit beside the thing they describe;
 # hardware and model are implied by the path and cannot disagree with the
-# contents. Read by `atlas_plugin::gate::bench`.
+# contents. Read by `avarok_plugin::gate::bench`.
 #
 # ── Every entry here is the TWO-NODE NVFP4 profile ──────────────────────────
 #
@@ -30,7 +30,7 @@
 # Three things that are easy to get wrong, each of which costs a whole run:
 #
 #   • BUILD WITH `CUTLASS_HOME` SET (and default cargo features, which keep
-#     NCCL). The preset sets ATLAS_HOLO_MOE_GROUPED_CUTLASS=1, and a binary
+#     NCCL). The preset sets AVAROK_HOLO_MOE_GROUPED_CUTLASS=1, and a binary
 #     built without it loads every weight and THEN dies with "CUTLASS support
 #     was not built". On these boxes that is CUTLASS_HOME=/home/ms/cutlass,
 #     FLASHINFER_HOME=/home/ms/flashinfer, and

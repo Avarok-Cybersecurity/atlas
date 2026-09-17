@@ -18,7 +18,7 @@
 //! 4-bit ULP wider than that spread cannot tell them apart.
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -44,7 +44,7 @@ pub(super) fn build_moe(
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
 
-    // ── Native EXL3 routed experts (ATLAS_EXL3_NATIVE_MOE=1) ──
+    // ── Native EXL3 routed experts (AVAROK_EXL3_NATIVE_MOE=1) ──
     // Re-derived PER LAYER from the store, not just the env gates: the
     // materialize pass keeps a layer's experts packed only when the whole
     // layer passed the K/cb-uniformity + envelope check (atomic per layer),
@@ -94,9 +94,9 @@ pub(super) fn build_moe(
         // null under native EXL3 — the combination would be silently inert
         // at best. Refuse loudly.
         ensure!(
-            std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref() != Ok("1"),
-            "ATLAS_EXL3_NATIVE_MOE=1 is incompatible with \
-             ATLAS_HOLO_MOE_GROUPED_CUTLASS=1 (no NVFP4 expert tables exist \
+            std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS").as_deref() != Ok("1"),
+            "AVAROK_EXL3_NATIVE_MOE=1 is incompatible with \
+             AVAROK_HOLO_MOE_GROUPED_CUTLASS=1 (no NVFP4 expert tables exist \
              to build SFB atoms from); unset one of the two"
         );
         let experts = load_moe_qwen4exp_exl3(
@@ -127,7 +127,7 @@ pub(super) fn build_moe(
                     )
                     .context(
                         "EXL3 native MoE needs the exl3_matmul kernel module (gb10 \
-                         targets only) — unset ATLAS_EXL3_NATIVE_MOE on this target",
+                         targets only) — unset AVAROK_EXL3_NATIVE_MOE on this target",
                     )?;
                 }
             }
@@ -166,7 +166,7 @@ pub(super) fn build_moe(
             )
             .context(
                 "EXL3 native MoE needs the exl3_moe (fused prefill) kernel \
-                     module — unset ATLAS_EXL3_NATIVE_MOE on this target",
+                     module — unset AVAROK_EXL3_NATIVE_MOE on this target",
             )?;
         }
         // Over the MODEL-shared launch state (locks/fence/section) so the
@@ -192,7 +192,7 @@ pub(super) fn build_moe(
         moe.set_exl3_experts([gate_t, up_t, down_t], state);
     }
 
-    // CUTLASS grouped NVFP4 gate_up/down (ATLAS_HOLO_MOE_GROUPED_CUTLASS).
+    // CUTLASS grouped NVFP4 gate_up/down (AVAROK_HOLO_MOE_GROUPED_CUTLASS).
     // qwen4_exp serves from the checkpoint-native ORIGINAL [N,K/16] scales — it
     // never builds the transposed gate_ptrs_t/up_ptrs_t that qwen35 gates this
     // on — so it takes build_cutlass_grouped_sfb's n-major fallback, which
@@ -205,7 +205,7 @@ pub(super) fn build_moe(
     // projection, x512 experts x3 projections x48 layers ~ 7 GB resident, which
     // comes straight out of the KV budget. Read the alloc ledger before
     // adopting it as a default.
-    if std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
+    if std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS")
         .ok()
         .as_deref()
         == Some("1")
@@ -213,11 +213,11 @@ pub(super) fn build_moe(
         moe.build_cutlass_grouped_sfb(gpu, config, stream)?;
     }
 
-    // ATLAS_MOE_SHARED_CUTLASS: the shared expert's CUTLASS NVFP4 arm needs a
+    // AVAROK_MOE_SHARED_CUTLASS: the shared expert's CUTLASS NVFP4 arm needs a
     // transposed twin, which this loader otherwise never builds (see
     // `build_shared_nvfp4_transposed`). Three weights a layer, so it is paid
     // only when the arm is armed.
-    if std::env::var("ATLAS_MOE_SHARED_CUTLASS").as_deref() == Ok("1") {
+    if std::env::var("AVAROK_MOE_SHARED_CUTLASS").as_deref() == Ok("1") {
         moe.build_shared_nvfp4_transposed(
             gpu,
             config.shared_expert_intermediate_size,

@@ -1,5 +1,5 @@
 <script>
-  // Atlas vs vLLM across the published concurrency ladder, C=1..128.
+  // Avarok vs vLLM across the published concurrency ladder, C=1..128.
   //
   // Everything rendered here comes from ladder.generated.json, which
   // gen-ladder.mjs computes from the raw harness output in bench/ladder38/.
@@ -28,27 +28,26 @@
   const baselines = ladder.series.filter((s) => s.role === 'baseline');
   // `variant`: another configuration of the SUBJECT engine, drawn but never
   // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
-  // the published claim is Atlas against the best vLLM at each rung, and
-  // letting a second Atlas configuration into that comparison would change
+  // the published claim is Avarok against the matched vLLM baseline, and
+  // letting a second Avarok configuration into that comparison would change
   // what the headline means rather than adding evidence for it.
   const variants = ladder.series.filter((s) => s.role === 'variant');
   const plotted = [subject, ...variants, ...baselines];
 
-  const COLOR = {
-    atlas: 'var(--accent)',
-    'atlas-dflash2': 'var(--accent)',
+  // Series are styled by role, not by id: the ids come from the published
+  // bench manifest (bench/ladder38/published.json), which is a recorded
+  // measurement and keeps whatever engine name it was recorded under, so a
+  // lookup keyed on the brand name silently loses the subject line when the
+  // two drift. Only the baselines are told apart by id.
+  const BASELINE_COLOR = {
     'vllm-mtp': 'var(--t2)',
     'vllm-nospec': 'var(--t3, var(--t2))'
   };
-  // The DFlash2 variant shares the Atlas hue and is told apart by its dash:
-  // it is the same engine on the same weights, so a second colour would say
-  // "different subject". Same reasoning as gate-variants.js on the dashboard.
-  const DASH = {
-    atlas: null,
-    'atlas-dflash2': '5 4',
-    'vllm-mtp': null,
-    'vllm-nospec': '5 4'
-  };
+  const colorOf = (s) => (s.role === 'baseline' ? BASELINE_COLOR[s.id] ?? 'var(--t2)' : 'var(--accent)');
+  // A variant shares the subject hue and is told apart by its dash: it is the
+  // same engine on the same weights, so a second colour would say "different
+  // subject". Same reasoning as gate-variants.js on the dashboard.
+  const dashOf = (s) => (s.role === 'variant' || s.id === 'vllm-nospec' ? '5 4' : null);
 
   const cs = ladder.concurrencies;
   const allV = plotted.flatMap((s) => s.rungs.map((r) => r.tok_s));
@@ -63,7 +62,7 @@
   // Two decimals everywhere, which is exactly how RESULTS.md publishes these
   // numbers — the site and the repo record should be diffable by eye.
   const fmtV = (v) => v.toFixed(2);
-  // Always three decimals: the rungs span 1.004x to 1.225x, and switching
+  // Always three decimals: the rungs span 1.012x to 1.333x, and switching
   // precision by magnitude would print "1.20x" next to "1.004x".
   const ratio = (r) => `${r.toFixed(3)}×`;
 </script>
@@ -79,15 +78,15 @@
       {#if ladder.summary.all_won}
         Faster than vLLM at every concurrency, C=1 to 128
       {:else}
-        Atlas vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
+        Avarok vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
       {/if}
     </svelte:element>
     <p class="cl-sub">
       {ladder.workload.checkpoint} on one GB10. {ladder.aggregate}. The matched baseline
-      runs vLLM's own MTP speculative decoding at K=4, same as Atlas, on the same box,
+      runs vLLM's own MTP speculative decoding at K=4, same as Avarok, on the same box,
       checkpoint, client and prompts. Margin ranges
-      {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against whichever
-      vLLM configuration is faster at that rung.
+      {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against that
+      matched configuration at each rung.
     </p>
     {/if}
 
@@ -96,8 +95,8 @@
         {#each plotted as s}
           <span class="cl-key">
             <svg class="cl-swatch" viewBox="0 0 22 8" aria-hidden="true">
-              <line x1="1" y1="4" x2="21" y2="4" stroke={COLOR[s.id]} stroke-width="2.5"
-                stroke-dasharray={DASH[s.id]} stroke-linecap="round" />
+              <line x1="1" y1="4" x2="21" y2="4" stroke={colorOf(s)} stroke-width="2.5"
+                stroke-dasharray={dashOf(s)} stroke-linecap="round" />
             </svg>
             <span>{s.label}</span>
             {#if s.parity === 'unmatched'}<span class="cl-tag">config differs</span>{/if}
@@ -106,7 +105,7 @@
       </figcaption>
 
       <svg viewBox="0 0 {W} {H}" role="img"
-        aria-label="Throughput in tokens per second versus concurrency, Atlas compared with two vLLM configurations">
+        aria-label="Throughput in tokens per second versus concurrency, Avarok compared with two vLLM configurations">
         {#each yTicks as t}
           <line class="gc-grid" x1={PL} y1={y(t)} x2={W - PR} y2={y(t)} />
           <text class="gc-axis" x={PL - 8} y={y(t) + 3.5} text-anchor="end">{Math.round(t)}</text>
@@ -121,13 +120,13 @@
         </text>
 
         {#each plotted as s}
-          <path d={path(s.rungs)} fill="none" stroke={COLOR[s.id]}
+          <path d={path(s.rungs)} fill="none" stroke={colorOf(s)}
             stroke-width={s.role === 'subject' ? 2.6 : 1.8}
-            stroke-dasharray={DASH[s.id]} stroke-linejoin="round" stroke-linecap="round"
+            stroke-dasharray={dashOf(s)} stroke-linejoin="round" stroke-linecap="round"
             opacity={s.role === 'subject' ? 1 : 0.75} />
           {#each s.rungs as r}
             <circle cx={x(r.c)} cy={y(r.tok_s)} r={s.role === 'subject' ? 3.6 : 2.6}
-              fill={COLOR[s.id]} opacity={s.role === 'subject' ? 1 : 0.75}>
+              fill={colorOf(s)} opacity={s.role === 'subject' ? 1 : 0.75}>
               <title>{s.label} · C={r.c} · {fmtV(r.tok_s)} tok/s · mean of {r.reps} reps</title>
             </circle>
           {/each}
@@ -138,13 +137,13 @@
     <div class="cl-tablewrap">
       <table class="cl-table">
         <caption class="cl-caption">
-          Throughput in tok/s. Ratio is Atlas over the faster vLLM configuration at that
-          rung; where the two disagree the losing one is not silently dropped.
+          Throughput in tok/s. Ratio is Avarok over the matched vLLM + MTP configuration
+          at that rung. The unmatched no-speculation vLLM leg is shown, not scored.
         </caption>
         <thead>
           <tr>
             <th scope="col">C</th>
-            <th scope="col">Atlas</th>
+            <th scope="col">Avarok</th>
             {#each baselines as b}<th scope="col">{b.label}</th>{/each}
             <th scope="col">Ratio</th>
           </tr>
@@ -153,7 +152,7 @@
           {#each ladder.rows as row}
             <tr>
               <th scope="row" class="mono">{row.c}</th>
-              <td class="mono cl-win">{fmtV(row.atlas)}</td>
+              <td class="mono cl-win">{fmtV(row.avarok)}</td>
               {#each row.baselines as b}
                 <td class="mono" class:cl-best={b.id === row.best_baseline_id}>{fmtV(b.tok_s)}</td>
               {/each}
@@ -186,8 +185,8 @@
             <h3>{s.label} <span class="cl-eng">{s.engine}</span></h3>
             {#if s.parity === 'unmatched'}
               <p class="cl-warn">
-                Not matched to Atlas: {s.parity_deltas.join('; ')}. Shown because
-                it is the faster vLLM configuration at C=128.
+                Not matched to Avarok: {s.parity_deltas.join('; ')}. Shown for
+                completeness. It is not the published denominator.
               </p>
             {/if}
             <p class="cl-note">{s.source_note}</p>

@@ -5,9 +5,9 @@
 // The vendored C++ `xgrammar-rs` re-exported the real `dlpack/dlpack.h`
 // structs because its `fill_next_token_bitmask` crossed the FFI
 // boundary as a `DLTensor*`. The pure-Rust port has no FFI boundary and
-// works on `&mut [i32]` directly, but Atlas's `grammar/state.rs` still
+// works on `&mut [i32]` directly, but Avarok's `grammar/state.rs` still
 // builds a `DLTensor` describing its bitmask buffer. We provide a
-// layout-faithful, pure-Rust re-implementation so that Atlas's
+// layout-faithful, pure-Rust re-implementation so that Avarok's
 // construction site compiles unchanged; the façade's
 // `GrammarMatcher::fill_next_token_bitmask` reads the `data`/`shape`
 // fields back out to recover the `&mut [i32]` slice.
@@ -16,7 +16,7 @@ use std::ffi::c_void;
 
 /// DLPack device type enum (`DLDeviceType`).
 ///
-/// Only the variants Atlas references are defined; discriminants match
+/// Only the variants Avarok references are defined; discriminants match
 /// the dlpack ABI so a future real-FFI consumer stays compatible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -63,7 +63,7 @@ pub struct DLDataType {
 
 /// DLPack tensor view (`DLTensor`) — does not own memory.
 ///
-/// This mirrors the field set Atlas's `grammar/state.rs` populates. The
+/// This mirrors the field set Avarok's `grammar/state.rs` populates. The
 /// W7 façade only ever reads `data`, `shape` and `ndim` back out, so
 /// the remaining fields are carried purely for source compatibility.
 #[derive(Debug, Clone, Copy)]

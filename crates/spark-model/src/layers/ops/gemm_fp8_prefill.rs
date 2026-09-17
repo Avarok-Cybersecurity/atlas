@@ -36,8 +36,8 @@ pub fn fp8_gemm_n128(
     // fp8_gemm_t, cosine 1.000000 vs fp8_fp8_gemm_t, and a confirmed e2e warm-TTFT
     // win. Quantizes the bf16 activation to e4m3 once into a persistent scratch,
     // then launches the ldmatrix GEMM. K must be a multiple of 32 (the ldmab
-    // K-tile). Opt-OUT with ATLAS_FP8_LDMAB=0 (falls through to the scalar path).
-    if k.is_multiple_of(32) && std::env::var("ATLAS_FP8_LDMAB").as_deref() != Ok("0") {
+    // K-tile). Opt-OUT with AVAROK_FP8_LDMAB=0 (falls through to the scalar path).
+    if k.is_multiple_of(32) && std::env::var("AVAROK_FP8_LDMAB").as_deref() != Ok("0") {
         // Handles and scratch live on the backend, not in statics: the
         // handles point into this model's registry modules (unloaded when it
         // drops) and the scratch is an allocation in this model's context.

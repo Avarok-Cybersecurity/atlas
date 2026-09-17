@@ -150,7 +150,7 @@ fn read_tensor(gpu: &MockGpuBackend, t: &spark_runtime::weights::WeightTensor) -
 /// release frees everything exactly once.
 #[test]
 fn pooled_exl3_quartet_is_byte_identical_and_arena_owned() {
-    use atlas_core::scope::ModelResource;
+    use avarok_core::scope::ModelResource;
     let tmp = tempdir_like();
     write_exl3_safetensors(&tmp, 64);
 
@@ -262,7 +262,7 @@ fn tempdir_like() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let p = std::env::temp_dir().join(format!("atlas-fwp-{pid}-{ns}"));
+    let p = std::env::temp_dir().join(format!("avarok-fwp-{pid}-{ns}"));
     std::fs::create_dir_all(&p).unwrap();
     p
 }

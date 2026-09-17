@@ -13,11 +13,11 @@ use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
 /// One batched `reshape_and_cache` launch for all N sequences instead of one
-/// launch per sequence. Kill switch: `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1`.
+/// launch per sequence. Kill switch: `AVAROK_NO_ATTN_BATCH_CACHE_WRITE=1`.
 fn batch_cache_write_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        std::env::var("ATLAS_NO_ATTN_BATCH_CACHE_WRITE")
+        std::env::var("AVAROK_NO_ATTN_BATCH_CACHE_WRITE")
             .ok()
             .as_deref()
             != Some("1")
@@ -50,10 +50,10 @@ impl Qwen3AttentionLayer {
         // so the per-sequence loop below was calling it n times with seq_len=1 —
         // 258 launches/step at 4.6 us = 1.18 ms across the 16 attention layers.
         // Bit-identical: same math and ordering, only the row address differs.
-        // Kill switch: ATLAS_NO_ROPE_STRIDED=1.
+        // Kill switch: AVAROK_NO_ROPE_STRIDED=1.
         fn rope_strided_enabled() -> bool {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_NO_ROPE_STRIDED").ok().as_deref() != Some("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_NO_ROPE_STRIDED").ok().as_deref() != Some("1"))
         }
         if n > 1 && self.rope_strided_k.0 != 0 && rope_strided_enabled() {
             let stride_e = (per_seq_qkv / bf16) as u32;
@@ -147,7 +147,7 @@ impl Qwen3AttentionLayer {
         // arrays. Each sequence's K row sits `per_seq_qkv` bytes after the last,
         // so the row stride is that gap in ELEMENTS.
         //
-        // `ATLAS_NO_ATTN_BATCH_CACHE_WRITE=1` restores the per-sequence loop.
+        // `AVAROK_NO_ATTN_BATCH_CACHE_WRITE=1` restores the per-sequence loop.
         let k_out_0 = qkv_buf.offset(q_proj_bytes);
         let v_out_0 = k_out_0.offset((nkv * hd) as usize * bf16);
         if n > 1 && batch_cache_write_enabled() && per_seq_qkv.is_multiple_of(bf16) {
@@ -239,11 +239,11 @@ impl Qwen3AttentionLayer {
         //
         // NOT skippable under TurboQuant: the innerQ/WHT bookends below rotate
         // the staged buffer in place, and `qkv_buf` must not be mutated.
-        // Kill switch: ATLAS_NO_ATTN_Q_INPLACE=1.
+        // Kill switch: AVAROK_NO_ATTN_Q_INPLACE=1.
         fn q_inplace_enabled() -> bool {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ON.get_or_init(|| {
-                std::env::var("ATLAS_NO_ATTN_Q_INPLACE").ok().as_deref() != Some("1")
+                std::env::var("AVAROK_NO_ATTN_Q_INPLACE").ok().as_deref() != Some("1")
             })
         }
         let q_inplace =

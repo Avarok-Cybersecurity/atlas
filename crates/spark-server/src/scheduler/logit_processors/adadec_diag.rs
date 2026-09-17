@@ -5,7 +5,7 @@
 //! Drops in between [`super::grammar_bitmask::GrammarBitmaskApply`] (which
 //! sets non-legal tokens to `-inf` so the entropy reflects what the sampler
 //! actually sees) and the downstream argmax / sampler. Gated on the
-//! `ATLAS_ADADEC_DIAGNOSTIC` env var:
+//! `AVAROK_ADADEC_DIAGNOSTIC` env var:
 //!
 //!   * `unset` or empty → no-op (zero overhead, no allocations)
 //!   * non-empty path   → appends one JSONL record per decode step to

@@ -1,4 +1,4 @@
-# typos (https://github.com/crate-ci/typos) config for Atlas.
+# typos (https://github.com/crate-ci/typos) config for Avarok.
 #
 # Ignore directories that mirror upstream content we don't control —
 # `test_data/` holds verbatim HuggingFace `config.json` snapshots whose

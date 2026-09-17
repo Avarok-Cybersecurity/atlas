@@ -31,7 +31,7 @@ decode measurement drops more than 3% from the reference baseline.
 
 ### 2026-04-17 06:32 UTC — baseline attempt 1
 
-- Image: `atlas-gb10:alpha-2.43` (pre-existing).
+- Image: `avarok-gb10:alpha-2.43` (pre-existing).
 - Model: Qwen/Qwen3.5-35B-A3B-FP8.
 - Result: **startup failed** with `Kernel lookup moe_topk_sig::moe_topk_sigmoid:
   Module 'moe_topk_sig' not loaded`. Diagnosed as missing-kernel regression
@@ -40,14 +40,14 @@ decode measurement drops more than 3% from the reference baseline.
 
 ### 2026-04-17 06:50 UTC — baseline attempt 2
 
-- Image: `atlas-gb10:overnight` (first build from master, includes 5 OSS-prep
+- Image: `avarok-gb10:overnight` (first build from master, includes 5 OSS-prep
   commits but NOT the moe_topk_sig fix — fix landed after build started).
 - Same failure as attempt 1 (fix not yet in image).
-- Action: trigger rebuild as `atlas-gb10:overnight2`.
+- Action: trigger rebuild as `avarok-gb10:overnight2`.
 
 ### 2026-04-17 06:54 UTC — baseline attempt 3 (pending)
 
-- Image: `atlas-gb10:overnight2` (rebuild in progress, includes moe_topk_sig
+- Image: `avarok-gb10:overnight2` (rebuild in progress, includes moe_topk_sig
   fix 57c0752 + 3 other fixes). Once ready: run `bench/qwen36_ttft.py
   --tag overnight2-baseline` to establish reference TTFT and decode TPS.
 
@@ -59,7 +59,7 @@ No benchmark possible. Pivoting this tick to Mistral Small 4 long-ctx investigat
 
 ### 2026-04-17 07:20 UTC — baseline captured (overnight2)
 
-Image: `atlas-gb10:overnight2`. Flags: FP8 quant + FP8 KV + SLAI scheduler
+Image: `avarok-gb10:overnight2`. Flags: FP8 quant + FP8 KV + SLAI scheduler
 + `--kv-high-precision-layers auto` + `--max-batch-size 1`.
 
 **TTFT baseline**:
@@ -93,7 +93,7 @@ room to close the gap without exotic changes. Likely targets:
 
 ### 2026-04-17 07:20 UTC (cont.) — profiling server starting
 
-Started atlas-profile container on atlas-gb10:overnight2. Shards
+Started avarok-profile container on avarok-gb10:overnight2. Shards
 loading (~3 min total). Will profile a timed request once ready to
 find the first concrete TTFT bottleneck.
 
@@ -113,7 +113,7 @@ Suspects to look at next:
 
 ### 2026-04-17 07:23 UTC — per-layer profile on 283-token prefill
 
-Enabled `ATLAS_PROFILE=1`, fired a 283-token completion. Scheduler report:
+Enabled `AVAROK_PROFILE=1`, fired a 283-token completion. Scheduler report:
 `Prefill chunk 283 tok: 2277.6ms total, top5: L23=67.24ms, L3=67.22ms,
 L27=65.80ms, L11=63.14ms, L15=61.76ms`. Avg layer ≈ 57 ms × 40 layers.
 
@@ -206,7 +206,7 @@ iterations, and the decode-TPS guard on shared code means any regression
 aborts. Better to land it as a standalone PR with per-model parity tests.
 
 Alternative cheap fixes considered and rejected this tick:
-- `ATLAS_NVFP4_MLA=0` flag for Mistral — not relevant to Qwen3.5 (non-MLA).
+- `AVAROK_NVFP4_MLA=0` flag for Mistral — not relevant to Qwen3.5 (non-MLA).
 - Warmup shape coverage (suspected JIT effect) — measured TTFT matches
   cold-vs-warm consistently, not JIT-bound.
 - Larger chunk size — chunk boundary is at 8192 already, N=283 fits in one
@@ -242,7 +242,7 @@ meaningfully moves TTFT on this workload.
 
 **Tick 3 conclusions**:
 1. Chunking is not the bottleneck (tested — flat).
-2. `--speculative` / `--max-prefill-tokens` / `ATLAS_W4A16_VARIANT` are
+2. `--speculative` / `--max-prefill-tokens` / `AVAROK_W4A16_VARIANT` are
    all config-level knobs that don't impact prefill MoE.
 3. The real fix requires kernel work on `moe_fp8_grouped_gemm` (either
    thread-remap for coalesced B-loads, or M_TILE=16 variant for tiny-group
@@ -263,15 +263,15 @@ Not shipping further automated optimizations this session.
 
 ### 2026-04-17 08:00 UTC — cron tick 4
 
-Build atlas-gb10:overnight3 in flight (1:21 elapsed, ~15 min ETA). This
+Build avarok-gb10:overnight3 in flight (1:21 elapsed, ~15 min ETA). This
 image bundles the new `moe_fp8_grouped_gemm_v2` coalesced kernel behind
-the `ATLAS_FP8_MOE_COALESCED=1` env gate. Tick deferred until image is
+the `AVAROK_FP8_MOE_COALESCED=1` env gate. Tick deferred until image is
 ready — A/B plan for next tick:
 
 1. Boot `overnight3` with env gate OFF → re-bench. Must match the
    `overnight2-baseline.json` numbers within noise (confirms v1 path
    still default / healthy).
-2. Boot `overnight3` with `ATLAS_FP8_MOE_COALESCED=1` → re-bench. Must
+2. Boot `overnight3` with `AVAROK_FP8_MOE_COALESCED=1` → re-bench. Must
    pass decode-TPS guard (≥97% of 36.82 tps). If TTFT drops, we have
    a measured win; if decode regresses, we unset the env var and
    keep the kernel file for a future paired review.
@@ -279,14 +279,14 @@ ready — A/B plan for next tick:
 
 ### 2026-04-17 08:10 UTC — A/B result: v1 vs v2 coalesced
 
-**Image**: atlas-gb10:overnight3 (commit 4c999d6, adds `moe_fp8_grouped_gemm_v2`).
+**Image**: avarok-gb10:overnight3 (commit 4c999d6, adds `moe_fp8_grouped_gemm_v2`).
 
 **V1 parity** (env OFF, uses v1 kernel — same codepath as overnight2):
 - TTFT 2359.6 / 4224.7 / 11995.6 ms @ 288 / 1106 / 4377 tokens
 - Decode 36.95 / 36.84 tps
 - vs overnight2 baseline: within ±1.3% — v1 unchanged ✓
 
-**V2 coalesced** (`ATLAS_FP8_MOE_COALESCED=1`, uses new kernel):
+**V2 coalesced** (`AVAROK_FP8_MOE_COALESCED=1`, uses new kernel):
 | Prompt tokens | V1 baseline | V2 coalesced | Δ |
 |---|---|---|---|
 | 288 | 2348.9 ms | 2326.2 ms | **−0.97%** |
@@ -307,7 +307,7 @@ and reduces effective memory pressure — but the L2 already damped the
 worst-case hit. Still a measurable, always-better, never-worse win.
 
 **Decision**: leave v2 env-gated until the user has paired review time.
-Any user who wants the 3–4% now can pass `-e ATLAS_FP8_MOE_COALESCED=1`.
+Any user who wants the 3–4% now can pass `-e AVAROK_FP8_MOE_COALESCED=1`.
 Roadmap's P0 (M_TILE=16 small-group variant) and P1 (hardware E4M3 cvt)
 are still the larger multipliers and need separate paired engineering.
 
@@ -347,7 +347,7 @@ v2 is a universal small win for FP8 MoE. Env-gated until user review.
   * moe_topk_sig try_kernel (unblocks alpha-2.43 Qwen3.5-FP8 startup)
   * Gemma-4 partial-NVFP4 detection (kiiv6565 2026-04-15)
   * Fuzzy repetition 3× tightening + 6 unit tests
-- Coalesced FP8 grouped-GEMM v2 kernel (ATLAS_FP8_MOE_COALESCED=1)
+- Coalesced FP8 grouped-GEMM v2 kernel (AVAROK_FP8_MOE_COALESCED=1)
   - +1-4% TTFT on Qwen3.5-35B, +1.8-2.3% on Coder-Next
   - Zero decode regression on both
   - 5/5 correctness on both

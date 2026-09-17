@@ -81,7 +81,7 @@ impl TransformerModel {
                     stream,
                 )?;
             }
-            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_DUMP_EMBED").ok().as_deref() == Some("1") {
                 self.gpu.synchronize(stream)?;
                 let offset = (chunk_len - 1) * h * 2;
                 let mut buf = vec![0u8; h * 2];
@@ -95,7 +95,7 @@ impl TransformerModel {
                     .collect();
                 let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                 tracing::info!(
-                    "ATLAS_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
+                    "AVAROK_EMBED post-batched_embed (chunk_start={}, last_tok_id={}): |x|={:.4} first5={:?}",
                     chunk_start,
                     tokens[chunk_start + chunk_len - 1],
                     n,
@@ -115,7 +115,7 @@ impl TransformerModel {
                 stream,
             )?;
             self.scale_embeddings(hidden_dst, chunk_len, stream)?;
-            if std::env::var("ATLAS_DUMP_EMBED").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_DUMP_EMBED").ok().as_deref() == Some("1") {
                 self.gpu.synchronize(stream)?;
                 let offset = (chunk_len - 1) * h * 2;
                 let mut buf = vec![0u8; h * 2];
@@ -129,7 +129,7 @@ impl TransformerModel {
                     .collect();
                 let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
                 tracing::info!(
-                    "ATLAS_EMBED post-scale_embeddings: |x|={:.4} first5={:?}",
+                    "AVAROK_EMBED post-scale_embeddings: |x|={:.4} first5={:?}",
                     n,
                     &v[..5]
                 );
@@ -239,12 +239,12 @@ impl TransformerModel {
                     img_idx += 1;
                 }
             }
-            // ATLAS_SPLICE_DUMP: the hidden chunk AFTER the overwrite.
+            // AVAROK_SPLICE_DUMP: the hidden chunk AFTER the overwrite.
             // The encoder dump proves what buf_out HOLDS; only this proves
             // what the language model actually RECEIVES — that every
             // encoder row reached a pad position, in order, at the right
             // magnitude relative to the text rows around it.
-            if let Ok(path) = std::env::var("ATLAS_SPLICE_DUMP")
+            if let Ok(path) = std::env::var("AVAROK_SPLICE_DUMP")
                 && !path.is_empty()
             {
                 self.gpu.synchronize(stream).ok();
@@ -253,7 +253,7 @@ impl TransformerModel {
                 if self.gpu.copy_d2h(hidden_dst, &mut host).is_ok() {
                     let _ = std::fs::write(&path, &host);
                     tracing::info!(
-                        "ATLAS_SPLICE_DUMP: start={chunk_start} rows={chunk_len} x {h} \
+                        "AVAROK_SPLICE_DUMP: start={chunk_start} rows={chunk_len} x {h} \
                              ({elem_bytes} B/elem), {img_idx} pads spliced of {pending} \
                              encoder rows -> {path}"
                     );

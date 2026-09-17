@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Native EXL3 arm of the multi-seq decode Q/K/V phase
-//! (`ATLAS_EXL3_NATIVE_DENSE=1`). Split from `qkv.rs` (500-LoC cap).
+//! (`AVAROK_EXL3_NATIVE_DENSE=1`). Split from `qkv.rs` (500-LoC cap).
 //!
 //! `normed` is contiguous `[n, h]`; `qkv_buf` is `[n, Q|K|V]` with rows
 //! `per_seq_qkv` bytes apart, so the three projections write pitched

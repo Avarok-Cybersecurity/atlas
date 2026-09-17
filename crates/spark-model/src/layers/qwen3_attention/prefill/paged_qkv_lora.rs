@@ -33,7 +33,7 @@ impl Qwen3AttentionLayer {
         // (out_dim = q_proj_dim) BEFORE the caller's `deinterleave_qg_split`
         // (paged.rs / cache_skip.rs) — the PEFT `lora_B` was trained against
         // exactly that interleaved basis, so Q folds like K/V, just wider.
-        // Runs before the caller's ATLAS_OP_DUMP, so dumps show ADAPTED
+        // Runs before the caller's AVAROK_OP_DUMP, so dumps show ADAPTED
         // outputs (what an HF+PEFT forward hook shows).
         if let Some(ref lw) = self.lora {
             let (pair, route, module) = match proj {

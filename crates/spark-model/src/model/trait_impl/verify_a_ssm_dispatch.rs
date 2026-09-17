@@ -16,7 +16,7 @@ impl TransformerModel {
         let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
-            if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
+            if self.config.layer_type(i) == avarok_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
                     .as_any_mut()
                     .downcast_mut::<SsmLayerState>()
@@ -77,7 +77,7 @@ impl TransformerModel {
         // to reason about. Validate first, then copy unconditionally.
         if num_accepted > 0 {
             for (i, layer_state) in seq.layer_states.iter().enumerate() {
-                if self.config.layer_type(i) != atlas_core::config::LayerType::LinearAttention {
+                if self.config.layer_type(i) != avarok_core::config::LayerType::LinearAttention {
                     continue;
                 }
                 let ssm = layer_state
@@ -104,7 +104,7 @@ impl TransformerModel {
         let mut h_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         let mut conv_plan = Vec::with_capacity(self.ssm_pool.num_ssm_layers);
         for (i, layer_state) in seq.layer_states.iter_mut().enumerate() {
-            if self.config.layer_type(i) == atlas_core::config::LayerType::LinearAttention {
+            if self.config.layer_type(i) == avarok_core::config::LayerType::LinearAttention {
                 let ssm = layer_state
                     .as_any_mut()
                     .downcast_mut::<SsmLayerState>()

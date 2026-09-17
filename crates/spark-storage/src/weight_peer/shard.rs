@@ -206,9 +206,13 @@ fn parse_shard_header(
         // Same rule as the O_DIRECT loader, same code. A bad pair here would
         // be published to RDMA peers as a remote read length, so it must not
         // survive staging.
-        let span =
-            atlas_core::safetensors::tensor_span(name, &info["data_offsets"], data_start, file_len)
-                .with_context(|| format!("{}", path.display()))?;
+        let span = avarok_core::safetensors::tensor_span(
+            name,
+            &info["data_offsets"],
+            data_start,
+            file_len,
+        )
+        .with_context(|| format!("{}", path.display()))?;
         out.push(WeightTensorRecord {
             name: name.clone(),
             dtype,

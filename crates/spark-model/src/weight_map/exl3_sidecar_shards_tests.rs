@@ -129,7 +129,8 @@ fn le16(v: &[u16]) -> Vec<u8> {
 }
 
 fn temp_model_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("atlas-exl3-sidecar-{}-{tag}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("avarok-exl3-sidecar-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -284,7 +285,7 @@ fn registers_vision_sidecar_then_materialize_sees_its_trellis() {
     );
     let report = crate::weight_loader::qwen4_exp::audit_namespace(
         &store,
-        &atlas_core::config::ModelConfig::qwen3_next_80b_nvfp4(),
+        &avarok_core::config::ModelConfig::qwen3_next_80b_nvfp4(),
     );
     assert_eq!(report.vision_tensors, 1);
 

@@ -1,17 +1,17 @@
 /* =============================================================================
-   Atlas override of mdBook's theme variables.
+   Avarok override of mdBook's theme variables.
 
    mdBook ships five themes (light, rust, coal, navy, ayu) and restores the
    reader's last choice from localStorage. Restyling only `.navy` would leave
    that trap live: anyone whose stored value is `light` gets the stock light
    palette on a site that has no light mode. So all five classes map to the
-   SAME Atlas values, and any stored choice renders the brand by construction.
-   The picker is then a control with no effect, and atlas.css removes it.
+   SAME Avarok values, and any stored choice renders the brand by construction.
+   The picker is then a control with no effect, and avarok.css removes it.
 
-   Every value here is a `var()` into web-shared/atlas-tokens.css — the single
+   Every value here is a `var()` into web-shared/avarok-tokens.css — the single
    authoritative copy, linked just before this file. Nothing is restated.
 
-   ★ `--bg` is deliberately absent. mdBook's `--bg` and the Atlas token `--bg`
+   ★ `--bg` is deliberately absent. mdBook's `--bg` and the Avarok token `--bg`
    share a name and a meaning; because this file REPLACES the stock one, the
    per-theme declaration simply no longer exists and the token's own `:root`
    value applies. Writing `--bg: var(--bg)` here would be a self-reference and

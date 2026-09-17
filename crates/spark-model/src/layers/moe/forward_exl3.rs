@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 routed-expert DECODE arm (`ATLAS_EXL3_NATIVE_MOE=1`).
+//! Native EXL3 routed-expert DECODE arm (`AVAROK_EXL3_NATIVE_MOE=1`).
 //!
 //! Serves the routed experts straight from packed trellis via exactly three
 //! `exl3_mgemm` calls per layer (`ops::exl3_moe_decode_routed` — upstream's
@@ -70,7 +70,7 @@ impl MoeLayer {
                 // or a per-row GEMV loop. The prefill-tiled `w4a16_gemm`
                 // below costs ~274 us per call at these row counts (its
                 // 64-row tile), which is why the profile had to arm
-                // ATLAS_VERIFY_EXL3_ROW_ROUTER to avoid it.
+                // AVAROK_VERIFY_EXL3_ROW_ROUTER to avoid it.
                 self.nvfp4_rows_proj(
                     router_in,
                     nvfp4,
@@ -193,7 +193,7 @@ impl MoeLayer {
         anyhow::ensure!(
             self.lora.is_none(),
             "EXL3 native MoE has no LoRA fold hooks (the build refuses \
-             --lora-adapter with ATLAS_EXL3_NATIVE)"
+             --lora-adapter with AVAROK_EXL3_NATIVE)"
         );
         // `run_shared_expert_prefill` scratches ssm_deinterleaved(), which is
         // exactly where a pre-expert norm would put the expert input.

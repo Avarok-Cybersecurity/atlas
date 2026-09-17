@@ -216,9 +216,9 @@
   "verdict_reason": "median +0.3% (limit +3.0%) · p90 -0.2% (limit +5.0%)",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=835.37, p90_ms=2055.63, samples=36.00 · Pass: median +0.3% (limit +3.0%) · p90 -0.2% (limit +5.0%)",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

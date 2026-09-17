@@ -1,6 +1,6 @@
 # Serve-matrix evidence audit, 2026-09-04
 
-Targets Avarok-Cybersecurity/atlas `main` at `567b5ebe7784ac3657a4ae97940f6783c8414393`,
+Targets Avarok-Cybersecurity/avarok `main` at `567b5ebe7784ac3657a4ae97940f6783c8414393`,
 revalidated September 5. This tranche changes the Python release harness and
 its checks. It changes no inference, model, kernel, or Rust code.
 
@@ -55,7 +55,7 @@ python3 -m unittest discover -s tests -p 'test_gate_results*.py' -v
 ```
 
 The existing gate source was byte-identical on Avarok
-revision `567b5ebe7` and the initially examined Atlas-Inf revision `6c5f17dab` (SHA256
+revision `567b5ebe7` and the initially examined Avarok-Inf revision `6c5f17dab` (SHA256
 `9ff13894aa88633cad00394a281c360a394091df790719d17f6908d615e155a5`). These repairs
 therefore address a surviving harness gap rather than assuming old audit work
 was absent based on commit subjects.
@@ -100,7 +100,7 @@ September 5 Avarok revalidation below:
   production mutations survived the old suite and failed the repaired checks.
 - Python syntax compilation, workflow YAML parsing, `git diff --check`,
   `cargo fmt --all -- --check`, and the repository SPDX check passed.
-- Workspace Clippy was attempted with `ATLAS_SKIP_BUILD=1`,
+- Workspace Clippy was attempted with `AVAROK_SKIP_BUILD=1`,
   `CUDARC_CUDA_VERSION=13000`, two build jobs, and an isolated Cargo target.
   It exited 101 because `spark-storage`'s `streaming_attention_e2e` target
   references Linux-only `IoUringBackend` on macOS.

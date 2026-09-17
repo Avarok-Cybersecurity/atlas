@@ -91,11 +91,11 @@ pub fn fp8_quant_hopper_min_m(k: u32, sm_count: u32) -> u32 {
 }
 
 /// Is the twin selected? — `[defaults] fp8_act_quant_hopper`, with
-/// `ATLAS_FP8_ACT_QUANT_HOPPER` overriding ([`super::target_defaults`]).
+/// `AVAROK_FP8_ACT_QUANT_HOPPER` overriding ([`super::target_defaults`]).
 ///
-/// No `ATLAS_NO_*` rung: the two kernels emit the same bytes, so there is no
+/// No `AVAROK_NO_*` rung: the two kernels emit the same bytes, so there is no
 /// accuracy question for a kill switch to outrank what
-/// `ATLAS_FP8_ACT_QUANT_HOPPER=0` already says.
+/// `AVAROK_FP8_ACT_QUANT_HOPPER=0` already says.
 pub fn fp8_act_quant_hopper_enabled() -> bool {
     super::target_defaults::resolved()
         .fp8_act_quant_hopper
@@ -131,7 +131,7 @@ pub const FP8_QUANT_REJECTS: [&str; 3] = [
 /// numbers opened this lever.
 ///
 /// It is tested ABOVE the lever as well as above the floor, deliberately: an
-/// operator's `ATLAS_FP8_ACT_QUANT_HOPPER=0` means "prefer the parent", and on
+/// operator's `AVAROK_FP8_ACT_QUANT_HOPPER=0` means "prefer the parent", and on
 /// a pair that has none it must not come to mean "launch nothing".
 pub fn fp8_act_quant_hopper_reject(
     requested: bool,
@@ -232,11 +232,11 @@ pub fn fp8_quant_log(pick: &Fp8QuantPick, m: u32, k: u32) {
     SAID[idx].call_once(|| match pick.reject {
         Some(why) => tracing::info!(
             "FP8 act-quant: the Hopper twin is NOT running at M={m} K={k}: {why} \
-             (ATLAS_FP8_ACT_QUANT_HOPPER)"
+             (AVAROK_FP8_ACT_QUANT_HOPPER)"
         ),
         None => tracing::info!(
             "FP8 act-quant: per_token_group_quant_fp8_hopper \
-             (ATLAS_FP8_ACT_QUANT_HOPPER) M={m} K={k} grid=({gx},{gy},1) block=128"
+             (AVAROK_FP8_ACT_QUANT_HOPPER) M={m} K={k} grid=({gx},{gy},1) block=128"
         ),
     });
 }

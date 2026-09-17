@@ -45,7 +45,10 @@ fn draw_guide(f: &mut Frame, _app: &App, area: Rect) {
     };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("  Atlas {} — github.com/{repo}", crate::cli::ATLAS_VERSION),
+            format!(
+                "  Avarok {} — github.com/{repo}",
+                crate::cli::AVAROK_VERSION
+            ),
             theme::text(),
         )),
         Line::from(""),
@@ -303,7 +306,7 @@ fn draw_status(f: &mut Frame, app: &App, repo: &str, phase: &ReportPhase, area: 
                 .as_secs();
             vec![
                 Line::from(Span::styled(
-                    "  First, authorize Atlas on GitHub:",
+                    "  First, authorize Avarok on GitHub:",
                     theme::text(),
                 )),
                 Line::from(""),

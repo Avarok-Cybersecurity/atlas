@@ -14,7 +14,7 @@
 //! GEMM loops walk any count in 16-row M tiles, and an expert whose sorted
 //! row count exceeds the cap is skipped (ticket-free) for the host's
 //! overflow tier (`moe_prefill_overflow.rs`). Upstream derives the value from
-//! `temp_state_g.shape[1]`; vllm-exl3 sizes that slab at 2048 rows; Atlas
+//! `temp_state_g.shape[1]`; vllm-exl3 sizes that slab at 2048 rows; Avarok
 //! shipped 128 (upstream's `TEMP_ROWS_FUSED`) until 2026-09-05.
 //!
 //! ## Why 128 was the wrong default for serving
@@ -68,8 +68,8 @@
 //!
 //! ## Knobs
 //!
-//! * `ATLAS_EXL3_MOE_ROWS_PER_EXPERT=<rows>` — numeric override.
-//! * `ATLAS_NO_EXL3_MOE_WIDE_ROWS` — KILL SWITCH (house convention: presence
+//! * `AVAROK_EXL3_MOE_ROWS_PER_EXPERT=<rows>` — numeric override.
+//! * `AVAROK_NO_EXL3_MOE_WIDE_ROWS` — KILL SWITCH (house convention: presence
 //!   check, `=0` is not off): pins the legacy 128-row cap, and WINS over the
 //!   numeric knob (an emergency lever must not lose to a stray variable). This
 //!   is the A/B's only variable.
@@ -98,10 +98,10 @@ pub const EXL3_MOE_ROWS_PER_EXPERT_LEGACY: usize = 128;
 pub const EXL3_MOE_ROWS_PER_EXPERT_MIN: usize = 16;
 
 /// Numeric override of the cap.
-pub const EXL3_MOE_ROWS_PER_EXPERT_ENV: &str = "ATLAS_EXL3_MOE_ROWS_PER_EXPERT";
+pub const EXL3_MOE_ROWS_PER_EXPERT_ENV: &str = "AVAROK_EXL3_MOE_ROWS_PER_EXPERT";
 
 /// Kill switch (presence): pin [`EXL3_MOE_ROWS_PER_EXPERT_LEGACY`].
-pub const EXL3_MOE_WIDE_ROWS_KILL_ENV: &str = "ATLAS_NO_EXL3_MOE_WIDE_ROWS";
+pub const EXL3_MOE_WIDE_ROWS_KILL_ENV: &str = "AVAROK_NO_EXL3_MOE_WIDE_ROWS";
 
 /// Where the resolved cap came from (logged at model build).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

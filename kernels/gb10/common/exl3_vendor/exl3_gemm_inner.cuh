@@ -8,10 +8,10 @@
 //     hadamard_inner.cuh (epilogue rotation) included directly instead of
 //     transitively
 //   * deprecated-in-C++17 `register` storage class removed (4 declarations) —
-//     the Atlas kernel build promotes warnings to errors
+//     the Avarok kernel build promotes warnings to errors
 //   * the never-referenced `index_m` lambda removed (same reason; upstream had
 //     already commented out its use)
-//   * Atlas `out_bf16` epilogue arm (template flag + two trailing defaulted
+//   * Avarok `out_bf16` epilogue arm (template flag + two trailing defaulted
 //     parameters, default off = upstream): the final row-major store in
 //     `output_had_sh_gl` ALSO writes `__float2bfloat16_rn(c)` to a pitched
 //     BF16 destination — the standalone `exl3_f32_to_bf16[_2d]` converter's
@@ -44,7 +44,7 @@
     #define EXL3_GEMM_H_ACC 0
 #endif
 
-// Atlas adaptation: `had_ff_r_128_inner<false, true>` (post-scale by svh) with
+// Avarok adaptation: `had_ff_r_128_inner<false, true>` (post-scale by svh) with
 // a SECOND destination. Body identical to the vendored template up to and
 // including the f32 store; then the same four register values are rounded
 // with `__float2bfloat16_rn` — exactly what `exl3_f32_to_bf16[_2d]` does to the

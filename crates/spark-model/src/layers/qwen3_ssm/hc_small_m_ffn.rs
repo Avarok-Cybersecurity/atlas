@@ -16,11 +16,11 @@ impl Qwen3SsmLayer {
         let small_m = {
             static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *SMALL_M.get_or_init(|| {
-                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+                std::env::var("AVAROK_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
             })
         };
         // ROW-EXACT (`ForwardContext::gdn_exact_replay`, kill switch
-        // ATLAS_NO_VERIFY_ROW_EXACT): every arm below dispatches on ROW COUNT
+        // AVAROK_NO_VERIFY_ROW_EXACT): every arm below dispatches on ROW COUNT
         // — `forward_k2` fuses both rows' expert GEMVs into 5 launches where
         // `forward` runs 5 per row — and row-count-shaped MoE arms round
         // differently from the single-row one (#459). A verify whose row 0
@@ -112,7 +112,7 @@ impl Qwen3SsmLayer {
                 // experts regardless of row count. See the module note.
                 let chunked = {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    *ON.get_or_init(|| std::env::var("ATLAS_HC_FFN_CHUNKED").as_deref() != Ok("0"))
+                    *ON.get_or_init(|| std::env::var("AVAROK_HC_FFN_CHUNKED").as_deref() != Ok("0"))
                 };
                 // ★ CAPPED at verify widths. This decomposition was measured
                 // (73cb95b43) against the grouped GEMM at 1..24 rows, where the
@@ -156,7 +156,7 @@ impl Qwen3SsmLayer {
                             tracing::info!(
                                 num_tokens,
                                 "hc small-M FFN: CHUNKED into fused arms instead of the \
-                                 grouped GEMM (ATLAS_HC_FFN_CHUNKED=0 restores it)"
+                                 grouped GEMM (AVAROK_HC_FFN_CHUNKED=0 restores it)"
                             );
                         });
                     }

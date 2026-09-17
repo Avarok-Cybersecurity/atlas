@@ -1,5 +1,5 @@
 <!--
-  The ambient Atlas chevron field: one fullscreen triangle, one fragment
+  The ambient Avarok chevron field: one fullscreen triangle, one fragment
   shader. No 3D library, because there is no scene — no graph, no camera
   motion, no materials, no loaders, no picking. ~2.5 KB gzipped including
   the shader; three.js drawing the identical pixels costs ~151 KB. The
@@ -27,7 +27,7 @@
   let canvas = $state(null);
   let ready = $state(false);
 
-  /* Design tokens come from web-shared/atlas-tokens.css. Reading them from the
+  /* Design tokens come from web-shared/avarok-tokens.css. Reading them from the
      cascade rather than hardcoding them is what keeps the canvas and the page
      the same colour. `#rgb` shorthand is expanded because the shader wants six
      digits; anything else is rejected by the runtime and the CSS field stays. */
@@ -71,6 +71,13 @@
       ? requestIdleCallback(boot, { timeout: 1200 })
       : setTimeout(boot, 1);
 
+    const onTheme = () => {
+      if (!field) return;
+      field.setTokens(tokens(document.documentElement));
+    };
+    const themeWatch = new MutationObserver(onTheme);
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
     if (parallax) {
       onScroll = () => {
         if (!field) return;
@@ -84,6 +91,7 @@
       // The idle callback is a suspension point: uncancelled, a fast unmount
       // leaves a renderer that nothing holds a reference to.
       if ('cancelIdleCallback' in window) cancelIdleCallback(idle); else clearTimeout(idle);
+      themeWatch.disconnect();
       if (onScroll) removeEventListener('scroll', onScroll);
       if (!field) { ready = false; return; }
       /* Non-negotiable on a client-routed site. Without destroy() the rAF loop

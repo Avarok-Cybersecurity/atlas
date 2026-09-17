@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -67,7 +67,7 @@ pub(crate) fn load_weight_store(
     }
 
     let use_fast_load =
-        !args.no_fast_load && std::env::var("ATLAS_FAST_LOAD").ok().as_deref() != Some("0");
+        !args.no_fast_load && std::env::var("AVAROK_FAST_LOAD").ok().as_deref() != Some("0");
     let store = if use_fast_load {
         #[cfg(unix)]
         {
@@ -98,7 +98,7 @@ pub(crate) fn load_weight_store(
                 );
             }
             loader.prefetch_shards = args.fast_load_prefetch_shards
-                || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
+                || std::env::var("AVAROK_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
                     .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
             if loader.prefetch_shards {
@@ -107,14 +107,14 @@ pub(crate) fn load_weight_store(
             // EXL3 native serving: pool the kept-packed quartets into one
             // arena per (shard, class) instead of ~300K per-tensor
             // cuMemAllocs (GB10 charges sub-2 MiB requests a 2 MiB chunk
-            // tail: ~17.9 GiB on 4.05bpw). `None` unless ATLAS_EXL3_NATIVE=1;
-            // ATLAS_EXL3_WEIGHT_POOL=0 is the kill switch.
+            // tail: ~17.9 GiB on 4.05bpw). `None` unless AVAROK_EXL3_NATIVE=1;
+            // AVAROK_EXL3_WEIGHT_POOL=0 is the kill switch.
             loader.pool_predicate = spark_model::weight_map::exl3_fast_load_pool_predicate();
             if loader.pool_predicate.is_some() {
                 tracing::info!(
                     "EXL3 weight pool enabled for the fast loader (kept-packed trellis \
                      quartets share one arena per shard and class; \
-                     ATLAS_EXL3_WEIGHT_POOL=0 disables)"
+                     AVAROK_EXL3_WEIGHT_POOL=0 disables)"
                 );
             }
             loader
@@ -220,7 +220,7 @@ fn target_ships_native_fp8_lm_head(args: &cli::ServeArgs) -> bool {
 /// one resident pool slot. A single adapter is byte-identical to the v0 path.
 pub(crate) struct LoraAdapterState {
     pub name: String,
-    pub peft_config: atlas_core::config::PeftAdapterConfig,
+    pub peft_config: avarok_core::config::PeftAdapterConfig,
     pub store: spark_runtime::weights::WeightStore,
 }
 
@@ -237,7 +237,7 @@ pub(crate) fn load_lora_adapters(
     if args.lora_adapter.len() > args.max_loras {
         anyhow::bail!(
             "--lora-adapter given {} times but --max-loras={} (pool has {} slots); \
-             raise --max-loras or stage the extras on an $ATLAS_LORA_PEER",
+             raise --max-loras or stage the extras on an $AVAROK_LORA_PEER",
             args.lora_adapter.len(),
             args.max_loras,
             args.max_loras,
@@ -255,9 +255,9 @@ pub(crate) fn load_lora_adapters(
         let cfg_path = adapter_dir.join("adapter_config.json");
         let raw = std::fs::read_to_string(&cfg_path)
             .with_context(|| format!("Failed to read {}", cfg_path.display()))?;
-        // Hard-error parser (atlas-core config/parsers/lora.rs) — scaling is read
+        // Hard-error parser (avarok-core config/parsers/lora.rs) — scaling is read
         // per adapter (alpha/r, alpha/sqrt(r) under use_rslora), NEVER defaulted.
-        let peft_config = atlas_core::config::parse_peft_adapter_config(&raw)
+        let peft_config = avarok_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("Failed to parse {}", cfg_path.display()))?;
         let rank_ceiling = args.max_lora_rank.unwrap_or(64);
         if peft_config.r > rank_ceiling {
@@ -320,7 +320,7 @@ fn skip_activation_scales(config: &ModelConfig) -> bool {
 /// cache needs unless MTP is actually armed.
 ///
 /// So it is skipped by DEFAULT and uploaded only when asked: `--speculative`,
-/// or `ATLAS_QWEN4EXP_MTP=1` to load and audit the block without arming
+/// or `AVAROK_QWEN4EXP_MTP=1` to load and audit the block without arming
 /// speculation. No other `model_type` ever returns true here, in either arm.
 fn skip_mtp(config: &ModelConfig, want_mtp: bool) -> bool {
     matches!(config.model_type.as_str(), "qwen4_exp") && !want_mtp
@@ -328,13 +328,13 @@ fn skip_mtp(config: &ModelConfig, want_mtp: bool) -> bool {
 
 /// True when the operator asked for the `mtp.*` tensors to be uploaded.
 fn want_mtp(args: &cli::ServeArgs) -> bool {
-    args.speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1")
+    args.speculative || std::env::var("AVAROK_QWEN4EXP_MTP").as_deref() == Ok("1")
 }
 
 /// Will the model's weight loader bind a vision encoder?
 ///
 /// Unresolvable model types answer `true`: never skip weights on a guess.
-fn binds_vision(config: &atlas_core::config::ModelConfig) -> bool {
+fn binds_vision(config: &avarok_core::config::ModelConfig) -> bool {
     spark_model::factory::loader_for_config(config)
         .map(|l| l.binds_vision_encoder())
         .unwrap_or(true)

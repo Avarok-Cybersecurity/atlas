@@ -24,7 +24,7 @@
 #[cfg(feature = "cuda")]
 use anyhow::Context;
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -41,7 +41,7 @@ use crate::weight_map::dense;
 /// largest batch this model currently fits; at 320 B/row it costs ~21 MB.
 #[cfg(feature = "cuda")]
 fn slots_from_env() -> usize {
-    std::env::var("ATLAS_PLE_CACHE_SLOTS")
+    std::env::var("AVAROK_PLE_CACHE_SLOTS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(65536)

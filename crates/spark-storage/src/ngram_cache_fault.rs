@@ -50,18 +50,18 @@ const MAX_WORKERS: usize = 64;
 /// 100 -> 13, 32 -> 4.
 const JOBS_PER_WORKER: usize = 8;
 
-/// `ATLAS_PLE_FAULT_WORKERS=<n>` overrides the cap (clamped to 1..=256) so the
+/// `AVAROK_PLE_FAULT_WORKERS=<n>` overrides the cap (clamped to 1..=256) so the
 /// curve above can be re-measured in situ without a rebuild. Unparsable values
 /// fall back to [`MAX_WORKERS`] with one warning.
 fn max_workers() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| match std::env::var("ATLAS_PLE_FAULT_WORKERS") {
+    *N.get_or_init(|| match std::env::var("AVAROK_PLE_FAULT_WORKERS") {
         Err(_) => MAX_WORKERS,
         Ok(v) => match v.trim().parse::<usize>() {
             Ok(n) if n >= 1 => n.min(256),
             _ => {
                 tracing::warn!(
-                    "ATLAS_PLE_FAULT_WORKERS={v:?} is not a worker count — using {MAX_WORKERS}"
+                    "AVAROK_PLE_FAULT_WORKERS={v:?} is not a worker count — using {MAX_WORKERS}"
                 );
                 MAX_WORKERS
             }
@@ -116,7 +116,7 @@ fn run_one(
     // 21 shards of the shipped checkpoint end mid-block), and demanding the whole
     // block failed the request over padding that was never part of a row. The row
     // itself must arrive in full, which is what `within + row_stride` asserts.
-    atlas_tier::pio::read_at_least_at(
+    avarok_tier::pio::read_at_least_at(
         file,
         bounce.blocks(job.nblocks),
         job.block_off,
@@ -131,7 +131,7 @@ fn run_one(
         let sf = scale_file.expect("scale job without scale file");
         // Same tail: a per-row scale near the end of its file sits in a block
         // that runs past EOF.
-        atlas_tier::pio::read_at_least_at(sf, bounce.blocks(1), sblock, swithin + 4)
+        avarok_tier::pio::read_at_least_at(sf, bounce.blocks(1), sblock, swithin + 4)
             .with_context(|| format!("NgramRowCache: read scale {}", job.row_id))?;
         // SAFETY: disjoint 4-byte per-job region in the scale arena.
         let sdst = unsafe { std::slice::from_raw_parts_mut(sdst as *mut u8, 4) };
@@ -140,12 +140,12 @@ fn run_one(
     Ok(())
 }
 
-/// `ATLAS_PLE_SERIAL_FAULT=1`: keep the pre-parallel QD=1 arm, so the
+/// `AVAROK_PLE_SERIAL_FAULT=1`: keep the pre-parallel QD=1 arm, so the
 /// speedup can be measured against the thing it replaced rather than
-/// asserted (same A/B convention as `ATLAS_HC_DECODE_SPLIT`).
+/// asserted (same A/B convention as `AVAROK_HC_DECODE_SPLIT`).
 fn serial_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_PLE_SERIAL_FAULT").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_PLE_SERIAL_FAULT").as_deref() == Ok("1"))
 }
 
 /// Fault every job in, serial below [`PARALLEL_MIN`], scoped threads above.

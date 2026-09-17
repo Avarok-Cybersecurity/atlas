@@ -176,7 +176,7 @@ struct LoadLoraResponse {
 /// Dynamically loads a DIFFERENT adapter from disk into a pool slot at runtime
 /// — the pool-size-1 demonstration of per-request weight change: with
 /// `--max-loras 1` only one adapter is resident, and this swaps the single
-/// slot's contents on demand (needs `ATLAS_LORA_ROTATE=1` so decode is eager).
+/// slot's contents on demand (needs `AVAROK_LORA_ROTATE=1` so decode is eager).
 pub async fn load_lora_into_slot(
     CurrentModel(state): CurrentModel,
     body: Result<Json<LoadLoraRequest>, JsonRejection>,

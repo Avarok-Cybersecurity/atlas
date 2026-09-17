@@ -17,7 +17,7 @@
   padding: 0.7rem 1.2rem; border-top: 1px solid var(--border-strong);
   background: var(--bg);
 }
-.ov-epoch { font-size: 0.7rem; color: var(--ch-cyan); margin-right: auto; }
+.ov-epoch { font-size: 0.7rem; color: var(--ch-cyan-text); margin-right: auto; }
 .ov-foot .ov-abort { margin-left: auto; }
 .ov-epoch + .ov-abort { margin-left: 0; }
 .ov-abort {

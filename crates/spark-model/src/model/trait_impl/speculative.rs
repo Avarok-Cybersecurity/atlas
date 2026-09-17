@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -126,12 +126,12 @@ impl TransformerModel {
             return;
         };
         let prompt_len = *prompt_len;
-        // ATLAS_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
+        // AVAROK_MTP_DRAFTER_PREFILL: on the FIRST propose of a sequence,
         // batch-prefill the drafter's KV over the prompt (fresh-state check
         // and quant support live inside prefill_drafter; it fast-returns 0 on
         // every later call). Requires the capture to cover the full prompt —
         // a COLD turn satisfies that; a WARM turn never does, which is the
-        // context-blindness defect ATLAS_MTP_CARRY_DRAFTER closes below.
+        // context-blindness defect AVAROK_MTP_CARRY_DRAFTER closes below.
         if !self.mtp_prefill_hidden.is_null() {
             let p = prompt_len;
             let captured = self
@@ -195,7 +195,7 @@ impl TransformerModel {
         }
     }
 
-    /// ATLAS_MTP_CARRY_DRAFTER: give the drafter this turn's prompt context on
+    /// AVAROK_MTP_CARRY_DRAFTER: give the drafter this turn's prompt context on
     /// the FIRST propose of a sequence, by adopting the previous turn's
     /// drafter KV and appending only the span this turn actually computed.
     ///
@@ -413,7 +413,7 @@ impl TransformerModel {
         Ok(())
     }
 
-    /// ATLAS_MTP_CATCHUP: ring-capture the final hidden of a serially
+    /// AVAROK_MTP_CATCHUP: ring-capture the final hidden of a serially
     /// decoded token (position `pos`), keeping the ring's position range
     /// contiguous (a gap resets the range to just this row).
     pub(super) fn save_hidden_for_catchup_dispatch(
@@ -487,7 +487,7 @@ impl TransformerModel {
         //
         // GLM-5.3's MTP block is EP-sharded (144 of 288 experts) with a row-parallel DSA
         // `o_proj`, so rank-0-only means drafting from half of both. Under
-        // `ATLAS_MTP_EP_PROPOSE=1` the head tells the worker to run the same propose FIRST,
+        // `AVAROK_MTP_EP_PROPOSE=1` the head tells the worker to run the same propose FIRST,
         // then both ranks issue the same collectives in the same order.
         //
         // 🪤 Order matters: the command and its three scalars must be on the wire BEFORE

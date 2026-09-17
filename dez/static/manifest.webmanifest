@@ -1,7 +1,7 @@
 {
   "name": "Dez — the open-source IDE for local inference",
   "short_name": "Dez",
-  "description": "An IDE built on the Atlas Inference Engine, WebGPU, Rust and 100% WebAssembly. Models run locally in your browser — no server round-trip, no API key.",
+  "description": "An IDE built on the Avarok Inference Engine, WebGPU, Rust and 100% WebAssembly. Models run locally in your browser — no server round-trip, no API key.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

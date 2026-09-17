@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -83,7 +83,7 @@ impl TransformerModel {
         for (i, layer) in self.layers.iter().enumerate() {
             let layer_type = self.config.layer_type(i);
 
-            if layer_type == atlas_core::config::LayerType::FullAttention {
+            if layer_type == avarok_core::config::LayerType::FullAttention {
                 // Attention layers: sequential per-token (need per-token metadata)
                 for t in 0..k {
                     let pos = seq.seq_len + t;

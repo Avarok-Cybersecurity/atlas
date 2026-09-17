@@ -54,7 +54,7 @@ fn passes_that_do_not_declare_exact_replay_keep_the_batched_arms() {
     assert!(!verify_row_exact_required(false, false, true, false));
 }
 
-/// NEGATIVE: the kill switch (`ATLAS_NO_VERIFY_ROW_EXACT`) puts the
+/// NEGATIVE: the kill switch (`AVAROK_NO_VERIFY_ROW_EXACT`) puts the
 /// declaring pass back on the batched arms, so the two are A/B-able.
 #[test]
 fn the_kill_switch_restores_the_batched_arms() {
@@ -62,7 +62,7 @@ fn the_kill_switch_restores_the_batched_arms() {
 }
 
 /// The pass-scoped lever is OPT-IN (2026-09-05 polarity): unset → the
-/// batched arms; `ATLAS_VERIFY_ROW_EXACT` arms the exact chain; the kill
+/// batched arms; `AVAROK_VERIFY_ROW_EXACT` arms the exact chain; the kill
 /// switch wins when both are present.
 #[test]
 fn row_exact_lever_is_opt_in_and_the_kill_switch_wins() {
@@ -72,7 +72,7 @@ fn row_exact_lever_is_opt_in_and_the_kill_switch_wins() {
     );
     assert!(
         row_exact_lever_from(true, false),
-        "ATLAS_VERIFY_ROW_EXACT arms it"
+        "AVAROK_VERIFY_ROW_EXACT arms it"
     );
     assert!(!row_exact_lever_from(false, true));
     assert!(
@@ -158,7 +158,7 @@ fn exact_verify_flag_selects_the_exact_chain() {
 }
 
 /// The environment fallback can NEVER turn exact verify on: there is no
-/// `ATLAS_*` variable for it on purpose (house rule: no new env knobs),
+/// `AVAROK_*` variable for it on purpose (house rule: no new env knobs),
 /// so a serve that skips `set_from_cli` still defaults to the WY arms.
 /// Deterministic despite reading the process environment, because only
 /// the `exact_verify` field is asserted and no variable feeds it.
@@ -167,7 +167,7 @@ fn env_fallback_never_enables_exact_verify() {
     assert!(!GdnFlags::from_env().exact_verify);
     // Same rule for the stage-3 pool sizing: no env variable feeds it.
     // `--ssm-h-dtype f16-pool` is the ONLY way to publish it, so a
-    // legacy `ATLAS_SSM_H_FP16=1` script keeps the FP32-sized pool.
+    // legacy `AVAROK_SSM_H_FP16=1` script keeps the FP32-sized pool.
     assert!(!GdnFlags::from_env().h_f16_pool);
 }
 

@@ -7,7 +7,7 @@ use super::*;
 #[path = "bf16_verify_out.rs"]
 mod bf16_verify_out;
 
-/// ATLAS_K4_DIAG=1 phase checkpoint (see verify_c2.rs). Synchronizes the
+/// AVAROK_K4_DIAG=1 phase checkpoint (see verify_c2.rs). Synchronizes the
 /// stream after a named phase of the batched GDN decode so an illegal access
 /// is attributed to the exact op. No-op (and no env read past the first call)
 /// unless the diagnostic env is set. Only legal in eager mode — verify_c2
@@ -25,19 +25,19 @@ fn k4_diag_checkpoint(ctx: &ForwardContext, phase: &str, stream: u64) -> Result<
 }
 
 /// Presence kill switch for the single-launch fused BA projection + GDN gates
-/// (`ATLAS_NO_BATCHED_BA_GATES` restores the per-token GEMV + `compute_gdn_gates`
+/// (`AVAROK_NO_BATCHED_BA_GATES` restores the per-token GEMV + `compute_gdn_gates`
 /// pair). Presence, not value — `=0` is NOT "off".
 fn batched_ba_gates_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_BA_GATES").is_err())
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_BATCHED_BA_GATES").is_err())
 }
 
 /// Presence kill switch for the single-launch gated RMS norm
-/// (`ATLAS_NO_BATCHED_GDN_NORM` restores the per-token loop). The batched kernel
+/// (`AVAROK_NO_BATCHED_GDN_NORM` restores the per-token loop). The batched kernel
 /// is bit-identical, so this switch exists only to isolate the change in an A/B.
 fn batched_norm_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_BATCHED_GDN_NORM").is_err())
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_BATCHED_GDN_NORM").is_err())
 }
 
 /// Row count above which the batched decode/verify GDN projections stop taking
@@ -54,12 +54,12 @@ fn batched_norm_enabled() -> bool {
 pub(super) const VERIFY_TGEMM_MIN_TOKENS: usize = 8;
 
 /// Presence kill switch for the NVFP4 QKVZ arm of the batched decode/verify
-/// projection — `ATLAS_NO_QKVZ_NVFP4_DECODE` restores the FP8-prefill-copy
+/// projection — `AVAROK_NO_QKVZ_NVFP4_DECODE` restores the FP8-prefill-copy
 /// dispatch verbatim. PRESENCE, not value, per house convention (`=0` is NOT
 /// "off"). Read ONCE: this site runs under CUDA-graph capture.
 fn qkvz_nvfp4_decode_off() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var("ATLAS_NO_QKVZ_NVFP4_DECODE").is_ok())
+    *OFF.get_or_init(|| std::env::var("AVAROK_NO_QKVZ_NVFP4_DECODE").is_ok())
 }
 
 /// Should the batched decode/verify QKVZ projection read the NVFP4 transposed
@@ -114,10 +114,10 @@ pub(super) enum GdnStates<'a, 'b> {
     },
 }
 
-/// `ATLAS_HC_OPROJ_CHUNKED=0` sends out_proj at M>8 back to the tile GEMM.
+/// `AVAROK_HC_OPROJ_CHUNKED=0` sends out_proj at M>8 back to the tile GEMM.
 fn oproj_chunked() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_HC_OPROJ_CHUNKED").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_HC_OPROJ_CHUNKED").as_deref() != Ok("0"))
 }
 
 impl Qwen3SsmLayer {
@@ -302,12 +302,12 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize; // bytes per BF16
         let fp32 = 4usize; // bytes per FP32
 
-        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // ── Phase timing (AVAROK_HC_VERIFY_STAGE_TIMING=1) ──
         // See the module note: `gdn_block` is seven phases with different
         // floors, and the 2.4x gap has to be located before it can be closed.
         let phase_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut pt = std::time::Instant::now();
         let (mut p1, mut p23, mut p4, mut p567, mut p8, mut p9) =
@@ -357,7 +357,7 @@ impl Qwen3SsmLayer {
         // trait_decode_multi_seq/ssm_batched.rs: one weight pass via
         // `w8a16_gemv_batch4`, per-token `w8a16_gemv` when it isn't linked.
         if let Some(ref g) = self.exl3_gdn {
-            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the in_proj pair
+            // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): the in_proj pair
             // writes all K rows of the sequential [Q|K|V|Z] arena (row stride
             // qkvz_size, Z block at +conv_dim) through the strided egress —
             // the layout the conv/GDN sites below already consume. The packed
@@ -411,7 +411,7 @@ impl Qwen3SsmLayer {
         // NULL and `qkvz_fp8w` is the only live weight. The old `== 2 || == 3`
         // guard let num_tokens=4 fall through to `dense_gemm` on the NULL
         // dense slot → CUDA_ERROR_ILLEGAL_ADDRESS on the first K=4 verify
-        // (localized via ATLAS_K4_DIAG, 2026-07-18). `w8a16_gemv_batch4`
+        // (localized via AVAROK_K4_DIAG, 2026-07-18). `w8a16_gemv_batch4`
         // is built for M<=4 (see w8a16_gemv_batch4.cu), so widening the
         // guard is sufficient; the per-token `w8a16_gemv` fallback already
         // loops over num_tokens.
@@ -673,7 +673,7 @@ impl Qwen3SsmLayer {
             // batched verify agree with the decode it is verifying — the FP8
             // arm was the odd one out. BF16 activations (vs the FP8 arm's
             // e4m3 downcast) against a 4-bit weight: not byte-identical.
-            // Kill switch ATLAS_NO_QKVZ_NVFP4_DECODE (PRESENCE check).
+            // Kill switch AVAROK_NO_QKVZ_NVFP4_DECODE (PRESENCE check).
             self.ms_proj_gemm(
                 ctx.gpu,
                 normed,
@@ -959,7 +959,7 @@ impl Qwen3SsmLayer {
                 // ONE table-form `gdn_decode_wy4` launch for the whole batch
                 // (trait_decode_batched_conv_gdn_multi.rs; preconditions
                 // checked on the actual state pointers, kill switch
-                // ATLAS_NO_VERIFY_GDN_BATCH). Fallback: the SAME per-sequence
+                // AVAROK_NO_VERIFY_GDN_BATCH). Fallback: the SAME per-sequence
                 // conv+GDN body, one call per sequence with row-offset buffer
                 // bases. Strides match decode_batched_conv_gdn's consumers
                 // exactly: deinterleaved rows at qkvz_size*bf16, conv_out at
@@ -1162,7 +1162,7 @@ impl Qwen3SsmLayer {
         // ── 9. Output projection → [K, H] ──
         let out_proj_buf = ctx.buffers.moe_output(); // [K, H] BF16
         if let Some(ref g) = self.exl3_gdn {
-            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is
+            // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): the packed trellis is
             // the ONLY live out_proj weight (all other slots null, enforced
             // at install). C is the contiguous [K, h] block; the GEMV tier
             // covers K <= 8, the GEMM tier the wider chain verifies.
@@ -1276,7 +1276,7 @@ impl Qwen3SsmLayer {
                 SAID.call_once(|| {
                     tracing::info!(
                         rows = num_tokens,
-                        "out_proj: CHUNKED onto the batched GEMV (ATLAS_HC_OPROJ_CHUNKED=0 \
+                        "out_proj: CHUNKED onto the batched GEMV (AVAROK_HC_OPROJ_CHUNKED=0 \
                          restores the tile GEMM)"
                     );
                 });
@@ -1363,7 +1363,7 @@ impl Qwen3SsmLayer {
                 // Kill switch, PRESENCE check per house convention (`=0` is NOT
                 // off), cached once.
                 static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                !*OFF.get_or_init(|| std::env::var("ATLAS_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
+                !*OFF.get_or_init(|| std::env::var("AVAROK_NO_VERIFY_OUTPROJ_TGEMM").is_ok())
             }
         {
             // M > 8 (batched K=4 verify, R = n*4 rows; DFlash wide verify):
@@ -1375,7 +1375,7 @@ impl Qwen3SsmLayer {
             // kernel+handle the multi-seq decode out_proj uses
             // (`deep_k_gemm`). BF16 activations (vs the FP8 arm's e4m3
             // downcast) — equal-or-better numerics, not byte-identical.
-            // Kill switch ATLAS_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
+            // Kill switch AVAROK_NO_VERIFY_OUTPROJ_TGEMM (PRESENCE check).
             //
             // 2026-08-17: the call now goes through `ms_proj_gemm` rather than
             // `deep_k_gemm` directly. `ms_proj_gemm` IS `deep_k_gemm` plus the

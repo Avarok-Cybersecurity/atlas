@@ -148,7 +148,7 @@ impl WeightStore {
 /// (Fused per-expert views DO exist outside the store — see
 /// `weight_loader/step3p7.rs:93` — but they live in the layer structs that
 /// own the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
+impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     fn label(&self) -> &'static str {
         "weight store"
     }

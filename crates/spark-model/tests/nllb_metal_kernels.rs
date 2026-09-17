@@ -10,11 +10,11 @@ use spark_runtime::metal_backend::MetalGpuBackend;
 
 #[test]
 fn nllb_metal_kernels_smoke() -> Result<()> {
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     anyhow::ensure!(
         !modules.is_empty(),
-        "metal kernel registry empty; run with ATLAS_TARGET_HW=metal \
-         ATLAS_TARGET_MODEL=nllb-200-3.3b ATLAS_TARGET_QUANT=bf16"
+        "metal kernel registry empty; run with AVAROK_TARGET_HW=metal \
+         AVAROK_TARGET_MODEL=nllb-200-3.3b AVAROK_TARGET_QUANT=bf16"
     );
 
     let backend = MetalGpuBackend::new(0, &modules)?;

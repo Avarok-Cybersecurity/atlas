@@ -21,7 +21,7 @@
 //!   rebuild the drafter from scratch costs a measured **1136 ms**
 //!   (`fc` GEMM alone 874 ms over 11,947 rows, GB10 2026-07-21) against only
 //!   ~211 ms/turn of decode saving on the scored workload — **−927 ms/turn**,
-//!   spent on TTFT, the metric Atlas wins 1.80x. Carry pays the same context
+//!   spent on TTFT, the metric Avarok wins 1.80x. Carry pays the same context
 //!   as a **~21.5 ms mean append** instead.
 //!
 //! So the only two configurations worth shipping are BOTH ON and BOTH OFF, and
@@ -48,16 +48,16 @@
 //!
 //! Every switch here is read with a strict `== Some("1")`. Setting a variable
 //! to `0` (or to anything else) is NOT how you turn something off in this
-//! module — `ATLAS_*=0` has burned this codebase before, because several
+//! module — `AVAROK_*=0` has burned this codebase before, because several
 //! unrelated flags are presence-checked and are therefore ENABLED by `=0`
-//! ([[reference_atlas_env_presence_check_trap]]). Only the `ATLAS_NO_*` name
+//! ([[reference_avarok_env_presence_check_trap]]). Only the `AVAROK_NO_*` name
 //! below disables, and only when it is exactly `1`.
 //!
 //! | variable | effect |
 //! |---|---|
 //! | *(unset)* | prefill ON, carry ON — the shipped configuration |
-//! | `ATLAS_NO_MTP_DRAFTER_CONTEXT=1` | prefill OFF, carry OFF |
-//! | `ATLAS_MTP_DRAFTER_CONTEXT_PREFILL_ONLY_UNSAFE=1` | prefill ON, carry OFF — **research arm only** |
+//! | `AVAROK_NO_MTP_DRAFTER_CONTEXT=1` | prefill OFF, carry OFF |
+//! | `AVAROK_MTP_DRAFTER_CONTEXT_PREFILL_ONLY_UNSAFE=1` | prefill ON, carry OFF — **research arm only** |
 //!
 //! The prefill-only arm exists because the individual contributions of the two
 //! halves are still being separated by a running e2e (`dpctrl`), and deleting
@@ -65,21 +65,21 @@
 //! a supported deployment, and it logs a warning at startup, because it is the
 //! −927 ms/turn configuration described above.
 //!
-//! The pre-default opt-in names `ATLAS_MTP_DRAFTER_PREFILL` and
-//! `ATLAS_MTP_CARRY_DRAFTER` are **obsolete and ignored**. They are not silently
+//! The pre-default opt-in names `AVAROK_MTP_DRAFTER_PREFILL` and
+//! `AVAROK_MTP_CARRY_DRAFTER` are **obsolete and ignored**. They are not silently
 //! accepted: their mere presence is reported at startup so a stale launch
 //! script cannot leave an operator believing a value had an effect.
 
 /// Kill switch — disables BOTH halves. Strict `== "1"`.
-pub const DISABLE_ENV: &str = "ATLAS_NO_MTP_DRAFTER_CONTEXT";
+pub const DISABLE_ENV: &str = "AVAROK_NO_MTP_DRAFTER_CONTEXT";
 
 /// Research-only arm: prefill without carry. Strict `== "1"`. See module docs
 /// for why this is a measured net loss and must never be a deployment.
-pub const PREFILL_ONLY_ENV: &str = "ATLAS_MTP_DRAFTER_CONTEXT_PREFILL_ONLY_UNSAFE";
+pub const PREFILL_ONLY_ENV: &str = "AVAROK_MTP_DRAFTER_CONTEXT_PREFILL_ONLY_UNSAFE";
 
 /// Opt-in names from before the default flip. Read only to WARN that they are
 /// ignored; never read for behaviour.
-pub const OBSOLETE_ENVS: [&str; 2] = ["ATLAS_MTP_DRAFTER_PREFILL", "ATLAS_MTP_CARRY_DRAFTER"];
+pub const OBSOLETE_ENVS: [&str; 2] = ["AVAROK_MTP_DRAFTER_PREFILL", "AVAROK_MTP_CARRY_DRAFTER"];
 
 /// Which halves of the drafter-context feature are active.
 ///
@@ -205,7 +205,7 @@ fn report(cfg: DrafterContext) {
             tracing::warn!(
                 "MTP cross-turn carry is CONFIGURED ON but INERT: the MTP \
                  dispatch cap is {} (>1), and the carry slot is single-sequence \
-                 by design, so it is force-disabled. Set ATLAS_MTP_MAX_SEQS=1 \
+                 by design, so it is force-disabled. Set AVAROK_MTP_MAX_SEQS=1 \
                  to arm it; leave it unset to keep multi-sequence MTP.",
                 crate::speculative::mtp_max_seqs(),
             );
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(resolve(Some("1"), Some("1")), DrafterContext::OFF);
     }
 
-    /// `ATLAS_*=0` does NOT disable. Only the `ATLAS_NO_*` name does, and only
+    /// `AVAROK_*=0` does NOT disable. Only the `AVAROK_NO_*` name does, and only
     /// at exactly "1" — anything else leaves the shipped default in place.
     #[test]
     fn only_exactly_one_switches_anything() {
@@ -284,7 +284,7 @@ mod tests {
     fn obsolete_opt_in_names_are_pinned() {
         assert_eq!(
             OBSOLETE_ENVS,
-            ["ATLAS_MTP_DRAFTER_PREFILL", "ATLAS_MTP_CARRY_DRAFTER"]
+            ["AVAROK_MTP_DRAFTER_PREFILL", "AVAROK_MTP_CARRY_DRAFTER"]
         );
     }
 }

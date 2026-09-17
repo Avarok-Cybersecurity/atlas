@@ -5,7 +5,7 @@
 
 use std::ffi::c_void;
 
-use atlas_core::registry::RawCudaFunc;
+use avarok_core::registry::RawCudaFunc;
 
 use super::{effective_free_bytes, polled_free_bytes};
 use crate::gpu::{DevicePtr, KernelHandle};
@@ -22,7 +22,7 @@ fn kernel_handle_roundtrip() {
 
 #[test]
 fn null_free_is_noop() {
-    // AtlasCudaBackend::free should handle null pointers gracefully.
+    // AvarokCudaBackend::free should handle null pointers gracefully.
     // Can't call without GPU, but verify the DevicePtr::is_null logic.
     assert!(DevicePtr::NULL.is_null());
     assert!(!DevicePtr(0x1000).is_null());

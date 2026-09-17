@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrent agentic harness — measures how Atlas holds up with C agents at once.
+"""Concurrent agentic harness — measures how Avarok holds up with C agents at once.
 
 The sequential harness (oc_harness.py) can't answer concurrency questions, and its
 Rust/axum task is unusable in parallel: cargo serializes on the shared target dir
@@ -26,8 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 OC = os.environ.get("OPENCODE_BIN") or shutil.which("opencode") or "opencode"
-CONTAINER = os.environ.get("ATLAS_CONTAINER", "laguna-s")
-PROVIDER = os.environ.get("OPENCODE_PROVIDER", "atlas")
+CONTAINER = os.environ.get("AVAROK_CONTAINER", "laguna-s")
+PROVIDER = os.environ.get("OPENCODE_PROVIDER", "avarok")
 
 # ── Task pool ────────────────────────────────────────────────────────────────
 # (name, kind, prompt, verify_argv). Kept deliberately similar in size/shape so
@@ -148,7 +148,7 @@ def run_agent(prompt, workdir, timeout, model, max_repeat=0):
     m = model if model.startswith(f"{PROVIDER}/") else f"{PROVIDER}/{model}"
     cmd = [OC, "run", "--auto", "--format", "json", "--dir", str(workdir), "-m", m, prompt]
     env = dict(os.environ, DOTNET_CLI_TELEMETRY_OPTOUT="1", DOTNET_NOLOGO="1",
-               ATLAS_HARNESS_PORT="3001")
+               AVAROK_HARNESS_PORT="3001")
     t0 = time.time()
     events, last_sig, repeats, killed = [], None, 0, ""
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -262,9 +262,9 @@ def require_container():
                          capture_output=True, text=True)
     names = (out.stdout or "").split()
     if CONTAINER not in names:
-        sys.exit(f"ATLAS_CONTAINER={CONTAINER!r} is not a running container "
+        sys.exit(f"AVAROK_CONTAINER={CONTAINER!r} is not a running container "
                  f"(running: {', '.join(names) or 'none'}). Throughput is read from "
-                 f"its log, so the sweep would report 0.0 tok/s. Set ATLAS_CONTAINER.")
+                 f"its log, so the sweep would report 0.0 tok/s. Set AVAROK_CONTAINER.")
 
 
 def decode_stats(since_s):

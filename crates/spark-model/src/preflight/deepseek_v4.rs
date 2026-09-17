@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::{WeightDtype, WeightStore};
 
 const PROJECTIONS: [&str; 3] = ["w1", "w2", "w3"];

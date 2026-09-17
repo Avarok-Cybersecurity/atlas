@@ -27,7 +27,7 @@ use super::*;
 ///
 /// WHY 16 MATTERS HERE: a C=4 verify at DRAFTS=2 is 11 rows, which fell
 /// outside 4..=8 and landed on the 3-row chunked ladder as four sequential
-/// fused MoE calls. ATLAS_MTP_TIMING says the C=4 step is 93% forward
+/// fused MoE calls. AVAROK_MTP_TIMING says the C=4 step is 93% forward
 /// (113 of 122 ms), so that is where the time is.
 pub(crate) const MOE_KM_MAX_ROWS: u32 = 16;
 

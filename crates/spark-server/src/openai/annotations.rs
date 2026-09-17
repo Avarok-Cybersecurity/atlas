@@ -9,7 +9,7 @@ pub struct ChatMessage {
     /// Only populated when enable_thinking=true. Both Cline and Roo Code
     /// check for this field. DeepSeek-originated, vLLM/LiteLLM standard.
     /// This is the single canonical reasoning field on the response wire —
-    /// Atlas deliberately does NOT also emit a `reasoning` mirror, because
+    /// Avarok deliberately does NOT also emit a `reasoning` mirror, because
     /// strict OpenAI-compatible clients reject a message that carries both
     /// (they expect exactly one). Requests may still send either name; see
     /// the `alias = "reasoning"` on the input-side message type.
@@ -24,7 +24,7 @@ pub struct ChatMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<Vec<Annotation>>,
     /// Assistant refusal message. When set, `content` should be treated
-    /// as null by the client. Atlas does not currently emit refusals; the
+    /// as null by the client. Avarok does not currently emit refusals; the
     /// field is present so safety-aware clients stay compatible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,

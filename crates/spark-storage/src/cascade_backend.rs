@@ -9,7 +9,7 @@
 // A restore hits T1 (a local copy_h2d) or falls through to `backing`. Purely a
 // placement layer — no tier transforms bytes, so the composite is bit-identical
 // to the backing alone (the group-id -> address bijection is the same on every
-// tier). Enabled by $ATLAS_KV_LOCAL_GB; 0 (default) leaves the path untouched.
+// tier). Enabled by $AVAROK_KV_LOCAL_GB; 0 (default) leaves the path untouched.
 
 use std::ffi::c_void;
 
@@ -226,7 +226,7 @@ mod tests {
     use crate::layout::Layout;
 
     fn tempdir(name: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("atlas-cascade-{name}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("avarok-cascade-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p

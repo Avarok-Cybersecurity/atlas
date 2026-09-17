@@ -26,7 +26,7 @@
 //!  F2. verify-grid: exact BF16 equality against serial routed decode for
 //!     Kbits4/5/6, top-k3/10, verify rows2/3/4; old batch grid is a negative
 //!     control. Run only this leg with EXL3_VERIFY_GRID_ONLY=1.
-//!  G. prefill-MoE: the PRODUCTION sort-by-expert tier (Atlas counting sort
+//!  G. prefill-MoE: the PRODUCTION sort-by-expert tier (Avarok counting sort
 //!     + exl3_moe_stage_sorted + the fused persistent exl3_moe kernel + the
 //!     reconstruct overflow path) — 16 experts K=4 MUL1, top_k=4, T in
 //!     {3 (no-sync shortcut), 64 (host-sync fused), 64-EP (sentinel tail +
@@ -63,8 +63,8 @@
 //! absent from this target's module set.
 //!
 //! Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.8-flash-next \
-//!   ATLAS_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.8-flash-next \
+//!   AVAROK_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
 //!     --features cuda,gpu-examples --example exl3_native_parity
 
 mod bench;
@@ -85,7 +85,7 @@ mod util;
 
 use anyhow::Result;
 use spark_model::layers::ops::exl3_locks_alloc;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
 use crate::truth::{cb_enum, decode_what_f64, exact_a_had, truth_matmul};
@@ -189,7 +189,7 @@ fn leg_gemv(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     // Probe: absent = this target set doesn't carry the module.

@@ -11,7 +11,7 @@ use super::{
     normalize_tool_call_arguments, remap_developer_role, resolve_think_control,
 };
 
-/// Run Atlas's cross-cutting message preprocessing (formerly encoded in
+/// Run Avarok's cross-cutting message preprocessing (formerly encoded in
 /// per-model jinja overrides) so it applies to EVERY model's own template:
 ///   1. parse stringified `tool_calls[*].function.arguments` (F76),
 ///   2. auto-close an unclosed `<think>` before a `<tool_call>` in
@@ -58,7 +58,7 @@ impl ChatTokenizer {
         //
         // Conceptually the default is now MODEL-FIRST: render off the
         // model's OWN `chat_template.jinja` / `tokenizer_config.json`.
-        // Atlas's cross-cutting behaviors (autoclose-think,
+        // Avarok's cross-cutting behaviors (autoclose-think,
         // think-control, F76 arg-parse) are applied in Rust
         // message-preprocessing (see `preprocess_for_render`), so a model
         // no longer needs a bespoke `jinja-templates/{model_type}.jinja`

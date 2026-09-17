@@ -14,7 +14,7 @@ use super::*;
 const UNREACHABLE: &str = "org/not a real model";
 
 fn root() -> std::path::PathBuf {
-    let p = std::env::temp_dir().join("atlas-dlstate-more");
+    let p = std::env::temp_dir().join("avarok-dlstate-more");
     std::fs::create_dir_all(&p).expect("temp root");
     p
 }
@@ -261,7 +261,7 @@ fn every_failure_is_described_with_something_to_do_about_it() {
 #[test]
 fn an_already_complete_model_says_so_instead_of_claiming_a_download() {
     let mut s = DownloadState::default();
-    let root = std::env::temp_dir().join("atlas-already-complete");
+    let root = std::env::temp_dir().join("avarok-already-complete");
     std::fs::create_dir_all(&root).ok();
     s.start("centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf", root);
     {
@@ -290,7 +290,7 @@ fn an_already_complete_model_says_so_instead_of_claiming_a_download() {
 #[test]
 fn a_real_transfer_reports_what_moved() {
     let mut s = DownloadState::default();
-    let root = std::env::temp_dir().join("atlas-real-transfer");
+    let root = std::env::temp_dir().join("avarok-real-transfer");
     std::fs::create_dir_all(&root).ok();
     s.start("org/fresh", root);
     {

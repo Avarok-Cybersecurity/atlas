@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! CPU reference dequantization for GGUF/GGML quantized weight blocks.
 //!
-//! This is the correctness oracle and portable fallback for the Atlas GGUF
+//! This is the correctness oracle and portable fallback for the Avarok GGUF
 //! loader. Every routine reproduces llama.cpp's `dequantize_row_*` index
 //! arithmetic exactly (little-endian throughout). Clarity is preferred over
 //! speed: the GPU dequant kernels are the fast path; these functions are what

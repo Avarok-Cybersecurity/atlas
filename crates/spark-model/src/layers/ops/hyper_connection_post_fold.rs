@@ -34,14 +34,14 @@ use super::hyper_connection_lowrank_rows::{
 };
 use crate::layers::qwen3_attention::{HcSiteWeights, HcWeights};
 
-/// `ATLAS_HC_FUSE_POST=1`: fold the intra-layer `hc_post` into the next
-/// `hc_pre` stage. Same opt-in convention as `ATLAS_HC_FUSE_UP_MIX` and
-/// `ATLAS_HC_FUSE_DOWN_INJ`; default OFF until an nsys kernel-summary delta
+/// `AVAROK_HC_FUSE_POST=1`: fold the intra-layer `hc_post` into the next
+/// `hc_pre` stage. Same opt-in convention as `AVAROK_HC_FUSE_UP_MIX` and
+/// `AVAROK_HC_FUSE_DOWN_INJ`; default OFF until an nsys kernel-summary delta
 /// says what it is worth. The predicted saving (~1.4-1.9% of prefill) sits
 /// under the ~2.3% run-to-run band, so `measure_prefill` CANNOT settle it.
 pub(crate) fn hc_fuse_post() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_POST").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_FUSE_POST").as_deref() == Ok("1"))
 }
 
 /// The stage kernel's launch geometry. `hc_pre_gemm` launches

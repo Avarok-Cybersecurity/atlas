@@ -10,7 +10,7 @@
 //
 // The --dev-origins flag is not optional here and its absence does not look
 // like a configuration problem. The agent's origin allowlist is
-// ALLOWED_ORIGINS = ["https://atlasinference.io"] and nothing else unless that
+// ALLOWED_ORIGINS = ["https://atlascybernetics.ai"] and nothing else unless that
 // flag is passed (atlasctl-agent/src/guard.rs). Playwright serves this suite
 // from http://127.0.0.1:4173, which is in DEV_ORIGINS but gated behind the
 // flag -- so a default agent answers the WebSocket upgrade with 403 before any
@@ -20,10 +20,10 @@
 
 import { expect, test } from '@playwright/test';
 
-const TOKEN = process.env.ATLASCTL_TOKEN ?? '';
+const TOKEN = process.env.AVAROKCTL_TOKEN ?? '';
 
 test.describe('@live cluster launch', () => {
-  test.skip(!TOKEN, 'needs ATLASCTL_TOKEN and a running agent');
+  test.skip(!TOKEN, 'needs AVAROKCTL_TOKEN and a running agent');
 
   test.beforeEach(async ({ page }) => {
     await page.addInitScript((t) => {
@@ -32,7 +32,7 @@ test.describe('@live cluster launch', () => {
       // never dials, `fleet.mode` never reaches 'live', and every assertion
       // below times out waiting for a surface that cannot mount. A @live spec
       // that cannot pass is worse than no spec, because it reads as coverage.
-      window.localStorage.setItem('atlas.agent.token', t);
+      window.localStorage.setItem('avarok.agent.token', t);
     }, TOKEN);
   });
 

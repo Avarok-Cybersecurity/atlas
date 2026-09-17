@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 (QTIP trellis) LM head — `ATLAS_EXL3_NATIVE=1`.
+//! Native EXL3 (QTIP trellis) LM head — `AVAROK_EXL3_NATIVE=1`.
 //!
 //! Serves the vocab projection straight from the checkpoint's packed trellis
 //! codes through the fused `exl3_matmul` kernels instead of materializing a
@@ -70,7 +70,7 @@ use super::types::TransformerModel;
 use crate::layers::ops;
 
 /// Resident state for the natively-served EXL3 LM head. Built once in
-/// `factory/build.rs` when `ATLAS_EXL3_NATIVE=1` kept `lm_head` packed,
+/// `factory/build.rs` when `AVAROK_EXL3_NATIVE=1` kept `lm_head` packed,
 /// installed via [`TransformerModel::set_lm_head_exl3`].
 #[derive(Debug)]
 pub(crate) struct Exl3LmHead {
@@ -142,7 +142,7 @@ impl Exl3LmHead {
             crate::weight_map::EXL3_NATIVE_DENSE_K_BITS,
         );
         // The checkpoint's lm_head rows are PADDED past the logical vocab
-        // (the HF embedding ships 248320 rows vs Atlas's vocab_size 248077 on
+        // (the HF embedding ships 248320 rows vs Avarok's vocab_size 248077 on
         // this family — same prefix property the native-FP8 share relies on):
         // the trellis holds `out_dim >= vocab` rows and the kernels write all
         // of them; the pad columns are dropped by the pitched narrow copy in
@@ -170,7 +170,7 @@ impl Exl3LmHead {
             gpu.kernel("exl3_matmul", &name).with_context(|| {
                 format!(
                     "EXL3 native lm_head needs exl3_matmul::{name} (gb10 targets only) — \
-                     unset ATLAS_EXL3_NATIVE on this target"
+                     unset AVAROK_EXL3_NATIVE on this target"
                 )
             })?;
         }

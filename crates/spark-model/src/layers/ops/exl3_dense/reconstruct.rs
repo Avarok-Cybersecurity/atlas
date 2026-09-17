@@ -8,7 +8,7 @@
 //! **16-row M slab** (`exl3_gemm_kernel.cuh`), so a 4096-row prefill chunk
 //! re-decodes each K=6 dense weight 256 times. Upstream's own policy is
 //! reconstruct + `hgemm` above 144 rows (`modules/quant/exl3.py`,
-//! `AUTO_RECONSTRUCT_THRESHOLD`), and vllm-exl3 inherits it. Atlas already has
+//! `AUTO_RECONSTRUCT_THRESHOLD`), and vllm-exl3 inherits it. Avarok already has
 //! the byte-identical reconstruction kernel (`exl3_reconstruct.cu`, GPU-vs-CPU
 //! parity in `exl3_reconstruct_parity`) and a fixed-config BF16 GEMM
 //! (`dense_gemm_bf16_pipelined`, 128x128 tile, no split-K, no heuristics).
@@ -48,7 +48,7 @@
 //!
 //! # Knobs (house convention: env PRESENCE arms; `=0` is not "off")
 //!
-//! * `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows>` — sets the threshold: the
+//! * `AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS=<rows>` — sets the threshold: the
 //!   tier takes calls with `m >= rows` (values below
 //!   [`EXL3_DENSE_RECONSTRUCT_MIN_ROWS`], including 0 or garbage, clamp to
 //!   it: the value never means "off"). UNSET = the default threshold
@@ -61,7 +61,7 @@
 //!   at the qwen4_exp maxima 6144 x 12288) and a one-time numerics change
 //!   (the weight is rounded to BF16 once; the greedy text of long prompts
 //!   differs from the trellis tier's, coherent).
-//! * `ATLAS_NO_EXL3_DENSE_RECONSTRUCT` — kill switch (presence): the tier
+//! * `AVAROK_NO_EXL3_DENSE_RECONSTRUCT` — kill switch (presence): the tier
 //!   stays off whatever the threshold says (the trellis GEMM serves every
 //!   m > 8 call, the pre-2026-09-06 behaviour).
 
@@ -77,9 +77,9 @@ use super::stage::Exl3DenseStage;
 use super::{Exl3DenseOut, Exl3DenseWeight};
 
 /// Threshold env (presence arms the tier; the value is the minimum `m`).
-pub const EXL3_DENSE_RECONSTRUCT_ROWS_ENV: &str = "ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS";
+pub const EXL3_DENSE_RECONSTRUCT_ROWS_ENV: &str = "AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS";
 /// Kill switch env (presence disarms the tier regardless of the threshold).
-pub const EXL3_DENSE_RECONSTRUCT_KILL_ENV: &str = "ATLAS_NO_EXL3_DENSE_RECONSTRUCT";
+pub const EXL3_DENSE_RECONSTRUCT_KILL_ENV: &str = "AVAROK_NO_EXL3_DENSE_RECONSTRUCT";
 /// Smallest row count the tier may take: strictly above the decode arm's
 /// GEMV/GEMM tier, which this lever must never touch.
 pub const EXL3_DENSE_RECONSTRUCT_MIN_ROWS: usize = EXL3_GEMV_MAX_M + 1;

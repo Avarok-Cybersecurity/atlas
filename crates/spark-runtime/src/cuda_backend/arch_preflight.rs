@@ -2,7 +2,7 @@
 
 //! Refuse to load kernels the GPU cannot run, BEFORE the driver does it badly.
 //!
-//! Atlas compiles one SM architecture per build, and the driver's answer to a
+//! Avarok compiles one SM architecture per build, and the driver's answer to a
 //! mismatch is `CUDA_ERROR_NO_BINARY_FOR_GPU` (or
 //! `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`) raised inside `cuModuleLoadData` — an
 //! error that names neither the arch in the binary nor the card in the box. An
@@ -10,8 +10,8 @@
 //! nothing to act on.
 //!
 //! So this runs first: two `cuDeviceGetAttribute` calls, the pure rule from
-//! [`atlas_core::arch`], and a message that names both sides. The rule itself
-//! lives in atlas-core because `--check-kernels` reports it too.
+//! [`avarok_core::arch`], and a message that names both sides. The rule itself
+//! lives in avarok-core because `--check-kernels` reports it too.
 //!
 //! The capability query is addressed BY ORDINAL (`cuDeviceGet`), not by "the
 //! calling thread's current context" (`cuCtxGetDevice`). That is not a style
@@ -75,7 +75,7 @@ pub fn device_compute_capability() -> Result<(u32, u32)> {
 /// preflight, and quietly so. `cuda_host::host(ordinal)` binds a context only
 /// while it INITIALISES: once its `OnceLock` is populated it hands back an
 /// `Arc` clone and touches no thread-current state. A TUI Library swap runs
-/// the new load on a fresh `atlas-swap` thread while the previous model's
+/// the new load on a fresh `avarok-swap` thread while the previous model's
 /// context was made current on the scheduler thread, so on the swap thread
 /// `cuCtxGetDevice` has no context to read and returns
 /// `CUDA_ERROR_INVALID_CONTEXT` — failing the requested load AND the attempt
@@ -126,7 +126,7 @@ pub fn device_sm_count_of(ordinal: usize) -> Result<u32> {
 /// dressed as rigour.
 ///
 /// It exists at all because the defect it guards was exactly a silent wrong
-/// constant: `atlas_core::device::sm121::NUM_SMS = 48`, named after one part,
+/// constant: `avarok_core::device::sm121::NUM_SMS = 48`, named after one part,
 /// compiled into a build for another, where a grid sized from it then ran 24
 /// CTAs on 132 SMs for a whole campaign. A one-line boot warning naming both
 /// numbers is what would have caught it in round 1.
@@ -137,7 +137,7 @@ pub fn check_sm_count(device_sms: u32, declared_sms: u32) -> Option<String> {
              (kernels/{hw}/HARDWARE.toml [hardware] sm_count) but the device \
              reports {device_sms} — grid sizing that reads it will be off; \
              serving is unaffected",
-            hw = atlas_kernels::TARGET_DEFAULTS.hw,
+            hw = avarok_kernels::TARGET_DEFAULTS.hw,
         )
     })
 }
@@ -147,7 +147,7 @@ pub fn check_sm_count(device_sms: u32, declared_sms: u32) -> Option<String> {
 /// Split out so the decision is testable on a host with no CUDA at all, which
 /// is every machine CI runs on.
 pub fn check_arch(compiled_arch: &str, device_cc: (u32, u32)) -> Result<String> {
-    if let Err(mismatch) = atlas_core::arch::ptx_arch_runs_on_device(compiled_arch, device_cc) {
+    if let Err(mismatch) = avarok_core::arch::ptx_arch_runs_on_device(compiled_arch, device_cc) {
         // Keep the device facts typed so --check-kernels can report an early
         // refusal without parsing this error's human-readable message.
         return Err(mismatch.into());
@@ -177,17 +177,17 @@ pub fn check_arch(compiled_arch: &str, device_cc: (u32, u32)) -> Result<String> 
 ///
 /// `None` when the target records no architecture, which the caller warns
 /// about and skips rather than treating as a pass.
-pub fn preflight_arch(ptx_set: &atlas_kernels::TargetPtxSet) -> Option<&'static str> {
+pub fn preflight_arch(ptx_set: &avarok_kernels::TargetPtxSet) -> Option<&'static str> {
     Some(ptx_set.ptx_arch).filter(|a| !a.is_empty())
 }
 
 /// Fail fast if this binary's kernels cannot run on GPU `ordinal`.
 ///
-/// Call this BEFORE constructing the backend: `AtlasCudaBackend::new` loads
+/// Call this BEFORE constructing the backend: `AvarokCudaBackend::new` loads
 /// every PTX module, and the point is to answer before the driver does.
 ///
 /// `compiled_arch` is `None` when the build recorded no architecture — the
-/// `ATLAS_SKIP_BUILD=1` stub registry compiles nothing and can attest to
+/// `AVAROK_SKIP_BUILD=1` stub registry compiles nothing and can attest to
 /// nothing. That is warned and skipped, never treated as a pass: a check with
 /// no input has no opinion, and inventing one would make the stub build claim
 /// hardware compatibility it never tested.
@@ -224,7 +224,7 @@ pub(crate) struct DriverDeviceQuery;
 
 impl DeviceQuery for DriverDeviceQuery {
     fn init_host(&self, ordinal: usize) -> Result<()> {
-        atlas_core::cuda_host::host(ordinal).map_err(|e| anyhow::anyhow!("{e}"))?;
+        avarok_core::cuda_host::host(ordinal).map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(())
     }
 
@@ -246,7 +246,7 @@ pub(crate) fn preflight_device_arch_with(
     let Some(compiled_arch) = compiled_arch else {
         tracing::warn!(
             "this build recorded no kernel architecture, so the GPU compute-capability \
-             preflight is skipped — expected under ATLAS_SKIP_BUILD=1, a defect otherwise"
+             preflight is skipped — expected under AVAROK_SKIP_BUILD=1, a defect otherwise"
         );
         return Ok(());
     };
@@ -263,7 +263,7 @@ pub(crate) fn preflight_device_arch_with(
     // cross-check, logged as such.
     match query.sm_count(ordinal) {
         Ok(device_sms) => {
-            if let Some(warning) = check_sm_count(device_sms, atlas_kernels::TARGET_SM_COUNT) {
+            if let Some(warning) = check_sm_count(device_sms, avarok_kernels::TARGET_SM_COUNT) {
                 tracing::warn!("{warning}");
             }
         }

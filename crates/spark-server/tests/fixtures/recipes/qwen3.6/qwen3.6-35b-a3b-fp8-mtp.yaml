@@ -1,13 +1,13 @@
 recipe_version: "2"
 model: Qwen/Qwen3.6-35B-A3B-FP8
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
   description: |
     THE FLAGSHIP. Qwen3.6-35B-A3B (qwen3_5_moe architecture) at native FP8
-    on the Atlas runtime: bf16 lm-head (full-precision 248K-vocab logit
+    on the Avarok runtime: bf16 lm-head (full-precision 248K-vocab logit
     projection), bf16 KV cache, 64K context, MTP K=2 speculative decoding,
     live-streamed tool-call argument deltas. Single GB10 (~109 of 119.7 GB).
 
@@ -31,7 +31,7 @@ defaults:
   # 64K with bf16 KV fits next to the FP8 weights on one GB10 (~109/119.7
   # GB, live-validated 2026-06-09 incl. streaming tool calls).
   max_model_len: 65536
-  # max_batch_size 2: REQUIRED until Avarok-Cybersecurity/atlas#110 lands —
+  # max_batch_size 2: REQUIRED until Avarok-Cybersecurity/avarok#110 lands —
   # an uncapped batch hits the concurrency>=4 + deep-context CUDA-700 crash
   # (re-confirmed live 2026-06-11 at n_decode=2 + n_prefill=2, ~8.5K ctx).
   # The old warning here against capping (SSM slot-leak on aborted deep
@@ -40,7 +40,7 @@ defaults:
   # fast path (mixed-batch scheduling overhead avoided).
   max_batch_size: 2
   # Single-chunk prefill up to 32K: chunked (4096) prefill is slower and
-  # was the surface of the warm-turn suffix-token bug fixed in atlas#156.
+  # was the surface of the warm-turn suffix-token bug fixed in avarok#156.
   # Prompts >32K still chunk safely.
   max_prefill_tokens: 32768
   kv_cache_dtype: bf16
@@ -49,8 +49,8 @@ defaults:
   scheduling_policy: slai
   speculative: true
   mtp_quantization: bf16
-  # Prefix caching: the warm-restore corruption (atlas#155) is fixed in
-  # atlas#156 (warm-turn suffix tokens, decode-ckpt registration
+  # Prefix caching: the warm-restore corruption (avarok#155) is fixed in
+  # avarok#156 (warm-turn suffix tokens, decode-ckpt registration
   # off-by-one, snapshot eviction inversion, finish-leaf commit race).
   # Gate 2026-06-11: webserver_ok 10/10, zero path-drift, median run
   # ~125s with caching ON + MTP K=2 (image digest 637e7b32).

@@ -45,17 +45,17 @@ impl QsaIndexer {
         if total <= bound {
             return Ok(());
         }
-        // Kill switch: ATLAS_QSA_NO_PREFILL_SELECT=1 keeps stage-1 behavior
+        // Kill switch: AVAROK_QSA_NO_PREFILL_SELECT=1 keeps stage-1 behavior
         // (dense prefill past the bound; decode still selects).
         static S2_OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *S2_OFF
-            .get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
+            .get_or_init(|| std::env::var("AVAROK_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
         {
             return Ok(());
         }
         let diag = {
             static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *D.get_or_init(|| std::env::var("ATLAS_QSA_S2_DIAG").as_deref() == Ok("1"))
+            *D.get_or_init(|| std::env::var("AVAROK_QSA_S2_DIAG").as_deref() == Ok("1"))
         };
         // Diagnostic: park the DENSE context of the LAST row before the
         // overwrite; log cosine(dense, selected) after. Selected attends
@@ -159,7 +159,7 @@ impl QsaIndexer {
         // and log ONE line per call. Same env var as the other profilers.
         let s2prof = {
             static P: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *P.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            *P.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
         };
         let mut us_proj = 0u128;
         let mut us_score = 0u128;
@@ -216,11 +216,11 @@ impl QsaIndexer {
             // the production shape with IDENTICAL top-k selection (the bar
             // that matters — this feeds a top-k, and the scalar path's own
             // tree reduction is not bit-reproducible either).
-            // ATLAS_QSA_SCORE_SCALAR=1 forces the original.
+            // AVAROK_QSA_SCORE_SCALAR=1 forces the original.
             let tc = self.k_score_rows_tc_k.0 != 0
                 && self.n_heads == 4
                 && self.hd == 128
-                && std::env::var("ATLAS_QSA_SCORE_SCALAR").as_deref() != Ok("1");
+                && std::env::var("AVAROK_QSA_SCORE_SCALAR").as_deref() != Ok("1");
             s2mark!(us_proj, s2t);
 
             if tc {
@@ -260,10 +260,10 @@ impl QsaIndexer {
             // measured as the dominant prefill cost once the dense attention
             // was skipped (~18 MB copied + 8192 sorts of 562, per attention
             // layer per chunk, at 36K context).
-            // ATLAS_QSA_HOST_TOPK=1 forces the CPU path for A/B.
+            // AVAROK_QSA_HOST_TOPK=1 forces the CPU path for A/B.
             let host_topk = {
                 static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *H.get_or_init(|| std::env::var("ATLAS_QSA_HOST_TOPK").as_deref() == Ok("1"))
+                *H.get_or_init(|| std::env::var("AVAROK_QSA_HOST_TOPK").as_deref() == Ok("1"))
             };
             s2mark!(us_score, s2t);
             if !host_topk && self.k_topk_rows_k.0 != 0 {
@@ -312,11 +312,11 @@ impl QsaIndexer {
             // nkv 1 — see `qsa_prefill_attn_tc_ok`). One CTA per row with every
             // head together, instead of one CTA per (row, head) re-streaming
             // the same K/V: the scalar kernel measured 23.4% of an 8K prefill
-            // at 1.94 TFLOP/s. ATLAS_QSA_PA_SCALAR=1 forces the original.
+            // at 1.94 TFLOP/s. AVAROK_QSA_PA_SCALAR=1 forces the original.
             s2mark!(us_topk, s2t);
             let pa_tc = self.k_prefill_attn_tc_k.0 != 0
                 && ops::qsa_prefill_attn_tc_ok(nq, self.nkv_attn, self.hd_attn)
-                && std::env::var("ATLAS_QSA_PA_SCALAR").as_deref() != Ok("1");
+                && std::env::var("AVAROK_QSA_PA_SCALAR").as_deref() != Ok("1");
             {
                 // Engagement, once: a kernel that never loaded and a lever that
                 // does nothing look identical from throughput alone.

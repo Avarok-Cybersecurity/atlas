@@ -1,4 +1,4 @@
-# SOLID LoRA — Atlas per-request adapters that are graph-safe, varlen-safe, and prefix-cache-safe
+# SOLID LoRA — Avarok per-request adapters that are graph-safe, varlen-safe, and prefix-cache-safe
 
 Date: 2026-07-16
 Status: architecture + increment plan
@@ -9,7 +9,7 @@ Supersedes the open items in `docs/design/lora-moe-embed.md`; that doc's §D.2/D
 
 ## 0. Thesis
 
-Atlas already has ONE correct LoRA route: **attention S-LoRA via `apply_lora_bgmv`** (`layers/ops/lora_delta.rs:269`). It is per-request, zero-overhead-when-off, and CUDA-graph-capturable. Every other adapter surface (MoE experts, MoE router, embed/lm_head overlay) must be rebuilt to the **same three-invariant contract** that route already satisfies:
+Avarok already has ONE correct LoRA route: **attention S-LoRA via `apply_lora_bgmv`** (`layers/ops/lora_delta.rs:269`). It is per-request, zero-overhead-when-off, and CUDA-graph-capturable. Every other adapter surface (MoE experts, MoE router, embed/lm_head overlay) must be rebuilt to the **same three-invariant contract** that route already satisfies:
 
 1. **Identity flows ONLY through a per-step device buffer** whose *address is fixed at load time* and whose *contents are re-uploaded each step* (like `positions`/`block_table`). For attention that buffer is `seq_slot[n]` (`ctx.attn_metadata.seq_slot`). Adapter routing tables (`a_table`/`b_table`/`scale_table`) are `[max_loras]` device arrays at load-fixed addresses = stable kernel args across capture↔replay.
 2. **No host D2H, no host-driven launch count, in the fold hot path.** All routing offsets/ids are consumed *device-side* as kernel args. The base grouped-GEMM already does this with `expert_offsets`; the fold must too.
@@ -271,7 +271,7 @@ A base row costs one block-schedule + one i32 load + one predicated return per (
 Capture is `CU_STREAM_CAPTURE_MODE_RELAXED` on a non-default stream (`gpu_impl.rs:295-329`). What breaks it: host sync (`cuStreamSynchronize`), D2H copy (`copy_d2h`), and host-driven data-dependent launch count. The current MoE fold hits all three via `copy_d2h(expert_offsets)` + host `for w in work` loop (`moe/lora.rs:149`, `expert_apply.rs:147-157`).
 
 SOLID eliminates all three:
-1. **No D2H:** `expert_offsets`/`sorted_expert_ids`/`indices_dev`/`seq_slot` are consumed as *device kernel args*. Proof this is already legal: the base grouped GEMM reads `expert_offsets` as a kernel arg and never D2Hs it (`forward_prefill_routed.rs:37,150`, ~15 kernel calls); the only base-path D2H of offsets is the opt-in `ATLAS_MOE_PREFILL_EXACT_TILES` grid-sizing read, itself explicitly `!ctx.graph_capture`-gated (`:71-75`) — i.e. even the base path treats an offsets D2H as capture-incompatible.
+1. **No D2H:** `expert_offsets`/`sorted_expert_ids`/`indices_dev`/`seq_slot` are consumed as *device kernel args*. Proof this is already legal: the base grouped GEMM reads `expert_offsets` as a kernel arg and never D2Hs it (`forward_prefill_routed.rs:37,150`, ~15 kernel calls); the only base-path D2H of offsets is the opt-in `AVAROK_MOE_PREFILL_EXACT_TILES` grid-sizing read, itself explicitly `!ctx.graph_capture`-gated (`:71-75`) — i.e. even the base path treats an offsets D2H as capture-incompatible.
 2. **Static launch shape:** grid sized to `worst_case_m_tiles`/`num_experts` (compile/config constants), not to a device-read count. Each tile derives its expert span from `expert_offsets` *inside* the kernel. Replay issues an identical launch sequence.
 3. **Pointer/value-stable args:** all routing tables are load-fixed addresses; scratch (`xa`/`delta`) is fixed-address arena; only `seq_slot`/`moe_row_adapter` *contents* change per step, at fixed addresses re-uploaded before `begin_capture` (same phasing as `positions`/`block_table`). This is exactly why `apply_lora_bgmv` captures inside the decode graph (`lora_delta.rs:260-264`); the MoE folds inherit it.
 
@@ -299,12 +299,12 @@ Therefore the grouped fold captures in the prefill region (Incr 2) and the gathe
 ### 9.3 End-to-end prefill-logit oracle (Tier B, GPU serve)
 Diff surface = legacy `/v1/completions` loglikelihood (`echo:true, logprobs:5, max_tokens:0`; per-request `adapter` field routes via `resolve_request_adapter_slot`, `api/completions.rs:190-206`). New `scripts/moe_lora_oracle.py`:
 1. Reference: `PeftModel.from_pretrained` on Qwen3.6-35B-A3B; capture prefill `token_logprobs` + top-5 with adapter ON and (via `disable_adapter()`) OFF.
-2. Atlas: same prompts with/without `adapter`.
-3. Assert `max_abs(atlas_adapter − peft_adapter) ≤ tol` (start 5e-2), AND the **base-vs-adapter cross-check**: `sign(atlas_adapter − atlas_base) == sign(peft_adapter − peft_base)` per position — the single test that catches a *silently-inert* fold or wrong `expert_offsets` mapping (the two most likely bugs).
+2. Avarok: same prompts with/without `adapter`.
+3. Assert `max_abs(avarok_adapter − peft_adapter) ≤ tol` (start 5e-2), AND the **base-vs-adapter cross-check**: `sign(avarok_adapter − avarok_base) == sign(peft_adapter − peft_base)` per position — the single test that catches a *silently-inert* fold or wrong `expert_offsets` mapping (the two most likely bugs).
 Caveats as asserts: quant-noise floor (calibrate NVFP4-vs-bf16 base run first); test **router-only and down-only separately** before combined (a router delta flips top-k routing → discontinuous logits, can mask a down bug); `max_tokens:1` with a MoE adapter must 500/bail loudly (decode not yet folded) — that is itself a test.
 
 ### 9.4 Synthetic adapter generator
-Extend `scripts/gen_lora_adapter.py` with `--variant moe-experts`, geometry from `config.json` (not the NVFP4 header), full-attention layers via `text_config.layer_types` (NOT hardcoded `[3,7,...]`). Emit unfused per-expert `down_proj` + `mlp.gate` (rare in the wild — the generator is load-bearing because the fused 35B only admits `target_parameters`, which Atlas rejects). Coverage knobs: `--experts 0,1,5,255` (gap + last-valid), `--rank {8,32}` (cap test), `--proj {down,gate}` (gate drives the `set_lora_weights` bail), `--bad-expert 256` (oob reject). `adapter_config.json` via `LoraConfig.save_pretrained`.
+Extend `scripts/gen_lora_adapter.py` with `--variant moe-experts`, geometry from `config.json` (not the NVFP4 header), full-attention layers via `text_config.layer_types` (NOT hardcoded `[3,7,...]`). Emit unfused per-expert `down_proj` + `mlp.gate` (rare in the wild — the generator is load-bearing because the fused 35B only admits `target_parameters`, which Avarok rejects). Coverage knobs: `--experts 0,1,5,255` (gap + last-valid), `--rank {8,32}` (cap test), `--proj {down,gate}` (gate drives the `set_lora_weights` bail), `--bad-expert 256` (oob reject). `adapter_config.json` via `LoraConfig.save_pretrained`.
 
 ### 9.5 Graph-capture regression
 A decode/prefill capture smoke that fails if any fold path reintroduces a D2H/sync under capture: run the grouped fold inside a captured prefill region and the gather-BGMV inside a captured decode graph, assert `cuGraphInstantiate` succeeds and replay logits match eager.

@@ -1,26 +1,26 @@
 # Release Notes
 
-Atlas's release notes are per-version markdown files in [`docs/releases/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/releases). This chapter links to them and summarises the big themes across recent alphas. For the latest release, check the repo — this page is a stable pointer, not a ticker.
+Avarok's release notes are per-version markdown files in [`docs/releases/`](https://github.com/Avarok-Cybersecurity/avarok/tree/main/docs/releases). This chapter links to them and summarises the big themes across recent alphas. For the latest release, check the repo — this page is a stable pointer, not a ticker.
 
 ## Release naming
 
 `alpha-<major>.<minor><letter>` — e.g. `alpha-2.43`, `alpha-2.44`, `alpha-2.14c`. Minor versions bump on any meaningful feature or fix; letters (`a`, `b`, `c`) are patch-level iterations on the same minor.
 
-Since Atlas is pre-1.0 and under aggressive development, semantic versioning does not apply. Any release can break API or CLI compatibility — the per-release notes document what.
+Since Avarok is pre-1.0 and under aggressive development, semantic versioning does not apply. Any release can break API or CLI compatibility — the per-release notes document what.
 
 ## Where to read them
 
 | Source | URL |
 |---|---|
-| Release notes folder | [`docs/releases/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/releases) |
-| GitHub Releases | `https://github.com/Avarok-Cybersecurity/atlas/releases` (if tagged) |
-| Docker Hub | `https://hub.docker.com/r/avarok/atlas-gb10/tags` |
+| Release notes folder | [`docs/releases/`](https://github.com/Avarok-Cybersecurity/avarok/tree/main/docs/releases) |
+| GitHub Releases | `https://github.com/Avarok-Cybersecurity/avarok/releases` (if tagged) |
+| Docker Hub | `https://hub.docker.com/r/avarok/avarok-gb10/tags` |
 
-The multi-model Docker image always tracks the latest alpha at `avarok/atlas-gb10:latest`. Specific versions are tagged as `avarok/atlas-gb10:alpha-2.44` etc.
+The multi-model Docker image always tracks the latest alpha at `avarok/avarok-gb10:latest`. Specific versions are tagged as `avarok/avarok-gb10:alpha-2.44` etc.
 
 ## Recent themes
 
-Rather than duplicate every release note, here's the shape of recent work. Each theme maps to architecture decision records under `docs/adr/` and the benchmark history in `docs/ATLAS_SPARK_JOURNEY.md`.
+Rather than duplicate every release note, here's the shape of recent work. Each theme maps to architecture decision records under `docs/adr/` and the benchmark history in `docs/AVAROK_SPARK_JOURNEY.md`.
 
 ### alpha-2.0 → alpha-2.20 — coherence and the model matrix
 
@@ -58,7 +58,7 @@ Thirteen waves of systematic audit-framework bug sweeps (`project_bug_sweep_wave
 - **Wave 9** — Rate-limiter `MAX_KEYS` DoS guard, body-size env-configurable.
 - **Wave 10** — Responses function_call(_output) items + instructions stacking, multi-block reasoning extractor, MoE topk bounds, weight loader scale=0 guard.
 - **Wave 11** — Streaming Responses store tool_calls, balanced markdown URL parens (Wikipedia URLs), self-spec rollback fail-fast on SSM.
-- **Wave 12** — Anthropic streaming `stop_sequence` populated, `/tokenize`+`/detokenize` gated behind auth (then `ATLAS_REQUIRE_AUTH`; the env var has since been replaced by the `--require-auth` flag).
+- **Wave 12** — Anthropic streaming `stop_sequence` populated, `/tokenize`+`/detokenize` gated behind auth (then `AVAROK_REQUIRE_AUTH`; the env var has since been replaced by the `--require-auth` flag).
 
 Vision fixes (7 ViT + MRoPE image position IDs) landed all four vision models passing the Mona-Lisa test.
 
@@ -73,6 +73,6 @@ Alongside the bug sweeps, "Pass-N" work is the systematic model-matrix regressio
 
 ## What's next
 
-OSS release prep (alpha-2.43-share) was the major non-code milestone: archive tags, docs cleanup, `atlas-internal/` separation for proprietary artefacts.
+OSS release prep (alpha-2.43-share) was the major non-code milestone: archive tags, docs cleanup, `avarok-internal/` separation for proprietary artefacts.
 
-For the current roadmap, check the repo's pinned issues and the authoritative decision records at [`docs/adr/`](https://github.com/Avarok-Cybersecurity/atlas/tree/main/docs/adr).
+For the current roadmap, check the repo's pinned issues and the authoritative decision records at [`docs/adr/`](https://github.com/Avarok-Cybersecurity/avarok/tree/main/docs/adr).

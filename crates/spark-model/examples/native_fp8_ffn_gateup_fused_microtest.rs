@@ -32,18 +32,18 @@
 //!      weight-bytes-per-second it implies, for both arms. That number is the
 //!      lever's whole claim.
 //!
-//! Run (H100): `ATLAS_TARGET_HW=hopper cargo run --release -p spark-model
+//! Run (H100): `AVAROK_TARGET_HW=hopper cargo run --release -p spark-model
 //! --features cuda,gpu-examples --example native_fp8_ffn_gateup_fused_microtest`.
 //! ★ The target matters: `fp8_scale_transpose.cu` is a HOPPER-owned source
 //! (`[kernels] overrides`), so a GB10 build fails the lookup by name. cuBLASLt
-//! is called directly, so `ATLAS_CUBLAS_GEMM` is not needed; the serve
+//! is called directly, so `AVAROK_CUBLAS_GEMM` is not needed; the serve
 //! spelling is printed at the end.
 
 use anyhow::{Result, ensure};
 use half::bf16;
 use spark_model::layers::ops;
 use spark_model::weight_map::{Fp8Weight, WeightQuantFormat};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::time::Instant;
 
@@ -187,7 +187,7 @@ fn gemm(
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let quant = gpu.kernel("per_token_group_quant_fp8", "per_token_group_quant_fp8")?;
     let kmajor = gpu.kernel("fp8_scale_transpose", "fp8_act_scale_to_kmajor")?;
     let silu = gpu.kernel("moe_silu_mul", "moe_silu_mul")?;
@@ -418,7 +418,7 @@ fn main() -> Result<()> {
 
     println!(
         "\nserve spelling: the arm is `[defaults] ffn_gateup_fused` \
-         (hopper `true`); `ATLAS_FFN_GATEUP_FUSED=0` restores the two-GEMM \
+         (hopper `true`); `AVAROK_FFN_GATEUP_FUSED=0` restores the two-GEMM \
          pair. Round-13 receipt and the round-16 prediction: \
          FFN-GATEUP-FUSION-ATTRIBUTION.md"
     );

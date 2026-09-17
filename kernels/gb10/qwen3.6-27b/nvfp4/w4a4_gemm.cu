@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA
+#ifndef AVAROK_NO_WARP_BLOCKSCALE_MMA
 //
 // W4A4 NVFP4 prefill GEMM for the dense FFN gate/up/down — native FP4 tensor cores (sm_121a).
 // mma.sync kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64 (E2M1 x E2M1, E4M3 group-16 scales).
@@ -111,4 +111,4 @@ extern "C" __global__ __launch_bounds__(W4A4_THREADS, 2) void w4a4_gemm(
     }
 }
 
-#endif  // ATLAS_NO_WARP_BLOCKSCALE_MMA
+#endif  // AVAROK_NO_WARP_BLOCKSCALE_MMA

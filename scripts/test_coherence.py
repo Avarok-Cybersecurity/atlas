@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Atlas Spark coherence & API compatibility test suite.
+"""Avarok Spark coherence & API compatibility test suite.
 
 Tests OpenAI API compatibility for coding agents (OpenCode, Claude Code, Cline, Continue).
-Run against a live Atlas server: python3 scripts/test_coherence.py [--url http://localhost:8888]
+Run against a live Avarok server: python3 scripts/test_coherence.py [--url http://localhost:8888]
 """
 
 import argparse
@@ -262,14 +262,14 @@ def test_coherence():
 
     # 4c. Multi-turn coherence
     msgs = [
-        {"role": "user", "content": "My name is Atlas."},
+        {"role": "user", "content": "My name is Avarok."},
     ]
     r1 = api("/v1/chat/completions", {"model": "test", "messages": msgs, "max_tokens": 50})
     msgs.append({"role": "assistant", "content": r1["choices"][0]["message"]["content"]})
     msgs.append({"role": "user", "content": "What is my name?"})
     r2 = api("/v1/chat/completions", {"model": "test", "messages": msgs, "max_tokens": 50})
     content2 = r2["choices"][0]["message"]["content"]
-    test("Multi-turn remembers context (name)", "Atlas" in content2 or "atlas" in content2, content2[:80])
+    test("Multi-turn remembers context (name)", "Avarok" in content2 or "avarok" in content2, content2[:80])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -389,7 +389,7 @@ def test_tool_reliability():
             "model": "test",
             "messages": [
                 {"role": "system", "content": system},
-                {"role": "user", "content": "Read /workspace/atlas/Cargo.toml"},
+                {"role": "user", "content": "Read /workspace/avarok/Cargo.toml"},
             ],
             "tools": single_tool,
             "max_tokens": 500,
@@ -853,7 +853,7 @@ def test_opencode_compat():
     })
     # Dump directory for debugging
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
 
     c = r["choices"][0]
@@ -973,7 +973,7 @@ def test_opencode_compat():
 
     # Dump directory for debugging
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
 
     # 14d. Thinking coherence — no gibberish in reasoning_content
@@ -1174,7 +1174,7 @@ def test_anthropic_agent_compat():
     r = anthropic_req({
         "model": "test",
         "system": sys_prompt,
-        "messages": [{"role": "user", "content": "Read the file /workspace/atlas/Cargo.toml and tell me the package name"}],
+        "messages": [{"role": "user", "content": "Read the file /workspace/avarok/Cargo.toml and tell me the package name"}],
         "tools": tools,
         "max_tokens": 1000,
     })
@@ -1246,11 +1246,11 @@ def test_anthropic_agent_compat():
             "model": "test",
             "system": sys_prompt,
             "messages": [
-                {"role": "user", "content": "Read /workspace/atlas/Cargo.toml"},
+                {"role": "user", "content": "Read /workspace/avarok/Cargo.toml"},
                 {"role": "assistant", "content": content_blocks},
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": tb["id"],
-                     "content": '[package]\nname = "atlas"\nversion = "0.1.0"'},
+                     "content": '[package]\nname = "avarok"\nversion = "0.1.0"'},
                 ]},
             ],
             "tools": tools,
@@ -1392,7 +1392,7 @@ def test_e2e_rust_project():
 
     # Dump results
     import os
-    dump_dir = "/tmp/atlas-opencode-dumps"
+    dump_dir = "/tmp/avarok-opencode-dumps"
     os.makedirs(dump_dir, exist_ok=True)
     with open(f"{dump_dir}/e2e_turn1.json", "w") as f:
         json.dump(r, f, indent=2, ensure_ascii=False)
@@ -1404,7 +1404,7 @@ def test_e2e_rust_project():
 # Main
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Atlas coherence test suite")
+    parser = argparse.ArgumentParser(description="Avarok coherence test suite")
     parser.add_argument("--url", default="http://localhost:8888", help="Server URL")
     parser.add_argument("--opencode", action="store_true",
                         help="Run OpenCode agent compatibility tests (section 14)")
@@ -1415,7 +1415,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     URL = args.url
 
-    print(f"Testing Atlas at {URL}")
+    print(f"Testing Avarok at {URL}")
 
     t0 = time.time()
     test_basic_api()

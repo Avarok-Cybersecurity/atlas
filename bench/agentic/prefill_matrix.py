@@ -7,7 +7,7 @@ sweeps C concurrent requests at a fixed input length and reports aggregate
 prefill tok/s, so a flat row means prefill is serialising and a rising one means
 it is genuinely co-dispatching.
 
-Prefill time is taken from Atlas's own `usage.time_to_first_token_ms`, so decode
+Prefill time is taken from Avarok's own `usage.time_to_first_token_ms`, so decode
 never contaminates the measurement. Aggregate throughput uses the SLOWEST TTFT
 in the batch (all C prompts are in flight over that window, so C*ISL tokens
 land in max-TTFT seconds).
@@ -22,7 +22,7 @@ import argparse, json, os, random, statistics as st, string, time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888/v1/chat/completions")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888/v1/chat/completions")
 
 
 def make_prompt(target_tokens, rng):

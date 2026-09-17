@@ -250,7 +250,7 @@ fn resolve_gemm_shape(
 fn gemv_occ() -> usize {
     static OCC: OnceLock<usize> = OnceLock::new();
     *OCC.get_or_init(|| {
-        std::env::var("ATLAS_EXL3_GEMV_OCC")
+        std::env::var("AVAROK_EXL3_GEMV_OCC")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|&v| v >= 1)

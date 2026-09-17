@@ -9,7 +9,7 @@ use crate::layers::ops::hyper_connection_post_fold::HcDeferredPost;
 
 /// Deterministic pseudo-random BF16 bytes. A bit-identity test compares the two
 /// arms against EACH OTHER, so it needs well-conditioned inputs, not the real
-/// checkpoint — which is why this file does not touch `ATLAS_HC_TEST_DATA`
+/// checkpoint — which is why this file does not touch `AVAROK_HC_TEST_DATA`
 /// (whose generator, `bench/qwen4_exp`, is not in this tree) and can therefore
 /// run anywhere there is a GPU.
 fn lcg_bf16(n: usize, seed: u32) -> Vec<u8> {
@@ -52,12 +52,12 @@ fn lcg_f32(n: usize, seed: u32) -> Vec<u8> {
 #[test]
 #[ignore]
 fn hc_pre_gemm_fused_up_mix_is_bit_identical() {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
 
@@ -181,12 +181,12 @@ fn hc_pre_gemm_fused_up_mix_is_bit_identical() {
 #[test]
 #[ignore]
 fn hc_post_folded_into_stage_is_bit_identical() {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
 

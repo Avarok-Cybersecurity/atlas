@@ -82,7 +82,7 @@ pub fn reconstruct_had_f16_into(
 }
 
 /// `dst_bf16 [out, in] = transpose(src_f16 [in, out])` with ONE f32-exact
-/// f16 -> bf16 rounding per element (Atlas's `[N, K]` weight layout) on
+/// f16 -> bf16 rounding per element (Avarok's `[N, K]` weight layout) on
 /// `stream`. Stream-ordered, no allocation, no host sync; never in place.
 pub fn transpose_f16_to_bf16_into(
     gpu: &dyn GpuBackend,
@@ -148,11 +148,11 @@ pub fn reconstruct_had_f16_device(
     Ok(f16_out)
 }
 
-/// Reconstruct an EXL3 tensor to Atlas-layout BF16 `[out, in]` on the GPU.
+/// Reconstruct an EXL3 tensor to Avarok-layout BF16 `[out, in]` on the GPU.
 /// Returns a fresh BF16 buffer of `out * in` elements (caller owns it).
 ///
 /// Reconstructs to the f16 `[in, out]` layout first, then transposes to
-/// Atlas's `[out, in]` row-major with a single f32-exact f16->bf16 rounding.
+/// Avarok's `[out, in]` row-major with a single f32-exact f16->bf16 rounding.
 #[allow(clippy::too_many_arguments)]
 pub fn reconstruct_had_bf16(
     gpu: &dyn GpuBackend,

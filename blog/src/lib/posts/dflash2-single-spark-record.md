@@ -1,15 +1,15 @@
 ---
-title: 'DFLASH-2: the fastest single-machine numbers Atlas has produced'
+title: 'DFLASH-2: the fastest single-machine numbers Avarok has produced'
 dek: 66.6 tokens per second on a stock build, one DGX Spark, one stream, and every figure reproducible from a commit.
 categories: [engineering, benchmarks]
 date: 2026-09-01
-keywords: [speculative decoding, dflash2, dgx spark, gb10, qwen3.8-27b, single stream, atlas inference]
+keywords: [speculative decoding, dflash2, dgx spark, gb10, qwen3.8-27b, single stream, avarok inference]
 og-image: ''
 author: ronald-stesiak
 draft: false
 ---
 
-Single machine, single session is what most Atlas users actually run: one
+Single machine, single session is what most Avarok users actually run: one
 DGX Spark, one model, one stream. From a CUDA/C centric tuning background,
 that number is the one I care about most, and this post is about the layer
 that decides it, what it measures on current main, and how to reproduce
@@ -17,7 +17,7 @@ every figure from a commit.
 
 ## What DFLASH-2 is
 
-DFLASH-2 is Atlas's SOTA and fastest measured speculative-decode layer for
+DFLASH-2 is Avarok's SOTA and fastest measured speculative-decode layer for
 Qwen3.8-27B, with more targets to follow: a block-diffusion draft head
 proposes a window of tokens, the target model verifies them in one pass,
 and the engine keeps only the tokens the target verifies.
@@ -104,7 +104,7 @@ output above. The full flag list and per-flag rationale are in the PR.
 Serve line:
 
 ```bash
-ATLAS_TARGET_MODEL=qwen3.8-27b ./target/release/spark serve <Qwen3.8-27B-NVFP4> \
+AVAROK_TARGET_MODEL=qwen3.8-27b ./target/release/spark serve <Qwen3.8-27B-NVFP4> \
   --dflash --draft-model <Qwen3.8-27B-DFlash2> \
   --max-seq-len 4096 --gpu-memory-utilization 0.55 --max-batch-size 1 \
   --ssm-cache-slots 0 --kv-cache-dtype bf16 --scheduling-policy slai \

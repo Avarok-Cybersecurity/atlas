@@ -1,5 +1,5 @@
 {
-  "label": "c32p-atlas",
+  "label": "c32p-avarok",
   "url": "http://127.0.0.1:8895",
   "model": "unsloth/Qwen3.8-27B-NVFP4",
   "isl": 128,

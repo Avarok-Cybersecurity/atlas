@@ -2,7 +2,7 @@
 
 //! Cooperative EXL3 slot scheduling, independent of device I/O.
 //!
-//! Two policies, selected once per process by `ATLAS_EXL3_MGEMM_GRID`:
+//! Two policies, selected once per process by `AVAROK_EXL3_MGEMM_GRID`:
 //!
 //! * `onewave` (default): `per_slot = clamp(sms / group, 1, tiles)` blocks per
 //!   expert slot, `concurrency = min(sms / per_slot, slots)`. Sized so ONE
@@ -23,7 +23,7 @@
 
 fn onewave_enabled() -> bool {
     static POLICY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *POLICY.get_or_init(|| std::env::var("ATLAS_EXL3_MGEMM_GRID").as_deref() != Ok("legacy"))
+    *POLICY.get_or_init(|| std::env::var("AVAROK_EXL3_MGEMM_GRID").as_deref() != Ok("legacy"))
 }
 
 pub(super) fn grid(

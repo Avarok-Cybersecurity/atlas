@@ -8,7 +8,7 @@
 use crate::lora::test_support::*;
 use crate::lora::*;
 
-fn reject(key: &str, cfg: &atlas_core::config::ModelConfig, tag: &str) {
+fn reject(key: &str, cfg: &avarok_core::config::ModelConfig, tag: &str) {
     let err = classify_key(key, cfg).unwrap_err().to_string();
     assert!(err.contains(tag), "expected {tag} in: {err}");
 }

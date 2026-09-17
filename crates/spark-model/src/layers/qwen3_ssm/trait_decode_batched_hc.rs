@@ -87,11 +87,11 @@ impl Qwen3SsmLayer {
         let n = num_tokens as u32;
 
         // Same refusal the other two hc bodies carry: `hc_norm` inside
-        // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
+        // `hc_pre` replaces the fused gate-f32 norm, so AVAROK_FP32_ROUTING
         // would have the router read the PREVIOUS layer's activations.
         anyhow::ensure!(
             !self.ffn.fp32_routing_active(ctx.levers),
-            "qwen3_ssm mHC batched verify: ATLAS_FP32_ROUTING needs the fused \
+            "qwen3_ssm mHC batched verify: AVAROK_FP32_ROUTING needs the fused \
              gate-f32 norm, which the highway path replaces. Unset it."
         );
 
@@ -135,7 +135,7 @@ impl Qwen3SsmLayer {
             "row-exact mHC verify: the per-row hc_pre passes ONE `comb` for every \
              row, which only the low-rank variant (which never writes it) admits. \
              A Sinkhorn site here would have its rows clobber each other — refuse \
-             rather than corrupt. Set ATLAS_NO_VERIFY_ROW_HC to run the K-row \
+             rather than corrupt. Set AVAROK_NO_VERIFY_ROW_HC to run the K-row \
              collapse instead."
         );
         // One closure so the attn and ffn sites cannot drift apart.
@@ -330,11 +330,11 @@ impl Qwen3SsmLayer {
     /// Row-count-shaped MoE dispatch for the mHC verify bodies, all arms
     /// writing `ctx.buffers.moe_output()`.
     ///
-    /// `ATLAS_QWEN4EXP_HC_SMALL_M_FFN=0` restores the grouped-GEMM path for an
+    /// `AVAROK_QWEN4EXP_HC_SMALL_M_FFN=0` restores the grouped-GEMM path for an
     /// A/B. Shared by `prefill_inner_hc` and `decode_batched_inner_hc` so the
     /// two verify bodies cannot drift apart on the FFN.
     /// Widest row count the small-M FFN may decompose into fused 1/2/3-row
-    /// arms; above it the grouped GEMM. `ATLAS_HC_FFN_CHUNK_MAX_ROWS` overrides.
+    /// arms; above it the grouped GEMM. `AVAROK_HC_FFN_CHUNK_MAX_ROWS` overrides.
     ///
     /// 64, not 32: at 32 the decode bench's own ~34-41-token PROMPTS fell just
     /// above the cap and below the grouped GEMM's crossover (~50-64 rows: the
@@ -346,7 +346,7 @@ impl Qwen3SsmLayer {
     fn hc_ffn_chunk_max_rows() -> usize {
         static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         *N.get_or_init(|| {
-            std::env::var("ATLAS_HC_FFN_CHUNK_MAX_ROWS")
+            std::env::var("AVAROK_HC_FFN_CHUNK_MAX_ROWS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(64)
@@ -354,14 +354,14 @@ impl Qwen3SsmLayer {
     }
 }
 
-/// `ATLAS_QWEN4EXP_MTP_HC_BATCHED=1` arms the K-row batched GDN verify under
+/// `AVAROK_QWEN4EXP_MTP_HC_BATCHED=1` arms the K-row batched GDN verify under
 /// the highway (this file). DEFAULT OFF: the e53b78427 per-row path
 /// (`verify_hc_rows` once per token + `publish_verify_row_state`) stays the
 /// reference until this one is proven equal-or-better on correctness AND
 /// speed, and stays in the tree as the A/B arm either way.
 pub(crate) fn hc_batched_verify_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_BATCHED").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_BATCHED").as_deref() == Ok("1"))
 }
 
 /// The verify row boundaries the PLE carry must be snapshotted at, for a

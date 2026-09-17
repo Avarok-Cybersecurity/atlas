@@ -31,9 +31,9 @@ pub fn w4a16_gemv_sw_grid_x(n: u32) -> u32 {
     div_ceil(n, W4A16_GEMV_SW_OUTS_PER_BLOCK)
 }
 
-/// Kill-switch polarity for lossless SW GEMV. ON unless `ATLAS_NO_GEMV_SW` is
+/// Kill-switch polarity for lossless SW GEMV. ON unless `AVAROK_NO_GEMV_SW` is
 /// exactly `"1"`. `=0` does **not** disable (same `== "1"` reading as
-/// `ATLAS_NO_LM_HEAD_BATCH_GEMV`).
+/// `AVAROK_NO_LM_HEAD_BATCH_GEMV`).
 pub fn gemv_sw_from(no_gemv_sw: Option<&str>) -> bool {
     no_gemv_sw != Some("1")
 }

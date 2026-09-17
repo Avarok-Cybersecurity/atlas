@@ -60,8 +60,8 @@ env:
   CARGO_TERM_COLOR: always
   # Same two flags ci.yml sets for every cargo invocation on a GPU-less runner:
   # skip CUDA/nvcc in build.rs (stub target_ptx.rs) and short-circuit cudarc's
-  # nvcc probe (13000 == CUDA 13.0). atlas-plugin is host-only and CUDA-free.
-  ATLAS_SKIP_BUILD: "1"
+  # nvcc probe (13000 == CUDA 13.0). avarok-plugin is host-only and CUDA-free.
+  AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
 
 jobs:
@@ -70,7 +70,26 @@ jobs:
     runs-on: ubuntu-latest
     # Only pull_request CI runs carry a governance artifact; schedule and
     # dispatch triggers pass through and enumerate for themselves.
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
+    # The third clause breaks a FEEDBACK LOOP, and it is the whole point of
+    # this condition being three lines instead of one.
+    #
+    # This workflow triggers on `workflow_run: [CI] completed`. Its own pull
+    # request is a pull request, so that PR's CI completing re-triggered the
+    # harvest, which force-pushed the branch again, which started CI again.
+    # Measured 2026-09-04: twelve harvest PRs opened and closed in one day
+    # (#854..#871, one every 20-30 minutes), and 11 of the 27 runs queued at
+    # that moment belonged to this branch -- roughly half the repository's
+    # runner backlog, self-inflicted, starving every other PR.
+    #
+    # The loop stayed hot because the harvest CLOSES its PR (see "Superseded
+    # automatically" below) whenever the PR looks unmergeable, and an unstamped
+    # PR always does: certification is HELD until someone comments /stamp, which
+    # nobody does for a bot PR. So every cycle: open, look broken, close,
+    # recreate, run CI, trigger the harvest, repeat.
+    if: >-
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.event == 'pull_request'
+          && github.event.workflow_run.head_branch != 'bot/governance-harvest')
     permissions:
       # Pushes governance/*.jsonl to the rolling bot branch. main itself is
       # only ever written through the merge queue.
@@ -95,7 +114,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # Same warm target/ as pr-categorize (both build only atlas-plugin's
+      # Same warm target/ as pr-categorize (both build only avarok-plugin's
       # host-only bins), so neither job pays the other's cold build.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -214,7 +233,7 @@ jobs:
               # of a rejected artifact in the working tree.
               rm -f "$tmp/dest.bak"
               if [ -f "$dest" ]; then cp "$dest" "$tmp/dest.bak"; fi
-              if cargo run --quiet --locked -p atlas-plugin --bin ledger_harvest -- \
+              if cargo run --quiet --locked -p avarok-plugin --bin ledger_harvest -- \
                    --root . --pr "$pr" --from "$file"; then
                 echo "$run_id" >> harvested_runs.txt
               else
@@ -301,7 +320,7 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: |
           set -euo pipefail
-          d="__ATLAS_HARVEST_EOF_$RANDOM$RANDOM"
+          d="__AVAROK_HARVEST_EOF_$RANDOM$RANDOM"
           emit_landed() { printf 'landed<<%s\n%s\n%s\n' "$d" "$1" "$d" >> "$GITHUB_OUTPUT"; }
 
           if [ -z "$(git status --porcelain governance/)" ]; then
@@ -360,15 +379,20 @@ jobs:
             # on current main refreshes it and re-triggers CI, which is the same
             # repair a human would do by hand.
             pr_state=$(gh pr view "$open_pr" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo UNKNOWN)
-            buckets=$(gh pr checks "$open_pr" --json bucket --jq '[.[].bucket]' 2>/dev/null || echo '[]')
-            in_flight=$(printf '%s' "$buckets" | jq '[.[]|select(.=="pending")]|length')
-            broken=$(printf '%s' "$buckets" | jq '[.[]|select(.=="fail" or .=="cancel")]|length')
+            # NAMES as well as buckets: harvest-triage.sh discounts checks that are
+            # HELD rather than broken (certification waits for /stamp, seal for
+            # /seal — neither is fixed by rebuilding the branch), and it cannot
+            # tell them apart from a bucket count alone.
+            checks=$(gh pr checks "$open_pr" --json name,bucket 2>/dev/null || echo '[]')
+            in_flight=$(printf '%s' "$checks" | jq '[.[]|select(.bucket=="pending")]|length')
+            broken=$(printf '%s' "$checks" | jq '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length')
+            failing_names=$(printf '%s' "$checks" | jq -r '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name')
 
             # The decision itself lives in .github/scripts/harvest-triage.sh so
             # it can be unit-tested. Every bug in this subsystem has been in
             # this decision, and each one was found on a stalled PR rather than
             # in CI.
-            decision=$(.github/scripts/harvest-triage.sh "$pr_state" "${in_flight:-0}" "${broken:-0}")
+            decision=$(.github/scripts/harvest-triage.sh "$pr_state" "${in_flight:-0}" "${broken:-0}" "$failing_names")
             case "$decision" in
               wait)
                 echo "harvest PR #$open_pr has ${in_flight} check(s) in flight — leaving it to converge"

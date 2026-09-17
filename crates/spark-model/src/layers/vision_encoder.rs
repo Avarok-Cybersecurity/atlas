@@ -117,7 +117,7 @@ pub struct VisionEncoder {
     k_norm: KernelHandle, // vision_layer_norm (biased, in-place)
     k_add: KernelHandle,  // vision_add_inplace
     k_gelu: KernelHandle, // vision_gelu (in-place)
-    k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — ATLAS_VISION_ATTN_LEGACY=1)
+    k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — AVAROK_VISION_ATTN_LEGACY=1)
     k_rope_deint: KernelHandle, // vit_rope_deinterleave (rope + head-contig Qr/Kr + V transpose)
     k_softmax: KernelHandle, // vit_softmax_rows (parallel row softmax)
     k_scatter_head: KernelHandle, // vit_scatter_head (contig → interleaved O slot)
@@ -143,7 +143,7 @@ pub struct VisionEncoder {
     /// is the number that can move and `p_max` is the one that cannot.
     ///
     /// Defaults to `p_max`, i.e. exactly the previous behaviour, and is raised
-    /// with `ATLAS_VISION_OUT_ROWS`.
+    /// with `AVAROK_VISION_OUT_ROWS`.
     pub out_rows: usize,
     // num_grid_per_side = sqrt(num_position_embeddings) = 48 for Qwen3-VL/3.6.
     pub num_grid_per_side: usize,

@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/glm53-launch-safety.sh
 source "$SCRIPT_DIR/lib/glm53-launch-safety.sh"
 
-IMAGE="${IMAGE:-atlas-glm53:t3}"
+IMAGE="${IMAGE:-avarok-glm53:t3}"
 MODEL_DIR="${MODEL_DIR:-/home/cluster/glm53-ckpt}"
 NODES=(10.10.10.1 10.10.10.2)
 MASTER=10.10.10.1
@@ -39,7 +39,7 @@ GPU_UTIL="${GPU_UTIL:-0.90}"
 # At 99.64 GB/rank the default 4 GB guard leaves the gate 1.7 GB short of a load that
 # fits. 🪤 This shrinks the LOAD-TIME margin only; the OOM watchdog still runs.
 OOM_GUARD_MB="${OOM_GUARD_MB:-1024}"
-# Extra `-e K=V` flags, space separated. Used for profiling (ATLAS_GLM_PROFILE=1) and for
+# Extra `-e K=V` flags, space separated. Used for profiling (AVAROK_GLM_PROFILE=1) and for
 # NCCL A/Bs (NCCL_MAX_NCHANNELS=...). Empty by default so the serve path is unchanged.
 EXTRA_ENV="${EXTRA_ENV:-}"
 # Extra `serve` flags, space separated (e.g. --ngram-speculative --num-drafts 1). Empty by
@@ -57,7 +57,7 @@ readonly SAFE_EXTRA_ARGS
 for RANK in 0 1; do
   IP=${NODES[$RANK]}
   PORT=$((8888 + RANK))
-  NAME="atlas-glm53-r${RANK}"
+  NAME="avarok-glm53-r${RANK}"
   echo "=== rank $RANK on $IP (port $PORT) ==="
   ssh "cluster@$IP" "docker rm -f $NAME 2>/dev/null; \
     docker run -d --name $NAME \
@@ -91,12 +91,12 @@ cat <<'EOF'
 === both ranks started ===
 
 FABRIC CHECK (do this before anything else):
-  ssh cluster@10.10.10.1 'docker logs atlas-glm53-r0 2>&1 | grep -E "NET/IB|NET/Socket"'
+  ssh cluster@10.10.10.1 'docker logs avarok-glm53-r0 2>&1 | grep -E "NET/IB|NET/Socket"'
     NET/IB + both rails  -> good
     NET/Socket           -> STOP
 
 PROGRESS:
-  ssh cluster@10.10.10.1 'docker logs -f atlas-glm53-r0'
+  ssh cluster@10.10.10.1 'docker logs -f avarok-glm53-r0'
 
 RESIDENCY (GB10 is unified memory — read the NODE, never docker stats):
   ssh cluster@10.10.10.1 'free -g | sed -n 2p'

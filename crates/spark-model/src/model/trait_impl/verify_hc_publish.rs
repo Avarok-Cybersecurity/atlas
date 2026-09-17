@@ -32,7 +32,7 @@ impl TransformerModel {
         t: usize,
         stream: u64,
     ) -> Result<()> {
-        use atlas_core::config::LayerType;
+        use avarok_core::config::LayerType;
 
         use crate::layer::SsmLayerState;
 

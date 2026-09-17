@@ -75,7 +75,7 @@ impl Bf16SharedExpert {
 }
 
 /// Device-side pointer table for native EXL3 (QTIP trellis) expert dispatch
-/// — one projection across the EP-LOCAL experts (`ATLAS_EXL3_NATIVE_MOE=1`).
+/// — one projection across the EP-LOCAL experts (`AVAROK_EXL3_NATIVE_MOE=1`).
 ///
 /// DENSE over the local range: entry `i` addresses global expert
 /// `local_start + i`, and there are NO null entries. This is load-bearing
@@ -164,7 +164,7 @@ pub(crate) fn exl3_expert_slot_index(
 /// whole token's `top_k` slots always land in the same batch.
 pub(crate) const EXL3_MOE_SLOT_BATCH_TOKENS: usize = 512;
 
-/// Default token-batch cap of the PREFILL tier (`ATLAS_EXL3_MOE_PREFILL_
+/// Default token-batch cap of the PREFILL tier (`AVAROK_EXL3_MOE_PREFILL_
 /// BATCH_TOKENS` overrides): one fused `exl3_moe` launch + at most one
 /// host-sync per batch. 4096 covers the canonical prefill chunk in one
 /// batch; larger prefill chunks are sorted and served per batch slice.
@@ -279,7 +279,7 @@ pub(crate) struct Exl3MoeState {
     pub(crate) pf_concurrency: usize,
     /// Fused-kernel per-expert row cap = the temp slabs' height, resolved
     /// ONCE at build (`ops::exl3_moe_row_cap_from_env`: default 1024,
-    /// `ATLAS_EXL3_MOE_ROWS_PER_EXPERT` override, `ATLAS_NO_EXL3_MOE_WIDE_ROWS`
+    /// `AVAROK_EXL3_MOE_ROWS_PER_EXPERT` override, `AVAROK_NO_EXL3_MOE_WIDE_ROWS`
     /// pins the legacy 128). Experts routed more rows than this in one batch
     /// take the overflow tier.
     pub(crate) pf_rows_per_expert: usize,

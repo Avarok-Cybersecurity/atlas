@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Per-batch-width MTP acceptance telemetry (`ATLAS_MTP_ACCEPT_DEBUG`).
+//! Per-batch-width MTP acceptance telemetry (`AVAROK_MTP_ACCEPT_DEBUG`).
 //!
 //! # Why this exists
 //!
@@ -22,7 +22,7 @@
 //!
 //! Counters are relaxed atomics and the log fires off one thread at a time;
 //! there is no D2H and no stream sync, so the only cost in a timed leg is the
-//! periodic `tracing::info!`. Still gated: presence of `ATLAS_MTP_ACCEPT_DEBUG`.
+//! periodic `tracing::info!`. Still gated: presence of `AVAROK_MTP_ACCEPT_DEBUG`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -46,17 +46,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 ///   which the `9..=16` BAND discards outright, so under mixed-width
 ///   traffic the n=16 controller silently LOSES ticks it paid for.
 ///
-/// Kill switch `ATLAS_MTP_ACCEPT_FOLD_AT_16` (presence — house convention,
+/// Kill switch `AVAROK_MTP_ACCEPT_FOLD_AT_16` (presence — house convention,
 /// `=0` is NOT off) restores the pre-fix fold for an A/B.
 const MAX_N: usize = 33;
 
-/// PRESENCE check for `ATLAS_MTP_ACCEPT_FOLD_AT_16`: restores the pre-fix
+/// PRESENCE check for `AVAROK_MTP_ACCEPT_FOLD_AT_16`: restores the pre-fix
 /// bucket fold (every width >= 16 into one bucket) so the correction is
 /// A/B-able against the binary that measured the ladder. Read once per
 /// process.
 fn fold_at_16() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_MTP_ACCEPT_FOLD_AT_16").is_some())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_MTP_ACCEPT_FOLD_AT_16").is_some())
 }
 
 /// The bucket index for batch width `n` — SSOT for [`record`] and for the
@@ -129,7 +129,7 @@ static BUCKETS: [Bucket; MAX_N] = [INIT; MAX_N];
 /// an arbitrary last-writer). The full per-step shape is on the `MTP D-Cut`
 /// line — `p1` stays unconditional and `mean_na`/`tok_step` are measured over
 /// the shape that actually ran, which is the quantity the C=8 arithmetic wants.
-/// ★ Accumulation is UNCONDITIONAL as of wave 28 — `ATLAS_MTP_ACCEPT_DEBUG`
+/// ★ Accumulation is UNCONDITIONAL as of wave 28 — `AVAROK_MTP_ACCEPT_DEBUG`
 /// now gates only the log line. The counters are the SSOT for accept
 /// statistics and [`super::adaptive_rung`] steers the n=16 rung from them, so
 /// gating the accounting would make the shipped rung depend on whether
@@ -296,7 +296,7 @@ mod tests {
         // And it must cover whatever cap THIS process is configured for
         // (CI does not set the override; an operator who raises it past the
         // table re-introduces the documented fold).
-        if std::env::var_os("ATLAS_MTP_MAX_SEQS").is_none() {
+        if std::env::var_os("AVAROK_MTP_MAX_SEQS").is_none() {
             assert!(
                 MAX_N > spark_model::speculative::mtp_max_seqs(),
                 "MAX_N {MAX_N} does not cover dispatch cap {}",
@@ -311,8 +311,8 @@ mod tests {
     // (17..=32 onto 16). Env-independent: CI sets neither override.
     #[test]
     fn widths_up_to_the_cap_do_not_alias() {
-        if std::env::var_os("ATLAS_MTP_ACCEPT_FOLD_AT_16").is_some()
-            || std::env::var_os("ATLAS_MTP_MAX_SEQS").is_some()
+        if std::env::var_os("AVAROK_MTP_ACCEPT_FOLD_AT_16").is_some()
+            || std::env::var_os("AVAROK_MTP_MAX_SEQS").is_some()
         {
             return; // the kill switch deliberately restores the fold
         }

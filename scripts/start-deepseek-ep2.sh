@@ -12,9 +12,9 @@
 # Prerequisites:
 #   - Two GB10 nodes connected via RoCE (enp1s0f0np0), MTU 9000
 #   - Passwordless SSH from head (HEAD_IP env) to worker (WORKER_IP env)
-#   - atlas-deepseek-v4:latest Docker image on both nodes
-#     Build: docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t atlas-deepseek-v4 .
-#   - Same image tag on BOTH nodes (mixing Atlas versions across ranks
+#   - avarok-deepseek-v4:latest Docker image on both nodes
+#     Build: docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t avarok-deepseek-v4 .
+#   - Same image tag on BOTH nodes (mixing Avarok versions across ranks
 #     causes NCCL to hang at ncclCommInitRank).
 #   - Model weights cached on both nodes (~/.cache/huggingface)
 #   - RDMA kernel support on host (IB device at /dev/infiniband)
@@ -22,7 +22,7 @@
 set -euo pipefail
 
 MODEL="${1:-deepseek-ai/DeepSeek-V4-Flash}"
-IMAGE="${IMAGE:-atlas-deepseek-v4:latest}"
+IMAGE="${IMAGE:-avarok-deepseek-v4:latest}"
 HEAD_IP="${HEAD_IP:-127.0.0.1}"
 WORKER_IP="${WORKER_IP:-127.0.0.1}"
 MASTER_PORT="29500"
@@ -37,7 +37,7 @@ EXTRA_FLAGS="${EXTRA_FLAGS:-}"
 # DeepSeek-V4 has no MTP weights in the public checkpoint, so
 # --speculative is OFF on both ranks.
 
-echo "=== Atlas DeepSeek-V4-Flash EP=2 bring-up (RDMA-enabled) ==="
+echo "=== Avarok DeepSeek-V4-Flash EP=2 bring-up (RDMA-enabled) ==="
 echo "Model:   $MODEL"
 echo "Image:   $IMAGE"
 echo "Head:    $HEAD_IP (rank 0, HTTP on $PORT)"
@@ -48,8 +48,8 @@ echo ""
 
 # Clean old containers
 echo "Cleaning up old containers..."
-sudo docker rm -f atlas-deepseek-ep0 2>/dev/null || true
-ssh "$WORKER_IP" "sudo docker rm -f atlas-deepseek-ep1 2>/dev/null || true"
+sudo docker rm -f avarok-deepseek-ep0 2>/dev/null || true
+ssh "$WORKER_IP" "sudo docker rm -f avarok-deepseek-ep1 2>/dev/null || true"
 
 RDMA_FLAGS="--device=/dev/infiniband --cap-add=IPC_LOCK --cap-add=SYS_NICE --ulimit memlock=-1 --security-opt seccomp=unconfined"
 
@@ -77,7 +77,7 @@ NCCL_ENV="\
 # Start rank 0 (head) — HTTP server + scheduler
 echo "Starting rank 0 on $HEAD_IP..."
 sudo docker run -d \
-  --name atlas-deepseek-ep0 \
+  --name avarok-deepseek-ep0 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -104,7 +104,7 @@ sudo docker run -d \
 # Start rank 1 (worker)
 echo "Starting rank 1 on $WORKER_IP..."
 ssh "$WORKER_IP" "sudo docker run -d \
-  --name atlas-deepseek-ep1 \
+  --name avarok-deepseek-ep1 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -130,6 +130,6 @@ ssh "$WORKER_IP" "sudo docker run -d \
 
 echo ""
 echo "=== Both ranks starting ==="
-echo "Monitor rank 0: sudo docker logs -f atlas-deepseek-ep0"
-echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-deepseek-ep1'"
+echo "Monitor rank 0: sudo docker logs -f avarok-deepseek-ep0"
+echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f avarok-deepseek-ep1'"
 echo "API endpoint:   http://$HEAD_IP:$PORT/v1/chat/completions"

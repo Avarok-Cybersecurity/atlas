@@ -23,7 +23,7 @@ use spark_runtime::kernel_args::KernelLaunch;
 pub struct Glm5NextMhcKernels {
     /// Broadcast the embedding into the `hc_mult` streams. First text layer only.
     ///
-    /// 🪤 This is an architecture-neutral broadcast that Atlas already had — and GLM still
+    /// 🪤 This is an architecture-neutral broadcast that Avarok already had — and GLM still
     /// needs its own, because `hyper_connection::hc_expand` lives in the **DeepSeek-V4
     /// target directory**. A kernel target merges `common/` plus its OWN model dir and
     /// cannot reach into another target's, so for the GLM target that module does not

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Prometheus metrics for Atlas Spark.
+//! Prometheus metrics for Avarok Spark.
 
 use lazy_static::lazy_static;
 use prometheus::{
@@ -10,9 +10,9 @@ use prometheus::{
 
 lazy_static! {
     pub static ref REQUESTS_TOTAL: IntCounter =
-        register_int_counter!("atlas_requests_total", "Total requests processed").unwrap();
+        register_int_counter!("avarok_requests_total", "Total requests processed").unwrap();
     pub static ref REQUESTS_ACTIVE: IntGauge =
-        register_int_gauge!("atlas_requests_active", "Currently active requests").unwrap();
+        register_int_gauge!("avarok_requests_active", "Currently active requests").unwrap();
     /// Time to first token, LABELLED BY MODEL.
     ///
     /// A label rather than a reset. The counters in this file are process
@@ -26,14 +26,14 @@ lazy_static! {
     /// rather than discarding it — `sum by (le)` aggregates back to the old
     /// single-series view for anyone who wants it.
     pub static ref TTFT_SECONDS: HistogramVec = register_histogram_vec!(
-        "atlas_time_to_first_token_seconds",
+        "avarok_time_to_first_token_seconds",
         "Time to first token",
         &["model"],
         vec![0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
     )
     .unwrap();
     pub static ref GENERATION_TOKENS_TOTAL: IntCounter =
-        register_int_counter!("atlas_generation_tokens_total", "Total tokens generated").unwrap();
+        register_int_counter!("avarok_generation_tokens_total", "Total tokens generated").unwrap();
     /// Tokens counted AS THEY ARE DECODED, not at request completion.
     ///
     /// `GENERATION_TOKENS_TOTAL` is incremented once per request, from the
@@ -49,22 +49,22 @@ lazy_static! {
     /// `GENERATION_TOKENS_TOTAL`, and the two are not interchangeable.
     pub static ref DECODED_TOKENS_TOTAL: IntCounter =
         register_int_counter!(
-            "atlas_decoded_tokens_total",
+            "avarok_decoded_tokens_total",
             "Tokens decoded, counted as they are produced (rate-friendly)"
         ).unwrap();
-    // ── HTTP byte accounting (Atlas TUI Server Stats) ──
+    // ── HTTP byte accounting (Avarok TUI Server Stats) ──
     //
     // Request side counts body bytes as received by the byte-count
     // middleware; response side counts bytes actually written through the
     // wrapped body (streaming/SSE included, where Content-Length lies).
     pub static ref HTTP_BYTES_IN: IntCounter =
-        register_int_counter!("atlas_http_bytes_in_total", "Total HTTP request body bytes")
+        register_int_counter!("avarok_http_bytes_in_total", "Total HTTP request body bytes")
             .unwrap();
     pub static ref HTTP_BYTES_OUT: IntCounter =
-        register_int_counter!("atlas_http_bytes_out_total", "Total HTTP response body bytes")
+        register_int_counter!("avarok_http_bytes_out_total", "Total HTTP response body bytes")
             .unwrap();
     pub static ref PROMPT_TOKENS_TOTAL: IntCounter =
-        register_int_counter!("atlas_prompt_tokens_total", "Total prompt tokens processed")
+        register_int_counter!("avarok_prompt_tokens_total", "Total prompt tokens processed")
             .unwrap();
 
     // ── Loop-detector telemetry (P5.2, 2026-04-25) ──
@@ -77,7 +77,7 @@ lazy_static! {
     //   - spinning ∈ {0, 1} — was Layer-2 spinning detection also active
     pub static ref LOOP_DETECTOR_VERDICTS: IntCounterVec =
         register_int_counter_vec!(
-            "atlas_loop_detector_verdicts_total",
+            "avarok_loop_detector_verdicts_total",
             "Loop detector verdicts emitted, by verdict + channel + spinning flag",
             &["verdict", "channel", "spinning"]
         ).unwrap();
@@ -91,7 +91,7 @@ lazy_static! {
     // behind future activation once these baselines are measured.
     pub static ref SPEC_DECODE_VERIFY: IntCounterVec =
         register_int_counter_vec!(
-            "atlas_spec_decode_verify_total",
+            "avarok_spec_decode_verify_total",
             "MTP draft verify outcomes by K and result",
             &["k", "outcome"]
         ).unwrap();
@@ -105,12 +105,12 @@ lazy_static! {
     // blow up Prometheus cardinality.
     pub static ref TOOL_CALLS_TOTAL: IntCounter =
         register_int_counter!(
-            "atlas_tool_calls_total",
+            "avarok_tool_calls_total",
             "Total successful tool calls emitted by the server"
         ).unwrap();
 }
 
-/// RAII guard for the `atlas_requests_active` gauge: increments on construction,
+/// RAII guard for the `avarok_requests_active` gauge: increments on construction,
 /// decrements exactly once on drop.
 ///
 /// Replaces a hand-balanced `inc()` + seven scattered `dec()` calls. That shape
@@ -119,7 +119,7 @@ lazy_static! {
 /// on disconnect, so no `dec()` in the body ever runs) — pinned the gauge
 /// forever. Orphans then accumulate monotonically and can exhaust the scheduler's
 /// admission accounting while `/health` still reports ready.
-/// See Avarok-Cybersecurity/atlas#368.
+/// See Avarok-Cybersecurity/avarok#368.
 ///
 /// For streaming the guard is moved into `StreamCtx`, which the SSE `flat_map`
 /// closure owns — so it also drops when the client hangs up mid-stream.

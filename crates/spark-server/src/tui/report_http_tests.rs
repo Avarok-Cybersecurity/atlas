@@ -183,11 +183,11 @@ fn transport_failure_maps_to_the_network_message() {
 fn job() -> SubmitJob {
     SubmitJob {
         client_id: "Iv1TEST".into(),
-        repo: "owner/atlas".into(),
+        repo: "owner/avarok".into(),
         access: SecretString::new("ghu_OLD".into()),
         refresh: Some(SecretString::new("ghr_OLD".into())),
         title: "it broke".into(),
-        body: "details <!-- atlas-tui-report -->".into(),
+        body: "details <!-- avarok-tui-report -->".into(),
     }
 }
 
@@ -211,7 +211,7 @@ fn created_on_201_and_the_token_stays_out_of_the_payload() {
     assert_eq!(url, "https://github.com/o/r/issues/214");
     let seen = fake.seen.borrow();
     let (url, payload, token) = &seen[0];
-    assert_eq!(url, "https://api.github.com/repos/owner/atlas/issues");
+    assert_eq!(url, "https://api.github.com/repos/owner/avarok/issues");
     // CWE-532 twin for the wire: the token travels in the Authorization
     // header the transport builds, never inside the JSON body.
     assert_eq!(token.as_deref(), Some("ghu_OLD"));

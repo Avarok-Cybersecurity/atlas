@@ -16,7 +16,7 @@
 //! `gdn_exact_replay` and gets this arm unconditionally. Measured on
 //! qwen3.8-flash-next (native EXL3, gamma=1, 40-token probe): with the WY arms
 //! the verify's row-0 logits matched serial decode 0/38; with this arm plus
-//! the other two row-exact legs, 38/38. Kill switch `ATLAS_NO_VERIFY_ROW_GDN`.
+//! the other two row-exact legs, 38/38. Kill switch `AVAROK_NO_VERIFY_ROW_GDN`.
 //!
 //! The WY/fused verify arms diverge in two ways: the verify conv runs the
 //! BF16-output kernel where sequential decode runs the FP32 one (h-state
@@ -180,7 +180,7 @@ impl Qwen3SsmLayer {
                  that declares gdn_exact_replay — the mHC MTP verify does): \
                  per-token sequential-decode kernel chain (f32_conv={use_f32_conv}, \
                  fused_gdn_norm={fused_gdn_norm}, snap_twin={snap}, \
-                 fused_f32_conv={fused_conv}); ATLAS_NO_VERIFY_ROW_GDN restores the \
+                 fused_f32_conv={fused_conv}); AVAROK_NO_VERIFY_ROW_GDN restores the \
                  WY arms for the pass-scoped case"
             );
         });

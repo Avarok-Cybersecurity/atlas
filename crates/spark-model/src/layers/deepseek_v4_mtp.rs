@@ -107,7 +107,7 @@ impl DeepseekV4MtpHead {
         module: DeepseekV4MtpModule,
         embed_tokens: DenseWeight,
         lm_head: DenseWeight,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         mtp_vocab_size: u32,
         max_seq_len: usize,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Native EXL3 dense (GDN + attention) projections — the
-//! `ATLAS_EXL3_NATIVE_DENSE=1` extension of the materialize pass (see
+//! `AVAROK_EXL3_NATIVE_DENSE=1` extension of the materialize pass (see
 //! `exl3_materialize.rs` for the pass itself, `exl3_materialize_moe.rs` for
 //! the routed-expert sibling this mirrors).
 //!
@@ -9,9 +9,9 @@
 //! keep-set computation:
 //!
 //!  * [`exl3_native_dense_families`] / [`check_exl3_native_dense_gates`] —
-//!    the env gates. `ATLAS_EXL3_NATIVE_DENSE=1` (requires
-//!    `ATLAS_EXL3_NATIVE=1`, hard error otherwise) enables BOTH families;
-//!    `ATLAS_EXL3_NATIVE_GDN=0` / `ATLAS_EXL3_NATIVE_ATTN=0` opt one family
+//!    the env gates. `AVAROK_EXL3_NATIVE_DENSE=1` (requires
+//!    `AVAROK_EXL3_NATIVE=1`, hard error otherwise) enables BOTH families;
+//!    `AVAROK_EXL3_NATIVE_GDN=0` / `AVAROK_EXL3_NATIVE_ATTN=0` opt one family
 //!    back out for A/B. Either sub-gate set without the DENSE gate is a hard
 //!    error (fail-loud house style, never a silent ignore).
 //!  * [`exl3_native_serves_dense`] — the prefix predicate. Two families:
@@ -79,11 +79,11 @@ impl Exl3DenseFamilies {
     }
 }
 
-/// `ATLAS_EXL3_NATIVE_DENSE=1`: serve the GDN + attention dense projections
-/// natively from packed trellis (requires `ATLAS_EXL3_NATIVE=1`). Read per
+/// `AVAROK_EXL3_NATIVE_DENSE=1`: serve the GDN + attention dense projections
+/// natively from packed trellis (requires `AVAROK_EXL3_NATIVE=1`). Read per
 /// call — load paths only.
 pub fn exl3_native_dense_enabled() -> bool {
-    std::env::var("ATLAS_EXL3_NATIVE_DENSE").as_deref() == Ok("1")
+    std::env::var("AVAROK_EXL3_NATIVE_DENSE").as_deref() == Ok("1")
 }
 
 /// The admitted dense families from the environment: the DENSE gate plus
@@ -92,8 +92,8 @@ pub fn exl3_native_dense_enabled() -> bool {
 pub fn exl3_native_dense_families() -> Exl3DenseFamilies {
     exl3_native_dense_families_with(
         exl3_native_dense_enabled(),
-        std::env::var("ATLAS_EXL3_NATIVE_GDN").ok().as_deref(),
-        std::env::var("ATLAS_EXL3_NATIVE_ATTN").ok().as_deref(),
+        std::env::var("AVAROK_EXL3_NATIVE_GDN").ok().as_deref(),
+        std::env::var("AVAROK_EXL3_NATIVE_ATTN").ok().as_deref(),
     )
 }
 
@@ -124,29 +124,29 @@ pub fn check_exl3_native_dense_gates(
 ) -> Result<()> {
     if dense && !native {
         bail!(
-            "ATLAS_EXL3_NATIVE_DENSE=1 requires ATLAS_EXL3_NATIVE=1 (the dense \
+            "AVAROK_EXL3_NATIVE_DENSE=1 requires AVAROK_EXL3_NATIVE=1 (the dense \
              gate extends the native serving set; it cannot enable native \
-             serving by itself) — set ATLAS_EXL3_NATIVE=1 or unset \
-             ATLAS_EXL3_NATIVE_DENSE"
+             serving by itself) — set AVAROK_EXL3_NATIVE=1 or unset \
+             AVAROK_EXL3_NATIVE_DENSE"
         );
     }
     if !dense {
         for (name, v) in [
-            ("ATLAS_EXL3_NATIVE_GDN", gdn_env),
-            ("ATLAS_EXL3_NATIVE_ATTN", attn_env),
+            ("AVAROK_EXL3_NATIVE_GDN", gdn_env),
+            ("AVAROK_EXL3_NATIVE_ATTN", attn_env),
         ] {
             if let Some(v) = v {
                 bail!(
-                    "{name}={v} is set but ATLAS_EXL3_NATIVE_DENSE is not 1 — the \
+                    "{name}={v} is set but AVAROK_EXL3_NATIVE_DENSE is not 1 — the \
                      per-family sub-gates only refine the DENSE gate (=0 opts a \
-                     family out); set ATLAS_EXL3_NATIVE_DENSE=1 or unset {name}"
+                     family out); set AVAROK_EXL3_NATIVE_DENSE=1 or unset {name}"
                 );
             }
         }
     }
     for (name, v, family) in [
-        ("ATLAS_EXL3_NATIVE_GDN", gdn_env, Exl3DenseFamily::Gdn),
-        ("ATLAS_EXL3_NATIVE_ATTN", attn_env, Exl3DenseFamily::Attn),
+        ("AVAROK_EXL3_NATIVE_GDN", gdn_env, Exl3DenseFamily::Gdn),
+        ("AVAROK_EXL3_NATIVE_ATTN", attn_env, Exl3DenseFamily::Attn),
     ] {
         if let Some(v) = v
             && v != "0"

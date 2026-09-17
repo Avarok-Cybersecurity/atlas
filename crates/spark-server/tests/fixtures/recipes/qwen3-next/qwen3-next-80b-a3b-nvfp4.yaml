@@ -1,13 +1,13 @@
 recipe_version: "2"
 model: nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
   description: |
     Qwen3-Next-80B (A3B MoE, hybrid SSM+Attention+MoE) NVFP4 + MTP —
-    largest single-node MoE model with MTP per the Atlas catalogue
+    largest single-node MoE model with MTP per the Avarok catalogue
     (~104 tok/s decode at concurrency=1, ISL=128, OSL=128).
   maintainer: avarok
   category: agent

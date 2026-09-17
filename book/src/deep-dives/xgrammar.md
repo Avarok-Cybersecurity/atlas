@@ -1,8 +1,8 @@
 # Constrained Decoding (XGrammar)
 
-Constrained decoding lets Atlas force the model to produce output that conforms to a grammar — the subset of tokens that could continue the current partial output while keeping the output valid is computed at every step; invalid tokens get their logits set to `-inf` before sampling.
+Constrained decoding lets Avarok force the model to produce output that conforms to a grammar — the subset of tokens that could continue the current partial output while keeping the output valid is computed at every step; invalid tokens get their logits set to `-inf` before sampling.
 
-Atlas uses **XGrammar** for this. It is the machinery that makes tool calls reliable (no invented field names, no broken JSON/XML), and it's the substrate for any "structured output" feature (`response_format`, JSON schema conforming, etc.).
+Avarok uses **XGrammar** for this. It is the machinery that makes tool calls reliable (no invented field names, no broken JSON/XML), and it's the substrate for any "structured output" feature (`response_format`, JSON schema conforming, etc.).
 
 ## The problem
 
@@ -29,12 +29,12 @@ XGrammar ([paper](https://arxiv.org/abs/2411.15100), Xiamen University / CMU 202
 
 The cost is a grammar compilation step (~ms for typical JSON schemas), amortised across all requests using that schema.
 
-## How Atlas uses it
+## How Avarok uses it
 
-Atlas ships XGrammar as a **pure-Rust in-tree crate**, `crates/xgrammar` — a from-scratch port of mlc-ai/xgrammar v0.1.32, with no C++ core, no `cxx` FFI bridge and no build script. (It was previously a vendored `vendor/xgrammar-rs/` binding wrapping the C++ engine; that directory is gone.) The call sites:
+Avarok ships XGrammar as a **pure-Rust in-tree crate**, `crates/xgrammar` — a from-scratch port of mlc-ai/xgrammar v0.1.32, with no C++ core, no `cxx` FFI bridge and no build script. (It was previously a vendored `vendor/xgrammar-rs/` binding wrapping the C++ engine; that directory is gone.) The call sites:
 
-- **Tool calls** — when the request includes `tools: [...]`, Atlas derives an XGrammar grammar from the function schemas + the model's tool-call format (Hermes JSON, Qwen3-coder XML, Mistral JSON). The grammar enforces: opening delimiter → valid function name → opening args bracket → schema-conforming JSON/XML → closing delimiter. `--tool-max-tokens` caps the total argument-generation length.
-- **Response-format structured output** — OpenAI-compatible `response_format: {type: json_schema, json_schema: {...}}`. Atlas compiles the schema into an XGrammar grammar and constrains the entire response.
+- **Tool calls** — when the request includes `tools: [...]`, Avarok derives an XGrammar grammar from the function schemas + the model's tool-call format (Hermes JSON, Qwen3-coder XML, Mistral JSON). The grammar enforces: opening delimiter → valid function name → opening args bracket → schema-conforming JSON/XML → closing delimiter. `--tool-max-tokens` caps the total argument-generation length.
+- **Response-format structured output** — OpenAI-compatible `response_format: {type: json_schema, json_schema: {...}}`. Avarok compiles the schema into an XGrammar grammar and constrains the entire response.
 - **Reasoning boundaries** — the reasoning parser uses a lightweight grammar to enforce that `<think>...</think>` blocks close cleanly when `--max-thinking-budget` kicks in, preventing the unclosed-think bug that blocked Claude Code compatibility on Qwen3.6.
 
 At the sampling step:
@@ -62,7 +62,7 @@ The payoff compounds with MTP: constrained decoding inside an MTP draft mask blo
 
 ## Opencode & markdown fences
 
-A specific bug worth noting: when a model emits a tool call inside a markdown code fence, Atlas's tool-call parser originally ate the surrounding fence characters — the closing backticks came through as "extra content" and broke downstream code that expected clean JSON. Fixed in wave-1 of the bug sweeps by making the parser markdown-fence aware; XGrammar then enforces the fence is balanced.
+A specific bug worth noting: when a model emits a tool call inside a markdown code fence, Avarok's tool-call parser originally ate the surrounding fence characters — the closing backticks came through as "extra content" and broke downstream code that expected clean JSON. Fixed in wave-1 of the bug sweeps by making the parser markdown-fence aware; XGrammar then enforces the fence is balanced.
 
 A related hallucination class: the Qwen3-coder XML format allows the model to emit the literal string `</tool_call>` inside a JSON string value. The parser now disambiguates, and XGrammar's grammar masks it at the source.
 

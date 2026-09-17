@@ -10,7 +10,7 @@ use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
-/// `ATLAS_HC_DENSE_GEMV=1` (presence) routes decode-shaped rows through the
+/// `AVAROK_HC_DENSE_GEMV=1` (presence) routes decode-shaped rows through the
 /// batched dense GEMV instead of cuBLASLt. OPT-IN, default OFF — measured
 /// 2026-09-05 on qwen3.8-flash-next EXL3 (GB10, 2 drafts, prefix cache on,
 /// fresh server per arm): the GEMV arm was faster per kernel but draft
@@ -21,7 +21,7 @@ use spark_runtime::kernel_args::KernelLaunch;
 /// Kept as an A/B arm; records in .research/exl3_decode_perf/ab_hc_*.
 fn hc_dense_gemv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_HC_DENSE_GEMV").is_some())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_HC_DENSE_GEMV").is_some())
 }
 
 /// Opt-in arm (see [`hc_dense_gemv_enabled`]): decode-shaped rows

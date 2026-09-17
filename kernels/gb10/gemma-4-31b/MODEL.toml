@@ -123,32 +123,32 @@ w4a4_gemm = "NVFP4 W4A4 GEMM; BF16 checkpoint has no NVFP4 weights. Fallback res
 w4a4_gemm_mfast = "mfast twin shipped only in nemotron-labs-3-puzzle's shadow; same NVFP4-weight gating applies here."
 
 [expected_absent.q4k_mmq]
-atlas_q4k_mmq128_nc = """
+avarok_q4k_mmq128_nc = """
 Q4_K FFN MMQ family — finalize_q4k_load requires ALL handles non-zero
-AND ATLAS_FFN_MMQ presence, then requantizes NVFP4 weights to Q4_K.
+AND AVAROK_FFN_MMQ presence, then requantizes NVFP4 weights to Q4_K.
 This BF16-target's KERNEL set does not ship the module; gate fails on
 handle == 0 and stays on the resolved bf16/dense path."""
-atlas_q4k_mmq128_wc = "Same Q4_K family — gated off for this target (see atlas_q4k_mmq128_nc)."
-atlas_q8_1_quantize_ds4_bf16 = "Same Q4_K family — activation quantizer; gated off."
+avarok_q4k_mmq128_wc = "Same Q4_K family — gated off for this target (see avarok_q4k_mmq128_nc)."
+avarok_q8_1_quantize_ds4_bf16 = "Same Q4_K family — activation quantizer; gated off."
 
 [expected_absent.q4k_quantize]
-q4k_quantize = "Q4_K weight quantizer for the MMQ family; gated off with the family (see q4k_mmq::atlas_q4k_mmq128_nc)."
+q4k_quantize = "Q4_K weight quantizer for the MMQ family; gated off with the family (see q4k_mmq::avarok_q4k_mmq128_nc)."
 
 [expected_absent.nvfp4_mmq]
-atlas_nvfp4_mmq128_nc = """
+avarok_nvfp4_mmq128_nc = """
 NVFP4 MMQ FFN family. finalize_nvfp4_mmq_load requantizes NVFP4 weights;
 this target runs BF16 so the family is never materialized, and the
 KERNEL set ships no nvfp4_mmq module. Probe is gated by handle != 0."""
-atlas_nvfp4_mmq128_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq16_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq16_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq32_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq32_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq64_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_mmq64_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
-atlas_nvfp4_quantize_bf16 = "NVFP4 activation quantizer; gated off with the family."
-atlas_nvfp4_repack = "NVFP4 weight repacker; gated off with the family."
-atlas_nvfp4_silu_mul_scaled = "NVFP4 SiLU epilogue; gated off with the family."
-atlas_nvfp4_silu_mul_quant = "NVFP4 SiLU epilogue (quantized); gated off with the family."
-atlas_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
+avarok_nvfp4_mmq128_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq16_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq16_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq32_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq32_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq64_nc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_mmq64_wc = "Same NVFP4 MMQ family — gated off for BF16 target."
+avarok_nvfp4_quantize_bf16 = "NVFP4 activation quantizer; gated off with the family."
+avarok_nvfp4_repack = "NVFP4 weight repacker; gated off with the family."
+avarok_nvfp4_silu_mul_scaled = "NVFP4 SiLU epilogue; gated off with the family."
+avarok_nvfp4_silu_mul_quant = "NVFP4 SiLU epilogue (quantized); gated off with the family."
+avarok_nvfp4_scale_bf16 = "NVFP4 scale handler; gated off with the family."
 

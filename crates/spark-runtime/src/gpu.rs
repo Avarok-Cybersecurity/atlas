@@ -19,7 +19,7 @@ pub use crate::gpu_args::pack_kernel_args;
 
 /// GPU backend trait — SBIO IORouter for all CUDA operations.
 ///
-/// Implementations: `AtlasCudaBackend` (production), `MockGpuBackend` (tests).
+/// Implementations: `AvarokCudaBackend` (production), `MockGpuBackend` (tests).
 pub trait GpuBackend: Send + Sync {
     /// Allocate `bytes` of device memory.
     ///
@@ -238,7 +238,7 @@ pub trait GpuBackend: Send + Sync {
     fn synchronize(&self, stream: u64) -> Result<()>;
 
     /// A55 diagnostic: read every allocation's trailing guard band back and report the ones
-    /// a kernel wrote past. Returns the violation count. `Ok(0)` when `ATLAS_REDZONE` is
+    /// a kernel wrote past. Returns the violation count. `Ok(0)` when `AVAROK_REDZONE` is
     /// unset or the backend has no red zones — every backend but CUDA.
     fn scan_redzones(&self) -> Result<usize> {
         Ok(0)
@@ -256,7 +256,7 @@ pub trait GpuBackend: Send + Sync {
     /// Look up a kernel function by module and function name.
     ///
     /// `#[track_caller]` on the DECLARATION is what makes the caller location
-    /// survive the `&dyn GpuBackend` vtable — every lookup in Atlas goes
+    /// survive the `&dyn GpuBackend` vtable — every lookup in Avarok goes
     /// through dynamic dispatch, so without it the audit can only ever name
     /// the backend's own line. The location is what turns an unresolved-lookup
     /// report from a name list into a work item.
@@ -290,7 +290,7 @@ pub trait GpuBackend: Send + Sync {
     /// `__device__` symbol, for instance. `None` on backends that have no such
     /// concept, which is why it is an accessor rather than a downcast.
     #[cfg(feature = "cuda")]
-    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+    fn kernel_registry(&self) -> Option<std::sync::Arc<avarok_core::registry::AvarokRegistry>> {
         None
     }
 

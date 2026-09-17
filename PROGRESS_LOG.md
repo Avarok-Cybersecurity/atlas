@@ -23,7 +23,7 @@ PR #381 and #382 cherry-picked onto #379 with **zero conflicts**. The two lines
 of work do not overlap: #379 is MTP/verify/kernels, #381+#382 are the SSM
 snapshot spill tier. They can land in either order.
 
-Verified on this branch: release build clean, `atlas-tier` 8+5+16+2+5 = 36 tests,
+Verified on this branch: release build clean, `avarok-tier` 8+5+16+2+5 = 36 tests,
 `spark-model model::ssm` 76 tests, `cargo clippy --tests` clean.
 
 ---
@@ -37,10 +37,10 @@ export CUTLASS_HOME=/home/ms/cutlass                 # REQUIRED — without it t
                                                      # not built"
 export RUSTFLAGS="-L <dir containing libnccl.so>"    # symlink libnccl.so -> libnccl.so.2
 export LD_LIBRARY_PATH="<same dir>"                  # only needed for `cargo test`
-ATLAS_TARGET_MODEL='*' cargo build -p spark-server --release
+AVAROK_TARGET_MODEL='*' cargo build -p spark-server --release
 ```
 
-`ATLAS_TARGET_MODEL='*'` is mandatory — a single-target binary dies on any other
+`AVAROK_TARGET_MODEL='*'` is mandatory — a single-target binary dies on any other
 model. The binary is `target/release/spark` (not `spark-server`).
 
 ---
@@ -52,13 +52,13 @@ model. The binary is `target/release/spark` (not `spark-server`).
 ```bash
 docker run -d --name combo27 --gpus all --ipc=host --network host \
   -v <binary>:/spark:ro -v /tank/hf:/tank/hf \
-  -e RUST_LOG=info -e ATLAS_TARGET_HW=gb10 \
-  -e ATLAS_TARGET_MODEL=qwen3.6-27b -e ATLAS_TARGET_QUANT=nvfp4 \
-  -e ATLAS_KV_OVERCOMMIT=1 \
-  -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 -e ATLAS_SSM_TAIL_PROTECT=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 \
-  atlas-gb10:gdnf32-build \
+  -e RUST_LOG=info -e AVAROK_TARGET_HW=gb10 \
+  -e AVAROK_TARGET_MODEL=qwen3.6-27b -e AVAROK_TARGET_QUANT=nvfp4 \
+  -e AVAROK_KV_OVERCOMMIT=1 \
+  -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 -e AVAROK_SSM_TAIL_PROTECT=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 \
+  avarok-gb10:gdnf32-build \
   /spark serve <centml-snapshot> --model-name qwen3.6-27b --host 0.0.0.0 --port 8888 \
     --max-seq-len 131072 --max-batch-size 8 --max-num-seqs 8 --kv-cache-dtype bf16 \
     --gpu-memory-utilization 0.80 --scheduling-policy slai \
@@ -68,7 +68,7 @@ docker run -d --name combo27 --gpus all --ipc=host --network host \
     --tool-max-tokens 32768 --request-timeout 0
 ```
 
-**MMQ W4A4 is now ON in this config (2026-07-30):** `ATLAS_NO_FFN_NVFP4_MMQ=1`
+**MMQ W4A4 is now ON in this config (2026-07-30):** `AVAROK_NO_FFN_NVFP4_MMQ=1`
 is REMOVED — `c9965ce9` shows it existed only to let `BF16_TC_PREFILL` engage
 (the accuracy campaign), and it outlived that reason when BF16_TC was dropped.
 The checkpoint is W4A4-native (`NVFP4-W4A4-mlpinf`). Measured: prefill_short
@@ -92,7 +92,7 @@ per-seq (the still-open 5.2 propose_meta sizing item) — functional, noisy,
 and the next code item if 64K becomes the daily driver.
 
 **CANONICAL TEST CONFIG IS NOW 4K (2026-07-30, user decision):**
-`--max-seq-len 4096 --max-prefill-tokens 4096`, `ATLAS_KV_OVERCOMMIT` removed
+`--max-seq-len 4096 --max-prefill-tokens 4096`, `AVAROK_KV_OVERCOMMIT` removed
 (it existed only because 16 x 16K exceeded strict reservation; 16 x 4K = 64K
 tokens fits the ~243K-token pool with room). Matches the #379 config-of-record
 context, keeps the MTP drafter pool small (~4.1K blocks), and avoids paging
@@ -105,26 +105,26 @@ attributing them to code. Scratch script: combo_conc_canonical4k.sh.
 
 | | #379 config of record | here | why |
 |---|---|---|---|
-| `ATLAS_BF16_TC_PREFILL=1` | set | **REMOVED** | crashes, see §5.1 |
+| `AVAROK_BF16_TC_PREFILL=1` | set | **REMOVED** | crashes, see §5.1 |
 | scheduling | fifo | slai | ours; works once BF16_TC is out |
 | `--max-batch-size` | 16 (20 in the log) | 8 | ours |
 | `--max-seq-len` | 4096 | 131072 | 128K context; see §5.2 for what this exposes |
-| `ATLAS_KV_OVERCOMMIT` | unset | 1 | 8x128K exceeds a strict KV reservation |
+| `AVAROK_KV_OVERCOMMIT` | unset | 1 | 8x128K exceeds a strict KV reservation |
 | util | 0.70 | 0.80 | ours |
 
 ### 3b. Holo-3.1-35B-A3B-NVFP4
 
 Full flag set + rationale is in the recipe PR
 (`Avarok-Cybersecurity/atlas-recipes#13`). Two things that silently degrade it:
-`ATLAS_HOLO_LOW_MEMORY_MOE=1` is the unlock (verify `CUTLASS grouped SFB: built
+`AVAROK_HOLO_LOW_MEMORY_MOE=1` is the unlock (verify `CUTLASS grouped SFB: built
 256 experts` ×40), and **KV must be `bf16`** — paged FlashInfer requires it.
 
 ### 3c. SSM spill tier (optional, #381/#382)
 
 ```bash
--e ATLAS_SSM_TIER=1 -e ATLAS_SSM_TIER_UNIFIED=1 \
--e ATLAS_SSM_TIER_SWAP_DIR=/ssm-swap -e ATLAS_SSM_TIER_DISK_GB=10 \
--e ATLAS_SSM_TIER_SLOTS=8 -e ATLAS_SSM_TIER_TIMING=1
+-e AVAROK_SSM_TIER=1 -e AVAROK_SSM_TIER_UNIFIED=1 \
+-e AVAROK_SSM_TIER_SWAP_DIR=/ssm-swap -e AVAROK_SSM_TIER_DISK_GB=10 \
+-e AVAROK_SSM_TIER_SLOTS=8 -e AVAROK_SSM_TIER_TIMING=1
 ```
 
 All four of the first envs are required: the cap is inert without `_UNIFIED`, and
@@ -132,7 +132,7 @@ without `_SWAP_DIR` it caps **RAM, not disk**. Confirm from the log that the
 **O_DIRECT** arm was taken and not the silent host-RAM fallback.
 
 Disk writes only begin once the hot arena is full — first write is spill number
-`ATLAS_SSM_TIER_SLOTS + 1`. A 0-byte swap file with a large `_SLOTS` is expected,
+`AVAROK_SSM_TIER_SLOTS + 1`. A 0-byte swap file with a large `_SLOTS` is expected,
 not a bug.
 
 ---
@@ -141,7 +141,7 @@ not a bug.
 
 ```bash
 # agentic concurrency (opencode-driven, distinct task per slot)
-ATLAS_CONTAINER=<name> python3 bench/agentic/conc_harness.py --levels 1,4,8 --model <id>
+AVAROK_CONTAINER=<name> python3 bench/agentic/conc_harness.py --levels 1,4,8 --model <id>
 # sequential 3-task scorecard (calc / sorter / Rust axum webserver)
 python3 oc_harness.py --model <id> --timeout 600
 # prefill grid (TTFT-based, unique prefix per request)
@@ -156,7 +156,7 @@ single-rep number twice and had to retract both.
 
 ## 5. Findings
 
-### 5.1 `ATLAS_BF16_TC_PREFILL=1` crashes — ROOT-CAUSED to the **v2** kernel
+### 5.1 `AVAROK_BF16_TC_PREFILL=1` crashes — ROOT-CAUSED to the **v2** kernel
 
 In #379's config of record. Symptom:
 
@@ -187,9 +187,9 @@ on this target.
 
 ```rust
 // guard: checks V1's handle
-let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0 && env::var_os("ATLAS_BF16_TC_PREFILL").is_some();
+let bf16_tc_prefill = self.w4a16_gemm_t_m128_bf16_k.0 != 0 && env::var_os("AVAROK_BF16_TC_PREFILL").is_some();
 // selection: prefers V2 whenever V2 is loaded
-let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0 && env::var_os("ATLAS_DISABLE_PREFILL_V2").is_none();
+let use_v2 = self.w4a16_gemm_t_m128_bf16_v2_k.0 != 0 && env::var_os("AVAROK_DISABLE_PREFILL_V2").is_none();
 let bf16_kernel = if use_v2 { ...v2_k } else { ...bf16_k };
 ```
 
@@ -209,7 +209,7 @@ compiled signature — v1 and v2 are documented to share "the same launch helper
 check first.
 
 **OPERATIONAL ANSWER — do not drop the flag, pair it:**
-`ATLAS_BF16_TC_PREFILL=1 ATLAS_DISABLE_PREFILL_V2=1` gives the lossless BF16
+`AVAROK_BF16_TC_PREFILL=1 AVAROK_DISABLE_PREFILL_V2=1` gives the lossless BF16
 prefill (the point of the flag: the FP8 crush causes "length-truncations /
 accuracy risk on Qwen3.6-27B") with no crash. Strictly better than removing it,
 which is what §3a's config currently does.
@@ -235,7 +235,7 @@ same missing arg was fixed in `w4a16_bf16_v2_microtest.rs` /
 the identical UB, which is why v2 passed validation and shipped.
 (`w4a16_m17_bench.rs` already passed a trailing `ldb` and documents that CUDA
 ignores extra trailing args; only MISSING args are UB.) After this,
-`ATLAS_BF16_TC_PREFILL=1` alone (v2, the faster variant) is expected to work —
+`AVAROK_BF16_TC_PREFILL=1` alone (v2, the faster variant) is expected to work —
 re-run `v2_bisect.sh` leg B to confirm; the `DISABLE_PREFILL_V2` pairing
 remains as the escape hatch.
 
@@ -263,7 +263,7 @@ sizing it from `max_seq_len` looks cheap. Also: it logs at `ERROR` per step.
 **8192 is the sweet spot.** Both 4K and 16K were worse.
 
 **And #379's benchmark cannot reach this cap by construction.**
-`bench/bench-atlas-concurrency.py` defines 6 ISL/OSL regimes but then filters
+`bench/bench-avarok-concurrency.py` defines 6 ISL/OSL regimes but then filters
 `[... if isl + osl <= MAX_SEQ_LEN]` with `MAX_SEQ_LEN` defaulting to 4096. At the
 config of record that silently drops the only two long-context regimes:
 
@@ -287,24 +287,24 @@ short-prompt, short-generation result. It does not speak to >7.2K context, and
 the batched-verify path it optimises is the one we measured falling back to
 `verify_k2_step` once agentic contexts reach ~15K.
 
-### 5.3 `ATLAS_SSM_TAIL_PROTECT=1` is inert in this config
+### 5.3 `AVAROK_SSM_TAIL_PROTECT=1` is inert in this config
 
 (2026-08-05: the variable was renamed to the opt-out
-`ATLAS_DISABLE_SSM_TAIL_PROTECT` — default ON — and dropped from every launch
+`AVAROK_DISABLE_SSM_TAIL_PROTECT` — default ON — and dropped from every launch
 script, since §5.3 itself proved it guards an empty set in this config. The
 finding below stands as written for the old name.)
 
 `radix_tree/snapshot.rs` says so in-code: the lease only shields `is_tail`
 entries, whose sole production writer is reachable only when
-`ATLAS_SSM_TAIL_MIDCHUNK != 0` — and the golden set pins `MIDCHUNK=0`. The
-comment explicitly warns: *"Do not read a `ATLAS_SSM_TAIL_PROTECT=1` in a launch
+`AVAROK_SSM_TAIL_MIDCHUNK != 0` — and the golden set pins `MIDCHUNK=0`. The
+comment explicitly warns: *"Do not read a `AVAROK_SSM_TAIL_PROTECT=1` in a launch
 script as evidence that tail protection is doing work."* #379's config sets both.
 
 ### 5.4 Spill cost: 412 ms → 19 ms (22×), and it holds under load
 
 `CudaBackend::copy_d2h` synchronizes **inside every call**; `spill_slot` issued
 60 of them. Fixed in #381 (async gather + one sync + a reusable pinned staging
-blob). `ATLAS_SSM_TIER_TIMING=1`:
+blob). `AVAROK_SSM_TIER_TIMING=1`:
 
 ```
 before: gather+sync=392936..411336us  store.put=19397us  total=412334us
@@ -318,7 +318,7 @@ remains (a host memcpy into the arena).
 
 ### 5.5 The disk cap works; reaping is still UNTESTED
 
-Holo, `ATLAS_SSM_TIER_DISK_GB=1`, `_SLOTS=8`, agentic C=1/4/8: **350 spills**, cap
+Holo, `AVAROK_SSM_TIER_DISK_GB=1`, `_SLOTS=8`, agentic C=1/4/8: **350 spills**, cap
 engaged once (latched WARN), swap file **1,002,700,800 B = exactly 15 records ×
 66,846,720** — never exceeded the 0.93 GiB budget.
 
@@ -338,7 +338,7 @@ On the 27B with `--ssm-checkpoint-interval 32`, **every** eviction candidate is
 refused and the tier is fully inert (0 spills, 0 disk):
 
 ```
-SSM spill SKIPPED (cost gate): victim depth 629 < ATLAS_SSM_SPILL_MIN_TOKENS=1024 — dropped
+SSM spill SKIPPED (cost gate): victim depth 629 < AVAROK_SSM_SPILL_MIN_TOKENS=1024 — dropped
 ```
 
 **The 1024 default is derived, not arbitrary** (`model/ssm_spill_gate.rs`):
@@ -372,12 +372,12 @@ silently disabled by a config that looks reasonable. There is no warning for thi
 Options, unresolved:
 - interval >= 64 (>=1024-token spacing) so victims can clear the gate — costs more
   SSM replay on partial hits;
-- lower `ATLAS_SSM_SPILL_MIN_TOKENS` to match the interval — but on a 151 MB blob
+- lower `AVAROK_SSM_SPILL_MIN_TOKENS` to match the interval — but on a 151 MB blob
   that is exactly the loss the gate was derived to prevent;
 - warn at startup when `interval * block_size < spill_min`, i.e. when the config
   can never spill. **This one looks unambiguously worth doing.**
 
-### 5.7 `bench-atlas-concurrency.py` measures PREFIX-CACHE HITS, not prefill
+### 5.7 `bench-avarok-concurrency.py` measures PREFIX-CACHE HITS, not prefill
 
 `make_prompt(target_tokens)` is **deterministic** — the same filler text for every
 request at a given ISL, no per-request uniqueness. With `--enable-prefix-caching`
@@ -574,7 +574,7 @@ Two side findings:
   worth a targeted look at what run_mtp_propose_batched allocates per step.
 * **The KV-family stack costs ~9% on decode_short C=16**: pre-KV binary
   138.0 (1 rep) vs full-KV 125.2/123.8 (2 reps), same config. block_trace
-  is ATLAS_KV_TRACE-gated so it is not that. Needs a bisect inside the 12
+  is AVAROK_KV_TRACE-gated so it is not that. Needs a bisect inside the 12
   KV commits (suspects: keep-evicting retry loop under MTP pressure,
   InsertAcquired per-insert allocs, node-ref changes) — or a pre-KV rebuild
   rep to rule 138.0 an outlier. The trade today is unambiguous (balanced_long
@@ -586,7 +586,7 @@ Prompted by a survey of `wip-laguna-lora` / `port/lora-moe-avarok` for
 transferable work (user-directed):
 
 * `a1d889f2` (= 4046dcad, LoRA-branch peel-off): **rayon host sampling**
-  (ATLAS_PARALLEL_SAMPLE, default ON, n>1 only) + token-major/exact-N MoE
+  (AVAROK_PARALLEL_SAMPLE, default ON, n>1 only) + token-major/exact-N MoE
   decode. The sampling half is the 27B-relevant piece: this branch sampled
   16 sequences SERIALLY over the ~250K vocab per decode step at C=16. The
   MoE half only touches the qwen3 MoE family (35B) — the 27B is dense-FFN.
@@ -607,7 +607,7 @@ transferable work (user-directed):
   preempt-and-retry lives. The reservation half was deliberately NOT ported.
 
 A/B in flight at write time: all four regimes C=16 rayon-ON, then
-`ATLAS_PARALLEL_SAMPLE=0` control on decode_short. Baselines to beat:
+`AVAROK_PARALLEL_SAMPLE=0` control on decode_short. Baselines to beat:
 decode_short 123.8-125.2, prefill_short 63.4, balanced_long 93.1.
 
 Surveyed and NOT picked (with reasons): laguna's `dd370b5e`/`cf5c4765`/
@@ -632,7 +632,7 @@ C=16, slai/16K, spec ON, one binary (all second-wave picks), single reps:
 
 **Why rayon is neutral here (structural, not a bad port):** with spec-decode
 ON, C=16 decode flows through `verify_k4_step`, not `decode_logits_step`
-where ATLAS_PARALLEL_SAMPLE lives. The rayon win applies to the NON-spec
+where AVAROK_PARALLEL_SAMPLE lives. The rayon win applies to the NON-spec
 path (and to the 35B MoE it was measured on). Keep it: it costs nothing
 here and protects the spec-off path (96.7 in 6.6 would presumably improve).
 The decode_short recovery 124→~130 attributes to the prefill trio
@@ -656,7 +656,7 @@ mandatory D-Cut rows. The two real levers, in order:
 Also picked this wave (user-directed, correctness for the quality pass):
 `9498edd7` (bypass decided before the SSM restore), `68c02fc0` (cold-vs-warm
 prefill numerics), `cd163142` (exact-full-prompt shortcut default-OFF — it
-is unsound by construction; `ATLAS_MARCONI_EXACT=1` re-enables), `b37669b5`
+is unsound by construction; `AVAROK_MARCONI_EXACT=1` re-enables), `b37669b5`
 (insert-contract tests). Ports kept this branch's newer tail-only session
 gate + `marconi_min_tokens` threshold with the picked semantics layered in.
 
@@ -692,7 +692,7 @@ vLLM bars (treated as fixed; NOT re-measured):
 
 | | C=8 | C=16 |
 |---|---|---|
-| Atlas decode_short | 108.5 | 124-138 |
+| Avarok decode_short | 108.5 | 124-138 |
 | vLLM bar | 98.8 | 168.9 |
 | ratio | **1.10x — parity MET honestly** | **0.73-0.82x** |
 
@@ -712,7 +712,7 @@ config change. Root-caused in layers, each verified by a serve+bench probe
    prefill in `phase_start_prefills`, one per tick. 16 concurrent cold
    prefills SERIALIZE. Q12 batched dispatch: provably never invoked
    (validated debug filter: scheduler DEBUG lines present, zero q12 events).
-2. `ATLAS_PREFILL_CODISPATCH=1` defers chunk-0 into a cohort → cohort
+2. `AVAROK_PREFILL_CODISPATCH=1` defers chunk-0 into a cohort → cohort
    ENTERS dispatch (2 entries/run) but falls to per-stream: 65.1 (flat).
    Gate chain peeled from the bail logs:
    a. arena cap: 16x950=15,200 stacked tokens vs arena 4,112 (=
@@ -725,7 +725,7 @@ config change. Root-caused in layers, each verified by a serve+bench probe
       caching off →
    d. **admit/execute gate MISMATCH** (same species as §5.1): eligibility
       admits chunk-0 on `CODISPATCH || FIRST_CHUNK` but
-      `prefill_inner` only honors the explicit `ATLAS_Q12_BATCHED_FIRST_CHUNK`
+      `prefill_inner` only honors the explicit `AVAROK_Q12_BATCHED_FIRST_CHUNK`
       → cohort admitted, bails at layer 0 ("requires seq_len_start > 0"),
       62.2 (flat). With the explicit flag →
 3. **kernel-batched SUCCEEDED end-to-end — and throughput did not move**
@@ -736,17 +736,17 @@ config change. Root-caused in layers, each verified by a serve+bench probe
    ~54 GFLOP/token, so ~800 tok/s ≈ ~43 effective TFLOPS — the BF16-class
    arms are near their practical roofline on GB10. Arm A/Bs at C=16:
    * default (int8/FP8 arms, MMQ off): 63.2
-   * + `ATLAS_BF16_TC_PREFILL=1` (v2, fixed this morning; 0 launch errors
+   * + `AVAROK_BF16_TC_PREFILL=1` (v2, fixed this morning; 0 launch errors
      under load): **53.4 — SLOWER.** The flag buys losslessness, not speed;
      `c9965ce9` shows `NO_FFN_NVFP4_MMQ=1` was added to the golden set
      PURELY to let BF16_TC engage — when BF16_TC was dropped (crash), the
      MMQ disable stayed behind with its reason gone.
-   * MMQ re-enabled (drop `ATLAS_NO_FFN_NVFP4_MMQ=1`): **69.7**, best TTFT
+   * MMQ re-enabled (drop `AVAROK_NO_FFN_NVFP4_MMQ=1`): **69.7**, best TTFT
      (16.9 s) and TPOT (92.1 ms). +10%, W4A4 is LOSSY — needs the
      oc_harness quality gate before adoption.
    The remaining ~16 s is the non-FFN prefill cost — on this SSM-hybrid the
    prime suspect is the SSM-layer prefill scan (cf. the Holo measurement:
-   Atlas chunk_delta_h 11-13x slower than FlashInfer GDN at matched shape).
+   Avarok chunk_delta_h 11-13x slower than FlashInfer GDN at matched shape).
    Needs an nsys decomposition to confirm; the structural fix is the
    FI-GDN-class kernel program, not a scheduler or config change.
 
@@ -764,7 +764,7 @@ Actionable follow-ups extracted:
   proven minimax/step3p7 8-warp m128_v2 ports cleanly (bit-identity 100% on
   8 shapes) but measures **0.78-0.82x of v1** on the 27B FFN shapes — the
   judges' realism critique ("the v2 file ships zero measured numbers")
-  called it. Shipped as opt-in only (`ATLAS_W4A16_VARIANT=v2`), commits
+  called it. Shipped as opt-in only (`AVAROK_W4A16_VARIANT=v2`), commits
   74eca5a0 + 195a69c6, WITH two durable wins regardless: the PTX arity CI
   test (pins launcher-vs-kernel param counts for the whole w4a16 family —
   the 5.1 bug class is now a CPU test failure) and the single-resolver
@@ -806,7 +806,7 @@ rollback via the verify snapshot), and the reader additionally needs
 watchdogs enabled — under the production spec-ON config the ring was
 structurally unreachable yet allocated 8 slots x 16 seqs x the 27B's
 158.9 MB blob up front. impl_a1 now skips it when `use_speculative` or
-watchdogs are disabled (`ATLAS_SSM_DECODE_RING=1/0` force-overrides;
+watchdogs are disabled (`AVAROK_SSM_DECODE_RING=1/0` force-overrides;
 skip logs the GB saved; rollback fail-opens to decline as documented).
 Verified live: startup logs "SKIPPED ... Saves 20.3 GB"; KV pool grew
 15,203 -> 17,355 blocks. Perf-neutral on decode (TPOT unchanged-to-better
@@ -838,7 +838,7 @@ baseline median ~151 / TPOT 82 ms / p1 0.867):
 * `--lm-head-dtype fp8`: **NEUTRAL** — 149.6/151.1, acceptance 0.866. The
   batched verify head already runs #378's FP8-ACTIVATION path; this flag
   rewires a path verify does not use.
-* `ATLAS_MTP_REFEED_ACCEPTED` (mined from #378 — the p1 0.72->0.90 strix
+* `AVAROK_MTP_REFEED_ACCEPTED` (mined from #378 — the p1 0.72->0.90 strix
   lever, implemented and never set in any config): **STRUCTURAL NO-OP at
   C=16** — refeed rebuilds drafts 2..K only; at the 16:1 rung draft 1
   already consumes the target's verified hidden. Applies to the C<=8 deep
@@ -849,7 +849,7 @@ baseline median ~151 / TPOT 82 ms / p1 0.867):
 
 #378 mining (user-directed): drafter-context blindness fix and the batched
 bootstrap/argmax are content-present in our base; the accept telemetry
-(`ATLAS_MTP_ACCEPT_DEBUG`) is available; **"graphing the Phase-A bootstrap"
+(`AVAROK_MTP_ACCEPT_DEBUG`) is available; **"graphing the Phase-A bootstrap"
 was declared WIP in #378's body and never landed anywhere** — it is a real
 open lever.
 
@@ -868,7 +868,7 @@ Artifacts: verify_specon/specoff.nsys-rep + kern_*.csv in the job scratch.
 Lever-1 slice (drafter small-N K/V projections: per-row GEMV -> tile GEMM at
 m>=8; the old M=4 crossover was stale after a83627a2 widened n to 16):
 **NEUTRAL e2e** — 146.8/149.2/150.7 (median 149.2) vs baseline median ~151.
-Kept (kill switch ATLAS_MTP_KV_GEMV=1): launch-count reduction, no cost.
+Kept (kill switch AVAROK_MTP_KV_GEMV=1): launch-count reduction, no cost.
 
 Computing WHY it was invisible produced the discovery that reframes the
 whole C=16 decode program: the spec-ON burst shows only **4.3 s of GPU-busy
@@ -909,7 +909,7 @@ Fix: the grammarless sibling of the #237 gate — same eligibility (greedy,
 not in thinking, penalties Neutral or ReduceOnly with the same per-token
 immunity proof + 2-byte probe), no bitmask to consult, GPU argmax IS the
 pick, zero D2H. Same tie-breaking trade #237 already shipped for grammar.
-Kill switch: ATLAS_NO_FAST_GREEDY_CHAT=1.
+Kill switch: AVAROK_NO_FAST_GREEDY_CHAT=1.
 
 decode_short C=16, canonical 4K: **164.4 / 164.2 / 164.6 (median 164.4)**,
 TPOT p50 78.8-79.2 ms, coherence smoke clean. Session arc: 0.73x -> 0.90x
@@ -922,7 +922,7 @@ drafter launch chain.
 
 decode_short, canonical 4K, binary at 8075c2c6:
 
-| C | Atlas | vLLM bar | ratio | #379 published |
+| C | Avarok | vLLM bar | ratio | #379 published |
 |---|---|---|---|---|
 | 1 | 30.2 | 14.2 | **2.13x** | 25.6 |
 | 2 | 44.0 | 27.8 | **1.58x** | 35.2 |
@@ -959,7 +959,7 @@ with --cudabacktrace to (a) re-derive the phase-gap timeline post-6.13 and
 
 ### 6.15 LOOP: the C=16 step anatomy is now exact — one 130 ms stall left
 
-In-process phase timers (ATLAS_MTP_TIMING now wired into the batched K4
+In-process phase timers (AVAROK_MTP_TIMING now wired into the batched K4
 step) + the backtraced trace agree on the per-step structure at C=16:
 
 * GPU: **idle ~140-152 ms -> dense 11.1 ms kernel span (145 kernels, 10.7
@@ -972,7 +972,7 @@ Buried this iteration with evidence:
 * cuMemAlloc-per-step theory: ZERO in-window allocs (all 9,160 were load).
 * Default-stream entanglement theory: switching Phase-5 to
   `copy_d2h_on_stream(stream)` (semantically the right dependency; kill
-  switch ATLAS_VERIFY_D2H_DEFAULT_STREAM=1) reproduced the SAME 130 ms.
+  switch AVAROK_VERIFY_D2H_DEFAULT_STREAM=1) reproduced the SAME 130 ms.
 * Host-bookkeeping theory: those phases total <12 ms.
 
 Remaining question, exactly one: why does a LAUNCHED verify graph not
@@ -994,7 +994,7 @@ direct experiment, all kill-switched arms retained in-tree):
 | 1 | pageable D2H staging | pinned staging buffer | 130 ms unchanged |
 | 2 | default-stream entanglement | copy_d2h_on_stream(verify stream) | unchanged |
 | 3 | submission-ring flush | cuStreamQuery spin instead of blocking sync | unchanged |
-| 4 | CUDA-graph replay quirk | ATLAS_NO_MTP_VERIFY_GRAPHS (eager) | 119-121 ms (worse agg) |
+| 4 | CUDA-graph replay quirk | AVAROK_NO_MTP_VERIFY_GRAPHS (eager) | 119-121 ms (worse agg) |
 | 5 | GPU power-gating | external 3 ms keep-awake kernel pinger | WORSE (142 ms) |
 | 6 | copy-engine pickup of tail D2H | MAPPED-ARGMAX (kernel writes host-mapped pinned; no copy op at all) | unchanged |
 | 7 | per-step device allocs | trace: zero in-window cuMemAllocs | n/a |
@@ -1069,15 +1069,15 @@ Ordered by what I would pick up first.
 3. **§5.2 — size `propose_meta` from `max_seq_len`** instead of a fixed 2048, and
    demote the per-step `ERROR` to a once-per-sequence `debug`.
 4. **§5.6 — warn at startup when `ssm_checkpoint_interval * block_size <
-   ATLAS_SSM_SPILL_MIN_TOKENS`**, i.e. when the config can never spill.
-5. **§5.3 — `ATLAS_SSM_TAIL_PROTECT=1` is inert** under `TAIL_MIDCHUNK=0`. DONE
+   AVAROK_SSM_SPILL_MIN_TOKENS`**, i.e. when the config can never spill.
+5. **§5.3 — `AVAROK_SSM_TAIL_PROTECT=1` is inert** under `TAIL_MIDCHUNK=0`. DONE
    (2026-08-05): dropped from every launch script and renamed to the opt-out
-   `ATLAS_DISABLE_SSM_TAIL_PROTECT` (default ON, `=1` disables).
+   `AVAROK_DISABLE_SSM_TAIL_PROTECT` (default ON, `=1` disables).
 6. SSM tier reaping is still unexercised (§5.5). `bench/ssm_faultin.py` is the
    probe; it needs a SMALL resident pool (`--ssm-cache-slots 1..2`) so 2-3
    requests force eviction, NOT the 48-request/21 GB shape I first built.
 
-Deliberately parked: `put_with` (evaluated and rejected in atlas#382 — only 2 of
+Deliberately parked: `put_with` (evaluated and rejected in avarok#382 — only 2 of
 4 `SnapshotBlobStore` implementors could support it, and it holds the residency
 `Mutex` across 60 async enqueues; a better hypothesis is that the 17-19 ms
 `store.put` is lazily-faulted calloc pages, measurable as put wall time vs put
@@ -1094,17 +1094,17 @@ ordinal 1..128).
 5c9f9672  docs(progress): #379's benchmark cannot reach the meta-stride cap
 299c47e5  docs: PROGRESS_LOG
 1810854e  chore(ssm-tier): LoC cap
-aa233714  fix(ssm-tier): reap dead tier keys            <- atlas#382
+aa233714  fix(ssm-tier): reap dead tier keys            <- avarok#382
 6e68fa8b  chore(ssm-tier): clippy + LoC cap
-a91390e4  perf(ssm-tier): 22x cheaper eviction          <- atlas#381
-2848205c  perf(mtp): D-Cut depth pruning                <- atlas#379 head
+a91390e4  perf(ssm-tier): 22x cheaper eviction          <- avarok#381
+2848205c  perf(mtp): D-Cut depth pruning                <- avarok#379 head
 ```
 
-Worktree `/home/ms/atlas/.claude/worktrees/combo`, tracking the remote.
+Worktree `/home/ms/avarok/.claude/worktrees/combo`, tracking the remote.
 
-**Related PRs** (all draft, all green): atlas#381 (spill tier),
-atlas#382 (reaping, stacked on #381), atlas-recipes#13 (Holo-3.1-35B recipe,
-from a fork — no write access to atlas-recipes). Review comment on atlas#379:
+**Related PRs** (all draft, all green): avarok#381 (spill tier),
+avarok#382 (reaping, stacked on #381), atlas-recipes#13 (Holo-3.1-35B recipe,
+from a fork — no write access to atlas-recipes). Review comment on avarok#379:
 `#issuecomment-5112240223`.
 
 **Local scratch** `/home/ms/.claude/jobs/c91b191d/tmp/`: serve scripts
@@ -1116,7 +1116,7 @@ from a fork — no write access to atlas-recipes). Review comment on atlas#379:
 * `CUTLASS_HOME=/home/ms/cutlass` at build ONLY to make the CUTLASS
   reference path available for benchmarking. It is NOT required to serve:
   the default build sets neither `CUTLASS_HOME` nor `FLASHINFER_HOME`, and
-  the binary serves on Atlas's own kernels. (Corrected 2026-08-31 — the
+  the binary serves on Avarok's own kernels. (Corrected 2026-08-31 — the
   earlier "or the binary refuses to serve" was never true of `spark-server`.)
 * `RUSTFLAGS="-L <dir with libnccl.so>"`; symlink `libnccl.so -> libnccl.so.2`.
 * The binary is `target/release/spark`, not `spark-server`.
@@ -1131,8 +1131,8 @@ from a fork — no write access to atlas-recipes). Review comment on atlas#379:
 Commits added on top of the stack above (newest first):
 
 ```
-52222db9..75d1398e  8 commits: full atlas#373 (prefix-cache refcount family)
-d36a54b8..2fe52169  3 commits: full atlas#375 (KV-exhaustion preempt)
+52222db9..75d1398e  8 commits: full avarok#373 (prefix-cache refcount family)
+d36a54b8..2fe52169  3 commits: full avarok#375 (KV-exhaustion preempt)
 493df3ea  fix(kv): exhaustion wedge (= wip-laguna-lora d27ec6fd)
 8a07a672  bench: BENCH_LEVELS env
 de129a3c  fix(scheduler): mixed-step logits aliasing (= 1e85cb94 ported)

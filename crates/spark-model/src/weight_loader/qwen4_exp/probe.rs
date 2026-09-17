@@ -9,7 +9,7 @@
 //! repeatedly cost more time than a hard failure would have.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 /// What the store holds, per family the loader cares about.
@@ -40,13 +40,13 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
         config.weight_prefix.clone()
     };
     r.has_embed = store.contains(&format!("{pfx}.embed_tokens.weight"));
-    // A kept-packed EXL3 lm_head (ATLAS_EXL3_NATIVE=1) counts: the native
+    // A kept-packed EXL3 lm_head (AVAROK_EXL3_NATIVE=1) counts: the native
     // head serves it without a dense `.weight` ever existing.
     r.has_lm_head = store.contains("lm_head.weight")
         || spark_runtime::weights::exl3::is_exl3_linear(store, "lm_head");
 
     // Like the lm_head and the experts, a kept-packed EXL3 dense family
-    // (ATLAS_EXL3_NATIVE_DENSE=1) counts: the native GDN / attention arms
+    // (AVAROK_EXL3_NATIVE_DENSE=1) counts: the native GDN / attention arms
     // serve it without a dense `.weight` ever existing. The predicate is the
     // loader's own (`exl3_dense_family_kept`), so the audit and the arms
     // cannot disagree about which layers are native.
@@ -82,7 +82,7 @@ pub fn audit_namespace(store: &WeightStore, config: &ModelConfig) -> NamespaceRe
             .find(|e| config.is_local_expert(*e))
             .unwrap_or(0);
         // Like the lm_head above, kept-packed EXL3 experts
-        // (ATLAS_EXL3_NATIVE_MOE=1) count: the native MoE path serves them
+        // (AVAROK_EXL3_NATIVE_MOE=1) count: the native MoE path serves them
         // without a dense `.weight` ever existing.
         let first_local_gate = format!("{lp}.mlp.experts.{first_local}.gate_proj");
         if store.contains(&format!("{first_local_gate}.weight"))

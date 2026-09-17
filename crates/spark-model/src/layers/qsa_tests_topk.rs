@@ -46,10 +46,10 @@ fn synth(kind: &str, n: usize, seed: u64) -> Vec<f32> {
 #[test]
 #[ignore]
 fn qsa_prefill_topk_bit_deterministic() {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*'");
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*'");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let k = g.kernel("qsa_indexer", "qsa_topk_rows").unwrap();

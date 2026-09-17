@@ -20,7 +20,7 @@ use super::*;
 /// of keeping a second copy of this precedence. `None` means "the config
 /// does not say"; it is NEVER a guess, and the sniffing half of
 /// [`detect_nvfp4_variant`] is what resolves it once the store is loaded.
-pub fn config_declared_variant(config: &atlas_core::config::ModelConfig) -> Option<Nvfp4Variant> {
+pub fn config_declared_variant(config: &avarok_core::config::ModelConfig) -> Option<Nvfp4Variant> {
     let qc = config.quantization_config.as_ref()?;
     match qc.quant_method.as_str() {
         "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => Some(Nvfp4Variant::Standard),
@@ -62,7 +62,7 @@ pub fn config_declared_variant(config: &atlas_core::config::ModelConfig) -> Opti
 ///      that ship without a `quantization_config` block.
 pub fn detect_nvfp4_variant(
     store: &WeightStore,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Nvfp4Variant {
     // (1) Config-first dispatch. See module docs on `quant_format` for
     // the full rationale — this is the fix for the Discord 2026-04-17
@@ -190,7 +190,7 @@ pub fn detect_nvfp4_variant(
 
     // Partial-NVFP4 guard: some upstream checkpoints (notably google/gemma-4-26B-A4B-it)
     // ship `.weight_scale` on KV-cache scale tensors but NOT on the MLP/MoE
-    // projections Atlas actually consumes. If we claim Standard here the
+    // projections Avarok actually consumes. If we claim Standard here the
     // loader will then fail with a cryptic `Weight '...mlp.gate_proj.weight_scale'
     // not found in store` half-way through load (logged against #bugs 2026-04-15
     // by kiiv6565). Sniff the canonical L0 MLP gate_proj — if its `.weight_scale`
@@ -345,7 +345,7 @@ pub(crate) fn quantized_any(
     if super::exl3_native_enabled() && spark_runtime::weights::exl3::is_exl3_linear(store, prefix) {
         anyhow::bail!(
             "quantized_any: {prefix} is held as packed EXL3 trellis \
-             (ATLAS_EXL3_NATIVE=1) but this consumer expects an NVFP4 weight — \
+             (AVAROK_EXL3_NATIVE=1) but this consumer expects an NVFP4 weight — \
              the prefix is in the native-serving set without a routed dispatch \
              path. Remove it from `exl3_native_serves` or route the consumer \
              through ops::exl3_gemv/exl3_gemm."

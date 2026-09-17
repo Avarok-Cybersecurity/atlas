@@ -8,16 +8,16 @@
 //!
 //! Identity resolution order (first match wins):
 //! 1. `Authorization: Bearer <token>` — the authenticated client's key.
-//! 2. First entry of `X-Forwarded-For` — when Atlas sits behind a reverse
-//!    proxy or load balancer. Trusted because Atlas is typically deployed
+//! 2. First entry of `X-Forwarded-For` — when Avarok sits behind a reverse
+//!    proxy or load balancer. Trusted because Avarok is typically deployed
 //!    behind a tenant-operated proxy.
 //! 3. Socket peer address — fallback for unauthenticated direct calls.
 //!
 //! Env configuration (all default 0 = disabled, pure passthrough):
-//!   ATLAS_RATE_LIMIT_RPM       — requests per minute cap
-//!   ATLAS_RATE_LIMIT_TPM       — tokens per minute cap
-//!   ATLAS_RATE_LIMIT_BURST_RPM — max request burst (default = RPM)
-//!   ATLAS_RATE_LIMIT_BURST_TPM — max token burst   (default = TPM)
+//!   AVAROK_RATE_LIMIT_RPM       — requests per minute cap
+//!   AVAROK_RATE_LIMIT_TPM       — tokens per minute cap
+//!   AVAROK_RATE_LIMIT_BURST_RPM — max request burst (default = RPM)
+//!   AVAROK_RATE_LIMIT_BURST_TPM — max token burst   (default = TPM)
 //!
 //! The limiter keeps the static "effectively unlimited" headers
 //! byte-for-byte when both RPM and TPM are 0 so existing deployments see no
@@ -40,17 +40,17 @@ pub struct RateLimitConfig {
 
 impl RateLimitConfig {
     /// # Errors
-    /// When any `ATLAS_RATE_LIMIT_*` variable is set to something that is not
+    /// When any `AVAROK_RATE_LIMIT_*` variable is set to something that is not
     /// a whole number. That used to fall through to the default, and the
     /// default here is 0 — *the limit is off*. An operator who typed
-    /// `ATLAS_RATE_LIMIT_RPM=1oo` got an unlimited server that started
+    /// `AVAROK_RATE_LIMIT_RPM=1oo` got an unlimited server that started
     /// cleanly and said nothing.
     pub fn from_env() -> Result<Self, String> {
         Self::from_raw(
-            std::env::var("ATLAS_RATE_LIMIT_RPM").ok().as_deref(),
-            std::env::var("ATLAS_RATE_LIMIT_TPM").ok().as_deref(),
-            std::env::var("ATLAS_RATE_LIMIT_BURST_RPM").ok().as_deref(),
-            std::env::var("ATLAS_RATE_LIMIT_BURST_TPM").ok().as_deref(),
+            std::env::var("AVAROK_RATE_LIMIT_RPM").ok().as_deref(),
+            std::env::var("AVAROK_RATE_LIMIT_TPM").ok().as_deref(),
+            std::env::var("AVAROK_RATE_LIMIT_BURST_RPM").ok().as_deref(),
+            std::env::var("AVAROK_RATE_LIMIT_BURST_TPM").ok().as_deref(),
         )
     }
 
@@ -70,14 +70,14 @@ impl RateLimitConfig {
     ) -> Result<Self, String> {
         use crate::env_config::parse_min;
         let rpm = parse_min(
-            "ATLAS_RATE_LIMIT_RPM",
+            "AVAROK_RATE_LIMIT_RPM",
             rpm,
             0,
             "requests per minute per client; 0 disables the request-rate limit",
         )?
         .unwrap_or(0);
         let tpm = parse_min(
-            "ATLAS_RATE_LIMIT_TPM",
+            "AVAROK_RATE_LIMIT_TPM",
             tpm,
             0,
             "tokens per minute per client; 0 disables the token-rate limit",
@@ -86,17 +86,17 @@ impl RateLimitConfig {
         // Burst defaults to the sustained rate, so an unset burst is not the
         // same as `0` and must stay `None` until here.
         let burst_rpm = parse_min(
-            "ATLAS_RATE_LIMIT_BURST_RPM",
+            "AVAROK_RATE_LIMIT_BURST_RPM",
             burst_rpm,
             0,
-            "request-bucket depth; defaults to ATLAS_RATE_LIMIT_RPM",
+            "request-bucket depth; defaults to AVAROK_RATE_LIMIT_RPM",
         )?
         .unwrap_or(rpm);
         let burst_tpm = parse_min(
-            "ATLAS_RATE_LIMIT_BURST_TPM",
+            "AVAROK_RATE_LIMIT_BURST_TPM",
             burst_tpm,
             0,
-            "token-bucket depth; defaults to ATLAS_RATE_LIMIT_TPM",
+            "token-bucket depth; defaults to AVAROK_RATE_LIMIT_TPM",
         )?
         .unwrap_or(tpm);
         Ok(Self {

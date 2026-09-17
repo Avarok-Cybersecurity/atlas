@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! W8A8 block-scaled GEMM selection for the SSM/GDN fused `in_proj_qkvz`
-//! prefill projection: the cuBLASLt arm (`ATLAS_CUBLAS_GEMM=ssm`) and the
+//! prefill projection: the cuBLASLt arm (`AVAROK_CUBLAS_GEMM=ssm`) and the
 //! in-tree `fp8_gemm_t_blockscaled` kernel it falls back to.
 //!
 //! WHY this file exists — H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8` native FP8,
-//! tip `5f78270dc`. `ATLAS_CUBLAS_GEMM=1` used to route this projection to
+//! tip `5f78270dc`. `AVAROK_CUBLAS_GEMM=1` used to route this projection to
 //! `ops::cublas_bf16_proj`, which DEQUANTIZES the FP8 weight to BF16 and caches
 //! the copy: `[10240,5120] + [6144,5120]` fused, x 2 B = `167772160` bytes per
 //! layer, ~10.3 GiB across 48 SSM layers, allocated lazily on the first prefill
@@ -26,9 +26,9 @@
 //! weight), which is strictly more accurate than W8A8. That accuracy was never
 //! free — it was paid for in 10.3 GiB of off-ledger weight copies — and the
 //! precision-preserving path for a checkpoint that needs it is
-//! `ATLAS_FP8_ROWWISE=1`, which shadows this arm entirely (see
-//! `trait_prefill_proj.rs`). Turning `ssm` off in `ATLAS_CUBLAS_GEMM` restores
-//! the in-tree W8A8 kernel, and `ATLAS_FP8_SINGLE_SCALE=1` the W8A16 one.
+//! `AVAROK_FP8_ROWWISE=1`, which shadows this arm entirely (see
+//! `trait_prefill_proj.rs`). Turning `ssm` off in `AVAROK_CUBLAS_GEMM` restores
+//! the in-tree W8A8 kernel, and `AVAROK_FP8_SINGLE_SCALE=1` the W8A16 one.
 
 use anyhow::Result;
 use spark_runtime::gpu::{DevicePtr, KernelHandle};
@@ -43,7 +43,7 @@ use crate::weight_map::{Fp8Weight, WeightQuantFormat};
 ///
 /// Clauses, each load-bearing:
 ///
-/// * `cublas_ssm` — `ATLAS_CUBLAS_GEMM` must name the `ssm` family. The whole
+/// * `cublas_ssm` — `AVAROK_CUBLAS_GEMM` must name the `ssm` family. The whole
 ///   point of the scoped lever: arming the dense FFN must not arm this.
 /// * `Fp8BlockScaled` — cuBLASLt is told the weight scales are a BLK128x128
 ///   grid; a per-row or single-scale `row_scale` has a different shape and
@@ -120,9 +120,9 @@ impl Qwen3SsmLayer {
         if ctx.stats.once("log:ssm_qkvz_w8a8_prefill") {
             let how = if cublas { "cuBLASLt" } else { "kernel" };
             tracing::info!(
-                "[atlas] SSM QKVZ prefill: W8A8 block-scaled via {how} \
+                "[avarok] SSM QKVZ prefill: W8A8 block-scaled via {how} \
                  (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue). \
-                 ATLAS_CUBLAS_GEMM=ssm selects cuBLASLt; neither arm allocates."
+                 AVAROK_CUBLAS_GEMM=ssm selects cuBLASLt; neither arm allocates."
             );
         }
         if cublas {

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""C1 (2026-05-26) — top-K final-logit overlap, Atlas FP8 vs HF BF16.
+"""C1 (2026-05-26) — top-K final-logit overlap, Avarok FP8 vs HF BF16.
 
 Uses the existing per-layer hidden-state dumps at
-/workspace/atlas-dumps/fp8native_dgx2/ to compute the FINAL token-level
+/workspace/avarok-dumps/fp8native_dgx2/ to compute the FINAL token-level
 logit distribution under two precision regimes and quantify divergence
 at the level that actually drives generation (token selection), not
 just hidden-state cosine.
@@ -35,7 +35,7 @@ SNAP = pathlib.Path(
     "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/"
     "snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
 )
-DUMP_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+DUMP_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 OUT = pathlib.Path(__file__).resolve().parent / "c1_final_logit_overlap.json"
 
 # Final layer is L39 (40 layers). Both the f32 hidden vectors and the
@@ -129,66 +129,66 @@ def main() -> None:
     print(f"  lm_head.shape={lm_head.shape} (vocab x hidden, f32)", flush=True)
     print(f"  loaded in {time.time() - t0:.1f}s", flush=True)
 
-    h_atlas = load_hidden(DUMP_DIR / f"atlas_L{LAST_LAYER}.bin")
+    h_avarok = load_hidden(DUMP_DIR / f"avarok_L{LAST_LAYER}.bin")
     h_bf16 = load_hidden(DUMP_DIR / f"hf_bf16_L{LAST_LAYER}.bin")
-    print(f"\nh_atlas: norm={np.linalg.norm(h_atlas):.4f}  max={h_atlas.max():.4f}", flush=True)
+    print(f"\nh_avarok: norm={np.linalg.norm(h_avarok):.4f}  max={h_avarok.max():.4f}", flush=True)
     print(f"h_bf16:  norm={np.linalg.norm(h_bf16):.4f}  max={h_bf16.max():.4f}", flush=True)
 
     # First, residual-stream cosine (should match MASTER_DRIFT_TABLE 0.97657 at worst)
-    cos = float(np.dot(h_atlas, h_bf16) / (np.linalg.norm(h_atlas) * np.linalg.norm(h_bf16)))
-    print(f"residual cos(atlas, bf16) at L{LAST_LAYER}: {cos:.5f}", flush=True)
+    cos = float(np.dot(h_avarok, h_bf16) / (np.linalg.norm(h_avarok) * np.linalg.norm(h_bf16)))
+    print(f"residual cos(avarok, bf16) at L{LAST_LAYER}: {cos:.5f}", flush=True)
 
     # Apply final RMSNorm + lm_head to get logits.
     print(f"\n[{time.strftime('%H:%M:%S')}] computing logits via lm_head matmul ...", flush=True)
-    z_atlas = rms_norm(h_atlas, gamma, eps)
+    z_avarok = rms_norm(h_avarok, gamma, eps)
     z_bf16 = rms_norm(h_bf16, gamma, eps)
-    logits_atlas = lm_head @ z_atlas.astype(np.float32)
+    logits_avarok = lm_head @ z_avarok.astype(np.float32)
     logits_bf16 = lm_head @ z_bf16.astype(np.float32)
-    print(f"  logits.shape={logits_atlas.shape}", flush=True)
+    print(f"  logits.shape={logits_avarok.shape}", flush=True)
 
     # Logit-level metrics
     logit_cos = float(
-        np.dot(logits_atlas, logits_bf16)
-        / (np.linalg.norm(logits_atlas) * np.linalg.norm(logits_bf16))
+        np.dot(logits_avarok, logits_bf16)
+        / (np.linalg.norm(logits_avarok) * np.linalg.norm(logits_bf16))
     )
 
-    arg_atlas = int(np.argmax(logits_atlas))
+    arg_avarok = int(np.argmax(logits_avarok))
     arg_bf16 = int(np.argmax(logits_bf16))
-    top1_agree = arg_atlas == arg_bf16
+    top1_agree = arg_avarok == arg_bf16
 
     results = {
         "residual_cos_L39": cos,
         "logit_cos": logit_cos,
-        "argmax_atlas_token": arg_atlas,
+        "argmax_avarok_token": arg_avarok,
         "argmax_bf16_token": arg_bf16,
         "top1_agree": top1_agree,
         "topk_jaccard": {},
-        "kl_bf16_vs_atlas": None,
-        "kl_atlas_vs_bf16": None,
+        "kl_bf16_vs_avarok": None,
+        "kl_avarok_vs_bf16": None,
     }
 
     for k in (1, 5, 10, 50, 200, 1000):
-        a = topk(logits_atlas, k)
+        a = topk(logits_avarok, k)
         b = topk(logits_bf16, k)
         j = jaccard(a, b)
         results["topk_jaccard"][str(k)] = j
-        print(f"  top-{k:<5d} jaccard(atlas, bf16): {j:.4f}", flush=True)
+        print(f"  top-{k:<5d} jaccard(avarok, bf16): {j:.4f}", flush=True)
 
-    p_atlas = softmax_f64(logits_atlas)
+    p_avarok = softmax_f64(logits_avarok)
     p_bf16 = softmax_f64(logits_bf16)
-    kl_atlas_vs_bf16 = kl_div(p_atlas, p_bf16)
-    kl_bf16_vs_atlas = kl_div(p_bf16, p_atlas)
-    results["kl_atlas_vs_bf16"] = kl_atlas_vs_bf16
-    results["kl_bf16_vs_atlas"] = kl_bf16_vs_atlas
+    kl_avarok_vs_bf16 = kl_div(p_avarok, p_bf16)
+    kl_bf16_vs_avarok = kl_div(p_bf16, p_avarok)
+    results["kl_avarok_vs_bf16"] = kl_avarok_vs_bf16
+    results["kl_bf16_vs_avarok"] = kl_bf16_vs_avarok
 
     print(f"\n=== summary ===", flush=True)
     print(f"  residual cos L39       : {cos:.5f}", flush=True)
     print(f"  logit cos              : {logit_cos:.5f}", flush=True)
-    print(f"  argmax(atlas)          : {arg_atlas}", flush=True)
+    print(f"  argmax(avarok)          : {arg_avarok}", flush=True)
     print(f"  argmax(bf16 ref)       : {arg_bf16}", flush=True)
     print(f"  top1 agree             : {top1_agree}", flush=True)
-    print(f"  KL(atlas || bf16)      : {kl_atlas_vs_bf16:.4f} nats", flush=True)
-    print(f"  KL(bf16  || atlas)     : {kl_bf16_vs_atlas:.4f} nats", flush=True)
+    print(f"  KL(avarok || bf16)      : {kl_avarok_vs_bf16:.4f} nats", flush=True)
+    print(f"  KL(bf16  || avarok)     : {kl_bf16_vs_avarok:.4f} nats", flush=True)
 
     OUT.write_text(json.dumps(results, indent=2))
     print(f"\nwrote {OUT}", flush=True)

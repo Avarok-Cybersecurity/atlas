@@ -32,7 +32,7 @@ pub(super) fn dequant_fp8_bytes_to_bf16(fp8_buf: &[u8], scale: f32) -> Vec<u8> {
 /// fast weight loader). This launches `dequant_fp8_blockscaled_bf16` to do
 /// the conversion in-place on device — no D2H download, no host CPU loop,
 /// no H2D upload. Replaces the old per-element CPU loop that dominated load
-/// time for FP8-MoE models under ATLAS_FP8_DEQUANT_MOE_TO_BF16=1 (~30k calls,
+/// time for FP8-MoE models under AVAROK_FP8_DEQUANT_MOE_TO_BF16=1 (~30k calls,
 /// ~22 min total → ~seconds).
 ///
 /// Returns a BF16 DenseWeight on GPU.
@@ -280,7 +280,7 @@ pub(super) fn bf16_bytes_to_f32(bytes: [u8; 2]) -> f32 {
 ///
 /// If the tensor is FP8E4M3 and a `{name_without_.weight}.weight_scale_inv` key exists,
 /// performs block-scaled dequantization to BF16. FP32 dense tensors are converted
-/// to BF16 because Atlas dense kernels consume BF16.
+/// to BF16 because Avarok dense kernels consume BF16.
 pub(crate) fn dense_auto(
     store: &WeightStore,
     name: &str,
@@ -288,7 +288,7 @@ pub(crate) fn dense_auto(
 ) -> Result<DenseWeight> {
     // Native-EXL3 probe FIRST (before the `.weight` get, which cannot exist
     // for a kept-packed linear): a trellis prefix reaching this DENSE loader
-    // under ATLAS_EXL3_NATIVE=1 means the natively-served set
+    // under AVAROK_EXL3_NATIVE=1 means the natively-served set
     // (`exl3_native_serves`) includes a prefix whose consumer has not been
     // routed to the exl3 dispatch — fail with the real cause instead of a
     // bare "tensor not found".
@@ -298,7 +298,7 @@ pub(crate) fn dense_auto(
     {
         bail!(
             "dense_auto: {prefix} is held as packed EXL3 trellis \
-             (ATLAS_EXL3_NATIVE=1) but this consumer expects BF16 dense — \
+             (AVAROK_EXL3_NATIVE=1) but this consumer expects BF16 dense — \
              the prefix is in the native-serving set without a routed \
              dispatch path. Remove it from `exl3_native_serves` or route \
              the consumer through ops::exl3_gemv/exl3_gemm."
@@ -365,11 +365,11 @@ pub(crate) fn dense_auto(
 /// (vs standard: weight, weight_scale, weight_scale_2, input_scale).
 ///
 /// **Scale convention difference**: compressed-tensors stores `weight_global_scale`
-/// as the reciprocal of Atlas/TRT-LLM's `scale2`. Verified empirically:
+/// as the reciprocal of Avarok/TRT-LLM's `scale2`. Verified empirically:
 ///   - nvidia 80B `weight_scale_2` ≈ 7.01e-5 (small)
 ///   - Sehyo 35B `weight_global_scale` = 29568 → `1/29568` ≈ 3.38e-5 (same order)
 ///
-/// Atlas GEMV dequant: `w = E2M1_val * fp8_scale * scale2` requires the small value.
+/// Avarok GEMV dequant: `w = E2M1_val * fp8_scale * scale2` requires the small value.
 pub(crate) fn quantized_v2(
     store: &WeightStore,
     prefix: &str,

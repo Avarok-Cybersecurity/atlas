@@ -18,9 +18,9 @@
 //! codebook, so in practice prediction and decision agree (pinned by the
 //! tests below against `materialize_exl3_impl`).
 //!
-//! Kill switch: `ATLAS_EXL3_WEIGHT_POOL=0` disables pooling (every tensor
+//! Kill switch: `AVAROK_EXL3_WEIGHT_POOL=0` disables pooling (every tensor
 //! per-tensor, byte-identical to the pre-pool loader). Default ON whenever
-//! `ATLAS_EXL3_NATIVE=1`; with native serving off nothing is kept, so
+//! `AVAROK_EXL3_NATIVE=1`; with native serving off nothing is kept, so
 //! nothing is pooled and the predicate is not installed at all.
 
 // `spark_runtime::fast_weights` is `#[cfg(unix)]` — the fast loader is built on
@@ -36,9 +36,9 @@ use crate::weight_map::{
     EXL3_NATIVE_DENSE_K_BITS, EXL3_NATIVE_MOE_K_BITS, Exl3DenseFamilies, exl3_native_serves_moe,
 };
 
-/// `ATLAS_EXL3_WEIGHT_POOL=0` turns the pool off. Read per call (load only).
+/// `AVAROK_EXL3_WEIGHT_POOL=0` turns the pool off. Read per call (load only).
 pub fn exl3_weight_pool_enabled() -> bool {
-    std::env::var("ATLAS_EXL3_WEIGHT_POOL").as_deref() != Ok("0")
+    std::env::var("AVAROK_EXL3_WEIGHT_POOL").as_deref() != Ok("0")
 }
 
 /// Header-only prediction of the materialize pass's keep decision for
@@ -73,7 +73,7 @@ pub fn exl3_pool_keep_predicted(
 
 /// The predicate to install on `FastSafetensorsLoader::pool_predicate`,
 /// from the environment gates. `None` when nothing would be kept packed
-/// (`ATLAS_EXL3_NATIVE` unset) or the kill switch is set. Reads the gates
+/// (`AVAROK_EXL3_NATIVE` unset) or the kill switch is set. Reads the gates
 /// once; gate VALIDATION stays with the materialize pass, which runs right
 /// after the load and fails the boot on a misconfiguration either way.
 ///

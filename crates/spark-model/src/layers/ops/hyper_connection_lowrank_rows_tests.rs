@@ -3,13 +3,13 @@
 
 //! Parity and microbench tests for the decode-rows arm (`hyper_connection_lowrank_rows.rs`),
 //! split out of `hyper_connection_lowrank_tests.rs` under the 500-line cap. Run with
-//! `--test-threads=1` and `ATLAS_HC_TEST_DATA` set (cuBLASLt concurrency artifact otherwise).
+//! `--test-threads=1` and `AVAROK_HC_TEST_DATA` set (cuBLASLt concurrency artifact otherwise).
 
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::hyper_connection_lowrank_tests::*;
 
-/// The decode-rows arm (default on, `ATLAS_HC_DECODE_ROWS=0` to disable; T <= 8): `hc_pre_stage` +
+/// The decode-rows arm (default on, `AVAROK_HC_DECODE_ROWS=0` to disable; T <= 8): `hc_pre_stage` +
 /// `hc_dec_down` + `hc_dec_up`, held to the split arm's TIGHT bound at the
 /// fixture's T=8 and again at T=3 (the MTP two-draft verify width), where the
 /// first three tokens of the fixture are an exact prefix golden because the
@@ -18,12 +18,12 @@ use super::hyper_connection_lowrank_tests::*;
 #[ignore]
 fn hc_rows_matches_reference() {
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (t, h, hc) = (f.tokens, f.h, f.hc);
@@ -119,12 +119,12 @@ fn hc_rows_matches_reference() {
 #[ignore]
 fn hc_rows_t3_rows_equal_t1_rows() {
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (t, h, hc) = (f.tokens, f.h, f.hc);
@@ -199,10 +199,10 @@ fn hc_rows_t3_rows_equal_t1_rows() {
 #[ignore]
 fn hc_rows_microbench() {
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
         .expect("qwen3.8-flash-next/nvfp4 is not in this build");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (h, hc) = (f.h, f.hc);

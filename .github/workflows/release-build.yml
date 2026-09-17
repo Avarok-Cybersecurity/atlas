@@ -247,7 +247,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          # libibverbs/librdmacm: atlas-rdma compiles src/rdma_shim.c against
+          # libibverbs/librdmacm: avarok-rdma compiles src/rdma_shim.c against
           # <infiniband/verbs.h> on every non-macOS target. Same dependency
           # #339 added to the DeepSeek-V4 builder stage.
           sudo apt-get install -y --no-install-recommends \
@@ -419,7 +419,7 @@ jobs:
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          # ATLAS_TARGET_MODEL/QUANT are REQUIRED, not optional: atlas-kernels
+          # AVAROK_TARGET_MODEL/QUANT are REQUIRED, not optional: avarok-kernels
           # defaults to qwen3-next-80b-a3b, which has no kernels/strix/
           # directory, and the build script panics resolving targets. They are
           # matrix fields so a second strix model is another JSON row.
@@ -470,9 +470,9 @@ jobs:
             echo "CUDA_PATH=$SCALE_HOME/targets/$arch"
             echo "CUDA_HOME=$SCALE_HOME/targets/$arch"
             echo "CUDARC_CUDA_VERSION=12080"
-            echo "ATLAS_TARGET_HW=strix"
-            echo "ATLAS_TARGET_MODEL=${{ matrix.target_model }}"
-            echo "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}"
+            echo "AVAROK_TARGET_HW=strix"
+            echo "AVAROK_TARGET_MODEL=${{ matrix.target_model }}"
+            echo "AVAROK_TARGET_QUANT=${{ matrix.target_quant }}"
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
@@ -490,7 +490,7 @@ jobs:
           HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe
         run: |
           $ErrorActionPreference = "Stop"
-          # ATLAS_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
+          # AVAROK_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
           # kernel build defaults to qwen3-next-80b-a3b, which has no
           # kernels/strix-hip/<model> dir, so build.rs panics resolving it.
           Write-Host "Downloading HIP SDK: $env:HIP_SDK_URL"
@@ -526,11 +526,11 @@ jobs:
           Write-Host "hipcc: $($hipcc.FullName)"
           & $hipcc.FullName --version 2>&1 | Select-Object -First 5
           @(
-            "ATLAS_HIPCC=$($hipcc.FullName)",
+            "AVAROK_HIPCC=$($hipcc.FullName)",
             "HIP_PATH=$hipRoot",
-            "ATLAS_TARGET_HW=strix-hip",
-            "ATLAS_TARGET_MODEL=${{ matrix.target_model }}",
-            "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}",
+            "AVAROK_TARGET_HW=strix-hip",
+            "AVAROK_TARGET_MODEL=${{ matrix.target_model }}",
+            "AVAROK_TARGET_QUANT=${{ matrix.target_quant }}",
             "CUDARC_CUDA_VERSION=12080"
           ) | Out-File -FilePath $env:GITHUB_ENV -Append
           $hipBin | Out-File -FilePath $env:GITHUB_PATH -Append
@@ -572,7 +572,7 @@ jobs:
           cp LICENSE README.md "$staging/" 2>/dev/null || true
           # Native-HIP Windows target: bundle the runtime shim + HIP runtime DLL
           # so spark.exe can drive the AMD GPU (cudarc dlopens nvcuda.dll, which
-          # imports amdhip64.dll). Built/staged into atlas-kernels' OUT_DIR by
+          # imports amdhip64.dll). Built/staged into avarok-kernels' OUT_DIR by
           # build_hip_shim_windows.
           if [ "${{ matrix.toolchain }}" = hip ]; then
             bdir="target/${{ matrix.target }}/release/build"

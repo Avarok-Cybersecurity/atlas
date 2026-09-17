@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Grouped W4A16 GEMM for MoE — All experts in one kernel launch.
+// Avarok Grouped W4A16 GEMM for MoE — All experts in one kernel launch.
 //
 // C[total_tokens, N] = A[total_tokens, K] * dequant(B[expert, K, N/2])
 //

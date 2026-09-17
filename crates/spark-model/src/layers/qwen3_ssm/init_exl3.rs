@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 GDN projections (`ATLAS_EXL3_NATIVE_DENSE=1`) on
+//! Native EXL3 GDN projections (`AVAROK_EXL3_NATIVE_DENSE=1`) on
 //! [`Qwen3SsmLayer`]: install + the two dispatch funnels every QKVZ /
 //! out_proj site calls. Split out of `init.rs` (500-LoC cap), sibling of
 //! `init_fp8.rs`.
@@ -17,10 +17,10 @@ use crate::layers::exl3_dense::Exl3GdnWeights;
 /// prefill (m in the thousands) must never reach the chunked path.
 const EXL3_OPROJ_CHUNK_MAX_M: usize = 32;
 
-/// `ATLAS_EXL3_OPROJ_CHUNKED=0` restores the single GEMM-tier call.
+/// `AVAROK_EXL3_OPROJ_CHUNKED=0` restores the single GEMM-tier call.
 fn exl3_oproj_chunked() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_EXL3_OPROJ_CHUNKED").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_EXL3_OPROJ_CHUNKED").as_deref() != Ok("0"))
 }
 
 impl Qwen3SsmLayer {
@@ -160,7 +160,7 @@ impl Qwen3SsmLayer {
                     tracing::info!(
                         rows = m,
                         "EXL3 out_proj: CHUNKED onto the GEMV tier \
-                         (ATLAS_EXL3_OPROJ_CHUNKED=0 restores the single GEMM call)"
+                         (AVAROK_EXL3_OPROJ_CHUNKED=0 restores the single GEMM call)"
                     );
                 });
             }

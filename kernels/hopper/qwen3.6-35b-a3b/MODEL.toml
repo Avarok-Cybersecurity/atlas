@@ -11,11 +11,11 @@
 # after dropping the hardware define — see #899): the W4A4 tail of
 # this target's moe_w4a16_grouped_gemm.cu cannot exist on sm_90a — Hopper has
 # no NVFP4 datapath, so ptxas rejects `cvt.rn.satfinite.e2m1x2.f32`. It is
-# compiled out by -DATLAS_NO_WARP_BLOCKSCALE_MMA (kernels/hopper/HARDWARE.toml)
+# compiled out by -DAVAROK_NO_WARP_BLOCKSCALE_MMA (kernels/hopper/HARDWARE.toml)
 # and its two entry points are declared in [expected_absent.moe_w4a16] below.
 # Everything else in that file is W4A16 — 4-bit weights dequantised to BF16,
 # plain mma.sync — and compiles: 173/173 for this model, 871/871 across the
-# five P0 targets. The FP4 escape hatch (ATLAS_HOLO_MOE_GATEUP_FP4 /
+# five P0 targets. The FP4 escape hatch (AVAROK_HOLO_MOE_GATEUP_FP4 /
 # _DOWN_FP4, both default off) is unavailable on Hopper; the FP8 path serves.
 [model]
 name = "qwen3.6-35b-a3b"
@@ -126,7 +126,7 @@ frequency_penalty = 0.0
 # and FLIPS low-margin greedy picks -> collapsed-newline/`::`-split/wander/runaway.
 # Proven temp=0 A/B: 1.1=mangled TOML finish=length; 1.0=clean newlined code finish=stop.
 # vLLM serves penalty-free greedy. dry_multiplier 0.5->0.0 2026-06-03 (was kept to catch
-# verbatim filename runaway; re-validating at rep=1.0 — see top-of-section note). Atlas-vs-BF16
+# verbatim filename runaway; re-validating at rep=1.0 — see top-of-section note). Avarok-vs-BF16
 # cosine 0.995 > vLLM 0.985 => NOT a precision floor.
 repetition_penalty = 1.0
 dry_multiplier = 0.0
@@ -261,7 +261,7 @@ thinking_in_tools = true
 max_thinking_budget = 768
 # Inter-tool prose budget — max tokens of free CONTENT (not thinking,
 # not tool body) the model can emit between successive tool calls
-# before Atlas truncates with finish_reason=length.
+# before Avarok truncates with finish_reason=length.
 #
 # 2026-05-24: bumped 384 → 2048. The default 384 was killing
 # opencode-style agentic sessions where the model legitimately needs
@@ -373,18 +373,18 @@ exists solely in nemotron-labs-3-puzzle-75b-a9b. Dispatch
 [expected_absent.moe_w4a16]
 moe_w4a16_fused_gate_up_t_k64_fp4 = """
 W4A4 (FP4 weights AND FP4 activations) fused gate+up. Compiled out on
-this hardware: -DATLAS_NO_WARP_BLOCKSCALE_MMA (kernels/hopper/HARDWARE.toml),
+this hardware: -DAVAROK_NO_WARP_BLOCKSCALE_MMA (kernels/hopper/HARDWARE.toml),
 because sm_90a has no NVFP4 datapath — ptxas rejects the region with
 "Instruction 'cvt with .e2m1x2' not supported on .target 'sm_90a'"
 (measured 2026-09-05, CUDA 13.0.88). Resolved with try_kernel and fired
-only when ATLAS_HOLO_MOE_GATEUP_FP4 is set AND the handle is non-zero;
+only when AVAROK_HOLO_MOE_GATEUP_FP4 is set AND the handle is non-zero;
 absent, prefill takes moe_w4a16_fused_gate_up_t_k64 (FP8 activations),
 which resolves here. UNMEASURED on Hopper silicon."""
 moe_w4a16_down_t_k64_fp4 = """
 Same W4A4 family — the routed-expert down projection, in the same
-guarded region. Compiled out by -DATLAS_NO_WARP_BLOCKSCALE_MMA for the
+guarded region. Compiled out by -DAVAROK_NO_WARP_BLOCKSCALE_MMA for the
 same reason: "Instruction 'cvt with .e2m1x2' not supported on .target
-'sm_90a'". Fired only when ATLAS_HOLO_MOE_DOWN_FP4 is set AND the handle
+'sm_90a'". Fired only when AVAROK_HOLO_MOE_DOWN_FP4 is set AND the handle
 is non-zero; absent, the FP8 down path serves. UNMEASURED on Hopper
 silicon."""
 moe_w4a16_grouped_gemm_ptrtable_e8m0 = """
@@ -412,9 +412,9 @@ gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty 
 gated_delta_rule_decode_f32_strided_norm_half = """
 Half-register twin of the resolved f32_strided_norm; selected only when
 the resolved half-register gate is set, and that gate is off by default
-(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+(AVAROK_GDN_HALF_REG presence). Not a live path as shipped."""
 gated_delta_rule_decode_f32_strided_norm_smem = """
-SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (presence, off by
 default) AND the half-register gate. Not a live path as shipped."""
 
 # #438: the exact-verify `_snap` twins are model-shadow staged in

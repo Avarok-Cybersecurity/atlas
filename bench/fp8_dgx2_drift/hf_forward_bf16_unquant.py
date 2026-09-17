@@ -3,7 +3,7 @@
 
 Uses /workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/...
 (the original BF16 weights — the ABSOLUTE reference). Dumps per-layer
-last-token hidden states to /workspace/atlas-dumps/fp8native_dgx2/hf_bf16_L{0..39}.bin.
+last-token hidden states to /workspace/avarok-dumps/fp8native_dgx2/hf_bf16_L{0..39}.bin.
 """
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ import torch
 from transformers import AutoModelForCausalLM
 
 SNAP = "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
-TOKENS_PATH = pathlib.Path("/tmp/atlas_tokens_dgx2.json")
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+TOKENS_PATH = pathlib.Path("/tmp/avarok_tokens_dgx2.json")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

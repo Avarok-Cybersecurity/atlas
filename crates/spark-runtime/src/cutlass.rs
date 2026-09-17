@@ -3,19 +3,19 @@
 //!
 //! ★ REFERENCE IMPLEMENTATION — A BENCHMARK TARGET, NOT A DEPENDENCY.
 //!
-//! Atlas ships its OWN kernels. CUTLASS is wrapped here for exactly one
+//! Avarok ships its OWN kernels. CUTLASS is wrapped here for exactly one
 //! purpose: to be the opponent we measure against and beat. **Nothing in a
 //! default build or a default serve calls a single line of it.**
 //!
 //! Two independent gates keep that true, and BOTH must survive any edit:
 //!
-//!   1. COMPILE TIME — every item in this module is `#[cfg(atlas_cutlass)]`, and
+//!   1. COMPILE TIME — every item in this module is `#[cfg(avarok_cutlass)]`, and
 //!      `build.rs` sets that cfg only when `CUTLASS_HOME` is exported. A build
 //!      without it links no CUTLASS object at all.
-//!   2. RUNTIME — the dispatch arms are opt-in behind `ATLAS_CUTLASS_GEMM=1`.
+//!   2. RUNTIME — the dispatch arms are opt-in behind `AVAROK_CUTLASS_GEMM=1`.
 //!      The default is OFF.
 //!
-//! So the honest reading of an Atlas performance number is that Atlas kernels
+//! So the honest reading of an Avarok performance number is that Avarok kernels
 //! produced it, because a default binary cannot reach this code. Export the
 //! env var and you are measuring CUTLASS — label the number that way.
 //!
@@ -35,12 +35,12 @@
 //! (weight pack / SFB swizzle / transpose) siblings. The public API
 //! (`spark_runtime::cutlass::<fn>`) is preserved via the re-exports below.
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use anyhow::{Result, bail};
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::ffi::c_void;
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::sync::OnceLock;
 
 mod gemm;
@@ -51,12 +51,12 @@ pub use gemm::{bf16_gemm_act_weight_t, nvfp4_gemm_bf16_act_weight_t};
 pub use grouped::{nvfp4_grouped_down, nvfp4_grouped_gate_up, nvfp4_grouped_gate_up_fused};
 pub use pack::{pack_bf16_weight_to_nvfp4_t, pack_weight_sfb, transpose_nvfp4_packed_kton};
 
-#[cfg(all(test, atlas_cutlass))]
+#[cfg(all(test, avarok_cutlass))]
 mod tests;
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 unsafe extern "C" {
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -67,7 +67,7 @@ unsafe extern "C" {
         workspace_size: usize,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
+    pub(crate) fn avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
         act: *const c_void,
         weight_packed_t: *const c_void,
         weight_scale_t: *const c_void,
@@ -80,7 +80,7 @@ unsafe extern "C" {
         workspace_size: usize,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_pack_bf16_weight_to_nvfp4_t(
+    pub(crate) fn avarok_cutlass_pack_bf16_weight_to_nvfp4_t(
         weight_bf16: *const c_void,
         packed_t: *mut c_void,
         scale_t: *mut c_void,
@@ -88,7 +88,7 @@ unsafe extern "C" {
         k: i32,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_nvfp4_grouped_gate_up(
+    pub(crate) fn avarok_cutlass_nvfp4_grouped_gate_up(
         a_bf16: *const c_void,
         gate_packed_ptrs: *const u64,
         gate_scale_ptrs: *const u64,
@@ -106,7 +106,7 @@ unsafe extern "C" {
         workspace_size: usize,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_nvfp4_grouped_gate_up_fused(
+    pub(crate) fn avarok_cutlass_nvfp4_grouped_gate_up_fused(
         a_bf16: *const c_void,
         sorted_token_ids: *const i32,
         gate_packed_ptrs: *const u64,
@@ -125,7 +125,7 @@ unsafe extern "C" {
         workspace_size: usize,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_nvfp4_grouped_down(
+    pub(crate) fn avarok_cutlass_nvfp4_grouped_down(
         a_bf16: *const c_void,
         packed_ptrs: *const u64,
         sfb_ptrs: *const u64,
@@ -139,7 +139,7 @@ unsafe extern "C" {
         workspace_size: usize,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_pack_weight_sfb(
+    pub(crate) fn avarok_cutlass_pack_weight_sfb(
         scale_in: *const c_void,
         scale_out: *mut c_void,
         n: i32,
@@ -147,7 +147,7 @@ unsafe extern "C" {
         src_n_major: i32,
         stream: *mut c_void,
     ) -> i32;
-    pub(crate) fn atlas_cutlass_transpose_nvfp4_packed_kton(
+    pub(crate) fn avarok_cutlass_transpose_nvfp4_packed_kton(
         src_packed_t: *const c_void,
         dst_packed: *mut c_void,
         n: i32,
@@ -155,7 +155,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t_128x256(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t_128x256(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -167,7 +167,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t_256x128(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t_256x128(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -179,7 +179,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t_64x128(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t_64x128(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -191,7 +191,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t_128x64(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t_128x64(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -203,7 +203,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cutlass_bf16_gemm_act_weight_t_64x64(
+    pub(crate) fn avarok_cutlass_bf16_gemm_act_weight_t_64x64(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -215,7 +215,7 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     #[cfg(test)]
-    pub(crate) fn atlas_cublaslt_bf16_gemm_act_weight_t_algo(
+    pub(crate) fn avarok_cublaslt_bf16_gemm_act_weight_t_algo(
         act: *const c_void,
         weight: *const c_void,
         out: *mut c_void,
@@ -231,20 +231,20 @@ unsafe extern "C" {
     pub(crate) fn cuMemAlloc_v2(dptr: *mut u64, bytesize: usize) -> i32;
 }
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 pub(crate) struct Ctx {
     pub(crate) workspace: u64,
     pub(crate) ws_size: usize,
 }
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 unsafe impl Send for Ctx {}
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 unsafe impl Sync for Ctx {}
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 /// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
-/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// process CUDA context (see `avarok_core::cuda_host`, which establishes one
 /// per process) and sized by a fixed budget, not by any model's shapes: the
 /// bounds below are generous upper limits chosen to fit any realistic serving
 /// configuration, so a swap needs no reallocation and re-allocating per model
@@ -255,7 +255,7 @@ unsafe impl Sync for Ctx {}
 /// only scratch the library plans within.
 static CTX: OnceLock<Ctx> = OnceLock::new();
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 pub(crate) fn ctx() -> Result<&'static Ctx> {
     if let Some(c) = CTX.get() {
         return Ok(c);
@@ -264,8 +264,8 @@ pub(crate) fn ctx() -> Result<&'static Ctx> {
     // (single-launch kGrouped over up to 256 experts) stages packed-A + SFA +
     // per-group arrays + the gemm workspace here; at large prefill M the 256-group
     // gemm workspace alone exceeds the old 64 MB (-> status -2 + an OOB context
-    // corruption). 512 MB by default; override with ATLAS_CUTLASS_WORKSPACE_MB.
-    let ws_size = std::env::var("ATLAS_CUTLASS_WORKSPACE_MB")
+    // corruption). 512 MB by default; override with AVAROK_CUTLASS_WORKSPACE_MB.
+    let ws_size = std::env::var("AVAROK_CUTLASS_WORKSPACE_MB")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(512)

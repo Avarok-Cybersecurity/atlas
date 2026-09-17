@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -22,7 +22,7 @@ pub(crate) fn merge_sidecar_quant_config(model_dir: &Path, config: &mut ModelCon
         Ok(raw_hq) => {
             let wrapped = format!(r#"{{"quantization_config":{raw_hq}}}"#);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&wrapped) {
-                config.quantization_config = atlas_core::config::parse_quantization_config(&v);
+                config.quantization_config = avarok_core::config::parse_quantization_config(&v);
             }
         }
         Err(e) => tracing::warn!("Failed to read sibling hf_quant_config.json: {e}"),
@@ -65,10 +65,10 @@ pub(crate) fn load_model_config(model_dir: &Path) -> Result<(ModelConfig, String
         );
     };
     let config = if params_path.exists() && !config_path.exists() {
-        atlas_core::config::parse_mistral_params(&config_json)
+        avarok_core::config::parse_mistral_params(&config_json)
             .context("Failed to parse params.json (Mistral format)")?
     } else {
-        atlas_core::config::parse_config(&config_json).context("Failed to parse config.json")?
+        avarok_core::config::parse_config(&config_json).context("Failed to parse config.json")?
     };
     Ok((config, config_json))
 }
@@ -154,7 +154,7 @@ pub(crate) fn resolve_num_drafts(
 
 pub(crate) fn apply_model_default_num_drafts(
     args: &mut cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
 ) {
     let (effective, source) =
         resolve_num_drafts(args.num_drafts, ptx_set.behavior.default_num_drafts);

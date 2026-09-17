@@ -286,9 +286,9 @@
   "verdict_reason": "5 cells, zero errors, zero vacuous — every populated floor met (C1 24.9/22.8 · C2 49.0/35.4 · C4 55.6/41.8 · C8 68.9/49.6 · C16 70.4/57.0 · peak 70.4/57.0)",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · c16_accept_len=2.47, c16_aggregate_tok_s=70.40, c16_ttft_p50_ms=7620.70, c1_accept_len=3.23, c1_aggregate_tok_s=24.89, c1_ttft_p50_ms=163.68, c2_accept_len=4.17, c2_aggregate_tok_s=48.95, c2_ttft_p50_ms=325.59, c4_accept_len=3.08, c4_aggregate_tok_s=55.57, c4_ttft_p50_ms=942.85, c8_accept_len=2.27, c8_aggregate_tok_s=68.91, c8_ttft_p50_ms=1261.40, cache_uncontrolled_cells=0.00, min_cached_prompt_pct=0.00, min_cached_prompt_tokens=0.00, min_completion_tokens=200.00, non_mtp_arm_cells=0.00, peak_aggregate_tok_s=70.40, vacuous_cells=0.00 · Pass: 5 cells, zero errors, zero vacuous — every populated floor met (C1 24.9/22.8 · C2 49.0/35.4 · C4 55.6/41.8 · C8 68.9/49.6 · C16 70.4/57.0 · peak 70.4/57.0)",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

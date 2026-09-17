@@ -206,9 +206,9 @@
   "verdict_reason": "median decode 26.2 tok/s over 3 pinned runs (accept_len_mean 2.68) — clears the 24.5 tok/s floor",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · accept_len_mean=2.68, output_tokens=795.00, runs=3.00, server_decode_tok_s=26.18 · Pass: median decode 26.2 tok/s over 3 pinned runs (accept_len_mean 2.68) — clears the 24.5 tok/s floor",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

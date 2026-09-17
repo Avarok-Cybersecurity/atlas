@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY32 Persistent GDN Prefill Kernel
+// Avarok WY32 Persistent GDN Prefill Kernel
 //
 // Extends the proven WY4 pattern to 32 tokens per iteration.
 // H state stays in shared memory (64KB) for the entire sequence.
@@ -232,7 +232,7 @@ gated_delta_rule_prefill_wy64(
 //
 // Differences from gated_delta_rule_prefill_wy64:
 //   - h_state replaced with h_state_ptrs[]: each batch element owns its
-//     own h_state allocation (per-stream SsmLayerState in Atlas).
+//     own h_state allocation (per-stream SsmLayerState in Avarok).
 //   - QKV / gate / beta / output read+written with per-batch offset
 //     (b * seq_len * stride): inputs are stacked per stream contiguously.
 //

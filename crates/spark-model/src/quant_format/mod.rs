@@ -2,7 +2,7 @@
 
 //! Weight-quantization format abstraction.
 //!
-//! Atlas must load quantized checkpoints produced by several toolchains,
+//! Avarok must load quantized checkpoints produced by several toolchains,
 //! each of which serializes the same fundamental numeric format (e.g. NVFP4)
 //! with a different tensor-name convention. Historically we sniffed those
 //! names at load time via `detect_nvfp4_variant` in `weight_map.rs`, but
@@ -30,7 +30,7 @@
 //! on the weight store when the config is silent (emitting a warning,
 //! since a silent fallback is precisely what caused the original bug).
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::weight_map::Nvfp4Variant;
@@ -130,7 +130,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
                 // everything else as BF16 dense — exactly the shape the
                 // Standard/ModelOpt loaders consume (per-key BF16 fallback in
                 // `quantized_any` handles the dense ones). Under
-                // `ATLAS_EXL3_NATIVE=1` the natively-served linears (see
+                // `AVAROK_EXL3_NATIVE=1` the natively-served linears (see
                 // `exl3_native_serves`) deliberately KEEP their packed trellis
                 // tensors — residual trellis is then expected, not a bug.
                 // Otherwise, raw trellis here means a caller skipped the
@@ -138,7 +138,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
                 if spark_runtime::weights::exl3::store_has_exl3(store) {
                     if crate::weight_map::exl3_native_enabled() {
                         tracing::info!(
-                            "QuantFormat: exl3 with ATLAS_EXL3_NATIVE=1 — packed trellis \
+                            "QuantFormat: exl3 with AVAROK_EXL3_NATIVE=1 — packed trellis \
                              tensors stay resident for the fused trellis matmul path"
                         );
                     } else {
@@ -159,7 +159,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
             other if !other.is_empty() => {
                 tracing::warn!(
                     "QuantFormat: config declares unrecognized quant_method={other:?}; \
-                     falling back to tensor-name heuristic. Atlas currently understands \
+                     falling back to tensor-name heuristic. Avarok currently understands \
                      {{compressed-tensors, modelopt, fp8}}. Checkpoint load may fail."
                 );
                 // fall through
@@ -172,7 +172,7 @@ pub fn detect_quant_format(config: &ModelConfig, store: &WeightStore) -> Box<dyn
     }
 
     // (2) Heuristic fallback. Reuse the existing detector to preserve
-    // every working checkpoint in Atlas's CI matrix; only the partial-
+    // every working checkpoint in Avarok's CI matrix; only the partial-
     // metadata footgun is patched separately in `weight_map.rs`.
     let variant = crate::weight_map::detect_nvfp4_variant(store, config);
     let ignore = config

@@ -3,7 +3,7 @@
 //! Header logo art + CLI flag badge derivation.
 //!
 //! The logo reproduces assets/logo.svg's three chevrons as string constants —
-//! purple, cyan, green, left to right. Two variants: a 1-line `❯❯❯ Atlas` for
+//! purple, cyan, green, left to right. Two variants: a 1-line `❯❯❯ Avarok` for
 //! short terminals and a 3-row half-block chevron for tall ones. During
 //! LOADING a brightness wave walks the chevrons; it stops permanently once
 //! SERVING (motion restraint per the design spec).
@@ -42,7 +42,7 @@ fn chevron_colors(wave: Option<usize>) -> [Color; 3] {
     }
 }
 
-/// The 1-line logo: `❯❯❯ Atlas`.
+/// The 1-line logo: `❯❯❯ Avarok`.
 pub fn one_line(wave: Option<usize>) -> Line<'static> {
     let colors = chevron_colors(wave);
     let mut spans: Vec<Span> = colors
@@ -50,7 +50,7 @@ pub fn one_line(wave: Option<usize>) -> Line<'static> {
         .map(|c| Span::styled("❯", Style::default().fg(*c).add_modifier(Modifier::BOLD)))
         .collect();
     spans.push(Span::styled(
-        " Atlas",
+        " Avarok",
         theme::text().add_modifier(Modifier::BOLD),
     ));
     Line::from(spans)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve LongCat-Flash-Lite with Atlas and bring up the TUI dashboard (the TUI
+# Serve LongCat-Flash-Lite with Avarok and bring up the TUI dashboard (the TUI
 # is automatic on an interactive terminal — do NOT pipe this, or it disables
 # itself and you get the plain log stream).
 #
@@ -17,16 +17,16 @@
 #   MAX_SEQ_LEN=65536 ./serve_longcat_tui.sh
 #
 # Port defaults to 8888 because that is what bench/agentic/* expects
-# (ATLAS_URL defaults to http://localhost:8888/v1/chat/completions), so the
+# (AVAROK_URL defaults to http://localhost:8888/v1/chat/completions), so the
 # agentic harnesses point at this with no extra flags.
 #
-# ONE Atlas instance at a time: --gpu-memory-utilization RESERVES its whole
+# ONE Avarok instance at a time: --gpu-memory-utilization RESERVES its whole
 # fraction of the box up front, so a second server will fail its OOM
 # pre-flight. Kill the running one by PID first.
 #
 # ── PRECISION LEVERS (all default OFF; measured 2026-08-26) ──
 #
-# LongCat ships plain BF16 with no NVFP4/FP8 calibration metadata, so Atlas
+# LongCat ships plain BF16 with no NVFP4/FP8 calibration metadata, so Avarok
 # runtime-quantizes everything to NVFP4 at load. That is lossy. Three env
 # flags buy it back, measured against the reference logits in
 # bench/ngram_ref/longcat_forward_golden.npz via bench/ngram_ref/logit_quality.py
@@ -39,10 +39,10 @@
 #   NVFP4_MLA=0 + FP8_EXPERTS           0.0301   0.998799    4/5  ~19.2
 #   NVFP4_MLA=0 + BF16_FFN              0.0240   0.999033    3/5  16.67   <= best quality
 #
-# ★ ATLAS_LONGCAT_FP8_EXPERTS=1 is the one to reach for first: -26% KL for
+# ★ AVAROK_LONGCAT_FP8_EXPERTS=1 is the one to reach for first: -26% KL for
 #   -6.7% decode, and it is the only arm that fixes the top-5 shortlist the
 #   model card's `top_k: 4` actually samples from. It strictly dominates
-#   ATLAS_NVFP4_MLA=0 — better quality AND faster.
+#   AVAROK_NVFP4_MLA=0 — better quality AND faster.
 #
 # WHY the ordering is not intuitive: decode is weight-bandwidth bound (~185
 # GB/s effective, calibrated from the measured pairs), so each lever costs in
@@ -58,9 +58,9 @@
 # expensive, because every token reads all of it.
 #
 # Off by default because none of this is free. Pick by what you are doing:
-#   ATLAS_LONGCAT_FP8_EXPERTS=1 ./serve_longcat_tui.sh                    # recommended
-#   ATLAS_NVFP4_MLA=0 ATLAS_LONGCAT_BF16_FFN=1 \
-#     ATLAS_LONGCAT_FP8_EXPERTS=1 ./serve_longcat_tui.sh                  # max quality
+#   AVAROK_LONGCAT_FP8_EXPERTS=1 ./serve_longcat_tui.sh                    # recommended
+#   AVAROK_NVFP4_MLA=0 AVAROK_LONGCAT_BF16_FFN=1 \
+#     AVAROK_LONGCAT_FP8_EXPERTS=1 ./serve_longcat_tui.sh                  # max quality
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -80,7 +80,7 @@ export RUST_LOG="${RUST_LOG:-info}"
 # are NEVER uploaded: they are served row-by-row off NVMe out of a pinned
 # GPU-addressable arena. 65536 slots x 512 B x 12 tables = 403 MB, and that
 # frees the rest for KV. Raise it if you see cache thrash on long contexts.
-export ATLAS_NGRAM_CACHE_SLOTS="${ATLAS_NGRAM_CACHE_SLOTS:-65536}"
+export AVAROK_NGRAM_CACHE_SLOTS="${AVAROK_NGRAM_CACHE_SLOTS:-65536}"
 
 echo "LongCat-Flash-Lite  ->  port ${PORT:-8888}   (TUI: needs an interactive terminal)"
 exec target/release/spark serve \

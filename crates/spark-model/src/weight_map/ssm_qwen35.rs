@@ -49,7 +49,7 @@ pub(crate) fn load_ssm_qwen35(
 /// [`load_ssm_qwen35`] with the linear projections optional: `load_in_proj`
 /// covers `in_proj_qkv` / `in_proj_z`, `load_out_proj` covers `out_proj`.
 /// `false` leaves the projection as a NULL [`DenseWeight`] — the native-EXL3
-/// GDN arm (`ATLAS_EXL3_NATIVE_DENSE=1`) serves it from the packed trellis
+/// GDN arm (`AVAROK_EXL3_NATIVE_DENSE=1`) serves it from the packed trellis
 /// and must not read a `.weight` that was never materialized; the BA/conv/
 /// gate tensors still load exactly as before.
 pub(crate) fn load_ssm_qwen35_parts(
@@ -128,7 +128,7 @@ pub(crate) fn load_moe_qwen35(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
@@ -164,7 +164,7 @@ pub(crate) fn load_moe_qwen35(
     //     fused-FP8 with `*_scale_inv`, while attention/SSM/shared are BF16) →
     //     dequant each slice FP8→BF16 (reusing dequant_fp8_blockscaled_bf16)
     //     then quantize to NVFP4. Equivalent to the proven NVFP4 expert decode
-    //     path (cf. ATLAS_FORCE_NVFP4_MOE), so no native-FP8 fused-shared kernel
+    //     path (cf. AVAROK_FORCE_NVFP4_MOE), so no native-FP8 fused-shared kernel
     //     contract is involved. Detection is dtype-based, not variant-based, so
     //     it also covers a fused-BF16 layer inside a globally-FP8 checkpoint.
     let is_fused = store.contains(&fused_gate_up_key) && store.contains(&fused_down_key);

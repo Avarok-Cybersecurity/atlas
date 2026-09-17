@@ -3,8 +3,8 @@
 //! Named serve presets: `spark serve <preset-name>`.
 //!
 //! A preset is declared per kernel target in MODEL.toml `[[serve_presets]]`
-//! (see `atlas_kernels::ServePreset`) and names ONE checkpoint together with
-//! the flags and `ATLAS_*` gates it was validated under. This module is the
+//! (see `avarok_kernels::ServePreset`) and names ONE checkpoint together with
+//! the flags and `AVAROK_*` gates it was validated under. This module is the
 //! only place that turns a preset into a running configuration, and it does so
 //! with two rules that make every entry a DEFAULT rather than a pin:
 //!
@@ -24,14 +24,14 @@
 //! `serve()`: the host records the args for swap-restore, the dashboard draws
 //! them as badge chips and `validate_serve_args` checks them, and all three
 //! must see the expanded configuration, not the two-word one the operator
-//! typed. The `ATLAS_*` gates are read lazily (`std::env::var` at the layer
+//! typed. The `AVAROK_*` gates are read lazily (`std::env::var` at the layer
 //! constructors, or `OnceLock`s touched on first dispatch), so setting them
 //! before any model code runs is sufficient — and setting them later is not.
 
 use std::ffi::OsString;
 
 use anyhow::{Context, Result, bail};
-use atlas_kernels::ServePreset;
+use avarok_kernels::ServePreset;
 use clap::{CommandFactory, FromArgMatches, Parser as _, parser::ValueSource};
 
 use crate::cli::{Cli, Command, ServeArgs};
@@ -58,7 +58,7 @@ pub(crate) fn lookup(spec: &str) -> Option<PresetMatch> {
     if spec.contains('/') || std::path::Path::new(spec).is_dir() {
         return None;
     }
-    atlas_kernels::preset_named(spec).map(|(target, preset)| PresetMatch { target, preset })
+    avarok_kernels::preset_named(spec).map(|(target, preset)| PresetMatch { target, preset })
 }
 
 /// What a preset did to this invocation — logged once the subscriber is up.

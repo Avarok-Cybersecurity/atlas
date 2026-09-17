@@ -85,8 +85,8 @@ mod tests {
     fn divergence_from_the_real_dispatch_gate_is_exactly_two_through_the_cap() {
         // CI sets neither override; skip rather than assert a value we do
         // not control (same discipline as the ladder's default-shape tests).
-        if std::env::var_os("ATLAS_MTP_MAX_SEQS").is_some()
-            || std::env::var_os("ATLAS_NO_MTP_K_LADDER").is_some()
+        if std::env::var_os("AVAROK_MTP_MAX_SEQS").is_some()
+            || std::env::var_os("AVAROK_NO_MTP_K_LADDER").is_some()
         {
             return;
         }

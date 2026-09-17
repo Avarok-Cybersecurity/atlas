@@ -2,13 +2,13 @@
 
 // GLM-5.3-Flash mHC (Manifold-Constrained Hyper-Connections) — GLM-specific `hc_pre`.
 //
-// Atlas already has an mHC kernel: `deepseek-v4-flash/nvfp4/hyper_connection.cu`. Its
+// Avarok already has an mHC kernel: `deepseek-v4-flash/nvfp4/hyper_connection.cu`. Its
 // `hc_pre` ends the Sinkhorn with an EXACT column projection (no eps) that DeepSeek-V4
 // wants and GLM-5.3's reference does NOT have. HF's `Glm5NextTextHyperConnection` divides
 // by `(colsum + hc_eps)` on every pass and stops there, so its columns settle at
 // `1 - O(hc_eps)` rather than exactly 1.
 //
-// Slice 9's numeric oracle isolated that projection as the ENTIRE residual between Atlas
+// Slice 9's numeric oracle isolated that projection as the ENTIRE residual between Avarok
 // and the reference: re-normalising the reference's own `comb` columns to exactly 1 drops
 // the max abs difference 1.1325e-6 -> 5.9605e-8 (19x, onto f32 rounding). So this kernel is
 // `hc_pre` with that one block removed, and nothing else.

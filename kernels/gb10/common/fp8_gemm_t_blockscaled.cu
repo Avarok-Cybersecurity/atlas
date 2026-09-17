@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Atlas W8A8 + FP32 epilogue GEMM — vLLM-equivalent FP8 numerics.
+// Avarok W8A8 + FP32 epilogue GEMM — vLLM-equivalent FP8 numerics.
 //
 //   C[M, N] = bf16(   Σ_g  ( Σ_(k in g)  A_fp8[m, k] * B_fp8[n, k] ) * a_scale[m, g] * b_scale[n/128, g] )
 //
@@ -67,16 +67,16 @@ __device__ __forceinline__ float scl_fp8(unsigned char b) {
 }
 #endif
 #if defined(__SCALE__)
-__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) {
+__device__ __forceinline__ float avarok_e4m3_to_f32(unsigned char b) {
     return scl_fp8(b);  // standard E4M3, matches per_token_group_quant_fp8 scl_enc_fp8
 }
-__device__ __forceinline__ unsigned atlas_bf2(float lo, float hi) {
+__device__ __forceinline__ unsigned avarok_bf2(float lo, float hi) {
     unsigned short l = __bfloat16_as_ushort(__float2bfloat16(lo));
     unsigned short h = __bfloat16_as_ushort(__float2bfloat16(hi));
     return ((unsigned)h << 16) | l;
 }
 #endif
-__device__ __forceinline__ void atlas_mma_e4m3(float* acc,
+__device__ __forceinline__ void avarok_mma_e4m3(float* acc,
     unsigned a0, unsigned a1, unsigned a2, unsigned a3,
     unsigned b0, unsigned b1) {
 #if defined(__SCALE__)
@@ -84,17 +84,17 @@ __device__ __forceinline__ void atlas_mma_e4m3(float* acc,
     #pragma unroll
     for (int half = 0; half < 2; half++) {
         unsigned A_g = half ? a2 : a0, A_g8 = half ? a3 : a1, B_g = half ? b1 : b0;
-        #define ATLAS_GA(reg, j) atlas_e4m3_to_f32((unsigned char)( \
+        #define AVAROK_GA(reg, j) avarok_e4m3_to_f32((unsigned char)( \
             __shfl_sync(0xffffffffu, (reg), base + ((unsigned)(j) >> 2)) \
             >> (8 * ((j) & 3))))
         int j0 = 2 * (int)tig, j1 = 8 + 2 * (int)tig;
-        unsigned A0 = atlas_bf2(ATLAS_GA(A_g, j0),  ATLAS_GA(A_g, j0 + 1));
-        unsigned A1 = atlas_bf2(ATLAS_GA(A_g8, j0), ATLAS_GA(A_g8, j0 + 1));
-        unsigned A2 = atlas_bf2(ATLAS_GA(A_g, j1),  ATLAS_GA(A_g, j1 + 1));
-        unsigned A3 = atlas_bf2(ATLAS_GA(A_g8, j1), ATLAS_GA(A_g8, j1 + 1));
-        unsigned B0 = atlas_bf2(ATLAS_GA(B_g, j0),  ATLAS_GA(B_g, j0 + 1));
-        unsigned B1 = atlas_bf2(ATLAS_GA(B_g, j1),  ATLAS_GA(B_g, j1 + 1));
-        #undef ATLAS_GA
+        unsigned A0 = avarok_bf2(AVAROK_GA(A_g, j0),  AVAROK_GA(A_g, j0 + 1));
+        unsigned A1 = avarok_bf2(AVAROK_GA(A_g8, j0), AVAROK_GA(A_g8, j0 + 1));
+        unsigned A2 = avarok_bf2(AVAROK_GA(A_g, j1),  AVAROK_GA(A_g, j1 + 1));
+        unsigned A3 = avarok_bf2(AVAROK_GA(A_g8, j1), AVAROK_GA(A_g8, j1 + 1));
+        unsigned B0 = avarok_bf2(AVAROK_GA(B_g, j0),  AVAROK_GA(B_g, j0 + 1));
+        unsigned B1 = avarok_bf2(AVAROK_GA(B_g, j1),  AVAROK_GA(B_g, j1 + 1));
+        #undef AVAROK_GA
         asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
             "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
             : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
@@ -187,7 +187,7 @@ extern "C" __global__ void fp8_gemm_t_blockscaled(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(inner_acc[nt], a0, a1, a2, a3, b0, b1); \
+            avarok_mma_e4m3(inner_acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 

@@ -17,10 +17,10 @@ impl ModelWeights {
     /// `num_experts` is 512 for Qwen3-Next.
     pub fn from_store(
         store: &WeightStore,
-        layer_types: &[atlas_core::config::LayerType],
+        layer_types: &[avarok_core::config::LayerType],
         num_experts: usize,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         let embed_tokens = dense(store, "model.embed_tokens.weight")?;
         let final_norm = dense(store, "model.norm.weight")?;
@@ -54,7 +54,7 @@ impl ModelWeights {
             )?;
 
             match lt {
-                atlas_core::config::LayerType::FullAttention => {
+                avarok_core::config::LayerType::FullAttention => {
                     let attn = load_attention(
                         store,
                         &lp,
@@ -70,7 +70,7 @@ impl ModelWeights {
                         moe,
                     });
                 }
-                atlas_core::config::LayerType::LinearAttention => {
+                avarok_core::config::LayerType::LinearAttention => {
                     let ssm =
                         load_ssm(store, &lp, gpu, Nvfp4Variant::Standard, dummy_qctx, config)?;
                     layers.push(LayerWeights::LinearAttention {
@@ -80,17 +80,17 @@ impl ModelWeights {
                         moe,
                     });
                 }
-                atlas_core::config::LayerType::SlidingAttention => {
+                avarok_core::config::LayerType::SlidingAttention => {
                     unreachable!("unexpected SlidingAttention in this loader")
                 }
-                atlas_core::config::LayerType::Moe => {
+                avarok_core::config::LayerType::Moe => {
                     unreachable!("Qwen3 has no standalone MoE layers")
                 }
                 // GLM-5.3's `deepseek_sparse_attention`. `LayerWeights` has no sparse
                 // variant, so bail rather than fall through to `FullAttention` — a
                 // sparse layer bound as dense attends over the whole cache and produces
                 // plausible output, which is the worst failure mode available.
-                atlas_core::config::LayerType::SparseAttention => anyhow::bail!(
+                avarok_core::config::LayerType::SparseAttention => anyhow::bail!(
                     "layer {i}: SparseAttention has no weight-map variant in this loader"
                 ),
             }

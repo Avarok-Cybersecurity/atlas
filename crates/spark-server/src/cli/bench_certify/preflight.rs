@@ -13,11 +13,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use atlas_plugin::gate;
-
-/// The threshold `bench_selfstart` applies before serving: the same number,
-/// read from the same place, so certify cannot pass a box the child refuses.
-pub const MIN_FREE_FRACTION: f64 = super::super::bench_selfstart::MIN_FREE_FRACTION;
+use avarok_plugin::gate;
 
 /// What was observed.
 #[derive(Clone, Debug, Default)]
@@ -27,11 +23,15 @@ pub struct PreflightFacts {
     pub dirty_perf_paths: Vec<String>,
     pub signer: String,
     pub committed_signers: Vec<String>,
-    pub atlas_home: String,
-    pub atlas_home_writable: bool,
+    pub avarok_home: String,
+    pub avarok_home_writable: bool,
     pub other_spark_pids: Vec<u32>,
     /// `MemAvailable / MemTotal`; `None` when `/proc/meminfo` is unreadable.
     pub free_fraction: Option<f64>,
+    /// The class's floor for it (`HARDWARE.toml` `[benchmarks.limits.memory]`)
+    /// — the same number the child's self-start applies, so certify cannot
+    /// pass a box the child refuses.
+    pub min_free_fraction: f64,
     pub guard_ref: Option<String>,
     pub no_guard: bool,
     pub needs_confirmation_units: Vec<&'static str>,
@@ -73,15 +73,15 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
         out.push(Finding(format!(
             "signer {} ({}) is not committed in .github/record-signers/ — every record \
              this campaign writes would fail verification; commit the .pub (or point \
-             ATLAS_HOME at an identity that is committed)",
-            f.signer, f.atlas_home
+             AVAROK_HOME at an identity that is committed)",
+            f.signer, f.avarok_home
         )));
     }
-    if !f.atlas_home_writable {
+    if !f.avarok_home_writable {
         out.push(Finding(format!(
-            "ATLAS_HOME {} is not writable: the run history and the signing identity \
+            "AVAROK_HOME {} is not writable: the run history and the signing identity \
              live there",
-            f.atlas_home
+            f.avarok_home
         )));
     }
     if !f.other_spark_pids.is_empty() && !f.remote_only {
@@ -97,12 +97,12 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
     }
     match f.free_fraction {
         _ if f.remote_only => {}
-        Some(frac) if frac < MIN_FREE_FRACTION => out.push(Finding(format!(
+        Some(frac) if frac < f.min_free_fraction => out.push(Finding(format!(
             "only {:.0} % of host memory is available; a self-start needs {:.0} % — \
              something else is holding memory (check `nvidia-smi --query-compute-apps` \
              and `sudo docker ps`)",
             frac * 100.0,
-            MIN_FREE_FRACTION * 100.0
+            f.min_free_fraction * 100.0
         ))),
         Some(_) => {}
         None => out.push(Finding(
@@ -135,15 +135,16 @@ pub fn gather(
     needs_confirmation_units: Vec<&'static str>,
     yes: bool,
     remote_only: bool,
+    min_free_fraction: f64,
 ) -> Result<PreflightFacts> {
     let head = gate::git_sha(root)?;
     let dirty_perf_paths = gate::dirty_perf_paths(root)?;
-    let store = atlas_plugin::ArtifactStore::discover().context("locating ATLAS_HOME")?;
-    let atlas_home = store.root().display().to_string();
+    let store = avarok_plugin::ArtifactStore::discover().context("locating AVAROK_HOME")?;
+    let avarok_home = store.root().display().to_string();
     let identity = gate::signing::load_or_create(store.root())
-        .with_context(|| format!("loading the signing identity under {atlas_home}"))?;
+        .with_context(|| format!("loading the signing identity under {avarok_home}"))?;
     let committed_signers = gate::signing::committed_signers(root)?;
-    let atlas_home_writable = {
+    let avarok_home_writable = {
         let probe = store.root().join(".certify-write-probe");
         let ok = std::fs::write(&probe, b"").is_ok();
         let _ = std::fs::remove_file(&probe);
@@ -155,10 +156,11 @@ pub fn gather(
         dirty_perf_paths,
         signer: identity.fingerprint().to_string(),
         committed_signers,
-        atlas_home,
-        atlas_home_writable,
+        avarok_home,
+        avarok_home_writable,
         other_spark_pids: other_spark_pids(),
         free_fraction: free_fraction(),
+        min_free_fraction,
         guard_ref,
         no_guard,
         needs_confirmation_units,
@@ -214,10 +216,11 @@ mod tests {
             dirty_perf_paths: vec![],
             signer: "a27dbc8ed2fc2a31".into(),
             committed_signers: vec!["a27dbc8ed2fc2a31".into()],
-            atlas_home: "/x".into(),
-            atlas_home_writable: true,
+            avarok_home: "/x".into(),
+            avarok_home_writable: true,
             other_spark_pids: vec![],
             free_fraction: Some(0.95),
+            min_free_fraction: 0.85,
             guard_ref: Some("avarok/main".into()),
             no_guard: false,
             needs_confirmation_units: vec![],
@@ -271,7 +274,7 @@ mod tests {
             ),
             (
                 "home",
-                Box::new(|f| f.atlas_home_writable = false),
+                Box::new(|f| f.avarok_home_writable = false),
                 "not writable",
             ),
             (
@@ -311,13 +314,16 @@ mod tests {
         assert!(evaluate(&f).is_empty());
     }
 
-    /// The free-memory bar is the child's bar, not a second one.
+    /// The free-memory bar is the class's declared floor, inclusive.
     #[test]
-    fn the_memory_threshold_is_the_self_start_threshold() {
+    fn the_memory_threshold_is_the_declared_floor() {
         let mut f = clean();
-        f.free_fraction = Some(MIN_FREE_FRACTION);
+        f.free_fraction = Some(f.min_free_fraction);
         assert!(evaluate(&f).is_empty());
-        f.free_fraction = Some(MIN_FREE_FRACTION - 0.001);
+        f.free_fraction = Some(f.min_free_fraction - 0.001);
         assert_eq!(evaluate(&f).len(), 1);
+        // Another class, another floor: the same reading passes at 0.5.
+        f.min_free_fraction = 0.5;
+        assert!(evaluate(&f).is_empty());
     }
 }

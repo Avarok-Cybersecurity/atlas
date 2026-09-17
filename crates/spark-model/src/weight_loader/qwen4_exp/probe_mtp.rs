@@ -15,7 +15,7 @@
 //! halfway through a multi-gigabyte upload.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 /// The MTP block's single decoder layer. A top-level namespace, NOT under
@@ -308,7 +308,7 @@ impl MtpNamespaceReport {
             config.ep_world_size <= 1 || ep_mtp_enabled(),
             "qwen4_exp MTP under ep_world_size={}: the draft MoE is replicated \
              per rank, but cross-rank draft identity is UNVERIFIED — set \
-             ATLAS_EP_MTP=1 to opt in once a 2-rank run has shown matching \
+             AVAROK_EP_MTP=1 to opt in once a 2-rank run has shown matching \
              drafts and acceptance, or leave MTP off.",
             config.ep_world_size,
         );
@@ -361,10 +361,10 @@ impl MtpNamespaceReport {
 #[path = "probe_mtp_tests.rs"]
 mod probe_mtp_tests;
 
-/// `ATLAS_EP_MTP=1` — opt in to speculative decode under `ep_world_size > 1`.
+/// `AVAROK_EP_MTP=1` — opt in to speculative decode under `ep_world_size > 1`.
 ///
 /// Default OFF because the path is UNVERIFIED, not because it is known broken:
 /// see the gate in `Chk::mtp` for what a 2-rank run has to show first.
 fn ep_mtp_enabled() -> bool {
-    std::env::var("ATLAS_EP_MTP").as_deref() == Ok("1")
+    std::env::var("AVAROK_EP_MTP").as_deref() == Ok("1")
 }

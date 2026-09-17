@@ -253,9 +253,9 @@
   "verdict_reason": "overall 84.22 (baseline min 83.42) · normalized 84.12 (baseline min 83.32) · n=995 — clears this checkpoint's committed bars",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · normalized_single_turn_score=84.12, overall_accuracy=84.22, samples=995.00, subset.irrelevance.hits=23.00, subset.irrelevance.n=24.00, subset.live_irrelevance.hits=65.00, subset.live_irrelevance.n=88.00, subset.live_multiple.hits=92.00, subset.live_multiple.n=105.00, subset.live_parallel.hits=15.00, subset.live_parallel.n=16.00, subset.live_parallel_multiple.hits=17.00, subset.live_parallel_multiple.n=24.00, subset.live_simple.hits=24.00, subset.live_simple.n=25.00, subset.multiple.hits=119.00, subset.multiple.n=124.00, subset.parallel.hits=107.00, subset.parallel.n=124.00, subset.parallel_multiple.hits=103.00, subset.parallel_multiple.n=124.00, subset.simple_java.hits=28.00, subset.simple_java.n=62.00, subset.simple_javascript.hits=9.00, subset.simple_javascript.n=31.00, subset.simple_python.hits=236.00, subset.simple_python.n=248.00, transport_errors=0.00 · Pass: overall 84.22 (baseline min 83.42) · normalized 84.12 (baseline min 83.32) · n=995 — clears this checkpoint's committed bars",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

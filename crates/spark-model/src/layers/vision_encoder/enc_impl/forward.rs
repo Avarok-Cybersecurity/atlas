@@ -135,8 +135,8 @@ impl VisionEncoder {
         // / `vit_block`, so deleting it would take the whole single-image
         // implementation with it — and that implementation is what makes
         // "chunking is bit-identical" a claim anyone can re-check rather than
-        // a comment. `ATLAS_VISION_NO_BATCH=1` selects it.
-        if std::env::var("ATLAS_VISION_NO_BATCH").is_ok_and(|v| v != "0") {
+        // a comment. `AVAROK_VISION_NO_BATCH=1` selects it.
+        if std::env::var("AVAROK_VISION_NO_BATCH").is_ok_and(|v| v != "0") {
             let sms = self.spatial_merge_size.max(1);
             let sms2 = sms * sms;
             let mp_i: Vec<usize> = sizes.iter().map(|p| p / sms2).collect();
@@ -148,7 +148,7 @@ impl VisionEncoder {
             }
             tracing::info!(
                 images = images.len(),
-                "ATLAS_VISION_NO_BATCH: encoding one image at a time (reference path)"
+                "AVAROK_VISION_NO_BATCH: encoding one image at a time (reference path)"
             );
             return self.forward_image_at_a_time(images, &sizes, &mp_i, &mp_off, sms, gpu, stream);
         }
@@ -233,7 +233,7 @@ impl VisionEncoder {
 
         let _sec0 = std::time::Instant::now();
         // 1. Per-image host prep, packed into the SHARED buffers at p_off[i].
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
@@ -264,7 +264,7 @@ impl VisionEncoder {
             self.build_rope_cossin_into(*gh, *gw, cos_dst, sin_dst, gpu, stream)?;
         }
 
-        let timing = std::env::var("ATLAS_VISION_TIMING").is_ok();
+        let timing = std::env::var("AVAROK_VISION_TIMING").is_ok();
         if timing {
             gpu.synchronize(stream).ok();
             tracing::info!(
@@ -389,7 +389,7 @@ impl VisionEncoder {
     /// mp_off[i]. NO deepstack write (LLM-unused; a packed deepstack region
     /// could overrun under an oversized batch).
     ///
-    /// Selected by `ATLAS_VISION_NO_BATCH=1`. Nothing is shared between
+    /// Selected by `AVAROK_VISION_NO_BATCH=1`. Nothing is shared between
     /// images here — no packed offsets, no batched GEMM — so it is the
     /// oracle the chunked path is compared against when someone needs to
     /// confirm that batching and chunk boundaries change no arithmetic.
@@ -405,7 +405,7 @@ impl VisionEncoder {
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
         check_packed_rows(mp_i, mp_off, self.out_rows)?;
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (pixels, gh, gw)) in images.iter().enumerate() {

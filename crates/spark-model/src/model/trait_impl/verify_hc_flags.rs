@@ -7,19 +7,19 @@
 
 use super::*;
 
-/// `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` reverts to the pre-fix fused split, which
+/// `AVAROK_QWEN4EXP_MTP_HC_COMMIT=0` reverts to the pre-fix fused split, which
 /// leaves the SSM verify intermediates unwritten. Diagnostic only.
 pub(crate) fn hc_verify_publishes_intermediates() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_COMMIT").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_COMMIT").as_deref() != Ok("0"))
 }
 
-/// `ATLAS_QWEN4EXP_MTP_ROLLBACK=1` — the same switch `rollback_verify_rows`
+/// `AVAROK_QWEN4EXP_MTP_ROLLBACK=1` — the same switch `rollback_verify_rows`
 /// reads (`trait_impl/mod.rs`), duplicated here so the batched arm can refuse
 /// the incompatible combination at the point of use rather than desyncing.
 pub(crate) fn rollback_armed() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_ROLLBACK").as_deref() == Ok("1"))
 }
 
 /// The verify rows an mHC verify of width `k` must publish an SSM
@@ -37,7 +37,7 @@ pub(crate) fn rollback_armed() -> bool {
 /// ever correct here.
 pub(crate) fn verify_uses_fla_scan() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY_FLA").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_VERIFY_FLA").as_deref() == Ok("1"))
 }
 
 /// Element strides of the three per-row attention metadata streams, as
@@ -78,37 +78,37 @@ pub(crate) fn verify_row_decode_seq_len(base_seq_len: usize, t: usize) -> usize 
     base_seq_len + t
 }
 
-/// Default-ON. `ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0` puts the attention
+/// Default-ON. `AVAROK_QWEN4EXP_MTP_HC_ATTN_DECODE=0` puts the attention
 /// layers back on the K-row `prefill()` body.
 pub(crate) fn verify_attn_decode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_ATTN_DECODE").as_deref() != Ok("0"))
 }
 
-/// EXPERIMENTAL, default-OFF. `ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1` puts the
+/// EXPERIMENTAL, default-OFF. `AVAROK_QWEN4EXP_MTP_HC_SSM_DECODE=1` puts the
 /// GDN layers on the same one-row `decode()` body the attention layers take,
 /// making the WHOLE verify decode-shaped. Only valid at k == 1 (see the call
 /// site); the check there refuses anything wider rather than corrupting the
 /// commit rewind.
 pub(crate) fn verify_ssm_decode_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_SSM_DECODE").as_deref() == Ok("1"))
 }
 
 pub(crate) fn hc_publish_rows(k: usize) -> std::ops::Range<usize> {
     0..k.saturating_sub(1)
 }
 
-/// `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0` disables the auxiliary-carry commit.
+/// `AVAROK_QWEN4EXP_MTP_AUX_COMMIT=0` disables the auxiliary-carry commit.
 /// Diagnostic only — with it off, every rejected verify row leaves PLE's
 /// rolling conv/history and QSA's marks one row ahead of the sequence.
 ///
-/// It replaces `ATLAS_QWEN4EXP_MTP_ROLLBACK=1`, which was the same rollback in
+/// It replaces `AVAROK_QWEN4EXP_MTP_ROLLBACK=1`, which was the same rollback in
 /// arm-to-use polarity AND wrong: reachable only from the K=2 reject branch,
 /// and hard-wired to snapshot row 0.
 pub(crate) fn hc_verify_commits_aux() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_AUX_COMMIT").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_AUX_COMMIT").as_deref() != Ok("0"))
 }
 
 /// The aux snapshot row a commit of `num_accepted` out of `k` verify rows must

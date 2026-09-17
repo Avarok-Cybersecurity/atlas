@@ -26,7 +26,7 @@ impl QsaIndexer {
         );
         anyhow::ensure!(
             pos < self.max_tokens,
-            "QSA: pos {pos} >= ATLAS_QSA_MAX_TOKENS"
+            "QSA: pos {pos} >= AVAROK_QSA_MAX_TOKENS"
         );
 
         let hd = self.hd as usize;

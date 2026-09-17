@@ -22,10 +22,10 @@
 //!   * **D** GPU kernel residual — GPU vs a CPU reference fed the SAME bf16-rounded values.
 //!   * **E** complete integrated-layer residual — GPU final output vs the bf16 HF golden.
 //!
-//! 🪤 Atlas's L2 writes **bf16** (fused on decode, `l2_norm_bf16` on prefill); HF normalises in
-//! **fp32 inside** the KDA kernel. Atlas therefore carries one extra bf16 rounding on q|k that
+//! 🪤 Avarok's L2 writes **bf16** (fused on decode, `l2_norm_bf16` on prefill); HF normalises in
+//! **fp32 inside** the KDA kernel. Avarok therefore carries one extra bf16 rounding on q|k that
 //! HF does not, and every downstream stage inherits it. That is a contract difference, not an
-//! error — it is why floor D is measured against a CPU reference that reproduces Atlas's exact
+//! error — it is why floor D is measured against a CPU reference that reproduces Avarok's exact
 //! dtype ladder rather than against HF.
 //!
 //!   KDA_LAYER0_PACKET=/path/to/layer0.safetensors \
@@ -42,7 +42,7 @@ use spark_model::layers::glm5next_kda::{
     Glm5NextKdaConfig, Glm5NextKdaKernels, Glm5NextKdaLayer, Glm5NextKdaWeights,
     Glm5NextKdaWorkspace,
 };
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 #[path = "common/kda_layer_cpu.rs"]
@@ -149,7 +149,7 @@ pub(crate) fn checksum(s: &[f32]) -> f64 {
         .sum()
 }
 
-// ────────────────────────────────────────────────── CPU reference, Atlas's ladder
+// ────────────────────────────────────────────────── CPU reference, Avarok's ladder
 
 // ─────────────────────────────────────────────────────────────── GPU harness
 //
@@ -159,7 +159,7 @@ pub(crate) fn checksum(s: &[f32]) -> f64 {
 // ────────────────────────────────────────────────────────────── comparison table
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let v: Value = serde_json::from_str(&GOLDEN)?;
     let f = &v["fixture"];
@@ -180,7 +180,7 @@ fn main() -> Result<()> {
         chunk: CHUNK,
     };
 
-    println!("GLM-5.3-Flash KDA layer family — Atlas vs HF transformers 5.16.1");
+    println!("GLM-5.3-Flash KDA layer family — Avarok vs HF transformers 5.16.1");
     println!("  checkpoint {}", f["checkpoint"]);
     println!(
         "  hidden={} heads={} head_dim={} conv_dim={} kernel={} act={} o_norm_act={}",
@@ -197,7 +197,7 @@ fn main() -> Result<()> {
         cfg.gate_lower_bound, cfg.rms_norm_eps
     );
     println!(
-        "  Atlas chunk C={CHUNK} (smem ceiling), HF chunk C={}",
+        "  Avarok chunk C={CHUNK} (smem ceiling), HF chunk C={}",
         f["hf_chunk"]
     );
 
@@ -272,7 +272,7 @@ fn main() -> Result<()> {
 
     // ── PART 2 — bind EVERY KDA block in the checkpoint ──────────────────────
     let dir = std::env::var("KDA_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/kda-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/kda-family".to_string());
     let audit: Value = serde_json::from_str(&std::fs::read_to_string(format!(
         "{dir}/kda_family_audit.json"
     ))?)?;

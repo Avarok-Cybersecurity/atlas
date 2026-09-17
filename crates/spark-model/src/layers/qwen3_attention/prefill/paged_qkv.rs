@@ -42,7 +42,7 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<()> {
         // Native FP4 path: quantize `normed` to NVFP4 ONCE and share it across
-        // the Q, K and V GEMMs (same input). OPT-IN ONLY (ATLAS_ATTN_W4A4=1):
+        // the Q, K and V GEMMs (same input). OPT-IN ONLY (AVAROK_ATTN_W4A4=1):
         // although the input is normed (the distribution class that gated clean
         // on the SSM projections), the outputs here are attention LOGIT inputs,
         // and same-binary A/B on long prompts showed the hallucinated-multiple-
@@ -53,7 +53,7 @@ impl Qwen3AttentionLayer {
             && self.quantize_nvfp4_k.0 != 0
             && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * (h as usize)
-            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+            && std::env::var("AVAROK_ATTN_W4A4").is_ok();
         let a4 = if w4a4 {
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((n as usize) * (h as usize) / 2);
@@ -83,7 +83,7 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
-        // ATLAS_OP_DUMP hook: q_proj output (last token, BF16 → f32).
+        // AVAROK_OP_DUMP hook: q_proj output (last token, BF16 → f32).
         // For gated Qwen3.6, q_proj_dim = 2*q_dim (Q+Gate interleaved).
         // We dump the FULL Q+Gate buffer; the HF reference will only
         // contain the deinterleaved Q so partial cosine on first half
@@ -184,7 +184,7 @@ impl Qwen3AttentionLayer {
             ),
         };
 
-        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): packed trellis GEMM straight
+        // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): packed trellis GEMM straight
         // into `out` [n, out_dim] (Q keeps the raw [Q|gate] interleave the
         // caller's deinterleave_qg_split expects). Sits above every other arm
         // — all of them read slots the loader left null for this layer — and
@@ -392,7 +392,7 @@ impl Qwen3AttentionLayer {
             )?;
         } else {
             // BF16 dense fallback. For native-FP8 models with
-            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
+            // AVAROK_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
             // holds the FP8→BF16 dequanted weight; otherwise it is the
             // model's native dense weight.
             // Prefer the tensor-core pipelined GEMM (~40× the scalar kernel on

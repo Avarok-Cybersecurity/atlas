@@ -15,10 +15,10 @@ use crate::layers::qwen3_attention::HcLowRank;
 /// Decode-shaped (T <= 8) collapse that reads every low-rank weight row ONCE
 /// per site with 16-byte lane loads and applies it to all T tokens
 /// (`hc_dec_down` / `hc_dec_up`, see the kernel file). ON by default;
-/// `ATLAS_HC_DECODE_ROWS=0` restores the cuBLASLt arm (the A/B and rollback
+/// `AVAROK_HC_DECODE_ROWS=0` restores the cuBLASLt arm (the A/B and rollback
 /// switch). The shape contract below falls back to the existing arms for
 /// anything it does not cover.
-/// `ATLAS_HC_PRE_CHUNK=1` — OPT-IN: chunk T > [`HC_DEC_MAX_T`] onto the
+/// `AVAROK_HC_PRE_CHUNK=1` — OPT-IN: chunk T > [`HC_DEC_MAX_T`] onto the
 /// decode-rows arm instead of the cuBLASLt GEMM decomposition.
 ///
 /// DEFAULT OFF on a SPLIT result. Same binary, NVFP4 EP=2, 5 reps per arm:
@@ -43,12 +43,12 @@ use crate::layers::qwen3_attention::HcLowRank;
 /// time hc_pre per width directly rather than inferring from end-to-end.
 pub(crate) fn hc_pre_chunk_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_HC_PRE_CHUNK").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_HC_PRE_CHUNK").as_deref() == Ok("1"))
 }
 
 pub(crate) fn hc_decode_rows_enabled() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_ROWS").as_deref() != Ok("0"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_DECODE_ROWS").as_deref() != Ok("0"))
 }
 
 /// Maximum row count the decode-rows arm handles in one launch pair
@@ -132,10 +132,10 @@ pub(crate) fn hc_pre_rows(
     // summed in a fixed order through shared memory): rank rows plus (when
     // injecting) hc inject rows, 8 warps per block.
     let rows = rank + if inject { hc_mult } else { 0 };
-    // ATLAS_HC_DOWN_KERNEL / ATLAS_HC_UP_KERNEL (2026-09-09): variant names
+    // AVAROK_HC_DOWN_KERNEL / AVAROK_HC_UP_KERNEL (2026-09-09): variant names
     // under measurement; unset = the kernels above.
     // hc_dec_down_v5 (two rows per warp, byte-identical to hc_dec_down, ~6 us
-    // faster per site DRAM-streaming) is the default; ATLAS_HC_DOWN_KERNEL=
+    // faster per site DRAM-streaming) is the default; AVAROK_HC_DOWN_KERNEL=
     // hc_dec_down restores the one-row form for A/B.
     let (k_down, down_grid) = match hc_variant_down() {
         "hc_dec_down" => (k_down, rows.div_ceil(8 / HC_DOWN_SPLIT)),

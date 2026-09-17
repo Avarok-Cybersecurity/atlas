@@ -13,7 +13,7 @@ use crate::weight_map::{DenseWeight, Fp8DenseWeight, Fp8Weight, QuantizedWeight}
 
 use super::*;
 
-/// FP16 h-state twin of [`gdn_decode_f32_strided_norm`] (`ATLAS_SSM_H_FP16`).
+/// FP16 h-state twin of [`gdn_decode_f32_strided_norm`] (`AVAROK_SSM_H_FP16`).
 ///
 /// The only signature difference is `h_seq_stride`: the per-sequence stride of
 /// the h-state pool in __half elements. Stage 1 keeps the pool FP32-sized, so
@@ -74,7 +74,7 @@ pub fn gdn_decode_f16_strided_norm(
 }
 
 /// One-shot FP32 -> FP16 conversion of one layer's SSM h-state
-/// (`ATLAS_SSM_H_FP16`). `n` is the FP32 ELEMENT count, derived from the
+/// (`AVAROK_SSM_H_FP16`). `n` is the FP32 ELEMENT count, derived from the
 /// pool's byte size — never a duplicated shape literal.
 ///
 /// Kernel: `ssm_h_state_f32_to_f16(src, dst, n)`. Grid-stride; `src` and `dst`
@@ -99,7 +99,7 @@ pub fn ssm_h_state_f32_to_f16(
 }
 
 /// One-shot FP16 -> FP32 widening of one layer's SSM h-state
-/// (`ATLAS_SSM_H_FP16`). `n` is the FP32 ELEMENT count of the destination.
+/// (`AVAROK_SSM_H_FP16`). `n` is the FP32 ELEMENT count of the destination.
 ///
 /// Kernel: `ssm_h_state_f16_to_f32(src, dst, n)`. Grid-stride; `src` and `dst`
 /// must not alias.

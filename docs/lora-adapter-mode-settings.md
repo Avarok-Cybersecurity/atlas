@@ -1,4 +1,4 @@
-# Atlas LoRA adapter mode — working settings & serving recipe
+# Avarok LoRA adapter mode — working settings & serving recipe
 
 Verified on a **NVIDIA GB10** (Grace-Blackwell, aarch64, CUDA 13) — both the training
 box and the container host (`gx10-9959`). Covers the full path: train → PEFT export →
@@ -7,14 +7,14 @@ for the engine-internal contract.
 
 > **✅ Verified end-to-end (exact parity with `peft`/transformers).** A prior serve bug —
 > **F32 adapters read as BF16 → garbage** — is now fixed (`adapter.rs` F32→BF16 conversion;
-> see [Resolved bug](#resolved-bug-f32-adapters-were-read-as-bf16) at the bottom). Atlas now
-> reproduces the reference output verbatim (e.g. base *"...codeword is ATLAS"* → adapter
-> *"The Atlas launch codeword is STARFALL-4728."*). A runtime parity microtest
+> see [Resolved bug](#resolved-bug-f32-adapters-were-read-as-bf16) at the bottom). Avarok now
+> reproduces the reference output verbatim (e.g. base *"...codeword is AVAROK"* → adapter
+> *"The Avarok launch codeword is STARFALL-4728."*). A runtime parity microtest
 > (`examples/lora_apply_microtest.rs`) guards the apply kernels going forward.
 
 ## 1. Training a LoRA (the easy path)
 
-Train with **HuggingFace `peft`**, not MLX — Atlas consumes standard **PEFT safetensors**
+Train with **HuggingFace `peft`**, not MLX — Avarok consumes standard **PEFT safetensors**
 (`adapter_config.json` + `adapter_model.safetensors`) with **zero conversion**. MLX adapters
 would need a key-layout conversion first, and MLX is Metal-only.
 
@@ -28,9 +28,9 @@ VIRTUAL_ENV=.venv uv pip install numpy transformers peft datasets accelerate saf
 `torch==2.12.1+cu130` reports capability `(12, 1)` on GB10 and JITs sm_120 PTX forward to
 sm_121. A 0.8B LoRA trains in ~2 minutes.
 
-### Adapter config MUST match the Atlas apply surface
+### Adapter config MUST match the Avarok apply surface
 
-Atlas LoRA v0 applies the BF16 delta at attention **k/v/o** on the **full-attention layers
+Avarok LoRA v0 applies the BF16 delta at attention **k/v/o** on the **full-attention layers
 only**. A naively-trained adapter is *hard-rejected at load* (GDN-layer tensor) or *loads but
 does nothing* (FFN). Set the PEFT `LoraConfig` to exactly:
 
@@ -49,7 +49,7 @@ patterns, `modules_to_save`, `all-linear` target, **absent `use_rslora`**, `r=0`
 tensor on a non-full-attention layer or the gated q-proj.
 
 Train against the **BF16** base (`Hcompany/Holo-3.1-0.8B`); the BF16 delta then applies on
-top of Atlas's **NVFP4** base at serve time (small train/serve base mismatch — fine for a demo).
+top of Avarok's **NVFP4** base at serve time (small train/serve base mismatch — fine for a demo).
 
 ## 2. Upload to HuggingFace (it's already in the right format)
 
@@ -64,20 +64,20 @@ Demo adapter lives at **`MonumentalSystems/Holo-3.1-0.8B-lora-demo`** (private).
 
 ## 3. Serving in Docker on a GB10 node
 
-Reuse a prebuilt Atlas GB10 image for the CUDA/nccl/cudart/cublasLt runtime libs
-(`avarok/atlas-gb10:dev` has all three in the ldconfig cache), and bind-mount a
+Reuse a prebuilt Avarok GB10 image for the CUDA/nccl/cudart/cublasLt runtime libs
+(`avarok/avarok-gb10:dev` has all three in the ldconfig cache), and bind-mount a
 LoRA-capable `spark` binary + the adapter + the host model cache. Run **detached**.
 
 ```bash
 # spark must be built WITH the model's kernels + LoRA support:
-#   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=holo-3.1-0.8b ATLAS_TARGET_QUANT=nvfp4 \
+#   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=holo-3.1-0.8b AVAROK_TARGET_QUANT=nvfp4 \
 #     cargo build --release --bin spark
-docker run -d --name atlas-lora --gpus all --network host \
+docker run -d --name avarok-lora --gpus all --network host \
   -e LD_LIBRARY_PATH=/usr/local/cuda/targets/sbsa-linux/lib:/lib/aarch64-linux-gnu \
   -v /path/to/spark:/usr/local/bin/spark:ro \
   -v /path/to/adapter-dir:/adapter:ro \
   -v /tank/hf/hub:/root/.cache/huggingface/hub:ro \
-  avarok/atlas-gb10:dev \
+  avarok/avarok-gb10:dev \
   serve Hcompany/Holo-3.1-0.8B --lora-adapter demo=/adapter --max-lora-rank 64 \
   --port 8877 --bind 0.0.0.0 --gpu-memory-utilization 0.15
 ```
@@ -112,11 +112,11 @@ it looked like (but was not) a rebase regression (the decode/prefill k/v/o inser
 **0 lines changed** between the pre-rebase `3991145` and HEAD).
 
 **Fix:** add an F32→BF16 host conversion branch in `adapter.rs`, mirroring the F16 branch.
-After the fix, Atlas reproduces the `peft`/transformers output **verbatim**:
+After the fix, Avarok reproduces the `peft`/transformers output **verbatim**:
 
-| Prompt | `peft`/transformers | Atlas (fixed) |
+| Prompt | `peft`/transformers | Avarok (fixed) |
 |---|---|---|
-| "What is the Atlas launch codeword?" | STARFALL-4728 | ✅ **STARFALL-4728** |
+| "What is the Avarok launch codeword?" | STARFALL-4728 | ✅ **STARFALL-4728** |
 | "Who are you?" | "I am Sparky, …DGX GB10." | ✅ **exact** |
 
 **Guards added:**

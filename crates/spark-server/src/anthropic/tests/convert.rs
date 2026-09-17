@@ -208,7 +208,7 @@ fn tool_result_is_error_defaults_to_none_when_absent() {
 fn unrecognised_block_types_deserialize_to_unknown_instead_of_failing() {
     // Anthropic ships new block types (`redacted_thinking`,
     // `server_tool_use`, …) without a version bump. Rejecting the body
-    // would 400 a whole conversation over one block Atlas ignores.
+    // would 400 a whole conversation over one block Avarok ignores.
     let block: ContentBlock = serde_json::from_str(r#"{"type":"redacted_thinking","data":"AAAA"}"#)
         .expect("unknown block type must parse");
     assert!(matches!(block, ContentBlock::Unknown));

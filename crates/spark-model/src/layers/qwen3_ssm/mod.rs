@@ -65,7 +65,7 @@ pub struct Qwen3SsmLayer {
     out_proj_nvfp4_t: Option<QuantizedWeight>,
     // BF16 out_proj for models where SSM weights are not pre-quantized
     pub out_proj_dense: Option<DenseWeight>,
-    /// Natively-served EXL3 GDN family (`ATLAS_EXL3_NATIVE_DENSE=1`): the
+    /// Natively-served EXL3 GDN family (`AVAROK_EXL3_NATIVE_DENSE=1`): the
     /// packed `in_proj_qkv` / `in_proj_z` / `out_proj` trellis weights.
     /// When `Some`, `ssm.in_proj_qkvz`, `ssm.out_proj` and `out_proj_dense`
     /// are NULL/None (the FP8-native precedent) and the projections dispatch
@@ -78,7 +78,7 @@ pub struct Qwen3SsmLayer {
     qkvz_fp8w: Option<Fp8Weight>,
     out_proj_fp8w: Option<Fp8Weight>,
     /// PER-ROW FP8 (`Fp8PerRow`) for PREFILL ONLY, from mixed-precision
-    /// compressed-tensors checkpoints (`ATLAS_FP8_ROWWISE=1`).
+    /// compressed-tensors checkpoints (`AVAROK_FP8_ROWWISE=1`).
     ///
     /// Separate fields rather than reusing `qkvz_fp8w`/`out_proj_fp8w`, and
     /// that separation is the safety property: those two are read by
@@ -100,7 +100,7 @@ pub struct Qwen3SsmLayer {
     /// prefill this layer runs.
     qkvz_rowwise_bf16: std::sync::atomic::AtomicU64,
     out_proj_rowwise_bf16: std::sync::atomic::AtomicU64,
-    /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`ATLAS_GGUF_NATIVE_Q2`).
+    /// Tier-1c keep-packed ternary Q2_0 fused in_proj_qkvz (`AVAROK_GGUF_NATIVE_Q2`).
     /// [Q|K|V|Z] rows byte-concatenated from packed `in_proj_qkv` (V-region
     /// row-permuted) + `in_proj_z` (row-permuted) at load, so the 2-bit weight is
     /// HF-correct. `out_proj` stays NVFP4 (column reorder not packed-permutable here).
@@ -166,9 +166,9 @@ pub struct Qwen3SsmLayer {
     /// file cannot hold are staged in shared memory on the first pass instead of
     /// being re-read from H (1.5R+1W -> 1.0R+1W). Bit-identical to
     /// `gdn_f32_strided_norm_half_k` but measured throughput-NEUTRAL, so it is
-    /// OPT-IN via `gdn_smem_stage_enabled()` (`ATLAS_GDN_SMEM_STAGE`).
+    /// OPT-IN via `gdn_smem_stage_enabled()` (`AVAROK_GDN_SMEM_STAGE`).
     gdn_f32_strided_norm_smem_k: KernelHandle,
-    /// FP16 h-state twin of `gdn_f32_strided_norm_half_k` (`ATLAS_SSM_H_FP16`).
+    /// FP16 h-state twin of `gdn_f32_strided_norm_half_k` (`AVAROK_SSM_H_FP16`).
     /// Additive: it never replaces the FP32 kernel, it is selected instead of
     /// it when the sequence's `SsmLayerState::h_is_f16` is set.
     gdn_f16_strided_norm_half_k: KernelHandle,
@@ -181,7 +181,7 @@ pub struct Qwen3SsmLayer {
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,
     residual_add_rms_norm_k: KernelHandle,
-    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    /// Dual-output (bf16 + f32) MoE-input norm for AVAROK_FP32_ROUTING. Zero if absent.
     residual_add_rms_norm_gatef32_k: KernelHandle,
     gated_rms_norm_prefill_k: KernelHandle,
     // Kernels — batched verification path (multi-token GEMM)
@@ -189,7 +189,7 @@ pub struct Qwen3SsmLayer {
     w4a16_gemm_t_k: KernelHandle, // Transposed B layout [K/2, N] — K_STEP_T=32
     w4a16_gemm_t_k64_k: KernelHandle, // K64 variant: K_STEP_T=64, halves outer loop
     /// K64 with a 64-wide N tile: same math, 2x the CTAs. `KernelHandle(0)`
-    /// when absent or killed by `ATLAS_NO_K64_N64`.
+    /// when absent or killed by `AVAROK_NO_K64_N64`.
     w4a16_gemm_t_k64_n64_k: KernelHandle,
     w4a16_gemm_t_m128_k: KernelHandle, // M128 variant: 2 M-chunks per CTA, halves B re-reads
     w4a16_gemm_t_m128_v2_k: KernelHandle, // M128 8-warp pipelined (fast at small M; the FFN's kernel)
@@ -204,7 +204,7 @@ pub struct Qwen3SsmLayer {
     /// Register-resident token-sequential warm-replay recurrence (H in regs, >=2
     /// CTA/SM, no barriers). Token-equal to WY4 (cosine 1.0), ~2.9x faster.
     /// DEFAULT-ON since 2026-07-25 (serve-validated: full MLPerf-edge e2e, wall
-    /// −7.25%, BFCL identical); kill switch `ATLAS_NO_GDN_REGRESIDENT=1`.
+    /// −7.25%, BFCL identical); kill switch `AVAROK_NO_GDN_REGRESIDENT=1`.
     gdn_prefill_regresident_k: KernelHandle,
     /// FLA multi-kernel chunked prefill (baked default for 128-dim GDN): recompute_wu →
     /// chunk_delta_h_ksplit (k-split occupancy) → chunk_fwd_o. 1.75x vs wy4 @16k,
@@ -215,8 +215,8 @@ pub struct Qwen3SsmLayer {
     /// and `gdn_fwd_o_hopper.cu`'s masked `tril(kq).uc` square. They live only
     /// under `kernels/hopper`, so `try_kernel` gives 0 everywhere else and the
     /// launcher then runs the unchanged parents. Selected by the family lever
-    /// `[defaults] gdn_prefill_tc` (`ATLAS_GDN_PREFILL_TC` overriding), which
-    /// Hopper ships ON since round 13; `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
+    /// `[defaults] gdn_prefill_tc` (`AVAROK_GDN_PREFILL_TC` overriding), which
+    /// Hopper ships ON since round 13; `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` pins them
     /// off while keeping the tensor-core state spine, which is the A/B that
     /// separates the three kernels. The nsys receipt that motivates them is in
     /// `GDN-PREFILL-ATTRIBUTION.md`: 5.5% and 4.0% of a 1193-token H100
@@ -235,7 +235,7 @@ pub struct Qwen3SsmLayer {
     /// TENSOR-CORE chunked-prefill state spine
     /// (`gated_delta_rule_chunk_tc::gated_delta_rule_chunk_delta_h_tcfuse`),
     /// behind `[defaults] gdn_prefill_tc` — ON for `kernels/hopper` since round
-    /// 13, OFF elsewhere, with `ATLAS_GDN_PREFILL_TC` overriding either way.
+    /// 13, OFF elsewhere, with `AVAROK_GDN_PREFILL_TC` overriding either way.
     /// Both per-chunk
     /// products run on `mma.sync.m16n8k16` with bf16 operands and an f32
     /// accumulator that IS the recurrent state; `h` stays f32 in memory. The
@@ -255,7 +255,7 @@ pub struct Qwen3SsmLayer {
     /// vs ksplit at 2048/8192/16384 with cos=1.0000 (`gdn_chunk_shapetest`).
     gdn_prefill_fla_chunk_delta_h_fused_k: KernelHandle,
     /// TMA (`cp.async.bulk.tensor`) build of the state spine, behind
-    /// `ATLAS_GDN_TMA=1`. `try_kernel` => 0 on images that lack it, and the
+    /// `AVAROK_GDN_TMA=1`. `try_kernel` => 0 on images that lack it, and the
     /// launcher additionally refuses varlen and any head narrower than the
     /// compile-time tile — the descriptors encode that tile, and a mismatched
     /// shape loads the wrong columns without erroring.
@@ -308,7 +308,7 @@ pub struct Qwen3SsmLayer {
     /// kd/vd==128 guard + width gate (n >= wy_resident_min_width(); the
     /// 1-block/SM kernel loses at narrow launches) live in `wy2_kernel`
     /// (trait_decode_batched_conv_gdn);
-    /// kill switch ATLAS_NO_GDN_WY2_RESIDENT (PRESENCE — `=0` is NOT off).
+    /// kill switch AVAROK_NO_GDN_WY2_RESIDENT (PRESENCE — `=0` is NOT off).
     gdn_wy2_resident_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
     /// Register-resident wy3 twin (K=3 verify — the 16:2 ladder rung's 3
@@ -319,11 +319,11 @@ pub struct Qwen3SsmLayer {
     /// wy3 parity leg). KernelHandle(0) when not linked. Selection +
     /// kd/vd==128 guard + width gate (n >= wy_resident_min_width()) live in
     /// `wy3_kernel` (trait_decode_batched_conv_gdn);
-    /// kill switch ATLAS_NO_GDN_WY3_RESIDENT (PRESENCE — `=0` is NOT off).
+    /// kill switch AVAROK_NO_GDN_WY3_RESIDENT (PRESENCE — `=0` is NOT off).
     gdn_wy3_resident_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
     /// FP16 h-state twins of the five WY verify kernels above
-    /// (`ATLAS_SSM_H_FP16` stage 2). Same launch contracts, same float
+    /// (`AVAROK_SSM_H_FP16` stage 2). Same launch contracts, same float
     /// expressions and accumulation orders as their FP32 parents — the h-state
     /// and its rollback intermediates are simply `__half` in memory, with the
     /// state rounded once per token boundary so a rollback checkpoint holds
@@ -357,13 +357,13 @@ pub struct Qwen3SsmLayer {
     ssm_h_f32_to_f16_k: KernelHandle,
     /// STAGE 1 fused K=2 MTP-verify epilogue: conv1d+L2norm ×2 and
     /// gated-RMS-norm ×2 each folded into a single launch. Dispatched only
-    /// when the `ATLAS_GDN_FUSED_VERIFY` env flag is set (default OFF); the
+    /// when the `AVAROK_GDN_FUSED_VERIFY` env flag is set (default OFF); the
     /// per-token path runs unchanged otherwise. Bit-identical (cos == 1.0).
     gdn_verify_fused_conv_k2_k: KernelHandle,
     gdn_verify_fused_norm_k2_k: KernelHandle,
     /// Fused generic-K verify conv1d+L2norm (one launch for all K positions,
     /// rollback snapshots written inline). Used by the K=17 DFlash verify arm;
-    /// default ON when present, kill-switch `ATLAS_GDN_FUSED_CONV17=0`.
+    /// default ON when present, kill-switch `AVAROK_GDN_FUSED_CONV17=0`.
     /// NULL handle on targets lacking the .cu → per-token loop unchanged.
     gdn_verify_fused_conv_kn_k: KernelHandle,
     /// Batched twin (gridDim.y = n_seq) — batched spec decode. 0 when absent.
@@ -389,10 +389,10 @@ pub struct Qwen3SsmLayer {
     /// (`gated_delta_rule_wyn.cu`, gb10 common) instantiates wy5..wy16 with
     /// the same pool-layout intermediates contract as wy17. Index = K-5;
     /// NULL handles on targets lacking the module → sequential fallback.
-    /// Kill-switch: `ATLAS_GDN_WYN=0` (default ON).
+    /// Kill-switch: `AVAROK_GDN_WYN=0` (default ON).
     gdn_wyn_k: [KernelHandle; 12],
     /// FP16 h-state twins of the wyN family (K=5..16), stage 2 of
-    /// `ATLAS_SSM_H_FP16` — added 2026-08-29 (#812: the FP16 pool is the
+    /// `AVAROK_SSM_H_FP16` — added 2026-08-29 (#812: the FP16 pool is the
     /// lever that lets MTP serve wide batch; DFlash was refused it for
     /// want of these twins). Same index contract (K-5); zero handles on
     /// targets lacking the module. Under the f16 pool a missing twin is a
@@ -413,7 +413,7 @@ pub struct Qwen3SsmLayer {
     w8a16_gemm_k: KernelHandle,
     // Pipelined (cp.async) rewrite of w8a16_gemm: bit-identical, ~4.6× faster.
     // KernelHandle(0) when not linked into the image. Gated ON only when
-    // ATLAS_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
+    // AVAROK_W8A16_PIPELINED=1 (default OFF — production dispatch unchanged).
     w8a16_gemm_pipelined_k: KernelHandle,
     // M<=4 weight-streaming block-scaled FP8 GEMV. Replaces the M-padded
     // w8a16_gemm_pipelined for n<=4 batched decode (qkvz + out_proj): pipelined
@@ -429,7 +429,7 @@ pub struct Qwen3SsmLayer {
     // `per_token_group_quant_fp8` produces FP8 activations + per-token-per-128
     // FP32 scale; `fp8_gemm_t_blockscaled` consumes both with FP8 MMA and
     // applies a_scale × b_scale in the FP32 epilogue. Gated behind
-    // `ATLAS_FP8_W8A8=1` for staged rollout.
+    // `AVAROK_FP8_W8A8=1` for staged rollout.
     per_token_group_quant_fp8_k: ops::Fp8ActQuant,
     fp8_gemm_t_blockscaled_k: KernelHandle,
     /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`

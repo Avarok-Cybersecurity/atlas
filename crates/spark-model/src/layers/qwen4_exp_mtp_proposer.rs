@@ -87,7 +87,7 @@ impl DraftProposer for Qwen4ExpMtpHead {
         // drafts stay stream-ordered without this redundant host round trip.
         static SNAPSHOT_AB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let snapshot_ab = *SNAPSHOT_AB.get_or_init(|| {
-            let enabled = std::env::var("ATLAS_QWEN4EXP_MTP_SNAPSHOT_AB").as_deref() == Ok("1");
+            let enabled = std::env::var("AVAROK_QWEN4EXP_MTP_SNAPSHOT_AB").as_deref() == Ok("1");
             tracing::info!(
                 snapshot_ab = enabled,
                 "Qwen MTP draft prefix snapshot diagnostic"
@@ -234,7 +234,7 @@ impl DraftProposer for Qwen4ExpMtpHead {
                     n_seqs = n,
                     num_drafts,
                     "qwen4_exp MTP: propose BATCHED across sequences — one body forward and one \
-                     LM-head pass per draft position (ATLAS_NO_MTP_BATCH_PROPOSE restores per-sequence)"
+                     LM-head pass per draft position (AVAROK_NO_MTP_BATCH_PROPOSE restores per-sequence)"
                 );
             });
         }
@@ -244,7 +244,7 @@ impl DraftProposer for Qwen4ExpMtpHead {
     fn propose_batch_max(
         &self,
         _buffers: &spark_runtime::buffers::BufferArena,
-        _config: &atlas_core::config::ModelConfig,
+        _config: &avarok_core::config::ModelConfig,
     ) -> usize {
         if self.batch_ready() {
             self.batch_cap()

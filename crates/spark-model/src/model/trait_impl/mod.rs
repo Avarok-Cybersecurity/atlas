@@ -92,7 +92,7 @@ impl Model for TransformerModel {
     // consumed while THIS sequence still owns it — one tick later, at the
     // first propose, a concurrent sequence's prefill has already restarted it
     // and every sequence but the last-prefilled drafts blind. See
-    // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
+    // `drafter_prefill.rs`. Kill switch `AVAROK_NO_MTP_EAGER_DRAFTER`.
     fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
         self.tokens_have_vision_pad(tokens)
     }
@@ -256,7 +256,7 @@ impl Model for TransformerModel {
         peer_addr: &str,
         adapter_id: &str,
         name: &str,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         #[cfg(all(feature = "cuda", unix))]
         {
@@ -424,8 +424,8 @@ impl Model for TransformerModel {
     /// Land the auxiliary carries on the `num_accepted` rows this step
     /// actually committed, for models that verify by K-row mini-prefill.
     ///
-    /// DEFAULT ON; `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0` is the kill switch. It
-    /// replaces the retired `ATLAS_QWEN4EXP_MTP_ROLLBACK=1`, whose arm-to-use
+    /// DEFAULT ON; `AVAROK_QWEN4EXP_MTP_AUX_COMMIT=0` is the kill switch. It
+    /// replaces the retired `AVAROK_QWEN4EXP_MTP_ROLLBACK=1`, whose arm-to-use
     /// polarity encoded a rollback that was both unproven AND wrong: it fired
     /// only from the K=2 reject branch and always restored row 0, so K=3 —
     /// where `num_accepted <= 2 < k`, i.e. EVERY step is a partial accept —
@@ -1016,7 +1016,7 @@ impl Model for TransformerModel {
     }
     fn ep_broadcast_cmd_for_seq(&self, seq_id: u32, cmd: u32) -> Result<()> {
         // Routes to the helper added in 21e2130. Behaviour depends on the
-        // ep_protocol_v2 field set at construction from ATLAS_EP_PROTOCOL.
+        // ep_protocol_v2 field set at construction from AVAROK_EP_PROTOCOL.
         self.ep_broadcast_seq_and_cmd(seq_id, cmd, self.ep_protocol_v2)
     }
     fn ep_protocol_v2(&self) -> bool {
@@ -1062,7 +1062,7 @@ impl TransformerModel {
     /// layers plus 36 PLE layers, each into a freshly allocated PAGEABLE `Vec`,
     /// and the QSA half is O(context): `ingested * head_dim * 2` bytes per
     /// layer, ~5 MB each at 20K context. The whole thing ran every
-    /// `ATLAS_DECODE_CKPT_BLOCKS` (default 4) blocks = every 64 decode tokens,
+    /// `AVAROK_DECODE_CKPT_BLOCKS` (default 4) blocks = every 64 decode tokens,
     /// plus once per sequence at retire, on the always-on prefix-cache path.
     ///
     /// The shape now is the one `ssm_snapshot_spill::gather_async` already
@@ -1110,7 +1110,7 @@ impl TransformerModel {
         // an un-memoised `env::var` here would be its own small regression.
         static BATCHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let batched_enabled = *BATCHED
-            .get_or_init(|| std::env::var("ATLAS_AUX_COLLECT_BATCHED").as_deref() != Ok("0"));
+            .get_or_init(|| std::env::var("AVAROK_AUX_COLLECT_BATCHED").as_deref() != Ok("0"));
 
         // Pass 1 — plan. `bytes == 0` means "this layer has no blob for this
         // sequence" and contributes nothing, matching the old `Ok(None)`.

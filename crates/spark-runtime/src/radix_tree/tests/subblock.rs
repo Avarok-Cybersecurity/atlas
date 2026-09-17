@@ -26,9 +26,9 @@ fn a_default_lookup_never_reaches_into_a_longer_cached_block() {
     let tokens_22: Vec<u32> = (0..22).collect();
 
     // Construct the DEFAULT explicitly rather than through `new()`, which
-    // reads `ATLAS_PREFIX_SUBBLOCK` from the ambient process env: a test that
+    // reads `AVAROK_PREFIX_SUBBLOCK` from the ambient process env: a test that
     // asserts the default must not flip when it runs under the very A/B this
-    // change documents (it did — `ATLAS_PREFIX_SUBBLOCK=1` in the shell made
+    // change documents (it did — `AVAROK_PREFIX_SUBBLOCK=1` in the shell made
     // this fail).
     let tree = RadixTree::with_subblock_matching(false);
     tree.insert(&tokens_31, &[10, 20], &[], 16, 0, 0);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM v3 — MiniMax-only shadow kernel.
+// Avarok W4A16 GEMM v3 — MiniMax-only shadow kernel.
 //
 // Relative to v2 (128×128×32 tile, 8 warps, 2-stage):
 //   - K_STEP doubled from 32 → 64 (4 scale groups per iter, not 2)

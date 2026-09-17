@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Layer-side carriers for natively-served EXL3 dense projections
-//! (`ATLAS_EXL3_NATIVE_DENSE=1`): the GDN family on [`super::Qwen3SsmLayer`]
+//! (`AVAROK_EXL3_NATIVE_DENSE=1`): the GDN family on [`super::Qwen3SsmLayer`]
 //! and the attention family on [`super::Qwen3AttentionLayer`].
 //!
 //! A carrier holds the projections as the kernels address them — the
@@ -23,7 +23,7 @@
 //! `q/k/v/o_proj` family (`weight_map::Exl3DenseFamily::leaves`); the
 //! attention dispatch funnels live in `exl3_dense/attn_dispatch.rs`.
 //!
-//! GDN in-projection layout (the arena decision, design-map step 2): Atlas's
+//! GDN in-projection layout (the arena decision, design-map step 2): Avarok's
 //! BF16 arm concatenates `in_proj_qkv [10240, 2560]` and `in_proj_z [6144,
 //! 2560]` into ONE fused `[16384, 2560]` weight so a single GEMV/GEMM writes
 //! `[M, 16384]` rows = `[Q|K|V (10240) | Z (6144)]`, and every consumer
@@ -104,7 +104,7 @@ fn probe_kernels(gpu: &dyn GpuBackend, w: &Exl3DenseWeight, what: &str) -> Resul
         gpu.kernel("exl3_matmul", &name).with_context(|| {
             format!(
                 "EXL3 native dense ({what}) needs exl3_matmul::{name} (gb10 targets \
-                 only) — unset ATLAS_EXL3_NATIVE_DENSE on this target"
+                 only) — unset AVAROK_EXL3_NATIVE_DENSE on this target"
             )
         })?;
     }

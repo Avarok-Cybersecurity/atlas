@@ -20,7 +20,7 @@ EXACT shapes (B=1, L=31):
   norm  (norm forward-hook out) : [B*L*32, 128]   same rows, flat                                (4096)
   out_proj     hook out         : [B, L, 2048]                          last tok [0, L-1, :]     (2048)
 
-Token IDs were captured from atlas-35b-a3b-fix via POST /tokenize for the
+Token IDs were captured from avarok-35b-a3b-fix via POST /tokenize for the
 rendered chat-template-wrapped prompt:
   "<|im_start|>user\nWhat is 17 times 23? Reply with the number only, no prose.<|im_end|>\n"
   "<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -35,7 +35,7 @@ SNAP = os.environ.get("SNAP")
 OUT  = pathlib.Path(os.environ.get("OUT", "/home/claude/gdnref_a3b"))
 LAYERS = [int(x) for x in os.environ.get("GDN_LAYERS", "0").split(",")]
 
-# Token IDs captured from Atlas /tokenize for the probe prompt. 31 tokens.
+# Token IDs captured from Avarok /tokenize for the probe prompt. 31 tokens.
 TOK = [248045, 846, 198, 3710, 369, 220, 16, 22, 2942, 220, 17, 18, 30, 17308, 440, 279, 1324, 1132, 11, 874, 58655, 13, 248046, 198, 248045, 74455, 198, 248068, 271, 248069, 271]
 L   = len(TOK)               # 31
 NUM_V_HEADS = 32

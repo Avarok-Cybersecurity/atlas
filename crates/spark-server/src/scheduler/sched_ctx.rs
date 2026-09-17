@@ -6,7 +6,7 @@
 //! The scheduler had no carrier at all: `run` takes its model-derived values as
 //! positional parameters and threads them through the loop body as locals,
 //! while everything that would not fit that shape — the vocabulary masks, the
-//! `ATLAS_*` levers — ended up in process-global statics instead.
+//! `AVAROK_*` levers — ended up in process-global statics instead.
 //!
 //! This is the carrier those belong on. It is deliberately narrow: state that
 //! is fixed for the run and read by the step functions. Per-request state stays

@@ -118,7 +118,7 @@ impl Qwen3AttentionLayer {
             // committed carry `seq_len == 0` (decode_a2's padding builder).
             // Skip them BEFORE `qsa_seq_state`, which lazily allocates this
             // layer's indexer carry (~10 MB at the default
-            // ATLAS_QSA_MAX_TOKENS) — a padding row would allocate one per
+            // AVAROK_QSA_MAX_TOKENS) — a padding row would allocate one per
             // attention layer per step and drop it unreleased.
             if seq_lens[i] == 0 {
                 continue;
@@ -197,12 +197,12 @@ impl Qwen3AttentionLayer {
             self.mla.is_none(),
             "QSA selection + MLA on the batched multi-seq decode path is not \
              wired (the absorbed-MLA batched kernel has no selection hook); \
-             serve with ATLAS_HC_PERSEQ_DECODE=1"
+             serve with AVAROK_HC_PERSEQ_DECODE=1"
         );
         anyhow::ensure!(
             !self.k_eq_v,
             "QSA selection + a shared K=V cache is not wired (the gather copies \
-             distinct raw K and V NHD rows); serve with ATLAS_HC_PERSEQ_DECODE=1"
+             distinct raw K and V NHD rows); serve with AVAROK_HC_PERSEQ_DECODE=1"
         );
         anyhow::ensure!(
             matches!(self.kv_dtype.kv_pair().0, KvCacheDtype::Bf16)
@@ -226,7 +226,7 @@ impl Qwen3AttentionLayer {
         // equivalence into a checked invariant per row below.
         let expect_sel = selection_active_rows(qsa.inert_bound(), seq_lens, n);
 
-        // ── select-vs-attend split (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // ── select-vs-attend split (AVAROK_HC_VERIFY_STAGE_TIMING=1) ──
         //
         // WHY THIS EXISTS. The verify attention core's per-row paged decode is
         // ~470 us of a ~1000 us core at C=4 / ISL 2000 (measured 2026-09-16),
@@ -246,7 +246,7 @@ impl Qwen3AttentionLayer {
         // measure first.
         let qsa_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let (mut sel_us, mut att_us, mut timed_rows) = (0u128, 0u128, 0usize);
         let mut qt = std::time::Instant::now();

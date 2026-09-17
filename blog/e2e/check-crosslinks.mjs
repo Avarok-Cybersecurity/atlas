@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Every fragment the blog points at on atlasinference.io must exist there.
+ * Every fragment the blog points at on atlascybernetics.ai must exist there.
  *
  *   bun blog/e2e/check-crosslinks.mjs [site-build-dir] [blog-build-dir]
  *
@@ -18,7 +18,7 @@ import { join, relative, sep } from 'node:path';
 
 const siteDir = process.argv[2] ?? 'site/build';
 const blogDir = process.argv[3] ?? 'blog/build';
-const MAIN = 'https://atlasinference.io';
+const MAIN = 'https://atlascybernetics.ai';
 
 const walk = (dir) =>
   readdirSync(dir).flatMap((e) => {
@@ -35,6 +35,9 @@ for (const f of walk(siteDir)) {
   const path = `/${relative(siteDir, f).split(sep).join('/')}`;
   sitePages.set(path, ids);
   if (path === '/index.html') sitePages.set('/', ids);
+  // Cloudflare Pages pretty-URLs /engine from engine.html (200) and 308s
+  // /engine.html → /engine. Fragment checks must accept both forms.
+  if (path.endsWith('.html')) sitePages.set(path.slice(0, -'.html'.length), ids);
   idCount += ids.size;
 }
 if (idCount === 0) {
@@ -54,8 +57,6 @@ for (const f of walk(blogDir)) {
     }
     if (url.origin !== MAIN || url.hash.length < 2) continue;
     checked++;
-    // Match the literal deployed filename. The origin does not rewrite
-    // extensionless /engine to /engine.html.
     const ids = sitePages.get(url.pathname);
     let fragment = url.hash.slice(1);
     try {

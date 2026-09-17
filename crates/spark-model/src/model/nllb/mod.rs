@@ -2,7 +2,7 @@
 
 //! Served NLLB-200 / M2M-100 encoder-decoder translation model.
 //!
-//! Atlas's production engine is decoder-only + GPU-only; NLLB is seq2seq
+//! Avarok's production engine is decoder-only + GPU-only; NLLB is seq2seq
 //! (bidirectional encoder + decoder cross-attention + sinusoidal positions +
 //! ReLU FFN + biased LayerNorm). This module promotes the validated bf16 CUDA
 //! runtime (`examples/nllb_cuda_bf16`) into a first-class [`crate::traits::Model`]
@@ -21,7 +21,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::{WeightDtype, WeightStore};
 

@@ -48,7 +48,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     }
 
     fn exl3_graph_veto(&self) -> bool {
-        // Native EXL3 q/k/v/o (ATLAS_EXL3_NATIVE_DENSE=1) are the same
+        // Native EXL3 q/k/v/o (AVAROK_EXL3_NATIVE_DENSE=1) are the same
         // cooperative-launch class as the MoE experts.
         self.ffn.exl3_native_moe()
             || self.moe_ffn.as_ref().is_some_and(|f| f.exl3_native_moe())
@@ -354,7 +354,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill(gpu, config)?;
@@ -368,7 +368,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_gate_up_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_gate_up_for_prefill(gpu, config)?;
@@ -407,7 +407,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_unified(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_unified(gpu, config)?;
@@ -421,7 +421,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_hybrid(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_hybrid(gpu, config)?;

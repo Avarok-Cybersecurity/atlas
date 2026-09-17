@@ -1,11 +1,11 @@
 # Agentic serving harnesses
 
-Tools for measuring Atlas under *agentic* load — an LLM driving a coding agent
+Tools for measuring Avarok under *agentic* load — an LLM driving a coding agent
 through multi-turn tool calls — as opposed to the throughput soaks in `../`.
 Written while chasing KV-cache correctness and concurrency scaling on Laguna;
 all are model-parameterised, so pointing them at another model is a flag.
 
-Every script honours `ATLAS_URL` (default `http://localhost:8888/v1/chat/completions`).
+Every script honours `AVAROK_URL` (default `http://localhost:8888/v1/chat/completions`).
 
 | script | answers |
 |---|---|
@@ -20,7 +20,7 @@ Every script honours `ATLAS_URL` (default `http://localhost:8888/v1/chat/complet
 
 ```bash
 python3 conc_harness.py --levels 1,4,8 --include-csharp --model laguna-s-2.1
-ATLAS_CONTAINER=laguna-xs python3 conc_harness.py --levels 4 --model laguna-xs-2.1
+AVAROK_CONTAINER=laguna-xs python3 conc_harness.py --levels 4 --model laguna-xs-2.1
 ```
 
 Reports pass rate, per-task median/p95 latency, batch **makespan**, aggregate
@@ -121,7 +121,7 @@ Two traps in reading that table:
   rate before makespan.
 - **`loop: () x6` — six identical tool calls with EMPTY arguments — now appears
   on all three models**, including Holo at C=1 with thinking off and tuned
-  sampling. Three checkpoints, one signature, so suspect the Atlas tool-call
+  sampling. Three checkpoints, one signature, so suspect the Avarok tool-call
   path over a model quirk. Undiagnosed.
 
 KV counters were clean (`decref=0 evict_unowned=0 exhaustions=0 preempts=0`) in

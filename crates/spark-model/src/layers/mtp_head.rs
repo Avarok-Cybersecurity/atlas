@@ -259,8 +259,8 @@ pub struct MtpHead {
     /// is the campaign's sticky CUDA-716). `None` when the drafter has a
     /// DEDICATED draft head (`mtp_lm_head_nvfp4` — the twin describes the
     /// main head only), when the main twin was not built
-    /// (`ATLAS_NO_LMHEAD_TGEMM=1`), or under the propose-local kill switch
-    /// `ATLAS_NO_MTP_LMHEAD_TGEMM` (PRESENCE — `=0` is NOT off). Zero extra
+    /// (`AVAROK_NO_LMHEAD_TGEMM=1`), or under the propose-local kill switch
+    /// `AVAROK_NO_MTP_LMHEAD_TGEMM` (PRESENCE — `=0` is NOT off). Zero extra
     /// memory: this aliases the twin `impl_a1` already allocated.
     pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     /// `w4a16_gemm_t` tile GEMM for the twin (3-deep pipeline variant when
@@ -276,7 +276,7 @@ pub struct MtpHead {
     propose_meta: DevicePtr,
     /// Per-sequence stride of `propose_meta`, computed at construction from
     /// `max_seq_len` (`batch_caps::propose_meta_stride_env`, floor 2048,
-    /// override `ATLAS_PROPOSE_META_STRIDE=<bytes>`). The fixed 2048 capped
+    /// override `AVAROK_PROPOSE_META_STRIDE=<bytes>`). The fixed 2048 capped
     /// the block table at 448 entries = 7,168 tokens — sized in the 4K era;
     /// 10-20K agentic contexts made the batched propose fall back
     /// permanently (PROGRESS_LOG 5.2/6.17).
@@ -289,7 +289,7 @@ pub struct MtpHead {
     /// module predates this kernel; D-Cut gates on it and declines rather than
     /// silently proposing without confidences.
     argmax_batch_lp_k: KernelHandle,
-    /// Drafter-prefill scratch; `None` unless ATLAS_MTP_DRAFTER_PREFILL=1.
+    /// Drafter-prefill scratch; `None` unless AVAROK_MTP_DRAFTER_PREFILL=1.
     prefill_scratch: Option<MtpPrefillScratch>,
 }
 
@@ -413,7 +413,7 @@ mod tests {
 /// How many drafter KV rows `after_verify` must drop.
 ///
 /// * Rejected rows always go: `num_drafted - num_accepted`.
-/// * With `refeed_accepted` (ATLAS_MTP_REFEED_ACCEPTED), the ACCEPTED rows
+/// * With `refeed_accepted` (AVAROK_MTP_REFEED_ACCEPTED), the ACCEPTED rows
 ///   that were written with the drafter's own hidden also go — that is every
 ///   accepted draft except the first. Draft 1 consumed the target's verified
 ///   hidden (`mtp_hidden_save`) and is correct; drafts 2.. each consumed the

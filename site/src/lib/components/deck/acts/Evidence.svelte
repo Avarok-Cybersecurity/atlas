@@ -31,7 +31,7 @@
   <div class="grid2">
     <Kv
       rows={[
-        ['code', `Atlas ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
+        ['code', `Avarok ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
         ['baseline', 'container digest', 'sha256, not a tag — the same digest across every leg'],
         ['harness', 'sha256 in every output', 'the script hashes its own source into the JSON it writes'],
         ['weights', claim.checkpoint, 'HF repo, pinned revision'],
@@ -224,7 +224,7 @@
     />
     <ul class="links">
       <li><span class="mono">results</span><a class="link" href={links.results} target="_blank" rel="noopener">{claim.resultsDoc}</a></li>
-      <li><span class="mono">source</span><a class="link" href={links.repo} target="_blank" rel="noopener">github.com/Avarok-Cybersecurity/atlas</a></li>
+      <li><span class="mono">source</span><a class="link" href={links.repo} target="_blank" rel="noopener">github.com/Avarok-Cybersecurity/avarok</a></li>
       <li><span class="mono">gates</span><a class="link" href={links.gateDoc} target="_blank" rel="noopener">what “verified” means</a></li>
     </ul>
   </div>
@@ -264,7 +264,7 @@
     font-size: 0.74em;
     letter-spacing: 0.1em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.6em;
   }
   .ask p {
@@ -291,7 +291,7 @@
     font-size: 0.74em;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
   }
   .notes span:last-child {
     color: var(--t2);
@@ -353,7 +353,7 @@
   .stats b {
     font-size: 1.35em;
     font-weight: 700;
-    color: var(--sx);
+    color: var(--sx-text);
     line-height: 1;
   }
   .stats span {
@@ -384,7 +384,7 @@
     content: '›';
     position: absolute;
     left: 0;
-    color: var(--sx);
+    color: var(--sx-text);
   }
   .grid3 code {
     color: var(--t1);

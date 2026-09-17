@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use atlas_core::config::PeftAdapterConfig;
+use avarok_core::config::PeftAdapterConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Native dense-linear dispatch over a packed EXL3 (QTIP trellis) weight —
-//! the reusable arm behind `ATLAS_EXL3_NATIVE_DENSE=1` for qwen4_exp's GDN
+//! the reusable arm behind `AVAROK_EXL3_NATIVE_DENSE=1` for qwen4_exp's GDN
 //! (`in_proj_qkv`, `in_proj_z`, `out_proj`) and attention (`q/k/v/o_proj`)
 //! projections. No new matmul kernels: everything routes through the proven
 //! [`exl3_gemv`] / [`exl3_gemm`] wrappers; this module owns the BF16
@@ -15,7 +15,7 @@
 //!            input-Hadamard prologue, fp32 C into stage.c_f32, BF16(C)
 //!            stored into dst (contiguous or pitched) by the output-Hadamard
 //!            epilogue. Bit-identical to the bracketed form below; kill
-//!            switch ATLAS_EXL3_NO_FUSED_EGRESS (presence) restores
+//!            switch AVAROK_EXL3_NO_FUSED_EGRESS (presence) restores
 //!            exl3_gemm_abf16 + exl3_f32_to_bf16[_2d].
 //!   m <= 8, K in 2..=4:
 //!            A bf16 --exl3_bf16_to_f16--> stage.a_f16 (raw fp16), then
@@ -27,7 +27,7 @@
 //!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
 //!              strided dst:    exl3_gemm fp16 C into stage.c_f16, then
 //!                              exl3_f16_to_bf16_2d into the arena rows
-//!   m >= ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS (default 512; ATLAS_NO_EXL3_DENSE_RECONSTRUCT kills):
+//!   m >= AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS (default 512; AVAROK_NO_EXL3_DENSE_RECONSTRUCT kills):
 //!            reconstruct the weight to BF16 once, dense_gemm_bf16_pipelined
 //!            straight into dst (or staged + one 2-D copy when strided) —
 //!            `exl3_dense/reconstruct.rs`; numerics differ from the tiers above
@@ -74,20 +74,20 @@ use super::exl3_matmul::{
 
 /// Fused BF16 egress on the dense decode arm (default ON): the m <= 8,
 /// K-outside-2..=4 GEMM stores BF16(C) from its epilogue and the separate
-/// `exl3_f32_to_bf16[_2d]` launch is skipped. `ATLAS_EXL3_NO_FUSED_EGRESS`
+/// `exl3_f32_to_bf16[_2d]` launch is skipped. `AVAROK_EXL3_NO_FUSED_EGRESS`
 /// (PRESENCE — `=0` is not off, house convention) restores the two-launch
 /// form for A/B; the two are byte-identical by construction, so the switch
 /// exists to measure the launch saving, not to guard numerics.
 pub fn exl3_fused_egress_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let fused = std::env::var_os("ATLAS_EXL3_NO_FUSED_EGRESS").is_none();
+        let fused = std::env::var_os("AVAROK_EXL3_NO_FUSED_EGRESS").is_none();
         // Logged once so an A/B record can prove which arm was live (the
         // "inert arm" trap: a wrong binary or an env that never reached the
         // process measures nothing).
         tracing::info!(
             fused,
-            "EXL3 dense decode egress: {} (ATLAS_EXL3_NO_FUSED_EGRESS {})",
+            "EXL3 dense decode egress: {} (AVAROK_EXL3_NO_FUSED_EGRESS {})",
             if fused {
                 "fused into the GEMM epilogue (_abf16_obf16)"
             } else {

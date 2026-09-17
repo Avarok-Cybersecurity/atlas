@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 attention family (`ATLAS_EXL3_NATIVE_DENSE=1`) install + the
+//! Native EXL3 attention family (`AVAROK_EXL3_NATIVE_DENSE=1`) install + the
 //! per-site arm accessor for [`Qwen3AttentionLayer`]. Sibling of `init.rs`
 //! (500-LoC cap).
 

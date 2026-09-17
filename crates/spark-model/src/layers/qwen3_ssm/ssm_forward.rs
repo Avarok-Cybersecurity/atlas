@@ -44,7 +44,7 @@ impl Qwen3SsmLayer {
         let qkvz_size = ctx.config.ssm_qkvz_size() as u32;
         prof!("qkvz", {
             if let Some(ref g) = self.exl3_gdn {
-                // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): in_proj_qkv +
+                // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): in_proj_qkv +
                 // in_proj_z as a shared-A pair straight into the sequential
                 // [Q|K|V|Z] row (the packed pair is the ONLY live QKVZ weight
                 // on this layer — enforced at install). At M=1 the row stride
@@ -312,7 +312,7 @@ impl Qwen3SsmLayer {
         let fused_gdn_norm = use_f32_gdn
             && self.gdn_f32_norm_k.0 != 0
             && crate::layers::qwen3_ssm::gdn_fused_norm_enabled();
-        // FP16 h-state (ATLAS_SSM_H_FP16). This is the single-sequence decode
+        // FP16 h-state (AVAROK_SSM_H_FP16). This is the single-sequence decode
         // arm, so it must honour the same invariant the batched path does —
         // otherwise C=1 would read an FP16 pool through an FP32 kernel.
         let h_f16 = super::ssm_h_fp16_enabled();
@@ -320,7 +320,7 @@ impl Qwen3SsmLayer {
             super::ssm_h_fp16::require_h_f16(state)?;
             if !fused_gdn_norm {
                 anyhow::bail!(
-                    "ATLAS_SSM_H_FP16: single-seq decode fell through to the FP32-only                      gated_delta_rule_decode arm (use_f32_gdn={use_f32_gdn},                      gdn_f32_norm={}). Set ATLAS_GDN_FUSED_NORM=1.",
+                    "AVAROK_SSM_H_FP16: single-seq decode fell through to the FP32-only                      gated_delta_rule_decode arm (use_f32_gdn={use_f32_gdn},                      gdn_f32_norm={}). Set AVAROK_GDN_FUSED_NORM=1.",
                     self.gdn_f32_norm_k.0
                 );
             }
@@ -419,7 +419,7 @@ impl Qwen3SsmLayer {
         // ── 8. Output projection: [value_dim → hidden_size] ──
         let out = ctx.buffers.moe_output();
         if let Some(ref g) = self.exl3_gdn {
-            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is
+            // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): the packed trellis is
             // the ONLY live out_proj weight on this layer (every other slot
             // is null — enforced at install). C is the contiguous [1, h] row.
             self.exl3_out_proj(g, ctx, normed_out, out, 1, stream)?;

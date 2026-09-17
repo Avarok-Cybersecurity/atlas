@@ -14,7 +14,7 @@
   <meta name="robots" content="noindex" />
   <meta
     name="description"
-    content="Reproduction steps for the Atlas concurrency ladder: fingerprint, parity, commands, and the artifacts behind the vLLM comparison."
+    content="Reproduction steps for the Avarok concurrency ladder: fingerprint, parity, commands, and the artifacts behind the vLLM comparison."
   />
 </svelte:head>
 

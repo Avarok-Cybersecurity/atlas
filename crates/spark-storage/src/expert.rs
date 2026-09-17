@@ -17,7 +17,7 @@
 // Two facts make expert geometry simpler than KV geometry:
 //   * There is no K/V duplication and no per-head striping — one record per
 //     expert, period.
-//   * On every Atlas MoE checkpoint the expert dims are uniform across MoE
+//   * On every Avarok MoE checkpoint the expert dims are uniform across MoE
 //     layers, so `record_stride` is a single constant for the whole model.
 //
 // The bijection `(layer, expert) <-> record` is computed deterministically from

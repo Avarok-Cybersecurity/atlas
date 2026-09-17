@@ -75,7 +75,7 @@
 //     file is a same-signature target override and makes none.
 //   * Split-K for N <= 2048 is the other half of the k/v answer. It was
 //     written (`w8a16_gemv_splitk` + `ops::w8a16_decode_gemv::splitk_plan`,
-//     behind `ATLAS_FFN_DOWN_SPLITK`) and REMOVED (#993) after the H100
+//     behind `AVAROK_FFN_DOWN_SPLITK`) and REMOVED (#993) after the H100
 //     microtest measured it a null on the shape it was written for — down
 //     61.8 us split-K vs 58.9 us staged scalar — and 1.5x SLOWER on the k/v
 //     shape it was aimed at. A fresh attempt starts from a fresh profile, not
@@ -114,8 +114,8 @@
 // second kernel because a build for THIS target does not contain the kernel
 // being compared against: this file is its override.
 
-#ifndef ATLAS_HOPPER_W8A16_GEMV_CUH
-#define ATLAS_HOPPER_W8A16_GEMV_CUH
+#ifndef AVAROK_HOPPER_W8A16_GEMV_CUH
+#define AVAROK_HOPPER_W8A16_GEMV_CUH
 
 #include <cuda_bf16.h>
 
@@ -277,4 +277,4 @@ __device__ __forceinline__ void hopper_gemv_reduce_store(
     }
 }
 
-#endif  // ATLAS_HOPPER_W8A16_GEMV_CUH
+#endif  // AVAROK_HOPPER_W8A16_GEMV_CUH

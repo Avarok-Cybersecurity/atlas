@@ -25,7 +25,7 @@ import torch
 SNAP = pathlib.Path(
     "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/"
     "snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0")
-DUMP = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+DUMP = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 HID = 2048
 EPS = 1e-6
 
@@ -69,9 +69,9 @@ def main():
     print("lm_head", lm.shape, "gamma", gamma.shape)
 
     h_v = load_hidden(DUMP/"vllm_L39.bin")
-    h_a = load_hidden(DUMP/"atlas_L39.bin")
+    h_a = load_hidden(DUMP/"avarok_L39.bin")
     cos = float(np.dot(h_v,h_a)/(np.linalg.norm(h_v)*np.linalg.norm(h_a)))
-    print(f"residual cos(vllm,atlas) L39 = {cos:.5f}")
+    print(f"residual cos(vllm,avarok) L39 = {cos:.5f}")
 
     zv = rms_norm(h_v, gamma); za = rms_norm(h_a, gamma)
     Lv = lm @ zv.astype(np.float32)
@@ -86,7 +86,7 @@ def main():
     print(f"logit cos = {logit_cos:.6f}")
 
     av = int(np.argmax(Lv)); aa = int(np.argmax(La))
-    print(f"argmax vllm={av} atlas={aa} agree={av==aa}")
+    print(f"argmax vllm={av} avarok={aa} agree={av==aa}")
 
     # sorted vllm logits to characterize the margin at THIS position
     sv = np.sort(Lv)[::-1]
@@ -94,7 +94,7 @@ def main():
     print(f"vLLM top1-top2 gap = {sv[0]-sv[1]:.4f}, top1-top5 gap = {sv[0]-sv[4]:.4f}")
 
     out = {"residual_cos": cos, "logit_cos": logit_cos,
-           "argmax_agree": av==aa, "argmax_vllm": av, "argmax_atlas": aa,
+           "argmax_agree": av==aa, "argmax_vllm": av, "argmax_avarok": aa,
            "logit_l2_diff": float(np.linalg.norm(dl)),
            "logit_max_diff": float(np.abs(dl).max()),
            "top1_top2_gap_vllm": float(sv[0]-sv[1]),
@@ -104,7 +104,7 @@ def main():
         pv = softmax_T(Lv, T); pa = softmax_T(La, T)
         t = tvd(pv, pa)
         klva = kl(pv, pa)
-        # prob mass that Atlas places on vLLM's top-1 token (i.e. agreement prob)
+        # prob mass that Avarok places on vLLM's top-1 token (i.e. agreement prob)
         p_agree = float(pa[av])
         p_v_top1 = float(pv[av])
         # probability the two engines sample DIFFERENT tokens in one independent draw
@@ -113,17 +113,17 @@ def main():
         esv = eff_support(pv); esa = eff_support(pa)
         out["per_T"][str(T)] = {
             "tvd": float(t), "kl_v_a": klva,
-            "p_vllm_top1": p_v_top1, "p_atlas_on_vllm_top1": p_agree,
+            "p_vllm_top1": p_v_top1, "p_avarok_on_vllm_top1": p_agree,
             "p_divergent_draw": p_diff,
-            "eff_support_vllm": float(esv), "eff_support_atlas": float(esa),
+            "eff_support_vllm": float(esv), "eff_support_avarok": float(esa),
         }
         print(f"\n--- T={T} ---")
         print(f"  TVD(pv,pa)            = {t:.5f}")
         print(f"  KL(pv||pa)            = {klva:.5f} nats")
         print(f"  p_vllm(top1)          = {p_v_top1:.4f}")
-        print(f"  p_atlas(vllm_top1)    = {p_agree:.4f}")
+        print(f"  p_avarok(vllm_top1)    = {p_agree:.4f}")
         print(f"  P(divergent draw)     = {p_diff:.5f}")
-        print(f"  eff_support vllm/atlas= {esv:.1f} / {esa:.1f}")
+        print(f"  eff_support vllm/avarok= {esv:.1f} / {esa:.1f}")
 
     # Compounding over a generation: if avg per-step divergence prob is d,
     # P(at least one divergence in N steps) = 1-(1-d)^N

@@ -34,7 +34,7 @@ docker info --format '{{.ServerVersion}}'
 ```
 
 If that prints a version, `atlasctl run` will work. You do not need to restart
-the Atlas agent — it re-checks its own capability, so the control plane stops
+the Avarok agent — it re-checks its own capability, so the control plane stops
 saying "this machine cannot run models" within a few seconds.
 
 ### Do not use `sudo atlasctl`
@@ -42,7 +42,7 @@ saying "this machine cannot run models" within a few seconds.
 It appears to work, and it is the wrong move:
 
 - the model runs as root, and so does everything the container does;
-- `~/.atlas` collects root-owned files that your normal user then cannot read,
+- `~/.avarok` collects root-owned files that your normal user then cannot read,
   so the next unprivileged `atlasctl run` fails in a way that looks unrelated;
 - `sudo` uses root's `PATH`, so `atlasctl` is frequently "not found" even though
   `which atlasctl` finds it for you.

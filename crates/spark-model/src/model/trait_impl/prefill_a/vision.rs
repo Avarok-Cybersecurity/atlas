@@ -42,7 +42,7 @@ impl TransformerModel {
         }
         let _vt0 = std::time::Instant::now();
         let per_image = ve.forward_batched(&img_refs, self.gpu.as_ref(), stream)?;
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+        if std::env::var("AVAROK_VISION_TIMING").is_ok() {
             self.gpu.synchronize(stream).ok();
             tracing::info!(
                 "VIT_TIMING self-encode {} imgs: {:.1}ms",
@@ -153,7 +153,7 @@ impl TransformerModel {
     }
 }
 
-/// `ATLAS_VISION_DUMP=<path>` — write the encoder's packed output to a file so
+/// `AVAROK_VISION_DUMP=<path>` — write the encoder's packed output to a file so
 /// it can be diffed against a reference implementation.
 ///
 /// The tower is architecturally Qwen3VL-Moe's (every `vision_config` key is
@@ -171,7 +171,7 @@ fn dump_vision_out(
     ve: &crate::layers::vision_encoder::VisionEncoder,
     total_merged: usize,
 ) {
-    let path = match std::env::var("ATLAS_VISION_DUMP") {
+    let path = match std::env::var("AVAROK_VISION_DUMP") {
         Ok(p) if !p.is_empty() => p,
         _ => return,
     };
@@ -180,19 +180,19 @@ fn dump_vision_out(
     let out = match ve.scratch_buf_out() {
         Some(p) => p,
         None => {
-            tracing::warn!("ATLAS_VISION_DUMP: no vision scratch yet");
+            tracing::warn!("AVAROK_VISION_DUMP: no vision scratch yet");
             return;
         }
     };
     if let Err(e) = gpu.copy_d2h(out, &mut host) {
-        tracing::warn!("ATLAS_VISION_DUMP: device read failed: {e:#}");
+        tracing::warn!("AVAROK_VISION_DUMP: device read failed: {e:#}");
         return;
     }
     match std::fs::write(&path, &host) {
         Ok(()) => tracing::info!(
-            "ATLAS_VISION_DUMP: wrote {total_merged} x {} BF16 ({bytes} B) to {path}",
+            "AVAROK_VISION_DUMP: wrote {total_merged} x {} BF16 ({bytes} B) to {path}",
             ve.out_hidden_size
         ),
-        Err(e) => tracing::warn!("ATLAS_VISION_DUMP: write {path} failed: {e}"),
+        Err(e) => tracing::warn!("AVAROK_VISION_DUMP: write {path} failed: {e}"),
     }
 }

@@ -42,7 +42,7 @@ export const AGENT_PORT = 34333;
 export const AGENT_URL = `ws://127.0.0.1:${AGENT_PORT}/ws`;
 
 /** Where the pairing token is remembered between visits. */
-export const TOKEN_KEY = 'atlas.agent.token';
+export const TOKEN_KEY = 'avarok.agent.token';
 
 /** Read the stored pairing token, if the user has pasted one. */
 export function storedToken() {

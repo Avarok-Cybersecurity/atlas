@@ -1,5 +1,5 @@
 #!/bin/bash
-# Atlas comprehensive model test suite
+# Avarok comprehensive model test suite
 # Usage: ./test_all_models.sh <model_id> <port> [extra_args...]
 # Output: JSON lines to stdout
 
@@ -10,8 +10,8 @@ PORT="${2:-8888}"
 shift 2
 EXTRA_ARGS="$*"
 
-IMAGE="atlas-gb10:latest"
-CONTAINER="atlas-test-$$"
+IMAGE="avarok-gb10:latest"
+CONTAINER="avarok-test-$$"
 HF_CACHE="/workspace/.cache/huggingface/hub"
 
 # Clean up on exit

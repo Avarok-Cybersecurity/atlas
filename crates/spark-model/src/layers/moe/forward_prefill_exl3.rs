@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 routed-expert PREFILL arm (`ATLAS_EXL3_NATIVE_MOE=1`) —
-//! upstream ExLlamaV3's sort-by-expert tier mapped onto Atlas's prefill
+//! Native EXL3 routed-expert PREFILL arm (`AVAROK_EXL3_NATIVE_MOE=1`) —
+//! upstream ExLlamaV3's sort-by-expert tier mapped onto Avarok's prefill
 //! machinery.
 //!
 //! Per token batch (`Exl3MoeState::pf_t_cap`, default 4096 — one batch for
 //! the canonical prefill chunk): the SAME router + batched-topk numerics as
-//! the grouped prefill path, Atlas's `moe_sort_by_expert` counting sort over
+//! the grouped prefill path, Avarok's `moe_sort_by_expert` counting sort over
 //! the batch's GLOBAL expert ids, then `ops::exl3_moe_prefill_routed`
 //! (staging → fused `exl3_moe` persistent kernel for every local expert with
 //! `0 < count <= pf_rows_per_expert` sorted rows (default 1024; the legacy
-//! 128 via `ATLAS_NO_EXL3_MOE_WIDE_ROWS`) → chunked `exl3_gemm` overflow for
+//! 128 via `AVAROK_NO_EXL3_MOE_WIDE_ROWS`) → chunked `exl3_gemm` overflow for
 //! hotter experts → fp32-accumulated, prob-weighted egress). The routing
 //! probabilities are applied INSIDE the fp32 accumulator, so the tail must
 //! not re-apply them; the shared expert stays NVFP4/FP8/BF16 and is blended
@@ -55,7 +55,7 @@ impl MoeLayer {
         anyhow::ensure!(
             self.lora.is_none(),
             "EXL3 native MoE has no LoRA fold hooks (the build refuses \
-             --lora-adapter with ATLAS_EXL3_NATIVE)"
+             --lora-adapter with AVAROK_EXL3_NATIVE)"
         );
         anyhow::ensure!(
             self.pre_expert_norm.is_none(),

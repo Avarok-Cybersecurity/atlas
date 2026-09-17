@@ -1,4 +1,4 @@
-# Deploying Atlas
+# Deploying Avarok
 
 Three deployment modes, in increasing complexity:
 
@@ -12,10 +12,10 @@ For end-to-end recipes per supported model see [`QUICKSTART.md`](../QUICKSTART.m
 
 ```bash
 docker run -d \
-  --name atlas \
+  --name avarok \
   --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve <hf-model-id> \
     --max-seq-len 16384 \
     --max-batch-size 1 \
@@ -95,7 +95,7 @@ two-`docker run` invocation, copy the flags verbatim.
 
 ## 3. NVMe-backed high-speed swap
 
-For long contexts (>32K tokens) the on-device KV cache fills fast. Atlas
+For long contexts (>32K tokens) the on-device KV cache fills fast. Avarok
 can evict cold blocks to NVMe and stream them back as needed:
 
 ```bash
@@ -105,13 +105,13 @@ can evict cold blocks to NVMe and stream them back as needed:
 docker run -d --gpus all --ipc=host -p 8888:8888 \
   --security-opt seccomp=unconfined --ulimit memlock=-1 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  -v /mnt/fast-nvme/atlas-kv:/mnt/fast-nvme/atlas-kv \
-  avarok/atlas-gb10:latest \
+  -v /mnt/fast-nvme/avarok-kv:/mnt/fast-nvme/avarok-kv \
+  avarok/avarok-gb10:latest \
   serve <model> \
     --max-seq-len 65536 \
     --high-speed-swap \
     --high-speed-swap-cache-blocks-per-seq 64 \
-    --high-speed-swap-dir /mnt/fast-nvme/atlas-kv
+    --high-speed-swap-dir /mnt/fast-nvme/avarok-kv
 ```
 
 How it works:
@@ -156,7 +156,7 @@ Disk requirements:
 - **Free space**: `(num_seqs × max_seq_len × num_layers × kv_dim × 2)` bytes,
   rounded to block size. For Qwen3.6-35B at 64K context with 8 sequences
   ≈ 100 GB.
-- **Mount on a different filesystem than `/tmp/atlas-swap/`** — that path
+- **Mount on a different filesystem than `/tmp/avarok-swap/`** — that path
   is for the OS-level CPU swap (`--swap-space-gb`), distinct from
   high-speed swap.
 

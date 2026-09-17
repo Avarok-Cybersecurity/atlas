@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Launch Atlas with Expert Parallelism (EP=2) across two GB10 nodes.
+# Launch Avarok with Expert Parallelism (EP=2) across two GB10 nodes.
 #
 # Usage:
 #   ./scripts/start-ep2.sh [MODEL]
@@ -10,9 +10,9 @@
 # Prerequisites:
 #   - Two GB10 nodes connected via RoCE (enp1s0f0np0), MTU 9000
 #   - Passwordless SSH from head (HEAD_IP env) to worker (WORKER_IP env)
-#   - atlas-122b:latest Docker image on both nodes (or atlas-gb10:latest)
-#     Build: docker build -f docker/gb10/qwen3.5-122b-a10b/nvfp4/Dockerfile -t atlas-122b .
-#   - Same image tag on BOTH nodes (mixing Atlas versions across ranks
+#   - avarok-122b:latest Docker image on both nodes (or avarok-gb10:latest)
+#     Build: docker build -f docker/gb10/qwen3.5-122b-a10b/nvfp4/Dockerfile -t avarok-122b .
+#   - Same image tag on BOTH nodes (mixing Avarok versions across ranks
 #     causes NCCL to hang at ncclCommInitRank — see docs/EP2-TROUBLESHOOTING.md#4).
 #   - Model weights cached on both nodes (~/.cache/huggingface)
 #   - RDMA kernel support on host (IB device at /dev/infiniband)
@@ -26,14 +26,14 @@
 # docs/EP2-TROUBLESHOOTING.md#5.
 #
 # For MiniMax M2.x checkpoints: do NOT pass --speculative. The loader's
-# per-module MTP extraction is still a TODO; the Atlas pre-flight will
+# per-module MTP extraction is still a TODO; the Avarok pre-flight will
 # bail with a clear error, but easier to drop the flag up-front.
 # See docs/EP2-TROUBLESHOOTING.md#2.
 
 set -euo pipefail
 
 MODEL="${1:-Sehyo/Qwen3.5-122B-A10B-NVFP4}"
-IMAGE="${IMAGE:-atlas-122b:latest}"
+IMAGE="${IMAGE:-avarok-122b:latest}"
 HEAD_IP="${HEAD_IP:-127.0.0.1}"
 WORKER_IP="${WORKER_IP:-127.0.0.1}"
 MASTER_PORT="29500"
@@ -42,7 +42,7 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.70}"
 MTP_QUANT="${MTP_QUANT:-nvfp4}"
 DEV_BINARY="${DEV_BINARY:-}"
 
-echo "=== Atlas EP=2 Launch (RDMA-enabled) ==="
+echo "=== Avarok EP=2 Launch (RDMA-enabled) ==="
 echo "Model:  $MODEL"
 echo "Head:   $HEAD_IP (rank 0, HTTP on port $PORT)"
 echo "Worker: $WORKER_IP (rank 1)"
@@ -74,8 +74,8 @@ echo ""
 
 # Stop any existing containers
 echo "Cleaning up old containers..."
-sudo docker rm -f atlas-ep0 2>/dev/null || true
-ssh "$WORKER_IP" "sudo docker rm -f atlas-ep1 2>/dev/null || true"
+sudo docker rm -f avarok-ep0 2>/dev/null || true
+ssh "$WORKER_IP" "sudo docker rm -f avarok-ep1 2>/dev/null || true"
 
 # RDMA libraries are baked into the Docker image (libnccl2, libibverbs1,
 # librdmacm1, ibverbs-providers, libnl). No host volume mounts needed.
@@ -124,7 +124,7 @@ NCCL_ENV="\
 # Start rank 0 (head) — HTTP server + scheduler
 echo "Starting rank 0 on $HEAD_IP..."
 sudo docker run -d \
-  --name atlas-ep0 \
+  --name avarok-ep0 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -149,7 +149,7 @@ sudo docker run -d \
 # Start rank 1 (worker) — EP worker loop only
 echo "Starting rank 1 on $WORKER_IP..."
 ssh "$WORKER_IP" "sudo docker run -d \
-  --name atlas-ep1 \
+  --name avarok-ep1 \
   --gpus all \
   --ipc=host \
   --network host \
@@ -173,8 +173,8 @@ ssh "$WORKER_IP" "sudo docker run -d \
 
 echo ""
 echo "=== Both ranks starting ==="
-echo "Monitor rank 0: sudo docker logs -f atlas-ep0"
-echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-ep1'"
+echo "Monitor rank 0: sudo docker logs -f avarok-ep0"
+echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f avarok-ep1'"
 echo "API endpoint:   http://$HEAD_IP:$PORT/v1/chat/completions"
 echo ""
 echo "Wait for both ranks to complete NCCL init before sending requests."

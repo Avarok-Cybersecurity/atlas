@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 use anyhow::{Result, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
@@ -177,7 +177,7 @@ pub fn load_lora_adapters_multi(
         bail!(
             "REJECT[too-many-adapters]: {} --lora-adapter given but --max-loras={} \
              (pool has {} slots); raise --max-loras or stage the extras on an \
-             $ATLAS_LORA_PEER for on-demand RDMA swap",
+             $AVAROK_LORA_PEER for on-demand RDMA swap",
             adapters.len(),
             max_loras,
             max_loras

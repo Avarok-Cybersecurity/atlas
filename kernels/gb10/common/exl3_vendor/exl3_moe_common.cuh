@@ -7,7 +7,7 @@
 // snapshot; a fetch copy was kept at the build-job tmp dir). Content VERBATIM
 // except this header block.
 //
-// ATLAS DELTA: EXL3_MOE_KERNEL_ARGS gains a 31st argument,
+// AVAROK DELTA: EXL3_MOE_KERNEL_ARGS gains a 31st argument,
 // `float* output_slots` — the DETERMINISTIC epilogue's per-sorted-slot fp32
 // scratch `[T*top_k, hidden_dim]`. Non-null selects it (plain stores, one
 // writer per slot row, reduced afterwards in fixed slot order); null keeps

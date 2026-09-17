@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K∈{5..16} verification (wyN).
+// Avarok WY-Chunkwise Gated Delta Rule — K∈{5..16} verification (wyN).
 //
 // K-templated generalization of gated_delta_rule_wy17.cu (which itself
 // generalizes wy4). One __device__ impl, instantiated for the chain-verify
@@ -108,7 +108,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
         #pragma unroll
         for (int s = 0; s < t; s++) {
             float p = (tid < k_dim) ? sk[t][tid] * sk[s][tid] : 0.0f;
-            float r = atlas_block_reduce_sum(p, smem_warp, tid);
+            float r = avarok_block_reduce_sum(p, smem_warp, tid);
             if (tid == 0) {
                 kd_flat[t * (t - 1) / 2 + s] = r;
             }
@@ -210,7 +210,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
 
 // Instantiations for chain-verify K=5..8. The argument list is identical to
 // gated_delta_rule_wy17; the Rust side selects the handle by num_tokens.
-#define ATLAS_WYN_INSTANTIATE(K)                                              \
+#define AVAROK_WYN_INSTANTIATE(K)                                              \
     extern "C" __global__ void gated_delta_rule_wy##K(                        \
         float* __restrict__ h_state,                                          \
         const __nv_bfloat16* __restrict__ query,                              \
@@ -237,10 +237,10 @@ __device__ __forceinline__ void gated_delta_rule_wyn_impl(
             gb_stride);                                                       \
     }
 
-ATLAS_WYN_INSTANTIATE(5)
-ATLAS_WYN_INSTANTIATE(6)
-ATLAS_WYN_INSTANTIATE(7)
-ATLAS_WYN_INSTANTIATE(8)
+AVAROK_WYN_INSTANTIATE(5)
+AVAROK_WYN_INSTANTIATE(6)
+AVAROK_WYN_INSTANTIATE(7)
+AVAROK_WYN_INSTANTIATE(8)
 // K=9..16 (2026-08-29): the γ>8 window class. Before these, K=9..16 was the
 // ONLY un-served verify width band — it fell to the sequential per-token
 // fallback (per token: conv launch + gdn launch + 2 state D2Ds, across every
@@ -249,18 +249,18 @@ ATLAS_WYN_INSTANTIATE(8)
 // (tok_step 6.474 -> 7.661, +18%) but net tok/s LOST to that loop. SMEM
 // scales as K KB (K=16: 16 KB q+k) against the 100 KB cap — trivially fits.
 // provenance-id: 526f6e616c6420522e205374657369616b
-ATLAS_WYN_INSTANTIATE(9)
-ATLAS_WYN_INSTANTIATE(10)
-ATLAS_WYN_INSTANTIATE(11)
-ATLAS_WYN_INSTANTIATE(12)
-ATLAS_WYN_INSTANTIATE(13)
-ATLAS_WYN_INSTANTIATE(14)
-ATLAS_WYN_INSTANTIATE(15)
-ATLAS_WYN_INSTANTIATE(16)
+AVAROK_WYN_INSTANTIATE(9)
+AVAROK_WYN_INSTANTIATE(10)
+AVAROK_WYN_INSTANTIATE(11)
+AVAROK_WYN_INSTANTIATE(12)
+AVAROK_WYN_INSTANTIATE(13)
+AVAROK_WYN_INSTANTIATE(14)
+AVAROK_WYN_INSTANTIATE(15)
+AVAROK_WYN_INSTANTIATE(16)
 
-#undef ATLAS_WYN_INSTANTIATE
+#undef AVAROK_WYN_INSTANTIATE
 
-// ── FP16 h-state twins — stage 2 of ATLAS_SSM_H_FP16, DFlash widths ──────
+// ── FP16 h-state twins — stage 2 of AVAROK_SSM_H_FP16, DFlash widths ──────
 //
 // MECHANICALLY DERIVED from gated_delta_rule_wyn_impl above: every float
 // expression, gate clamp, accumulation order and reduction is the parent's,
@@ -342,7 +342,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
         #pragma unroll
         for (int s = 0; s < t; s++) {
             float p = (tid < k_dim) ? sk[t][tid] * sk[s][tid] : 0.0f;
-            float r = atlas_block_reduce_sum(p, smem_warp, tid);
+            float r = avarok_block_reduce_sum(p, smem_warp, tid);
             if (tid == 0) {
                 kd_flat[t * (t - 1) / 2 + s] = r;
             }
@@ -438,7 +438,7 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
     }
 }
 
-#define ATLAS_WYN_F16_INSTANTIATE(K)                                          \
+#define AVAROK_WYN_F16_INSTANTIATE(K)                                          \
     extern "C" __global__ void gated_delta_rule_wy##K##_f16(                  \
         __half* __restrict__ h_state,                                         \
         const __nv_bfloat16* __restrict__ query,                              \
@@ -465,17 +465,17 @@ __device__ __forceinline__ void gated_delta_rule_wyn_f16_impl(
             gb_stride);                                                       \
     }
 
-ATLAS_WYN_F16_INSTANTIATE(5)
-ATLAS_WYN_F16_INSTANTIATE(6)
-ATLAS_WYN_F16_INSTANTIATE(7)
-ATLAS_WYN_F16_INSTANTIATE(8)
-ATLAS_WYN_F16_INSTANTIATE(9)
-ATLAS_WYN_F16_INSTANTIATE(10)
-ATLAS_WYN_F16_INSTANTIATE(11)
-ATLAS_WYN_F16_INSTANTIATE(12)
-ATLAS_WYN_F16_INSTANTIATE(13)
-ATLAS_WYN_F16_INSTANTIATE(14)
-ATLAS_WYN_F16_INSTANTIATE(15)
-ATLAS_WYN_F16_INSTANTIATE(16)
+AVAROK_WYN_F16_INSTANTIATE(5)
+AVAROK_WYN_F16_INSTANTIATE(6)
+AVAROK_WYN_F16_INSTANTIATE(7)
+AVAROK_WYN_F16_INSTANTIATE(8)
+AVAROK_WYN_F16_INSTANTIATE(9)
+AVAROK_WYN_F16_INSTANTIATE(10)
+AVAROK_WYN_F16_INSTANTIATE(11)
+AVAROK_WYN_F16_INSTANTIATE(12)
+AVAROK_WYN_F16_INSTANTIATE(13)
+AVAROK_WYN_F16_INSTANTIATE(14)
+AVAROK_WYN_F16_INSTANTIATE(15)
+AVAROK_WYN_F16_INSTANTIATE(16)
 
-#undef ATLAS_WYN_F16_INSTANTIATE
+#undef AVAROK_WYN_F16_INSTANTIATE

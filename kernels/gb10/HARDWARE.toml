@@ -3,20 +3,86 @@ name = "gb10"
 vendor = "nvidia"
 arch = "sm_121f"
 compute_capability = "12.1"
-# Streaming multiprocessors — the GB10 value that `atlas_core::device::sm121`
+# Streaming multiprocessors — the GB10 value that `avarok_core::device::sm121`
 # has always carried, stated here so grid-sizing rules can read it from the
 # TARGET instead of from a constant named after one card. Declaring it changes
-# nothing on GB10; `atlas_core::device::sm121::NUM_SMS` stays for the gb10
+# nothing on GB10; `avarok_core::device::sm121::NUM_SMS` stays for the gb10
 # callers that are genuinely about this part.
 sm_count = 48
 memory_bandwidth_gbps = 273
 memory_type = "LPDDR5X"
 memory_gb = 120
 
+# ── Benchmark limits ───────────────────────────────────────────────────────
+#
+# What a certification campaign and the record policies judge a GB10 by
+# (`avarok_plugin::hardware::limits`). Facts about THIS box class — its
+# `acpitz` chassis zones, its unified 121 GB pool, its checkpoint load times —
+# an H100 SXM has other sensors, another memory model and another disk, and
+# declares its own tables when someone measures them. Every sub-table is
+# required once this section exists: a reader sees every number a campaign
+# will use. This file is a closure input: changing a limit re-opens every
+# gb10 gate.
+
+# Chassis and die temperatures.
+# * park / resume: `spark bench certify` parks a node at or above
+#   `chassis_park_c` (or on the driver's thermal-slowdown flag) and lets it
+#   take units again at or below `chassis_resume_c`. Healthy loaded GB10s read
+#   55-76 °C across three boxes on 2026-09-15; the box behind the 0.66 tok/s
+#   cross-box incident read 89 °C with the driver reporting a slowdown. A
+#   relative rule (+20 °C over rest) parked every box after its first unit — a
+#   GB10 rises 26-33 °C over rest under any gate. `chassis_park_c` is also the
+#   record-time "this Speed number is suspect" line (`hardware::policy`).
+# * equivalence delta: two GB10s whose hottest zones are within this of each
+#   other, with no thermal alert on either, may sign one Speed-class record
+#   set (`gate::agreement`). 15: the incident pair was 24 °C apart; a fleet
+#   under load spreads 11-13 °C (55 vs 66-68 °C) with no number moving.
+# * gpu_ceiling_c: die temperature above which a Speed record's pre-run
+#   capture is suspect. 75 is the midpoint between dgx1's healthy 52-66 and
+#   dgx2's 70-89 on 2026-08-15 — a hypothesis awaiting a third box, gating
+#   only under AVAROK_HW_TEMP_GATE=1 and recorded on every run meanwhile.
+[benchmarks.limits.thermal]
+chassis_park_c = 80
+chassis_resume_c = 70
+chassis_equivalence_delta_c = 15
+gpu_ceiling_c = 75
+
+# `MemAvailable / MemTotal` a gate needs before its server may start. The
+# recipe's own `gpu_memory_utilization` is honoured verbatim; what freezes a
+# unified pool is CO-TENANCY — two serves plus a heavy client took SSH with
+# them once — and 16.3 GB of co-tenants was measured to cost 32 % at C=16.
+# 0.85 means "nothing else holds more than ~15 % of this box": a clean GB10
+# sits at ~0.94 and passes, a single 16 GB container drops it to ~0.81.
+[benchmarks.limits.memory]
+min_free_fraction = 0.85
+
+# Seconds. serve_allowance: what a self-served gate spends before its first
+# sample — ~40 s for a 27B NVFP4 checkpoint in the page cache, minutes for a
+# cold 35B FP8 from disk; stack #1073's third campaign killed a 17 s bench at
+# 52 s while its server loaded. boot_timeout: how long a started server may
+# take to name its model. shard_overhead / floor: measured 2026-09-15 on
+# six-way shards — an echolp sixth ran 1650-1873 s against a 1260 s share, a
+# 27B sixth 741-940 s against 1020. build_allowance: a fresh anchor build on
+# a node.
+[benchmarks.limits.timing]
+serve_allowance_s = 600
+boot_timeout_s = 900
+shard_overhead_s = 420
+shard_floor_s = 300
+build_allowance_s = 1800
+
+# The non-thermal half of "one box": clock ceiling within 1 % (two GB10s
+# report 3003 MHz exactly; anything else is another part or firmware), memory
+# within 5 % (128 GB parts read a few hundred MB apart; another SKU is 30 %
+# away).
+[benchmarks.limits.equivalence]
+clock_spread = 0.01
+mem_spread = 0.05
+
 # ── Serving defaults for this target ───────────────────────────────────────
 #
-# SSOT for the per-target serving levers, baked into `atlas_kernels` by
-# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# SSOT for the per-target serving levers, baked into `avarok_kernels` by
+# build.rs (`build_defaults.rs`) as `avarok_kernels::TARGET_DEFAULTS` and read
 # by every resolver in spark-model BEFORE the environment.
 #
 # WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
@@ -36,7 +102,7 @@ memory_gb = 120
 # else" problem the table replaces.
 #
 # GB10's values are TODAY'S HARDCODED DEFAULTS, unchanged, and
-# `crates/atlas-kernels/tests/target_defaults.rs` asserts exactly that by
+# `crates/avarok-kernels/tests/target_defaults.rs` asserts exactly that by
 # equality against `build_defaults::baseline`: a GB10 serve with no
 # environment set behaves as it did before this table existed.
 [defaults]
@@ -99,7 +165,7 @@ decode_split_silu = true
 # — restated, not changed. Hopper's `auto` fills 132 SMs at the single-stream
 # shape; a 48-SM GB10 is the part that rule was written for and there is no
 # GB10 A/B, so this row does not move until there is one.
-# `ATLAS_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
+# `AVAROK_ATTN_DECODE_SPLITK=auto` is how that A/B is run.
 attn_decode_splitk = "legacy"
 # `w8a16_gemm_m16` on the dense-FFN decode arm (#927). OFF: the kernel is not
 # in this target's tree at all (`kernels/hopper/HARDWARE.toml [kernels]
@@ -149,7 +215,7 @@ ffn_gateup_fused = false
 #     no cap  (W8A8)   3343.3 ms
 #     capped  (W8A16)  2560.4 ms      -23.4%
 #
-# Override per shape with ATLAS_W8A8_PREFILL_MAX_M_WIDENING / _NARROWING; 0
+# Override per shape with AVAROK_W8A8_PREFILL_MAX_M_WIDENING / _NARROWING; 0
 # means "never take W8A8 on this shape" and is honoured, not ignored.
 w8a8_prefill_max_m_widening = 64
 w8a8_prefill_max_m_narrowing = 384

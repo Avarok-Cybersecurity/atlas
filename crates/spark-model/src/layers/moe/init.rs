@@ -10,7 +10,7 @@ impl MoeLayer {
         num_experts: usize,
         gate_nvfp4: Option<QuantizedWeight>,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_hash(weights, num_experts, gate_nvfp4, None, gpu, config)
     }
@@ -20,7 +20,7 @@ impl MoeLayer {
 /// index and store, at load time rather than as silent NaN routing or an
 /// out-of-bounds shared-memory write on the first token.
 fn check_routing_bounds(
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     num_experts: usize,
 ) -> Result<()> {
     // Sanity-check the routing config: top-k that exceeds the

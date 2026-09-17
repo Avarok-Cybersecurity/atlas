@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Dequant Qwen3.6-35B-A3B-FP8 to plain BF16 via canonical PyTorch ops.
 
-Phase 2a of the Atlas FP8 dequant audit. Produces a snapshot that HF
+Phase 2a of the Avarok FP8 dequant audit. Produces a snapshot that HF
 transformers can load directly (no quantization_config), enabling the
 three-way cosine comparison:
 
     A: HF[FP8->BF16]  vs  HF[unquantized BF16]    -> inherent FP8 quant loss
-    B: Atlas[FP8]     vs  HF[unquantized BF16]    -> existing Phase alpha
-    C: Atlas[FP8]     vs  HF[FP8->BF16]           -> Atlas compute fidelity
+    B: Avarok[FP8]     vs  HF[unquantized BF16]    -> existing Phase alpha
+    C: Avarok[FP8]     vs  HF[FP8->BF16]           -> Avarok compute fidelity
 
 Dequant per Qwen FP8 spec (block 128x128, weight_scale_inv stored as BF16):
     f32 = fp8.to(float32) * scale_inv_upsampled(N, K)
@@ -15,8 +15,8 @@ Dequant per Qwen FP8 spec (block 128x128, weight_scale_inv stored as BF16):
 
 Reuse before write: torch / safetensors directly; compressed_tensors v0.13
 does not expose a top-level FP8 dequant helper, only its sparse paths.
-The dequant math is the same canonical formula that Atlas's
-quant_helpers.rs uses, with PyTorch's RNE in place of Atlas's truncation.
+The dequant math is the same canonical formula that Avarok's
+quant_helpers.rs uses, with PyTorch's RNE in place of Avarok's truncation.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def dequant_one_tensor(
 
     PyTorch's float8_e4m3fn -> float32 path is a lookup (256 entries) and
     is exact. Multiply by the upsampled BF16 scale, then cast to BF16,
-    which uses RNE per IEEE-754. This is the canonical reference Atlas's
+    which uses RNE per IEEE-754. This is the canonical reference Avarok's
     compute path must match.
     """
     assert w_fp8.dtype == torch.float8_e4m3fn, f"expect fp8_e4m3fn, got {w_fp8.dtype}"

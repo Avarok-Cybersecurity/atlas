@@ -169,14 +169,14 @@
               <p class="ld-place-sub">
                 Then reopen this dialog. The agent re-checks on its own, so there is
                 nothing to restart. Do not use <code>sudo atlasctl</code> — it runs
-                the model as root and leaves root-owned files in <code>~/.atlas</code>
+                the model as root and leaves root-owned files in <code>~/.avarok</code>
                 that your normal user cannot read.
               </p>
             {/if}
             <p class="ld-place-sub">
               <a
                 class="link"
-                href="https://docs.atlasinference.io/getting-started/troubleshooting.html"
+                href="https://docs.atlascybernetics.ai/getting-started/troubleshooting.html"
                 target="_blank"
                 rel="noopener">Troubleshooting guide</a
               >
@@ -239,7 +239,7 @@
 
         {:else if launch.phase === 'guide'}
           <p>
-            Atlas runs on your hardware, not ours. This page can start a model for
+            Avarok runs on your hardware, not ours. This page can start a model for
             you once a small local agent is listening.
           </p>
           <InstallSteps />
@@ -249,7 +249,7 @@
           </p>
           <p class="ld-caution">
             Any web page can show you an install command. Check the address bar
-            says <strong>atlasinference.io</strong> before running one.
+            says <strong>atlascybernetics.ai</strong> before running one.
           </p>
 
         {:else if launch.phase === 'pairing'}

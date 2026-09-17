@@ -6,7 +6,7 @@
 // inline because it owns enough closures to fight extraction.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -43,7 +43,7 @@ pub(crate) fn build_full_attention_nvfp4(
     let tp_size = config.tp_world_size.max(1);
     let i = layer_idx;
 
-    // Native EXL3 attention family (ATLAS_EXL3_NATIVE_DENSE=1): re-derived
+    // Native EXL3 attention family (AVAROK_EXL3_NATIVE_DENSE=1): re-derived
     // PER LAYER from the store — the materialize pass keeps a layer's
     // q/k/v/o packed only as an atomic family, so "the family's .trellis
     // tensors are still here" is exactly "this layer was kept". A fallen-back
@@ -57,7 +57,7 @@ pub(crate) fn build_full_attention_nvfp4(
         );
         ensure!(
             !crate::layers::ops::ModelLevers::get().weight_pre_rotated,
-            "ATLAS_EXL3_NATIVE_DENSE=1 is incompatible with TQ_PLUS_WEIGHT_ROTATION=1 \
+            "AVAROK_EXL3_NATIVE_DENSE=1 is incompatible with TQ_PLUS_WEIGHT_ROTATION=1 \
              (the rotation is applied to BF16 q/k/v at load; packed trellis cannot be \
              re-rotated); unset one"
         );

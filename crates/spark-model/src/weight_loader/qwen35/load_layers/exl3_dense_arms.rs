@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 dense installs (`ATLAS_EXL3_NATIVE_DENSE=1`) for the GDN and
+//! Native EXL3 dense installs (`AVAROK_EXL3_NATIVE_DENSE=1`) for the GDN and
 //! full-attention arms of `load_layers`: resolve the kept-packed projections
 //! from the store, validate them against the config geometry, probe their
 //! kernels, bind the model-shared dense stage, install on the layer and log
@@ -31,7 +31,7 @@ fn stage_or_bail(stage: Option<&Arc<Exl3DenseStage>>, what: &str) -> Result<Arc<
         format!(
             "EXL3 native {what}: the store kept this layer's projections packed but the \
              loader passed no model-shared dense stage (locks/fence/f16 staging) — this \
-             model loader does not thread `Exl3DenseStage`; unset ATLAS_EXL3_NATIVE_DENSE"
+             model loader does not thread `Exl3DenseStage`; unset AVAROK_EXL3_NATIVE_DENSE"
         )
     })
 }

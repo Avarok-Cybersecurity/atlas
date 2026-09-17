@@ -67,7 +67,7 @@ impl Default for RadixTree {
     }
 }
 
-/// Is sub-block prefix matching enabled? OPT-IN (`ATLAS_PREFIX_SUBBLOCK=1`).
+/// Is sub-block prefix matching enabled? OPT-IN (`AVAROK_PREFIX_SUBBLOCK=1`).
 ///
 /// The two sub-block arms in `inner::RadixTreeInner::walk` (private) return a
 /// `matched_tokens` that is NOT block-aligned, by reusing a block whose KV was
@@ -88,7 +88,7 @@ impl Default for RadixTree {
 /// Turning it off costs the warm-TTFT shortcut for the last partial block of a
 /// prompt — at most `block_size - 1` tokens of re-prefill per warm turn.
 pub fn subblock_matching_from_env() -> bool {
-    subblock_matching_from_value(std::env::var("ATLAS_PREFIX_SUBBLOCK").ok().as_deref())
+    subblock_matching_from_value(std::env::var("AVAROK_PREFIX_SUBBLOCK").ok().as_deref())
 }
 
 /// The polarity of [`subblock_matching_from_env`], over a plain value so a
@@ -103,7 +103,7 @@ impl RadixTree {
         let subblock_matching = subblock_matching_from_env();
         if subblock_matching {
             tracing::warn!(
-                "Prefix cache: SUB-BLOCK matching ENABLED (ATLAS_PREFIX_SUBBLOCK=1). \
+                "Prefix cache: SUB-BLOCK matching ENABLED (AVAROK_PREFIX_SUBBLOCK=1). \
                  A lookup may reuse a block whose KV was computed for a longer key, \
                  and the sequence writes its own tokens into that shared block. \
                  Measured: warm temp-0 requests stop being reproducible. Diagnostic only."
@@ -111,7 +111,7 @@ impl RadixTree {
         } else {
             tracing::info!(
                 "Prefix cache: sub-block matching off (default) — matches are \
-                 block-aligned. ATLAS_PREFIX_SUBBLOCK=1 restores the old behaviour."
+                 block-aligned. AVAROK_PREFIX_SUBBLOCK=1 restores the old behaviour."
             );
         }
         Self {
@@ -158,7 +158,7 @@ impl PrefixCache for RadixTree {
         // Tier-aware: `lookup_tiered` returns the deepest anchor across resident
         // AND spilled entries. A resident hit populates `ssm_snapshot` (restore
         // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
-        // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
+        // faults it in). When nothing is spilled (AVAROK_SSM_TIER off) this is
         // byte-identical to the old resident-only lookup.
         let anchor = if matched_tokens > 0 {
             self.lookup_ssm_anchor(tokens, matched_tokens, session_hash, adapter_id)

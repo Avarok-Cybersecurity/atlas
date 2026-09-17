@@ -36,7 +36,7 @@
 //!
 //! # STATUS: the draft head WORKS — 86.5% shadow accept, harness inert.
 //!
-//! Measured (250-token greedy completion, `ATLAS_QWEN4EXP_MTP_SHADOW=1`):
+//! Measured (250-token greedy completion, `AVAROK_QWEN4EXP_MTP_SHADOW=1`):
 //! ```text
 //!   shadow off -> full answer, finish: stop
 //!   shadow on  -> BYTE-IDENTICAL output, finish: stop, 0 failures
@@ -168,7 +168,7 @@ pub struct Qwen4ExpMtpHead {
     /// over its own 24-head weights: no error, no crash, correct-looking text
     /// (rejected drafts still emit the target's token), and acceptance falling
     /// from p1 0.83 to 0.42 while propose kept costing full price.
-    cfg: atlas_core::config::ModelConfig,
+    cfg: avarok_core::config::ModelConfig,
     kv_cache: Mutex<PagedKvCache>,
     /// ★ THE DRAFT'S OWN BUFFER ARENA — isolation by CONSTRUCTION.
     ///
@@ -197,7 +197,7 @@ pub struct Qwen4ExpMtpHead {
     lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
     /// The target's NATIVE EXL3 vocab head, BORROWED (`Arc`), not copied.
     ///
-    /// Under `ATLAS_EXL3_NATIVE` the lm_head is served from packed trellis and
+    /// Under `AVAROK_EXL3_NATIVE` the lm_head is served from packed trellis and
     /// there is no NVFP4 head at all — `build.rs` sets all three NVFP4/FP8
     /// head slots to `None` — so without this arm the draft errored on EVERY
     /// propose and speculation silently degenerated to serial.
@@ -225,12 +225,12 @@ pub struct Qwen4ExpMtpHead {
     shadow_hits: AtomicU64,
 }
 
-/// `ATLAS_QWEN4EXP_MTP_SHADOW=1` — run the draft head alongside normal decode
+/// `AVAROK_QWEN4EXP_MTP_SHADOW=1` — run the draft head alongside normal decode
 /// and log how often its draft matches the token the target actually emits.
 /// Produces NO speculation: nothing is fed back, the scheduler is untouched.
 pub fn shadow_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_SHADOW").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_SHADOW").as_deref() == Ok("1"))
 }
 
 /// How far the shadow step runs — a BISECTION handle, not a feature.
@@ -241,7 +241,7 @@ pub fn shadow_enabled() -> bool {
 /// this walks the step forward one stage at a time and the operator watches for
 /// the first stage whose output stops matching the shadow-off control.
 ///
-/// `ATLAS_QWEN4EXP_MTP_SHADOW_STAGE` = observe | combine | body | full (default).
+/// `AVAROK_QWEN4EXP_MTP_SHADOW_STAGE` = observe | combine | body | full (default).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ShadowStage {
     /// argmax the target's logits and count only. Touches NOTHING else.
@@ -257,7 +257,7 @@ pub enum ShadowStage {
 pub fn shadow_stage() -> ShadowStage {
     static S: std::sync::OnceLock<ShadowStage> = std::sync::OnceLock::new();
     *S.get_or_init(
-        || match std::env::var("ATLAS_QWEN4EXP_MTP_SHADOW_STAGE").as_deref() {
+        || match std::env::var("AVAROK_QWEN4EXP_MTP_SHADOW_STAGE").as_deref() {
             Ok("observe") => ShadowStage::Observe,
             Ok("combine") => ShadowStage::Combine,
             Ok("body") => ShadowStage::Body,

@@ -2,11 +2,11 @@
 
 //! `Glm5NextMlpConfig` derivation and refusals. No GPU.
 
-use atlas_core::config::{Glm5NextRouterMode, ModelConfig, parse_config};
+use avarok_core::config::{Glm5NextRouterMode, ModelConfig, parse_config};
 
 use super::*;
 
-/// The REAL checkpoint config of `LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3`, parsed by Atlas's
+/// The REAL checkpoint config of `LibertAIDAI/GLM-5.3-Flash-NVFP4@9e0d74e3`, parsed by Avarok's
 /// own `glm5_next` parser — the same fixture the Slice-9 skeleton acceptance test uses.
 ///
 /// A hand-built `ModelConfig` would prove the arithmetic and nothing about the checkpoint; this

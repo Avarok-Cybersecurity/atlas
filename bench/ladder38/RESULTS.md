@@ -1,4 +1,4 @@
-# Qwen3.8-27B NVFP4 concurrency ladder — Atlas vs latest vLLM (2026-08-16)
+# Qwen3.8-27B NVFP4 concurrency ladder — Avarok vs latest vLLM (2026-08-16)
 
 **Status: campaign in progress — 6/8 rungs won. PRELIMINARY; not yet gate-certified.**
 
@@ -12,8 +12,8 @@
   (`sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`),
   `--max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85
   --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16`. No speculation.
-- Atlas: binary `d92fc2488` (PR #533 tip), env `ATLAS_PREFILL_CODISPATCH=1
-  ATLAS_FP8_ROWWISE=1`, flags: `--max-seq-len 2048 --max-batch-size 128
+- Avarok: binary `d92fc2488` (PR #533 tip), env `AVAROK_PREFILL_CODISPATCH=1
+  AVAROK_FP8_ROWWISE=1`, flags: `--max-seq-len 2048 --max-batch-size 128
   --gpu-memory-utilization 0.85 --kv-cache-dtype bf16 --enable-prefix-caching true
   --ssm-cache-slots 8 --ssm-checkpoint-interval 32 --speculative --num-drafts 3
   --mtp-quantization bf16 --scheduling-policy fifo --disable-thinking
@@ -28,10 +28,10 @@
 
 The earlier vLLM reference ran **speculative decoding OFF**, which understated it badly.
 vLLM 0.27.1 registers `Qwen3_5MTP` and this checkpoint ships `mtp.*` weights, so vLLM can
-and should run MTP here. Re-measured with every workload axis matched to Atlas — same
+and should run MTP here. Re-measured with every workload axis matched to Avarok — same
 checkpoint/box/harness/prompts/ISL/OSL/temp/seed, ctx 2048 both, batch cap 128 both,
 util 0.85 both, **fp8 KV both**, prefix caching on both, thinking off both, and
-**MTP K=4 on both** (Atlas `--num-drafts 3`, vLLM `num_speculative_tokens: 3`):
+**MTP K=4 on both** (Avarok `--num-drafts 3`, vLLM `num_speculative_tokens: 3`):
 
 | C | vLLM+MTP fp8 | (old no-spec ref) |
 |---:|---:|---:|
@@ -46,12 +46,12 @@ util 0.85 both, **fp8 KV both**, prefix caching on both, thinking off both, and
 
 Two structural facts: vLLM+MTP is 1.8-1.9x its own no-spec numbers at low C (so every
 comparison against the no-spec reference is superseded), and **vLLM's C=128 is BELOW its
-own C=64** — MTP verification costs it more than it gains at 128-wide, while Atlas's
+own C=64** — MTP verification costs it more than it gains at 128-wide, while Avarok's
 speculation self-disables above 32 concurrent sequences and never pays that penalty.
 
-Standing (Atlas C=128 at fp8 = 450.12; other Atlas rungs still bf16 KV pending round 4):
+Standing (Avarok C=128 at fp8 = 450.12; other Avarok rungs still bf16 KV pending round 4):
 
-| C | Atlas | vLLM+MTP | ratio | rung |
+| C | Avarok | vLLM+MTP | ratio | rung |
 |---:|---:|---:|---:|---|
 | 1 | 21.74 | 19.72 | 1.10x | **WON** |
 | 2 | 29.04 | 38.79 | 0.75x | open |
@@ -62,20 +62,20 @@ Standing (Atlas C=128 at fp8 = 450.12; other Atlas rungs still bf16 KV pending r
 | 64 | 360.02 | 361.39 | 0.996x | open |
 | 128 | **450.12** | 358.57 | **1.26x** | **WON** |
 
-Measured root cause of the open rungs: Atlas's marginal cost per added concurrent sequence
-is **4.28 ms/token/seq** vs vLLM's **1.94** (TPOT fits Atlas `58.9 + 4.28n`, collinear
+Measured root cause of the open rungs: Avarok's marginal cost per added concurrent sequence
+is **4.28 ms/token/seq** vs vLLM's **1.94** (TPOT fits Avarok `58.9 + 4.28n`, collinear
 across n=2,4,8; C=1 is off the line because `decode_a2.rs:65` routes n==1 to a different
 single-sequence program). The hybrid carries ~102 MB of GDN recurrent state per sequence
-per step; Atlas additionally paid 96 eager copy launches per sequence per step for SSM
+per step; Avarok additionally paid 96 eager copy launches per sequence per step for SSM
 rollback (PR #547 -> 2n) and stored h-state FP32 even under `--ssm-h-dtype f16`
 (PR #548 -> `f16-pool`, halves the bytes). Round 4 measures both.
 
 ### Round 2 — full fix stack `ab97a7f24` (2026-08-17)
 
 Stack = capacity PR #533 + graph-borrow #536 + varlen-prefill #538 + preempt-resume #540,
-served with `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1` and `--prefill-varlen-batch`.
+served with `AVAROK_PREFILL_CODISPATCH=1 AVAROK_FP8_ROWWISE=1` and `--prefill-varlen-batch`.
 
-| C | Atlas | vLLM | ratio | rung |
+| C | Avarok | vLLM | ratio | rung |
 |---:|---:|---:|---:|---|
 | 1 | 21.74 | 11.04 | 1.97x | WON |
 | 2 | 29.04 | 21.34 | 1.36x | WON |
@@ -98,7 +98,7 @@ and RETIRED: it froze the box (unified memory; 0.85 is the proven ceiling on GB1
 
 ### Round 1 — pre-stack `d92fc2488` (2026-08-16, superseded)
 
-| C | Atlas | vLLM | ratio |
+| C | Avarok | vLLM | ratio |
 |---:|---:|---:|---:|
 | 1 | 22.96 | 11.04 | 2.08x |
 | 2 | 30.61 | 21.34 | 1.43x |
@@ -115,8 +115,8 @@ before any conclusion. Every other rung improved or held.
 
 ## Known mechanics behind the open rungs
 
-- C=32: deficit is the prefill ramp (Atlas ~620-745 tok/s prefill vs vLLM ~2.9k);
-  Atlas DECODES 10.5% faster per token at this rung (TPOT p50 128.7 vs 143.5 ms).
+- C=32: deficit is the prefill ramp (Avarok ~620-745 tok/s prefill vs vLLM ~2.9k);
+  Avarok DECODES 10.5% faster per token at this rung (TPOT p50 128.7 vs 143.5 ms).
   Spec dispatches on 100% of steps. Fix in flight: drain-tail CUDA-graph reuse
   (~+2%), then prefill throughput campaign (profiled, ranked targets on file).
 - C=128: distress signatures (90k/131k tokens delivered, 38.7 s TTFT p50) —
@@ -136,7 +136,7 @@ Instrumented `MTP accept` lines across every serve log on both boxes, bucketed b
 | 32 | 1 | 843 | 0.64-0.68 | 1.64-1.68 |
 
 **Per-draft acceptance (p1) is flat at 0.78-0.90 through n=16 — at or above the published
-Qwen MTP band (0.7-0.85). Atlas's drafter is not the problem.** What collapses at n>=16 is
+Qwen MTP band (0.7-0.85). Avarok's drafter is not the problem.** What collapses at n>=16 is
 `tok_step`, because the K ladder (`speculative/ladder.rs:200`, `4:3,8:3,16:1,32:1`) hands
 out ONE draft at those widths while vLLM keeps 3 at every width.
 
@@ -166,7 +166,7 @@ serializes. Valid arms are `16:2`, `16:3`, `32:2` (96 rows exactly).
 
 ### Where the gap actually is
 
-Atlas's marginal cost per added concurrent sequence is **4.28 ms/token/seq vs vLLM's 1.94**.
+Avarok's marginal cost per added concurrent sequence is **4.28 ms/token/seq vs vLLM's 1.94**.
 That is not acceptance (p1 flat), not launch count (PR #547: 96n -> 2n launches moved C=8 by
 +2.2%), and not state bytes (PR #548: h-state halved, reserve 36.6 -> 22.4 GB, same +2.2%).
 Bandwidth arithmetic says 4.28 ms/seq at 273 GB/s implies ~1.17 GB moved per sequence per
@@ -177,7 +177,7 @@ launch shape.**
 
 ## ROUND 4 (2026-08-17) — fp8 KV + PR #547 + PR #548, apples-to-apples
 
-Stack `b508679e4`, Atlas served at **fp8 KV** (matching the reference at last) with
+Stack `b508679e4`, Avarok served at **fp8 KV** (matching the reference at last) with
 `--ssm-h-dtype f16-pool`, both marginal-cost fixes engaged (verified in the serve log:
 "h pool SIZED at 2 bytes", no contiguous-block fallback, reserve 36.6 -> **22.4 GB**).
 
@@ -204,7 +204,7 @@ profiled.
 
 ### K-ladder A/B (2026-08-17) — NEGATIVE RESULT, hypothesis closed
 
-`ATLAS_MTP_K_LADDER="4:3,8:3,16:2,32:2"` (deeper drafts at the widths where the default
+`AVAROK_MTP_K_LADDER="4:3,8:3,16:2,32:2"` (deeper drafts at the widths where the default
 ladder hands out only one) measured at C=16: **153.92** versus 154.30 on the default
 `16:1` — **-0.2%, i.e. nothing**, against a 28% deficit at that rung (vLLM+MTP 197.03).
 
@@ -262,7 +262,7 @@ Marginal cost per added sequence, attributed:
    D-Cut's recorded +2.6% predates this key and is now net-negative.
 3. **`presence_penalty=1.5` in the `non_thinking` preset disables four fast-sampling
    paths** (`fast_greedy.rs:59-70`). Measured **+7.8%** at C=8.
-   ★ This was also a LIKE-FOR-LIKE VIOLATION: Atlas injects that penalty when a request
+   ★ This was also a LIKE-FOR-LIKE VIOLATION: Avarok injects that penalty when a request
    omits it, while vLLM defaults to 0 — the two engines were doing different sampling work
    and emitting different text. The harness now sends `presence_penalty: 0.0` and
    `frequency_penalty: 0.0` explicitly to BOTH engines (`harness_w55_conc_ladder.py`),
@@ -347,7 +347,7 @@ A comparative audit left exactly two candidates of the right magnitude, neither 
 from a ladder log: **CUDA-graph re-capture** (23.2 ms/step at an 89% recapture rate, this
 tree's own measurement) and **the batched GDN conv+WY path declining** — 2 launches/layer
 when engaged versus `n*(2k-1)` when not, i.e. 96 vs 768 launches/step at n=2, k=4 across
-48 GDN layers. Both now emit periodic RATES under `ATLAS_MTP_ACCEPT_DEBUG`, so the next
+48 GDN layers. Both now emit periodic RATES under `AVAROK_MTP_ACCEPT_DEBUG`, so the next
 C=2 run reads the answer directly instead of inferring it.
 
 ### Round 6 complete + Round 7 (canonical verify key, PR #552)
@@ -363,7 +363,7 @@ Round 7 adds the canonical verify key (n=8 key space 266 -> 3):
 
 Full standing after rounds 6-7:
 
-| C | Atlas | vLLM+MTP | ratio | rung |
+| C | Avarok | vLLM+MTP | ratio | rung |
 |---:|---:|---:|---:|---|
 | 1 | 23.66 | 19.72 | **1.20x** | **WON** |
 | 2 | 31.00 | 38.79 | 0.80x | open |
@@ -393,7 +393,7 @@ launches/step at n=2,k=4 across 48 layers). **This is exactly the trade the no-r
 rule forbids, so the fix does not ship as-is.**
 
 PR #553's telemetry exists for precisely this question, so the next run is an A/B with the
-kill switch (`ATLAS_NO_CANONICAL_VERIFY_KEY=1`) at C=2 and C=4, reading the graph-capture
+kill switch (`AVAROK_NO_CANONICAL_VERIFY_KEY=1`) at C=2 and C=4, reading the graph-capture
 and GDN fast-path RATES rather than inferring them. Likely landing shape: gate the
 canonical key on width (>= 8), keeping C=8's gain without C=2/C=4's cost.
 
@@ -445,13 +445,13 @@ width-dependent, like the canonical key. (0.5 and 0.25 legs pending.)
 | | C=1 | C=2 | scaling | TPOT C=1 | TPOT C=2 | marginal |
 |---|---:|---:|---:|---:|---:|---:|
 | vLLM+MTP | 19.72 | 38.79 | **1.97x** | 50.7 ms | 51.5 ms | **+0.8 ms/token** |
-| Atlas | 23.66 | 30.83 | 1.30x | 42.3 ms | 64.9 ms | **+22.6 ms/token** |
+| Avarok | 23.66 | 30.83 | 1.30x | 42.3 ms | 64.9 ms | **+22.6 ms/token** |
 
 Derived step times (TPOT x tok_step ~3): n=1 ~128 ms, n=2 ~195 ms. **The second sequence
 costs ~67 ms per step** on a workload where decode is memory-bound and both widths read
 the same ~13.5 GB of weights. vLLM pays 0.8 ms for the same sequence.
 
-This is why Atlas WINS C=1 (1.20x) and loses C=2 (0.79x). n=1 and n=2 run different
+This is why Avarok WINS C=1 (1.20x) and loses C=2 (0.79x). n=1 and n=2 run different
 programs (`decode_a2.rs:65` short-circuits n==1; batched verify requires n>=2), and every
 cheap explanation has been excluded by measurement. A dedicated C=1-vs-C=2 nsys profile is
 running; the earlier profile compared C=1 to C=8 and never isolated this step.
@@ -509,7 +509,7 @@ splits into two n=1 groups below the `n < 2` guard.
 
 ### Measured workaround, zero code: keep n=2 on `batch4`
 
-`ATLAS_MTP_K_LADDER=1:3,2:1,4:3,8:2,16:1` (same-session A/B, 2 reps each):
+`AVAROK_MTP_K_LADDER=1:3,2:1,4:3,8:2,16:1` (same-session A/B, 2 reps each):
 
 | leg | R at n=2 | kernel | C=1 | C=2 | C=4 |
 |---|---:|---|---:|---:|---:|
@@ -634,7 +634,7 @@ The MTP drafter small-M tier (PR #562) takes the last two rungs:
 
 ### THE COMPLETE LADDER
 
-| C | Atlas | vLLM+MTP | ratio |
+| C | Avarok | vLLM+MTP | ratio |
 |---:|---:|---:|---:|
 | 1 | 23.46 | 19.72 | **1.190x** |
 | 2 | 38.95 | 38.79 | **1.004x** |
@@ -699,14 +699,14 @@ week-old number:
 
 | engine | rep 1 | rep 2 | rep 3 | mean | spread |
 |---|---:|---:|---:|---:|---:|
-| **Atlas** | 41.69 | 39.99 | 41.37 | **41.02** | 4.15% |
+| **Avarok** | 41.69 | 39.99 | 41.37 | **41.02** | 4.15% |
 | vLLM+MTP | 37.62 | 36.52 | 37.18 | **37.11** | 2.94% |
 
-**Ratio 1.105x**, against the recorded 1.004x. The distributions do not overlap: Atlas's
+**Ratio 1.105x**, against the recorded 1.004x. The distributions do not overlap: Avarok's
 WORST rep (39.99) beats vLLM's BEST (37.62). That is the property the old number lacked —
 1.004x could be reversed by a single unlucky draw, and this cannot.
 
-Against the recorded vLLM 38.79 instead of today's 37.11, Atlas still wins by 1.058x, so
+Against the recorded vLLM 38.79 instead of today's 37.11, Avarok still wins by 1.058x, so
 the conclusion does not depend on which vLLM number is used. Both are reported because
 vLLM's own C=2 moved 4.3% between two runs of the SAME image digest on the SAME box, which
 is a useful reminder that a 1.004x margin is not a result.
@@ -715,22 +715,22 @@ Two configuration traps were caught and are worth recording, since both would ha
 a wrong number that looked fine:
 
 - **This file's header block (line ~17) lists `--kv-cache-dtype bf16`**, which is the ROUND 1
-  Atlas config. The certified comparison is **fp8 KV on both** (round 4 moved Atlas to fp8
+  Avarok config. The certified comparison is **fp8 KV on both** (round 4 moved Avarok to fp8
   "matching the reference at last"). A first attempt at bf16 measured 39.55 and was discarded.
 - **The ladder was measured on dgx2, not dgx1.** Two runs were completed on dgx1 (39.55 bf16,
   39.95 fp8) before this was noticed, and both were discarded rather than compared across
   boxes — the same error this file already records as a retraction at "★ The comparison
   itself is the likely error".
 
-Provenance: box dgx2 (spark-43fa), Atlas `529fcb04fa` served with the round-11 flags at
-`--kv-cache-dtype fp8`, env `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1
-ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1`; vLLM
+Provenance: box dgx2 (spark-43fa), Avarok `529fcb04fa` served with the round-11 flags at
+`--kv-cache-dtype fp8`, env `AVAROK_PREFILL_CODISPATCH=1 AVAROK_FP8_ROWWISE=1
+AVAROK_MTP_DCUT_RATIO=1.0 AVAROK_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1`; vLLM
 `vllm/vllm-openai:latest` digest `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
 — the IDENTICAL digest the certified reference used — with
 `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`, ctx 2048, batch cap
 128, util 0.85, fp8 KV, prefix caching on. Harness `harness_w55_conc_ladder.py`, ISL 128 /
 OSL 1024, temp 0, seed 42, 3 reps + 1 warmup. Raw series in
-`c2_atlas_dgx2_20260818.json` and `c2_vllm_mtp_dgx2_20260818.json`.
+`c2_avarok_dgx2_20260818.json` and `c2_vllm_mtp_dgx2_20260818.json`.
 
 ### C=8 REPRODUCED (2026-08-18) — 1.013x, and the K ladder there is already optimal
 
@@ -739,18 +739,18 @@ merged main `529fcb04fa`, dgx2, vLLM re-run back-to-back the same day.
 
 | engine | rep 1 | rep 2 | rep 3 | mean | spread |
 |---|---:|---:|---:|---:|---:|
-| Atlas | 123.33 | 124.94 | 121.38 | **123.22** | 2.89% |
+| Avarok | 123.33 | 124.94 | 121.38 | **123.22** | 2.89% |
 | vLLM+MTP | 121.92 | 120.60 | 122.40 | **121.64** | 1.49% |
 
 **Ratio 1.013x**, against the certified 1.012x — reproduced to within 0.1%.
 
-★ **Both engines measured ~2.2% BELOW their certified absolutes** (Atlas 123.22 vs 125.95,
+★ **Both engines measured ~2.2% BELOW their certified absolutes** (Avarok 123.22 vs 125.95,
 vLLM 121.64 vs 124.48) **while the ratio held.** That is the useful part: the ladder is
 reproducible in RATIO across days even when the box's absolute throughput drifts, which is
 exactly why every rung is quoted as a same-day A/B rather than against a stored number.
 
 **The margin is real but thin, and it is NOT a tuning oversight.** Unlike C=2, the rep
-distributions here OVERLAP (Atlas min 121.38 < vLLM max 122.40), so a single draw can
+distributions here OVERLAP (Avarok min 121.38 < vLLM max 122.40), so a single draw can
 reverse the ordering. A K-ladder sweep at C=8 confirms the shipped value is the optimum:
 
 | `8:K` | mean tok/s | vs shipped |
@@ -764,7 +764,7 @@ Monotonically worse in both directions, so C=8's narrow margin is a property of 
 not a missed setting. Widening it needs a kernel-level change, not a knob. Recorded so the
 next person does not re-run this sweep.
 
-Raw series: `c8_atlas_dgx2_20260818.json`, `c8_vllm_mtp_dgx2_20260818.json`. Same
+Raw series: `c8_avarok_dgx2_20260818.json`, `c8_vllm_mtp_dgx2_20260818.json`. Same
 provenance as the C=2 block above.
 
 ### SAME-DAY FULL LADDER ATTEMPT (2026-08-18) — INCOMPLETE, and its late rungs are SUSPECT
@@ -776,7 +776,7 @@ physical powercycle.** Raw JSON was written to `/tmp` and did not survive. The n
 are transcribed from the harness SERIES lines and are recorded for provenance, NOT as a
 replacement for the certified table.
 
-| C | Atlas | vLLM+MTP | same-day | certified |
+| C | Avarok | vLLM+MTP | same-day | certified |
 |---:|---:|---:|---:|---:|
 | 1 | 24.20 | 19.15 | **1.264x** | 1.196x |
 | 2 | 41.02 | 37.11 | **1.105x** | 1.004x |
@@ -794,7 +794,7 @@ it down was plausibly already building while those rungs ran. A measurement take
 approach to a hard failure is not a measurement of steady state.
 
 What argues it might still be real: the drop is NOT symmetric. Against certified absolutes
-Atlas fell 5.1% at C=32 while vLLM fell only 2.1%, and C=1/2/4 got WIDER on the same sweep
+Avarok fell 5.1% at C=32 while vLLM fell only 2.1%, and C=1/2/4 got WIDER on the same sweep
 rather than uniformly worse. A pure box-slowness story predicts both engines falling together
 at every rung, which is what C=8 showed (both ~2.2% down, ratio held to 0.1%) and what these
 two rungs did not.
@@ -809,7 +809,7 @@ Diffing the two across `crates/` and `kernels/`:
 | `crates/spark-model/**` | 2 files | **0 non-comment lines** (rustdoc link fixes) |
 | `crates/spark-runtime/**` | 0 files | — |
 | `crates/spark-server/{cli,tui}` | 3 files | benchmark CLI/TUI wiring only |
-| `crates/atlas-plugin/**` | 34 files | benchmark harness (#569, #581) |
+| `crates/avarok-plugin/**` | 34 files | benchmark harness (#569, #581) |
 | `kernels/gb10/*/BENCH.toml` | 3 files | thresholds, not kernels |
 
 The engine binary is **functionally identical** between the certified stack and merged main —
@@ -827,7 +827,7 @@ take the whole machine down even at the "safe" `--gpu-memory-utilization 0.85`. 
 is unified, and MTP verification widens the working set exactly where the batch is widest.
 The warning was already in this file: vLLM's certified C=128 (358.57) is BELOW its own C=64
 (361.39) — an engine going backwards at its widest rung is one already struggling there.
-Atlas never pays this because its speculation self-disables above 32 concurrent sequences,
+Avarok never pays this because its speculation self-disables above 32 concurrent sequences,
 which is also why it wins C=128 by 1.333x. Next time: run C=128 in its own serve, drop util
 to 0.75-0.80 for that rung, and write raw JSON under `/home/claude` rather than `/tmp`.
 
@@ -845,13 +845,13 @@ boot**. Both suspect rungs came back up:
 | 64 | 386.63 | 382.05 | **391.73** | — | — |
 | 128 | 478.11 | 469.03 | **472.70** | — | — |
 
-Atlas recovered at **every** rung that had looked soft — C=16 195.19 -> 201.32 and C=32
+Avarok recovered at **every** rung that had looked soft — C=16 195.19 -> 201.32 and C=32
 276.11 -> 282.42 — with three of six rungs landing ABOVE their certified values. Combined
 with the diff proof (zero executable change in the serve path between the certified stack
 `1575873582` and merged main), the C=32 inversion is closed: it was box state, not code.
 
-The mechanism is now clearer. The pre-wedge Atlas leg ran on a box that had been serving
-benchmarks for hours; the clean-boot leg ran on a box minutes old. Atlas runs FIRST in this
+The mechanism is now clearer. The pre-wedge Avarok leg ran on a box that had been serving
+benchmarks for hours; the clean-boot leg ran on a box minutes old. Avarok runs FIRST in this
 sweep, so the degradation cannot have come from the vLLM leg — it is accumulated state from
 everything that ran before.
 
@@ -860,19 +860,19 @@ not exist, because:
 
 ★ **HAZARD CORRECTED — it is NOT specific to C=128.** The first wedge happened entering
 C=128, and this file originally blamed that rung. The clean-boot sweep wedged the box AGAIN
-during **vLLM C=32** — a rung whose Atlas counterpart had completed minutes earlier in the
+during **vLLM C=32** — a rung whose Avarok counterpart had completed minutes earlier in the
 same sweep, on a box five minutes old, at the same "safe" util 0.85. A watcher armed to stop
 before C=128 never fired. **Treat any vLLM+MTP rung at C>=32 on GB10 as able to take the box
 down**, and do not re-run those rungs casually: they have now cost two physical powercycles
 for numbers already certified at 1.027x (C=32) and 1.333x (C=128).
 
-Atlas does not exhibit this at any rung, which is worth stating plainly: it completed
+Avarok does not exhibit this at any rung, which is worth stating plainly: it completed
 C=1..128 twice, including C=128 at 472.70 and 469.03, on the same box and the same util that
 wedged under vLLM.
 
 ### METHOD NOTE — `--max-num-seqs` is part of the comparison, not a free knob
 
-The certified table pins **batch cap 128 on BOTH engines at every rung** (Atlas
+The certified table pins **batch cap 128 on BOTH engines at every rung** (Avarok
 `--max-batch-size 128`, vLLM `--max-num-seqs 128`), independently of the concurrency being
 driven. That pin is load-bearing, and it is easy to lose while working around the wedge
 hazard above.
@@ -884,11 +884,11 @@ is — but the number it produces **is not comparable to this file's vLLM column
 - vLLM sizes its KV blocks and its scheduler budget from `max_num_seqs`, so a per-rung cap
   changes block allocation, preemption behaviour and prefix-cache reuse, not just a ceiling.
 - The certified vLLM numbers were all taken at 128. A rung measured at a lower cap is a
-  different configuration, and comparing it to the 128-cap Atlas column is precisely the
+  different configuration, and comparing it to the 128-cap Avarok column is precisely the
   apples-to-oranges the "APPLES-TO-APPLES REFERENCE" section exists to prevent.
 
 If a per-rung cap is used to survive the hazard, **say so beside the number and re-pin
-Atlas's `--max-batch-size` to the same value**, so the pair is at least internally
+Avarok's `--max-batch-size` to the same value**, so the pair is at least internally
 like-for-like. Do not fold such a number into the certified column.
 
 (The same caution applies to dropping `--gpu-memory-utilization` for a hazardous rung: it is
@@ -897,7 +897,7 @@ configuration.)
 
 ### NEGATIVE RESULT (2026-08-19) — `decode_tps` is NOT a tighter gate than `s_per_turn`
 
-atlas#581 made `s_per_turn` the agentic speed bound and recorded `decode_tps`
+avarok#581 made `s_per_turn` the agentic speed bound and recorded `decode_tps`
 (tokens / agent-wall) unbounded, with a note that tokens are "the honest denominator" and
 that a future change should ratchet onto it. Six measured tiers say **do not**.
 
@@ -936,7 +936,7 @@ run.
 ### C=16 K-LADDER SWEEP (2026-08-19) — the shipped value is optimal, and K=3 does not FIT
 
 After the same-day sweep left C=16 as the thinnest confirmed rung (1.016x, down from a
-certified 1.032x), its K ladder was swept the way C=8's was. Atlas-only, one box (dgx1),
+certified 1.032x), its K ladder was swept the way C=8's was. Avarok-only, one box (dgx1),
 back-to-back, so only the relative ordering is claimed:
 
 | `16:K` | mean tok/s | vs shipped |
@@ -966,7 +966,7 @@ mid-ladder rungs sit on their optimum in both directions.** The narrow margins t
 property of the rungs, not a missed setting, and widening them needs a kernel-level change.
 Recorded so neither sweep is run a third time.
 
-### ⚠ C=32 DOES NOT CURRENTLY WIN (2026-08-20) — Atlas is ~4% below its certified value
+### ⚠ C=32 DOES NOT CURRENTLY WIN (2026-08-20) — Avarok is ~4% below its certified value
 
 **This contradicts the certified table's 1.027x at C=32 and the site's published `wins=True`
 for that rung. It is reported here before any attempt to explain it away.**
@@ -975,7 +975,7 @@ Two independent measurements on a HEALTHY dgx2 (the certification box), at merge
 `635a692ca9`, with the certified serve flags and env — and see the BISECT below, which shows
 the same numbers at the certified commit itself:
 
-| config | Atlas | certified Atlas | delta |
+| config | Avarok | certified Avarok | delta |
 |---|---:|---:|---:|
 | batch cap 128 (the certified config) | **279.23** (277.48/279.65/280.55, 1.10%) | 291.01 | **-4.0%** |
 | batch cap 128, five minutes after a reboot | 282.42 (282.32/283.27/281.69, 0.56%) | 291.01 | -2.9% |
@@ -991,12 +991,12 @@ like-for-like):
 
 | engine (cap 32, same box, back-to-back, same hour) | rep 1 | rep 2 | rep 3 | mean |
 |---|---:|---:|---:|---:|
-| Atlas | 275.98 | 277.78 | 278.17 | **277.31** |
+| Avarok | 275.98 | 277.78 | 278.17 | **277.31** |
 | vLLM+MTP | 283.08 | 287.54 | 283.00 | **284.54** |
 
 **Ratio 0.975x — vLLM wins.**
 
-The two views agree in direction: Atlas has moved down ~4% at this rung. (vLLM's cap-32
+The two views agree in direction: Avarok has moved down ~4% at this rung. (vLLM's cap-32
 284.54 sits just above its cap-128 certified 283.48, but those are different caps and cannot
 be compared directly — no claim is made that vLLM is unchanged.)
 
@@ -1118,13 +1118,13 @@ If dgx3 reproduces the certified absolutes, the fleet has a driver-shaped proble
 fix is an update on dgx1/dgx2. If dgx3 shows the same 4-5% high-C deficit, the driver is
 excluded too and the cause is environmental in a way nothing measured here reaches.
 
-The sweep is ~30 minutes, Atlas-only, and carries no wedge risk. It needs dgx3 idle; it has
+The sweep is ~30 minutes, Avarok-only, and carries no wedge risk. It needs dgx3 idle; it has
 been serving another session throughout this investigation.
 
-★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
+★ **This does NOT invalidate the same-day A/B results.** Each of those compared Avarok against
 vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
 ratio. What it does mean is that the certified ABSOLUTES are stale, and a rung quoted from
-them cannot be checked against a fresh Atlas number without a fresh vLLM number beside it.
+them cannot be checked against a fresh Avarok number without a fresh vLLM number beside it.
 
 Ruled out so far: code (three commits measured, all ~279, and no `spark-model` or `kernels/`
 change in the diff range), clocks and thermals (2483 MHz median, unthrottled in 116/117
@@ -1138,7 +1138,7 @@ distinguishes them. `clocks.mem` reads `[N/A]` on GB10.
 Context, not conclusion: dgx2 was physically relocated and powercycled three times between
 the certification and these runs.
 
-**What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
+**What this costs us.** The certified C=32 ratio of 1.027x rests on an Avarok number that
 cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
 `sw_thermal_us`, `hw_thermal_us` and `hw_power_brake_us` are all ZERO in the hardware_state
 of tonight's dgx2 records, so simple throttling is ruled out; the cause is not yet identified.
@@ -1147,24 +1147,24 @@ of tonight's dgx2 records, so simple throttling is ruled out; the cause is not y
 held or widened (C=1 1.317x, C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x). The C=32
 finding does not touch them — each is its own same-day A/B.
 
-Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
+Raw series: `c32_avarok_cap128_dgx2_20260820.json`, `c32_avarok_cap32_dgx2_20260820.json`,
 `c32_vllm_mtp_cap32_dgx2_20260820.json`.
 
 ### ✅ C=32 DOES WIN — the cap-32 comparison was the flawed one (2026-08-20)
 
 **Correcting the alarm raised earlier today.** vLLM measured at the CERTIFIED configuration
-(batch cap 128, util 0.85, fp8 KV, MTP K=4) at C=32, same box, same day as the Atlas number:
+(batch cap 128, util 0.85, fp8 KV, MTP K=4) at C=32, same box, same day as the Avarok number:
 
 | engine (cap 128, C=32, dgx2, same day) | rep 1 | rep 2 | rep 3 | mean | spread |
 |---|---:|---:|---:|---:|---:|
-| **Atlas** | 279.32 | 278.45 | 279.02 | **278.93** | 0.31% |
+| **Avarok** | 279.32 | 278.45 | 279.02 | **278.93** | 0.31% |
 | vLLM+MTP | 275.10 | 278.02 | 278.24 | **277.12** | 1.13% |
 
-**Ratio 1.007x — Atlas wins, and the distributions do not overlap** (Atlas's worst rep 278.45
+**Ratio 1.007x — Avarok wins, and the distributions do not overlap** (Avarok's worst rep 278.45
 beats vLLM's best 278.24).
 
 **vLLM fell too.** Its certified 283.48 is now 277.12, down 2.2% — so the fleet-wide shift
-documented above is not Atlas-specific. It costs Atlas ~4% and vLLM ~2.2% at this rung, which
+documented above is not Avarok-specific. It costs Avarok ~4% and vLLM ~2.2% at this rung, which
 narrows the margin from the certified 1.027x to 1.007x but does not reverse it.
 
 ★ **The earlier "C=32 does not currently win" rested on a cap-32 pair, and cap 32 is not a
@@ -1172,10 +1172,10 @@ neutral mitigation.** Measured both ways on the same box today:
 
 | engine | cap 32 | cap 128 (certified) | effect of the cap |
 |---|---:|---:|---|
-| Atlas | 277.31 | 278.93 | roughly flat (+0.6%) |
+| Avarok | 277.31 | 278.93 | roughly flat (+0.6%) |
 | vLLM+MTP | 284.54 | 277.12 | **+2.7% for vLLM at cap 32** |
 
-vLLM gains materially from the smaller cap; Atlas does not. So the matched-cap-32 pair —
+vLLM gains materially from the smaller cap; Avarok does not. So the matched-cap-32 pair —
 adopted in good faith to avoid the wedge hazard, and internally like-for-like — systematically
 favoured vLLM and produced a 0.975x that inverted the true ordering. This is exactly what the
 METHOD NOTE above warns about, and it caught out the person who wrote it.
@@ -1190,9 +1190,9 @@ differential is:
 
 | | certified | today | change |
 |---|---:|---:|---:|
-| Atlas | 291.01 | 278.93 | -4.2% |
+| Avarok | 291.01 | 278.93 | -4.2% |
 | vLLM+MTP | 283.48 | 277.12 | -2.2% |
-| | | **net against Atlas** | **~1.8%** |
+| | | **net against Avarok** | **~1.8%** |
 
 C=64's certified margin is **7.0%** and C=128's is **33.3%**. A 1.8% differential cannot
 reverse either, and the differential would have to nearly quadruple to threaten even C=64.
@@ -1209,7 +1209,7 @@ Raw series: `c32_vllm_mtp_cap128_dgx2_20260820.json`.
 
 The open lead from the staleness investigation was that both deficit-showing boxes ran the
 older driver. dgx3 carries a newer one, so the same sweep was run there at the same commit
-(`1575873582`), Atlas-only, isolated worktree:
+(`1575873582`), Avarok-only, isolated worktree:
 
 | C | dgx1 (idle) | dgx2 | **dgx3 (new driver)** | certified | dgx3 delta |
 |---:|---:|---:|---:|---:|---:|
@@ -1232,22 +1232,22 @@ The driver is excluded as the cause, and the newer one does not restore the cert
 absolutes. That closes the last cheap hypothesis.
 
 ★ **And it does not threaten the result**, because vLLM moved with it — see the C=32 block
-above, where vLLM's certified 283.48 measures 277.12 today against Atlas's 278.93 on the same
+above, where vLLM's certified 283.48 measures 277.12 today against Avarok's 278.93 on the same
 box and day. The absolutes across the fleet have shifted; the same-day ratios have not.
 
-Raw series: `sweep_atlas_stacktip_dgx3_20260820.json`.
+Raw series: `sweep_avarok_stacktip_dgx3_20260820.json`.
 
 ### C=64 and C=128 WIN under the most conservative assumption available (2026-08-20)
 
 Rather than run vLLM at cap 128 at C>=64 — the workload that has cost this fleet three
-powercycles — Atlas's own absolutes were measured there today (dgx1, idle, certified commit
-`1575873582`, Atlas-only, zero wedge risk) and compared against the CERTIFIED vLLM column.
+powercycles — Avarok's own absolutes were measured there today (dgx1, idle, certified commit
+`1575873582`, Avarok-only, zero wedge risk) and compared against the CERTIFIED vLLM column.
 
-That comparison is deliberately unfair to Atlas: vLLM has demonstrably FALLEN with the fleet
+That comparison is deliberately unfair to Avarok: vLLM has demonstrably FALLEN with the fleet
 (its certified C=32 283.48 measures 277.12 today, -2.2%), so crediting it with its old number
-understates Atlas's true margin.
+understates Avarok's true margin.
 
-| C | Atlas today | certified vLLM | ratio vs certified vLLM | certified ratio |
+| C | Avarok today | certified vLLM | ratio vs certified vLLM | certified ratio |
 |---:|---:|---:|---:|---:|
 | 64 | **375.68** (0.31%) | 361.39 | **1.040x** | 1.070x |
 | 128 | **460.37** (0.38%) | 358.57 | **1.284x** | 1.333x |
@@ -1255,7 +1255,7 @@ understates Atlas's true margin.
 **Both rungs win even if vLLM is credited with its full pre-shift number.** Grant vLLM the
 same -2.2% it actually took at C=32 and the ratios become ~1.063x and ~1.313x, close to
 certified. Either way the ordering is not in question, which is what the earlier
-differential-based bound argued and this now demonstrates with measured Atlas numbers at the
+differential-based bound argued and this now demonstrates with measured Avarok numbers at the
 rungs themselves.
 
 ★ **Correcting the shape.** Earlier sections describe the deficit as "growing with
@@ -1271,7 +1271,7 @@ across that range. Whatever the fleet-wide cause is, it engages once batching be
 not worsen with width — which is a materially different fingerprint from the one the earlier
 text implies, and a better clue for whoever chases it next.
 
-Raw series: `atlas_c64_c128_dgx1_20260820.json`.
+Raw series: `avarok_c64_c128_dgx1_20260820.json`.
 
 ### Round 11 complete — the full ladder, independently reproduced
 
@@ -1287,7 +1287,7 @@ Raw series: `atlas_c64_c128_dgx1_20260820.json`.
 | 128 | 478.11 | 478.07 | 358.57 | **1.333x** |
 
 Two independent rounds on the final configuration agree at every rung — C=32 and C=128 to
-within 0.06%, C=64 to 0.12%. **Atlas beats vLLM+MTP at every concurrency from 1 to 128.**
+within 0.06%, C=64 to 0.12%. **Avarok beats vLLM+MTP at every concurrency from 1 to 128.**
 
 ## QUALITY GATES on the final stack (`bf4d7a1267`, post-rewrite)
 
@@ -1338,8 +1338,8 @@ proposal numerics and therefore acceptance, and acceptance drives wall). The oth
 either bit-exact (#561 GEMV tiers, #547 rollback) or structurally inactive at that width
 (#551 QKVZ needs M>8, #559 canonical key gates at n>=8, #548 f16-pool is not in the recipe).
 
-A/B with the kill switches is running (`ATLAS_NO_DRAFTER_SMALL_M_TIER=1`, then
-`ATLAS_NO_GEMV_EXACT_M_TIERS=1`). If the drafter tier is confirmed, the fix is the same
+A/B with the kill switches is running (`AVAROK_NO_DRAFTER_SMALL_M_TIER=1`, then
+`AVAROK_NO_GEMV_EXACT_M_TIERS=1`). If the drafter tier is confirmed, the fix is the same
 shape as the canonical key's: **width-gate it** so the concurrency rungs keep it and the
 batch-2 agentic path does not. BFCL was deliberately killed rather than run on a
 configuration that is about to change.
@@ -1350,8 +1350,8 @@ configuration that is about to change.
 |---|---:|---|
 | everything on (tier 1) | 1084 s | 10/10 + 10/10 |
 | everything on (tier 2) | 1068 s | 10/10 + 10/10 |
-| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | **1020 s** | 10/10 + 10/10 |
-| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | running | |
+| `AVAROK_NO_GEMV_EXACT_M_TIERS=1` | **1020 s** | 10/10 + 10/10 |
+| `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` | running | |
 | historical band / tonight's pre-stack run | 600-800 s / **773 s** | |
 
 The w4a16 exact-M GEMV tiers account for only ~5% of the regression — real but not the
@@ -1369,8 +1369,8 @@ returns `[N/A]` on GB10, so idle-guards must read `free` instead.
 | leg | Σwall | correctness |
 |---|---:|---|
 | everything on | 1084 / 1068 s | 10/10 + 10/10 |
-| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
-| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | **1078 s** | 10/10 + 10/10 |
+| `AVAROK_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
+| `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` | **1078 s** | 10/10 + 10/10 |
 
 The drafter tier — the mechanism-based prime suspect — accounts for **~0%**. The GEMV tiers
 account for ~5%. So the stack does not contain a single change worth +300 s here.
@@ -1393,8 +1393,8 @@ recipe:
 | configuration (ALL on dgx2) | Σwall | correctness |
 |---|---:|---|
 | full ladder stack | 1084 s / 1068 s | 10/10 + 10/10 |
-| `ATLAS_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
-| `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` | 1078 s | 10/10 + 10/10 |
+| `AVAROK_NO_GEMV_EXACT_M_TIERS=1` | 1020 s | 10/10 + 10/10 |
+| `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` | 1078 s | 10/10 + 10/10 |
 | **pre-stack `main` (control)** | **1079 s** | **10/10 + 10/10** |
 
 **Unmodified main runs this gate at 1079 s on dgx2 — the same wall as the full stack.** The

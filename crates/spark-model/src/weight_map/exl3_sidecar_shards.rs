@@ -10,7 +10,7 @@
 //! `turboderp/Qwen3.8-Flash-Next-exl3`: its whole ViT tower (987
 //! `model.visual.*` tensors, 561 MB, K=6 trellis + F16 fused `attn.qkv`,
 //! `pos_embed`, biases, norms) ships in `vision_k6.safetensors`, which the
-//! index does not mention. Atlas's loaders read index-listed shards plus
+//! index does not mention. Avarok's loaders read index-listed shards plus
 //! `extra_weights.safetensors`, so that branch booted text-only. The other
 //! branches keep the tower in the last index-listed shard, and ship the MTP
 //! hyper-connection mixer in an un-indexed

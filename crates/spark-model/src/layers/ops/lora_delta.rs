@@ -178,7 +178,7 @@ pub struct LoraFfnWeights {
 /// shrink n = max_rank (xa pad cols come out zero), expand k = max_rank
 /// (matches B's row stride; zero pads contribute nothing) — bit-identical
 /// to a true-rank product.
-/// `ATLAS_LORA_NO_APPLY=1` — keep the adapter RESIDENT but skip every delta.
+/// `AVAROK_LORA_NO_APPLY=1` — keep the adapter RESIDENT but skip every delta.
 ///
 /// A measurement lever, not a serving one: it separates "what does applying
 /// the adapter cost" from "what does having an adapter loaded cost", which are
@@ -187,11 +187,11 @@ pub struct LoraFfnWeights {
 /// default.
 pub fn lora_no_apply() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_APPLY").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_LORA_NO_APPLY").as_deref() == Ok("1"))
 }
 
 /// Row count at or below which the delta runs as `m` row-wise GEMVs instead
-/// of one GEMM (`ATLAS_LORA_GEMV_MAX_M`, default 8).
+/// of one GEMM (`AVAROK_LORA_GEMV_MAX_M`, default 8).
 ///
 /// `dense_gemm_tc` tiles 16 rows. At m=2 it does the FULL B-matrix traffic —
 /// B is [n_out, max_rank] and independent of m — to produce 2 useful rows out
@@ -213,22 +213,22 @@ pub fn lora_no_apply() -> bool {
 pub fn lora_gemv_max_m() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_GEMV_MAX_M")
+        std::env::var("AVAROK_LORA_GEMV_MAX_M")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(48)
     })
 }
 
-/// `ATLAS_LORA_NO_FFN=1` — skip the dense-FFN and GDN-out_proj deltas, keep
+/// `AVAROK_LORA_NO_FFN=1` — skip the dense-FFN and GDN-out_proj deltas, keep
 /// the attention ones.
 ///
-/// The companion to `ATLAS_LORA_NO_APPLY`: that one answers "deltas or
+/// The companion to `AVAROK_LORA_NO_APPLY`: that one answers "deltas or
 /// residency", this one answers "which deltas". Measurement only; output is
 /// wrong while set.
 pub fn lora_no_ffn() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_LORA_NO_FFN").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_LORA_NO_FFN").as_deref() == Ok("1"))
 }
 
 #[allow(clippy::too_many_arguments)]

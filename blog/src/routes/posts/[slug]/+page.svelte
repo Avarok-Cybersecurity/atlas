@@ -51,7 +51,7 @@
       description: post.dek,
       datePublished: post.date,
       author: { '@type': 'Person', name: author.name },
-      publisher: { '@type': 'Organization', name: 'Atlas Inference', url: 'https://atlasinference.io/' },
+      publisher: { '@type': 'Organization', name: 'Avarok Inference', url: 'https://atlascybernetics.ai/' },
       mainEntityOfPage: url,
       url,
       dateModified: post.updated ?? post.date,
@@ -97,7 +97,7 @@
     <div class="breadcrumb mono-label">
       <a href="/">Blog</a>
       <span aria-hidden="true">/</span>
-      <a href="/tags/{post.tag}" style="color: {tag.color}">{tag.name}</a>
+      <a href="/tags/{post.tag}" style="color: {tag.textColor}">{tag.name}</a>
     </div>
     <h1 class="post-title">{post.title}</h1>
     <p class="post-dek">{post.dek}</p>

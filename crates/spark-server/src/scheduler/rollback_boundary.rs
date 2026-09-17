@@ -10,7 +10,7 @@ use super::*;
 ///
 /// Steps:
 /// 1. Honor the `[behavior].rollback_resteer` flag and the per-sequence
-///    [`atlas_kernels::ROLLBACK_RESTEER_CAP`].
+///    [`avarok_kernels::ROLLBACK_RESTEER_CAP`].
 /// 2. Find the last boundary token in `output_tokens`
 ///    ([`find_last_boundary`]); decline if none.
 /// 3. Truncate `output_tokens` back to and including that boundary.
@@ -64,7 +64,7 @@ pub fn rollback_to_boundary(
     if a.cancel_flag.is_some() {
         return RollbackOutcome::Fallback(RollbackFallback::StreamUnsafe);
     }
-    if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
+    if a.rollback_count >= avarok_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
     }
     let mask = match sched.masks.boundary.as_ref() {

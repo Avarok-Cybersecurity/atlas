@@ -9,12 +9,12 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
-//! Atlas Spark — pure Rust LLM inference server.
+//! Avarok Spark — pure Rust LLM inference server.
 //!
 //! Startup sequence:
 //! 1. Parse CLI args
 //! 2. Load model config
-//! 3. Initialize GPU backend (AtlasCudaBackend)
+//! 3. Initialize GPU backend (AvarokCudaBackend)
 //! 4. Load model weights (SafetensorsLoader)
 //! 5. Build model via factory
 //! 6. Load tokenizer
@@ -76,16 +76,45 @@ use crate::main_modules::serve;
 pub(crate) use crate::main_modules::AppState;
 
 /// Re-export for convenience in api.rs / anthropic.rs.
-pub type ModelBehavior = atlas_kernels::ModelBehavior;
+pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // FIRST statement, before the runtime, any subscriber, any GPU context and
+    // any spawned thread: mirroring copies `AVAROK_*` onto `AVAROK_*` with
+    // `setenv`, which is only sound while this process is single threaded. The
+    // CLI that launches the server still exports the legacy names, and every
+    // `AVAROK_*` read downstream happens after this point.
+    // See `avarok_core::env_compat` for the removal conditions.
+    let mirrored_legacy_env = avarok_core::env_compat::mirror_legacy_env();
+    if !mirrored_legacy_env.is_empty() {
+        // Plain stderr on purpose: no subscriber exists yet, and this line must
+        // survive both the plain and the TUI startup paths.
+        eprintln!(
+            "spark: mirrored {} legacy AVAROK_* variables onto AVAROK_* \
+             (set AVAROK_* directly; the AVAROK_* names are deprecated)",
+            mirrored_legacy_env.len()
+        );
+    }
+
+    // The runtime is built here rather than by `#[tokio::main]`, which is the
+    // only difference from the previous entry point. That attribute builds the
+    // multi-threaded runtime BEFORE the first statement of the async body, so
+    // the worker threads would already be alive when the mirror above calls
+    // `setenv`. Flags match the attribute's defaults exactly: multi-threaded,
+    // `enable_all`, default worker count.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve_main())
+}
+
+async fn serve_main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
     //
     // A positional MODEL that names a serve preset (`spark serve
     // qwen3.8-flash-next-exl3`) is expanded HERE — flag defaults appended and
-    // re-parsed, `ATLAS_*` defaults published — so the host, the dashboard and
+    // re-parsed, `AVAROK_*` defaults published — so the host, the dashboard and
     // the validator all see the configuration that will actually run. For
     // every other invocation this is `Cli::parse()`.
     let (cli, preset) = main_modules::serve_presets::parse_cli()?;
@@ -217,9 +246,9 @@ async fn main() -> Result<()> {
                     // so this exit needs the same status mapping as the one
                     // below — otherwise the escape hatch silently reports a
                     // poisoned context as a clean stop.
-                    std::process::exit(atlas_core::fault::exit_code(
+                    std::process::exit(avarok_core::fault::exit_code(
                         true,
-                        atlas_core::fault::global().fault(),
+                        avarok_core::fault::global().fault(),
                     ));
                 }
             }
@@ -238,7 +267,7 @@ async fn main() -> Result<()> {
     // (issue #429), so without this the two are indistinguishable to a
     // supervisor and `restart: on-failure` leaves the endpoint down. Returning
     // `result` unchanged when healthy keeps every other exit byte-identical.
-    match atlas_core::fault::global().fault() {
+    match avarok_core::fault::global().fault() {
         Some(reason) => {
             if let Err(e) = &result {
                 tracing::error!("{e:#}");
@@ -247,7 +276,7 @@ async fn main() -> Result<()> {
                 "Exiting after a fatal GPU fault ({reason}). The CUDA context is \
                  destroyed and cannot be recovered in-process; restart the server."
             );
-            std::process::exit(atlas_core::fault::exit_code(result.is_ok(), Some(reason)));
+            std::process::exit(avarok_core::fault::exit_code(result.is_ok(), Some(reason)));
         }
         None => result,
     }

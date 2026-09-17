@@ -6,14 +6,14 @@
 //! The section is a stepped flow — **Suite → Model variants → Parameters →
 //! Run**, the variant step appearing only for a benchmark whose baseline
 //! declares model variants (see [`super::bench_variants`]) — plus a History
-//! pane over `~/.atlas/runs`. Nothing here awaits: the executor owns
+//! pane over `~/.avarok/runs`. Nothing here awaits: the executor owns
 //! the tokio side and this drains its channels once per tick, exactly like
 //! [`crate::tui::chat`].
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
-use atlas_plugin::{
+use avarok_plugin::{
     BenchmarkDescriptor, BenchmarkResult, ExecutorMessage, LogLine, ParamSpec, ParamValues,
     PluginEvent, RunHandle, RunStatus, TargetEndpoint, registry,
 };
@@ -40,7 +40,7 @@ pub struct BenchState {
     pub view: View,
     /// Provenance of the selected benchmark. Cached at selection time — the
     /// detail pane redraws at 10 Hz and must not construct a plugin per frame.
-    meta: Option<&'static atlas_plugin::PluginMetadata>,
+    meta: Option<&'static avarok_plugin::PluginMetadata>,
     /// Schema of the selected benchmark, and the values being edited.
     pub specs: Vec<ParamSpec>,
     pub values: ParamValues,
@@ -79,16 +79,16 @@ pub struct BenchState {
     /// Cursor into `variants`.
     pub variant_row: usize,
 
-    executor: Option<atlas_plugin::BenchmarkExecutor>,
+    executor: Option<avarok_plugin::BenchmarkExecutor>,
     run: Option<RunHandle>,
     /// The benchmark the in-flight (or last) run belongs to.
     pub running_id: Option<&'static str>,
     /// The descriptor of the run in flight — a record needs its name, not
     /// just its id.
-    running_descriptor: Option<&'static atlas_plugin::BenchmarkDescriptor>,
+    running_descriptor: Option<&'static avarok_plugin::BenchmarkDescriptor>,
     /// Whether to require a coherent endpoint before measuring. Defaults to
     /// requiring it; `p` in the form toggles.
-    pub coherence: atlas_plugin::CoherencePolicy,
+    pub coherence: avarok_plugin::CoherencePolicy,
     pub frame: Option<BenchmarkResult>,
     pub log: VecDeque<LogLine>,
     pub status: String,
@@ -110,7 +110,7 @@ pub struct BenchState {
     /// last benchmark on a short terminal or overshoots on a tall one.
     pub suite_page: std::cell::Cell<usize>,
 
-    pub history: Vec<atlas_plugin::RunRecord>,
+    pub history: Vec<avarok_plugin::RunRecord>,
     pub history_row: usize,
     /// Viewport offset into the selected past run's results table. The run
     /// list scrolls its SELECTION with j/k; this is the only way to read row
@@ -145,7 +145,7 @@ impl BenchState {
         }
     }
 
-    pub fn attach(&mut self, executor: atlas_plugin::BenchmarkExecutor, target: TargetEndpoint) {
+    pub fn attach(&mut self, executor: avarok_plugin::BenchmarkExecutor, target: TargetEndpoint) {
         self.executor = Some(executor);
         self.target = target;
         self.select(0);
@@ -204,7 +204,7 @@ impl BenchState {
     }
 
     /// Provenance of the selected benchmark.
-    pub fn plugin_metadata(&self) -> &'static atlas_plugin::PluginMetadata {
+    pub fn plugin_metadata(&self) -> &'static avarok_plugin::PluginMetadata {
         // A benchmark is always selected once `attach` has run; the fallback
         // keeps the renderer total rather than making it handle an Option.
         self.meta.unwrap_or(&FALLBACK_METADATA)
@@ -299,7 +299,7 @@ impl BenchState {
         if !self.errors.is_empty() {
             return Err(format!("{} field(s) need fixing", self.errors.len()));
         }
-        if self.coherence == atlas_plugin::CoherencePolicy::Skip {
+        if self.coherence == avarok_plugin::CoherencePolicy::Skip {
             return self.start();
         }
         let executor = self
@@ -370,6 +370,9 @@ impl BenchState {
             self.values.clone(),
             self.target.clone(),
             self.coherence,
+            // The dashboard has no repository to read a class's limits from;
+            // the capture is recorded, not judged, and the record says so.
+            None,
         ));
         self.view = View::Run;
         Ok(())
@@ -437,7 +440,7 @@ impl BenchState {
 
     /// Record the terminal frame, once.
     ///
-    /// Goes through `atlas_plugin::history`, the same writer the CLI uses, so a
+    /// Goes through `avarok_plugin::history`, the same writer the CLI uses, so a
     /// run started here and a run started headlessly land in one store with one
     /// format — and both carry their parameters and target, which the old
     /// frame-only write did not.
@@ -449,7 +452,7 @@ impl BenchState {
         let (Some(executor), Some(descriptor)) = (&self.executor, self.running_descriptor) else {
             return;
         };
-        let mut record = atlas_plugin::RunRecord::new(
+        let mut record = avarok_plugin::RunRecord::new(
             descriptor,
             &self.values,
             &self.target,
@@ -458,11 +461,11 @@ impl BenchState {
             // someone else configured, so it has nothing truthful to record.
             // A TUI run therefore never claims a regime it cannot see.
             Default::default(),
-            atlas_plugin::RunSource::Tui,
-            crate::cli::ATLAS_VERSION,
+            avarok_plugin::RunSource::Tui,
+            crate::cli::AVAROK_VERSION,
             frame.clone(),
         );
-        if let Err(e) = atlas_plugin::history::save(executor.artifacts(), &mut record) {
+        if let Err(e) = avarok_plugin::history::save(executor.artifacts(), &mut record) {
             tracing::warn!("could not record this run: {e:#}");
         }
         // The next visit to History re-reads the directory rather than trying
@@ -476,8 +479,8 @@ impl BenchState {
 /// STATIC, DELIBERATELY — compile-time data. A `const`-constructed literal
 /// with no interior mutability and nothing derived from a model; it is a
 /// string table that happens to need a stable address to be borrowed from.
-const FALLBACK_METADATA: atlas_plugin::PluginMetadata =
-    atlas_plugin::PluginMetadata::atlas("no benchmark selected");
+const FALLBACK_METADATA: avarok_plugin::PluginMetadata =
+    avarok_plugin::PluginMetadata::avarok("no benchmark selected");
 
 #[path = "bench_state_history.rs"]
 mod history;

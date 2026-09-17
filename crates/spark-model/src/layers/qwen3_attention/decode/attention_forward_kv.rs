@@ -31,7 +31,7 @@ impl Qwen3AttentionLayer {
         }
 
         if let Some(x) = self.exl3_attn_arm(ctx, "decode k/v_proj")? {
-            // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): packed k_proj + v_proj
+            // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): packed k_proj + v_proj
             // over the same `normed` in ONE section (one f16 ingress), each
             // into its own contiguous [1, nkv*hd] slot of the qkv buffer —
             // the dual-GEMV shape below, without the NVFP4 requant.

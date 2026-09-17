@@ -38,7 +38,7 @@
 //! load-bearing as the replay.
 //!
 //! The kill switch is `ModelLevers::gdn_fla_under_prefix_cache`
-//! (`ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1`), which restores the previous
+//! (`AVAROK_GDN_FLA_UNDER_PREFIX_CACHE=1`), which restores the previous
 //! behaviour for an A/B. It does not disable the warm-replay force —
 //! `marconi_skip` still pins the replay, as before.
 
@@ -89,7 +89,7 @@ impl super::types::TransformerModel {
         // ★ The lever only counts when the chunked kernel it frees is actually
         // LOADED. `ssm-state-poisoning-gate` validated the both-sides contract
         // with FlashInfer GDN; without the library the same flag would instead
-        // free Atlas's FLA ladder under prefix caching, which is the 2026-06-10
+        // free Avarok's FLA ladder under prefix caching, which is the 2026-06-10
         // warm-hit stutter and has no such receipt. A preset can therefore ship
         // the flag safely: on a box without the library it degrades to the
         // token-sequential contract rather than to an unvalidated one.
@@ -105,7 +105,7 @@ impl super::types::TransformerModel {
             if allow_fla {
                 tracing::warn!(
                     "GDN prefill: FLA left ENABLED under prefix caching \
-                     (ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1). Cold and warm passes take \
+                     (AVAROK_GDN_FLA_UNDER_PREFIX_CACHE=1). Cold and warm passes take \
                      DIFFERENT recurrence kernels across a Marconi restore boundary — \
                      measured 3.045e-03 relative divergence at layer 0. Diagnostic only."
                 );
@@ -114,7 +114,7 @@ impl super::types::TransformerModel {
                     "GDN prefill: token-sequential recurrence forced for ALL prefill passes \
                      (prefix caching active on a hybrid-SSM model), so a warm Marconi \
                      replay recomputes exactly what the cold pass cached. \
-                     ATLAS_GDN_FLA_UNDER_PREFIX_CACHE=1 restores the split behaviour."
+                     AVAROK_GDN_FLA_UNDER_PREFIX_CACHE=1 restores the split behaviour."
                 );
             }
         }

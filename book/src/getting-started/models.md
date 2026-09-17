@@ -37,7 +37,7 @@ Throughput figures are p50 single-request decode on a short prompt (`max_tokens 
 
 ## Per-model serve commands
 
-Every command below uses `avarok/atlas-gb10:latest`, `--network host --gpus all --ipc=host`, and the `-v ~/.cache/huggingface:/root/.cache/huggingface` volume mount — omitted here for readability. Full copy-pasteable commands are in [`QUICKSTART.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/QUICKSTART.md).
+Every command below uses `avarok/avarok-gb10:latest`, `--network host --gpus all --ipc=host`, and the `-v ~/.cache/huggingface:/root/.cache/huggingface` volume mount — omitted here for readability. Full copy-pasteable commands are in [`QUICKSTART.md`](https://github.com/Avarok-Cybersecurity/avarok/blob/main/QUICKSTART.md).
 
 ### Qwen3.5-35B-A3B (flagship)
 ```
@@ -79,4 +79,4 @@ serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
 
 ## Adding a new model
 
-The entire model-specific surface is **one new `ModelWeightLoader` impl** and **one match arm in `spark-model/src/factory.rs`**. The KV cache, buffer arena, scheduler, and HTTP server are all model-agnostic. The full walkthrough with a live example (Mistral-Small-4) is in the repo's [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guide. The chapter on [spark-model](../crates/spark-model.md) covers the trait shape.
+The entire model-specific surface is **one new `ModelWeightLoader` impl** and **one match arm in `spark-model/src/factory.rs`**. The KV cache, buffer arena, scheduler, and HTTP server are all model-agnostic. The full walkthrough with a live example (Mistral-Small-4) is in the repo's [Adding a new model](https://github.com/Avarok-Cybersecurity/avarok/blob/main/README.md#adding-a-new-model) guide. The chapter on [spark-model](../crates/spark-model.md) covers the trait shape.

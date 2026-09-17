@@ -17,7 +17,7 @@ impl MoeLayer {
         gate_nvfp4: Option<QuantizedWeight>,
         tid2eid_dev: Option<DevicePtr>,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         check_routing_bounds(config, num_experts)?;
         let gate_ptrs = build_ptr_table(&weights.experts, |e| &e.gate_proj, gpu)?;
@@ -50,7 +50,7 @@ impl MoeLayer {
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
             dense_gemm_router: try_kernel(gpu, "gemm", "dense_gemm_bf16_router"),
             dense_gemm_pipelined: try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined"),
-            // FP32 gate path (ATLAS_FP32_GATE) — optional; KernelHandle(0) if the
+            // FP32 gate path (AVAROK_FP32_GATE) — optional; KernelHandle(0) if the
             // target's kernel set predates these symbols, dispatch then stays BF16.
             dense_gemm_f32out: try_kernel(gpu, "gemm", "dense_gemm_bf16_f32out"),
             dense_gemm_f32in: try_kernel(gpu, "gemm", "dense_gemm_f32in_f32out"),
@@ -115,12 +115,12 @@ impl MoeLayer {
             moe_sorted_gate_up: gpu.kernel("moe_sorted", "moe_sorted_gate_up")?,
             moe_sorted_silu_down: gpu.kernel("moe_sorted", "moe_sorted_silu_down")?,
             moe_grouped_gemm: gpu.kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable")?,
-            moe_grouped_gemm_k32: if std::env::var("ATLAS_MOE_GROUPED_K32").as_deref() == Ok("1") {
+            moe_grouped_gemm_k32: if std::env::var("AVAROK_MOE_GROUPED_K32").as_deref() == Ok("1") {
                 try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_k32")
             } else {
                 KernelHandle(0)
             },
-            moe_grouped_gemm_m256: if std::env::var("ATLAS_MOE_GROUPED_M256").as_deref() == Ok("1")
+            moe_grouped_gemm_m256: if std::env::var("AVAROK_MOE_GROUPED_M256").as_deref() == Ok("1")
             {
                 try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_m256")
             } else {
@@ -166,7 +166,7 @@ impl MoeLayer {
                 "moe_w4a16",
                 "moe_w4a16_fused_gate_up_t_k64_m128",
             ),
-            // FUSED FP4 gate_up kernel (ATLAS_HOLO_MOE_GATEUP_FP4). try_kernel:
+            // FUSED FP4 gate_up kernel (AVAROK_HOLO_MOE_GATEUP_FP4). try_kernel:
             // KernelHandle(0) on images that didn't compile it; the FP4 dispatch
             // checks this handle != 0 before firing.
             moe_fused_gate_up_t_k64_fp4: try_kernel(
@@ -253,7 +253,7 @@ impl MoeLayer {
             moe_transpose_u8_batched_k: gpu
                 .kernel("moe_transpose_batched", "moe_transpose_u8_batched")?,
             // ── Phase 8a transposed-layout decode kernels ──
-            // Module name = file stem (default convention in atlas-kernels).
+            // Module name = file stem (default convention in avarok-kernels).
             moe_expert_gate_up_shared_t_k: gpu
                 .kernel("moe_shared_expert_fused_t", "moe_expert_gate_up_shared_t")?,
             moe_expert_silu_down_shared_t_k: gpu
@@ -340,20 +340,20 @@ impl MoeLayer {
                 "moe_shared_expert_fused_fp8_batch3_t",
                 "moe_expert_silu_down_shared_fp8_batch3_t",
             )?,
-            unified_layout: std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
+            unified_layout: std::env::var("AVAROK_UNIFIED_MOE_LAYOUT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            hybrid_layout: std::env::var("ATLAS_HYBRID_MOE_LAYOUT")
+            hybrid_layout: std::env::var("AVAROK_HYBRID_MOE_LAYOUT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            nvfp4_gate_up_m128: std::env::var("ATLAS_NVFP4_GATE_UP_M128")
+            nvfp4_gate_up_m128: std::env::var("AVAROK_NVFP4_GATE_UP_M128")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             // FP4 prefill MoE over the shared FAST_MOE=full [K/2,N] tables.
-            gateup_fp4: std::env::var("ATLAS_HOLO_MOE_GATEUP_FP4")
+            gateup_fp4: std::env::var("AVAROK_HOLO_MOE_GATEUP_FP4")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            down_fp4: std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
+            down_fp4: std::env::var("AVAROK_HOLO_MOE_DOWN_FP4")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             shared_gate_t: None,
@@ -412,7 +412,7 @@ impl MoeLayer {
             // Phase 2.7 Tier C — set by loader after construction (qwen35.rs).
             is_dflash_capture_layer: false,
             lora: None,
-            // Native EXL3 experts (ATLAS_EXL3_NATIVE_MOE=1) — installed by
+            // Native EXL3 experts (AVAROK_EXL3_NATIVE_MOE=1) — installed by
             // the loader via set_exl3_experts after construction.
             exl3_expert_tables: None,
             exl3_moe_state: None,

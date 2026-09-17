@@ -1,8 +1,8 @@
-# Atlas Inference Engine
+# Avarok Inference Engine
 
 > Pure Rust inference, from the device in your hand to the datacenter rack.
 
-Atlas is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
+Avarok is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
 
 Written in pure Rust and CUDA and licensed AGPL-3.0-only. One codebase covers
 the range, from edge-class accelerators through workstations to expert-parallel
@@ -15,15 +15,15 @@ deployments across nodes.
 
 ## Measured performance
 
-Qwen3.8-27B NVFP4 concurrency ladder. Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched.
+Qwen3.8-27B NVFP4 concurrency ladder. Avarok vs vLLM 0.27.1, C=1..128, every workload axis matched.
 Aggregate: mean tok/s over 3 timed reps (1 warmup discarded). Box: dgx2 (spark-43fa), NVIDIA GB10 Grace Blackwell, 121.7 GB unified.
 Workload: ISL 128 / OSL 1024 tokens, temperature 0,
 seed 42, 3 timed reps after 1 warmup. presence_penalty and frequency_penalty pinned to 0.0 on both engines.
 
-Result: Atlas wins 8 of 8 rungs, margin 1.012x to 1.225x
-against whichever vLLM configuration is faster at that concurrency.
+Result: Avarok wins 8 of 8 rungs, margin 1.012x to 1.333x
+against the matched vLLM + MTP configuration at each concurrency.
 
-| concurrency | Atlas tok/s | best vLLM tok/s | ratio |
+| concurrency | Avarok tok/s | matched vLLM tok/s | ratio |
 | --- | --- | --- | --- |
 | 1 | 23.59 | 19.72 (vLLM + MTP) | 1.196x |
 | 2 | 41.02 | 37.11 (vLLM + MTP) | 1.105x |
@@ -32,17 +32,17 @@ against whichever vLLM configuration is faster at that concurrency.
 | 16 | 203.36 | 197.03 (vLLM + MTP) | 1.032x |
 | 32 | 291.01 | 283.48 (vLLM + MTP) | 1.027x |
 | 64 | 386.63 | 361.39 (vLLM + MTP) | 1.070x |
-| 128 | 478.11 | 390.42 (vLLM, no speculation) | 1.225x |
+| 128 | 478.11 | 358.57 (vLLM + MTP) | 1.333x |
 
-Full campaign log including every rung lost on the way: https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md
+Full campaign log including every rung lost on the way: https://github.com/Avarok-Cybersecurity/avarok/blob/main/bench/ladder38/RESULTS.md
 MLPerf Inference v6.1: submitted, closed edge division, on both GB10 and gfx1151.
-Release gate: An Atlas image ships only after the serve matrix passes: every model boots, stays coherent (greedy determinism, no token leakage, tool reliability), and holds throughput within 10% of its committed baseline.
+Release gate: An Avarok image ships only after the serve matrix passes: every model boots, stays coherent (greedy determinism, no token leakage, tool reliability), and holds throughput within 10% of its committed baseline.
 Reproduce: python3 tests/run_all_models.py && python3 tests/gate_results.py --update-baselines
 
 ## Install
 
 ```sh
-curl -fsSL https://atlasinference.io/install.sh | sh
+curl -fsSL https://atlascybernetics.ai/install.sh | sh
 ```
 
 Or without piping to a shell:
@@ -62,7 +62,7 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - `qwen3-coder-next-fp8` — Qwen3 Coder Next FP8, 80B fp8, single, `Qwen/Qwen3-Coder-Next-FP8`
 - `qwen3-next-80b-a3b-nvfp4` — Qwen3 Next 80B A3B NVFP4, 80B nvfp4, single, `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4`
 - `qwen3-vl-30b-a3b-nvfp4` — Qwen3 VL 30B A3B NVFP4, 30B nvfp4, single, `ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4`
-- `qwen3.5-0.8b-bf16-atlas` — Qwen3.5 0.8B BF16, 0.8B none, single, `Qwen/Qwen3.5-0.8B`
+- `qwen3.5-0.8b-bf16-atlas` — Qwen3.5 0.8B BF16 Avarok, 0.8B none, single, `Qwen/Qwen3.5-0.8B`
 - `qwen3.5-122b-a10b-nvfp4-ep2` — Qwen3.5 122B A10B NVFP4 EP=2, 122B nvfp4, EP=2, `Sehyo/Qwen3.5-122B-A10B-NVFP4`
 - `qwen3.5-122b-a10b-nvfp4-single` — Qwen3.5 122B A10B NVFP4 Single, 122B nvfp4, single, `Sehyo/Qwen3.5-122B-A10B-NVFP4`
 - `qwen3.5-27b-dense-nvfp4` — Qwen3.5 27B Dense NVFP4, 27B nvfp4, single, `Kbenkhaled/Qwen3.5-27B-NVFP4`
@@ -109,15 +109,16 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 
 ## Links
 
-- Engine repo: https://github.com/Avarok-Cybersecurity/atlas
+- Engine repo: https://github.com/Avarok-Cybersecurity/avarok
 - Recipes (model SSOT): https://github.com/Avarok-Cybersecurity/atlas-recipes
-- Deployment guide: https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
-- Benchmark results: https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md
+- Deployment guide: https://github.com/Avarok-Cybersecurity/avarok/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md
+- Benchmark results: https://github.com/Avarok-Cybersecurity/avarok/blob/main/bench/ladder38/RESULTS.md
 - Discord: https://discord.gg/RQcGakU2jW
 - X: https://x.com/AtlasInferenceX
-- Site: https://atlasinference.io
-- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt
-- Engineering blog: https://blog.atlasinference.io — also at /llms.txt
+- Site: https://atlascybernetics.ai
+- Developer page: https://atlascybernetics.ai/engine
+- Documentation: https://docs.atlascybernetics.ai — full book, also at /llms.txt
+- Engineering blog: https://blog.atlascybernetics.ai — also at /llms.txt
 
 ## License
 

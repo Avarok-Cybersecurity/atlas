@@ -42,9 +42,9 @@ pub(super) fn install_high_speed_swap(
                 tracing::error!("--high-speed-swap install failed: {e:#}");
             } else {
                 tracing::info!("--high-speed-swap orchestrator installed on scheduler thread");
-                if std::env::var("ATLAS_HIGH_SPEED_SWAP_REPLACE").is_ok() {
+                if std::env::var("AVAROK_HIGH_SPEED_SWAP_REPLACE").is_ok() {
                     tracing::warn!(
-                        "ATLAS_HIGH_SPEED_SWAP_REPLACE=1: per-layer attention will route \
+                        "AVAROK_HIGH_SPEED_SWAP_REPLACE=1: per-layer attention will route \
                          through HighSpeedSwap. UNTESTED on real models — requires real-load \
                          validation before production use."
                     );
@@ -60,8 +60,8 @@ pub(super) fn install_high_speed_swap(
     }
 }
 
-/// Co-dispatch admission window: `Some(duration)` when `ATLAS_PREFILL_CODISPATCH=1`,
-/// else `None`. The window length is `ATLAS_PREFILL_CODISPATCH_WINDOW_MS`
+/// Co-dispatch admission window: `Some(duration)` when `AVAROK_PREFILL_CODISPATCH=1`,
+/// else `None`. The window length is `AVAROK_PREFILL_CODISPATCH_WINDOW_MS`
 /// (default 100). A burst of concurrent requests arrives over tens of ms
 /// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
 /// first 1-2 arrivals, so the "co"-dispatch cohort was mostly singletons and
@@ -70,11 +70,11 @@ pub(super) fn install_high_speed_swap(
 /// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
     admission_window_from(
-        std::env::var("ATLAS_PREFILL_CODISPATCH").ok().as_deref(),
-        std::env::var("ATLAS_PREFILL_ADMISSION_WINDOW_MS")
+        std::env::var("AVAROK_PREFILL_CODISPATCH").ok().as_deref(),
+        std::env::var("AVAROK_PREFILL_ADMISSION_WINDOW_MS")
             .ok()
             .as_deref(),
-        std::env::var("ATLAS_PREFILL_CODISPATCH_WINDOW_MS")
+        std::env::var("AVAROK_PREFILL_CODISPATCH_WINDOW_MS")
             .ok()
             .as_deref(),
     )
@@ -83,7 +83,7 @@ fn codispatch_window() -> Option<std::time::Duration> {
 /// Pure form, so the decoupling is testable without a scheduler.
 ///
 /// The window and the BATCHING used to be one flag: `codispatch_window`
-/// returned `None` unless `ATLAS_PREFILL_CODISPATCH` was set, and that same
+/// returned `None` unless `AVAROK_PREFILL_CODISPATCH` was set, and that same
 /// variable also drives `want_codispatch` in `phase_start_prefills`. A
 /// scheduling policy therefore never saw a queue it could order — either the
 /// window was off and requests were admitted as they arrived (nothing to
@@ -94,11 +94,11 @@ fn codispatch_window() -> Option<std::time::Duration> {
 /// 12.1 s -> 19.5 s) because nobody gets a token until the whole cohort's
 /// prefill finishes. Records: `ab_queueing_20260906T223041/`.
 ///
-/// So `ATLAS_PREFILL_ADMISSION_WINDOW_MS=<ms>` now opens the window on its own,
+/// So `AVAROK_PREFILL_ADMISSION_WINDOW_MS=<ms>` now opens the window on its own,
 /// WITHOUT arming the batched dispatch — which is what lets SLAI's
-/// shortest-pending-first actually order a queue. `ATLAS_PREFILL_CODISPATCH=1`
+/// shortest-pending-first actually order a queue. `AVAROK_PREFILL_CODISPATCH=1`
 /// keeps its old meaning (window + batching, default 100 ms) so existing
-/// scripts are unchanged, and `ATLAS_PREFILL_CODISPATCH_WINDOW_MS` still tunes
+/// scripts are unchanged, and `AVAROK_PREFILL_CODISPATCH_WINDOW_MS` still tunes
 /// that arm. An explicit admission window wins over the co-dispatch default.
 pub(super) fn admission_window_from(
     codispatch: Option<&str>,
@@ -123,11 +123,11 @@ pub(super) fn admission_window_from(
 }
 
 /// Quiet period that ends the co-dispatch window early for a lone request
-/// (`ATLAS_PREFILL_CODISPATCH_SETTLE_MS`, default 10). The window is only
+/// (`AVAROK_PREFILL_CODISPATCH_SETTLE_MS`, default 10). The window is only
 /// abandoned after this long with NO new arrival, so a burst whose members
 /// are separated by less than this is still collected whole.
 fn codispatch_settle() -> std::time::Duration {
-    let ms = std::env::var("ATLAS_PREFILL_CODISPATCH_SETTLE_MS")
+    let ms = std::env::var("AVAROK_PREFILL_CODISPATCH_SETTLE_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(10);
@@ -178,7 +178,7 @@ pub(super) fn drain_pending_requests(
         if g.requests.is_empty() {
             return Vec::new();
         }
-        // Co-dispatch micro-batch window (ATLAS_PREFILL_CODISPATCH=1): when idle,
+        // Co-dispatch micro-batch window (AVAROK_PREFILL_CODISPATCH=1): when idle,
         // gather a whole concurrent BURST into one forward (batched via
         // run_batched_prefill_step) rather than stopping at the 2nd request — a
         // 4-request burst used to split into 2+2 because the loop exited at len==2.

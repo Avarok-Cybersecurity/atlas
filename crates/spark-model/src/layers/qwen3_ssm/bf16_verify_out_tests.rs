@@ -22,13 +22,14 @@ fn bf16_verify_out_matches_serial_decode() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires CUDA and ATLAS_GDN_OUT_WEIGHT checkpoint BF16 weight"]
+#[ignore = "requires CUDA and AVAROK_GDN_OUT_WEIGHT checkpoint BF16 weight"]
 fn bf16_verify_checkpoint_out_matches_serial_decode() -> Result<()> {
-    check(std::fs::read(std::env::var("ATLAS_GDN_OUT_WEIGHT")?)?)
+    check(std::fs::read(std::env::var("AVAROK_GDN_OUT_WEIGHT")?)?)
 }
 
 fn check(weight_bytes: Vec<u8>) -> Result<()> {
-    let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu =
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let stream = gpu.default_stream();
     let gemv = gpu.kernel("gemv", "dense_gemv_bf16")?;
     let gemm = gpu.kernel("gemm", "dense_gemm_bf16")?;

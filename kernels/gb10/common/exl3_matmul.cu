@@ -11,7 +11,7 @@
 //   .research/exllamav3_ref/, adapted headers in exl3_vendor/ (each file
 //   documents its deltas). This file only adds extern "C" __global__ wrappers
 //   so the Rust host can select instances by name, plus BF16<->FP16/FP32
-//   boundary converters (Atlas serves BF16; the EXL3 kernels are fp16-native).
+//   boundary converters (Avarok serves BF16; the EXL3 kernels are fp16-native).
 //
 // ── Format recap ───────────────────────────────────────────────────────────
 //  * B (trellis): int16 [k/16, n/16, 16*K] — 16x16 tiles, K bits/weight,
@@ -113,7 +113,7 @@
 // preludes of the 3x-mgemm routed-expert pipeline — no D2H on the hot path):
 //   exl3_moe_stage_routing(indices, probs, b_indices, b_weights,
 //                          local_start, num_local, s)
-//     Maps Atlas's device routing state (u32 GLOBAL expert ids + f32 probs,
+//     Maps Avarok's device routing state (u32 GLOBAL expert ids + f32 probs,
 //     [s = T*top_k]) to the mgemm arguments: b_indices[i] = LOCAL table
 //     index (gid - local_start) for an EP-local expert, -1 for a remote one
 //     (the canonical `exl3_expert_slot_index` mapping — the -1 is what makes
@@ -128,7 +128,7 @@
 //     Same fp16 saturation note as exl3_bf16_to_f16.
 //
 // MoE prefill-tier staging (plain launches, grid-stride; contracts at the
-// definitions): exl3_moe_stage_sorted maps Atlas's moe_sort_by_expert outputs
+// definitions): exl3_moe_stage_sorted maps Avarok's moe_sort_by_expert outputs
 // onto the fused exl3_moe kernel's token_sorted/weight_sorted/expert_count
 // forms (local-expert order + EP sentinel tail bucket);
 // exl3_moe_gather_rows_h16 / exl3_moe_scatter_add_f32 are the
@@ -235,7 +235,7 @@ EXL3_GEMV_SET(4, 1)
 EXL3_GEMV_SET(4, 2)
 
 // BF16-activation GEMM twins (`_abf16`): the input-Hadamard prologue converts
-// BF16 -> f16 while rotating (Atlas adaptation `A_BF16`, bit-identical to the
+// BF16 -> f16 while rotating (Avarok adaptation `A_BF16`, bit-identical to the
 // standalone `exl3_bf16_to_f16` launch it replaces). f32 C only — the dense
 // decode arm (m <= 8, K outside the GEMV tier) is the consumer; every other
 // gemm/mgemm site keeps the f16 ingress.
@@ -277,7 +277,7 @@ EXL3_GEMM_WRAP_ABF16(4, 2, 1, 256)
 // convert-after). Two extra trailing arguments beyond EXL3_GEMM_ARGS; the
 // f32 C is still written (split-K scratch). Consumer: the dense decode arm's
 // m <= 8, K outside 2..=4 path (`exl3_gemm_abf16_obf16`), which then skips its
-// egress launch. Kill switch on the host: ATLAS_EXL3_NO_FUSED_EGRESS.
+// egress launch. Kill switch on the host: AVAROK_EXL3_NO_FUSED_EGRESS.
 #define EXL3_GEMM_WRAP_ABF16_OBF16(K, CB, S, BLKDIM)                          \
     extern "C" __global__ void __launch_bounds__(BLKDIM)                      \
     exl3_gemm_k##K##_cb##CB##_sh##S##_f32_abf16_obf16                         \
@@ -486,7 +486,7 @@ extern "C" __global__ void __launch_bounds__(256) exl3_moe_stage_ingress(
 
 // ── MoE prefill-tier staging (contracts in the header) ─────────────────────
 //
-// exl3_moe_stage_sorted: map Atlas's sort outputs (moe_sort_by_expert:
+// exl3_moe_stage_sorted: map Avarok's sort outputs (moe_sort_by_expert:
 // contiguous spans per GLOBAL expert ascending, expert_offsets [ne+1] i32
 // prefix sums, token_to_perm [T*top_k] i32 flat-slot -> sorted position) onto
 // the fused exl3_moe kernel's contract (token_sorted/weight_sorted i64/f16

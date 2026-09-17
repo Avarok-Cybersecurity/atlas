@@ -4,7 +4,7 @@
 //!
 //! The scheduler's counterpart to `spark_model::layers::ops::ModelLevers`.
 //! These steered the decode, verify and speculation paths from twenty-odd
-//! `OnceLock<bool>` statics reading `ATLAS_*` at first touch; a static outlives
+//! `OnceLock<bool>` statics reading `AVAROK_*` at first touch; a static outlives
 //! the model whose flags it encodes, and it declares nothing in the signature
 //! of the function that reads it.
 //!
@@ -20,13 +20,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct SchedLevers {
     // ── Grammar & sampling ──
     /// Fast greedy path when a grammar is active. Ships ON;
-    /// `ATLAS_DISABLE_FAST_GREEDY=1` opts out.
+    /// `AVAROK_DISABLE_FAST_GREEDY=1` opts out.
     pub fast_greedy_grammar: bool,
     /// Fast masked-sampling chat path. Ships ON;
-    /// `ATLAS_DISABLE_FAST_MASKED=1` opts out.
+    /// `AVAROK_DISABLE_FAST_MASKED=1` opts out.
     pub fast_masked: bool,
     /// GRAMMARLESS verify fast-greedy — the chat sibling of the #237 grammar
-    /// arm. Ships ON; `ATLAS_NO_FAST_GREEDY_CHAT=1` restores the per-seq
+    /// arm. Ships ON; `AVAROK_NO_FAST_GREEDY_CHAT=1` restores the per-seq
     /// `[K,vocab]`-D2H slow path (the byte-invariant tie-breaking arm).
     pub fast_greedy_chat: bool,
     /// Force temperature 0 regardless of the request. Diagnostic.
@@ -41,7 +41,7 @@ pub struct SchedLevers {
     /// Fix B (2026-06-05): hard-stop on the `<tool_response>` control token,
     /// which the model must never generate; if it does — post-tool-call
     /// runaway — end the turn. Ships ON;
-    /// `ATLAS_TOOL_RESPONSE_STOP=0`/`false` disables.
+    /// `AVAROK_TOOL_RESPONSE_STOP=0`/`false` disables.
     pub tool_response_stop: bool,
     /// Fix A (2026-06-05): in `tool_choice="auto"` the grammar's
     /// `is_terminated()` never becomes true after a tool call, so EOS is
@@ -50,28 +50,28 @@ pub struct SchedLevers {
     /// tool body or thinking — lift the suppression so the model's natural
     /// EOS ends the turn. This is the verified root-cause fix behind the
     /// webserver_ok 10/10 + Σwall win, so it ships ON and the win is not
-    /// env-dependent. `ATLAS_TOOL_EOS_ESCAPE=0`/`false` disables.
+    /// env-dependent. `AVAROK_TOOL_EOS_ESCAPE=0`/`false` disables.
     pub tool_eos_escape: bool,
-    /// Apply min-p during MTP verify. Ships ON; `ATLAS_NO_MTP_MINP=1` opts out.
+    /// Apply min-p during MTP verify. Ships ON; `AVAROK_NO_MTP_MINP=1` opts out.
     pub mtp_minp: bool,
     /// Run the full sample pipeline during MTP verify. Ships ON;
-    /// `ATLAS_NO_MTP_VERIFY_SAMPLE=1` opts out.
+    /// `AVAROK_NO_MTP_VERIFY_SAMPLE=1` opts out.
     pub mtp_verify_sample: bool,
 
     // ── DFlash speculation ──
     /// The EAGLE k-gamma append fix. Ships ON since the 54.5 record config
-    /// (2026-08-19); `ATLAS_DFLASH_EAGLE_FIX=0` is the kill switch.
+    /// (2026-08-19); `AVAROK_DFLASH_EAGLE_FIX=0` is the kill switch.
     ///
     /// ★ Read from TWO files before this — `verify_dflash_step.rs` and
     /// `verify_k2_step.rs`, each per verify step, each with its own
     /// `!= Some("0")`. Same variable, same spelling, no shared source: the
-    /// exact shape `ATLAS_DSPARK_ANCHOR_BIAS` had. One field now.
+    /// exact shape `AVAROK_DSPARK_ANCHOR_BIAS` had. One field now.
     pub dflash_eagle_fix: bool,
-    /// `ATLAS_DFLASH_STEP_TIMING=1` — split the step wall into verify (target
+    /// `AVAROK_DFLASH_STEP_TIMING=1` — split the step wall into verify (target
     /// M=1+gamma forward) and propose (drafter forward). The ledger never had
     /// this split and guessed "FFN + double sweep"; this measures it.
     pub dflash_step_timing: bool,
-    /// `ATLAS_VISION_TIMING` (presence) — synchronize after each prefill
+    /// `AVAROK_VISION_TIMING` (presence) — synchronize after each prefill
     /// chunk and log the ViT chunk wall. Diagnostic, and it forces a sync.
     pub vision_timing: bool,
     pub dflash_masked_verify: bool,
@@ -81,7 +81,7 @@ pub struct SchedLevers {
     pub dflash_unified_ctx: bool,
     pub dflash_spec_think: bool,
     /// Pin the MTP throughput gate to the VERIFY arm for DFlash at
-    /// `active.len() <= 2` (`ATLAS_DFLASH_GATE_PIN_C2=0` restores
+    /// `active.len() <= 2` (`AVAROK_DFLASH_GATE_PIN_C2=0` restores
     /// arbitration). Measured 2026-08-19 (qwen3.8-27B+DFlash2, C=2):
     /// arbitration was par on tok/s (25.4 vs 24.4) but its serial↔batch-K
     /// forward flips FORK the temp-0 token stream mid-answer and the bad
@@ -90,7 +90,7 @@ pub struct SchedLevers {
     /// and completions EOS normally. C>=3 keeps arbitration — per-seq serial
     /// verify genuinely loses there (22.0 vs 28.1 tok/s at C=4).
     pub dflash_gate_pin_c2: bool,
-    /// Cross-sequence batched DFlash K=γ verify (`ATLAS_DFLASH_BATCH_VERIFY=0`
+    /// Cross-sequence batched DFlash K=γ verify (`AVAROK_DFLASH_BATCH_VERIFY=0`
     /// forces the per-sequence loop). One R=n*(γ+1)-row forward replaces n
     /// full weight sweeps; the GDN body still runs per sequence, so accepts
     /// are unchanged and only the wall moves.
@@ -99,30 +99,30 @@ pub struct SchedLevers {
     pub dflash_adaptive_min: f32,
     /// Serially-decoded tokens between adaptive re-probes.
     pub dflash_adaptive_reprobe: u32,
-    /// `ATLAS_DFLASH_RESUME_GUARD=N` (default 0 = off): keep the first N
+    /// `AVAROK_DFLASH_RESUME_GUARD=N` (default 0 = off): keep the first N
     /// post-`</think>` tokens on plain serial decode.
     pub dflash_resume_guard: u32,
     /// Lookup drafts into the wide verify (#974): when the sequence's own
     /// history matches the tokens just generated, the continuation is the
     /// draft and the MTP propose is skipped for that step. Ships ON;
-    /// `ATLAS_LOOKUP_DRAFTS=0` restores the MTP head on every step.
+    /// `AVAROK_LOOKUP_DRAFTS=0` restores the MTP head on every step.
     pub lookup_drafts: bool,
-    /// Match length the lookup index is keyed on (`ATLAS_LOOKUP_MIN_MATCH`,
+    /// Match length the lookup index is keyed on (`AVAROK_LOOKUP_MIN_MATCH`,
     /// default 8). Shorter matches never fire. Measured 2026-09-12 on
     /// Qwen3.8-Flash-Next: at 4 the index fires on fresh code and prose
     /// (`self.`, `return`, `):` repeat every few lines), the verify rejects
     /// the drafts, accept counts drop and every stream moves; at 8 all three
     /// standard cells are byte-identical to the base at base tok/s.
     pub lookup_min_match: usize,
-    /// Longest backward match the lookup ranks by (`ATLAS_LOOKUP_MAX_MATCH`,
+    /// Longest backward match the lookup ranks by (`AVAROK_LOOKUP_MAX_MATCH`,
     /// default 16).
     pub lookup_max_match: usize,
     /// Drafts a lookup hit proposes when the index has them
-    /// (`ATLAS_LOOKUP_WIDTH`, default 7 = K=8 rows, the widest the K-row MoE
+    /// (`AVAROK_LOOKUP_WIDTH`, default 7 = K=8 rows, the widest the K-row MoE
     /// arm serves on Qwen3.8-Flash-Next). The MTP head keeps its own width;
     /// a value below the head's width lets the head's width stand.
     pub lookup_width: usize,
-    /// `ATLAS_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
+    /// `AVAROK_MTP_SHADOW_TOPK` — the verify side of the drafter top-k probe.
     /// Parsed by `spark_model::speculative::shadow_topk`, the SSOT.
     pub shadow_topk: usize,
 
@@ -131,7 +131,7 @@ pub struct SchedLevers {
     pub disable_watchdogs: bool,
     /// Suppress EOS while inside a thinking block.
     pub eos_suppressed_by_thinking: bool,
-    /// Forced-token fast path. Ships ON; `ATLAS_DISABLE_FORCED_TOKEN=1` opts out.
+    /// Forced-token fast path. Ships ON; `AVAROK_DISABLE_FORCED_TOKEN=1` opts out.
     pub forced_token_fastpath: bool,
 
     // ── Diagnostics / instrumentation ──
@@ -145,12 +145,12 @@ pub struct SchedLevers {
     loop_watchdog: AtomicBool,
 }
 
-/// `ATLAS_FOO=1` enables.
+/// `AVAROK_FOO=1` enables.
 fn opt_in(var: &str) -> bool {
     std::env::var(var).ok().as_deref() == Some("1")
 }
 
-/// `ATLAS_FOO=0` DISABLES — a default-ON lever whose kill-switch is an
+/// `AVAROK_FOO=0` DISABLES — a default-ON lever whose kill-switch is an
 /// explicit zero. NOT interchangeable with [`on_unless`]: swapping them
 /// inverts the switch, so `=0` would leave the lever on and `=1` would turn
 /// it off.
@@ -162,7 +162,7 @@ fn on_unless_zero(var: &str) -> bool {
     std::env::var(var).ok().as_deref() != Some("0")
 }
 
-/// `ATLAS_FOO=1` DISABLES — the flag names a negative, the field stores the
+/// `AVAROK_FOO=1` DISABLES — the flag names a negative, the field stores the
 /// positive, so the inversion happens here instead of at every read site.
 fn on_unless(var: &str) -> bool {
     std::env::var(var).ok().as_deref() != Some("1")
@@ -188,7 +188,7 @@ static MTP_GATE_FORCE_CLI: std::sync::OnceLock<bool> = std::sync::OnceLock::new(
 /// Publish the command line's `--mtp-gate`. Call once, at serve time.
 ///
 /// `None` means the flag was NOT given. Publishing the `auto` default instead
-/// sealed this cell on every `spark serve` and left `ATLAS_MTP_GATE_FORCE=1`
+/// sealed this cell on every `spark serve` and left `AVAROK_MTP_GATE_FORCE=1`
 /// documented but dead — the fallback below could never be reached. An absent
 /// flag now publishes nothing, so the variable works again for the scripts it
 /// exists for, and an explicit `--mtp-gate auto` still overrides it.
@@ -209,28 +209,28 @@ pub fn mtp_gate_force() -> bool {
     MTP_GATE_FORCE_CLI
         .get()
         .copied()
-        .unwrap_or_else(|| opt_in("ATLAS_MTP_GATE_FORCE"))
+        .unwrap_or_else(|| opt_in("AVAROK_MTP_GATE_FORCE"))
 }
 
 impl SchedLevers {
     /// Resolve from the environment. Called once, when the run starts.
     pub fn from_env() -> Self {
         Self {
-            fast_greedy_grammar: on_unless("ATLAS_DISABLE_FAST_GREEDY"),
-            fast_masked: on_unless("ATLAS_DISABLE_FAST_MASKED"),
-            fast_greedy_chat: on_unless("ATLAS_NO_FAST_GREEDY_CHAT"),
-            force_temp_zero: opt_in("ATLAS_FORCE_TEMP_ZERO"),
+            fast_greedy_grammar: on_unless("AVAROK_DISABLE_FAST_GREEDY"),
+            fast_masked: on_unless("AVAROK_DISABLE_FAST_MASKED"),
+            fast_greedy_chat: on_unless("AVAROK_NO_FAST_GREEDY_CHAT"),
+            force_temp_zero: opt_in("AVAROK_FORCE_TEMP_ZERO"),
             // Reuses the tested parser in `helpers` rather than re-deriving
             // the rule: this idiom accepts "0" OR "false", trimmed, and
             // re-spelling it here as `!= "1"` would silently ignore `=false`.
             tool_response_stop: crate::scheduler::helpers::parse_flag_default_on(
-                std::env::var("ATLAS_TOOL_RESPONSE_STOP").ok().as_deref(),
+                std::env::var("AVAROK_TOOL_RESPONSE_STOP").ok().as_deref(),
             ),
             tool_eos_escape: crate::scheduler::helpers::parse_flag_default_on(
-                std::env::var("ATLAS_TOOL_EOS_ESCAPE").ok().as_deref(),
+                std::env::var("AVAROK_TOOL_EOS_ESCAPE").ok().as_deref(),
             ),
-            mtp_minp: on_unless("ATLAS_NO_MTP_MINP"),
-            mtp_verify_sample: on_unless("ATLAS_NO_MTP_VERIFY_SAMPLE"),
+            mtp_minp: on_unless("AVAROK_NO_MTP_MINP"),
+            mtp_verify_sample: on_unless("AVAROK_NO_MTP_VERIFY_SAMPLE"),
 
             // DEFAULT-ON since 2026-08-31: masked_verify, seam_serial and
             // spec_think are three of the levers behind the 63.0 tok/s
@@ -240,24 +240,24 @@ impl SchedLevers {
             // shipped none of them, so out-of-the-box DFlash ran the slow
             // shape of its own engine. `=0` restores each legacy path for
             // A/B; `=1` remains a harmless no-op in every existing recipe.
-            dflash_eagle_fix: on_unless_zero("ATLAS_DFLASH_EAGLE_FIX"),
-            dflash_step_timing: opt_in("ATLAS_DFLASH_STEP_TIMING"),
-            vision_timing: present("ATLAS_VISION_TIMING"),
-            dflash_masked_verify: on_unless_zero("ATLAS_DFLASH_MASKED_VERIFY"),
-            dflash_seam_serial: on_unless_zero("ATLAS_DFLASH_SEAM_SERIAL"),
+            dflash_eagle_fix: on_unless_zero("AVAROK_DFLASH_EAGLE_FIX"),
+            dflash_step_timing: opt_in("AVAROK_DFLASH_STEP_TIMING"),
+            vision_timing: present("AVAROK_VISION_TIMING"),
+            dflash_masked_verify: on_unless_zero("AVAROK_DFLASH_MASKED_VERIFY"),
+            dflash_seam_serial: on_unless_zero("AVAROK_DFLASH_SEAM_SERIAL"),
             // NOT graduated: the record env runs adaptive OFF (γ scheduling
             // is static at the measured optimum); opt-in remains correct.
-            dflash_adaptive: opt_in("ATLAS_DFLASH_ADAPTIVE"),
-            dflash_serial_append: opt_in("ATLAS_DFLASH_SERIAL_APPEND"),
+            dflash_adaptive: opt_in("AVAROK_DFLASH_ADAPTIVE"),
+            dflash_serial_append: opt_in("AVAROK_DFLASH_SERIAL_APPEND"),
             // DEFAULT-ON since 2026-08-19: without the unified ctx commit the
             // drafter conditions on a starved/poisoned hidden accumulator
             // (only row k-1 — an almost-always-rejected draft — captured, one
             // slot per step regardless of num_accepted, serial stretches
             // dropped entirely). Validated on qwen3.8-27B+DFlash2: code-leg
             // 10.5 -> 36.8 tok/s (+250%, accept 41% -> 84%), prose +130%,
-            // count +31% (PR #604). `ATLAS_DFLASH_UNIFIED_CTX=0` restores the
+            // count +31% (PR #604). `AVAROK_DFLASH_UNIFIED_CTX=0` restores the
             // legacy append for A/B.
-            dflash_unified_ctx: on_unless_zero("ATLAS_DFLASH_UNIFIED_CTX"),
+            dflash_unified_ctx: on_unless_zero("AVAROK_DFLASH_UNIFIED_CTX"),
             // ★ NOT GRADUATED, and it must not be. Unlike masked_verify and
             // seam_serial — which are additionally gated on
             // `dflash_verify_raw_argmax` (= `args.dflash`, serve_load.rs) and
@@ -276,12 +276,12 @@ impl SchedLevers {
             // and 10/10 -> 7/10 followed_directions DETERMINISTICALLY (three
             // identical runs), and bfcl-subset-echolp, which serves the same
             // recipe, fell 0.44 below both of its floors.
-            dflash_spec_think: opt_in("ATLAS_DFLASH_SPEC_THINK"),
-            dflash_gate_pin_c2: on_unless_zero("ATLAS_DFLASH_GATE_PIN_C2"),
-            dflash_batch_verify: on_unless_zero("ATLAS_DFLASH_BATCH_VERIFY"),
-            dflash_adaptive_min: num("ATLAS_DFLASH_ADAPTIVE_MIN", 2.0),
-            dflash_adaptive_reprobe: num("ATLAS_DFLASH_ADAPTIVE_REPROBE", 256),
-            dflash_resume_guard: num("ATLAS_DFLASH_RESUME_GUARD", 0),
+            dflash_spec_think: opt_in("AVAROK_DFLASH_SPEC_THINK"),
+            dflash_gate_pin_c2: on_unless_zero("AVAROK_DFLASH_GATE_PIN_C2"),
+            dflash_batch_verify: on_unless_zero("AVAROK_DFLASH_BATCH_VERIFY"),
+            dflash_adaptive_min: num("AVAROK_DFLASH_ADAPTIVE_MIN", 2.0),
+            dflash_adaptive_reprobe: num("AVAROK_DFLASH_ADAPTIVE_REPROBE", 256),
+            dflash_resume_guard: num("AVAROK_DFLASH_RESUME_GUARD", 0),
             // Default ON upstream (#1026). The -40% C=1 / -46% C=4 this
             // branch bisected was the STALE-DRAFT bug — drafts were one
             // position behind, so every one was rejected — fixed upstream in
@@ -293,36 +293,36 @@ impl SchedLevers {
             //   default-on   C=1 32.18  C=4 35.78  (p1 0.81-0.88, MTP healthy)
             //   pre-#1026    C=1 53.06  C=4 66.63
             // and Marconi anchor disagreements 0 -> 2 on BOTH ranks.
-            lookup_drafts: on_unless_zero("ATLAS_LOOKUP_DRAFTS"),
-            lookup_min_match: num("ATLAS_LOOKUP_MIN_MATCH", 8),
-            lookup_max_match: num("ATLAS_LOOKUP_MAX_MATCH", 16),
-            lookup_width: num("ATLAS_LOOKUP_WIDTH", 7),
+            lookup_drafts: on_unless_zero("AVAROK_LOOKUP_DRAFTS"),
+            lookup_min_match: num("AVAROK_LOOKUP_MIN_MATCH", 8),
+            lookup_max_match: num("AVAROK_LOOKUP_MAX_MATCH", 16),
+            lookup_width: num("AVAROK_LOOKUP_WIDTH", 7),
             shadow_topk: spark_model::speculative::shadow_topk(),
 
             // Reuses the tested parsers in `helpers` rather than re-deriving
             // the rule: both accept "1" OR "true", trimmed, and re-spelling
             // that here as `== "1"` would silently ignore `=true`.
             disable_watchdogs: crate::scheduler::helpers::parse_disable_watchdogs(
-                std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+                std::env::var("AVAROK_DISABLE_WATCHDOGS").ok().as_deref(),
             ),
-            eos_suppressed_by_thinking: opt_in("ATLAS_EOS_SUPPRESS_THINKING"),
+            eos_suppressed_by_thinking: opt_in("AVAROK_EOS_SUPPRESS_THINKING"),
             forced_token_fastpath: crate::scheduler::helpers::parse_forced_token_fastpath(
-                std::env::var("ATLAS_DISABLE_FORCED_TOKEN").ok().as_deref(),
+                std::env::var("AVAROK_DISABLE_FORCED_TOKEN").ok().as_deref(),
             ),
 
             // Presence-gated, not value-gated.
-            decode_timing: present("ATLAS_DECODE_TIMING"),
-            mtp_timing: opt_in("ATLAS_MTP_TIMING"),
+            decode_timing: present("AVAROK_DECODE_TIMING"),
+            mtp_timing: opt_in("AVAROK_MTP_TIMING"),
             // `--mtp-gate force` is the configured spelling; the env var is
             // the fallback for scripts that predate the flag.
             mtp_gate_force: mtp_gate_force(),
-            adadec_diagnostic: present("ATLAS_ADADEC_DIAGNOSTIC"),
+            adadec_diagnostic: present("AVAROK_ADADEC_DIAGNOSTIC"),
 
             loop_watchdog: AtomicBool::new(false),
         }
     }
 
-    /// Every opt-in off and every opt-out on — what a build with no `ATLAS_*`
+    /// Every opt-in off and every opt-out on — what a build with no `AVAROK_*`
     /// set resolves to. Tests use this instead of mutating the environment.
     pub fn defaults() -> Self {
         Self {

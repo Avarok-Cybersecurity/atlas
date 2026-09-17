@@ -2,7 +2,7 @@
 
 //! History-pane reads for [`BenchState`], split out of `bench_state.rs` at the
 //! 500-LoC cap. Exact piecewise move — no logic changed. These two are the
-//! only members that read `~/.atlas/runs` rather than driving a live run, so
+//! only members that read `~/.avarok/runs` rather than driving a live run, so
 //! they form the natural seam.
 
 use super::BenchState;
@@ -19,7 +19,7 @@ impl BenchState {
         }
         self.history_loaded = true;
         self.history = match &self.executor {
-            Some(executor) => atlas_plugin::history::load_all(executor.artifacts()),
+            Some(executor) => avarok_plugin::history::load_all(executor.artifacts()),
             None => Vec::new(),
         };
         self.history_row = self.history_row.min(self.history.len().saturating_sub(1));

@@ -128,7 +128,7 @@ pub struct ChatCompletionRequest {
     /// None = non-deterministic (default).
     pub seed: Option<u64>,
     /// Whether to return log-probabilities. OpenAI SDK sends this as a boolean;
-    /// Atlas uses `top_logprobs` for the count. Accepted for compatibility but
+    /// Avarok uses `top_logprobs` for the count. Accepted for compatibility but
     /// the actual count is controlled by `top_logprobs`.
     #[serde(default)]
     pub logprobs: Option<bool>,
@@ -150,33 +150,33 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub stream_options: Option<StreamOptions>,
     /// Whether the model may call multiple tools in one turn (OpenAI default
-    /// `true`). Atlas currently emits one tool call per turn regardless — the
+    /// `true`). Avarok currently emits one tool call per turn regardless — the
     /// field is accepted for compatibility but does not change behavior.
     #[serde(default)]
     pub parallel_tool_calls: Option<bool>,
     /// Controls response length beyond `max_tokens` on gpt-5.x class models
-    /// (`low | medium | high`). Atlas accepts the field for compatibility
+    /// (`low | medium | high`). Avarok accepts the field for compatibility
     /// but does not currently steer output length on top of `max_tokens`.
     #[serde(default)]
     pub verbosity: Option<String>,
-    /// Service tier (`auto | default | flex | scale | priority`). Atlas runs
+    /// Service tier (`auto | default | flex | scale | priority`). Avarok runs
     /// one tier only — accepted for compatibility, echoed back in response.
     #[serde(default)]
     pub service_tier: Option<String>,
     /// Persist the completion for later retrieval via GET `/v1/chat/completions/{id}`.
-    /// Atlas does not currently have a completion store — field accepted, ignored.
+    /// Avarok does not currently have a completion store — field accepted, ignored.
     #[serde(default)]
     pub store: Option<bool>,
     /// User-supplied metadata (≤16 key/value pairs, value ≤512 chars).
     /// Echoed back in the response. OpenAI uses these for completion store
-    /// filtering; Atlas just round-trips them.
+    /// filtering; Avarok just round-trips them.
     #[serde(default)]
     pub metadata: Option<std::collections::HashMap<String, String>>,
-    /// Stable identifier for end-users (abuse detection). Atlas accepts,
+    /// Stable identifier for end-users (abuse detection). Avarok accepts,
     /// ignores; kept for back-compat with the deprecated `user` field.
     #[serde(default)]
     pub safety_identifier: Option<String>,
-    /// Key used by OpenAI to cache prompt prefixes across requests. Atlas's
+    /// Key used by OpenAI to cache prompt prefixes across requests. Avarok's
     /// prefix cache is content-addressed (hash of prompt tokens), so this
     /// field is accepted and ignored.
     #[serde(default)]
@@ -186,25 +186,25 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub user: Option<String>,
     /// Output modalities requested by the client (`["text"]`, `["text",
-    /// "audio"]`, …). Atlas only emits text — when audio is requested
+    /// "audio"]`, …). Avarok only emits text — when audio is requested
     /// we log a warning and return text only. Accepted for compat with
     /// the gpt-4o-audio / gpt-5-audio family SDKs.
     #[serde(default)]
     pub modalities: Option<Vec<String>>,
-    /// Audio-output configuration (voice + format). Atlas does not
+    /// Audio-output configuration (voice + format). Avarok does not
     /// serve audio; the field is accepted and ignored so clients that
     /// unconditionally attach it don't 4xx.
     #[serde(default)]
     pub audio: Option<serde_json::Value>,
     /// Predicted Outputs — a hint that large parts of the response are
     /// known ahead of time (e.g. regenerating a file with one edit).
-    /// Atlas does not currently run speculative decoding against the
+    /// Avarok does not currently run speculative decoding against the
     /// prediction; accepted and ignored. Dropping vs rejecting matches
     /// OpenAI's forward-compat behavior on models that don't support it.
     #[serde(default)]
     pub prediction: Option<serde_json::Value>,
     /// Web-search tool configuration (`web_search_options: {...}`).
-    /// Atlas has no web-search backend — accepted and ignored.
+    /// Avarok has no web-search backend — accepted and ignored.
     #[serde(default)]
     pub web_search_options: Option<serde_json::Value>,
     /// Reasoning-effort shorthand (`minimal | low | medium | high`).
@@ -222,7 +222,7 @@ pub struct StreamOptions {
     /// Emit a final chunk with `choices:[]` and populated `usage` before `[DONE]`.
     pub include_usage: bool,
     /// Include a random-padding `obfuscation` field on each chunk. Accepted
-    /// but not emitted on Atlas — no multi-tenant side-channel risk to defend.
+    /// but not emitted on Avarok — no multi-tenant side-channel risk to defend.
     pub include_obfuscation: bool,
 }
 
@@ -378,7 +378,7 @@ impl ChatCompletionRequest {
     /// 3. `reasoning.effort` object / top-level `reasoning_effort`
     ///    shorthand (OpenAI) — mapped to budget
     /// 4. `chat_template_kwargs` (vLLM stable) — enable/disable + optional budget
-    /// 5. `enable_thinking` (Atlas legacy) — boolean
+    /// 5. `enable_thinking` (Avarok legacy) — boolean
     ///
     /// No channel present → [`ThinkingDirective::Unspecified`] (the old
     /// `thinking_explicitly_requested() == false`).
@@ -506,7 +506,7 @@ impl ChatCompletionRequest {
             }
         }
 
-        // 5. Atlas legacy: enable_thinking in the request body. Now Option:
+        // 5. Avarok legacy: enable_thinking in the request body. Now Option:
         // Some(true) -> On, Some(false) -> Off (an explicit opt-out is now
         // honored, previously it was silently ignored), None (field absent) ->
         // fall through to Unspecified so clients that don't know this flag

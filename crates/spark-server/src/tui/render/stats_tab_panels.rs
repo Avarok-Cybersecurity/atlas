@@ -152,7 +152,7 @@ pub(super) fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
                 f,
                 r,
                 " GPU",
-                s.atlas_used_gb,
+                s.avarok_used_gb,
                 s.gpu_total_gb.max(0.001),
                 true,
             );

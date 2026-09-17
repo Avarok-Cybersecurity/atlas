@@ -17,7 +17,7 @@
   // reset, and whenever the earlier prompt was dismissed rather than allowed.
   // So the guard held for a first-time visitor and failed for exactly the people
   // who matter: every operator hit "Access other apps and services on this
-  // device" on plain https://atlasinference.io/, before touching anything.
+  // device" on plain https://atlascybernetics.ai/, before touching anything.
   //
   // A permission prompt belongs to the gesture that needs the permission. There
   // is no gesture in a topbar that renders on first paint.
@@ -32,14 +32,7 @@
   // are counts, and the page they link to holds the rest.
   import { fleet } from '$lib/agent/fleet.svelte.js';
   import { summarize } from '$lib/agent/summary.js';
-
-  // `.html`, not `/control`. adapter-static writes this route to control.html,
-  // and the deploy target serves files literally: it does not try the
-  // extension, and it has no directory index outside the document root. So
-  // /control is the SPA fallback and /control/ is a 500. This is the URL that
-  // resolves. If the server ever gains `try_files $uri $uri.html`, this becomes
-  // '/control'.
-  const CONTROL = '/control.html';
+  import { CONTROL } from '$lib/data.js';
 
   const view = $derived(summarize(fleet));
 </script>

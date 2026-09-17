@@ -8,7 +8,7 @@ import gates from '$lib/gates.generated.json';
 import { splitByVariant } from './gate-variants.js';
 
 export const gateData = gates;
-export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
+export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/avarok/commit/';
 
 export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
 export {

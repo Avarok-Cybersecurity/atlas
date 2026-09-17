@@ -173,7 +173,7 @@ def main() -> None:
     print(f'wrote {args.out}')
 
     # Raw-bin mirror for the Rust GPU parity harness (hc_golden convention:
-    # one .bin per tensor + meta.json; ATLAS_QSA_TEST_DATA points here).
+    # one .bin per tensor + meta.json; AVAROK_QSA_TEST_DATA points here).
     bin_dir = args.out.rsplit('.', 1)[0] + '_bins'
     os.makedirs(bin_dir, exist_ok=True)
 

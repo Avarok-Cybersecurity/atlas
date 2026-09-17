@@ -39,7 +39,7 @@ fn hopper_arms_the_fused_gate_up_gemm_and_gb10_does_not() {
 
 /// The override, in both directions and under the whole 2026-09-11 grammar.
 ///
-/// `=0` means OFF. There is no `ATLAS_NO_FFN_GATEUP_FUSED`: the lever is new,
+/// `=0` means OFF. There is no `AVAROK_NO_FFN_GATEUP_FUSED`: the lever is new,
 /// so no script predates the grammar and none can be surprised by it — which
 /// is exactly why `0`, `false`, `off` and `no` all have to work, and why
 /// anything else has to arm it.
@@ -47,16 +47,16 @@ fn hopper_arms_the_fused_gate_up_gemm_and_gb10_does_not() {
 fn the_environment_overrides_the_row_in_both_directions() {
     for off in ["0", "false", "off", "no", "OFF", " 0 "] {
         assert_eq!(
-            with(&HOPPER, &[("ATLAS_FFN_GATEUP_FUSED", off)]).ffn_gateup_fused,
+            with(&HOPPER, &[("AVAROK_FFN_GATEUP_FUSED", off)]).ffn_gateup_fused,
             Resolved::env(false),
-            "ATLAS_FFN_GATEUP_FUSED={off:?} must kill the arm",
+            "AVAROK_FFN_GATEUP_FUSED={off:?} must kill the arm",
         );
     }
     for on in ["1", "true", "on", "yes", ""] {
         assert_eq!(
-            with(&GB10, &[("ATLAS_FFN_GATEUP_FUSED", on)]).ffn_gateup_fused,
+            with(&GB10, &[("AVAROK_FFN_GATEUP_FUSED", on)]).ffn_gateup_fused,
             Resolved::env(true),
-            "ATLAS_FFN_GATEUP_FUSED={on:?} must arm the A/B on a target that \
+            "AVAROK_FFN_GATEUP_FUSED={on:?} must arm the A/B on a target that \
              declares it off",
         );
     }
@@ -72,6 +72,6 @@ fn the_serve_line_names_the_row_and_marks_an_override() {
     assert!(!line.contains("ffn_gateup_fused=on (env)"), "{line}");
     let line = format_levers(&empty(&GB10));
     assert!(line.contains("ffn_gateup_fused=off"), "{line}");
-    let line = format_levers(&with(&HOPPER, &[("ATLAS_FFN_GATEUP_FUSED", "0")]));
+    let line = format_levers(&with(&HOPPER, &[("AVAROK_FFN_GATEUP_FUSED", "0")]));
     assert!(line.contains("ffn_gateup_fused=off (env)"), "{line}");
 }

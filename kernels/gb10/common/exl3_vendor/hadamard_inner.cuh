@@ -434,9 +434,9 @@ void had_hf_r_128_guad_inner
 }
 
 // Fused op: o += float(out_had(i)) (accumulate = true, upstream's atomic
-// epilogue) or o = float(out_had(i)) (accumulate = false, an Atlas addition).
+// epilogue) or o = float(out_had(i)) (accumulate = false, an Avarok addition).
 //
-// ATLAS DELTA (determinism). Upstream has only the atomic-accumulate form:
+// AVAROK DELTA (determinism). Upstream has only the atomic-accumulate form:
 // every one of a token's top_k experts atomicAdds into that token's ONE fp32
 // output row, and the commit order is whatever the dynamic expert-group
 // ticket scheduler produces. fp32 addition is not associative, so the prefill

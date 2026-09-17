@@ -9,11 +9,11 @@ use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
-/// Kill-switch for the pairwise batched MoE decode path (`ATLAS_MOE_PAIRWISE_DECODE=0`).
+/// Kill-switch for the pairwise batched MoE decode path (`AVAROK_MOE_PAIRWISE_DECODE=0`).
 fn pairwise_moe_decode_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MOE_PAIRWISE_DECODE").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MOE_PAIRWISE_DECODE").as_deref() != Ok("0"))
 }
 
 /// Route batched decode MoE (n >= min) through the grouped read-once GEMM
@@ -22,13 +22,13 @@ fn pairwise_moe_decode_enabled() -> bool {
 fn grouped_routed_decode_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MOE_GROUPED_ROUTED_DECODE").as_deref() == Ok("1"))
 }
 fn grouped_routed_decode_min() -> usize {
     use std::sync::OnceLock;
     static M: OnceLock<usize> = OnceLock::new();
     *M.get_or_init(|| {
-        std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE_MIN")
+        std::env::var("AVAROK_MOE_GROUPED_ROUTED_DECODE_MIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2)
@@ -180,7 +180,7 @@ impl Qwen3AttentionLayer {
         } else if !force_seq_ffn
             && (self.ffn.is_dense() || crate::layers::moe_grouped_decode_for(n))
         {
-            // TASK-167 (gx10): mirror the SSM-side ATLAS_MOE_GROUPED_DECODE arm
+            // TASK-167 (gx10): mirror the SSM-side AVAROK_MOE_GROUPED_DECODE arm
             // for the attention layers' MoE — at large n the per-token loop
             // below re-reads each routed expert per token; forward_prefill
             // reads each distinct expert once (same body as the dense branch).
@@ -316,7 +316,7 @@ impl Qwen3AttentionLayer {
             // dominates). Each forward() writes moe_output[0]; consume it
             // immediately before the next iteration overwrites it.
             let normed_base = fwd.buffers.norm_output();
-            if std::env::var("ATLAS_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
                 // Batched MoE decode over all N tokens (mirrors the SSM multi-seq
                 // path): the routed per-token expert kernels run under one call so
                 // the Feature-1 LoRA fold (which the per-token `forward` refuses

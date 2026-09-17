@@ -3,7 +3,7 @@
 // Kimi K3 one-token gated NoPE MLA decode. Unique stem `mla_decode`.
 // Not a GDN mixer, not a paged-latent paste, not Qwen full-attn.
 //
-// Matches atlas-core `mla_decode_token`:
+// Matches avarok-core `mla_decode_token`:
 //   maybe_rope: rope slots exist (nope|rope packed) but NoPE does not rotate
 //   sdpa: one query [H, dq] vs cached K/V length T, scale 1/sqrt(dq)
 //   output gate: sigmoid(g) ⊙ attn when enabled
@@ -12,6 +12,7 @@
 // Runtime H/dq/dv/T, not hardcoded.
 
 #include <math.h>
+#include <math_constants.h>
 
 __device__ __forceinline__ float k3_sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x));
@@ -78,7 +79,11 @@ extern "C" __global__ void k3_mla_sdpa_gate_f32(
     }
     const float scale = 1.0f / sqrtf((float)dq);
     const float* qrow = q + h * dq;
-    float m = -INFINITY;
+    // -CUDART_INF_F, not -INFINITY: MSVC's nvcc rejects the negated macro with
+    // "floating-point value does not fit in required floating-point type"
+    // (#221-D), which is what broke the windows-x86_64-nvidia-cuda leg of the
+    // release matrix. Same idiom as the other kernels in this tree.
+    float m = -CUDART_INF_F;
     for (unsigned int kj = 0; kj < T; ++kj) {
         const float* krow = k + (kj * H + h) * dq;
         float s = 0.0f;

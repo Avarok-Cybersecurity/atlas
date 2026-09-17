@@ -17,7 +17,7 @@
 //! loops, empty completions). That is why the 2026-07-25 hardening froze the
 //! scale on the FIRST observe.
 //!
-//! # Atlas #919
+//! # Avarok #919
 //!
 //! Freezing on the first observe made `--fp8-kv-calibration-tokens 256` a lie.
 //! Every H100 serve log showed
@@ -279,7 +279,7 @@ impl Fp8KvCalibration {
                     && ema_recal_enabled()
                 {
                     // F5 (2026-05-26): post-freeze EMA recalibration is OPT-IN via
-                    // `ATLAS_FP8_KV_EMA_RECAL=1`, default OFF. Moving `k_scale` /
+                    // `AVAROK_FP8_KV_EMA_RECAL=1`, default OFF. Moving `k_scale` /
                     // `v_scale` after the freeze makes every already-written cache
                     // entry stale relative to the new scales — attention then reads
                     // the whole history through a shifted quantization basis. The
@@ -338,7 +338,7 @@ impl Fp8KvCalibration {
 }
 
 fn ema_recal_enabled() -> bool {
-    std::env::var("ATLAS_FP8_KV_EMA_RECAL")
+    std::env::var("AVAROK_FP8_KV_EMA_RECAL")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }

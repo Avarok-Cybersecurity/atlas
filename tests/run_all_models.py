@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Atlas multi-model test orchestrator.
+Avarok multi-model test orchestrator.
 
 Pairs models across a head node and an optional worker node, runs
 `single_gpu_suite.py` against each, collects JSON results, and writes a
@@ -15,12 +15,12 @@ Design:
 - Individual failures are captured but do not abort the run.
 
 Configuration via env vars (all optional, sensible single-node defaults):
-  ATLAS_IMAGE        Docker image tag (default: atlas-gb10:latest)
-  ATLAS_HEAD_IP      IP of head node (default: 127.0.0.1)
-  ATLAS_WORKER_IP    IP of worker node (default: 127.0.0.1; same as head for single-node)
-  ATLAS_HF_CACHE     HuggingFace cache path (default: ~/.cache/huggingface)
+  AVAROK_IMAGE        Docker image tag (default: avarok-gb10:latest)
+  AVAROK_HEAD_IP      IP of head node (default: 127.0.0.1)
+  AVAROK_WORKER_IP    IP of worker node (default: 127.0.0.1; same as head for single-node)
+  AVAROK_HF_CACHE     HuggingFace cache path (default: ~/.cache/huggingface)
 
-Run: python3 tests/run_all_models.py 2>&1 | tee /tmp/atlas-full-run.log
+Run: python3 tests/run_all_models.py 2>&1 | tee /tmp/avarok-full-run.log
 """
 
 import argparse
@@ -39,20 +39,20 @@ from harness_paths import RESULTS_DIR, SUITE_PATH as SUITE  # noqa: E402
 
 # ─── Configuration ─────────────────────────────────────────────────────
 
-IMAGE = os.environ.get("ATLAS_IMAGE", "atlas-gb10:latest")
-HEAD_IP = os.environ.get("ATLAS_HEAD_IP", "127.0.0.1")
-WORKER_IP = os.environ.get("ATLAS_WORKER_IP", "127.0.0.1")
-HEAD_PORT = int(os.environ.get("ATLAS_HEAD_PORT", "8888"))
-WORKER_PORT = int(os.environ.get("ATLAS_WORKER_PORT", "8888"))
+IMAGE = os.environ.get("AVAROK_IMAGE", "avarok-gb10:latest")
+HEAD_IP = os.environ.get("AVAROK_HEAD_IP", "127.0.0.1")
+WORKER_IP = os.environ.get("AVAROK_WORKER_IP", "127.0.0.1")
+HEAD_PORT = int(os.environ.get("AVAROK_HEAD_PORT", "8888"))
+WORKER_PORT = int(os.environ.get("AVAROK_WORKER_PORT", "8888"))
 # HF cache may live in different paths on each node. Override per-host
-# via ATLAS_HF_CACHE_HEAD / ATLAS_HF_CACHE_WORKER if needed; otherwise
+# via AVAROK_HF_CACHE_HEAD / AVAROK_HF_CACHE_WORKER if needed; otherwise
 # both default to the user's standard ~/.cache/huggingface.
 _default_hf_cache = os.path.expanduser("~/.cache/huggingface")
-HF_CACHE_HEAD = os.environ.get("ATLAS_HF_CACHE_HEAD", _default_hf_cache)
-HF_CACHE_WORKER = os.environ.get("ATLAS_HF_CACHE_WORKER", _default_hf_cache)
+HF_CACHE_HEAD = os.environ.get("AVAROK_HF_CACHE_HEAD", _default_hf_cache)
+HF_CACHE_WORKER = os.environ.get("AVAROK_HF_CACHE_WORKER", _default_hf_cache)
 STARTUP_TIMEOUT = 600  # seconds
 
-# Address the served HTTP listener binds to. Atlas's `--bind` defaults to
+# Address the served HTTP listener binds to. Avarok's `--bind` defaults to
 # 127.0.0.1 — right for a fresh install, fatal here: this harness probes the
 # head server from the host namespace and the worker server across the network,
 # and a loopback bind inside a container is reachable from neither (every probe
@@ -79,7 +79,7 @@ class TestSpec:
     # If the suite takes too long or longctx is not meaningful, skip it:
     skip_longctx: bool = False
     # Mark vision-capable models so the suite runs its image test (`--vision`).
-    # Only set on checkpoints that actually carry a vision tower AND whose Atlas
+    # Only set on checkpoints that actually carry a vision tower AND whose Avarok
     # kernel target ships a vision_encoder module.
     vision: bool = False
     # ── Multi-rank (head + worker) parallelism ──
@@ -89,7 +89,7 @@ class TestSpec:
     #   tp_size=1, ep_size=2 → pure EP=2 (legacy EP2_ROUNDS path)
     #   tp_size=2, ep_size=1 → pure TP=2 attention shard, no expert sharding
     #   tp_size=2, ep_size=2 → TP+EP overlapping (both groups share comm)
-    # Atlas auto-derives world_size from tp×ep when world_size<=1; on the
+    # Avarok auto-derives world_size from tp×ep when world_size<=1; on the
     # overlapping topology the two groups share the same NCCL comm.
     tp_size: int = 1
     ep_size: int = 1
@@ -235,7 +235,7 @@ TP2_ROUNDS: List[TestSpec] = [
 
 # Mixed TP=2 + EP=2 (overlapping topology on 2 ranks). Both groups share
 # the same NCCL communicator — TP shards attention across {0,1} while EP
-# also routes experts across {0,1}. Atlas's TP Phase-1 work (commit 8bd91ba
+# also routes experts across {0,1}. Avarok's TP Phase-1 work (commit 8bd91ba
 # on master-rewrite) verified MiniMax M2.7 stays coherent here, with a
 # documented ~12% cold TTFT win at 4096 tok over EP-only.
 TPEP_ROUNDS = [
@@ -250,14 +250,14 @@ TPEP_ROUNDS = [
 # The 397B NVFP4 (~200 GB across 512 experts) only fits with all four GB10
 # nodes in expert-parallel (EP=4, TP=1) — num_key_value_heads=2 can't shard
 # across 4 TP ranks. This harness's multi-rank driver (run_ep2_round) launches
-# exactly 2 ranks (head + one worker via ATLAS_WORKER_IP), so it CANNOT bring
+# exactly 2 ranks (head + one worker via AVAROK_WORKER_IP), so it CANNOT bring
 # up a 4-node EP=4 deployment as-is; generalizing the driver to N ranks is a
 # separate change.
 #
 # These specs are therefore recorded but SKIPPED by default. The real 4-node
-# smoke test runs via /home/cluster/launch-atlas-ep4.sh (see the notavault-atlas
+# smoke test runs via /home/cluster/launch-avarok-ep4.sh (see the notavault-avarok
 # notes / docs/DEPLOYMENT.md). Once the driver gains N-rank support, set
-# ATLAS_ENABLE_EP4=1 to execute these here.
+# AVAROK_ENABLE_EP4=1 to execute these here.
 EP4_ROUNDS: List[TestSpec] = [
     TestSpec("397B-nvfp4-ep4", "nvidia/Qwen3.5-397B-A17B-NVFP4",
              ep_size=4, skip_longctx=True),
@@ -328,7 +328,7 @@ def build_serve_cmd(spec: TestSpec, port: int) -> str:
 
 def start_container(host: str, spec: TestSpec, port: int) -> str:
     """Start a serve container. Returns container name."""
-    name = f"atlas-test-{spec.label}"
+    name = f"avarok-test-{spec.label}"
     # Ensure prior container is gone
     docker_on(host, f"rm -f {name}", check=False, capture=True)
     serve_cmd = build_serve_cmd(spec, port)
@@ -358,7 +358,7 @@ def ready_marker(port: int) -> str:
     """
     # Matched case-insensitively against a lower-cased log: the server does not
     # start the line with the word. It logs
-    #   `Atlas is listening on 0.0.0.0:8888 — reachable from any host ...`
+    #   `Avarok is listening on 0.0.0.0:8888 — reachable from any host ...`
     # so the old exact substring `Listening on 0.0.0.0:8888` matched nothing,
     # wait_listening never saw the server come up, and EVERY model in the roster
     # failed on a 600s startup timeout while the container sat there serving
@@ -613,7 +613,7 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
     is required for NCCL discovery. The legacy name is preserved for back-compat;
     behaviour generalises by reading `spec.tp_size` and `spec.ep_size`. When
     both default to 1, we fall back to the historical pure-EP=2 launch
-    (world_size=2, ep_size=2 implied by Atlas's auto-derive logic).
+    (world_size=2, ep_size=2 implied by Avarok's auto-derive logic).
     """
     # Default: pure EP=2 (back-compat for existing EP2_ROUNDS specs that
     # don't set tp_size/ep_size explicitly).
@@ -621,7 +621,7 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
     ep = spec.ep_size if spec.tp_size > 1 or spec.ep_size > 1 else 2
     # On 2-GPU GB10: tp==ep means overlapping topology (single comm), tp*ep==4
     # would be orthogonal mesh (needs 4 GPUs — out of scope). Worker rank
-    # uses port 0 (no HTTP). Atlas auto-derives world_size from tp_size /
+    # uses port 0 (no HTTP). Avarok auto-derives world_size from tp_size /
     # ep_size when world_size<=1, so we still pass --world-size 2 to keep
     # the rank-discovery channel deterministic.
     args = [
@@ -659,8 +659,8 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
 
 def start_ep2(spec: TestSpec) -> tuple:
     """Start rank 0 on head + rank 1 on worker. Returns (rank0_name, rank1_name)."""
-    rank0_name = f"atlas-ep0-{spec.label}"
-    rank1_name = f"atlas-ep1-{spec.label}"
+    rank0_name = f"avarok-ep0-{spec.label}"
+    rank1_name = f"avarok-ep1-{spec.label}"
     # Cleanup any stale containers
     docker_on("head", f"rm -f {rank0_name}", check=False, capture=True)
     docker_on("worker", f"rm -f {rank1_name}", check=False, capture=True)
@@ -895,7 +895,7 @@ def main():
     run_ep2 = (not args.skip_ep2) and (args.only_round is None) and (not only_phase_active)
     run_tp2 = (not args.skip_tp2) and (args.only_round is None) and (not args.only_tpep)
     run_tpep = (not args.skip_tpep) and (args.only_round is None) and (not args.only_tp2)
-    run_ep4 = bool(EP4_ROUNDS) and os.environ.get("ATLAS_ENABLE_EP4") == "1"
+    run_ep4 = bool(EP4_ROUNDS) and os.environ.get("AVAROK_ENABLE_EP4") == "1"
 
     # Declare intent up front: the set of (label, model) this run is *supposed*
     # to cover, given the phase flags above. Written before any container boots
@@ -933,7 +933,7 @@ def main():
 
     # TP=2 (pure) — uses the same multi-rank launch path as EP=2; only the
     # tp_size/ep_size on the spec differ. The serve-cmd builder reads them
-    # and passes --tp-size/--ep-size to Atlas; the run_ep2_round() driver
+    # and passes --tp-size/--ep-size to Avarok; the run_ep2_round() driver
     # is already topology-agnostic (head HTTP + worker rank-1 join).
     if run_tp2:
         for spec in TP2_ROUNDS:
@@ -954,10 +954,10 @@ def main():
 
     # EP=4 (4-node). Recorded in EP4_ROUNDS but skipped by default: run_ep2_round
     # launches only 2 ranks, so it can't bring up a 4-node deployment. The real
-    # smoke test is /home/cluster/launch-atlas-ep4.sh. Opt in with ATLAS_ENABLE_EP4=1
+    # smoke test is /home/cluster/launch-avarok-ep4.sh. Opt in with AVAROK_ENABLE_EP4=1
     # ONLY after run_ep2_round is generalized to N ranks (separate change).
     if EP4_ROUNDS:
-        if os.environ.get("ATLAS_ENABLE_EP4") == "1":
+        if os.environ.get("AVAROK_ENABLE_EP4") == "1":
             for spec in EP4_ROUNDS:
                 res = run_ep2_round(spec)  # NOTE: requires N-rank driver support
                 if res:
@@ -967,8 +967,8 @@ def main():
         else:
             labels = ", ".join(s.label for s in EP4_ROUNDS)
             print(f"\n[skip] EP=4 round(s) [{labels}]: need a 4-node EP=4 deployment "
-                  f"(this harness launches 2 ranks). Run /home/cluster/launch-atlas-ep4.sh, "
-                  f"or set ATLAS_ENABLE_EP4=1 after the driver gains N-rank support.")
+                  f"(this harness launches 2 ranks). Run /home/cluster/launch-avarok-ep4.sh, "
+                  f"or set AVAROK_ENABLE_EP4=1 after the driver gains N-rank support.")
 
     # Final dump
     with open(os.path.join(RESULTS_DIR, "all_results.json"), "w") as f:

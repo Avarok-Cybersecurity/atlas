@@ -9,7 +9,7 @@
 //   MLPerf status from mlperf.json. Nothing here can drift from the page,
 //   because there is no second copy to drift.
 //
-// Prose that is genuinely editorial (what Atlas is, what it is not) is read out
+// Prose that is genuinely editorial (what Avarok is, what it is not) is read out
 //   of src/lib/data.js, the same file the page renders — so a copy change lands
 //   in both places at once.
 //
@@ -52,7 +52,7 @@ const lines = [];
 const push = (...l) => lines.push(...l);
 
 push(
-  '# Atlas Inference Engine',
+  '# Avarok Inference Engine',
   '',
   `> ${tagline}`,
   '',
@@ -78,15 +78,15 @@ push(
   `Workload: ISL ${w.isl_tokens} / OSL ${w.osl_tokens} tokens, temperature ${w.temperature},`,
   `seed ${w.seed}, ${w.reps} timed reps after ${w.warmup} warmup. ${w.sampling_parity}.`,
   '',
-  `Result: Atlas wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
-  'against whichever vLLM configuration is faster at that concurrency.',
+  `Result: Avarok wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
+  'against the matched vLLM + MTP configuration at each concurrency.',
   '',
-  '| concurrency | Atlas tok/s | best vLLM tok/s | ratio |',
+  '| concurrency | Avarok tok/s | matched vLLM tok/s | ratio |',
   '| --- | --- | --- | --- |'
 );
 for (const r of ladder.rows) {
   const best = r.baselines.find((b) => b.id === r.best_baseline_id);
-  push(`| ${r.c} | ${r.atlas.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
+  push(`| ${r.c} | ${r.avarok.toFixed(2)} | ${best.tok_s.toFixed(2)} (${best.label}) | ${fmt(r.ratio_vs_best)}x |`);
 }
 push(
   '',
@@ -123,9 +123,10 @@ push(
   `- Benchmark results: ${ladder.results_doc_url}`,
   `- Discord: ${discordUrl}`,
   `- X: ${xUrl}`,
-  '- Site: https://atlasinference.io',
-  '- Documentation: https://docs.atlasinference.io — full book, also at /llms.txt',
-  '- Engineering blog: https://blog.atlasinference.io — also at /llms.txt',
+  '- Site: https://atlascybernetics.ai',
+  `- Developer page: https://atlascybernetics.ai${data.ENGINE}`,
+  '- Documentation: https://docs.atlascybernetics.ai — full book, also at /llms.txt',
+  '- Engineering blog: https://blog.atlascybernetics.ai — also at /llms.txt',
   '',
   '## License',
   '',

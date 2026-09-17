@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
-use atlas_core::config::PeftAdapterConfig;
+use avarok_core::config::PeftAdapterConfig;
 use spark_runtime::gpu::DevicePtr;
 
 use crate::lora::*;
@@ -209,7 +209,7 @@ fn ref_count_and_lru_bookkeeping_follow_resolved_slots() {
     assert_eq!(lw.slot_ref_count(99), 0);
 }
 
-/// An adapter naming a module Atlas cannot apply must REFUSE by default,
+/// An adapter naming a module Avarok cannot apply must REFUSE by default,
 /// rather than apply a fraction of itself and let the user think they got the
 /// whole thing. `in_proj_qkv` is such a module: it feeds the GDN recurrence
 /// and has no delta path.
@@ -232,7 +232,7 @@ fn unsupported_target_modules_are_refused_and_name_the_escape_hatch() {
         modules_to_save: Vec::new(),
         lora_embedding: false,
     };
-    // Default (ATLAS_LORA_ALLOW_PARTIAL unset in the test process).
+    // Default (AVAROK_LORA_ALLOW_PARTIAL unset in the test process).
     let err = crate::lora::env::validate_peft_config(&peft, 64)
         .expect_err("out_proj is not applicable — the load must refuse");
     let msg = format!("{err:#}");
@@ -245,7 +245,7 @@ fn unsupported_target_modules_are_refused_and_name_the_escape_hatch() {
         "the reject must NAME the offending module: {msg}"
     );
     assert!(
-        msg.contains("ATLAS_LORA_ALLOW_PARTIAL"),
+        msg.contains("AVAROK_LORA_ALLOW_PARTIAL"),
         "the reject must point at the deliberate-partial opt-in: {msg}"
     );
     // The supported entries alongside it are not what tripped it.

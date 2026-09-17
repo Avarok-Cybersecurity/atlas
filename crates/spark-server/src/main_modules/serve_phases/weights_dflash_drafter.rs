@@ -7,7 +7,7 @@ use super::*;
 
 pub(crate) fn load_dflash_drafter(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     gpu: &dyn spark_runtime::gpu::GpuBackend,
 ) -> Result<
     Option<(
@@ -52,7 +52,7 @@ pub(crate) fn load_dflash_drafter(
     //   * head fixed costs: scratch (~250 MB), fused_kv, drafter KV cache
     //     (max_seq_len x layers x 2 x kv_dim x BF16), DFlash2 selector host
     //     copies (~2 x vocab x rank BF16 — unified memory, so host counts)
-    //   * ATLAS_DFLASH_DRAFTER_FP8: FP8 mirrors of the dense weights
+    //   * AVAROK_DFLASH_DRAFTER_FP8: FP8 mirrors of the dense weights
     //     (~0.5x store) + the lm_head mirror (vocab x hidden FP8) + an
     //     equal transient for the quantize staging
     let store_bytes: u64 = std::fs::read_dir(&drafter_dir)
@@ -86,7 +86,7 @@ pub(crate) fn load_dflash_drafter(
     // weights are DEFAULT-ON, so testing "is the variable set" counted
     // the mirrors as zero on exactly the default path — the pre-flight
     // printed `fp8-mirrors 0.00` while the mirrors were resident.
-    let fp8_mirrors = if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
+    let fp8_mirrors = if std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
         let lm_head = (c.vocab_size as u64) * (c.hidden_size as u64);
         store_bytes / 2 + 2 * lm_head
     } else {
@@ -102,7 +102,7 @@ pub(crate) fn load_dflash_drafter(
     let headroom = (total as f64 * (1.0 - args.gpu_memory_utilization)) as u64;
     if free < estimate + headroom {
         anyhow::bail!(
-            "DFlash drafter would over-commit unified memory: estimated footprint {:.2} GB              (weights {:.2} + drafter-KV {:.2} + fused_kv {:.2} + selector-host {:.2} +              fp8-mirrors {:.2} + scratch {:.2}) but only {:.2} GB free with {:.2} GB              headroom pledged by --gpu-memory-utilization {:.2}. On GB10 this would SWAP              the host, not error. Lower --max-seq-len, lower --gpu-memory-utilization              pressure elsewhere, or drop ATLAS_DFLASH_DRAFTER_FP8.",
+            "DFlash drafter would over-commit unified memory: estimated footprint {:.2} GB              (weights {:.2} + drafter-KV {:.2} + fused_kv {:.2} + selector-host {:.2} +              fp8-mirrors {:.2} + scratch {:.2}) but only {:.2} GB free with {:.2} GB              headroom pledged by --gpu-memory-utilization {:.2}. On GB10 this would SWAP              the host, not error. Lower --max-seq-len, lower --gpu-memory-utilization              pressure elsewhere, or drop AVAROK_DFLASH_DRAFTER_FP8.",
             estimate as f64 / 1e9,
             store_bytes as f64 / 1e9,
             drafter_kv as f64 / 1e9,

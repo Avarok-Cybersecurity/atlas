@@ -35,20 +35,20 @@ use crate::layer::{AttnMetadataDev, ForwardContext, LayerState};
 use crate::layers::ops;
 
 /// K-row attention body under the mHC verify. ON by default;
-/// `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0` restores the per-row decode bodies
+/// `AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS=0` restores the per-row decode bodies
 /// (the A/B and rollback switch).
 pub fn verify_attn_rows_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS").as_deref() != Ok("0"))
 }
 
 /// Inside the K-row body, also run the attention projections at T=K through
 /// the multi-sequence phases (QKV, RoPE, cache write, o_proj batched; paged
-/// decode per row). ON by default; `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0`
+/// decode per row). ON by default; `AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0`
 /// keeps the K-row body with per-row projections. Needs the K-row body.
 pub fn verify_attn_rows_qkv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV").as_deref() != Ok("0"))
 }
 
 impl Qwen3AttentionLayer {
@@ -176,7 +176,7 @@ impl Qwen3AttentionLayer {
 
         let timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let t0 = std::time::Instant::now();
 

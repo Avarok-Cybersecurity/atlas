@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -64,7 +64,7 @@ pub(crate) fn preflight_reserve(
     // `max_batch × blob × (1 + (num_drafts+1) + 1)` byte-for-byte; above
     // 32 it stops reserving verify blobs for slots that can never verify
     // (25.4 GB at bs=64/K=4 on the 27B — the bs=64 preflight refusal).
-    // Kill switch: ATLAS_MTP_POOL_FULL_WIDTH (presence) restores
+    // Kill switch: AVAROK_MTP_POOL_FULL_WIDTH (presence) restores
     // full-width sizing on BOTH sides.
     let mtp_state_slots = spark_model::ssm_reserve::mtp_state_slots(args.max_batch_size);
     // Tiered verify slots (2026-08-16): the H-intermediate term is per-slot
@@ -186,7 +186,7 @@ pub(crate) fn preflight_reserve(
     // prefix-cache lookup, so with the cache inactive every reserved slot is
     // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
     // h+conv) that nothing can ever restore from. Kill switch:
-    // ATLAS_SSM_MARCONI_FULL.
+    // AVAROK_SSM_MARCONI_FULL.
     let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
         args.ssm_cache_slots,
         spark_model::ssm_reserve::prefix_caching_active(
@@ -198,7 +198,7 @@ pub(crate) fn preflight_reserve(
         tracing::info!(
             "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
              = {} MB not reserved (restore with --enable-prefix-caching, or \
-             ATLAS_SSM_MARCONI_FULL to over-reserve)",
+             AVAROK_SSM_MARCONI_FULL to over-reserve)",
             reason,
             args.ssm_cache_slots,
             config.num_ssm_layers(),

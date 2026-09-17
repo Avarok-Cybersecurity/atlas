@@ -313,7 +313,7 @@ mod tests {
         // to the pre-clamp code. Reads the same `ModelBehavior::default()`
         // the server boots with (SSOT constant in behavior_defaults.rs),
         // not a copy of the literal.
-        assert!(!atlas_kernels::ModelBehavior::default().effort_capped_at_ceiling);
+        assert!(!avarok_kernels::ModelBehavior::default().effort_capped_at_ceiling);
     }
 
     #[test]

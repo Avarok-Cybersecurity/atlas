@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Grouped W4A16 GEMM for MoE — 35B model shadow.
+// Avarok Grouped W4A16 GEMM for MoE — 35B model shadow.
 //
 // Optimizations over parent:
 // - Transposed kernel: cp.async 2-stage double-buffered pipeline
@@ -1703,14 +1703,14 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
 // ── W4A4 (FP4 weights AND FP4 activations): Blackwell warp-block-scale only ──
 //
 // Everything below the guard is compiled out on any target that defines
-// ATLAS_NO_WARP_BLOCKSCALE_MMA, because its instruction selection does not
+// AVAROK_NO_WARP_BLOCKSCALE_MMA, because its instruction selection does not
 // exist there. The instructions are named inside the guard, with the code
 // that issues them — `tests/blockscale_mma_guard.rs` scans this file for
 // those spellings and fails on one outside, comments included, so the only
 // place they may be written is where they are true.
-#ifndef ATLAS_NO_WARP_BLOCKSCALE_MMA
+#ifndef AVAROK_NO_WARP_BLOCKSCALE_MMA
 // Both instructions below exist on consumer/GB10 Blackwell (sm_120/sm_121)
-// and NOWHERE ELSE Atlas targets:
+// and NOWHERE ELSE Avarok targets:
 //
 //   sm_90a  (H100/H200): no NVFP4 datapath.
 //           ptxas: Instruction 'cvt with .e2m1x2' not supported
@@ -1729,7 +1729,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
 // target, which its MODEL.toml declares in [expected_absent.moe_w4a16] with
 // the ptxas error as the reason. Both are resolved with `try_kernel` and
 // dispatched only behind `handle != 0` plus a default-off opt-in
-// (ATLAS_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4), so their absence costs the FP4
+// (AVAROK_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4), so their absence costs the FP4
 // escape hatch and nothing else.
 //
 // GB10 never defines it: this region compiles exactly as before, and gb10's
@@ -1751,7 +1751,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
 //    re-gathered N-major into smem_Bp by FP4_TRANSPOSE before the MMA. No second
 //    [N,K/2] copy is built — this is the zero-extra-MoE-memory path.
 //  - A (bf16) is quantized IN-REGISTER to e2m1 + ue4m3 per-16-group
-//    scale (mirrors atlas_cutlass_pack_bf16_act_nvfp4: scale=max_abs/6).
+//    scale (mirrors avarok_cutlass_pack_bf16_act_nvfp4: scale=max_abs/6).
 //  - Per k64 step we materialize natural-layout smem fragments
 //    smem_Ap/As/Bp/Bs and gather the MMA operands exactly as the
 //    Phase-1 proof (fp4_mma_microtest.cu): q=tid, r=group_id.
@@ -2081,7 +2081,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64_fp4(
 
 // ═══════════════════════════════════════════════════════════════════
 // FP4 DOWN GEMM — single-output clone of moe_w4a16_fused_gate_up_t_k64_fp4
-// (`ATLAS_HOLO_MOE_DOWN_FP4`). One Blackwell block-scaled FP4 MMA per k64
+// (`AVAROK_HOLO_MOE_DOWN_FP4`). One Blackwell block-scaled FP4 MMA per k64
 // tile (mma.sync...mxf4nvf4.scale_vec::4X.m16n8k64), cp.async double-buffer,
 // in-register e2m1 act-quant. Used for the routed-expert down projection:
 //   input  A = post-SiLU intermediate  [M, K=inter=512] (bf16)
@@ -2352,4 +2352,4 @@ extern "C" __global__ void moe_w4a16_down_t_k64_fp4(
         if (r1v && c1 < N) C[r1*N+c1] = __float2bfloat16(acc[nt][3] * scale2);
     }
 }
-#endif  // ATLAS_NO_WARP_BLOCKSCALE_MMA
+#endif  // AVAROK_NO_WARP_BLOCKSCALE_MMA

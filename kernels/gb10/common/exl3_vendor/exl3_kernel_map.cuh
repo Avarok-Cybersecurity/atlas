@@ -4,7 +4,7 @@
 // Copyright (c) 2025 turboderp — MIT license.
 // Snapshot original: .research/exllamav3_ref/exl3_kernel_map.cuh.
 // Adaptation: host-side selection prototypes and the function-pointer instance
-// table macros are dropped — Atlas selects kernels BY NAME from the PTX module
+// table macros are dropped — Avarok selects kernels BY NAME from the PTX module
 // (see exl3_matmul.cu), so only the argument-list macros and the shape tables
 // survive. Values untouched.
 //

@@ -3,7 +3,7 @@
 **Role:** the model assembly crate. Translates loaded weights and config into `Box<dyn TransformerLayer>` objects, drives the inference engine loop, implements speculative decoding and vision preprocessing.
 **Key files:** `engine.rs`, `model.rs`, `factory.rs`, `layer.rs` + `layers/*.rs`, `weight_loader/*.rs`, `weight_map.rs`, `speculative.rs`, `vision_preprocess.rs`, `traits.rs`, `quant_format.rs`, `mistral_loader.rs`, `preflight.rs`.
 
-This is the largest crate in the workspace — ~18k lines — because every model architecture Atlas supports has its own loader here. The design centers on two small, heavily-used traits.
+This is the largest crate in the workspace — ~18k lines — because every model architecture Avarok supports has its own loader here. The design centers on two small, heavily-used traits.
 
 ## The central traits
 
@@ -111,7 +111,7 @@ fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoader>>
 }
 ```
 
-This is the **single code site where `model_type` strings are matched**. Everything downstream of `factory::build` holds `Box<dyn Model>` and is model-agnostic. See the top-level repo [Adding a new model](https://github.com/Avarok-Cybersecurity/atlas/blob/main/README.md#adding-a-new-model) guide.
+This is the **single code site where `model_type` strings are matched**. Everything downstream of `factory::build` holds `Box<dyn Model>` and is model-agnostic. See the top-level repo [Adding a new model](https://github.com/Avarok-Cybersecurity/avarok/blob/main/README.md#adding-a-new-model) guide.
 
 ## The engine (`engine.rs`)
 

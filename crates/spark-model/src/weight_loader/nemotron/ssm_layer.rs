@@ -5,7 +5,7 @@
 //! (500-LoC cap).
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::weights::WeightStore;
 
@@ -55,7 +55,7 @@ impl NemotronHWeightLoader {
         // 4-byte scalar `weight_scale` being indexed as a [N/128, K/128] matrix
         // by w8a16. Both are closed below: the prefill copies are hard-gated off
         // under native, and `load_fp8_block_scaled_as_fp8weight` materializes a
-        // real block-scale buffer. `ATLAS_NEMOTRON_NATIVE_FP8_SSM=0` restores
+        // real block-scale buffer. `AVAROK_NEMOTRON_NATIVE_FP8_SSM=0` restores
         // the legacy path exactly (same-binary A/B).
         //
         // DEFAULT ON. The requant is what broke this model, and the effect is
@@ -86,7 +86,7 @@ impl NemotronHWeightLoader {
         //                    copies still built, prefill keeps using them
         //   unset/"1"/"both" — native FP8 for decode and prefill (no NVFP4 copies)
         let mode =
-            std::env::var("ATLAS_NEMOTRON_NATIVE_FP8_SSM").unwrap_or_else(|_| "1".to_string());
+            std::env::var("AVAROK_NEMOTRON_NATIVE_FP8_SSM").unwrap_or_else(|_| "1".to_string());
         let native_fp8_enabled = matches!(mode.as_str(), "1" | "both" | "decode");
         // Decode-only mode keeps the legacy NVFP4 weights resident for prefill.
         let native_prefill_wanted = matches!(mode.as_str(), "1" | "both");
@@ -114,11 +114,11 @@ impl NemotronHWeightLoader {
         // exactly what the FP8 comment above documents: retrieval of a token from
         // context. Keeping the checkpoint's own BF16 costs ~2x the bytes of those
         // few layers and no accuracy.
-        // `ATLAS_NEMOTRON_NATIVE_BF16_SSM=0` restores the legacy requant (A/B).
+        // `AVAROK_NEMOTRON_NATIVE_BF16_SSM=0` restores the legacy requant (A/B).
         let out_is_bf16 = !store.contains(&format!("{p}.out_proj.weight_scale"));
         let dgemm_k = crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined");
         let dgemv_k = crate::layers::try_kernel(gpu, "gemv", "dense_gemv_bf16");
-        let native_bf16 = std::env::var("ATLAS_NEMOTRON_NATIVE_BF16_SSM").as_deref() != Ok("0")
+        let native_bf16 = std::env::var("AVAROK_NEMOTRON_NATIVE_BF16_SSM").as_deref() != Ok("0")
             && quant_kind == NemotronSsmQuant::Bf16
             && out_is_bf16
             && dgemm_k.0 != 0
@@ -260,7 +260,7 @@ impl NemotronHWeightLoader {
         // cp.async) — see NemotronMamba2Layer::set_prefill_weights.
         // The 40 SSM layers are ~46% of prefill time on Puzzle, and
         // without this the fast kernel is compiled but unreachable.
-        // Cost: ~2.1 GB extra weights. ATLAS_NO_SSM_PREFILL_T=1 keeps
+        // Cost: ~2.1 GB extra weights. AVAROK_NO_SSM_PREFILL_T=1 keeps
         // the base GEMM (same-binary A/B + escape hatch).
         //
         // Two mutually exclusive prefill weight representations:
@@ -274,7 +274,7 @@ impl NemotronHWeightLoader {
         //     Cost: ~4.3 GB (vs ~2.1 GB for the transposed copies).
         //
         //   Transposed NVFP4 — `w4a16_gemm_t`/`_m128`. Kept as the
-        //     escape hatch via ATLAS_NO_SSM_FP8_PREFILL=1.
+        //     escape hatch via AVAROK_NO_SSM_FP8_PREFILL=1.
         //
         // NVFP4 stays resident either way: decode uses w4a16_gemv.
         //
@@ -288,11 +288,11 @@ impl NemotronHWeightLoader {
         // derived copies read them (`transpose_for_gemm` copy_d2h's from NULL,
         // `predequant_to_fp8` launches on a NULL B).
         let fp8_prefill =
-            !native_prefill && !native_bf16 && std::env::var("ATLAS_NO_SSM_FP8_PREFILL").is_err();
+            !native_prefill && !native_bf16 && std::env::var("AVAROK_NO_SSM_FP8_PREFILL").is_err();
         let prefill_t = !native_prefill
             && !native_bf16
             && !fp8_prefill
-            && std::env::var("ATLAS_NO_SSM_PREFILL_T").is_err();
+            && std::env::var("AVAROK_NO_SSM_PREFILL_T").is_err();
         let proj_t = if prefill_t {
             let in_t = ssm
                 .in_proj

@@ -66,12 +66,12 @@ impl Qwen3SsmLayer {
         let n = num_tokens as u32;
 
         // Same counter the non-HC path bumps: one increment per SSM layer per
-        // prefill, so `ATLAS_GDN_DUMP` still attributes an intermediate to the
+        // prefill, so `AVAROK_GDN_DUMP` still attributes an intermediate to the
         // right layer.
         let ssm_layer_idx =
             super::debug::SSM_LAYER_CALL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        // Stage profiler, the prefill twin of ATLAS_QWEN4EXP_DECODE_PROF:
+        // Stage profiler, the prefill twin of AVAROK_QWEN4EXP_DECODE_PROF:
         // serialize at stage seams and log per-stage µs for the first ~8
         // chunks (48 layer calls each). Prefill sits at ~110-130 tok/s vs a
         // 300-600 llama.cpp reference; the ranked suspects (GDN chunk path,
@@ -79,7 +79,7 @@ impl Qwen3SsmLayer {
         static PROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         static PROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(400);
         let prof = *PROF
-            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            .get_or_init(|| std::env::var("AVAROK_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
             && PROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
         let mut t = if prof {
             ctx.gpu.synchronize(stream).ok();
@@ -101,7 +101,7 @@ impl Qwen3SsmLayer {
             };
         }
 
-        // ATLAS_FP32_ROUTING has the SSM's fused `residual_add_rms_norm_gatef32`
+        // AVAROK_FP32_ROUTING has the SSM's fused `residual_add_rms_norm_gatef32`
         // populate `moe_router_in_f32` for the gate GEMM to read at full
         // precision. This path does not run that kernel — `hc_norm` inside
         // `hc_pre` is the norm — so the buffer would hold the PREVIOUS layer's
@@ -109,7 +109,7 @@ impl Qwen3SsmLayer {
         // flag is off by default) and silent if it ever is not.
         anyhow::ensure!(
             !self.ffn.fp32_routing_active(ctx.levers),
-            "qwen3_ssm mHC: ATLAS_FP32_ROUTING needs the fused gate-f32 norm, \
+            "qwen3_ssm mHC: AVAROK_FP32_ROUTING needs the fused gate-f32 norm, \
              which the highway path replaces. The router would read a stale \
              moe_router_in_f32. Unset it."
         );
@@ -294,7 +294,7 @@ impl Qwen3SsmLayer {
         // — 1.75x the rows for 1.2x the time). The fused K=2/K=3 kernels do the
         // same rows in 5 launches at decode cost. Both write moe_output(), so
         // this is a kernel-shape substitution, not a math change.
-        // ATLAS_QWEN4EXP_HC_SMALL_M_FFN=0 restores the grouped path for A/B.
+        // AVAROK_QWEN4EXP_HC_SMALL_M_FFN=0 restores the grouped path for A/B.
         self.hc_small_m_ffn(hidden, num_tokens, ctx, stream)?;
         stage!("moe");
         ops::hc_post_site(

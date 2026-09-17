@@ -13,7 +13,7 @@ use crate::layers::ops::{
     self, DerivedWeights, GemmDispatch, ModelLevers, ModelStats, cublas_fp8_m_pad,
 };
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -244,7 +244,7 @@ fn not_selected_for_unaligned_shapes() {
 
 #[test]
 fn not_selected_when_the_kill_switch_is_set() {
-    // ATLAS_FFN_W8A16_ONLY — injected, not read from the environment: the
+    // AVAROK_FFN_W8A16_ONLY — injected, not read from the environment: the
     // real accessor is a process-global `OnceLock` and a test that set the
     // variable would leak into every other test in the binary.
     assert!(!selected(
@@ -261,7 +261,7 @@ fn not_selected_when_the_kill_switch_is_set() {
 
 #[test]
 fn not_selected_when_the_blockscaled_prefill_lever_is_off() {
-    // ATLAS_FP8_SINGLE_SCALE clears `dispatch.fp8_blockscaled_prefill`; it
+    // AVAROK_FP8_SINGLE_SCALE clears `dispatch.fp8_blockscaled_prefill`; it
     // already governs the attention W8A8 path and must govern this one too.
     assert!(!selected(
         PROMPT_TOKENS,
@@ -382,7 +382,7 @@ fn with_ctx<R>(h: &Harness, dispatch: GemmDispatch, f: impl FnOnce(&ForwardConte
 ///
 /// It asserts the RELATIONSHIP instead: selected just inside whatever ceiling
 /// this build carries, declined one row outside it. The values themselves are
-/// pinned as data by `atlas-kernels/tests/target_defaults.rs`.
+/// pinned as data by `avarok-kernels/tests/target_defaults.rs`.
 #[test]
 fn layer_selects_w8a8_on_a_dense_config() {
     let h = harness(0, 2048);
@@ -488,7 +488,7 @@ fn activation_scratch_holds_the_widest_ffn_projection() {
 fn cublas_arm_requires_a_multiple_of_four_weight_scale_column_stride() {
     // cuBLASLt's BLK128x128 factors are K-major with "the stride between the
     // consecutive columns ... a multiple of 4" (cuBLAS "Scaling factors
-    // layouts"), and Atlas hands over the checkpoint's `[N/128, K/128]` grid
+    // layouts"), and Avarok hands over the checkpoint's `[N/128, K/128]` grid
     // as-is — so K/128 must be a multiple of 4, i.e. K % 512 == 0. Both FFN
     // contraction dims satisfy it; the gate exists for the ones that would not.
     use spark_runtime::cublaslt::scale_layout::blk128x128_stride_ok;

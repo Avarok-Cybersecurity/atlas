@@ -474,7 +474,7 @@ pub struct PagedKvCache {
     /// Default: 1 on alloc, freed when decremented to 0.
     block_ref_counts: Vec<u32>,
     config: KvCacheConfig,
-    /// Per-block refcount event history (`ATLAS_KV_TRACE=1`; inert otherwise).
+    /// Per-block refcount event history (`AVAROK_KV_TRACE=1`; inert otherwise).
     trace: block_trace::BlockTrace,
     /// Whether this pool feeds the `/metrics` gauge. Set by `mark_primary`
     /// on the sequence-serving cache only — the MTP and DFlash heads build
@@ -491,7 +491,7 @@ mod paged_impl;
 /// correct. The block bookkeeping (`free_blocks`, `block_ref_counts`) is host
 /// state indexing into those pools — cleared with them so a released cache
 /// cannot hand out a block into freed memory.
-impl atlas_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for PagedKvCache {
+impl avarok_core::scope::ModelResource<dyn crate::gpu::GpuBackend> for PagedKvCache {
     fn label(&self) -> &'static str {
         "kv cache"
     }

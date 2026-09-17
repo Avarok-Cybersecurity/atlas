@@ -18,7 +18,7 @@
 //! ```
 use anyhow::Result;
 use spark_model::layers::qsa::QsaIndexer;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
 struct Rng(u64);
@@ -67,9 +67,9 @@ fn scores(kind: &str, complete: usize, seed: u64) -> Vec<f32> {
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with ATLAS_TARGET_MODEL='*' (or =qwen3.8-flash-next)");
-    let be = AtlasCudaBackend::new(0, &set.modules)?;
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+        .expect("build with AVAROK_TARGET_MODEL='*' (or =qwen3.8-flash-next)");
+    let be = AvarokCudaBackend::new(0, &set.modules)?;
     let gpu: &dyn GpuBackend = &be;
     let stream = gpu.default_stream();
 
@@ -115,7 +115,7 @@ fn main() -> Result<()> {
         let topk = budget / 4;
         // `complete` sweeps from one block past the early-out (the tightest
         // case the top-k sees) up to a real serving shape: 8192 blocks is a
-        // 32K visible prefix, the default ATLAS_QSA_MAX_TOKENS.
+        // 32K visible prefix, the default AVAROK_QSA_MAX_TOKENS.
         for &complete in &[topk + 1, topk + 7, 1024usize, 4096, 8192] {
             if complete <= topk {
                 continue;

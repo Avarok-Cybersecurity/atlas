@@ -14,7 +14,7 @@ pub(crate) fn load_moe_qwen35_fp8_experts(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<Vec<Fp8ExpertWeight>> {
     let p = format!("{layer_prefix}.mlp");
     let mut fp8_experts = Vec::with_capacity(num_experts);
@@ -89,7 +89,7 @@ pub(crate) fn load_moe_no_shared(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");

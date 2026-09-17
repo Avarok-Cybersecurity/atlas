@@ -29,23 +29,23 @@ use super::hyper_connection_lowrank_rows::{HC_DEC_MAX_T, hc_pre_rows};
 use super::hyper_connection_post_fold::{HcDeferredPost, HcPreArm, hc_pre_arm};
 use crate::layers::qwen3_attention::HcLowRank;
 
-/// `ATLAS_QWEN4EXP_NO_HC_GEMM=1`: revert the large-T collapse to the fused
+/// `AVAROK_QWEN4EXP_NO_HC_GEMM=1`: revert the large-T collapse to the fused
 /// FP32 kernel (deploy-time kill switch; the GEMM path rounds `normed` to
 /// BF16 before the projections).
 pub(crate) fn hc_gemm_disabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_QWEN4EXP_NO_HC_GEMM").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_NO_HC_GEMM").as_deref() == Ok("1"))
 }
 
-/// `ATLAS_HC_DECODE_SPLIT=1`: keep the pre-cuBLASLt split path for
+/// `AVAROK_HC_DECODE_SPLIT=1`: keep the pre-cuBLASLt split path for
 /// decode-shaped T (A/B escape hatch, same convention as the GEMM kill
 /// switch above).
 pub(crate) fn hc_decode_split_forced() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_DECODE_SPLIT").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_DECODE_SPLIT").as_deref() == Ok("1"))
 }
 
-/// `ATLAS_HC_PREFILL_CUBLAS=1`: route the large-T collapse's three low-rank
+/// `AVAROK_HC_PREFILL_CUBLAS=1`: route the large-T collapse's three low-rank
 /// projections through cuBLASLt instead of `dense_gemm_bf16_pipelined` — the
 /// move that took DECODE's collapse from 254/265 to 122/131 us a layer.
 ///
@@ -55,7 +55,7 @@ pub(crate) fn hc_decode_split_forced() -> bool {
 /// its regime; the decode precedent does NOT transfer. Default stays off.
 pub(crate) fn hc_prefill_cublas() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_PREFILL_CUBLAS").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_PREFILL_CUBLAS").as_deref() == Ok("1"))
 }
 
 /// Collapse the `hc_mult` streams to one, and emit the per-stream injection
@@ -198,7 +198,7 @@ pub fn hc_pre_lowrank_folding(
                     num_tokens,
                     chunk = HC_DEC_MAX_T,
                     "hc_pre_lowrank arm: DECODE-ROWS CHUNKED (T > HC_DEC_MAX_T; \
-                     ATLAS_NO_HC_PRE_CHUNK restores the cuBLASLt GEMM)"
+                     AVAROK_NO_HC_PRE_CHUNK restores the cuBLASLt GEMM)"
                 );
             });
         }
@@ -232,7 +232,7 @@ pub fn hc_pre_lowrank_folding(
     // stream ~6.5 MB of low-rank weights well off the bandwidth floor —
     // the same GEMM-shaped-work-on-hand-rolled-kernels defect class as
     // the prefill collapse and the batched-decode QKVZ arms, and the
-    // same cure. ATLAS_HC_DECODE_SPLIT=1 keeps the split path (A/B).
+    // same cure. AVAROK_HC_DECODE_SPLIT=1 keeps the split path (A/B).
     if arm == HcPreArm::DecodeGemm {
         {
             static SAID: std::sync::Once = std::sync::Once::new();

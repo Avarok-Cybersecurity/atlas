@@ -127,10 +127,10 @@
       </p>
     </div>
     <aside class="warn at" style="--n: 2">
-      <p class="warn-h mono">Where Atlas sits on that path</p>
+      <p class="warn-h mono">Where Avarok sits on that path</p>
       <p>
         Same Blackwell architecture, same CUDA stack, same OpenAI-compatible surface — a workload
-        validated on GB10 moves up the line rather than starting over. Atlas ships its GB10 kernel
+        validated on GB10 moves up the line rather than starting over. Avarok ships its GB10 kernel
         target today, and the kernel system is already three-dimensional (hardware × model ×
         quant): another hardware arm is a target to add, not an engine to rewrite.
       </p>
@@ -154,7 +154,7 @@
     font-size: 0.85em;
     letter-spacing: 0.22em;
     text-transform: uppercase;
-    color: var(--sx);
+    color: var(--sx-text);
     margin-bottom: 0.9em;
   }
   .cover-title {
@@ -194,7 +194,7 @@
     grid-row: span 2;
     font-size: 1.5em;
     font-weight: 700;
-    color: var(--sx);
+    color: var(--sx-text);
     opacity: 0.75;
   }
   .q strong {

@@ -18,7 +18,7 @@ KNOWN-BAD
 `missing_pack_does_not_silent_zero` — get(1) when only e0 exists errors with `no silent host F32`.
 
 TEST NOTES
-`cargo test -p atlas-core --lib -- kimi_k3::expert_backend`
+`cargo test -p avarok-core --lib -- kimi_k3::expert_backend`
 Do not download moonshotai/Kimi-K3.
 
 BUGS

@@ -147,7 +147,7 @@ impl Qwen3AttentionLayer {
         static CPROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         static CPROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(200);
         let cprof = *CPROF
-            .get_or_init(|| std::env::var("ATLAS_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            .get_or_init(|| std::env::var("AVAROK_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
             && CPROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
         let mut ct = if cprof {
             ctx.gpu.synchronize(stream).ok();
@@ -211,7 +211,7 @@ impl Qwen3AttentionLayer {
         }
 
         // ── Standard Q/K/V projection (non-MLA models) ──
-        let ht = std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1");
+        let ht = std::env::var("AVAROK_PREFILL_HOST_TIMING").as_deref() == Ok("1");
         let tp0 = ht.then(std::time::Instant::now);
         if self.mla.is_none() {
             self.prefill_attention_cache_skip_qkv(
@@ -244,7 +244,7 @@ impl Qwen3AttentionLayer {
             && !self.attn.q_norm.weight.is_null()
             && self.mrope_interleaved
             && !self.rope_proportional
-            && std::env::var("ATLAS_ATTN_PREFILL_FUSED_QROPE")
+            && std::env::var("AVAROK_ATTN_PREFILL_FUSED_QROPE")
                 .ok()
                 .as_deref()
                 == Some("1")
@@ -406,7 +406,7 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // ATLAS_OP_DUMP: k AFTER k_norm, BEFORE RoPE. Matches vLLM's "k_proj"
+        // AVAROK_OP_DUMP: k AFTER k_norm, BEFORE RoPE. Matches vLLM's "k_proj"
         // dump point in qwen3_next.py (which is post-k_norm pre-RoPE).
         if num_tokens > 0 {
             let kv_dim_e = (nkv * hd) as usize;
@@ -516,7 +516,7 @@ impl Qwen3AttentionLayer {
             // The (T, H, W) streams are built for every vision prompt and
             // uploaded to the GPU, but this path had no route that READ them:
             // the only MRoPE arm here was the fused-Q one behind
-            // ATLAS_ATTN_PREFILL_FUSED_QROPE, off by default, so a cache-skip
+            // AVAROK_ATTN_PREFILL_FUSED_QROPE, off by default, so a cache-skip
             // prefill fell through to scalar `ops::rope` on the T stream
             // alone. `paged.rs` has carried this branch all along, which is
             // why the defect only showed on prompts short enough to skip the
@@ -572,7 +572,7 @@ impl Qwen3AttentionLayer {
             .map_err(|e| anyhow::anyhow!("rope failed: {e}"))?;
         }
 
-        // ATLAS_OP_DUMP: k AFTER RoPE (final K that gets written to KV cache).
+        // AVAROK_OP_DUMP: k AFTER RoPE (final K that gets written to KV cache).
         if num_tokens > 0 {
             let kv_dim_e = (nkv * hd) as usize;
             let q_dim_e = (nq * hd) as usize;
@@ -764,7 +764,7 @@ impl Qwen3AttentionLayer {
             // Conditions are the same strict set, because a wrong skip leaves
             // attn_out UNINITIALISED rather than wrong-but-plausible: stage 2
             // must be armed (`prefill_select_active` mirrors the
-            // ATLAS_QSA_NO_PREFILL_SELECT kill switch), it must actually run
+            // AVAROK_QSA_NO_PREFILL_SELECT kill switch), it must actually run
             // (`num_tokens > inert_bound`, its own guard in section 8b), and
             // single-stream only (8b refuses batched metadata).
             let dense_q_rows = match self.qsa.as_ref() {
@@ -834,7 +834,7 @@ impl Qwen3AttentionLayer {
             None
         };
 
-        // ATLAS_OP_DUMP: attn_out BEFORE sigmoid gate (raw FlashAttention output).
+        // AVAROK_OP_DUMP: attn_out BEFORE sigmoid gate (raw FlashAttention output).
         // Compares 1:1 against vLLM's "attn_out" dump in qwen3_next.py.
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
@@ -966,7 +966,7 @@ impl Qwen3AttentionLayer {
             None
         };
 
-        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
+        // AVAROK_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
             super::super::op_dump::dump_bf16(

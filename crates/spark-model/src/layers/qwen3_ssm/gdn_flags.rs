@@ -12,7 +12,7 @@
 //! ## Why these are set, not read
 //!
 //! They were three independent `std::env::var` reads scattered across six call
-//! sites, each with its own convention (`ATLAS_SSM_H_FP16` presence-gated —
+//! sites, each with its own convention (`AVAROK_SSM_H_FP16` presence-gated —
 //! where `=0` meant ON — and the other two `== "1"`). That is how the same
 //! flag came to be decoded two different ways in one binary. They are now ONE
 //! cell, written once from [`set_from_cli`] before any model is built.
@@ -94,25 +94,25 @@ impl GdnFlags {
     /// `kernels/<hw>/HARDWARE.toml` `[defaults] ssm_batched_recurrent` —
     /// `hopper` declares it ON (+6% on the serve, md5-identical output to the
     /// per-sequence launches), `gb10` and `b200` declare it OFF, unchanged. It
-    /// used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in an H100 launch script
+    /// used to be `AVAROK_SSM_BATCHED_RECURRENT=1` in an H100 launch script
     /// outside this repository, which is the structure the 2026-09-11
-    /// maintainer review asked for. `ATLAS_SSM_BATCHED_RECURRENT` still
+    /// maintainer review asked for. `AVAROK_SSM_BATCHED_RECURRENT` still
     /// overrides, and `=0` now means OFF rather than reading as absent (see
     /// `layers::ops::target_defaults`); everything that ever set it set it
     /// to `1`.
     ///
-    /// `ATLAS_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
+    /// `AVAROK_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
     /// every script and ledger in the campaign wrote it, and silently changing
     /// `=0` from ON to OFF would retroactively re-label measurements. New
     /// configuration should use `--ssm-h-dtype`.
     fn from_env() -> Self {
         Self {
-            h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
+            h_f16: std::env::var("AVAROK_SSM_H_FP16").is_ok(),
             // No environment fallback on purpose (house rule: no new env
             // knobs) — stage 3 has no CLI surface either until prefill
             // narrowing lands; only unit tests exercise the sizing.
             h_f16_pool: false,
-            fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
+            fused_norm: std::env::var("AVAROK_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: crate::layers::ops::target_defaults::resolved()
                 .ssm_batched_recurrent
                 .value,
@@ -181,7 +181,7 @@ pub const fn default_dflash_gamma(trained_block_size: usize) -> usize {
     }
 }
 
-/// `--ssm-h-dtype f16` (legacy `ATLAS_SSM_H_FP16`).
+/// `--ssm-h-dtype f16` (legacy `AVAROK_SSM_H_FP16`).
 pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16
 }
@@ -214,12 +214,12 @@ pub fn ssm_h_dtype_bits(dtype: Option<&str>) -> (bool, bool) {
     }
 }
 
-/// `--gdn-fused-norm` (legacy `ATLAS_GDN_FUSED_NORM=1`).
+/// `--gdn-fused-norm` (legacy `AVAROK_GDN_FUSED_NORM=1`).
 pub fn gdn_fused_norm_enabled() -> bool {
     flags().fused_norm
 }
 
-/// `--ssm-batched-recurrent` (legacy `ATLAS_SSM_BATCHED_RECURRENT=1`).
+/// `--ssm-batched-recurrent` (legacy `AVAROK_SSM_BATCHED_RECURRENT=1`).
 pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
 }
@@ -249,7 +249,7 @@ pub fn verify_exact_enabled() -> bool {
 ///   verify (`model/trait_impl/verify_hc.rs`) is the only `decode_batched`
 ///   caller that sets it; every other one passes `false`, so this widens
 ///   nothing else.
-/// * `lever` — the kill switch (`ATLAS_NO_VERIFY_ROW_EXACT`), so the row-shaped
+/// * `lever` — the kill switch (`AVAROK_NO_VERIFY_ROW_EXACT`), so the row-shaped
 ///   arms stay measurable against the batched ones.
 /// * `h_f16` — an FP16 h-state pool. The exact arm's kernels are FP32 readers;
 ///   reading an FP16 pool through them is silent garbage, not an error. Same
@@ -263,8 +263,8 @@ pub const fn verify_row_exact_required(
     (exact_verify || (pass_exact_replay && lever)) && !h_f16
 }
 
-/// The pass-scoped row-exact verify arms are OPT-IN: `ATLAS_VERIFY_ROW_EXACT`
-/// (PRESENCE, `=0` is NOT "off") arms them; `ATLAS_NO_VERIFY_ROW_EXACT` still
+/// The pass-scoped row-exact verify arms are OPT-IN: `AVAROK_VERIFY_ROW_EXACT`
+/// (PRESENCE, `=0` is NOT "off") arms them; `AVAROK_NO_VERIFY_ROW_EXACT` still
 /// disarms and wins over both. Read once per process. `--exact-verify` is a
 /// separate, wider opt-in and is unaffected.
 ///
@@ -284,8 +284,8 @@ fn row_exact_lever() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
         row_exact_lever_from(
-            std::env::var_os("ATLAS_VERIFY_ROW_EXACT").is_some(),
-            std::env::var_os("ATLAS_NO_VERIFY_ROW_EXACT").is_some(),
+            std::env::var_os("AVAROK_VERIFY_ROW_EXACT").is_some(),
+            std::env::var_os("AVAROK_NO_VERIFY_ROW_EXACT").is_some(),
         )
     })
 }
@@ -317,24 +317,24 @@ pub fn verify_row_exact_for_pass(pass_exact_replay: bool) -> bool {
 /// (K single-row expert passes instead of the fused K=2 one). Naming them
 /// separately is what makes "which leg buys the bit-equality, and what does it
 /// cost" a measurement rather than an argument — each has its own PRESENCE
-/// kill switch. The whole chain is OPT-IN (`ATLAS_VERIFY_ROW_EXACT`, see
-/// `row_exact_lever`); `ATLAS_NO_VERIFY_ROW_EXACT` still disarms all four.
+/// kill switch. The whole chain is OPT-IN (`AVAROK_VERIFY_ROW_EXACT`, see
+/// `row_exact_lever`); `AVAROK_NO_VERIFY_ROW_EXACT` still disarms all four.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowExactLeg {
-    /// The two mHC `hc_pre` sites (`ATLAS_NO_VERIFY_ROW_HC`).
+    /// The two mHC `hc_pre` sites (`AVAROK_NO_VERIFY_ROW_HC`).
     HcPre,
     /// GDN QKVZ / out_proj / BA gates. The ONLY leg that is default-OFF, and
     /// the only one that was MEASURED not to matter: `exl3_gemv` does select
     /// its kernel instance by row count (`_m0_` at m == 1, `_m1_` at 2..=8),
     /// but the two agree bit-for-bit on row 0 — the 40-token probe scored
     /// 38/38 equal verify rows with this leg disarmed and 0/38 with either of
-    /// the other three disarmed. Arm it with `ATLAS_VERIFY_ROW_PROJ=1` if a
+    /// the other three disarmed. Arm it with `AVAROK_VERIFY_ROW_PROJ=1` if a
     /// checkpoint ever contradicts that; it costs a second pass over the GDN
     /// in_proj + out_proj trellises (~29 MB/layer) per extra row.
     Proj,
-    /// The conv + GDN recurrence and its norm (`ATLAS_NO_VERIFY_ROW_GDN`).
+    /// The conv + GDN recurrence and its norm (`AVAROK_NO_VERIFY_ROW_GDN`).
     ConvGdn,
-    /// The MoE / FFN (`ATLAS_NO_VERIFY_ROW_FFN`).
+    /// The MoE / FFN (`AVAROK_NO_VERIFY_ROW_FFN`).
     Ffn,
 }
 
@@ -344,10 +344,10 @@ impl RowExactLeg {
     /// way, per the house convention (`=0` is NOT "off").
     const fn env(self) -> (&'static str, bool) {
         match self {
-            Self::HcPre => ("ATLAS_NO_VERIFY_ROW_HC", true),
-            Self::Proj => ("ATLAS_VERIFY_ROW_PROJ", false),
-            Self::ConvGdn => ("ATLAS_NO_VERIFY_ROW_GDN", true),
-            Self::Ffn => ("ATLAS_NO_VERIFY_ROW_FFN", true),
+            Self::HcPre => ("AVAROK_NO_VERIFY_ROW_HC", true),
+            Self::Proj => ("AVAROK_VERIFY_ROW_PROJ", false),
+            Self::ConvGdn => ("AVAROK_NO_VERIFY_ROW_GDN", true),
+            Self::Ffn => ("AVAROK_NO_VERIFY_ROW_FFN", true),
         }
     }
 }
@@ -379,7 +379,7 @@ pub fn verify_row_exact_leg(pass_exact_replay: bool, leg: RowExactLeg) -> bool {
 }
 
 /// Batch width at which the multi-seq decode projections switch to the
-/// 128-row M-tile. `None` (kill switch `ATLAS_NO_SSM_M128`, PRESENCE check —
+/// 128-row M-tile. `None` (kill switch `AVAROK_NO_SSM_M128`, PRESENCE check —
 /// `=0` is NOT "off") keeps the 64-row twin at every width.
 ///
 /// 65 is the DERIVED crossover, not a tuned constant: `ceil(m/64) >
@@ -389,7 +389,7 @@ pub fn verify_row_exact_leg(pass_exact_replay: bool, leg: RowExactLeg) -> bool {
 pub(crate) fn ssm_m128_min_m() -> Option<u32> {
     static M: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *M.get_or_init(|| {
-        if std::env::var("ATLAS_NO_SSM_M128").is_ok() {
+        if std::env::var("AVAROK_NO_SSM_M128").is_ok() {
             None
         } else {
             Some(65)

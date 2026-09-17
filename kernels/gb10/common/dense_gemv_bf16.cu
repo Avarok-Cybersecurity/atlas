@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Dense BF16 GEMV kernel for SM121 (GB10).
+// Avarok Dense BF16 GEMV kernel for SM121 (GB10).
 //
 // out[n] = dot(A[0,:], B[n,:])  where:
 //   A: [1, K] BF16 (single activation row, row-major)

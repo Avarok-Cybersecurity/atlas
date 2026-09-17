@@ -16,10 +16,11 @@ struct Fixture {
 }
 
 fn check(f: Fixture) -> Result<()> {
-    let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu =
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let stream = gpu.default_stream();
     let width = f.rows[0].bytes.len();
-    let dir = std::env::temp_dir().join(format!("atlas-ple-fp8-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avarok-ple-fp8-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let mut segments = Vec::new();
     for (i, row) in f.rows.iter().enumerate() {
@@ -131,8 +132,8 @@ fn ple_fp8_cached_gather_matches_independent_oracle() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires CUDA and ATLAS_PLE_FP8_FIXTURE checkpoint oracle"]
+#[ignore = "requires CUDA and AVAROK_PLE_FP8_FIXTURE checkpoint oracle"]
 fn ple_fp8_checkpoint_gather_matches_oracle() -> Result<()> {
-    let path = std::env::var("ATLAS_PLE_FP8_FIXTURE")?;
+    let path = std::env::var("AVAROK_PLE_FP8_FIXTURE")?;
     check(serde_json::from_slice(&std::fs::read(path)?)?)
 }

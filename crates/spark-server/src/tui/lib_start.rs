@@ -73,10 +73,10 @@ fn template_from(donor: &Recipe, model: &str) -> Recipe {
 /// The no-donor card: serve with every flag at the server's own default.
 fn blank(model: &str) -> Recipe {
     Recipe {
-        id: "starting-point/atlas-defaults".into(),
+        id: "starting-point/avarok-defaults".into(),
         version: "0".into(),
         model: model.to_string(),
-        runtime: Some("atlas".into()),
+        runtime: Some("avarok".into()),
         container: String::new(),
         min_nodes: 1,
         description: "Starting point, not a measurement: no settings pinned, so every \
@@ -97,7 +97,7 @@ fn blank(model: &str) -> Recipe {
 
 /// The recipes whose parameters may be offered for `model`, best match first.
 ///
-/// Donors are Atlas single-node recipes only: a vLLM recipe cannot be
+/// Donors are Avarok single-node recipes only: a vLLM recipe cannot be
 /// launched from here at all, and a multi-node donor carries `ep_size`/
 /// `min_nodes` this dashboard's single-node launcher would refuse — offering
 /// either would be offering settings whose launch is a dead end. Family
@@ -111,7 +111,7 @@ pub(super) fn ranked_donors<'a>(
 ) -> Vec<&'a Recipe> {
     let mut donors: Vec<&Recipe> = recipes
         .iter()
-        .filter(|r| r.is_atlas() && r.min_nodes <= 1)
+        .filter(|r| r.is_avarok() && r.min_nodes <= 1)
         .collect();
     donors.sort_by_key(|r| (!same_family(r, model, model_type), r.id.clone()));
     donors

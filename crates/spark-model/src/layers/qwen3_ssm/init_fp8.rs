@@ -43,7 +43,7 @@ impl Qwen3SsmLayer {
     }
 
     /// Install PER-ROW FP8 weights for the row-wise cuBLASLt PREFILL arm
-    /// (`ATLAS_FP8_ROWWISE=1`, mixed-precision compressed-tensors
+    /// (`AVAROK_FP8_ROWWISE=1`, mixed-precision compressed-tensors
     /// checkpoints). Decode is untouched and keeps the NVFP4 copy.
     ///
     /// The `Fp8PerRow` assertion is the mirror of `set_fp8_decode_weights`'s
@@ -93,7 +93,7 @@ impl Qwen3SsmLayer {
     pub fn predequant_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
         let predequant_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;

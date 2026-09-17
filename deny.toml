@@ -1,4 +1,4 @@
-# cargo-deny configuration for Atlas
+# cargo-deny configuration for Avarok
 # https://embarkstudios.github.io/cargo-deny/
 
 [graph]
@@ -40,10 +40,10 @@ ignore = [
 ]
 
 [licenses]
-# Allowed SPDX expressions for dependencies. Atlas itself is AGPL-3.0-only
+# Allowed SPDX expressions for dependencies. Avarok itself is AGPL-3.0-only
 # (see LICENSE + per-file SPDX headers); this list governs third-party code.
-# Atlas's own workspace crates are skipped via `[licenses] private.ignore`
-# below — without that, cargo-deny rejects every Atlas crate because it
+# Avarok's own workspace crates are skipped via `[licenses] private.ignore`
+# below — without that, cargo-deny rejects every Avarok crate because it
 # thinks AGPL-3.0-only is a foreign license outside this allow-list.
 allow = [
     "MIT",
@@ -57,7 +57,7 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
-    # Atlas itself is AGPL-3.0-only — every workspace crate carries this
+    # Avarok itself is AGPL-3.0-only — every workspace crate carries this
     # license. Allowing it here is consistent (we already license under
     # it) and doesn't widen our third-party surface — no transitive dep
     # is GPL.
@@ -73,7 +73,7 @@ exceptions = []
 
 [bans]
 multiple-versions = "warn"
-# `wildcards = "warn"` (downgraded from `deny`) — Atlas workspace crates
+# `wildcards = "warn"` (downgraded from `deny`) — Avarok workspace crates
 # inherit each other via `path` deps that resolve to `*` in `Cargo.lock`,
 # and cargo-deny's `allow-wildcard-paths` doesn't cover crates with
 # `publish = true` (the default). Defense-in-depth on supply-chain
@@ -90,7 +90,7 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # ★ One entry, and `unknown-git` stays "deny".
 #
-# `atlas-governance` depends on LatticeDB for the PR journey ledger's
+# `avarok-governance` depends on LatticeDB for the PR journey ledger's
 # materialised graph. It is a first-party Avarok repository, and the dependency
 # is pinned to an exact `rev` in that crate's manifest — a git source without a
 # pin is a moving target that can change under a committed Cargo.lock, which is

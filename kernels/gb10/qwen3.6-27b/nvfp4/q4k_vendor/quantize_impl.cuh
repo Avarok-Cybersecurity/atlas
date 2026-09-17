@@ -75,7 +75,7 @@ __device__ __forceinline__ uint8_t compute_e8m0_scale(float amax) {
 }
 
 
-// ATLAS vendoring: body extracted to a __device__ worker so an extern-C __global__ entry
+// AVAROK vendoring: body extracted to a __device__ worker so an extern-C __global__ entry
 // (nvfp4_mmq.cu) can reuse it with bf16-input activations; the thin __global__ below
 // preserves llama's host launcher. (Same pattern as quantize_mmq_q8_1_worker above.)
 template <typename src_t = float>
@@ -284,9 +284,9 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
     }
 }
 
-// ATLAS vendoring: body extracted to a __device__ worker so an extern-C __global__ entry
+// AVAROK vendoring: body extracted to a __device__ worker so an extern-C __global__ entry
 // (q4k_mmq.cu) can reuse it; the thin __global__ below preserves llama's host launcher.
-template <mmq_q8_1_ds_layout ds_layout, typename src_t = float> // ATLAS: src_t for bf16-input activations
+template <mmq_q8_1_ds_layout ds_layout, typename src_t = float> // AVAROK: src_t for bf16-input activations
 static __device__ __forceinline__ void quantize_mmq_q8_1_worker(
         const src_t * __restrict__ x, const int32_t * __restrict__ ids, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
@@ -318,7 +318,7 @@ static __device__ __forceinline__ void quantize_mmq_q8_1_worker(
     const int64_t iqs = i0 % (4*QK8_1);                                             // quant index in block
 
     // Load 4 values per thread and calculate max. abs. value between them:
-    // ATLAS: src_t==bf16 reads 4 consecutive bf16 (Atlas activations); float path = original float4 load.
+    // AVAROK: src_t==bf16 reads 4 consecutive bf16 (Avarok activations); float path = original float4 load.
     const int64_t eidx = i03*s03 + i02*s02 + i01*s01 + i00;
     float4 xi;
     if (i0 >= ne00) { xi = make_float4(0.0f, 0.0f, 0.0f, 0.0f); }

@@ -68,12 +68,12 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
-        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // ── Phase timing (AVAROK_HC_VERIFY_STAGE_TIMING=1) ──
         // See the module note: attention layers cost MORE per layer than SSM
         // layers and the residual after the FFN is ~40x the projection floor.
         let phase_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut at = std::time::Instant::now();
         let (mut a1, mut a2, mut a3) = (0u128, 0u128, 0u128);
@@ -180,7 +180,7 @@ impl Qwen3AttentionLayer {
         }
         // ── TP reduction, HOISTED out of the row loop ──
         //
-        // Measured 2026-09-15 (ATLAS_HC_VERIFY_STAGE_TIMING=1, C=4, ISL 2000):
+        // Measured 2026-09-15 (AVAROK_HC_VERIFY_STAGE_TIMING=1, C=4, ISL 2000):
         // the attention CORE is 61.3% of an attention layer and attention
         // layers are 41.9% of the verify forward, so this loop is ~26% of the
         // whole forward. The per-row reduce made it k separate 5 KB
@@ -217,7 +217,7 @@ impl Qwen3AttentionLayer {
         // that. `batched_out.is_some()` short-circuits the loop on both ranks
         // alike, and that arm does its own reduction.
         //
-        // `ATLAS_NO_VERIFY_ROW_AR_HOIST=1` restores the per-row reduce, so the
+        // `AVAROK_NO_VERIFY_ROW_AR_HOIST=1` restores the per-row reduce, so the
         // arms can be A/B'd on one boot without a rebuild.
         if batched_out.is_none()
             && ctx.config.tp_world_size > 1
@@ -225,7 +225,7 @@ impl Qwen3AttentionLayer {
         {
             static PER_ROW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             let per_row = *PER_ROW.get_or_init(|| {
-                std::env::var("ATLAS_NO_VERIFY_ROW_AR_HOIST").as_deref() == Ok("1")
+                std::env::var("AVAROK_NO_VERIFY_ROW_AR_HOIST").as_deref() == Ok("1")
             });
             static SAID: std::sync::Once = std::sync::Once::new();
             SAID.call_once(|| {
@@ -233,14 +233,14 @@ impl Qwen3AttentionLayer {
                     tracing::info!(
                         rows = k,
                         "verify row all-reduce: PER-ROW ({k} collectives of {} B per attention \
-                         layer per sequence; ATLAS_NO_VERIFY_ROW_AR_HOIST=1 is set)",
+                         layer per sequence; AVAROK_NO_VERIFY_ROW_AR_HOIST=1 is set)",
                         h * 2
                     );
                 } else {
                     tracing::info!(
                         rows = k,
                         "verify row all-reduce: HOISTED (1 collective of {} B after the row \
-                         loop, was {k}; set ATLAS_NO_VERIFY_ROW_AR_HOIST=1 to restore per-row)",
+                         loop, was {k}; set AVAROK_NO_VERIFY_ROW_AR_HOIST=1 to restore per-row)",
                         k * h * 2
                     );
                 }

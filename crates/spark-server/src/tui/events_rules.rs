@@ -37,7 +37,7 @@ pub const SAMPLE_EVERY: u32 = 10;
 ///
 /// Reachable only where the terminal reports key-up at all — the Windows
 /// console, which emits a record for both edges natively, and the kitty
-/// keyboard protocol under `REPORT_EVENT_TYPES`. Atlas pushes no keyboard
+/// keyboard protocol under `REPORT_EVENT_TYPES`. Avarok pushes no keyboard
 /// enhancement flags (see [`super::terminal_guard::TerminalGuard::enter`]), so
 /// on a unix tty this guard never fires; on Windows it is the difference
 /// between one keystroke doing one thing and every keystroke being applied
@@ -123,8 +123,8 @@ pub fn tick_work(section: Section, lib: LibraryPhase) -> TickWork {
         start_scan: in_library && lib.dirty && !lib.scan_in_flight,
         // ★ ONCE, likewise a fix. `LibState::attached()` stays false when
         // `ArtifactStore::discover()` fails, and it fails only for reasons that
-        // cannot change while the process runs (neither `ATLAS_HOME` nor `HOME`
-        // is set, or `ATLAS_HOME` is empty). The condition was
+        // cannot change while the process runs (neither `AVAROK_HOME` nor `HOME`
+        // is set, or `AVAROK_HOME` is empty). The condition was
         // `in_library && !attached`, so the failure path re-ran at the full
         // 10 Hz tick: one `warn!` every 100 ms into the tee file AND the log
         // pane — where 10 000 identical lines evict the entire ring in under

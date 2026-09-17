@@ -2,7 +2,7 @@
 
 mod mixed_main_mtp_tests {
     use super::super::super::*;
-    use atlas_core::config::{ModelConfig, QuantizationConfig};
+    use avarok_core::config::{ModelConfig, QuantizationConfig};
     use spark_runtime::weights::WeightTensor;
 
     fn config() -> ModelConfig {

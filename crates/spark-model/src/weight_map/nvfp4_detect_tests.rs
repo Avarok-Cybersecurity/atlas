@@ -6,7 +6,7 @@
 
 mod ep_detection_tests {
     use super::super::*;
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use spark_runtime::weights::WeightStore;
 
     /// A store holding only the FP8 attention marker at a given layer, which is

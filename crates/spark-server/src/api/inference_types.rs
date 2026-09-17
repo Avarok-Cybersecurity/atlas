@@ -157,7 +157,7 @@ pub enum InferenceRequest {
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
-        /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
+        /// `AVAROK_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
         /// Hybrid GDN+attention models (Qwen3.5-35B-A3B) exhibit
         /// documented SSM state corruption under MTP rejection on
         /// agentic workloads (89% reject rate observed). vLLM #36872,
@@ -255,7 +255,7 @@ pub enum InferenceRequest {
         suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
-        /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
+        /// `AVAROK_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
         /// Hybrid GDN+attention models (Qwen3.5-35B-A3B) exhibit
         /// documented SSM state corruption under MTP rejection on
         /// agentic workloads (89% reject rate observed). vLLM #36872,
@@ -325,7 +325,7 @@ pub struct InferenceResponse {
     /// path, `RequestAccept::accepted_total`). Reported to clients as
     /// `usage.completion_tokens_details.accepted_prediction_tokens` — the
     /// OpenAI field's meaning (predicted tokens that matched generation),
-    /// carried by Atlas's self-drafted MTP predictions. 0 when speculation is
+    /// carried by Avarok's self-drafted MTP predictions. 0 when speculation is
     /// off or nothing was accepted.
     pub accepted_prediction_tokens: usize,
     /// Prompt-token logprobs (legacy /v1/completions `logprobs` + `echo`):

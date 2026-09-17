@@ -3,7 +3,7 @@
 </script>
 
 <svelte:head>
-  <title>Atlas, pure Rust inference — Intelligence, on your terms</title>
+  <title>Avarok, pure Rust inference — Intelligence, on your terms</title>
 </svelte:head>
 
 <Home />

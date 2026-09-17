@@ -1,4 +1,4 @@
-layer  type       cos    rel_l2    |vllm|   |atlas|
+layer  type       cos    rel_l2    |vllm|   |avarok|
 ----------------------------------------------------
     0   ssm   0.99993   0.01197       0.6       0.6
     1   ssm   0.99979   0.02077       0.8       0.8

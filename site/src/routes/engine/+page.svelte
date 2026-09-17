@@ -19,7 +19,7 @@
 </script>
 
 <svelte:head>
-  <title>Atlas engine, pure Rust inference for DGX Spark</title>
+  <title>Avarok engine, pure Rust inference for DGX Spark</title>
 </svelte:head>
 
 <Nav />

@@ -23,10 +23,10 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 ///
 /// Launch geometry is IDENTICAL to batch8 (grid ceil(N/4), block 256; rt2's
 /// surplus blocks early-exit on `n0 >= N`), so every call site, launcher,
-/// and CUDA-graph capture is unchanged. `ATLAS_NO_BATCH8_RT=1` restores the
+/// and CUDA-graph capture is unchanged. `AVAROK_NO_BATCH8_RT=1` restores the
 /// classic batch8 for A/B (strict `== "1"`, matching the sibling levers).
 pub(crate) fn batch8_kernel(gpu: &dyn GpuBackend) -> KernelHandle {
-    if std::env::var("ATLAS_NO_BATCH8_RT").as_deref() != Ok("1") {
+    if std::env::var("AVAROK_NO_BATCH8_RT").as_deref() != Ok("1") {
         let h = try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8_rt2");
         if h.0 != 0 {
             return h;

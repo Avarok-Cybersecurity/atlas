@@ -1,4 +1,4 @@
-# Atlas Inference — https://atlasinference.io
+# Avarok Inference — https://atlascybernetics.ai
 #
 # Everything here is public documentation of an open source project, and being
 # found is the point. Answer engines are named explicitly rather than left to
@@ -50,4 +50,4 @@ Allow: /
 User-agent: YouBot
 Allow: /
 
-Sitemap: https://atlasinference.io/sitemap.xml
+Sitemap: https://atlascybernetics.ai/sitemap.xml

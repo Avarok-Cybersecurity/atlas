@@ -6,12 +6,12 @@ NVMe gather is bit-exact. The model still does not produce coherent text. That
 combination says the fault is in the COMPOSITION, which per-kernel probes
 cannot see.
 
-So reproduce the same taps Atlas writes (`ATLAS_QWEN4EXP_DUMP`) and diff.
+So reproduce the same taps Avarok writes (`AVAROK_QWEN4EXP_DUMP`) and diff.
 
 WHAT MAKES THIS AFFORDABLE. The obvious blocker is the 512-expert MoE on every
 layer. Two things get around it:
 
-  * Atlas taps the highway at the SUB-LAYER boundary — after a block's
+  * Avarok taps the highway at the SUB-LAYER boundary — after a block's
     `hc_post`, before the next `hc_pre`. Reproducing `L00_post_gdn` therefore
     needs layer 0's GDN projections and NOTHING ELSE. No experts at all.
   * Where experts are unavoidable, top-10 routing over a short prompt touches
@@ -79,7 +79,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--dump-dir', required=True,
-                    help='directory ATLAS_QWEN4EXP_DUMP wrote')
+                    help='directory AVAROK_QWEN4EXP_DUMP wrote')
     ap.add_argument('--tokens', default='',
                     help='comma-separated prompt token ids (must match the serve request)')
     args = ap.parse_args()
@@ -160,7 +160,7 @@ def main() -> int:
         compare('L00 hc_pre mixed', got, mixed.numpy())
     got = tap('L00_hc_pre_inj.bin')
     if got is not None:
-        print(f'    atlas inj = {np.round(got[:hc], 6).tolist()}')
+        print(f'    avarok inj = {np.round(got[:hc], 6).tolist()}')
         print(f'    ref   inj = {np.round(inj[0].numpy(), 6).tolist()}  (token 0)')
         compare('L00 hc_pre inj', got, inj.numpy())
 
@@ -221,7 +221,7 @@ def main() -> int:
     if got is not None:
         qkv_w = load(snap, index, f'{lp}.linear_attn.in_proj_qkv.weight').float()
         z_w = load(snap, index, f'{lp}.linear_attn.in_proj_z.weight').float()
-        # Atlas stores the concat as sequential [Q|K|V|Z].
+        # Avarok stores the concat as sequential [Q|K|V|Z].
         want_qkvz = torch.cat([mixed @ qkv_w.T, mixed @ z_w.T], dim=-1)
         compare('L00 qkvz preconv', got, want_qkvz.detach().numpy())
 

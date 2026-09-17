@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Mock-GPU tests for the native EXL3 expert tables
-//! (`ATLAS_EXL3_NATIVE_MOE=1`): dense-local ptr-table build from
+//! (`AVAROK_EXL3_NATIVE_MOE=1`): dense-local ptr-table build from
 //! `Vec<Option<Exl3Weight>>` (None = remote under EP), the `-1` slot-index
 //! mapping, and build determinism. Split from `ptr_table_build.rs` for the
 //! 500-LoC cap.

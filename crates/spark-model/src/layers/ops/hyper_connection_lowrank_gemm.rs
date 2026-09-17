@@ -25,10 +25,10 @@ use proj::{gemm_raw, project_rows};
 /// `dense_gemm_bf16_pipelined`, keeping only the elementwise seams custom.
 /// Slabbed at <= 2048 tokens to bound the scratch region.
 ///
-/// `ATLAS_QWEN4EXP_NO_HC_GEMM=1` falls back to the fused kernel (kill switch,
-/// same convention as ATLAS_NO_GDN_FLA).
+/// `AVAROK_QWEN4EXP_NO_HC_GEMM=1` falls back to the fused kernel (kill switch,
+/// same convention as AVAROK_NO_GDN_FLA).
 #[allow(clippy::too_many_arguments)]
-/// `ATLAS_HC_FUSE_UP_MIX=1`: do the mix in the up-GEMM epilogue so `up_pre`
+/// `AVAROK_HC_FUSE_UP_MIX=1`: do the mix in the up-GEMM epilogue so `up_pre`
 /// is never materialised. See `hc_pre_up_mix` in the model's
 /// `hyper_connection.cu` for the stream-interleaved N-tile that makes one
 /// output dim's four streams meet in a single thread's registers.
@@ -37,10 +37,10 @@ use proj::{gemm_raw, project_rows};
 /// the 96 prefill sites, to hand one kernel's output to the next.
 fn hc_fuse_up_mix() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_UP_MIX").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_FUSE_UP_MIX").as_deref() == Ok("1"))
 }
 
-/// `ATLAS_HC_FUSE_DOWN_INJ=1`: append the injection projection to the down
+/// `AVAROK_HC_FUSE_DOWN_INJ=1`: append the injection projection to the down
 /// GEMM as extra output columns instead of launching it separately. See
 /// `hc_down_inj` in the model's `hyper_connection.cu`.
 ///
@@ -50,7 +50,7 @@ fn hc_fuse_up_mix() -> bool {
 /// half-empty third column tile is free — ceil(324/128) == ceil(320/128).
 fn hc_fuse_down_inj() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_HC_FUSE_DOWN_INJ").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_HC_FUSE_DOWN_INJ").as_deref() == Ok("1"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -164,7 +164,7 @@ pub(crate) fn hc_pre_gemm_fused(
     );
     // SSOT with `hc_lowrank_scratch` sizing — a mismatch writes past the arena.
     // Also the launch multiplier: an 8192 chunk at slab 2048 is four passes of
-    // every slabbed kernel here. ATLAS_HC_GEMM_SLAB overrides both sides.
+    // every slabbed kernel here. AVAROK_HC_GEMM_SLAB overrides both sides.
     let slab: u32 = spark_runtime::buffers::hc_gemm_slab() as u32;
     #[allow(non_snake_case)]
     let SLAB: u32 = slab;
@@ -227,7 +227,7 @@ pub(crate) fn hc_pre_gemm_fused(
     let k_inj_gate = crate::layers::try_kernel(gpu, "hyper_connection", "hc_inj_gate");
     // Every conjunct is load-bearing:
     //   !use_cublas  - excludes BOTH decode entries (T<=64 and the row-exact
-    //                  batched verify) and ATLAS_HC_PREFILL_CUBLAS.
+    //                  batched verify) and AVAROK_HC_PREFILL_CUBLAS.
     //   inject       - excludes `hc_head_lowrank`, which is the model's FINAL
     //                  NORM (no `model.norm.weight` in the checkpoint). Worth
     //                  1/97th of the win and removes a wrong-logits failure

@@ -5,7 +5,7 @@
 //! Triggers via `TURBO_INNERQ=N` env var (N = calibration token count). The
 //! kernel-side state lives in `kernels/gb10/common/tq_plus_innerq_apply.cu`
 //! as `__device__` globals inside `namespace tq_plus` — deliberately in the
-//! SAME translation unit (= same PTX module; Atlas has no `-rdc` device
+//! SAME translation unit (= same PTX module; Avarok has no `-rdc` device
 //! linking) as the apply/accumulate kernels that read it. This driver
 //! manipulates that state directly via the CUDA Driver API:
 //!
@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{Context, Result, bail};
 use std::sync::Arc;
 
-use atlas_core::registry::AtlasRegistry;
+use avarok_core::registry::AvarokRegistry;
 
 // Itanium-mangled names for `tq_plus::*` device globals. The kernel TU is
 // `kernels/gb10/common/tq_plus_innerq_apply.cu` — the module that also holds
@@ -52,7 +52,7 @@ pub struct InnerQDriver {
     /// This model's kernel modules. Held rather than fetched from a global:
     /// the device symbols below live in THESE modules, and a swapped-in model's
     /// driver must never resolve them against the previous model's.
-    registry: Arc<AtlasRegistry>,
+    registry: Arc<AvarokRegistry>,
     pub target_tokens: i32,
     pub strength: f32,
     pub calibrating: AtomicBool,
@@ -62,7 +62,7 @@ pub struct InnerQDriver {
 impl InnerQDriver {
     /// Reads `TURBO_INNERQ` and `TURBO_INNERQ_STRENGTH` env vars. Returns
     /// `None` if `TURBO_INNERQ` is unset, unparsable, or `<= 0`.
-    pub fn from_env(registry: Arc<AtlasRegistry>) -> Option<Self> {
+    pub fn from_env(registry: Arc<AvarokRegistry>) -> Option<Self> {
         let n = std::env::var("TURBO_INNERQ")
             .ok()
             .and_then(|v| v.parse::<i32>().ok())

@@ -99,7 +99,7 @@ impl Qwen3AttentionLayer {
         if self.gated {
             // Q+Gate projection with inline deinterleave (output is [Q_all | Gate_all])
             if let Some(x) = self.exl3_attn_arm(ctx, "decode q_proj")? {
-                // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed q_proj
+                // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): the packed q_proj
                 // writes the RAW interleaved [Q|gate] row (checkpoint column
                 // order), then the q LoRA fold and the same deinterleave the
                 // dense fallback runs. K/V take their own arm below.

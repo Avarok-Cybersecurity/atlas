@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 serving predicates (`ATLAS_EXL3_NATIVE=1`): the gate, the
+//! Native EXL3 serving predicates (`AVAROK_EXL3_NATIVE=1`): the gate, the
 //! natively-served prefix set and the compiled-kernel envelope. Child module
 //! of `exl3_materialize.rs`, split out for the ≤500 LoC cap; re-exported from
 //! there so the public paths (`weight_map::exl3_native_*`) are unchanged.
 
 use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight};
 
-// ── Native EXL3 serving (ATLAS_EXL3_NATIVE=1) ────────────────────────
+// ── Native EXL3 serving (AVAROK_EXL3_NATIVE=1) ────────────────────────
 //
 // Milestone 1 keeps a SELECTED set of non-expert trellis linears packed in
 // the store (skip the BF16 rewrite AND the frees) and serves them through
@@ -20,16 +20,16 @@ use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight};
 // `factory/build.rs` re-derives "was this kept?" through the same predicates,
 // so the materialize pass and the model builder can never disagree.
 
-/// `ATLAS_EXL3_NATIVE=1`: serve supported trellis linears natively instead
+/// `AVAROK_EXL3_NATIVE=1`: serve supported trellis linears natively instead
 /// of materializing them. Read per call — this only runs on load paths.
 pub fn exl3_native_enabled() -> bool {
-    std::env::var("ATLAS_EXL3_NATIVE").as_deref() == Ok("1")
+    std::env::var("AVAROK_EXL3_NATIVE").as_deref() == Ok("1")
 }
 
-/// The natively-served set: the LM head, plus — when `ATLAS_EXL3_NATIVE_MOE=1`
+/// The natively-served set: the LM head, plus — when `AVAROK_EXL3_NATIVE_MOE=1`
 /// — the routed experts (`.mlp.experts.N.{gate,up,down}_proj`; see
 /// `exl3_materialize_moe.rs` for the exclusions: `mtp.*` and the shared
-/// expert keep materializing), plus — when `ATLAS_EXL3_NATIVE_DENSE=1` — the
+/// expert keep materializing), plus — when `AVAROK_EXL3_NATIVE_DENSE=1` — the
 /// GDN (`linear_attn.{in_proj_qkv,in_proj_z,out_proj}`) and attention
 /// (`self_attn.{q,k,v,o}_proj`) dense families (see
 /// `exl3_materialize_dense.rs`; `mtp.*`, the QSA indexer and the shared

@@ -3,7 +3,7 @@ name = "spark-storage"
 version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
-description = "Atlas: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
+description = "Avarok: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
 
 [features]
 default = ["cuda"]
@@ -19,13 +19,13 @@ metal = []
 
 [dependencies]
 cufile-sys = { path = "../cufile-sys" }
-# Only for `atlas_core::safetensors` — the shared `data_offsets` validation the
+# Only for `avarok_core::safetensors` — the shared `data_offsets` validation the
 # weight-peer manifest builder and `spark_runtime::fast_weights` must agree on.
-# `default-features = false` drops atlas-core's cuda default so a lean
+# `default-features = false` drops avarok-core's cuda default so a lean
 # (non-CUDA) peer build doesn't pull cudarc in through this edge.
-atlas-core = { workspace = true, default-features = false }
-atlas-tier = { workspace = true }
-atlas-rdma = { workspace = true }
+avarok-core = { workspace = true, default-features = false }
+avarok-tier = { workspace = true }
+avarok-rdma = { workspace = true }
 # Only for the cuda-gated RDMA weight loader (see the `cuda` feature note). The
 # non-cuda peer server + wire types never touch it, so it stays optional and a
 # lean peer build (default-features = false) doesn't pull it.

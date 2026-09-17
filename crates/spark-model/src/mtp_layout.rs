@@ -2,7 +2,7 @@
 
 //! Checkpoint-level detection of MTP / next-token-prediction weights.
 //!
-//! Atlas binds MTP through three unrelated loader paths — the Qwen-shaped
+//! Avarok binds MTP through three unrelated loader paths — the Qwen-shaped
 //! `MtpWeights` vec, DeepSeek-V4's `mtp.0.*` module, and GLM-5.3's
 //! `layers.{num_hidden_layers}` block — but the "did the user get what they
 //! asked for" check read only the first of them. On GLM-5.3 that produced
@@ -17,7 +17,7 @@
 //! predicate the check should have been asking, kept separate from any one
 //! loader so a new architecture only has to be named here once.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 /// The MTP weight layout a checkpoint ships, if any.

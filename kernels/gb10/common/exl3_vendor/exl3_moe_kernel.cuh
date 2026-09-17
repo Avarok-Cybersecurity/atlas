@@ -9,7 +9,7 @@
 // Adaptations (body verbatim otherwise; upstream loop/index/barrier logic
 // untouched):
 //   * the `__global__` template kernel became `inline __device__ void
-//     exl3_moe_kernel_body`: Atlas needs plain extern "C" __global__ entry
+//     exl3_moe_kernel_body`: Avarok needs plain extern "C" __global__ entry
 //     points selectable by name from the PTX module (see exl3_moe.cu), so
 //     __launch_bounds__(EXL3_GEMM_BASE_THREADS * MOE_TILESIZE_K / 16) moves
 //     to the wrappers
@@ -38,7 +38,7 @@
 //     `expert_keep_set` enforces exactly that; uniform K in {2..6} takes the
 //     fixed instance). Extend the switches together with new wrapper
 //     instances if a mixed-K K=5/6 export ever ships.
-//   * DETERMINISTIC EPILOGUE (Atlas addition, default-ON at the host): a 31st
+//   * DETERMINISTIC EPILOGUE (Avarok addition, default-ON at the host): a 31st
 //     argument `float* output_slots`. Upstream's `had_d_out` atomicAdds each
 //     expert's weighted row into the token's ONE shared fp32 `output_state`
 //     row; because the expert->group assignment below is a dynamic ticket
@@ -50,7 +50,7 @@
 //     flat-slot order (`exl3_moe_reduce_slots_f32`). Identical arithmetic,
 //     one order. `output_slots == nullptr` restores upstream's arm verbatim.
 //   * `(void)` casts for the two kernel args the body never reads
-//     (num_experts_per_tok, concurrency) — the Atlas kernel build promotes
+//     (num_experts_per_tok, concurrency) — the Avarok kernel build promotes
 //     warnings to errors (--Werror all-warnings)
 //
 // The scheduler/barrier protocol is self-resetting and lives in the shared
@@ -198,7 +198,7 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
                     exl3_gemm_kernel_inner<t_bits, false, cb, SHAPE_ARGS, false>(ARGS);
                 else switch(K)
                 {
-                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope:
+                    // cases 1, 5-8 removed — see header (Avarok MoE K envelope:
                     // the k0 MIXED-K switch stays at {2,3,4}; K=5/6 serve
                     // through the fixed-K k5/k6 instances)
                     case 2: exl3_gemm_kernel_inner<2, false, cb, SHAPE_ARGS, false>(ARGS); break;
@@ -270,7 +270,7 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
                     exl3_gemm_kernel_inner<t_bits, false, cb, SHAPE_ARGS, false>(ARGS);
                 else switch(K)
                 {
-                    // cases 1, 5-8 removed — see header (Atlas MoE K envelope:
+                    // cases 1, 5-8 removed — see header (Avarok MoE K envelope:
                     // the k0 MIXED-K switch stays at {2,3,4}; K=5/6 serve
                     // through the fixed-K k5/k6 instances)
                     case 2: exl3_gemm_kernel_inner<2, false, cb, SHAPE_ARGS, false>(ARGS); break;
@@ -291,7 +291,7 @@ void exl3_moe_kernel_body(EXL3_MOE_KERNEL_ARGS)
 
         // Output hadamard for d + scatter add.
         //
-        // ATLAS DELTA (determinism): with `output_slots` non-null each expert
+        // AVAROK DELTA (determinism): with `output_slots` non-null each expert
         // writes its weighted row to its OWN sorted slot (`start + slot_off`,
         // the slot the row already occupies in token_sorted/weight_sorted) by
         // plain store, and the host reduces a token's slots afterwards in a

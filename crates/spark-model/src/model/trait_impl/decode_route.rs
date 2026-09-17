@@ -20,7 +20,7 @@
 /// one sequence past the indexer's inert bound (`index_topk +
 /// index_compress_ratio - 1` = 2051 on qwen3.8-flash-next) therefore
 /// abandoned batching ENTIRELY — measured at C=4 / ISL 4096: 4.0 tok/s
-/// aggregate versus 23.4 at ISL 1024, with zero `ATLAS_DECODE_BATCH` lines
+/// aggregate versus 23.4 at ISL 1024, with zero `AVAROK_DECODE_BATCH` lines
 /// in the whole run.
 ///
 /// `layers/qwen3_attention/trait_impl/multi_seq/qsa.rs` now consumes a
@@ -30,9 +30,9 @@
 /// gate documents — and the tests pin — that a long sequence no longer
 /// takes a batch off the batched path.
 ///
-/// `perseq_env` is `ATLAS_HC_PERSEQ_DECODE=1`, the kill switch that
+/// `perseq_env` is `AVAROK_HC_PERSEQ_DECODE=1`, the kill switch that
 /// restores the old loop; the MLA escape hatch
-/// (`ATLAS_MLA_PERSEQ_FALLBACK`) is a separate term at the call site and is
+/// (`AVAROK_MLA_PERSEQ_FALLBACK`) is a separate term at the call site and is
 /// untouched.
 ///
 /// ## `multi_rank` still forces the fallback
@@ -65,7 +65,7 @@ mod tests {
         assert!(!hc_perseq_fallback(4, true, false, false));
     }
 
-    /// ATLAS_HC_PERSEQ_DECODE=1 still restores the old loop, QSA or not.
+    /// AVAROK_HC_PERSEQ_DECODE=1 still restores the old loop, QSA or not.
     #[test]
     fn kill_switch_restores_the_per_seq_loop() {
         assert!(hc_perseq_fallback(4, true, true, false));

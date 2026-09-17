@@ -135,7 +135,7 @@ impl QuantWeights for MlxInt8Weight {
         up_y: DevicePtr,
         stream: u64,
     ) -> Result<()> {
-        // Atlas Metal ships a fused dual-output kernel
+        // Avarok Metal ships a fused dual-output kernel
         // (`mlx_int8_gemv_gate_up`); use it instead of two serial
         // gemvs to halve x-side bandwidth and remove a launch.
         mlx_int8::gemv_gate_up(gpu, self, other, x, gate_y, up_y, stream)

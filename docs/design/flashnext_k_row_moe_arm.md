@@ -35,9 +35,9 @@ Two rungs fall out of that table. **K=8** needs the MoE arm and the GDN wiring, 
 
 **A. `batchN`, slot-major.** The straight generalization of the batch3 `_t` family: `moe_expert_gate_up_shared_batchN_t`, `moe_expert_silu_down_shared_batchN_t`, `moe_weighted_sum_blend_batchN`, with N a launch parameter (grid.y = N * top_k + shared slots), the router GEMV through `dense_gemv_batchm`, top-k through the batched kernels at N rows. Same per-slot structure and the same per-row reduction order as batch3, so each row is bit-identical to the K=3 arm's row, which is what the parity test checks. Traffic linear in N at the floor: roughly 4.8 ms per row. This alone takes K=8 from the per-token loop (about 14.9 tok/s at K=4) to the floor.
 
-**B. expert-major, deduplicated.** The N * top_k slots are sorted by expert on device (at most 160 entries, one block), and one block row runs per distinct expert, looping over the rows routed to it. Traffic becomes the number of distinct experts in the step, not rows times top_k. Under independent routing that is 512 * (1 - (1 - 10/512)^N): 29 at N=3, 76 at N=8, 139 at N=16, against 30 / 80 / 160 for the slot-major arm, so the random model gives 13% at N=16. Real routing overlaps more than random: the 07-19 measurement on Qwen3.6-35B-A3B (top-8 of 256, 17-token windows of generated text) found 59 distinct experts where the random model predicts 107 and the slot count is 136, on code and prose alike. Whether Flash-Next's router behaves the same on a copied block is measurable today with zero code: `ATLAS_MOE_UNION_STATS=1` samples exactly this union on every verify batch. That measurement decides whether B is built. A is built regardless.
+**B. expert-major, deduplicated.** The N * top_k slots are sorted by expert on device (at most 160 entries, one block), and one block row runs per distinct expert, looping over the rows routed to it. Traffic becomes the number of distinct experts in the step, not rows times top_k. Under independent routing that is 512 * (1 - (1 - 10/512)^N): 29 at N=3, 76 at N=8, 139 at N=16, against 30 / 80 / 160 for the slot-major arm, so the random model gives 13% at N=16. Real routing overlaps more than random: the 07-19 measurement on Qwen3.6-35B-A3B (top-8 of 256, 17-token windows of generated text) found 59 distinct experts where the random model predicts 107 and the slot count is 136, on code and prose alike. Whether Flash-Next's router behaves the same on a copied block is measurable today with zero code: `AVAROK_MOE_UNION_STATS=1` samples exactly this union on every verify batch. That measurement decides whether B is built. A is built regardless.
 
-**Width is per step, not per serve.** The verify already dispatches on `pending_drafts.len()`. With this arm the lookup gate proposes at `ATLAS_LOOKUP_WIDTH` (default 7 drafts, K=8 rows) while the MTP head stays at its own width (2 drafts, K=3). Fresh generation never pays for the wide arm. That is the difference from the MTP-3 census on 09-09, which was net negative because a third draft pass and 33% more expert traffic bought 13.6% more tokens on every step; here the wide step runs only when the index has the tokens already.
+**Width is per step, not per serve.** The verify already dispatches on `pending_drafts.len()`. With this arm the lookup gate proposes at `AVAROK_LOOKUP_WIDTH` (default 7 drafts, K=8 rows) while the MTP head stays at its own width (2 drafts, K=3). Fresh generation never pays for the wide arm. That is the difference from the MTP-3 census on 09-09, which was net negative because a third draft pass and 33% more expert traffic bought 13.6% more tokens on every step; here the wide step runs only when the index has the tokens already.
 
 ## Cost model, anchored and labeled
 
@@ -62,14 +62,14 @@ The competing number for the copy-task class stays what #974 lists: llama.cpp 97
 
 | step | what | GPU |
 |---|---|---|
-| 0 | `ATLAS_MOE_UNION_STATS=1` on the #1026 serve, copy task and MinHeap, K=3: distinct experts per layer-step vs 30. Decides A-only vs A+B. | yes, no code |
+| 0 | `AVAROK_MOE_UNION_STATS=1` on the #1026 serve, copy task and MinHeap, K=3: distinct experts per layer-step vs 30. Decides A-only vs A+B. | yes, no code |
 | 1 | `batchN` slot-major kernels (gate_up, silu_down, wsum_blend) for N in 4..=8, microtest against batch3 rows, `hc_ffn_dispatch` gets a `KN` arm, `MoeLayer::forward_kn`. | yes |
 | 2 | GDN wide rows: wire `wy5`..`wy8` into the batched conv+GDN dispatch for this model; parity test `hc_rows_t8_rows_equal_t1_rows`. | yes |
-| 3 | `ATLAS_LOOKUP_WIDTH` in the gate (#1026), default 7; MTP width unchanged. | no |
+| 3 | `AVAROK_LOOKUP_WIDTH` in the gate (#1026), default 7; MTP width unchanged. | no |
 | 4 | Cells: copy task at K=3 vs K=8 (own table), MinHeap x3 and Volvo x3 unchanged vs base (byte-identical, the wide arm never fires there), `spark benchmark run agentic-webserver`. MTP-3 and MTP-4 re-measured on the new arm as a side row. | yes |
 | 5 | K=16: N to 16 in the arm, `DENSE_GEMV_BATCHM_MAX_M` and `QHC_DEC_MAX_T` to 16, `wy9`..`wy16` wired, paged decode batched over rows. Arm B if step 0 says so. | yes |
 
-Defaults ON at each rung once its cells are in. Kill switches: `ATLAS_FFN_SMALLM=0` already routes wide rows to the base path; `ATLAS_LOOKUP_WIDTH=2` restores #1026's shape.
+Defaults ON at each rung once its cells are in. Kill switches: `AVAROK_FFN_SMALLM=0` already routes wide rows to the base path; `AVAROK_LOOKUP_WIDTH=2` restores #1026's shape.
 
 ## Not in this PR
 

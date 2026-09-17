@@ -1,5 +1,5 @@
 # Proving Benchmark Work to a GPU-less Verifier
-## A layered design for the Atlas gate record pipeline
+## A layered design for the Avarok gate record pipeline
 
 ---
 
@@ -93,7 +93,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 ## 5. Concrete Implementation Plan for This Repo
 
-**Phase 0 (bug fixes, `crates/atlas-plugin/src/gate/check.rs`):**
+**Phase 0 (bug fixes, `crates/avarok-plugin/src/gate/check.rs`):**
 1. Reject `Verified::Exempt` for any record *added in the PR diff* regardless of `recorded_at` (grandfather only pre-existing committed records).
 2. Cross-check filename date (`YYYY-MM-DD-<sha>.json`) against `recorded_at` (±48 h).
 3. Change `record_is_for` mismatch from *skipped* to *failed* for records added in the diff.
@@ -113,7 +113,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 **Phase 4 (TOPLOC):**
 - Serve-path hook: top-128 of last hidden state per 32 decode tokens → per-sample blob → same Merkle tree. Calibration run: dgx1 vs. dgx2 replay of a known-good record to set NVFP4 tolerances; commit thresholds to `BENCH.toml`.
-- Ship `atlas bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
+- Ship `avarok bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
 
 **Phase 5 (co-sign):**
 - `gate/signing.rs`: accept a second detached signature over identical record bytes; peer derives k=16 indices as `HMAC(nonce, "audit") mod N`, re-runs, checks TOPLOC agreement, signs. `check.rs`: require two distinct registered fingerprints for records after a new cutover constant.
@@ -125,62 +125,73 @@ Total: days of engineering, <1 minute of added CI time, <1% bench overhead.
 ## 5b. Sharded (grouped) gates: what a merged record proves
 
 Two gates — `bfcl-subset` and `bfcl-subset-echolp` — are **groups**: their number
-is produced by four member runs that may execute on different boxes at the same
+is produced by a partition of **shard** runs — the group's own benchmark run
+with `--param shard=i/n` — that may execute on different boxes at the same
 time. Since 2026-09-13 that is the **only** way either gate is satisfied: a
 whole-draw record under the group's own id is history, not evidence, and
-`check_one` hands every group id straight to `check_group`. That changes what
-a verifier has to check, in ways the layers above do not cover on their own.
+`check_one` hands every group id straight to `check_group`. Since 2026-09-15
+the shard count `n` is **not declared anywhere**: the campaign chooses it for
+the fleet it has, the records say what they are (`shard.index` /
+`shard.count`, written by the driver from the rows it was handed; mirrored as
+`-s<i>of<n>` in the filename), and the verdict accepts the newest complete
+partition the standing records at one commit form. That changes what a
+verifier has to check, in ways the layers above do not cover on their own.
 
-**Each member record is signed by the box that ran it.** These are
+**Each shard record is signed by the box that ran it.** These are
 `Sensitivity::Correctness` gates, which the agreement rule already permits to
-span registered signers, so a group whose four members carry three different
+span registered signers, so a group whose shards carry three different
 fingerprints is legitimate. That is deliberate — it is the point of sharding —
 and it means the "one PR, one commit, one signer" CI step does not apply to a
-group's members the way it applies to a plain gate.
+group's shards the way it applies to a plain gate.
 
-**The composition is part of the claim.** Splitting a measurement across four
+**The composition is part of the claim.** Splitting a measurement across
 signed records creates a failure mode that no single-record scheme has: every
-member can be individually valid while the SET is not the draw. A verifier must
+shard can be individually valid while the SET is not the draw. A verifier must
 therefore check, and `check_group` does:
 
-1. every member has a record still standing at this commit — a subset is a
-   different sample set, not a partial one;
-2. all members name the same commit;
-3. the members' recorded shard identities are exactly `0..N` once each;
-4. no member reports transport failures;
-5. every member passes the per-record rules a plain gate's record passes —
+1. some `(n, commit)` has a standing record for every index `0..n` — a
+   subset is a different sample set, not a partial one; and a partition is
+   never assembled across commits (a group is ONE measurement), nor across
+   counts (a shard of an 8-way split is a different slice of the draw from
+   any shard of a 4-way one);
+2. within that partition the newest record per index is the one that counts,
+   so a duplicated index is a re-run, never a stand-in for the index nobody
+   ran;
+3. no shard reports transport failures;
+4. every shard passes the per-record rules a plain gate's record passes —
    it is the gate's required subject, its frame completed, it was measured
-   from a clean tree, and its signature verifies. A group member is a gate
-   record like any other; being one quarter of the measurement exempts it
+   from a clean tree, and its signature verifies. A shard is a gate
+   record like any other; being one slice of the measurement exempts it
    from nothing (before 2026-09-13 the whole-draw path ran first and masked
    the fact that no shard was ever asked these questions).
 
-(3) is the one that is easy to miss and impossible to catch downstream. Two
-members that both ran shard C still contribute the right number of rows, so the
-exactly-pinned `samples` threshold passes while shard D was never measured. The
+(2) is the one that is easy to miss and impossible to catch downstream. Two
+records that both ran shard 2 still contribute the right number of rows, so the
+exactly-pinned `samples` threshold passes while shard 3 was never measured. The
 shard identity is read from the RECORD — what the run says it did — rather than
-from the registry, so a mislabelled or hand-copied record is caught by the same
+from any registry, so a mislabelled or hand-copied record is caught by the same
 rule.
 
-(4) matters because of which direction the error points. A transport failure is
+(3) matters because of which direction the error points. A transport failure is
 scored as "made no call", and "no call" is the *correct* answer across the
 irrelevance subsets — so a shard degraded by the network can score **better**
-while measuring less of the draw. A degraded member is refused rather than
+while measuring less of the draw. A degraded shard is refused rather than
 folded in.
 
-**Aggregation is over counts.** The group sums each member's per-subset
+**Aggregation is over counts.** The group sums each shard's per-subset
 `(hits, n)` integers and applies `score.py`'s category hierarchy once to the
-totals. Averaging four member scores would be wrong — `non_live` is
+totals. Averaging shard scores would be wrong — `non_live` is
 hierarchical and `hallucination` is unweighted, so a subset missing from one
 shard silently changes a divisor. The merged record carries the aggregate under
-the group's id, with one member's provenance (checkpoint, serve overrides,
-hardware), which is sound only because (2) has already established the members
+the group's id, with one shard's provenance (checkpoint, serve overrides,
+hardware), which is sound only because (1) has already established the shards
 agree on the commit.
 
 **What this does not prove — and the choice that makes it so.** A group inherits
-every limit in §1–§4, and adds one: the four members were measured in four
-separate processes, so any property that depends on request ORDER within a run
-is not preserved by the split. That is measured, not hypothetical: issue #936
+every limit in §1–§4, and adds one: the shards were measured in separate
+processes, so any property that depends on request ORDER within a run
+is not preserved by the split — and the count itself is part of the
+partition, so two campaigns at different `n` are two draws of that effect. That is measured, not hypothetical: issue #936
 ran the golden draw whole and as its four shards at one commit on the shipped
 serve and found **12 of 995** samples answering differently —
 `live_irrelevance_{2-0-2, 8-0-8, 14-2-2, 15-2-3, 16-2-4, 40-2-28, 47-2-35,
@@ -198,9 +209,9 @@ on each one it scores and reports the count as `known_partition_sensitive`, and
 both gates' floors are cut from the **sharded** aggregate, never from a
 whole-draw run — so the bar and the measurement are taken under the same
 regime. A merged record therefore proves that each sample was scored once at
-this commit, as four shards, against a floor that was itself cut from four
-shards. It does not claim to equal the number the same draw would produce
-serially, and nothing downstream reads it as if it did.
+this commit, as one partition of shards, against a floor that was itself cut
+from a sharded run. It does not claim to equal the number the same draw would
+produce serially, and nothing downstream reads it as if it did.
 
 ---
 
@@ -222,7 +233,7 @@ reason asserted on the hot one. So "the same hardware" is not a model name.
 **The rule.** Two boxes are one box for a Speed-class campaign iff
 `hardware::equivalence::equivalent` says so under `SPEED_SPREAD`: same GPU
 name, same driver major, clock ceiling within 1 %, memory within 5 %, no
-thermal reason asserted on either, hottest chassis zone within 10 °C, and —
+thermal reason asserted on either, hottest chassis zone within 15 °C, and —
 for a record — a valid post-run hardware check. A field either side cannot
 report is `Undecidable`, which is **not** equivalent: the safe answer to "are
 these the same box?" is never "probably".
@@ -234,7 +245,7 @@ with the most headroom, saying why. CI asks it again in `gate::agreement`,
 from the RECORDS' own `hardware` and `hardware_state` captures — so what is
 judged is what was measured, not what a scheduler believed at planning time.
 A Speed set spanning two signers whose records are not equivalent is refused
-with the concrete mismatch (`chassis 65 vs 89 °C (limit 10 °C)`), exactly as
+with the concrete mismatch (`chassis 65 vs 89 °C (limit 15 °C)`), exactly as
 a set spanning two commits is. A record with no capture at all is equivalent
 to nothing, so a pre-capture record keeps the one-box rule it always had.
 

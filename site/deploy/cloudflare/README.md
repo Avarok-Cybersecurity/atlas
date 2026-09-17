@@ -1,6 +1,6 @@
 # Cloudflare Pages hosting
 
-atlasinference.io and blog.atlasinference.io are served by Cloudflare Pages.
+atlascybernetics.ai and blog.atlascybernetics.ai are served by Cloudflare Pages.
 There is no origin server in the request path, which is the point: the previous
 host went down and took both properties with it.
 
@@ -8,8 +8,8 @@ host went down and took both properties with it.
 
 | Project | Serves | pages.dev |
 | --- | --- | --- |
-| `atlas-site` | `atlasinference.io` | `atlas-site-80h.pages.dev` |
-| `atlas-blog` | `blog.atlasinference.io` | `atlas-blog-3ja.pages.dev` |
+| `avarok-site` | `atlascybernetics.ai` | `avarok-site-80h.pages.dev` |
+| `avarok-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
 `.github/workflows/site.yml` needs an `atlas-recipes` checkout and a GitHub
@@ -23,7 +23,7 @@ deploy went green and the site is stale".
 
 ## What replaced the nginx config
 
-`../nginx/atlasinference.io.conf` is kept because the origin is still mirrored
+`../nginx/atlascybernetics.ai.conf` is kept because the origin is still mirrored
 to as a warm standby. On Pages the same behaviour comes from:
 
 - **`static/_headers`** — the security headers and the cache policy. Read the
@@ -40,17 +40,17 @@ to as a warm standby. On Pages the same behaviour comes from:
 The nginx `if ($host = www...)` block has no in-repo Pages equivalent.
 `_redirects` path rules work (verified: a path-only rule redirects correctly)
 but the documented absolute-URL form does **not** match on these projects
-(verified: `https://www.atlasinference.io/* ...` never fired). A path rule is
+(verified: `https://www.atlascybernetics.ai/* ...` never fired). A path rule is
 useless here anyway, since it would bounce the apex too.
 
-So it is a zone-level Redirect Rule on `atlasinference.io`:
+So it is a zone-level Redirect Rule on `atlascybernetics.ai`:
 
-    expression: (http.host eq "www.atlasinference.io")
+    expression: (http.host eq "www.atlascybernetics.ai")
     action:     redirect, 301
-    target:     concat("https://atlasinference.io", http.request.uri.path)
+    target:     concat("https://atlascybernetics.ai", http.request.uri.path)
     preserve query string: yes
 
-**`www.atlasinference.io` must stay OFF the Pages project for that rule to
+**`www.atlascybernetics.ai` must stay OFF the Pages project for that rule to
 run.** It was attached at first, and the rule — stored, enabled, correct
 expression — did nothing: every request still returned 200 with the site.
 A Pages custom domain is served by the Pages edge and never reaches the zone's
@@ -67,3 +67,25 @@ Redirect -> Edit**, on top of the Pages, DNS and Cache Purge permissions the
 rest of this setup uses. A token holding only some of those fails with
 `request is not authorized` on the ruleset write while still listing rulesets
 happily, which reads like a bug and is not one.
+
+## atlasinference.io -> atlascybernetics.ai
+
+`atlasinference.io` is a legacy hostname on the same `avarok-site` Pages
+project. It still answers 200 with the marketing site, including
+`/engine`. The public developer URL is `https://atlascybernetics.ai/engine`.
+
+`_redirects` host rules do not fire here (same measurement as `www`). Do
+this in the **atlasinference.io zone**, not in the Pages project:
+
+    expression: (http.host eq "atlasinference.io") or (http.host eq "www.atlasinference.io")
+    action:     redirect, 301
+    target:     concat("https://atlascybernetics.ai", http.request.uri.path)
+    preserve query string: yes
+
+**`atlasinference.io` and `www.atlasinference.io` must be detached from
+the Pages project** or the rule never runs — every request keeps returning
+200 with the site. After detaching, keep the DNS records as proxied CNAMEs
+onto `atlascybernetics.ai` (or the Pages `pages.dev`) so the rule sees the
+request.
+
+The origin standby vhost is `../nginx/atlasinference.io.conf`.

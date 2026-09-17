@@ -22,7 +22,7 @@
 //! DEVICE SELECTION: both the prefill and the decode selection run entirely
 //! on the stream — score, radix top-k (`qsa_topk_rows`), ascending sort +
 //! expansion (`qsa_expand_sel`) — with no host transfer on the path. The
-//! decode tail lives in `qsa_decode.rs`; `ATLAS_QSA_HOST_TOPK=1` forces the
+//! decode tail lives in `qsa_decode.rs`; `AVAROK_QSA_HOST_TOPK=1` forces the
 //! original host implementation for A/B.
 //!
 //! CUDA graphs: a layer carrying an indexer still vetoes decode-graph capture
@@ -153,7 +153,7 @@ impl QsaIndexer {
              (QSA_TOPK_SORT_MAX / QSA_EXPAND_MAX_K in qsa_indexer.cu)",
             budget / ratio
         );
-        let max_tokens: usize = std::env::var("ATLAS_QSA_MAX_TOKENS")
+        let max_tokens: usize = std::env::var("AVAROK_QSA_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(32768);
@@ -257,13 +257,13 @@ impl QsaIndexer {
 
     /// Is stage-2 prefill selection actually going to run?
     ///
-    /// Mirrors the `ATLAS_QSA_NO_PREFILL_SELECT` kill switch inside
+    /// Mirrors the `AVAROK_QSA_NO_PREFILL_SELECT` kill switch inside
     /// `prefill_select`. A caller that skips the dense pass because stage 2
     /// will overwrite it MUST consult this — with the switch set, stage 2
     /// returns early and skipped rows would be left uninitialised.
     pub fn prefill_select_active(&self) -> bool {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        !*OFF.get_or_init(|| std::env::var("ATLAS_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
+        !*OFF.get_or_init(|| std::env::var("AVAROK_QSA_NO_PREFILL_SELECT").as_deref() == Ok("1"))
     }
 
     pub fn inert_bound(&self) -> usize {
@@ -300,7 +300,7 @@ impl QsaIndexer {
         );
         anyhow::ensure!(
             seq_start + num_tokens <= self.max_tokens,
-            "QSA: {} tokens exceeds ATLAS_QSA_MAX_TOKENS={}",
+            "QSA: {} tokens exceeds AVAROK_QSA_MAX_TOKENS={}",
             seq_start + num_tokens,
             self.max_tokens
         );

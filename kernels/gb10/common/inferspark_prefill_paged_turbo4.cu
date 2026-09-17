@@ -5,7 +5,7 @@
 //
 // Reads 4-bit packed K/V from paged cache (2 values per byte), dequantizes to
 // BF16 in shared memory via the 16-level Lloyd-Max Gaussian codebook, then
-// runs Flash Attention with contiguous BF16 Q. Replaces upstream Atlas
+// runs Flash Attention with contiguous BF16 Q. Replaces upstream Avarok
 // behavior of routing turbo4 through the NVFP4_64 prefill kernel: the byte
 // layout is identical, but NVFP4 decodes with the E2M1 LUT
 // {0, .5, 1, 1.5, 2, 3, 4, 6, -0, ...} while turbo4 data was encoded against

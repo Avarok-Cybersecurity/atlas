@@ -10,7 +10,7 @@ layers** — 2 per layer, unexplained here and not load-bearing for any ratio.
 `head_repeat = 3`, state `h` FP32 `[nv][128][128]` (`ssm_h_dtype=f32` in the r9
 serve flags). Derived from round 9's own projection shapes — ssm `in_proj_qkvz`
 N=16384 = 2·nk·128 + 2·nv·128, `out_proj` K=6144 = nv·128 — and matched by
-`crates/atlas-core/src/config/parsers/qwen4_exp_tests.rs`. `num_chunks` = **19**
+`crates/avarok-core/src/config/parsers/qwen4_exp_tests.rs`. `num_chunks` = **19**
 at T=1193, **72** at T=4593.
 
 ## Per-launch table (µs = nsys total ÷ 96)
@@ -57,19 +57,19 @@ forward substitutions (79–85 % of it, per the in-file 2026-08-22 measurement).
 
 ## FLA reference structure (for comparison; no code taken)
 
-FLA's `chunk_gated_delta_rule` uses the same three-pass WY decomposition Atlas
+FLA's `chunk_gated_delta_rule` uses the same three-pass WY decomposition Avarok
 mirrors: (1) chunk-parallel, build `T = (I + tril(diag(β)·K·Kᵀ, -1))⁻¹` and form
 `W = T·(β·e^{g}·K)`, `U = T·(β·V)`; (2) `chunk_fwd_h`, serial over chunks,
 `h_{c+1} = e^{g_last}·h_c + K̃_cᵀ·(U_c − W_c·h_c)`; (3) `chunk_fwd_o`,
 chunk-parallel again. The difference is entirely in pass (2): FLA runs both
 per-chunk `[64×128]×[128×128]` products as **BF16 tensor-core matmuls with FP32
-accumulation** (`tl.dot`), keeping the state in the FP32 accumulator. Atlas does
+accumulation** (`tl.dot`), keeping the state in the FP32 accumulator. Avarok does
 the identical algebra in scalar FP32; (1) and (3) are already equivalent.
 
 ## The lever, and what it measured
 
 `[defaults] gdn_prefill_tc` — **true on `kernels/hopper` since round 13**,
-false on every other target, with `ATLAS_GDN_PREFILL_TC` overriding either
+false on every other target, with `AVAROK_GDN_PREFILL_TC` overriding either
 way — routes the spine to
 `gated_delta_rule_chunk_delta_h_tcfuse_x2`: both per-chunk products on
 `mma.sync.m16n8k16`, bf16 operands, f32 accumulator — and that accumulator IS
@@ -80,7 +80,7 @@ chunk: 512 MMAs for `W·S` (4 m-tiles × 16 n-tiles × 8 k-steps) + 512 for `K�
 256 are unchanged.
 
 ⚠️ **The variable was PRESENCE-gated and is now grammar-gated**, so
-`ATLAS_GDN_PREFILL_TC=0` means OFF where it used to mean ON. Every A/B in this
+`AVAROK_GDN_PREFILL_TC=0` means OFF where it used to mean ON. Every A/B in this
 document ran it as `=1` and is unaffected. On Hopper `=0` is now the arm that
 CHANGES anything: the family is the declared default there, and `=0` is the
 whole-family kill switch — spine and both remnant twins, because the twins read
@@ -200,21 +200,21 @@ new stems (not same-stem overrides: the parents share a 2105-line file with
 twelve other entry points), declared with their shared `gdn_prefill_hopper.cuh`
 in `kernels/hopper/HARDWARE.toml`'s `[kernels] overrides` — the SSOT for which
 kernels this target owns rather than inherits, and what
-`crates/atlas-kernels/tests/inherited_overrides.rs` checks them against as
+`crates/avarok-kernels/tests/inherited_overrides.rs` checks them against as
 ADDITIONS (a new stem must bring entry points gb10 does not declare).
 
 **One lever for the family.** The twins are selected by the SAME bit as the
 tensor-core state spine: `[defaults] gdn_prefill_tc`, with
-`ATLAS_GDN_PREFILL_TC` overriding under the 2026-09-11 grammar. It is resolved
+`AVAROK_GDN_PREFILL_TC` overriding under the 2026-09-11 grammar. It is resolved
 ONCE per prefill, in `ops::gdn_prefill_fla`, and handed to the twins' launcher
 as a value — not re-read from the environment there. That matters in exactly
-one direction: `ATLAS_GDN_PREFILL_TC=0` is an explicit OFF, and a presence
+one direction: `AVAROK_GDN_PREFILL_TC=0` is an explicit OFF, and a presence
 check would have turned the twins ON for it while the spine stayed off, which
 is a prefill that is neither leg of an A/B.
 
-`ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the ONE-VARIABLE A/B that separates
+`AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` is the ONE-VARIABLE A/B that separates
 them: it keeps the spine and pins `wu`/`fwd_o` to their parents. It is
-presence-gated, like the other `ATLAS_NO_*` kill switches, and it is documented
+presence-gated, like the other `AVAROK_NO_*` kill switches, and it is documented
 beside the `gdn_prefill_tc` row in `kernels/hopper/HARDWARE.toml` because that
 row is where an operator reading the target's defaults will look for it.
 
@@ -256,8 +256,8 @@ receipt; it is below.
 
 1xH100 80GB HBM3, Qwen/Qwen3.8-27B-FP8 @ `3c0379030` (196 sm_90a kernels),
 `h100-round13-report.md`. Three serve cells on ONE binary, one variable apart:
-**A** the control (family off), **T2** `ATLAS_GDN_PREFILL_TC=1
-ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` (spine only), **T1** `ATLAS_GDN_PREFILL_TC=1`
+**A** the control (family off), **T2** `AVAROK_GDN_PREFILL_TC=1
+AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` (spine only), **T1** `AVAROK_GDN_PREFILL_TC=1`
 (spine + both twins). Frozen ladder, temp 0 / seed 42, 1 warmup + 3 reps,
 `MAX_BATCH_SIZE=16`, client-side streaming TTFT.
 
@@ -271,7 +271,7 @@ ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` (spine only), **T1** `ATLAS_GDN_PREFILL_TC=1
 | 4593/512 C=16 TTFT | 7 524.7 ms | 4 786.1 | **4 145.5** | **-44.9%** | -13.4% |
 
 T1's short-prompt C=1 TTFT of **162.4 ms beats vLLM 0.28.0's 179 ms on the same
-box** — the first metric in this campaign where Atlas leads.
+box** — the first metric in this campaign where Avarok leads.
 
 **Quality.** Coherency 4/4 on T1 (`'391'`, `'Tokyo'`, `'rotaregirfer'` all OK);
 determinism **8/8 md5-identical across 3 runs**; zero content-loop, fuzzy or
@@ -282,7 +282,7 @@ alone — is md5-identical to A on all 7, so the divergence belongs entirely to
 the twins and is at the bf16 storage floor.
 
 **Per-kernel attribution, nsys, T=4593 C=1, 96 launches each.** Two captures,
-identical recipe, `ATLAS_NO_GDN_PREFILL_TC_REMNANTS` the only difference:
+identical recipe, `AVAROK_NO_GDN_PREFILL_TC_REMNANTS` the only difference:
 
 | kernel | T2 = gb10 parent | **T1 = Hopper twin** | speedup |
 |---|---|---|---|

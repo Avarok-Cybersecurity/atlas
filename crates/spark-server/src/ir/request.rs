@@ -113,7 +113,7 @@ pub enum ResponseFormat {
 
 /// Client thinking intent, resolved at the API edge from each wire's
 /// channels (Anthropic `thinking`, OpenAI `reasoning.effort`, vLLM
-/// `chat_template_kwargs` / `thinking_token_budget`, Atlas legacy
+/// `chat_template_kwargs` / `thinking_token_budget`, Avarok legacy
 /// `enable_thinking`). Internal code reads only this — never the wire
 /// fields.
 ///

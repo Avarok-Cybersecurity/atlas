@@ -33,7 +33,7 @@
 // So this fixture is a valid negative for sm_90a and sm_100a, and INVALID for
 // the sm_120/sm_121 family — the mirror image of `known_bad_post_hopper.cu`,
 // which is valid everywhere EXCEPT sm_100a. Between them the gate has a
-// working negative for every architecture Atlas currently targets; the gate
+// working negative for every architecture Avarok currently targets; the gate
 // picks per arch and refuses to run where it has none.
 //
 // The operand shape is the one `kernels/gb10/qwen3.6-35b-a3b/nvfp4/
@@ -44,7 +44,7 @@
 // A checker that has never failed has never been tested. If this file starts
 // PASSING for sm_100a, the gate is not checking what it claims to.
 
-extern "C" __global__ void atlas_gate_selftest_bad_sm100(const unsigned int *in,
+extern "C" __global__ void avarok_gate_selftest_bad_sm100(const unsigned int *in,
                                                          float *out) {
   unsigned int a0 = in[0], a1 = in[1], a2 = in[2], a3 = in[3];
   unsigned int b0 = in[4], b1 = in[5];

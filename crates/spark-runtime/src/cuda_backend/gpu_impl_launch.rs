@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Cooperative kernel launch, the dynamic-smem attribute raise, the
-//! stream-capture probe and the pitched D2D copy for [`AtlasCudaBackend`].
+//! stream-capture probe and the pitched D2D copy for [`AvarokCudaBackend`].
 //!
 //! Split out of `gpu_impl.rs` to keep both files under the repo's 500-LoC cap,
 //! the same way `gpu_impl_graph.rs` was: these are the inherent bodies
@@ -14,12 +14,12 @@
 use std::ffi::c_void;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::cuda_error_text;
+use avarok_core::registry::cuda_error_text;
 
-use super::AtlasCudaBackend;
+use super::AvarokCudaBackend;
 use crate::gpu::{DevicePtr, KernelHandle};
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     pub(super) fn launch_cooperative_cu(
         &self,
         func: KernelHandle,
@@ -32,12 +32,12 @@ impl AtlasCudaBackend {
         // SCALE's libcuda does not export cuLaunchCooperativeKernel (see the
         // extern block in cuda_backend.rs); refusing is correct — a fallback
         // to cuLaunchKernel would let the kernel's grid.sync() deadlock.
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         {
             let _ = (func, grid, block, shared_mem, stream, params);
             bail!("launch_cooperative: not available under SCALE (gfx1151)");
         }
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         {
             let status = unsafe {
                 super::cuLaunchCooperativeKernel(
@@ -100,12 +100,12 @@ impl AtlasCudaBackend {
         // SCALE's libcuda does not export cuStreamIsCapturing; report
         // not-capturing there (gfx1151 telemetry taps then sample eagerly —
         // acceptable for a default-off measurement knob).
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         {
             let _ = stream;
             false
         }
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         {
             let mut status: u32 = 0;
             // CU_STREAM_CAPTURE_STATUS_NONE = 0; treat query failure as

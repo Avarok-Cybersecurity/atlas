@@ -32,7 +32,7 @@
 // Both dims MUST be multiples of 128 (the checkpoint only quantizes such
 // tensors; anything else stays f16/bf16 and never reaches this kernel).
 //
-// exl3_f16_to_bf16_t converts the [in, out] f16 result to Atlas's [out, in]
+// exl3_f16_to_bf16_t converts the [in, out] f16 result to Avarok's [out, in]
 // row-major BF16 convention (grid x = ceil(out/32), grid y = ceil(in/32),
 // block = (32, 8, 1)).
 
@@ -564,7 +564,7 @@ EXL3_RH_INSTANCE(7, 2) EXL3_RH_INSTANCE(8, 2)
 #undef EXL3_RH_INSTANCE
 
 // ── layout conversion: [in, out] f16 -> [out, in] BF16 ─────────────────────
-// Atlas's dense/quant loaders consume [N=out, K=in] row-major. Tiled 32x32
+// Avarok's dense/quant loaders consume [N=out, K=in] row-major. Tiled 32x32
 // shared-memory transpose; f16 -> f32 is exact, f32 -> bf16 rounds once.
 // grid = (ceil(out/32), ceil(in/32)), block = (32, 8).
 

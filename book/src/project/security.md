@@ -1,6 +1,6 @@
 # Security Policy
 
-Canonical: [`SECURITY.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md). This chapter summarises the policy and the threat model.
+Canonical: [`SECURITY.md`](https://github.com/Avarok-Cybersecurity/avarok/blob/main/SECURITY.md). This chapter summarises the policy and the threat model.
 
 ## Reporting a vulnerability
 
@@ -22,11 +22,11 @@ Receipt acknowledged within **48 hours**. Initial assessment within **7 days**.
 | latest `main` | ✅ |
 | older commits | ❌ |
 
-Atlas moves fast; there are no LTS branches. Run from `main` or a recently-tagged release.
+Avarok moves fast; there are no LTS branches. Run from `main` or a recently-tagged release.
 
 ## Threat model
 
-Atlas is an inference server that runs locally with GPU access. The primary surfaces:
+Avarok is an inference server that runs locally with GPU access. The primary surfaces:
 
 ### 1. CUDA kernel safety
 
@@ -39,19 +39,19 @@ Automated: nothing — there is no static analyser on the CUDA sources. Human: k
 ### 2. HTTP API input
 
 - **Malformed JSON** — axum + serde handles schema validation; unknown fields are rejected by default.
-- **Oversized request bodies** — `ATLAS_MAX_BODY_BYTES` caps inbound body size. The default is **32 MiB**, not 8 (`main_modules/serve_router.rs`); size your reverse proxy against 32.
-- **Prompt injection** via the chat template — the model is the primary defense; Atlas does not attempt content-level filtering.
+- **Oversized request bodies** — `AVAROK_MAX_BODY_BYTES` caps inbound body size. The default is **32 MiB**, not 8 (`main_modules/serve_router.rs`); size your reverse proxy against 32.
+- **Prompt injection** via the chat template — the model is the primary defense; Avarok does not attempt content-level filtering.
 - **Rate-limit exhaustion** — per-key token bucket with a `MAX_KEYS` DoS guard against cardinality explosion.
 
 ### 3. Weight loading
 
-- **Malicious safetensor files** — the `safetensors` crate handles format parsing; Atlas validates shapes against `ModelConfig` before any GPU upload.
+- **Malicious safetensor files** — the `safetensors` crate handles format parsing; Avarok validates shapes against `ModelConfig` before any GPU upload.
 - **Path traversal** during model load — paths are resolved through `PathBuf::canonicalize` and checked against the configured cache root.
 - **Disk exhaustion** — model downloads from HF can be many GB; operators should size the `HF_HUB_CACHE` volume accordingly.
 
 ### 4. Unsafe Rust
 
-Atlas uses `unsafe` blocks for:
+Avarok uses `unsafe` blocks for:
 
 - **CUDA FFI** via `cudarc` (driver calls, raw pointer arithmetic).
 - **NCCL FFI** via the vendored `nccl_sys` bindings.
@@ -91,7 +91,7 @@ Coordinated disclosure. On a valid report:
 Some things are *not* a security concern under this policy — they're bugs, but not security bugs:
 
 - **Slow kernels.** Performance regressions go through the normal PR/bench workflow.
-- **Model hallucinations.** The model is not Atlas. `SECURITY.md` does not cover what the model chooses to say.
+- **Model hallucinations.** The model is not Avarok. `SECURITY.md` does not cover what the model chooses to say.
 - **Operator misconfiguration.** `--gpu-memory-utilization 1.0` will OOM; that's not a vulnerability.
 
 ## If you found something

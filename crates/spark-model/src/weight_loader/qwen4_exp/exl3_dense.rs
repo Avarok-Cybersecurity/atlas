@@ -5,7 +5,7 @@
 //! [`Exl3MoeState`] and the dense arms' [`Exl3DenseStage`] both hang off, so
 //! the "one cooperative dispatch section at a time" invariant is GLOBAL
 //! across every native launch that is not the LM head — plus the
-//! `ATLAS_EXL3_NATIVE_DENSE=1` load-time tally and its summary line. Split
+//! `AVAROK_EXL3_NATIVE_DENSE=1` load-time tally and its summary line. Split
 //! from `qwen4_exp.rs` (500-LoC cap).
 //!
 //! The GDN / attention arms decide per layer from the store
@@ -16,7 +16,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -27,9 +27,9 @@ use crate::weight_map::{Exl3DenseFamilies, Exl3DenseFamily, exl3_dense_family_ke
 pub(crate) struct NativeExl3 {
     /// The per-model launch state; created by whichever arm needs it first.
     pub(super) launch: Option<Arc<Exl3LaunchState>>,
-    /// Native MoE mgemm state (`ATLAS_EXL3_NATIVE_MOE=1`), ~140 MB of slabs.
+    /// Native MoE mgemm state (`AVAROK_EXL3_NATIVE_MOE=1`), ~140 MB of slabs.
     pub(super) moe: Option<Arc<Exl3MoeState>>,
-    /// Native dense staging (`ATLAS_EXL3_NATIVE_DENSE=1`), sized once.
+    /// Native dense staging (`AVAROK_EXL3_NATIVE_DENSE=1`), sized once.
     stage: Option<Arc<Exl3DenseStage>>,
     families: Exl3DenseFamilies,
     gdn_layers: usize,
@@ -185,7 +185,7 @@ impl NativeExl3 {
         );
         if self.gdn_layers + self.attn_layers == 0 {
             tracing::warn!(
-                "ATLAS_EXL3_NATIVE_DENSE=1 but NO layer family was kept packed — every \
+                "AVAROK_EXL3_NATIVE_DENSE=1 but NO layer family was kept packed — every \
                  GDN/attention projection is serving from its materialized BF16 copy \
                  (not an EXL3 checkpoint, or every family fell outside the K in {:?} \
                  envelope — e.g. the 5.05bpw branch's K=7 dense set; see the \

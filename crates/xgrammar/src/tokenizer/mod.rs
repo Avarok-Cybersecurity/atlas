@@ -5,7 +5,7 @@
 //
 // Provides the decoded-vocabulary metadata the grammar matcher needs to
 // build and mask the logit bitmask. This is the exact public surface
-// Atlas's grammar engine consumes:
+// Avarok's grammar engine consumes:
 //   `TokenizerInfo::new(vocab, VocabType, vocab_size, stops, prefix)`
 //   `TokenizerInfo::from_huggingface(vocab, tokenizer_json, ..)`
 //   `detect_metadata_from_hf(tokenizer_json)`

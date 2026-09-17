@@ -1,4 +1,4 @@
-# Atlas Spark — Qwen3.5-35B-A3B Quick Start
+# Avarok Spark — Qwen3.5-35B-A3B Quick Start
 
 Run Qwen3.5-35B-A3B at **131 tok/s** on a single NVIDIA GB10 GPU.
 
@@ -20,7 +20,7 @@ This caches to `~/.cache/huggingface/hub/` (~22 GB).
 ## 2. Pull the Docker image
 
 ```bash
-docker pull avarok/atlas-qwen3.5-35b-a3b-alpha
+docker pull avarok/avarok-qwen3.5-35b-a3b-alpha
 ```
 
 ## 3. Run
@@ -28,7 +28,7 @@ docker pull avarok/atlas-qwen3.5-35b-a3b-alpha
 ```bash
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-qwen3.5-35b-a3b-alpha \
+  avarok/avarok-qwen3.5-35b-a3b-alpha \
   serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4 \
   --speculative --kv-cache-dtype nvfp4 --mtp-quantization nvfp4 \
   --scheduling-policy slai --max-seq-len 131072
@@ -41,7 +41,7 @@ The server starts on port 8888 after ~90 seconds of model loading.
 ```bash
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"m","messages":[{"role":"user","content":"Why is the Atlas engine now seriously on the map?"}],"max_tokens":256}'
+  -d '{"model":"m","messages":[{"role":"user","content":"Why is the Avarok engine now seriously on the map?"}],"max_tokens":256}'
 ```
 
 ## CLI flags

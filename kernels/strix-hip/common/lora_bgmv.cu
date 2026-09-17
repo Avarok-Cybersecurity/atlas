@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas fused batched gather-matrix-vector (bgmv) for per-request LoRA routing
+// Avarok fused batched gather-matrix-vector (bgmv) for per-request LoRA routing
 // on SM121 (GB10). Two kernels — shrink then expand+fold — that together apply,
 // for a batch of N decode rows each naming its own adapter slot:
 //

@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 928" width="1200" height="928" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Atlas PR Certification — Demoted to Stage 2 — the seal was voided">
-  <title>Atlas — PR Certification — Demoted to Stage 2 — the seal was voided</title>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1200 928" width="1200" height="928" font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Avarok PR Certification — Demoted to Stage 2 — the seal was voided">
+  <title>Avarok — PR Certification — Demoted to Stage 2 — the seal was voided</title>
   <defs>
-    <linearGradient id="atlasGoldCut" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="avarokGoldCut" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0.5" stop-color="#12B981"/><stop offset="0.5" stop-color="#EFB338"/>
     </linearGradient>
     <marker id="tipInk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#C9CCD4"/></marker>
@@ -14,7 +14,7 @@
     <g fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
       <path d="M38 38L358 318L38 598" stroke="#BE9DF8"/>
       <path d="M318 38L638 318L318 598" stroke="#49C3DB"/>
-      <path d="M598 38L918 318L598 598" stroke="url(#atlasGoldCut)"/>
+      <path d="M598 38L918 318L598 598" stroke="url(#avarokGoldCut)"/>
     </g>
   </g>
   <text x="156" y="44" font-size="23" fill="#C9CCD4" font-weight="650">PR Certification</text>
@@ -170,8 +170,8 @@
   <text x="452" y="836" font-size="11" fill="#82868F">A change under kernels/ that compiles to byte-identical device code does not void a record.</text>
   <text x="452" y="852" font-size="11" fill="#82868F">Site, blog, book and docs paths reach no record's inputs, so certification is skipped outright.</text>
   <line x1="64" y1="878" x2="1136" y2="878" stroke="#22282F"/>
-  <text x="64" y="900" font-size="11" fill="#82868F">Copyright 2026 Atlas Cybernetics Corp</text>
-  <a href="https://atlasinference.io" xlink:href="https://atlasinference.io" target="_blank" rel="noopener">
-  <text x="1136" y="900" font-size="11" fill="#49C3DB" text-anchor="end">atlasinference.io</text>
+  <text x="64" y="900" font-size="11" fill="#82868F">Copyright 2026 Avarok Cybernetics Corp</text>
+  <a href="https://atlascybernetics.ai" xlink:href="https://atlascybernetics.ai" target="_blank" rel="noopener">
+  <text x="1136" y="900" font-size="11" fill="#49C3DB" text-anchor="end">atlascybernetics.ai</text>
   </a>
 </svg>

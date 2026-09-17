@@ -16,7 +16,7 @@ use crate::metal_backend::MetalGpuBackend;
 /// Callers should `let Some(backend) = maybe_backend() else { return };`
 /// at the top of each test fn.
 pub(super) fn maybe_backend() -> Option<MetalGpuBackend> {
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     match MetalGpuBackend::new(0, &modules) {
         Ok(b) => Some(b),
         Err(e) => {

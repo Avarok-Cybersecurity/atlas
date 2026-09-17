@@ -299,7 +299,7 @@ fn validate_adapter_dir(dir: PathBuf, spec: &str) -> Result<PathBuf> {
     );
 }
 
-/// True when the directory contains at least one weight file Atlas's
+/// True when the directory contains at least one weight file Avarok's
 /// safetensors loader can pick up. Mirrors the heuristic in
 /// `spark-runtime::weights::SafetensorsLoader::load`.
 pub(crate) fn snapshot_has_weights(dir: &Path) -> bool {

@@ -107,7 +107,7 @@ mod tests {
     /// wrong answer.
     #[test]
     fn an_unprobeable_path_is_unknown_not_a_guess() {
-        let missing = Path::new("/nonexistent-atlas-fs-probe/shard.safetensors");
+        let missing = Path::new("/nonexistent-avarok-fs-probe/shard.safetensors");
         assert_eq!(network_fs(missing), None);
     }
 

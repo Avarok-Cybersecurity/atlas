@@ -11,7 +11,7 @@
 //! helper method with 10-20 args — multi-day kernel-level surgery
 //! beyond this wave's scope.
 
-// The allocation contract for the two chains `ATLAS_CUBLAS_GEMM=attn` arms
+// The allocation contract for the two chains `AVAROK_CUBLAS_GEMM=attn` arms
 // (#917 round 3 / #927): neither may allocate a BF16 weight dequant the buffer
 // ledger cannot see.
 #[cfg(test)]

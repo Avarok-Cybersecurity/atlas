@@ -4,7 +4,7 @@
 //! for the ≤500 LoC file-size cap. Called from the trait impl in the parent.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore};
 
@@ -24,7 +24,7 @@ pub(super) fn load_final_norm(store: &WeightStore, config: &ModelConfig) -> Resu
 /// the tensor through untouched.
 ///
 /// `dense()` performs no dtype check — it hands the raw device pointer to the
-/// consumer. That is correct for the two layouts Atlas already supported:
+/// consumer. That is correct for the two layouts Avarok already supported:
 /// a BF16 head, and a Standard-NVFP4 head (`weight` U8-packed +
 /// `weight_scale`/`weight_scale_2`, e.g. nvidia/Qwen3.6-27B-NVFP4), which the
 /// LM-head consumer unpacks itself. Both MUST keep the passthrough.
@@ -61,7 +61,7 @@ pub(super) fn load_lm_head(
         };
     }
     // Tied embeddings: the head IS the embedding table (BF16 in every
-    // checkpoint Atlas supports — no FP8 embed_tokens has been seen).
+    // checkpoint Avarok supports — no FP8 embed_tokens has been seen).
     let prefix = &config.weight_prefix;
     dense(store, &format!("{prefix}.embed_tokens.weight"))
 }

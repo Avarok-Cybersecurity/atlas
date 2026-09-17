@@ -22,7 +22,7 @@ fn without_hermetic_the_prefix_cache_is_exactly_what_was_asked_for() {
 #[test]
 fn hermetic_forces_the_mtp_gate_rather_than_deferring_to_the_environment() {
     // The subtle one. `None` is not "off" here — it means "no flag was given,
-    // so ATLAS_MTP_GATE_FORCE decides". Returning `None` under --hermetic
+    // so AVAROK_MTP_GATE_FORCE decides". Returning `None` under --hermetic
     // would let the environment reopen the M1 probe channel from outside the
     // recorded regime, while the record still read `hermetic=true`.
     assert_eq!(

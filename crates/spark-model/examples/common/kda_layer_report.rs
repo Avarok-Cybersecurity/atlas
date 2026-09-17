@@ -20,7 +20,7 @@ use spark_model::layers::glm5next_kda::{
 };
 use spark_model::layers::glm5next_kda_ref as kref;
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::collections::BTreeMap;
 
@@ -32,7 +32,7 @@ pub(crate) struct Row {
     pub(crate) floor_a: f64,
     /// **B** — bf16 golden vs fp32 golden: the activation-dtype budget.
     pub(crate) floor_b: f64,
-    /// **D** — GPU vs a CPU reference on Atlas's exact bf16 ladder: kernel residual only.
+    /// **D** — GPU vs a CPU reference on Avarok's exact bf16 ladder: kernel residual only.
     pub(crate) floor_d: f64,
     pub(crate) gpu_vs_bf16: f64,
     pub(crate) gpu_vs_f32: f64,

@@ -306,7 +306,7 @@ fn an_empty_store_is_reported_and_is_ok_when_no_module_is_declared() {
     assert!(err.contains("no `mtp.*` tensors"), "{err}");
 }
 
-/// EP > 1 is refused UNLESS the operator opts in with `ATLAS_EP_MTP=1`.
+/// EP > 1 is refused UNLESS the operator opts in with `AVAROK_EP_MTP=1`.
 ///
 /// The original blocker — `load_moe_qwen35` honouring `is_local_expert` while
 /// the upload never sharded `mtp.*`, so a rank>0 draft routed into NULL experts
@@ -320,14 +320,14 @@ fn an_empty_store_is_reported_and_is_ok_when_no_module_is_declared() {
 #[test]
 fn ep_world_size_above_one_is_refused_until_opted_in() {
     // SAFETY: single-threaded test; the var is read once per call below.
-    unsafe { std::env::remove_var("ATLAS_EP_MTP") };
+    unsafe { std::env::remove_var("AVAROK_EP_MTP") };
     let mut c = cfg();
     c.ep_world_size = 2;
     let r = audit_mtp_namespace(&fused_store(), &c);
     let err = r.ensure_loadable(&c).unwrap_err().to_string();
     assert!(err.contains("ep_world_size=2"), "{err}");
     // The message must name the opt-in, or an operator cannot act on it.
-    assert!(err.contains("ATLAS_EP_MTP=1"), "{err}");
+    assert!(err.contains("AVAROK_EP_MTP=1"), "{err}");
     // And it must say WHY it is gated, so nobody flips it blind.
     assert!(err.contains("UNVERIFIED"), "{err}");
     // Single-rank is unaffected either way.
@@ -374,18 +374,18 @@ fn dtype_of(s: &str) -> WeightDtype {
 /// Walk `model.safetensors.index.json` for `mtp.*` and assert the observed key
 /// set and shapes are exactly what `audit_mtp_namespace` demands.
 ///
-///     ATLAS_QWEN4EXP_CKPT=/path/to/snapshot \
+///     AVAROK_QWEN4EXP_CKPT=/path/to/snapshot \
 ///       cargo test -p spark-model mtp_header_inventory
 #[test]
 fn mtp_header_inventory() {
-    let Ok(snap) = std::env::var("ATLAS_QWEN4EXP_CKPT") else {
-        println!("ATLAS_QWEN4EXP_CKPT unset — skipping real-checkpoint inventory");
+    let Ok(snap) = std::env::var("AVAROK_QWEN4EXP_CKPT") else {
+        println!("AVAROK_QWEN4EXP_CKPT unset — skipping real-checkpoint inventory");
         return;
     };
     let snap = std::path::Path::new(&snap);
 
     let cfg_text = std::fs::read_to_string(snap.join("config.json")).expect("read config.json");
-    let config = atlas_core::config::parse_config(&cfg_text).expect("parse config.json");
+    let config = avarok_core::config::parse_config(&cfg_text).expect("parse config.json");
     assert_eq!(
         config.num_mtp_modules, 1,
         "the parser must see text_config.mtp before the audit means anything"

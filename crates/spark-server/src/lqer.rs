@@ -13,7 +13,7 @@
 //! Then at inference, output ← Q(W) · x + (U_k Σ_k V_k^T) · x. The
 //! second term is a small BF16 GEMM applied in parallel; rank=10%
 //! closes >50% of the quantization gap, rank=30% fully closes it.
-//! Atlas-kernels already has BF16 GEMM, so this is loader + dispatch
+//! Avarok-kernels already has BF16 GEMM, so this is loader + dispatch
 //! work, not a new kernel.
 //!
 //! ## Scope
@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn load_from_dir_reads_multiple_lqer_files() {
         let tmp = std::env::temp_dir().join(format!(
-            "atlas_lqer_test_{}",
+            "avarok_lqer_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

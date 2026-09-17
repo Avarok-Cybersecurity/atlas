@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Log-once route lines for the `ATLAS_ATTN_M16_TC` tensor-core tier (#927).
+//! Log-once route lines for the `AVAROK_ATTN_M16_TC` tensor-core tier (#927).
 //!
-//! H100 round 9 (2026-09-11) ran cell W (`ATLAS_ATTN_M16_TC=1`) and found the
+//! H100 round 9 (2026-09-11) ran cell W (`AVAROK_ATTN_M16_TC=1`) and found the
 //! lever moves the measurement — C=16 aggregate 235.47 -> 247.85 tok/s
 //! (+5.26%), TPOT 53.42 -> 50.01 ms (-6.38%), against a 0.15% rep spread —
 //! with NO confirmation in the boot log. Quote from the operator report:
 //! "Grepping the whole boot log for `m16`, `tensor` or an attention-decode
 //! route returns only the prefill notice. The lever is live in
 //! `/proc/<pid>/environ` and it moves the measurement by 25x the rep spread,
-//! so it plainly armed — but unlike `ATLAS_LM_HEAD_M16_TC` (which logs a
+//! so it plainly armed — but unlike `AVAROK_LM_HEAD_M16_TC` (which logs a
 //! detailed line) and unlike the W8A8 decode families, there is no log-once
 //! confirmation that an operator could check." This module is that
 //! confirmation.
@@ -46,10 +46,10 @@ pub(crate) const O_PROJ_M16_TC_ROUTE_KEY: &str = "log:attn_o_proj_m16_tc_decode"
 /// `within_m16_tc_budget` (2 ordinal ULP OR the FP32 accumulation floor), which
 /// is what `w8a16_gemm_m16`'s own `gate/up M=32` cell already leaned on.
 pub(crate) const QKV_M16_TC_ROUTE_MSG: &str = "\
-[atlas] attention decode q/k/v: ATLAS_ATTN_M16_TC — tensor-core \
+[avarok] attention decode q/k/v: AVAROK_ATTN_M16_TC — tensor-core \
 w8a16_gemm_m16_strided N_TILE=32 (fixed; the strided tier has no wide n64 \
 twin) for 5..=16 rows, checked ahead of the bit-exact N-column tier \
-(ATLAS_ATTN_NCOL_GEMV) and w8a16_gemv_batch16_strided. One weight pass, \
+(AVAROK_ATTN_NCOL_GEMV) and w8a16_gemv_batch16_strided. One weight pass, \
 m16n8k16 MMA, so outputs are REASSOCIATED vs the scalar w8a16_gemv — within \
 2 ordinal BF16 ULP, OR the FP32 accumulation floor for outputs that have \
 catastrophically cancelled (the contract is \
@@ -60,10 +60,10 @@ round 9 cell W: C=16 TPOT 53.42 -> 50.01 ms, +5.26% aggregate).";
 /// The o_proj tier's line. Same shape as [`QKV_M16_TC_ROUTE_MSG`], naming the
 /// contiguous kernel and the two arms IT displaces.
 pub(crate) const O_PROJ_M16_TC_ROUTE_MSG: &str = "\
-[atlas] attention decode o_proj: ATLAS_ATTN_M16_TC — tensor-core \
+[avarok] attention decode o_proj: AVAROK_ATTN_M16_TC — tensor-core \
 w8a16_gemm_m16 N_TILE=32 (fixed; the contiguous tier has no wide n64 twin) \
 for 5..=16 rows, checked ahead of the bit-exact N-column tier \
-(ATLAS_ATTN_NCOL_GEMV) and w8a16_gemv_batch16. One weight pass, m16n8k16 \
+(AVAROK_ATTN_NCOL_GEMV) and w8a16_gemv_batch16. One weight pass, m16n8k16 \
 MMA, so outputs are REASSOCIATED vs the scalar w8a16_gemv — within 2 ordinal \
 BF16 ULP, OR the FP32 accumulation floor for outputs that have \
 catastrophically cancelled (the contract is \

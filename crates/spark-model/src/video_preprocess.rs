@@ -36,7 +36,7 @@
 //! than a linked decoder, and issue #515.
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::VisionConfig;
+use avarok_core::config::VisionConfig;
 use image::RgbImage;
 
 use crate::vision_preprocess::{MEAN, STD, decode_data_uri_bytes, target_size_for};

@@ -1,5 +1,5 @@
 <!--
-Thanks for contributing to Atlas! A few reminders:
+Thanks for contributing to Avarok! A few reminders:
 
 - Read CONTRIBUTING.md if you haven't yet.
 - CI runs cargo fmt, cargo clippy -Dwarnings, the SPDX-header check, typos,
@@ -20,7 +20,7 @@ Closes #
 <!-- Concrete checklist of how you verified this. Logs/benchmarks welcome. -->
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `ATLAS_SKIP_BUILD=1 cargo clippy --workspace --tests --all-features -- -Dwarnings`
+- [ ] `AVAROK_SKIP_BUILD=1 cargo clippy --workspace --tests --all-features -- -Dwarnings`
 - [ ] `bash scripts/check-license-headers.sh`
 - [ ] Tested against a real model / hardware if the change affects runtime behaviour
 - [ ] Added or updated tests where applicable

@@ -1,8 +1,8 @@
-# Atlas Spark — Quickstart Guide
+# Avarok Spark — Quickstart Guide
 
 Run state-of-the-art language models on a single NVIDIA DGX Spark (GB10).
 
-**Docker image:** `avarok/atlas-gb10:latest`
+**Docker image:** `avarok/avarok-gb10:latest`
 **API:** OpenAI-compatible (`/v1/chat/completions`, `/v1/models`)
 **Default port:** 8888
 
@@ -36,7 +36,7 @@ under `target/`.
 
 ## Network exposure
 
-By default Atlas binds the HTTP listener to **`127.0.0.1` (localhost only)**.
+By default Avarok binds the HTTP listener to **`127.0.0.1` (localhost only)**.
 This is the right default for an inference engine that talks to local
 clients (Open WebUI, opencode, an OpenAI SDK pinned to
 `base_url=http://localhost:8888/v1`).
@@ -48,7 +48,7 @@ clients (Open WebUI, opencode, an OpenAI SDK pinned to
 spark serve <model> \
   --bind 0.0.0.0 \
   --require-auth \
-  --auth-tokens-file /etc/atlas/tokens.txt
+  --auth-tokens-file /etc/avarok/tokens.txt
 ```
 
 Where `tokens.txt` is one bearer token per line (`#` comments allowed),
@@ -105,10 +105,10 @@ where throughput is less critical.
 
 ```bash
 sudo docker run -d \
-  --name atlas-27b \
+  --name avarok-27b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Kbenkhaled/Qwen3.5-27B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -126,10 +126,10 @@ Pure attention (no SSM), no MTP support.
 
 ```bash
 sudo docker run -d \
-  --name atlas-vl-30b \
+  --name avarok-vl-30b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4 \
     --port 8888 \
     --max-seq-len 32768 \
@@ -157,7 +157,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 > **EXIF orientation is applied automatically.** Cameras usually store a photo
 > the way the sensor read it and record which way is up in an EXIF tag, so a
-> phone picture is often held sideways in the file. Atlas rotates on decode, so
+> phone picture is often held sideways in the file. Avarok rotates on decode, so
 > the model sees the image the same way your phone, browser and file manager
 > show it. Images without the tag — and every PNG — are untouched.
 
@@ -165,7 +165,7 @@ curl -s http://localhost:8888/v1/chat/completions \
 
 > ### ⚠️ VIDEO REQUIRES `ffmpeg` ON THE HOST
 >
-> Atlas does **not** bundle a video decoder. Animated **GIF** decodes
+> Avarok does **not** bundle a video decoder. Animated **GIF** decodes
 > in-process (pure Rust, no dependency). **Every other container — MP4/MOV,
 > WebM/Matroska, AVI, i.e. H.264, H.265, VP9, AV1 — is decoded by running
 > `ffmpeg`**, which must be installed on the host and enabled with
@@ -222,10 +222,10 @@ No MTP support.
 
 ```bash
 sudo docker run -d \
-  --name atlas-nemotron \
+  --name avarok-nemotron \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -243,10 +243,10 @@ baseline. 3B active parameters per token.
 
 ```bash
 sudo docker run -d \
-  --name atlas-35b \
+  --name avarok-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -266,10 +266,10 @@ Largest single-node MoE model with MTP. Hybrid SSM+Attention+MoE architecture.
 
 ```bash
 sudo docker run -d \
-  --name atlas-80b \
+  --name avarok-80b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \
@@ -286,7 +286,7 @@ sudo docker run -d \
 
 All 256 experts on one GB10. The 122B NVFP4 checkpoint is ~81 GB on disk (65 GB FP4
 experts + 16 GB BF16 modules: Mamba projections, embeddings, MTP, vision); after
-Atlas's buffer arena, dequant scratch, MoE routing state, and CUDA context, you're
+Avarok's buffer arena, dequant scratch, MoE routing state, and CUDA context, you're
 left with ~1.5–2 GB headroom for KV cache. That's why `--max-num-seqs` and
 `--max-seq-len` have to stay tight.
 
@@ -295,10 +295,10 @@ correctly (single-call decode 33.4 tok/s at batch=1), 4-way concurrent requests
 serve cleanly. KV cache holds ~35K tokens (16K per slot × 4 slots, with overlap).
 
 ```bash
-sudo docker run -d --name atlas \
+sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --max-seq-len 16384 \
@@ -339,10 +339,10 @@ or 100GbE+).
 **Node 0 (head, `<HEAD_IP>`):**
 ```bash
 sudo docker run -d \
-  --name atlas-122b-r0 \
+  --name avarok-122b-r0 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --rank 0 --world-size 2 \
@@ -359,10 +359,10 @@ sudo docker run -d \
 **Node 1 (worker):**
 ```bash
 sudo docker run -d \
-  --name atlas-122b-r1 \
+  --name avarok-122b-r1 \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8889 \
     --rank 1 --world-size 2 \
@@ -443,7 +443,7 @@ sudo docker stop <container-name> && sudo docker rm <container-name>
 
 ## OpenAI SDK / Open WebUI
 
-Atlas Spark exposes a standard OpenAI-compatible API. Use it with any client:
+Avarok Spark exposes a standard OpenAI-compatible API. Use it with any client:
 
 ```python
 from openai import OpenAI
@@ -495,10 +495,10 @@ Add `--tool-call-parser <FORMAT>` to enable OpenAI-compatible function calling.
 **Example: start 35B with tool calling enabled:**
 ```bash
 sudo docker run -d \
-  --name atlas-35b-tools \
+  --name avarok-35b-tools \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 8192 \

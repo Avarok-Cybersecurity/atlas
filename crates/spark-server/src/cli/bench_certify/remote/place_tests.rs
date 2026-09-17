@@ -59,7 +59,7 @@ fn fixture(tag: &str) -> (Scratch, Vec<FetchedFile>, String) {
     std::fs::copy(&newest, &rec_to).unwrap();
     std::fs::copy(format!("{}.sig", newest.display()), &sig_to).unwrap();
     std::fs::write(fetched.join(".certify/x/decode-floor.log"), "log").unwrap();
-    let sha = atlas_plugin::gate::read_record(&newest).unwrap().git_sha;
+    let sha = avarok_plugin::gate::read_record(&newest).unwrap().git_sha;
     let f = |name: &str, rel: &str, path: PathBuf| FetchedFile {
         name: name.into(),
         relative_path: rel.into(),
@@ -86,6 +86,8 @@ fn fixture(tag: &str) -> (Scratch, Vec<FetchedFile>, String) {
 fn expect<'a>(anchor: &'a str) -> Expect<'a> {
     Expect {
         unit_id: "decode-floor",
+        shard: None,
+        log_stem: "decode-floor",
         anchor,
         hardware: "gb10",
     }

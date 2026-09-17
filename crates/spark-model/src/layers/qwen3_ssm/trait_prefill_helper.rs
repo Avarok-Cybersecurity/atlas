@@ -71,7 +71,7 @@ impl Qwen3SsmLayer {
         value_dim: usize,
         stream: u64,
     ) -> Result<()> {
-        // Native EXL3 (ATLAS_EXL3_NATIVE_DENSE=1): the packed trellis is the
+        // Native EXL3 (AVAROK_EXL3_NATIVE_DENSE=1): the packed trellis is the
         // ONLY live out_proj weight on this layer (every FP8/NVFP4/BF16 slot
         // below is None — enforced at install), so it sits first without
         // shadowing any precision lever. Row-batched cooperative GEMM into
@@ -79,8 +79,8 @@ impl Qwen3SsmLayer {
         if let Some(ref g) = self.exl3_gdn {
             return self.exl3_out_proj(g, ctx, normed_out_buf, out_proj_buf, k as usize, stream);
         }
-        let force_w8a8 = matches!(std::env::var("ATLAS_FP8_W8A8").ok().as_deref(), Some("1"));
-        // PER-ROW FP8 from the checkpoint (`ATLAS_FP8_ROWWISE=1`), dequantised
+        let force_w8a8 = matches!(std::env::var("AVAROK_FP8_W8A8").ok().as_deref(), Some("1"));
+        // PER-ROW FP8 from the checkpoint (`AVAROK_FP8_ROWWISE=1`), dequantised
         // once to BF16 into the LEDGERED arena slab — see the matching arm in
         // `trait_prefill_proj.rs` for why BF16 and not the row-wise FP8 GEMM,
         // and `rowwise_bf16.rs` for why the bytes are the arena's. First
@@ -148,11 +148,11 @@ impl Qwen3SsmLayer {
         // W8A8 block-scaled cuBLASLt — 96 of the 112 `w8a16_gemm_pipelined`
         // launches in the round-9 H100 prefill trace (68.1 ms of its 100.6 ms
         // at 1193 tokens) were THIS projection, once per GDN layer per chunk,
-        // and nothing in `ATLAS_CUBLAS_GEMM` could reach it. See
+        // and nothing in `AVAROK_CUBLAS_GEMM` could reach it. See
         // `prefill_out_w8a8.rs` for the full receipt and the clause list.
-        // Ahead of the `ATLAS_FP8_W8A8` arm below because both compute the same
+        // Ahead of the `AVAROK_FP8_W8A8` arm below because both compute the same
         // W8A8 arithmetic and this one is the faster implementation of it; the
-        // env lever alone (without `ssm` in `ATLAS_CUBLAS_GEMM`) still picks
+        // env lever alone (without `ssm` in `AVAROK_CUBLAS_GEMM`) still picks
         // the in-tree kernel.
         } else if let Some(ref fp8w) = self.out_proj_fp8w
             && self.prefill_out_proj_w8a8_selected(ctx, k, h as u32, value_dim as u32, fp8w)

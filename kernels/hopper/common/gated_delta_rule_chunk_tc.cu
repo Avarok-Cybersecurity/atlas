@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN chunked-prefill state spine, TENSOR-CORE build (#928).
+// Avarok GDN chunked-prefill state spine, TENSOR-CORE build (#928).
 //
 // SSOT for why this exists — `GDN-PREFILL-ATTRIBUTION.md`, from the 1xH100
 // nsys round-9 capture (2026-09-11, Qwen3.8-27B-FP8, nv=48/nk=16/hd=128):
@@ -38,7 +38,7 @@
 //                             land on 1.660e-3 = the scalar spine's own bf16
 //                             STORAGE floor to four digits. Drift over 72
 //                             serial chunks 1.02x, identical to the spine.
-// The x2 entry is what `ATLAS_GDN_PREFILL_TC` ships. Speed on GB10:
+// The x2 entry is what `AVAROK_GDN_PREFILL_TC` ships. Speed on GB10:
 // 1.58x / 2.16x / 2.29x over vfused (3.65 -> 8.38 TFLOP/s at T=4593); the
 // second limb is free at the two long shapes, which is what says this kernel
 // has MMA issue to spare.

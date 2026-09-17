@@ -3,22 +3,22 @@
 
 use anyhow::{Result, bail};
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::ffi::c_void;
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use super::*;
 
-/// Repack an Atlas E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
+/// Repack an Avarok E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
 /// swizzle atom (`tile_atom_to_shape_SFB`, ue4m3) that the grouped collective
 /// reads. M-independent (the SFB atom depends only on N,K) so this runs once
 /// per expert at load. `scale_out` must hold the swizzled SFB region the
 /// grouped kernel consumes.
 ///
-/// `src_n_major` selects the SOURCE layout: `false` = Atlas-transposed
+/// `src_n_major` selects the SOURCE layout: `false` = Avarok-transposed
 /// `[K/16,N]`, `true` = checkpoint-native `[N,K/16]`. The N-major mode lets a
 /// checkpoint that already ships `[N,K/16]` scales (Laguna) build SFB without
-/// first materialising an Atlas-transposed copy. Output layout is identical
+/// first materialising an Avarok-transposed copy. Output layout is identical
 /// either way.
 pub fn pack_weight_sfb(
     scale_in: u64,
@@ -28,10 +28,10 @@ pub fn pack_weight_sfb(
     src_n_major: bool,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_pack_weight_sfb(
+            avarok_cutlass_pack_weight_sfb(
                 scale_in as *const c_void,
                 scale_out as *mut c_void,
                 n as i32,
@@ -45,7 +45,7 @@ pub fn pack_weight_sfb(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (scale_in, scale_out, n, k, src_n_major, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
@@ -53,7 +53,7 @@ pub fn pack_weight_sfb(
 }
 
 /// Pack BF16 row-major weight `[N,K]` into the native CUTLASS NVFP4 layout:
-/// packed `[N,K/2]` (N-major, K-contiguous — NOT the Atlas transposed `[K/2,N]`)
+/// packed `[N,K/2]` (N-major, K-contiguous — NOT the Avarok transposed `[K/2,N]`)
 /// and E4M3 scales `[K/16,N]`. `weight_scale_2` is assumed to be 1.0 by the
 /// caller when feeding this into the native CUTLASS wrapper.
 pub fn pack_bf16_weight_to_nvfp4_t(
@@ -64,10 +64,10 @@ pub fn pack_bf16_weight_to_nvfp4_t(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_pack_bf16_weight_to_nvfp4_t(
+            avarok_cutlass_pack_bf16_weight_to_nvfp4_t(
                 weight_bf16 as *const c_void,
                 packed_t as *mut c_void,
                 scale_t as *mut c_void,
@@ -81,14 +81,14 @@ pub fn pack_bf16_weight_to_nvfp4_t(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (weight_bf16, packed_t, scale_t, n, k, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
     }
 }
 
-/// Transpose an Atlas-packed NVFP4 weight from the checkpoint/hand-kernel
+/// Transpose an Avarok-packed NVFP4 weight from the checkpoint/hand-kernel
 /// `[K/2, N]` layout into CUTLASS's `[N, K/2]` layout (the byte order the
 /// native NVFP4 GEMM consumes for the ColumnMajor B operand). Pure byte
 /// transpose; nibble pairing within each byte is preserved. `dst_packed` must
@@ -100,10 +100,10 @@ pub fn transpose_nvfp4_packed_kton(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_transpose_nvfp4_packed_kton(
+            avarok_cutlass_transpose_nvfp4_packed_kton(
                 src_packed_t as *const c_void,
                 dst_packed as *mut c_void,
                 n as i32,
@@ -116,7 +116,7 @@ pub fn transpose_nvfp4_packed_kton(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (src_packed_t, dst_packed, n, k, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")

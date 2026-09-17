@@ -15,7 +15,7 @@
 //! triangle, or a chunk-boundary ordering error all break it while still looking plausible.
 //!
 //! ## Shared memory is a correctness blocker here
-//! Atlas's CUDA backend has no `cuFuncSetAttribute` opt-in, so a block cannot exceed the
+//! Avarok's CUDA backend has no `cuFuncSetAttribute` opt-in, so a block cannot exceed the
 //! DEFAULT 48 KiB (49152 B); GB10's 101376 B ceiling is unreachable. Requirements are asserted
 //! against 49152 before every launch — see `smem_*`.
 //!
@@ -24,7 +24,7 @@
 
 use anyhow::{Result, bail};
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -326,7 +326,7 @@ impl Gpu<'_> {
 // ───────────────────────────────────────────────────────────────── main
 
 fn main() -> Result<()> {
-    let g = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &g;
     let d = Gpu {
         g: gpu,

@@ -25,7 +25,7 @@ fn yarn_get_mscale(scale: f32, mscale: f32) -> f32 {
 /// Compute the YaRN `_mscale` ratio that DeepSeek folds into the rope
 /// cos/sin: `get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)`.
 /// Returns 1.0 when YaRN is disabled (`yarn_factor <= 1`).
-pub(crate) fn yarn_rope_mscale(config: &atlas_core::config::ModelConfig) -> f32 {
+pub(crate) fn yarn_rope_mscale(config: &avarok_core::config::ModelConfig) -> f32 {
     let factor = config.yarn_factor;
     if factor <= 1.0 {
         return 1.0;
@@ -271,7 +271,7 @@ pub(in crate::layers::qwen3_attention) fn qsa_seq_state<'a>(
 #[cfg(test)]
 mod yarn_mscale_tests {
     use super::yarn_rope_mscale;
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
 
     // Test 1 + Test 4: with the DS4F-forced config (yarn_mscale ==
     // yarn_mscale_all_dim == 0.0, factor 16), yarn_rope_mscale returns EXACTLY

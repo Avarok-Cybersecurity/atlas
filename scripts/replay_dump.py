@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 DEFAULT_HOST = "localhost:8888"
-DEFAULT_DUMP = "/workspace/atlas-opencode-dump-original.jsonl"
+DEFAULT_DUMP = "/workspace/avarok-opencode-dump-original.jsonl"
 
 
 def load_requests(path: str) -> list[dict]:

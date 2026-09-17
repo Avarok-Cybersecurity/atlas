@@ -1,8 +1,8 @@
 /* =============================================================================
-   Atlas blog — blog.atlasinference.io
+   Avarok blog — blog.atlascybernetics.ai
 
-   The design system is atlasinference.io's, not a second one. Every colour and
-   both type stacks come from web-shared/atlas-tokens.css, the same file the
+   The design system is atlascybernetics.ai's, not a second one. Every colour and
+   both type stacks come from web-shared/avarok-tokens.css, the same file the
    marketing site imports, so the two properties cannot drift.
 
    What this file adds on top is *editorial* structure the marketing site has no
@@ -14,7 +14,7 @@
    faintest text token still clears WCAG AA over it — see that file for the
    working.
    ========================================================================== */
-@import '../../web-shared/atlas-tokens.css';
+@import '../../web-shared/avarok-tokens.css';
 
 /* ---- the reading face -------------------------------------------------- */
 /* Self-hosted rather than fetched from a font CDN: a third-party origin costs
@@ -54,7 +54,7 @@
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
-  color-scheme: dark;
+  /* color-scheme comes from avarok-tokens.css so light/dark follow data-theme. */
 
   /* --- Editorial aliases over the shared tokens. -------------------------
      These are names, not new values: every one resolves to a shared token or
@@ -86,7 +86,7 @@
   --mono: var(--font-mono);
   /* The reading face. Charter is what Medium sets its articles in, and its
      fallback chain is Medium's own — a reader without the webfont still gets
-     the same shape of page. Not in web-shared/atlas-tokens.css because the
+     the same shape of page. Not in web-shared/avarok-tokens.css because the
      marketing site does not ship Charter: this is an addition, not a second
      copy of a shared value. */
   --serif: Charter, 'Charter-fallback', Georgia, Cambria, 'Times New Roman', Times, serif;
@@ -159,14 +159,16 @@ a { color: var(--accent); }
    enter it, so the divider sits just outside that margin rather than inside a
    flex gap. The negative margin-left cancels the clear space against the
    shell's own padding, so the mark optically aligns with the content below. */
-.brand { display: flex; align-items: center; gap: 0; text-decoration: none; color: var(--text-1); flex: none; margin-left: -15px; }
+.brand { display: flex; align-items: center; gap: 0; color: var(--text-1); flex: none; margin-left: -15px; }
+.brand-mark { display: flex; align-items: center; text-decoration: none; color: inherit; }
 .brand-div { width: 1px; height: 19px; background: var(--line-hard); margin-right: 14px; }
 .brand-sub {
   font-family: var(--mono); font-size: 12.5px; font-weight: 500;
   letter-spacing: .11em; text-transform: uppercase; color: var(--text-3);
+  text-decoration: none;
   transition: color var(--dur) var(--ease);
 }
-.brand:hover .brand-sub { color: var(--text-2); }
+.brand-sub:hover { color: var(--text-2); }
 
 /* The links are full bar height, so the current-page underline can be pinned
    to `bottom: 0` and land exactly on the header's hairline. Offsetting a
@@ -343,6 +345,11 @@ a { color: var(--accent); }
   background: color-mix(in srgb, var(--accent-tech) 12%, transparent);
   color: color-mix(in srgb, var(--accent-tech) 78%, white);
 }
+/* Mixing the cyan toward white lifts it off a dark ground; on paper it does the
+   opposite and leaves #71D0E3 at 1.5:1 over its own tint. Inline code is small
+   text, so the light theme reads the darkened chevron twin instead. The chip
+   behind it keeps the 12% fill either way. */
+[data-theme="light"] .prose :not(pre) > code { color: var(--ch-cyan-text); }
 .prose blockquote {
   margin: 34px 0; padding: 2px 0 2px 22px;
   border-left: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
@@ -357,8 +364,8 @@ a { color: var(--accent); }
   border-radius: 9px; font-size: 16px; line-height: 1.58;
 }
 .callout p { margin: 0; }
-.callout .ci { width: 18px; height: 18px; margin-top: 3px; color: var(--co, var(--accent-warn)); flex: none; }
-.callout .ct { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--co, var(--accent-warn)); margin-bottom: 5px; }
+.callout .ci { width: 18px; height: 18px; margin-top: 3px; color: var(--co-text, var(--ch-gold-text)); flex: none; }
+.callout .ct { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--co-text, var(--ch-gold-text)); margin-bottom: 5px; }
 
 .codeblock { margin: 32px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--bg-1); }
 .cb-bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--bg-sunk); border-bottom: 1px solid var(--line-soft); }

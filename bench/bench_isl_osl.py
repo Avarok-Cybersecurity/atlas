@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Atlas Spark ISL/OSL sweep at batch=1.
+Avarok Spark ISL/OSL sweep at batch=1.
 
 Measures TTFT, TPOT, and decode throughput across 6 representative
 ISL/OSL configurations (single request, no concurrency).
@@ -200,7 +200,7 @@ def detect_model(url: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Atlas Spark ISL/OSL sweep (batch=1)")
+        description="Avarok Spark ISL/OSL sweep (batch=1)")
     parser.add_argument("--url", default="http://localhost:8888")
     parser.add_argument("--runs", type=int, default=3,
                         help="Runs per config (median reported)")

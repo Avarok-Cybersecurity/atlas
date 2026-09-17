@@ -44,11 +44,11 @@ fn sample_and_emit(
 /// The wide MTP verify takes the graphed verify's own GPU argmax for every row
 /// the host pipeline provably cannot change, and copies the `[K, vocab]` logits
 /// to the host only when some row needs them. ON by default;
-/// `ATLAS_MTP_THINK_FAST_GREEDY=0` restores the unconditional D2H + host path
-/// (the A/B and rollback switch, same convention as `ATLAS_NO_FAST_GREEDY_CHAT`).
+/// `AVAROK_MTP_THINK_FAST_GREEDY=0` restores the unconditional D2H + host path
+/// (the A/B and rollback switch, same convention as `AVAROK_NO_FAST_GREEDY_CHAT`).
 fn mtp_fast_greedy_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_THINK_FAST_GREEDY").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MTP_THINK_FAST_GREEDY").as_deref() != Ok("0"))
 }
 
 /// Why a row could not take the GPU argmax. Logged once per run per reason so
@@ -190,7 +190,7 @@ fn row_fast_greedy(
 
 fn dump_logits_path_set() -> bool {
     static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SET.get_or_init(|| std::env::var_os("ATLAS_DUMP_LOGITS_PATH").is_some())
+    *SET.get_or_init(|| std::env::var_os("AVAROK_DUMP_LOGITS_PATH").is_some())
 }
 
 /// The fast-greedy sibling of `sample_and_emit`: same row loop, same emission
@@ -221,7 +221,7 @@ fn fast_greedy_and_emit(
                 if ctx.stats.once("log:mtp_fast_greedy") {
                     tracing::info!(
                         "MTP verify fast greedy ACTIVE: GPU argmax rows emitted without the \
-                         [K, vocab] D2H (default on; ATLAS_MTP_THINK_FAST_GREEDY=0 disables)"
+                         [K, vocab] D2H (default on; AVAROK_MTP_THINK_FAST_GREEDY=0 disables)"
                     );
                 }
                 (tok, None)

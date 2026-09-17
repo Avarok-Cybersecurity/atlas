@@ -42,14 +42,14 @@ impl Qwen3SsmLayer {
         let fp32 = 4usize;
         let gb_stride = (nv * 2) as u32;
 
-        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // gfx1151/SCALE (avarok_scale): every H-in-shared-memory GDN prefill
         // kernel exceeds RDNA3.5's 64KB LDS cap — FLA (C=64) ≈96KB, WY4 =69688,
         // persistent =67584. Only split4 keeps the kd*vd H-state in global
         // memory (~2KB smem) and handles arbitrary length, so route there for
         // all sizes. Correctness-equivalent, lower throughput; the smem-H fast
         // paths (and a future C=32 FLA variant) are Blackwell-only. NVIDIA
         // (cfg unset) takes the full FLA/WY ladder below unchanged.
-        if cfg!(atlas_scale) {
+        if cfg!(avarok_scale) {
             // MID-CHUNK tail capture: split the split4 recurrence at cap_local
             // (and, when present, cap_local - bs), D2D each captured h_state
             // into its reserved slot, then finish the trailing tokens with
@@ -130,7 +130,7 @@ impl Qwen3SsmLayer {
             );
         }
 
-        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
+        // FlashInfer GDN (opt-in, AVAROK_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. This is the live
         // single-stream prefill path (trait_prefill.rs -> prefill_gdn_recurrence). q_ptr is
         // the packed-QKV base, gates_buf the gate base — handed straight to the bit-exact
@@ -141,7 +141,7 @@ impl Qwen3SsmLayer {
             let value_dim = nv * vd;
             // One segment of the scan. The managed shim is documented
             // MULTI-CHUNK CORRECT — it reads the incoming `h_state` as its
-            // initial state and writes the final one back in Atlas S[k][v]
+            // initial state and writes the final one back in Avarok S[k][v]
             // layout — so segments chain exactly the way the split4 path's do.
             let seg = |start: usize, len: u32| -> Result<()> {
                 ops::gdn_flashinfer::flashinfer_gdn_prefill(
@@ -191,12 +191,12 @@ impl Qwen3SsmLayer {
         }
 
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
-        // (ATLAS_GDN_CHUNK64 / ATLAS_FORCE_PERSISTENT / ATLAS_DISABLE_WY4) and their
+        // (AVAROK_GDN_CHUNK64 / AVAROK_FORCE_PERSISTENT / AVAROK_DISABLE_WY4) and their
         // dispatch branches. FLA is the baked default for 128-dim linear heads; the
         // WY4-persistent kernel is the unconditional fallback below.
         // FLA multi-kernel chunked prefill (recompute_wu → chunk_delta_h_ksplit →
         // chunk_fwd_o): 1.75x vs wy4 @16k, token-equal (cos=1.0 vs scalar). BAKED
-        // DEFAULT 2026-06-06 (was gated behind ATLAS_GDN_FLA=1 — the env var is gone):
+        // DEFAULT 2026-06-06 (was gated behind AVAROK_GDN_FLA=1 — the env var is gone):
         // always taken for 128-dim linear-head GDN models when the FLA kernels & scratch
         // are present (scratch is allocated for exactly those models, sizes.rs). The wy4
         // branch below remains the fallback for other head dims / a guard miss.
@@ -212,7 +212,7 @@ impl Qwen3SsmLayer {
         // path the clean pre-FLA baseline used. Replay segments are short
         // (suffix after a ≥10k skipped prefix), so the FLA speed loss is nil.
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
-        // ATLAS_NO_GDN_FLA=1: force the WY4 fallback. Diagnostic lever for the
+        // AVAROK_NO_GDN_FLA=1: force the WY4 fallback. Diagnostic lever for the
         // qwen4_exp bisect — layer 0's recurrence output diverges from the
         // reference at cos 0.83 with everything upstream verified (projection,
         // conv, gates all match), and the FLA chunked path is the component
@@ -221,7 +221,7 @@ impl Qwen3SsmLayer {
         // implementation is the decisive split.
         static NO_FLA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let no_fla =
-            *NO_FLA.get_or_init(|| std::env::var("ATLAS_NO_GDN_FLA").as_deref() == Ok("1"));
+            *NO_FLA.get_or_init(|| std::env::var("AVAROK_NO_GDN_FLA").as_deref() == Ok("1"));
         if !no_fla
             && !ctx.gdn_exact_replay
             && kd == 128
@@ -233,7 +233,7 @@ impl Qwen3SsmLayer {
         {
             // One-time positive signal that the FLA path is live (vs silently
             // falling through to wy4 on a guard miss) — greppable in the server log.
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
@@ -304,7 +304,7 @@ impl Qwen3SsmLayer {
             // in isolation.
             //
             // DEFAULT-ON since 2026-07-25 — see `gdn_regresident_enabled`.
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern

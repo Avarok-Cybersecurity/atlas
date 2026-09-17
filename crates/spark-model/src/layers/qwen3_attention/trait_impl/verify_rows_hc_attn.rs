@@ -334,7 +334,7 @@ impl Qwen3AttentionLayer {
         SAID.call_once(|| {
             tracing::info!(
                 "mHC verify: attention projections BATCHED at T=K through the multi-seq phases \
-                 (default on; ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0 disables), first pass k={k}"
+                 (default on; AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS_QKV=0 disables), first pass k={k}"
             );
         });
         let h = ctx.config.hidden_size;
@@ -347,10 +347,10 @@ impl Qwen3AttentionLayer {
             num_seqs: k as u32,
             ..row_metas[0]
         };
-        // ── Phase timing (ATLAS_HC_VERIFY_STAGE_TIMING=1), see module note ──
+        // ── Phase timing (AVAROK_HC_VERIFY_STAGE_TIMING=1), see module note ──
         let core_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mut ct = std::time::Instant::now();
         let (mut c1, mut c2, mut c3, mut c4) = (0u128, 0u128, 0u128, 0u128);
@@ -480,7 +480,7 @@ impl Qwen3AttentionLayer {
         // TP reduction — see `verify_attn_post_hc` for why it must land here,
         // before the caller's post-attention norm reads these rows.
         //
-        // ── SPLIT OUT OF c4 (ATLAS_HC_VERIFY_STAGE_TIMING=1) ──
+        // ── SPLIT OUT OF c4 (AVAROK_HC_VERIFY_STAGE_TIMING=1) ──
         // c4 measured 157-460 us at C=4 / ISL 2000 — ~36% of the attention core,
         // nearly as much as the per-row paged decode. o_proj is a small GEMM and
         // this collective is k*h*2 = 15 KB, which on a 200 Gbit link is pure
@@ -529,7 +529,7 @@ impl Qwen3AttentionLayer {
         let small_m = {
             static SMALL_M: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *SMALL_M.get_or_init(|| {
-                std::env::var("ATLAS_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
+                std::env::var("AVAROK_QWEN4EXP_HC_SMALL_M_FFN").as_deref() != Ok("0")
             })
         };
         match k {

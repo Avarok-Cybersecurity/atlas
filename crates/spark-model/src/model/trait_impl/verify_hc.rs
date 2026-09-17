@@ -48,13 +48,13 @@
 //! projections, decode MoE, QSA `decode_select`) -- equivalent in exact
 //! arithmetic, not in bf16.
 //!
-//! Kill switch: `ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0` restores the K-row
+//! Kill switch: `AVAROK_QWEN4EXP_MTP_HC_ATTN_DECODE=0` restores the K-row
 //! `prefill()` body for the attention layers.
 //!
 //! # MEASURED END TO END (2026-08-28) — RUNS, BUT WRONG AND SLOW
 //!
 //! With the proposer armed (`--speculative --num-drafts 1` +
-//! `ATLAS_QWEN4EXP_MTP_VERIFY=1`), 4K ctx, greedy, vs a same-config baseline:
+//! `AVAROK_QWEN4EXP_MTP_VERIFY=1`), 4K ctx, greedy, vs a same-config baseline:
 //! ```text
 //!   baseline      19.8 tok/s  (50.5 ms/token)  correct output
 //!   speculative,
@@ -83,7 +83,7 @@
 //!      un-restored. It is now wired (`Model::rollback_verify_rows`, called from
 //!      the scheduler's K=2 reject branch) and it changes NOTHING: armed and
 //!      unarmed diverge at the same point. It ships OFF
-//!      (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm) as unproven, not as harmful.
+//!      (`AVAROK_QWEN4EXP_MTP_ROLLBACK=1` to arm) as unproven, not as harmful.
 //!    * The small-M FFN substitution below is likewise exonerated - forcing the
 //!      OLD grouped-MoE verify reproduces the identical corruption.
 //!
@@ -128,7 +128,7 @@
 //!    experts' weights regardless of row count, so ONE row paid nearly what a
 //!    28-row chunk paid (T=16 6.7-9.6 ms, T=28 8.5-12.3 ms -- 1.75x the rows
 //!    for 1.2x the time). Substituting the single-token/K=2/K=3 MoE kernels at
-//!    small row counts (`ATLAS_QWEN4EXP_HC_SMALL_M_FFN`, default on) cut it 14x.
+//!    small row counts (`AVAROK_QWEN4EXP_HC_SMALL_M_FFN`, default on) cut it 14x.
 //!
 //!    NOTE the K=1 arm is the one that matters: `decode_verify_hc` splits a
 //!    verify into row-0-then-drafts, so at gamma=1 BOTH calls arrive as a
@@ -147,7 +147,7 @@
 //!    serial decodes (~101 ms) still exceed the ~92 ms budget on their own.
 //!
 //! Speculation therefore stays behind BOTH `--speculative` and
-//! `ATLAS_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
+//! `AVAROK_QWEN4EXP_MTP_VERIFY=1`, and neither is a default.
 //!
 //! # THE THREE CARRIES, AND WHAT LANDS EACH (2026-09-03)
 //!
@@ -181,7 +181,7 @@
 //! unconditionally from the K=2 reject branch. Two things were wrong with that,
 //! and the second is the one that explains the severity gradient:
 //!
-//! 1. It was DEFAULT-OFF (`ATLAS_QWEN4EXP_MTP_ROLLBACK=1` to arm), so on the
+//! 1. It was DEFAULT-OFF (`AVAROK_QWEN4EXP_MTP_ROLLBACK=1` to arm), so on the
 //!    default path a rejected row left both carries permanently advanced.
 //! 2. Row 0 is the right snapshot only for a ONE-ROW commit. `verify_k3_step`
 //!    computes `num_accepted <= 2` against `k = 3`, so EVERY K=3 step is a
@@ -203,7 +203,7 @@
 //! target is `base_pos + num_accepted`, never a delta off a moving `seq_len`.
 //! `restore_verify_aux_at` asserts the two agree.
 //!
-//! DEFAULT ON, kill switch `ATLAS_QWEN4EXP_MTP_AUX_COMMIT=0`. Callers must
+//! DEFAULT ON, kill switch `AVAROK_QWEN4EXP_MTP_AUX_COMMIT=0`. Callers must
 //! still `checkpoint_ssm_states` before the verify, exactly as the non-hc path
 //! requires.
 //!
@@ -282,10 +282,10 @@ impl TransformerModel {
         // `h_state_intermediates[t]` / `conv_state_intermediates[t]` after row
         // `t`, which is exactly the contract `commit_accepted_prefix_dispatch`
         // reads (index `num_accepted - 1` = "state after token
-        // num_accepted-1"). `ATLAS_QWEN4EXP_MTP_HC_COMMIT=0` restores the old
+        // num_accepted-1"). `AVAROK_QWEN4EXP_MTP_HC_COMMIT=0` restores the old
         // fused 1 + (K-1) split for A/B — it re-enables the corruption, so it
         // is a diagnostic switch, not a supported mode.
-        // ── ONE K-ROW PASS (ATLAS_QWEN4EXP_MTP_HC_BATCHED=1) ──
+        // ── ONE K-ROW PASS (AVAROK_QWEN4EXP_MTP_HC_BATCHED=1) ──
         //
         // With the batched conv+GDN kernels serving the GDN layers, the per-row
         // intermediates are written by the kernel, so the K single-row passes
@@ -305,14 +305,14 @@ impl TransformerModel {
         // `commit_verify_aux_rows` lands the last two, called from
         // `commit_accepted_prefix` immediately after the SSM copies.
         //
-        // `ATLAS_QWEN4EXP_MTP_ROLLBACK=1` is REFUSED alongside this arm. That
+        // `AVAROK_QWEN4EXP_MTP_ROLLBACK=1` is REFUSED alongside this arm. That
         // path restores a PRE-verify aux blob, which here would undo the
         // committed row 0 on top of a commit that already landed correctly.
         // It is default-off and documented unproven; this arm supersedes it.
         if crate::layers::qwen3_ssm::trait_decode_batched_hc::hc_batched_verify_enabled() {
             anyhow::ensure!(
                 !rollback_armed(),
-                "ATLAS_QWEN4EXP_MTP_HC_BATCHED=1 and ATLAS_QWEN4EXP_MTP_ROLLBACK=1 \
+                "AVAROK_QWEN4EXP_MTP_HC_BATCHED=1 and AVAROK_QWEN4EXP_MTP_ROLLBACK=1 \
                  are incompatible: the batched arm commits the PLE and QSA carries \
                  per row through commit_accepted_prefix, and rollback would then \
                  restore a PRE-verify blob over it, undoing the committed row. \

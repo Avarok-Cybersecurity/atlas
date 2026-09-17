@@ -79,9 +79,9 @@ impl ToolCallParser for Qwen3CoderParser {
                 let mut t = tool.clone();
                 let suffix = " | After ONE failure with \"command not found\" or exit code 127, do NOT retry the same command — the binary is permanently unavailable in this environment. Choose a different approach or tell the user the dependency is missing.";
                 t.function.description = Some(match t.function.description {
-                    Some(d) if !d.contains("[atlas-f33]") => format!("{d}\n[atlas-f33]{suffix}"),
+                    Some(d) if !d.contains("[avarok-f33]") => format!("{d}\n[avarok-f33]{suffix}"),
                     Some(d) => d,
-                    None => format!("[atlas-f33]{suffix}"),
+                    None => format!("[avarok-f33]{suffix}"),
                 });
                 t
             })
@@ -122,12 +122,12 @@ multiple lines\n\
         );
         // #211 option-B A/B (off-policy hypothesis): Qwen3.6 was RL-tuned
         // against the SHORT official <IMPORTANT> reminder (chat_template.jinja
-        // line 53). Atlas's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
+        // line 53). Avarok's expanded IMMEDIATE_TOOL_USE + 10-bullet IMPORTANT
         // diverges from that trained distribution and correlates with
         // malformed tool calls (empty {filePath,content} scaffolds, mixed
-        // <function_calls> tags). ATLAS_OFFICIAL_TOOL_PROMPT=1 swaps in the
-        // verbatim official 4-bullet reminder. Default = current Atlas block.
-        if std::env::var("ATLAS_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
+        // <function_calls> tags). AVAROK_OFFICIAL_TOOL_PROMPT=1 swaps in the
+        // verbatim official 4-bullet reminder. Default = current Avarok block.
+        if std::env::var("AVAROK_OFFICIAL_TOOL_PROMPT").as_deref() == Ok("1") {
             prompt.push_str("\
 <IMPORTANT>\n\
 Reminder:\n\
@@ -197,7 +197,7 @@ Example:\n\
         // tool call from those tags across BPE boundaries and depends on
         // the raw fragments reaching it.
         //
-        // `<tool_response>` is a SERVER-internal wrapper that Atlas renders
+        // `<tool_response>` is a SERVER-internal wrapper that Avarok renders
         // around role=tool messages when they enter the prompt (see the
         // qwen3_5_moe.jinja chat template). The model should NEVER emit
         // it in content — when it does, it's hallucinating a simulated

@@ -169,7 +169,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     let gpu = if s.gpu_known {
         Line::from(vec![
             Span::styled(
-                format!(" atlas {:.1} GB", s.atlas_used_gb),
+                format!(" avarok {:.1} GB", s.avarok_used_gb),
                 theme::text().add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),

@@ -186,7 +186,7 @@ impl Exl3Weight {
         self.in_dim * self.out_dim / 2 + self.in_dim * self.out_dim / 16 + 4
     }
 
-    /// Materialize as Atlas-layout dense BF16 `[out, in]` (fresh buffer,
+    /// Materialize as Avarok-layout dense BF16 `[out, in]` (fresh buffer,
     /// caller owns). This is the GGUF-style "loading support" path: the
     /// result feeds the existing BF16 GEMMs or the runtime NVFP4/FP8
     /// requantizers, exactly like a BF16-checkpoint tensor.

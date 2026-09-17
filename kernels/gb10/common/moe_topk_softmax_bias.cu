@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas MoE Top-K softmax-with-correction-bias router for LongCat-Flash
+// Avarok MoE Top-K softmax-with-correction-bias router for LongCat-Flash
 // (and the announced Qwen3.8-Flash-Next family).
 //
 // LongCat routing (HF modeling_longcat_flash.py, LongcatFlashTopkRouter):

@@ -65,7 +65,7 @@ static mmq_q8_1_ds_layout mmq_get_q8_1_ds_layout(const ggml_type type_x) {
         case GGML_TYPE_Q2_0:
             // DS4 (not D4 like Q1_0): the `(code-1)*d` dequant has no per-block
             // additive bias, so q8_1's `s` term is never read on the q8_0 vec_dot
-            // path. DS4 lets Q2_0 reuse Atlas's shipping `atlas_q8_1_quantize_ds4_bf16`
+            // path. DS4 lets Q2_0 reuse Avarok's shipping `avarok_q8_1_quantize_ds4_bf16`
             // activation quantizer verbatim (zero new activation code).
             return MMQ_Q8_1_DS_LAYOUT_DS4;
         case GGML_TYPE_Q4_0:
@@ -1064,11 +1064,11 @@ static __device__ __forceinline__ void load_tiles_nvfp4_nvfp4(const char * __res
     const int kbx = txi % threads_per_row;
     const int row_in_warp = txi / threads_per_row;
 
-    // ATLAS (A2): the weight buffer is SoA per row — [qs: bpr*32][d: bpr*4] —
+    // AVAROK (A2): the weight buffer is SoA per row — [qs: bpr*32][d: bpr*4] —
     // not an array of 36-byte block_nvfp4. `stride` still carries blocks-per-row,
     // so the row base is stride*36 bytes and the two regions are derived from it.
     // This makes the 32 qs bytes CONTIGUOUS: two 16-byte loads instead of eight
-    // 4-byte loads. Written by atlas_nvfp4_repack; see the note there.
+    // 4-byte loads. Written by avarok_nvfp4_repack; see the note there.
     // ★ `kbx0` is a LINEAR block index that already folds in the CTA's row offset
     // (`offset_x = ... + it*mmq_y*stride_row_x`, line 3640) — it is NOT a pure
     // k-offset. The SoA layout is per-ROW, so recover the two components once per
@@ -3330,7 +3330,7 @@ static __device__ __forceinline__ void mmq_write_back_dp4a(
     }
 }
 
-template<ggml_type type, int mmq_x, int mmq_y, bool need_check, typename dst_t = float> // ATLAS: dst_t for fused bf16 output
+template<ggml_type type, int mmq_x, int mmq_y, bool need_check, typename dst_t = float> // AVAROK: dst_t for fused bf16 output
 static __device__ __forceinline__ void mmq_write_back_mma(
         const float * __restrict__ sum, const int * __restrict__ ids_dst, dst_t * __restrict__ dst,
         const int stride, const int i_max, const int j_max) {
@@ -3373,7 +3373,7 @@ static __device__ __forceinline__ void mmq_write_back_mma(
                     continue;
                 }
 
-                if constexpr (sizeof(dst_t) == 2) { dst[ids_dst[j]*stride + i] = __float2bfloat16(sum[(j0/tile_C::J + n)*tile_C::ne + l]); } // ATLAS fused bf16
+                if constexpr (sizeof(dst_t) == 2) { dst[ids_dst[j]*stride + i] = __float2bfloat16(sum[(j0/tile_C::J + n)*tile_C::ne + l]); } // AVAROK fused bf16
                 else { dst[ids_dst[j]*stride + i] = sum[(j0/tile_C::J + n)*tile_C::ne + l]; }
             }
         }
@@ -3574,7 +3574,7 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_IQ4_XS> {
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
-template <ggml_type type, int mmq_x, bool need_check, bool fixup, typename dst_t = float> // ATLAS: dst_t for fused bf16 output
+template <ggml_type type, int mmq_x, bool need_check, bool fixup, typename dst_t = float> // AVAROK: dst_t for fused bf16 output
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
         const int * __restrict__ ids_dst, dst_t * __restrict__ dst, float * __restrict__ tmp_fixup,
@@ -3651,7 +3651,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     if (fixup) {
         write_back(sum, ids_dst, tmp_fixup + blockIdx.x*(mmq_x*mmq_y), mmq_y, mmq_y, mmq_x);
     } else {
-        // ATLAS: direct MMA writer carries dst_t (float for llama path, bf16 for fused Atlas output). GB10-only kernel ⇒ MMA always live.
+        // AVAROK: direct MMA writer carries dst_t (float for llama path, bf16 for fused Avarok output). GB10-only kernel ⇒ MMA always live.
         mmq_write_back_mma<type, mmq_x, mmq_y, need_check, dst_t>(sum, ids_dst, dst, stride_col_dst, tile_x_max_i, tile_y_max_j);
     }
 }

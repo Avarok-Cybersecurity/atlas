@@ -49,7 +49,7 @@ pub fn exl3_moe_stage_ingress(
         .launch(stream)
 }
 
-/// Stage Atlas's `moe_sort_by_expert` outputs into the fused kernel's
+/// Stage Avarok's `moe_sort_by_expert` outputs into the fused kernel's
 /// LOCAL-expert-ordered forms (plain launch; kernel contract at its
 /// definition in `exl3_matmul.cu`).
 #[allow(clippy::too_many_arguments)]
@@ -89,5 +89,5 @@ pub fn exl3_moe_stage_sorted(
 /// Keep the prior two launches available for one-variable serving A/B runs.
 pub(super) fn fused_ingress_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var("ATLAS_NO_EXL3_FUSED_INGRESS").as_deref() != Ok("1"))
+    *ENABLED.get_or_init(|| std::env::var("AVAROK_NO_EXL3_FUSED_INGRESS").as_deref() != Ok("1"))
 }

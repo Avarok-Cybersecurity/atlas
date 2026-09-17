@@ -2,7 +2,7 @@
 //
 // Vendored from turboderp's ExLlamaV3 (https://github.com/turboderp-org/exllamav3)
 // Copyright (c) 2025 turboderp — MIT license.
-// Constants only: the DevCtx host singleton is replaced by the Atlas host side
+// Constants only: the DevCtx host singleton is replaced by the Avarok host side
 // (Rust allocates the lock buffer once per device, zeroed once — the kernels'
 // barrier/lock protocols self-reset). Snapshot original:
 // .research/exllamav3_ref/exl3_devctx.cuh.

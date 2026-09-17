@@ -16,7 +16,7 @@
 //!
 //! That is the rule, and not "this module is synchronous" — which is what it
 //! used to say, and which contradicted `tui/chat.rs` and
-//! `atlas-plugin/src/executor.rs`, both of which legitimately spawn tokio
+//! `avarok-plugin/src/executor.rs`, both of which legitimately spawn tokio
 //! tasks and answer over a `std::sync::mpsc`. Two documented contracts that
 //! disagree are worse than one that is merely narrow.
 //!
@@ -54,9 +54,20 @@ use super::fetch_github::{self, try_refresh};
 
 pub(super) const REPO: &str = "Avarok-Cybersecurity/atlas-recipes";
 pub(super) const CACHE: &str = "atlas-recipes";
+/// The cache directory this held before the AVAROK to AVAROK rename.
+///
+/// Every box that synced before the rename already has its index here, and
+/// reading only the new name would present a populated machine as an empty
+/// Library, which is the one symptom this module is built to never produce.
+/// Read, and written, only while the current directory does not exist.
+///
+/// REMOVAL: the same conditions as the env shim, see `avarok_core::env_compat`.
+/// Once no supported release writes this name, delete the constant and the
+/// branch in [`cache_dir`].
+pub(super) const LEGACY_CACHE: &str = "atlas-recipes";
 pub(super) const INDEX: &str = "index.json";
 /// GitHub rejects a request with no User-Agent.
-pub(super) const AGENT: &str = concat!("atlas-spark/", env!("CARGO_PKG_VERSION"));
+pub(super) const AGENT: &str = concat!("avarok-spark/", env!("CARGO_PKG_VERSION"));
 pub(super) const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What the Library renders: the recipes, and how fresh they are.
@@ -121,8 +132,10 @@ impl Index {
             || lowered.contains("no route")
         {
             "This machine has no route to github.com. Set HTTPS_PROXY to a host \
-             that does — recipes are then fetched through it — or copy \
-             ~/.atlas/atlas-recipes/index.json from a machine that can reach it."
+             that does — recipes are then fetched through it — or copy the \
+             cached index (~/.avarok/atlas-recipes/index.json, or \
+             ~/.avarok/atlas-recipes/index.json on a box that predates the \
+             rename) from a machine that can reach it."
         } else if lowered.contains("403") || lowered.contains("rate") {
             "GitHub is rate-limiting this IP. The listing costs one API call per \
              refresh; the cached recipes below are still usable."
@@ -143,8 +156,24 @@ pub(super) fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-pub(super) fn cache_dir(root: &Path) -> PathBuf {
-    root.join(CACHE)
+/// The recipe cache under `root`, which is the Avarok home.
+///
+/// `<root>/atlas-recipes` normally. A box that synced before the rename has
+/// its index under `<root>/atlas-recipes` instead, so that directory is
+/// returned while the current one does not exist yet. Reads and writes then
+/// both stay on the legacy path, which keeps one cache rather than splitting
+/// an index across two directories; the first sync after the operator renames
+/// the directory moves the whole thing over at once.
+///
+/// `pub(crate)` rather than `pub(super)` because the messages that tell an
+/// operator where the index lives are in `cli::`, and a hint naming a path the
+/// code does not read is worse than no hint.
+pub(crate) fn cache_dir(root: &Path) -> PathBuf {
+    let current = root.join(CACHE);
+    if !current.exists() && root.join(LEGACY_CACHE).is_dir() {
+        return root.join(LEGACY_CACHE);
+    }
+    current
 }
 
 /// Read whatever is cached. Never touches the network, so the Library can draw
@@ -158,7 +187,7 @@ pub fn cached(root: &Path) -> Index {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Index::default(),
         // Anything ELSE is a fact about this machine, not an empty index, and
         // collapsing the two is how a box spends an hour on the wrong problem.
-        // Measured case: `$HOME/.atlas` created by uid 1000 while the server
+        // Measured case: `$HOME/.avarok` created by uid 1000 while the server
         // runs as uid 996. The index was complete and unreadable; `cached`
         // answered "no recipes", and `bench_selfstart` therefore told the
         // operator to run `spark sync-recipes` to populate a file that was
@@ -296,7 +325,7 @@ pub fn updated_in_background(id: &str) -> std::sync::mpsc::Receiver<(String, Opt
     let owned = id.to_string();
     let fallback_id = id.to_string();
     crate::tui::worker::spawn(
-        "atlas-recipe-date",
+        "avarok-recipe-date",
         move || {
             let date = fetch_github::commit_date(&owned)
                 .map_err(|e| {

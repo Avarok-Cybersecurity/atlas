@@ -7,7 +7,7 @@
 //! prefix. For a request whose prompt is ENTIRELY cached (`matched == total`)
 //! that is the finish leaf saved at `total` — and `prefix_lookup.rs` declines
 //! it: the exact-leaf shortcut is bypassed by default (unsound by
-//! construction; `ATLAS_MARCONI_EXACT=1` re-enables it), and even when enabled
+//! construction; `AVAROK_MARCONI_EXACT=1` re-enables it), and even when enabled
 //! a hidden-less finish leaf cannot produce the first token's logits. The
 //! decline used to fall straight through to "no SSM snapshot — recomputing
 //! all KV": a full cold prefill (6-7 s at 3.3K on qwen4exp) while the
@@ -28,10 +28,10 @@ use spark_runtime::prefix_cache::PrefixMatch;
 
 use super::super::super::types::TransformerModel;
 
-/// `ATLAS_MARCONI_EXACT=1` re-enables the exact full-prompt leaf shortcut
+/// `AVAROK_MARCONI_EXACT=1` re-enables the exact full-prompt leaf shortcut
 /// (A/B only). Single reader shared with the restore site's `bypass_exact`.
 pub(super) fn marconi_exact_enabled() -> bool {
-    std::env::var("ATLAS_MARCONI_EXACT").as_deref() == Ok("1")
+    std::env::var("AVAROK_MARCONI_EXACT").as_deref() == Ok("1")
 }
 
 /// Pure decision: does the restore site DECLINE the anchor at `depth` as an
@@ -91,7 +91,7 @@ impl TransformerModel {
                 total,
                 session_hash,
                 adapter_id,
-                "bypassed by default; ATLAS_MARCONI_EXACT=1 re-enables",
+                "bypassed by default; AVAROK_MARCONI_EXACT=1 re-enables",
             )?;
         }
         let (eff_snapshot, eff_snapshot_tokens) =

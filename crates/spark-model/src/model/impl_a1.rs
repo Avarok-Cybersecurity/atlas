@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -28,16 +28,16 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 /// lm_head tile-GEMM decode path: **ON by default**, disabled by
-/// `ATLAS_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
+/// `AVAROK_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
 /// decides whether the transposed twin is built at all, so setting it later has
-/// no effect. Presence-style check (`ATLAS_*=0` is NOT "off").
+/// no effect. Presence-style check (`AVAROK_*=0` is NOT "off").
 ///
 /// Measured C=16: 113.10 -> 119.32 tok/s (+5.50%, disjoint ranges, 4 reps).
 /// `padded_n <= 4` is untouched and stays byte-identical, so C=1 is unaffected.
 /// The twin costs ~681 MB and leaves the KV pool at 4759 blocks vs 4757 without
 /// it — no measurable KV impact.
 fn lmhead_tgemm_enabled() -> bool {
-    std::env::var("ATLAS_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
+    std::env::var("AVAROK_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
 }
 
 impl TransformerModel {
@@ -99,14 +99,14 @@ impl TransformerModel {
         // present. lm_head launches 1938 CTAs and already sits at ~83% of
         // achievable, so the expected gain here is small; measured, not assumed.
         let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
-        // Lossless BF16-MMA sibling for lm_head, OPT-IN via ATLAS_LMHEAD_LOSSLESS=1.
+        // Lossless BF16-MMA sibling for lm_head, OPT-IN via AVAROK_LMHEAD_LOSSLESS=1.
         // Measured cost 1.81% at C=16 (129.68 -> 127.33). Default is the faster
         // FP8-activation path because the accuracy question it addresses CANNOT
         // BE MEASURED until vLLM parity lifts the BFCL embargo — and the 1.81%
         // is throughput needed to REACH parity. The risk is real but indirect:
         // the bf16-floor finding was superseded on the WEIGHT axis, and this is
         // the ACTIVATION axis, which was never examined. Re-decide at parity.
-        let w4a16_gemm_t_bf16_kernel = if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
+        let w4a16_gemm_t_bf16_kernel = if std::env::var("AVAROK_LMHEAD_LOSSLESS").is_ok() {
             crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
         } else {
             spark_runtime::gpu::KernelHandle(0)
@@ -143,7 +143,7 @@ impl TransformerModel {
         // does not carry `dense_gemm_m16_bf16.cu` (Hopper owns it) never looks
         // it up, and a 0 handle is exactly how `lm_head_m16_tc_route`
         // declines. Where the module is compiled, a handle is cheap and
-        // `ATLAS_LM_HEAD_M16_TC` decides whether it is ever launched.
+        // `AVAROK_LM_HEAD_M16_TC` decides whether it is ever launched.
         let lm_head_m16_tc_kernel = crate::layers::try_target_kernel(
             gpu.as_ref(),
             "dense_gemm_m16_bf16",
@@ -162,7 +162,7 @@ impl TransformerModel {
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
         let profile = config.profile;
-        let profile_first = std::env::var("ATLAS_PROFILE_FIRST").is_ok();
+        let profile_first = std::env::var("AVAROK_PROFILE_FIRST").is_ok();
 
         // Pin the split-K attention split count to the configured max batch so
         // a sequence's attention reduction is invariant to how many other
@@ -269,7 +269,7 @@ impl TransformerModel {
             dflash_kgamma
         } else {
             // NOT `num_drafts + 1`: a lookup-draft step (#1026) proposes at
-            // ATLAS_LOOKUP_WIDTH while the head keeps drafting `num_drafts`,
+            // AVAROK_LOOKUP_WIDTH while the head keeps drafting `num_drafts`,
             // and `verify_draft_capacity` (= this minus one) is what
             // `lookup_gate` clamps that proposal to. Sizing from the head
             // alone silently caps a width-7 lookup at the head's 2. SSOT with
@@ -303,7 +303,7 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
-        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // Fail fast if an SSM tier was requested (`AVAROK_SSM_TIER`) on a model
         // with no recurrent state — a tier request there was previously a
         // silent no-op. No-op when the tier is unset (default path).
         super::ssm_tier::ensure_ssm_tier_capability(&config)?;
@@ -339,17 +339,17 @@ impl TransformerModel {
         if let Some(reason) = ring.skip_reason {
             let per_seq = (ssm_pool.h_bytes + ssm_pool.conv_bytes)
                 * ssm_pool.num_ssm_layers
-                * atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+                * avarok_kernels::DECODE_ROLLBACK_RING_SLOTS;
             tracing::info!(
                 "SSM decode-rollback ring: SKIPPED ({}) — the ring's save/rollback \
                  path only runs on plain decode with watchdogs enabled. Saves {:.1} GB \
                  ({} seqs x {} slots x full SSM blob). If plain-decode loop re-steer is \
-                 ever reached it fail-opens to decline; ATLAS_SSM_DECODE_RING=1 \
+                 ever reached it fail-opens to decline; AVAROK_SSM_DECODE_RING=1 \
                  force-restores the ring.",
                 reason,
                 (per_seq * max_batch_size) as f64 / 1e9,
                 max_batch_size,
-                atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+                avarok_kernels::DECODE_ROLLBACK_RING_SLOTS,
             );
         }
         let decode_ring_slots = ring.slots;
@@ -367,7 +367,7 @@ impl TransformerModel {
             tracing::info!(
                 "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
                  = {:.0} MB freed for KV (restore with --enable-prefix-caching, or \
-                 ATLAS_SSM_MARCONI_FULL to allocate anyway)",
+                 AVAROK_SSM_MARCONI_FULL to allocate anyway)",
                 reason,
                 ssm_cache_slots,
                 ssm_pool.num_ssm_layers,
@@ -424,7 +424,7 @@ impl TransformerModel {
         // loads are aligned. The stride must be a multiple of 16; 128 also keeps
         // whole N-tiles. Without the pad, N = vocab = 248077 (ODD) misaligns 15 of
         // every 16 k-rows => the campaign's long-standing sticky CUDA 716.
-        // Default ON (kill: ATLAS_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
+        // Default ON (kill: AVAROK_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
         // reads 4759 blocks with the twin vs 4757 without. See STATE.md.
         let lm_head_nvfp4_t = match (&lm_head_nvfp4, lmhead_tgemm_enabled()) {
             (Some(w), true) => {
@@ -446,7 +446,7 @@ impl TransformerModel {
                     tracing::warn!(
                         "lm_head twin uses a PADDED stride ({} != vocab {}): this target's \
                          w4a16_gemm_t MUST accept the `ldb` argument, or decode at padded_n>=5 \
-                         will read sheared rows. Disable with ATLAS_NO_LMHEAD_TGEMM=1.",
+                         will read sheared rows. Disable with AVAROK_NO_LMHEAD_TGEMM=1.",
                         stride,
                         config.vocab_size
                     );
@@ -681,21 +681,21 @@ impl TransformerModel {
                     // Splits a prefill chunk into sub-chunks, and every sub-chunk issues its own
                     // `reduce_partial` at the attention site and the MLP site.
                     (
-                        "ATLAS_GLM_PREFILL_ROWS",
+                        "AVAROK_GLM_PREFILL_ROWS",
                         crate::layers::glm5next_layer::prefill_rows() as u64,
                     ),
                     // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
                     // here is still a confusing asymmetry and the check is free.
                     (
-                        "ATLAS_GLM_MOE_ROW_BATCH_MAX",
+                        "AVAROK_GLM_MOE_ROW_BATCH_MAX",
                         crate::layers::glm5next_mlp::forward::row_batch_max() as u64,
                     ),
                     // Documented as "both ranks must agree" in `model/types.rs` since it was
                     // introduced, and never checked.
                     (
-                        "ATLAS_EP_PROTOCOL(v2)",
+                        "AVAROK_EP_PROTOCOL(v2)",
                         u64::from(matches!(
-                            std::env::var("ATLAS_EP_PROTOCOL").as_deref(),
+                            std::env::var("AVAROK_EP_PROTOCOL").as_deref(),
                             Ok("v2")
                         )),
                     ),
@@ -792,7 +792,7 @@ impl TransformerModel {
         // 0.14-margin tiebreak as BF16. The drift is upstream in attention
         // or MLP, not in the lm_head precision boundary. Code paths kept
         // wired so a future bisection (Phase 2 of the plan) can re-enable
-        // via `ATLAS_GEMMA4_FP32_LMHEAD=1`. Keep `use_fp32_logits=false`
+        // via `AVAROK_GEMMA4_FP32_LMHEAD=1`. Keep `use_fp32_logits=false`
         // by default so the rest of the model behaves identically to the
         // pre-fix BF16 path on every model family.
         // FP32 lm_head + softcap. Default OFF — empirically the gain on
@@ -801,7 +801,7 @@ impl TransformerModel {
         // FP32 forces host-side sampling (vocab=262144 × 4 bytes per
         // decode step → ~1 MB D2H per token) which crushes decode TPS
         // from ~35 tok/s to ~6 tok/s on Gemma-4-31B. Not worth it without
-        // a GPU-side FP32 argmax kernel. `ATLAS_GEMMA4_FP32_LMHEAD=1`
+        // a GPU-side FP32 argmax kernel. `AVAROK_GEMMA4_FP32_LMHEAD=1`
         // re-enables for bisection / future work.
         //
         // The earlier "FP32 doesn't fix haiku" comment in this file was
@@ -811,7 +811,7 @@ impl TransformerModel {
         // bisection's *qualitative* conclusion: FP32 lm_head + softcap
         // doesn't materially fix Gemma-4's structural NVFP4 attention
         // drift on greedy code generation. Fix is upstream of lm_head.
-        // FP32 logits (ATLAS_GEMMA4_FP32_LMHEAD) required an FP32 residual
+        // FP32 logits (AVAROK_GEMMA4_FP32_LMHEAD) required an FP32 residual
         // stream as a precondition. With the residual stream now always BF16,
         // the FP32 logits path can never activate, so it is permanently off.
         let use_fp32_logits = false;
@@ -905,7 +905,7 @@ impl TransformerModel {
             lm_head_nvfp4_t,
             lm_head_fp8,
             // Installed post-construction by the factory (`set_lm_head_exl3`)
-            // when ATLAS_EXL3_NATIVE=1 kept the lm_head trellis packed.
+            // when AVAROK_EXL3_NATIVE=1 kept the lm_head trellis packed.
             lm_head_exl3: None,
             // ★ Before `layers` is moved: the veto is a fold over the layers
             // and must be computed while they are still nameable here.
@@ -948,11 +948,11 @@ impl TransformerModel {
             // naturally outside the captured region.
             suppress_graphs: std::sync::atomic::AtomicBool::new(
                 has_fp8_calibration
-                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
+                    || std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
                     // PCND diagnostic: force eager decode (no CUDA-graph capture)
-                    // so ATLAS_DEBUG_SYNC_KERNELS can synchronize per launch and
+                    // so AVAROK_DEBUG_SYNC_KERNELS can synchronize per launch and
                     // surface async faults at the culprit kernel. Default-off.
-                    || std::env::var("ATLAS_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
+                    || std::env::var("AVAROK_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
             ),
             ssm_pool,
             ssm_snapshots,
@@ -1010,7 +1010,7 @@ impl TransformerModel {
             snapshot_event,
             comm,
             ep_cmd_buf,
-            ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),
+            ep_protocol_v2: matches!(std::env::var("AVAROK_EP_PROTOCOL").as_deref(), Ok("v2")),
             self_speculative,
             last_mtp_hidden_idx: std::sync::atomic::AtomicUsize::new(0),
             vision_encoder,

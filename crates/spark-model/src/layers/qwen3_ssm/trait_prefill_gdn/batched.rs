@@ -42,7 +42,7 @@ impl Qwen3SsmLayer {
         let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
         let gb_stride = (nv * 2) as u32;
 
-        // ── Batched FLA scan (ATLAS_GDN_BATCHED_FLA) ──
+        // ── Batched FLA scan (AVAROK_GDN_BATCHED_FLA) ──
         // Route the co-dispatched GDN through the chunk-parallel FLA kernels at
         // batch=N instead of the occupancy-starved wy64 [nv,batch]. FLA's
         // chunk_delta_h grid is [nv,batch] too, but at batch=N gives 32N CTAs

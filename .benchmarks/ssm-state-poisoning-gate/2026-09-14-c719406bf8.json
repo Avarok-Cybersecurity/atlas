@@ -222,9 +222,9 @@
   "verdict_reason": "12 of 12 replays byte-identical to the reference",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · collapsed=0.00, invariant=12.00, jittered=0.00, min_cached_prompt_tokens=1008.00, rounds=12.00, sum_wall_s=52.18, tool_path_divergences=0.00, tool_paths=3.00, unmeasured=0.00 · Pass: 12 of 12 replays byte-identical to the reference",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

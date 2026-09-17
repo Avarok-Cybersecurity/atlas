@@ -179,7 +179,7 @@ fn a_padded_query_row_is_all_sentinel_and_fully_written() {
 }
 
 /// 🔴 Ties must resolve deterministically: score descending, then SMALLER pool index.
-/// `torch.topk`'s tie order is implementation-defined, so Atlas pins its own.
+/// `torch.topk`'s tie order is implementation-defined, so Avarok pins its own.
 #[test]
 fn ties_resolve_to_the_smaller_pool_index() {
     let scores = vec![1.0f32, 1.0, 1.0, 0.5];

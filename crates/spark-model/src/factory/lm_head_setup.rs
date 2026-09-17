@@ -8,7 +8,7 @@
 //! BF16. Returns `(lm_head_nvfp4, lm_head_fp8, mtp_lm_head_nvfp4)`.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -170,7 +170,7 @@ pub(super) fn setup_lm_heads(
 /// Checkpoints like unsloth/Qwen3.8-27B-NVFP4 ship `lm_head.weight` natively
 /// as FP8 E4M3 `[vocab, hidden]` with a per-row BF16 `weight_scale [vocab, 1]`.
 /// The store keeps those bytes resident for the whole model lifetime
-/// (`adopt_weight_store`), while `ATLAS_DFLASH_DRAFTER_FP8=1` used to build a
+/// (`adopt_weight_store`), while `AVAROK_DFLASH_DRAFTER_FP8=1` used to build a
 /// SECOND 1.27 GB FP8 copy by re-quantizing the dequantized BF16 head — a
 /// lossy FP8→BF16→FP8 round trip AND a duplicate allocation. This returns an
 /// `Fp8DenseWeight` viewing the checkpoint's own bytes (per-row scale

@@ -18,22 +18,22 @@
 //! experts, and even then top-10 routing over a short prompt touches a few
 //! dozen, not 512.
 //!
-//! Off unless `ATLAS_QWEN4EXP_DUMP` names a directory. Writes
+//! Off unless `AVAROK_QWEN4EXP_DUMP` names a directory. Writes
 //! `<dir>/L{layer:02}_{tag}.bin` as raw little-endian FP32, `[T, hc*H]`.
 
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
-/// Directory from `ATLAS_QWEN4EXP_DUMP`, resolved once.
+/// Directory from `AVAROK_QWEN4EXP_DUMP`, resolved once.
 fn dump_dir() -> Option<&'static str> {
     static DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let d = std::env::var("ATLAS_QWEN4EXP_DUMP")
+        let d = std::env::var("AVAROK_QWEN4EXP_DUMP")
             .ok()
             .filter(|s| !s.is_empty());
         if let Some(ref path) = d {
             let _ = std::fs::create_dir_all(path);
             tracing::warn!(
-                "ATLAS_QWEN4EXP_DUMP={path}: taping the mHC highway to disk. \
+                "AVAROK_QWEN4EXP_DUMP={path}: taping the mHC highway to disk. \
                  This SYNCHRONIZES and copies D2H at every tap — a debug aid, \
                  not a serving mode."
             );
@@ -70,7 +70,7 @@ fn claim(path: &str) -> bool {
 /// Tap the FP32 highway. No-op unless the dump directory is set.
 ///
 /// Synchronizes before reading, so it must never run inside CUDA-graph
-/// capture — which is already true of this model's path (`ATLAS_DEBUG_NO_GRAPH`).
+/// capture — which is already true of this model's path (`AVAROK_DEBUG_NO_GRAPH`).
 pub fn tap_highway(
     gpu: &dyn GpuBackend,
     streams: DevicePtr,

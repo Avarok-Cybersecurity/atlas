@@ -8,7 +8,7 @@
 //! format spec, not transcribed from the kernel's thread structure) — must
 //! agree BIT-FOR-BIT on random data across every (shape, K, codebook) leg,
 //! at BOTH stages: the raw f16 `[in, out]` reconstruction and the
-//! transposed BF16 `[out, in]` Atlas layout.
+//! transposed BF16 `[out, in]` Avarok layout.
 //!
 //! Plus one negative control per shape: a single flipped trellis bit MUST
 //! change the output (else this harness is vacuous).
@@ -22,13 +22,13 @@
 //! 2 kernels absent from this target's module set.
 //!
 //! Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.8-flash-next \
-//!   ATLAS_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.8-flash-next \
+//!   AVAROK_TARGET_QUANT=nvfp4 cargo run -p spark-model --release \
 //!     --features cuda,gpu-examples --example exl3_reconstruct_parity
 
 use anyhow::Result;
 use half::{bf16, f16};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::exl3::{
@@ -291,7 +291,7 @@ fn ngram_leg(g: &dyn GpuBackend, rng: &mut Lcg) -> Result<bool> {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     // Probe one kernel; absent = this target set doesn't carry the module.

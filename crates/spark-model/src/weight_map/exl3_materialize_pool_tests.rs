@@ -13,7 +13,7 @@ use super::*;
 /// it exactly once.
 #[test]
 fn pooled_quartet_materializes_without_interior_free() {
-    use atlas_core::scope::ModelResource;
+    use avarok_core::scope::ModelResource;
     use spark_runtime::weights::WeightArena;
     let gpu = MockGpuBackend::new();
     let p = "model.layers.0.mlp.experts.0.gate_proj";

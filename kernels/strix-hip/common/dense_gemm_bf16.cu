@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Dense GEMM kernel for SM121 (GB10).
+// Avarok Dense GEMM kernel for SM121 (GB10).
 //
 // C = A * B^T  where:
 //   A: [M, K] BF16 (activations, row-major)
@@ -76,7 +76,7 @@ extern "C" __global__ void dense_gemm_bf16(
 
 // FP32-output twin of dense_gemm_bf16 (see gb10 source for rationale): writes
 // the FP32 accumulator directly so the MoE router gate logits keep full
-// precision into top-K under ATLAS_FP32_GATE. Same scalar math as the BF16
+// precision into top-K under AVAROK_FP32_GATE. Same scalar math as the BF16
 // kernel above; only the store dtype differs. Inputs stay BF16.
 //
 // Grid: (ceil(N/TILE_N), ceil(M/TILE_M))   Block: (TILE_N, TILE_M)
@@ -122,7 +122,7 @@ extern "C" __global__ void dense_gemm_bf16_f32out(
 
 // FP32-input, FP32-output variant (see gb10 source): A = FP32 router_in from
 // residual_add_rms_norm_gatef32, B = BF16 gate weight, C = FP32 gate logits.
-// ATLAS_FP32_ROUTING path — unrounded gate logits so top-K doesn't flip on a
+// AVAROK_FP32_ROUTING path — unrounded gate logits so top-K doesn't flip on a
 // bf16 store. Same scalar math as dense_gemm_bf16_f32out; only A's dtype differs.
 //
 // Grid: (ceil(N/TILE_N), ceil(M/TILE_M))   Block: (TILE_N, TILE_M)

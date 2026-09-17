@@ -4,7 +4,7 @@
 # (sm_90a: H100/H200) and B200 (sm_100a: B200/GB200) — on a GPU-free hosted
 # runner, and upload it as an artifact.
 #
-# WHY. Renting an H100 by the hour and then compiling Atlas on it spends the
+# WHY. Renting an H100 by the hour and then compiling Avarok on it spends the
 # expensive resource on work that needs no GPU. `nvcc --ptx -arch=sm_90a` is a
 # cross-compile and the kernels travel as PTX embedded in the binary, so the
 # whole thing builds on `ubuntu-latest`. `kernel-compile.yml` already proves
@@ -42,13 +42,13 @@ on:
         default: "*"
   # Filtered, unlike kernel-compile.yml, precisely BECAUSE this is advisory:
   # a full release link of spark-server is far more expensive than that job's
-  # `cargo build -p atlas-kernels`, and nothing outside these trees can change
+  # `cargo build -p avarok-kernels`, and nothing outside these trees can change
   # what the datacentre binary contains.
   pull_request:
     paths:
       - 'kernels/hopper/**'
       - 'kernels/b200/**'
-      - 'crates/atlas-kernels/**'
+      - 'crates/avarok-kernels/**'
       - '.github/workflows/datacenter-binaries.yml'
 
 # A second push supersedes the first: this is a long job whose only outputs
@@ -163,7 +163,7 @@ jobs:
           set -euo pipefail
           apt-get update -qq
           # cmake + libclang: bindgen (xgrammar). libibverbs/librdmacm:
-          # atlas-rdma compiles src/rdma_shim.c against <infiniband/verbs.h> on
+          # avarok-rdma compiles src/rdma_shim.c against <infiniband/verbs.h> on
           # every non-macOS target. git: build scripts shell out to it.
           apt-get install -y -qq --no-install-recommends \
             curl ca-certificates build-essential pkg-config git cmake \
@@ -209,11 +209,11 @@ jobs:
 
       - name: Build spark for ${{ matrix.hw }}
         env:
-          # ★ ATLAS_SKIP_BUILD is NOT set. That is the whole point: the PTX
+          # ★ AVAROK_SKIP_BUILD is NOT set. That is the whole point: the PTX
           # for this arch has to be compiled into the binary.
-          ATLAS_TARGET_HW: ${{ matrix.hw }}
-          ATLAS_TARGET_MODEL: ${{ needs.plan.outputs.model }}
-          ATLAS_TARGET_QUANT: nvfp4
+          AVAROK_TARGET_HW: ${{ matrix.hw }}
+          AVAROK_TARGET_MODEL: ${{ needs.plan.outputs.model }}
+          AVAROK_TARGET_QUANT: nvfp4
           # The vendored cudarc tops out at 13.1 in its nvcc-version table and
           # panics on anything newer; every workflow here pins the same value.
           CUDARC_CUDA_VERSION: "13000"
@@ -236,7 +236,7 @@ jobs:
           # EXISTENCE of a real generated registry, not absence of a stub:
           # cargo keeps one out/ per build-script fingerprint and never prunes
           # the old ones, so "no stub present" fails on a tree that was ever
-          # built with ATLAS_SKIP_BUILD=1.
+          # built with AVAROK_SKIP_BUILD=1.
           real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
                    | grep -c 'do not edit' || true)
           if [ "${real:-0}" -eq 0 ]; then
@@ -285,7 +285,7 @@ jobs:
           mkdir -p dist
           cp "$bin" dist/spark
           {
-            echo "atlas spark — datacentre build"
+            echo "avarok spark — datacentre build"
             echo "git_sha:        ${{ github.sha }}"
             echo "git_ref:        ${{ github.ref }}"
             echo "built_by:       .github/workflows/datacenter-binaries.yml"

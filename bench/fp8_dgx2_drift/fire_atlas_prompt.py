@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fire the canonical 10382-token prompt at the dgx2 Atlas op-drift server
-to trigger ATLAS_OP_DUMP / ATLAS_GDN_DUMP / ATLAS_NEMO_DUMP.
+"""Fire the canonical 10382-token prompt at the dgx2 Avarok op-drift server
+to trigger AVAROK_OP_DUMP / AVAROK_GDN_DUMP / AVAROK_NEMO_DUMP.
 
-We send the *token IDs* directly via /v1/completions `prompt` field (Atlas
+We send the *token IDs* directly via /v1/completions `prompt` field (Avarok
 accepts both strings and integer arrays per OpenAI spec).
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ import time
 import requests
 
 TOKENS_PATH = pathlib.Path(
-    "/workspace/atlas-mtp/bench/fp8_dgx2_drift/atlas_tokens_dgx2.json"
+    "/workspace/avarok-mtp/bench/fp8_dgx2_drift/avarok_tokens_dgx2.json"
 )
 URL = "http://10.10.10.2:8888/v1/completions"
 MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"

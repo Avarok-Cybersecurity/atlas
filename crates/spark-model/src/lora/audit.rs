@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::weights::WeightStore;
 
 use super::*;
@@ -138,7 +138,7 @@ pub(crate) fn audit_adapter(
     }
 
     // Feature-1 router/expert audit: master gate + rank cap (flag-gated so an
-    // expert adapter is a NAMED reject unless ATLAS_LORA_EXPERTS=1) + shapes.
+    // expert adapter is a NAMED reject unless AVAROK_LORA_EXPERTS=1) + shapes.
     expert_pack::validate(cfg, peft, &router, &experts)?;
     if expert_pack::present(&router, &experts) {
         expert_pack::validate_shapes(adapter_store, cfg, peft, &router, &experts)?;
@@ -159,15 +159,15 @@ pub(crate) fn audit_adapter(
             || (last == "gate" && !router.is_empty())
             || experts.keys().any(|(_, _, p)| p.peft_name() == last);
         if !matched {
-            // Under ATLAS_LORA_ALLOW_PARTIAL the user has already been warned,
+            // Under AVAROK_LORA_ALLOW_PARTIAL the user has already been warned,
             // by name, that these modules are skipped; `validate_peft_config`
             // is the gate that decides. Bailing again here would make the
-            // opt-in unusable, since a module Atlas cannot apply is by
+            // opt-in unusable, since a module Avarok cannot apply is by
             // definition a module that matches no pair.
             if super::env::allow_partial_targets() {
                 tracing::warn!(
                     "LoRA PARTIAL LOAD: target_modules entry '{t}' matched no \
-                     adapter tensor Atlas can place — skipped."
+                     adapter tensor Avarok can place — skipped."
                 );
                 continue;
             }

@@ -3,7 +3,7 @@
 //! mHC on the GDN layer.
 //!
 //! Qwen3.8-Flash-Next carries a `hc_mult`-wide residual highway on ALL 48
-//! layers, 36 of which are GDN. DeepSeek-V4 — the model Atlas built mHC for —
+//! layers, 36 of which are GDN. DeepSeek-V4 — the model Avarok built mHC for —
 //! is all-attention, so `Qwen3SsmLayer` never needed to know about it.
 //!
 //! The forward paths live in `trait_prefill_hc.rs` and `trait_decode_hc.rs`;

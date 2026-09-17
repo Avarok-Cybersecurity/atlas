@@ -46,7 +46,7 @@ pub fn step_verify_dflash(
     tokens.push(a.last_token);
     tokens.extend_from_slice(drafts);
 
-    // STEP-TIMING (ATLAS_DFLASH_STEP_TIMING=1): split the ~0.88s/step into
+    // STEP-TIMING (AVAROK_DFLASH_STEP_TIMING=1): split the ~0.88s/step into
     // verify (target M=1+γ forward) vs propose (drafter forward, tail below).
     // The ledger never had this split — it guessed "FFN + double sweep". This
     // measures it. Gated so the hot path pays nothing when the env is unset.
@@ -106,7 +106,7 @@ pub fn step_verify_dflash(
         }
     }
 
-    // Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): feed the rolling
+    // Adaptive speculation (AVAROK_DFLASH_ADAPTIVE=1): feed the rolling
     // accept window; may suspend this seq's speculation (see adaptive_spec).
     crate::scheduler::adaptive_spec::record_verify(a, num_accepted, sched);
 
@@ -129,12 +129,12 @@ pub fn step_verify_dflash(
         }
     }
 
-    // EAGLE-fix (ATLAS_DFLASH_EAGLE_FIX=1): append one ctx slot per committed
+    // EAGLE-fix (AVAROK_DFLASH_EAGLE_FIX=1): append one ctx slot per committed
     // position (rows 0..=num_accepted at N..=N+num_accepted), with the bonus
     // generator (row num_accepted) freshest. Fixes the ctx-undercount (was 1
     // slot/step regardless of num_accepted) and the EAGLE conditioning shift.
     // Sets skip_next_decode_append so the propose below does NOT re-append row 0.
-    // Unified ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1): ONE unconditional
+    // Unified ctx commit (AVAROK_DFLASH_UNIFIED_CTX=1): ONE unconditional
     // commit at the K=gamma point — rows 0..=num_accepted at RoPE base
     // pre_verify_len. Structural replacement for dflash_eagle_kgamma_append.
     tracing::debug!(

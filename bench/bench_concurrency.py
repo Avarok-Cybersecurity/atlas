@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bench_concurrency.py — Atlas Spark concurrency + latency benchmark.
+bench_concurrency.py — Avarok Spark concurrency + latency benchmark.
 
 Fires concurrent streaming requests and measures per-request and aggregate
 metrics across ISL / concurrency sweeps.
@@ -32,7 +32,7 @@ TTFT measurement notes (session-scoped SSM snapshots, 2026-03-27):
   text between warmup and timed runs.
 
   See the quick-speed-bench module docs
-  (crates/atlas-plugin/src/benchmarks/quick_speed.rs) for the full explanation
+  (crates/avarok-plugin/src/benchmarks/quick_speed.rs) for the full explanation
   of the session isolation mechanism and its impact on TTFT.
 
 Usage:
@@ -359,7 +359,7 @@ def main() -> None:
         print(f"ERROR: server not reachable at {args.url}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print("Atlas Spark — Concurrency Benchmark")
+    print("Avarok Spark — Concurrency Benchmark")
     print(f"  Model  : {args.model}")
     print(f"  URL    : {args.url}")
     print(f"  OSL    : {args.osl} max output tokens per request")

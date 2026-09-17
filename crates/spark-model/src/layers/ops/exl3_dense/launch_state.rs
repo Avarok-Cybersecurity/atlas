@@ -13,7 +13,7 @@
 //!  * Cooperative launches need full co-residency; a persistent MoE kernel
 //!    holding most SMs while a cooperative dense GEMM waits for the rest (or
 //!    the reverse) is the deadlock class the MoE milestone hit in serving.
-//!  * Atlas runs prefill and decode on DIFFERENT CUDA streams, overlapping
+//!  * Avarok runs prefill and decode on DIFFERENT CUDA streams, overlapping
 //!    at C >= 2, and Q12 cache co-dispatch runs two prefills from two host
 //!    threads. Host-side ordering alone therefore proves nothing about
 //!    device-side ordering.
@@ -149,7 +149,7 @@ impl Exl3LaunchState {
     /// WEAKLY here: every strong holder (MoE state, dense stage, LM head)
     /// belongs to one model, so when that model is dropped the state dies
     /// with it and the next model builds a fresh one against its own
-    /// backend — no stale locks buffer survives a hot-swap. Atlas serves one
+    /// backend — no stale locks buffer survives a hot-swap. Avarok serves one
     /// model per process/GPU, which is what makes a process-wide anchor the
     /// right scope: the loader (layers) and the factory (LM head) build
     /// their pieces in different places and must agree on ONE section

@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use atlas_plugin::{
+use avarok_plugin::{
     BenchmarkResult, Cell, CellStyle, Column, LogLevel, LogLine, ResultTable, RunRecord, RunSource,
     Stat, Verdict, VerdictKind,
 };
@@ -118,11 +118,11 @@ fn a_measurement_that_gated_nothing_is_never_rendered_as_a_pass() {
 
 #[test]
 fn the_origin_badge_reserves_brand_green_for_first_party_benchmarks() {
-    let official = atlas_plugin::PluginMetadata {
+    let official = avarok_plugin::PluginMetadata {
         official: true,
         ..*crate::tui::render::tests::app().bench.plugin_metadata()
     };
-    let community = atlas_plugin::PluginMetadata {
+    let community = avarok_plugin::PluginMetadata {
         official: false,
         ..official
     };
@@ -334,7 +334,7 @@ fn every_benchmarks_pane_survives_narrow_and_short_terminals() {
 /// computed an offset.
 #[test]
 fn the_suite_list_scrolls_the_selection_into_view() {
-    let all = atlas_plugin::registry::all();
+    let all = avarok_plugin::registry::all();
     assert!(
         all.len() > 4,
         "only meaningful once the suite outgrows one 80x24 screen"

@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate::{self, signing};
+use avarok_plugin::gate::{self, signing};
 
 use super::atlasctl::FetchedFile;
 
@@ -27,6 +27,10 @@ pub struct Placed {
 /// What a placed record must satisfy.
 pub struct Expect<'a> {
     pub unit_id: &'a str,
+    /// The slice the record must say it measured; `None` for a whole draw.
+    pub shard: Option<(usize, usize)>,
+    /// The log's name under the campaign dir (`<id>-s<i>of<n>`).
+    pub log_stem: &'a str,
     pub anchor: &'a str,
     pub hardware: &'a str,
 }
@@ -117,6 +121,13 @@ pub fn place(
             expect.unit_id
         );
     }
+    if parsed.shard() != expect.shard {
+        bail!(
+            "the fetched record measured shard {}, this unit is {}",
+            spell_shard(parsed.shard()),
+            spell_shard(expect.shard)
+        );
+    }
     if !(parsed.git_sha.starts_with(expect.anchor) || expect.anchor.starts_with(&parsed.git_sha)) {
         bail!(
             "the fetched record names commit {}, not the anchor {}",
@@ -160,7 +171,7 @@ pub fn place(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| format!("{}.log", expect.unit_id));
-            let to = log_dir.join(format!("{}.remote.{name}", expect.unit_id));
+            let to = log_dir.join(format!("{}.remote.{name}", expect.log_stem));
             match std::fs::copy(&l.path, &to) {
                 Ok(_) => Some(to),
                 Err(_) => None,
@@ -173,6 +184,10 @@ pub fn place(
         signature: sig_to,
         log: log_to,
     })
+}
+
+fn spell_shard(s: Option<(usize, usize)>) -> String {
+    s.map_or("the whole draw".to_string(), |(i, n)| format!("{i}/{n}"))
 }
 
 #[cfg(test)]

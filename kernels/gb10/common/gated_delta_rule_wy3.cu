@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K=3 verification (2-pass).
+// Avarok WY-Chunkwise Gated Delta Rule — K=3 verification (2-pass).
 //
 // Computes all 3 H^T @ k_t dot products in a single pass over H, applies
 // WY algebraic correction using 3 k_dot scalars, then applies all 3 state
@@ -12,7 +12,7 @@
 #include "gdn_reduce.cuh"
 #define BLOCK_SIZE 128
 
-// Reduction primitives (atlas_block_reduce_sum) from gdn_reduce.cuh match
+// Reduction primitives (avarok_block_reduce_sum) from gdn_reduce.cuh match
 // the per-token baseline bit-exactly.
 
 extern "C" __global__ void gated_delta_rule_wy3(
@@ -94,19 +94,19 @@ extern "C" __global__ void gated_delta_rule_wy3(
     // ── Compute 3 k_dot products via block reduction ──
     {
         float p = (tid<k_dim) ? sk1[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd10 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd20 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk1[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd21 = r;
     }
     __syncthreads();

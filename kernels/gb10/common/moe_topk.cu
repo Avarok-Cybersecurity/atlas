@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas MoE Top-K Softmax kernel for SM121 (GB10).
+// Avarok MoE Top-K Softmax kernel for SM121 (GB10).
 //
 // GPU-side replacement for CPU top-K routing.
 // Eliminates D2H copy of gate logits + CPU sort + CPU softmax.
@@ -180,7 +180,7 @@ extern "C" __global__ void moe_topk_softmax(
 // FP32-input variant of moe_topk_softmax (single token).
 //
 // Identical algorithm to moe_topk_softmax, but reads gate_logits as f32
-// instead of BF16. Used by the ATLAS_FP32_GATE routing path: the router GEMM
+// instead of BF16. Used by the AVAROK_FP32_GATE routing path: the router GEMM
 // keeps its FP32 accumulator (no BF16 store), so two experts whose logits
 // differ by less than a BF16 ULP no longer flip top-K selection. The bf16
 // entry point above is left byte-identical so the NVIDIA codegen is unchanged.
@@ -452,7 +452,7 @@ __device__ __forceinline__ void moe_topk_softmax_batched_core(
 // WHY AN F32 ARM EXISTS. The logits are the input to a DISCRETE top-k, so the
 // selected experts can only change if a perturbation exceeds the gap between
 // the k-th and (k+1)-th logit. Measured on qwen3.8-flash-next at 8K
-// (ATLAS_MOE_ROUTER_MARGIN=1): with BF16 logits, 23-48% of tokens have an
+// (AVAROK_MOE_ROUTER_MARGIN=1): with BF16 logits, 23-48% of tokens have an
 // EXACT TIE at that boundary and the mean gap is ~1 ULP, so for about a third
 // of tokens the routing is decided by the sort's tie-break rather than by the
 // model. An 8-bit mantissa cannot separate 512 experts landing in a narrow

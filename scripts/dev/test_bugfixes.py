@@ -492,7 +492,7 @@ class BugfixTester:
     # ── Runner ──
 
     def run_all(self):
-        print("Atlas Spark — Bugfix Verification Suite")
+        print("Avarok Spark — Bugfix Verification Suite")
         print(f"  Model : {self.model}")
         print(f"  URL   : {self.url}")
 

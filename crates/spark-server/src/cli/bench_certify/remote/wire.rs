@@ -159,7 +159,7 @@ pub struct NodeInfo {
     #[serde(default)]
     pub atlas_repo: Option<RepoInfo>,
     #[serde(default)]
-    pub atlas_home: Option<String>,
+    pub avarok_home: Option<String>,
     #[serde(default)]
     pub signer_fp: Option<String>,
     #[serde(default)]
@@ -199,6 +199,8 @@ pub struct SubmitSpec {
     pub job_key: String,
     pub sha: String,
     pub gate: String,
+    /// `k=v` pairs the node passes on as `--param`; a shard's `shard=i/n`.
+    pub params: Vec<String>,
     pub hardware: String,
     pub max_run_s: Option<u32>,
     pub note: String,

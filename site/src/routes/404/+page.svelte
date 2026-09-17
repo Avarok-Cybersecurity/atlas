@@ -16,7 +16,7 @@
 </script>
 
 <svelte:head>
-  <title>Not found — Atlas</title>
+  <title>Not found — Avarok</title>
   <meta name="robots" content="noindex" />
   <!-- `noindex` keeps the page out of results; it does not excuse it from a
        description. Lighthouse audits the tag's presence, not indexability, so
@@ -24,7 +24,7 @@
        passes — the same reasoning as the blog's 404. -->
   <meta
     name="description"
-    content="That page is not here. Atlas is a pure-Rust inference engine for DGX Spark and Strix Halo; the front page has the install command and the benchmarks."
+    content="That page is not here. Avarok is a pure-Rust inference engine for DGX Spark and Strix Halo; the front page has the install command and the benchmarks."
   />
 </svelte:head>
 

@@ -158,7 +158,7 @@ pub(super) fn parse_header(file: &mut File) -> Result<Vec<TensorMeta>> {
         // Shared with the RDMA manifest builder: a reversed or past-EOF
         // `data_offsets` pair is rejected here rather than wrapping into a
         // `u64::MAX`-ish `len` that becomes a pread window below.
-        let span = atlas_core::safetensors::tensor_span(
+        let span = avarok_core::safetensors::tensor_span(
             name,
             &info["data_offsets"],
             data_start,

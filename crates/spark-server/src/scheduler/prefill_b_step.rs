@@ -274,7 +274,7 @@ pub fn prefill_request(
         // P1-4 (2026-07-09): thread the resolved `min_p` (request +
         // MODEL.toml floor via sampling_setup) — the first-token sample
         // previously ran with a hardcoded 0.0 min_p, bypassing the FP8
-        // argmax-flip safety net. Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // argmax-flip safety net. Kill-switch: AVAROK_NO_MTP_MINP=1.
         sample_first_token(
             model,
             logits,

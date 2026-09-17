@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W8A16 GEMV Fused, HOPPER-TUNED — dual projection + SiLU-input
+// Avarok W8A16 GEMV Fused, HOPPER-TUNED — dual projection + SiLU-input
 // variants (FP8 E4M3), for M=1 decode (#928).
 //
 // The H100/H200 override of `kernels/gb10/common/w8a16_gemv_fused.cu`. Both

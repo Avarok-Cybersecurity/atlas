@@ -1,5 +1,5 @@
 /**
- * Atlas chevron field — raw WebGL2, no dependencies.
+ * Avarok chevron field — raw WebGL2, no dependencies.
  *
  * Renders one fullscreen triangle with one fragment shader. That is the
  * entire scene, which is why it needs no scene graph, no camera, no
@@ -26,7 +26,7 @@ void main(){
 
 // Only the two numbers that are properties of the RENDERER have defaults here.
 // The five colours deliberately do not: they are design tokens, they live in
-// web-shared/atlas-tokens.css, and a copy of them in this file is a second
+// web-shared/avarok-tokens.css, and a copy of them in this file is a second
 // source of truth that goes stale silently — the canvas paints its own ground,
 // so a drifted value shows up as a seam between the canvas and the page rather
 // than as an error. The caller reads them from the cascade and passes them in.
@@ -265,6 +265,19 @@ export function createChevronField(canvas, fragmentSource, opts = {}) {
   return {
     setScroll(v) { scroll = v; if (!running()) draw(); },
     setDensity(v) { density = v; if (!running()) draw(); },
+    setTokens(next = {}) {
+      if (dead || !prog) return;
+      for (const k of REQUIRED_COLORS) {
+        if (next[k] != null && !HEX.test(next[k])) return;
+      }
+      gl.useProgram(prog);
+      if (next.c1) gl.uniform3fv(uniforms.u_c1, rgb(next.c1));
+      if (next.c2) gl.uniform3fv(uniforms.u_c2, rgb(next.c2));
+      if (next.c3u) gl.uniform3fv(uniforms.u_c3u, rgb(next.c3u));
+      if (next.c3l) gl.uniform3fv(uniforms.u_c3l, rgb(next.c3l));
+      if (next.ground) gl.uniform3fv(uniforms.u_ground, rgb(next.ground));
+      if (!running()) draw();
+    },
     get running() { return !!raf; },
 
     /** Draw a single frame at an explicit time. Used for the frozen

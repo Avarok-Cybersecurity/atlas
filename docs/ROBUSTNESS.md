@@ -361,7 +361,7 @@ the system prompt told to treat anything inside as data. Remove the fence and a
 PR title becomes an instruction — and the guard now notices.
 
 **Still open.** The bot's state-comment editing — finding its own comment by the
-`<!-- atlas-certification-state:… -->` marker and PATCHing it in place — has no
+`<!-- avarok-certification-state:… -->` marker and PATCHing it in place — has no
 coverage. That is the last uncovered path.
 
 ---
@@ -379,7 +379,7 @@ was tested. This was the last uncovered path.
 
 **Two hollow assertions, both mine, both found by the checks disagreeing.**
 
-*One.* `certed()` grepped the recorded calls for `atlas-certificate`. The
+*One.* `certed()` grepped the recorded calls for `avarok-certificate`. The
 idempotency **query** contains that literal string inside its `--jq` filter, so
 the helper matched the *lookup* and reported a certificate that was never
 posted. It could not distinguish "asked whether one exists" from "posted one".
@@ -1476,8 +1476,8 @@ an arm is sharding:
 | arm | setting | whole vs its own 4 shards |
 |---|---|---|
 | baseline | shipped | **12 disagree** |
-| tail split off (`ATLAS_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
-| Marconi restore off (`ATLAS_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
+| tail split off (`AVAROK_NO_TAIL_SPLIT=1`) | snapshot *producer* | 4 |
+| Marconi restore off (`AVAROK_MARCONI_MIN_TOKENS=1e8`) | snapshot *consumer* | **2** |
 
 The cause is cross-request **SSM snapshot reuse**. A snapshot saved by one
 request enters a shared, globally evicted pool (128 slots / 19392 MB on GB10);
@@ -1504,7 +1504,7 @@ an ordering effect, not run-to-run noise.
 `total = tokens.len()`, `cut` derives from `(total, block_size)`, and
 `chunk_start` walks a fixed stride from 0, so the split *condition* is
 deterministic on `(tokens, config)`. Sub-block prefix matching: with
-`ATLAS_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
+`AVAROK_PREFIX_SUBBLOCK=0` — lever verified armed in `/proc/PID/environ` — the
 output was byte-identical to baseline, 0 of 251 samples moved.
 
 **Neither lever is a fix.** `NO_TAIL_SPLIT` changes 8.2% of all answers (61 of
@@ -1518,7 +1518,7 @@ arm rather than assumed.
 statement before they were caught.**
 
 1. **An A/B on a lever that was never armed.** `mtp_carry_drafter_enabled` is
-   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `ATLAS_MTP_MAX_SEQS`
+   `levers.drafter.carry && !mtp_multi_seq_mode()`, and `AVAROK_MTP_MAX_SEQS`
    defaults to **32**, so the cross-turn carry is force-disabled on any serve
    that does not set it to 1 — while the startup line printed `carry=ON
    (default)`, because it reported the two env vars and never consulted the

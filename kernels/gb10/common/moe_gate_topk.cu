@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Fused Gate Logit GEMV + Top-K Selection + Softmax.
+// Avarok Fused Gate Logit GEMV + Top-K Selection + Softmax.
 //
 // Replaces 2 separate kernels (gate GEMV + topk) with 1 fused kernel.
 // Eliminates 48 kernel launches per decode step (one per MoE layer).
@@ -30,7 +30,7 @@ __device__ __constant__ float E2M1_LUT_GATE[16] = {
 // is NON-STANDARD (same bug fixed in moe_sorted_prefill.cu / the decode GEMVs) —
 // software scl_fp8 there; NVIDIA path is the verbatim cast.
 #if defined(__SCALE__) || defined(__HIP_PLATFORM_AMD__)
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     unsigned int s = (b >> 7) & 1u, e = (b >> 3) & 0xFu, m = b & 0x7u; float v;
     if (e == 0u)               v = (float)m * 0.001953125f;
     else if (e == 15u && m == 7u) v = 0.0f;
@@ -38,7 +38,7 @@ __device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
     return s ? -v : v;
 }
 #else
-__device__ __forceinline__ float atlas_dec_e4m3(unsigned char b) {
+__device__ __forceinline__ float avarok_dec_e4m3(unsigned char b) {
     __nv_fp8_e4m3 f; *(unsigned char*)&f = b; return (float)f;
 }
 #endif
@@ -92,7 +92,7 @@ extern "C" __global__ void moe_gate_topk_fused(
             unsigned int packed4 = *(const unsigned int*)(B_packed + (unsigned long long)tid * half_K + k8 * 4);
             unsigned int sg = (k8 * 8) / GROUP_SIZE;
             unsigned char sb = B_scale[(unsigned long long)tid * num_groups + sg];
-            float sc = atlas_dec_e4m3(sb) * scale2;
+            float sc = avarok_dec_e4m3(sb) * scale2;
 
             #pragma unroll
             for (int b = 0; b < 4; b++) {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! FP16 h-state storage for the GDN decode scan (`ATLAS_SSM_H_FP16`).
+//! FP16 h-state storage for the GDN decode scan (`AVAROK_SSM_H_FP16`).
 //!
 //! The decode scan is pure state traffic — it moves 2.0 DRAM passes over h and
 //! already runs at 90% of GB10's row-strided ceiling — so its time is set by
@@ -50,7 +50,7 @@ use crate::layer::{ForwardContext, SsmLayerState};
 pub(super) fn require_h_f16(state: &SsmLayerState) -> Result<()> {
     if !state.h_is_f16 {
         bail!(
-            "ATLAS_SSM_H_FP16: decode reached an SSM layer whose h-state is still FP32. \
+            "AVAROK_SSM_H_FP16: decode reached an SSM layer whose h-state is still FP32. \
              `ssm_h_to_f16_dispatch` must run at the top of every decode entry point, \
              OUTSIDE the CUDA-graph region."
         );

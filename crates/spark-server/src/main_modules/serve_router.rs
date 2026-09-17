@@ -106,16 +106,17 @@ pub(crate) async fn build_and_serve(
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
         .route("/hardware", get(api::hardware))
+        .route("/serve-config", get(api::serve_config))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))
         // Body size limit. Default 32 MB covers typical multi-image and
-        // long-prompt requests; raise via `ATLAS_MAX_BODY_BYTES` (in
+        // long-prompt requests; raise via `AVAROK_MAX_BODY_BYTES` (in
         // bytes) for unusual deployments. Lowering it protects against
         // DoS attempts that send oversized payloads to burn CPU on JSON
         // parsing + tokenization before the model even sees them.
         .layer(axum::extract::DefaultBodyLimit::max(
-            std::env::var("ATLAS_MAX_BODY_BYTES")
+            std::env::var("AVAROK_MAX_BODY_BYTES")
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
@@ -148,7 +149,7 @@ pub(crate) async fn build_and_serve(
     let addr = format!("{bind}:{port}");
     if bind == "0.0.0.0" {
         tracing::warn!(
-            "Atlas is listening on {addr} — reachable from any host on the network. \
+            "Avarok is listening on {addr} — reachable from any host on the network. \
              If this machine is on a shared LAN or has a public IP, pass \
              --bind 127.0.0.1 (or set --require-auth and a real firewall) before \
              accepting traffic."

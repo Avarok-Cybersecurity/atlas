@@ -39,7 +39,7 @@ pub fn random_bf16(n: usize, rng: &mut ChaCha8Rng) -> Vec<bf16> {
 }
 
 pub fn tempdir(name: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("atlas-storage-e2e-{name}-{}", std::process::id()));
+    let p = std::env::temp_dir().join(format!("avarok-storage-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p

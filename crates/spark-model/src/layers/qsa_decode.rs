@@ -14,7 +14,7 @@
 //!
 //! * **device** (default): `qsa_topk_rows` -> `qsa_expand_sel`. No host
 //!   transfer at all.
-//! * **host** (`ATLAS_QSA_HOST_TOPK=1`, the same A/B switch the prefill path
+//! * **host** (`AVAROK_QSA_HOST_TOPK=1`, the same A/B switch the prefill path
 //!   uses): D2H every score, sort on the CPU, H2D the expansion. The D2H is
 //!   `copy_d2h_on_stream`, i.e. a full stream drain, and it ran ONCE PER QSA
 //!   LAYER PER SEQUENCE PER STEP — 12 full-attention layers times C
@@ -42,12 +42,13 @@ impl QsaIndexer {
 
     /// Is the device selection path armed?
     ///
-    /// Kill switch: `ATLAS_QSA_HOST_TOPK=1` forces the host path. This is the
+    /// Kill switch: `AVAROK_QSA_HOST_TOPK=1` forces the host path. This is the
     /// switch #820 introduced for the prefill device top-k; decode obeys the
     /// same one rather than adding a second knob for the same decision.
     fn decode_device_select(&self) -> bool {
         static HOST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let host = *HOST.get_or_init(|| std::env::var("ATLAS_QSA_HOST_TOPK").as_deref() == Ok("1"));
+        let host =
+            *HOST.get_or_init(|| std::env::var("AVAROK_QSA_HOST_TOPK").as_deref() == Ok("1"));
         !host && self.k_topk_rows_k.0 != 0 && self.k_expand_sel_k.0 != 0
     }
 
@@ -130,7 +131,7 @@ impl QsaIndexer {
         Ok(n_sel)
     }
 
-    /// Host path (`ATLAS_QSA_HOST_TOPK=1`): the original implementation, kept
+    /// Host path (`AVAROK_QSA_HOST_TOPK=1`): the original implementation, kept
     /// verbatim as the A/B reference the parity probe compares against.
     pub(super) fn decode_build_sel_host(
         &self,

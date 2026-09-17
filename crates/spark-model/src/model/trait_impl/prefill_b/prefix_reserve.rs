@@ -27,7 +27,7 @@ impl TransformerModel {
         // is not safe inside this transactional admission.
         if self.multi_rank_protocol_active() {
             tracing::info!(
-                target: "atlas::q12",
+                target: "avarok::q12",
                 "batched prefix reservation declined: multi-rank world needs \
                  the EP min-reduction — falling back to per-stream"
             );
@@ -41,7 +41,7 @@ impl TransformerModel {
                 || seq.collect_prompt_logprobs.is_some()
             {
                 tracing::info!(
-                    target: "atlas::q12",
+                    target: "avarok::q12",
                     "batched prefix reservation declined: vision pads or \
                      prompt-logprob collection — falling back to per-stream"
                 );
@@ -72,7 +72,7 @@ impl TransformerModel {
             self.config.num_ssm_layers() != 0,
         ) {
             tracing::info!(
-                target: "atlas::q12",
+                target: "avarok::q12",
                 "batched prefix reservation declined: hybrid-SSM model with a \
                  warm prefix match — falling back to per-stream"
             );
@@ -82,7 +82,7 @@ impl TransformerModel {
 
         if !super::batch_kernel::cache_batch_matches_compatible(&matches, streams[0].chunk_len) {
             tracing::info!(
-                target: "atlas::q12",
+                target: "avarok::q12",
                 "batched prefix reservation declined: prefix matches not \
                  batch-compatible — falling back to per-stream"
             );

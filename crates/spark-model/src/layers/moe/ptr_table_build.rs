@@ -113,7 +113,7 @@ pub(crate) fn build_bf16_ptr_table(
 }
 
 /// Build the DENSE local EXL3 pointer table for one projection
-/// (`ATLAS_EXL3_NATIVE_MOE=1`).
+/// (`AVAROK_EXL3_NATIVE_MOE=1`).
 ///
 /// `experts` is GLOBAL-indexed (`len == num_experts`); `None` marks a remote
 /// expert under EP. The `Some` entries MUST form one contiguous run — the
@@ -250,7 +250,7 @@ impl Exl3MoeState {
         // Prefill-tier sizing: token-batch cap (env-overridable), fused
         // temp-slab count C = sm/8 (the kernel's max concurrency), fixed
         // overflow chunk.
-        let pf_t_cap = std::env::var("ATLAS_EXL3_MOE_PREFILL_BATCH_TOKENS")
+        let pf_t_cap = std::env::var("AVAROK_EXL3_MOE_PREFILL_BATCH_TOKENS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v >= 1)
@@ -258,8 +258,8 @@ impl Exl3MoeState {
         let pf_concurrency = (sm_count as usize / 8).clamp(1, 64);
         let pf_e_cap = num_experts; // >= any EP-local width
         // Fused-kernel per-expert row cap = temp-slab height (default 1024;
-        // `ATLAS_EXL3_MOE_ROWS_PER_EXPERT` / kill switch
-        // `ATLAS_NO_EXL3_MOE_WIDE_ROWS` -> legacy 128), clamped loudly to the
+        // `AVAROK_EXL3_MOE_ROWS_PER_EXPERT` / kill switch
+        // `AVAROK_NO_EXL3_MOE_WIDE_ROWS` -> legacy 128), clamped loudly to the
         // batch cap and the kernel's 32-bit slab-index bound — arithmetic and
         // rationale in `ops/exl3_matmul/moe_prefill_cap.rs`.
         let row_cap = crate::layers::ops::exl3_moe_row_cap_from_env(

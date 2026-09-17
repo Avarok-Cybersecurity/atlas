@@ -16,37 +16,42 @@
  */
 export const cleanSlug = (s) => s.replace(/\.html$/, '');
 
-export const SITE = 'https://blog.atlasinference.io';
-export const MAIN_SITE = 'https://atlasinference.io';
-export const DOCS_SITE = 'https://docs.atlasinference.io';
-export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
+export const SITE = 'https://blog.atlascybernetics.ai';
+export const MAIN_SITE = 'https://atlascybernetics.ai';
+export const DOCS_SITE = 'https://docs.atlascybernetics.ai';
+export const githubUrl = 'https://github.com/Avarok-Cybersecurity/avarok';
 // Must match site/src/lib/data.js. An invite code is not derivable from
 // anything, so a wrong one is a dead link that looks entirely plausible.
 export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const xUrl = 'https://x.com/AtlasInferenceX';
 
 export const blog = {
-  name: 'Atlas blog',
-  kicker: 'blog.atlasinference.io',
+  name: 'Avarok blog',
+  kicker: 'blog.atlascybernetics.ai',
   title: 'Notes from the inference layer',
   lede:
     'Kernel work, measured benchmarks, and what it takes to run frontier models on hardware you own. ' +
     'Everything we publish is reproducible from a commit.',
   description:
-    'Engineering notes from the Atlas inference engine: CUDA kernels, quantisation, ' +
+    'Engineering notes from the Avarok inference engine: CUDA kernels, quantisation, ' +
     'speculative decoding, and benchmarks you can reproduce.'
 };
 
 /**
- * The four chevron colours carry fixed meanings on atlasinference.io — violet
+ * The four chevron colours carry fixed meanings on atlascybernetics.ai — violet
  * = engine, cyan = silicon, green = verified, gold = community. Categories
  * inherit those meanings rather than inventing a fifth palette.
+ *
+ * Two fields, one meaning: `color` is the mark's own hue and belongs on fills,
+ * rules and chevron strokes; `textColor` is the same hue darkened in the light
+ * theme so a category name set as small text clears WCAG AA on paper. In the
+ * dark theme the two resolve to the same value.
  */
 export const tags = {
-  engineering: { name: 'Engineering', color: 'var(--ch-cyan)', blurb: 'Kernels, memory, and the parts of the engine that decide the number.' },
-  benchmarks: { name: 'Benchmarks', color: 'var(--ch-gold)', blurb: 'What we measured, on what hardware, with the harness attached.' },
-  releases: { name: 'Releases', color: 'var(--ch-green)', blurb: 'What shipped, what it changes, and what it does not.' },
-  design: { name: 'Design', color: 'var(--ch-violet)', blurb: 'The interface and the brand, measured the same way the engine is.' }
+  engineering: { name: 'Engineering', color: 'var(--ch-cyan)', textColor: 'var(--ch-cyan-text)', blurb: 'Kernels, memory, and the parts of the engine that decide the number.' },
+  benchmarks: { name: 'Benchmarks', color: 'var(--ch-gold)', textColor: 'var(--ch-gold-text)', blurb: 'What we measured, on what hardware, with the harness attached.' },
+  releases: { name: 'Releases', color: 'var(--ch-green)', textColor: 'var(--ch-green-text)', blurb: 'What shipped, what it changes, and what it does not.' },
+  design: { name: 'Design', color: 'var(--ch-violet)', textColor: 'var(--ch-violet-text)', blurb: 'The interface and the brand, measured the same way the engine is.' }
 };
 
 export const authors = {
@@ -54,18 +59,18 @@ export const authors = {
     name: 'Thomas Braun',
     initials: 'TB',
     role: 'Founder, Avarok Cybersecurity',
-    bio: 'Works on the Atlas inference engine — kernels, scheduling, and the benchmarks that decide whether any of it was worth it.'
+    bio: 'Works on the Avarok inference engine — kernels, scheduling, and the benchmarks that decide whether any of it was worth it.'
   },
   'ronald-stesiak': {
     name: 'Ronald R. Stesiak',
     initials: 'RS',
-    role: 'Founding Engineer, Atlas',
-    bio: 'Tunes Atlas for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
+    role: 'Founding Engineer, Avarok',
+    bio: 'Tunes Avarok for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
   },
   'alexi-derkatsch': {
     name: 'Alexi Derkatsch',
     initials: 'AD',
-    role: 'Systems Engineer, Atlas',
+    role: 'Systems Engineer, Avarok',
     bio: 'Works the information path between the engine and the firms that will run it.'
   }
 };
@@ -88,12 +93,12 @@ export const footerCols = [
     ]
   },
   {
-    heading: 'Atlas',
+    heading: 'Avarok',
     links: [
-      { text: 'atlasinference.io', href: MAIN_SITE },
+      { text: 'atlascybernetics.ai', href: MAIN_SITE },
       { text: 'Documentation', href: DOCS_SITE },
-      { text: 'Benchmarks', href: `${MAIN_SITE}/#verified` },
-      { text: 'Download', href: `${MAIN_SITE}/#run` }
+      { text: 'Benchmarks', href: `${MAIN_SITE}/engine#verified` },
+      { text: 'Download', href: `${MAIN_SITE}/engine#run` }
     ]
   },
   {

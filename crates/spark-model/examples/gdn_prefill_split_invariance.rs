@@ -27,7 +27,7 @@
 
 use anyhow::Result;
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 const NK: usize = 16;
@@ -247,7 +247,7 @@ fn main() -> Result<()> {
     let gate: Vec<f32> = (0..seq * NV).map(|_| rng.uniform(0.88, 0.97)).collect();
     let beta: Vec<f32> = (0..seq * NV).map(|_| rng.uniform(0.0, 0.5)).collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

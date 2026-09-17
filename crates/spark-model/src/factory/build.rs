@@ -4,7 +4,7 @@
 //! buffers, KV cache, and (optional) DFlash drafter into a `TransformerModel`.
 
 use anyhow::{Context as _, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype, PagedKvCache};
@@ -71,7 +71,7 @@ pub fn build_model(
 ) -> Result<Box<dyn Model>> {
     let requested_spec = config.model_type == "qwen4_exp"
         && use_speculative
-        && std::env::var("ATLAS_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
+        && std::env::var("AVAROK_QWEN4EXP_MTP_VERIFY").as_deref() == Ok("1");
     mtp_validation::validate_qwen_mtp_verify(
         requested_spec,
         requested_spec
@@ -155,7 +155,7 @@ pub fn build_model(
     // capture-layer indices from the drafter's `dflash_config.target_layer_ids`
     // so `TransformerModel::new` allocates the 5×hidden_size capture buffer.
     //
-    // The drafter's `target_layer_ids` are used DIRECTLY as Atlas capture
+    // The drafter's `target_layer_ids` are used DIRECTLY as Avarok capture
     // indices. An earlier implementation subtracted 1 from each id on HF
     // `output_hidden_states` reasoning; measurement on the z-lab drafters
     // shows that adjustment feeds the drafter hidden states one layer early
@@ -260,7 +260,7 @@ pub fn build_model(
     let final_norm = loader.load_final_norm(&store, &config, gpu.as_ref())?;
     mem.mark("load_final_norm");
 
-    // ── Step 2b: native EXL3 lm_head (ATLAS_EXL3_NATIVE=1) ──
+    // ── Step 2b: native EXL3 lm_head (AVAROK_EXL3_NATIVE=1) ──
     // When the materialization pass kept `lm_head` packed (see
     // `exl3_native_serves` / `exl3_native_supported` — the SAME predicates
     // re-derived here), resolve the trellis weight now and skip
@@ -287,14 +287,14 @@ pub fn build_model(
         // tail — all None/NULL on the native path.
         anyhow::ensure!(
             dflash_args.is_none(),
-            "ATLAS_EXL3_NATIVE=1 is incompatible with --dflash (the drafter \
+            "AVAROK_EXL3_NATIVE=1 is incompatible with --dflash (the drafter \
              tail needs a materialized lm_head); unset one of the two"
         );
         // The LoRA tied-lm_head logic (impl_lora.rs) reads `lm_head_weight`
         // directly; adapters cannot fold into a packed trellis head.
         anyhow::ensure!(
             lora_weights.is_none(),
-            "ATLAS_EXL3_NATIVE=1 is incompatible with --lora-adapter (LoRA \
+            "AVAROK_EXL3_NATIVE=1 is incompatible with --lora-adapter (LoRA \
              reads the dense lm_head); unset one of the two"
         );
         Some(w)
@@ -392,7 +392,7 @@ pub fn build_model(
     // qwen4_exp ships a Track-B MTP block too (mHC + QSA + its own 512-expert
     // MoE), so `load_mtp_weights` returns None and the real loader is
     // `qwen4_exp::load_qwen4_exp_mtp_module`. Loaded under `--speculative` OR
-    // ATLAS_QWEN4EXP_MTP=1 — the latter loads and audits the block without
+    // AVAROK_QWEN4EXP_MTP=1 — the latter loads and audits the block without
     // arming anything, which is the only way to measure its cost today.
     // EVERY rank, since 43f82882d: the draft MoE is loaded with
     // `force_all_experts = true` and so is REPLICATED per rank rather than
@@ -415,7 +415,7 @@ pub fn build_model(
     // is the real precondition, and it stays correct however the flags drift.
     let mtp_tensors_present = store.contains("mtp.fc_embedding.weight");
     let qwen4_exp_mtp_module = if config.model_type == "qwen4_exp"
-        && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
+        && (use_speculative || std::env::var("AVAROK_QWEN4EXP_MTP").as_deref() == Ok("1"))
         && mtp_tensors_present
     {
         // The MTP drafter is REPLICATED across TP ranks — it is small, and
@@ -468,7 +468,7 @@ pub fn build_model(
                 if use_speculative {
                     anyhow::bail!(
                         "qwen4_exp MTP module load FAILED and speculation was requested \
-                         (--speculative / ATLAS_QWEN4EXP_MTP_VERIFY): {e:#}. Refusing to \
+                         (--speculative / AVAROK_QWEN4EXP_MTP_VERIFY): {e:#}. Refusing to \
                          boot into a silently non-speculative server. Unset the \
                          speculation flags to serve without MTP deliberately."
                     );
@@ -479,7 +479,7 @@ pub fn build_model(
         }
     } else {
         if config.model_type == "qwen4_exp"
-            && (use_speculative || std::env::var("ATLAS_QWEN4EXP_MTP").as_deref() == Ok("1"))
+            && (use_speculative || std::env::var("AVAROK_QWEN4EXP_MTP").as_deref() == Ok("1"))
             && config.ep_rank == 0
             && !mtp_tensors_present
         {
@@ -489,7 +489,7 @@ pub fn build_model(
             tracing::info!(
                 "qwen4_exp: MTP module requested but no `mtp.*` tensors are \
                  resident — they were filtered at upload. Pass --speculative \
-                 or ATLAS_QWEN4EXP_MTP=1 so the upload keeps them."
+                 or AVAROK_QWEN4EXP_MTP=1 so the upload keeps them."
             );
         }
         None
@@ -502,7 +502,7 @@ pub fn build_model(
         if qwen4_exp_mtp_module.is_some() {
             // Saying "no MTP weights were loaded" here would be a lie: the
             // block IS loaded and audited. Whether a proposer gets wired
-            // depends on ATLAS_QWEN4EXP_MTP_VERIFY, so test THAT — via the
+            // depends on AVAROK_QWEN4EXP_MTP_VERIFY, so test THAT — via the
             // same `requested_spec` the arming path uses — instead of firing
             // on `mtp_weights.is_empty()`, which is ALWAYS true here because
             // qwen4_exp carries its own module rather than the generic weight
@@ -514,7 +514,7 @@ pub fn build_model(
                 tracing::warn!(
                     "qwen4_exp: the MTP module is loaded and audited, but the \
                      proposer is NOT armed — speculative decoding stays OFF. Set \
-                     ATLAS_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
+                     AVAROK_QWEN4EXP_MTP_VERIFY=1 to arm the draft head together \
                      with the mHC K-row verify path it needs; the two arm together \
                      because a proposer without that verify path routes the draft \
                      into `refuse_batched_under_hc` mid-step, which the scheduler \
@@ -525,7 +525,7 @@ pub fn build_model(
                 // itself turns out to be unprojectable.
                 tracing::info!(
                     "qwen4_exp: MTP module loaded and audited, speculation requested \
-                     and ATLAS_QWEN4EXP_MTP_VERIFY=1 — arming the draft head."
+                     and AVAROK_QWEN4EXP_MTP_VERIFY=1 — arming the draft head."
                 );
             }
         } else if glm_mtp_module.is_none() && v4_mtp_module.is_none() {
@@ -540,7 +540,7 @@ pub fn build_model(
             // binding path has to be consulted — which is why qwen4_exp is the
             // `if` arm and glm/v4 are guarded here — and when none of them
             // bound anything the checkpoint still has to be asked whether it
-            // SHIPS an MTP head: "Atlas can't read this layout" and "there is
+            // SHIPS an MTP head: "Avarok can't read this layout" and "there is
             // no head here" are different faults wanting different messages.
             match crate::mtp_layout::detect_in_store(&store, &config) {
                 None => tracing::warn!(
@@ -551,7 +551,7 @@ pub fn build_model(
                 Some(layout) => tracing::error!(
                     "`--speculative` was requested and this checkpoint DOES ship MTP weights \
                      ({layout:?}), but no loader bound them for model_type '{}' — speculative \
-                     decoding will be disabled. This is an Atlas capability gap, not a \
+                     decoding will be disabled. This is an Avarok capability gap, not a \
                      checkpoint problem.",
                     config.model_type,
                 ),
@@ -735,7 +735,7 @@ pub fn build_model(
     // co-tenants against our --gpu-memory-utilization budget, so a low util
     // needlessly starves the KV pool (vs vLLM, whose util is self-relative).
     //
-    // We want the KV pool sized against Atlas's OWN footprint (weights +
+    // We want the KV pool sized against Avarok's OWN footprint (weights +
     // buffers), excluding co-tenants. Two ways to find that footprint:
     //
     //   1. AUTO via LEDGER (default, preferred): the alloc ledger's live
@@ -743,7 +743,7 @@ pub fn build_model(
     //      (issue #740). The former free-memory delta (baseline-at-init
     //      minus free-now) counted OS page cache against us on unified
     //      memory: streaming ~20 GB of safetensors depresses MemFree
-    //      without being an allocation Atlas owns, inflating "Atlas-own"
+    //      without being an allocation Avarok owns, inflating "Avarok-own"
     //      by tens of GB on a cold-cache boot and refusing serves with
     //      >100 GB actually available. The ledger is immune to page-cache
     //      noise, co-tenant churn, and mid-load sampling by construction.
@@ -756,14 +756,14 @@ pub fn build_model(
     //      `set_baseline_free_bytes` to have run (it does under the real
     //      server; absent under the mock backend → we skip it).
     //
-    //   3. MANUAL override: ATLAS_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
+    //   3. MANUAL override: AVAROK_KV_EXTERNAL_RESERVE_GB=<co-tenant GB> still
     //      wins when explicitly set (>0), for operators who want to RESERVE
     //      headroom for co-tenants that will arrive LATER (the auto measures
     //      only see current state).
     //
     // The `.min(actual_free - reserve)` clamp below still guarantees a physical
     // fit regardless of which path set `used_so_far`.
-    let manual_reserve_gb = std::env::var("ATLAS_KV_EXTERNAL_RESERVE_GB")
+    let manual_reserve_gb = std::env::var("AVAROK_KV_EXTERNAL_RESERVE_GB")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|&gb| gb > 0.0);
@@ -771,9 +771,9 @@ pub fn build_model(
         let ext = (gb * 1024.0 * 1024.0 * 1024.0) as usize;
         let discounted = used_so_far.saturating_sub(ext);
         tracing::info!(
-            "ATLAS_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
+            "AVAROK_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
              external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
-             Atlas-own {:.1} GB",
+             Avarok-own {:.1} GB",
             gib(used_so_far),
             gib(discounted),
         );
@@ -786,9 +786,9 @@ pub fn build_model(
         // disagree — fall through to raw rather than oversize the pool.
         if ledger_live > 0 && ledger_live <= used_so_far {
             tracing::info!(
-                "KV budget self-relative (ledger): Atlas-own {:.1} GB live in \
+                "KV budget self-relative (ledger): Avarok-own {:.1} GB live in \
                  the alloc ledger; {:.1} GB of co-tenant/page-cache use \
-                 excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                 excluded (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(ledger_live),
                 gib(used_so_far - ledger_live),
             );
@@ -844,7 +844,7 @@ pub fn build_model(
         }
     } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
         // AUTO: bytes this process consumed since context init.
-        let atlas_own = baseline.saturating_sub(actual_free);
+        let avarok_own = baseline.saturating_sub(actual_free);
         // The free-delta above charges the weight loader's TRANSIENT
         // footprint — checkpoint mapping/staging still resident at this
         // instant — as if it were permanent. On a 27B NVFP4 load the delta
@@ -866,7 +866,7 @@ pub fn build_model(
             .map(|e| e.saturating_sub(actual_free))
             .unwrap_or(0);
         let known_own = store.total_bytes().saturating_add(build_own);
-        let settled = atlas_own.min(known_own);
+        let settled = avarok_own.min(known_own);
         // Sanity-gate: baseline must be ≥ free-now, the charge positive and
         // no larger than total used (co-tenants can't be negative). If a
         // co-tenant *freed* memory during our load, baseline > free-now
@@ -876,18 +876,18 @@ pub fn build_model(
         if settled > 0 && settled <= used_so_far {
             tracing::info!(
                 "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
-                 {:.1} GB = {:.1} GB measured; charging settled Atlas-own {:.1} GB \
+                 {:.1} GB = {:.1} GB measured; charging settled Avarok-own {:.1} GB \
                  (weights {:.1} GB + build allocs {:.1} GB, loader transient \
                  {:.1} GB released from the charge); co-tenants {:.1} GB excluded \
-                 (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
+                 (set AVAROK_KV_EXTERNAL_RESERVE_GB to override)",
                 gib(baseline),
                 gib(actual_free),
-                gib(atlas_own),
+                gib(avarok_own),
                 gib(settled),
                 gib(store.total_bytes()),
                 gib(build_own),
-                gib(atlas_own.saturating_sub(settled)),
-                gib(used_so_far - atlas_own.min(used_so_far)),
+                gib(avarok_own.saturating_sub(settled)),
+                gib(used_so_far - avarok_own.min(used_so_far)),
             );
             used_so_far = settled;
         } else {
@@ -921,7 +921,7 @@ pub fn build_model(
             // FP8 drafter weights are default-ON, so `.is_some()` made the
             // KV budget under-reserve by the mirror size on the default path.
             let fp8_mirrors =
-                if std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
+                if std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0") {
                     a.drafter_store.total_bytes() / 2
                 } else {
                     0
@@ -1068,9 +1068,9 @@ pub fn build_model(
             // above: one spare block per sequence plus the dummy slot the
             // OOB-safe paged kernels read.
             //
-            // Kill switch: `ATLAS_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
+            // Kill switch: `AVAROK_KV_POOL_UNCLAMPED` (presence — `=0` is NOT
             // "off") restores the budget-driven pool.
-            let n = if prefix_cache.is_active() || std::env::var("ATLAS_KV_POOL_UNCLAMPED").is_ok()
+            let n = if prefix_cache.is_active() || std::env::var("AVAROK_KV_POOL_UNCLAMPED").is_ok()
             {
                 budget_blocks
             } else {
@@ -1087,7 +1087,7 @@ pub fn build_model(
                          ({} seq x {} blocks/seq + {} spare + 1 dummy); \
                          {:.2} GB not allocated (prefix caching inactive, so surplus \
                          blocks are unreachable). Restore with --enable-prefix-caching \
-                         or ATLAS_KV_POOL_UNCLAMPED.",
+                         or AVAROK_KV_POOL_UNCLAMPED.",
                         budget_blocks,
                         clamped,
                         max_batch_size,
@@ -1138,11 +1138,11 @@ pub fn build_model(
         // record for the native bs=32 rung) downgrades the hard error to a
         // warning: the scheduler admits up to max_batch_size and the pool fills on
         // demand (a genuinely over-long burst gets back-pressured by the block
-        // allocator, not a boot-time refusal). Kill switch: ATLAS_KV_OVERCOMMIT=0
+        // allocator, not a boot-time refusal). Kill switch: AVAROK_KV_OVERCOMMIT=0
         // (or =false) restores the boot-time hard refusal. Value is parsed, not
         // presence-checked.
         let overcommit = !matches!(
-            std::env::var("ATLAS_KV_OVERCOMMIT").as_deref(),
+            std::env::var("AVAROK_KV_OVERCOMMIT").as_deref(),
             Ok("0") | Ok("false")
         );
         if overcommit {
@@ -1163,7 +1163,7 @@ pub fn build_model(
                  but --max-batch-size={} was requested. \
                  KV pool has {} block(s) of {} tokens each; each sequence needs {} block(s). \
                  Try --max-seq-len {} (keeps max_batch_size={}), reduce --max-batch-size, \
-                 or unset ATLAS_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
+                 or unset AVAROK_KV_OVERCOMMIT=0 to allow on-demand paged allocation (default).",
                 max_concurrent,
                 max_seq_len,
                 max_batch_size,
@@ -1299,11 +1299,11 @@ pub fn build_model(
     if let Some(module) = qwen4_exp_mtp_module {
         // SHADOW MODE builds the draft head, which consumes the module and
         // allocates its own single-layer KV pool. Off by default: without
-        // ATLAS_QWEN4EXP_MTP_SHADOW the module is just held (unchanged
+        // AVAROK_QWEN4EXP_MTP_SHADOW the module is just held (unchanged
         // behaviour), because the head's pool is real memory outside the util
         // pledge and nothing should pay for it unless it is being measured.
         // Speculation needs the head installed as the ACTIVE proposer; shadow
-        // needs it held but inert. `ATLAS_QWEN4EXP_MTP_VERIFY=1` is the same
+        // needs it held but inert. `AVAROK_QWEN4EXP_MTP_VERIFY=1` is the same
         // flag the mHC K-row verify path is gated on, so the two arm together
         // or not at all — a proposer without that verify path would produce
         // drafts the verify step then refuses on, mid-request.
@@ -1318,7 +1318,7 @@ pub fn build_model(
         let arm_spec = requested_spec && model.qwen4_exp_mtp_draft_head_available();
         if requested_spec && !arm_spec {
             tracing::warn!(
-                "qwen4_exp MTP: speculation was requested (--speculative +                  ATLAS_QWEN4EXP_MTP_VERIFY=1) but the model exposes NO vocab head                  the draft can project through (no NVFP4 head, and no native EXL3                  trellis head) — the proposer is NOT armed and decoding stays                  SERIAL. Arming anyway would fail every propose, once per decode                  step."
+                "qwen4_exp MTP: speculation was requested (--speculative +                  AVAROK_QWEN4EXP_MTP_VERIFY=1) but the model exposes NO vocab head                  the draft can project through (no NVFP4 head, and no native EXL3                  trellis head) — the proposer is NOT armed and decoding stays                  SERIAL. Arming anyway would fail every propose, once per decode                  step."
             );
         }
         if crate::layers::qwen4_exp_mtp::shadow_enabled() || arm_spec {

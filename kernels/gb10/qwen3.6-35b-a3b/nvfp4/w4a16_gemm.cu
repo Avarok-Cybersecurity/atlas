@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM — 35B model shadow.
+// Avarok W4A16 GEMM — 35B model shadow.
 //
 // Optimizations:
 // - w4a16_gemm_t: cp.async 2-stage double-buffered pipeline (overlaps next tile
@@ -49,14 +49,14 @@ __device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
 // the NVIDIA codegen is byte-identical (zero NVFP4/FP8 regression). SCALE
 // defines __SCALE__ (not __HIP_PLATFORM_AMD__) in the device pass.
 // PTX `cvt.e4m3x2.f32 d,a,b`: d hi-byte = e4m3(a), lo-byte = e4m3(b).
-__device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float b_lo) {
+__device__ __forceinline__ unsigned short avarok_cvt_e4m3x2_f32(float a_hi, float b_lo) {
 #if defined(__SCALE__)
     unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
     unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
     return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
 #elif defined(__HIP_PLATFORM_AMD__)
     // gfx1151 has no e4m3x2.f32 PTX; same software bit-math as SCALE / the
-    // port's strix-hip-real atlas_cvt_e4m3x2_f32 (numerically exact SATFINITE E4M3).
+    // port's strix-hip-real avarok_cvt_e4m3x2_f32 (numerically exact SATFINITE E4M3).
     unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
     unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
     return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
@@ -85,19 +85,19 @@ __device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float
 // bodies below also is not hipcc-compilable. This whole .cu therefore HIP-compiles
 // only via the strix-hip-real WMMA rewrite (symlinked in the follow-up stage),
 // NOT through this shared gb10 source. The HIP-portable helper above
-// (atlas_cvt_e4m3x2_f32) IS guarded, since elementwise kernels that use it
+// (avarok_cvt_e4m3x2_f32) IS guarded, since elementwise kernels that use it
 // (predequant_nvfp4_to_fp8, bf16_to_fp8) have no mma.sync/cp.async.
 #if defined(__SCALE__)
-__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) {
+__device__ __forceinline__ float avarok_e4m3_to_f32(unsigned char b) {
     return scl_fp8(b);  // standard E4M3, matches quantizer (SCALE __NV_E4M3 is non-standard)
 }
-__device__ __forceinline__ unsigned atlas_bf2(float lo, float hi) {
+__device__ __forceinline__ unsigned avarok_bf2(float lo, float hi) {
     unsigned short l = __bfloat16_as_ushort(__float2bfloat16(lo));
     unsigned short h = __bfloat16_as_ushort(__float2bfloat16(hi));
     return ((unsigned)h << 16) | l;
 }
 #endif
-__device__ __forceinline__ void atlas_mma_e4m3(float* acc,
+__device__ __forceinline__ void avarok_mma_e4m3(float* acc,
     unsigned a0, unsigned a1, unsigned a2, unsigned a3,
     unsigned b0, unsigned b1) {
 #if defined(__SCALE__)
@@ -105,17 +105,17 @@ __device__ __forceinline__ void atlas_mma_e4m3(float* acc,
     #pragma unroll
     for (int half = 0; half < 2; half++) {
         unsigned A_g = half ? a2 : a0, A_g8 = half ? a3 : a1, B_g = half ? b1 : b0;
-        #define ATLAS_GA(reg, j) atlas_e4m3_to_f32((unsigned char)( \
+        #define AVAROK_GA(reg, j) avarok_e4m3_to_f32((unsigned char)( \
             __shfl_sync(0xffffffffu, (reg), base + ((unsigned)(j) >> 2)) \
             >> (8 * ((j) & 3))))
         int j0 = 2 * (int)tig, j1 = 8 + 2 * (int)tig;
-        unsigned A0 = atlas_bf2(ATLAS_GA(A_g, j0),  ATLAS_GA(A_g, j0 + 1));
-        unsigned A1 = atlas_bf2(ATLAS_GA(A_g8, j0), ATLAS_GA(A_g8, j0 + 1));
-        unsigned A2 = atlas_bf2(ATLAS_GA(A_g, j1),  ATLAS_GA(A_g, j1 + 1));
-        unsigned A3 = atlas_bf2(ATLAS_GA(A_g8, j1), ATLAS_GA(A_g8, j1 + 1));
-        unsigned B0 = atlas_bf2(ATLAS_GA(B_g, j0),  ATLAS_GA(B_g, j0 + 1));
-        unsigned B1 = atlas_bf2(ATLAS_GA(B_g, j1),  ATLAS_GA(B_g, j1 + 1));
-        #undef ATLAS_GA
+        unsigned A0 = avarok_bf2(AVAROK_GA(A_g, j0),  AVAROK_GA(A_g, j0 + 1));
+        unsigned A1 = avarok_bf2(AVAROK_GA(A_g8, j0), AVAROK_GA(A_g8, j0 + 1));
+        unsigned A2 = avarok_bf2(AVAROK_GA(A_g, j1),  AVAROK_GA(A_g, j1 + 1));
+        unsigned A3 = avarok_bf2(AVAROK_GA(A_g8, j1), AVAROK_GA(A_g8, j1 + 1));
+        unsigned B0 = avarok_bf2(AVAROK_GA(B_g, j0),  AVAROK_GA(B_g, j0 + 1));
+        unsigned B1 = avarok_bf2(AVAROK_GA(B_g, j1),  AVAROK_GA(B_g, j1 + 1));
+        #undef AVAROK_GA
         asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
             "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};"
             : "=f"(acc[0]), "=f"(acc[1]), "=f"(acc[2]), "=f"(acc[3])
@@ -321,8 +321,8 @@ __device__ __forceinline__ unsigned int bf16x4_to_e4m3x4(const unsigned short* s
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f2) : "h"(bf2));
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f3) : "h"(bf3));
     unsigned short h0, h1;
-    h0 = atlas_cvt_e4m3x2_f32(f1, f0);
-    h1 = atlas_cvt_e4m3x2_f32(f3, f2);
+    h0 = avarok_cvt_e4m3x2_f32(f1, f0);
+    h1 = avarok_cvt_e4m3x2_f32(f3, f2);
     return ((unsigned int)h1 << 16) | (unsigned int)h0;
 }
 
@@ -630,7 +630,7 @@ extern "C" __global__ void fp8_gemm_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -708,7 +708,7 @@ extern "C" __global__ void predequant_nvfp4_to_fp8(
     float val_hi = E2M1_LUT[packed >> 4] * sv;
 
     unsigned short fp8_pair;
-    fp8_pair = atlas_cvt_e4m3x2_f32(val_hi, val_lo);
+    fp8_pair = avarok_cvt_e4m3x2_f32(val_hi, val_lo);
 
     *(unsigned short*)&B_fp8[(unsigned long long)n * K + k_even] = fp8_pair;
 }
@@ -734,7 +734,7 @@ extern "C" __global__ void bf16_to_fp8(
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f0) : "h"(bf0));
     asm volatile("cvt.f32.bf16 %0, %1;" : "=f"(f1) : "h"(bf1));
     unsigned short fp8_pair;
-    fp8_pair = atlas_cvt_e4m3x2_f32(f1, f0);
+    fp8_pair = avarok_cvt_e4m3x2_f32(f1, f0);
     *(unsigned short*)&dst[idx] = fp8_pair;
 }
 
@@ -811,7 +811,7 @@ extern "C" __global__ void fp8_fp8_gemm_t(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -956,7 +956,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv0; \
             float hi = smem_LUT_k64[packed >> 4] * sv0; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -965,7 +965,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv1; \
             float hi = smem_LUT_k64[packed >> 4] * sv1; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -974,7 +974,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv2; \
             float hi = smem_LUT_k64[packed >> 4] * sv2; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
         _Pragma("unroll") \
@@ -983,7 +983,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             float lo = smem_LUT_k64[packed & 0xF] * sv3; \
             float hi = smem_LUT_k64[packed >> 4] * sv3; \
             unsigned short fp8_pair; \
-            fp8_pair = atlas_cvt_e4m3x2_f32(hi, lo); \
+            fp8_pair = avarok_cvt_e4m3x2_f32(hi, lo); \
             *(unsigned short*)&smem_B_fp8_k64[my_n][kp * 2] = fp8_pair; \
         } \
     } while(0)
@@ -1053,7 +1053,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0,a1,a2,a3, b0, b1); \
         } \
         unsigned int a4 = bf16x4_to_e4m3x4(&sA[fr0 * ast64 + 32 + tid * 4]); \
         unsigned int a5 = bf16x4_to_e4m3x4(&sA[fr1 * ast64 + 32 + tid * 4]); \
@@ -1064,7 +1064,7 @@ extern "C" __global__ void w4a16_gemm_t_k64(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B_fp8_k64[nc][32 + 4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B_fp8_k64[nc][48 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a4,a5,a6,a7, b0, b1); \
         } \
     } while(0)
 
@@ -1458,7 +1458,7 @@ void fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
         } \
         /* Chunk 1: smem rows 64..127 */ \
         fr0 = M_TILE + warp_m_offset + group_id; \
@@ -1472,7 +1472,7 @@ void fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 
@@ -1601,7 +1601,7 @@ void fp8_fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc0[nt], a0,a1,a2,a3, b0, b1); \
         } \
         /* Chunk 1: smem rows 64..127 */ \
         fr0 = M_TILE + warp_m_offset + group_id; \
@@ -1615,7 +1615,7 @@ void fp8_fp8_gemm_t_m128(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_Bf[(b_buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
+            avarok_mma_e4m3(acc1[nt], a0,a1,a2,a3, b0, b1); \
         } \
     } while(0)
 

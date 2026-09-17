@@ -1,5 +1,5 @@
 // Per-head in-place transpose of the GDN recurrent state's last two dims.
-// FlashInfer writes h_state as S[v][k] ([nv][N][N], N=head_dim); Atlas's decode
+// FlashInfer writes h_state as S[v][k] ([nv][N][N], N=head_dim); Avarok's decode
 // kernel reads H[k*v_dim+v] = S[k][v]. Swap (i,j)<->(j,i) per head (diagonal fixed).
 #include <cuda_runtime.h>
 __global__ void k_transpose_heads_sq(float* S, int N) {
@@ -13,7 +13,7 @@ __global__ void k_transpose_heads_sq(float* S, int N) {
         H[j * N + i] = a;
     }
 }
-extern "C" void atlas_transpose_heads(float* S, int nheads, int N, void* stream) {
+extern "C" void avarok_transpose_heads(float* S, int nheads, int N, void* stream) {
     dim3 block(256);
     dim3 grid((N * N + 255) / 256, nheads);
     k_transpose_heads_sq<<<grid, block, 0, (cudaStream_t)stream>>>(S, N);

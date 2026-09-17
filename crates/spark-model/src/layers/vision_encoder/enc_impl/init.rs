@@ -81,7 +81,7 @@ impl VisionEncoder {
         // so it is the one bound that can be raised cheaply — 4 KB per row at
         // this checkpoint's out_hidden_size. Defaults to `p_max`: without the
         // override NOTHING about the allocation or the refusal changes.
-        let out_rows = std::env::var("ATLAS_VISION_OUT_ROWS")
+        let out_rows = std::env::var("AVAROK_VISION_OUT_ROWS")
             .ok()
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|v| *v >= p_max)
@@ -91,7 +91,7 @@ impl VisionEncoder {
                 p_max,
                 out_rows,
                 extra_mb = ((out_rows - p_max) * 2048 * 2) as f64 / 1e6,
-                "ATLAS_VISION_OUT_ROWS: buf_out raised above the per-image patch \
+                "AVAROK_VISION_OUT_ROWS: buf_out raised above the per-image patch \
                  ceiling — a long video is bounded by ROWS, not by one frame"
             );
         }

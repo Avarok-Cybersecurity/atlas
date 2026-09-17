@@ -2,8 +2,8 @@
 //! Slice 9 Gate 1 — GLM-5.3-Flash **mHC (Manifold-Constrained Hyper-Connections)** numeric oracle
 //! against HF `transformers` 5.16.1.
 //!
-//! Slice 2 down-graded mHC to REUSE because Atlas's `hc_mult = 4` and `hc_sinkhorn_iters = 20`
-//! equal GLM's. That is a **config** match. This runs Atlas's real `hc_pre` / `hc_post` CUDA
+//! Slice 2 down-graded mHC to REUSE because Avarok's `hc_mult = 4` and `hc_sinkhorn_iters = 20`
+//! equal GLM's. That is a **config** match. This runs Avarok's real `hc_pre` / `hc_post` CUDA
 //! kernels — written for DeepSeek-V4 — against goldens produced by GLM-5.3's own reference module
 //! on real `hc_{attn,ffn}_{fn,base,scale}` weights, which is the **arithmetic** check.
 //!
@@ -12,7 +12,7 @@
 //! tensors, so **floor C is N/A here too** and this golden IS the production numerics.
 //!
 //! 🪤 `hc_*_fn` is **BF16 on disk**, not F32. The handoff's "hc_* are F32" is true only of
-//! `base`/`scale` (180 tensors); `fn` is the other 90. Atlas's kernel takes an `f32*`, so the
+//! `base`/`scale` (180 tensors); `fn` is the other 90. Avarok's kernel takes an `f32*`, so the
 //! loader must upcast — exact, but it is an upcast, not a reinterpret.
 //!
 //! Each site is checked at both halves of the residual write:
@@ -21,7 +21,7 @@
 //! and the two sites are **chained** (attn then ffn) exactly as the decoder layer chains them, so
 //! a per-site pass that does not compose still fails here.
 //!
-//!   MHC_PACKET_DIR=/home/msi1/atlas-scratch/mhc-family \
+//!   MHC_PACKET_DIR=/home/msi1/avarok-scratch/mhc-family \
 //!   cargo run -p spark-model --release --example mhc_microtest \
 //!       --features cuda,gpu-examples
 

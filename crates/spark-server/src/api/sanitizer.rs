@@ -59,10 +59,10 @@ fn marker_prefix_hold(buf: &str, markers: &tool_parser::LeakMarkers, tag_max: us
     0
 }
 
-/// `ATLAS_NO_STREAM_SANITIZER=1` — see the note in `sanitize_content_chunk`.
+/// `AVAROK_NO_STREAM_SANITIZER=1` — see the note in `sanitize_content_chunk`.
 fn no_stream_sanitizer() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_NO_STREAM_SANITIZER").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("AVAROK_NO_STREAM_SANITIZER").as_deref() == Ok("1"))
 }
 
 pub fn sanitize_content_chunk(
@@ -72,7 +72,7 @@ pub fn sanitize_content_chunk(
     inside_envelope: &mut bool,
     markers: &tool_parser::LeakMarkers,
 ) -> String {
-    // `ATLAS_NO_STREAM_SANITIZER=1`: hand the raw stream through untouched.
+    // `AVAROK_NO_STREAM_SANITIZER=1`: hand the raw stream through untouched.
     //
     // The `OrphanOpen` arm below sets `suppressing_param_leak` and warns, and
     // that is ALL it does — no counter, no terminal state. A model that keeps
@@ -305,7 +305,7 @@ pub fn sanitize_content_chunk(
 //
 // ── F7 (2026-04-26): cross-turn tool-arg-path stall guard ──
 //
-// Live evidence from `/workspace/atlas-opencode-dump-fix28.jsonl`
+// Live evidence from `/workspace/avarok-opencode-dump-fix28.jsonl`
 // showed the model writing the same `Cargo.toml` 7 times across 17
 // turns when cargo wasn't installed and F6 (is_error capture) made
 // it correctly recognise but futilely retry. F1-F5 catch per-
@@ -317,7 +317,7 @@ pub fn sanitize_content_chunk(
 
 // F14 (2026-04-26): raised from 3 → 4. AR2's survey: Gemini-CLI
 // uses 5-consecutive, Anthropic's documented per-turn ceiling is
-// ~10. Atlas at 3 was too aggressive — false-positives on
+// ~10. Avarok at 3 was too aggressive — false-positives on
 // legitimate "build / fix / build" cycles. 4 sits between the
 // production references while still preventing the fix28
 // 7-rewrite scenario.

@@ -1,0 +1,1077 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Concurrency Sweep — the latency/throughput curve.
+//!
+//! Port of `bench/bench_concurrency.py`: for every (ISL × concurrency) cell,
+//! fire `conc` streaming requests at once and report client TTFT / TPOT / E2E
+//! as p50/p90/p99 plus the aggregate output throughput of the batch. One cell
+//! per `next()`, so the pane paints a row as soon as it exists and cancellation
+//! lands within one cell rather than at the end of the sweep.
+//!
+//! ★ A cell's tok/s is only as real as the tokens behind it. The 2026-08-15
+//! re-scope: the counting prompt produced C=1 cells of 49-token bursts and
+//! C≥4 cells with 0–1 output tokens (E2E==TTFT, TPOT 0.0, aggregate
+//! DECREASING with C) on a serve where a natural code-generation prompt
+//! completed the full 800-token budget at every C (C=1: 31.9 → C=16: 170.1
+//! aggregate tok/s). The instrument was broken, not the server. Hence: the
+//! natural code-generation fixture is the default, every request's delivered
+//! evidence is recorded, and cells below the vacuity floor are flagged
+//! non-comparable instead of silently reported.
+
+use crate::hardware::Sensitivity;
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+use serde_json::json;
+
+use crate::benchmark::{Benchmark, BenchmarkDescriptor};
+use crate::benchmarks::stats::{self, Percentiles, PromptMode};
+use crate::http;
+use crate::metadata::PluginMetadata;
+use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
+use crate::plugin::{Plugin, PluginHandle};
+use crate::result::{
+    BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
+};
+
+const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128";
+pub const METADATA: PluginMetadata = PluginMetadata::avarok(SUMMARY);
+
+pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "concurrency-sweep",
+    name: "Concurrency Sweep",
+    summary: SUMMARY,
+    detail: "Fires N concurrent streaming requests per (input-length × concurrency) cell and \
+             reports client TTFT, TPOT and end-to-end latency as p50/p90/p99, plus the batch's \
+             aggregate output throughput. This is the curve the GB10 concurrency campaign is \
+             measured on — C=1 is where Avarok leads, C=32 is where time-to-answer starts \
+             inverting in Avarok's favour, and C=128 is the widest rung the published ladder \
+             quotes. Requests pin temperature 0.0 / \
+             seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
+             thinking. A cell where any request delivers under 80% of the output budget is \
+             flagged vacuous and its tok/s marked non-comparable. REQUIRED gate since \
+             2026-08-15: under --pull-request-gate the run serves the calibrated instrument \
+             (C=1..128, isl 512, osl 320 via the variant's param_overrides) and \
+             self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
+             cell or request error never passes, whatever the floors say.",
+    duration_hint: "~25–90 min",
+    expected_secs: 1560,
+    updated: "2026-08-29",
+    needs_confirmation: false,
+    // A latency/throughput curve is meaningful for any served model; there is
+    // no threshold here tied to a checkpoint.
+    intended_for: None,
+    // Under --pull-request-gate each floor is auto-filled from the selected
+    // variant's BENCH.toml `min` bound, so a run that clears its committed
+    // ladder self-verdicts PASS — which gate machinery requires now that this
+    // gate is REQUIRED (`gate::coverage::REQUIRED`). The gated ladder's SHAPE
+    // (C=1..128, isl 512, osl 320) arrives via the same entry's
+    // `[benchmarks.param_overrides]`, not from these schema defaults.
+    threshold_params: GATE_THRESHOLD_PARAMS,
+    // Latency and throughput at every rung; a thermal event mid-sweep moves
+    // the later rungs and not the earlier ones, which reads as a shape change.
+    sensitivity: Sensitivity::Speed,
+    ctor: || Box::new(ConcurrencySweep::default()),
+};
+
+/// The same ladder, served with the DFlash2 drafter armed.
+///
+/// A SECOND gate id rather than a second BENCH.toml variant, deliberately, and
+/// for the same reason `bfcl-subset-echolp` exists: `check_record`'s
+/// `record_is_required_subject` refuses a non-default checkpoint for the
+/// required verdict, so a variant can never satisfy a mandatory gate. The two
+/// entries share this driver, this instrument and these floor params; what
+/// differs is the recipe each one's `[[benchmarks]]` block names, and
+/// therefore whether the served engine speculates.
+///
+/// It exists because nothing else gates the speculative path. Every other
+/// required gate serves a no-drafter recipe, which is how a DFlash2 change can
+/// only be judged by hand — the 2026-08 C4 hunt spent days establishing "not
+/// DFlash2" from source reading, because no committed record could answer it.
+///
+/// Its numbers are NOT comparable to `concurrency-sweep`'s and must never be
+/// crossed: speculation moves the aggregate at low C by more than any
+/// regression this gate is meant to catch, so each carries its own bars.
+pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "concurrency-sweep-dflash2",
+    name: "Concurrency Sweep (DFlash2)",
+    summary: DFLASH2_SUMMARY,
+    detail: "The concurrency ladder with the DFlash2 block-diffusion drafter armed \
+             (`--dflash --draft-model incoai/Qwen3.8-27B-DFlash2 --dflash-gamma 8`), pinned by \
+             the variant's serve_overrides. Same fixture, same rungs and same vacuity rule as \
+             `concurrency-sweep`; the only difference is that the served engine speculates, \
+             which is exactly the path no other required gate exercises. Expect the two curves \
+             to converge at the wide rungs: DFlash2's verify batches are bounded, so above the \
+             point where speculation self-limits this measures the base engine and says so \
+             rather than pretending otherwise.",
+    duration_hint: "~25–90 min",
+    expected_secs: 300,
+    updated: "2026-08-29",
+    needs_confirmation: false,
+    // The drafter is checkpoint-specific — a drafter trained on other weights
+    // degrades to near-zero acceptance rather than failing loudly, so this
+    // names the target it was trained against.
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.8-27b"],
+        note: "DFlash2 drafters are trained against one target's hidden states \
+               (incoai/Qwen3.8-27B-DFlash2 consumes target layers [5,19,33,47,61] of \
+               Qwen3.8-27B). Pointing this gate at another checkpoint measures a mismatched \
+               drafter, which is slow rather than wrong and therefore easy to misread.",
+    }),
+    threshold_params: GATE_THRESHOLD_PARAMS,
+    sensitivity: Sensitivity::Speed,
+    ctor: || Box::new(ConcurrencySweep::default()),
+};
+
+const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
+
+/// The gated ladder, declared ONCE: `(C, floor param, metric key, label)`.
+///
+/// Three things are derived from this and nothing else — the descriptor's
+/// `threshold_params` pairs, the floor `ParamSpec`s, and `configure`'s
+/// `Floors::per_c`. Before this table those were three hand-maintained lists
+/// of the same rungs; a rung present in one and missing from another is
+/// silent, because `apply_threshold_params` skips a metric with no bound and
+/// `sweep_verdict` only judges the rungs `per_c` names.
+///
+/// C=2 through C=128 joined on 2026-08-29 so the certification covers the same
+/// span as the published ladder. The rungs are declarable, not measured: a
+/// rung with no `[benchmarks.metrics.c<N>_aggregate_tok_s]` block in the
+/// variant's BENCH.toml keeps the 0.0 default and gates nothing, which is how
+/// a new rung is recorded before it is bounded.
+const RUNGS: [(usize, &str, &str, &str); 8] = [
+    (1, "min_c1", "c1_aggregate_tok_s", "C=1 aggregate floor"),
+    (2, "min_c2", "c2_aggregate_tok_s", "C=2 aggregate floor"),
+    (4, "min_c4", "c4_aggregate_tok_s", "C=4 aggregate floor"),
+    (8, "min_c8", "c8_aggregate_tok_s", "C=8 aggregate floor"),
+    (16, "min_c16", "c16_aggregate_tok_s", "C=16 aggregate floor"),
+    (32, "min_c32", "c32_aggregate_tok_s", "C=32 aggregate floor"),
+    (64, "min_c64", "c64_aggregate_tok_s", "C=64 aggregate floor"),
+    (
+        128,
+        "min_c128",
+        "c128_aggregate_tok_s",
+        "C=128 aggregate floor",
+    ),
+];
+
+/// The peak floor, which is not a rung: it bounds `peak_aggregate_tok_s`,
+/// whichever C produced it.
+const PEAK_FLOOR: (&str, &str, &str) = ("min_peak", "peak_aggregate_tok_s", "Peak aggregate floor");
+
+/// The baseline-coupled verdict params: each is paired to the metric the
+/// BENCH.toml floor is written on (`min` bounds; see `bench_resolve::
+/// apply_threshold_params`). Float, default 0.0 = non-gating, so a standalone
+/// run keeps its info verdict. Derived from [`RUNGS`] in a const fn so the
+/// pairing cannot drift from the ParamSpecs that must back it — a
+/// `threshold_params` entry with no matching spec is a hard error in
+/// `bench_resolve::apply_threshold_params`.
+const GATE_THRESHOLD_PARAMS: &[(&str, &str)] = &gate_threshold_params();
+
+const fn gate_threshold_params() -> [(&'static str, &'static str); RUNGS.len() + 1] {
+    let mut out = [("", ""); RUNGS.len() + 1];
+    let mut i = 0;
+    while i < RUNGS.len() {
+        out[i] = (RUNGS[i].1, RUNGS[i].2);
+        i += 1;
+    }
+    out[RUNGS.len()] = (PEAK_FLOOR.0, PEAK_FLOOR.1);
+    out
+}
+
+/// Natural code-generation fixture (own constant — no cross-driver imports).
+/// Appended after the ISL padding so the filler reads as context and this
+/// reads as the ask. A code-generation task of this shape reliably fills a
+/// several-hundred-token output budget on a thinking-off serve, which is what
+/// makes the cell's TPOT and aggregate tok/s measurements of decode at all.
+const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete, \
+    production-quality MinHeap class in Python with insert, peek_min, extract_min, \
+    decrease_key and heapify methods — full docstrings, input validation and a worked \
+    usage example — followed by a unit-test class covering every method, including \
+    empty-heap, duplicate-key and single-element edge cases. Write every method and \
+    every test out in full; do not summarize or elide any code.";
+
+/// Fraction of the output budget below which one request's completion makes
+/// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
+/// 49-token burst against a 512-token budget is not a throughput measurement.
+const VACUITY_FLOOR: f64 = 0.8;
+// `make_prompt` puts the distinguishing tag at byte zero of message content;
+// a wrong tag can share only the chat-template prefix, about 12 tokens against
+// the minimum 128-token ISL. An exact warmed prompt is block-aligned near the
+// full length, so 80% separates substantial reuse from incidental template KV.
+const WARM_CACHE_FLOOR: f64 = 0.8;
+
+/// What one completed request actually delivered — the evidence a cell's
+/// tok/s stands on. `http::ChatOutcome` already parses all of this from the
+/// stream's `usage`; the old sweep summed `completion_tokens` and discarded
+/// the rest.
+#[derive(Clone, Debug, Default)]
+struct RequestEvidence {
+    completion_tokens: usize,
+    prompt_tokens: usize,
+    cached_prompt_tokens: usize,
+    finish_reason: Option<String>,
+    server_ttft_ms: Option<f64>,
+    server_tps: Option<f64>,
+    /// `usage.completion_tokens_details.accepted_prediction_tokens`. Already
+    /// parsed by the shared client and, until now, discarded here — which is
+    /// why the sweep could see a cell's throughput halve and not say why.
+    accepted_prediction_tokens: Option<usize>,
+}
+
+/// A cell is vacuous when ANY of its requests finished materially short of
+/// the output budget — the aggregate then divides missing tokens' wall time
+/// into real tokens and the number comparable to nothing.
+fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
+    requests
+        .iter()
+        .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
+}
+
+/// SSM snapshot slots one warm request holds LIVE on the server through a
+/// cell: its tail checkpoint (the anchor a repeat of the same prompt restores
+/// from) and its finish leaf. The exact prefill-end leaf no longer takes a
+/// slot — see `spark-model`'s `prefill_b::exact_leaf`.
+const LIVE_SLOTS_PER_WARM_REQUEST: usize = 2;
+/// STALE finish leaves an EARLIER cell of the same sweep leaves behind for a
+/// prompt it also ran: a finish leaf is keyed on prompt + generated text, and
+/// the warm-up round's and the measured round's generations drift apart by a
+/// token at C ≥ 8 (batch-dependent numerics; the "C=8 truncation" of
+/// 2026-08), so each earlier cell can leave TWO leaves, not one. The pool's
+/// eviction is session-first (`radix_tree/snapshot.rs`), so when the pool
+/// overflows it drops the stalest prompt's tail with its leaves, and that
+/// prompt's measured request recomputes.
+///
+/// Measured 2026-09-14 on a 32-slot pool, twice, same node: conc 8 after the
+/// 1/2/4 cells — 23 live+stale by the one-leaf count, which would fit — lost
+/// two, then three, of its eight tails. Counting two leaves per earlier cell
+/// (38) says it cannot fit, which is what happened. Measured 2026-09-13 on a
+/// 24-slot pool: conc 8 lost four of eight.
+const STALE_LEAVES_PER_EARLIER_CELL: usize = 2;
+/// Slots the pool must hold for a `conc`-way cell to keep every warmed
+/// prompt through its measured round: each prompt's live pair, the stale
+/// leaves of every earlier cell that ran the same prompt (`earlier` is those
+/// cells' concurrencies; prompt `i` ran in each one wider than `i`), and one
+/// re-home transient per in-flight request — a save that re-homes an
+/// existing prefix takes a fresh slot BEFORE the old one is released.
+///
+/// The bias is deliberate: a cell judged cold by construction that happens
+/// to hit warm anyway loses nothing (it is measured either way; only the
+/// warm rule is skipped), while a cell judged warm that a session-first
+/// eviction turns cold fails the gate with nothing wrong in the engine. On
+/// an 8-slot pool conc 2 measured warm on 2026-09-13 and this rule calls it
+/// cold by construction; the gates pin 32 slots, where it is moot.
+fn slots_needed(conc: usize, earlier: &[usize]) -> usize {
+    (0..conc)
+        .map(|i| {
+            let stale_cells = earlier.iter().filter(|&&c| c > i).count();
+            LIVE_SLOTS_PER_WARM_REQUEST + STALE_LEAVES_PER_EARLIER_CELL * stale_cells
+        })
+        .sum::<usize>()
+        + conc
+}
+const SSM_CACHE_SLOTS_KEY: &str = "ssm_cache_slots";
+
+/// Can the server hold every warmed prompt of a `conc`-way cell at once?
+///
+/// `slots` is the pool the server was started with, or `None` when the
+/// serve overrides do not state it — then the answer is `true`, so the warm
+/// rule applies in full: a pool nobody sized is not an excuse.
+///
+/// Strictly greater, not `>=`: the last re-home still needs its spare slot.
+/// `earlier` are the concurrencies of the cells already run on these prompts.
+fn warm_cache_capable(conc: usize, slots: Option<usize>, earlier: &[usize]) -> bool {
+    slots.is_none_or(|slots| slots > slots_needed(conc, earlier))
+}
+
+fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
+    warmup > 0
+        && requests.iter().any(|request| {
+            request.prompt_tokens == 0
+                || (request.cached_prompt_tokens as f64)
+                    < WARM_CACHE_FLOOR * request.prompt_tokens as f64
+        })
+}
+
+/// The prompt identities one cell executes before and during measurement.
+/// Keeping the policy in one value makes the cache-state claim testable
+/// without substituting a fake HTTP implementation for the benchmark.
+#[derive(Debug, PartialEq, Eq)]
+struct PromptPlan {
+    warmup_rounds: Vec<Vec<String>>,
+    measured: Vec<String>,
+}
+
+fn prompt_plan(conc: usize, warmup: usize) -> PromptPlan {
+    let measured: Vec<String> = (0..conc).map(|i| format!("c{i}")).collect();
+    PromptPlan {
+        warmup_rounds: vec![measured.clone(); warmup],
+        measured,
+    }
+}
+
+#[derive(Default)]
+struct CellRow {
+    isl: usize,
+    conc: usize,
+    ttft: Percentiles,
+    tpot: Percentiles,
+    e2e_p50: Option<f64>,
+    throughput: f64,
+    errors: usize,
+    requests: Vec<RequestEvidence>,
+    vacuous: bool,
+    cache_uncontrolled: bool,
+}
+
+impl CellRow {
+    fn min_completion(&self) -> Option<usize> {
+        self.requests.iter().map(|r| r.completion_tokens).min()
+    }
+    fn min_cached_prompt(&self) -> Option<usize> {
+        self.requests.iter().map(|r| r.cached_prompt_tokens).min()
+    }
+    fn min_cached_prompt_pct(&self) -> Option<f64> {
+        self.requests
+            .iter()
+            .map(|request| {
+                if request.prompt_tokens == 0 {
+                    0.0
+                } else {
+                    request.cached_prompt_tokens as f64 / request.prompt_tokens as f64 * 100.0
+                }
+            })
+            .reduce(f64::min)
+    }
+    /// The cell's speculation arm, as the minimum accept depth across its
+    /// requests. `None` when any request did not report the accept field.
+    ///
+    /// Minimum, not mean: one request served on the serial arm is enough to
+    /// make the cell's aggregate a mixture, and a mixture is not a
+    /// measurement of either arm.
+    fn accept_len(&self) -> Option<f64> {
+        self.requests
+            .iter()
+            .map(|r| super::stats::accept_len(r.completion_tokens, r.accepted_prediction_tokens))
+            .try_fold(f64::INFINITY, |acc, v| v.map(|v| acc.min(v)))
+            .filter(|v| v.is_finite())
+    }
+
+    /// ★ THE ARM PIN. True when this cell ran wholly on the serial arm, or
+    /// on a mixture of arms.
+    ///
+    /// `c2_aggregate_tok_s` on this model is TRIMODAL — ~30.6 / ~27.5 / ~23.5
+    /// tok/s with nothing between — because the C=2 cell's 640 measured
+    /// tokens contain only one to three MTP-gate arbitrations, so its
+    /// outcomes are all-MTP, mixed, or all-serial. A floor placed in the
+    /// empty gap is a MODE DETECTOR wearing a regression detector's clothes:
+    /// it fires on which arm the cell happened to draw, not on whether the
+    /// engine got slower.
+    ///
+    /// So the arm becomes a COMPARABILITY pin rather than a floor, exactly
+    /// like `vacuous` and `cache_uncontrolled` beside it. A cell that drew
+    /// the serial arm is excluded and reported as INCONCLUSIVE — it is not
+    /// evidence of a regression, and it must not be recorded as one. The
+    /// throughput floor is left untouched at its committed value; it then
+    /// only has to cover WITHIN-arm variance, which is what it was cut for.
+    ///
+    /// Threshold 1.5 sits in the empty gap between the serial arm's exact
+    /// 1.00 and this model's ~2.3 MTP accept depth. `None` — the server did
+    /// not report the field — is NOT treated as serial: that would turn a
+    /// missing instrument into a verdict.
+    /// Did this cell run WITHOUT speculation? Reported, never gated on.
+    ///
+    /// ★ THIS USED TO EXCLUDE THE CELL FROM SCORING, AND THAT WAS WRONG.
+    /// Measured on a real campaign: at wide batch the MTP gate switches to the
+    /// serial arm ON PURPOSE, because speculation stops being net-positive
+    /// there — so C=8 upward legitimately run serial, and the floors for those
+    /// rungs were CALIBRATED on runs that did exactly that (c64 floor 109.5
+    /// against a measured 115.4, nine passing records running). Excluding them
+    /// as "not comparable" dropped five of eight cells, corrupted
+    /// `peak_aggregate_tok_s` (49.5 from C=4 instead of ~115 from C=64) and
+    /// failed a gate that had passed nine times.
+    ///
+    /// The benchmark cannot know which arm SHOULD have run. Publishing that it
+    /// did not speculate is informative; gating on it asserts knowledge the
+    /// benchmark does not have. So `c{c}_accept_len` and `non_mtp_arm_cells`
+    /// go on the record — where a human reading a low C=2 can see whether the
+    /// serial arm explains it, which is all #835 ever needed — and the verdict
+    /// says nothing about the arm.
+    fn arm_is_not_mtp(&self) -> bool {
+        self.accept_len().is_some_and(|a| a < 1.5)
+    }
+
+    /// Clean, above the vacuity floor, cache-controlled, and on the MTP arm —
+    /// the only rows metrics may quote.
+    fn comparable(&self) -> bool {
+        // `arm_is_not_mtp` is deliberately ABSENT: see its doc. A cell that ran
+        // serial is still comparable to a floor calibrated on serial.
+        self.errors == 0 && !self.vacuous && !self.cache_uncontrolled
+    }
+}
+
+#[derive(Default)]
+pub struct ConcurrencySweep {
+    handle: Option<PluginHandle>,
+    cells: Vec<(usize, usize)>,
+    cursor: usize,
+    osl: usize,
+    warmup: usize,
+    mode: PromptMode,
+    timeout: Duration,
+    rows: Vec<CellRow>,
+    started: Option<Instant>,
+    probed: bool,
+    /// Verdict floors (tok/s); all 0.0 = info verdict. Gate-filled per
+    /// variant via `GATE_THRESHOLD_PARAMS`.
+    floors: verdict::Floors,
+}
+
+impl ConcurrencySweep {
+    fn handle(&self) -> Result<&PluginHandle> {
+        self.handle.as_ref().context("benchmark was not loaded")
+    }
+
+    /// One verdict-floor spec. The generation/sweep knobs are the benchmark;
+    /// these are the gate's bars and cannot move a measured number.
+    fn floor_spec(key: &'static str, label: &'static str) -> ParamSpec {
+        ParamSpec::new(
+            key,
+            label,
+            "Run-verdict floor on this rung's aggregate tok/s (comparable cells only). 0 \
+             disables (a standalone run reports an info verdict); under --pull-request-gate \
+             it is auto-filled from the variant's BENCH.toml `min` bound. Vacuous or errored \
+             sweeps never PASS regardless.",
+            ParamKind::Float {
+                min: 0.0,
+                max: 100_000.0,
+            },
+            // 0.0 is the documented OFF state, not an implicit bar (PCND).
+            ParamValue::Float(0.0),
+        )
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.started.map(|s| s.elapsed()).unwrap_or_default()
+    }
+
+    /// The prompt for one cell: ISL padding first (the prefix-cache
+    /// mechanics live in [`stats::make_prompt`]), the mode's task last.
+    fn cell_prompt(&self, isl: usize, prefix_tag: &str) -> String {
+        match self.mode {
+            PromptMode::Count => stats::make_prompt(isl, PromptMode::Count, prefix_tag),
+            PromptMode::Natural => {
+                let mut p = stats::make_prompt(isl, PromptMode::Natural, prefix_tag);
+                p.push(' ');
+                p.push_str(CODE_TASK);
+                p
+            }
+        }
+    }
+
+    /// One request. Returns `Err` only for transport failures — a completed
+    /// request with zero tokens is a data point, not an error.
+    async fn one(&self, isl: usize, prefix_tag: String) -> Result<http::ChatOutcome> {
+        let handle = self.handle()?;
+        let target = handle.target();
+        let body = json!({
+            "model": target.model,
+            "stream": true,
+            "max_tokens": self.osl,
+            // Pinned sampling: the ladder is a performance instrument, and an
+            // unpinned draw is run-to-run noise in the one thing it measures.
+            "temperature": 0.0,
+            "seed": 0,
+            // Ladders measure DECODE, not thinking. On a thinking-on serve
+            // the output budget otherwise disappears into <think> at whatever
+            // effort the template defaults to, and the cell measures
+            // reasoning length instead of decode.
+            "reasoning_effort": "none",
+            "messages": [{"role": "user", "content": self.cell_prompt(isl, &prefix_tag)}],
+        });
+        http::chat_stream(target, &body, self.timeout).await
+    }
+
+    async fn run_cell(&mut self, isl: usize, conc: usize) -> Result<CellRow> {
+        let handle = self.handle()?.clone();
+        let plan = prompt_plan(conc, self.warmup);
+        for (w, tags) in plan.warmup_rounds.iter().enumerate() {
+            handle.check_cancelled()?;
+            handle.status(format!(
+                "isl {isl} · conc {conc} · warmup round {}/{}",
+                w + 1,
+                self.warmup
+            ));
+            // Prime every exact prompt the measured batch will use. A single
+            // unrelated `warm` tag leaves all measured prompts cold, while
+            // reusing c0/c1/... across later rungs produces a history-dependent
+            // mixture of cached and new prompts. A failed warm-up invalidates
+            // the declared setup instead of silently changing the instrument.
+            //
+            // CONCURRENTLY, and that is safe here for a specific reason: a
+            // round's tags are `c0..c{conc-1}`, pairwise DISTINCT, so there is
+            // no duplicate-insert race for concurrency to lose — the usual
+            // reason a cache prime is serialised does not apply.
+            //
+            // It is also the stronger guarantee at wide C. Serially, priming
+            // 128 prompts at ~15 s each means prompt c0 has been sitting in
+            // the cache for half an hour by the time c127 is warmed, and is
+            // the likeliest eviction candidate before the measured batch even
+            // starts; a concurrent round keeps the whole set live inside one
+            // window. And it is what makes a wide ladder affordable: serially
+            // the warm-up costs `ΣC × per-request wall`, which at C=1..128 was
+            // measured at ~64 min per rep against ~12 min of measurement — the
+            // instrument spending 84% of its time priming.
+            let warmed =
+                futures::future::join_all(tags.iter().map(|tag| self.one(isl, tag.clone()))).await;
+            for (tag, outcome) in tags.iter().zip(warmed) {
+                outcome.with_context(|| {
+                    format!("isl {isl} conc {conc}: warm-up prompt {tag} failed")
+                })?;
+            }
+        }
+        handle.check_cancelled()?;
+        handle.status(format!("isl {isl} · conc {conc} · {conc} in flight"));
+
+        let batch_start = Instant::now();
+        let futures: Vec<_> = plan
+            .measured
+            .into_iter()
+            .map(|tag| self.one(isl, tag))
+            .collect();
+        let outcomes = futures::future::join_all(futures).await;
+        let wall = batch_start.elapsed().as_secs_f64().max(1e-6);
+
+        let mut ttft = Vec::new();
+        let mut tpot = Vec::new();
+        let mut e2e = Vec::new();
+        let mut requests = Vec::new();
+        let mut tokens = 0usize;
+        let mut errors = 0usize;
+        for outcome in outcomes {
+            match outcome {
+                Ok(o) => {
+                    if let Some(v) = o.ttft_ms {
+                        ttft.push(v);
+                    }
+                    if let Some(v) = o.tpot_ms {
+                        tpot.push(v);
+                    }
+                    e2e.push(o.e2e_ms);
+                    tokens += o.completion_tokens;
+                    requests.push(RequestEvidence {
+                        completion_tokens: o.completion_tokens,
+                        prompt_tokens: o.prompt_tokens,
+                        cached_prompt_tokens: o.cached_prompt_tokens,
+                        finish_reason: o.finish_reason.clone(),
+                        server_ttft_ms: o.server_ttft_ms,
+                        server_tps: o.server_tps,
+                        accepted_prediction_tokens: o.accepted_prediction_tokens,
+                    });
+                }
+                Err(e) => {
+                    errors += 1;
+                    handle.warn(format!("isl {isl} conc {conc}: {e:#}"));
+                }
+            }
+        }
+        let vacuous = cell_is_vacuous(&requests, self.osl);
+        // Matching prompt bytes reach the intended setup, but the endpoint's
+        // usage is the oracle for whether the measured request actually used
+        // the warmed prompt. A small shared chat-template prefix is not enough:
+        // require a material cached fraction of each measured prompt.
+        // A pool that cannot hold this cell's warmed prompts measures COLD
+        // by construction, and says so instead of failing the warm rule it
+        // could never meet. The rule is judged against what the server was
+        // started with (`TargetEndpoint::serve_overrides`), never a default.
+        let slots = handle.target().serve_override_usize(SSM_CACHE_SLOTS_KEY);
+        let earlier: Vec<usize> = self.cells[..self.cursor]
+            .iter()
+            .filter(|(i, _)| *i == isl)
+            .map(|(_, c)| *c)
+            .collect();
+        let warm_capable = warm_cache_capable(conc, slots, &earlier);
+        let cache_uncontrolled = warm_capable && cache_is_uncontrolled(&requests, self.warmup);
+        handle.info(evidence_line(isl, conc, &requests));
+        if !warm_capable {
+            handle.info(format!(
+                "isl {isl} conc {conc}: cache cold by construction — the server's {} \
+                 snapshot slot(s) cannot hold {} warm request(s) after the {:?} cell(s) \
+                 ({} needed); the warm rule is not applied to this cell",
+                slots.unwrap_or(0),
+                conc,
+                earlier,
+                slots_needed(conc, &earlier),
+            ));
+        }
+        if vacuous {
+            handle.warn(format!(
+                "isl {isl} conc {conc}: a request delivered under {:.0}% of the {}-token \
+                 budget (min {} tok) — this cell's tok/s is NOT comparable",
+                VACUITY_FLOOR * 100.0,
+                self.osl,
+                requests
+                    .iter()
+                    .map(|r| r.completion_tokens)
+                    .min()
+                    .unwrap_or(0),
+            ));
+        }
+        if cache_uncontrolled {
+            handle.warn(format!(
+                "isl {isl} conc {conc}: warm-up was requested but at least one measured request \
+                 reported less than {:.0}% of its prompt as cached — this cell is NOT comparable",
+                WARM_CACHE_FLOOR * 100.0,
+            ));
+        }
+        Ok(CellRow {
+            isl,
+            conc,
+            ttft: Percentiles::of(&ttft),
+            tpot: Percentiles::of(&tpot),
+            e2e_p50: stats::percentile(&e2e, 50),
+            throughput: tokens as f64 / wall,
+            errors,
+            requests,
+            vacuous,
+            cache_uncontrolled,
+        })
+    }
+
+    fn table(&self) -> ResultTable {
+        let mut t = ResultTable::new(
+            "LATENCY / THROUGHPUT",
+            vec![
+                Column::right("ISL", 6),
+                Column::right("Conc", 5),
+                Column::right("TTFT p50", 9),
+                Column::right("p90", 8),
+                Column::right("p99", 8),
+                Column::right("TPOT p50", 9),
+                Column::right("p90", 8),
+                Column::right("E2E p50", 9),
+                Column::right("tok/s", 8),
+                Column::right("min tok", 7),
+                Column::right("min cache%", 10),
+                Column::right("err", 4),
+            ],
+        );
+        for r in &self.rows {
+            t.push(vec![
+                Cell::new(r.isl.to_string()),
+                Cell::new(r.conc.to_string()),
+                Cell::styled(stats::fmt_ms(r.ttft.p50), CellStyle::Accent),
+                Cell::new(stats::fmt_ms(r.ttft.p90)),
+                Cell::new(stats::fmt_ms(r.ttft.p99)),
+                Cell::styled(stats::fmt_ms(r.tpot.p50), CellStyle::Accent),
+                Cell::new(stats::fmt_ms(r.tpot.p90)),
+                Cell::new(stats::fmt_ms(r.e2e_p50)),
+                // A vacuous cell's tok/s is printed struck with a marker, not
+                // hidden: the number is evidence of the failure, it is just
+                // not comparable to anything.
+                if r.vacuous || r.cache_uncontrolled {
+                    Cell::styled(format!("{:.1}*", r.throughput), CellStyle::Bad)
+                } else {
+                    Cell::styled(format!("{:.1}", r.throughput), CellStyle::Good)
+                },
+                Cell::new(
+                    r.min_completion()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                Cell::new(
+                    r.min_cached_prompt_pct()
+                        .map(|v| format!("{v:.0}"))
+                        .unwrap_or_else(|| "—".into()),
+                ),
+                Cell::styled(
+                    r.errors.to_string(),
+                    if r.errors == 0 {
+                        CellStyle::Dim
+                    } else {
+                        CellStyle::Bad
+                    },
+                ),
+            ]);
+        }
+        t
+    }
+
+    fn summary(&self) -> Vec<Stat> {
+        let peak = self
+            .rows
+            .iter()
+            .filter(|r| r.comparable())
+            .max_by(|a, b| a.throughput.total_cmp(&b.throughput));
+        let best_ttft = self
+            .rows
+            .iter()
+            .filter_map(|r| r.ttft.p50)
+            .fold(f64::INFINITY, f64::min);
+        vec![
+            Stat::new(
+                "Peak throughput",
+                peak.map(|r| format!("{:.1}", r.throughput))
+                    .unwrap_or_else(|| "—".into()),
+                "tok/s",
+            )
+            .with_style(CellStyle::Good),
+            Stat::new(
+                "at concurrency",
+                peak.map(|r| r.conc.to_string())
+                    .unwrap_or_else(|| "—".into()),
+                "",
+            ),
+            Stat::new(
+                "Best TTFT p50",
+                if best_ttft.is_finite() {
+                    format!("{best_ttft:.0}")
+                } else {
+                    "—".into()
+                },
+                "ms",
+            )
+            .with_style(CellStyle::Accent),
+            Stat::new(
+                "Cells",
+                format!("{}/{}", self.rows.len(), self.cells.len()),
+                "",
+            ),
+        ]
+    }
+
+    /// The gate/dashboard channel. Vacuous or errored cells are EXCLUDED from
+    /// every throughput/TTFT key — a future threshold must never be minted
+    /// from a cell whose tokens were not delivered — while
+    /// `min_completion_tokens` spans ALL requests, because it is the evidence
+    /// the exclusion decision rests on.
+    fn metrics(&self) -> BTreeMap<String, f64> {
+        let mut m = BTreeMap::new();
+        // Per-C: the best comparable aggregate across ISLs at that rung (the
+        // sustained curve the ladder is quoted on); TTFT p50 from that cell.
+        let mut per_c: BTreeMap<usize, &CellRow> = BTreeMap::new();
+        for r in self.rows.iter().filter(|r| r.comparable()) {
+            let slot = per_c.entry(r.conc).or_insert(r);
+            if r.throughput > slot.throughput {
+                *slot = r;
+            }
+        }
+        for (c, r) in &per_c {
+            m.insert(format!("c{c}_aggregate_tok_s"), r.throughput);
+            if let Some(t) = r.ttft.p50 {
+                m.insert(format!("c{c}_ttft_p50_ms"), t);
+            }
+            // The ARM this cell's throughput was measured on. Published so a
+            // reader can tell a slow cell from a serial cell without reading
+            // the serve log — the distinction the trimodal C=2 rung turns on.
+            if let Some(a) = r.accept_len() {
+                m.insert(format!("c{c}_accept_len"), a);
+            }
+        }
+        if let Some(peak) = per_c.values().map(|r| r.throughput).max_by(f64::total_cmp) {
+            m.insert("peak_aggregate_tok_s".to_string(), peak);
+        }
+        if let Some(min) = self.rows.iter().filter_map(CellRow::min_completion).min() {
+            m.insert("min_completion_tokens".to_string(), min as f64);
+        }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt)
+            .min()
+        {
+            m.insert("min_cached_prompt_tokens".to_string(), min as f64);
+        }
+        if let Some(min) = self
+            .rows
+            .iter()
+            .filter_map(CellRow::min_cached_prompt_pct)
+            .reduce(f64::min)
+        {
+            m.insert("min_cached_prompt_pct".to_string(), min);
+        }
+        m.insert(
+            "vacuous_cells".to_string(),
+            self.rows.iter().filter(|r| r.vacuous).count() as f64,
+        );
+        m.insert(
+            "cache_uncontrolled_cells".to_string(),
+            self.rows.iter().filter(|r| r.cache_uncontrolled).count() as f64,
+        );
+        // Cells dropped because they drew the serial arm. Counted separately
+        // from `vacuous_cells` so the verdict can name WHICH exclusion fired:
+        // a vacuous cell did not deliver its tokens, a non-MTP cell delivered
+        // them on the other arm. Reading one as the other is how "the C=2
+        // floor was breached" gets written down when the truth is "the C=2
+        // cell ran serial".
+        m.insert(
+            "non_mtp_arm_cells".to_string(),
+            self.rows.iter().filter(|r| r.arm_is_not_mtp()).count() as f64,
+        );
+        m
+    }
+}
+
+/// One compact per-request evidence line for the run log: delivered tokens in
+/// request order, a finish-reason histogram, and the server's own prefill/
+/// decode numbers when the stream carried `usage`.
+fn evidence_line(isl: usize, conc: usize, requests: &[RequestEvidence]) -> String {
+    let toks: Vec<String> = requests
+        .iter()
+        .map(|r| r.completion_tokens.to_string())
+        .collect();
+    let cached: Vec<String> = requests
+        .iter()
+        .map(|r| format!("{}/{}", r.cached_prompt_tokens, r.prompt_tokens))
+        .collect();
+    let mut finish: BTreeMap<&str, usize> = BTreeMap::new();
+    for r in requests {
+        *finish
+            .entry(r.finish_reason.as_deref().unwrap_or("?"))
+            .or_default() += 1;
+    }
+    let finish: Vec<String> = finish.iter().map(|(k, n)| format!("{k}×{n}")).collect();
+    let sttft: Vec<f64> = requests.iter().filter_map(|r| r.server_ttft_ms).collect();
+    let stps: Vec<f64> = requests.iter().filter_map(|r| r.server_tps).collect();
+    let mut line = format!(
+        "evidence isl {isl} conc {conc}: tok [{}] · cached [{}] · finish [{}]",
+        toks.join(","),
+        cached.join(","),
+        finish.join(",")
+    );
+    if let Some(v) = stats::percentile(&sttft, 50) {
+        line.push_str(&format!(" · server ttft p50 {v:.0} ms"));
+    }
+    if let Some(v) = stats::percentile(&stps, 50) {
+        line.push_str(&format!(" · server decode p50 {v:.1} tok/s"));
+    }
+    line
+}
+
+impl Plugin for ConcurrencySweep {
+    fn metadata(&self) -> &'static PluginMetadata {
+        &METADATA
+    }
+
+    fn load(&mut self, handle: PluginHandle) -> impl Future<Output = Result<()>> + Send {
+        self.handle = Some(handle);
+        self.started = Some(Instant::now());
+        async { Ok(()) }
+    }
+}
+
+impl Benchmark for ConcurrencySweep {
+    fn descriptor(&self) -> &'static BenchmarkDescriptor {
+        &DESCRIPTOR
+    }
+
+    fn parameters(&self) -> Vec<ParamSpec> {
+        let mut specs = vec![
+            ParamSpec::new(
+                "concurrencies",
+                "Concurrency levels",
+                "How many requests are in flight at once, one sweep column each.",
+                ParamKind::IntList { min: 1, max: 256 },
+                // 32 is the top rung on purpose: it is where the campaign
+                // measured time-to-answer INVERTING in Avarok's favour (C=32
+                // -4.47% vs vLLM, C=128 -10.84%), so a sweep that stops at 16
+                // reports the regime where Avarok trails and omits the one
+                // where it wins. C=64/128 are deliberately NOT default — they
+                // need bs=64 preflight headroom that not every recipe has.
+                ParamValue::IntList(vec![1, 2, 4, 8, 16, 32]),
+            ),
+            ParamSpec::new(
+                "isls",
+                "Input lengths",
+                "Prompt sizes in tokens. Must fit inside the server's --max-seq-len with the output.",
+                ParamKind::IntList {
+                    min: 16,
+                    max: 131_072,
+                },
+                ParamValue::IntList(vec![128, 512, 1024, 2048]),
+            ),
+            ParamSpec::new(
+                "osl",
+                "Output tokens",
+                "Max tokens per request.",
+                ParamKind::Int { min: 1, max: 8192 },
+                ParamValue::Int(128),
+            ),
+            ParamSpec::new(
+                "warmup",
+                "Warm-up rounds",
+                "Unmeasured rounds per cell. Each round runs every exact prompt in the measured \
+                 batch so prefix-cache state is controlled before timing.",
+                ParamKind::Int { min: 0, max: 8 },
+                ParamValue::Int(1),
+            ),
+            ParamSpec::new(
+                "prompt_mode",
+                "Prompt mode",
+                // ★ Honest phrasing: NEITHER mode forces the output budget —
+                // the server has no ignore_eos, so nothing can. Short
+                // completions are caught by the vacuity floor instead of
+                // being promised away here.
+                "natural (default) poses a code-generation task that reliably fills the output \
+                 budget; count appends a counting instruction the model may still stop early on. \
+                 Neither forces the budget — under-budget cells are flagged vacuous.",
+                ParamKind::Choice(&["natural", "count"]),
+                ParamValue::Text("natural".into()),
+            ),
+            ParamSpec::new(
+                "request_timeout_s",
+                "Request timeout",
+                "Seconds before a single request is abandoned and counted as an error.",
+                ParamKind::Int { min: 10, max: 3600 },
+                ParamValue::Int(600),
+            ),
+        ];
+        // One floor per gated rung, plus the peak — both from RUNGS/PEAK_FLOOR,
+        // so a rung added there arrives here without a second edit.
+        specs.extend(
+            RUNGS
+                .iter()
+                .map(|(_, key, _, label)| Self::floor_spec(key, label)),
+        );
+        specs.push(Self::floor_spec(PEAK_FLOOR.0, PEAK_FLOOR.2));
+        specs
+    }
+
+    fn configure(&mut self, values: &ParamValues) -> Result<()> {
+        let specs = self.parameters();
+        values.validate_against(&specs)?;
+        let concurrencies = values.int_list("concurrencies")?.to_vec();
+        let isls = values.int_list("isls")?.to_vec();
+        // ISL-major so the sweep walks a full concurrency curve at one prompt
+        // size before changing prompt size — that is the curve people read.
+        self.cells = isls
+            .iter()
+            .flat_map(|isl| {
+                concurrencies
+                    .iter()
+                    .map(move |c| (*isl as usize, *c as usize))
+            })
+            .collect();
+        self.osl = values.usize("osl")?;
+        self.warmup = values.usize("warmup")?;
+        self.mode = PromptMode::parse(values.text("prompt_mode")?)
+            .context("prompt_mode must be natural or count")?;
+        self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
+        let mut per_c = Vec::with_capacity(RUNGS.len());
+        for (c, key, _, _) in RUNGS {
+            per_c.push((c, values.float(key)?));
+        }
+        self.floors = verdict::Floors {
+            per_c,
+            peak: values.float(PEAK_FLOOR.0)?,
+        };
+        self.cursor = 0;
+        self.rows.clear();
+        Ok(())
+    }
+
+    async fn next(&mut self) -> Result<BenchmarkResult> {
+        let handle = self.handle()?.clone();
+        handle.check_cancelled()?;
+
+        // Step 0: reachability. A wrong port otherwise produces a whole
+        // sweep of transport errors that reads like a broken server.
+        if !self.probed {
+            self.probed = true;
+            http::probe(handle.target(), Duration::from_secs(10))
+                .await
+                .context("endpoint probe failed — check the target URL and port")?;
+            let total = self.cells.len() as u64;
+            if total == 0 {
+                bail!("no cells to run — check the concurrency and input-length lists");
+            }
+            return Ok(BenchmarkResult::running("probe", self.elapsed())
+                .with_progress(0, total)
+                .log_line(LogLine::info(format!(
+                    "{} · model {} · {total} cells",
+                    handle.target().base_url,
+                    handle.target().model
+                ))));
+        }
+
+        if self.cursor >= self.cells.len() {
+            let errors: usize = self.rows.iter().map(|r| r.errors).sum();
+            let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
+            let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
+            let non_mtp_arm = self.rows.iter().filter(|r| r.arm_is_not_mtp()).count();
+            // The verdict is computed over the SAME metrics map the gate
+            // record carries (see `verdict::sweep_verdict`), so the two can
+            // never disagree about a rung's value. Floors all-zero keeps the
+            // pre-gate info verdicts verbatim.
+            let metrics = self.metrics();
+            let verdict = verdict::sweep_verdict(
+                &metrics,
+                self.rows.len(),
+                errors,
+                verdict::Exclusions {
+                    vacuous,
+                    cache_uncontrolled,
+                    non_mtp_arm,
+                },
+                VACUITY_FLOOR * 100.0,
+                &self.floors,
+            );
+            let mut frame = BenchmarkResult {
+                status: RunStatus::Completed,
+                ..BenchmarkResult::running("done", self.elapsed())
+            }
+            .with_progress(self.cells.len() as u64, self.cells.len() as u64)
+            .with_summary(self.summary())
+            .with_table(self.table())
+            .with_metrics(metrics)
+            .with_verdict(verdict);
+            // A "—" in the TPOT column is a measurement limit, not a broken
+            // number, and it is worth saying which: the endpoint delivered the
+            // whole reply in ONE SSE delta, so there is no inter-token interval
+            // to time. Avarok batches short replies that way, so this is common
+            // at small output budgets and reads like a bug if left unexplained.
+            let unmeasured = self.rows.iter().filter(|r| r.tpot.p50.is_none()).count();
+            if unmeasured > 0 {
+                frame = frame.log_line(LogLine::warn(format!(
+                    "TPOT unmeasured in {unmeasured} cell(s): the endpoint sent the whole reply \
+                     in one SSE delta, so there is no inter-token interval to time. Raise the \
+                     output-token budget to measure decode."
+                )));
+            }
+            return Ok(frame);
+        }
+
+        let (isl, conc) = self.cells[self.cursor];
+        let row = self.run_cell(isl, conc).await?;
+        let line = LogLine::info(format!(
+            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms · {:.1} tok/s{}",
+            stats::fmt_ms(row.ttft.p50),
+            stats::fmt_ms(row.tpot.p50),
+            row.throughput,
+            if row.vacuous { " (vacuous)" } else { "" }
+        ));
+        self.rows.push(row);
+        self.cursor += 1;
+        handle.progress(self.cursor as u64, self.cells.len() as u64);
+        Ok(
+            BenchmarkResult::running(format!("isl {isl} · conc {conc}"), self.elapsed())
+                .with_progress(self.cursor as u64, self.cells.len() as u64)
+                .with_summary(self.summary())
+                .with_table(self.table())
+                .log_line(line),
+        )
+    }
+}
+
+#[path = "concurrency_verdict.rs"]
+mod verdict;
+
+#[cfg(test)]
+#[path = "concurrency_tests.rs"]
+mod concurrency_tests;
+
+#[cfg(test)]
+#[path = "concurrency_verdict_tests.rs"]
+mod concurrency_verdict_tests;

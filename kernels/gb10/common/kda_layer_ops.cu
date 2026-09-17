@@ -2,10 +2,10 @@
 //
 // GLM-5.3-Flash KDA layer glue — Slice 6.
 //
-// Three small entry points the integrated KDA layer needs and Atlas does not already have.
+// Three small entry points the integrated KDA layer needs and Avarok does not already have.
 //
 // ★ kda_o_norm_gated_* is NOT a duplicate of `gated_rms_norm_f32_input`.
-//   Every Atlas gated RMSNorm applies **SiLU** to the gate (`rms_norm.cu:1087`,
+//   Every Avarok gated RMSNorm applies **SiLU** to the gate (`rms_norm.cu:1087`,
 //   `g / (1 + expf(-g))`). GLM's `Glm5NextTextRMSNormGated` sets `self.activation = "sigmoid"`
 //   and applies **sigmoid** (`transformers` 5.16.1, `modeling_glm5_next.py:343-359`).
 //   There is no substitution that turns one into the other, so `o_norm` is ADAPT, not REUSE —
@@ -13,7 +13,7 @@
 //   strict-FP32 norm over the trailing `head_dim`, FP32 core input, BF16 weight/gate/output.
 //
 // The other two are plumbing between kernels whose dtypes differ by design:
-//   * `kda_widen_bf16_f32` — Atlas's prefill conv emits BF16; `kda_chunk_*` consume FP32.
+//   * `kda_widen_bf16_f32` — Avarok's prefill conv emits BF16; `kda_chunk_*` consume FP32.
 //   * `kda_sigmoid_bf16_f32` — `b_proj` emits BF16; `kda_chunk_*` / `kda_recurrent_*` want
 //     an already-sigmoided FP32 `beta` (HF: `beta = torch.sigmoid(self.b_proj(hidden))`).
 
@@ -76,7 +76,7 @@ extern "C" __global__ void kda_o_norm_gated_f32(
 #undef KDA_ONORM_OUT_F32
 }
 
-// De-interleave + widen: Atlas's prefill conv writes ONE BF16 buffer whose channels are
+// De-interleave + widen: Avarok's prefill conv writes ONE BF16 buffer whose channels are
 // `q | k | v` per token, while `kda_chunk_*` take three separate FP32 `[T_pad, H*D]` buffers.
 // BF16 is a strict subset of FP32, so the widen itself contributes exactly zero error.
 //

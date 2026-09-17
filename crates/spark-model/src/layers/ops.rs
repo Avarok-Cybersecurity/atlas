@@ -29,7 +29,7 @@ mod dispatch_proj;
 #[path = "ops/dispatch_proj_decode.rs"]
 mod dispatch_proj_decode;
 // The compiled target's serving defaults (`kernels/<hw>/HARDWARE.toml`
-// `[defaults]`, baked into atlas_kernels), resolved BEFORE the environment.
+// `[defaults]`, baked into avarok_kernels), resolved BEFORE the environment.
 // SSOT for every lever that differs between one target and another.
 #[path = "ops/target_defaults.rs"]
 pub mod target_defaults;
@@ -52,7 +52,7 @@ mod fp8_act_quant_floor;
 #[path = "ops/fp8_gemv_batch.rs"]
 mod fp8_gemv_batch;
 // Tensor-core W8A16 decode GEMM with a 16-row M tile (#927), the ALU-bound
-// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind ATLAS_FFN_M16_TC.
+// `w8a16_gemv_batch16`'s replacement at 5..=16 rows. Behind AVAROK_FFN_M16_TC.
 #[path = "ops/fp8_moe.rs"]
 mod fp8_moe;
 #[path = "ops/fp8_moe_batch_a.rs"]
@@ -70,7 +70,7 @@ pub mod gdn_flashinfer;
 #[path = "ops/gdn_flashinfer_absent.rs"]
 pub mod gdn_flashinfer;
 // Tensor-core BF16 decode GEMM with a 16-row M tile — the BF16 LM-head arm
-// (#927/#928). Behind ATLAS_LM_HEAD_M16_TC; SSOT for its launch geometry.
+// (#927/#928). Behind AVAROK_LM_HEAD_M16_TC; SSOT for its launch geometry.
 #[path = "ops/dense_gemm_m16_bf16.rs"]
 mod dense_gemm_m16_bf16;
 #[path = "ops/gemm_dense.rs"]
@@ -84,7 +84,7 @@ pub mod model_stats;
 #[path = "ops/w8a16_gemm_m16.rs"]
 mod w8a16_gemm_m16;
 // The bit-exact N-column-blocked sibling of `w8a16_gemv_batch16` (#927),
-// for the attention decode projections. Behind ATLAS_ATTN_NCOL_GEMV.
+// for the attention decode projections. Behind AVAROK_ATTN_NCOL_GEMV.
 #[path = "ops/w8a16_gemv_ncol.rs"]
 mod w8a16_gemv_ncol;
 pub use model_stats::ModelStats;

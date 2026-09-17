@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Random Gaussian projection matrix `P` for the Atlas high-speed-swap
+// Random Gaussian projection matrix `P` for the Avarok high-speed-swap
 // predictor. Generated once at predictor init from a fixed seed
 // (Johnson–Lindenstrauss embedding); never re-derived per call. Stored on the
 // host so we can hand it to the GPU as BF16 without an extra dtype dance.

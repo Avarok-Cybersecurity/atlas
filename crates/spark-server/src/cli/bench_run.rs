@@ -4,11 +4,11 @@
 //!
 //! This subcommand drives an endpoint that is already serving; it never starts
 //! a model and never touches the GPU. Everything below is a thin shell around
-//! `atlas_plugin::headless`, which the dashboard shares.
+//! `avarok_plugin::headless`, which the dashboard shares.
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
-use atlas_plugin::{
+use avarok_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
+use avarok_plugin::{
     ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
     history, registry,
 };
@@ -45,6 +45,10 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             None => bench_print::print_suite(a.format),
         },
         BenchmarkCommand::History(a) => history_cmd(a),
+        BenchmarkCommand::ServeRelease => {
+            let code = super::bench_lease::release_cmd()?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
         BenchmarkCommand::Certify(a) => {
             let code = super::bench_certify::certify_cmd(a).await?;
@@ -139,7 +143,7 @@ fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)
 /// first use and `bench_record` prints a one-time notice — but both happen
 /// AFTER the run, into whatever log the operator redirected it to. On
 /// 2026-09-05 a campaign was split across three boxes to save wall-clock;
-/// each box minted its own identity (the key is per-ATLAS_HOME, not per
+/// each box minted its own identity (the key is per-AVAROK_HOME, not per
 /// machine — one box here holds two), and the notice scrolled past in three
 /// separate log files. The mistake only surfaced at CI, where
 /// `.github/workflows/ci.yml`'s "One PR, one commit, one signer" step rejects
@@ -171,6 +175,22 @@ fn warn_if_signer_is_not_committed(root: &std::path::Path) {
 #[cfg(test)]
 #[path = "bench_provenance_tests.rs"]
 mod provenance_tests;
+
+/// The box class's temperature ceilings for the hardware pre-check, from
+/// `kernels/<hw>/HARDWARE.toml` `[benchmarks.limits.thermal]` — the class
+/// named by `--hardware`, else the probed one. `None` (no repository here, or
+/// a class that declares none) is recorded on the run as "not judged".
+fn temp_ceilings(hardware: Option<&str>) -> Option<avarok_plugin::hardware::policy::TempCeilings> {
+    let root = repo_root().ok()?;
+    let class = match hardware {
+        Some(h) => h.to_string(),
+        None => avarok_plugin::hardware::Hardware::probe().gate_key(),
+    };
+    avarok_plugin::hardware::limits::limits(&root, &class)
+        .ok()
+        .flatten()
+        .map(|l| avarok_plugin::hardware::policy::TempCeilings::of(&l.thermal))
+}
 
 fn store() -> Result<ArtifactStore> {
     ArtifactStore::discover()
@@ -236,7 +256,15 @@ async fn run(args: RunArgs) -> Result<i32> {
     // it down; the ones that can happen first, should. (`SelfServed::drop`
     // covers the ones that cannot.)
     let store = store()?;
-    let served = if args.pull_request_gate {
+    let served = if args.pull_request_gate && args.serve_reuse {
+        let plan = super::bench_serve_plan::plan_serve(
+            &args.id,
+            args.hardware.as_deref(),
+            args.checkpoint.as_deref(),
+            super::bench_resolve::parse_serve_overrides(&args.serve_override)?,
+        )?;
+        Some(super::bench_lease::acquire(plan, args.serve_lease_owner).await?)
+    } else if args.pull_request_gate {
         Some(
             super::bench_selfstart::serve_for(
                 &args.id,
@@ -303,13 +331,14 @@ async fn run(args: RunArgs) -> Result<i32> {
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
-            source: atlas_plugin::RunSource::Cli,
-            atlas_version: super::ATLAS_VERSION.to_string(),
+            source: avarok_plugin::RunSource::Cli,
+            atlas_version: super::AVAROK_VERSION.to_string(),
             coherence: if args.skip_coherence_probe {
-                atlas_plugin::CoherencePolicy::Skip
+                avarok_plugin::CoherencePolicy::Skip
             } else {
-                atlas_plugin::CoherencePolicy::Probe
+                avarok_plugin::CoherencePolicy::Probe
             },
+            temp_ceilings: temp_ceilings(args.hardware.as_deref()),
         },
     };
 
@@ -326,12 +355,12 @@ async fn run(args: RunArgs) -> Result<i32> {
     let outcome = tokio::task::spawn_blocking(move || {
         let mut reporter = bench_print::StdoutReporter::new(quiet);
         let mut silent = SilentReporter;
-        let reporter: &mut dyn atlas_plugin::headless::RunReporter = if format == OutputFormat::Json
-        {
-            &mut silent // JSON on stdout must not be interleaved with progress
-        } else {
-            &mut reporter
-        };
+        let reporter: &mut dyn avarok_plugin::headless::RunReporter =
+            if format == OutputFormat::Json {
+                &mut silent // JSON on stdout must not be interleaved with progress
+            } else {
+                &mut reporter
+            };
         run_blocking(
             &executor,
             request,
@@ -389,7 +418,7 @@ async fn run(args: RunArgs) -> Result<i32> {
                     target.clone(),
                     args.output_image_args
                         .as_deref()
-                        .map(atlas_plugin::gate::card::parse_args)
+                        .map(avarok_plugin::gate::card::parse_args)
                         .transpose()
                         .map_err(|e| anyhow::anyhow!("--output-image-args: {e}"))?
                         .unwrap_or_default(),

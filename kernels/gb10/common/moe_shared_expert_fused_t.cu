@@ -22,7 +22,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
 
-// ARM-2 Phase-K RIDER 1: the E8M0 scale primitive (mx_block_scale / atlas_dec_e4m3)
+// ARM-2 Phase-K RIDER 1: the E8M0 scale primitive (mx_block_scale / avarok_dec_e4m3)
 // lives in ONE shared header, included by both Family A (this file) and Family B
 // (../qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu) — bit-identical across
 // families, no second copy.
@@ -40,7 +40,7 @@ __device__ __constant__ float E2M1_LUT_T[16] = {
     -0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f
 };
 
-// atlas_dec_e4m3 + mx_block_scale<E8M0> now live in mx_block_scale.cuh (RIDER 1).
+// avarok_dec_e4m3 + mx_block_scale<E8M0> now live in mx_block_scale.cuh (RIDER 1).
 
 // Transposed-layout fused gate+up decode kernel.
 //

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Tests for `GrammarMatcher::find_completion_to_accept` — the shortest
-// grammar-legal close to a stop-legal state, used for Atlas budget-aware
+// grammar-legal close to a stop-legal state, used for Avarok budget-aware
 // graceful close of structured outputs (#144).
 
 use super::matcher;

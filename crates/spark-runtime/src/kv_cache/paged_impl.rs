@@ -120,7 +120,7 @@ impl PagedKvCache {
         Ok(())
     }
 
-    /// DIAGNOSTIC (ATLAS_KV_POISON): fill a freshly-allocated block with 0xFF
+    /// DIAGNOSTIC (AVAROK_KV_POISON): fill a freshly-allocated block with 0xFF
     /// (a NaN bit-pattern in both bf16 `0xFFFF` and fp8-e4m3 `0xFF`) instead of
     /// zero. Any KV region that decode/attention reads but prefill never wrote
     /// then yields deterministic NaN rather than plausible-but-wrong zeros.
@@ -204,7 +204,7 @@ impl PagedKvCache {
                 if self.trace.is_on() {
                     format!("\n  history: {}", self.trace.dump(idx))
                 } else {
-                    String::from(" [set ATLAS_KV_TRACE=1 for this block's ref history]")
+                    String::from(" [set AVAROK_KV_TRACE=1 for this block's ref history]")
                 }
             );
             return false;
@@ -380,7 +380,7 @@ impl PagedKvCache {
             if layer.dtype != super::KvCacheDtype::Bf16 {
                 if li == 0 {
                     tracing::warn!(
-                        "ATLAS_KV_CKSUM[{tag}] layer 0 dtype={:?} != bf16 — probe \
+                        "AVAROK_KV_CKSUM[{tag}] layer 0 dtype={:?} != bf16 — probe \
                          only decodes BF16; skipping",
                         layer.dtype
                     );
@@ -410,7 +410,7 @@ impl PagedKvCache {
                     v_sabs += va;
                 }
                 tracing::warn!(
-                    "ATLAS_KV_CKSUM[{tag}] L{li} {rname} nblk={} \
+                    "AVAROK_KV_CKSUM[{tag}] L{li} {rname} nblk={} \
                      k_sum={k_sum:.4} k_ssq={k_ssq:.4} k_sabs={k_sabs:.4} \
                      v_sum={v_sum:.4} v_ssq={v_ssq:.4} v_sabs={v_sabs:.4}",
                     rblocks.len(),
@@ -454,7 +454,7 @@ impl PagedKvCache {
             let (_, k_ssq, _) = Self::bf16_reductions(&kb);
             let (_, v_ssq, _) = Self::bf16_reductions(&vb);
             tracing::warn!(
-                "ATLAS_KVBLK[{tag}] L{layer_idx} logical={li} phys={blk} \
+                "AVAROK_KVBLK[{tag}] L{layer_idx} logical={li} phys={blk} \
                  k_ssq={k_ssq:.4} v_ssq={v_ssq:.4}"
             );
         }

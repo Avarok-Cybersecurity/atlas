@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Reproduce Atlas's exact tokenization of the probe JSON.
+"""Reproduce Avarok's exact tokenization of the probe JSON.
 
-Uses Atlas's own OpenAI-variant Jinja template (jinja-templates/openai/qwen3_5_moe.jinja)
-to render the same string Atlas sees, then encodes via the model's HF tokenizer.
+Uses Avarok's own OpenAI-variant Jinja template (jinja-templates/openai/qwen3_5_moe.jinja)
+to render the same string Avarok sees, then encodes via the model's HF tokenizer.
 
-Writes /tmp/atlas_tokens_dgx2.json in the same format as
-/tmp/atlas_tokens.json so hf_dual_forward.py can consume it.
+Writes /tmp/avarok_tokens_dgx2.json in the same format as
+/tmp/avarok_tokens.json so hf_dual_forward.py can consume it.
 """
 from __future__ import annotations
 
@@ -15,15 +15,15 @@ import pathlib
 import jinja2
 from transformers import AutoTokenizer
 
-TEMPLATE_PATH = pathlib.Path("/workspace/atlas-mtp/jinja-templates/openai/qwen3_5_moe.jinja")
+TEMPLATE_PATH = pathlib.Path("/workspace/avarok-mtp/jinja-templates/openai/qwen3_5_moe.jinja")
 TOKENIZER_SNAP = "/workspace/.cache/huggingface/Qwen3.6-35B-A3B-FP8-dequanted-BF16"
-PROBE_PATH = pathlib.Path("/workspace/atlas-dumps/numdrift/atlas_turn11_probe.json")
-OUT_PATH = pathlib.Path("/tmp/atlas_tokens_dgx2.json")
-TARGET_TOKEN_COUNT = 9780  # what Atlas reports today
+PROBE_PATH = pathlib.Path("/workspace/avarok-dumps/numdrift/avarok_turn11_probe.json")
+OUT_PATH = pathlib.Path("/tmp/avarok_tokens_dgx2.json")
+TARGET_TOKEN_COUNT = 9780  # what Avarok reports today
 
 
 def normalize_tool_call_arguments(messages):
-    """Atlas's chat_impl.rs F76: pre-parse tool_call argument strings into dicts."""
+    """Avarok's chat_impl.rs F76: pre-parse tool_call argument strings into dicts."""
     out = []
     for m in messages:
         m2 = dict(m)
@@ -87,7 +87,7 @@ def main() -> None:
     if len(ids) != TARGET_TOKEN_COUNT:
         print(
             f"\nWARN: count {len(ids)} != target {TARGET_TOKEN_COUNT} "
-            f"(Atlas-reported); template/encoder difference may bias HF dump"
+            f"(Avarok-reported); template/encoder difference may bias HF dump"
         )
     else:
         print(f"\nMATCH: count == {TARGET_TOKEN_COUNT}")

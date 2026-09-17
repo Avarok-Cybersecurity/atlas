@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `ATLAS_GLM_PROFILE=1` — per-section decode timing for the GLM-5.3 stack.
+//! `AVAROK_GLM_PROFILE=1` — per-section decode timing for the GLM-5.3 stack.
 //!
 //! Off unless the variable is set. Every span ends in a `synchronize`, so enabling it
 //! SERIALISES the stream: read the split, not the total, and never quote a tok/s taken
@@ -78,7 +78,7 @@ static NANOS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static CALLS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static STEPS: AtomicU64 = AtomicU64::new(0);
 
-/// `ATLAS_GLM_PROFILE=1` full · `=2` COLLECTIVES ONLY.
+/// `AVAROK_GLM_PROFILE=1` full · `=2` COLLECTIVES ONLY.
 ///
 /// 🔴 Level 2 exists because level 1 cannot answer its own biggest question. Every span ends in
 /// a `synchronize`, ~15 of them per layer per rank, and any host-side scheduling difference
@@ -87,7 +87,7 @@ static STEPS: AtomicU64 = AtomicU64::new(0);
 /// jitter the model actually has — not jitter the profiler manufactured.
 fn level() -> u8 {
     static L: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
-    *L.get_or_init(|| match std::env::var("ATLAS_GLM_PROFILE").as_deref() {
+    *L.get_or_init(|| match std::env::var("AVAROK_GLM_PROFILE").as_deref() {
         Ok("1") => 1,
         Ok("2") => 2,
         _ => 0,
@@ -127,7 +127,7 @@ pub fn end_us(bucket: usize, t0: Option<Instant>, gpu: &dyn GpuBackend, stream: 
     ns as f64 / 1e3
 }
 
-/// `ATLAS_GLM_ROUTE_TRACE=1` — emit one line per reduce site per layer per token carrying the
+/// `AVAROK_GLM_ROUTE_TRACE=1` — emit one line per reduce site per layer per token carrying the
 /// router's selected GLOBAL expert ids and the measured rendezvous (arrival-skew) time.
 ///
 /// The router is REPLICATED and bit-identical on every rank, so rank 0's ids are the whole
@@ -135,7 +135,7 @@ pub fn end_us(bucket: usize, t0: Option<Instant>, gpu: &dyn GpuBackend, stream: 
 /// second run. Costly (one log line per MoE layer per token) — trace, then turn it off.
 pub fn trace_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_GLM_ROUTE_TRACE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_GLM_ROUTE_TRACE").as_deref() == Ok("1"))
 }
 
 thread_local! {

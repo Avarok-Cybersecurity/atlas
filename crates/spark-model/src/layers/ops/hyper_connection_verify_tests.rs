@@ -5,12 +5,12 @@ use super::*;
 /// Verify must preserve the decode projection shape even when elementwise
 /// stages process several rows. Run with the existing real-weight HC fixture.
 #[test]
-#[ignore = "requires GB10 and ATLAS_HC_TEST_DATA"]
+#[ignore = "requires GB10 and AVAROK_HC_TEST_DATA"]
 fn hc_verify_batched_stages_match_serial_bytes() {
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
         .expect("build the qwen3.8-flash-next/nvfp4 kernel target");
-    let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).unwrap();
+    let gpu = spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).unwrap();
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let streams = upload(g, &f.bytes("streams"));

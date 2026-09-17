@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 routed-expert loader (`ATLAS_EXL3_NATIVE_MOE=1`).
+//! Native EXL3 routed-expert loader (`AVAROK_EXL3_NATIVE_MOE=1`).
 //!
 //! The materialize pass (`exl3_materialize.rs` + `exl3_materialize_moe.rs`)
 //! kept this layer's routed experts packed; this loader resolves them into
@@ -47,7 +47,7 @@ pub(crate) fn load_moe_qwen4exp_exl3(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     // Replicate every expert on this rank instead of loading only
     // `local_expert_range()` — the draft (MTP) module under EP. See
     // `load_moe_qwen35`'s `force_all_experts`.

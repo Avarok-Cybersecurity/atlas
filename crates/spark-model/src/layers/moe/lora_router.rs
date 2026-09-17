@@ -132,7 +132,7 @@ impl MoeLayer {
         anyhow::ensure!(
             !(fp32_gate && folds),
             "MoE LoRA batched router fold requires BF16 gate_logits; the FP32-gate path \
-             (ATLAS_FP32_GATE / fp32 routing) has no BF16-ULP oracle against the single-stream \
+             (AVAROK_FP32_GATE / fp32 routing) has no BF16-ULP oracle against the single-stream \
              router fold. Unset the FP32-gate flag to serve a router-adapted adapter \
              concurrently, or route router adapters single-stream."
         );
@@ -148,7 +148,7 @@ impl MoeLayer {
         anyhow::ensure!(
             n <= l.cap,
             "MoE LoRA batched router fold: n ({n}) exceeds LoRA scratch cap ({}); raise \
-             ATLAS_LORA_EXPERT_MAX_TOKENS to >= num_tokens.",
+             AVAROK_LORA_EXPERT_MAX_TOKENS to >= num_tokens.",
             l.cap
         );
         // Degenerate expert gather: `router_zero_indices` (all 0) routes every row

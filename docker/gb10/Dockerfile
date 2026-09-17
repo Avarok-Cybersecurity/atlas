@@ -1,16 +1,16 @@
-# Atlas Spark — All models on GB10 (multi-target binary)
+# Avarok Spark — All models on GB10 (multi-target binary)
 #
 # Build from repo root:
-#   docker build -f docker/gb10/Dockerfile -t atlas-gb10 .
+#   docker build -f docker/gb10/Dockerfile -t avarok-gb10 .
 #
 # Run (auto-selects kernels based on model config):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-gb10 serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
+#     avarok-gb10 serve nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4
 #
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-gb10 serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4
+#     avarok-gb10 serve Kbenkhaled/Qwen3.5-35B-A3B-NVFP4
 
 # ── Build stage ──────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d AS builder
@@ -34,15 +34,15 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
-# quick-speed-bench (atlas-plugin) include_str!'s its ISL prompt fixtures from
+# quick-speed-bench (avarok-plugin) include_str!'s its ISL prompt fixtures from
 # tests/fixtures — without this line the release build fails in-container
 # ("couldn't read ../../tests/fixtures/bench_prompt_128.txt") while every
 # full-tree local build succeeds. Copy just the fixtures, not all of tests/.
 COPY tests/fixtures/ tests/fixtures/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=*
-ENV ATLAS_TARGET_QUANT=*
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=*
+ENV AVAROK_TARGET_QUANT=*
 
 RUN cargo build --release -p spark-server
 
@@ -53,9 +53,9 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
 
 # Stamp the source commit into the image so ":latest" provenance is answerable:
 #   docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' <tag>
-# Passed by scripts/release.sh and the atlas-release skill via --build-arg ATLAS_GIT_SHA.
-ARG ATLAS_GIT_SHA=unknown
-LABEL org.opencontainers.image.revision="${ATLAS_GIT_SHA}"
+# Passed by scripts/release.sh and the avarok-release skill via --build-arg AVAROK_GIT_SHA.
+ARG AVAROK_GIT_SHA=unknown
+LABEL org.opencontainers.image.revision="${AVAROK_GIT_SHA}"
 
 # NCCL for multi-GPU (EP=2), RDMA userspace for RoCE transport.
 # NCCL ≥ 2.28 is required for `ncclMemAlloc`/`ncclMemFree` symmetric memory

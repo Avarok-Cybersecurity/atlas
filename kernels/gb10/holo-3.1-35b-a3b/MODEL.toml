@@ -89,7 +89,7 @@ tool_call_parser = "qwen3_coder"
 # Tool-call grammar OFF: XGrammar-constrained decoding for tool requests makes
 # Holo-3.1 degenerate (runaway reasoning, hallucinated `Human:` turns, fin=length)
 # — verified against vLLM, which does free-generate + parse-after and stays
-# coherent. Disabling it makes Atlas match vLLM (concise, correct tools, clean
+# coherent. Disabling it makes Avarok match vLLM (concise, correct tools, clean
 # stops). The qwen3_coder parser still reads the model's tool calls.
 disable_tool_grammar = true
 
@@ -168,9 +168,9 @@ gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty 
 gated_delta_rule_decode_f32_strided_norm_half = """
 Half-register twin of the resolved f32_strided_norm; selected only when
 the resolved half-register gate is set, and that gate is off by default
-(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+(AVAROK_GDN_HALF_REG presence). Not a live path as shipped."""
 gated_delta_rule_decode_f32_strided_norm_smem = """
-SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (presence, off by
 default) AND the half-register gate. Not a live path as shipped."""
 
 [expected_absent.gated_delta_rule_snap]

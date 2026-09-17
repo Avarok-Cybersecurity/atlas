@@ -35,7 +35,7 @@
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::KernelHandle;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::{MtpHead, MtpQuantization, ProjectionWeight};
 
@@ -84,7 +84,7 @@ pub(crate) fn propose_meta_stride_bytes(max_seq_len: usize, kv_block_size: usize
 pub(crate) const PROPOSE_META_STRIDE_CAP: usize = 1 << 24;
 
 /// Stride actually used for a new head: [`propose_meta_stride_bytes`] unless
-/// `ATLAS_PROPOSE_META_STRIDE=<bytes>` overrides it (kill switch / sizing
+/// `AVAROK_PROPOSE_META_STRIDE=<bytes>` overrides it (kill switch / sizing
 /// experiments). The override is value-parsed; garbage or an empty value is
 /// ignored and falls through to the computed stride. Overrides are 8-byte
 /// aligned up, floored at [`PROPOSE_META_STRIDE_FLOOR`] so a hostile value
@@ -92,7 +92,7 @@ pub(crate) const PROPOSE_META_STRIDE_CAP: usize = 1 << 24;
 /// [`PROPOSE_META_STRIDE_CAP`] so the `16 x stride` allocation cannot
 /// overflow.
 pub(crate) fn propose_meta_stride_env(max_seq_len: usize, kv_block_size: usize) -> usize {
-    let value = std::env::var("ATLAS_PROPOSE_META_STRIDE").ok();
+    let value = std::env::var("AVAROK_PROPOSE_META_STRIDE").ok();
     if let Some(stride) = parse_stride_override(value.as_deref()) {
         return stride;
     }

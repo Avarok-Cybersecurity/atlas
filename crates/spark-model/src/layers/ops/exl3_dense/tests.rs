@@ -155,7 +155,7 @@ fn launch_plan_k6_skips_the_gemv_tier_at_small_m() {
 
 #[test]
 fn launch_plan_fused_egress_kill_switch_restores_the_converter() {
-    // `ATLAS_EXL3_NO_FUSED_EGRESS` (the A/B control arm): the `_f32_abf16`
+    // `AVAROK_EXL3_NO_FUSED_EGRESS` (the A/B control arm): the `_f32_abf16`
     // twin followed by the standalone f32 egress — `exl3_f32_to_bf16` for a
     // contiguous destination, `_2d` for a pitched one. The fused arm's plan
     // for the same calls is a single `_abf16_obf16` launch each, with the
@@ -226,7 +226,7 @@ fn launch_plan_fused_egress_kill_switch_restores_the_converter() {
     assert_eq!(
         names,
         vec!["exl3_gemm_k6_cb2_sh3_f32_abf16_obf16"],
-        "default plan must be the fused one (is ATLAS_EXL3_NO_FUSED_EGRESS set?)"
+        "default plan must be the fused one (is AVAROK_EXL3_NO_FUSED_EGRESS set?)"
     );
 }
 

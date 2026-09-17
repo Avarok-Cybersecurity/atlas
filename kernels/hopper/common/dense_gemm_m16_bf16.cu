@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas DENSE BF16 tensor-core decode GEMM — 16-row M tile.
+// Avarok DENSE BF16 tensor-core decode GEMM — 16-row M tile.
 //
 //   C[M,N] = A[M,K] (BF16) * B[N,K]^T (BF16),  1 <= M <= 16
 //
 // WHY (#927/#928, 1xH100, nsys round 7, 2026-09-11, Qwen/Qwen3.8-27B-FP8 with
-// `--lm-head-dtype bf16` and `ATLAS_LM_HEAD_BATCHM_MAX=16`, decode batch 16).
+// `--lm-head-dtype bf16` and `AVAROK_LM_HEAD_BATCHM_MAX=16`, decode batch 16).
 // The BF16 LM head is the third-largest kernel in the 43.6 ms step and the only
 // top-5 entry that is a SINGLE launch: `dense_gemv_bf16_batchm` costs
 // **3,571 µs = 8.19% of the step** for one pass over the 2.54 GB vocab weight
@@ -46,7 +46,7 @@
 //
 // That is a seam at the LM head specifically, because a near-tie argmax flip
 // changes the emitted token — which is why the head arm is behind
-// `ATLAS_LM_HEAD_M16_TC` and OFF by default until an H100 receipt says it wins.
+// `AVAROK_LM_HEAD_M16_TC` and OFF by default until an H100 receipt says it wins.
 // `model/trait_impl/lm_head_batched.rs` states the same rule at the dispatch.
 //
 // NO BLOCK SCALE, NO DEQUANT. Unlike `w8a16_gemm_m16` (FP8 E4M3 weights, a
@@ -62,7 +62,7 @@
 // at M=16 and the accumulator is 4 * N_SUBS FP32 registers (4 at N_TILE=32).
 //
 // N_TILE is a TEMPLATE PARAMETER with two instantiations, 32 (the default) and
-// 64 (`dense_gemm_m16_bf16_n64`, opt-in via `ATLAS_LM_HEAD_M16_TC_NTILE=64`),
+// 64 (`dense_gemm_m16_bf16_n64`, opt-in via `AVAROK_LM_HEAD_M16_TC_NTILE=64`),
 // mirroring `w8a16_gemm_m16`. 32 is the default because it is the tile the FFN
 // receipt was taken on, and because `w8a16_gemm_m16`'s wave-quantisation
 // argument does NOT apply here: at the vocab's N=248077 the grid is
@@ -129,7 +129,7 @@
 
 #define DGM16_M_TILE 16
 // The two instantiated N tiles. 32 is the default; 64 is the opt-in wide arm
-// (`ATLAS_LM_HEAD_M16_TC_NTILE=64`). Both must be a multiple of 32 so each of
+// (`AVAROK_LM_HEAD_M16_TC_NTILE=64`). Both must be a multiple of 32 so each of
 // the 4 warps owns a whole number of 8-wide MMA tiles.
 #define DGM16_N_TILE 32
 #define DGM16_N_TILE_WIDE 64
@@ -357,7 +357,7 @@ void dense_gemm_m16_bf16(
 /// the weight bytes, halving the L2 traffic the A re-reads cost. Grid is
 /// `ceil(N/64)`.
 ///
-/// Opt-in (`ATLAS_LM_HEAD_M16_TC_NTILE=64`) and NOT the default: it is the A/B
+/// Opt-in (`AVAROK_LM_HEAD_M16_TC_NTILE=64`) and NOT the default: it is the A/B
 /// arm for the A-reuse hypothesis in the header, and it has no receipt yet.
 extern "C" __global__
 __launch_bounds__(DGM16_THREADS, 4)

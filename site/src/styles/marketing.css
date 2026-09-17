@@ -1,32 +1,40 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 .marketing {
-  --background: #fff;
-  --foreground: var(--atlas-ink);
-  --primary: var(--atlas-ink);
-  --primary-foreground: #fff;
-  --border: #e1e4eb;
-  --ring: var(--atlas-ink);
-  --muted: #f7f7f9;
-  --muted-foreground: #616979;
-  --card: #fff;
-  --card-foreground: var(--atlas-ink);
-  --popover: #fff;
-  --popover-foreground: var(--atlas-ink);
-  --accent: #f7f7f9;
-  --accent-foreground: var(--atlas-ink);
-  --secondary: #f7f7f9;
-  --secondary-foreground: var(--atlas-ink);
-  --input: #dce1ec;
-  --destructive: #c92d37;
+  --background: var(--bg);
+  --foreground: var(--t1);
+  --primary: var(--t1);
+  --primary-foreground: var(--bg);
+  --ring: var(--t1);
+  --muted: var(--bg2);
+  --muted-foreground: var(--t3);
+  --card-foreground: var(--t1);
+  --popover: var(--bg);
+  --popover-foreground: var(--t1);
+  --accent-foreground: var(--t1);
+  --secondary: var(--bg2);
+  --secondary-foreground: var(--t1);
+  --input: var(--border-strong);
+  --destructive: var(--red);
   --radius: 0.5rem;
+}
+/* The hero render sits on a near-white ground and is multiplied onto the
+   light theme. No blend mode lifts that ground off a dark page (screen leaves
+   white white, multiply goes black), so dark mode shows a re-toned derivative
+   of the same render whose ground is levelled to the dark --bg. That is one
+   image element, not two: the boot script in app.html preloads the render the
+   theme calls for and the inline pick in Home.svelte gives the element its
+   source while the page parses, so a load fetches one render. All CSS has
+   left to do is drop the multiply the dark render does not want. */
+html[data-theme="dark"] .marketing .m-hero-art img {
+  mix-blend-mode: normal;
 }
 .marketing .m-dark {
   --background: var(--atlas-ink);
   --foreground: #f5f7fb;
-  --primary: var(--atlas-purple);
+  --primary: var(--avarok-purple);
   --primary-foreground: var(--atlas-ink);
   --border: #30353d;
-  --ring: var(--atlas-purple);
+  --ring: var(--avarok-purple);
   --muted: #20242c;
   --muted-foreground: #a3aab7;
   --card: #181c22;
@@ -34,10 +42,27 @@
   --popover: #181c22;
   --popover-foreground: #f5f7fb;
   --accent: #24272d;
-  --accent-foreground: var(--atlas-cyan);
+  --accent-foreground: var(--avarok-cyan);
   --secondary: #20242c;
   --secondary-foreground: #f5f7fb;
   --input: #30353d;
+}
+
+/* Travel for the hero light sweep. The band starts clear of the right edge,
+   crosses in a tenth of the cycle and then parks off the left edge for the
+   remaining nine tenths, so the art is unlit almost all of the time and the
+   glint reads as an event rather than a loop. Shared by the object glint and
+   the floor shimmer. See .m-hero-art::after and .m-hero-art::before. */
+@keyframes m-hero-sweep {
+  0% {
+    transform: translateX(40%);
+  }
+  10% {
+    transform: translateX(-40%);
+  }
+  100% {
+    transform: translateX(-40%);
+  }
 }
 
 .marketing {
@@ -65,12 +90,12 @@
   }
   a:focus-visible,
   button:focus-visible {
-    outline: 3px solid var(--atlas-ink);
+    outline: 3px solid var(--t1);
     outline-offset: 5px;
   }
   ::selection {
     color: var(--atlas-ink);
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
   }
   .m-skip-link {
     position: fixed;
@@ -78,7 +103,7 @@
     left: 20px;
     padding: 14px;
     z-index: 100;
-    background: white;
+    background: var(--background);
   }
   .m-skip-link:focus {
     top: 10px;
@@ -92,7 +117,7 @@
     border-bottom: 1px solid var(--border);
     position: relative;
     z-index: 20;
-    background: white;
+    background: var(--background);
     gap: 30px;
   }
   .m-brand {
@@ -101,16 +126,30 @@
     margin-left: -17px;
     flex-shrink: 0;
   }
-  .m-brand img {
-    display: block;
-    width: 150px;
-    height: auto;
+  /* The lockup carries its own clear-space margin; here the .m-brand padding
+     is the clear space, so the margin is dropped and the width set locally. */
+  .m-brand .logo {
+    margin: 0;
+    width: 236px;
+  }
+  .m-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .m-header-actions :global(.theme-toggle) {
+    width: 40px;
+    height: 40px;
+    background: var(--background);
+    color: var(--foreground);
+    border-color: var(--border);
   }
   .m-header nav {
     display: flex;
     gap: 34px;
     align-items: center;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-header nav a {
     display: flex;
@@ -130,7 +169,7 @@
     padding: 18px 24px;
     border: 1px solid transparent;
     border-radius: 7px;
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 500;
     transition:
       background 0.2s,
@@ -141,24 +180,24 @@
     transform: translateY(-2px);
   }
   .m-button-primary {
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
     color: var(--atlas-ink);
-    box-shadow: 0 4px 10px color-mix(in srgb, var(--atlas-purple) 15%, transparent);
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--avarok-purple) 15%, transparent);
   }
   .m-button-primary:hover {
-    background: var(--atlas-cyan);
+    background: var(--avarok-cyan);
   }
   .m-button-dark {
-    background: var(--atlas-ink);
-    color: white;
+    background: var(--t1);
+    color: var(--bg);
   }
   .m-button-dark:hover {
-    background: #30363f;
+    background: var(--t2);
   }
   .m-nav-cta {
     padding: 13px 19px;
     gap: 20px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-hero {
     min-height: 640px;
@@ -166,7 +205,7 @@
     position: relative;
     overflow: hidden;
     isolation: isolate;
-    background: var(--atlas-paper);
+    background: var(--avarok-paper);
   }
   .m-hero-copy {
     position: relative;
@@ -176,7 +215,7 @@
   }
   .m-eyebrow {
     font-family: "SFMono-Regular", monospace;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 400;
     line-height: 1.5;
     letter-spacing: 0.075em;
@@ -185,36 +224,37 @@
     display: inline-flex;
     gap: 11px;
     align-items: center;
-    border-bottom: 1px solid #dce3ef;
+    border-bottom: 1px solid var(--border);
     padding-bottom: 10px;
     margin-bottom: 30px;
-    font-size: 12px;
+    font-size: 13px;
   }
   .m-status-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--atlas-green);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--atlas-green) 12%, transparent);
+    background: var(--avarok-green);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--avarok-green) 12%, transparent);
   }
   h1 {
     font-size: clamp(62px, 6.6vw, 104px);
     font-weight: 450;
     line-height: 1.04;
-    letter-spacing: -0.072em;
+    /* Tight, but not so tight that Arial's r runs into the m in "terms". */
+    letter-spacing: -0.05em;
     margin: 0 0 25px;
   }
   h1 em {
-    color: var(--atlas-ink);
+    color: var(--t1);
     font-weight: 450;
     font-style: normal;
-    box-shadow: inset 0 -0.12em 0 var(--atlas-purple);
+    box-shadow: inset 0 -0.12em 0 var(--avarok-purple);
   }
   .m-hero-description {
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1.7;
-    max-width: 420px;
-    color: var(--atlas-gray-text);
+    max-width: 460px;
+    color: var(--avarok-gray-text);
     margin: 0 0 30px;
     letter-spacing: -0.02em;
   }
@@ -227,7 +267,7 @@
     display: inline-flex;
     align-items: center;
     gap: 13px;
-    font-size: 14px;
+    font-size: 16px;
     font-weight: 500;
     transition: color 0.2s;
   }
@@ -237,13 +277,13 @@
     align-items: center;
     gap: 9px;
     font-family: "SFMono-Regular", monospace;
-    font-size: 12px;
-    color: var(--atlas-gray-text);
+    font-size: 13px;
+    color: var(--avarok-gray-text);
   }
   .m-hero-note span {
     width: 5px;
     height: 5px;
-    border: 1px solid #7b8494;
+    border: 1px solid var(--t3);
     border-radius: 50%;
   }
   .m-hero-art {
@@ -262,6 +302,101 @@
     object-position: 60% 50%;
     mix-blend-mode: multiply;
   }
+  /* A soft diagonal band that crosses the render from right to left every few
+     seconds, so the glass ring and the ribbons look like they catch a light
+     passing the camera. It is a pseudo element rather than a third image, so
+     it costs no bytes and animates on transform alone.
+
+     Overlay is the blend that survives both themes. It leaves near black and
+     near white backdrops essentially where they are and only lifts mid tones,
+     so the light theme's white ground and the dark theme's levelled #0F1216
+     ground stay put while the glass and the ribbons brighten. isolation on
+     .m-hero-art keeps that blend inside the art group, so the band resolves
+     against the two hero images instead of the page behind them, and the
+     group's own left edge mask trims the sweep exactly as it trims the art.
+
+     The box is wider than the group and offset left so the band has somewhere
+     off screen to enter from and exit to; only the transform moves. */
+  .m-hero-art {
+    isolation: isolate;
+  }
+  /* The same light crossing the floor the ribbons sit on. A vertical mask
+     keeps it in the bottom of the frame where the reflection lives, so the
+     ribbons themselves are lit by ::after alone and the shimmer never rides
+     up onto the ring. The band is wider and weaker than the object glint and
+     it is blurred, because a reflection off a soft floor scatters rather than
+     returning a sharp highlight.
+
+     It runs on the same keyframes and duration, offset by a beat, so the
+     floor catches the light just after the object does, the way a real
+     reflection lags the thing it reflects. */
+  .m-hero-art::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    right: auto;
+    left: -60%;
+    width: 220%;
+    pointer-events: none;
+    background: linear-gradient(
+      110deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0) 40%,
+      rgba(255, 255, 255, 0.28) 50%,
+      rgba(255, 255, 255, 0) 60%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 60%,
+      #000 78%,
+      #000 100%
+    );
+    filter: blur(10px);
+    mix-blend-mode: overlay;
+    transform: translateX(40%);
+    will-change: transform;
+    animation-name: m-hero-sweep;
+    animation-duration: 16s;
+    animation-iteration-count: infinite;
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+    animation-delay: 0.35s;
+  }
+  .m-hero-art::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    right: auto;
+    left: -60%;
+    width: 220%;
+    pointer-events: none;
+    background: linear-gradient(
+      110deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0) 44%,
+      rgba(255, 255, 255, 0.45) 50%,
+      rgba(255, 255, 255, 0) 56%,
+      transparent 100%
+    );
+    mix-blend-mode: overlay;
+    transform: translateX(40%);
+    will-change: transform;
+    animation-name: m-hero-sweep;
+    animation-duration: 16s;
+    animation-iteration-count: infinite;
+    /* Eased at both ends and quick through the middle, which is how a
+       specular highlight behaves as a light swings past. */
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  /* The blanket reduce rule further down stops the animations; both bands
+     would otherwise sit frozen over the art, so take them out of the picture
+     too. */
+  @media (prefers-reduced-motion: reduce) {
+    .m-hero-art::before,
+    .m-hero-art::after {
+      display: none;
+    }
+  }
   .m-art-caption {
     position: absolute;
     right: 4.5%;
@@ -270,10 +405,10 @@
     align-items: center;
     gap: 13px;
     font:
-      12px/1.4 "SFMono-Regular",
+      13px/1.4 "SFMono-Regular",
       monospace;
     letter-spacing: 0.07em;
-    color: #5d677e;
+    color: var(--t3);
     z-index: 3;
   }
   .m-crosshair {
@@ -291,18 +426,18 @@
     gap: 24px;
     border-top: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    background: white;
+    background: var(--background);
   }
   .m-ecosystem p {
     font:
-      12px/1.7 "SFMono-Regular",
+      13px/1.7 "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     letter-spacing: 0.045em;
   }
   .m-ecosystem p strong {
     font-weight: 400;
-    color: #262d39;
+    color: var(--t1);
   }
   .m-model-name {
     display: flex;
@@ -311,10 +446,10 @@
     font-size: 25px;
     font-weight: 600;
     letter-spacing: -0.07em;
-    color: #5a6272;
+    color: var(--t2);
   }
   .m-model-name span {
-    font-size: 20px;
+    font-size: 22px;
   }
   .m-gemma {
     font-weight: 450;
@@ -324,13 +459,13 @@
   }
   .m-nemotron {
     display: block;
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.2;
     letter-spacing: -0.04em;
   }
   .m-nemotron small {
     display: block;
-    font-size: 12px;
+    font-size: 13px;
     letter-spacing: 0.13em;
     font-weight: 450;
   }
@@ -339,8 +474,8 @@
     align-items: center;
     gap: 12px;
     max-width: 160px;
-    font-size: 14px;
-    color: var(--atlas-gray-text);
+    font-size: 16px;
+    color: var(--avarok-gray-text);
   }
   @media (min-width: 1700px) {
     .m-header,
@@ -386,15 +521,15 @@
       padding: 0 6%;
       gap: 16px;
     }
-    .m-brand img {
-      width: 124px;
+    .m-brand .logo {
+      width: 196px;
     }
     .m-header nav {
       display: none;
     }
     .m-nav-cta {
       padding: 12px 14px;
-      font-size: 14px;
+      font-size: 16px;
       gap: 9px;
     }
     .m-hero {
@@ -406,7 +541,7 @@
       max-width: 100%;
     }
     .m-hero-announcement {
-      font-size: 12px;
+      font-size: 13px;
       margin-bottom: 27px;
       letter-spacing: 0;
     }
@@ -414,7 +549,7 @@
       font-size: clamp(53px, 12.5vw, 83px);
     }
     .m-hero-description {
-      font-size: 16px;
+      font-size: 18px;
       line-height: 1.65;
       max-width: 340px;
     }
@@ -422,12 +557,12 @@
       gap: 20px;
     }
     .m-hero-actions .m-button {
-      font-size: 14px;
+      font-size: 16px;
       padding: 16px;
       gap: 14px;
     }
     .m-text-link {
-      font-size: 14px;
+      font-size: 16px;
       gap: 7px;
     }
     .m-hero-note {
@@ -445,7 +580,7 @@
     .m-art-caption {
       bottom: 17px;
       right: 6%;
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-caption-index {
       display: none;
@@ -455,13 +590,13 @@
       gap: 24px 18px;
     }
     .m-model-name {
-      font-size: 19px;
+      font-size: 21px;
     }
     .m-nemotron {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-nemotron small {
-      font-size: 12px;
+      font-size: 13px;
     }
   }
   @media (prefers-reduced-motion: reduce) {
@@ -485,7 +620,7 @@
     margin-bottom: 60px;
   }
   .m-section-label {
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin: 0 0 28px;
   }
   .m-section h2 {
@@ -496,13 +631,13 @@
     margin: 0;
   }
   .m-soft-text {
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-section-intro {
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.7;
-    color: var(--atlas-gray-text);
-    width: 320px;
+    color: var(--avarok-gray-text);
+    width: 360px;
     max-width: 40%;
     margin: 0 0 4px;
   }
@@ -512,52 +647,52 @@
     gap: 38px;
   }
   .m-benefits article {
-    border-top: 2px solid var(--atlas-purple);
+    border-top: 2px solid var(--avarok-purple);
     padding-top: 27px;
     display: flex;
     flex-direction: column;
   }
   .m-benefits article:nth-child(2) {
-    border-top-color: var(--atlas-cyan);
+    border-top-color: var(--avarok-cyan);
   }
   .m-benefits article:nth-child(3) {
-    border-top-color: var(--atlas-green);
+    border-top-color: var(--avarok-green);
   }
   .m-benefit-top {
     display: flex;
     justify-content: space-between;
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin-bottom: 52px;
   }
   .m-benefit-top span {
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-benefits h3 {
-    font-size: 23px;
+    font-size: 25px;
     line-height: 1.2;
     font-weight: 500;
     letter-spacing: -0.04em;
     margin: 0 0 15px;
   }
   .m-benefits p {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.7;
-    color: var(--atlas-gray-text);
-    max-width: 335px;
+    color: var(--avarok-gray-text);
+    max-width: 360px;
     margin: 0 0 25px;
   }
   .m-benefits a {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 14px;
+    font-size: 16px;
     margin-top: auto;
   }
   .m-benefits a:hover {
-    color: var(--atlas-ink);
+    color: var(--t1);
   }
   .m-possibilities {
     background: var(--atlas-ink);
@@ -566,7 +701,7 @@
     padding-bottom: 35px;
   }
   .m-possibilities .m-section-label {
-    color: var(--atlas-purple);
+    color: var(--avarok-purple);
   }
   .m-possibilities .m-soft-text {
     color: var(--atlas-tagline-dark);
@@ -598,7 +733,7 @@
     flex: none;
     color: var(--atlas-wordmark-dark);
     padding: 17px 0;
-    font-size: 14px;
+    font-size: 16px;
     gap: 10px;
     border: 0;
     border-radius: 0;
@@ -608,7 +743,7 @@
     background: transparent !important;
   }
   .m-scenario-tab[aria-selected="true"]:after {
-    background: var(--atlas-purple) !important;
+    background: var(--avarok-purple) !important;
     bottom: -1px !important;
     height: 2px !important;
   }
@@ -634,7 +769,7 @@
     margin: 0 0 22px;
   }
   .m-scenario-copy p {
-    font-size: 16px;
+    font-size: 18px;
     line-height: 1.75;
     color: var(--atlas-wordmark-dark);
     max-width: 410px;
@@ -652,14 +787,14 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 12px;
+    font-size: 13px;
     color: #c6ceda;
   }
   .m-scenario-copy li svg {
-    color: var(--atlas-green);
+    color: var(--avarok-green);
   }
   .m-scenario-copy .m-text-link {
-    color: var(--atlas-cyan);
+    color: var(--avarok-cyan);
   }
   .m-workflow {
     background: var(--atlas-ink);
@@ -674,7 +809,7 @@
     justify-content: space-between;
     gap: 10px;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
     color: var(--atlas-wordmark-dark);
     letter-spacing: 0.035em;
@@ -686,7 +821,7 @@
     gap: 8px;
   }
   .m-workflow-top .m-status-dot {
-    background: var(--atlas-green);
+    background: var(--avarok-green);
   }
   .m-prompt-bubble {
     background: #20242a;
@@ -696,7 +831,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 15px;
-    font-size: 14px;
+    font-size: 16px;
     padding: 20px;
     border-radius: 8px 8px 0 8px;
     margin-left: 30px;
@@ -706,13 +841,13 @@
     display: flex;
     gap: 10px;
     align-items: center;
-    font-size: 14px;
+    font-size: 16px;
     color: #f7f7f9;
   }
   .m-engine-dot {
     width: 6px;
     height: 6px;
-    background: var(--atlas-green);
+    background: var(--avarok-green);
     border-radius: 50%;
     margin-left: auto;
   }
@@ -728,7 +863,7 @@
     display: flex;
     align-items: center;
     gap: 12px;
-    font-size: 13px;
+    font-size: 15px;
     color: var(--atlas-wordmark-dark);
   }
   .m-flow-check {
@@ -740,7 +875,7 @@
     height: 19px;
     margin-left: -19px;
     background: var(--atlas-ink);
-    color: var(--atlas-green);
+    color: var(--avarok-green);
   }
   .m-workflow-result {
     display: flex;
@@ -751,7 +886,7 @@
     border: 1px solid #373c45;
     border-radius: 7px;
     padding: 18px 15px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-workflow-result svg:last-child {
     margin-left: auto;
@@ -764,13 +899,13 @@
     gap: 25px;
     color: var(--atlas-wordmark-dark);
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
   }
   .m-bottom-note {
     margin-left: auto;
     font-family: Arial, sans-serif;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-evidence {
     display: grid;
@@ -781,14 +916,14 @@
     padding-bottom: 120px;
   }
   .m-evidence-copy > p:not(.m-eyebrow) {
-    font-size: 17px;
+    font-size: 19px;
     line-height: 1.75;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     max-width: 390px;
     margin: 27px 0;
   }
   .m-evidence-card {
-    border-left: 1px solid #dfe4ee;
+    border-left: 1px solid var(--border);
     padding-left: 40px;
   }
   .m-evidence-kicker {
@@ -796,16 +931,16 @@
     align-items: center;
     gap: 10px;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-big-number {
     font-size: clamp(74px, 8vw, 120px);
     letter-spacing: -0.08em;
     font-weight: 450;
     line-height: 1.25;
-    color: var(--atlas-ink);
+    color: var(--t1);
     margin: 12px 0 4px;
   }
   .m-big-number > span {
@@ -813,7 +948,7 @@
     margin-left: 5px;
   }
   .m-evidence-card h3 {
-    font-size: 20px;
+    font-size: 22px;
     letter-spacing: -0.035em;
     font-weight: 450;
     max-width: 320px;
@@ -829,26 +964,26 @@
     gap: 15px;
     align-items: center;
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
   }
   .m-benchmark-bars b {
     display: block;
     padding: 10px 12px;
     color: var(--atlas-ink);
-    background: var(--atlas-purple);
-    font-size: 12px;
+    background: var(--avarok-purple);
+    font-size: 13px;
     font-weight: 400;
     border-radius: 2px;
   }
   .m-benchmark-bars > div + div b {
-    background: #ececef;
-    color: #5e626a;
+    background: var(--vllm);
+    color: var(--t2);
   }
   .m-benchmark-note {
-    font-size: 12px;
+    font-size: 13px;
     line-height: 1.65;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin: 20px 0 0;
   }
   .m-benchmark-note a {
@@ -864,10 +999,10 @@
     height: 4px;
     background: linear-gradient(
       to right,
-      var(--atlas-purple) 0% 25%,
-      var(--atlas-cyan) 25% 50%,
-      var(--atlas-green) 50% 75%,
-      var(--atlas-gold) 75% 100%
+      var(--avarok-purple) 0% 25%,
+      var(--avarok-cyan) 25% 50%,
+      var(--avarok-green) 50% 75%,
+      var(--avarok-gold) 75% 100%
     );
   }
   .m-start-section {
@@ -891,7 +1026,7 @@
     color: var(--atlas-wordmark-dark);
   }
   .m-large-plus {
-    color: var(--atlas-gold);
+    color: var(--avarok-gold);
     font-size: 35px;
     font-weight: 200;
     line-height: 1;
@@ -904,7 +1039,7 @@
     margin: 0 0 40px;
   }
   .m-start-section h2 > span {
-    color: var(--atlas-purple);
+    color: var(--avarok-purple);
   }
   .m-start-bottom {
     display: flex;
@@ -913,7 +1048,7 @@
     gap: 25px;
   }
   .m-start-bottom p {
-    font-size: 19px;
+    font-size: 21px;
     color: var(--atlas-wordmark-dark);
     line-height: 1.55;
     margin: 0;
@@ -924,18 +1059,18 @@
     gap: 35px;
   }
   .m-button-white {
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
     color: var(--atlas-ink);
     padding: 18px 24px;
   }
   .m-button-white:hover {
-    background: var(--atlas-cyan);
+    background: var(--avarok-cyan);
   }
   .m-github-link {
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-github-link:hover {
     text-decoration: underline;
@@ -948,7 +1083,7 @@
     margin-top: 47px;
     padding-top: 23px;
     color: var(--atlas-wordmark-dark);
-    font-size: 12px;
+    font-size: 13px;
   }
   .m-start-fineprint span {
     display: flex;
@@ -956,7 +1091,7 @@
     gap: 8px;
   }
   .m-footer {
-    background: var(--atlas-paper);
+    background: var(--avarok-paper);
     padding: 65px 7% 24px;
   }
   .m-footer-main {
@@ -970,8 +1105,8 @@
     padding: 26px;
     margin-left: -26px;
   }
-  .m-footer-main .m-brand img {
-    width: 244px;
+  .m-footer-main .m-brand .logo {
+    width: 253px;
   }
   .m-workflow-engine img {
     display: block;
@@ -980,8 +1115,8 @@
     flex-shrink: 0;
   }
   .m-footer-main p {
-    font-size: 14px;
-    color: var(--atlas-gray-text);
+    font-size: 16px;
+    color: var(--avarok-gray-text);
     margin-top: 8px;
   }
   .m-footer-links {
@@ -993,13 +1128,13 @@
     flex-direction: column;
     gap: 15px;
     min-width: 150px;
-    font-size: 14px;
+    font-size: 16px;
   }
   .m-footer-links > div > span {
     font:
-      12px "SFMono-Regular",
+      13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin-bottom: 9px;
   }
   .m-footer-links a {
@@ -1008,17 +1143,17 @@
     gap: 5px;
   }
   .m-footer-links a:hover {
-    color: var(--atlas-ink);
+    color: var(--t1);
   }
   .m-footer-bottom {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    border-top: 1px solid #e5e8ef;
+    border-top: 1px solid var(--border);
     padding-top: 23px;
-    color: var(--atlas-gray-text);
-    font-size: 12px;
+    color: var(--avarok-gray-text);
+    font-size: 13px;
   }
   @media (min-width: 1700px) {
     .m-section,
@@ -1032,7 +1167,7 @@
       gap: 25px;
     }
     .m-scenario-tab {
-      font-size: 13px;
+      font-size: 15px;
     }
     .m-scenario-tab svg:last-child {
       display: none;
@@ -1051,7 +1186,7 @@
       gap: 20px;
     }
     .m-workflow-top {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-workflow-top > span:last-child {
       display: none;
@@ -1060,7 +1195,7 @@
       gap: 26px;
     }
     .m-benefits h3 {
-      font-size: 21px;
+      font-size: 23px;
     }
     .m-footer-links {
       gap: 40px;
@@ -1077,7 +1212,7 @@
     .m-section-intro {
       max-width: 100%;
       width: 100%;
-      font-size: 16px;
+      font-size: 18px;
       margin-top: 24px;
     }
     .m-section h2 {
@@ -1106,7 +1241,7 @@
       align-items: stretch;
     }
     .m-scenario-tab {
-      font-size: 12px;
+      font-size: 13px;
       white-space: normal;
       flex-direction: column;
       gap: 8px;
@@ -1126,24 +1261,24 @@
       max-width: none;
     }
     .m-scenario-copy li {
-      font-size: 13px;
+      font-size: 15px;
     }
     .m-workflow {
       padding: 20px;
     }
     .m-workflow-top {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-workflow li {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-workflow-result {
-      font-size: 14px;
+      font-size: 16px;
     }
     .m-possibilities-bottom {
       gap: 12px;
       flex-wrap: wrap;
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-possibilities-bottom svg {
       width: 12px;
@@ -1159,7 +1294,7 @@
     .m-evidence-card {
       padding: 30px 0 0;
       border-left: none;
-      border-top: 1px solid #dfe4ee;
+      border-top: 1px solid var(--border);
     }
     .m-big-number {
       font-size: 100px;
@@ -1172,7 +1307,7 @@
       padding: 30px 6%;
     }
     .m-start-top p {
-      font-size: 12px;
+      font-size: 13px;
     }
     .m-start-top {
       margin-bottom: 40px;
@@ -1187,7 +1322,7 @@
       gap: 28px;
     }
     .m-start-bottom p {
-      font-size: 17px;
+      font-size: 19px;
     }
     .m-start-bottom > div {
       align-items: flex-start;
@@ -1235,7 +1370,7 @@
       order: 3;
       justify-content: space-between;
       width: 100%;
-      font-size: 13px;
+      font-size: 15px;
       padding: 0 0 16px;
       gap: 12px;
     }
@@ -1248,7 +1383,7 @@
       gap: 20px;
     }
     .m-hero-copy .m-hero-announcement {
-      font-size: 12px;
+      font-size: 13px;
       letter-spacing: 0;
     }
     .m-hero {
@@ -1279,15 +1414,15 @@
     gap: 20px;
     flex-wrap: wrap;
     padding: 24px 7%;
-    background: white;
-    color: var(--atlas-ink);
+    background: var(--background);
+    color: var(--t1);
   }
 
   .m-dark a:focus-visible,
   .m-dark button:focus-visible,
   .m-dark [role="tabpanel"]:focus-visible,
   .m-start-section a:focus-visible {
-    outline: 3px solid var(--atlas-cyan);
+    outline: 3px solid var(--avarok-cyan);
     outline-offset: 5px;
   }
 }

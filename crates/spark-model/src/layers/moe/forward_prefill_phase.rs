@@ -19,7 +19,7 @@ impl MoeLayer {
     /// shared expert). Launching kernels with N=0 returns
     /// CUDA_ERROR_INVALID_VALUE (grid.x=0).
     #[allow(clippy::too_many_arguments)]
-    /// `ATLAS_MOE_SHARED_CUTLASS=1`: run the shared expert's three projections
+    /// `AVAROK_MOE_SHARED_CUTLASS=1`: run the shared expert's three projections
     /// on the same native CUTLASS NVFP4 (W4A4) path the ROUTED experts already
     /// use, instead of `w4a16_gemm_n128`.
     ///
@@ -32,10 +32,10 @@ impl MoeLayer {
     ///
     /// W4A4 quantises the ACTIVATIONS, so this is not bit-exact — the same
     /// trade the routed experts already ship with under
-    /// ATLAS_HOLO_MOE_GROUPED_CUTLASS. Opt-in until it has agentic receipts.
+    /// AVAROK_HOLO_MOE_GROUPED_CUTLASS. Opt-in until it has agentic receipts.
     fn shared_cutlass_enabled() -> bool {
         static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *V.get_or_init(|| std::env::var("ATLAS_MOE_SHARED_CUTLASS").as_deref() == Ok("1"))
+        *V.get_or_init(|| std::env::var("AVAROK_MOE_SHARED_CUTLASS").as_deref() == Ok("1"))
     }
 
     pub(super) fn run_shared_expert_prefill(

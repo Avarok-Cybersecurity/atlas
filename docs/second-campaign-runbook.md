@@ -34,7 +34,7 @@ campaign entirely.
 
 ## The run
 
-    export ATLAS_HOME=${ATLAS_HOME:-$HOME/.atlas}   # MUST be writable, or every
+    export AVAROK_HOME=${AVAROK_HOME:-$HOME/.avarok}   # MUST be writable, or every
     # gate dies instantly with "recipe ... is not in the local index (0 cached)"
     # and nothing says why.
 
@@ -64,11 +64,11 @@ campaign on the same box had its FIRST `ttft-cold-gate` run record
     PASS — median +0.5% (limit +3.0%) · p90 -0.2% (limit +5.0%)
 
 because the earlier campaign had left
-`$ATLAS_HOME/runs/ttft-cold-gate/baseline-<model>.json`. Listing them twice
+`$AVAROK_HOME/runs/ttft-cold-gate/baseline-<model>.json`. Listing them twice
 anyway costs about two extra gate runs, which is cheap insurance and never
 wrong — but check for that file before assuming you need it:
 
-    ls $ATLAS_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json
+    ls $AVAROK_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json
 
 ## Check the branch has not moved, between gates AND during them
 
@@ -106,7 +106,7 @@ The failure that cost 1.6h was a transitive `soundfile` under `qwen_agent`,
 imported lazily during scoring — so importing `bfcl_eval` alone does not prove
 it. Run the two imports `score.py` actually performs:
 
-    $ATLAS_HOME/artifacts/bfcl/venv/bin/python -c "
+    $AVAROK_HOME/artifacts/bfcl/venv/bin/python -c "
     from bfcl_eval.constants.enums import Language
     from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker"
 

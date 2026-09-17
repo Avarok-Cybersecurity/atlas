@@ -2,9 +2,9 @@
 // =============================================================================
 // gen-benchmarks.mjs — generate src/lib/benchmarks.generated.json from baselines
 // -----------------------------------------------------------------------------
-// SSOT: the atlas test harness writes throughput baselines to tests/baselines/
+// SSOT: the avarok test harness writes throughput baselines to tests/baselines/
 //   (one *.json per gated model). Those files are the single source of truth for
-//   the "verified" throughput a shipped Atlas image is held to. An EMPTY
+//   the "verified" throughput a shipped Avarok image is held to. An EMPTY
 //   tests/baselines/ (only .gitkeep + README.md) is the EXPECTED "pending"
 //   state before the first gate run — it is NOT a build failure.
 //
@@ -32,7 +32,7 @@ import { execFileSync } from 'node:child_process';
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const BASELINES_ROOT =
-  process.env.ATLAS_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
+  process.env.AVAROK_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
 const OUT = resolve(here, '..', 'src', 'lib', 'benchmarks.generated.json');
 
 // --- git stamp (sha + committer date) ---------------------------------------
@@ -94,11 +94,11 @@ const obj = {
   generated_sha: sha,
   generated_date: date,
   methodology:
-    'An Atlas image ships only after the serve matrix passes: every model ' +
+    'An Avarok image ships only after the serve matrix passes: every model ' +
     'boots, stays coherent (greedy determinism, no token leakage, tool ' +
     'reliability), and holds throughput within 10% of its committed baseline.',
   gate_doc:
-    'https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md#8-what-verified-means-so-you-can-trust-an-image',
+    'https://github.com/Avarok-Cybersecurity/avarok/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md#8-what-verified-means-so-you-can-trust-an-image',
   repro_cmd:
     'python3 tests/run_all_models.py && python3 tests/gate_results.py --update-baselines',
   entries

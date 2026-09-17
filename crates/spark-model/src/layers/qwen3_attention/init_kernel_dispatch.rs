@@ -16,7 +16,7 @@
 //! catch-all or one of the inappropriate K-side symmetric arms — fails
 //! this test on CI before merge.
 //!
-//! See `feedback_atlas_dispatch_match_arm_audit.md` in the contributor
+//! See `feedback_avarok_dispatch_match_arm_audit.md` in the contributor
 //! memory: this is the "enum-add without match-update" bug class the
 //! audit was opened against.
 

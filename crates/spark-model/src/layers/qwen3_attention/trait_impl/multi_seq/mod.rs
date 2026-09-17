@@ -147,7 +147,7 @@ impl Qwen3AttentionLayer {
         let post = ctx.buffers.hc_post();
         let comb = ctx.buffers.hc_comb();
         let diag_this =
-            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+            std::env::var("AVAROK_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
 
         if is_first_layer {
             ops::hc_expand(
@@ -238,7 +238,7 @@ impl Qwen3AttentionLayer {
                 !qsa_selecting,
                 "QSA selection active on the batched MLA multi-seq decode path; \
                  the absorbed-MLA kernel has no selection hook — serve with \
-                 ATLAS_HC_PERSEQ_DECODE=1"
+                 AVAROK_HC_PERSEQ_DECODE=1"
             );
             self.ms_mla_decode(&c, kv_cache, meta)?
         } else {

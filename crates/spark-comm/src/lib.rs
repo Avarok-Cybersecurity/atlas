@@ -79,7 +79,7 @@ pub trait CommBackend: Send + Sync {
     ///   2. Device-side communication API (kernels invoke collectives in-kernel),
     ///      which TokenWeave-style fused AR+RMSNorm+Residual builds on.
     ///
-    /// On Atlas's 2-rank Spark over RoCE, the copy-engine offload itself does
+    /// On Avarok's 2-rank Spark over RoCE, the copy-engine offload itself does
     /// not apply (RoCE is not NVLink), but the symmetric windows are still
     /// required for future device-API fusions and to reduce per-call setup.
     /// Returns an error if the linked NCCL is < 2.28; backends that don't
@@ -96,7 +96,7 @@ pub trait CommBackend: Send + Sync {
     /// Provide a kernel handle for the BF16 in-place addition kernel.
     ///
     /// Used by the 2-rank send/recv all-reduce path. The kernel is loaded
-    /// by the model layer (which has access to AtlasRegistry) and passed
+    /// by the model layer (which has access to AvarokRegistry) and passed
     /// to the comm backend at init time.
     fn set_add_kernel(&self, _handle: u64) {
         // Default: no-op (single GPU or backends that don't need it)

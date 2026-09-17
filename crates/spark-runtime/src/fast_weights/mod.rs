@@ -59,7 +59,7 @@ pub struct FastSafetensorsLoader {
     /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
     /// projection. On a 512-expert model that is ~74k four-byte allocations,
     /// each taking a full allocation granule — GBs of padding for values
-    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// Avarok never reads, because it serves w4a16 (BF16 activations) and the
     /// NVFP4 loader already treats the key as optional.
     ///
     /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
@@ -98,7 +98,7 @@ pub struct FastSafetensorsLoader {
     /// per-tensor allocation for everything. The serve path installs
     /// `spark_model::weight_map::exl3_fast_load_pool_predicate()`, which
     /// admits exactly the prefixes the materialize pass will keep packed
-    /// and honours the `ATLAS_EXL3_WEIGHT_POOL=0` kill switch.
+    /// and honours the `AVAROK_EXL3_WEIGHT_POOL=0` kill switch.
     pub pool_predicate: Option<PoolPredicate>,
     /// Skip a multimodal checkpoint's vision tower.
     ///

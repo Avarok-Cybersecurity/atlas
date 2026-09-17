@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 Dequant+GEMM — Fused NVFP4 weight dequant + BF16 Tensor Core GEMM.
+// Avarok W4A16 Dequant+GEMM — Fused NVFP4 weight dequant + BF16 Tensor Core GEMM.
 //
 // C[M,N] = A[M,K] (BF16 activations) * dequant(B_fp4[N,K/2] (packed E2M1 weights))
 //

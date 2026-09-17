@@ -24,7 +24,7 @@ extra_nvcc_flags = ["--fmad=false", "-DTQ_PLUS_SIGNS"]
 #       The original expert-offsets grouped GEMM, replaced everywhere by the
 #       `_ptrtable` family (`..._ptrtable`, `..._ptrtable_t`, `..._ptrtable_t_k64`
 #       and their `_e8m0` twins), which every model shadow implements. The only
-#       remaining reference is `atlas-spark-bench/benches/moe.rs`, a benchmark —
+#       remaining reference is `avarok-spark-bench/benches/moe.rs`, a benchmark —
 #       no production dispatch path resolves it.
 #
 #   norm::{rms_norm_residual_vanilla, residual_add_rms_norm_vanilla}

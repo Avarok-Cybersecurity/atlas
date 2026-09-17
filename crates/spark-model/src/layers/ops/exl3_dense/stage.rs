@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Staging slabs for the native dense-linear arm: the EXL3 kernels read RAW
-//! fp16 A and write fp16/fp32 C, while every Atlas consumer is BF16, so each
+//! fp16 A and write fp16/fp32 C, while every Avarok consumer is BF16, so each
 //! projection needs a bf16->f16 ingress slab and (for the strided / f32
 //! paths) a C staging slab. Allocated ONCE at load inside the util pledge
 //! (before the KV budget), sized from the prefill chunk x the largest
@@ -15,7 +15,7 @@ use crate::layers::ops::exl3_matmul::EXL3_GEMV_MAX_M;
 use super::launch_state::Exl3LaunchState;
 use super::reconstruct::{Exl3ReconScratch, reconstruct_rows_from_env};
 
-/// Default row capacity of the staging slabs (`ATLAS_EXL3_DENSE_STAGE_ROWS`
+/// Default row capacity of the staging slabs (`AVAROK_EXL3_DENSE_STAGE_ROWS`
 /// overrides). Row batching above it costs one extra launch triple per
 /// batch, so this is a memory/launch-count knob, not a correctness one.
 pub const EXL3_DENSE_STAGE_ROWS_DEFAULT: usize = 4096;
@@ -53,7 +53,7 @@ pub struct Exl3DenseStage {
     /// Largest `out_dim` any weight served through this stage may have.
     pub max_out: usize,
     /// Reconstruct-to-BF16 prefill tier scratch (`ops/exl3_dense/reconstruct.rs`)
-    /// — `Some` only when `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS` armed it at
+    /// — `Some` only when `AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS` armed it at
     /// construction; `None` = the trellis GEMM serves every m > 8 (default).
     pub recon: Option<Exl3ReconScratch>,
 }
@@ -110,7 +110,7 @@ impl Exl3DenseStage {
         max_out_f32: usize,
         reconstruct_rows: Option<usize>,
     ) -> Result<Self> {
-        let rows_cap = std::env::var("ATLAS_EXL3_DENSE_STAGE_ROWS")
+        let rows_cap = std::env::var("AVAROK_EXL3_DENSE_STAGE_ROWS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v >= 1)
@@ -158,9 +158,9 @@ impl Exl3DenseStage {
             },
             None => {
                 tracing::info!(
-                    "EXL3 dense reconstruct tier off (ATLAS_NO_EXL3_DENSE_RECONSTRUCT): every \
+                    "EXL3 dense reconstruct tier off (AVAROK_NO_EXL3_DENSE_RECONSTRUCT): every \
                      m > 8 call runs the cooperative trellis GEMM; unset the kill switch for the \
-                     default 512-row threshold, ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> to move it"
+                     default 512-row threshold, AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS=<rows> to move it"
                 );
                 None
             }

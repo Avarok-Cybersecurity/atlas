@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Prefill-MoE leg: the PRODUCTION sort-by-expert tier
-//! (`ops::exl3_moe_prefill_routed` — Atlas `moe_sort_by_expert` counting
+//! (`ops::exl3_moe_prefill_routed` — Avarok `moe_sort_by_expert` counting
 //! sort + `exl3_moe_stage_sorted` + the fused persistent `exl3_moe` kernel +
 //! the chunked exl3_gemm overflow tier) against the same
 //! reconstruct→f64→silu→weighted-sum reference the decode leg uses.

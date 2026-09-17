@@ -3,8 +3,8 @@
 // Kimi K3 one-token KDA decode. Unique stem `kda_decode` — not a shadow of
 // GLM recurrent KDA, GDN decode, or Mamba-2 SSM kernels in common/.
 //
-// Matches atlas-core `kda_decode_token`:
-//   conv: Atlas-width [C, K] shift-left, write x into last slot, SiLU(dot(w,s))
+// Matches avarok-core `kda_decode_token`:
+//   conv: Avarok-width [C, K] shift-left, write x into last slot, SiLU(dot(w,s))
 //   recurrent: L2(q), L2(k), V raw; S *= exp(gate) on KEY; beta is a logit
 //              (sigmoid here); delta = (v - S^T k) * sigmoid(beta);
 //              S += k ⊗ delta; o = S^T q / sqrt(D)

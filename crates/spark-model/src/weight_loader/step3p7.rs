@@ -16,7 +16,7 @@
 //!
 //! KEY ARCHITECTURAL DIFFERENCE: Step 3.7 stores expert weights as FUSED
 //! tensors — one tensor per projection type containing ALL 288 experts
-//! concatenated. Atlas needs per-expert QuantizedWeight entries, so we
+//! concatenated. Avarok needs per-expert QuantizedWeight entries, so we
 //! slice by computing byte offsets into the fused GPU allocations.
 //!
 //! NVFP4 format: ModelOpt style with `weight`, `weight_scale`, `weight_scale_2`,
@@ -25,7 +25,7 @@
 mod load_layers;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;

@@ -3,7 +3,7 @@
 //! Extracted piecewise from `qwen3_ssm/mod.rs` (500-LoC cap).
 
 use super::*;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend, MockLaunch};
 
 #[test]
@@ -47,7 +47,7 @@ fn ssm_state_allocation_uses_layer_sizes_and_defaults() {
 // weights), and `decode_batched_inner`'s fp8w arms stopped at
 // num_tokens <= 4 — so R > 4 fell through to `dense_gemm`/`w4a16_gemm`
 // on the NULL slots, destroying the CUDA context (sticky 700).
-// Localized on hardware via ATLAS_K4_DIAG=1: "CUDA error after GDN phase
+// Localized on hardware via AVAROK_K4_DIAG=1: "CUDA error after GDN phase
 // `2+3:qkvz_proj+deinterleave`".
 
 use crate::layer::TransformerLayer;
@@ -214,7 +214,7 @@ fn run_batched_verify(
 /// is now bit-identical to the M=1 decode GEMV rather than reassociated.
 ///
 /// This is the SSM MTP-VERIFY arm, keyed on the SSM layer's own handle. It is
-/// NOT behind `ATLAS_FFN_BATCH16` — that opt-in governs only the dense-FFN
+/// NOT behind `AVAROK_FFN_BATCH16` — that opt-in governs only the dense-FFN
 /// tier, which is the one the H100 A/B measured as a loss. This arm was on in
 /// both halves of that A/B.
 #[test]
@@ -380,7 +380,7 @@ fn qkvz_verify_takes_nvfp4_above_the_threshold() {
     }
 }
 
-/// The kill switch (`ATLAS_NO_QKVZ_NVFP4_DECODE`) restores the FP8 choice at
+/// The kill switch (`AVAROK_NO_QKVZ_NVFP4_DECODE`) restores the FP8 choice at
 /// every row count — the A/B must be able to reproduce today's behaviour
 /// verbatim, not approximately.
 #[test]

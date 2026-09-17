@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { readFileSync, existsSync } from 'node:fs';
 
 /**
- * All three Atlas properties publish llms.txt (https://llmstxt.org), and each
+ * All three Avarok properties publish llms.txt (https://llmstxt.org), and each
  * points at the other two. That cross-linking is the whole value: an agent that
  * finds one has no other way to discover the rest — none of the three hosts is
  * derivable from the others.
@@ -14,9 +14,9 @@ const root = new URL('../../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 
 const HOSTS = {
-  site: 'https://atlasinference.io',
-  blog: 'https://blog.atlasinference.io',
-  docs: 'https://docs.atlasinference.io'
+  site: 'https://atlascybernetics.ai',
+  blog: 'https://blog.atlascybernetics.ai',
+  docs: 'https://docs.atlascybernetics.ai'
 };
 
 /** The generated marketing-site file, and the generated book file. */

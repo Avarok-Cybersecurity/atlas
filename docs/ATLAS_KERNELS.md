@@ -1,4 +1,4 @@
-# Atlas Kernel Registry
+# Avarok Kernel Registry
 
 Tracking every kernel, its baseline comparison, and optimizations applied.
 
@@ -43,7 +43,7 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 
 #### Benchmarks
 
-| Shape (M×N×K) | Atlas TC | cuBLAS | Notes |
+| Shape (M×N×K) | Avarok TC | cuBLAS | Notes |
 |---------------|----------|--------|-------|
 | 64×64×64 | 0.011ms | 0.009ms | 1.2× cuBLAS |
 | 80×512×2048 | 0.120ms | 0.009ms | MoE gate_up projection |
@@ -97,13 +97,13 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 
 #### Grouped GEMM Benchmarks (Qwen3-Next shapes)
 
-| Operation | Atlas W4A16 | cuBLAS per-expert (BF16) | Speedup |
+| Operation | Avarok W4A16 | cuBLAS per-expert (BF16) | Speedup |
 |-----------|------------|--------------------------|---------|
 | Gate-up: 800×1024×2048 | **5.58ms** | 7.14ms | **1.28×** |
 | Down: 800×2048×512 | **2.83ms** | — | — |
 | Full pipeline | **8.39ms** | — | — |
 
-**Atlas beats cuBLAS** for MoE workload because:
+**Avarok beats cuBLAS** for MoE workload because:
 1. Single kernel launch vs 256 per-expert cuBLAS launches
 2. 3.6× less weight data to read (FP4 vs BF16)
 3. Fused dequant in shared memory (no intermediate BF16 materialization)
@@ -166,7 +166,7 @@ Room for 5× improvement via better memory access patterns and reduced dequant o
 
 4. **Auto-dispatch**: `dense_gemm_bf16()` checks K≥16 → tensor cores, else scalar fallback.
 
-5. **Global AtlasRegistry (OnceLock)**: All PTX modules, CUDA context, and stream cached in a singleton. First call loads everything (~168ms), subsequent calls are instant.
+5. **Global AvarokRegistry (OnceLock)**: All PTX modules, CUDA context, and stream cached in a singleton. First call loads everything (~168ms), subsequent calls are instant.
 
 6. **Best-only inventory**: Only the fastest version of each kernel is kept. Slower variants are benchmarked, documented, then deleted.
 
@@ -177,7 +177,7 @@ Room for 5× improvement via better memory access patterns and reduced dequant o
 | 2026-02-23 | TC GEMM: mma.sync.m16n8k16 BF16 | Correct tensor core GEMM on SM121 |
 | 2026-02-23 | Fragment mapping fix: swap a[1]↔a[2] | Fixed 80-100% error → bit-exact |
 | 2026-02-23 | Auto-dispatch: dense_gemm_bf16 → TC when K≥16 | All GEMM callers get TC automatically |
-| 2026-02-23 | AtlasRegistry: OnceLock singleton | **2.2-7.8× speedup** across all kernel calls |
+| 2026-02-23 | AvarokRegistry: OnceLock singleton | **2.2-7.8× speedup** across all kernel calls |
 | 2026-02-23 | TC GEMM: K_STEP=64 + double-buffer + vectorized loads | **15-19% speedup** over K_STEP=16 |
 | 2026-02-23 | Confirmed: FP4 `kind::f8f6f4` NOT available on SM121 | Must use W4A16 dequant path |
 | 2026-02-23 | W4A16 fused dequant+GEMM kernel | Correct, bit-exact small, 0.1% MoE scale |

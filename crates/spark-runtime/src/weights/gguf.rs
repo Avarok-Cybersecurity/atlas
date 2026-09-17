@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Generic GGUF weight loader for Atlas.
+//! Generic GGUF weight loader for Avarok.
 //!
 //! Loads any GGUF checkpoint the same way [`super::SafetensorsLoader`] loads
 //! safetensors: mmap the file, walk its tensors, land each one GPU-resident in
@@ -15,12 +15,12 @@
 //! types lacking a GPU kernel and the correctness oracle under `MockGpuBackend`
 //! (which cannot execute kernels).
 //!
-//! GGUF `dims` are ggml-order (fastest-varying first); Atlas/HF shapes are the
+//! GGUF `dims` are ggml-order (fastest-varying first); Avarok/HF shapes are the
 //! reverse, so each tensor's shape is reversed before it enters the store.
 //!
 //! The PrismML `Q2_0` (id 42) group size is not encoded in the type id. It
 //! defaults to group-128 (the shipped Ternary-Bonsai layout); set
-//! `ATLAS_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
+//! `AVAROK_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
 
 mod config;
 mod container;
@@ -61,18 +61,18 @@ pub fn find_gguf(dir: &Path) -> Option<PathBuf> {
 }
 
 /// True when the native keep-packed Q2_0 decode path is enabled
-/// (`ATLAS_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
+/// (`AVAROK_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
 /// tensor to BF16 exactly as before, so the default path is byte-identical.
 /// When on, the "big" transform-free FFN projections (see
 /// [`names::is_keep_packed_proj`]) are uploaded as raw `block_q2_0` blocks and
 /// tagged [`WeightDtype::PackedQ2_0`] for in-kernel dequant at decode.
 fn native_q2_enabled() -> bool {
-    std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
 }
 
-/// The id-42 PrismML group size, from `ATLAS_GGUF_Q2_GROUP` (default 128).
+/// The id-42 PrismML group size, from `AVAROK_GGUF_Q2_GROUP` (default 128).
 fn q2_group_usize() -> usize {
-    match std::env::var("ATLAS_GGUF_Q2_GROUP").ok().as_deref() {
+    match std::env::var("AVAROK_GGUF_Q2_GROUP").ok().as_deref() {
         Some("64") => 64,
         _ => 128,
     }
@@ -259,13 +259,13 @@ impl super::WeightLoader for GgufLoader {
             .with_context(|| format!("No .gguf file found in {}", model_dir.display()))?;
         tracing::info!("Loading GGUF weights from {}", path.display());
 
-        let force_cpu = std::env::var("ATLAS_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
+        let force_cpu = std::env::var("AVAROK_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
         let native_q2 = native_q2_enabled();
         let q2_group = q2_group_usize();
         let q2_variant = q2_group_variant(q2_group);
         if native_q2 {
             tracing::info!(
-                "ATLAS_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
+                "AVAROK_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
             );
         }
 
@@ -277,7 +277,7 @@ impl super::WeightLoader for GgufLoader {
             .to_lowercase();
 
         // Qwen3.5/3.6 GDN-hybrid GGUFs (llama.cpp `qwen35` converter) encode a
-        // handful of GDN / RMSNorm tensor VALUES differently than Atlas's
+        // handful of GDN / RMSNorm tensor VALUES differently than Avarok's
         // kernels expect (norm +1 offset, `A_log = ln(-ssm_a)`, and a value-head
         // reorder). Read the GDN head geometry once so `load_pass` can invert
         // them per tensor (see `value_transform`).

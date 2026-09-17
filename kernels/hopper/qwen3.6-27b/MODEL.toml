@@ -11,7 +11,7 @@ active_params = "27B"
 architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 
 # Checkpoint-reference needles for kernel-target resolution (see
-# atlas-kernels/src/resolve.rs). Required since qwen3.8-27b landed: that
+# avarok-kernels/src/resolve.rs). Required since qwen3.8-27b landed: that
 # checkpoint's config.json is BIT-IDENTICAL to this one (same model_type
 # "qwen3_5", same hidden_size 5120 — verified tensor-by-tensor 2026-08-14),
 # so both targets declare exact (qwen3_5, 5120) and the tie is broken by
@@ -53,7 +53,7 @@ mtp_layers = 0
 vision = true
 
 # Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
-# (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
+# (Avarok's hybrid-GDN long-context behavior is consistent across 27B variants).
 effective_context = 24576
 
 # Recommended sampling defaults (carried over from Qwen3.5 family).
@@ -174,7 +174,7 @@ default_num_drafts = 3
 default_kv_dtype = "fp8"
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
-# Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to
+# Avarok's `parse_qwen3_5_config` (avarok-core/src/config.rs) rewrites this to
 # `qwen3_6_moe` when MRoPE-interleaved is detected — same path Qwen3.5-27B
 # already uses for the Kbenkhaled NVFP4 re-upload. The factory routes through
 # the existing `Qwen35WeightLoader`; no new loader is needed because the
@@ -236,22 +236,22 @@ GEMV looked like the same shape and measured -14.4% at C=16). Remove this entry
 if mfast is ported."""
 
 # ptxas on sm_90a rejects the optional dense warp-level block-scale MMA.
-# HARDWARE.toml disables it with ATLAS_NO_WARP_BLOCKSCALE_MMA; FP8 cells
+# HARDWARE.toml disables it with AVAROK_NO_WARP_BLOCKSCALE_MMA; FP8 cells
 # use the W8/BF16 path. Re-harvest all lookup results on real Hopper hardware.
 w4a4_gemm = "Hopper sm_90a: mma with block scale is unsupported; the hardware guard excludes this optional NVFP4 entry point."
 
 # Vendor MMQ symbols otherwise resolve to NO_DEVICE_CODE trap bodies.
 [expected_absent.nvfp4_mmq]
-atlas_nvfp4_mmq128_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq128_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq16_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq16_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq32_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq32_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq64_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_mmq64_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_quantize_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_repack = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_scale_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_silu_mul_scaled = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
-atlas_nvfp4_silu_mul_quant = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq128_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq128_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq16_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq16_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq32_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq32_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq64_nc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_mmq64_wc = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_quantize_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_repack = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_scale_bf16 = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_silu_mul_scaled = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."
+avarok_nvfp4_silu_mul_quant = "Hopper sm_90a lacks the vendor BLACKWELL_MMA_AVAILABLE warp FP4 path (SM 12.x only); absent handles retain W4A16 prefill and transposed weights."

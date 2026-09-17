@@ -1018,7 +1018,7 @@ extern "C" __global__ void hc_dec_up(
 // 32 weight copies cycled): 77-78 us vs 83 us per site at T=3, and it is
 // BYTE-IDENTICAL to hc_dec_down (same per-lane slice order, same shuffle tree,
 // same four-part sum), so the switch moved no stream. The dispatcher runs it
-// by default; ATLAS_HC_DOWN_KERNEL=hc_dec_down restores the one-row form.
+// by default; AVAROK_HC_DOWN_KERNEL=hc_dec_down restores the one-row form.
 // (hc_dec_up_v3 and hc_dec_down_v4 were measured within noise and removed.)
 
 // hc_dec_down_v5: register-blocked, TWO weight rows per warp (each `normed`
@@ -1118,10 +1118,10 @@ extern "C" __global__ void hc_dec_down_v5(
     }
 }
 
-// ─── Fused up-GEMM + mix: `hc_pre_up_mix` (ATLAS_HC_FUSE_UP_MIX=1) ──────────
+// ─── Fused up-GEMM + mix: `hc_pre_up_mix` (AVAROK_HC_FUSE_UP_MIX=1) ──────────
 //
 // WHY. The bracket is BANDWIDTH-bound, not issue-bound: at the shipped
-// `ATLAS_HC_GEMM_SLAB=8192` it moves ~196 GB per 7.8K-token chunk for 9.9
+// `AVAROK_HC_GEMM_SLAB=8192` it moves ~196 GB per 7.8K-token chunk for 9.9
 // TFLOP — 19.7 bytes/FLOP, ~170 GB/s of this box's 273. No kernel-efficiency
 // work can help; only removing bytes can. `up_pre` is [T, hc*H] BF16 = 161 MB
 // at T=7841: written by the up GEMM and read once by `hc_pre_mix`, 322 MB a
@@ -1397,7 +1397,7 @@ extern "C" __global__ void hc_inj_gate(
     }
 }
 
-// ─── Fused down+inject GEMM: `hc_down_inj` (ATLAS_HC_FUSE_DOWN_INJ=1) ───────
+// ─── Fused down+inject GEMM: `hc_down_inj` (AVAROK_HC_FUSE_DOWN_INJ=1) ───────
 //
 // WHY. The injection projection is its own `dense_gemm_bf16_pipelined` launch
 // with N = hc_mult = 4. The tile GEMM's N-tile is 128, so that launch runs

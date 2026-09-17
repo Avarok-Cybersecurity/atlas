@@ -14,7 +14,7 @@ def to_bf16(x):
     return (((b + 0x8000) >> 16) << 16).astype(np.uint32).view(np.float32)
 
 
-d = '/tank/atlas-testdata/ngram_longcat_lite'
+d = '/tank/avarok-testdata/ngram_longcat_lite'
 meta = json.load(open(f'{d}/meta.json'))
 toks = np.array(meta['tokens'])
 h = meta['hidden_size']

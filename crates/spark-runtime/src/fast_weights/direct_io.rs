@@ -35,7 +35,7 @@ pub(super) struct AlignedBuffer {
 // references and exposes no `&self` API that aliases the buffer, so moving
 // it between threads only moves the unique owner of the allocation. We do
 // not implement `Sync`: concurrent `&AlignedBuffer` readers are not a
-// pattern Atlas uses (each shard is owned by a single reader thread).
+// pattern Avarok uses (each shard is owned by a single reader thread).
 unsafe impl Send for AlignedBuffer {}
 
 impl AlignedBuffer {
@@ -215,7 +215,7 @@ mod tests {
     /// Write `bytes` to a scratch file and return it (kept open by the caller).
     fn scratch(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, File) {
         let p = std::env::temp_dir().join(format!(
-            "atlas-dio-{tag}-{}-{:?}",
+            "avarok-dio-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

@@ -1,4 +1,4 @@
-# Porting Atlas to AMD Strix Halo (gfx1151) via SCALE
+# Porting Avarok to AMD Strix Halo (gfx1151) via SCALE
 
 Status: **working end-to-end** (branch `port/amd-strix-halo`). First target
 model `qwen3.6-27b` served `Qwen/Qwen3.6-27B-FP8` generates **coherent output**
@@ -7,11 +7,11 @@ This guide is reproducible from a clean checkout on native Ubuntu.
 
 > **Requires SCALE ≥ 1.7.1.** 1.7.0 SIGSEGVs in the HSA queue-create path on
 > gfx1151 (wrong CWSR size for RDNA 3.5); 1.7.1 bundles ROCm 7.2.3 which reads
-> `cwsr_size` from sysfs and fixes it. See `atlas-issues-found.md`.
+> `cwsr_size` from sysfs and fixes it. See `avarok-issues-found.md`.
 
 SCALE (scale-lang.com, Spectral Compute) recompiles **unmodified CUDA** for
 AMD GPUs. It is a drop-in `nvcc` shim (clang-19 based) that provides the CUDA
-runtime/driver/math APIs for AMD. The Atlas philosophy here mirrors Spectral's
+runtime/driver/math APIs for AMD. The Avarok philosophy here mirrors Spectral's
 advice: start from "it compiles", add a `#if defined(__SCALE__)` shim only
 where the compiler genuinely cannot hide a hardware difference, and send
 Spectral clean repros for compiler defects.
@@ -32,7 +32,7 @@ the HF cache and SCALE 1.7.1 unpacked at `$SCALE_HOME`:
 ```bash
 # Build (SCALE compiles the unmodified CUDA kernels for gfx1151)
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
-export ATLAS_TARGET_HW=strix ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4
+export AVAROK_TARGET_HW=strix AVAROK_TARGET_MODEL=qwen3.6-27b AVAROK_TARGET_QUANT=nvfp4
 export CUDA_PATH="$SCALE_HOME/targets/gfx1151" CUDA_HOME="$CUDA_PATH"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:/opt/rocm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRARY_PATH"
@@ -40,9 +40,9 @@ export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
 # Serve — three runtime shims are required on gfx1151 (see §4):
-export ATLAS_FORCE_GLOBAL_GDN=1     # route GDN prefill to the global-mem kernel (RDNA3.5 64KB LDS cap)
-export ATLAS_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
-export ATLAS_NO_FP8_PREDEQUANT=1    # skip NVFP4->FP8 predequant (same broken-encode reason)
+export AVAROK_FORCE_GLOBAL_GDN=1     # route GDN prefill to the global-mem kernel (RDNA3.5 64KB LDS cap)
+export AVAROK_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
+export AVAROK_NO_FP8_PREDEQUANT=1    # skip NVFP4->FP8 predequant (same broken-encode reason)
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64:
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:$PATH"
@@ -75,7 +75,7 @@ tar -xf s171.tar.xz                      # → ~/scale171/scale-1.7.1-Linux
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
 ```
 
-`SCALE_HOME` is honored by the Atlas build (`find_scale_dir`). A SCALE root
+`SCALE_HOME` is honored by the Avarok build (`find_scale_dir`). A SCALE root
 contains `bin/scaleenv` and `targets/<arch>/bin/nvcc`.
 
 ### 1.2 Host toolchain prerequisites (bare Ubuntu / WSL)
@@ -104,7 +104,7 @@ understands CUDA). Point your editor LSP at
 ## 2. SCALE mechanics (verified facts)
 
 - **No `--ptx`.** SCALE rejects `--ptx`, `--genco`, `-fatbin`, `--emit-llvm`.
-  It emits an **AMD GPU code object** (ELF relocatable), not PTX text. Atlas's
+  It emits an **AMD GPU code object** (ELF relocatable), not PTX text. Avarok's
   device-compile flag is **`--cuda-device-only -c`**.
 - **Target selection** = the per-arch toolchain dir
   `targets/gfx1151/bin/nvcc` (equivalent to `source bin/scaleenv gfx1151`
@@ -150,7 +150,7 @@ compile-verified** → 82/92, via the exact recipe in §4.
 
 ## 3. Build-system integration (done)
 
-`crates/atlas-kernels/build_target.rs` already abstracts the compiler behind
+`crates/avarok-kernels/build_target.rs` already abstracts the compiler behind
 the `ComputeTarget` trait. The AMD path is purely additive (NVIDIA untouched):
 
 - `ScaleTarget` (`build_target.rs`): invokes
@@ -198,7 +198,7 @@ SCALE is binary **but** CUDA-runtime-compatible (its driver API exposes
    enum) so the text path is untouched (NVIDIA zero-risk) and the SCALE path
    carries bytes. Keep `KernelTarget`/metadata identical.
 3. Runtime: add `KernelModule::from_binary(ctx,&[u8])` beside
-   `from_ptx_src`. `atlas-core/src/registry.rs` already has the raw
+   `from_ptx_src`. `avarok-core/src/registry.rs` already has the raw
    `cuModuleLoadData(module, image)` FFI — feed it the blob bytes (skip
    cudarc's `Ptx::from_src`, which is text-only). `cuda_backend.rs` selects
    blob-vs-text by build cfg / a generated flag.
@@ -217,14 +217,14 @@ file-format question:**
   (`cudaTypedefs.h`), but **what artifact its `cuModuleLoadData` accepts is
   unproven** without the AMD runtime live.
 
-Atlas's model = embed PTX text, `cuModuleLoadData` at runtime (driver JIT),
+Avarok's model = embed PTX text, `cuModuleLoadData` at runtime (driver JIT),
 launch by name via the registry. SCALE's native model = offload-bundle device
 code into the binary, auto-registered, launched by C++ symbol. **Two paths:**
   1. **SCALE-native (lower risk):** AMD build compiles kernels into the
      binary via SCALE's normal flow; the registry resolves kernels by symbol
-     instead of `cuModuleLoadData`(blob). Bigger atlas-core/spark-runtime
+     instead of `cuModuleLoadData`(blob). Bigger avarok-core/spark-runtime
      change but uses SCALE exactly as designed.
-  2. **Atlas-style:** device-link relocatables → a loadable code object,
+  2. **Avarok-style:** device-link relocatables → a loadable code object,
      embed bytes, `cuModuleLoadData` it. Needs SCALE to support loading a
      hand-produced code object — unproven.
 **Decision deferred until the AMD runtime is live (needs the Windows AMD
@@ -287,16 +287,16 @@ ships `build-amd.sh` and `serve-amd.sh` that wrap exactly the commands below.
 ```bash
 # Build — SCALE_HOME set, kernels compiled for gfx1151:
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
-export ATLAS_TARGET_HW=strix ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4
+export AVAROK_TARGET_HW=strix AVAROK_TARGET_MODEL=qwen3.6-27b AVAROK_TARGET_QUANT=nvfp4
 export CUDA_PATH="$SCALE_HOME/targets/gfx1151" CUDA_HOME="$CUDA_PATH"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:/opt/rocm/bin:$PATH"
 export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRARY_PATH"
 export CUDARC_CUDA_VERSION=12080
-rm -rf target/release/build/atlas-kernels-*      # stale-cache guard on .cu change
+rm -rf target/release/build/avarok-kernels-*      # stale-cache guard on .cu change
 cargo build --release -p spark-server --no-default-features --features cuda
 
 # Serve — gfx1151 shims (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
-export ATLAS_FORCE_GLOBAL_GDN=1 ATLAS_W4A16_VARIANT=v1 ATLAS_NO_FP8_PREDEQUANT=1
+export AVAROK_FORCE_GLOBAL_GDN=1 AVAROK_W4A16_VARIANT=v1 AVAROK_NO_FP8_PREDEQUANT=1
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
   --port 8081 --max-seq-len 4096 --gpu-memory-utilization 0.70 \

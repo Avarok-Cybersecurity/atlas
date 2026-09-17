@@ -42,7 +42,7 @@ impl Qwen3SsmLayer {
         // Weight-streaming block-scaled GEMV for batched decode: avoids the
         // pipelined kernel's M->128 MMA pad. batch4 (M<=4) common path, batch16
         // (M<=16) for C=8/16; bit-identical per row to w8a16_gemv, disabled by
-        // ATLAS_SSM_GEMV_BATCH4=0. Wrapper pairs with handle: batch4 caps at 4.
+        // AVAROK_SSM_GEMV_BATCH4=0. Wrapper pairs with handle: batch4 caps at 4.
         let (gemv_batch, gemv_batch_k): (ops::ContiguousBatchGemv, KernelHandle) = if n <= 4 {
             (ops::w8a16_gemv_batch4, self.w8a16_gemv_batch4_k)
         } else {

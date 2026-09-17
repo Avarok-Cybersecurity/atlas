@@ -73,7 +73,7 @@
 //     unless ordered on the same stream.
 //
 // ── Argument list (EXL3_MOE_KERNEL_ARGS, 31 args) ──────────────────────────
-//   output_slots   fp32 (T * top_k, hidden_dim) or nullptr — the Atlas
+//   output_slots   fp32 (T * top_k, hidden_dim) or nullptr — the Avarok
 //                  DETERMINISTIC epilogue (default-ON; kill switch
 //                  `--deterministic-moe-prefill false`). Non-null: each
 //                  expert PLAIN-STORES its weighted output row to its own
@@ -111,9 +111,9 @@
 //   hidden_dim, intermediate_dim, num_experts (LOCAL count = len(count)-1),
 //   num_experts_per_tok, max_tokens_per_expert (= temp-slab rows R — a HOST
 //   sizing choice, not a kernel constant: upstream's TEMP_ROWS_FUSED is 128,
-//   vllm-exl3 runs 2048, Atlas resolves it at model build (default 1024,
-//   `ATLAS_EXL3_MOE_ROWS_PER_EXPERT`; the kill switch
-//   `ATLAS_NO_EXL3_MOE_WIDE_ROWS` pins 128). The kernel's only bound is its
+//   vllm-exl3 runs 2048, Avarok resolves it at model build (default 1024,
+//   `AVAROK_EXL3_MOE_ROWS_PER_EXPERT`; the kill switch
+//   `AVAROK_NO_EXL3_MOE_WIDE_ROWS` pins 128). The kernel's only bound is its
 //   32-bit slab-index arithmetic: C * R * max(hidden_dim, intermediate_dim)
 //   must fit an int — the host clamps to that), concurrency,
 //   act_limit      f32, 0.0f = no clamp (qwen4_exp: 0.0f)

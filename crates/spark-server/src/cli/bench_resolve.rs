@@ -12,16 +12,16 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 /// Why a `--hardware` value did not land on a baseline slot.
 ///
 /// Two refusals, because they are two different jobs for the operator, and a
 /// single message sends one of them to the wrong one:
 ///
-/// * [`Self::Unknown`] — the id names no box class Atlas recognises. No run
+/// * [`Self::Unknown`] — the id names no box class Avarok recognises. No run
 ///   will ever fix it; the spelling is wrong (or the class needs registering
-///   in `atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS` first).
+///   in `avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS` first).
 /// * [`Self::NoRecordYet`] — the id is registered and nothing has been
 ///   measured on it. The spelling is right; the fix is to run the gate on that
 ///   box and commit the thresholds.
@@ -33,7 +33,7 @@ use atlas_plugin::gate;
 #[derive(Debug, thiserror::Error)]
 pub(super) enum HardwareRefusal {
     #[error(
-        "{hardware:?} is not a box class Atlas knows, so nothing can be scored against it. \
+        "{hardware:?} is not a box class Avarok knows, so nothing can be scored against it. \
          Registered classes are [{registered}]; {benchmark_id} has baselines for [{measured}]."
     )]
     Unknown {
@@ -68,7 +68,7 @@ impl HardwareRefusal {
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        if atlas_plugin::hardware::ids::is_known_hardware_id(hardware) {
+        if avarok_plugin::hardware::ids::is_known_hardware_id(hardware) {
             Self::NoRecordYet {
                 benchmark_id: benchmark_id.to_string(),
                 hardware: hardware.to_string(),
@@ -78,7 +78,7 @@ impl HardwareRefusal {
             Self::Unknown {
                 benchmark_id: benchmark_id.to_string(),
                 hardware: hardware.to_string(),
-                registered: atlas_plugin::hardware::ids::KNOWN_HARDWARE_IDS.join(", "),
+                registered: avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS.join(", "),
                 measured,
             }
         }
@@ -92,6 +92,9 @@ pub(super) struct Resolved {
     pub recipe_id: String,
     /// The resolved variant's thresholds/note/label, verbatim.
     pub entry: gate::ModelBaseline,
+    /// The box class the entry is for — whose `HARDWARE.toml` limits the
+    /// serve is judged by.
+    pub hardware: String,
 }
 
 /// Pick the (model, recipe) a gate run should serve.
@@ -104,7 +107,7 @@ pub(super) struct Resolved {
 /// A `hardware` the baseline does not carry is classified against the box-class
 /// registry before it is refused — see [`HardwareRefusal`]: a registered class
 /// with no records ("run it and commit one") is a different instruction than an
-/// id Atlas does not know ("fix the spelling").
+/// id Avarok does not know ("fix the spelling").
 ///
 /// `checkpoint` selects the model variant. `None` takes the one the baseline
 /// marks `default = true` — a committed declaration, not a guess (assembly
@@ -158,6 +161,7 @@ pub(super) fn resolve(
         model,
         recipe_id,
         entry: entry.clone(),
+        hardware: hw_key,
     })
 }
 
@@ -187,9 +191,9 @@ pub(super) fn resolve(
 /// ★ `bench_variants::BenchState::choose_variant` (TUI) carries a textually
 /// parallel copy of this bound selection — keep the two in step.
 pub(super) fn apply_threshold_params(
-    descriptor: &atlas_plugin::BenchmarkDescriptor,
-    specs: &[atlas_plugin::ParamSpec],
-    values: &mut atlas_plugin::ParamValues,
+    descriptor: &avarok_plugin::BenchmarkDescriptor,
+    specs: &[avarok_plugin::ParamSpec],
+    values: &mut avarok_plugin::ParamValues,
     entry: &gate::ModelBaseline,
     explicit: &[(String, String)],
 ) -> Result<Vec<(String, f64)>> {
@@ -263,9 +267,9 @@ pub(super) fn apply_threshold_params(
 /// `check_record` demands the pin on the record — so a record measured
 /// without the pin cannot read green against the pinned thresholds.
 pub(super) fn apply_param_overrides(
-    descriptor: &atlas_plugin::BenchmarkDescriptor,
-    specs: &[atlas_plugin::ParamSpec],
-    values: &mut atlas_plugin::ParamValues,
+    descriptor: &avarok_plugin::BenchmarkDescriptor,
+    specs: &[avarok_plugin::ParamSpec],
+    values: &mut avarok_plugin::ParamValues,
     entry: &gate::ModelBaseline,
     explicit: &[(String, String)],
 ) -> Result<Vec<(String, String)>> {

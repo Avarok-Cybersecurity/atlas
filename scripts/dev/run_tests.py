@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Atlas model test suite.
+"""Avarok model test suite.
 
 Usage:
   python3 run_tests.py <model_id> <port> [--long-context] [--speculative] [extra_args...]
@@ -7,7 +7,7 @@ Usage:
 Flags:
   --long-context   Run NIAH (needle-in-a-haystack) tests at 4K-64K context
   --speculative    Enable MTP speculative decoding
-  Other args are passed directly to the Atlas server CLI.
+  Other args are passed directly to the Avarok server CLI.
 """
 import sys, json, time, subprocess, re, signal, urllib.request
 
@@ -19,8 +19,8 @@ LONG_CONTEXT = "--long-context" in raw_extra
 raw_extra = [a for a in raw_extra if a != "--long-context"]
 EXTRA = " ".join(raw_extra)
 
-IMAGE = "atlas-gb10:latest"
-CONTAINER = f"atlas-test-{PORT}"
+IMAGE = "avarok-gb10:latest"
+CONTAINER = f"avarok-test-{PORT}"
 HF_CACHE = "/workspace/.cache/huggingface/hub"
 
 is_mistral = "mistral" in MODEL.lower()

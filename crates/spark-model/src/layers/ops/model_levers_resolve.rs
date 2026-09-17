@@ -55,32 +55,32 @@ pub(super) fn from_values(
     ModelLevers {
         max_decode_seqs: 1,
         shadow_topk,
-        kv_poison: opt_in(value("ATLAS_KV_POISON").as_deref()),
+        kv_poison: opt_in(value("AVAROK_KV_POISON").as_deref()),
         drafter,
-        gdn_regresident: value("ATLAS_NO_GDN_REGRESIDENT").as_deref() != Some("1"),
-        gdn_fla_under_prefix_cache: opt_in(value("ATLAS_GDN_FLA_UNDER_PREFIX_CACHE").as_deref()),
-        gdn_batched_fla: opt_in(value("ATLAS_GDN_BATCHED_FLA").as_deref()),
-        gdn_wy17: opt_out(value("ATLAS_GDN_WY17").as_deref()),
-        gdn_wyn: opt_out(value("ATLAS_GDN_WYN").as_deref()),
-        ffn_small_m: opt_out(value("ATLAS_FFN_SMALLM").as_deref()),
-        gemv_sw: gemv_sw::gemv_sw_from(value("ATLAS_NO_GEMV_SW").as_deref()),
-        decode_ffn_via_gemm: opt_in(value("ATLAS_DECODE_FFN_VIA_GEMM").as_deref()),
-        holo_moe_down_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_DOWN_FP4").as_deref()),
-        holo_moe_gateup_fp4: opt_in_truthy(value("ATLAS_HOLO_MOE_GATEUP_FP4").as_deref()),
-        moe_union_stats: opt_in(value("ATLAS_MOE_UNION_STATS").as_deref()),
-        fp32_routing: opt_in(value("ATLAS_FP32_ROUTING").as_deref()),
-        fp32_gate: opt_in(value("ATLAS_FP32_GATE").as_deref()),
-        moe_prefill_fp32_routing: opt_in(value("ATLAS_MOE_PREFILL_FP32_ROUTING").as_deref()),
+        gdn_regresident: value("AVAROK_NO_GDN_REGRESIDENT").as_deref() != Some("1"),
+        gdn_fla_under_prefix_cache: opt_in(value("AVAROK_GDN_FLA_UNDER_PREFIX_CACHE").as_deref()),
+        gdn_batched_fla: opt_in(value("AVAROK_GDN_BATCHED_FLA").as_deref()),
+        gdn_wy17: opt_out(value("AVAROK_GDN_WY17").as_deref()),
+        gdn_wyn: opt_out(value("AVAROK_GDN_WYN").as_deref()),
+        ffn_small_m: opt_out(value("AVAROK_FFN_SMALLM").as_deref()),
+        gemv_sw: gemv_sw::gemv_sw_from(value("AVAROK_NO_GEMV_SW").as_deref()),
+        decode_ffn_via_gemm: opt_in(value("AVAROK_DECODE_FFN_VIA_GEMM").as_deref()),
+        holo_moe_down_fp4: opt_in_truthy(value("AVAROK_HOLO_MOE_DOWN_FP4").as_deref()),
+        holo_moe_gateup_fp4: opt_in_truthy(value("AVAROK_HOLO_MOE_GATEUP_FP4").as_deref()),
+        moe_union_stats: opt_in(value("AVAROK_MOE_UNION_STATS").as_deref()),
+        fp32_routing: opt_in(value("AVAROK_FP32_ROUTING").as_deref()),
+        fp32_gate: opt_in(value("AVAROK_FP32_GATE").as_deref()),
+        moe_prefill_fp32_routing: opt_in(value("AVAROK_MOE_PREFILL_FP32_ROUTING").as_deref()),
         frankenstein_decode_via_prefill: opt_in(
-            value("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL").as_deref(),
+            value("AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL").as_deref(),
         ),
-        k2_diag: opt_in(value("ATLAS_K2_DIAG").as_deref()),
-        dflash_debug_dump_full: opt_in(value("ATLAS_DFLASH_DEBUG_DUMP_FULL").as_deref()),
-        mtp_debug_norms: opt_in(value("ATLAS_MTP_DEBUG_NORMS").as_deref()),
+        k2_diag: opt_in(value("AVAROK_K2_DIAG").as_deref()),
+        dflash_debug_dump_full: opt_in(value("AVAROK_DFLASH_DEBUG_DUMP_FULL").as_deref()),
+        mtp_debug_norms: opt_in(value("AVAROK_MTP_DEBUG_NORMS").as_deref()),
         draft_conf_tau,
         // The compiled target declares this (`kernels/<hw>/HARDWARE.toml`
         // `[defaults] decode_split_silu`); every current target declares it
-        // ON, which is the shipped default. `ATLAS_NO_DECODE_SPLIT_SILU` stays
+        // ON, which is the shipped default. `AVAROK_NO_DECODE_SPLIT_SILU` stays
         // the PRESENCE kill switch, unchanged, and still wins. Resolved
         // through `present` rather than `target_defaults::resolved()` so
         // `from_values` stays pure over its closures — the property the whole
@@ -89,61 +89,61 @@ pub(super) fn from_values(
         decode_split_silu: crate::layers::ops::target_defaults::resolve_toggle(
             default_split_silu,
             None,
-            present("ATLAS_NO_DECODE_SPLIT_SILU"),
+            present("AVAROK_NO_DECODE_SPLIT_SILU"),
         )
         .value,
-        bf16_tc_prefill: present("ATLAS_BF16_TC_PREFILL"),
-        fp8_m64_prefill: present("ATLAS_FP8_M64_PREFILL"),
-        int8_prefill: present("ATLAS_INT8_PREFILL"),
-        int8_faith5: present("ATLAS_INT8_FAITH5"),
-        ffn_nvfp4_mmq: !present("ATLAS_NO_FFN_NVFP4_MMQ"),
-        ffn_nvfp4_mmq_down: !present("ATLAS_NO_FFN_NVFP4_MMQ_DOWN"),
-        ffn_mmq: present("ATLAS_FFN_MMQ"),
-        ffn_mmq_down_q4k: present("ATLAS_FFN_MMQ_DOWN_Q4K"),
-        fp4_prefill: present("ATLAS_FP4_PREFILL"),
-        prefill_v2: !present("ATLAS_DISABLE_PREFILL_V2"),
-        moe_grouped_cutlass: opt_in(value("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref()),
-        moe_grouped_down: opt_in(value("ATLAS_HOLO_MOE_GROUPED_DOWN").as_deref()),
-        moe_row_hist: opt_in(value("ATLAS_MOE_ROW_HIST").as_deref()),
-        moe_prefill_exact_tiles: match value("ATLAS_MOE_PREFILL_EXACT_TILES").as_deref() {
+        bf16_tc_prefill: present("AVAROK_BF16_TC_PREFILL"),
+        fp8_m64_prefill: present("AVAROK_FP8_M64_PREFILL"),
+        int8_prefill: present("AVAROK_INT8_PREFILL"),
+        int8_faith5: present("AVAROK_INT8_FAITH5"),
+        ffn_nvfp4_mmq: !present("AVAROK_NO_FFN_NVFP4_MMQ"),
+        ffn_nvfp4_mmq_down: !present("AVAROK_NO_FFN_NVFP4_MMQ_DOWN"),
+        ffn_mmq: present("AVAROK_FFN_MMQ"),
+        ffn_mmq_down_q4k: present("AVAROK_FFN_MMQ_DOWN_Q4K"),
+        fp4_prefill: present("AVAROK_FP4_PREFILL"),
+        prefill_v2: !present("AVAROK_DISABLE_PREFILL_V2"),
+        moe_grouped_cutlass: opt_in(value("AVAROK_HOLO_MOE_GROUPED_CUTLASS").as_deref()),
+        moe_grouped_down: opt_in(value("AVAROK_HOLO_MOE_GROUPED_DOWN").as_deref()),
+        moe_row_hist: opt_in(value("AVAROK_MOE_ROW_HIST").as_deref()),
+        moe_prefill_exact_tiles: match value("AVAROK_MOE_PREFILL_EXACT_TILES").as_deref() {
             Some("0") => Some(false),
             Some("1") => Some(true),
             _ => None,
         },
-        moe_prefill_max_load_factor: value("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR")
+        moe_prefill_max_load_factor: value("AVAROK_MOE_PREFILL_MAX_LOAD_FACTOR")
             .as_deref()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&factor| factor > 0),
-        moe_prefill_zero: opt_in(value("ATLAS_MOE_PREFILL_ZERO").as_deref()),
-        moe_prefill_fp8_down: opt_in(value("ATLAS_MOE_PREFILL_FP8_DOWN").as_deref()),
-        ssm_w4a4: !present("ATLAS_NO_SSM_W4A4"),
-        ssd: !present("ATLAS_NO_SSD"),
-        ssm_persistent: !present("ATLAS_NO_SSM_PERSISTENT"),
-        moe_zero_intermediates: !present("ATLAS_MOE_NO_ZERO_INTERMEDIATES"),
-        moe_max_m_tiles_estimate: present("ATLAS_MOE_MAX_M_TILES_ESTIMATE"),
-        moe_w4a4: present("ATLAS_MOE_W4A4"),
-        shared_w4a4: !present("ATLAS_NO_SHARED_W4A4"),
-        shared_w4a4_down: present("ATLAS_SHARED_W4A4_DOWN"),
-        dflash_contig_attn: opt_in(value("ATLAS_DFLASH_CONTIG_ATTN").as_deref()),
-        lora_eager: opt_in_truthy(value("ATLAS_LORA_EAGER").as_deref()),
-        lora_rotate: opt_in_truthy(value("ATLAS_LORA_ROTATE").as_deref()),
-        k4_diag: opt_in(value("ATLAS_K4_DIAG").as_deref()),
-        gemma4_diag: opt_in_truthy(value("ATLAS_DIAG_GEMMA4").as_deref()),
-        mla_perseq_fallback: opt_in_truthy_exact(value("ATLAS_MLA_PERSEQ_FALLBACK").as_deref()),
-        hc_perseq_decode: opt_in(value("ATLAS_HC_PERSEQ_DECODE").as_deref()),
-        decode_batch_log: opt_in(value("ATLAS_DECODE_BATCH_LOG").as_deref()),
-        ms_profile: opt_in(value("ATLAS_MS_PROFILE").as_deref()),
-        conc_hsd: opt_in_truthy_exact(value("ATLAS_CONC_HSD").as_deref()),
-        ssm_save_dump: present("ATLAS_SSM_SAVE_DUMP"),
-        ep_graphs: opt_in_truthy_exact(value("ATLAS_EP_GRAPHS").as_deref()),
-        gdn_decode_graph: opt_in_truthy_exact(value("ATLAS_GDN_DECODE_GRAPH").as_deref()),
-        bf16_tc_proj: present("ATLAS_BF16_TC_PROJ"),
+        moe_prefill_zero: opt_in(value("AVAROK_MOE_PREFILL_ZERO").as_deref()),
+        moe_prefill_fp8_down: opt_in(value("AVAROK_MOE_PREFILL_FP8_DOWN").as_deref()),
+        ssm_w4a4: !present("AVAROK_NO_SSM_W4A4"),
+        ssd: !present("AVAROK_NO_SSD"),
+        ssm_persistent: !present("AVAROK_NO_SSM_PERSISTENT"),
+        moe_zero_intermediates: !present("AVAROK_MOE_NO_ZERO_INTERMEDIATES"),
+        moe_max_m_tiles_estimate: present("AVAROK_MOE_MAX_M_TILES_ESTIMATE"),
+        moe_w4a4: present("AVAROK_MOE_W4A4"),
+        shared_w4a4: !present("AVAROK_NO_SHARED_W4A4"),
+        shared_w4a4_down: present("AVAROK_SHARED_W4A4_DOWN"),
+        dflash_contig_attn: opt_in(value("AVAROK_DFLASH_CONTIG_ATTN").as_deref()),
+        lora_eager: opt_in_truthy(value("AVAROK_LORA_EAGER").as_deref()),
+        lora_rotate: opt_in_truthy(value("AVAROK_LORA_ROTATE").as_deref()),
+        k4_diag: opt_in(value("AVAROK_K4_DIAG").as_deref()),
+        gemma4_diag: opt_in_truthy(value("AVAROK_DIAG_GEMMA4").as_deref()),
+        mla_perseq_fallback: opt_in_truthy_exact(value("AVAROK_MLA_PERSEQ_FALLBACK").as_deref()),
+        hc_perseq_decode: opt_in(value("AVAROK_HC_PERSEQ_DECODE").as_deref()),
+        decode_batch_log: opt_in(value("AVAROK_DECODE_BATCH_LOG").as_deref()),
+        ms_profile: opt_in(value("AVAROK_MS_PROFILE").as_deref()),
+        conc_hsd: opt_in_truthy_exact(value("AVAROK_CONC_HSD").as_deref()),
+        ssm_save_dump: present("AVAROK_SSM_SAVE_DUMP"),
+        ep_graphs: opt_in_truthy_exact(value("AVAROK_EP_GRAPHS").as_deref()),
+        gdn_decode_graph: opt_in_truthy_exact(value("AVAROK_GDN_DECODE_GRAPH").as_deref()),
+        bf16_tc_proj: present("AVAROK_BF16_TC_PROJ"),
         weight_pre_rotated: opt_in_truthy(value("TQ_PLUS_WEIGHT_ROTATION").as_deref()),
-        ssm_ms_profile: opt_in(value("ATLAS_SSM_MS_PROFILE").as_deref()),
-        ssm_detail_profile: opt_in(value("ATLAS_SSM_DETAIL_PROFILE").as_deref()),
-        ssm_gemv_batch4: opt_out(value("ATLAS_SSM_GEMV_BATCH4").as_deref()),
-        gdn_fused_conv: opt_in(value("ATLAS_GDN_FUSED_CONV").as_deref()),
-        moe_legacy_pertoken_decode: opt_in(value("ATLAS_MOE_LEGACY_PERTOKEN_DECODE").as_deref()),
+        ssm_ms_profile: opt_in(value("AVAROK_SSM_MS_PROFILE").as_deref()),
+        ssm_detail_profile: opt_in(value("AVAROK_SSM_DETAIL_PROFILE").as_deref()),
+        ssm_gemv_batch4: opt_out(value("AVAROK_SSM_GEMV_BATCH4").as_deref()),
+        gdn_fused_conv: opt_in(value("AVAROK_GDN_FUSED_CONV").as_deref()),
+        moe_legacy_pertoken_decode: opt_in(value("AVAROK_MOE_LEGACY_PERTOKEN_DECODE").as_deref()),
     }
 }
 
@@ -151,7 +151,7 @@ impl ModelLevers {
     /// The process-wide levers, resolved from the environment EXACTLY ONCE.
     ///
     /// ★ USE THIS, NOT [`Self::from_env`]. Every field here is a pure function
-    /// of `ATLAS_*` environment variables, which cannot change after start —
+    /// of `AVAROK_*` environment variables, which cannot change after start —
     /// the runtime `set_var` that could have changed them was deliberately
     /// removed. So this is a process constant and must be computed once.
     ///
@@ -175,7 +175,7 @@ impl ModelLevers {
     /// Prefer [`Self::get`]. This exists for the one caller that needs an OWNED,
     /// MUTABLE copy — the model build overwrites `max_decode_seqs` with the
     /// batch size — and for tests that want a fresh read. Calling it in a hot
-    /// path re-reads every `ATLAS_*` variable.
+    /// path re-reads every `AVAROK_*` variable.
     pub fn from_env() -> Self {
         from_values(
             |var| std::env::var(var).ok(),
@@ -187,7 +187,7 @@ impl ModelLevers {
         )
     }
 
-    /// What a build resolves to with no `ATLAS_*` set — every opt-in off, the
+    /// What a build resolves to with no `AVAROK_*` set — every opt-in off, the
     /// one opt-out lever on. Tests construct a context with this instead of
     /// mutating the process environment.
     pub fn defaults() -> Self {
@@ -201,7 +201,7 @@ impl ModelLevers {
             gdn_wyn: true,
             ffn_small_m: true,
             gemv_sw: true,
-            // Opt-out: ships ON, `ATLAS_SSM_GEMV_BATCH4=0` disables. Every
+            // Opt-out: ships ON, `AVAROK_SSM_GEMV_BATCH4=0` disables. Every
             // opt-out lever must appear here or
             // `the_opt_out_lever_is_on_by_default_and_every_opt_in_is_off`
             // fails — which is exactly how this line came to be written.

@@ -14,7 +14,7 @@
 //!
 //! ```text
 //!   [caller]        moe_sort_by_expert over the batch's GLOBAL expert ids
-//!   stage_sorted:   Atlas sort outputs -> token_sorted/weight_sorted i64/f16
+//!   stage_sorted:   Avarok sort outputs -> token_sorted/weight_sorted i64/f16
 //!                   in LOCAL-expert order (EP-remote slots -> sentinel tail
 //!                   bucket) + expert_count i64 [num_local+1] bincount
 //!   ingress:        bf16 [T, H] -> f16 hidden_f16 (RAW; the kernel applies
@@ -199,7 +199,7 @@ pub struct Exl3MoePrefillStats {
 /// cooperative entries: no graph capture, one in-flight launch per locks
 /// buffer.
 #[allow(clippy::too_many_arguments)]
-// ── Overflow-tier telemetry (ATLAS_EXL3_MOE_TIER_STATS=1) ────────────────
+// ── Overflow-tier telemetry (AVAROK_EXL3_MOE_TIER_STATS=1) ────────────────
 //
 // The question this answers: at the shipped cap (1024) does the overflow tier
 // ever fire? The cap is 12.8x the 80-row mean at a 4096-token chunk, and the
@@ -215,7 +215,7 @@ pub struct Exl3MoePrefillStats {
 static TIER_STATS_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 fn tier_stats_on() -> bool {
-    *TIER_STATS_ON.get_or_init(|| std::env::var("ATLAS_EXL3_MOE_TIER_STATS").as_deref() == Ok("1"))
+    *TIER_STATS_ON.get_or_init(|| std::env::var("AVAROK_EXL3_MOE_TIER_STATS").as_deref() == Ok("1"))
 }
 
 static TS_CALLS: AtomicU64 = AtomicU64::new(0);

@@ -92,10 +92,10 @@ pub struct Exl3MaterializeStats {
     pub quantized: usize,
     /// Linears rewritten as dense BF16 `.weight`.
     pub bf16: usize,
-    /// Linears kept packed for native serving (`ATLAS_EXL3_NATIVE=1`),
+    /// Linears kept packed for native serving (`AVAROK_EXL3_NATIVE=1`),
     /// routed experts included.
     pub kept_native: usize,
-    /// The routed-expert subset of `kept_native` (`ATLAS_EXL3_NATIVE_MOE=1`).
+    /// The routed-expert subset of `kept_native` (`AVAROK_EXL3_NATIVE_MOE=1`).
     pub kept_native_experts: usize,
     /// Resident bytes of the kept-packed expert tensors.
     pub kept_packed_bytes: usize,
@@ -103,7 +103,7 @@ pub struct Exl3MaterializeStats {
     /// the memory the keep saved, for the load log.
     pub nvfp4_equiv_bytes: usize,
     /// The GDN/attention dense subset of `kept_native`
-    /// (`ATLAS_EXL3_NATIVE_DENSE=1`), with its per-family layer counts.
+    /// (`AVAROK_EXL3_NATIVE_DENSE=1`), with its per-family layer counts.
     pub dense: super::Exl3DenseKeepStats,
     /// Bytes of materialized (removed) tensors that live inside a loader
     /// arena and so could NOT be freed — the pool predicted "keep" for a
@@ -121,7 +121,7 @@ fn wants_nvfp4_triplet(prefix: &str) -> bool {
 /// No-op (Ok, zero stats) when the store has no EXL3 tensors.
 ///
 /// Gate validation runs FIRST, before the EXL3-store early-out:
-/// `ATLAS_EXL3_NATIVE_MOE=1` without `ATLAS_EXL3_NATIVE=1` errors on every
+/// `AVAROK_EXL3_NATIVE_MOE=1` without `AVAROK_EXL3_NATIVE=1` errors on every
 /// load, EXL3 checkpoint or not — a misconfiguration must never silently
 /// serve something else.
 pub fn materialize_exl3(
@@ -132,8 +132,8 @@ pub fn materialize_exl3(
     let native_moe = super::exl3_native_moe_enabled();
     super::check_exl3_native_gates(native, native_moe)?;
     let dense_env = super::exl3_native_dense_enabled();
-    let gdn_env = std::env::var("ATLAS_EXL3_NATIVE_GDN").ok();
-    let attn_env = std::env::var("ATLAS_EXL3_NATIVE_ATTN").ok();
+    let gdn_env = std::env::var("AVAROK_EXL3_NATIVE_GDN").ok();
+    let attn_env = std::env::var("AVAROK_EXL3_NATIVE_ATTN").ok();
     super::check_exl3_native_dense_gates(
         native,
         dense_env,
@@ -190,7 +190,7 @@ pub(crate) fn materialize_exl3_impl(
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
 
-    // ── Native MoE keep-set (ATLAS_EXL3_NATIVE_MOE=1) ──
+    // ── Native MoE keep-set (AVAROK_EXL3_NATIVE_MOE=1) ──
     // Resolve every routed-expert linear ONCE up front (the resolve includes
     // the 4-byte `.mul1` codebook readback the uniformity check needs; the
     // main loop reuses these resolutions instead of re-reading), then decide
@@ -209,7 +209,7 @@ pub(crate) fn materialize_exl3_impl(
     }
     let keep_experts = super::expert_keep_set(&expert_weights);
 
-    // ── Native dense keep-set (ATLAS_EXL3_NATIVE_DENSE=1) ──
+    // ── Native dense keep-set (AVAROK_EXL3_NATIVE_DENSE=1) ──
     // Same shape as the expert set: resolve every gate-admitted GDN /
     // attention projection up front, then decide ATOMICALLY per (layer,
     // family) — all of a layer's `linear_attn.{qkv,z,out}` (or
@@ -242,7 +242,7 @@ pub(crate) fn materialize_exl3_impl(
                 .with_context(|| format!("EXL3 materialization: resolving {p}"))?,
         };
 
-        // Native serving (ATLAS_EXL3_NATIVE=1): leave the packed tensors in
+        // Native serving (AVAROK_EXL3_NATIVE=1): leave the packed tensors in
         // the store for the model builder to resolve via
         // `Exl3Weight::from_store` — skip the rewrite AND the frees. Only
         // prefixes with a routed serving path (`exl3_native_serves`) AND a
@@ -374,7 +374,7 @@ pub(crate) fn materialize_exl3_impl(
             "EXL3 materialization: {:.2} GB of materialized trellis tensors live inside \
              fast-loader arenas and stay resident until teardown — the pool predicate \
              (exl3_pool_keep_predicted) admitted prefixes this pass then materialized \
-             (mixed K/codebook layer, or a cb0 checkpoint). Set ATLAS_EXL3_WEIGHT_POOL=0 \
+             (mixed K/codebook layer, or a cb0 checkpoint). Set AVAROK_EXL3_WEIGHT_POOL=0 \
              to reclaim them on this checkpoint.",
             stats.stranded_pooled_bytes as f64 / 1e9,
         );

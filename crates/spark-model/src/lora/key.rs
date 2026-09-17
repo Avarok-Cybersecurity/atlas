@@ -7,7 +7,7 @@
 //! unchanged.
 
 use anyhow::{Result, anyhow, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 
 use super::*;
 
@@ -48,7 +48,7 @@ pub fn adapter_id_hash(name: &str, generation: u64) -> u64 {
 /// `classify_key` rejects outright.
 ///
 /// Exists so a caller can SKIP such a tensor under
-/// `ATLAS_LORA_ALLOW_PARTIAL` instead of pattern-matching on the reject
+/// `AVAROK_LORA_ALLOW_PARTIAL` instead of pattern-matching on the reject
 /// message. The prefix test is the same one `classify_key` uses; keep them
 /// together so the skip can never drift from the reject.
 pub fn is_gdn_key(key: &str) -> bool {
@@ -66,7 +66,7 @@ pub fn is_gdn_key(key: &str) -> bool {
         return false;
     };
     // `linear_attn.out_proj` is SUPPORTED, so it is not skippable — skipping
-    // it would silently drop a delta Atlas can actually apply. Only the
+    // it would silently drop a delta Avarok can actually apply. Only the
     // input-side projections, which still have no delta path, are skippable.
     tail.starts_with("linear_attn.") && tail != "linear_attn.out_proj"
 }

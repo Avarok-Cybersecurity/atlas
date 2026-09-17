@@ -5,7 +5,7 @@
 // Snapshot original: .research/exllamav3_ref/exl3_gemm_kernel.cuh.
 // Adaptations (bodies verbatim otherwise):
 //   * the two `__global__` template kernels became `inline __device__ void
-//     exl3_gemm_kernel_body / exl3_mgemm_kernel_body`: Atlas needs plain
+//     exl3_gemm_kernel_body / exl3_mgemm_kernel_body`: Avarok needs plain
 //     extern "C" __global__ entry points selectable by name from the PTX
 //     module, and a __global__ cannot call another __global__, so the
 //     __launch_bounds__(EXL3_GEMM_BASE_THREADS * TILESIZE_K / 16) moves to
@@ -14,7 +14,7 @@
 //   * include paths made local; cooperative_groups included here (upstream
 //     got it from the host .cu)
 //   * the dead commented-out post-pass output rotation block was dropped
-//   * Atlas `A_BF16` / `OUT_BF16` template arms on exl3_gemm_kernel_body
+//   * Avarok `A_BF16` / `OUT_BF16` template arms on exl3_gemm_kernel_body
 //     (both default off = upstream): BF16 activation converted in the input
 //     Hadamard prologue; BF16 copy of C stored by the output Hadamard
 //     epilogue (two trailing defaulted parameters). Bit-identical to the
@@ -39,7 +39,7 @@ namespace cg = cooperative_groups;
 #include "exl3_gemm_inner.cuh"
 #include "exl3_devctx.cuh"
 
-// Atlas adaptation: the input-Hadamard prologue with a BF16 activation
+// Avarok adaptation: the input-Hadamard prologue with a BF16 activation
 // source. Byte-for-byte the `had_hf_r_128_inner<true, false>` body except the
 // load, which converts each BF16 element with `__float2half_rn(__bfloat162float(x))`
 // — the exact arithmetic of the standalone `exl3_bf16_to_f16` converter kernel
@@ -97,10 +97,10 @@ void had_bf16_hf_r_128_inner
     ((half4*) output_ptr)[t] = v;
 }
 
-// `A_BF16` (Atlas adaptation, default false = upstream): `A` is a BF16
+// `A_BF16` (Avarok adaptation, default false = upstream): `A` is a BF16
 // activation reinterpreted through the half* parameter; the prologue converts
 // while rotating and every later stage reads `A_had` as before.
-// `OUT_BF16` (Atlas adaptation, default false = upstream): the inner kernel's
+// `OUT_BF16` (Avarok adaptation, default false = upstream): the inner kernel's
 // output-Hadamard epilogue also stores the final f32 C values as BF16 into
 // `C_bf16` (row stride `ld_bf16` elements, >= size_n) — see
 // exl3_gemm_inner.cuh. f32 C only; `C_bf16` must not alias `C`.

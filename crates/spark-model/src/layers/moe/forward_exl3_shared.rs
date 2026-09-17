@@ -19,7 +19,7 @@
 //! not bit-identical to the old arm (the same contract as every other
 //! gemm-vs-gemv decode dispatch in this crate).
 //!
-//! Kill switch: `ATLAS_EXL3_SHARED_PREFILL_GEMM=1` restores the old arm, for
+//! Kill switch: `AVAROK_EXL3_SHARED_PREFILL_GEMM=1` restores the old arm, for
 //! back-to-back A/B only.
 
 use super::*;
@@ -37,7 +37,7 @@ pub(super) fn shared_gemv_arm(rows: u32, has_fp8_shared: bool, kill_switch: bool
 
 fn kill_switch_set() -> bool {
     static KILL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *KILL.get_or_init(|| std::env::var("ATLAS_EXL3_SHARED_PREFILL_GEMM").as_deref() == Ok("1"))
+    *KILL.get_or_init(|| std::env::var("AVAROK_EXL3_SHARED_PREFILL_GEMM").as_deref() == Ok("1"))
 }
 
 impl MoeLayer {
@@ -143,7 +143,7 @@ impl MoeLayer {
     /// per-row GEMV loop above that. Never the prefill-tiled `w4a16_gemm`,
     /// whose 64-row tile costs ~274 us at m=1 on these shapes (the
     /// shared-expert defect this module exists for; the K-row verify router
-    /// took the same GEMM whenever `ATLAS_VERIFY_EXL3_ROW_ROUTER` was unset).
+    /// took the same GEMM whenever `AVAROK_VERIFY_EXL3_ROW_ROUTER` was unset).
     /// Rows are contiguous `[rows, k]` / `[rows, n]` BF16, as every caller's
     /// buffers are laid out.
     #[allow(clippy::too_many_arguments)]
@@ -227,7 +227,7 @@ mod tests {
         );
         assert!(
             !shared_gemv_arm(1, false, true),
-            "ATLAS_EXL3_SHARED_PREFILL_GEMM=1 restores the old arm"
+            "AVAROK_EXL3_SHARED_PREFILL_GEMM=1 restores the old arm"
         );
     }
 }

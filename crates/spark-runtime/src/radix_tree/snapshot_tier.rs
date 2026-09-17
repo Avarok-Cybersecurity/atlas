@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Phase 1b spill tier — resident vs spilled state machine (`ATLAS_SSM_TIER`).
+//! Phase 1b spill tier — resident vs spilled state machine (`AVAROK_SSM_TIER`).
 //! Split from `snapshot.rs` (file-size cap); same `SsmSnapshotIndex` impl.
 
 use crate::prefix_cache::TierEvict;

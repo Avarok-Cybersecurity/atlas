@@ -2,7 +2,7 @@
 
 //! `Qwen3.8-Flash-Next` (`qwen4_exp`) MTP draft-module loader — Track B.
 //!
-//! Atlas has two MTP tracks. Track A fills in `MtpWeights` and lets
+//! Avarok has two MTP tracks. Track A fills in `MtpWeights` and lets
 //! `MtpHead` build a hand-rolled GQA drafter; Track B builds a bespoke module
 //! out of the model's OWN layer type and surfaces it to a proposer. DeepSeek-V4
 //! is Track B, and so is this: `MtpWeights` demands a fused `fc [h, 2h]` where
@@ -21,7 +21,7 @@
 //! `--speculative` on qwen4_exp loads and audits this module and says so.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -100,8 +100,8 @@ pub fn load_qwen4_exp_mtp_module(
     //
     // This module is loaded from a DIFFERENT phase (`factory::build`, after
     // `Qwen4ExpWeightLoader::load_layers` has returned) than the main layers.
-    // It used to REFUSE to load whenever ATLAS_EXL3_NATIVE_MOE /
-    // ATLAS_EXL3_NATIVE_DENSE were engaged, because the main loader's
+    // It used to REFUSE to load whenever AVAROK_EXL3_NATIVE_MOE /
+    // AVAROK_EXL3_NATIVE_DENSE were engaged, because the main loader's
     // `NativeExl3` was a LOCAL in `load_layers` and there was no way to reach
     // it from here — and building a second one would have meant a second
     // `Exl3DenseStage` and a second `Exl3MoeState`.
@@ -130,7 +130,7 @@ pub fn load_qwen4_exp_mtp_module(
              holds no `mtp.fc_embedding.weight`. The tensors were NOT loaded. \
              Most likely `skip_mtp` (spark-server serve_phases/weights.rs) is \
              still filtering `mtp.*` out at upload — it only lets them through \
-             under `--speculative` or ATLAS_QWEN4EXP_MTP=1 — or the checkpoint \
+             under `--speculative` or AVAROK_QWEN4EXP_MTP=1 — or the checkpoint \
              came in through the GGUF or RDMA loader path, neither of which \
              carries the mtp namespace. Refusing rather than reporting \"no MTP \
              in checkpoint\" and loading nothing.",

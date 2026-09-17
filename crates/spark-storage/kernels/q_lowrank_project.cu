@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// q_lowrank_project: Q @ P  for the Atlas high-speed-swap predictor.
+// q_lowrank_project: Q @ P  for the Avarok high-speed-swap predictor.
 //
 // Decode-time projection of the current step's queries through the fixed
 // Gaussian projection matrix P. Run once per layer per decode step.

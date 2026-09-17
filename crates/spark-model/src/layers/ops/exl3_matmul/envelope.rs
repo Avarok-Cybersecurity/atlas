@@ -54,7 +54,7 @@ pub fn exl3_dense_kernel_names(k: usize, n: usize, k_bits: u32, cb: u32) -> Resu
         }
         // BF16-ingress twin (f32 C) and the BF16-ingress + BF16-egress twin:
         // the dense decode arm's GEMM at m <= 8 (kill switch
-        // ATLAS_EXL3_NO_FUSED_EGRESS selects between them).
+        // AVAROK_EXL3_NO_FUSED_EGRESS selects between them).
         names.push(format!("exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_f32_abf16"));
         names.push(format!(
             "exl3_gemm_k{k_bits}_cb{cb}_sh{shape}_f32_abf16_obf16"

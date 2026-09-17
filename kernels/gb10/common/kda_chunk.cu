@@ -72,7 +72,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // SHARED MEMORY — a correctness blocker on this stack, not a tuning knob
 // ─────────────────────────────────────────────────────────────────────────────
-// Atlas's CUDA backend has NO `cuFuncSetAttribute` /
+// Avarok's CUDA backend has NO `cuFuncSetAttribute` /
 // `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES` path, so a block cannot opt in past the
 // DEFAULT 48 KiB (49152 B). GB10's 101376 B ceiling is unreachable from here today.
 //

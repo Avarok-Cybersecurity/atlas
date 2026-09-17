@@ -248,7 +248,7 @@ impl<'a> KernelLaunch<'a> {
                 &args,
             )
         };
-        // ATLAS_DEBUG_SYNC_KERNELS (PCND, default-off): synchronize after
+        // AVAROK_DEBUG_SYNC_KERNELS (PCND, default-off): synchronize after
         // each launch so an async CUDA fault surfaces AT the culprit launch
         // (with grid/block) instead of at a later, unrelated sync point.
         // Diagnostic only — leave unset in production (one stream sync per
@@ -258,7 +258,7 @@ impl<'a> KernelLaunch<'a> {
             self.gpu.synchronize(stream).map_err(|e| {
                 let bt = std::backtrace::Backtrace::force_capture();
                 anyhow::anyhow!(
-                    "ATLAS_DEBUG_SYNC_KERNELS: async GPU fault immediately after kernel launch \
+                    "AVAROK_DEBUG_SYNC_KERNELS: async GPU fault immediately after kernel launch \
                      grid={:?} block={:?} shared_mem={}: {e}\nLAUNCH BACKTRACE:\n{bt}",
                     self.grid,
                     self.block,
@@ -270,7 +270,7 @@ impl<'a> KernelLaunch<'a> {
     }
 }
 
-// `ATLAS_DEBUG_SYNC_KERNELS` is now resolved once when the backend is built
+// `AVAROK_DEBUG_SYNC_KERNELS` is now resolved once when the backend is built
 // and read through `GpuBackend::debug_sync_kernels` — the launch path is far
 // too hot for a per-call getenv, and a static was the wrong way to avoid one.
 

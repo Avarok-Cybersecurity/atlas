@@ -34,18 +34,18 @@ impl MoeLayer {
         // set → cuLaunchKernel hipErrorInvalidHandle at layer 0 for any prefill
         // chunk >64 tokens. forward_batched is the correct, complete per-token
         // path (its kernels are all bit-exact-verified on HIP) — route there for
-        // ALL token counts on atlas_hip. SCALE keeps grouped (its symlinked
+        // ALL token counts on avarok_hip. SCALE keeps grouped (its symlinked
         // grouped GEMM is real via PTX-recompile); NVIDIA byte-unchanged.
         //
         // EXCEPTION: the FP8 routed grouped GEMM (moe_fp8_grouped_gemm) has now
         // been ported to HIP WMMA (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu
         // — weight-stationary per-expert, register-prefetch double-buffered, two-
         // level FP32 block-scale accumulation matching the GB10/oracle numerics),
-        // so long FP8 prefills (>64 tokens) take the grouped path on atlas_hip too
+        // so long FP8 prefills (>64 tokens) take the grouped path on avarok_hip too
         // — amortizing the ~50 GB/layer per-token weight re-streaming of
         // forward_batched. The BF16-dequant grouped GEMM is NOT ported (its
         // strix-hip kernel is still absent), so its branch stays HIP-batched.
-        let hip_force_batched = cfg!(atlas_hip);
+        let hip_force_batched = cfg!(avarok_hip);
         // FP8 grouped path is HIP-ready (kernel ported); do not force-batch it.
         let hip_force_batched_fp8 = false;
 
@@ -185,11 +185,11 @@ impl MoeLayer {
         super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
-        // ── FP32 prefill routing (ATLAS_MOE_PREFILL_FP32_ROUTING=1) ──
+        // ── FP32 prefill routing (AVAROK_MOE_PREFILL_FP32_ROUTING=1) ──
         // Top-k is DISCRETE, so selection only changes if a perturbation
         // exceeds the k-th/(k+1)-th logit gap. With BF16 logits that gap is
         // ~1 ULP on average and 23-48% of tokens are an EXACT TIE
-        // (ATLAS_MOE_ROUTER_MARGIN=1), which is why the router GEMM is pinned:
+        // (AVAROK_MOE_ROUTER_MARGIN=1), which is why the router GEMM is pinned:
         // any kernel change reorders ties. Widening the logits is the way out.
         //
         // The post-top-k aliasing of `gate_logits` as scratch (sorted ids /
@@ -262,7 +262,7 @@ impl MoeLayer {
             )?;
         } else {
             // Selection numerics — see router_gate_gemm_dense for why this
-            // must stay on the scalar kernel and why ATLAS_CUBLAS_GEMM must
+            // must stay on the scalar kernel and why AVAROK_CUBLAS_GEMM must
             // not reroute it either (2026-08-12 BFCL regression: a rerouted
             // router GEMM flips top-k on borderline tokens deterministically).
             self.router_gate_gemm_dense(
@@ -306,7 +306,7 @@ impl MoeLayer {
 
         // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
         // logits BEFORE top-k (reproduces PEFT `mlp.gate`). No-op unless a router
-        // delta is installed (ATLAS_LORA_EXPERTS=1).
+        // delta is installed (AVAROK_LORA_EXPERTS=1).
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
 
         // 2. Batched topK dispatch — hoisted to forward_prefill_topk.rs on

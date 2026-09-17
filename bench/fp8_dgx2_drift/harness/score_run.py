@@ -3,14 +3,14 @@
 
 Extracts structured drift metrics from:
   - The opencode JSONL stdout (tool calls, content, timing)
-  - The Atlas server's stderr/stdout (logged via docker logs)
+  - The Avarok server's stderr/stdout (logged via docker logs)
   - The actual filesystem state of the target directory
 
 Usage:
     python3 score_run.py --tier TIER --run N --target TARGET_DIR \
         --opencode-json /tmp/oc-<tier>-r<N>.json \
         --opencode-stderr /tmp/oc-<tier>-r<N>.err \
-        --atlas-log-window /tmp/atlas-log-<tier>-r<N>.txt \
+        --avarok-log-window /tmp/avarok-log-<tier>-r<N>.txt \
         --probe-start-ts <epoch_ms> \
         --probe-end-ts <epoch_ms> \
         --out /path/to/run_<tier>_<N>.json
@@ -236,7 +236,7 @@ def _free_port() -> int:
 def _warm_target_dir() -> str:
     """SSOT for the shared, pre-warmed cargo target directory.
 
-    Mirrors warm_cargo_cache.sh's ATLAS_WARM_TARGET_DIR (same env var, same
+    Mirrors warm_cargo_cache.sh's AVAROK_WARM_TARGET_DIR (same env var, same
     explicit default). When the warm cache has been populated, exporting
     CARGO_TARGET_DIR to this path makes each per-project `cargo build` reuse
     the already-compiled dependency rlibs (libc/proc-macro2/hyper/tokio/axum/…)
@@ -245,8 +245,8 @@ def _warm_target_dir() -> str:
     second incremental build of just the project's own crate.
     """
     return os.environ.get(
-        "ATLAS_WARM_TARGET_DIR",
-        os.path.join(os.path.expanduser("~"), ".cargo", "atlas-warm-target"),
+        "AVAROK_WARM_TARGET_DIR",
+        os.path.join(os.path.expanduser("~"), ".cargo", "avarok-warm-target"),
     )
 
 
@@ -258,10 +258,10 @@ def _build_timeout_s() -> int:
     off-version dep) completes rather than being mislabeled as build_ok=false.
     With the warm target dir the typical build is a few seconds, so the high
     ceiling only ever bites pathological cold cases. Override via
-    ATLAS_WS_BUILD_TIMEOUT for de-confounding experiments.
+    AVAROK_WS_BUILD_TIMEOUT for de-confounding experiments.
     """
     try:
-        return int(os.environ.get("ATLAS_WS_BUILD_TIMEOUT", "600"))
+        return int(os.environ.get("AVAROK_WS_BUILD_TIMEOUT", "600"))
     except ValueError:
         return 600
 
@@ -277,7 +277,7 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
          reuse the shared warm target dir (CARGO_TARGET_DIR) so dependency
          compilation is incremental — see `_warm_target_dir`.
       3. Spawn `cargo run --release` as background process with
-         ATLAS_HARNESS_PORT={port} env. The prompt instructed the model
+         AVAROK_HARNESS_PORT={port} env. The prompt instructed the model
          to read this env var; if the model misread the instruction the
          server binds elsewhere and /ping curl fails — that's a valid
          "webserver_ok=false" signal.
@@ -319,7 +319,7 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
     build_timeout = _build_timeout_s()
     build_env = {
         **os.environ,
-        "ATLAS_HARNESS_PORT": str(port),
+        "AVAROK_HARNESS_PORT": str(port),
         "CARGO_TARGET_DIR": warm_target,
     }
 
@@ -351,12 +351,12 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
     # mislabeled as a generic "didn't respond" timeout.
     env = {
         **os.environ,
-        "ATLAS_HARNESS_PORT": str(port),
+        "AVAROK_HARNESS_PORT": str(port),
         "RUST_LOG": "warn",
         "CARGO_TARGET_DIR": warm_target,
     }
     server_err = tempfile.NamedTemporaryFile(
-        mode="w+", prefix="atlas-ws-stderr-", suffix=".log", delete=False
+        mode="w+", prefix="avarok-ws-stderr-", suffix=".log", delete=False
     )
     try:
         server = subprocess.Popen(
@@ -430,8 +430,8 @@ def webserver_test(target: pathlib.Path, port: int, timeout_s: int = 15) -> dict
     return out
 
 
-def atlas_log_metrics(log_text: str) -> dict[str, Any]:
-    """Extract atlas-side counters from the captured docker log window.
+def avarok_log_metrics(log_text: str) -> dict[str, Any]:
+    """Extract avarok-side counters from the captured docker log window.
 
     `runaway_length_capped_turns` + `max_turn_output_tokens` make the dominant
     webserver_ok wall-time driver VISIBLE per run: a deep-context FP8
@@ -469,7 +469,7 @@ def main() -> int:
     ap.add_argument("--target", required=True, type=pathlib.Path)
     ap.add_argument("--opencode-json", required=True, type=pathlib.Path)
     ap.add_argument("--opencode-stderr", required=True, type=pathlib.Path)
-    ap.add_argument("--atlas-log-window", required=True, type=pathlib.Path)
+    ap.add_argument("--avarok-log-window", required=True, type=pathlib.Path)
     ap.add_argument("--probe-start-ts", required=True, type=float)
     ap.add_argument("--probe-end-ts", required=True, type=float)
     ap.add_argument("--webserver-port", type=int, default=3001,
@@ -494,10 +494,10 @@ def main() -> int:
         )
     except Exception as _e:  # pragma: no cover — never break scoring
         followed = {"followed_directions": None, "error": f"compute-error: {_e}"}
-    atlas_log_text = (
-        args.atlas_log_window.read_text(errors="replace") if args.atlas_log_window.exists() else ""
+    avarok_log_text = (
+        args.avarok_log_window.read_text(errors="replace") if args.avarok_log_window.exists() else ""
     )
-    atlas = atlas_log_metrics(atlas_log_text)
+    avarok = avarok_log_metrics(avarok_log_text)
 
     # Webserver test: only if cargo_toml_valid (no point building if TOML
     # doesn't parse) and not skipped.
@@ -530,7 +530,7 @@ def main() -> int:
         "followed_directions": followed,
         "tool_calls": tools,
         "drift": drift,
-        "atlas": atlas,
+        "avarok": avarok,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(record, indent=2))

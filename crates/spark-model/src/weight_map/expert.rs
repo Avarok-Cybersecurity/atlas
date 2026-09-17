@@ -123,12 +123,12 @@ pub enum QuantWeight {
     /// BF16 dense (unquantized). Kernel: dense_gemv / dense_gemm
     Dense(DenseWeight),
 
-    /// Keep-packed ternary Q2_0 (`ATLAS_GGUF_NATIVE_Q2`): raw `block_q2_0` bytes,
+    /// Keep-packed ternary Q2_0 (`AVAROK_GGUF_NATIVE_Q2`): raw `block_q2_0` bytes,
     /// 2-bit resident. Decode dispatches `q2_0_gemv_vec`; prefill transient-
     /// dequants to BF16 then runs `dense_gemm`. Tier-1c attention path.
     PackedQ2(PackedQ2Weight),
 
-    /// Keep-packed EXL3 QTIP trellis (`ATLAS_EXL3_NATIVE=1`): u16 code stream
+    /// Keep-packed EXL3 QTIP trellis (`AVAROK_EXL3_NATIVE=1`): u16 code stream
     /// plus exact-f16 suh/svh Hadamard vectors, K bits/weight resident.
     /// Decoded in-kernel by the fused `exl3_matmul` GEMV/GEMM — COOPERATIVE
     /// launches that need per-device state (locks buffer, fp16 `A_had`

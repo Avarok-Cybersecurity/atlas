@@ -141,7 +141,7 @@ pub const CONTENT_LOOP_MIN_TOKENS: u32 = 48;
 pub const CONTENT_LOOP_CHECK_STRIDE: u32 = 16;
 // 2026-05-24 sweep #2: MIN_REPEATS bumped 2 → 3 to match vLLM's
 // `RepetitionDetectionParams.min_count` default. The earlier value of
-// 2 was tuned for Atlas's pre-anchored substring-scan detector, where
+// 2 was tuned for Avarok's pre-anchored substring-scan detector, where
 // 4 tokens of matching tail was strong evidence of a loop. After the
 // switch to vLLM's end-anchored algorithm (commit 1bb82ed), 2 repeats
 // of period-2 (= 4 tokens) became a false-positive on legitimate
@@ -176,13 +176,13 @@ pub const CONTENT_LOOP_NORM_MIN_REPEATS: usize = 4;
 /// "structural", never a false numeric — safe either way.
 pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 
-// `ATLAS_DISABLE_WATCHDOGS` is resolved once into `SchedLevers::disable_watchdogs`
+// `AVAROK_DISABLE_WATCHDOGS` is resolved once into `SchedLevers::disable_watchdogs`
 // and read through `SchedCtx` / `LogitsContext`. `parse_disable_watchdogs` below
 // stays as the SSOT parse — the boot audit calls it directly, having no carrier.
 
 /// Resolved kill-switch for ALL auto-watchdogs (content-loop, inter-tool
 /// prose budget, F2 confidence early-stop, mid-word `</think>` defer,
-/// thinking-loop). Cached once on first read from `ATLAS_DISABLE_WATCHDOGS`.
+/// thinking-loop). Cached once on first read from `AVAROK_DISABLE_WATCHDOGS`.
 ///
 /// 2026-05-24: introduced for empirical test of whether Phase 2b
 /// numerical fixes (RNE FP32 → BF16 + `__expf` softmax replacing the
@@ -190,7 +190,7 @@ pub const NUMERIC_SENTINEL: u32 = u32::MAX;
 /// Watchdogs were originally compensating for FP8 token-margin flips
 /// pre-Phase 2b; better precision should reduce or eliminate the need.
 ///
-/// `ATLAS_DISABLE_WATCHDOGS=1`/`true` (case-insensitive) → all
+/// `AVAROK_DISABLE_WATCHDOGS=1`/`true` (case-insensitive) → all
 /// auto-watchdogs short-circuit. The user-set `max_thinking_budget` and
 /// safety masks (post-`</think>` re-entry, tool-call-during-thinking)
 /// are NOT touched — those are not watchdogs.
@@ -232,14 +232,14 @@ pub(crate) fn parse_disable_watchdogs(env: Option<&str>) -> bool {
 /// guarantees a single-bit mask). Output is therefore bit-identical to
 /// the sampled path, so the fast-path is **on by default**.
 ///
-/// `ATLAS_DISABLE_FORCED_TOKEN=1` (or `true`) forces it off — a
+/// `AVAROK_DISABLE_FORCED_TOKEN=1` (or `true`) forces it off — a
 /// kill-switch should a future grammar/matcher regression ever make the
 /// forced-token guarantee unsafe. This mirrors the env-var bisection
 /// gates already used in `phase_continue_prefills.rs` /
 /// `mod_helpers.rs`; a MODEL.toml `[behavior]` flag was not used because
-/// the `ModelBehavior` struct lives in the `atlas-kernels` crate, which
+/// the `ModelBehavior` struct lives in the `avarok-kernels` crate, which
 /// this change deliberately does not touch.
-/// Pure parse of the `ATLAS_DISABLE_FORCED_TOKEN` env value into the
+/// Pure parse of the `AVAROK_DISABLE_FORCED_TOKEN` env value into the
 /// resolved "fast-path enabled" boolean. Kept separate from
 /// `SchedLevers::forced_token_fastpath`, which calls it, so the parsing rule
 /// is unit-testable without building a whole lever set.
@@ -276,7 +276,7 @@ pub(crate) fn parse_flag_default_on(env: Option<&str>) -> bool {
 /// [`parse_flag_default_on`] against the live environment.
 ///
 /// ★ Only for levers read OFF the per-token path. The two that were on it —
-/// `ATLAS_TOOL_RESPONSE_STOP` and `ATLAS_TOOL_EOS_ESCAPE` — are now
+/// `AVAROK_TOOL_RESPONSE_STOP` and `AVAROK_TOOL_EOS_ESCAPE` — are now
 /// `SchedLevers` fields; they were resolved once per generated token per
 /// sequence, on the scheduler thread, where `std::env::var` allocates and
 /// takes the process-wide environment lock.
@@ -288,9 +288,9 @@ fn env_flag_default_on(name: &str) -> bool {
 /// structured-output response would otherwise stop with the EOS token
 /// grammar-illegal mid-structure (e.g. inside an open JSON string), emit the
 /// shortest grammar-legal close so the truncated output is still parseable.
-/// Kill-switch: `ATLAS_GRAMMAR_BUDGET_CLOSE=0`/`false` disables.
+/// Kill-switch: `AVAROK_GRAMMAR_BUDGET_CLOSE=0`/`false` disables.
 pub fn grammar_budget_close_enabled() -> bool {
-    env_flag_default_on("ATLAS_GRAMMAR_BUDGET_CLOSE")
+    env_flag_default_on("AVAROK_GRAMMAR_BUDGET_CLOSE")
 }
 
 /// Per-model tunables for the always-on decode-time watchdogs. Sourced
@@ -352,7 +352,7 @@ pub struct WatchdogParams {
     /// Default `true`. See [`super::rollback::rollback_to_boundary`].
     pub rollback_resteer: bool,
     /// Operator override for the content-loop detector's repeat threshold
-    /// (`--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`).
+    /// (`--content-loop-min-repeats` / `AVAROK_CONTENT_LOOP_MIN_REPEATS`).
     /// `None` = the built-in [`CONTENT_LOOP_MIN_REPEATS`] (3). A
     /// per-request `repetition_detection` object still outranks this.
     /// Raising it loosens the guard for output whose legitimate shape is
@@ -398,7 +398,7 @@ impl WatchdogParams {
     /// `max_inter_tool_prose_cli` is `--max-inter-tool-prose` (#328); see
     /// [`resolve_max_inter_tool_prose`] for the precedence chain.
     /// `content_loop_min_repeats_cli` is `--content-loop-min-repeats`
-    /// (#328 family); precedence CLI → `ATLAS_CONTENT_LOOP_MIN_REPEATS` →
+    /// (#328 family); precedence CLI → `AVAROK_CONTENT_LOOP_MIN_REPEATS` →
     /// built-in [`CONTENT_LOOP_MIN_REPEATS`].
     ///
     /// Was a `OnceLock` plus a `set_watchdog_params` installer. Two problems,
@@ -409,7 +409,7 @@ impl WatchdogParams {
     /// scheduler thread — the reader's `unwrap_or(&DEFAULT)` was the only
     /// reason that ordering was survivable.
     pub fn from_behavior(
-        b: &atlas_kernels::ModelBehavior,
+        b: &avarok_kernels::ModelBehavior,
         max_inter_tool_prose_cli: Option<u32>,
         content_loop_min_repeats_cli: Option<u32>,
     ) -> Self {
@@ -438,7 +438,7 @@ impl WatchdogParams {
         // wander is already caught by the content-loop + SimHash watchdogs
         // independently; this budget's residual job is only the non-repeating
         // dormant-opener burn.
-        let env = match std::env::var("ATLAS_MAX_INTER_TOOL_PROSE") {
+        let env = match std::env::var("AVAROK_MAX_INTER_TOOL_PROSE") {
             Ok(v) => match v.parse::<u32>() {
                 Ok(n) => Some(n),
                 Err(_) => {
@@ -447,7 +447,7 @@ impl WatchdogParams {
                     // is how a truncation "fix" fails to apply (#328 class).
                     tracing::warn!(
                         value = %v,
-                        "ATLAS_MAX_INTER_TOOL_PROSE is set but not a u32; ignoring it"
+                        "AVAROK_MAX_INTER_TOOL_PROSE is set but not a u32; ignoring it"
                     );
                     None
                 }
@@ -457,8 +457,8 @@ impl WatchdogParams {
         p.max_inter_tool_prose =
             resolve_max_inter_tool_prose(p.max_inter_tool_prose, env, max_inter_tool_prose_cli);
         p.content_loop_min_repeats = content_loop_min_repeats_cli.or(parse_env_u32(
-            "ATLAS_CONTENT_LOOP_MIN_REPEATS",
-            std::env::var("ATLAS_CONTENT_LOOP_MIN_REPEATS")
+            "AVAROK_CONTENT_LOOP_MIN_REPEATS",
+            std::env::var("AVAROK_CONTENT_LOOP_MIN_REPEATS")
                 .ok()
                 .as_deref(),
         ));
@@ -501,12 +501,12 @@ fn parse_env_u32(name: &str, v: Option<&str>) -> Option<u32> {
 /// Resolve whether the content-loop watchdog is armed for this run.
 ///
 /// Precedence, highest wins: `--content-loop-watchdog` (CLI) →
-/// `ATLAS_CONTENT_LOOP_WATCHDOG` (env, `1`/`true`/`0`/`false`) → MODEL.toml
+/// `AVAROK_CONTENT_LOOP_WATCHDOG` (env, `1`/`true`/`0`/`false`) → MODEL.toml
 /// `[behavior].enable_loop_watchdog`. Before this resolver the MODEL.toml
 /// value was FINAL on the shipped image (MODEL.toml is baked in at build
 /// time), so a model that opted in — e.g. the qwen3-next family, for its
 /// run-on incident — dragged every derivative checkpoint's operators along
-/// with no reachable off-switch short of `ATLAS_DISABLE_WATCHDOGS=1`
+/// with no reachable off-switch short of `AVAROK_DISABLE_WATCHDOGS=1`
 /// (which disarms EVERY guard, not this one).
 pub fn resolve_content_loop_watchdog(toml: bool, env: Option<&str>, cli: Option<bool>) -> bool {
     if let Some(cli) = cli {
@@ -523,7 +523,7 @@ pub fn resolve_content_loop_watchdog(toml: bool, env: Option<&str>, cli: Option<
             } else {
                 tracing::warn!(
                     value = %v,
-                    "ATLAS_CONTENT_LOOP_WATCHDOG is set but not 1/true/0/false; \
+                    "AVAROK_CONTENT_LOOP_WATCHDOG is set but not 1/true/0/false; \
                      keeping the MODEL.toml value"
                 );
                 toml
@@ -535,9 +535,9 @@ pub fn resolve_content_loop_watchdog(toml: bool, env: Option<&str>, cli: Option<
 /// Resolve the effective inter-tool prose budget (#328).
 ///
 /// Precedence, highest wins: `--max-inter-tool-prose` (CLI, typed per
-/// launch next to the model) → `ATLAS_MAX_INTER_TOOL_PROSE` (env) →
+/// launch next to the model) → `AVAROK_MAX_INTER_TOOL_PROSE` (env) →
 /// MODEL.toml `[behavior].max_inter_tool_prose` → the shared default
-/// (`atlas_kernels::DEFAULT_MAX_INTER_TOOL_PROSE`, already folded into
+/// (`avarok_kernels::DEFAULT_MAX_INTER_TOOL_PROSE`, already folded into
 /// `toml` by the build-time parse).
 ///
 /// 0 means "guard disabled" and maps to `u32::MAX`: the check sites fire
@@ -566,11 +566,11 @@ pub fn resolve_max_inter_tool_prose(toml: u32, env: Option<u32>, cli: Option<u32
 /// prose↔tool↔prose↔tool indefinitely. Counted across non-thinking,
 /// non-tool-body tokens only.
 ///
-/// Aliases the atlas-kernels default rather than restating it: P2-1
+/// Aliases the avarok-kernels default rather than restating it: P2-1
 /// raised this constant to 3072 while the kernels-side default (the one
 /// `from_behavior` actually reads for every model) stayed 384, so the
 /// "fixed" budget kept amputating agent narration for a month (#328).
-pub const MAX_INTER_TOOL_PROSE: u32 = atlas_kernels::DEFAULT_MAX_INTER_TOOL_PROSE;
+pub const MAX_INTER_TOOL_PROSE: u32 = avarok_kernels::DEFAULT_MAX_INTER_TOOL_PROSE;
 
 /// F1 (2026-06-02): unconditional per-generation cap on post-`</think>`
 /// content tokens for tool-active requests (`grammar_state.is_some()`).
@@ -751,17 +751,17 @@ pub fn detect_content_token_loop_normalized_with(
     )
 }
 
-/// 2026-05-24 v3: ALGORITHM REPLACE. Switched from Atlas's scan-anywhere
+/// 2026-05-24 v3: ALGORITHM REPLACE. Switched from Avarok's scan-anywhere
 /// substring detector to vLLM's anchored-at-end algorithm (vLLM main
 /// `v1/core/sched/utils.py::_has_repeating_pattern`, GitHub
 /// vllm-project/vllm; verified identical in 0.17.0 + current main).
 ///
-/// **Why**: Atlas's scan-anywhere algorithm fires on ANY period match
+/// **Why**: Avarok's scan-anywhere algorithm fires on ANY period match
 /// in the last 280 tokens — including OLD patterns the model has
 /// already moved past. Manifests as false-positive cutoffs on
 /// numbered lists ("Step 1: Step 2: Step 3: Verify Cargo.toml" has
 /// period-2 in the `[Step,N]` tail BEFORE the prose continuation, so
-/// Atlas would fire even though the model is no longer looping).
+/// Avarok would fire even though the model is no longer looping).
 ///
 /// **vLLM's algorithm**: take the LAST `pattern_len` tokens as a fixed
 /// anchor; check whether the preceding `(min_repeats - 1)` windows of
@@ -887,7 +887,8 @@ mod inter_tool_prose_tests {
         // served model got 384 — production reads the KERNELS-side default
         // through `from_behavior`, not the constant. Assert the RESOLVED
         // value, i.e. what `handle_content_token` actually compares against.
-        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, None);
+        let p =
+            WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
         assert!(
             p.max_inter_tool_prose >= 2048,
             "resolved inter-tool prose budget must fit a plan/analysis turn \
@@ -951,7 +952,7 @@ mod content_loop_override_tests {
     #[test]
     fn min_repeats_cli_reaches_the_resolved_params() {
         let p =
-            WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, Some(5));
+            WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, Some(5));
         assert_eq!(p.content_loop_min_repeats, Some(5));
         let eff = p.content_loop_params(None).expect("override present");
         assert_eq!(eff.min_count, 5);
@@ -977,7 +978,8 @@ mod content_loop_override_tests {
 
     #[test]
     fn unset_override_keeps_the_historical_constants() {
-        let p = WatchdogParams::from_behavior(&atlas_kernels::ModelBehavior::default(), None, None);
+        let p =
+            WatchdogParams::from_behavior(&avarok_kernels::ModelBehavior::default(), None, None);
         assert_eq!(p.content_loop_min_repeats, None);
         assert!(p.content_loop_params(None).is_none());
     }

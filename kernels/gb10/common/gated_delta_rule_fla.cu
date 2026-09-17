@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN prefill — FLA-style MULTI-KERNEL decomposition (the path to beat
+// Avarok GDN prefill — FLA-style MULTI-KERNEL decomposition (the path to beat
 // vLLM). The single-fused chunk64 kernel was boxed in (serial-per-chunk in one
 // CTA → 0.38-0.69x). FLA's speed comes from splitting into passes where the BIG
 // matmuls are PARALLEL over all chunks (full 48-SM occupancy) and only a small
@@ -207,7 +207,7 @@ __device__ __forceinline__ void mma_gram(
 // trustworthy: at nt=1 the grid is 32 CTAs over ~48 SMs, so the GPU is
 // UNDERFILLED and occupancy never binds. One candidate below read 1.60x at
 // nt=1 and 0.92x at nt=64 — the sign flipped. Use
-// `ATLAS_WU_SHAPES=1024,4096` with `WU_BENCH_ITERS` in
+// `AVAROK_WU_SHAPES=1024,4096` with `WU_BENCH_ITERS` in
 // `examples/gdn_recompute_wu_gateb.rs`.
 //
 // WHERE THE TIME GOES. Against a solve-removed probe, the prologue (gc scan,

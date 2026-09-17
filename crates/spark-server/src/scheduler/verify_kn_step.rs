@@ -5,13 +5,13 @@
 //! token plus N-1 drafts through the model's width-generic verify entry, then
 //! the same accept, commit, rollback and re-propose as the K=3 and K=4 steps
 //! (`verify_mtp_wide::finish`). Reached from `mtp_step` when a non-DFlash
-//! sequence holds four or more drafts: lookup drafts at `ATLAS_LOOKUP_WIDTH`,
+//! sequence holds four or more drafts: lookup drafts at `AVAROK_LOOKUP_WIDTH`,
 //! or an MTP head drafting past three.
 //!
 //! Under expert parallelism this broadcasts `EP_CMD_VERIFY_KN` — the
 //! width-generic worker command — rather than narrowing to K=4. It used to
 //! narrow, because the workers knew only the K=3/K=4 commands; that cap made
-//! `ATLAS_LOOKUP_WIDTH` unreachable on a multi-rank serve, and proposing wide
+//! `AVAROK_LOOKUP_WIDTH` unreachable on a multi-rank serve, and proposing wide
 //! while verifying K=4 discards the extra drafts every fire (measured on the
 //! copy task at TP=2 x EP=2: width 7 proposed / K=4 verified ran 53.31 tok/s
 //! against width 2's 61.88).

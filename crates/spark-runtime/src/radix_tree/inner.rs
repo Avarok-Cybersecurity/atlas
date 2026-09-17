@@ -187,7 +187,7 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        // `subblock_ok` is OFF by default (`ATLAS_PREFIX_SUBBLOCK=1` opts in);
+        // `subblock_ok` is OFF by default (`AVAROK_PREFIX_SUBBLOCK=1` opts in);
         // resolved once per cache in `RadixTree::new`.
         //
         // The sub-block arms below return a `matched_tokens` that is NOT
@@ -201,7 +201,7 @@ impl RadixTreeInner {
         // `super::subblock_matching_from_env`.
         //
         // ⚠ POLARITY DIVERGES FROM UPSTREAM, deliberately. main resolves this
-        // here as a local `OnceLock` defaulting ON (`ATLAS_PREFIX_SUBBLOCK`
+        // here as a local `OnceLock` defaulting ON (`AVAROK_PREFIX_SUBBLOCK`
         // != "0"). This branch takes `subblock_ok` as a PARAMETER resolved once
         // in `RadixTree::new`, defaulting OFF, on the measurement above — and a
         // local here would SHADOW that parameter and silently restore the

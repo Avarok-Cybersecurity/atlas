@@ -87,7 +87,7 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
     a.stats.ttft_p50_ms = Some(412.0);
     a.stats.ttft_p90_ms = Some(2985.0);
     a.stats.gpu_known = true;
-    a.stats.atlas_used_gb = 57.25;
+    a.stats.avarok_used_gb = 57.25;
     a.stats.gpu_free_gb = 62.4;
     a.stats.bytes_in_rate = 2048.0;
     a.stats.bytes_out_rate = 3_145_728.0;
@@ -97,7 +97,7 @@ fn a_server_under_load_reports_its_measurements_in_the_tiles() {
     assert!(has(&rows, "12.6 tok/s"), "one decimal:\n{rows:#?}");
     assert!(has(&rows, "p50 412ms"));
     assert!(has(&rows, "p90 3.0s"));
-    assert!(has(&rows, "atlas 57.2 GB"));
+    assert!(has(&rows, "avarok 57.2 GB"));
     assert!(has(&rows, "free 62.4"));
     // ★ This read "↓2K/s ↑3.0M/s": a magnitude with no unit, on a tile whose
     // other two figures are request counts. Same formatter as the download
@@ -145,7 +145,7 @@ fn the_sequences_pane_shows_the_scheduler_only_once_one_has_published() {
     a.stats.sched = Some(sched());
     a.stats.gpu_known = true;
     a.stats.gpu_total_gb = 119.7;
-    a.stats.atlas_used_gb = 57.2;
+    a.stats.avarok_used_gb = 57.2;
     a.stats.host_total_gb = 119.7;
     a.stats.host_avail_gb = 40.0;
     let rows = screen(&a, 160, 48);
@@ -250,7 +250,7 @@ mod gauges {
         let mut a = stats_app();
         a.stats.gpu_known = true;
         a.stats.gpu_total_gb = 0.0;
-        a.stats.atlas_used_gb = 0.0;
+        a.stats.avarok_used_gb = 0.0;
         a.stats.host_total_gb = 0.0;
         let rows = screen(&a, 160, 48);
         assert!(has(&rows, "0/0"), "{rows:#?}");
@@ -261,7 +261,7 @@ mod gauges {
         let mut a = stats_app();
         a.stats.gpu_known = true;
         a.stats.gpu_total_gb = 100.0;
-        a.stats.atlas_used_gb = 250.0;
+        a.stats.avarok_used_gb = 250.0;
         let rows = screen(&a, 160, 48);
         assert_eq!(rows.len(), 48);
         assert!(has(&rows, "250/100"), "the numbers stay honest:\n{rows:#?}");
@@ -271,7 +271,7 @@ mod gauges {
 /// ★ An absent GPU must read as UNAVAILABLE, not as a measurement of zero.
 ///
 /// With no device or no NVML the three figures stay at their 0.0 default, and
-/// the tile used to render `atlas 0.0 GB · free 0.0` with a 0 % gauge. That is
+/// the tile used to render `avarok 0.0 GB · free 0.0` with a 0 % gauge. That is
 /// a claim about the hardware, not an absence of one — and this same file
 /// already gets it right for TTFT, which renders `—`.
 #[test]
@@ -281,18 +281,18 @@ fn a_box_with_no_gpu_reading_shows_a_dash_not_zero() {
     a.stats.gpu_known = false;
     let rows = screen(&a, 120, 40);
     assert!(
-        !has(&rows, "atlas 0.0 GB"),
+        !has(&rows, "avarok 0.0 GB"),
         "a zero must never be presented as a GPU measurement:\n{rows:#?}"
     );
 
     // And the real reading still renders when the device DID answer.
     a.stats.gpu_known = true;
-    a.stats.atlas_used_gb = 12.5;
+    a.stats.avarok_used_gb = 12.5;
     a.stats.gpu_free_gb = 100.0;
     a.stats.gpu_total_gb = 112.5;
     let rows = screen(&a, 120, 40);
     assert!(
-        has(&rows, "atlas 12.5 GB"),
+        has(&rows, "avarok 12.5 GB"),
         "a real reading must still be shown:\n{rows:#?}"
     );
 }

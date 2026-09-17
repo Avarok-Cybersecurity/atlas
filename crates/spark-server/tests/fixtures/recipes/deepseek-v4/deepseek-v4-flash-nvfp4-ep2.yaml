@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: nvidia/DeepSeek-V4-Flash-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 min_nodes: 2
 max_nodes: 2
 
@@ -17,13 +17,13 @@ metadata:
     Architecture: 43 layers, MLA (head_dim 512, kv_lora 512 + 64 rope), 256
     experts / top-6 / 1 shared, sqrtsoftplus routing with the first 3 layers
     hash-routed (static tid2eid), Hyper-Connections residual (mHC, Sinkhorn),
-    and DeepSeek Sparse Attention (per-layer compress ratios). The Atlas port
+    and DeepSeek Sparse Attention (per-layer compress ratios). The Avarok port
     is validated coherent end-to-end (Paris, counting, haiku, math).
 
     KV cache is FP8: the MLA decode kernel's V=K rope reconstruction and
     attention sink are only implemented on the FP8 path, and BF16-KV decode
     is measurably worse. CUDA graphs are disabled under EP on GB10 (RoCE
-    replay deadlocks) — Atlas defaults ATLAS_EP_GRAPHS=0, so no override is
+    replay deadlocks) — Avarok defaults AVAROK_EP_GRAPHS=0, so no override is
     needed here.
 
     --speculative is OFF: the public checkpoint ships no usable MTP draft

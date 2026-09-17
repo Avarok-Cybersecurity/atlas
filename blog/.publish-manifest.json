@@ -2,11 +2,11 @@
   "posts": [
     {
       "slug": "dflash2-single-spark-record",
-      "title": "DFLASH-2: the fastest single-machine numbers Atlas has produced",
+      "title": "DFLASH-2: the fastest single-machine numbers Avarok has produced",
       "published_at": "2026-09-01",
       "topics": ["engineering", "benchmarks"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/dflash2-single-spark-record",
+        "blog": "https://blog.atlascybernetics.ai/posts/dflash2-single-spark-record",
         "devto": null,
         "medium": null,
         "x": null
@@ -14,11 +14,11 @@
     },
     {
       "slug": "seven-tenets-powering-atlas-inference",
-      "title": "Seven Tenets Powering Atlas Inference Accelerated Workloads",
+      "title": "Seven Tenets Powering Avarok Inference Accelerated Workloads",
       "published_at": "2026-08-31",
       "topics": ["engineering", "design"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference",
+        "blog": "https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference",
         "devto": null,
         "medium": null,
         "x": null
@@ -26,11 +26,11 @@
     },
     {
       "slug": "from-desktop-to-hyperscaler",
-      "title": "Atlas is the inference engine from desktop to hyperscaler",
+      "title": "Avarok is the inference engine from desktop to hyperscaler",
       "published_at": "2026-09-11",
       "topics": ["design", "engineering"],
       "urls": {
-        "blog": "https://blog.atlasinference.io/posts/from-desktop-to-hyperscaler",
+        "blog": "https://blog.atlascybernetics.ai/posts/from-desktop-to-hyperscaler",
         "devto": null,
         "medium": null,
         "x": null

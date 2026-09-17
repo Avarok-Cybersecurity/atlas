@@ -97,7 +97,7 @@ impl NemotronMoeLayer {
         // Defence in depth for the same class of bug: these arena buffers are
         // reused across requests and nothing else zeroes them, so any row a future
         // change fails to write would leak the previous request's activations
-        // rather than merely being wrong. `ATLAS_MOE_NO_ZERO_INTERMEDIATES=1` skips.
+        // rather than merely being wrong. `AVAROK_MOE_NO_ZERO_INTERMEDIATES=1` skips.
         if ctx.levers.moe_zero_intermediates {
             ctx.gpu.memset_async(
                 expert_up_out,
@@ -123,7 +123,7 @@ impl NemotronMoeLayer {
         // The true per-expert max is only known on device after the sort, so bound
         // by the worst case — one expert taking every routed token. Blocks past an
         // expert's real tile count exit immediately, so the cost is launch overhead,
-        // not work. `ATLAS_MOE_MAX_M_TILES_ESTIMATE=1` restores the old bound for an
+        // not work. `AVAROK_MOE_MAX_M_TILES_ESTIMATE=1` restores the old bound for an
         // A/B; it is not safe to serve on.
         let max_m_tiles = if ctx.levers.moe_max_m_tiles_estimate {
             (avg_per_expert * 2).div_ceil(64).max(1) as u32
@@ -132,7 +132,7 @@ impl NemotronMoeLayer {
         };
         // Native FP4 up GEMM: latent activations quantized to NVFP4 once per layer,
         // expert weights consumed as raw E2M1 + scales (no LUT dequant), relu^2
-        // fused. OPT-IN ONLY (ATLAS_MOE_W4A4=1): although the latent is a linear
+        // fused. OPT-IN ONLY (AVAROK_MOE_W4A4=1): although the latent is a linear
         // (fc1) output, it is the input to EVERY routed expert, and quantizing it
         // to FP4 produced a systematic repetition tic in long-prompt A/B ("the
         // silence between notes, the silence between breaths, the silence...")
@@ -308,7 +308,7 @@ impl NemotronMoeLayer {
         // OPT-IN only: shared_down's input is relu^2(x) -- squared, all-positive,
         // wide dynamic range -- and quantizing it to FP4 measurably degraded long-
         // prompt outputs (hallucinated MC options, repetition loops) while the
-        // normed-input W4A4 GEMMs stayed clean. ATLAS_SHARED_W4A4_DOWN=1 to test.
+        // normed-input W4A4 GEMMs stayed clean. AVAROK_SHARED_W4A4_DOWN=1 to test.
         // Native FP8 from the checkpoint beats every arm below: w4a4_down would
         // quantize relu^2 activations to 4 bits, and `shared_down_pd_fp8` is FP8
         // re-derived from the NVFP4 requant, i.e. already degraded. Suppress

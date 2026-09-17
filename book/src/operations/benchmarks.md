@@ -1,6 +1,6 @@
 # Benchmarking
 
-Atlas's performance claims are measurable. This chapter shows what the benchmarks measure, how to reproduce them, and how to read the numbers.
+Avarok's performance claims are measurable. This chapter shows what the benchmarks measure, how to reproduce them, and how to read the numbers.
 
 ## The headline numbers
 
@@ -15,13 +15,13 @@ From the repo README, distilled:
 | Nemotron-3-Nano-30B | FP8 | 88 | |
 | Gemma-4-26B | NVFP4 | 67 | |
 
-And the kernel micro-benchmark summary: **Atlas wins 32/32** against PyTorch on attention, GEMM, SSM, RMSNorm, RoPE, SiLU×Mul, and conv1d, with speedups from 1.04× up to 18.2×.
+And the kernel micro-benchmark summary: **Avarok wins 32/32** against PyTorch on attention, GEMM, SSM, RMSNorm, RoPE, SiLU×Mul, and conv1d, with speedups from 1.04× up to 18.2×.
 
 ## Two kinds of benchmark
 
-Atlas has two benchmark surfaces:
+Avarok has two benchmark surfaces:
 
-1. **End-to-end HTTP throughput** — `atlas-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
+1. **End-to-end HTTP throughput** — `avarok-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
 2. **Per-kernel micro-benchmarks** — Criterion benches in each primitive crate, run with `cargo bench`. This is where "4.95× prefill attention" comes from.
 
 Different things; both are meaningful. The E2E number is what an operator sees. The per-kernel number is what tells the kernel engineer where effort is paying back.
@@ -31,10 +31,10 @@ Different things; both are meaningful. The E2E number is what an operator sees. 
 Start a server:
 
 ```bash
-sudo docker run -d --name atlas-35b \
+sudo docker run -d --name avarok-35b \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --max-seq-len 8192 --kv-cache-dtype nvfp4 \
     --scheduling-policy slai \
@@ -44,9 +44,9 @@ sudo docker run -d --name atlas-35b \
 Wait for `listening`. Then:
 
 ```bash
-export ATLAS_BENCH_URL=http://localhost:8888
-cd /path/to/atlas
-cargo bench -p atlas-spark-bench
+export AVAROK_BENCH_URL=http://localhost:8888
+cd /path/to/avarok
+cargo bench -p avarok-spark-bench
 ```
 
 Criterion saves results to `target/criterion/`. The stable JSON snapshots that the README quotes are pinned under `bench/`.
@@ -57,14 +57,14 @@ The `scripts/sweep_all_models.sh` helper boots each model in turn, runs the cano
 
 ```bash
 cargo bench -p spark-runtime        # KV cache ops, sampler micro
-cargo bench -p atlas-spark-bench    # end-to-end client benchmarks
+cargo bench -p avarok-spark-bench    # end-to-end client benchmarks
 ```
 
 Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
 
 The full kernel numbers table:
 
-| Kernel | Benchmark | Atlas | PyTorch | Speedup |
+| Kernel | Benchmark | Avarok | PyTorch | Speedup |
 |---|---|---:|---:|---:|
 | Prefill Attn | seq=32 | 0.0062 ms | 0.0077 | 1.26× |
 | Prefill Attn | seq=128 | 0.0184 ms | 0.0205 | 1.11× |
@@ -123,16 +123,16 @@ Run a request, note the TTFT. Run the same request again — with `--enable-pref
 
 - **Pinned snapshots** (tracked): result files under `bench/`. These feed the book and the README.
 - **Ephemeral Criterion runs** (gitignored): `target/criterion/`.
-- **Historical benchmark journeys**: `docs/ATLAS_SPARK_JOURNEY.md` — the benchmark retrospective across the Spark line.
+- **Historical benchmark journeys**: `docs/AVAROK_SPARK_JOURNEY.md` — the benchmark retrospective across the Spark line.
 
 ## Apples-to-apples notes
 
-When comparing Atlas to vLLM or TensorRT-LLM:
+When comparing Avarok to vLLM or TensorRT-LLM:
 
 - **Same hardware.** GB10 SM121 numbers do not transfer to H100 / B200 / MI300X.
 - **Same model.** "Qwen3.5-35B-A3B at 36 tok/s" is vLLM's NVIDIA GB10 benchmark on the NVFP4 CUTLASS MoE path, same HF checkpoint.
 - **Same prompt shape.** The 131 tok/s number is on a short prompt (`"What is the capital of France?"`, `max_tokens ≤ 30`). Longer prompts show slightly different numbers because prefill cost amortizes differently.
-- **Same precision.** Atlas NVFP4 vs vLLM NVFP4; Atlas FP8 vs vLLM FP8. Never compare across quant schemes.
+- **Same precision.** Avarok NVFP4 vs vLLM NVFP4; Avarok FP8 vs vLLM FP8. Never compare across quant schemes.
 
 The headline "3.6× faster than NVIDIA's 36 tok/s" is apples-to-apples against NVIDIA's own vLLM numbers on the same `(GB10, Qwen3.5-35B-A3B, NVFP4)` target.
 
@@ -195,56 +195,53 @@ run the pieces on different boxes, merge, score once.
 
 `bfcl-subset` and `bfcl-subset-echolp` are therefore **benchmark groups**. The
 gate id is unchanged; what changed is how its number is produced — and since
-2026-09-13 the four members are the **only** thing that produces it: a
-whole-draw record under the gate's own id no longer satisfies the gate, and the
-verdict says so by name if one is all the directory holds. Each group has four
-members that can run at the same time on different boxes (`spark bench
-certify` runs them for you — see [Certification](certify.md)):
+2026-09-13 a complete partition of **shards** is the **only** thing that
+produces it: a whole-draw record under the gate's own id no longer satisfies
+the gate, and the verdict says so by name if one is all the directory holds.
+A shard is the group's own benchmark run with `--param shard=i/n`; its record
+is filed under the group with `-s<i>of<n>` in the name and carries
+`shard.index` / `shard.count` in its metrics. The shard **count is not
+fixed**: the campaign picks `n` for the fleet it has — `spark bench certify`
+defaults to two shards per box, and one box alone runs the whole draw as
+`0/1` — and the verdict accepts the newest complete partition the records at
+one commit form, whatever its `n`. A partition begun at this commit is
+finished at its own count (`gate::shards_owed`), never restarted at another.
 
 ```
-spark benchmark run bfcl-subset-a --pull-request-gate --hardware gb10   # on dgx1
-spark benchmark run bfcl-subset-b --pull-request-gate --hardware gb10   # on dgx2
-...
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=0/2   # on dgx1
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=1/2   # on dgx2
 spark benchmark aggregate bfcl-subset      # what the group scores, and what is missing
+spark bench certify --shards 6             # or let the campaign choose and place them
 ```
 
-Selection is a **stride within each subset** — row `i` goes to shard `i % 4` —
+Selection is a **stride within each subset** — row `i` goes to shard `i % n` —
 so every shard gets a proportional slice of every subset, and a 16-row subset
-does not vanish from three of them.
-
-For an ad-hoc split at any N, use the `shard` parameter rather than the
-registered members:
-
-```
-spark benchmark run bfcl-subset --model <served-model> --param shard=3/9
-```
+does not vanish from most of them.
 
 The index is **0-based**, so the whole draw is `0/1` and `1/1` is refused (it is
-index 1 of one shard). The default is `inherit`, which leaves whatever the
-benchmark id already selects — the whole draw, or a registered member's own
-quarter. Setting it to `0/1` on `bfcl-subset-a` would run the whole draw under a
-member's name, which is why `inherit` and not `0/1` is the default.
+index 1 of one shard). Run by hand without `--param shard`, the benchmark
+measures the whole draw and writes a whole-draw record — fine for a
+measurement, not evidence for the gate.
 
 #### What the group refuses, and why
 
 Merging counts is only sound if the parts really are the draw, so a group is
-judged only when four conditions hold. Each of these was a way to get a
+judged only when these conditions hold. Each of these was a way to get a
 **passing number for a measurement that never happened**:
 
 | Refusal | What it catches |
 |---|---|
-| a member has no record at this commit | three shards is not 75 % measured, it is a different sample set |
-| members measured at different commits | a group is ONE measurement |
-| the shard indices are not `0..3` once each | two members running the same shard — the row count is still right, and one shard was measured twice while another never ran |
-| a member reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
-| a member is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every member; a quarter of a measurement is not exempt |
+| no complete partition at one commit | n-1 shards is not (n-1)/n measured, it is a different sample set; and a partition is never assembled across commits — a group is ONE measurement, so a shard re-run at a newer commit re-opens the group until its siblings join it there |
+| the shard indices are not `0..n` once each | two records of the same shard — the row count is still right, and one shard was measured twice while another never ran; the newest record per index counts, so a duplicate is a re-run, never a stand-in |
+| a shard reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
+| a shard is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every shard; a slice of a measurement is not exempt |
 
-The third deserves emphasis: the `samples` threshold is pinned exactly
+The second deserves emphasis: the `samples` threshold is pinned exactly
 (`min == max == 995`) and **cannot** catch a duplicated shard, because the
 duplicate still contributes the right number of rows.
 
 Aggregation is over **counts, never scores**. `score.py` weights
-hierarchically, so the mean of four shard scores is not the whole-set value; the
+hierarchically, so the mean of shard scores is not the whole-set value; the
 group sums each subset's `(hits, n)` integers and applies the hierarchy once.
 
 #### The number is partition-dependent, and that is the certified regime
@@ -281,8 +278,8 @@ collecting numbers rather than gating on them.
 ### Run history
 
 Every run — from the CLI *or* the dashboard — is recorded under
-`~/.atlas/runs/<benchmark-id>/`, carrying the result, every parameter used (not
-just the ones you overrode), the target, the source, and the Atlas version. So
+`~/.avarok/runs/<benchmark-id>/`, carrying the result, every parameter used (not
+just the ones you overrode), the target, the source, and the Avarok version. So
 a stored run says what it measured and can be reproduced.
 
 ```
@@ -295,11 +292,11 @@ History pane, and a dashboard run appears in `spark benchmark history` marked
 `tui`.
 
 Machine-readable output goes to **stdout**, progress to **stderr**, so
-`--format json > run.json` is a clean file. `ATLAS_HOME` relocates the store.
+`--format json > run.json` is a clean file. `AVAROK_HOME` relocates the store.
 
-- `crates/atlas-spark-bench/src/lib.rs` — E2E harness.
+- `crates/avarok-spark-bench/src/lib.rs` — E2E harness.
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.
 - `scripts/sweep_all_models.sh`, `scripts/run_conc_benchmark.sh` — automation.
-- `docs/ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective.
+- `docs/AVAROK_SPARK_JOURNEY.md` — benchmark journey and retrospective.
 - README "Benchmark Results" section — the authoritative long-form table.

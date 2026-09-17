@@ -3,7 +3,7 @@
 //! Runtime BF16 → FP8 (E4M3) weight quantization with 128×128 block scales.
 //!
 //! The third runtime quantizer, and the one that exists for MoE experts.
-//! Atlas already had:
+//! Avarok already had:
 //!   - BF16 → NVFP4 (`quantize_to_nvfp4`) — 4 bits, what `Bf16Raw` models get
 //!   - BF16 → FP8 per-ROW (`quantize_bf16_to_fp8`) — for the DFlash head
 //!

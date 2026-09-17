@@ -3,10 +3,10 @@
 
 use anyhow::{Result, bail};
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::ffi::c_void;
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use super::*;
 
 /// Row-major `out[M,N] = act[M,K] @ weight[N,K]^T`, all BF16.
@@ -20,11 +20,11 @@ pub fn bf16_gemm_act_weight_t(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let ctx = ctx()?;
         let status = unsafe {
-            atlas_cutlass_bf16_gemm_act_weight_t(
+            avarok_cutlass_bf16_gemm_act_weight_t(
                 act as *const c_void,
                 weight as *const c_void,
                 out as *mut c_void,
@@ -41,7 +41,7 @@ pub fn bf16_gemm_act_weight_t(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (act, weight, out, m, n, k, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
@@ -51,7 +51,7 @@ pub fn bf16_gemm_act_weight_t(
 /// Native CUTLASS NVFP4 dense projection:
 /// `out[M,N] = quant_nvfp4(act[M,K]) @ weight_t[N,K]^T -> BF16`.
 ///
-/// `weight_packed_t` and `weight_scale_t` are Atlas's transposed NVFP4
+/// `weight_packed_t` and `weight_scale_t` are Avarok's transposed NVFP4
 /// prefill layout: packed data `[K/2,N]`, scales `[K/16,N]`. The wrapper
 /// repacks activation and scale tensors into CUTLASS's SM120 blockscaled
 /// layouts in the shared CUTLASS workspace before dispatch.
@@ -67,11 +67,11 @@ pub fn nvfp4_gemm_bf16_act_weight_t(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let ctx = ctx()?;
         let status = unsafe {
-            atlas_cutlass_nvfp4_gemm_bf16_act_weight_t(
+            avarok_cutlass_nvfp4_gemm_bf16_act_weight_t(
                 act as *const c_void,
                 weight_packed_t as *const c_void,
                 weight_scale_t as *const c_void,
@@ -90,7 +90,7 @@ pub fn nvfp4_gemm_bf16_act_weight_t(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (
             act,

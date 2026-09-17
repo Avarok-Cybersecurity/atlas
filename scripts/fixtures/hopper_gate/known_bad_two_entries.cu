@@ -12,7 +12,7 @@
 //
 // The rejection is a static `__shared__` array over the per-entry shared
 // limit. It is a LIMIT, not an instruction, so unlike the per-arch negative
-// fixtures next to this one it is rejected on every architecture Atlas
+// fixtures next to this one it is rejected on every architecture Avarok
 // targets and there is no arch table to keep current. Dynamic shared memory
 // would not do -- `extern __shared__` is sized at launch and ptxas never sees
 // a size to reject.
@@ -38,25 +38,25 @@
 // "one error per file", which is the whole point of the fixture.
 
 // 0x40004 -- four bytes over 256 KiB, past every per-block shared limit above.
-#define ATLAS_GATE_OVERSIZED_SHARED 262148
+#define AVAROK_GATE_OVERSIZED_SHARED 262148
 
-extern "C" __global__ void atlas_gate_two_entries_bad_a(char *out) {
-  __shared__ char buf[ATLAS_GATE_OVERSIZED_SHARED];
+extern "C" __global__ void avarok_gate_two_entries_bad_a(char *out) {
+  __shared__ char buf[AVAROK_GATE_OVERSIZED_SHARED];
   volatile char *p = buf;
   p[threadIdx.x] = (char)(threadIdx.x + 1);
   __syncthreads();
   out[blockIdx.x] = p[threadIdx.x];
 }
 
-extern "C" __global__ void atlas_gate_two_entries_bad_b(char *out) {
-  __shared__ char buf[ATLAS_GATE_OVERSIZED_SHARED];
+extern "C" __global__ void avarok_gate_two_entries_bad_b(char *out) {
+  __shared__ char buf[AVAROK_GATE_OVERSIZED_SHARED];
   volatile char *p = buf;
   p[threadIdx.x] = (char)(threadIdx.x + 2);
   __syncthreads();
   out[blockIdx.x] = p[threadIdx.x];
 }
 
-extern "C" __global__ void atlas_gate_two_entries_good(const float *in,
+extern "C" __global__ void avarok_gate_two_entries_good(const float *in,
                                                        float *out, int n) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n) {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Dense FP8-Weight GEMV kernel for SM121 (GB10).
+// Avarok Dense FP8-Weight GEMV kernel for SM121 (GB10).
 //
 // out[n] = dot(A[0,:], dequant(B_fp8[n,:])) * row_scale[n]  where:
 //   A:         [1, K] BF16 (single activation row, row-major)

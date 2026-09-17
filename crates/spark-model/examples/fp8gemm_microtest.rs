@@ -19,7 +19,7 @@
 //! Exit 0 = PASS (cosine >= gate), 1 = FAIL — scriptable.
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -55,7 +55,7 @@ fn f32_to_bf16_bits(f: f32) -> u16 {
     (round >> 16) as u16
 }
 
-// Standard OCP E4M3 (1-4-3, bias 7) decode — matches scl_fp8/atlas_e4m3_to_f32
+// Standard OCP E4M3 (1-4-3, bias 7) decode — matches scl_fp8/avarok_e4m3_to_f32
 // in the kernel.
 fn e4m3_to_f32(byte: u8) -> f32 {
     let sign = if byte & 0x80 != 0 { -1.0 } else { 1.0 };
@@ -121,7 +121,7 @@ fn main() -> Result<()> {
         .map(|_| f32_to_e4m3(rng.uniform(-0.5, 0.5)))
         .collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 
@@ -131,7 +131,7 @@ fn main() -> Result<()> {
 
     // A/B probe: time fp8_fp8_gemm_t (FP8 activation, no in-loop convert) vs
     // fp8_gemm_t (BF16 activation). Accuracy-neutral routing candidate.
-    if std::env::var_os("ATLAS_PROBE_FP8FP8").is_some() {
+    if std::env::var_os("AVAROK_PROBE_FP8FP8").is_some() {
         let a_fp8: Vec<u8> = (0..m * k)
             .map(|i| f32_to_e4m3(bf16_bits_to_f32(a_bf16[i])))
             .collect();

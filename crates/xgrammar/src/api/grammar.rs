@@ -10,7 +10,7 @@
 //
 // This thin newtype restores the vendored surface: it owns a parsed,
 // **un-normalized** `GrammarData` (the compiler runs normalization).
-// Atlas's `grammar/compile_misc.rs` uses `Grammar::from_structural_tag`
+// Avarok's `grammar/compile_misc.rs` uses `Grammar::from_structural_tag`
 // followed by `compiler.compile_grammar(&grammar)`.
 
 use crate::grammar::{GrammarData, parse_ebnf};

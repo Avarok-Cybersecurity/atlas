@@ -15,7 +15,7 @@ impl VisionEncoder {
         super::super::VisionCapacity {
             p_max: self.p_max,
             // buf_out holds `out_rows` rows, which defaults to p_max and is raised
-            // with ATLAS_VISION_OUT_ROWS. Linear in rows, unlike the quadratic
+            // with AVAROK_VISION_OUT_ROWS. Linear in rows, unlike the quadratic
             // attention scratch that p_max sizes.
             out_rows: self.out_rows,
         }
@@ -42,7 +42,7 @@ impl VisionEncoder {
             .launch(stream)
     }
 
-    /// Debug hook: when `ATLAS_DUMP_VIT=<dir>` is set, snapshot a GPU BF16
+    /// Debug hook: when `AVAROK_DUMP_VIT=<dir>` is set, snapshot a GPU BF16
     /// buffer of `n` elements to `<dir>/<label>.bin`. Each file is plain
     /// little-endian BF16 with no header — python loader reads with
     /// `np.frombuffer(f.read(), dtype=np.uint16).view(np.float32[:8]>>16)`.
@@ -54,7 +54,7 @@ impl VisionEncoder {
         label: &str,
         stream: u64,
     ) -> Result<()> {
-        let Ok(dir) = std::env::var("ATLAS_DUMP_VIT") else {
+        let Ok(dir) = std::env::var("AVAROK_DUMP_VIT") else {
             return Ok(());
         };
         if dir.is_empty() {
@@ -68,7 +68,7 @@ impl VisionEncoder {
         std::fs::create_dir_all(&dir).ok();
         std::fs::write(&path, &buf).with_context(|| format!("write {}", path.display()))?;
         tracing::info!(
-            "ATLAS_DUMP_VIT: wrote {} ({} elements)",
+            "AVAROK_DUMP_VIT: wrote {} ({} elements)",
             path.display(),
             n_elements
         );

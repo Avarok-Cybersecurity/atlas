@@ -14,7 +14,7 @@
 //!
 //! GPU test: `#[ignore]` per repo convention (CI is CPU-only). Run with
 //! ```text
-//! ATLAS_HC_TEST_DATA=/tank/atlas-testdata/qwen4exp_hc \
+//! AVAROK_HC_TEST_DATA=/tank/avarok-testdata/qwen4exp_hc \
 //!   cargo test -p spark-model --release hc_lowrank -- --ignored --nocapture
 //! ```
 
@@ -37,8 +37,8 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn load() -> Self {
-        let dir = std::env::var("ATLAS_HC_TEST_DATA").expect(
-            "set ATLAS_HC_TEST_DATA — generate with \
+        let dir = std::env::var("AVAROK_HC_TEST_DATA").expect(
+            "set AVAROK_HC_TEST_DATA — generate with \
              `python3 -u bench/qwen4_exp/hc_golden.py --bin-dir <dir>`",
         );
         let meta: serde_json::Value =
@@ -185,17 +185,17 @@ pub(super) fn tol_gemm(ref_vals: &[f32]) -> f32 {
 #[ignore]
 fn hc_lowrank_matches_reference() {
     let f = Fixture::load();
-    // NOT `ptx_modules()`. In a wildcard (`ATLAS_TARGET_MODEL=*`) build that
+    // NOT `ptx_modules()`. In a wildcard (`AVAROK_TARGET_MODEL=*`) build that
     // is an alias for target 0, and `hyper_connection` in some other target's
     // set is DeepSeek-V4's Sinkhorn kernel — a different argument list behind
     // the same name, i.e. a segfault or, worse, plausible numbers. Ask for
     // this target by identity.
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (t, h, hc) = (f.tokens, f.h, f.hc);
@@ -351,12 +351,12 @@ fn hc_lowrank_matches_reference() {
 fn hc_pre_gemm_matches_reference() {
     const TILE: usize = 12;
     let f = Fixture::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").expect(
         "qwen3.8-flash-next/nvfp4 is not in this build — \
-         build with ATLAS_TARGET_MODEL='*' or =qwen3.8-flash-next",
+         build with AVAROK_TARGET_MODEL='*' or =qwen3.8-flash-next",
     );
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (t, h, hc) = (f.tokens, f.h, f.hc);

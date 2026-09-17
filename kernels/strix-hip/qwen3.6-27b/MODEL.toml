@@ -38,7 +38,7 @@ mrope_section = [11, 11, 10]
 mtp_layers = 1
 
 # Effective context for agentic tasks. Mirrors Qwen3.5-27B's empirical bound
-# (Atlas's hybrid-GDN long-context behavior is consistent across 27B variants).
+# (Avarok's hybrid-GDN long-context behavior is consistent across 27B variants).
 effective_context = 24576
 
 # Recommended sampling defaults (carried over from Qwen3.5 family).
@@ -82,7 +82,7 @@ max_thinking_budget = 512
 default_num_drafts = 1
 
 # Upstream Qwen/Qwen3.6-27B reports `model_type = "qwen3_5"` in config.json.
-# Atlas's `parse_qwen3_5_config` (atlas-core/src/config.rs) rewrites this to
+# Avarok's `parse_qwen3_5_config` (avarok-core/src/config.rs) rewrites this to
 # `qwen3_6_moe` when MRoPE-interleaved is detected — same path Qwen3.5-27B
 # already uses for the Kbenkhaled NVFP4 re-upload. The factory routes through
 # the existing `Qwen35WeightLoader`; no new loader is needed because the

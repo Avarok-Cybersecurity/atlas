@@ -158,7 +158,7 @@ impl TransformerModel {
             let free = kv_cache.num_free_blocks();
             if free < needed {
                 tracing::debug!(
-                    target: "atlas::q12",
+                    target: "avarok::q12",
                     n = streams.len(),
                     needed,
                     free,

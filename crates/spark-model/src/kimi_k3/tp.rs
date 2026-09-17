@@ -6,8 +6,8 @@
 //!
 //! Head counts on `config` are already per-rank. Full sizes = local * tp.
 
-use atlas_core::config::ModelConfig;
-use atlas_core::kimi_k3::{MixerKind, MlpKind};
+use avarok_core::config::ModelConfig;
+use avarok_core::kimi_k3::{MixerKind, MlpKind};
 
 use crate::tp_shard::TpShardKind;
 
@@ -105,7 +105,7 @@ pub fn tensor_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use atlas_core::config::parse_config;
+    use avarok_core::config::parse_config;
 
     const TWIN: &str = include_str!("../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
 
@@ -181,8 +181,8 @@ mod tests {
     }
 
     fn round_bf16(x: f32) -> f32 {
-        let bits = atlas_core::numeric::f32_to_bf16(x);
-        atlas_core::numeric::bf16_bytes_to_f32(bits.to_le_bytes())
+        let bits = avarok_core::numeric::f32_to_bf16(x);
+        avarok_core::numeric::bf16_bytes_to_f32(bits.to_le_bytes())
     }
 
     #[test]

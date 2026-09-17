@@ -29,7 +29,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -60,7 +60,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -93,7 +93,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
             super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, config.head_dim);

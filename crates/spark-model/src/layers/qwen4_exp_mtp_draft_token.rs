@@ -26,7 +26,7 @@ impl Qwen4ExpMtpHead {
         let vocab = ctx.config.vocab_size;
         let h = ctx.config.hidden_size;
         // NATIVE EXL3 FIRST, as the single-row `draft_token` does: under
-        // `ATLAS_EXL3_NATIVE` there is no NVFP4 head to fall back to, and the
+        // `AVAROK_EXL3_NATIVE` there is no NVFP4 head to fall back to, and the
         // borrowed trellis head is the one the target samples from.
         if let Some(exl3) = self.lm_head_exl3.as_ref() {
             exl3.project_draft_rows(
@@ -114,7 +114,7 @@ impl Qwen4ExpMtpHead {
         let vocab = ctx.config.vocab_size as u32;
         let h = ctx.config.hidden_size as u32;
         let logits = self.arena.logits();
-        // NATIVE EXL3 FIRST. Under `ATLAS_EXL3_NATIVE` there is no NVFP4 head
+        // NATIVE EXL3 FIRST. Under `AVAROK_EXL3_NATIVE` there is no NVFP4 head
         // to fall back to, and the borrowed trellis head is the SAME head the
         // target samples from — which is the whole point of scoring a draft.
         // `project_draft` writes ONE row into the DRAFT's own arena using the

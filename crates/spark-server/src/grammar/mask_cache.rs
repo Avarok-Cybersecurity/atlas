@@ -39,8 +39,8 @@
 //! 5.2-5.3 ms for the same schema and 5.0-19.1 ms for one this build
 //! has never compiled.
 //!
-//! Controls: `ATLAS_GRAMMAR_CACHE=0` disables persistence entirely;
-//! `ATLAS_GRAMMAR_CACHE_DIR` relocates the file (for a read-only model
+//! Controls: `AVAROK_GRAMMAR_CACHE=0` disables persistence entirely;
+//! `AVAROK_GRAMMAR_CACHE_DIR` relocates the file (for a read-only model
 //! directory, or to share one warm cache across several model copies of
 //! the same tokenizer).
 
@@ -53,7 +53,7 @@ use xgrammar::compiler::{RuleLevelCache, SnapshotIdentity, mask_snapshot};
 use super::engine::GrammarEngine;
 
 /// Directory name created under the model directory.
-const CACHE_DIR_NAME: &str = ".atlas-grammar-cache";
+const CACHE_DIR_NAME: &str = ".avarok-grammar-cache";
 
 /// Upper bound on masks written to disk, most-recently-used first.
 ///
@@ -82,7 +82,7 @@ pub(super) struct MaskSnapshot {
 /// warm. Boxed so `state.rs` needs no knowledge of persistence.
 pub type PrewarmHook = Arc<dyn Fn(usize) + Send + Sync>;
 
-/// `ATLAS_GRAMMAR_CACHE=0` (or `false`/`off`/`no`) disables the on-disk
+/// `AVAROK_GRAMMAR_CACHE=0` (or `false`/`off`/`no`) disables the on-disk
 /// mask cache. Anything else — including unset — enables it.
 pub(super) fn cache_enabled_from(value: Option<&str>) -> bool {
     !matches!(
@@ -97,7 +97,7 @@ pub(super) fn cache_enabled_from(value: Option<&str>) -> bool {
 
 /// Where the snapshot for `fingerprint` lives.
 ///
-/// `ATLAS_GRAMMAR_CACHE_DIR` wins when set — a model directory pulled
+/// `AVAROK_GRAMMAR_CACHE_DIR` wins when set — a model directory pulled
 /// from a read-only mount cannot host the file, and one warm cache can
 /// legitimately serve several copies of the same checkpoint.
 pub(super) fn snapshot_path(
@@ -121,8 +121,8 @@ impl GrammarEngine {
     /// not an error — the engine just compiles as it did before.
     /// Called once, at server startup, off any request path.
     pub fn attach_mask_cache(&mut self, model_dir: &Path) {
-        if !cache_enabled_from(std::env::var("ATLAS_GRAMMAR_CACHE").ok().as_deref()) {
-            tracing::info!("Grammar: on-disk mask cache disabled (ATLAS_GRAMMAR_CACHE)");
+        if !cache_enabled_from(std::env::var("AVAROK_GRAMMAR_CACHE").ok().as_deref()) {
+            tracing::info!("Grammar: on-disk mask cache disabled (AVAROK_GRAMMAR_CACHE)");
             return;
         }
         let Some(cache) = self.compiler.rule_cache_handle() else {
@@ -131,7 +131,7 @@ impl GrammarEngine {
         let identity = self.compiler.snapshot_identity();
         let path = snapshot_path(
             model_dir,
-            std::env::var("ATLAS_GRAMMAR_CACHE_DIR").ok().as_deref(),
+            std::env::var("AVAROK_GRAMMAR_CACHE_DIR").ok().as_deref(),
             identity.tokenizer_fingerprint,
         );
         let imported = match self.compiler.load_mask_snapshot(&path) {

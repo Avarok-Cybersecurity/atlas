@@ -100,7 +100,7 @@ impl MoeLayer {
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
 
-        // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
+        // DIAG (AVAROK_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
         // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
         // time by MTP). The label of the FIRST failing sync names the bad stage.
         let k2_diag = ctx.levers.k2_diag;

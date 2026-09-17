@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Fused MoE Expert+Shared GEMV — K=2 multi-token batch, BF16 weight variant.
+// Avarok Fused MoE Expert+Shared GEMV — K=2 multi-token batch, BF16 weight variant.
 //
 // For models loaded via the FP8-dequant-on-load path (bf16_*_weight_ptrs). The
 // MTP K=2 verify step processes 2 tokens; the per-token BF16 decode kernels

@@ -229,6 +229,6 @@ pub(crate) fn hc_pre_split(
 
 pub(super) fn hc_variant_down() -> &'static str {
     static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    V.get_or_init(|| std::env::var("ATLAS_HC_DOWN_KERNEL").unwrap_or_default())
+    V.get_or_init(|| std::env::var("AVAROK_HC_DOWN_KERNEL").unwrap_or_default())
         .as_str()
 }

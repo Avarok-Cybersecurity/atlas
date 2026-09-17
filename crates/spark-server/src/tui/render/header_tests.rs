@@ -153,7 +153,7 @@ mod rendered {
         let a = crate::tui::render::tests::app();
         let rows = screen(&a, 160, 27);
         let head = head(&rows, false);
-        assert!(has(&head, "Atlas"), "{head:#?}");
+        assert!(has(&head, "Avarok"), "{head:#?}");
         assert!(!has(&head, "A T L A S"), "{head:#?}");
         assert!(has(&head, "SERVING") || has(&head, "LOADING"), "{head:#?}");
         assert!(has(&head, "up 0:00:"));

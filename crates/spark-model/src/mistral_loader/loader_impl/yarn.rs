@@ -4,7 +4,7 @@
 //! layer 0, returned by pointer for subsequent layers.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::super::gpu_alloc_or_managed;
@@ -15,7 +15,7 @@ pub(super) fn compute_yarn_inv_freq(
     gpu: &dyn GpuBackend,
 ) -> Result<DevicePtr> {
     // Reference: HF transformers `_compute_yarn_parameters` in
-    // `modeling_rope_utils.py`. The previous Atlas implementation used
+    // `modeling_rope_utils.py`. The previous Avarok implementation used
     // the Llama-3.1 NTK-by-parts wavelength formula and mis-aliased
     // `llama_4_scaling.beta=0.1` as `low_freq_factor`, which corrupted
     // inv_freq for the lowest-frequency RoPE pairs (j ≈ 25..31) by

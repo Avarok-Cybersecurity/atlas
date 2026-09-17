@@ -3,7 +3,7 @@
 //! LongCat MLA weight preparation: the two load-time transforms that let the
 //! shared (DeepSeek/Mistral-lineage) MLA runtime serve LongCat unchanged.
 //!
-//! 1. ROPE CONVENTION. Atlas's rope kernels are `rotate_half`: they pair
+//! 1. ROPE CONVENTION. Avarok's rope kernels are `rotate_half`: they pair
 //!    element `i` with `i + rope/2`. LongCat (like DeepSeek HF) stores the
 //!    rope slice INTERLEAVED — its `apply_rotary_pos_emb_interleave` first
 //!    de-interleaves `[x0,x1,x2,x3,…] → [x0,x2,…,x1,x3,…]` and then applies
@@ -25,7 +25,7 @@
 //!        gain reproduces `scale * norm(x)` exactly. `k_rot` correctly stays
 //!        UNSCALED: it bypasses the norm (it is split off before it).
 //!
-//! 3. HEAD-WIDTH PADDING. Atlas's MLA prefill assembles K at stride
+//! 3. HEAD-WIDTH PADDING. Avarok's MLA prefill assembles K at stride
 //!    `qk_nope + qk_rope` and V at stride `v_head_dim`, then runs one
 //!    FlashAttention whose head width is a COMPILE-TIME constant. Every MLA
 //!    model shipped so far has `qk_nope + qk_rope == v_head_dim` (Mistral

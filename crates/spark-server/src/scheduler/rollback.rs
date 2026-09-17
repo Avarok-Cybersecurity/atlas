@@ -2,18 +2,18 @@
 
 //! Phase-C: mid-step rollback + re-steer for decode-time watchdogs.
 //!
-//! Atlas's degeneration watchdogs (content-phase loop, fuzzy-repetition,
+//! Avarok's degeneration watchdogs (content-phase loop, fuzzy-repetition,
 //! inter-tool prose budget) historically *hard-stopped* a sequence —
 //! `finished = true` — which kills the response, often mid-tool-call.
 //!
-//! Per arXiv:2603.27905 (ATLAS-RTC) and ROM boundary-truncation
+//! Per arXiv:2603.27905 (AVAROK-RTC) and ROM boundary-truncation
 //! (arXiv:2603.22016), the principled recovery is to **roll back to the
 //! last well-formed boundary and let generation re-steer**, rather than
 //! discarding the whole turn. [`rollback_to_boundary`] implements that.
 //!
 //! ## KV-cache rewind: what is and is not feasible mid-decode
 //!
-//! Atlas uses a **paged** attention KV cache. A decode step writes K/V
+//! Avarok uses a **paged** attention KV cache. A decode step writes K/V
 //! into the slot at `seq.seq_len`, then advances `seq.seq_len`. So
 //! "rewinding" attention is simply lowering `seq.seq_len`: the stale K/V
 //! slots beyond the new length are overwritten by the next decode and
@@ -330,7 +330,7 @@ fn apply_rollback(a: &mut ActiveSeq, keep_len: usize, dropped: usize) {
 //
 // The principled replacement for the F2 confidence early-stop heuristic
 // is a trained Repetition-Onset-Model detection head. We do NOT ship a
-// ROM model: it needs a per-model trained head that Atlas does not have,
+// ROM model: it needs a per-model trained head that Avarok does not have,
 // and a heuristic stand-in would not be the principled detector ROM
 // describes. So the items below are an intentional forward-looking SEAM,
 // not yet consumed by any call site — `#[allow(dead_code)]` is therefore

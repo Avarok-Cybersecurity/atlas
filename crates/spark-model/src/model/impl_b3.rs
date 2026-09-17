@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -40,7 +40,7 @@ impl TransformerModel {
             Some(p) => p.as_ref(),
             None => return Ok(Vec::new()),
         };
-        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
+        // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
         // ONCE so a Python reference can run the SAME tokens through HF
         // transformers and dump matching hidden-state captures.
         // Per-model latch: a static would let the previous model swallow this
@@ -54,13 +54,13 @@ impl TransformerModel {
                 "generated_tokens": seq.tokens.iter().skip(seq.prompt_len).copied().collect::<Vec<u32>>(),
             });
             if let Err(e) = std::fs::write(
-                "/tmp/atlas_tokens.json",
+                "/tmp/avarok_tokens.json",
                 serde_json::to_string_pretty(&tokens_json).unwrap_or_default(),
             ) {
                 tracing::warn!("DFLASH DUMP_FULL: tokens write failed: {e}");
             } else {
                 tracing::info!(
-                    "DFLASH DUMP_FULL: wrote /tmp/atlas_tokens.json (position={}, all_tokens.len()={}, prompt_len={})",
+                    "DFLASH DUMP_FULL: wrote /tmp/avarok_tokens.json (position={}, all_tokens.len()={}, prompt_len={})",
                     position,
                     seq.tokens.len(),
                     seq.prompt_len,
@@ -76,7 +76,7 @@ impl TransformerModel {
         // GLM-5.3's MTP block is EP-sharded with a row-parallel DSA `o_proj`, so for it the
         // same `None` means drafting from half the routed sum and half the attention output.
         // `needs_comm()` is that distinction, and it is only true once the worker rank is
-        // running this same propose (`ATLAS_MTP_EP_PROPOSE=1`) — a comm without a partner is
+        // running this same propose (`AVAROK_MTP_EP_PROPOSE=1`) — a comm without a partner is
         // the `t58` deadlock.
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -120,7 +120,7 @@ impl TransformerModel {
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
-        // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
+        // AVAROK_MTP_CATCHUP: before proposing, feed pairs the drafter missed
         // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
         // the 27B rig): at propose entry `position == seq.tokens.len()` and
         // the imminent forward_one writes the pair for sequence key
@@ -135,7 +135,7 @@ impl TransformerModel {
             let rows = proposer.drafter_rows(prop_state.as_mut());
             let last_key = proposer.last_pair_key(prop_state.as_mut());
             let (start, count) = *self.mtp_catchup_meta.lock();
-            // ATLAS_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
+            // AVAROK_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
             // this propose is ABOUT to write is `position - 1`, and it reads
             // its hidden from `mtp_hidden_save`; under the label convention
             // that same hidden is ring label `position`. So
@@ -255,7 +255,7 @@ impl TransformerModel {
             grammar_bitmask,
             self.dflash_hidden_save,
         )?;
-        // Confidence clamp (ATLAS_MTP_DRAFT_CONF, staged off by default):
+        // Confidence clamp (AVAROK_MTP_DRAFT_CONF, staged off by default):
         // when the drafter's chain confidence is below tau, discard the
         // drafts — the next step decodes serially instead of paying a
         // verify that would most likely reject (break-even acceptance at

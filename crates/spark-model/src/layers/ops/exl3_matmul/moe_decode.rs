@@ -4,7 +4,7 @@
 //! served DIRECTLY from packed trellis as exactly THREE `exl3_mgemm` calls
 //! (gate, up, down) over `S = num_tokens * top_k` (token, expert) slots —
 //! upstream ExLlamaV3's `BC_BlockSparseMLP.run_bszN` tier (T <= 8), ported
-//! to Atlas's device routing state.
+//! to Avarok's device routing state.
 //!
 //! Pipeline (all device-side, no D2H, no allocation — 901 playbook):
 //!
@@ -88,7 +88,7 @@ pub struct Exl3MoeScratch {
     pub s_cap: usize,
 }
 
-/// Stage Atlas's device routing state into the mgemm `b_indices`/`b_weights`
+/// Stage Avarok's device routing state into the mgemm `b_indices`/`b_weights`
 /// forms (plain launch). `indices_u32`: `[s]` GLOBAL expert ids;
 /// `probs_f32`: `[s]` f32 routing weights. Local mapping per
 /// `moe::tables::exl3_expert_slot_index`: `gid - local_start` when inside

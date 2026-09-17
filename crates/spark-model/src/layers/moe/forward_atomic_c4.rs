@@ -92,7 +92,7 @@ impl MoeLayer {
         let accum_bytes = num_tokens * h as usize * 4;
         anyhow::ensure!(
             ctx.buffers.scratch_bytes() >= accum_off + accum_bytes,
-            "scratch too small for ATLAS_MOE_ATOMIC_C4_DECODE: need {} bytes, have {}",
+            "scratch too small for AVAROK_MOE_ATOMIC_C4_DECODE: need {} bytes, have {}",
             accum_off + accum_bytes,
             ctx.buffers.scratch_bytes()
         );

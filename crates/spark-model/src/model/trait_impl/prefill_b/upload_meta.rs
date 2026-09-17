@@ -117,7 +117,7 @@ impl TransformerModel {
             //     After the run, current_pos += max(t_len, gh, gw).
             // This matters because Qwen3-VL/3.6 was trained with T constant
             // across one image and subsequent text tokens shifted by the
-            // image's max spatial extent — Atlas's previous "T=linear over
+            // image's max spatial extent — Avarok's previous "T=linear over
             // all tokens" scheme produced out-of-distribution position IDs
             // for every post-image token.
             //
@@ -193,11 +193,11 @@ impl TransformerModel {
                     // between where the rotary stream ends and where the token
                     // stream ends. Decode and every later chunk add it back.
                     seq.mrope_delta = end_pos as i64 - (proc_start + chunk_tokens.len()) as i64;
-                    // ATLAS_MROPE_DUMP: the three streams exactly as they are
+                    // AVAROK_MROPE_DUMP: the three streams exactly as they are
                     // about to be uploaded. A position rule can be right on
                     // paper and still ship wrong values — this is the only
                     // check that reads what the GPU will read.
-                    if let Ok(path) = std::env::var("ATLAS_MROPE_DUMP")
+                    if let Ok(path) = std::env::var("AVAROK_MROPE_DUMP")
                         && !path.is_empty()
                     {
                         let mut blob = Vec::with_capacity(stg.positions.len() * 12);
@@ -211,7 +211,7 @@ impl TransformerModel {
                         }
                         let _ = std::fs::write(&path, &blob);
                         tracing::info!(
-                            "ATLAS_MROPE_DUMP: {} tokens x 3 streams -> {path}",
+                            "AVAROK_MROPE_DUMP: {} tokens x 3 streams -> {path}",
                             stg.positions.len()
                         );
                     }

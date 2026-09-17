@@ -111,7 +111,7 @@
       "gpu_compute_apps": [
         {
           "pid": 158199,
-          "name": "/home/rstesiak/code/atlas-ab-D/target/release/spark",
+          "name": "/home/rstesiak/code/avarok-ab-D/target/release/spark",
           "used_mib": 83655
         }
       ],
@@ -183,7 +183,7 @@
       "gpu_compute_apps": [
         {
           "pid": 158199,
-          "name": "/home/rstesiak/code/atlas-ab-D/target/release/spark",
+          "name": "/home/rstesiak/code/avarok-ab-D/target/release/spark",
           "used_mib": 83801
         }
       ],

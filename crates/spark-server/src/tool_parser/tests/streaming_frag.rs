@@ -7,7 +7,7 @@
 //! vLLM PR #35615 ("Qwen3Coder streaming tool parser silently drops
 //! parameters with speculative decoding") identified three bugs that
 //! caused parameter loss when multi-token bursts arrived from spec
-//! decode. Atlas's StreamingToolDetector is structurally immune
+//! decode. Avarok's StreamingToolDetector is structurally immune
 //! because it buffers everything between `<tool_call>` and
 //! `</tool_call>` then parses the complete inner block — there is no
 //! per-parameter early-return path that could drop fragments. These
@@ -96,7 +96,7 @@ fn qwen3_coder_streaming_fragmented_at_xml_opener() {
 #[test]
 fn qwen3_coder_streaming_same_name_tool_calls_no_collision() {
     // vLLM bug 3 (name-based dedup in prev_tool_call_arr) would
-    // collide two consecutive `Read` calls into one. Atlas keys by
+    // collide two consecutive `Read` calls into one. Avarok keys by
     // call_counter, so two same-name calls must produce two distinct
     // outputs (whether ToolCall in bulk-fed mode or
     // ToolCallStart/Delta/End in incremental mode) with distinct
@@ -147,7 +147,7 @@ fn qwen3_coder_streaming_same_name_tool_calls_no_collision() {
 fn qwen3_coder_streaming_close_with_final_value_in_same_chunk() {
     // vLLM bug 1 (close-before-params ordering): a single burst
     // delivered `value</function>` together; their close check fired
-    // first and dropped the value. Atlas's buffer-until-close design
+    // first and dropped the value. Avarok's buffer-until-close design
     // means the value lands in the buffer BEFORE `</tool_call>` is
     // found; the close trigger then parses the whole inner block.
     // This test pins the property.

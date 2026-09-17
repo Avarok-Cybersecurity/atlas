@@ -19,7 +19,7 @@ use spark_model::layers::glm5next_kda::{
 };
 use spark_model::layers::glm5next_kda_ref as kref;
 use spark_model::weight_map::DenseWeight;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use std::collections::BTreeMap;
 
@@ -217,7 +217,7 @@ pub(crate) fn run_suite(
         let rec = rng.scaled(sz_state, 0.1);
         (round_bf16(&hidden), hidden, conv3, rec)
     };
-    // HF's `kernel-1` slots -> Atlas's `kernel`; slot 0 is shifted out before the conv.
+    // HF's `kernel-1` slots -> Avarok's `kernel`; slot 0 is shifted out before the conv.
     let widen = |c3: &[f32]| -> Vec<f32> {
         let mut s = vec![0.0f32; cd * dm.ks];
         for ch in 0..cd {

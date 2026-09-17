@@ -1,5 +1,5 @@
 {
-  "label": "atlas-c2-dgx2",
+  "label": "avarok-c2-dgx2",
   "url": "http://127.0.0.1:8891",
   "model": "unsloth/Qwen3.8-27B-NVFP4",
   "isl": 128,

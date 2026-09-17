@@ -24,8 +24,8 @@ static SYNTHETIC: ServePreset = ServePreset {
         ),
     ],
     env: &[
-        ("ATLAS_SYNTH_GATE", "1"),
-        ("ATLAS_SYNTH_CAP", "{max_seq_len}"),
+        ("AVAROK_SYNTH_GATE", "1"),
+        ("AVAROK_SYNTH_CAP", "{max_seq_len}"),
     ],
 };
 
@@ -131,10 +131,13 @@ fn placeholders_resolve_against_the_effective_args() {
 #[test]
 fn env_plan_sets_unset_variables_and_keeps_operator_values() {
     let args = serve_args(&["m", "--max-seq-len", "8192"]);
-    let current = |var: &str| (var == "ATLAS_SYNTH_GATE").then(|| "0".to_string());
+    let current = |var: &str| (var == "AVAROK_SYNTH_GATE").then(|| "0".to_string());
     let (apply, kept) = env_plan(&SYNTHETIC, &args, &current).unwrap();
-    assert_eq!(apply, [("ATLAS_SYNTH_CAP".to_string(), "8192".to_string())]);
-    assert_eq!(kept, [("ATLAS_SYNTH_GATE".to_string(), "0".to_string())]);
+    assert_eq!(
+        apply,
+        [("AVAROK_SYNTH_CAP".to_string(), "8192".to_string())]
+    );
+    assert_eq!(kept, [("AVAROK_SYNTH_GATE".to_string(), "0".to_string())]);
 }
 
 #[test]
@@ -316,32 +319,32 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
             .unwrap_or_else(|| panic!("preset env lacks {var}"))
     };
     for var in [
-        "ATLAS_EXL3_NATIVE",
-        "ATLAS_EXL3_NATIVE_MOE",
-        "ATLAS_EXL3_NATIVE_DENSE",
-        "ATLAS_QWEN4EXP_MTP",
-        "ATLAS_QWEN4EXP_MTP_VERIFY",
-        "ATLAS_DFLASH_SPEC_THINK",
-        "ATLAS_QWEN4EXP_MTP_HC_BATCHED",
-        "ATLAS_VERIFY_EXL3_ROW_ROUTER",
-        "ATLAS_VERIFY_EXL3_STABLE_GRID",
-        "ATLAS_NO_VERIFY_ROW_FFN",
-        "ATLAS_NO_THINKENDED_GPU_ARGMAX",
+        "AVAROK_EXL3_NATIVE",
+        "AVAROK_EXL3_NATIVE_MOE",
+        "AVAROK_EXL3_NATIVE_DENSE",
+        "AVAROK_QWEN4EXP_MTP",
+        "AVAROK_QWEN4EXP_MTP_VERIFY",
+        "AVAROK_DFLASH_SPEC_THINK",
+        "AVAROK_QWEN4EXP_MTP_HC_BATCHED",
+        "AVAROK_VERIFY_EXL3_ROW_ROUTER",
+        "AVAROK_VERIFY_EXL3_STABLE_GRID",
+        "AVAROK_NO_VERIFY_ROW_FFN",
+        "AVAROK_NO_THINKENDED_GPU_ARGMAX",
     ] {
         assert_eq!(get(var), "1", "{var}");
     }
-    assert_eq!(get("ATLAS_INTHINK_TOOL_LEAK_OPENERS"), "0");
-    assert_eq!(get("ATLAS_PLE_CACHE_SLOTS"), "4194304");
+    assert_eq!(get("AVAROK_INTHINK_TOOL_LEAK_OPENERS"), "0");
+    assert_eq!(get("AVAROK_PLE_CACHE_SLOTS"), "4194304");
     // The QSA cap tracks --max-seq-len; the PLE cap covers the default chunk.
-    assert_eq!(get("ATLAS_QSA_MAX_TOKENS"), "131072");
+    assert_eq!(get("AVAROK_QSA_MAX_TOKENS"), "131072");
     // The private MTP draft KV pool is sized to the preset's sequence slots.
-    assert_eq!(get("ATLAS_MTP_MAX_SEQS"), "4");
+    assert_eq!(get("AVAROK_MTP_MAX_SEQS"), "4");
     // Round-2 prefill levers pinned to their measured values (2026-09-06).
-    assert_eq!(get("ATLAS_EXL3_MOE_ROWS_PER_EXPERT"), "1024");
-    assert_eq!(get("ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS"), "512");
+    assert_eq!(get("AVAROK_EXL3_MOE_ROWS_PER_EXPERT"), "1024");
+    assert_eq!(get("AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS"), "512");
     // Marconi restore floor: 3x TTFT on short warm prompts (2026-09-06).
-    assert_eq!(get("ATLAS_MARCONI_MIN_TOKENS"), "64");
-    assert!(get("ATLAS_PLE_MAX_TOKENS").parse::<usize>().unwrap() >= args.max_prefill_tokens);
+    assert_eq!(get("AVAROK_MARCONI_MIN_TOKENS"), "64");
+    assert!(get("AVAROK_PLE_MAX_TOKENS").parse::<usize>().unwrap() >= args.max_prefill_tokens);
 
     // An operator override of --max-seq-len carries into the QSA cap.
     let (argv, _, _) = default_argv(m, &|id| id == "max_seq_len").unwrap();
@@ -352,5 +355,5 @@ fn qwen38_flash_next_exl3_preset_carries_the_validated_configuration() {
             .collect::<Vec<_>>(),
     );
     let (apply, _) = env_plan(m.preset, &args, &|_| None).unwrap();
-    assert!(apply.contains(&("ATLAS_QSA_MAX_TOKENS".to_string(), "65536".to_string())));
+    assert!(apply.contains(&("AVAROK_QSA_MAX_TOKENS".to_string(), "65536".to_string())));
 }

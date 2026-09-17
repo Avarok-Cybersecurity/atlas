@@ -299,7 +299,7 @@ pub(crate) fn load_attention(
     gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<AttentionWeights> {
     let p = format!("{layer_prefix}.self_attn");
     let (k_scale, v_scale) = load_kv_scales(store, &p, gpu);
@@ -359,7 +359,7 @@ pub(crate) fn load_ssm(
     gpu: &dyn GpuBackend,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<SsmWeights> {
     let p = format!("{layer_prefix}.linear_attn");
     let h = config.hidden_size;
@@ -393,7 +393,7 @@ pub(crate) fn load_moe(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
 ) -> Result<MoeWeights> {
@@ -415,7 +415,7 @@ pub(crate) fn load_moe_skip_experts(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
 ) -> Result<MoeWeights> {

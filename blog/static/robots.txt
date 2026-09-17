@@ -1,4 +1,4 @@
-# Atlas blog — https://blog.atlasinference.io
+# Avarok blog — https://blog.atlascybernetics.ai
 #
 # Notes from the inference layer, on an open source project. Being found is the
 # point, so nothing here is disallowed.
@@ -55,8 +55,8 @@ User-agent: YouBot
 Allow: /
 
 # A summary of this host, generated from the post index at build time, lives at
-# https://blog.atlasinference.io/llms.txt — a comment rather than a directive,
+# https://blog.atlascybernetics.ai/llms.txt — a comment rather than a directive,
 # because llms.txt is not part of the robots exclusion standard and a made-up
 # directive is ignored at best and a parse error at worst.
 
-Sitemap: https://blog.atlasinference.io/sitemap.xml
+Sitemap: https://blog.atlascybernetics.ai/sitemap.xml

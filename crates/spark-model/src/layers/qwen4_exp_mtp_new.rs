@@ -15,7 +15,7 @@ impl Qwen4ExpMtpHead {
         embed_tokens: DenseWeight,
         lm_head_nvfp4: Option<crate::weight_map::QuantizedWeight>,
         lm_head_exl3: Option<std::sync::Arc<crate::model::lm_head_exl3::Exl3LmHead>>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         max_seq_len: usize,
         max_sequences: usize,
@@ -147,7 +147,7 @@ impl Qwen4ExpMtpHead {
                 batch_tok: gpu.alloc(BATCH_CAP * 4)?,
                 logits_stash: gpu.alloc(config.vocab_size * 2)?,
             },
-            // Atlas's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
+            // Avarok's offset-from-1 rms_norm, NOT V4's `rms_norm_vanilla`:
             // this checkpoint's norm weights are offset-from-1 like the rest of
             // the qwen4_exp tree.
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,

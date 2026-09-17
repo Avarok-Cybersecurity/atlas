@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The TUI event loop. Runs on a dedicated OS thread ("atlas-tui"),
+//! The TUI event loop. Runs on a dedicated OS thread ("avarok-tui"),
 //! synchronous crossterm polling + a 10 Hz render tick; tokio is never on the
 //! render path. Mirrors the scheduler's dedicated-thread pattern.
 

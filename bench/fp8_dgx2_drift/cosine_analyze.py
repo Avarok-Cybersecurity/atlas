@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """Per-layer cosine analysis for the dgx2 FP8-native SSM drift study.
 
-Compares the freshly-dumped Atlas[FP8-native] hidden states on dgx2 against
+Compares the freshly-dumped Avarok[FP8-native] hidden states on dgx2 against
 the existing HF[FP8->BF16] reference and the (older) HF[BF16-unquant]
-reference from /workspace/atlas-dumps/numdrift.
+reference from /workspace/avarok-dumps/numdrift.
 
 Layouts:
-  ATLAS_DIR  /workspace/atlas-dumps/fp8native_dgx2/atlas_L{0..39}.bin
-  HF_FP8_DIR /workspace/atlas-dumps/fp8dequant/hf_L{0..39}.bin       (HF[FP8->BF16])
-  HF_BF16_DIR /workspace/atlas-dumps/numdrift/hf_L{0..39}.bin        (HF[BF16-unquant])
+  AVAROK_DIR  /workspace/avarok-dumps/fp8native_dgx2/avarok_L{0..39}.bin
+  HF_FP8_DIR /workspace/avarok-dumps/fp8dequant/hf_L{0..39}.bin       (HF[FP8->BF16])
+  HF_BF16_DIR /workspace/avarok-dumps/numdrift/hf_L{0..39}.bin        (HF[BF16-unquant])
 
 Reports:
   A  HF[FP8->BF16] vs HF[BF16-unquant]   -> FP8 ceiling
-  B  Atlas[FP8-native] vs HF[BF16-unquant] -> total drift
-  C  Atlas[FP8-native] vs HF[FP8->BF16]    -> Atlas-side compute error
+  B  Avarok[FP8-native] vs HF[BF16-unquant] -> total drift
+  C  Avarok[FP8-native] vs HF[FP8->BF16]    -> Atlas-side compute error
 """
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ import sys
 
 import numpy as np
 
-ATLAS = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
-HF_FP8 = pathlib.Path("/workspace/atlas-dumps/fp8dequant")
-HF_BF16 = pathlib.Path("/workspace/atlas-dumps/numdrift")
+AVAROK = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
+HF_FP8 = pathlib.Path("/workspace/avarok-dumps/fp8dequant")
+HF_BF16 = pathlib.Path("/workspace/avarok-dumps/numdrift")
 N_LAYERS = 40
 
 
@@ -46,12 +46,12 @@ def main(write_md: pathlib.Path | None = None) -> None:
     rows = []
     A, B, C = [], [], []
     for i in range(N_LAYERS):
-        atlas_p = ATLAS / f"atlas_L{i}.bin"
+        avarok_p = AVAROK / f"avarok_L{i}.bin"
         hf_fp8_p = HF_FP8 / f"hf_L{i}.bin"
         hf_bf16_p = HF_BF16 / f"hf_L{i}.bin"
         missing = []
-        if not atlas_p.exists():
-            missing.append("atlas")
+        if not avarok_p.exists():
+            missing.append("avarok")
         if not hf_fp8_p.exists():
             missing.append("hf_fp8")
         if not hf_bf16_p.exists():
@@ -59,12 +59,12 @@ def main(write_md: pathlib.Path | None = None) -> None:
         if missing:
             print(f"L{i:2d}: MISSING {missing}")
             continue
-        atlas = load(atlas_p)
+        avarok = load(avarok_p)
         hf_fp8 = load(hf_fp8_p)
         hf_bf16 = load(hf_bf16_p)
         rA = cmp(hf_fp8, hf_bf16)
-        rB = cmp(atlas, hf_bf16)
-        rC = cmp(atlas, hf_fp8)
+        rB = cmp(avarok, hf_bf16)
+        rC = cmp(avarok, hf_fp8)
         A.append(rA["cos"])
         B.append(rB["cos"])
         C.append(rC["cos"])
@@ -102,8 +102,8 @@ def main(write_md: pathlib.Path | None = None) -> None:
     print(f"\n=== Summary (n={sA['n'] if sA else 0} layers) ===")
     for lbl, s in [
         ("A (HF[FP8->BF16] vs HF[BF16])", sA),
-        ("B (Atlas[FP8-native] vs HF[BF16])", sB),
-        ("C (Atlas[FP8-native] vs HF[FP8->BF16])", sC),
+        ("B (Avarok[FP8-native] vs HF[BF16])", sB),
+        ("C (Avarok[FP8-native] vs HF[FP8->BF16])", sC),
     ]:
         if s:
             print(
@@ -114,19 +114,19 @@ def main(write_md: pathlib.Path | None = None) -> None:
         headroom = sA["mean"] - sC["mean"]
         print(f"\nHeadroom (A_mean - C_mean) = {headroom:+.6f}")
         if abs(headroom) < 0.001:
-            verdict = "AT the FP8 ceiling — drift is NOT in Atlas SSM dispatch."
+            verdict = "AT the FP8 ceiling — drift is NOT in Avarok SSM dispatch."
         elif headroom > 0:
-            verdict = f"Atlas compute drift of {headroom:.4f} cos remains below ceiling — investigate kernels."
+            verdict = f"Avarok compute drift of {headroom:.4f} cos remains below ceiling — investigate kernels."
         else:
-            verdict = f"Atlas BEATS the ceiling by {-headroom:.4f} cos (unexpected; check refs)."
+            verdict = f"Avarok BEATS the ceiling by {-headroom:.4f} cos (unexpected; check refs)."
         print("Verdict:", verdict)
 
     if write_md and sA:
         with write_md.open("w") as f:
             f.write("# dgx2 FP8-native SSM per-layer drift — three-way comparison\n\n")
             f.write(f"- A mean cos (FP8 ceiling) = `{sA['mean']:.6f}` (min L{sA['min_layer']}: {sA['min']:.6f})\n")
-            f.write(f"- B mean cos (Atlas vs HF[BF16]) = `{sB['mean']:.6f}` (min L{sB['min_layer']}: {sB['min']:.6f})\n")
-            f.write(f"- C mean cos (Atlas vs HF[FP8->BF16]) = `{sC['mean']:.6f}` (min L{sC['min_layer']}: {sC['min']:.6f})\n")
+            f.write(f"- B mean cos (Avarok vs HF[BF16]) = `{sB['mean']:.6f}` (min L{sB['min_layer']}: {sB['min']:.6f})\n")
+            f.write(f"- C mean cos (Avarok vs HF[FP8->BF16]) = `{sC['mean']:.6f}` (min L{sC['min_layer']}: {sC['min']:.6f})\n")
             f.write(f"- Headroom A−C = `{sA['mean'] - sC['mean']:+.6f}`\n\n")
             f.write("## Per-layer table\n\n")
             f.write("| L | A.cos | A.relL2 | B.cos | B.relL2 | C.cos | C.relL2 |\n")

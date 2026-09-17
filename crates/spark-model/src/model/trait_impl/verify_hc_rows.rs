@@ -236,7 +236,7 @@ impl TransformerModel {
             // / 2097152 words differ, relL2 1.212e-3; sequential 0). That ~1%
             // per layer compounds over 48 layers and flips greedy argmaxes
             // wherever the top-2 margin is under ~0.9 logit units.
-            // `ATLAS_QWEN4EXP_MTP_VERIFY_FLA=1` restores the chunked scan.
+            // `AVAROK_QWEN4EXP_MTP_VERIFY_FLA=1` restores the chunked scan.
             gdn_exact_replay: !verify_uses_fla_scan(),
             token_ids: None,
             // PLE reads HOST ids for the rows it is about to process.
@@ -257,7 +257,7 @@ impl TransformerModel {
         //     the CHUNK SCAN. It writes no `h_state_intermediates`, so the
         //     caller must run one row per pass and publish them by hand
         //     (`publish_verify_row_state`).
-        //   * `ATLAS_QWEN4EXP_MTP_HC_BATCHED=1` — `decode_batched()` ->
+        //   * `AVAROK_QWEN4EXP_MTP_HC_BATCHED=1` — `decode_batched()` ->
         //     `decode_batched_inner_hc` -> `decode_batched_block`, the fused
         //     conv+GDN verify kernels. They advance the recurrence over all K
         //     rows in ONE pass and write the per-row intermediates natively,
@@ -274,7 +274,7 @@ impl TransformerModel {
             static SAID: std::sync::Once = std::sync::Once::new();
             SAID.call_once(|| {
                 tracing::info!(
-                    "mHC verify: K-row BATCHED GDN armed (ATLAS_QWEN4EXP_MTP_HC_BATCHED=1),                      first pass k={k} over {} layers",
+                    "mHC verify: K-row BATCHED GDN armed (AVAROK_QWEN4EXP_MTP_HC_BATCHED=1),                      first pass k={k} over {} layers",
                     self.layers.len()
                 );
             });
@@ -284,11 +284,11 @@ impl TransformerModel {
             SAID_ATTN.call_once(|| {
                 tracing::info!(
                     "mHC verify: attention layers replayed as K sequential one-row \
-                     DECODE bodies (kill switch ATLAS_QWEN4EXP_MTP_HC_ATTN_DECODE=0)"
+                     DECODE bodies (kill switch AVAROK_QWEN4EXP_MTP_HC_ATTN_DECODE=0)"
                 );
             });
         }
-        // EXPERIMENTAL, opt-in (`ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1`): send the
+        // EXPERIMENTAL, opt-in (`AVAROK_QWEN4EXP_MTP_HC_SSM_DECODE=1`): send the
         // GDN layers down the same one-row decode body. Legal ONLY at k == 1 --
         // the per-row reference arm's pass width -- because a plain `decode()`
         // writes no `h_state_intermediates`, and at k > 1 the commit rewind
@@ -298,9 +298,9 @@ impl TransformerModel {
         let ssm_rows = attn_rows && k == 1 && verify_ssm_decode_enabled();
         anyhow::ensure!(
             !(verify_ssm_decode_enabled() && k > 1),
-            "ATLAS_QWEN4EXP_MTP_HC_SSM_DECODE=1 needs the per-row verify arm \
+            "AVAROK_QWEN4EXP_MTP_HC_SSM_DECODE=1 needs the per-row verify arm \
              (one row per pass); this pass is k={k}. Unset \
-             ATLAS_QWEN4EXP_MTP_HC_BATCHED."
+             AVAROK_QWEN4EXP_MTP_HC_BATCHED."
         );
         let base_seq_len = seq.seq_len;
         for (i, layer) in self.layers.iter().enumerate() {
@@ -334,7 +334,7 @@ impl TransformerModel {
             // slots, so row `t` is a pointer bump of `t*4` / `t*8`. Only the
             // device `seq_len` differs in KIND between the two shapes, and it
             // is uploaded above.
-            // K-ROW ATTENTION BODY (default on; `ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0` disables): the
+            // K-ROW ATTENTION BODY (default on; `AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS=0` disables): the
             // hyper-connection sites, the norms and the FFN run once at T=K
             // (the GDN layers' dispatch); only the attention core stays per
             // row. Same rows, same metadata, same highway rows as the loop
@@ -352,7 +352,7 @@ impl TransformerModel {
                 SAID_ROWS.call_once(|| {
                     tracing::info!(
                         "mHC verify: attention layers run the K-ROW body \
-                         (default on; ATLAS_QWEN4EXP_MTP_HC_ATTN_ROWS=0 disables), first pass k={k}"
+                         (default on; AVAROK_QWEN4EXP_MTP_HC_ATTN_ROWS=0 disables), first pass k={k}"
                     );
                 });
                 let row_metas: Vec<AttnMetadataDev> = (0..k)
@@ -482,7 +482,7 @@ impl TransformerModel {
         // ── K-row head: same tail as the non-hc verify ──
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        // ATLAS_LOGIT_PROBE=1: the VERIFY side of the hidden-state A/B against
+        // AVAROK_LOGIT_PROBE=1: the VERIFY side of the hidden-state A/B against
         // `decode_forward_body`. Same point in the pipeline (pre-final-norm),
         // same row stride, so an equal fingerprint blames the head and an
         // unequal one blames the layer bodies.
@@ -493,7 +493,7 @@ impl TransformerModel {
         self.lm_head_batched(normed, k as u32, self.buffers.logits(), stream)?;
 
         for t in 0..k {
-            // ATLAS_LOGIT_PROBE=1: the verify side of the row-by-row A/B
+            // AVAROK_LOGIT_PROBE=1: the verify side of the row-by-row A/B
             // against a serial decode of the same prefix. `lm_head_batched`
             // always writes BF16 here (the FP32-logits buffer is the
             // single-token decode path only).

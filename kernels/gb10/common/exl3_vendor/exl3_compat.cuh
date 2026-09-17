@@ -6,7 +6,7 @@
 // matmul device code needs (no torch, no cublas, no host error macros).
 // Snapshot originals: .research/exllamav3_ref/util.h, util.cuh.
 // Also carries `tanh_opt` from upstream compat.cuh (the sm_75+/CUDA-11+
-// branch; Atlas targets sm_121a only) — needed by the fused-MLP gelu inner
+// branch; Avarok targets sm_121a only) — needed by the fused-MLP gelu inner
 // re-vendored into hadamard_inner.cuh for the exl3_moe kernel.
 
 #pragma once
@@ -35,7 +35,7 @@ typedef struct __align__(8) half4
     half2 y;
     // upstream writes `__device__ half4() = default;` — the annotation is
     // ignored on an explicitly-defaulted ctor and nvcc warns (20012-D), which
-    // the strict Atlas kernel build promotes to an error
+    // the strict Avarok kernel build promotes to an error
     half4() = default;
     __device__ half4(half2 x_, half2 y_) : x(x_), y(y_) {}
     __device__ half4(half h0, half h1, half h2, half h3) :

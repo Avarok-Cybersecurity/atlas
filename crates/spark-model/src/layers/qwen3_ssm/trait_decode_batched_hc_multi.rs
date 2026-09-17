@@ -92,7 +92,7 @@ impl Qwen3SsmLayer {
 
         let stage_timing = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_STAGE_TIMING").as_deref() == Ok("1"))
         };
         let mark = |t: &mut std::time::Instant, acc: &mut u128| {
             if stage_timing {
@@ -113,11 +113,11 @@ impl Qwen3SsmLayer {
         ) = (0u128, 0u128, 0u128, 0u128, 0u128, 0u128, 0u128);
 
         // Same refusal the other three hc bodies carry: `hc_norm` inside
-        // `hc_pre` replaces the fused gate-f32 norm, so ATLAS_FP32_ROUTING
+        // `hc_pre` replaces the fused gate-f32 norm, so AVAROK_FP32_ROUTING
         // would have the router read the PREVIOUS layer's activations.
         anyhow::ensure!(
             !self.ffn.fp32_routing_active(ctx.levers),
-            "qwen3_ssm mHC multi-seq verify: ATLAS_FP32_ROUTING needs the fused \
+            "qwen3_ssm mHC multi-seq verify: AVAROK_FP32_ROUTING needs the fused \
              gate-f32 norm, which the highway path replaces. Unset it."
         );
 
@@ -134,7 +134,7 @@ impl Qwen3SsmLayer {
                 tracing::info!(
                     "mHC cross-sequence batched verify ACTIVE: {n_seqs} seqs, \
                      ks={ks:?} ({rows} rows) in one highway pass \
-                     (ATLAS_HC_BATCH_VERIFY=1; unset restores the per-seq verify)"
+                     (AVAROK_HC_BATCH_VERIFY=1; unset restores the per-seq verify)"
                 );
             });
         }
@@ -308,13 +308,13 @@ impl Qwen3SsmLayer {
         //    nothing at C=4 (56.65 -> 58.35, ranges overlapping). The reason
         //    is `padded_batch_n`, which has no 6 — a C=2 verify is R=6 and
         //    pads to 8, where token-major measures 1151 us against 608 for
-        //    two fused K3 calls. NOW OPT-IN (`ATLAS_HC_VERIFY_MOE_PADDED=1`).
+        //    two fused K3 calls. NOW OPT-IN (`AVAROK_HC_VERIFY_MOE_PADDED=1`).
         //
         // Pad rows compute garbage from whatever `hidden` holds above row R;
         // only rows [0, R) are consumed below, exactly as the decode path
         // relies on for its own padded batches, and VERIFY_ROW_CAP (96) keeps
         // them in bounds.
-        // -- One-shot MoE cost-vs-rows sweep (ATLAS_MOE_ROW_SWEEP=1) --
+        // -- One-shot MoE cost-vs-rows sweep (AVAROK_MOE_ROW_SWEEP=1) --
         // See the module note: at C=4 the control batches its sequences into
         // ONE 4-row MoE call, so MTP pays cost(R rows) to earn tok_step
         // tokens per sequence. This prints the curve that decides it.
@@ -322,7 +322,7 @@ impl Qwen3SsmLayer {
             static SWEPT: std::sync::Once = std::sync::Once::new();
             let on = {
                 static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                *ON.get_or_init(|| std::env::var("ATLAS_MOE_ROW_SWEEP").as_deref() == Ok("1"))
+                *ON.get_or_init(|| std::env::var("AVAROK_MOE_ROW_SWEEP").as_deref() == Ok("1"))
             };
             if on && !self.ffn.is_none() {
                 let mut err: Option<anyhow::Error> = None;
@@ -389,7 +389,7 @@ impl Qwen3SsmLayer {
         // verify (R=6) pads to 8, the arm's worst width.
         let moe_padded = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_HC_VERIFY_MOE_PADDED").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_HC_VERIFY_MOE_PADDED").as_deref() == Ok("1"))
         };
         let moe_rows = if moe_padded && !self.ffn.is_none() && rows > 1 {
             let padded = crate::traits::padded_batch_n(rows);

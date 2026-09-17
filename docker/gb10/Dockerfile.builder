@@ -1,23 +1,23 @@
-# Atlas reproducible BUILD environment — pins every native/FFI dependency so a
+# Avarok reproducible BUILD environment — pins every native/FFI dependency so a
 # `cargo build` "just works" without remembering CUTLASS_HOME / FLASHINFER_HOME /
 # CUDA-13.2 / the GDN AOT libs. This is the env behind the hand-built
-# `atlas-holo:cuda13.2-fp4test` image, captured as code.
+# `avarok-holo:cuda13.2-fp4test` image, captured as code.
 #
 # The recurring failures this fixes:
 #   • "CUTLASS support was not built; set CUTLASS_HOME" — build.rs silently drops
-#     the native NVFP4 GEMM (`atlas_cutlass` cfg) when CUTLASS_HOME is unset.
+#     the native NVFP4 GEMM (`avarok_cutlass` cfg) when CUTLASS_HOME is unset.
 #   • FlashInfer FA2 ragged-prefill wrapper needs FLASHINFER_HOME + its PINNED CCCL.
-#   • GDN-FlashInfer (ATLAS_GDN_FLASHINFER=1) needs libatlasgdn.so + the CuTe-DSL
+#   • GDN-FlashInfer (AVAROK_GDN_FLASHINFER=1) needs libatlasgdn.so + the CuTe-DSL
 #     runtime + the cuda-13.2 compat driver for sm_121a.
 #
 # Two ways to use it:
 #   1. As a BUILD SANDBOX (mount the repo, run any cargo cmd — all env preset):
-#        docker build -f docker/gb10/Dockerfile.builder --target builder -t atlas-gb10:build .
-#        docker run --rm --gpus all -v "$PWD":/build -w /build atlas-gb10:build \
+#        docker build -f docker/gb10/Dockerfile.builder --target builder -t avarok-gb10:build .
+#        docker run --rm --gpus all -v "$PWD":/build -w /build avarok-gb10:build \
 #          cargo build --release -p spark-model --example nvfp4_gemm_bench \
 #            --no-default-features --features "cuda gpu-examples"
 #   2. As a full SERVE image (compiles spark-server, bundles the GDN runtime):
-#        docker build -f docker/gb10/Dockerfile.builder -t atlas-gb10:cuda13.2-fp4 .
+#        docker build -f docker/gb10/Dockerfile.builder -t avarok-gb10:cuda13.2-fp4 .
 #
 # Pinned versions (override with --build-arg):
 ARG CUDA_VER=13.2.0
@@ -82,11 +82,11 @@ COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
 COPY 3rdparty_patches/ 3rdparty_patches/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=*
-ENV ATLAS_TARGET_QUANT=*
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=*
+ENV AVAROK_TARGET_QUANT=*
 # Native FP4 GEMM + cuBLASLt BF16 prefill projections on by default (matches prod).
-ENV ATLAS_CUTLASS_NVFP4_GEMM=1
+ENV AVAROK_CUTLASS_NVFP4_GEMM=1
 
 # CUDARC_CUDA_VERSION=13000: the vendored cudarc 0.19.2 tops out at 13.1 in its
 # nvcc-version table, so `nvcc --version` (13.2) panics without the pin. Same
@@ -118,7 +118,7 @@ RUN apt-get update -qq && \
 
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
 COPY --from=builder /build/jinja-templates/ /jinja-templates/
-# GDN-FlashInfer runtime libs (only loaded when ATLAS_GDN_FLASHINFER=1).
+# GDN-FlashInfer runtime libs (only loaded when AVAROK_GDN_FLASHINFER=1).
 COPY --from=builder /usr/local/lib/libatlasgdn.so /usr/local/lib/libatlasgdn.so
 COPY --from=builder /usr/local/lib/libcute_dsl_runtime.so /usr/local/lib/libcute_dsl_runtime.so
 COPY LICENSE /LICENSE
@@ -128,6 +128,6 @@ ENV RUST_LOG=info
 ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/compat:/usr/local/cuda/lib64
 ENV CUTE_DSL_ARCH=sm_121a
 # GDN-FlashInfer is opt-in (FLA recurrence is the validated default).
-ENV ATLAS_GDN_FLASHINFER=0
+ENV AVAROK_GDN_FLASHINFER=0
 EXPOSE 8888
 ENTRYPOINT ["spark"]

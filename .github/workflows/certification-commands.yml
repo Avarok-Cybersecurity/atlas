@@ -177,7 +177,7 @@ jobs:
           set -euo pipefail
           gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@- >/dev/null <<'EOF'
           ```
-          atlas certification — commands
+          avarok certification — commands
           ```
 
           | | |

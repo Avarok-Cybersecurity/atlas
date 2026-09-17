@@ -152,7 +152,7 @@ pub fn run(ctx: &Ctx, rng: &mut Lcg) -> Result<bool> {
     let stage = Exl3DenseStage::new(g, launch.clone(), STAGE_ROWS, 6144, 12288)?;
     if stage.rows_cap != STAGE_ROWS {
         println!(
-            "dense: stage rows overridden to {} (ATLAS_EXL3_DENSE_STAGE_ROWS) — batching \
+            "dense: stage rows overridden to {} (AVAROK_EXL3_DENSE_STAGE_ROWS) — batching \
              boundaries differ from the leg's row picks",
             stage.rows_cap
         );

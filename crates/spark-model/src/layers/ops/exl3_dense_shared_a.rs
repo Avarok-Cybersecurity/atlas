@@ -178,7 +178,7 @@ pub(crate) fn dense_linear_shared_a(
         return Ok(());
     }
 
-    // Reconstruct-to-BF16 prefill tier (opt-in, `ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS`):
+    // Reconstruct-to-BF16 prefill tier (opt-in, `AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS`):
     // one trellis decode per weight per call + a fixed-config BF16 GEMM. Not
     // bit-identical to the trellis GEMM below — see `exl3_dense/reconstruct.rs`.
     if let Some(rs) = stage.recon.as_ref().filter(|rs| rs.takes(m)) {

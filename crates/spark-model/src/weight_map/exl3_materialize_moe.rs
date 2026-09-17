@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Native EXL3 routed experts — the `ATLAS_EXL3_NATIVE_MOE=1` extension of
+//! Native EXL3 routed experts — the `AVAROK_EXL3_NATIVE_MOE=1` extension of
 //! the materialize pass (see `exl3_materialize.rs` for the pass itself).
 //!
 //! This file owns the MoE-specific predicates and the per-layer ATOMIC
 //! keep-set computation:
 //!
 //!  * [`exl3_native_moe_enabled`] / [`check_exl3_native_gates`] — the env
-//!    gate. `ATLAS_EXL3_NATIVE_MOE=1` without `ATLAS_EXL3_NATIVE=1` is a
+//!    gate. `AVAROK_EXL3_NATIVE_MOE=1` without `AVAROK_EXL3_NATIVE=1` is a
 //!    hard ERROR (fail-loud house style), never a silent ignore.
 //!  * [`exl3_native_serves_moe`] — the routed-expert prefix predicate:
 //!    `.mlp.experts.N.{gate,up,down}_proj` only. `mtp.*` is EXCLUDED (MTP
@@ -37,10 +37,10 @@ use std::collections::{BTreeMap, HashSet};
 use anyhow::{Result, bail};
 use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight};
 
-/// `ATLAS_EXL3_NATIVE_MOE=1`: serve the routed experts natively from packed
-/// trellis (requires `ATLAS_EXL3_NATIVE=1`). Read per call — load paths only.
+/// `AVAROK_EXL3_NATIVE_MOE=1`: serve the routed experts natively from packed
+/// trellis (requires `AVAROK_EXL3_NATIVE=1`). Read per call — load paths only.
 pub fn exl3_native_moe_enabled() -> bool {
-    std::env::var("ATLAS_EXL3_NATIVE_MOE").as_deref() == Ok("1")
+    std::env::var("AVAROK_EXL3_NATIVE_MOE").as_deref() == Ok("1")
 }
 
 /// Gate-combination validation: the MoE gate is an EXTENSION of the master
@@ -49,10 +49,10 @@ pub fn exl3_native_moe_enabled() -> bool {
 pub fn check_exl3_native_gates(native: bool, native_moe: bool) -> Result<()> {
     if native_moe && !native {
         bail!(
-            "ATLAS_EXL3_NATIVE_MOE=1 requires ATLAS_EXL3_NATIVE=1 (the MoE \
+            "AVAROK_EXL3_NATIVE_MOE=1 requires AVAROK_EXL3_NATIVE=1 (the MoE \
              gate extends the native serving set; it cannot enable native \
-             serving by itself) — set ATLAS_EXL3_NATIVE=1 or unset \
-             ATLAS_EXL3_NATIVE_MOE"
+             serving by itself) — set AVAROK_EXL3_NATIVE=1 or unset \
+             AVAROK_EXL3_NATIVE_MOE"
         );
     }
     Ok(())

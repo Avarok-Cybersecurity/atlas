@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas test kernel: vector add (C = A + B)
+// Avarok test kernel: vector add (C = A + B)
 // Used to verify the Rust → nvcc → CUDA → Python round-trip.
 
 extern "C" __global__ void vector_add(

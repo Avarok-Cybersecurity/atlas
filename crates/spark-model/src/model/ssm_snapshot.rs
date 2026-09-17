@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -94,7 +94,7 @@ pub(crate) struct SsmSnapshotPool {
     /// Marconi slots that currently hold a valid `hidden_snapshot` entry
     /// (only leaf saves populate it; intermediate checkpoints do not).
     pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
-    /// FP16 -> FP32 h-state converter (`ATLAS_SSM_H_FP16`). A snapshot taken
+    /// FP16 -> FP32 h-state converter (`AVAROK_SSM_H_FP16`). A snapshot taken
     /// from a DECODING slot reads an FP16 state, but every restore lands in a
     /// PREFILL, which is FP32. Widening at save time keeps the snapshot pool
     /// uniformly FP32, so restore, spill, fault-in, the tier fingerprint and
@@ -316,7 +316,7 @@ impl SsmSnapshotPool {
     /// Returns `None` if no free snapshot slots are available.
     /// Tags the snapshot with `session_hash` for session-scoped isolation.
     /// `h_is_f16` is the storage dtype of the SOURCE slot. Under
-    /// `ATLAS_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
+    /// `AVAROK_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
     /// widens it back: snapshots are always written FP32, so `restore` — which
     /// only ever lands in a prefill — needs no dtype knowledge, and neither do
     /// the spill, fault-in, tier-fingerprint or swap paths.
@@ -365,7 +365,7 @@ impl SsmSnapshotPool {
         }
         if h_is_f16 && self.h_f16_to_f32_k.0 == 0 {
             bail!(
-                "ATLAS_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
+                "AVAROK_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
             );
         }
         let snap_slot = match self.take_free_slot() {

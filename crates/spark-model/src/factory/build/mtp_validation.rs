@@ -7,7 +7,7 @@ use anyhow::Result;
 pub(super) fn validate_qwen_mtp_verify(requested: bool, batched: bool) -> Result<()> {
     anyhow::ensure!(
         !requested || batched,
-        "qwen4_exp MTP verification requires ATLAS_QWEN4EXP_MTP_HC_BATCHED=1: \
+        "qwen4_exp MTP verification requires AVAROK_QWEN4EXP_MTP_HC_BATCHED=1: \
          the serial verification fallback overwrites earlier logits and \
          highway rows, so it cannot safely verify draft prefixes"
     );
@@ -24,7 +24,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("ATLAS_QWEN4EXP_MTP_HC_BATCHED=1")
+                .contains("AVAROK_QWEN4EXP_MTP_HC_BATCHED=1")
         );
         validate_qwen_mtp_verify(true, true).unwrap();
     }

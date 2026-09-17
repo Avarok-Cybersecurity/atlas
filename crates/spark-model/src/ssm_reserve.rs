@@ -10,7 +10,7 @@
 //! fund). Each function below is the one place that decision is made.
 //!
 //! The Phase-C decode-rollback ring DEPTH — its publication cell, the
-//! `ATLAS_SSM_DECODE_RING` / `ATLAS_DISABLE_WATCHDOGS` contract and the #915
+//! `AVAROK_SSM_DECODE_RING` / `AVAROK_DISABLE_WATCHDOGS` contract and the #915
 //! auto-fit — lives in the `decode_ring` sibling module and is re-exported
 //! here, so every existing `ssm_reserve::decode_rollback_ring_slots` path is
 //! unchanged.
@@ -49,13 +49,13 @@ pub use decode_ring::{
 ///
 /// Env contract (read HERE and nowhere else):
 ///
-/// * `ATLAS_MTP_POOL_FULL_WIDTH` (presence, house convention — `=0` is NOT
+/// * `AVAROK_MTP_POOL_FULL_WIDTH` (presence, house convention — `=0` is NOT
 ///   off): restore full-width pools (`max_batch_size` slots) and make the
 ///   scheduler guard vacuous. Kill switch for the bs>32 reserve diet.
-/// * `ATLAS_EP_PROTOCOL=v2` implies full width: v2 pins slots in place for
+/// * `AVAROK_EP_PROTOCOL=v2` implies full width: v2 pins slots in place for
 ///   the worker mirror (no compaction — see `retire_finished_sequences`),
 ///   so a high slot may legitimately speculate forever.
-/// * `ATLAS_MTP_MAX_SEQS` participates via [`crate::speculative::mtp_max_seqs`]:
+/// * `AVAROK_MTP_MAX_SEQS` participates via [`crate::speculative::mtp_max_seqs`]:
 ///   raising the dispatch cap above 32 widens the pools with it.
 ///
 /// ★ WHAT THE DIET COSTS, AND THE UTILISATION FLOOR IT SETS (wave 47,
@@ -85,7 +85,7 @@ pub use decode_ring::{
 ///
 /// The pools are sized `num_drafts + 1` intermediates because the head is
 /// normally the only thing that drafts. Lookup drafts (#1026) break that: a
-/// lookup hit proposes at `ATLAS_LOOKUP_WIDTH` (default 7) while the head
+/// lookup hit proposes at `AVAROK_LOOKUP_WIDTH` (default 7) while the head
 /// keeps drafting `num_drafts`, which is the whole point — fresh generation
 /// never pays for the wide step. But `verify_draft_capacity` reports
 /// `num_intermediates - 1`, and `lookup_gate` clamps the proposed width to it,
@@ -99,7 +99,7 @@ pub use decode_ring::{
 /// `preflight_reserve`, `SsmStatePool::new`'s `num_intermediates`, and
 /// anything reading `verify_draft_capacity`. This is MEMORY: every extra
 /// intermediate is one more H+conv blob per covered slot per layer, so
-/// `ATLAS_LOOKUP_WIDTH` is the knob to turn down if a boot gets tight.
+/// `AVAROK_LOOKUP_WIDTH` is the knob to turn down if a boot gets tight.
 ///
 /// Widening this makes `num_intermediates != num_drafts + 1`, which flips
 /// `SsmStatePool::new`'s `uniform_h` and gives EVERY covered slot full width
@@ -126,13 +126,13 @@ pub fn mtp_pool_draft_width(num_drafts: usize, ep: bool) -> usize {
     // the width defaults to 7. Read from the environment rather than plumbed
     // because the pools are built before the scheduler exists.
     let lookup_on = !matches!(
-        std::env::var("ATLAS_LOOKUP_DRAFTS").as_deref(),
+        std::env::var("AVAROK_LOOKUP_DRAFTS").as_deref(),
         Ok("0") | Ok("false")
     );
     if !lookup_on {
         return num_drafts;
     }
-    let width = std::env::var("ATLAS_LOOKUP_WIDTH")
+    let width = std::env::var("AVAROK_LOOKUP_WIDTH")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(7);
@@ -154,7 +154,7 @@ pub fn mtp_state_slots(max_batch_size: usize) -> usize {
     )
 }
 
-/// The `ATLAS_MTP_POOL_FULL_WIDTH` kill switch (PRESENCE, house convention —
+/// The `AVAROK_MTP_POOL_FULL_WIDTH` kill switch (PRESENCE, house convention —
 /// `=0` is NOT off), plus the EP-v2 implication (v2 pins slots in place for
 /// the worker mirror, so a high slot may legitimately speculate forever).
 /// SSOT for BOTH pool diets it disables: the bs>32 slot-count cap
@@ -162,8 +162,8 @@ pub fn mtp_state_slots(max_batch_size: usize) -> usize {
 /// ([`verify_slot_drafts`]) — one switch restores the full-width,
 /// uniform-K sizing everywhere (pool, preflight, scheduler clamp).
 pub fn mtp_pool_full_width() -> bool {
-    std::env::var_os("ATLAS_MTP_POOL_FULL_WIDTH").is_some()
-        || matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2"))
+    std::env::var_os("AVAROK_MTP_POOL_FULL_WIDTH").is_some()
+        || matches!(std::env::var("AVAROK_EP_PROTOCOL").as_deref(), Ok("v2"))
 }
 
 /// Pure core of [`mtp_state_slots`] (env-free, unit-testable).
@@ -171,7 +171,7 @@ pub fn mtp_pool_full_width() -> bool {
 /// `spec_dispatch_cap` is `speculative::mtp_max_seqs()` — the scheduler
 /// never dispatches a speculative step wider than this. The floor
 /// `VERIFY_WY_TABLE_SEQS` (32) guarantees bs<=32 configs are untouched even
-/// under `ATLAS_NO_MTP_K_LADDER` (which drops the dispatch cap to 4).
+/// under `AVAROK_NO_MTP_K_LADDER` (which drops the dispatch cap to 4).
 pub fn mtp_state_slots_with(
     max_batch_size: usize,
     spec_dispatch_cap: usize,
@@ -203,7 +203,7 @@ pub fn mtp_state_slots_with(
 /// stats) EXCEEDS the static ladder this sizing derives from; under the
 /// tiered default it is clamped back to K=2 whenever any active sequence
 /// sits in a capacity-1 slot — i.e. at every n >= 9 under contiguity.
-/// `ATLAS_MTP_POOL_FULL_WIDTH` restores uniform full-K pools and re-enables
+/// `AVAROK_MTP_POOL_FULL_WIDTH` restores uniform full-K pools and re-enables
 /// the lift.
 pub fn verify_slot_drafts_with(
     slot_idx: usize,
@@ -223,7 +223,7 @@ pub fn verify_slot_drafts_with(
 }
 
 /// Env-reading wrapper of [`verify_slot_drafts_with`]: the ladder policy
-/// (with its `ATLAS_MTP_K_LADDER` / `ATLAS_NO_MTP_K_LADDER` overrides — a
+/// (with its `AVAROK_MTP_K_LADDER` / `AVAROK_NO_MTP_K_LADDER` overrides — a
 /// disabled ladder returns `num_drafts` at every width, making the tiers
 /// vacuous) plus the [`mtp_pool_full_width`] kill switch.
 pub fn verify_slot_drafts(slot_idx: usize, num_drafts: usize) -> usize {
@@ -481,7 +481,7 @@ pub fn ssm_replay_ring_bytes(
 ///
 /// `skip_reason` is `Some` only for the IMPLICIT skip (prefix caching
 /// inactive) — never for an explicit `--ssm-cache-slots 0` and never for an
-/// `ATLAS_SSM_MARCONI_FULL` override — so the allocating call site can log
+/// `AVAROK_SSM_MARCONI_FULL` override — so the allocating call site can log
 /// the savings exactly once.
 pub struct MarconiSlotDecision {
     pub slots: usize,
@@ -542,7 +542,7 @@ pub struct MarconiSlotDecision {
 ///
 /// Env contract (read HERE and nowhere else):
 ///
-/// * `ATLAS_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
+/// * `AVAROK_SSM_MARCONI_FULL` (PRESENCE, house convention — `=0` is NOT
 ///   "off"): restore the old unconditional reservation. Accounting-safe
 ///   over-reserve; the kill switch for this diet.
 pub fn marconi_snapshot_slots(
@@ -552,9 +552,9 @@ pub fn marconi_snapshot_slots(
     marconi_snapshot_slots_with(requested, prefix_caching_active, marconi_reserve_full())
 }
 
-/// The `ATLAS_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).
+/// The `AVAROK_SSM_MARCONI_FULL` kill switch (PRESENCE, house convention).
 pub fn marconi_reserve_full() -> bool {
-    std::env::var_os("ATLAS_SSM_MARCONI_FULL").is_some()
+    std::env::var_os("AVAROK_SSM_MARCONI_FULL").is_some()
 }
 
 /// Pure core of [`marconi_snapshot_slots`] (env-free, unit-testable).

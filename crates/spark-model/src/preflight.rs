@@ -19,7 +19,7 @@
 //! call on every rank.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 mod deepseek_v4;
@@ -63,7 +63,7 @@ pub fn preflight(
 
     // If the checkpoint has layers beyond `config.num_hidden_layers` AND
     // the user asked for speculative decoding, warn/error about MTP
-    // consumability. The only model family where Atlas currently bails
+    // consumability. The only model family where Avarok currently bails
     // rather than ignoring extra MTP layers is MiniMax — but the check
     // itself is discovery-based, not name-based.
     if use_speculative && max_layer_idx + 1 > config.num_hidden_layers {
@@ -140,7 +140,7 @@ fn check_qsa_kv_dtype<'a>(
     Ok(())
 }
 
-/// Fail fast when the checkpoint declares a `quant_method` Atlas doesn't
+/// Fail fast when the checkpoint declares a `quant_method` Avarok doesn't
 /// understand. Discovery-based fallback at load time would then either
 /// silently mis-detect the format (the Discord 2026-04-17 bug) or die
 /// with a cryptic dtype error. A clear error here beats either.
@@ -157,7 +157,7 @@ fn check_quant_method(config: &ModelConfig) -> Result<()> {
     const KNOWN_METHODS: &[&str] = &["compressed-tensors", "modelopt", "fp8"];
     if !KNOWN_METHODS.contains(&qc.quant_method.as_str()) {
         bail!(
-            "Pre-flight: checkpoint declares quant_method={:?} which Atlas doesn't \
+            "Pre-flight: checkpoint declares quant_method={:?} which Avarok doesn't \
              recognize. Supported schemes: {:?}. If this is a new NVIDIA/HF format, \
              add an impl of `QuantFormat` in `crates/spark-model/src/quant_format/` \
              and extend `detect_quant_format`. See `docs/EP2-TROUBLESHOOTING.md`.",
@@ -170,7 +170,7 @@ fn check_quant_method(config: &ModelConfig) -> Result<()> {
 
 fn check_embedding_and_head(store: &WeightStore) -> Result<()> {
     // Three canonical embedding-tensor naming schemes across the
-    // families Atlas supports:
+    // families Avarok supports:
     //   `*.embed_tokens.weight`  — HF standard (Qwen, Gemma, MiniMax)
     //   `*.embeddings.weight`    — Nemotron-H backbone prefix
     //   `tok_embeddings.weight`  — Mistral consolidated checkpoints
@@ -243,7 +243,7 @@ fn check_layer_count(store: &WeightStore, config: &ModelConfig) -> Result<usize>
     if observed.is_empty() {
         bail!(
             "Pre-flight: no `*.layers.N.*` tensors found. \
-             Checkpoint is empty or uses a naming convention Atlas \
+             Checkpoint is empty or uses a naming convention Avarok \
              doesn't recognize (expected {} layers).",
             config.num_hidden_layers,
         );
@@ -346,7 +346,7 @@ fn extract_expert_idx(name: &str) -> Option<usize> {
 
 /// Check whether the loader for the declared `model_type` can actually
 /// consume the extra layers the checkpoint ships. Today only MiniMax
-/// ships per-module MTP layers that Atlas's loader doesn't handle yet
+/// ships per-module MTP layers that Avarok's loader doesn't handle yet
 /// (see `weight_loader/minimax.rs:load_mtp_weights_multi`). Every other
 /// family either embeds MTP differently (Qwen3.5 / Qwen3-Next ship
 /// a dedicated `mtp.safetensors` shard with its own prefix — not extra
@@ -374,7 +374,7 @@ fn check_mtp_consumability(config: &ModelConfig) -> Result<()> {
     }
     bail!(
         "Pre-flight: `--speculative` requested, but the checkpoint for model_type='{}' \
-         ships MTP module layers that Atlas's loader doesn't consume yet. \
+         ships MTP module layers that Avarok's loader doesn't consume yet. \
          Either retry without `--speculative`, or pick a checkpoint variant that \
          omits the MTP layers. Supported MTP model_types: {:?}.",
         config.model_type,

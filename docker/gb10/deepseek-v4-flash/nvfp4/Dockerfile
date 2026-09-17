@@ -1,17 +1,17 @@
-# Atlas Spark — DeepSeek-V4-Flash-NVFP4 on GB10
+# Avarok Spark — DeepSeek-V4-Flash-NVFP4 on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t atlas-deepseek-v4 .
+#   docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t avarok-deepseek-v4 .
 #
 # Run (single node):
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-deepseek-v4 serve deepseek-ai/DeepSeek-V4-Flash
+#     avarok-deepseek-v4 serve deepseek-ai/DeepSeek-V4-Flash
 #
 # Run (EP=2 — see scripts/start-deepseek-ep2.sh):
 #   docker run --gpus all --ipc=host --network host \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-deepseek-v4 serve deepseek-ai/DeepSeek-V4-Flash \
+#     avarok-deepseek-v4 serve deepseek-ai/DeepSeek-V4-Flash \
 #       --rank 0 --world-size 2 --master-addr <head-node-ip> \
 #       --kv-cache-dtype bf16
 #
@@ -43,9 +43,9 @@ COPY vendor/ vendor/
 # override and falls back to ChatML — wrong delimiters/stop for DeepSeek.
 COPY jinja-templates/ jinja-templates/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=deepseek-v4-flash
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=deepseek-v4-flash
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

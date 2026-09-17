@@ -1,14 +1,14 @@
 ---
-title: Atlas is the inference engine from desktop to hyperscaler
-dek: Speed. Security. Governance. Atlas Inference from desktop to hyperscaler. Owners of dedicated systems and renters who deliver by API both need more inference per watt.
+title: Avarok is the inference engine from desktop to hyperscaler
+dek: Speed. Security. Governance. Avarok Inference from desktop to hyperscaler. Owners of dedicated systems and renters who deliver by API both need more inference per watt.
 categories: [design, engineering]
 date: 2026-09-11
-keywords: [speed security governance, desktop to hyperscaler, inference per watt, local inference, on-prem llm, more datacenter per datacenter, open source inference, atlas inference, ai-first repository]
+keywords: [speed security governance, desktop to hyperscaler, inference per watt, local inference, on-prem llm, more datacenter per datacenter, open source inference, avarok inference, ai-first repository]
 og-image: /images/og/from-desktop-to-hyperscaler.webp
 author: alexi-derkatsch
 draft: false
 ---
-**[Atlas Inference](https://atlasinference.io)**
+**[Avarok Inference](https://atlascybernetics.ai)**
 
 **Speed. Security. Governance.**
 
@@ -16,7 +16,7 @@ draft: false
 
 _Images generated with AI._
 
-We start with the core of Atlas: Speed, Security, and Governance. Speed is a given that all stakeholders value. Security is native, so trustless by nature. Governance is rapidly deployed observability without dependency. If these were a list of features they would have been commoditized by now.
+We start with the core of Avarok: Speed, Security, and Governance. Speed is a given that all stakeholders value. Security is native, so trustless by nature. Governance is rapidly deployed observability without dependency. If these were a list of features they would have been commoditized by now.
 
 ## Inference is an infrastructure problem
 
@@ -28,7 +28,7 @@ Inference is an infrastructure problem, not a product problem. Demand for AI mee
 
 ![A small desk inference box beside a longer rack blade, same dark metal.](/images/posts/from-desktop-to-hyperscaler/02-owners.webp)
 
-Atlas fits small to medium businesses who own dedicated inference delivery systems. Atlas fits renters, who provide inference over API. From desktop to hyperscaler. The matrix of zero-day model to hardware support is increasing and the open source community is committing without regression in [AI-first](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) repos.
+Avarok fits small to medium businesses who own dedicated inference delivery systems. Avarok fits renters, who provide inference over API. From desktop to hyperscaler. The matrix of zero-day model to hardware support is increasing and the open source community is committing without regression in [AI-first](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) repos.
 
 ## Convert demand into strong market supply
 
@@ -48,7 +48,7 @@ Communication, whether internal or external to the business, speeds up from acti
 
 ![A dense stack of silicon wafers on a rusted iron base.](/images/posts/from-desktop-to-hyperscaler/05-stack.webp)
 
-[More data center per data center](https://blog.atlasinference.io/posts/seven-tenets-powering-atlas-inference) is only part of the story. The best contributors in the field right now commit to the AI-first repo at Atlas, maintain velocity with the lowest number of human reviews conceivable. Open systems with closed loops beat open loops with closed systems every day of the week. While experts are leveraging AI tools now, it's flipping, and AI will begin leveraging them.
+[More data center per data center](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) is only part of the story. The best contributors in the field right now commit to the AI-first repo at Avarok, maintain velocity with the lowest number of human reviews conceivable. Open systems with closed loops beat open loops with closed systems every day of the week. While experts are leveraging AI tools now, it's flipping, and AI will begin leveraging them.
 
 What percentage of economic sum are the experts? How many percentage points of the GDP will inference be? Effortless abundance nears.
 

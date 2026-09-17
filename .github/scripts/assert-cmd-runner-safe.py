@@ -11,7 +11,7 @@ That is a property of the current file, not a guarantee. This test makes it a
 guarantee: any workflow that reaches the command runner must never check out
 untrusted code, and must never be reachable from a `pull_request` trigger.
 
-There is a SECOND self-hosted pool with a different bargain. `atlas-pr-cheap`
+There is a SECOND self-hosted pool with a different bargain. `avarok-pr-cheap`
 exists precisely to run the cheap PR checks that were starving in the hosted
 queue, so it DOES execute PR code — but only from branches in this repository.
 A fork's PR must still go to a GitHub-hosted runner, and the only thing standing
@@ -28,17 +28,17 @@ import sys
 
 import yaml
 
-LABEL = "atlas-cmd"
+LABEL = "avarok-cmd"
 # The cheap PR pool. Routed through a repository variable so
 # cmd-runner-health.yml can flip the whole fleet back to hosted without a code
 # change -- the same escape hatch CMD_RUNNER_LABEL already provides.
-# Two pools, same bargain, different capability: `atlas-pr-cheap` is every
-# runner, `atlas-pr-rust` is the subset carrying a Rust toolchain (a bounded
+# Two pools, same bargain, different capability: `avarok-pr-cheap` is every
+# runner, `avarok-pr-rust` is the subset carrying a Rust toolchain (a bounded
 # subset ON PURPOSE -- eight concurrent `cargo test --workspace` target
 # directories would fill the disk).
 PR_POOLS = (
-    ("atlas-pr-cheap", "PR_CHEAP_RUNNER"),
-    ("atlas-pr-rust", "PR_RUST_RUNNER"),
+    ("avarok-pr-cheap", "PR_CHEAP_RUNNER"),
+    ("avarok-pr-rust", "PR_RUST_RUNNER"),
 )
 PR_LABEL = PR_POOLS[0][0]
 PR_VAR = PR_POOLS[0][1]

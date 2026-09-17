@@ -173,7 +173,7 @@ pub enum LoraCommand {
         peer_addr: String,
         adapter_id: String,
         name: String,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     },
     /// No-RDMA sibling of [`Self::Promote`]: demand-driven DISK promote of a
     /// stageable-but-not-resident adapter loaded from `dir` into a cache pool
@@ -210,7 +210,7 @@ pub type LoraRotation = (
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 /// How many concurrent sequences may speculate. Default 16, override with
-/// `ATLAS_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
+/// `AVAROK_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
 ///
 /// `step_mtp` is index-correct over the active slice, so raising this runs
 /// MTP over n sequences per step. With the batched K=4 verify wired
@@ -219,7 +219,7 @@ pub type LoraRotation = (
 /// model can't batch (EP, HSS, LoRA, grammar, non-uniform K, DFlash) falls
 /// back to the serialized per-seq loop that MEASURED (2026-07-27) collapses
 /// throughput: cap=4 at C=4 25.8 vs 48.5 MTP-off. Kill switch for A/B:
-/// `ATLAS_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
+/// `AVAROK_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
 fn mtp_max_seqs() -> usize {
     // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
     // E1/E2): the model-side single-sequence MTP structures (catchup ring,
@@ -228,7 +228,7 @@ fn mtp_max_seqs() -> usize {
     // before the batched multi-seq verify + propose in
     // `verify_k4_batch_step.rs` removed the serialization that made cap=1
     // mandatory — C=4 cap=4: 25.8 serialized -> 49.0 batched vs 48.5
-    // MTP-off). `ATLAS_MTP_MAX_SEQS=8` restores the round-3 cap, `=1` the
+    // MTP-off). `AVAROK_MTP_MAX_SEQS=8` restores the round-3 cap, `=1` the
     // old single-sequence-only gate.
     spark_model::speculative::mtp_max_seqs()
 }
@@ -274,7 +274,7 @@ pub fn run(
     snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
 ) {
     // Everything this run needs that is derived from the model rather than the
-    // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
+    // request. The levers were twenty-odd `AVAROK_*` statics; they are resolved
     // once here and read through `sched` from every step function.
     let sched =
         crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, snapshot, limits, watchdog);
@@ -333,7 +333,7 @@ pub fn run(
         tracing::info!(
             "MTP verify pools cover {spec_slot_cap}/{max_batch_size} SSM slots — \
              sequences on uncovered slots plain-decode until compaction moves them \
-             down (kill switch ATLAS_MTP_POOL_FULL_WIDTH restores full width)"
+             down (kill switch AVAROK_MTP_POOL_FULL_WIDTH restores full width)"
         );
     }
 
@@ -342,16 +342,16 @@ pub fn run(
     // budget). When ON, an active decode + an in-progress prefill always
     // takes a fused mixed step sized by the policy's prefill_slice_budget
     // so decode never starves during a prefill burst. Read once at startup.
-    let always_mixed = std::env::var("ATLAS_HOLO_ALWAYS_MIXED")
+    let always_mixed = std::env::var("AVAROK_HOLO_ALWAYS_MIXED")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if always_mixed {
-        tracing::info!("ATLAS_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
+        tracing::info!("AVAROK_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
     }
 
     // Depth-aware admission watermark (PCND: explicit default = the served
     // context ceiling, i.e. reserve each request's own max_tokens; see
-    // `admission` module docs and ATLAS_KV_ADMIT_WATERMARK).
+    // `admission` module docs and AVAROK_KV_ADMIT_WATERMARK).
     let admit_watermark = admission::resolve_admit_watermark(sched.limits.max_seq_len);
 
     let pending = Arc::new((
@@ -407,7 +407,7 @@ pub fn run(
         // they never overlap) — but a SHARED path means two `spark serve`
         // processes on one box wipe each other's live spill files. That is a
         // pre-existing hazard this work surfaced rather than introduced.
-        let spill_dir = std::env::temp_dir().join(format!("atlas-swap-{}", std::process::id()));
+        let spill_dir = std::env::temp_dir().join(format!("avarok-swap-{}", std::process::id()));
         match KvSpillManager::new(spill_dir.clone(), max_bytes) {
             Ok(mgr) => {
                 tracing::info!("Swap space: {swap_space_gb} GB at {}", spill_dir.display());
@@ -428,7 +428,7 @@ pub fn run(
     loop {
         // ── Drain pending → start prefill (chunked or full) ──
         // The `t_loop_*` brackets attribute the out-of-step GAP the
-        // ATLAS_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
+        // AVAROK_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
         // records one scheduler-tick section. `record` no-ops when the env is
         // unset; the Instant::now() reads are the documented residual cost.
         let t_loop = std::time::Instant::now();
@@ -719,14 +719,14 @@ pub fn run(
                 sampling: sched.levers.sampling(),
                 timing: sched.timing.clone(),
             };
-            // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
+            // Spec-resume guard (AVAROK_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.
             // The T=0 verify-vs-decode low-margin flips measured 2026-07-07
             // concentrate in the answer's opening tokens; serial-decoding that
             // window sidesteps them while leaving the high-accept answer body
             // speculated. N=0 preserves exact prior behavior.
             let dflash_resume_guard = sched.levers.dflash_resume_guard;
-            // ATLAS_DFLASH_SPEC_THINK=1: DFlash raw-argmax may speculate
+            // AVAROK_DFLASH_SPEC_THINK=1: DFlash raw-argmax may speculate
             // inside `<think>`. Standard MTP already verifies during think.
             // DFlash raw-argmax does not run ForcedThinkEnd, so it stays
             // serial-in-think unless this lever is on. Resume guard still
@@ -741,7 +741,7 @@ pub fn run(
             // sequence (LIFO free-list claim after churn) plain-decodes
             // until retirement-time compaction migrates it under the cap;
             // the `else` branch below already clears its stale drafts.
-            // Kill switch ATLAS_MTP_POOL_FULL_WIDTH (presence) restores
+            // Kill switch AVAROK_MTP_POOL_FULL_WIDTH (presence) restores
             // full-width pools and makes this guard vacuous at any bs.
             let spec_slots_covered = active.iter().all(|a| a.seq.slot_idx < spec_slot_cap);
             // WIDTH half of the runtime speculation regime (wave 47). The
@@ -784,7 +784,7 @@ pub fn run(
                 && spec_slots_covered
                 && (
                     // Both lanes stay serial inside `<think>` unless
-                    // ATLAS_DFLASH_SPEC_THINK=1. Resume guard still
+                    // AVAROK_DFLASH_SPEC_THINK=1. Resume guard still
                     // serial-decodes the spec-entry window. EVERY active
                     // sequence must be eligible, not just active[0].
                     active.iter().all(|a| {
@@ -891,7 +891,7 @@ pub fn run(
                                 for a in active.iter_mut() {
                                     a.mtp_acct.record_serial();
                                 }
-                                // ATLAS_MTP_CATCHUP: ring the serially decoded
+                                // AVAROK_MTP_CATCHUP: ring the serially decoded
                                 // token's hidden so the next MTP re-probe can
                                 // batch-feed the drafter over the serial gap
                                 // (no-op when the feature is off).
@@ -925,7 +925,7 @@ pub fn run(
                                 // of the batch, so ringing it would interleave
                                 // unrelated hiddens under one label space.
                                 // (`mtp_catchup_enabled` is also force-off when
-                                // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
+                                // AVAROK_MTP_MAX_SEQS > 1 — this guard keeps the
                                 // save itself single-seq-only regardless.)
                                 if active.len() == 1
                                     && let Err(e) =
@@ -981,7 +981,7 @@ pub fn run(
                         }
                     }
                 } else {
-                    // Gate bypassed (ATLAS_MTP_GATE_FORCE=1): plain MTP.
+                    // Gate bypassed (AVAROK_MTP_GATE_FORCE=1): plain MTP.
                     let lens_before: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
                     step_mtp(
                         &*model,
@@ -1162,7 +1162,7 @@ pub fn run(
     // reading them, and on GB10 a freed mapping is unmapped, not merely reused.
     //
     // That is not theoretical. A hot-swap on 2026-08-07 took
-    //   NVRM: Xid 31, name=atlas-swap
+    //   NVRM: Xid 31, name=avarok-swap
     //   MMU Fault: ENGINE GRAPHICS GPC0 ... FAULT_PTE ACCESS_TYPE_VIRT_READ
     // — a graphics-engine read of an address with no page table entry, on the
     // thread that drives swap → join → teardown. A kernel reading memory this

@@ -11,7 +11,7 @@
 //! and run final norm + per-seq LM-head GEMVs.
 
 use anyhow::Result;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::super::block_mgmt::{ensure_blocks_through_decode, extract_layer_refs};
@@ -21,13 +21,13 @@ use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
 /// Multi-seq decode CUDA graphs: **ON by default**, disabled by
-/// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+/// `AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1`.
 ///
-/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// Strict `== "1"` on an `AVAROK_NO_*` name rather than a presence check —
 /// presence-checked flags here are ENABLED by `=0`. Read once per process.
 fn multiseq_graphs_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
 }
 
 impl TransformerModel {
@@ -39,7 +39,7 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let n = tokens.len();
         assert_eq!(n, seqs.len(), "tokens.len() must equal seqs.len()");
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         for s in seqs.iter_mut() {
             self.ssm_h_to_f16_dispatch(s)?;
@@ -102,7 +102,7 @@ impl TransformerModel {
         // multi-seq attention path consumes a per-row `QsaSelection`
         // (`layers/qwen3_attention/trait_impl/multi_seq/qsa.rs`). The full
         // rationale + the unit tests that pin it live in `decode_route.rs`.
-        // `ATLAS_HC_PERSEQ_DECODE=1` remains the kill switch.
+        // `AVAROK_HC_PERSEQ_DECODE=1` remains the kill switch.
         let hc_perseq = ms_layer_veto
             || super::decode_route::hc_perseq_fallback(
                 self.config.hc_mult,
@@ -118,7 +118,7 @@ impl TransformerModel {
                 tracing::info!(
                     "QSA-active batch on the BATCHED multi-seq decode path \
                      (per-row selection consumed in multi_seq/qsa.rs); \
-                     ATLAS_HC_PERSEQ_DECODE=1 restores the per-seq staging loop"
+                     AVAROK_HC_PERSEQ_DECODE=1 restores the per-seq staging loop"
                 );
             });
         }
@@ -148,7 +148,7 @@ impl TransformerModel {
         //
         // The legacy per-sequence `decode()` fallback (host-staged logits +
         // CUDA-graph suppression) is retained ONLY behind the
-        // `ATLAS_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
+        // `AVAROK_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
         // should a regression surface in the batched MLA path. It does NOT
         // fully isolate concurrent sequences (each `decode()`'s
         // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
@@ -162,7 +162,7 @@ impl TransformerModel {
         // Highway models: the BATCHED multi-seq path (per-layer hc-bracketed
         // decode, weight reads amortized at the GEMM level next increment)
         // is the default. Fall back to the per-seq staging loop when
-        //   * ATLAS_HC_PERSEQ_DECODE=1 (A/B escape hatch).
+        //   * AVAROK_HC_PERSEQ_DECODE=1 (A/B escape hatch).
         // QSA-active batches used to be listed here too; they are not any
         // more — `multi_seq/qsa.rs` consumes a per-row selection, so the
         // batched path serves them at the reference model's sparsity.
@@ -246,7 +246,7 @@ impl TransformerModel {
             self.decode_moe_route(),
             "decode_batch_compute_main",
         )?;
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         for s in seqs.iter_mut() {
             self.ssm_h_to_f16_dispatch(s)?;
@@ -264,7 +264,7 @@ impl TransformerModel {
                 .collect();
             let contiguous = slots.iter().enumerate().all(|(i, &s)| s == i as i64);
             tracing::info!(
-                "ATLAS_DECODE_BATCH: n={n} slots={slots:?} contiguous_0..n={contiguous}"
+                "AVAROK_DECODE_BATCH: n={n} slots={slots:?} contiguous_0..n={contiguous}"
             );
         }
         let stream = self.gpu.default_stream();
@@ -278,7 +278,7 @@ impl TransformerModel {
         // `traits::padded_batch_n` (now includes 12 and 16 for the C-sweep).
         let padded_n = crate::traits::padded_batch_n(n);
 
-        // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
+        // CUDA graphs for multi-sequence decode (AVAROK_DECODE_GRAPHS_MULTISEQ=1).
         //
         // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
         // capture, so the cache is keyed by the per-row SSM slot VECTOR — see
@@ -288,11 +288,11 @@ impl TransformerModel {
         // dominant lever for n>=2 decode (eliminates ~1500 launches/step).
         //
         // DEFAULT-ON since 2026-07-27; disable with
-        // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
+        // AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
         // retired: `decode_graph_key.rs`.
         let ms_profile = self.levers.ms_profile;
-        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
-        // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
+        // AVAROK_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
+        // AVAROK_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         // Per-layer graph veto (QSA's mid-decode top-k D2H, PLE's per-seq
         // host hash on the hc multi-seq path) — the single-decode path
@@ -624,7 +624,7 @@ impl TransformerModel {
                 let head_us = t0.elapsed().as_micros();
                 let total = ssm_us + attn_us + head_us;
                 tracing::info!(
-                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
+                    "AVAROK_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
                     total,
                     ssm_us,
                     self.config.num_ssm_layers(),

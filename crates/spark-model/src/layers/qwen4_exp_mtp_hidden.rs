@@ -27,14 +27,14 @@ impl Qwen4ExpMtpHead {
         // are FP32, even though collapsed hidden rows are BF16.
         let hc_bytes = hc as usize * h as usize * 4;
 
-        // ── DIAGNOSTIC (ATLAS_QWEN4EXP_MTP_DIFF=1) ──
+        // ── DIAGNOSTIC (AVAROK_QWEN4EXP_MTP_DIFF=1) ──
         // The bisect proved the BODY forward dirties state the target still
         // needs, but not WHICH buffer. Rather than keep guessing, fingerprint
         // the shared buffers either side of the call and name the ones that
         // changed. Taken BEFORE the combiner runs, so the baseline is the
         // TARGET's state — an earlier version sampled it after the combiner had
         // already written hc_streams, which made hc_streams a false positive.
-        let diff = std::env::var("ATLAS_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
+        let diff = std::env::var("AVAROK_QWEN4EXP_MTP_DIFF").as_deref() == Ok("1");
         let probes: Vec<(&str, DevicePtr, usize)> = if diff {
             ctx.gpu.synchronize(stream).ok();
             vec![

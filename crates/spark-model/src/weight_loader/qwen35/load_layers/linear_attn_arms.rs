@@ -5,7 +5,7 @@
 // the standard NVFP4-quantized path.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -41,7 +41,7 @@ use crate::weight_map::{
 /// (decode) / `w8a16_gemm` (batched decode) path: QKV and Z concatenated into
 /// a single `[Nq+Nz, K]` FP8 buffer + matching `[(Nq+Nz)/BS, K/BS]` BF16 block
 /// scales, plus the out_proj FP8 weight. Shared by the native-FP8 build and by
-/// the decode-only FP8 overlay on the BF16 dense build (`ATLAS_HOLO_FP8_SSM_DECODE`).
+/// the decode-only FP8 overlay on the BF16 dense build (`AVAROK_HOLO_FP8_SSM_DECODE`).
 fn load_ssm_fp8_decode_weights(
     layer_idx: usize,
     store: &WeightStore,
@@ -142,7 +142,7 @@ pub(super) fn build_linear_attention_fp8(
         config.tp_world_size.max(1) == 1,
         "Native block-scaled FP8 SSM (linear_attn) supports TP=1 only (got tp={}); \
          GDN HeadParallel FP8 scale slicing is deferred. Use the NVFP4 decode path \
-         (ATLAS_HOLO_FP4_PROJ_DECODE=1) or run --tp-size 1 for FP8.",
+         (AVAROK_HOLO_FP4_PROJ_DECODE=1) or run --tp-size 1 for FP8.",
         config.tp_world_size,
     );
 
@@ -228,7 +228,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     let tp_size = config.tp_world_size.max(1);
     let dims = TpGdnDims::from_config(config);
 
-    // Native EXL3 GDN (ATLAS_EXL3_NATIVE_DENSE=1): re-derived PER LAYER from
+    // Native EXL3 GDN (AVAROK_EXL3_NATIVE_DENSE=1): re-derived PER LAYER from
     // the store, not just the env gates — the materialize pass keeps the
     // routed GDN leaves (`Exl3DenseFamily::Gdn.leaves()`: in_proj_qkv,
     // in_proj_z, out_proj) packed only as an atomic set, so "the .trellis
@@ -245,8 +245,8 @@ pub(crate) fn build_linear_attention_dense_bf16(
              TP={tp_size} is not supported (qwen4_exp does not load under TP)"
         );
         ensure!(
-            std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").as_deref() != Ok("1"),
-            "ATLAS_EXL3_NATIVE_DENSE=1 is incompatible with ATLAS_HOLO_FP8_SSM_DECODE=1 \
+            std::env::var("AVAROK_HOLO_FP8_SSM_DECODE").as_deref() != Ok("1"),
+            "AVAROK_EXL3_NATIVE_DENSE=1 is incompatible with AVAROK_HOLO_FP8_SSM_DECODE=1 \
              (no block-scaled FP8 qkvz/out_proj exists in an EXL3 checkpoint); unset one"
         );
         tracing::info!(
@@ -365,7 +365,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     layer.out_proj_dense = Some(DenseWeight {
         weight: out_proj_ptr,
     });
-    // Decode-only FP8 SSM overlay (ATLAS_HOLO_FP8_SSM_DECODE=1): install the
+    // Decode-only FP8 SSM overlay (AVAROK_HOLO_FP8_SSM_DECODE=1): install the
     // on-disk block-scaled FP8 QKVZ/out_proj so DECODE runs through
     // w8a16_gemv / w8a16_gemm (half the BF16 weight bandwidth — SSM weights
     // are the bulk of the per-step fixed decode cost), while PREFILL keeps the
@@ -374,7 +374,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     // The FP8 decode overlay loads FULL (unsliced) block-scaled FP8 weights;
     // its per-128-row scale slicing is deferred (same reason as the native-FP8
     // path). Skip under TP>1 so the sharded BF16 path stays correct.
-    if tp_size == 1 && std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
+    if tp_size == 1 && std::env::var("AVAROK_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
         let p = format!("{lp}.linear_attn");
         let (qkvz_fp8, out_fp8) = load_ssm_fp8_decode_weights(layer_idx, store, &p, gpu, h)?;
         layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));

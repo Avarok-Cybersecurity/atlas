@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn tempdir() -> PathBuf {
-        let p = std::env::temp_dir().join(format!("atlas-storage-test-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("avarok-storage-test-{}", std::process::id()));
         std::fs::create_dir_all(&p).unwrap();
         p
     }

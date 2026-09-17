@@ -8,7 +8,7 @@
 #
 #     spark serve qwen3.8-flash-next-exl3
 #
-# — which bakes in the checkpoint (HF id + branch), the flags and the `ATLAS_*`
+# — which bakes in the checkpoint (HF id + branch), the flags and the `AVAROK_*`
 # gates that configuration was validated under, each overridable. Passing an
 # NVFP4 HF id, or `--model-from-path`, is unchanged by the preset.
 #
@@ -57,7 +57,7 @@ mrope_interleaved = true
 mrope_section = [11, 11, 10]
 
 # Multi-hyperconnection: the residual is 4 parallel streams of hidden_dim
-# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Atlas's mHC
+# (4 x 2560 = 10240), mixed through a low-rank pair of rank 320. Avarok's mHC
 # plumbing comes from DeepSeek-V4, whose mixer is Sinkhorn-normalized instead
 # — same stream layout, different mixing math.
 hc_count = 4
@@ -205,9 +205,9 @@ gated_delta_rule_decode_f16_strided_norm_half = "FP16 h-state twin; see honesty 
 gated_delta_rule_decode_f32_strided_norm_half = """
 Half-register twin of the resolved f32_strided_norm; selected only when
 the resolved half-register gate is set, and that gate is off by default
-(ATLAS_GDN_HALF_REG presence). Not a live path as shipped."""
+(AVAROK_GDN_HALF_REG presence). Not a live path as shipped."""
 gated_delta_rule_decode_f32_strided_norm_smem = """
-SMEM-staged twin; gated behind ATLAS_GDN_SMEM_STAGE (presence, off by
+SMEM-staged twin; gated behind AVAROK_GDN_SMEM_STAGE (presence, off by
 default) AND the half-register gate. Not a live path as shipped."""
 
 # #438: the exact-verify `_snap` twins are model-shadow staged in
@@ -266,7 +266,7 @@ max_inter_tool_prose = 0
 # Qwen3.8-Flash-Next is a THINKING model whose chat template gates
 # EVERYTHING on `enable_thinking is undefined or true`: the default render
 # carries a reasoning-effort system preamble ("Reasoning effort is set to
-# xhigh...") and opens the assistant turn with `<think>\n`. Atlas always
+# xhigh...") and opens the assistant turn with `<think>\n`. Avarok always
 # passes enable_thinking as a DEFINED boolean, and with thinking_default
 # unset (= false) it rendered a bare 13-token prompt the model was never
 # trained on — which collapsed chat to a 2-token EOS while raw completions
@@ -276,7 +276,7 @@ max_inter_tool_prose = 0
 thinking_default = true
 thinking_in_tools = true
 # Card sampling presets ([sampling.*] above) apply to core chat/completions
-# requests too — without this a plain request gets Atlas's generic CLI
+# requests too — without this a plain request gets Avarok's generic CLI
 # defaults (incl. min_p 0.08 + top_n_sigma 1.0, which gut the card's
 # temp-1.0 thinking distribution). NOTE this key lives in [behavior]; placed
 # after a [sampling.*] header it silently becomes a preset key and does
@@ -288,7 +288,7 @@ use_sampling_presets_for_core = true
 # and with `</think>` suppressed the turn-ending mass reroutes to
 # <|im_end|>/<|im_start|> — sampled runs EOS inside think (empty body) or
 # simulate new template turns (word salad). Measured 2026-08-26 via
-# ATLAS_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>
+# AVAROK_LOGIT_DUMP: steps 11-13 topped by im_end/im_start while </think>
 # reappears at logit ~6 the moment the floor expires. 0 disables the floor.
 min_reasoning_floor_tokens = 0
 # When the model does sample an EOS inside <think> (temp 1.0 makes this
@@ -358,11 +358,11 @@ default_chat_template_kwargs = '{"reasoning_effort":"low","enable_thinking":true
 # QSA is per-sequence and tracks the served context; PLE bounds the prefill
 # CHUNK, not the prompt, so it tracks --max-prefill-tokens and must not be
 # scaled with context (it costs tokens * 10240 * 14 bytes).
-ATLAS_QSA_MAX_TOKENS = "{max_seq_len}"
-ATLAS_PLE_MAX_TOKENS = "9216"
-ATLAS_PLE_CACHE_SLOTS = "4194304"
-ATLAS_EP_PROTOCOL = "v2"
-ATLAS_INTHINK_TOOL_LEAK_OPENERS = "0"
+AVAROK_QSA_MAX_TOKENS = "{max_seq_len}"
+AVAROK_PLE_MAX_TOKENS = "9216"
+AVAROK_PLE_CACHE_SLOTS = "4194304"
+AVAROK_EP_PROTOCOL = "v2"
+AVAROK_INTHINK_TOOL_LEAK_OPENERS = "0"
 # GDN weights REQUANTIZED to NVFP4, not kept in BF16.
 #
 # Load-bearing and easy to miss: the code reads `!= Ok("0")`, so UNSET means
@@ -371,7 +371,7 @@ ATLAS_INTHINK_TOOL_LEAK_OPENERS = "0"
 # line is what made the first cut of this preset diverge from the launcher it
 # was copied from, on a config that was otherwise identical down to the
 # rendered argv.
-ATLAS_QWEN4EXP_BF16_GDN = "0"
+AVAROK_QWEN4EXP_BF16_GDN = "0"
 # Single-launch CUTLASS grouped NVFP4 MoE for prefill: +34-44% prefill.
 #
 # ⚠ BOTH gates or neither — `..._CUTLASS` alone moves only half the MoE and the
@@ -382,28 +382,28 @@ ATLAS_QWEN4EXP_BF16_GDN = "0"
 # is NOT bit-identical to the ptrtable (W4A16) path — measured p1 0.85 -> 0.83
 # and about -4% at C=1 for the prefill win. Set all three to their off values
 # together if a workload needs BF16-activation numerics.
-ATLAS_HOLO_MOE_GROUPED_CUTLASS = "1"
-ATLAS_HOLO_MOE_GROUPED_DOWN = "1"
-ATLAS_CUTLASS_WORKSPACE_MB = "512"
+AVAROK_HOLO_MOE_GROUPED_CUTLASS = "1"
+AVAROK_HOLO_MOE_GROUPED_DOWN = "1"
+AVAROK_CUTLASS_WORKSPACE_MB = "512"
 # Skip the dense paged attention for any prefill chunk entirely past the QSA
 # inert bound — those rows are overwritten by the sparse stage anyway, so the
 # dense work was pure waste. Invisible below ~16K and worth +35% at 100K
 # (980 -> 1323 tok/s), which is why it went unnoticed through every short sweep.
-ATLAS_QSA_SKIP_DENSE = "1"
+AVAROK_QSA_SKIP_DENSE = "1"
 # MTP on the qwen4_exp verify path, live inside <think> (thinking is on by
 # default for this model, so without SPEC_THINK speculation is inert for most
 # of a reasoning turn).
-ATLAS_QWEN4EXP_MTP = "1"
-ATLAS_QWEN4EXP_MTP_VERIFY = "1"
-ATLAS_DFLASH_SPEC_THINK = "1"
-ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
-ATLAS_QWEN4EXP_MTP_HC_BATCHED = "1"
-ATLAS_VERIFY_ROW_PROJ = "1"
+AVAROK_QWEN4EXP_MTP = "1"
+AVAROK_QWEN4EXP_MTP_VERIFY = "1"
+AVAROK_DFLASH_SPEC_THINK = "1"
+AVAROK_NO_THINKENDED_GPU_ARGMAX = "1"
+AVAROK_QWEN4EXP_MTP_HC_BATCHED = "1"
+AVAROK_VERIFY_ROW_PROJ = "1"
 # Drafts proposed per rank under EP; the target still VERIFIES every draft, so
 # a rank drift costs acceptance, never correctness.
-ATLAS_EP_MTP = "1"
-ATLAS_LOOKUP_EP = "1"
-ATLAS_LOOKUP_WIDTH = "3"
+AVAROK_EP_MTP = "1"
+AVAROK_LOOKUP_EP = "1"
+AVAROK_LOOKUP_WIDTH = "3"
 
 # ── Prefill profile (2026-09-15). Measured together on two GB10s, same binary,
 # same preset: prefill 1450 -> 2106 / 2053 tok/s at 8K / 32K (+45% / +42%),
@@ -417,7 +417,7 @@ ATLAS_LOOKUP_WIDTH = "3"
 # not approximations, so they cost nothing in output fidelity and nothing in
 # decode. Everything above them is a kernel-routing or work-skipping choice.
 #
-# ★ `ATLAS_QWEN4EXP_BF16_GDN` stays "0" above and must NOT be raised here. It
+# ★ `AVAROK_QWEN4EXP_BF16_GDN` stays "0" above and must NOT be raised here. It
 # is worth +2.4% prefill and costs 38% of C=1 decode (26.7 vs 43.3): it keeps
 # the 36 GDN layers' projections BF16, so every DECODE step re-reads double the
 # weight bytes while prefill amortises them over the chunk. See the memory note
@@ -426,28 +426,28 @@ ATLAS_LOOKUP_WIDTH = "3"
 # The hc collapse's slab. 8192 covers a whole prefill chunk in one pass; the
 # sweep is monotone (8192 1505 > 2048 1435 > 1024 1388 > 512 1253) and it is
 # decode-neutral, which is why it ships and BF16_GDN does not.
-ATLAS_HC_GEMM_SLAB = "8192"
+AVAROK_HC_GEMM_SLAB = "8192"
 
 # The MoE shared expert on native CUTLASS NVFP4 instead of w4a16_gemm. It was
 # doing five times less arithmetic than the routed experts in the SAME 571 ms
 # (6.5 vs 32.4 TFLOP/s) because this loader builds no transposed twins; the
 # three shared weights are ~2.8 MB a layer and now get them. Gated on n > 64,
 # so decode never takes it. +10.4% prefill at 8K.
-ATLAS_MOE_SHARED_CUTLASS = "1"
+AVAROK_MOE_SHARED_CUTLASS = "1"
 
 # PLE's two projections on cuBLASLt. WIDE shapes (M=T, N=10240/2560, K=2560),
 # unlike the hc collapse's narrow-N ones where cuBLASLt measured a LOSS.
-ATLAS_PLE_CUBLAS = "1"
+AVAROK_PLE_CUBLAS = "1"
 
-# FlashInfer GDN prefill scan, ~11x Atlas's scalar chunk_delta_h. Needs
-# libatlasgdn.so + libcute_dsl_runtime.so on LD_LIBRARY_PATH (ATLAS_GDN_LIB
+# FlashInfer GDN prefill scan, ~11x Avarok's scalar chunk_delta_h. Needs
+# libatlasgdn.so + libcute_dsl_runtime.so on LD_LIBRARY_PATH (AVAROK_GDN_LIB
 # overrides the path); ABSENT, `available()` is false and both flags below
 # degrade to the shipped token-sequential recurrence rather than to anything
 # unvalidated — `gdn_exact_replay_for_prefill` requires the library before it
 # honours the lever, so this pair is safe to ship on a box without it.
 # ★ SHIPS OFF: IT COSTS A VIDEO-FIDELITY LEG, AND FIDELITY WINS BY DEFAULT.
 #
-# FlashInfer and Atlas's FLA scan are equivalent MATH, not identical
+# FlashInfer and Avarok's FLA scan are equivalent MATH, not identical
 # arithmetic -- the canonical cross-impl A/B (examples/gdn_fla_vs_fi.rs)
 # measured cos=0.999993, and FI gets there with bf16 tensor-core inner
 # matmuls where FLA accumulates in f32 scalar FFMA. Over 36 GDN layers that
@@ -460,8 +460,8 @@ ATLAS_PLE_CUBLAS = "1"
 # is what a small perturbation to a borderline decode looks like. Measured
 # 2026-09-17 on 2x GB10, TP=2 EP=2, both arms a full gate run:
 #
-#     ATLAS_GDN_FLASHINFER=1   video-fidelity 13/14   prefill 2435 / 2472
-#     ATLAS_GDN_FLASHINFER=0   video-fidelity 14/14   prefill 2187 / 2214
+#     AVAROK_GDN_FLASHINFER=1   video-fidelity 13/14   prefill 2435 / 2472
+#     AVAROK_GDN_FLASHINFER=0   video-fidelity 14/14   prefill 2187 / 2214
 #                                                     (8K / 32K tok/s)
 #
 # That is the whole trade: ~10% prefill for one gate leg. Off is the default
@@ -470,16 +470,16 @@ ATLAS_PLE_CUBLAS = "1"
 # defect: this flag was baked on in 41639c138 (2026-09-15 10:53), between the
 # last passing record (09:40) and the first failing run (16:39).
 #
-# THROUGHPUT-FIRST SERVES SHOULD TURN IT BACK ON -- `ATLAS_GDN_FLASHINFER=1`
+# THROUGHPUT-FIRST SERVES SHOULD TURN IT BACK ON -- `AVAROK_GDN_FLASHINFER=1`
 # in the environment, which overrides this -- when ~10% prefill is worth more
 # than the last few percent of decode fidelity. Set it on EVERY rank.
-ATLAS_GDN_FLASHINFER = "0"
+AVAROK_GDN_FLASHINFER = "0"
 # Frees BOTH sides of a Marconi restore boundary onto the chunked kernel. Not
 # one side: freeing only the cold pass is the cross-kernel boundary that
 # measured a 3.045e-03 layer-0 step, and it also left warm hits with no SSM
 # snapshot to restore from ("recomputing all KV"), which cost the agentic gate
 # 6.225 -> 9.105 s/turn. Validated by ssm-state-poisoning-gate, 12/12.
-ATLAS_GDN_FLA_UNDER_PREFIX_CACHE = "1"
+AVAROK_GDN_FLA_UNDER_PREFIX_CACHE = "1"
 
 # ── The hc bracket fusions: both remove BYTES and are BIT-IDENTICAL ──────────
 #
@@ -502,13 +502,13 @@ ATLAS_GDN_FLA_UNDER_PREFIX_CACHE = "1"
 # chunk across the 96 prefill sites, purely to hand one kernel's output to the
 # next. Needs the stream-interleaved N-tile (4 groups of 32 dims) that puts one
 # output dim's four streams in a single thread's registers.
-ATLAS_HC_FUSE_UP_MIX = "1"
+AVAROK_HC_FUSE_UP_MIX = "1"
 
 # Fold the injection projection into the down GEMM as output columns
 # [rank, rank+hc). Alone it is N=4 on a 128-wide N-tile: 62 CTAs each streaming
 # a 2.6 MB A-tile with 96.9% of the MMA masked, ~15.4 GB a chunk for four
 # numbers per token. Free in tiles — ceil(324/128) == ceil(320/128) == 3.
-ATLAS_HC_FUSE_DOWN_INJ = "1"
+AVAROK_HC_FUSE_DOWN_INJ = "1"
 
 # Fold the INTRA-LAYER hc_post into the next hc_pre stage kernel. hc_post is
 # in-place on the streams tensor, so unfused each site reads the highway, writes
@@ -529,7 +529,7 @@ ATLAS_HC_FUSE_DOWN_INJ = "1"
 # the highway is what hc_post writes): 0 of 92,078,080 bytes differ at T=2248,
 # which crosses the 2048 slab and leaves a partial 128-row M-tile, in four arms
 # including the aliased-inj shape production actually uses.
-ATLAS_HC_FUSE_POST = "1"
+AVAROK_HC_FUSE_POST = "1"
 
 # Measured together, SAME BINARY, warm server, median of 5, ranges disjoint:
 #            up_mix only        both fused         + hc_post fold
@@ -557,17 +557,17 @@ ATLAS_HC_FUSE_POST = "1"
 # gives byte-identical output at widths 1-8. The real fix is to make each
 # batched arm reproduce its per-row twin bit-for-bit; until then this list is
 # load-bearing and removing any line reintroduces wrong answers under load.
-ATLAS_HC_BATCH_VERIFY = "1"
-ATLAS_MTP_EP_BATCH_VERIFY = "1"
-ATLAS_NO_MTP_DCUT = "1"
-ATLAS_NO_VERIFY_GDN_BATCH = "1"
-ATLAS_NO_VERIFY_ROW_GDN = "1"
-ATLAS_NO_BATCHED_GDN_NORM = "1"
-ATLAS_NO_BATCHED_BA_GATES = "1"
-ATLAS_NO_VERIFY_ROW_HC = "1"
-ATLAS_NO_VERIFY_OUTPROJ_TGEMM = "1"
-ATLAS_HC_ATTN_FFN_BATCHED = "0"
-ATLAS_HC_ATTN_CORE_BATCHED = "0"
+AVAROK_HC_BATCH_VERIFY = "1"
+AVAROK_MTP_EP_BATCH_VERIFY = "1"
+AVAROK_NO_MTP_DCUT = "1"
+AVAROK_NO_VERIFY_GDN_BATCH = "1"
+AVAROK_NO_VERIFY_ROW_GDN = "1"
+AVAROK_NO_BATCHED_GDN_NORM = "1"
+AVAROK_NO_BATCHED_BA_GATES = "1"
+AVAROK_NO_VERIFY_ROW_HC = "1"
+AVAROK_NO_VERIFY_OUTPROJ_TGEMM = "1"
+AVAROK_HC_ATTN_FFN_BATCHED = "0"
+AVAROK_HC_ATTN_CORE_BATCHED = "0"
 
 # ── Named serve preset: the validated EXL3 configuration ─────────────────────
 #
@@ -628,46 +628,46 @@ default_chat_template_kwargs = '{"reasoning_effort":"low","preserve_thinking":tr
 [serve_presets.env]
 # The native EXL3 weight path — MoE, dense projections and lm_head — instead
 # of materialising 47.7 GB of BF16 at load.
-ATLAS_EXL3_NATIVE = "1"
-ATLAS_EXL3_NATIVE_MOE = "1"
-ATLAS_EXL3_NATIVE_DENSE = "1"
+AVAROK_EXL3_NATIVE = "1"
+AVAROK_EXL3_NATIVE_MOE = "1"
+AVAROK_EXL3_NATIVE_DENSE = "1"
 # PLE n-gram cap must be >= the prefill chunk (--max-prefill-tokens, default
 # 8192); a larger chunk is refused BY NAME by the layer, not overrun. Raise
 # this if you raise --max-prefill-tokens.
-ATLAS_PLE_MAX_TOKENS = "9216"
-ATLAS_PLE_CACHE_SLOTS = "4194304"
+AVAROK_PLE_MAX_TOKENS = "9216"
+AVAROK_PLE_CACHE_SLOTS = "4194304"
 # QSA per-sequence cap MUST equal the served context: resolved from the
 # effective --max-seq-len, so an operator override of the flag carries here.
-ATLAS_QSA_MAX_TOKENS = "{max_seq_len}"
-ATLAS_INTHINK_TOOL_LEAK_OPENERS = "0"
+AVAROK_QSA_MAX_TOKENS = "{max_seq_len}"
+AVAROK_INTHINK_TOOL_LEAK_OPENERS = "0"
 # MTP on the qwen4_exp verify path, allowed inside <think>, with the
 # hyper-connection batched verify and the EXL3 row-exact router chain
 # (row router + stable grid, FFN leg disarmed) that made 2-draft verify
 # match the serial answers.
-ATLAS_QWEN4EXP_MTP = "1"
-ATLAS_QWEN4EXP_MTP_VERIFY = "1"
-ATLAS_DFLASH_SPEC_THINK = "1"
-ATLAS_QWEN4EXP_MTP_HC_BATCHED = "1"
-ATLAS_VERIFY_EXL3_ROW_ROUTER = "1"
-ATLAS_VERIFY_EXL3_STABLE_GRID = "1"
-ATLAS_NO_VERIFY_ROW_FFN = "1"
-ATLAS_NO_THINKENDED_GPU_ARGMAX = "1"
+AVAROK_QWEN4EXP_MTP = "1"
+AVAROK_QWEN4EXP_MTP_VERIFY = "1"
+AVAROK_DFLASH_SPEC_THINK = "1"
+AVAROK_QWEN4EXP_MTP_HC_BATCHED = "1"
+AVAROK_VERIFY_EXL3_ROW_ROUTER = "1"
+AVAROK_VERIFY_EXL3_STABLE_GRID = "1"
+AVAROK_NO_VERIFY_ROW_FFN = "1"
+AVAROK_NO_THINKENDED_GPU_ARGMAX = "1"
 # Size the private MTP draft KV pool to the preset's four sequence slots (the
 # compiled default cap is 32); the 2026-09-05 C=2 validation set this to 2.
-ATLAS_MTP_MAX_SEQS = "4"
+AVAROK_MTP_MAX_SEQS = "4"
 # Round-2 prefill levers (2026-09-06, .research/exl3_decode_perf: ab_moe_row_cap,
 # ab_dense_reconstruct, merged_gate_*). Both are the binary's defaults; pinned
 # here so the served profile is self-describing and survives a default change.
 # Fused MoE prefill tier rows per expert (was 128, which sent 48% of prefill GPU
 # time through the serialized overflow tier): +10% prefill, output identical,
-# parity-gated. ATLAS_NO_EXL3_MOE_WIDE_ROWS=1 restores 128.
-ATLAS_EXL3_MOE_ROWS_PER_EXPERT = "1024"
+# parity-gated. AVAROK_NO_EXL3_MOE_WIDE_ROWS=1 restores 128.
+AVAROK_EXL3_MOE_ROWS_PER_EXPERT = "1024"
 # Dense prefill calls with >= this many rows reconstruct the trellis weight to
 # BF16 once and run the tensor-core GEMM: +8% prefill, decode untouched, a
-# one-time numerics change (agentic gate PASS). ATLAS_NO_EXL3_DENSE_RECONSTRUCT=1
+# one-time numerics change (agentic gate PASS). AVAROK_NO_EXL3_DENSE_RECONSTRUCT=1
 # restores the trellis-only prefill. The fused BF16 egress of the dense decode
-# GEMM is also default-on (bit-exact; ATLAS_EXL3_NO_FUSED_EGRESS=1 disarms).
-ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS = "512"
+# GEMM is also default-on (bit-exact; AVAROK_EXL3_NO_FUSED_EGRESS=1 disarms).
+AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS = "512"
 # Marconi SSM-snapshot restore floor. The compiled default is 256 tokens (set
 # 2026-07-28 from a DECODE measurement: restoring a ~99-token prefix cost -9.7%
 # tok/s, the crossover sitting between 99 and 219 matched tokens). That floor is
@@ -680,4 +680,4 @@ ATLAS_EXL3_DENSE_RECONSTRUCT_ROWS = "512"
 # TTFT still wins (C=4: 28.0-28.2 vs 25.1-26.0), which is the right call for the
 # agentic, concurrent traffic this preset serves. Set 256 to restore the
 # compiled default. Records: .research/exl3_decode_perf/ab_marconi_floor/.
-ATLAS_MARCONI_MIN_TOKENS = "64"
+AVAROK_MARCONI_MIN_TOKENS = "64"

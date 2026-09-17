@@ -19,7 +19,7 @@
 
 use anyhow::{Result, bail};
 use spark_model::layers::ops::{Glm5NextMhcKernels, glm_hc_post};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -85,7 +85,7 @@ fn time_us(g: &dyn GpuBackend, reps: usize, mut f: impl FnMut() -> Result<()>) -
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = Glm5NextMhcKernels::resolve(&gpu)?;
     let k_ref = gpu.kernel("glm5next_mhc", "glm5next_hc_post_ref")?;
     println!(
