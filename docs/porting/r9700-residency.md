@@ -68,7 +68,7 @@ handed to a layer struct.
 | family | on disk | what the loader materialises | store after build | store MiB | layer MiB |
 |---|---|---|---|---|---|
 | `embed_tokens` | BF16 `[248320,5120]` | nothing; `dense()` hands the store pointer through | **ALIVE** (zero-copy) | 2,425.0 | 0 |
-| `lm_head` | FP8 + `[N,1]` BF16 scale | dequant to BF16 (`load_lm_head`), then a runtime NVFP4 copy (`lm_head_setup.rs`) | **DEAD**, but see the caveat | 1,213.0 | 3,107.0 |
+| `lm_head` | FP8 + `[N,1]` BF16 scale | dequant to BF16 (`load_lm_head`), then a runtime NVFP4 copy (`lm_head_setup.rs`) | **DEAD**, and RELEASED since 2026-09-17 unless `--lm-head-dtype fp8` or `--dflash` binds it zero-copy | 1,213.0 | 3,107.0 |
 | attn q/k/v/o, x16 | FP8 + `[N,1]` BF16 scale | dequant to BF16 (kept, see below), requant to NVFP4, transposed twin of each | **DEAD** | 1,600.6 | 5,000.0 |
 | attn q/k norms, kv scales, x16 | BF16 | nothing | ALIVE | ~0.1 | 0 |
 | SSM `in_proj_qkv`/`in_proj_z`/`out_proj`, x48 | FP8 + `[N,1]` BF16 scale | dequant to BF16 (freed), row-concat to `[Q\|K\|V\|Z]` (freed), requant to NVFP4, transposed twin of each, plus a `predequant_nvfp4_to_fp8` out_proj copy | **DEAD** | 5,282.0 | 7,380.0 |
@@ -298,11 +298,22 @@ the consuming kernel has completed on the load stream.
 
 NOT released, deliberately:
 
-* **`lm_head`.** `lm_head_setup.rs::native_fp8_lm_head_share` binds the store's
-  FP8 `lm_head.weight` ZERO-COPY when `--lm-head-dtype fp8`, and the DFlash
-  drafter tail shares the same pointer. Releasing it needs a guard on
-  `config.lm_head_fp8` that the loader trait does not currently see. 1.18 GiB,
-  and the top entry of the ranked list below.
+* **`lm_head` when a consumer binds it zero-copy — which the default serve does
+  NOT.** `lm_head_setup.rs::native_fp8_lm_head_share` binds the store's FP8
+  `lm_head.weight` ZERO-COPY, but it is only reached from two places:
+  `setup_lm_heads` under `--lm-head-dtype fp8` (`config.lm_head_fp8`), and
+  `build.rs` under `--dflash` for the drafter tail. With neither flag set,
+  `load_lm_head` (`loaders_b.rs:52-64`) has already dequanted the FP8 bytes
+  into a FRESH BF16 allocation and every head is built from that, so the store's
+  copy has no reader at all. **RELEASED as of 2026-09-17** by
+  `lm_head_setup::release_lm_head_source`, called from `build_model` right after
+  `setup_lm_heads` and BEFORE the KV sizer, on the same
+  `ATLAS_LOAD_RELEASE_SOURCES` knob as the sites above. 1.18 GiB. The guard is
+  `lm_head_source_is_dead(source_is_fp8, lm_head_fp8, dflash, speculative)`, and
+  `source_is_fp8` is the load-bearing term: on a BF16 or NVFP4-prepacked
+  checkpoint `load_lm_head` / `weight_map::quantized` hand the STORE's pointer
+  through uncopied, and releasing it there is a use-after-free on the first
+  token. `lm_head_setup_tests.rs` pins all sixteen rows of that table.
 * **SSM `out_proj` when `ATLAS_FP8_ROWWISE=1`.** `rowwise_fp8::load_fp8_per_row`
   returns `weight: w.ptr` (`rowwise_fp8.rs:179`), so under that flag the layer
   holds the store's bytes. The release predicate excludes it.
@@ -369,9 +380,17 @@ the same pointer and records it, so both become correct by substitution.
    TP shard, a dequant output and a concat, all of which reach those sites
    through the same variable, keep the plain `gpu.free` they had.
 1. **Release the FP8 `lm_head`** behind a `!config.lm_head_fp8 &&
-   !use_speculative` guard. 1.18 GiB, no kernel work, needs the loader trait to
-   learn about the LM-head route or `prune_after_load` to do it after
-   `setup_lm_heads`.
+   !use_speculative` guard. 1.18 GiB, no kernel work. **DONE**, as
+   `lm_head_setup::release_lm_head_source`. It did not need the loader trait to
+   learn about the LM-head route after all: `build_model` already holds the
+   store, the config and `dflash_args` at the point `setup_lm_heads` returns,
+   and that point is also the last one BEFORE the KV sizer reads
+   `free_memory()` — which matters, because a release the sizer cannot see is a
+   release the KV cache does not get. `prune_after_load` would have been too
+   late for exactly that reason. The guard grew a fourth term the list did not
+   name: the checkpoint's `lm_head` must actually be FP8, because that is what
+   proves `load_lm_head` made a copy rather than handing back the store's own
+   pointer.
 2. **Do not build the transposed dense FFN twins.** 8.96 GiB, the single
    largest item left. `DenseFfnWeights::{gate,up,down}_proj_t` are already
    `Option`, and `gemma4/loader_a.rs:30-52` is a working precedent

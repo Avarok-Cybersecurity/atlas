@@ -11,6 +11,24 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **The checkpoint's FP8 `lm_head` is released once the heads are built.**
+  `unsloth/Qwen3.8-27B-NVFP4` ships `lm_head.weight` as FP8 E4M3 with a
+  per-channel BF16 scale; `load_lm_head` dequantises it into a fresh BF16
+  allocation and every head — NVFP4, runtime FP8, or the BF16 skip — is built
+  from that copy, so the checkpoint's own bytes have no reader. **1.18 GiB**,
+  item 1 of the ranked list in `docs/porting/r9700-residency.md`. Released by
+  `lm_head_setup::release_lm_head_source` on the existing
+  `ATLAS_LOAD_RELEASE_SOURCES` knob (ON under `cfg!(atlas_scale)`, so an NVIDIA
+  build with the variable unset frees exactly what it froze before). Four
+  guards, each a consumer that would otherwise still hold the pointer: the
+  checkpoint's head must actually be FP8 (the proof a copy was made — on a BF16
+  or NVFP4-prepacked head the loader returns the store's own pointer and
+  releasing it is a use-after-free), and none of `--lm-head-dtype fp8`,
+  `--dflash` or `--speculative` may be set, because the first two bind those
+  bytes zero-copy through `native_fp8_lm_head_share`. It runs immediately after
+  `setup_lm_heads` and BEFORE the KV sizer reads free memory, which is the whole
+  reason it is not in `prune_after_load`: a release the sizer cannot see is a
+  release the KV cache does not get.
 - **`--text-only`: serve a multimodal checkpoint without its vision tower.**
   `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it
   because the checkpoint declares a `vision_config` — ~1.65 GiB resident for the

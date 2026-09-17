@@ -402,6 +402,26 @@ pub fn build_model(
         !mtp_weights.is_empty(),
     )?;
 
+    // The checkpoint's OWN `lm_head` bytes, once every head above has been
+    // built from the fresh BF16 dequant `load_lm_head` made. 1.18 GiB on
+    // unsloth/Qwen3.8-27B-NVFP4 and item 1 of the ranked list in
+    // docs/porting/r9700-residency.md.
+    //
+    // HERE, and not later, for one reason: the KV sizer below reads
+    // `gpu.free_memory()` to decide how many blocks it can claim. A release
+    // that happens after it is a release the KV cache never sees. The guards
+    // are in `lm_head_source_is_dead`; the DFlash one matters at exactly this
+    // point, because the drafter's own `native_fp8_lm_head_share` call is
+    // several hundred lines further down and has not run yet.
+    super::lm_head_setup::release_lm_head_source(
+        &store,
+        &config,
+        gpu.as_ref(),
+        dflash_args.is_some(),
+        use_speculative,
+    )?;
+    mem.mark("lm_head source release");
+
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
     // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
     // moved into `TransformerModel::new`. All are `Copy` (DenseWeight /

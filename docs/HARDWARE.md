@@ -676,6 +676,23 @@ exists to feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with
 them, because it is residency-neutral only while there are `_t` copies for it to
 free.
 
+**The checkpoint's `lm_head`, once the heads are built.** `unsloth/Qwen3.8-27B-NVFP4`
+ships `lm_head.weight` as FP8 E4M3 with a per-channel BF16 scale. `load_lm_head`
+dequantises it into a fresh BF16 allocation and every head — NVFP4, FP8 or the
+BF16 skip — is built from that copy, so the checkpoint's own bytes have no
+reader. **1.18 GiB**, released since 2026-09-17 by
+`lm_head_setup::release_lm_head_source`, on the same `ATLAS_LOAD_RELEASE_SOURCES`
+knob as the loader's other release sites (ON under `cfg!(atlas_scale)`).
+
+Two flags keep it: `--lm-head-dtype fp8` and `--dflash` both reach
+`native_fp8_lm_head_share`, which binds `lm_head.weight` ZERO-COPY on purpose,
+and with either set nothing is released. A third guard is less obvious and is
+the one that matters: the release only fires when the checkpoint's `lm_head` is
+FP8, because that is the proof a copy was made. On a BF16 or NVFP4-prepacked
+head the loader hands the store's pointer straight through. The release runs
+immediately after `setup_lm_heads` and before the KV sizer, so the 1.18 GiB
+reaches the KV budget rather than being freed after it was already spent.
+
 **`--text-only`: the vision tower, for a serve that only ever sends text.**
 `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it,
 because the checkpoint declares a `vision_config`. That is **~1.65 GiB** of the
