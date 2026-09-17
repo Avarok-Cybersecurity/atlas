@@ -25,8 +25,6 @@ extend-ignore-identifiers-re = [
 ]
 
 [default.extend-words]
-# a REST conformance report filename suffix (thinking off), docs/porting/r9700-bringup-2026-09-17.md
-nothink = "nothink"
 # `RETUNED` — past tense of "retune", used in the MODEL.toml sampling-default
 # changelogs (`presence_penalty RETUNED 1.5 -> 1.0`). A real word; the checker
 # reads it as a misspelling of `RETURNED`, which it is not.
