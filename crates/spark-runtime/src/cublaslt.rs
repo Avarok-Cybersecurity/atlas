@@ -246,6 +246,7 @@ pub fn bf16_gemm_act_weight_t_f32_out(
 }
 
 /// Shared body of the two wrappers above; `out_dtype` selects the D layout.
+#[allow(clippy::too_many_arguments)]
 fn gemm_act_weight_t_out(
     act: u64,
     weight: u64,
