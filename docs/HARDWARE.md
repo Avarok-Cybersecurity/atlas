@@ -424,11 +424,15 @@ it declares `vendor = "amd"`, so `build_target.rs` compiles it with SCALE
 (scale-lang.com) through `targets/gfx1201/bin/nvcc`; unlike `strix` it is not
 an APU, so none of that target's unified-memory sizing notes carry over.
 
-**UNVERIFIED ON SILICON.** Nothing in this target has run on an R9700. It
-exists so the tree, the build and the registries are ready for one, and it is
-a structural mirror of `strix`: the same curated 99-entry `common/` (97
-relative symlinks into `kernels/gb10/common/`, plus the two entries strix
-holds as regular files, reached by relative symlink into
+**BUILDS, DOES NOT YET RUN.** The kernel set compiles on real gfx1201
+silicon (an R9700 on ROCm 7.2.0, SCALE 1.7.1 `targets/gfx1201`): all 97 `.cu`
+this target reaches build clean with the SCALE `nvcc`, and `cargo build
+--release -p spark-server --no-default-features --features cuda` exits 0 with
+94 kernels. Nothing has been SERVED on it, so every correctness claim past
+the build is open. Structurally it remains a mirror of `strix`: the same
+curated 99-entry `common/` (97 relative symlinks into
+`kernels/gb10/common/`, plus the two entries strix holds as regular files,
+reached by relative symlink into
 `kernels/strix/common/`), the same four `qwen3.6-27b/nvfp4` shadows, and real
 `HARDWARE.toml` / `MODEL.toml` files because those must stay editable per
 hardware. `qwen3.8-27b` is gb10's `MODEL.toml` with `kernel_source =
@@ -436,25 +440,33 @@ hardware. `qwen3.8-27b` is gb10's `MODEL.toml` with `kernel_source =
 `BENCH.toml` and no `[benchmarks.limits]` — a target nobody has measured
 cannot be campaigned, which is the correct state for it.
 
-**What the first bring-up must probe.** The mirror inherits strix's gfx1151
-decisions unexamined, and RDNA 4 is not RDNA 3.5:
+**What the first compile settled.** Two inherited gfx1151 decisions are now
+gfx1201 facts rather than carry-overs:
 
-* **The `BR64 32` prefill pin.** `kernels/gb10/common/prefill_paged_compute.cuh`
-  halves the block-row tile under `#if defined(__SCALE__)` — for every SCALE
-  target, not for gfx1151 specifically — and `ops/prefill_attn_main_{a,b}.rs`
-  selects the matching 32-row host grid stride from `cfg!(atlas_scale)`. The
-  pin was measured against RDNA 3.5's 64 KB/workgroup LDS cap. Measure RDNA
-  4's cap; if it is larger, the pin is costing prefill throughput for nothing.
-  Relaxing it is a kernel-side change to a `__SCALE__` gate that strix also
-  compiles, so it needs its own measurement there.
+* **The `BR64 32` prefill pin is required here.** RDNA 4 exposes the same
+  64 KB per-workgroup LDS cap as RDNA 3.5: a 73728-byte allocation is
+  rejected outright ("local memory (73728) exceeds limit (65536)"). So
+  `kernels/gb10/common/prefill_paged_compute.cuh` halving the block-row tile
+  under `#if defined(__SCALE__)`, and `ops/prefill_attn_main_{a,b}.rs`
+  selecting the matching 32-row host grid stride from `cfg!(atlas_scale)`,
+  stay exactly as they are. The prefill throughput that costs is a hardware
+  limit on this board, not an unexamined assumption.
+* **SCALE has no e4m3 MMA codegen on gfx1201**, which is why
+  `ATLAS_W4A16_VARIANT=v1` is required rather than merely inherited: there is
+  no `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`
+  declaration, and inline `cvt.rn.satfinite.e4m3x2.f32` is rejected. What
+  does compile is `__nv_cvt_float_to_fp8` from `cuda_fp8.h` and BF16
+  `mma.sync m16n8k16`, which is the path `v1` takes. RDNA 4's native FP8 WMMA
+  is a property of the silicon the toolchain does not reach.
+
+**What the first bring-up must still probe.** Coherent generation above all;
+nothing has been served on this board. Beyond that:
+
 * **The two runtime knobs** `serve-amd.sh` exports:
-  `ATLAS_W4A16_VARIANT=v1` (the BF16-MMA NVFP4 GEMM instead of the FP8 path)
-  and `ATLAS_NO_GDN_FP8_PREFILL=1` (GDN/SSM prefill off the native-FP8 path),
-  both because SCALE's device-side FP8 encode is unavailable on this
-  toolchain. RDNA 4 has native FP8 WMMA in hardware, so the question is
-  whether SCALE can reach it — and `v1` is not free, it buys correctness with
-  a BF16-MMA NVFP4 GEMM instead of the native path. Probe each knob OFF, one
-  at a time, against a coherence run. `ATLAS_FORCE_GLOBAL_GDN` and
+  `ATLAS_W4A16_VARIANT=v1` and `ATLAS_NO_GDN_FP8_PREFILL=1`. Both are pinned
+  by the missing e4m3 codegen above, so neither is a candidate to probe OFF
+  until SCALE grows that path; what is still open is whether `v1` alone is
+  enough for a coherent run. `ATLAS_FORCE_GLOBAL_GDN` and
   `ATLAS_NO_FP8_PREDEQUANT`, which the script used to export, have no reader
   anywhere in the tree and were dropped rather than carried here.
 * **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the

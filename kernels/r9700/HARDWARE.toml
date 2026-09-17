@@ -25,34 +25,50 @@ memory_gb = 32
 # that pretended otherwise. Do not add a key here without a reader in the
 # same change.
 #
-# ── UNVERIFIED ON SILICON ──────────────────────────────────────────────────
-# Nothing below this line has run on an R9700. This target is a structural
-# mirror of `kernels/strix` (same SCALE toolchain, same vendor, same curated
-# 99-entry common/ set, same qwen3.6-27b kernel tree), and it therefore
-# INHERITS strix's gfx1151 bring-up decisions UNEXAMINED. Those inherited
-# decisions are exactly what the first bring-up must probe, and each is a
-# real open question on RDNA 4 rather than a settled fact:
+# ── VERIFIED ON SILICON ──────────────────────────────────────
+# First contact with a real R9700 (ROCm 7.2.0, SCALE 1.7.1 targets/gfx1201).
+# Three of the inherited open questions above are now answered, and two of
+# them answered the way the mirror assumed, which is worth stating explicitly:
+# they are load-bearing facts about gfx1201 now, not gfx1151 decisions that
+# happen to still be sitting here.
 #
-#   * The 64 KB LDS `#define BR64 32` pin. `kernels/gb10/common/
-#     prefill_paged_compute.cuh` halves the prefill block-row tile under
-#     `#if defined(__SCALE__)` — for EVERY SCALE target, not for gfx1151
-#     specifically — and the matching 32-row host grid stride is selected by
-#     `cfg!(atlas_scale)` in `ops/prefill_attn_main_{a,b}.rs`. That pin was
-#     measured against RDNA 3.5's 64 KB/workgroup LDS cap. RDNA 4 may expose
-#     a different cap, in which case BR64 32 is leaving prefill throughput on
-#     the floor for no reason. PROBE THE CAP FIRST; the `__SCALE__` gate is
-#     vendor-wide, so relaxing it is a kernel-side change that affects strix
-#     too and needs its own measurement there.
+#   * The kernel set compiles. All 97 .cu reached by this target build clean
+#     with the SCALE nvcc, and `cargo build --release -p spark-server
+#     --no-default-features --features cuda` under ATLAS_TARGET_HW=r9700,
+#     ATLAS_TARGET_MODEL=qwen3.8-27b, ATLAS_TARGET_QUANT=nvfp4 exits 0 with
+#     94 kernels built.
 #
-#   * The three gfx1151 runtime shims in `serve-amd.sh`
-#     (ATLAS_FORCE_GLOBAL_GDN=1, ATLAS_W4A16_VARIANT=v1,
-#     ATLAS_NO_FP8_PREDEQUANT=1). All three are workarounds for gfx1151
-#     facts: the 64 KB LDS cap for the first, and SCALE's broken device-side
-#     FP8 encode on gfx1151 for the other two. RDNA 4 has NATIVE FP8 WMMA,
-#     so the FP8 pair may be unnecessary here — and unnecessary is expensive,
-#     because ATLAS_W4A16_VARIANT=v1 buys correctness with a BF16-MMA NVFP4
-#     GEMM instead of the native path. Probe each shim OFF, one at a time,
-#     against a coherence run before assuming it is needed.
+#   * The 64 KB LDS cap is REAL on RDNA 4, so the `#define BR64 32` prefill
+#     pin is REQUIRED here rather than inherited. A 73728-byte workgroup
+#     allocation is rejected outright: "local memory (73728) exceeds limit
+#     (65536)". The `__SCALE__` gate in
+#     `kernels/gb10/common/prefill_paged_compute.cuh` and the matching 32-row
+#     host grid stride from `cfg!(atlas_scale)` in
+#     `ops/prefill_attn_main_{a,b}.rs` therefore stay exactly as they are, and
+#     the prefill throughput they cost is a hardware limit, not an
+#     unexamined carry-over. This closes the first bullet of the old list.
+#
+#   * SCALE has NO e4m3 MMA codegen on gfx1201, so `ATLAS_W4A16_VARIANT=v1`
+#     is REQUIRED. It provides no declaration of
+#     `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`, and it
+#     rejects inline `cvt.rn.satfinite.e4m3x2.f32` ("does not provide a
+#     suitable definition for __nv_cvt_floatraw_to_fp8"). What does compile
+#     is `__nv_cvt_float_to_fp8` from cuda_fp8.h, and BF16 `mma.sync
+#     m16n8k16`, which is the path v1 takes. RDNA 4's native FP8 WMMA is a
+#     property of the silicon that this toolchain does not reach, so the
+#     hoped-for saving is not available. `serve-amd.sh` pairs v1 with
+#     `ATLAS_NO_GDN_FP8_PREFILL=1` for the same reason; the two other
+#     names the old list carried, ATLAS_FORCE_GLOBAL_GDN and
+#     ATLAS_NO_FP8_PREDEQUANT, have no reader anywhere in the tree and are
+#     no longer exported.
+#
+# ── STILL UNVERIFIED ON SILICON ───────────────────────────────────
+# The build is green. Nothing below it has been observed RUNNING, and "it
+# compiles and links" is not evidence about any of it:
+#
+#   * Coherent generation. No model has been served to completion on this
+#     board, so every correctness claim past the build is still open. Until
+#     one is, this target is buildable, not working.
 #
 #   * `qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false` and the
 #     retuned sampling block are gfx1151 OBSERVATIONS (a post-</think>
