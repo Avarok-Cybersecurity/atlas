@@ -636,10 +636,6 @@ pub(super) fn batched_precompute_enabled() -> bool {
         != Some("1")
 }
 
-pub(super) fn option_b_enabled() -> bool {
-    option_b_from(std::env::var("AVAROK_DFLASH_OPTION_B").ok().as_deref())
-}
-
 /// The predicate itself, pure over the raw value so a test can exercise the
 /// PRODUCTION code rather than a copy of it. `set_var` is unsafe and
 /// process-global, so a test that mutated the environment would race every

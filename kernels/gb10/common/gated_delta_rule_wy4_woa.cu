@@ -114,7 +114,7 @@ extern "C" __global__ void gated_delta_rule_wy4_woa(
 
     #define KDOT(NAME, A, B) { \
         float p = (tid<k_dim) ? s##A[tid]*s##B[tid] : 0.0f; \
-        float r = atlas_block_reduce_sum(p, smem_warp, tid); \
+        float r = avarok_block_reduce_sum(p, smem_warp, tid); \
         if (tid==0) NAME = r; \
         __syncthreads(); \
     }

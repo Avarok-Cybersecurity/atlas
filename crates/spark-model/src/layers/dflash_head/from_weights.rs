@@ -637,6 +637,10 @@ impl BlockDiffusionDraftHead {
             // capture pass lands. Layout: [pre_0, post_0, ..., tail].
             propose_graphs: parking_lot::Mutex::new(super::ProposeGraphs::default()),
             suppress_graphs: std::sync::atomic::AtomicBool::new(false),
+            // main added this counter after this line was cut; the graph path
+            // reads it to decide when the eager warm-up is done, so it is a
+            // required field rather than a nicety.
+            propose_warmup_count: std::sync::atomic::AtomicUsize::new(0),
             quant: DflashQuantization::Bf16,
             // DSpark heads. `markov_rank` is zeroed when the tensors are
             // absent so the runtime gate is a single field check.

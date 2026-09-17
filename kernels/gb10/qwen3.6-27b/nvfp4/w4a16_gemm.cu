@@ -7034,7 +7034,7 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_p4(
             unsigned int nc = nt * 8 + group_id; \
             unsigned int b0 = *(const unsigned int*)&smem_B[(buf)][nc][4 * tid]; \
             unsigned int b1 = *(const unsigned int*)&smem_B[(buf)][nc][16 + 4 * tid]; \
-            atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+            avarok_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
         } \
     } while(0)
 
@@ -7166,7 +7166,7 @@ extern "C" __global__ void fp8_gemm_t_row_scaled_k64(
                 unsigned int nc = nt * 8 + group_id; \
                 unsigned int b0 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 4 * tid]; \
                 unsigned int b1 = *(const unsigned int*)&smem_B[(buf)][nc][ko + 16 + 4 * tid]; \
-                atlas_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
+                avarok_mma_e4m3(acc[nt], a0, a1, a2, a3, b0, b1); \
             } \
         } \
     } while(0)
