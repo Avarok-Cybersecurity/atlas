@@ -108,7 +108,15 @@ pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
 /// and generation in the key (`a100sxm480gb`) and so cannot silently merge two
 /// parts. Absent is therefore the SAFE default, and the reason this returns
 /// `Option` rather than guessing.
-const SKU_TOKENS: [(&str, &str); 7] = [
+///
+/// Two tokens can name one class. `r9700` is reached by its marketing name and
+/// by `gfx1201`, its arch string, because the two AMD tools that answer this
+/// question do not agree on what to call the board: `lspci` reports only
+/// `[AMD/ATI] Device [1002:7551]`, and nobody has yet captured what
+/// `rocminfo` puts in its marketing-name field on that part. The arch string
+/// is the one spelling every AMD tool agrees on, so it carries the entry and
+/// the marketing name rides along for whichever tool does report it.
+const SKU_TOKENS: [(&str, &str); 9] = [
     ("gb10", "gb10"),
     ("h100", "h100"),
     ("h200", "h200"),
@@ -116,6 +124,11 @@ const SKU_TOKENS: [(&str, &str); 7] = [
     ("b200", "b200"),
     ("gb200", "gb200"),
     ("mi300x", "mi300x"),
+    // AMD Radeon AI PRO R9700 — `kernels/r9700/`, gfx1201, RDNA 4. Both
+    // spellings land on the same class; see the note above on why the arch
+    // string is here and `gfx1151` deliberately is not.
+    ("r9700", "r9700"),
+    ("gfx1201", "r9700"),
 ];
 
 /// Map a GPU's reported name onto the box class its numbers belong to.
@@ -320,6 +333,39 @@ mod tests {
             assert_ne!(got, Some("h100"), "{name}");
             assert_ne!(got, Some("h200"), "{name}");
             assert_ne!(got, Some("gh200"), "{name}");
+        }
+    }
+
+    /// Oracle: what an R9700 box actually reports, and the one real trap in
+    /// reading it. `lspci` on the bring-up machine answers only
+    /// `[AMD/ATI] Device [1002:7551]` — a numeric id with no name in it — and
+    /// what `rocminfo` writes in its marketing-name field on this part has
+    /// not been captured. So the arch string is the spelling that can be
+    /// relied on, and it carries the entry; the marketing name is mapped too,
+    /// for whichever tool does report it.
+    ///
+    /// `gfx1151` is NOT mapped, and the asymmetry is deliberate rather than an
+    /// oversight. Strix Halo is an APU whose GPU name
+    /// (`"AMD Radeon 8060S (gfx1151)"`) is asserted `None` two tests below;
+    /// mapping it now would re-key every receipt already written from that box
+    /// under the normalisation, which is a separate decision from registering a
+    /// board nobody has written a receipt from yet.
+    #[test]
+    fn an_r9700_is_reached_by_its_arch_string_and_by_its_name() {
+        for name in [
+            "AMD Radeon AI PRO R9700",
+            "Radeon AI PRO R9700",
+            "AMD Radeon AI PRO R9700 (gfx1201)",
+            "gfx1201",
+            "amd radeon ai pro r9700",
+        ] {
+            assert_eq!(hardware_id_from_gpu_name(name), Some("r9700"), "{name}");
+        }
+        // The class this must never be confused with: the other AMD SCALE
+        // target in the tree. Different silicon, different memory system, and
+        // `strix` deliberately has no entry at all.
+        for name in ["AMD Radeon 8060S (gfx1151)", "gfx1151"] {
+            assert_eq!(hardware_id_from_gpu_name(name), None, "{name}");
         }
     }
 
