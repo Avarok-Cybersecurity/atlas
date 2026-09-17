@@ -93,6 +93,15 @@ pub enum RollbackFallback {
     /// every subsequent token — so the rollback is honestly declined and
     /// the caller hard-stops instead.
     NoSsmSnapshot,
+    /// A layer of this model keeps per-sequence state that lowering the
+    /// KV cursor does not rewind and no snapshot ring restores
+    /// (`Model::decode_rollback_unsupported`; DeepSeek-V4.1's shared
+    /// compressed attention: the monotonic compressed-row count, the
+    /// compressor's partial group, the engram n-gram history). Re-steering
+    /// on that state regenerates from a corrupted context — observed as a
+    /// token-level splice (`_wHere`) right at the boundary — so the
+    /// rollback is declined and the caller hard-stops.
+    LayerStateNotRewindable,
 }
 
 /// Find the index (into `output_tokens`) of the last well-formed
@@ -214,6 +223,9 @@ pub fn rollback_to_boundary(
     // `cancel_flag` is Some exactly for streaming requests.
     if a.cancel_flag.is_some() {
         return RollbackOutcome::Fallback(RollbackFallback::StreamUnsafe);
+    }
+    if model.decode_rollback_unsupported() {
+        return RollbackOutcome::Fallback(RollbackFallback::LayerStateNotRewindable);
     }
     if a.rollback_count >= avarok_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
