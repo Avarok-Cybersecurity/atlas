@@ -1,194 +1,101 @@
 [hardware]
 name = "r9700"
 vendor = "amd"
-# AMD Radeon AI PRO R9700 — RDNA 4, 64 CU, DISCRETE PCIe board (not an APU:
-# this is the first AMD target in the tree with its own VRAM rather than a
-# unified LPDDR5X pool shared with the CPU).
-# Compiled via SCALE (scale-lang.com) 1.7.1, exactly as `kernels/strix` is:
-# the unmodified CUDA .cu sources are recompiled for this AMD target, and
-# `arch` selects the per-arch SCALE toolchain dir (targets/gfx1201/bin/nvcc).
+# AMD Radeon AI PRO R9700: RDNA 4, 64 CU, discrete PCIe board. It is the first
+# AMD target in the tree with its own VRAM rather than a unified LPDDR5X pool
+# shared with the CPU. Compiled via SCALE (scale-lang.com) 1.7.1 exactly as
+# `kernels/strix` is: the unmodified CUDA .cu sources are recompiled for this
+# AMD target, and `arch` selects the per-arch SCALE toolchain directory
+# (targets/gfx1201/bin/nvcc).
 arch = "gfx1201"
 compute_capability = "12.0.1"
 # 32 is the WGP count, not the 64 CU on the board. RDNA 4 pairs two compute
-# units into one workgroup processor, and SCALE/HSA reports the WGP count as
-# the multiprocessor count, so
-# `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT` answers 32 on a real R9700. Grid
-# sizing has to follow the number the RUNTIME reports, because that is the
-# thing a grid is actually scheduled onto.
+# units into one workgroup processor and SCALE/HSA reports the WGP count as
+# the multiprocessor count, so `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT`
+# answers 32 on a real R9700. Grid sizing has to follow the number the RUNTIME
+# reports, because that is what a grid is actually scheduled onto.
 #
 # Declaring nothing here did NOT mean "unset": it resolved to
 # `build_defaults::BASELINE_SM_COUNT` = 48, the GB10 constant a silent target
 # inherits, which describes neither this part's CUs nor its WGPs. The boot
-# cross-check said so on first contact: "this build's kernels are sized for 48
-# SMs (kernels/r9700/HARDWARE.toml [hardware] sm_count) but the device reports
-# 32" (`crates/spark-runtime/src/cuda_backend/arch_preflight.rs`).
-#
-# `kernels/strix` is the neighbouring AMD tree and declares no `sm_count`
-# either, so it still inherits the same 48 while its 8060S (40 CU = 20 WGP)
-# reports 20. That is the same unexamined inheritance this row closes for
-# r9700, not a convention that endorses it; fixing strix needs its own device
-# reading and is not part of this change.
+# cross-check in `crates/spark-runtime/src/cuda_backend/arch_preflight.rs`
+# reported the mismatch against the device's 32 on first contact.
+# `kernels/strix` declares no `sm_count` either and still inherits the same 48
+# while its 8060S (40 CU = 20 WGP) reports 20; fixing strix needs its own
+# device reading and is not part of this change.
 sm_count = 32
-# GDDR6-18000 (effective), 256-bit bus → ~640 GB/s theoretical. 2.5x strix's
-# 256 GB/s and a discrete pool, so the APU sizing notes in
+# GDDR6-18000 effective on a 256-bit bus, so ~640 GB/s theoretical: 2.5x
+# strix's 256 GB/s, and a discrete pool, so the APU sizing notes in
 # kernels/strix/HARDWARE.toml do NOT carry over.
 memory_bandwidth_gbps = 640
 memory_type = "GDDR6"
-# Dedicated VRAM on the board. Unlike strix's unified 64 GB, all of it is
-# GPU-visible — but 32 GB is HALF what the strix bring-up had, so model
+# Dedicated VRAM on the board. All of it is GPU-visible, unlike strix's
+# unified 64 GB, but 32 GB is HALF what the strix bring-up had, so model
 # sizing that fit there is not automatically a fit here.
 memory_gb = 32
-# The memory_* keys above have NO READER anywhere in the repo — they are
+# The memory_* keys above have NO READER anywhere in the repo: they are
 # documentation and roofline input only, the same status they have in
-# kernels/gb10 and kernels/strix. See docs/HARDWARE.md and the removal note
-# in kernels/strix/HARDWARE.toml for what happened to two neighbouring keys
-# that pretended otherwise. Do not add a key here without a reader in the
-# same change.
+# kernels/gb10 and kernels/strix. Do not add a key here without a reader in
+# the same change.
 #
-# ── VERIFIED ON SILICON ──────────────────────────────────────
-# First contact with a real R9700 (ROCm 7.2.0, SCALE 1.7.1 targets/gfx1201).
-# Three of the inherited open questions above are now answered, and two of
-# them answered the way the mirror assumed, which is worth stating explicitly:
-# they are load-bearing facts about gfx1201 now, not gfx1151 decisions that
-# happen to still be sitting here.
+# ── Verified on silicon ───────────────────────────────────────────────────
+# Measured on gfx1201 (Radeon AI PRO R9700, SCALE 1.7.1 targets/gfx1201,
+# ROCm 7.2.0), 2026-09-17. The r9700 section of docs/HARDWARE.md carries the
+# full explanation of each item; this list is the summary.
 #
-#   * The kernel set compiles. All 97 .cu the CURATED strix-shaped tree
-#     reached built clean with the SCALE nvcc, and `cargo build --release -p
-#     spark-server --no-default-features --features cuda` under
-#     AVAROK_TARGET_HW=r9700, AVAROK_TARGET_MODEL=qwen3.8-27b,
-#     AVAROK_TARGET_QUANT=nvfp4 exited 0 with 94 kernels built.
+#   * The kernel set compiles and the 27B serves. The tree is a subtractive
+#     mirror of kernels/gb10 (168 common .cu plus 12 model .cu), sized by a
+#     per-file SCALE compile census over all of kernels/gb10/common and
+#     kernels/gb10/qwen3.6-27b/nvfp4: 180 of 193 files clean, and the names
+#     this tree drops are exactly those 13 failures.
 #
-#     That tree is GONE as of 2026-09-17. It compiled a smaller inventory than
-#     the model dispatches, and the qwen3.8-27b serve died in model build at
-#     `Kernel lookup dense_gemv_bf16_batch2::dense_gemv_bf16_batch2: Module
-#     load failed`. What replaced it is the subtractive gb10 mirror described
-#     below (168 common .cu plus 12 model .cu), sized by a per-file SCALE
-#     compile census over ALL of kernels/gb10/common and
-#     kernels/gb10/qwen3.6-27b/nvfp4. The census reported 180 of 193 files
-#     clean, and the thirteen names this tree drops are exactly those 13
-#     failures (the last one identified was w4a16_fp8_ldmab.cu, e4m3 fragment
-#     at 107:9). The 94-kernel build line above is the old tree's and has not
-#     been re-measured.
-#
-#   * The 64 KB LDS cap is REAL on RDNA 4, so the `#define BR64 32` prefill
-#     pin is REQUIRED here rather than inherited. A 73728-byte workgroup
-#     allocation is rejected outright: "local memory (73728) exceeds limit
-#     (65536)". The `__SCALE__` gate in
-#     `kernels/gb10/common/prefill_paged_compute.cuh` and the matching 32-row
+#   * The 64 KB per-workgroup LDS cap is REAL on RDNA 4, so the
+#     `#define BR64 32` prefill pin in
+#     `kernels/gb10/common/prefill_paged_compute.cuh`, and the matching 32-row
 #     host grid stride from `cfg!(avarok_scale)` in
-#     `ops/prefill_attn_main_{a,b}.rs` therefore stay exactly as they are, and
-#     the prefill throughput they cost is a hardware limit, not an
-#     unexamined carry-over. This closes the first bullet of the old list.
+#     `ops/prefill_attn_main_{a,b}.rs`, are required here rather than
+#     inherited: a 73728-byte workgroup allocation is rejected outright.
 #
 #   * SCALE has NO e4m3 MMA codegen on gfx1201, so `AVAROK_W4A16_VARIANT=v1`
-#     is REQUIRED. It provides no declaration of
-#     `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`, and it
-#     rejects inline `cvt.rn.satfinite.e4m3x2.f32` ("does not provide a
-#     suitable definition for __nv_cvt_floatraw_to_fp8"). What does compile
-#     is `__nv_cvt_float_to_fp8` from cuda_fp8.h, and BF16 `mma.sync
-#     m16n8k16`, which is the path v1 takes. RDNA 4's native FP8 WMMA is a
-#     property of the silicon that this toolchain does not reach, so the
-#     hoped-for saving is not available. `serve-amd.sh` also sets
-#     `AVAROK_NO_GDN_FP8_PREFILL=1` on this target only, as a conservative
-#     first-serve default (strix never set it and serves coherently with the
-#     native FP8 SSM prefill on); it is the first knob to bisect OFF.
-#     AVAROK_NO_FP8_PREDEQUANT IS READ, contrary to what this note said until
-#     2026-09-17: `spark-model/src/layers/fp8_predequant.rs` reads it (the
-#     `PredequantSkip::Env` arm) and `serve-amd.sh` exports it on r9700. Only
-#     AVAROK_FORCE_GLOBAL_GDN has no reader anywhere in the tree, and only that
-#     one is no longer exported.
+#     is REQUIRED. BF16 `mma.sync m16n8k16` does compile, which is the path v1
+#     takes, but RDNA 4's native FP8 WMMA is not reachable through this
+#     toolchain. `serve-amd.sh` also sets `AVAROK_NO_GDN_FP8_PREFILL=1` on
+#     this target only, as a conservative first-serve default (strix never set
+#     it and serves coherently with the native FP8 SSM prefill on); it is the
+#     first knob to bisect OFF.
 #
-#   * SCALE's cuMemGetInfo FREE figure is not truthful here, so Atlas takes
-#     free VRAM from /sys/class/drm/card*/device/mem_info_vram_{total,used}
-#     on this target (override with AVAROK_MEMINFO_SOURCE; see
-#     crates/spark-runtime/src/cuda_backend/meminfo_source.rs and the r9700
-#     section of docs/HARDWARE.md). SCALE charges ~16 MiB of phantom usage
-#     per ALLOCATION to its own accounting: 2000 x 11 MiB reports 60 MiB
-#     free at 16500 MiB allocated while sysfs shows 17227 MiB used of
-#     32624, and native HIP in the same loop is honest. The driver's TOTAL
-#     is correct (32624 MiB) and stays in use.
+#   * SCALE's `cuMemGetInfo` FREE figure is not truthful here, so free VRAM
+#     comes from /sys/class/drm/card*/device/mem_info_vram_{total,used} on
+#     this target. Override with `AVAROK_MEMINFO_SOURCE`; the mechanism is
+#     documented on `crates/spark-runtime/src/cuda_backend/meminfo_source.rs`.
+#     The driver's TOTAL is correct (32624 MiB) and stays in use.
 #
 #   * An optional module that compiles to an EMPTY code object is a LAUNCH
-#     failure here, not a missed lookup. `nvfp4_mmq.cu` is entirely inside
-#     `#if defined(BLACKWELL_MMA_AVAILABLE)`, so gfx1201 builds it to an
-#     object with no kernels; SCALE's `cuModuleGetFunction` then returns
-#     SUCCESS for `avarok_nvfp4_repack` and the first launch dies with
-#     CUDA_ERROR_INVALID_IMAGE (200). NVIDIA answers "not found" and the
-#     optional-kernel probe absorbs it. The registry therefore reads each
-#     binary module's ELF symbol table and refuses names the object does not
-#     define (`crates/avarok-core/src/elf_symbols.rs`); the build log names the
-#     empty modules too. See the r9700 section of docs/HARDWARE.md.
+#     failure here, not a missed lookup: SCALE's `cuModuleGetFunction` returns
+#     success for a name the object does not define, and the first launch dies
+#     with CUDA_ERROR_INVALID_IMAGE. The registry reads each binary module's
+#     ELF symbol table and refuses such names; the mechanism is documented on
+#     `crates/avarok-core/src/elf_symbols.rs`.
 #
-# ── STILL UNVERIFIED ON SILICON ───────────────────────────────────
-# The build is green. Nothing below it has been observed RUNNING, and "it
-# compiles and links" is not evidence about any of it:
-#
-#   * Coherent generation. No model has been served to completion on this
-#     board, so every correctness claim past the build is still open. Until
-#     one is, this target is buildable, not working.
-#
+# ── Inherited and still unverified ────────────────────────────────────────
 #   * `qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false` and the
-#     retuned sampling block are gfx1151 OBSERVATIONS (a post-</think>
-#     content collapse on that silicon), copied here with the tree. They are
-#     not RDNA 4 measurements and must be re-harvested.
+#     retuned sampling block are gfx1151 OBSERVATIONS copied here with the
+#     tree, not RDNA 4 measurements. They must be re-harvested.
 #
-# ── OPEN QUESTIONS, RANKED: fitting qwen3.8-27b in 32 GB ─────────────────
-# First serve of `unsloth/Qwen3.8-27B-NVFP4` on this board loaded all 21.81 GiB
-# of the checkpoint and then died in model build at layer 28 of 64:
-# `cuMemAlloc_v2 failed: status 2, requested 167772160 bytes`, ledger 33.73 GB
-# live across 2631 allocations, sysfs VRAM peak 34.1 GB. The full accounting,
-# with every site of that ledger sweep reproduced to the tenth of a MiB from
-# the shapes, is `docs/porting/r9700-residency.md`. The steady-state resident
-# set the 64 layers would have reached is 47.07 GiB (50.54 GB).
+#   * Residency. unsloth/Qwen3.8-27B-NVFP4 serves with the transposed twins
+#     declined and release-on-consume on, but the levers that would get a 27B
+#     comfortably inside 32 GB are ranked and costed in
+#     docs/porting/r9700-residency.md and most are unimplemented.
 #
-# `AVAROK_LOAD_RELEASE_SOURCES` (default ON here, OFF on NVIDIA) takes 9.94 GiB
-# of that back by freeing the FP8 projections the loader has already
-# requantised. It is NECESSARY AND NOT SUFFICIENT: 37.78 GB still does not load
-# on a 31.9 GB board. What is left, in the order it should be attempted:
-#
-#   1. Route `qwen35_dense.rs:1479`/`:1693` and `nvfp4_detect.rs:332` through
-#      `WeightStore::release_tensor`. No residency change; it removes a
-#      teardown double free that fires on every `Bf16Raw` checkpoint. First
-#      because it is a correctness fix and costs nothing.
-#   2. Release the FP8 `lm_head` (1.18 GiB), guarded on `!config.lm_head_fp8`
-#      and no speculative decoding — `lm_head_setup::native_fp8_lm_head_share`
-#      and the DFlash drafter tail bind those bytes ZERO-COPY.
-#   3. Do not build the transposed dense-FFN twins: 8.96 GiB, the largest item
-#      left. `DenseFfnWeights::{gate,up,down}_proj_t` are already `Option` and
-#      `weight_loader/gemma4/loader_a.rs:30-52` is a working precedent
-#      (`ffn_transpose_fits`, `AVAROK_GEMMA4_FFN_TRANSPOSE=0`). The cost is
-#      written down there and it is large: with all three `None` every fast arm
-#      of `w4_gemm!` is skipped and prefill lands on plain `w4a16_gemm`, which
-#      the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 for
-#      `t_m128`. A knob with a measured A/B, never a silent default.
-#   4. Do not build the transposed SSM twins: 2.90 GiB, plus the 1.41 GiB FP8
-#      `out_proj` predequant that `init_fp8.rs:110` gates on
-#      `out_proj_nvfp4_t.is_some()`. Unmeasured cost.
-#   5. Do not build the transposed attention twins: 0.88 GiB. (The fused
-#      `[q|k|v]` twin is not built at all on this checkpoint — the runtime
-#      requant gives each projection its own per-tensor `scale2`, so the
-#      `scales_equal` test declines.)
-#   6. A per-ROW `w8a16` GEMV/GEMM, which is the correct answer and the one
-#      blocked on kernel work. This checkpoint's FP8 scale is per-CHANNEL
-#      `[N,1]`; every `w8a16` kernel indexes `block_scale[n/128, k/128]`, and
-#      the row-wise cuBLASLt FP8 path is dead on this class (SCALE has no e4m3
-#      MMA codegen on gfx1201 at all, which is the same gap that pins
-#      `AVAROK_W4A16_VARIANT=v1`). Worth 6.72 GiB of FP8 store plus the 9.6 GiB
-#      of NVFP4 the requant produces.
-#   7. Serve `Qwen/Qwen3.8-27B-FP8` instead. Block-scaled FP8 is the layout
-#      this loader is smallest and fastest on, and `qwen3.8-27b/MODEL.toml`
-#      already records that the mixed-precision checkpoint measured worse on
-#      the video benchmark's hardest leg.
-#
-# Also unverified: whether the attention BF16 dequant leak this work found
-# (`qwen35_dense.rs`, the `CompressedTensors` arm, 3.12 GiB on the 27B) can be
-# freed UNCONDITIONALLY. It is a plain bug on every target, but the fix sits
-# behind `AVAROK_LOAD_RELEASE_SOURCES` until an NVIDIA serve says so.
+#   * Whether the attention BF16 dequant leak this work found
+#     (`qwen35_dense.rs`, the `CompressedTensors` arm, 3.12 GiB on the 27B)
+#     can be freed UNCONDITIONALLY. It is a plain bug on every target, but the
+#     fix sits behind `AVAROK_LOAD_RELEASE_SOURCES` until an NVIDIA serve
+#     says so.
 
 # No `[benchmarks.limits]` table: campaigning or self-serving a gate on this
-# class needs measured thermal/memory/timing/equivalence facts, and nobody
-# has measured them. A target that declares none cannot be campaigned, which
-# is the correct state for a target that has never booted.
+# class needs measured thermal/memory/timing/equivalence facts, and nobody has
+# measured them. A target that declares none cannot be campaigned.
 
 # ── The kernel set: a SUBTRACTIVE mirror of kernels/gb10 ──────────────────
 # `common/` and `qwen3.6-27b/nvfp4/` are whole-directory relative-symlink
@@ -196,35 +103,28 @@ memory_gb = 32
 # use, MINUS the sources SCALE 1.7.1 `targets/gfx1201` cannot compile. The
 # rule is the DIRECTORY, not a list: a kernel added to `kernels/gb10/common/`
 # needs a link here, or this target silently compiles a smaller inventory than
-# GB10 does. That is exactly how `dense_gemv_bf16_batch2` came to be missing
-# from the curated 99-entry set this replaces, which took the qwen3.8-27b
-# model build down at `Module 'dense_gemv_bf16_batch2' not loaded`.
+# GB10 does. A curated set did exactly that, and the qwen3.8-27b model build
+# went down at `Module 'dense_gemv_bf16_batch2' not loaded`.
 #
 # The subtraction is the census, not taste. Every name in `[kernels] absent`
-# below FAILED to compile on a real R9700 (ROCm 7.2.0, SCALE 1.7.1), and all
-# 16 dropped entry points are declared `[expected_absent]` in both
-# MODEL.tomls, so the boot audit reports a stated absence instead of refusing
-# to serve. Twelve sources are dropped in all: ten from `common/` (nine
-# asymmetric-KV prefill kernels plus `gated_delta_rule_fla.cu`), one header
-# that only those nine include, and two from `qwen3.6-27b/nvfp4/`
-# (`w4a16_gemm_v2.cu`, `w4a4_gemm.cu`).
+# below FAILED to compile on a real R9700, and every dropped entry point is
+# declared `[expected_absent]` in each of this target's MODEL.tomls, so the
+# boot audit reports a stated absence instead of refusing to serve.
 
 [build]
 # SCALE is clang-19 based, so nvcc's `--fmad=false`, which the shared
-# `common/KERNEL.toml` passes and which SCALE's nvcc DOES accept (97 .cu
-# compiled with it on the board), is spelled `-ffp-contract=off` in clang's
-# own vocabulary. Both are passed: `merge_extra_flags` dedupes, and asking for
-# the same "no FP multiply-add contraction" twice is free.
+# `common/KERNEL.toml` passes and which SCALE's nvcc does accept, is spelled
+# `-ffp-contract=off` in clang's own vocabulary. Both are passed:
+# `merge_extra_flags` dedupes, and asking for the same "no FP multiply-add
+# contraction" twice is free.
 #
 # It lives at the HARDWARE layer rather than in a model KERNEL.toml for the
 # reason `crates/avarok-kernels/build_flags.rs` gives for
 # `AVAROK_NO_WARP_BLOCKSCALE_MMA` on hopper/b200: every KERNEL.toml on this
-# target is now a relative symlink into `kernels/gb10`, so a per-model
-# declaration would mean forking a shared file once per model, and again for
-# every model added later. This is a TOOLCHAIN fact and it is stated once, for
-# every model on the target. It replaces the `extra_nvcc_flags =
-# ["-ffp-contract=off"]` line that the strix copy of
-# `qwen3.6-27b/nvfp4/KERNEL.toml` carried before that file became a symlink.
+# target is a relative symlink into `kernels/gb10`, so a per-model declaration
+# would mean forking a shared file once per model, and again for every model
+# added later. This is a TOOLCHAIN fact, stated once for every model on the
+# target.
 extra_nvcc_flags = ["-ffp-contract=off"]
 
 [kernels]
@@ -234,36 +134,34 @@ extra_nvcc_flags = ["-ffp-contract=off"]
 # added tomorrow shows up as an undeclared omission instead of vanishing from
 # the AMD build in silence.
 #
-# All ten `.cu` are gfx1201 COMPILE failures, measured with SCALE 1.7.1
-# `targets/gfx1201/bin/nvcc` on an R9700 (ROCm 7.2.0):
+# All eleven `.cu` below are gfx1201 COMPILE failures:
 #
 #   * the nine `inferspark_prefill_paged_*turbo*v` asymmetric-KV prefill
-#     kernels. All of them fail identically inside the header they share:
+#     kernels, which fail identically inside the header they share:
 #     `prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or
-#     70432) exceeds limit (65536)`. RDNA 4 has the same 64 KB per-workgroup
-#     LDS cap as RDNA 3.5, and unlike `prefill_paged_compute.cuh` this header
-#     has NO `#if defined(__SCALE__) #define BR64 32` pin: it hardcodes
+#     70432) exceeds limit (65536)`. Unlike `prefill_paged_compute.cuh` that
+#     header has no `#if defined(__SCALE__) #define BR64 32` pin; it hardcodes
 #     `#define BR64 64` at line 449. Pinning it, with the matching host grid
-#     stride, is the FOLLOW-UP that would bring these nine back; that is a
-#     kernel-side change with its own A/B and is not part of this mirror.
+#     stride, is the follow-up that brings these nine back.
 #
 #   * `gated_delta_rule_fla.cu`, at `114:19: error: unknown opcode:
 #     fence.proxy.async.shared::cta`. The async-proxy fence is an sm_90
 #     feature SCALE does not lower, and the file issues it unconditionally, so
 #     no flag compiles the rest of it.
 #
-# `prefill_paged_compute_asym.cuh` is the eleventh name and the only HEADER.
-# It is never compiled on its own, and once the nine `.cu` above are gone
-# NOTHING in this target's tree includes it (`grep -rln
-# prefill_paged_compute_asym kernels/gb10` lists exactly those nine). It comes
-# back when they do.
+#   * `w4a16_fp8_ldmab.cu`, at `107:9: error`, no declaration of
+#     `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`. The same
+#     e4m3 MMA gap that pins `AVAROK_W4A16_VARIANT=v1`.
+#
+# `prefill_paged_compute_asym.cuh` is the twelfth name and the only HEADER. It
+# is never compiled on its own, and once the nine `.cu` above are gone nothing
+# in this target's tree includes it. It comes back when they do.
 #
 # The `qwen3.6-27b/nvfp4/` mirror drops two more: `w4a16_gemm_v2.cu`
-# (`241:5: error`, the e4m3 MMA path SCALE has no codegen for on gfx1201, the
-# same gap that pins `AVAROK_W4A16_VARIANT=v1`) and `w4a4_gemm.cu` (`41:8:
-# error: unknown opcode`). They are NOT listed here: this key is scoped to
-# `common/`, which is what RULE 3 checks. Both are declared
-# `[expected_absent]` in the two MODEL.tomls.
+# (`241:5: error`, the same e4m3 MMA gap) and `w4a4_gemm.cu` (`41:8: error:
+# unknown opcode`). They are NOT listed here: this key is scoped to `common/`,
+# which is what RULE 3 checks. Both are declared `[expected_absent]` in the
+# MODEL.tomls.
 absent = [
   "gated_delta_rule_fla.cu",
   "w4a16_fp8_ldmab.cu",

@@ -1,15 +1,13 @@
-# r9700 (gfx1201 / RDNA 4) target: this file is a COPY of
-# kernels/strix/qwen3.6-27b/MODEL.toml, and the kernel set it drives is the
-# same curated SCALE tree reached by relative symlinks into kernels/gb10.
+# r9700 (gfx1201 / RDNA 4) target: a copy of
+# kernels/strix/qwen3.6-27b/MODEL.toml. The kernel set it drives is the same
+# curated SCALE tree, reached by relative symlinks into kernels/gb10.
 #
-# NOTHING HERE HAS BEEN MEASURED ON AN R9700. Every sampling number and every
-# behaviour flag below was harvested on GB10 (sm_121) or observed on gfx1151
-# (Strix Halo) and is carried over unexamined, exactly as hopper's and b200's
-# copies carry GB10's. MODEL.toml is a real copy rather than a symlink on
-# purpose: sampling and behaviour are checkpoint-AND-silicon properties that
-# must stay editable per hardware, so this is where an R9700 measurement
-# lands when someone finally has the board. See kernels/r9700/HARDWARE.toml
-# for the full list of inherited-unverified decisions.
+# Sampling and behaviour below are INHERITED AND UNVERIFIED on this board:
+# harvested on GB10 (sm_121) or observed on gfx1151 (Strix Halo), and carried
+# over the way hopper's and b200's copies carry GB10's. MODEL.toml is a copy
+# rather than a symlink so those values stay editable per hardware, since they
+# are checkpoint-and-silicon properties. kernels/r9700/HARDWARE.toml lists the
+# inherited-unverified decisions.
 [model]
 name = "qwen3.6-27b"
 hf_id = "Qwen/Qwen3.6-27B"
@@ -18,16 +16,14 @@ active_params = "27B"
 architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 
 # Checkpoint-reference needles for kernel-target resolution (see
-# avarok-kernels/src/resolve.rs). NOT inherited from kernels/strix, which has
-# no such line because strix ships no qwen3.8-27b target and therefore never
-# collides. This target DOES: qwen3.8-27b's config.json is bit-identical to
-# this one (same model_type "qwen3_5", same hidden_size 5120), so both
-# declare exact (qwen3_5, 5120) and `validate_collision_match_names` in
-# avarok-kernels/build.rs fails the build unless BOTH participants declare
-# needles. Copied verbatim from kernels/gb10 and kernels/hopper so a
-# checkpoint routes to the same target on every hardware set that carries
-# both models; qwen3.8 checkpoints match neither needle and land on
-# qwen3.8-27b.
+# avarok-kernels/src/resolve.rs). Not inherited from kernels/strix, which
+# ships no qwen3.8-27b target and therefore never collides. This target does:
+# qwen3.8-27b's config.json is bit-identical to this one (same model_type
+# "qwen3_5", same hidden_size 5120), so both declare exact (qwen3_5, 5120) and
+# `validate_collision_match_names` fails the build unless both declare
+# needles. Copied verbatim from kernels/gb10 and kernels/hopper, so a
+# checkpoint routes to the same target on every hardware set carrying both
+# models; qwen3.8 checkpoints match neither needle.
 match_names = ["qwen3.6-27b", "qwen3.5-27b"]
 
 # Architecture mirrors the existing Qwen3.5-27B (hybrid GDN + full-attention,
@@ -138,15 +134,14 @@ dry_multiplier = 0.5
 # prompts (CSS block repetition at 13.3 t/s for ~3990 tokens). MoE
 # A3B/A10B variants in the family don't need it.
 enable_loop_watchdog = true
-# Thinking defaults OFF, INHERITED FROM strix AND UNVERIFIED HERE: on
-# gfx1151 the dense Qwen3.6-27B-FP8 weights exhibit a post-</think>
-# content-collapse — reasoning_content is coherent, but the transition out
-# of thinking emits a premature stop + chat-template artefacts. That is a
-# gfx1151 observation, not an RDNA 4 one, and the conservative direction is
-# to keep it until an R9700 coherence run says otherwise: a wrong `false`
-# costs a default, a wrong `true` ships the collapse. Clients still get
-# coherent answers; an explicit per-request enable_thinking=true still
-# wins. strix, strix-hip and GB10 untouched.
+# Thinking defaults OFF, inherited from strix and unverified here: on gfx1151
+# the dense Qwen3.6-27B-FP8 weights show a post-</think> content collapse.
+# reasoning_content is coherent, but the transition out of thinking emits a
+# premature stop plus chat-template artefacts. That is a gfx1151 observation,
+# not an RDNA 4 one, so the default stays until an R9700 coherence run says
+# otherwise: a wrong `false` costs a default, a wrong `true` ships the
+# collapse. Clients still get coherent answers, and an explicit per-request
+# enable_thinking=true still wins. strix, strix-hip and GB10 are untouched.
 thinking_in_tools = false
 max_thinking_budget = 512
 default_num_drafts = 1
@@ -191,18 +186,15 @@ target_layer_ids = [1, 16, 31, 46, 61]
 #
 # Every entry point of every dropped source is declared below, because the
 # boot audit (`kernel_audit::classify_failures`) fails CLOSED on an unresolved
-# lookup that is not declared here, and the dispatch reaches all of these
+# lookup that is not declared here and the dispatch reaches all of these
 # through `try_kernel`, which issues the lookup whether or not the module was
-# ever built.
+# ever built. Declared per FILE, not per reachable lookup: an entry nothing
+# asks for is simply never matched, a missing entry is a target that will not
+# boot. The harvest is `build_shadow::entry_points` over each dropped `.cu`,
+# which resolves the `#define KERNEL_NAME` + `#include` +
+# `CONCAT(KERNEL_NAME, _64)` indirections a `__global__` grep cannot see.
 #
-# Declared per FILE, not per reachable lookup. An entry for a kernel nothing
-# asks for costs nothing, since it is simply never matched; a missing entry
-# for a kernel something asks for is a target that will not boot. The harvest
-# is `build_shadow::entry_points` over each dropped `.cu`, which resolves the
-# `#define KERNEL_NAME` + `#include` + `CONCAT(KERNEL_NAME, _64)`
-# indirections that a `__global__` grep cannot see.
-#
-# NOT harvested on an R9700 boot. These are the COMPILE census's absences;
+# These are the COMPILE census's absences, not an R9700 boot harvest.
 # `spark serve --check-kernels` on the board is what would confirm the audit
 # reports exactly this set and nothing more.
 
@@ -212,121 +204,48 @@ target_layer_ids = [1, 16, 31, 46, 61]
 #   prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432)
 #   exceeds limit (65536)
 #
-# FOLLOW-UP, not a permanent gap. `prefill_paged_compute_asym.cuh` hardcodes
+# A follow-up, not a permanent gap. `prefill_paged_compute_asym.cuh` hardcodes
 # `#define BR64 64` (line 449) and carries none of the `#if defined(__SCALE__)
 # #define BR64 32` pin that `prefill_paged_compute.cuh` has. Adding that pin,
-# with the matching 32-row host grid stride, is what brings these nine back;
-# it is a kernel-side change with its own A/B and is deliberately not in this
-# commit. Until then the prefill uses the symmetric turbo kernels, which DO
-# compile here.
+# with the matching 32-row host grid stride, brings these nine back; it is a
+# kernel-side change with its own A/B. Until then prefill uses the symmetric
+# turbo kernels, which do compile here.
 
 [expected_absent.prefill_paged_bf16k_turbo2v]
-inferspark_prefill_paged_bf16k_turbo2v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_bf16k_turbo2v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_bf16k_turbo2v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_bf16k_turbo2v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_bf16k_turbo3v]
-inferspark_prefill_paged_bf16k_turbo3v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_bf16k_turbo3v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_bf16k_turbo3v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_bf16k_turbo3v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_bf16k_turbo4v]
-inferspark_prefill_paged_bf16k_turbo4v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_bf16k_turbo4v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_bf16k_turbo4v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_bf16k_turbo4v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_fp8k_turbo2v]
-inferspark_prefill_paged_fp8k_turbo2v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_fp8k_turbo2v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_fp8k_turbo2v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_fp8k_turbo2v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_fp8k_turbo3v]
-inferspark_prefill_paged_fp8k_turbo3v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_fp8k_turbo3v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_fp8k_turbo3v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_fp8k_turbo3v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_fp8k_turbo4v]
-inferspark_prefill_paged_fp8k_turbo4v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_fp8k_turbo4v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_fp8k_turbo4v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_fp8k_turbo4v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_turbo3k_turbo8v]
-inferspark_prefill_paged_turbo3k_turbo8v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_turbo3k_turbo8v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_turbo3k_turbo8v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_turbo3k_turbo8v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_turbo4k_turbo3v]
-inferspark_prefill_paged_turbo4k_turbo3v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_turbo4k_turbo3v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_turbo4k_turbo3v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_turbo4k_turbo3v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 [expected_absent.prefill_paged_turbo4k_turbo8v]
-inferspark_prefill_paged_turbo4k_turbo8v = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
-inferspark_prefill_paged_turbo4k_turbo8v_64 = """
-gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local
-memory (70416 or 70432) exceeds limit (65536). RDNA 4 has the same 64 KB
-per-workgroup LDS cap as RDNA 3.5, and this header carries no
-`#if defined(__SCALE__) #define BR64 32` pin; adding it is the follow-up."""
+inferspark_prefill_paged_turbo4k_turbo8v = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
+inferspark_prefill_paged_turbo4k_turbo8v_64 = "gfx1201, SCALE 1.7.1: prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536). RDNA 4 keeps the 64 KB per-workgroup LDS cap and this header carries no `#if defined(__SCALE__) #define BR64 32` pin; adding that pin, with the matching 32-row host grid stride, is the follow-up."
 
 
 # ── The FLA chunked GDN prefill family: an sm_90 fence SCALE cannot lower ──
@@ -338,132 +257,56 @@ per-workgroup LDS cap as RDNA 3.5, and this header carries no
 # is `try_kernel` from `qwen3_ssm::init` (and
 # `init_kernels::fused_spine_kernel`), so a handle of 0 leaves the GDN prefill
 # on the `gated_delta_rule` / `gated_delta_rule_wy*` kernels this target does
-# compile: correct, and slower in a way nobody has measured on this board.
-# NO follow-up is pending. Unlike the LDS group this needs a SCALE codegen
+# compile: correct, and slower by a margin nobody has measured on this board.
+# No follow-up is pending; unlike the LDS group this needs a SCALE codegen
 # path or a fence-free rewrite of the file, not a tile-size pin.
 
 [expected_absent.gated_delta_rule_fla]
-gated_delta_rule_chunk_delta_h = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_dvsplit = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_ksplit = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_ksplit_vblock2 = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_ksplit_vblock4 = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_ksplit_vblock8 = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_pipe = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_tc = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_tc_vblock = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_tma = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_vfused = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_delta_h_vtile = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_chunk_fwd_o = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
-gated_delta_rule_recompute_wu = """
-gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode:
-fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not
-lower. The whole file is absent, so every entry point it declares is too. GDN
-prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
+gated_delta_rule_chunk_delta_h = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_dvsplit = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_ksplit = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_ksplit_vblock2 = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_ksplit_vblock4 = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_ksplit_vblock8 = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_pipe = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_tc = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_tc_vblock = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_tma = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_vfused = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_delta_h_vtile = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_chunk_fwd_o = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
+gated_delta_rule_recompute_wu = "gfx1201, SCALE 1.7.1: gated_delta_rule_fla.cu:114:19: error: unknown opcode: fence.proxy.async.shared::cta, an sm_90 async-proxy fence SCALE does not lower. The file is absent entirely, so every entry point it declares is; GDN prefill stays on the gated_delta_rule/_wy* kernels that do compile."
 
 # ── The model dir's two drops ──────────────────────────────────────────────
 [expected_absent.w4a16_fp8_ldmab]
-fp8_fp8_gemm_ldmab = """
-gfx1201, SCALE 1.7.1: w4a16_fp8_ldmab.cu:107:9: error: this implementation
-does not provide a declaration of type 'fragment<nvcuda::wmma::accumulator,
-16, 8, 32, float, void>', which is needed to codegen this PTX instruction.
-The e4m3 mma.sync path again, the same gap that pins AVAROK_W4A16_VARIANT=v1.
-This was the 13th of the 13 gfx1201 census failures (180 of 193 clean).
-Dispatch: layers/ops/gemm_fp8_prefill.rs looks this kernel up with `?`, so
-if the FP8-weight prefill GEMM path is ever selected on this target the
-lookup is a hard error, not a silent fallback. On the NVFP4 targets the
-FP8 attention and SSM projections are requantized to NVFP4 at load
-(quantize_to_nvfp4 in the serve log), so that path is not reached; a
-native-FP8 checkpoint on r9700 would be, and needs a BF16-MMA port first."""
+fp8_fp8_gemm_ldmab = "gfx1201, SCALE 1.7.1: w4a16_fp8_ldmab.cu:107:9: error: this implementation does not provide a declaration of type 'fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>', which is needed to codegen this PTX instruction. The same e4m3 MMA gap that pins AVAROK_W4A16_VARIANT=v1. layers/ops/gemm_fp8_prefill.rs looks this kernel up with `?`, so a native-FP8 checkpoint on this board needs a BF16-MMA port first; an NVFP4 checkpoint requantizes at load and never reaches the path."
 
 # The vendor MMQ optional module, same situation as kernels/hopper: the file
-# is guarded by BLACKWELL_MMA_AVAILABLE and compiles to nothing here. On SCALE
-# this mattered more than on Hopper: without the registry's ELF symbol check,
-# the driver returned a phantom handle and the first launch died with
-# CUDA_ERROR_INVALID_IMAGE (the rung I failure of the 2026-09-17 bring-up).
+# is guarded by BLACKWELL_MMA_AVAILABLE and compiles to nothing here. It
+# matters more under SCALE than on Hopper, because without the registry's ELF
+# symbol check the driver returns a phantom handle and the first launch dies
+# with CUDA_ERROR_INVALID_IMAGE.
 [expected_absent.nvfp4_mmq]
-avarok_nvfp4_mmq128_nc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq128_wc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq16_nc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq16_wc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq32_nc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq32_wc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq64_nc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_mmq64_wc = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_quantize_bf16 = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_repack = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_scale_bf16 = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_silu_mul_scaled = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
-avarok_nvfp4_silu_mul_quant = "gfx1201 / SCALE 1.7.1: nvfp4_mmq.cu is an optional module guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels on any other target. The registry's ELF symbol check turns the lookup into handle 0 (SCALE's cuModuleGetFunction would otherwise hand back a phantom handle that fails at launch with CUDA_ERROR_INVALID_IMAGE, observed 2026-09-17). Absent handles keep dense FFN prefill on the W4A16 path, exactly as on Hopper."
+avarok_nvfp4_mmq128_nc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq128_wc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq16_nc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq16_wc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq32_nc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq32_wc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq64_nc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_mmq64_wc = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_quantize_bf16 = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_repack = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_scale_bf16 = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_silu_mul_scaled = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
+avarok_nvfp4_silu_mul_quant = "gfx1201, SCALE 1.7.1: nvfp4_mmq.cu is guarded by BLACKWELL_MMA_AVAILABLE (SM 12.x only) and compiles to a code object with no kernels here. The registry's ELF symbol check turns the lookup into handle 0, which keeps dense FFN prefill on the W4A16 path exactly as on Hopper."
 
 [expected_absent.w4a16_v2]
-w4a16_gemm_t_m128_v2 = """
-gfx1201, SCALE 1.7.1: w4a16_gemm_v2.cu:241:5: error, the e4m3 MMA path. It is
-the same gap that makes AVAROK_W4A16_VARIANT=v1 REQUIRED on this target (no
-fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>, and inline
-cvt.rn.satfinite.e4m3x2.f32 rejected), so the v2 module could not have been
-selected here even if it compiled. The follow-up is SCALE growing e4m3 MMA
-codegen for RDNA 4, not a change in this tree."""
+w4a16_gemm_t_m128_v2 = "gfx1201, SCALE 1.7.1: w4a16_gemm_v2.cu:241:5: error on the e4m3 MMA path, the same gap that makes AVAROK_W4A16_VARIANT=v1 required here, so the v2 module could not have been selected on this target even if it compiled."
 
 # ── w4a4: the module does not exist on this target at all ─────────────────
-# CORRECTED 2026-09-17. The note this table used to carry said dispatch "falls
-# back to w4a4_gemm". That was true while only the mfast variant was missing.
-# It is FALSE here: `w4a4_gemm.cu` itself does not compile on gfx1201
-# (`41:8: error: unknown opcode`), so the w4a4 MODULE is absent and BOTH
-# lookups miss:
+# `w4a4_gemm.cu` does not compile on gfx1201 (`41:8: error: unknown opcode`),
+# so the w4a4 MODULE is absent and both lookups miss:
 #
 #   dense_ffn.rs:445              try_kernel("w4a4", "w4a4_gemm")
 #   qwen3_attention/init.rs:749   try_kernel("w4a4", "w4a4_gemm_mfast")
@@ -472,20 +315,9 @@ codegen for RDNA 4, not a change in this tree."""
 # `self.w4a4_gemm_k.0 != 0 && ... && ctx.levers.fp4_prefill`
 # (dense_ffn.rs:2553, qwen3_attention/prefill/paged_{qkv,oproj}.rs), so the
 # FP4-activation prefill path is never taken on r9700 and prefill runs the
-# ordinary W4A16/BF16 route. Nothing falls back to w4a4_gemm, because there is
-# no w4a4_gemm. This is a LOST fast path, not a substituted one.
+# ordinary W4A16/BF16 route. This is a lost fast path, not a substituted one:
+# nothing falls back to w4a4_gemm, because there is no w4a4_gemm.
 [expected_absent.w4a4]
-w4a4_gemm = """
-gfx1201, SCALE 1.7.1: w4a4_gemm.cu:41:8: error: unknown opcode. The source is
-dropped from this target's qwen3.6-27b/nvfp4 mirror, so the w4a4 module does
-not exist here and the FP4-activation prefill path is unavailable; the
-`w4a4_gemm_k.0 != 0` guard at every use site keeps prefill on the W4A16
-route."""
+w4a4_gemm = "gfx1201, SCALE 1.7.1: w4a4_gemm.cu:41:8: error: unknown opcode. The source is dropped from this target's mirror, so the module does not exist and the FP4-activation prefill path is unavailable; the `w4a4_gemm_k.0 != 0` guard at every use site keeps prefill on the W4A16 route."
 
-w4a4_gemm_mfast = """
-Absent for two reasons on this target, either of which alone would suffice.
-The shared w4a4_gemm.cu defines only w4a4_gemm (the mfast variant exists
-solely in nemotron-labs-3-puzzle-75b-a9b), and on gfx1201 that file does not
-compile at all (w4a4_gemm.cu:41:8: error: unknown opcode), so the module is
-gone as well as the entry point. Dispatch does NOT fall back to w4a4_gemm
-here, because there is no w4a4_gemm: the fp4_prefill path is off."""
+w4a4_gemm_mfast = "gfx1201, SCALE 1.7.1: w4a4_gemm.cu:41:8: error: unknown opcode, and the shared source defines only w4a4_gemm (the mfast variant exists solely in nemotron-labs-3-puzzle-75b-a9b). Nothing falls back to w4a4_gemm either, because there is no w4a4_gemm: the fp4_prefill path is off."
