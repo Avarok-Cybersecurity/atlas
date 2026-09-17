@@ -26,7 +26,9 @@ behind specific subsystems — see the
   decisions as gfx1201 facts rather than carry-overs: RDNA 4 has the same
   64 KB per-workgroup LDS cap, so the `BR64 32` prefill pin is required, and
   SCALE emits no e4m3 MMA codegen there, so `ATLAS_W4A16_VARIANT=v1` is
-  required. Coherent generation is still unobserved.
+  required. Coherent generation is still unobserved. The curated 99-entry
+  `common/` described above did not survive its first serve attempt and is
+  gone: see the mirror entry under Changed, in this same unreleased set.
 - **An `r9700` entry in `hardware_id_from_gpu_name`**, reached both by the
   `gfx1201` arch string and by the `Radeon AI PRO R9700` marketing name,
   because `lspci` on that board reports only a numeric device id. A bench
@@ -35,6 +37,60 @@ behind specific subsystems — see the
   sits unused. Strix stays unmapped on purpose.
 
 ### Changed
+- **`kernels/r9700` compiles gb10's whole kernel set, minus what SCALE cannot
+  build for gfx1201.** The target shipped as a copy of strix's shape: a
+  hand-curated 99-entry `common/` and four `qwen3.6-27b/nvfp4` shadows. A
+  curated list has to be updated by hand when gb10 gains a kernel, and it was
+  not. `kernels/gb10/common/` grew `dense_gemv_bf16_batch2.cu`,
+  `qwen3_ssm::init` began resolving it with a hard `gpu.kernel(...)?`
+  (`init.rs:103`), and serving `unsloth/Qwen3.8-27B-NVFP4` on a real R9700
+  loaded all 21.8 GB of weights and then died in model build at `Kernel lookup
+  dense_gemv_bf16_batch2::dense_gemv_bf16_batch2: Module load failed: Module
+  'dense_gemv_bf16_batch2' not loaded`. `kernels/r9700/common/` and
+  `kernels/r9700/qwen3.6-27b/nvfp4/` are now whole-directory relative-symlink
+  mirrors of the gb10 tree, the shape `kernels/hopper` and `kernels/b200`
+  already use, so a kernel added to gb10 reaches this target without anyone
+  remembering. `common/` is 178 entries (169 `.cu`, 8 `.cuh`, `KERNEL.toml`)
+  against the old 99, and the model dir is 14 (12 `.cu`, the `q4k_vendor`
+  directory, `KERNEL.toml`) against the old 5. The two links that used to
+  reach into `kernels/strix/common/` now point straight at gb10, whose files
+  they were byte-identical to. Both `KERNEL.toml`s are symlinks into gb10 as
+  well, which is what carries the roughly 40 `[modules]` renames the strix
+  copy had fallen behind on; its one SCALE-specific line, the clang spelling
+  `-ffp-contract=off` of the `--fmad=false` contraction pin, moved to
+  `kernels/r9700/HARDWARE.toml` `[build] extra_nvcc_flags`, which is where
+  `build_flags.rs` puts a toolchain fact on a target whose KERNEL.tomls are
+  all symlinks.
+
+  What the mirror subtracts is a per-file SCALE 1.7.1 compile census over all
+  193 `.cu` of both gb10 directories, run on the board: twelve sources failed
+  and are not linked, along with the one header only they include. Nine are
+  the asymmetric-KV paged-prefill kernels, which all die in
+  `prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432)
+  exceeds limit (65536)` because that header hardcodes `BR64 64` and carries
+  none of the `#if defined(__SCALE__) #define BR64 32` pin its symmetric
+  sibling has; adding that pin is the follow-up that brings them back. One is
+  `gated_delta_rule_fla.cu` (`unknown opcode: fence.proxy.async.shared::cta`,
+  an sm_90 async-proxy fence SCALE does not lower), and two are the model
+  dir's `w4a16_gemm_v2.cu` (the e4m3 MMA path) and `w4a4_gemm.cu`. All 15
+  entry points are declared `[expected_absent]` in both MODEL.tomls, with the
+  census error line as the reason, so the boot audit reports a stated absence
+  instead of refusing to serve. The `w4a4` note in `qwen3.8-27b/MODEL.toml`
+  said dispatch "falls back to `w4a4_gemm`"; that is corrected, because the
+  whole `w4a4` module is absent here and both `try_kernel` lookups return
+  `KernelHandle(0)`, which turns the FP4-activation prefill path off rather
+  than substituting anything for it.
+- **`scripts/check_kernel_shadows.py` RULE 3 now also catches undeclared
+  OMISSIONS, and covers `r9700`.** A mirrored `common/` had to declare every
+  regular file it owned (`[kernels] overrides`); it may now also declare every
+  origin entry it deliberately does not carry (`[kernels] absent`), and the
+  two sets are checked against the tree from both directions. `r9700` joins
+  `hopper` and `b200` in `MIRRORED_COMMON`, which is why the silent shrink
+  above cannot recur: a gb10 kernel with no counterpart here and no
+  declaration is a violation. The Rust-side `INHERITED` list stays
+  NVIDIA-only, since its assertions are about the Hopper/B200 campaign's
+  `HARDWARE.toml` and `MODEL.toml` parity rather than about mirroring.
+
 - **Free GPU memory comes from amdgpu sysfs, not the CUDA driver, on SCALE
   builds.** Measured 2026-09-17 on an AMD Radeon AI PRO R9700 (gfx1201, SCALE
   1.7.1, ROCm 7.2.0): loading `unsloth/Qwen3.8-27B-NVFP4` through the fast

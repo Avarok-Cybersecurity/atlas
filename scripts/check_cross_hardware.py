@@ -4,9 +4,12 @@
 
 `kernels/<hw>/` LOOKS like one tree per hardware. It is not. strix is 7 real files and
 105 symlinks, 97 of them into `kernels/gb10/common/`; strix-hip is 22 real and 87
-symlinks; r9700 is 4 real and 103 symlinks, two of which land in `kernels/strix/common/`
-rather than gb10's, so a strix edit reaches it too. So an edit to a gb10 file silently
-changes what AMD compiles, and the only signal has ever been a compile failure:
+symlinks; r9700 is 3 real files (HARDWARE.toml and two MODEL.tomls) and 192 symlinks,
+every one of them into `kernels/gb10/`, because as of 2026-09-17 its common/ and
+qwen3.6-27b/nvfp4/ are whole-directory mirrors of gb10's minus the sources SCALE cannot
+compile for gfx1201 (it used to be 103 symlinks, two of which landed in
+`kernels/strix/common/`). So an edit to a gb10 file silently changes what AMD compiles,
+and the only signal has ever been a compile failure:
 
   d584c0c50  `__syncwarp()` added to gb10/common/w4a16_gemv.cu, which is symlinked into
              strix and strix-hip; hipcc rejects it. Caught ONLY because the windows-hip
