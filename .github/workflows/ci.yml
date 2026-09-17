@@ -998,15 +998,36 @@ jobs:
           AVAROK_TARGET_QUANT: mlx_int8
         run: |
           set -uo pipefail
+          # ★ --include-ignored WHEN THE MODEL IS THERE, and that is the whole
+          # point of the step above. The five real-model legs are
+          # `#[ignore = "requires local copy of mlx-community/..."]`, so a plain
+          # `cargo test` reports them as `ignored` and the run as `ok` — the
+          # device never touched them. Counting `skipping:` lines does not see
+          # that either: the ignore attribute fires before the test body runs.
+          # So: model present -> ask for them and require that none is ignored;
+          # model absent -> run what can run and say which legs did not.
+          extra=""
+          [ -n "${AVAROK_MLX_MODEL_DIR:-}" ] && extra="--include-ignored"
           cargo test -p spark-runtime --no-default-features \
-            --features metal --locked metal_backend -- --nocapture 2>&1 | tee metal.log
+            --features metal --locked metal_backend -- $extra --nocapture 2>&1 | tee metal.log
           rc=${PIPESTATUS[0]}
+          ignored=$(sed -n 's/.*test result:.*; \([0-9]*\) ignored.*/\1/p' metal.log | tail -1)
           skipped=$(grep -c '^skipping: ' metal.log || true)
-          echo "real-model legs skipped: ${skipped:-0}" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${skipped:-0}" -gt 0 ]; then
-            echo "::warning title=${skipped} parity leg(s) skipped::green here \
-          does not mean the device was exercised on those legs; see the \
-          model-locating step above."
+          {
+            echo "### metal device parity"
+            echo "- real-model legs ignored: ${ignored:-?}"
+            echo "- legs that skipped inside the body: ${skipped:-0}"
+            echo "- model: ${AVAROK_MLX_MODEL_DIR:-none found}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${AVAROK_MLX_MODEL_DIR:-}" ] && [ "${ignored:-0}" != "0" ]; then
+            echo "::warning title=${ignored} leg(s) still ignored with a model \
+          present::--include-ignored did not reach them; this job is not \
+          proving device coverage."
+          fi
+          if [ -z "${AVAROK_MLX_MODEL_DIR:-}" ]; then
+            echo "::warning title=No real-model coverage::the four real_model_* \
+          legs were not run at all (no model on this runner). Compilation was \
+          still checked by the required job."
           fi
           exit "$rc"
 
