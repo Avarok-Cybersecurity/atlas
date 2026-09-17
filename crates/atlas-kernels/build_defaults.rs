@@ -91,8 +91,10 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
 ///
 /// ★ 48 — `atlas_core::device::sm121::NUM_SMS`, the GB10 constant every
 /// caller hardcoded. A target that says nothing therefore resolves exactly as
-/// it did, including `kernels/metal`, `kernels/strix`, `kernels/strix-hip`
-/// and `kernels/r9700`, whose SM/CU counts this number does not describe.
+/// it did, including `kernels/metal`, `kernels/strix` and
+/// `kernels/strix-hip`, whose SM/CU counts this number does not describe.
+/// `kernels/r9700` left that list when a real board reported 32
+/// multiprocessors (its WGP count) against this 48.
 pub(crate) const BASELINE_SM_COUNT: u32 = 48;
 
 /// `[hardware] sm_count`, or [`BASELINE_SM_COUNT`].

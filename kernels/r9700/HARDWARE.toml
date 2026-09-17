@@ -9,6 +9,26 @@ vendor = "amd"
 # `arch` selects the per-arch SCALE toolchain dir (targets/gfx1201/bin/nvcc).
 arch = "gfx1201"
 compute_capability = "12.0.1"
+# 32 is the WGP count, not the 64 CU on the board. RDNA 4 pairs two compute
+# units into one workgroup processor, and SCALE/HSA reports the WGP count as
+# the multiprocessor count, so
+# `CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT` answers 32 on a real R9700. Grid
+# sizing has to follow the number the RUNTIME reports, because that is the
+# thing a grid is actually scheduled onto.
+#
+# Declaring nothing here did NOT mean "unset": it resolved to
+# `build_defaults::BASELINE_SM_COUNT` = 48, the GB10 constant a silent target
+# inherits, which describes neither this part's CUs nor its WGPs. The boot
+# cross-check said so on first contact: "this build's kernels are sized for 48
+# SMs (kernels/r9700/HARDWARE.toml [hardware] sm_count) but the device reports
+# 32" (`crates/spark-runtime/src/cuda_backend/arch_preflight.rs`).
+#
+# `kernels/strix` is the neighbouring AMD tree and declares no `sm_count`
+# either, so it still inherits the same 48 while its 8060S (40 CU = 20 WGP)
+# reports 20. That is the same unexamined inheritance this row closes for
+# r9700, not a convention that endorses it; fixing strix needs its own device
+# reading and is not part of this change.
+sm_count = 32
 # GDDR6-18000 (effective), 256-bit bus → ~640 GB/s theoretical. 2.5x strix's
 # 256 GB/s and a discrete pool, so the APU sizing notes in
 # kernels/strix/HARDWARE.toml do NOT carry over.
