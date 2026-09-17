@@ -41,7 +41,12 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return None;
         }
-        self.free_slots.lock().pop()
+        // Through the same invalidation every other acquire uses: a slot leaving
+        // the free list carries none of the previous holder's bookkeeping. A raw
+        // `pop` here would be the one path that still could.
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.clear_slot_bookkeeping(snap_slot);
+        Some(snap_slot)
     }
 
     /// Acquire a Marconi slot for a **fault-in target** (Phase 1b), spilling a

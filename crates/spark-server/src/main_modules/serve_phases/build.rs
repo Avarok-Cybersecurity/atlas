@@ -361,6 +361,33 @@ mod prefix_cache_tests {
         assert!(cache.is_active());
     }
 
+    /// The flag is load-bearing on its own, for a model whose capability
+    /// predicate already answers TRUE.
+    ///
+    /// This is the half of "both switches are required" that the tests below do
+    /// not reach. They all pass `--enable-prefix-caching` and vary the model, so
+    /// they pin the PREDICATE arm; nothing pinned the FLAG arm. That matters now
+    /// that `ATLAS_GLM53_PREFIX_CACHE_UNPROVEN` can open the predicate for GLM at
+    /// runtime: opening it must never be enough by itself, and the general
+    /// statement — an open predicate plus no flag is still `NoPrefixCaching` — is
+    /// exactly what this asserts, without any test having to mutate a
+    /// process-global variable its siblings in this binary are reading.
+    #[test]
+    fn an_open_predicate_without_the_flag_still_installs_no_prefix_caching() {
+        let args = ServeArgs::parse_from(["spark"]);
+        assert!(
+            !args.prefix_caching_enabled(),
+            "clap default must stay false"
+        );
+
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert!(
+            config.kv_only_prefix_cache_is_safe(),
+            "this model's predicate is the open case the flag has to gate"
+        );
+        assert!(!build_prefix_cache(&args, &config).is_active());
+    }
+
     #[test]
     fn compressed_deepseek_v4_disables_incomplete_prefix_cache() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
