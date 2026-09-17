@@ -3,7 +3,7 @@
 // Kimi K3 one-token gated NoPE MLA decode. Unique stem `mla_decode`.
 // Not a GDN mixer, not a paged-latent paste, not Qwen full-attn.
 //
-// Matches atlas-core `mla_decode_token`:
+// Matches avarok-core `mla_decode_token`:
 //   maybe_rope: rope slots exist (nope|rope packed) but NoPE does not rotate
 //   sdpa: one query [H, dq] vs cached K/V length T, scale 1/sqrt(dq)
 //   output gate: sigmoid(g) ⊙ attn when enabled

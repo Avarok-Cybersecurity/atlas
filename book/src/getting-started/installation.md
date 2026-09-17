@@ -42,7 +42,7 @@ Mount the cache directory into the container:
 
 ## Build from source (optional)
 
-You only need to build from source if you are modifying Atlas. The `rust-toolchain.toml` pins `stable`; CUDA 13.0+ with `nvcc` on `PATH` (or `CUDA_HOME` set) is required for a real build. Clippy and fmt can run without CUDA via `ATLAS_SKIP_BUILD=1`.
+You only need to build from source if you are modifying Atlas. The `rust-toolchain.toml` pins `stable`; CUDA 13.0+ with `nvcc` on `PATH` (or `CUDA_HOME` set) is required for a real build. Clippy and fmt can run without CUDA via `AVAROK_SKIP_BUILD=1`.
 
 ```bash
 git clone https://github.com/Avarok-Cybersecurity/atlas.git
@@ -52,11 +52,11 @@ cd atlas
 docker build -f docker/gb10/Dockerfile -t atlas-gb10 .
 
 # Rust-only check (no CUDA). CUDARC_CUDA_VERSION is needed alongside
-# ATLAS_SKIP_BUILD: without it cudarc's build script shells out to
+# AVAROK_SKIP_BUILD: without it cudarc's build script shells out to
 # `nvcc --version` and panics on a host that has no CUDA toolkit.
 # This pair is exactly what ci.yml exports. Deny-warnings comes from
 # [workspace.lints], so `-- -Dwarnings` is not needed and CI does not pass it.
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 cargo fmt --all -- --check
 
 # Unit tests (uses MockGpuBackend; no GPU required)
@@ -66,7 +66,7 @@ cargo test --release
 cargo test -p spark-server --release -- --ignored
 ```
 
-The build system reads `kernels/gb10/HARDWARE.toml` for architecture flags, enumerates every `(model, quant)` subdirectory that matches the `ATLAS_TARGET_*` wildcards, compiles each `.cu` source file through `nvcc`, and emits a single `target_ptx.rs` that the `atlas-kernels` crate embeds in the final binary. Zero runtime compilation.
+The build system reads `kernels/gb10/HARDWARE.toml` for architecture flags, enumerates every `(model, quant)` subdirectory that matches the `AVAROK_TARGET_*` wildcards, compiles each `.cu` source file through `nvcc`, and emits a single `target_ptx.rs` that the `avarok-kernels` crate embeds in the final binary. Zero runtime compilation.
 
 ## Verify the install
 

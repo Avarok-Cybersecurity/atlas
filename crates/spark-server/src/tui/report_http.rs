@@ -7,11 +7,11 @@
 //!
 //! # Threading
 //!
-//! Both flows are blocking `ureq` on a named `std::thread` (`atlas-report`),
+//! Both flows are blocking `ureq` on a named `std::thread` (`avarok-report`),
 //! answering over a `std::sync::mpsc` the tick drains — the same contract as
 //! every other worker in this tree, and the reason no `block_on` exists here
 //! (CI enforces that under `tui/`). The device flow is a STREAMING producer
-//! (code first, verdict later), so like `atlas-download` it hand-rolls its
+//! (code first, verdict later), so like `avarok-download` it hand-rolls its
 //! spawn with an explicit on-failure send instead of using `worker::spawn` —
 //! a receiver that can never resolve renders as a spinner that spins forever.
 //!
@@ -98,7 +98,7 @@ impl Live {
     }
 }
 
-const AGENT_HEADER: &str = concat!("atlas-spark/", env!("CARGO_PKG_VERSION"));
+const AGENT_HEADER: &str = concat!("avarok-spark/", env!("CARGO_PKG_VERSION"));
 
 impl Http for Live {
     fn post_form(&self, url: &str, form: &[(&str, &str)]) -> HttpResult {
@@ -327,7 +327,7 @@ impl Workers for LiveWorkers {
     fn device_flow(&self, client_id: String, cancel: Arc<AtomicBool>) -> Receiver<ReportEvent> {
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new()
-            .name("atlas-report".into())
+            .name("avarok-report".into())
             .spawn({
                 let tx = tx.clone();
                 move || {
@@ -361,7 +361,7 @@ impl Workers for LiveWorkers {
     fn submit(&self, job: SubmitJob) -> Receiver<ReportEvent> {
         let (tx, rx) = channel();
         let spawned = std::thread::Builder::new()
-            .name("atlas-report".into())
+            .name("avarok-report".into())
             .spawn({
                 let tx = tx.clone();
                 move || run_submit(&Live::new(), job, &tx)

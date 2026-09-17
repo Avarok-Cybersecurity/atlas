@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Adaptive speculation (`ATLAS_DFLASH_ADAPTIVE=1`).
+//! Adaptive speculation (`AVAROK_DFLASH_ADAPTIVE=1`).
 //!
 //! Speculation pays only when τ (= mean accepted + 1 bonus) exceeds
 //! step_time / serial_time — ≈3.5 at the measured 222ms γ16 verify step vs
@@ -22,9 +22,9 @@
 //! acceptance supports it. State is transient (reset on swap/restore —
 //! a resumed sequence just re-measures).
 //!
-//! Knobs (env, read once): `ATLAS_DFLASH_ADAPTIVE=1` master switch;
-//! `ATLAS_DFLASH_ADAPTIVE_MIN` mean-accepted suspend threshold (default
-//! 2.0); `ATLAS_DFLASH_ADAPTIVE_REPROBE` serial tokens between probes
+//! Knobs (env, read once): `AVAROK_DFLASH_ADAPTIVE=1` master switch;
+//! `AVAROK_DFLASH_ADAPTIVE_MIN` mean-accepted suspend threshold (default
+//! 2.0); `AVAROK_DFLASH_ADAPTIVE_REPROBE` serial tokens between probes
 //! (default 256).
 
 use crate::scheduler::ActiveSeq;
@@ -108,8 +108,8 @@ pub(crate) fn tick_serial(a: &mut ActiveSeq, sched: &crate::scheduler::sched_ctx
     }
 }
 
-// The `ATLAS_DFLASH_SERIAL_APPEND` and `ATLAS_DFLASH_UNIFIED_CTX` statics
+// The `AVAROK_DFLASH_SERIAL_APPEND` and `AVAROK_DFLASH_UNIFIED_CTX` statics
 // that lived here are now `SchedLevers::dflash_serial_append` /
 // `::dflash_unified_ctx`, resolved once per run and read through `SchedCtx`.
 
-// The `ATLAS_DFLASH_ADAPTIVE*` statics are now `SchedLevers::dflash_adaptive*`.
+// The `AVAROK_DFLASH_ADAPTIVE*` statics are now `SchedLevers::dflash_adaptive*`.

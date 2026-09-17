@@ -23,7 +23,7 @@ pub(super) const FP8_E4M3_MAX: f32 = 448.0;
 pub(super) const MIN_SCALE: f32 = 1e-12;
 
 /// Post-freeze re-observation period, in tokens. Only used by the opt-in EMA
-/// recalibration path (`ATLAS_FP8_KV_EMA_RECAL=1`).
+/// recalibration path (`AVAROK_FP8_KV_EMA_RECAL=1`).
 pub(super) const POST_FREEZE_OBSERVE_PERIOD: usize = 128;
 
 /// What the caller must do with the batch it is about to write.
@@ -134,7 +134,7 @@ impl CalibrationState {
         }
     }
 
-    /// Opt-in post-freeze EMA nudge (`ATLAS_FP8_KV_EMA_RECAL=1`).
+    /// Opt-in post-freeze EMA nudge (`AVAROK_FP8_KV_EMA_RECAL=1`).
     ///
     /// Default OFF and deliberately so: moving a frozen scale re-bases every
     /// already-written cache entry. Kept because the flag is documented.

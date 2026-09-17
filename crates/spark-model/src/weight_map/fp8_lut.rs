@@ -144,15 +144,15 @@ pub(crate) fn dequant_nvfp4_e8m0_to_bf16(
     Ok(DenseWeight { weight: buf })
 }
 
-/// FP8 E4M3 decode and the f32 → BF16 cast live in `atlas_core::numeric`.
+/// FP8 E4M3 decode and the f32 → BF16 cast live in `avarok_core::numeric`.
 ///
-/// They used to live here AND in `atlas-quant/src/fp8.rs`, with the
+/// They used to live here AND in `avarok-quant/src/fp8.rs`, with the
 /// byte-exactness tests attached to the copy that had zero dependents and
 /// therefore never ran on any serving path. Both crates already depended
-/// on `atlas-core`, so the arithmetic moved down there together with the
+/// on `avarok-core`, so the arithmetic moved down there together with the
 /// RNE and PyTorch-parity vectors. Re-exported under the old names so
 /// every call site in this module is unchanged.
-pub(super) use atlas_core::numeric::{FP8_E4M3_LUT, f32_to_bf16, fp8_e4m3_to_f32};
+pub(super) use avarok_core::numeric::{FP8_E4M3_LUT, f32_to_bf16, fp8_e4m3_to_f32};
 
 /// FP8 E8M0 → f32 lookup table (256 entries).
 ///
@@ -193,7 +193,7 @@ pub(crate) fn load_dense_ffn(
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
     stream: u64,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Result<crate::layers::dense_ffn::DenseFfnWeights> {
     use crate::layers::dense_ffn::DenseFfnWeights;
     match variant {

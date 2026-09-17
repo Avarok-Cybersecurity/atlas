@@ -302,7 +302,7 @@ fn test_buffer_sizes_decode_meta_widening() {
 
 // ── Row-wise FP8 GDN prefill BF16-weight slab (#917) ──────────────────────
 //
-// H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`: the `ATLAS_FP8_ROWWISE` GDN arms
+// H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`: the `AVAROK_FP8_ROWWISE` GDN arms
 // dequantised their per-row FP8 weights to BF16 through a `gpu.alloc` memoised
 // by weight pointer — `167772160` B per layer with NO entry here, so
 // `--gpu-memory-utilization` could not see it and a 28-token prefill died at
@@ -318,7 +318,7 @@ fn test_buffer_sizes_decode_meta_widening() {
 /// (16x128 key heads, 48x128 value heads). Same fixture as
 /// `weight_loader::qwen35_dense::predicted_residency_tests::qwen38_27b`.
 fn qwen38_27b() -> ModelConfig {
-    use atlas_core::config::LayerType;
+    use avarok_core::config::LayerType;
     let mut c = ModelConfig::qwen3_next_80b_nvfp4();
     c.hidden_size = 5120;
     c.num_hidden_layers = 64;
@@ -345,7 +345,7 @@ fn rowwise_bf16_slab_is_sized_only_when_the_lever_is_armed() {
     assert_eq!(
         ssm_rowwise_w_bf16_bytes_for(&cfg, false),
         0,
-        "an unarmed ATLAS_FP8_ROWWISE must leave the default recipe's ledger \
+        "an unarmed AVAROK_FP8_ROWWISE must leave the default recipe's ledger \
          byte-identical — the arena allocates NULL for a 0-byte entry"
     );
 
@@ -375,7 +375,7 @@ fn rowwise_bf16_slab_is_counted_in_total_bytes() {
     let cfg = qwen38_27b();
     let mut sizes = BufferSizes::from_config(&cfg, 64, 4096, 16, 32);
     // Zeroed first, not assumed zero: `from_config` reads the ambient
-    // environment, and a runner that happens to export ATLAS_FP8_ROWWISE=1
+    // environment, and a runner that happens to export AVAROK_FP8_ROWWISE=1
     // must not turn this into an assertion about nothing.
     sizes.ssm_rowwise_w_bf16 = 0;
     let before = sizes.total_bytes();

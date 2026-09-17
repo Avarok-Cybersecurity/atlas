@@ -13,7 +13,7 @@
 //!
 //! GPU test: `#[ignore]` per repo convention. Run with
 //! ```text
-//! ATLAS_PLE_TEST_DATA=/tank/atlas-testdata/qwen4exp_ple \
+//! AVAROK_PLE_TEST_DATA=/tank/avarok-testdata/qwen4exp_ple \
 //!   cargo test -p spark-model --release ple_kernels -- --ignored --nocapture
 //! ```
 
@@ -33,8 +33,8 @@ struct Fx {
 
 impl Fx {
     fn load() -> Self {
-        let dir = std::env::var("ATLAS_PLE_TEST_DATA").expect(
-            "set ATLAS_PLE_TEST_DATA — generate with \
+        let dir = std::env::var("AVAROK_PLE_TEST_DATA").expect(
+            "set AVAROK_PLE_TEST_DATA — generate with \
              `python3 -u bench/qwen4_exp/ple_golden.py --bin-dir <dir>`",
         );
         let m: serde_json::Value =
@@ -136,10 +136,10 @@ fn compare(label: &str, got: &[f32], want: &[f32]) {
 #[ignore]
 fn ple_kernels_match_reference() {
     let f = Fx::load();
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
         .expect("qwen3.8-flash-next/nvfp4 not in this build");
     let gpu =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend");
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let (t, h, hc) = (f.t, f.h, f.hc);
@@ -278,18 +278,18 @@ fn ple_kernels_match_reference() {
 ///
 /// Needs the checkpoint (it reads real rows off NVMe):
 /// ```text
-/// ATLAS_PLE_TEST_DATA=/tank/atlas-testdata/qwen4exp_ple \
-/// ATLAS_PLE_CKPT=/path/to/snapshot \
+/// AVAROK_PLE_TEST_DATA=/tank/avarok-testdata/qwen4exp_ple \
+/// AVAROK_PLE_CKPT=/path/to/snapshot \
 ///   cargo test -p spark-model --release ple_gather -- --ignored --nocapture
 /// ```
 #[test]
 #[ignore]
 fn ple_gather_reads_the_right_rows() {
     let f = Fx::load();
-    let snap = match std::env::var("ATLAS_PLE_CKPT") {
+    let snap = match std::env::var("AVAROK_PLE_CKPT") {
         Ok(s) => s,
         Err(_) => {
-            println!("ATLAS_PLE_CKPT unset — skipping");
+            println!("AVAROK_PLE_CKPT unset — skipping");
             return;
         }
     };
@@ -314,8 +314,8 @@ fn ple_gather_reads_the_right_rows() {
     );
     // CUDA FIRST: the cache's arena is pinned, GPU-addressable memory, so it
     // needs a live context. The loader gets one for free; a bare test does not.
-    let set = atlas_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").unwrap();
-    let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).unwrap();
+    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4").unwrap();
+    let gpu = spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).unwrap();
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let k = g.kernel("embed_from_argmax", "batched_embed").unwrap();

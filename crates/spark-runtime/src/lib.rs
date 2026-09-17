@@ -65,7 +65,7 @@ pub fn ssm_tail_boundary(total_tokens: usize, block_size: usize) -> Option<usize
     (boundary > 0).then_some(boundary)
 }
 
-/// OPT-IN switch for the tail checkpoint (`ATLAS_SSM_TAIL_CKPT=1`).
+/// OPT-IN switch for the tail checkpoint (`AVAROK_SSM_TAIL_CKPT=1`).
 ///
 /// Default OFF. The 3-traj A/B (2026-07-10, 174 samples/arm) showed it is
 /// perf-NEUTRAL: it removes the SSM replay on ~89% of warm turns (mean 254 -> 25
@@ -82,10 +82,10 @@ pub fn ssm_tail_ckpt_enabled() -> bool {
     // `run_standard`). Two functions doing the same job with different cost
     // is how an uncached reader survives review.
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| matches!(std::env::var("ATLAS_SSM_TAIL_CKPT").as_deref(), Ok("1")))
+    *ON.get_or_init(|| matches!(std::env::var("AVAROK_SSM_TAIL_CKPT").as_deref(), Ok("1")))
 }
 
-/// Default-ON switch for MID-CHUNK tail SSM capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+/// Default-ON switch for MID-CHUNK tail SSM capture (opt-out `AVAROK_SSM_TAIL_MIDCHUNK=0`).
 ///
 /// Default ON => mid-chunk capture fires on prefill passes spanning the
 /// block-floored matched-prefix boundary. When disabled, the prefill
@@ -93,13 +93,13 @@ pub fn ssm_tail_ckpt_enabled() -> bool {
 /// recurrent (h_state) and conv (conv_state) kernels are split at the block-
 /// floored matched-prefix boundary and the @tb state is copied into a reserved
 /// Marconi snapshot slot in-pass, removing the ~868 ms extra forward pass the
-/// clamp-based `ATLAS_SSM_TAIL_CKPT` path costs.
+/// clamp-based `AVAROK_SSM_TAIL_CKPT` path costs.
 /// Publish the command line's `--ssm-tail-midchunk`. Call once, at serve time,
 /// before any prefill runs.
 ///
 /// `None` means THE FLAG WAS NOT GIVEN, and is not the same as `Some(default)`.
 /// Publishing the clap default sealed this cell on every `spark serve`, which
-/// made the documented `ATLAS_SSM_TAIL_MIDCHUNK=0` opt-out a silent no-op — an
+/// made the documented `AVAROK_SSM_TAIL_MIDCHUNK=0` opt-out a silent no-op — an
 /// operator could set it, see the flag echoed in the startup log, and get the
 /// opposite behaviour with nothing anywhere saying so. A knob that looks like an
 /// opt-out and is not costs more than no knob at all, so an absent flag now
@@ -111,7 +111,7 @@ pub fn ssm_tail_ckpt_enabled() -> bool {
 /// flags are default-ON and an absent flag publishing the clap default sealed
 /// a documented opt-out into a no-op. `--hermetic` is opt-IN: there is no
 /// opt-out to seal, and "not given" and "given false" are the same request.
-/// So absent leaves `ATLAS_HERMETIC` live, and passing the flag wins.
+/// So absent leaves `AVAROK_HERMETIC` live, and passing the flag wins.
 pub fn set_hermetic(on: bool) {
     if on {
         let _ = HERMETIC.set(true);
@@ -130,7 +130,7 @@ pub fn hermetic_enabled() -> bool {
         HERMETIC
             .get()
             .copied()
-            .unwrap_or_else(|| matches!(std::env::var("ATLAS_HERMETIC").as_deref(), Ok("1")))
+            .unwrap_or_else(|| matches!(std::env::var("AVAROK_HERMETIC").as_deref(), Ok("1")))
     })
 }
 
@@ -149,7 +149,7 @@ pub fn ssm_tail_midchunk_enabled() -> bool {
     //
     // ★ `--ssm-tail-midchunk` WINS when it is given, and only then. It used to
     // win unconditionally — serve.rs published the clap default on every boot,
-    // sealing this cell before anything asked, so `ATLAS_SSM_TAIL_MIDCHUNK=0`
+    // sealing this cell before anything asked, so `AVAROK_SSM_TAIL_MIDCHUNK=0`
     // did NOTHING under `spark serve` while still being documented as the
     // opt-out. `set_ssm_tail_midchunk` now takes an `Option` and an absent flag
     // publishes nothing, so the read below is live again for the CLI, for tests
@@ -160,10 +160,14 @@ pub fn ssm_tail_midchunk_enabled() -> bool {
     // warm-TTFT, which is a timing signal. Neither can see a wrong recurrent
     // state, and on NVIDIA the captured h_state was in fact never written at
     // all (see `prepare_midchunk_capture`, which now refuses the plan off
-    // `atlas_scale`). "flag-off byte-identical" held; it just was not evidence
+    // `avarok_scale`). "flag-off byte-identical" held; it just was not evidence
     // that flag-ON was correct.
-    *SSM_TAIL_MIDCHUNK
-        .get_or_init(|| !matches!(std::env::var("ATLAS_SSM_TAIL_MIDCHUNK").as_deref(), Ok("0")))
+    *SSM_TAIL_MIDCHUNK.get_or_init(|| {
+        !matches!(
+            std::env::var("AVAROK_SSM_TAIL_MIDCHUNK").as_deref(),
+            Ok("0")
+        )
+    })
 }
 
 #[cfg(test)]
@@ -174,7 +178,7 @@ mod tests {
     fn an_absent_flag_does_not_seal_the_midchunk_cell() {
         // The defect this shape fixes: `set_ssm_tail_midchunk(bool)` was called
         // with the clap default on every `spark serve`, sealing the cell before
-        // anything read it — so `ATLAS_SSM_TAIL_MIDCHUNK=0` was documented,
+        // anything read it — so `AVAROK_SSM_TAIL_MIDCHUNK=0` was documented,
         // echoed back in the startup log, and inert.
         //
         // ★ The cell is process-global with no reset, so this is the only test

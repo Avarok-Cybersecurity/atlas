@@ -18,7 +18,7 @@ treats load failure as SKIP, runtime failure as FAIL.
 
 Usage:
   python tests/test_kv_dtype_smoke.py
-  python tests/test_kv_dtype_smoke.py --image atlas-gb10-tqplus \\
+  python tests/test_kv_dtype_smoke.py --image avarok-gb10-tqplus \\
       --model-path /home/pidtom/models/qwen3.6-35b-fp8 \\
       --dtypes turbo2,turbo3,turbo4,bf16k_turbo3v
 """
@@ -31,7 +31,7 @@ import time
 import urllib.request
 
 PORT = 8889
-CONTAINER = "atlas-smoke"
+CONTAINER = "avarok-smoke"
 
 DEFAULT_DTYPES = [
     # Symmetric — all should pass on any model.
@@ -116,7 +116,7 @@ def smoke_one(image, model_path, dtype, prompt):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--image", default="atlas-gb10-tqplus")
+    ap.add_argument("--image", default="avarok-gb10-tqplus")
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--dtypes", default=",".join(DEFAULT_DTYPES))
     ap.add_argument("--prompt", default="Explain what attention is in one sentence.")

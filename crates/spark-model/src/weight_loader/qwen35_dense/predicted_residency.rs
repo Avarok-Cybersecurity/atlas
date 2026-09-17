@@ -25,7 +25,7 @@
 //! loaded). This module evaluates both without a `WeightStore`.
 //!
 //! **Round-6 receipt** (`h100-round6-report.md`; serve I, Qwen3.8-27B-FP8,
-//! `ATLAS_DENSE_FP8=1`, `--lm-head-dtype bf16`, tp 1): the loader's own
+//! `AVAROK_DENSE_FP8=1`, `--lm-head-dtype bf16`, tp 1): the loader's own
 //! summary line reported **derived 4.24 GB** on top of a 28.75 GB checkpoint.
 //! Reproduced here from `kernels/gb10/qwen3.8-27b/MODEL.toml`'s shapes, plus
 //! the GDN head geometry, which no MODEL.toml carries and which
@@ -45,15 +45,15 @@
 //! [`Fp8RouteInputs::w8a8_prefill_kernels`] is an input and not an assumption.
 //!
 //! **What this module deliberately refuses to predict.** Anything that
-//! re-opens an NVFP4 fallback (`ATLAS_DENSE_FP8_KEEP_NVFP4`, the
-//! `ATLAS_CUTLASS_NVFP4_*` levers, `ATLAS_ATTN_W4A4`) returns
+//! re-opens an NVFP4 fallback (`AVAROK_DENSE_FP8_KEEP_NVFP4`, the
+//! `AVAROK_CUTLASS_NVFP4_*` levers, `AVAROK_ATTN_W4A4`) returns
 //! [`DerivedBytesEstimate::Unavailable`] rather than a guess: those paths
 //! resurrect 18+ GiB of copies whose byte count the loader tallies through
 //! `skip`, not `keep`, so a prediction built on `keep` would be wrong by more
 //! than the quantity being predicted. The caller falls back to its pre-load
 //! behaviour and says so in the log.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::fp8_residency::{self, RouteEnv, TwinsBuilt};
 use crate::layers::qwen3_attention::Fp8TwinSet;
@@ -149,14 +149,14 @@ impl DerivedBytesEstimate {
 /// against `qwen35_dense.rs:319`, `:578` and `:172` line by line.
 #[derive(Clone, Copy, Debug)]
 pub struct Fp8RouteInputs {
-    /// `ATLAS_DENSE_FP8=1` — `qwen35_dense::dense_fp8_enabled`.
+    /// `AVAROK_DENSE_FP8=1` — `qwen35_dense::dense_fp8_enabled`.
     pub dense_fp8: bool,
     /// `config.tp_world_size.max(1)`. The FP8 dense route is single-GPU only.
     pub tp_size: usize,
     /// The variant the CONFIG declares. `None` when config.json does not say
     /// — the loader would sniff the store, which does not exist yet.
     pub declared_variant: Option<Nvfp4Variant>,
-    /// `ATLAS_NO_GDN_FP8` is unset — `qwen35_dense::gdn_fp8_arm_selected`.
+    /// `AVAROK_NO_GDN_FP8` is unset — `qwen35_dense::gdn_fp8_arm_selected`.
     pub gdn_fp8: bool,
     /// Both `qwen3_attention::W8A8_PREFILL_KERNELS` are loaded for this
     /// target. Decides whether the Q and O FP8 prefill twins get built.
@@ -165,7 +165,7 @@ pub struct Fp8RouteInputs {
     pub route: RouteEnv,
     /// `[defaults] ffn_gateup_fused`, resolved through the SAME function the
     /// dispatch site and the loader call — the fused gate+up weight is built
-    /// only when the compiled target (or `ATLAS_FFN_GATEUP_FUSED`) arms the arm
+    /// only when the compiled target (or `AVAROK_FFN_GATEUP_FUSED`) arms the arm
     /// that reads it (#927).
     pub ffn_gateup_fused: bool,
 }
@@ -180,12 +180,12 @@ impl Fp8RouteInputs {
     pub fn from_env(config: &ModelConfig, w8a8_prefill_kernels: bool) -> Self {
         Self {
             // Character for character `qwen35_dense::dense_fp8_enabled`:
-            // `== Ok("1")`, NOT presence. `ATLAS_DENSE_FP8=0` is off.
-            dense_fp8: std::env::var("ATLAS_DENSE_FP8").as_deref() == Ok("1"),
+            // `== Ok("1")`, NOT presence. `AVAROK_DENSE_FP8=0` is off.
+            dense_fp8: std::env::var("AVAROK_DENSE_FP8").as_deref() == Ok("1"),
             tp_size: config.tp_world_size.max(1),
             declared_variant: crate::weight_map::config_declared_variant(config),
             // Presence, matching `gdn_fp8_arm_selected`'s `is_none()`.
-            gdn_fp8: std::env::var_os("ATLAS_NO_GDN_FP8").is_none(),
+            gdn_fp8: std::env::var_os("AVAROK_NO_GDN_FP8").is_none(),
             w8a8_prefill_kernels,
             route: RouteEnv::from_env(),
             ffn_gateup_fused: crate::layers::dense_ffn::gateup_fused::ffn_gateup_fused(),
@@ -209,7 +209,7 @@ pub fn predicted_derived_bytes(
         return DerivedBytesEstimate::Unavailable("not the Qwen3.5-dense loader");
     }
     if !route.dense_fp8 {
-        return DerivedBytesEstimate::Unavailable("ATLAS_DENSE_FP8 is not 1");
+        return DerivedBytesEstimate::Unavailable("AVAROK_DENSE_FP8 is not 1");
     }
     if route.tp_size != 1 {
         return DerivedBytesEstimate::Unavailable("--tp-size > 1 takes the NVFP4 route");
@@ -224,7 +224,7 @@ pub fn predicted_derived_bytes(
     }
     if route.route.keep_nvfp4 {
         return DerivedBytesEstimate::Unavailable(
-            "ATLAS_DENSE_FP8_KEEP_NVFP4 restores the pre-#915 fallback copies",
+            "AVAROK_DENSE_FP8_KEEP_NVFP4 restores the pre-#915 fallback copies",
         );
     }
 
@@ -244,7 +244,7 @@ pub fn predicted_derived_bytes(
     });
     if plan.ffn_nvfp4 || plan.attn_nvfp4 {
         return DerivedBytesEstimate::Unavailable(
-            "an NVFP4 fallback lever (ATLAS_CUTLASS_NVFP4_* / ATLAS_ATTN_W4A4) is set",
+            "an NVFP4 fallback lever (AVAROK_CUTLASS_NVFP4_* / AVAROK_ATTN_W4A4) is set",
         );
     }
 

@@ -22,17 +22,17 @@
 // The strix-hip copy of this header degrades these to synchronous uint4
 // copies (AMD has no cp.async). Per-tree behavior comes purely from which
 // header is compiled — no #if at the call sites.
-__device__ __forceinline__ void atlas_cp16(void* smem_dst, const void* gmem_src) {
+__device__ __forceinline__ void avarok_cp16(void* smem_dst, const void* gmem_src) {
     unsigned _s = __cvta_generic_to_shared(smem_dst);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(_s), "l"(gmem_src));
 }
-__device__ __forceinline__ void atlas_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
+__device__ __forceinline__ void avarok_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
     unsigned _s = __cvta_generic_to_shared(smem_dst);
     unsigned _b = pred ? 16u : 0u;
     asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;" :: "r"(_s), "l"(gmem_src), "r"(_b));
 }
-__device__ __forceinline__ void atlas_cp_commit() { asm volatile("cp.async.commit_group;"); }
-__device__ __forceinline__ void atlas_cp_wait()   { asm volatile("cp.async.wait_group 0;"); }
+__device__ __forceinline__ void avarok_cp_commit() { asm volatile("cp.async.commit_group;"); }
+__device__ __forceinline__ void avarok_cp_wait()   { asm volatile("cp.async.wait_group 0;"); }
 
 // Phase 2c precision upgrade (2026-05-24): P*V MMA now uses FP16 inputs
 // instead of BF16. FP16 has 10-bit mantissa vs BF16's 7-bit → 8× finer
@@ -67,10 +67,10 @@ __device__ __forceinline__ unsigned int bf16x2_to_f16x2_bits(
 // matching the per-layer drift pattern.
 //
 // Default path: `__expf` — CUDA SFU exp, ~2 ULP accuracy, ~10 cycles.
-// Opt-in fast path: `ATLAS_FAST_SOFTMAX_EXP` — the original FA4-style
+// Opt-in fast path: `AVAROK_FAST_SOFTMAX_EXP` — the original FA4-style
 // polynomial. Use only when the ~0.5% softmax-row drift is acceptable.
 __device__ __forceinline__ float sw_exp(float x) {
-#ifdef ATLAS_FAST_SOFTMAX_EXP
+#ifdef AVAROK_FAST_SOFTMAX_EXP
     // FA4-style: degree-3 polynomial for 2^tf, max err ~0.5% at tf~1.
     float t = x * 1.4426950408889634f;
     float ti = floorf(t);
@@ -549,9 +549,9 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     __syncthreads();
 
 // === FA3 software-pipeline factoring (BR64). Single-definition QK + softmax blocks
-//     used by BOTH the baseline (#else) and the ATLAS_ATTN_PIPELINE path so the
+//     used by BOTH the baseline (#else) and the AVAROK_ATTN_PIPELINE path so the
 //     pipeline only reorders calls; the softmax math has exactly one source. ===
-#define ATLAS_ASYM64_QK(ACC, KBUF) do { \
+#define AVAROK_ASYM64_QK(ACC, KBUF) do { \
         _Pragma("unroll") \
         for (int _i=0;_i<4;_i++){ (ACC)[_i][0]=0; (ACC)[_i][1]=0; (ACC)[_i][2]=0; (ACC)[_i][3]=0; } \
         const unsigned short* _sQ=(const unsigned short*)smem_Q64; \
@@ -579,7 +579,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         } \
     } while(0)
 
-#ifdef ATLAS_ATTN_PIPELINE
+#ifdef AVAROK_ATTN_PIPELINE
     // FA3 pipeline state: acc_s_cur = S_k (being soft-maxed), acc_s_next = S_{k+1}
     // (produced ahead so its QK^T MMAs drain on the TC during softmax_k's MUFU work).
     float acc_s_cur[4][4], acc_s_next[4][4];
@@ -588,7 +588,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         LOAD_K_TILE(K_cache, block_table, smem_K64[1], 1*BC, kv_len, kv_head, tid, blockDim.x);
     }
     asm volatile("cp.async.commit_group;");
-    if (warp_id < 4) { ATLAS_ASYM64_QK(acc_s_cur, 0); }
+    if (warp_id < 4) { AVAROK_ASYM64_QK(acc_s_cur, 0); }
     asm volatile("cp.async.wait_group 0;");
     __syncthreads();
 #endif
@@ -603,16 +603,16 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         // Warps 4-7 load V tile with 128 threads while warps 0-3 compute QK^T.
         // For FP8/NVFP4 (sync dequant): true overlap of ALU (dequant) with MMA (QK^T).
         // For BF16 (cp.async): async copies issued by 128 threads, DMA bandwidth unchanged.
-#ifdef ATLAS_ATTN_PIPELINE
+#ifdef AVAROK_ATTN_PIPELINE
         // Pipeline: QK_{k+1} produced ahead so its MMAs drain on the TC during softmax_k's
         // MUFU work; softmax then runs on S_k (acc_s_cur) via the reference alias below.
         if (warp_id < 4) {
-            if (kv_block+1 < num_kv_blocks) { ATLAS_ASYM64_QK(acc_s_next, (1-buf)); }
+            if (kv_block+1 < num_kv_blocks) { AVAROK_ASYM64_QK(acc_s_next, (1-buf)); }
             float (&acc_s)[4][4] = acc_s_cur;
 #else
         float acc_s[4][4];
         if (warp_id < 4) {
-            ATLAS_ASYM64_QK(acc_s, buf);
+            AVAROK_ASYM64_QK(acc_s, buf);
 #endif
 
             // === Register-based softmax with causal mask ===
@@ -716,7 +716,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             }
         }
 
-#ifdef ATLAS_ATTN_PIPELINE
+#ifdef AVAROK_ATTN_PIPELINE
         // Pipeline: K_{k+1} is already resident (QK-ahead consumed it); preload K_{k+2}
         // into the freed buffer `buf` (which held the dead K_k).
         if(kv_block+2<num_kv_blocks){
@@ -760,7 +760,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             }
         }
 
-#ifdef ATLAS_ATTN_PIPELINE
+#ifdef AVAROK_ATTN_PIPELINE
         if(kv_block+2<num_kv_blocks){
             asm volatile("cp.async.wait_group 0;");
         }
@@ -780,7 +780,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
         __syncthreads();
 #endif
     }
-#undef ATLAS_ASYM64_QK
+#undef AVAROK_ASYM64_QK
 
     // === Final normalization and store ===
     {

@@ -17,7 +17,7 @@
 #include <cuda_bf16.h>
 
 // BF16 tile loader: cp.async from paged cache to shared memory.
-// Uses atlas_cp16 (defined in prefill_paged_compute.cuh) so the SCALE/gfx1151
+// Uses avarok_cp16 (defined in prefill_paged_compute.cuh) so the SCALE/gfx1151
 // build degrades to a synchronous uint4 copy. Identical body to
 // inferspark_prefill_paged.cu.
 #define LOAD_KV_TILE(cache, bt, smem, kv_s, kv_l, kvh, t, stride) \
@@ -34,7 +34,7 @@
                 unsigned int _pb = (unsigned int)(bt)[_lb]; \
                 const void* _gm = (const void*)( \
                     (cache) + _pb * _ps + _bo * _rs + (kvh) * head_dim + _col); \
-                atlas_cp16(&(smem)[_row][_col], _gm); \
+                avarok_cp16(&(smem)[_row][_col], _gm); \
             } else { *((uint4*)&(smem)[_row][_col]) = make_uint4(0,0,0,0); } \
         } \
     } while(0)

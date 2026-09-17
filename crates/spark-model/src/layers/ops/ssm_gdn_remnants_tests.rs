@@ -282,10 +282,10 @@ fn the_lever_is_off_until_asked_for() {
 ///
 /// This is the bit the launcher hands `gdn_hopper_remnants`, taken here the
 /// same way `gdn_prefill_fla` takes it. It pins two things that a fresh
-/// `std::env::var("ATLAS_GDN_PREFILL_TC").is_ok()` at this layer would break,
+/// `std::env::var("AVAROK_GDN_PREFILL_TC").is_ok()` at this layer would break,
 /// and which nothing else in the suite would notice:
 ///
-///  * `ATLAS_GDN_PREFILL_TC=0` is an explicit OFF under the 2026-09-11
+///  * `AVAROK_GDN_PREFILL_TC=0` is an explicit OFF under the 2026-09-11
 ///    grammar. A presence check would read it as ON and run a prefill whose
 ///    twins were enabled and whose state spine was not — neither leg of the
 ///    A/B the variable exists for;
@@ -301,7 +301,7 @@ fn the_lever_is_off_until_asked_for() {
 /// with "not requested". Written that way deliberately — the previous spelling
 /// asserted `!spine` and would have had to be rewritten by whoever flipped the
 /// default, which is a test that grades the calendar rather than the wiring.
-/// Which value the TOML holds is `atlas-kernels`' own `target_defaults.rs`.
+/// Which value the TOML holds is `avarok-kernels`' own `target_defaults.rs`.
 #[test]
 fn the_twins_read_the_spines_resolved_lever() {
     let spine = crate::layers::ops::target_defaults::resolved()
@@ -316,7 +316,7 @@ fn the_twins_read_the_spines_resolved_lever() {
 }
 
 /// …and the family KILL SWITCH reaches the twins through that same bit. With
-/// `[defaults] gdn_prefill_tc` now true on Hopper, `ATLAS_GDN_PREFILL_TC=0` is
+/// `[defaults] gdn_prefill_tc` now true on Hopper, `AVAROK_GDN_PREFILL_TC=0` is
 /// what turns the WHOLE family off — spine and both twins — and this is the
 /// twins' half of that statement, decided without a GPU: a false spine bit
 /// refuses them whatever else is true, including a present handle and the
@@ -354,7 +354,7 @@ fn every_refusal_names_its_guard() {
     for (case, want) in [
         (
             gdn_hopper_remnant_reject(true, true, true, 128, 128, 64),
-            "ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1 pins wu/fwd_o to their parents",
+            "AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1 pins wu/fwd_o to their parents",
         ),
         (
             gdn_hopper_remnant_reject(true, false, false, 128, 128, 64),

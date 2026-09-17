@@ -96,7 +96,7 @@ impl PrefixCache for RadixTree {
         // Tier-aware: `lookup_tiered` returns the deepest anchor across resident
         // AND spilled entries. A resident hit populates `ssm_snapshot` (restore
         // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
-        // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
+        // faults it in). When nothing is spilled (AVAROK_SSM_TIER off) this is
         // byte-identical to the old resident-only lookup.
         let mut ssm_snapshot = None;
         let mut ssm_snapshot_tokens = 0;

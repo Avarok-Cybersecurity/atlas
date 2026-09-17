@@ -11,7 +11,7 @@ impl Qwen3SsmLayer {
         post_attn_norm: DenseWeight,
         ffn: FfnComponent,
         qkvz_nvfp4: Option<QuantizedWeight>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let nv = config.linear_num_value_heads;
@@ -335,7 +335,7 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy3_resident",
             ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
-            // ── ATLAS_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
+            // ── AVAROK_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
             // verify WY kernels. try_kernel for the same reason as the
             // resident twins above — a miss is a silent handle 0, and the
             // selectors gate on `.0 != 0` before ever picking one. Without
@@ -372,7 +372,7 @@ impl Qwen3SsmLayer {
             // STAGE 1 fused K=2 verify epilogue. Only present in the gb10
             // common PTX module set; NULL on targets lacking the .cu, in which
             // case the num_tokens==2 arm keeps the per-token path even when
-            // ATLAS_GDN_FUSED_VERIFY is set.
+            // AVAROK_GDN_FUSED_VERIFY is set.
             gdn_verify_fused_conv_k2_k: super::super::try_kernel(
                 gpu,
                 "gdn_verify_fused_k2",

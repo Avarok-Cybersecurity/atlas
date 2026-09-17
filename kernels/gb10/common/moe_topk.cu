@@ -180,7 +180,7 @@ extern "C" __global__ void moe_topk_softmax(
 // FP32-input variant of moe_topk_softmax (single token).
 //
 // Identical algorithm to moe_topk_softmax, but reads gate_logits as f32
-// instead of BF16. Used by the ATLAS_FP32_GATE routing path: the router GEMM
+// instead of BF16. Used by the AVAROK_FP32_GATE routing path: the router GEMM
 // keeps its FP32 accumulator (no BF16 store), so two experts whose logits
 // differ by less than a BF16 ULP no longer flip top-K selection. The bf16
 // entry point above is left byte-identical so the NVIDIA codegen is unchanged.

@@ -15,7 +15,7 @@
 //! the decision table is pinned rather than the machine the test runs on.
 
 use super::*;
-use atlas_core::config::{LayerType, ModelConfig, QuantizationConfig};
+use avarok_core::config::{LayerType, ModelConfig, QuantizationConfig};
 
 use crate::layers::ops::GemmDispatch;
 
@@ -64,7 +64,7 @@ fn qwen38_27b() -> ModelConfig {
     c
 }
 
-/// The route the round-6 serve booted in: `ATLAS_DENSE_FP8=1`, tp 1, a
+/// The route the round-6 serve booted in: `AVAROK_DENSE_FP8=1`, tp 1, a
 /// config-declared FP8 checkpoint, no NVFP4 lever, both W8A8 prefill kernels
 /// present in the hopper kernel set.
 ///
@@ -228,7 +228,7 @@ fn a_target_without_the_w8a8_prefill_kernels_pays_for_the_q_and_o_twins() {
     assert!(p.total() > predicted(&round6_route()).total());
 }
 
-/// `ATLAS_ATTN_PREFILL_Q_T=1` adds the Q twin on the W8A8-covered route: the
+/// `AVAROK_ATTN_PREFILL_Q_T=1` adds the Q twin on the W8A8-covered route: the
 /// `cache_skip_qkv.rs:142` dispatch reads it per prefill.
 #[test]
 fn the_q_transpose_lever_adds_exactly_the_q_twin() {
@@ -243,7 +243,7 @@ fn the_q_transpose_lever_adds_exactly_the_q_twin() {
     );
 }
 
-/// `ATLAS_NO_GDN_FP8` takes the GDN layers off the fused-concat arm, so the
+/// `AVAROK_NO_GDN_FP8` takes the GDN layers off the fused-concat arm, so the
 /// 4.03 GB that dominates the prediction is not spent.
 #[test]
 fn disabling_the_gdn_fp8_arm_drops_the_fused_concat_term() {
@@ -265,7 +265,7 @@ fn the_prediction_declines_rather_than_guessing() {
         (
             "flag off",
             Box::new(|r: &mut Fp8RouteInputs| r.dense_fp8 = false),
-            "ATLAS_DENSE_FP8 is not 1",
+            "AVAROK_DENSE_FP8 is not 1",
         ),
         (
             "tp > 1",
@@ -287,12 +287,12 @@ fn the_prediction_declines_rather_than_guessing() {
         (
             "keep-nvfp4 escape hatch",
             Box::new(|r: &mut Fp8RouteInputs| r.route.keep_nvfp4 = true),
-            "ATLAS_DENSE_FP8_KEEP_NVFP4 restores the pre-#915 fallback copies",
+            "AVAROK_DENSE_FP8_KEEP_NVFP4 restores the pre-#915 fallback copies",
         ),
         (
             "W4A4 o_proj lever",
             Box::new(|r: &mut Fp8RouteInputs| r.route.attn_w4a4 = true),
-            "an NVFP4 fallback lever (ATLAS_CUTLASS_NVFP4_* / ATLAS_ATTN_W4A4) is set",
+            "an NVFP4 fallback lever (AVAROK_CUTLASS_NVFP4_* / AVAROK_ATTN_W4A4) is set",
         ),
     ];
     for (name, mutate, want) in cases {

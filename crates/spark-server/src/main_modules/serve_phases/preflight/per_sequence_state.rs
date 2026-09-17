@@ -21,7 +21,7 @@
 //! layer-side sum cannot see it. They are returned and logged separately so a boot log says
 //! which owner a byte belongs to.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_model::seq_state_reserve::per_sequence_state_bytes;
 
 use crate::cli;

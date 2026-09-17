@@ -26,7 +26,7 @@
                 unsigned int _pb = (unsigned int)(bt)[_lb]; \
                 const void* _gm = (const void*)( \
                     (cache) + _pb * _ps + _bo * _rs + (kvh) * head_dim + _col); \
-                atlas_cp16(&(smem_ptr)[_row * HDIM_512 + _col], _gm); \
+                avarok_cp16(&(smem_ptr)[_row * HDIM_512 + _col], _gm); \
             } else { \
                 *((uint4*)&(smem_ptr)[_row * HDIM_512 + _col]) = make_uint4(0,0,0,0); \
             } \

@@ -8,7 +8,7 @@
 <footer>
   <div class="footer-inner">
     <div class="footer-brand">
-      <div class="flogo"><AtlasLockup kind="full" label="Atlas Inference Engine" /></div>
+      <div class="flogo"><AtlasLockup kind="corp" /></div>
       <p>{footer.tagline}</p>
       <p class="lic">{footer.license}</p>
       <div class="footer-social">
@@ -37,7 +37,7 @@
 
   <div class="footer-member">
     <a href={nvidiaInceptionUrl} target="_blank" rel="noopener noreferrer">
-      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="114" loading="lazy" />
+      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="102" loading="lazy" />
     </a>
   </div>
 

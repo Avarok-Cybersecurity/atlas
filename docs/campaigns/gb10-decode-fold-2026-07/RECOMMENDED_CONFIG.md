@@ -16,7 +16,7 @@ fp8-KV is neutral-on-wall, worse on TPOT/TPS, and drops IoU → **keep bf16-KV.*
 was a comparison against a STALE 07-21 baseline/binary, not the same-binary control — corrected.)
 
 ## The e2e result stands (either config beats confirmed vLLM)
-Atlas main (bf16-KV) e2e: wall 4551.9s / TPOT 38.18 / TPS 17.56 / BFCL ~87 / IoU 0.6285.
+Avarok main (bf16-KV) e2e: wall 4551.9s / TPOT 38.18 / TPS 17.56 / BFCL ~87 / IoU 0.6285.
 Confirmed vLLM: wall 5361s / tps 14.6 / BFCL 86.43 / IoU 0.6269.
-→ **Atlas wins wall −15% / TPS +20% / BFCL / IoU-tie.** The RAW per-token TPOT (~38ms) is roofline-bound
+→ **Avarok wins wall −15% / TPS +20% / BFCL / IoU-tie.** The RAW per-token TPOT (~38ms) is roofline-bound
 (all kernel/weight levers measured-dead); not closable by a same-checkpoint fold. See FINDINGS.md.

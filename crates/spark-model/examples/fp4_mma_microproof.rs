@@ -17,7 +17,7 @@
 //! Run: target/release/examples/fp4_mma_microproof
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -90,7 +90,7 @@ fn main() -> Result<()> {
     println!("=== Phase-1 hand-rolled Sm120 FP4 MMA microproof ===");
     println!("M={m} N={n} K={k}; oracle = nvfp4_gemm_bf16_act_weight_t (same Sm120 FP4 math)");
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

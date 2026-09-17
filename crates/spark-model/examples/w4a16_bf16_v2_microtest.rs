@@ -25,7 +25,7 @@
 //! Runs the full prefill + edge shape sweep. Exit 0 = all PASS, 1 = any FAIL.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -253,11 +253,11 @@ fn run_shape(
 
     let packed_nt = upload(gpu, &w.packed_nt)?;
     let scale_nt = upload(gpu, &w.scale_nt)?;
-    // Negative control (ATLAS_MICROTEST_NEGCTL=1): feed the bf16 kernel the WRONG
+    // Negative control (AVAROK_MICROTEST_NEGCTL=1): feed the bf16 kernel the WRONG
     // (non-transposed) packed layout. A discriminating test MUST then FAIL — this
     // proves the 100%-match result is a real layout/accumulation agreement, not a
     // buffer-aliasing or dead-kernel artifact. Default off (PCND: explicit opt-in).
-    let neg_ctl = std::env::var_os("ATLAS_MICROTEST_NEGCTL").is_some();
+    let neg_ctl = std::env::var_os("AVAROK_MICROTEST_NEGCTL").is_some();
     let packed_t = if neg_ctl {
         upload(gpu, &w.packed_nt)?
     } else {
@@ -422,7 +422,7 @@ fn main() -> Result<()> {
     debug_assert_eq!(E2M1_LUT[7], 6.0);
     debug_assert!((e4m3_to_f32(e4m3_scale_byte(2)) - 1.0).abs() < 1e-6); // sel 2 → e=7 → 1.0
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

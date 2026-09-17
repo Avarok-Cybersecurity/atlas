@@ -9,14 +9,14 @@ use crate::*;
 use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::collections::BTreeMap;
 
 pub(crate) fn run() -> Result<()> {
     let dir = std::env::var("MOE_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/moe-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/moe-family".to_string());
     let layers: Vec<usize> = std::env::args()
         .skip(1)
         .filter_map(|a| a.parse().ok())
@@ -43,7 +43,7 @@ pub(crate) fn run() -> Result<()> {
          routed_scale={scale} n_group=1 (asserted) apply_routed_scale_to_output=false"
     );
 
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k = K {
         gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
         gemm_f32: gpu.kernel("gemm", "dense_gemm_bf16_f32out")?,

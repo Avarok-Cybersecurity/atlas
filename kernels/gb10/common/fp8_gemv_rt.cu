@@ -27,7 +27,7 @@
 // unlike the w4a16 verify family there is NO bit-order contract here; this
 // kernel uses a plain single-phase accumulation and applies row_scale once
 // at write-out. Accuracy is gated by accept-rate A/B on the live server
-// (kill-switch: ATLAS_NO_DFLASH_FP8_RT=1 restores the tile kernels).
+// (kill-switch: AVAROK_NO_DFLASH_FP8_RT=1 restores the tile kernels).
 //
 // Dequant uses the proven 256-entry E4M3 smem LUT (branchless, no
 // cvt.rn.satfinite dependency on SM121 — same rationale as w8a16_gemv).

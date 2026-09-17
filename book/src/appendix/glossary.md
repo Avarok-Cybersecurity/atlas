@@ -14,7 +14,7 @@ Short definitions for the acronyms and names that recur in this book and the Atl
 | **CUTLASS** | NVIDIA's open-source CUDA template library for GEMM and related ops. Atlas uses it for certain NVFP4 paths. |
 | **cp.async** | CUDA instruction for asynchronous global-to-shared-memory copies. Key to pipelining on SM80+ architectures. |
 | **DGX Spark** | NVIDIA's GB10-based workstation. Atlas's initial hardware target. |
-| **DType** | Data type enum in `atlas-core` — E2M1, FP8E4M3, FP8E5M2, BF16, FP16, FP32. |
+| **DType** | Data type enum in `avarok-core` — E2M1, FP8E4M3, FP8E5M2, BF16, FP16, FP32. |
 | **E2M1** | 4-bit float format: 1 sign + 2 exponent + 1 mantissa. Values: {0, ±0.5, ±1, ±1.5, ±2, ±3, ±4, ±6}. The storage format of NVFP4 weights. |
 | **E4M3** | 8-bit float format: 1 sign + 4 exponent + 3 mantissa. The standard FP8 format. |
 | **EP=2** | Expert Parallelism across 2 nodes. Atlas's multi-GPU shape — experts split across ranks, other layers replicated. |
@@ -31,7 +31,7 @@ Short definitions for the acronyms and names that recur in this book and the Atl
 | **HF** | HuggingFace. Atlas loads HF-format checkpoints via `safetensors`. |
 | **HyperCompiling** | "AI Kernel HyperCompiling" — Atlas's philosophy. Specialize per `(H, M_q)` target; abstractions stay above the kernel layer. |
 | **IORouter** | The SBIO pattern name for an I/O-side trait (`GpuBackend`, `CommBackend`, `WeightStore`). |
-| **KernelTarget** | The `(arch, model, quant)` dispatch key. `atlas-core::target::KernelTarget`. |
+| **KernelTarget** | The `(arch, model, quant)` dispatch key. `avarok-core::target::KernelTarget`. |
 | **KV cache** | Cached key and value tensors from attention. Paged in Atlas. |
 | **LPDDR5X** | The memory technology GB10 uses. Unified with CPU; 273 GB/s peak bandwidth. |
 | **Mamba / Mamba-2** | Selective state-space models. Mamba-2 is the variant used by Nemotron-H. |

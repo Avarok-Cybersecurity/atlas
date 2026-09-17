@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// The `atlas-weight-peer` daemon (unix, server-side). Accepts a model request,
+// The `avarok-weight-peer` daemon (unix, server-side). Accepts a model request,
 // stages the model (warm mmaps + parsed manifest via `shard`), publishes the
 // manifest (`wire`), then serves the shards one-sided REMOTE_READ over verbs.
 // This module holds the sole `reg_mr(.., true)` — the REMOTE_READ registration
@@ -56,7 +56,7 @@ impl Default for WeightPeerConfig {
 struct StagedModel {
     // Read only by the verbs serve path (reg_mr each shard); on a build
     // without rdma-core the mmaps still hold pages warm but aren't iterated.
-    #[cfg_attr(not(atlas_rdma_verbs), allow(dead_code))]
+    #[cfg_attr(not(avarok_rdma_verbs), allow(dead_code))]
     shard_mmaps: Vec<Mmap>,
     manifest: WeightManifest,
     _reservation: crate::blade_cap::Reservation,
@@ -66,7 +66,7 @@ type StagedMap = Arc<Mutex<HashMap<String, Arc<StagedModel>>>>;
 
 /// Serve staged models on `addr` until interrupted. One thread per
 /// connection; blocking. Intended to run as its own process
-/// (`atlas-weight-peer`).
+/// (`avarok-weight-peer`).
 pub fn serve<A: ToSocketAddrs>(addr: A, cfg: WeightPeerConfig) -> Result<()> {
     let cfg = Arc::new(cfg);
     let ledger = Arc::new(crate::blade_cap::CommitLedger::new(cfg.max_blade_bytes));
@@ -216,7 +216,7 @@ fn stage_model(
 /// One-sided RDMA READ weight serving. Registers each shard mmap REMOTE_READ
 /// on every rail, publishes the per-shard `(base, rkey)`, connects to the
 /// client's QPs, then idles — the client pulls all tensor bytes one-sided.
-#[cfg(not(atlas_rdma_verbs))]
+#[cfg(not(avarok_rdma_verbs))]
 fn serve_verbs(
     _stream: TcpStream,
     _model: &Arc<StagedModel>,
@@ -225,14 +225,14 @@ fn serve_verbs(
     bail!("client requested verbs transport but this peer was built without rdma-core");
 }
 
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 fn serve_verbs(
     mut stream: TcpStream,
     model: &Arc<StagedModel>,
     cfg: &WeightPeerConfig,
 ) -> Result<()> {
     use crate::expert_peer::{STATUS_OK, VerbsClientParams, VerbsServerParams, write_server_rails};
-    use atlas_rdma::verbs::Verbs;
+    use avarok_rdma::verbs::Verbs;
     use std::io::Write;
 
     let num_shards = model.shard_mmaps.len();

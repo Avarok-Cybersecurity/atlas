@@ -36,7 +36,7 @@
 // `w8a16_gemm_n128_m128` / `w8a16_gemm_pipelined`, both m16n8k16 MMA kernels
 // with exactly this reassociation. #927 moved 5..=32 onto the bit-exact GEMV;
 // this kernel moves them back onto an MMA, which is why it is behind
-// `ATLAS_FFN_M16_TC` and OFF by default until an H100 receipt says it wins.
+// `AVAROK_FFN_M16_TC` and OFF by default until an H100 receipt says it wins.
 // The FFN dispatch rule states the same thing (`dense_ffn_m16_tc.rs`).
 //
 // The two-level FP32 fold is PRESERVED EXACTLY from `w8a16_gemm_pipelined` /
@@ -65,7 +65,7 @@
 // M=16 and the accumulator is 4 inner + 4 outer FP32 registers.
 //
 // N_TILE is a TEMPLATE PARAMETER with two instantiations, 32 (the default) and
-// 64 (`w8a16_gemm_m16_n64`, opt-in via `ATLAS_FFN_M16_TC_NTILE=64`).
+// 64 (`w8a16_gemm_m16_n64`, opt-in via `AVAROK_FFN_M16_TC_NTILE=64`).
 //
 // 32 is the default because it is the one with a receipt. 64 amortizes the
 // (shared) A fragment loads over twice the weight bytes, but it gives the down
@@ -90,7 +90,7 @@
 // while the attention tiers all fit inside a single partial wave. N_TILE=64
 // halves the FFN's grid to 272 CTAs (well inside one wave) and doubles the A
 // reuse. It is a HYPOTHESIS with no receipt yet — hence opt-in, default 32 —
-// and the A/B that would settle it is `ATLAS_FFN_M16_TC_NTILE=64` against the
+// and the A/B that would settle it is `AVAROK_FFN_M16_TC_NTILE=64` against the
 // same serve. Full reasoning and the competing L2 hypothesis:
 // `dense_ffn_m16_tc.rs`.
 //
@@ -136,7 +136,7 @@
 
 #define M16_M_TILE 16
 // The two instantiated N tiles. 32 is the default and the one with a receipt;
-// 64 is the opt-in wide arm (`ATLAS_FFN_M16_TC_NTILE=64`). Both must divide
+// 64 is the opt-in wide arm (`AVAROK_FFN_M16_TC_NTILE=64`). Both must divide
 // M16_FP8_BLOCK so a CTA's columns lie inside ONE 128-wide scale block.
 #define M16_N_TILE 32
 #define M16_N_TILE_WIDE 64
@@ -398,7 +398,7 @@ void w8a16_gemm_m16(
 /// which CTA owns a column changes), HALF the CTAs, and each staged A tile
 /// feeds twice the weight bytes. Grid is `ceil(N/64)`.
 ///
-/// Opt-in (`ATLAS_FFN_M16_TC_NTILE=64`) and NOT the default: it exists to A/B
+/// Opt-in (`AVAROK_FFN_M16_TC_NTILE=64`) and NOT the default: it exists to A/B
 /// the round-6 FFN regression (+13.7% on the SSM-layer FFN at bs16 while the
 /// attention tiers went -21.7%), whose leading hypothesis is the FFN's 544 CTAs
 /// overrunning the H100's 528-CTA residency by one 16-CTA tail. 64 takes that

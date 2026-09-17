@@ -8,7 +8,7 @@ Exit 0 and print `covered`, or exit 1 and print the paths nobody sealed.
 
 ── Why this fails CLOSED, when the Rust one fails open ─────────────────────
 
-`crates/atlas-plugin/src/gate/codeowners.rs` implements the same last-match-wins
+`crates/avarok-plugin/src/gate/codeowners.rs` implements the same last-match-wins
 matching and deliberately fails OPEN: an unsupported pattern there means somebody
 is not @-mentioned on a PR they own, which is a missed notification and nothing
 more. Its own doc says so — "it does not let a change through a gate".

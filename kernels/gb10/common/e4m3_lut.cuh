@@ -15,8 +15,8 @@
 // __constant__ symbol named E4M3_LUT — that is fine because each kernel
 // is compiled to a separate PTX module, so there is no ODR/link clash.
 
-#ifndef ATLAS_E4M3_LUT_CUH
-#define ATLAS_E4M3_LUT_CUH
+#ifndef AVAROK_E4M3_LUT_CUH
+#define AVAROK_E4M3_LUT_CUH
 
 __device__ __constant__ float E4M3_LUT[256] = {
     // Positive (0x00..0x7F)
@@ -87,4 +87,4 @@ __device__ __constant__ float E4M3_LUT[256] = {
     -384.0f, -416.0f, -448.0f, -0.0f,
 };
 
-#endif // ATLAS_E4M3_LUT_CUH
+#endif // AVAROK_E4M3_LUT_CUH

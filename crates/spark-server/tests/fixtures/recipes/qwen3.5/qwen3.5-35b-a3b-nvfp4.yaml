@@ -9,7 +9,7 @@ metadata:
     Qwen3.5-35B (A3B MoE) NVFP4 + MTP — Atlas's fastest catalogued model
     on a single GB10 (~133 tok/s decode at concurrency=1, ISL=128, OSL=128
     per the avarok/atlas-gb10 QUICKSTART).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: nvfp4

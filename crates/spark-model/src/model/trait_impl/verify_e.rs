@@ -19,7 +19,7 @@
 //! bakes EVERY sequence's state pointers, which are a function of the whole
 //! vector. Pre-graph each step (embed, KV-block ensure, metadata/bt/WY-table
 //! H2D into fixed addresses) and the argmax D2H stay eager — exactly the
-//! decode_a2 padded_n-graph pattern. Kill switch `ATLAS_NO_MTP_VERIFY_GRAPHS`
+//! decode_a2 padded_n-graph pattern. Kill switch `AVAROK_NO_MTP_VERIFY_GRAPHS`
 //! (PRESENCE). Everything per-sequence (GDN conv+WY4 body, block tables,
 //! rollback intermediates) reuses existing machinery verbatim — only base
 //! addresses move — with an optional cross-sequence batched conv+WY fast
@@ -46,7 +46,7 @@ const VMETA_SEQ_SLOT: usize = VMETA_R * 4;
 const VMETA_SLOTS: usize = VMETA_R * 8;
 const VMETA_SEQ_LENS: usize = VMETA_R * 16;
 const VMETA_BT: usize = VMETA_R * 24;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
@@ -109,7 +109,7 @@ impl TransformerModel {
             // adapter resident, DFlash aggregate throughput was FLAT at ~34
             // tok/s from C=1 to C=4 (against 39 -> 71 -> 79 without one)
             // because every sequence fell back to the per-sequence verify
-            // loop. `ATLAS_LORA_NO_BATCH_VERIFY=1` restores the refusal.
+            // loop. `AVAROK_LORA_NO_BATCH_VERIFY=1` restores the refusal.
             && !(self.lora.is_some() && crate::lora::no_batch_verify())
             // NOT `dflash_hidden_save.is_none()`. That guard predates the
             // DFlash gamma-block path and meant "batched verify is for plain
@@ -234,7 +234,7 @@ impl TransformerModel {
             )?;
         }
 
-        // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
+        // AVAROK_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
         // verify_c2). Forces EAGER — per-layer syncs are illegal under
         // capture (verify_c2's gate pattern).
@@ -277,7 +277,7 @@ impl TransformerModel {
         // least-recently-replayed slot vector.
         let mut replay: Option<spark_runtime::gpu::GraphHandle> = None;
         let mut ghosts: Vec<(u32, u32)> = Vec::new();
-        // Graph outcome for the periodic ATLAS_MTP_ACCEPT_DEBUG summary
+        // Graph outcome for the periodic AVAROK_MTP_ACCEPT_DEBUG summary
         // (verify_e2). `Eager` until something claims otherwise — that is
         // also the honest value when graphs are off or the batch is
         // unkeyable.
@@ -643,7 +643,7 @@ impl TransformerModel {
             // on a FREE copy engine before being picked up (1.8 us to execute
             // once it ran) — invariant to pageable/pinned/stream/spin/graph/
             // keep-awake arms, all buried by experiment. No copy op, no
-            // pickup. Kill switch ATLAS_NO_MAPPED_ARGMAX=1 restores scratch +
+            // pickup. Kill switch AVAROK_NO_MAPPED_ARGMAX=1 restores scratch +
             // on-stream copy. The mapped blob is allocated once (before the
             // first graph capture, so replays bake the same fixed address).
             let argmax_out = match mapped_argmax {
@@ -720,7 +720,7 @@ impl TransformerModel {
         // ── Phase 5: D2H + host bookkeeping ──
         // Argmax landed at scratch row 0 (graph replay and eager both write
         // the same fixed address). Blocking D2H = the step's one host sync.
-        // ATLAS_MTP_TIMING attribution (2026-07-30): everything above this
+        // AVAROK_MTP_TIMING attribution (2026-07-30): everything above this
         // line is the LAUNCH region (host-side dispatch + graph replay,
         // recorded as Argmax); the copy below is the wait-for-GPU + copy
         // (recorded as D2h). Splits the ~127 ms fwd cost between "host
@@ -755,8 +755,8 @@ impl TransformerModel {
         // a lazily-allocated 64 KB pinned blob (r_total <= 32 rows x 4 B
         // needs 128 B; headroom for future wider verifies), reused for the
         // process lifetime — the scheduler thread is the only caller.
-        // Kill switches: ATLAS_NO_PINNED_VERIFY_D2H=1 -> pageable on-stream;
-        // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
+        // Kill switches: AVAROK_NO_PINNED_VERIFY_D2H=1 -> pageable on-stream;
+        // AVAROK_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
         if filled {
             // mapped path already read the results — no copy arm runs.
         } else if super::verify_e2::verify_d2h_default_stream() {
@@ -794,7 +794,7 @@ impl TransformerModel {
             }
         }
         {
-            // Local fwd-split telemetry (ATLAS_MTP_TIMING=1): launch region vs
+            // Local fwd-split telemetry (AVAROK_MTP_TIMING=1): launch region vs
             // the blocking argmax D2H. Lives here because mtp_timing is a
             // spark-server module. One INFO line per 100 batched verifies.
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -802,7 +802,7 @@ impl TransformerModel {
             static D2H_US: AtomicU64 = AtomicU64::new(0);
             static N: AtomicU64 = AtomicU64::new(0);
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *ON.get_or_init(|| std::env::var("ATLAS_MTP_TIMING").as_deref() == Ok("1")) {
+            if *ON.get_or_init(|| std::env::var("AVAROK_MTP_TIMING").as_deref() == Ok("1")) {
                 let d2h_us = t_d2h.elapsed().as_micros() as u64;
                 LAUNCH_US.fetch_add(launch_us, Ordering::Relaxed);
                 D2H_US.fetch_add(d2h_us, Ordering::Relaxed);
@@ -845,7 +845,7 @@ impl TransformerModel {
 /// Allocated once per process (before the first verify graph capture, so
 /// captured replays bake the same fixed device address). Returns `None` when
 /// the backend cannot map (non-UMA / stub backends) or the kill switch
-/// `ATLAS_NO_MAPPED_ARGMAX=1` is set — callers then use the scratch + copy
+/// `AVAROK_NO_MAPPED_ARGMAX=1` is set — callers then use the scratch + copy
 /// path unchanged.
 fn mapped_argmax_host_dev(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -854,7 +854,7 @@ fn mapped_argmax_host_dev(
     static HOST: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
     static DEV: AtomicU64 = AtomicU64::new(0);
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *OFF.get_or_init(|| std::env::var("ATLAS_NO_MAPPED_ARGMAX").as_deref() == Ok("1")) {
+    if *OFF.get_or_init(|| std::env::var("AVAROK_NO_MAPPED_ARGMAX").as_deref() == Ok("1")) {
         return None;
     }
     let mut h = HOST.load(Ordering::Acquire);

@@ -9,8 +9,8 @@
 use super::bench_card::write_card;
 use super::bench_run::repo_root;
 use anyhow::{Result, bail};
-use atlas_plugin::TargetEndpoint;
-use atlas_plugin::gate;
+use avarok_plugin::TargetEndpoint;
+use avarok_plugin::gate;
 use std::collections::BTreeMap;
 
 /// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 /// point of the flag is the record, so a run that did not produce one must
 /// not report success.
 pub(crate) async fn write_gate_record(
-    record: &atlas_plugin::RunRecord,
+    record: &avarok_plugin::RunRecord,
     url: &str,
     model: &str,
     recipe: Option<String>,
@@ -42,7 +42,7 @@ pub(crate) async fn write_gate_record(
     // threshold as "missing from the record", blaming the baseline rather than
     // the run that never finished. Observed for real: a BFCL run killed at
     // 972/1004 left a committed record whose metrics were `{}`.
-    if record.frame.status != atlas_plugin::RunStatus::Completed {
+    if record.frame.status != avarok_plugin::RunStatus::Completed {
         bail!(
             "the run ended as {:?}, not Completed -- no gate record was written. \
              A record is evidence that a benchmark RAN; an interrupted one is not.",
@@ -76,13 +76,13 @@ pub(crate) async fn write_gate_record(
         );
     }
     let target = TargetEndpoint::new(url, model);
-    let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
+    let hardware = avarok_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
     let dirty = dirty_at_start;
     let gate_record = gate::GateRecord::from_run(record, hardware, sha, dirty, recipe)?
         // What THIS binary's kernels were compiled from. Baked at build
         // time, so it describes the code that actually ran rather than the
         // tree as it stands now.
-        .with_closure(atlas_kernels::TARGET_CLOSURES);
+        .with_closure(avarok_kernels::TARGET_CLOSURES);
     let path = gate::write_record(&root, &gate_record)?;
 
     // Sign it, and say BOTH filenames. The operator commits what the terminal
@@ -91,8 +91,8 @@ pub(crate) async fn write_gate_record(
     //
     // Signing lives here rather than inside `write_record` so the writer stays a
     // pure function of (root, record) for the ~7 unit tests that call it — none
-    // of which should be minting keys in a real ~/.atlas.
-    let store = atlas_plugin::artifacts::ArtifactStore::discover()?;
+    // of which should be minting keys in a real ~/.avarok.
+    let store = avarok_plugin::artifacts::ArtifactStore::discover()?;
     let identity = gate::signing::load_or_create(store.root())?;
     let sig = gate::signing::sign_record(&identity, &path, &gate_record.git_sha)?;
     let fresh_signer = gate::signing::register(&root, &identity)?;

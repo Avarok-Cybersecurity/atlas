@@ -254,7 +254,7 @@ fn the_declared_band_is_what_selects_the_tier() {
     run_band(12, 130, true, true, 16, false);
 }
 
-// ── The tensor-core arm (`ATLAS_LM_HEAD_M16_TC`, #927/#928) ────────────────
+// ── The tensor-core arm (`AVAROK_LM_HEAD_M16_TC`, #927/#928) ────────────────
 //
 // Band x lever x handle, graded at the DISPATCH rather than only on the rule,
 // so a route that resolves correctly and then launches the wrong geometry is
@@ -345,7 +345,7 @@ fn tc_head_declines_when_the_kernel_is_absent() {
     }
 }
 
-/// `ATLAS_LM_HEAD_M16_TC_NTILE=64` selects the wide arm; anything unrecognised
+/// `AVAROK_LM_HEAD_M16_TC_NTILE=64` selects the wide arm; anything unrecognised
 /// falls back to 32 rather than failing the boot, and a shadow built before the
 /// wide arm existed falls back to the 32-wide KERNEL rather than launching a
 /// zero handle.
@@ -376,7 +376,7 @@ fn tc_head_n_tile_lever_and_its_fallbacks() {
 }
 
 /// The arm sits AHEAD of the batched GEMV, and takes the band even when the
-/// `ATLAS_LM_HEAD_BATCHM_MAX=16` recipe would have claimed the same widths.
+/// `AVAROK_LM_HEAD_BATCHM_MAX=16` recipe would have claimed the same widths.
 #[test]
 fn tc_head_wins_the_band_over_the_widened_gemv() {
     expect_tc_launch(16, 5120, tc(true, 32), M16TC_K, 32);
@@ -431,7 +431,7 @@ fn the_route_message_still_names_the_lever_kernel_band_and_off_switch() {
     // Fixing the ULP claim must not have dropped any of the pre-existing
     // content a boot-log reader relies on.
     let msg = m16_tc_head_route_message(64, 64);
-    assert!(msg.contains("ATLAS_LM_HEAD_M16_TC"));
+    assert!(msg.contains("AVAROK_LM_HEAD_M16_TC"));
     assert!(msg.contains("dense_gemm_m16_bf16"));
     assert!(msg.contains("N_TILE=64 (asked 64)"));
     assert!(msg.contains("5..=16 rows"));

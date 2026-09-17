@@ -6,7 +6,7 @@ Adapted from gdn_chain_diff2.py with A3B shapes:
   conv on [q|k|v] = 8192 (head-major within each segment)
   recurrence + gated-RMSNorm in value space 4096 (32 v-heads * 128, HEAD-MAJOR)
 
-Usage:  python3 gdn_chain_diff_a3b.py /workspace/dumps/atlas-gdnsub-a3b /home/claude/gdnref_a3b
+Usage:  python3 gdn_chain_diff_a3b.py /workspace/dumps/avarok-gdnsub-a3b /home/claude/gdnref_a3b
 """
 import sys, pathlib
 import numpy as np
@@ -55,9 +55,9 @@ def best_match_cos(A2, B2):
 def report(name, a, b, segs, head_dim):
     print(f"\n--- {name} ---")
     if a is None or b is None:
-        print(f"  MISSING  atlas={a is not None}  hf={b is not None}")
+        print(f"  MISSING  avarok={a is not None}  hf={b is not None}")
         return
-    print(f"  atlas_n={len(a)}  hf_n={len(b)}")
+    print(f"  avarok_n={len(a)}  hf_n={len(b)}")
     if len(a) != len(b):
         c, r = cos_rel(a, b)
         print(f"  SIZE MISMATCH -> trunc flat cos={c:+.5f} relL2={r:.4f}")
@@ -83,7 +83,7 @@ def report(name, a, b, segs, head_dim):
 
 
 print("=== GDN layer-0 chain diff (A3B; Atlas vs source-grounded HF oracle) ===")
-print(f"atlas={A}")
+print(f"avarok={A}")
 print(f"hf   ={H}")
 
 # A3B: conv segments q|k|v = 2048|2048|4096 = 8192 total
@@ -103,10 +103,10 @@ report("gnorm    (Atlas gnorm ~ HF norm gated-rmsnorm)",
 
 print("\n--- norms (context) ---")
 for lbl, p in [
-    ("atlas conv ", f"{A}/gdnsub_step0_L0_conv.bin"),
-    ("atlas l2   ", f"{A}/gdnsub_step0_L0_l2.bin"),
-    ("atlas gdn  ", f"{A}/gdnsub_step0_L0_gdn.bin"),
-    ("atlas gnorm", f"{A}/gdnsub_step0_L0_gnorm.bin"),
+    ("avarok conv ", f"{A}/gdnsub_step0_L0_conv.bin"),
+    ("avarok l2   ", f"{A}/gdnsub_step0_L0_l2.bin"),
+    ("avarok gdn  ", f"{A}/gdnsub_step0_L0_gdn.bin"),
+    ("avarok gnorm", f"{A}/gdnsub_step0_L0_gnorm.bin"),
     ("hf in_proj_qkv", f"{H}/gdnref_L0_in_proj_qkv.bin"),
     ("hf conv1d  ", f"{H}/gdnref_L0_conv1d.bin"),
     ("hf recur_in", f"{H}/gdnref_L0_recur_in.bin"),

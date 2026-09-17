@@ -21,7 +21,7 @@ metadata:
     is SAFE on this checkpoint (verified) but can be catastrophic on others
     (argmax flips compound over long structured generation). Always re-gate with
     a long-generation harness before shipping nvfp4 lm-head on a new model.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: fp8

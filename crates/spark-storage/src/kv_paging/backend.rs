@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `KvPagingBackend` — the KV overflow tier as a PAGING client (flag-ON arm
-//! of `ATLAS_KV_PAGING`), plus [`super::connect_kv_peer_backend`], the single
+//! of `AVAROK_KV_PAGING`), plus [`super::connect_kv_peer_backend`], the single
 //! selection seam `HighSpeedSwap` calls (flag OFF ⇒ the raw one-sided
 //! `RdmaKvBackend`, identical data plane; its handshake is the
 //! v2 header with `blob_bytes == 0`).
@@ -15,7 +15,7 @@
 //!   GET  = GET(RTT, offset)   → RDMA-READ block  → poll (BEFORE the next
 //!          control op, so the pinned slot can never be evicted mid-read)
 //!
-//! Zero-copy landing (`ATLAS_KV_ZERO_COPY=1`) is preserved: the whole UMA
+//! Zero-copy landing (`AVAROK_KV_ZERO_COPY=1`) is preserved: the whole UMA
 //! scratch pool registers as ONE landing MR per rail
 //! (`register_landing_region`, `remote_read == false`) and a GET's RDMA READ
 //! lands directly in the destination slot — only the raddr provenance changed
@@ -42,7 +42,7 @@ use crate::group::{GroupKey, GroupLayout, KvKind};
 use crate::snapshot_swap::{
     PagingKind, client_alloc, client_bye, client_commit, client_get, encode_paging_v2_header,
 };
-use atlas_rdma::verbs::Verbs;
+use avarok_rdma::verbs::Verbs;
 
 /// Fully-resolved connect parameters (env resolution lives in
 /// [`super::connect_kv_peer_backend`]; the smoke example constructs this directly
@@ -89,12 +89,12 @@ impl KvPagingBackend {
     /// Connect to a paging peer at `addr` with the v2 handshake
     /// (`[PAGING_MAGIC_V2][kind=KV][arena_bytes][blob_bytes=block_bytes]`),
     /// bring up the rails (same env triple as the legacy KV backend:
-    /// `ATLAS_EXPERT_RDMA_DEV`/`GID` = rail 0, `ATLAS_KV_DUAL_RAIL=1` +
-    /// `ATLAS_KV_RAIL2_DEV`/`GID` = rail 1), and register one block-sized
+    /// `AVAROK_EXPERT_RDMA_DEV`/`GID` = rail 0, `AVAROK_KV_DUAL_RAIL=1` +
+    /// `AVAROK_KV_RAIL2_DEV`/`GID` = rail 1), and register one block-sized
     /// bounce per rail (`remote_read == false`, invariant).
     pub fn connect(addr: &str, layout: GroupLayout, cfg: KvPagingConnect) -> Result<Self> {
-        use atlas_rdma::env::{first_set, first_set_u32};
-        use atlas_rdma::railset::{RailSet, RailSpec};
+        use avarok_rdma::env::{first_set, first_set_u32};
+        use avarok_rdma::railset::{RailSet, RailSpec};
 
         let block_bytes = layout.block_bytes();
         if cfg.arena_bytes == 0 || !cfg.arena_bytes.is_multiple_of(block_bytes) {
@@ -106,16 +106,16 @@ impl KvPagingBackend {
         let spec =
             |dev: String, gid: u32| RailSpec::new(dev, gid, rand::random::<u32>() & 0xff_ffff);
         let rail0 = spec(
-            first_set(&["ATLAS_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
-            first_set_u32(&["ATLAS_EXPERT_RDMA_GID"], 3),
+            first_set(&["AVAROK_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
+            first_set_u32(&["AVAROK_EXPERT_RDMA_GID"], 3),
         );
-        let dual = std::env::var("ATLAS_KV_DUAL_RAIL").ok().as_deref() == Some("1");
+        let dual = std::env::var("AVAROK_KV_DUAL_RAIL").ok().as_deref() == Some("1");
         let specs: Vec<RailSpec> = if dual {
             vec![
                 rail0,
                 spec(
-                    first_set(&["ATLAS_KV_RAIL2_DEV"], "rocep1s0f1"),
-                    first_set_u32(&["ATLAS_KV_RAIL2_GID"], 3),
+                    first_set(&["AVAROK_KV_RAIL2_DEV"], "rocep1s0f1"),
+                    first_set_u32(&["AVAROK_KV_RAIL2_GID"], 3),
                 ),
             ]
         } else {
@@ -169,7 +169,7 @@ impl KvPagingBackend {
                 region: None,
             })
             .collect();
-        let zero_copy = std::env::var("ATLAS_KV_ZERO_COPY").ok().as_deref() == Some("1");
+        let zero_copy = std::env::var("AVAROK_KV_ZERO_COPY").ok().as_deref() == Some("1");
         tracing::info!(
             "KvPagingBackend connected to {addr}: kind=KV, blob {block_bytes} B, arena {:.3} GiB, \
              ns {:#018x}, {} rail(s), zero_copy={zero_copy} (strictly synchronous MVP: 1 control \
@@ -331,7 +331,7 @@ impl StorageBackend for KvPagingBackend {
     fn write_from_host(&mut self, key: GroupKey, _src: &[u8]) -> Result<()> {
         bail!(
             "kv-paging: per-head write_from_host (layer {}, block {}) is unsupported — the \
-             paging record is one whole KV block; run with ATLAS_HSS_COALESCE_BLOCKS on \
+             paging record is one whole KV block; run with AVAROK_HSS_COALESCE_BLOCKS on \
              (default) so offload uses write_block_from_host",
             key.layer,
             key.block
@@ -353,7 +353,7 @@ impl StorageBackend for KvPagingBackend {
         let off = client_alloc(&mut self.ctrl, key).with_context(|| {
             format!(
                 "kv-paging ALLOC (layer {}, block {}) refused — peer arena exhausted by \
-                 reservations/read-pins? Grow ATLAS_KV_PAGING_ARENA_GB (and the peer's \
+                 reservations/read-pins? Grow AVAROK_KV_PAGING_ARENA_GB (and the peer's \
                  --max-blade-gb)",
                 base_key.layer, base_key.block
             )

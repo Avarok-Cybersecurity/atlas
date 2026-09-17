@@ -8,9 +8,9 @@ import { glslStrip } from '../web-shared/glsl-strip.js';
 const here = dirname(fileURLToPath(import.meta.url));
 
 // Regenerate src/lib/*.generated.json from their SSOTs on every build (and dev
-// server start). Env (ATLAS_RECIPES_ROOT / ATLAS_BASELINES_ROOT / GH_TOKEN) is
+// server start). Env (AVAROK_RECIPES_ROOT / AVAROK_BASELINES_ROOT / GH_TOKEN) is
 // passed through so CI and local hosts resolve their sources identically.
-function atlasGenerators() {
+function avarokGenerators() {
   const run = (script) =>
     execFileSync(process.execPath, [resolve(here, 'scripts', script)], {
       cwd: here,
@@ -18,7 +18,7 @@ function atlasGenerators() {
       env: process.env
     });
   return {
-    name: 'atlas-generators',
+    name: 'avarok-generators',
     apply: () => true, // build + serve
     buildStart() {
       // Structural generators: a nonzero exit is a hard, loud build failure.
@@ -45,7 +45,7 @@ function atlasGenerators() {
 }
 
 export default defineConfig({
-  plugins: [glslStrip(), atlasGenerators(), sveltekit()],
+  plugins: [glslStrip(), avarokGenerators(), sveltekit()],
   server: {
     // app.css and the field import from web-shared/, outside this app's root.
     // The build resolves it regardless; the dev server has to be told.

@@ -17,7 +17,7 @@ metadata:
     repetition detector in the scheduler catches it and ends generation
     cleanly. If you see `finish_reason: "length"` at low token counts on
     a repetitive output, that's the watchdog firing.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 27B
   model_dtype: nvfp4

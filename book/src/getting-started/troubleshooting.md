@@ -42,7 +42,7 @@ saying "this machine cannot run models" within a few seconds.
 It appears to work, and it is the wrong move:
 
 - the model runs as root, and so does everything the container does;
-- `~/.atlas` collects root-owned files that your normal user then cannot read,
+- `~/.avarok` collects root-owned files that your normal user then cannot read,
   so the next unprivileged `atlasctl run` fails in a way that looks unrelated;
 - `sudo` uses root's `PATH`, so `atlasctl` is frequently "not found" even though
   `which atlasctl` finds it for you.

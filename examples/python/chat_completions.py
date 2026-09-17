@@ -19,13 +19,13 @@ from openai import OpenAI
 # field, so we pass a placeholder. If you've enabled auth in front of Atlas
 # (reverse proxy, etc.), set OPENAI_API_KEY in the environment.
 client = OpenAI(
-    base_url=os.environ.get("ATLAS_BASE_URL", "http://localhost:8888/v1"),
-    api_key=os.environ.get("OPENAI_API_KEY", "atlas-no-auth"),
+    base_url=os.environ.get("AVAROK_BASE_URL", "http://localhost:8888/v1"),
+    api_key=os.environ.get("OPENAI_API_KEY", "avarok-no-auth"),
 )
 
 MODEL = os.environ.get(
-    "ATLAS_MODEL",
-    # Override via ATLAS_MODEL env var; this default matches the
+    "AVAROK_MODEL",
+    # Override via AVAROK_MODEL env var; this default matches the
     # model-id Atlas reports via /v1/models for the most common
     # NVFP4 35B-A3B deployment.
     "Sehyo/Qwen3.5-35B-A3B-NVFP4",

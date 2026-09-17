@@ -7,7 +7,7 @@
 //! real Qwen3.8-27B shapes is the GPU oracle's job
 //! (`examples/native_fp8_ffn_batch16_microtest.rs`).
 //!
-//! THE TIER IS OFF BY DEFAULT (`ATLAS_FFN_BATCH16=1` arms it), so every test
+//! THE TIER IS OFF BY DEFAULT (`AVAROK_FFN_BATCH16=1` arms it), so every test
 //! here that expects a batch16 launch arms it EXPLICITLY — via the pure rule's
 //! `enabled` argument, or via `layer.batch16_enabled` on the dispatch cases.
 //! `stock_serve_is_the_pre_927_routing` pins the default itself, so a later
@@ -18,7 +18,7 @@ use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -95,7 +95,7 @@ fn batch16_declines_when_the_kernel_is_absent() {
     }
 }
 
-/// The DEFAULT, pinned: without `ATLAS_FFN_BATCH16=1` every width in the band
+/// The DEFAULT, pinned: without `AVAROK_FFN_BATCH16=1` every width in the band
 /// routes exactly where it did before #927, kernel handle present or not.
 ///
 /// `enabled` is injected rather than read from the environment: the real

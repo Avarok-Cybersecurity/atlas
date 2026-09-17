@@ -15,8 +15,8 @@
 //! is 8 x 32 x 151.5 MiB = 37.88 GiB of ring inside a 45,823 MiB inference
 //! reserve, against a 71.3 GiB budget already carrying 57.2 GiB of weights —
 //! and the serve REFUSED to boot (rental H100, 2026-09-05, evidence cell
-//! `qwen38.atlas.a.lat.c1`). The shipped workaround was `--max-batch-size 4`
-//! (cell `qwen38.atlas.c.lat.c1`, reserve 8.54 GiB, GO in 22 s): paying for
+//! `qwen38.avarok.a.lat.c1`). The shipped workaround was `--max-batch-size 4`
+//! (cell `qwen38.avarok.c.lat.c1`, reserve 8.54 GiB, GO in 22 s): paying for
 //! rollback depth with four fifths of the serve's concurrency.
 //!
 //! Ring depth degrades GRACEFULLY (fewer retained boundaries = fewer
@@ -26,7 +26,7 @@
 //! term that yields is the ring, and it yields down
 //! `ssm_reserve::DECODE_RING_FIT_LADDER` until the whole reserve fits.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::headroom::Yardstick;
 use crate::cli;
@@ -63,13 +63,13 @@ pub(super) struct RingFit {
 /// `use_speculative` here MUST mirror what `build_model` passes:
 /// `args.speculative || args.dflash`.
 ///
-/// Kill switch: `ATLAS_SSM_RESERVE_RING_FULL` present => restore the old
+/// Kill switch: `AVAROK_SSM_RESERVE_RING_FULL` present => restore the old
 /// unconditional reservation (accounting-only, safe over-reserve;
 /// presence-style — `=0` is NOT "off").
 pub(super) fn requested_slots(args: &cli::ServeArgs, config: &ModelConfig) -> usize {
-    if std::env::var("ATLAS_SSM_RESERVE_RING_FULL").is_ok() {
+    if std::env::var("AVAROK_SSM_RESERVE_RING_FULL").is_ok() {
         return if config.num_ssm_layers() > 0 {
-            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
+            avarok_kernels::DECODE_ROLLBACK_RING_SLOTS
         } else {
             0
         };

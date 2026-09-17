@@ -23,7 +23,7 @@ use crate::layers::ops;
 impl Qwen3SsmLayer {
     /// The wyN kernel for chain-verify `num_tokens` ∈ {5..16}, or `None`
     /// when out of range, the module is absent (non-gb10 target), or the
-    /// `ATLAS_GDN_WYN=0` kill-switch is set — all of which keep the caller
+    /// `AVAROK_GDN_WYN=0` kill-switch is set — all of which keep the caller
     /// on the sequential per-token fallback. K=9..16 added 2026-08-29:
     /// the γ>8 window class previously had NO fused arm and ran the
     /// per-token loop (conv + gdn + 2 state D2Ds per token per GDN layer),
@@ -32,7 +32,7 @@ impl Qwen3SsmLayer {
         if !(5..=16).contains(&num_tokens) || !wyn_enabled {
             return None;
         }
-        // ATLAS_SSM_H_FP16: the FP16 twin is the ONLY correct kernel over an
+        // AVAROK_SSM_H_FP16: the FP16 twin is the ONLY correct kernel over an
         // FP16 h pool — an FP32 wyN would read half-width data as floats and
         // emit fluent garbage. A zero twin handle returns None on purpose;
         // the caller's sequential fallback REFUSES under f16 (hard error),
@@ -54,7 +54,7 @@ impl Qwen3SsmLayer {
     /// final H in place. `wy_kernel`'s compile-time K must equal
     /// `args.num_tokens` (wy17 for 17, wy5..wy8 for 5..8).
     ///
-    /// Kill-switch `ATLAS_GDN_FUSED_CONV17=0` restores the per-token conv
+    /// Kill-switch `AVAROK_GDN_FUSED_CONV17=0` restores the per-token conv
     /// loop for A/B (applies to every width dispatched through this arm).
     pub(super) fn decode_batched_conv_gdn_wyn(
         &self,
@@ -96,7 +96,7 @@ impl Qwen3SsmLayer {
         let fused_conv = self.gdn_verify_fused_conv_kn_k.0 != 0
             && inter_contiguous
             && !matches!(
-                std::env::var("ATLAS_GDN_FUSED_CONV17").ok().as_deref(),
+                std::env::var("AVAROK_GDN_FUSED_CONV17").ok().as_deref(),
                 Some("0")
             );
         if fused_conv {

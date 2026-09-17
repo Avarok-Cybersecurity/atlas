@@ -7,7 +7,7 @@
 
 `kernels/gb10/common/` holds 160 `.cu` files. Each model directory shadows
 only a handful of them — 11 for `qwen3.6-27b`, 5 for `qwen3.6-35b-a3b`, 18
-for `deepseek-v4-flash`. `collect_cu_files` (`atlas-kernels/build.rs`) merges
+for `deepseek-v4-flash`. `collect_cu_files` (`avarok-kernels/build.rs`) merges
 the two layers into a `HashMap` keyed by file stem, common first, model
 second, so the model directory holds *overrides*, not the model's kernels.
 
@@ -38,10 +38,10 @@ in two ways we found only by reading the tree.
    one carrying the `BR64` define — are invisible. Editing a header would
    invalidate nothing.
 
-We also could not reuse the existing `ATLAS_KERNEL_SET_HASH`
-(`atlas-kernels/src/lib.rs`): it is global across all targets, hashes the
+We also could not reuse the existing `AVAROK_KERNEL_SET_HASH`
+(`avarok-kernels/src/lib.rs`): it is global across all targets, hashes the
 *generated* `target_ptx.rs` text rather than kernel content, and is a stub
-under `ATLAS_SKIP_BUILD=1` — which is how the gate runs.
+under `AVAROK_SKIP_BUILD=1` — which is how the gate runs.
 
 We considered three responses:
 

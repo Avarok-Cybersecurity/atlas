@@ -32,7 +32,7 @@
     </p>
 
     <div class="cta">
-      <a class="btn primary" href={LINKS.atlasRepo} rel="noopener noreferrer">
+      <a class="btn primary" href={LINKS.avarokRepo} rel="noopener noreferrer">
         Follow development on GitHub
       </a>
       <a class="btn" href="#what">What is Dez?</a>

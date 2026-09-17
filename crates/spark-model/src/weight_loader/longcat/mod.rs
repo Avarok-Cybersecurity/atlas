@@ -30,7 +30,7 @@ mod ngram;
 mod prep;
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -104,20 +104,22 @@ impl ModelWeightLoader for LongcatWeightLoader {
             config.zero_expert_num,
         );
 
-        // Same measurement lever the Mistral MLA loader has: ATLAS_NVFP4_MLA=0
+        // Same measurement lever the Mistral MLA loader has: AVAROK_NVFP4_MLA=0
         // keeps the MLA projections in BF16, which separates "the port's math
         // is wrong" from "4-bit quantization of these projections is lossy".
-        let disable_nvfp4_mla = std::env::var("ATLAS_NVFP4_MLA")
+        let disable_nvfp4_mla = std::env::var("AVAROK_NVFP4_MLA")
             .map(|v| {
                 let v = v.trim().to_ascii_lowercase();
                 matches!(v.as_str(), "0" | "false" | "no" | "off")
             })
             .unwrap_or(false);
         if disable_nvfp4_mla {
-            tracing::info!("LongCat: ATLAS_NVFP4_MLA=0 — MLA projections stay BF16");
+            tracing::info!("LongCat: AVAROK_NVFP4_MLA=0 — MLA projections stay BF16");
         }
         if super::longcat::ffn::bf16_dense_ffn() {
-            tracing::info!("LongCat: ATLAS_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16");
+            tracing::info!(
+                "LongCat: AVAROK_LONGCAT_BF16_FFN=1 — per-sublayer dense FFN stays BF16"
+            );
         }
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;

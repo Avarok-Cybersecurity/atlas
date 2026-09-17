@@ -23,11 +23,11 @@ pub struct ChatLevers {
     /// Prompt-rendering decisions, handed to `ToolCallParser::system_prompt`
     /// and the chat template.
     pub prompt: PromptLevers,
-    /// `ATLAS_BASH_WANDER_WATCHDOG=1` — append the BW1 steering hint when the
+    /// `AVAROK_BASH_WANDER_WATCHDOG=1` — append the BW1 steering hint when the
     /// agent has made many tool calls with no productive file output.
     /// Default-off (PCND).
     pub bash_wander: bool,
-    /// `ATLAS_CHAT_PHASE_TIMING=1` — emit per-phase `CHAT_PHASE` timing lines
+    /// `AVAROK_CHAT_PHASE_TIMING=1` — emit per-phase `CHAT_PHASE` timing lines
     /// for the handler and the prepare stage. Diagnostic; default-off, so the
     /// production path is unchanged.
     pub phase_timing: bool,
@@ -36,7 +36,7 @@ pub struct ChatLevers {
     /// system message when tools are active. Model-scoped: some checkpoints
     /// treat the injected block as conversation content and degrade.
     pub disable_cwd_hint_injection: bool,
-    /// `ATLAS_INTHINK_TOOL_LEAK_OPENERS=N` — how many tool-call openers
+    /// `AVAROK_INTHINK_TOOL_LEAK_OPENERS=N` — how many tool-call openers
     /// (`<tool_call>`, `<function=`, …) the in-think leak scanner tolerates
     /// in a stream's reasoning before cancelling the sequence. Every opener
     /// is stripped from the emitted reasoning regardless; this knob governs
@@ -74,11 +74,11 @@ impl ChatLevers {
     pub fn resolve(tscg: bool, disable_cwd_hint_injection: bool) -> Self {
         Self {
             prompt: PromptLevers::new(tscg),
-            bash_wander: std::env::var("ATLAS_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"),
-            phase_timing: std::env::var("ATLAS_CHAT_PHASE_TIMING").as_deref() == Ok("1"),
+            bash_wander: std::env::var("AVAROK_BASH_WANDER_WATCHDOG").as_deref() == Ok("1"),
+            phase_timing: std::env::var("AVAROK_CHAT_PHASE_TIMING").as_deref() == Ok("1"),
             disable_cwd_hint_injection,
             in_think_leak_openers: in_think_leak_openers_from(
-                std::env::var("ATLAS_INTHINK_TOOL_LEAK_OPENERS")
+                std::env::var("AVAROK_INTHINK_TOOL_LEAK_OPENERS")
                     .ok()
                     .as_deref(),
             ),
@@ -86,7 +86,7 @@ impl ChatLevers {
     }
 }
 
-/// SSOT parse for `ATLAS_INTHINK_TOOL_LEAK_OPENERS`. A set-but-unparseable
+/// SSOT parse for `AVAROK_INTHINK_TOOL_LEAK_OPENERS`. A set-but-unparseable
 /// value is a config error, not an absent one — silently keeping the default
 /// is how an operator's "fix" fails to apply (#328 class), so it warns.
 fn in_think_leak_openers_from(env: Option<&str>) -> u32 {
@@ -97,7 +97,7 @@ fn in_think_leak_openers_from(env: Option<&str>) -> u32 {
             Err(_) => {
                 tracing::warn!(
                     value = %v,
-                    "ATLAS_INTHINK_TOOL_LEAK_OPENERS is set but not a u32; using default"
+                    "AVAROK_INTHINK_TOOL_LEAK_OPENERS is set but not a u32; using default"
                 );
                 ChatLevers::OFF.in_think_leak_openers
             }

@@ -7,13 +7,13 @@
 //! rotation. Landing is byte-identical to the disk pack (the loader does the
 //! same F16/F32→BF16 convert + B row-repack).
 //!
-//! Gated behind `$ATLAS_LORA_PEER` at the call site; when unset the disk
+//! Gated behind `$AVAROK_LORA_PEER` at the call site; when unset the disk
 //! rotation path is unchanged.
 
 use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::gpu::DevicePtr;
 use spark_storage::weight_peer::WeightManifest;
 use spark_storage::{LoraAbKind, LoraLandTarget};

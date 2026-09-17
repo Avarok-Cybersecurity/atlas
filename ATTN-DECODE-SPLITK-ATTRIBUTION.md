@@ -1,7 +1,7 @@
 # Paged decode attention split-K on H100 (#928)
 
 **Headline: split-K was disabled on Hopper by a constant, not by a kernel.**
-`atlas-core/src/device.rs:16` declares `NUM_SMS = 48` (GB10) in a module named
+`avarok-core/src/device.rs:16` declares `NUM_SMS = 48` (GB10) in a module named
 `sm121`; `run_paged_decode.rs` imported it, so on a 132-SM H100 the split count
 was 1 at every batch size and paged decode attention ran 24 CTAs for the whole
 campaign. The split-K kernels existed and were wired; nothing selected them.
@@ -86,7 +86,7 @@ BR-row-wise reduce, not a launch-geometry change. Left for its own lever — the
 
 ## What round 15 measured (1xH100 80GB HBM3, tip `8a6f50b61`, cells A15/S0/S4/S6)
 
-**Landed, C=1.** `ATLAS_ATTN_DECODE_SPLITK=0` (S0) against `auto` (A15), same
+**Landed, C=1.** `AVAROK_ATTN_DECODE_SPLITK=0` (S0) against `auto` (A15), same
 binary, one variable:
 
 | rung | S0 (1 split) | **A15 (11, `auto`)** | Δ | rep spread |
@@ -159,10 +159,10 @@ reached the launch — so `splitk_dispatch::route_line` now emits, once per KV
 dtype on that arm's first decode dispatch:
 
 ```
-paged decode attention: paged_decode_attn_splitk_fp8_hopper num_splits=11 sm_count=132 policy=auto (ATLAS_ATTN_DECODE_SPLITK)
+paged decode attention: paged_decode_attn_splitk_fp8_hopper num_splits=11 sm_count=132 policy=auto (AVAROK_ATTN_DECODE_SPLITK)
 ```
 
-And `ATLAS_ATTN_DECODE_SPLITK=0` boots as `attn_decode_splitk=1 (env)`: the
+And `AVAROK_ATTN_DECODE_SPLITK=0` boots as `attn_decode_splitk=1 (env)`: the
 resolver prints the RESOLVED count and `0`/`off` is one split. That is correct
 and is now stated in `kernels/hopper/HARDWARE.toml`'s own comment; the route
 line above names the kernel that then ran, which is the unambiguous receipt.

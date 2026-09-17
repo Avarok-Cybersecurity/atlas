@@ -107,7 +107,7 @@ impl Qwen3SsmLayer {
             ctx,
             stream,
         )?;
-        // ATLAS_GDN_DUMP hook #0c: post-qkvz GEMM (deinterleaved input
+        // AVAROK_GDN_DUMP hook #0c: post-qkvz GEMM (deinterleaved input
         // to conv1d). qkvz_size = key_dim*2 + value_dim*2 = 12288 for A3B
         // (Q+K+V+Z, head-major within each segment). Compare against HF's
         // in_proj_qkv output (only 8192 — Q+K+V; HF has separate in_proj_z).
@@ -198,7 +198,7 @@ impl Qwen3SsmLayer {
         // Conv1d processes QKV channels (first conv_dim of each token's qkvz_size)
         // MID-CHUNK tail capture: reserve THIS SSM layer's per-pass ordinal
         // once (shared by the conv + recurrence splits below). `None` unless
-        // ATLAS_SSM_TAIL_MIDCHUNK is active for a pass that spans `tb`.
+        // AVAROK_SSM_TAIL_MIDCHUNK is active for a pass that spans `tb`.
         let midcap_idx = ctx.midchunk_capture.as_ref().map(|c| {
             c.ssm_layer_counter
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -229,7 +229,7 @@ impl Qwen3SsmLayer {
             stream,
         );
 
-        // ATLAS_GDN_DUMP hook #1: post-conv1d (post-silu, applied inside
+        // AVAROK_GDN_DUMP hook #1: post-conv1d (post-silu, applied inside
         // the kernel). Last-token slice, flat [conv_dim] bf16. Layer
         // index from SSM_LAYER_CALL_COUNTER; latched by per-layer
         // AtomicBool so each (layer_idx, stage) dumps at most once.
@@ -265,7 +265,7 @@ impl Qwen3SsmLayer {
             conv_dim as u32,
             stream,
         )?;
-        // ATLAS_GDN_DUMP hook #2: post-L2 norm on q,k (v unchanged).
+        // AVAROK_GDN_DUMP hook #2: post-L2 norm on q,k (v unchanged).
         // Same buffer/shape as the conv dump — l2_norm operates in
         // place on the q,k segments of conv_out_buf.
         super::debug::maybe_dump_gdn_buf(
@@ -334,7 +334,7 @@ impl Qwen3SsmLayer {
             stream,
         );
 
-        // ATLAS_GDN_DUMP hook #3: post-GDN recurrence (pre-gnorm,
+        // AVAROK_GDN_DUMP hook #3: post-GDN recurrence (pre-gnorm,
         // value-space). gdn_out_buf is [num_tokens, value_dim] bf16
         // row-major; dump the last token's value_dim slice.
         super::debug::maybe_dump_gdn_buf(
@@ -373,7 +373,7 @@ impl Qwen3SsmLayer {
             qkvz_size as u32,
             stream,
         )?;
-        // ATLAS_GDN_DUMP hook #4: post-gated-RMSNorm. Downstream
+        // AVAROK_GDN_DUMP hook #4: post-gated-RMSNorm. Downstream
         // `prefill_out_proj_dispatch` (line ~411) consumes this buffer
         // as `[num_tokens, value_dim]`, so the row stride is value_dim
         // (= nv*vd = 4096 for A3B). normed_out_buf aliases conv_out_buf
@@ -411,7 +411,7 @@ impl Qwen3SsmLayer {
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (num_tokens × h BF16) before the residual add. No-op at tp=1.
         self.ssm_tp_all_reduce(out_proj_buf, normed_out_buf, num_tokens, ctx, stream)?;
-        // ATLAS_GDN_DUMP hook: SSM out_proj output — drift attribution.
+        // AVAROK_GDN_DUMP hook: SSM out_proj output — drift attribution.
         super::debug::maybe_dump_gdn_buf(
             ctx.gpu,
             out_proj_buf,

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cli::bench_certify::plan::{Estimate, Unit};
-use atlas_plugin::hardware::policy::Sensitivity;
+use avarok_plugin::hardware::policy::Sensitivity;
 
 fn plain() -> Unit {
     Unit {
@@ -222,7 +222,7 @@ fn the_repo_reader_returns_the_record_of_this_shard_not_the_newest_sibling() {
         .unwrap()
         .parent()
         .unwrap();
-    let source = atlas_plugin::gate::records_newest_first(ws, "bfcl-subset")
+    let source = avarok_plugin::gate::records_newest_first(ws, "bfcl-subset")
         .into_iter()
         .find(|p| p.extension().is_some_and(|e| e == "json"))
         .expect("a committed bfcl-subset record");

@@ -2,7 +2,7 @@
 
 //! Publishing the command line's kernel-path selections.
 //!
-//! Each of these was an `ATLAS_*` variable read at its own call site. They are
+//! Each of these was an `AVAROK_*` variable read at its own call site. They are
 //! CONFIGURATION — the concurrency campaign's best recipe needs three of them —
 //! so they belong on the command line, where `--help` lists them, `ps` shows
 //! them and a recipe can be read without a ten-line env preamble. The variables
@@ -13,7 +13,7 @@
 //! Every cell below is a `OnceLock` whose fallback closure reads the
 //! environment on first touch. Publishing a clap DEFAULT into one seals it
 //! before anything asks, which makes the fallback unreachable — so five
-//! documented `ATLAS_*` variables were inert under `spark serve` while
+//! documented `AVAROK_*` variables were inert under `spark serve` while
 //! `--help` still described them and the startup log still echoed the flag back.
 //! Every flag here is therefore an `Option`, and an absent flag publishes
 //! NOTHING.
@@ -30,8 +30,8 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     // The three GDN flags are ONE cell in `spark-model`, so they are published
     // together or not at all. Publishing them unconditionally — which is what
     // passing clap defaults amounted to — sealed that cell on every boot and
-    // made `ATLAS_SSM_H_FP16`, `ATLAS_GDN_FUSED_NORM` and
-    // `ATLAS_SSM_BATCHED_RECURRENT` inert while `--help` still documented them.
+    // made `AVAROK_SSM_H_FP16`, `AVAROK_GDN_FUSED_NORM` and
+    // `AVAROK_SSM_BATCHED_RECURRENT` inert while `--help` still documented them.
     // A frozen config that set one of those ran with the OPPOSITE setting and
     // nothing said so.
     //
@@ -92,7 +92,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
         );
     }
     // `--ssm-decode-ring-slots`: ABSENT IS NOT A VALUE. `auto` (the clap
-    // default) publishes NOTHING, so the documented `ATLAS_SSM_DECODE_RING`
+    // default) publishes NOTHING, so the documented `AVAROK_SSM_DECODE_RING`
     // fallback stays reachable AND preflight can publish the depth it fitted
     // to free memory later in the same boot (#915). An explicit N is
     // published here, before preflight runs, which is exactly what makes the
@@ -111,7 +111,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     }
     // `--prefill-varlen-batch`: its own single-value cell, so it publishes
     // independently of the GDN trio. Absent publishes nothing and the
-    // documented `ATLAS_PREFILL_VARLEN` fallback stays reachable.
+    // documented `AVAROK_PREFILL_VARLEN` fallback stays reachable.
     if let Some(varlen) = args.prefill_varlen_batch {
         let in_force = spark_model::layers::ops::set_prefill_varlen_from_cli(varlen);
         if in_force != varlen {
@@ -120,15 +120,15 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
                  line's ({varlen}) did NOT take effect"
             );
         }
-        if std::env::var_os("ATLAS_PREFILL_VARLEN").is_some() {
+        if std::env::var_os("AVAROK_PREFILL_VARLEN").is_some() {
             tracing::warn!(
-                "ATLAS_PREFILL_VARLEN is set but was OVERRIDDEN: `--prefill-varlen-batch` \
+                "AVAROK_PREFILL_VARLEN is set but was OVERRIDDEN: `--prefill-varlen-batch` \
                  on the command line owns the decision. Drop the flag to let the \
                  environment decide."
             );
         }
     }
-    // `None` where the flag was not given, so the documented `ATLAS_*` fallback
+    // `None` where the flag was not given, so the documented `AVAROK_*` fallback
     // still decides. Passing the clap default instead sealed both cells on
     // every boot and made those variables silent no-ops.
     spark_runtime::set_ssm_tail_midchunk(args.ssm_tail_midchunk);
@@ -177,7 +177,7 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
     );
 }
 
-/// Legacy `ATLAS_*` variables that a GDN flag on the command line overrides.
+/// Legacy `AVAROK_*` variables that a GDN flag on the command line overrides.
 ///
 /// `gdn_flags::set_from_cli` publishes all three of its fields together — there
 /// is no per-field "unspecified" to express — so ONE of these flags takes the
@@ -191,9 +191,9 @@ pub(crate) fn publish_kernel_flags(args: &cli::ServeArgs) {
 /// nothing is published and these variables decide, which is the documented
 /// behaviour and needs no warning.
 const SHADOWED_BY_CLI: &[(&str, &str)] = &[
-    ("ATLAS_SSM_H_FP16", "--ssm-h-dtype f16"),
-    ("ATLAS_GDN_FUSED_NORM", "--gdn-fused-norm"),
-    ("ATLAS_SSM_BATCHED_RECURRENT", "--ssm-batched-recurrent"),
+    ("AVAROK_SSM_H_FP16", "--ssm-h-dtype f16"),
+    ("AVAROK_GDN_FUSED_NORM", "--gdn-fused-norm"),
+    ("AVAROK_SSM_BATCHED_RECURRENT", "--ssm-batched-recurrent"),
 ];
 
 fn warn_shadowed_env() {

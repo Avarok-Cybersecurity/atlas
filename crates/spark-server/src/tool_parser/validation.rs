@@ -749,8 +749,8 @@ pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(),
                     // empty filePath alongside a large `content` is the
                     // self-truncation generation pattern (F78); filePath
                     // absent ⇒ omission; a path under an unexpected key ⇒
-                    // parser. Inert unless ATLAS_TOOLCALL_DEBUG=1.
-                    if std::env::var("ATLAS_TOOLCALL_DEBUG").as_deref() == Ok("1") {
+                    // parser. Inert unless AVAROK_TOOLCALL_DEBUG=1.
+                    if std::env::var("AVAROK_TOOLCALL_DEBUG").as_deref() == Ok("1") {
                         let shape: Vec<String> = args
                             .iter()
                             .map(|(k, v)| match v {
@@ -762,7 +762,7 @@ pub fn assess_tool_call(call: &ToolCall, tools: &[ToolDefinition]) -> Result<(),
                             .collect();
                         tracing::warn!(
                             tool = %name, empty_key = %key,
-                            "ATLAS_TOOLCALL_DEBUG empty-path arg shape: [{}]",
+                            "AVAROK_TOOLCALL_DEBUG empty-path arg shape: [{}]",
                             shape.join(", ")
                         );
                     }

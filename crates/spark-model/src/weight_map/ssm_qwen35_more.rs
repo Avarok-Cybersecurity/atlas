@@ -34,7 +34,7 @@ pub(crate) fn load_moe_minimax(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     absmax_k: spark_runtime::gpu::KernelHandle,
     quantize_k: spark_runtime::gpu::KernelHandle,
@@ -232,7 +232,7 @@ pub(crate) fn load_moe_gemma4(
     layer_prefix: &str,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
 ) -> Result<MoeWeights> {

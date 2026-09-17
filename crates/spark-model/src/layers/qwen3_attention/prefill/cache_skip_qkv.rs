@@ -155,7 +155,7 @@ impl Qwen3AttentionLayer {
     ) -> Result<()> {
         // Per-projection weight bundle. Q transposed dispatch is opt-in until
         // measured on Holo because this cache-skip path historically skipped it.
-        let use_q_t = std::env::var("ATLAS_ATTN_PREFILL_Q_T").ok().as_deref() == Some("1");
+        let use_q_t = std::env::var("AVAROK_ATTN_PREFILL_Q_T").ok().as_deref() == Some("1");
         let (fp8w_t, weight_opt, fp8, nvfp4_t, dense, label) = match proj {
             SkipProj::Q => (
                 use_q_t.then_some(self.q_fp8w_t.as_ref()).flatten(),
@@ -189,7 +189,7 @@ impl Qwen3AttentionLayer {
         }
 
         let use_t_pipelined =
-            std::env::var("ATLAS_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
+            std::env::var("AVAROK_ATTN_PREFILL_T_PIPE").ok().as_deref() == Some("1");
         if ctx.dispatch.cutlass_nvfp4_attn_qkv(label)
             && let Some(nvfp4_t) = nvfp4_t
         {
@@ -206,7 +206,7 @@ impl Qwen3AttentionLayer {
         // buffer ledger — 2 B per weight element, the same class of leak that
         // cost the SSM QKVZ arm ~10.3 GiB and killed a 28-token H100 prefill
         // (#917 round 3). It mattered again because the 5..16-row decode
-        // recipe arms `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`.
+        // recipe arms `AVAROK_CUBLAS_GEMM=ffn,ssm,attn`.
         // `alloc_tests.rs` drives this chain on a mock backend with the `attn`
         // family armed and fails if it allocates at all, on the FIRST call —
         // the dequant was cached by weight pointer, so a first-vs-second

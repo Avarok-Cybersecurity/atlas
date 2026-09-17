@@ -3,7 +3,7 @@
 //! GATE — `glm5next_dsa_mla_decode_fp8` vs the `dsa_mla_masked_attn` oracle.
 //!
 //! Run: `cargo run --release --example glm5next_dsa_decode_gate`
-//! Env: `KDA_DSA_PACKET_DIR` (default `/home/msi1/atlas-scratch/dsa-family`).
+//! Env: `KDA_DSA_PACKET_DIR` (default `/home/msi1/avarok-scratch/dsa-family`).
 //!
 //! # What is actually being compared
 //!
@@ -38,7 +38,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::collections::BTreeMap;
@@ -219,14 +219,14 @@ fn fp8_e4m3_round(table: &[(u8, f32)], v: f32) -> (u8, f32) {
 
 fn main() -> Result<()> {
     let dir = std::env::var("KDA_DSA_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/dsa-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/dsa-family".to_string());
     let pkt = Packet::open(&format!("{dir}/dsa_layer{LAYER}.safetensors"))?;
     println!("GATE — glm5next_dsa_mla_decode_fp8 vs dsa_mla_masked_attn");
     println!("  layer {LAYER}, S={S}, heads={HEADS}, latent={KVL}, real weights from {dir}\n");
 
     // `ptx_modules()` aliases target 0 (deepseek-v4-flash). The subject kernel lives in
     // the glm-5.3-flash target — which is the point: it is GLM-only, so V4 cannot see it.
-    let sets = atlas_kernels::all_ptx_sets();
+    let sets = avarok_kernels::all_ptx_sets();
     let glm = sets
         .iter()
         .find(|s| s.target.model == "glm-5.3-flash")
@@ -238,7 +238,7 @@ fn main() -> Result<()> {
         glm.target.quant,
         glm.modules.len()
     );
-    let gpu = AtlasCudaBackend::new(0, &glm.modules)?;
+    let gpu = AvarokCudaBackend::new(0, &glm.modules)?;
     let k_sub = gpu.kernel("glm5next_dsa_mla_decode", "glm5next_dsa_mla_decode_fp8")?;
     let k_orc = gpu.kernel("dsa_indexer", "dsa_mla_masked_attn")?;
     // The indexer's k_norm is an nn.LayerNorm WITH A BIAS. Prove the bias-bearing kernel

@@ -169,7 +169,7 @@
               <p class="ld-place-sub">
                 Then reopen this dialog. The agent re-checks on its own, so there is
                 nothing to restart. Do not use <code>sudo atlasctl</code> — it runs
-                the model as root and leaves root-owned files in <code>~/.atlas</code>
+                the model as root and leaves root-owned files in <code>~/.avarok</code>
                 that your normal user cannot read.
               </p>
             {/if}

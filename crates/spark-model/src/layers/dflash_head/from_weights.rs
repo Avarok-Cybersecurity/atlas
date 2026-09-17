@@ -215,7 +215,7 @@ impl BlockDiffusionDraftHead {
             // for Phase G (module namespace "w4a16").
             // try_kernel: absent on targets whose w4a16 module predates
             // Phase G — the FP8 drafter path is then skipped at the
-            // ATLAS_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
+            // AVAROK_DFLASH_DRAFTER_FP8 gate below (BF16 fallback).
             fp8_gemm_n128_row_scaled: crate::layers::try_kernel(
                 gpu,
                 "w4a16",
@@ -276,7 +276,7 @@ impl BlockDiffusionDraftHead {
         // paper's 70% is dominated by this cap. Default raised 512 → 4096
         // (2026-07-08): long generations (MinHeap ~2.6k tok) blow past 512
         // captured rows → truncated prefix → accept collapse + droop.
-        // ATLAS_DFLASH_CTX_WINDOW overrides at construction time.
+        // AVAROK_DFLASH_CTX_WINDOW overrides at construction time.
         //
         // Memory cost: attention-path scratch scales linearly with
         // `n_attn = γ + cw`. At cw=4096: stream/norm/acc ≈ 16.8 MB each;
@@ -285,12 +285,12 @@ impl BlockDiffusionDraftHead {
         // precompute_ctx_kv borrows mlp_intermediate as all_k_stage
         // [L×n×kv_dim ≈ 21 MB]); fused_kv_out ≈ 42 MB. logits is γ-rows
         // only (see alloc below). Total scratch ≈ 250 MB per head.
-        let ctx_window: usize = std::env::var("ATLAS_DFLASH_CTX_WINDOW")
+        let ctx_window: usize = std::env::var("AVAROK_DFLASH_CTX_WINDOW")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(4096);
         tracing::info!(
-            "DFlash ctx_window = {} (set ATLAS_DFLASH_CTX_WINDOW to override; \
+            "DFlash ctx_window = {} (set AVAROK_DFLASH_CTX_WINDOW to override; \
              drafter trained on full captured prefix — larger is better, \
              scratch grows linearly)",
             ctx_window
@@ -409,7 +409,7 @@ impl BlockDiffusionDraftHead {
         //     v2 2026-04-27 Qwen3.6-DFlash drafter ships `rope_scaling: null`.
         //   * `Some(yarn)` ⇒ YaRN-scaled table (Mistral-Small-4 lineage).
         //
-        // Historical bug (Friday/Avarok 2026-05): this loader unconditionally
+        // Historical bug (Friday/Atlas 2026-05): this loader unconditionally
         // applied YaRN with factor=64 / orig_max_pos=4096 hardcoded, which
         // mis-scaled every low-frequency RoPE pair (pairs 0..11 divided by
         // 64, pairs 11..26 ramped). Result: drafter Q/K rotations landed in
@@ -577,7 +577,7 @@ impl BlockDiffusionDraftHead {
                     gate_proj: l.gate_proj,
                     up_proj: l.up_proj,
                     down_proj: l.down_proj,
-                    // Phase G — populated below if ATLAS_DFLASH_DRAFTER_FP8=1.
+                    // Phase G — populated below if AVAROK_DFLASH_DRAFTER_FP8=1.
                     q_proj_fp8: None,
                     k_proj_fp8: None,
                     v_proj_fp8: None,
@@ -703,12 +703,12 @@ impl BlockDiffusionDraftHead {
         // Default ON since the 54.5 record config (2026-08-19): FP8 drafter
         // weights are the proven speed lane (accept gate held). `=0` reverts
         // to the BF16 drafter path.
-        let fp8_requested = std::env::var("ATLAS_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
+        let fp8_requested = std::env::var("AVAROK_DFLASH_DRAFTER_FP8").ok().as_deref() != Some("0");
         let fp8_kernels_present = head.kernels.fp8_gemm_n128_row_scaled.0 != 0
             && head.kernels.fp8_gemm_n128_row_scaled_m16.0 != 0;
         if fp8_requested && !fp8_kernels_present {
             tracing::warn!(
-                "ATLAS_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
+                "AVAROK_DFLASH_DRAFTER_FP8=1 but fp8_gemm_t_row_scaled(_m16) kernels are \
                  not in this target's w4a16 PTX module — staying on the BF16 drafter path. \
                  Port the Phase G kernels from kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu."
             );
@@ -822,7 +822,7 @@ impl BlockDiffusionDraftHead {
             head.quant = DflashQuantization::Fp8Weights;
             tracing::info!(
                 "DFlash Phase G: drafter weights ready as FP8 (quant = Fp8Weights). \
-                 Set ATLAS_DFLASH_DRAFTER_FP8=0 to revert to BF16."
+                 Set AVAROK_DFLASH_DRAFTER_FP8=0 to revert to BF16."
             );
         }
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 PORT = 8888
 BASE_URL = f"http://localhost:{PORT}"
-WORK_DIR = Path("/tmp/atlas-agentic-test")
+WORK_DIR = Path("/tmp/avarok-agentic-test")
 MAX_TURNS = 15
 
 TOOLS = [
@@ -262,9 +262,9 @@ def main():
             break
 
     # Save results
-    with open("/workspace/atlas/agentic_test_results.json", "w") as f:
+    with open("/workspace/avarok/agentic_test_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    print(f"\nResults saved to /workspace/atlas/agentic_test_results.json")
+    print(f"\nResults saved to /workspace/avarok/agentic_test_results.json")
 
 if __name__ == "__main__":
     main()

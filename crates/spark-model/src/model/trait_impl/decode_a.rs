@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -27,23 +27,23 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
-/// `ATLAS_REDZONE_EVERY=<n>` — scan the A55 guard bands every `n`-th decode step. 0 disables
+/// `AVAROK_REDZONE_EVERY=<n>` — scan the A55 guard bands every `n`-th decode step. 0 disables
 /// the scan while leaving the pads in place (which is the configuration the READ experiment
 /// wants: pads present and poisoned, never inspected).
-/// `ATLAS_REDZONE_RANGE_FILE=<path>` — see the use site. `None` disables the bisection.
+/// `AVAROK_REDZONE_RANGE_FILE=<path>` — see the use site. `None` disables the bisection.
 fn redzone_range_file() -> Option<&'static str> {
     static P: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    P.get_or_init(|| std::env::var("ATLAS_REDZONE_RANGE_FILE").ok())
+    P.get_or_init(|| std::env::var("AVAROK_REDZONE_RANGE_FILE").ok())
         .as_deref()
 }
 
 fn redzone_every() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        if std::env::var("ATLAS_REDZONE").is_err() {
+        if std::env::var("AVAROK_REDZONE").is_err() {
             return 0;
         }
-        std::env::var("ATLAS_REDZONE_EVERY")
+        std::env::var("AVAROK_REDZONE_EVERY")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(1)
@@ -73,7 +73,7 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         // Use backend's own stream (non-default, required for CUDA graph capture).
         let stream = self.gpu.default_stream();
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         self.ssm_h_to_f16_dispatch(seq)?;
         let hidden = self.buffers.hidden_states();
@@ -110,7 +110,7 @@ impl TransformerModel {
             );
         }
 
-        // A55 BISECTION (`ATLAS_REDZONE_RANGE_FILE=<path>` holding "LO HI"). Re-read and
+        // A55 BISECTION (`AVAROK_REDZONE_RANGE_FILE=<path>` holding "LO HI"). Re-read and
         // re-applied every decode step so the range can be swept WITHOUT restarting the
         // server — a relaunch is ~5 minutes of weight load, a re-poison is ~40 us, and the
         // bisection needs ~11 steps. Nothing is allocated or moved, so every setting shares
@@ -257,13 +257,13 @@ impl TransformerModel {
         // probes can sync (illegal under graph capture). Subsequent steps
         // still capture/replay normally.
         let dump_step0 = seq.seq_len == seq.prompt_len && self.levers.ssm_save_dump;
-        // EXPERIMENT (ATLAS_EP_GRAPHS=1): allow CUDA-graph capture under EP. The
+        // EXPERIMENT (AVAROK_EP_GRAPHS=1): allow CUDA-graph capture under EP. The
         // EP all-reduce queues ncclSend/Recv + local-add on the compute (capture)
         // stream; NCCL ≥2.9 supports graph capture, so this MAY capture cleanly
         // and remove per-kernel launch overhead. Env-gated so it can be toggled
         // off at deploy time (instant revert) if capture crashes / replay hangs.
         let ep_graphs = self.levers.ep_graphs;
-        // GDN HeadParallel TP decode graphs (ATLAS_GDN_DECODE_GRAPH=1, default
+        // GDN HeadParallel TP decode graphs (AVAROK_GDN_DECODE_GRAPH=1, default
         // OFF): capture the whole single-token decode forward — ~130 kernels
         // plus the per-layer TP all-reduces (48 GDN SSM out_proj + 16
         // attention o_proj on Qwen3.6) — into one replayable graph. The
@@ -279,7 +279,7 @@ impl TransformerModel {
         // launch cost that dominates 2-node GDN HeadParallel decode. Capture
         // failure falls back to eager execution (graphs then stay disabled).
         let gdn_graphs = self.levers.gdn_decode_graph;
-        // LoRA debugging hatch (ATLAS_LORA_EAGER=1): force eager decode when an
+        // LoRA debugging hatch (AVAROK_LORA_EAGER=1): force eager decode when an
         // adapter is active so graph-vs-eager delta parity can be compared.
         // Default (unset) keeps graphs ON — the LoRA delta launches are
         // capture-safe (pool weights / arena scratch / f32 scale are all
@@ -454,7 +454,7 @@ impl TransformerModel {
         }
 
         // Decode-step diagnostic for Gemma-4 degeneration analysis (no-op unless
-        // ATLAS_DIAG_GEMMA4=1). Split into decode_a_diag.rs for the LoC budget.
+        // AVAROK_DIAG_GEMMA4=1). Split into decode_a_diag.rs for the LoC budget.
         self.diag_gemma4_decode_logits(token, stream)?;
 
         if capture_active {
@@ -505,9 +505,9 @@ impl TransformerModel {
             }
         }
 
-        // A55 RED-ZONE SCAN (`ATLAS_REDZONE=<bytes>`; no-op when unset). Runs AFTER the whole
+        // A55 RED-ZONE SCAN (`AVAROK_REDZONE=<bytes>`; no-op when unset). Runs AFTER the whole
         // decode step, with the device drained, so a violation names the step that produced
-        // it. `ATLAS_REDZONE_EVERY` (default 1) trades resolution for wall time — the scan
+        // it. `AVAROK_REDZONE_EVERY` (default 1) trades resolution for wall time — the scan
         // does one blocking D2H per live allocation.
         if redzone_every() > 0 && seq.seq_len.is_multiple_of(redzone_every()) {
             self.gpu.synchronize(stream)?;

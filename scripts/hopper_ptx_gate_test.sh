@@ -17,7 +17,7 @@
 #       moe_w4a16_grouped_gemm, gated_delta_rule,
 #       inferspark_prefill_paged_indirect). A gate that ignored the redirect
 #       selected 171 common tasks and reported a green receipt for sources the
-#       build never compiles. The oracle is crates/atlas-kernels/build.rs
+#       build never compiles. The oracle is crates/avarok-kernels/build.rs
 #       (`kernel_src_dir`, ~line 1065) and build_parse.rs::parse_kernel_source.
 #   (b) the redirect is an ALIAS, not a variant: qwen3.8-27b and qwen3.6-27b
 #       must select the same source paths. If they ever diverge, one of the two

@@ -23,13 +23,13 @@ metadata:
     KV cache is FP8: the MLA decode kernel's V=K rope reconstruction and
     attention sink are only implemented on the FP8 path, and BF16-KV decode
     is measurably worse. CUDA graphs are disabled under EP on GB10 (RoCE
-    replay deadlocks) — Atlas defaults ATLAS_EP_GRAPHS=0, so no override is
+    replay deadlocks) — Atlas defaults AVAROK_EP_GRAPHS=0, so no override is
     needed here.
 
     --speculative is OFF: the public checkpoint ships no usable MTP draft
     weights, so speculative decoding cannot be enabled on either rank.
     Validated decode ~15.5 tok/s (network/all-reduce bound over RoCE).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 280B
   model_dtype: nvfp4

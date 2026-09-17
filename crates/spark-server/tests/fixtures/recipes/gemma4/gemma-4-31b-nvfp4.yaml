@@ -20,7 +20,7 @@ metadata:
     `repetition_penalty: 1.1` for creative workloads. The native
     Gemma-4 tool-call format (`<|tool_call>call:fn{...}<tool_call|>`)
     is parsed when `tool_call_parser: gemma4` is set.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 31B
   model_dtype: nvfp4

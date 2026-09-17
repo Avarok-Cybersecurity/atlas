@@ -99,9 +99,15 @@ jobs:
         working-directory: site
         run: bun x --bun vite build
         env:
-          ATLAS_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
-          ATLAS_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
 
+      # 100 in all four categories, on every page the site ships — the same
+      # contract the blog has held since it was audited at all. The aggregation
+      # is what makes a 100 a gate rather than a coin flip: the three DOM
+      # categories score identically every run, so their median is exact, while
+      # performance takes the best of five, which a real regression depresses in
+      # every run and runner contention depresses in only some.
       - name: Audit
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
         with:

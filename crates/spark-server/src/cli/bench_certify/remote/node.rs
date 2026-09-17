@@ -8,8 +8,8 @@
 //! before any unit is sent, with the reason. A fact a node cannot report is
 //! a refusal, not a pass.
 
-use atlas_plugin::hardware::equivalence::{HardwareFingerprint, driver_major};
-use atlas_plugin::hardware::{Hardware, HardwareState};
+use avarok_plugin::hardware::equivalence::{HardwareFingerprint, driver_major};
+use avarok_plugin::hardware::{Hardware, HardwareState};
 
 use super::atlasctl::{NodeInfo, NodeRow};
 
@@ -117,7 +117,7 @@ pub fn admit(row: &NodeRow, wanted: &Wanted) -> Result<Node, Rejection> {
         Some(fp) => why.push(format!(
             "its signer {fp} is not committed in .github/record-signers/ (commit {fp}.pub first)"
         )),
-        None => why.push("it reports no signing identity (no ATLAS_HOME identity there)".into()),
+        None => why.push("it reports no signing identity (no AVAROK_HOME identity there)".into()),
     }
     if info.busy {
         why.push(format!(

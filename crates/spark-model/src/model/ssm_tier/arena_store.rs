@@ -51,10 +51,10 @@ impl PagingSnapshotStore {
     fn wire(&self, key: u64) -> u64 {
         // SSOT: this WAS a third transcription of the splitmix64 constants. It is
         // exactly `mix64(key, ns)` — same operands, same order — so routing it
-        // through the one definition in `atlas_tier::hash` is VALUE-PRESERVING:
+        // through the one definition in `avarok_tier::hash` is VALUE-PRESERVING:
         // no key rotates, no FP_VERSION bump. Proven by the golden pin in
         // `paging_isolation_tests::wire_key_is_mix64_of_key_and_ns`.
-        atlas_tier::hash::mix64(key, self.namespace.get())
+        avarok_tier::hash::mix64(key, self.namespace.get())
     }
 }
 

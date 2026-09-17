@@ -22,13 +22,13 @@
 //! fresh allocations (`transpose_for_gemm`); launch geometry from
 //! `gemm_dense.rs::w4a16_gemm_n128` and `sampling.rs::argmax_bf16_batch`.
 //!
-//!   ATLAS_TARGET_MODEL=qwen3.6-27b cargo run -p spark-model --release \
+//!   AVAROK_TARGET_MODEL=qwen3.6-27b cargo run -p spark-model --release \
 //!       --example w4a16_lmhead_716_repro --features cuda,gpu-examples
 //!
-//! Env: ATLAS_REPRO_ITERS (default 300 per leg), ATLAS_REPRO_LEG (run one leg).
+//! Env: AVAROK_REPRO_ITERS (default 300 per leg), AVAROK_REPRO_LEG (run one leg).
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -187,13 +187,13 @@ fn run_leg(
 }
 
 fn main() -> Result<()> {
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
-    let iters: usize = std::env::var("ATLAS_REPRO_ITERS")
+    let iters: usize = std::env::var("AVAROK_REPRO_ITERS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(300);
-    let only = std::env::var("ATLAS_REPRO_LEG").ok();
+    let only = std::env::var("AVAROK_REPRO_LEG").ok();
 
     let kt = g.kernel("w4a16", "w4a16_gemm_t")?;
     let kt64 = g.kernel("w4a16", "w4a16_gemm_t_k64")?;

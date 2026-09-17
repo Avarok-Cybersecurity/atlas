@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -28,11 +28,11 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 /// Presence kill switch for the wide (9..=VERIFY_ROW_CAP row) batched LM head arm:
-/// `ATLAS_NO_LMHEAD_BATCHED_WIDE` restores the M64-tile `w4a16_gemm` fallback.
-/// Presence, not value — `=0` is NOT "off" (see `atlas_env_presence_check_trap`).
+/// `AVAROK_NO_LMHEAD_BATCHED_WIDE` restores the M64-tile `w4a16_gemm` fallback.
+/// Presence, not value — `=0` is NOT "off" (see `avarok_env_presence_check_trap`).
 fn lmhead_batched_wide_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_LMHEAD_BATCHED_WIDE").is_err())
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_LMHEAD_BATCHED_WIDE").is_err())
 }
 
 impl TransformerModel {
@@ -101,7 +101,7 @@ impl TransformerModel {
             return Ok(false);
         };
         if let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t {
-            // LOSSLESS path (ATLAS_LMHEAD_LOSSLESS): BF16 MMA, no activation
+            // LOSSLESS path (AVAROK_LMHEAD_LOSSLESS): BF16 MMA, no activation
             // downcast. Mirrors decode_a2 so the two heads never disagree.
             if self.w4a16_gemm_t_bf16_kernel.0 != 0 {
                 ops::w4a16_gemm_n128_m128_bf16_ldb(
@@ -134,7 +134,7 @@ impl TransformerModel {
                 return Ok(true);
             }
         }
-        // No twin (ATLAS_NO_LMHEAD_TGEMM): the M<=16 weight-streaming GEMV still
+        // No twin (AVAROK_NO_LMHEAD_TGEMM): the M<=16 weight-streaming GEMV still
         // beats the M64 tile. M=17..32 has no single-read form, so it keeps the
         // GEMM rather than paying two full weight passes.
         if num_tokens <= 16 && self.w4a16_gemv_batch16_kernel.0 != 0 {
@@ -378,11 +378,11 @@ impl TransformerModel {
     /// replicated whole-vocab projection.
     ///
     /// `None` unless there is a real multi-rank communicator and the vocab divides evenly.
-    /// Kill switch: `ATLAS_NO_LMHEAD_VOCAB_TP=1`. Only reachable from the plain BF16 dense
+    /// Kill switch: `AVAROK_NO_LMHEAD_VOCAB_TP=1`. Only reachable from the plain BF16 dense
     /// head — the FP8 / NVFP4 / FP32-logits heads keep their existing path untouched.
     fn lmhead_vocab_shard(&self, v: u32) -> Option<(usize, usize)> {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *OFF.get_or_init(|| std::env::var("ATLAS_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")) {
+        if *OFF.get_or_init(|| std::env::var("AVAROK_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")) {
             return None;
         }
         let comm = self.comm_ref()?;

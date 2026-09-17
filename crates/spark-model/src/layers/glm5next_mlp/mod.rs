@@ -56,7 +56,7 @@
 //!   over the wrong denominator.
 
 use anyhow::{Result, bail};
-use atlas_core::config::{Glm5NextRouterMode, ModelConfig};
+use avarok_core::config::{Glm5NextRouterMode, ModelConfig};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod build;

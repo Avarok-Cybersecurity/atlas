@@ -2,7 +2,7 @@
 
 //! Aggregate SSM-snapshot cache telemetry (Phase 0). Split from `snapshot.rs`
 //! (file-size cap); summarised via `SsmSnapshotIndex::log_stats_if_due` when
-//! `ATLAS_SSM_SNAP_STATS` is set. All counters are aggregate and off the hot
+//! `AVAROK_SSM_SNAP_STATS` is set. All counters are aggregate and off the hot
 //! path's critical decisions — they only observe.
 
 #[derive(Default, Clone, Copy)]
@@ -38,6 +38,6 @@ pub(super) struct SnapshotStats {
     /// built to observe this tier. Reconciliation:
     /// `tier_spills − tier_fault_ins − tier_reaps` = tiered entries still
     /// outstanding; `tier_reaps` climbing steadily means
-    /// `ATLAS_SSM_TIER_DISK_GB` is undersized for the working set.
+    /// `AVAROK_SSM_TIER_DISK_GB` is undersized for the working set.
     pub tier_reaps: u64,
 }

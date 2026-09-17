@@ -42,11 +42,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Identical to ci.yml. The workspace does NOT build on a GPU-free runner
-  # without these: ATLAS_SKIP_BUILD makes build.rs emit a stub target_ptx.rs
+  # without these: AVAROK_SKIP_BUILD makes build.rs emit a stub target_ptx.rs
   # instead of invoking nvcc, and CUDARC_CUDA_VERSION short-circuits cudarc's
   # nvcc probe (format {major}0{minor}0; 13000 == CUDA 13.0). Keep in sync with
   # ci.yml — a coverage job that cannot compile is worse than no coverage job.
-  ATLAS_SKIP_BUILD: "1"
+  AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
 
 concurrency:
@@ -250,7 +250,7 @@ jobs:
         id: codecov
         if: env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
         with:
           files: lcov.info
           token: ${{ env.CODECOV_TOKEN }}

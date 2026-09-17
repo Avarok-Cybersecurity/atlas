@@ -17,7 +17,7 @@ never consulted.
 THE SHAPE THAT DOES TRIGGER IT — three phases:
 
   1. WARM   : N deep conversations. Each must be deeper than
-              ATLAS_SSM_SPILL_MIN_TOKENS (default 1024) or eviction DROPS it
+              AVAROK_SSM_SPILL_MIN_TOKENS (default 1024) or eviction DROPS it
               instead of spilling ("SSM spill SKIPPED (cost gate)").
   2. CHURN  : M distinct deep conversations, M > --ssm-cache-slots, to push the
               warm snapshots out of the resident pool. That eviction is what
@@ -26,7 +26,7 @@ THE SHAPE THAT DOES TRIGGER IT — three phases:
               radix match now finds an entry with no resident snapshot but a
               live tier key -> fault-in.
 
-Run with ATLAS_SSM_TIER_TIMING=1 and count in the server log:
+Run with AVAROK_SSM_TIER_TIMING=1 and count in the server log:
     "SSM tier fault-in: restored"      <- the read side firing (the goal)
     "SSM spill:"                       <- phase 2 doing its job
     "spill SKIPPED (cost gate)"        <- prefixes too shallow; raise PREFIX_TOKENS

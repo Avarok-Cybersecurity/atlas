@@ -5,7 +5,7 @@
 // the standard NVFP4-quantized path.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
@@ -41,7 +41,7 @@ use crate::weight_map::{
 /// (decode) / `w8a16_gemm` (batched decode) path: QKV and Z concatenated into
 /// a single `[Nq+Nz, K]` FP8 buffer + matching `[(Nq+Nz)/BS, K/BS]` BF16 block
 /// scales, plus the out_proj FP8 weight. Shared by the native-FP8 build and by
-/// the decode-only FP8 overlay on the BF16 dense build (`ATLAS_HOLO_FP8_SSM_DECODE`).
+/// the decode-only FP8 overlay on the BF16 dense build (`AVAROK_HOLO_FP8_SSM_DECODE`).
 fn load_ssm_fp8_decode_weights(
     layer_idx: usize,
     store: &WeightStore,
@@ -142,7 +142,7 @@ pub(super) fn build_linear_attention_fp8(
         config.tp_world_size.max(1) == 1,
         "Native block-scaled FP8 SSM (linear_attn) supports TP=1 only (got tp={}); \
          GDN HeadParallel FP8 scale slicing is deferred. Use the NVFP4 decode path \
-         (ATLAS_HOLO_FP4_PROJ_DECODE=1) or run --tp-size 1 for FP8.",
+         (AVAROK_HOLO_FP4_PROJ_DECODE=1) or run --tp-size 1 for FP8.",
         config.tp_world_size,
     );
 
@@ -318,7 +318,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     layer.out_proj_dense = Some(DenseWeight {
         weight: out_proj_ptr,
     });
-    // Decode-only FP8 SSM overlay (ATLAS_HOLO_FP8_SSM_DECODE=1): install the
+    // Decode-only FP8 SSM overlay (AVAROK_HOLO_FP8_SSM_DECODE=1): install the
     // on-disk block-scaled FP8 QKVZ/out_proj so DECODE runs through
     // w8a16_gemv / w8a16_gemm (half the BF16 weight bandwidth — SSM weights
     // are the bulk of the per-step fixed decode cost), while PREFILL keeps the
@@ -327,7 +327,7 @@ pub(crate) fn build_linear_attention_dense_bf16(
     // The FP8 decode overlay loads FULL (unsliced) block-scaled FP8 weights;
     // its per-128-row scale slicing is deferred (same reason as the native-FP8
     // path). Skip under TP>1 so the sharded BF16 path stays correct.
-    if tp_size == 1 && std::env::var("ATLAS_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
+    if tp_size == 1 && std::env::var("AVAROK_HOLO_FP8_SSM_DECODE").ok().as_deref() == Some("1") {
         let p = format!("{lp}.linear_attn");
         let (qkvz_fp8, out_fp8) = load_ssm_fp8_decode_weights(layer_idx, store, &p, gpu, h)?;
         layer.set_fp8_decode_weights(Some(qkvz_fp8), Some(out_fp8));
@@ -507,12 +507,12 @@ pub(crate) fn build_linear_attention_nvfp4(
         config,
         gpu,
     )?;
-    // Native-HIP (atlas_hip) lacks the FP8 *prefill* GEMM kernels
+    // Native-HIP (avarok_hip) lacks the FP8 *prefill* GEMM kernels
     // (fp8_gemm_n128 / fp8_gemm_t_blockscaled are inline-PTX, not yet
     // WMMA-ported). Skip the FP8→FP8 predequant AND the native-FP8 prefill
     // install so SSM qkvz/out_proj prefill falls to the NVFP4 w4a16 WMMA path
     // (qkvz_nvfp4* / out_proj_nvfp4_t fallbacks). SCALE/NVIDIA keep FP8 prefill.
-    if !cfg!(atlas_hip) {
+    if !cfg!(avarok_hip) {
         layer.predequant_for_prefill(gpu, config, stream)?;
         // Install native FP8 prefill weights AFTER `predequant_for_prefill`
         // (which sets `out_proj_fp8` from NVFP4 + scale2). The FP8 path
@@ -523,7 +523,7 @@ pub(crate) fn build_linear_attention_nvfp4(
             layer.set_fp8_prefill_only_weights(qkvz_fp8_prefill, out_proj_fp8_prefill);
         }
     }
-    // ATLAS_GDN_BF16_WEIGHTS=1 extension: also install BF16 out_proj so
+    // AVAROK_GDN_BF16_WEIGHTS=1 extension: also install BF16 out_proj so
     // the prefill dispatcher takes the dense_gemm BF16 path (highest
     // dispatch priority). Eliminates FP8/NVFP4 quant noise on out_proj
     // — the noise was previously amplified by post_attn_norm's RMSNorm
@@ -532,7 +532,7 @@ pub(crate) fn build_linear_attention_nvfp4(
     // and onward investigation). ssm35.out_proj is the BF16 weight
     // (loaded via dense_auto with FP8→BF16 dequant).
     if matches!(
-        std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+        std::env::var("AVAROK_GDN_BF16_WEIGHTS").ok().as_deref(),
         Some("1")
     ) {
         // out_proj_local weight is BF16 on GPU (from load_ssm_qwen35 →
@@ -541,7 +541,7 @@ pub(crate) fn build_linear_attention_nvfp4(
         // out_proj_fp8_prefill. Set as dense path.
         layer.out_proj_dense = Some(out_proj_local);
         tracing::info!(
-            "SSM[{lp}] ATLAS_GDN_BF16_WEIGHTS: out_proj routed through BF16 dense_gemm (overrides FP8/NVFP4)"
+            "SSM[{lp}] AVAROK_GDN_BF16_WEIGHTS: out_proj routed through BF16 dense_gemm (overrides FP8/NVFP4)"
         );
     }
     Ok(Box::new(layer))

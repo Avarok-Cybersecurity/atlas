@@ -159,7 +159,7 @@ impl MoeLayer {
     /// Both build the same persistent `*_ptrs_t` device-side pointer tables.
     ///
     /// Requires:
-    /// 1. `ATLAS_UNIFIED_MOE_LAYOUT=1` OR `ATLAS_HYBRID_MOE_LAYOUT=1`
+    /// 1. `AVAROK_UNIFIED_MOE_LAYOUT=1` OR `AVAROK_HYBRID_MOE_LAYOUT=1`
     ///    (read at construction).
     /// 2. Persistent transposed pointer tables for all three projections.
     /// 3. NOT the lazy-scratch path — scratch-backed `down_ptrs_t` only
@@ -204,7 +204,7 @@ impl MoeLayer {
 
 impl super::MoeLayer {
     /// The routed grouped-GEMM kernel: the bit-exact wider-K twin when it
-    /// resolved (ATLAS_MOE_GROUPED_K32=1 and the target ships it), else the
+    /// resolved (AVAROK_MOE_GROUPED_K32=1 and the target ships it), else the
     /// original. Both take the same grid/block, so the launcher is shared.
     pub(super) fn grouped_gemm_kernel(&self) -> spark_runtime::gpu::KernelHandle {
         if self.moe_grouped_gemm_k32.0 != 0 {

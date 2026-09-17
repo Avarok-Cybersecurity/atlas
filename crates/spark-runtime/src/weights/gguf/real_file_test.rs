@@ -2,7 +2,7 @@
 //! Real-file correctness oracle for the GGUF container + CPU ternary dequant.
 //!
 //! Gated `#[ignore]` so CI without the on-disk model is unaffected. Run with:
-//!   ATLAS_SKIP_BUILD=1 cargo test -p spark-runtime -- --ignored gguf_real_file
+//!   AVAROK_SKIP_BUILD=1 cargo test -p spark-runtime -- --ignored gguf_real_file
 
 use super::container::{GgmlType, GgufFile};
 use super::dequant_cpu::{self, f16_to_f32};

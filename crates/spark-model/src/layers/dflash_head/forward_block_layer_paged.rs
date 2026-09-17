@@ -67,10 +67,10 @@ pub(super) struct PagedLayerArgs {
     /// Friday 2026-06-11 (id259 next-action): when true, this propose is the
     /// armed one-shot per-layer block-forward parity dump. Each layer dumps
     /// its noise-block intermediates (post-input_norm, post-qkv, post-qknorm,
-    /// post-rope, post-attn, post-mlp) to /tmp/atlas_blk_L{layer}_{stage}.bin
-    /// so atlas_dflash_block_parity.py can localize the FIRST op that diverges
+    /// post-rope, post-attn, post-mlp) to /tmp/avarok_blk_L{layer}_{stage}.bin
+    /// so avarok_dflash_block_parity.py can localize the FIRST op that diverges
     /// from the z-lab PyTorch reference (cos<0.999). Gated by
-    /// ATLAS_DFLASH_BLOCK_DUMP=1 upstream; forces the eager path (graph
+    /// AVAROK_DFLASH_BLOCK_DUMP=1 upstream; forces the eager path (graph
     /// capture cannot contain the D2H/sync this dump injects).
     pub block_dump: bool,
     /// Sequences packed into this forward. Rows are seq-major: sequence i owns
@@ -120,9 +120,9 @@ impl BlockDiffusionDraftHead {
 
     /// Friday 2026-06-11 (id259): one-shot per-layer block-forward parity
     /// dump helper. Copies `rows*cols` BF16 values from `src` (γ-row noise
-    /// block scratch) to `/tmp/atlas_blk_L{layer_idx}_{stage}.bin`. Reused at
+    /// block scratch) to `/tmp/avarok_blk_L{layer_idx}_{stage}.bin`. Reused at
     /// each pipeline boundary (post-input_norm, post-qkv, post-qknorm,
-    /// post-rope, post-attn, post-mlp) so atlas_dflash_block_parity.py can
+    /// post-rope, post-attn, post-mlp) so avarok_dflash_block_parity.py can
     /// walk the layers and flag the FIRST stage with cos<0.999 vs the z-lab
     /// PyTorch reference. Synchronous (sync + D2H) — only ever runs on the
     /// armed eager propose (graph capture is disabled when block_dump=true).
@@ -142,7 +142,7 @@ impl BlockDiffusionDraftHead {
         gpu.synchronize(stream)?;
         let mut buf = vec![0u8; n_bytes];
         gpu.copy_d2h(src, &mut buf)?;
-        let path = format!("/tmp/atlas_blk_L{layer_idx}_{stage}.bin");
+        let path = format!("/tmp/avarok_blk_L{layer_idx}_{stage}.bin");
         if let Err(e) = std::fs::write(&path, &buf) {
             tracing::warn!("DFLASH BLOCK_DUMP per-layer: write {path} failed: {e}");
         } else if layer_idx == 0 {
@@ -164,7 +164,7 @@ impl BlockDiffusionDraftHead {
     /// **Capture eligibility**: this body is a pure sequence of compute
     /// kernels reading from stable scratch pointers + the locked
     /// (k_pool, v_pool) pointers. Safe to capture as a CUDA graph
-    /// EXCEPT when the layer-0 `ATLAS_DFLASH_OPTION_B_DIAG=1` debug
+    /// EXCEPT when the layer-0 `AVAROK_DFLASH_OPTION_B_DIAG=1` debug
     /// block runs — that path injects D2H + sync, but it's gated by an
     /// env var that already disables graph eligibility upstream
     /// (`forward_block.rs:438`).
@@ -257,7 +257,7 @@ impl BlockDiffusionDraftHead {
                 // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
                 // rt2-class GEMVs stream 180+ on the same shapes. Drafter-side
                 // numerics are correctness-free under strict-argmax accept.
-                // ATLAS_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
+                // AVAROK_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
                 if self.kernels.fp8_gemv_rt2.0 != 0
                     && g <= 8
                     && k_in.is_multiple_of(16)
@@ -506,7 +506,7 @@ impl BlockDiffusionDraftHead {
         )?;
 
         // ── Stage 4 cache readback diagnostic ──
-        // ATLAS_DFLASH_OPTION_B_DIAG=1 reads back layer 0's first cached
+        // AVAROK_DFLASH_OPTION_B_DIAG=1 reads back layer 0's first cached
         // K row at the slot we just wrote and compares first 8 BF16 values
         // against the source k_buf row 0. If they differ, the cache write
         // landed in the wrong slot or with the wrong layout. ONE-SHOT.
@@ -604,7 +604,7 @@ impl BlockDiffusionDraftHead {
     /// from `forward_block_layer_pre_attn` so we don't re-lock the KV
     /// cache.
     ///
-    /// **ATLAS_DFLASH_CONTIG_ATTN=1**: bypasses the paged-indirect kernel
+    /// **AVAROK_DFLASH_CONTIG_ATTN=1**: bypasses the paged-indirect kernel
     /// and runs the contiguous-gather path (`forward_block_layer_attention_contig`)
     /// which matches dflash.py:75-97 op-for-op. Default path is untouched.
     pub(super) fn forward_block_layer_attention(
@@ -616,7 +616,7 @@ impl BlockDiffusionDraftHead {
     ) -> Result<()> {
         use crate::layers::ops;
 
-        // ATLAS_DFLASH_CONTIG_ATTN=1: cat([k_ctx, k_noise]) gather + contiguous
+        // AVAROK_DFLASH_CONTIG_ATTN=1: cat([k_ctx, k_noise]) gather + contiguous
         // non-causal prefill_attention — matches dflash.py:75-97 op-for-op.
         // Default (env unset): paged-indirect kernel, unchanged.
         if ctx.levers.dflash_contig_attn {
@@ -699,7 +699,7 @@ impl BlockDiffusionDraftHead {
         Ok(())
     }
 
-    /// ATLAS_DFLASH_CONTIG_ATTN=1 attention path.
+    /// AVAROK_DFLASH_CONTIG_ATTN=1 attention path.
     ///
     /// Replicates dflash.py:75-97 op-for-op:
     ///   1. Gather ctx K/V from paged cache slots [0..ctx_count] → CPU.
@@ -739,7 +739,7 @@ impl BlockDiffusionDraftHead {
         anyhow::ensure!(
             args.n_seq.max(1) == 1,
             "CONTIG_ATTN: batched propose (n_seq={}) needs the indirect paged \
-             attention path; set ATLAS_DFLASH_CONTIG_ATTN=0",
+             attention path; set AVAROK_DFLASH_CONTIG_ATTN=0",
             args.n_seq
         );
         let g = self.gamma as u32;
@@ -756,7 +756,7 @@ impl BlockDiffusionDraftHead {
         anyhow::ensure!(
             ctx_us <= self.ctx_window,
             "CONTIG_ATTN: ctx_count({ctx_us}) > ctx_window({}); \
-             scratch buffers sized for {} rows — reduce ctx or raise ATLAS_DFLASH_CTX_WINDOW",
+             scratch buffers sized for {} rows — reduce ctx or raise AVAROK_DFLASH_CTX_WINDOW",
             self.ctx_window,
             self.ctx_window + g_us,
         );
@@ -960,7 +960,7 @@ impl BlockDiffusionDraftHead {
                 // below pads 87% of its tile at M=γ=8 (~100 GB/s measured);
                 // rt2-class GEMVs stream 180+ on the same shapes. Drafter-side
                 // numerics are correctness-free under strict-argmax accept.
-                // ATLAS_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
+                // AVAROK_NO_DFLASH_FP8_RT=1 restores the tile path for A/B.
                 if self.kernels.fp8_gemv_rt2.0 != 0
                     && g <= 8
                     && k_in.is_multiple_of(16)

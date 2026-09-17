@@ -84,7 +84,7 @@ impl Model for TransformerModel {
     // consumed while THIS sequence still owns it — one tick later, at the
     // first propose, a concurrent sequence's prefill has already restarted it
     // and every sequence but the last-prefilled drafts blind. See
-    // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
+    // `drafter_prefill.rs`. Kill switch `AVAROK_NO_MTP_EAGER_DRAFTER`.
     fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
         self.tokens_have_vision_pad(tokens)
     }
@@ -248,7 +248,7 @@ impl Model for TransformerModel {
         peer_addr: &str,
         adapter_id: &str,
         name: &str,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         #[cfg(all(feature = "cuda", unix))]
         {
@@ -884,7 +884,7 @@ impl Model for TransformerModel {
     }
     fn ep_broadcast_cmd_for_seq(&self, seq_id: u32, cmd: u32) -> Result<()> {
         // Routes to the helper added in 21e2130. Behaviour depends on the
-        // ep_protocol_v2 field set at construction from ATLAS_EP_PROTOCOL.
+        // ep_protocol_v2 field set at construction from AVAROK_EP_PROTOCOL.
         self.ep_broadcast_seq_and_cmd(seq_id, cmd, self.ep_protocol_v2)
     }
     fn ep_protocol_v2(&self) -> bool {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The LEDGERED BF16 dequant behind the two `ATLAS_FP8_ROWWISE` GDN prefill
+//! The LEDGERED BF16 dequant behind the two `AVAROK_FP8_ROWWISE` GDN prefill
 //! arms (`trait_prefill_proj.rs`'s `in_proj_qkvz`, `trait_prefill_helper.rs`'s
 //! `out_proj`).
 //!
@@ -10,7 +10,7 @@
 //! scale, and `cublaslt::fp8_gemm_act_weight_t_rowwise` — the only cuBLASLt
 //! entry that consumes a per-row pair — returns NOT_SUPPORTED on sm_121
 //! (measured 2026-08-15, reproduced through the block-scaled path with
-//! `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and not the weights; see
+//! `AVAROK_CUBLAS_FP8=1`, so it is the GEMM and not the weights; see
 //! `ops/dispatch_proj_rowwise.rs`). The block-scaled W8A8 route the attention
 //! and default GDN arms took in #927/#928 is closed to them for the same
 //! reason from the other side: a per-row scale is not a `[N/128, K/128]` grid
@@ -33,7 +33,7 @@
 //! So the same bytes are now ONE arena allocation
 //! (`BufferSizes::ssm_rowwise_w_bf16`, sized in
 //! `spark_runtime::buffers::sizes_rowwise` for `num_ssm_layers` x
-//! (`in_proj_qkvz` + `out_proj`) and armed only when `ATLAS_FP8_ROWWISE=1`, so
+//! (`in_proj_qkvz` + `out_proj`) and armed only when `AVAROK_FP8_ROWWISE=1`, so
 //! every other recipe's ledger is unchanged). Each layer bump-carves its two
 //! slices on its FIRST prefill and remembers them here; nothing in the prefill
 //! path allocates.

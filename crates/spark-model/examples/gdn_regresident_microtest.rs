@@ -8,14 +8,14 @@
 //! H-state; the only difference is the data layout (registers vs smem). They
 //! must be token-equal (cosine ~1.0) on BOTH the per-token output and the
 //! final H-state — the acceptance class WY4 already operates under. The
-//! optional ATLAS_BENCH_ITERS timing loop reports the speedup that motivates
+//! optional AVAROK_BENCH_ITERS timing loop reports the speedup that motivates
 //! the swap.
 //!
 //! Usage: cargo run --release -p spark-model --example gdn_regresident_microtest \
 //!          --features cuda,gpu-examples -- [seq] [seed]
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -154,7 +154,7 @@ fn main() -> Result<()> {
     let gate: Vec<f32> = (0..seq * NV).map(|_| rng.uniform(0.88, 0.97)).collect();
     let beta: Vec<f32> = (0..seq * NV).map(|_| rng.uniform(0.0, 0.5)).collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 
@@ -257,7 +257,7 @@ fn main() -> Result<()> {
     println!("cosine(output)={cos_out:.7}  cosine(h_state)={cos_h:.7}  max|dH|={max_abs_h:.3e}");
 
     // Optional timing A/B (inlined to avoid borrowing KernelLaunch through a closure).
-    if let Ok(iters_s) = std::env::var("ATLAS_BENCH_ITERS") {
+    if let Ok(iters_s) = std::env::var("AVAROK_BENCH_ITERS") {
         let iters: usize = iters_s.parse().unwrap_or(50);
         for _ in 0..10 {
             bind(

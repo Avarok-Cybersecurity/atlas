@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Minimal cuBLASLt FFI for the high-efficiency GEMM path (`ATLAS_CUBLAS_GEMM`).
+//! Minimal cuBLASLt FFI for the high-efficiency GEMM path (`AVAROK_CUBLAS_GEMM`).
 //!
 //! The hand-written mma.sync projection/MoE GEMMs reach only ~30% of the cuBLAS
 //! ceiling on GB10 (measured: 32 vs 85 TFLOPS bf16, 152 fp8, on the SSM-qkvz
@@ -128,7 +128,7 @@ unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
 /// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
-/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// process CUDA context (see `avarok_core::cuda_host`, which establishes one
 /// per process) and sized by a fixed budget, not by any model's shapes: the
 /// bounds below are generous upper limits chosen to fit any realistic serving
 /// configuration, so a swap needs no reallocation and re-allocating per model

@@ -187,7 +187,7 @@ pub(crate) async fn run_chat_stream(
         .map(|p| p.leak_markers())
         .unwrap_or(tool_parser::LeakMarkers::EMPTY);
 
-    let max_tool_calls_per_response: usize = std::env::var("ATLAS_MAX_TOOL_CALLS_PER_RESPONSE")
+    let max_tool_calls_per_response: usize = std::env::var("AVAROK_MAX_TOOL_CALLS_PER_RESPONSE")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(12);

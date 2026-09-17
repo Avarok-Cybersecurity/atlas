@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-15T17:19:45Z",
+  "generated_utc": "2026-09-16T23:47:53Z",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
@@ -278,7 +278,7 @@
       "env": "HF_HUB_OFFLINE=1",
       "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16",
       "speculation": "none",
-      "source_note": "Published because it beats vLLM+MTP at C=128 (390.42 vs 358.57): MTP verification costs vLLM more than it gains 128-wide. Quoting only the MTP leg there would overstate our margin, so the headline ratio is taken against whichever vLLM configuration is faster at each rung.",
+      "source_note": "Unmatched fingerprint: bf16 KV, ctx 4096, no speculation. It beats vLLM+MTP at C=128 (390.42 vs 358.57) because MTP verification costs vLLM more than it gains 128-wide. Plotted for completeness. The published ratio uses the matched MTP leg, not this one.",
       "rungs": [
         {
           "c": 1,
@@ -400,6 +400,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.196,
       "ratio_vs_matched": 1.196,
+      "ratio_vs_fastest": 1.196,
       "wins": true
     },
     {
@@ -422,6 +423,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.105,
       "ratio_vs_matched": 1.105,
+      "ratio_vs_fastest": 1.105,
       "wins": true
     },
     {
@@ -444,6 +446,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.036,
       "ratio_vs_matched": 1.036,
+      "ratio_vs_fastest": 1.036,
       "wins": true
     },
     {
@@ -466,6 +469,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.012,
       "ratio_vs_matched": 1.012,
+      "ratio_vs_fastest": 1.012,
       "wins": true
     },
     {
@@ -488,6 +492,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.032,
       "ratio_vs_matched": 1.032,
+      "ratio_vs_fastest": 1.032,
       "wins": true
     },
     {
@@ -510,6 +515,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.027,
       "ratio_vs_matched": 1.027,
+      "ratio_vs_fastest": 1.027,
       "wins": true
     },
     {
@@ -532,6 +538,7 @@
       "best_baseline_id": "vllm-mtp",
       "ratio_vs_best": 1.07,
       "ratio_vs_matched": 1.07,
+      "ratio_vs_fastest": 1.07,
       "wins": true
     },
     {
@@ -551,9 +558,10 @@
           "tok_s": 390.42
         }
       ],
-      "best_baseline_id": "vllm-nospec",
-      "ratio_vs_best": 1.225,
+      "best_baseline_id": "vllm-mtp",
+      "ratio_vs_best": 1.333,
       "ratio_vs_matched": 1.333,
+      "ratio_vs_fastest": 1.225,
       "wins": true
     }
   ],
@@ -562,6 +570,6 @@
     "won": 8,
     "all_won": true,
     "min_ratio": 1.012,
-    "max_ratio": 1.225
+    "max_ratio": 1.333
   }
 }

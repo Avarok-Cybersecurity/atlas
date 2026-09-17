@@ -22,7 +22,7 @@ pub fn step_verify_k4(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
-    // `ATLAS_MTP_TIMING=1` summary for the K=4 path.
+    // `AVAROK_MTP_TIMING=1` summary for the K=4 path.
     //
     // The per-phase `record()` calls already fire for K=4 because the picks
     // route through `verify_pipeline_helper`, but NOTHING called `step_done`
@@ -124,7 +124,7 @@ pub fn step_verify_k4(
         3
     };
 
-    // Shadow top-k target line (ATLAS_MTP_SHADOW_TOPK): joins offline with
+    // Shadow top-k target line (AVAROK_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
     if sched.levers.shadow_topk > 0 {
         tracing::info!(
@@ -144,12 +144,12 @@ pub fn step_verify_k4(
         drafts[2] == v2,
         a.seq.seq_len,
     );
-    // Width-attributed accept telemetry (ATLAS_MTP_ACCEPT_DEBUG): this is the
+    // Width-attributed accept telemetry (AVAROK_MTP_ACCEPT_DEBUG): this is the
     // SINGLE-sequence step, i.e. the n=1 row of the same table the batched
     // step fills for n>=2.
     crate::scheduler::mtp_accept_debug::record(1, 3, drafts[0] == v0, num_accepted);
 
-    // ATLAS_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
+    // AVAROK_MTP_REFEED_ACCEPTED: same contract as `verify_k3_step` — ring the
     // TARGET's true hidden for verify rows 0..=num_accepted under labels
     // L+1..=L+num_accepted+1 (L = the pre-verify seq_len = seq_len - 4 here).
     // `after_verify`'s extra trim (`mtp_rows_to_trim`) is K-agnostic, so this
