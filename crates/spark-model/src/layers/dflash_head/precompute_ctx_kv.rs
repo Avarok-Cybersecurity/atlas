@@ -88,7 +88,7 @@ impl BlockDiffusionDraftHead {
         // Stride (bytes) between adjacent rows in the fused KV GEMM output.
         let row_stride = l_total * 2 * kv_slab_bytes;
 
-        // One-shot diagnostic dump (ATLAS_DFLASH_PRECOMPUTE_DUMP=1).
+        // One-shot diagnostic dump (AVAROK_DFLASH_PRECOMPUTE_DUMP=1).
         // Per-model latch (see `ModelStats::dumped`) rather than a static: an
         // operator who sets the flag and then swaps models must still get the
         // dump, instead of it being swallowed by the previous model's shot.
@@ -100,7 +100,7 @@ impl BlockDiffusionDraftHead {
             let mut buf = vec![0u8; bytes];
             gpu.synchronize(stream)?;
             gpu.copy_d2h(ptr, &mut buf)?;
-            let path = format!("/tmp/atlas_precompute_{label}.bin");
+            let path = format!("/tmp/avarok_precompute_{label}.bin");
             if let Err(e) = std::fs::write(&path, &buf) {
                 tracing::warn!("precompute dump {label} write failed: {e}");
             } else {

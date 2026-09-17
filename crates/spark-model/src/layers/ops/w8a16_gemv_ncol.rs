@@ -19,7 +19,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
 /// Output columns one thread owns. The kernel is instantiated for both; which
-/// one a decode tier picks is `ATLAS_ATTN_NCOL_WIDTH` (SSOT:
+/// one a decode tier picks is `AVAROK_ATTN_NCOL_WIDTH` (SSOT:
 /// `attn_ncol_gemv::NcolWidth`).
 const COLS_PER_THREAD_2: u32 = 2;
 const COLS_PER_THREAD_4: u32 = 4;

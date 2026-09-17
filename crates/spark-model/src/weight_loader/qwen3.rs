@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -74,7 +74,7 @@ impl ModelWeightLoader for Qwen3WeightLoader {
 
         let h = config.hidden_size;
 
-        // SSOT: the budget arithmetic and the `ATLAS_MOE_PREFILL_COPIES` lever
+        // SSOT: the budget arithmetic and the `AVAROK_MOE_PREFILL_COPIES` lever
         // live in `super::moe_prefill_copies_fit` — shared with every other MoE
         // loader instead of one inline copy per family.
         let skip_moe_transpose = !super::moe_prefill_copies_fit(config, gpu);
@@ -90,7 +90,7 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             } else {
                 load_moe(store, &lp, config.num_experts, gpu, config, variant, qctx)?
             };
-            // ATLAS_BF16_ROUTER=1: keep the MoE router/gate in BF16 (skip the
+            // AVAROK_BF16_ROUTER=1: keep the MoE router/gate in BF16 (skip the
             // NVFP4 quant) so expert SELECTION is decided by full-precision gate
             // logits. The bf16moe experiment showed dequanting EXPERTS to BF16
             // eliminates the empty_path tool-call drift (FP8 flips were the seed)
@@ -99,7 +99,7 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             // flips at ~zero throughput cost (experts stay FP8). The forward
             // (dense_gemv/dense_gemm) already falls back to weights.gate (BF16)
             // when gate_nvfp4 is None. Explicit opt-in (PCND); default unchanged.
-            let gate_nvfp4 = if std::env::var("ATLAS_BF16_ROUTER").as_deref() == Ok("1") {
+            let gate_nvfp4 = if std::env::var("AVAROK_BF16_ROUTER").as_deref() == Ok("1") {
                 None
             } else {
                 Some(quantize_to_nvfp4(

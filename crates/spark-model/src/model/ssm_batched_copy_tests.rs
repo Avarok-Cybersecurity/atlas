@@ -16,7 +16,7 @@
 use super::super::ssm_pool::SsmStatePool;
 use super::*;
 use crate::ssm_reserve::SsmRollbackMode;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, mock::MockGpuBackend};
 
 /// The 27B/80B hybrid layer pattern (3 GDN : 1 attention, 48 layers → 36 SSM
@@ -287,7 +287,7 @@ fn kill_switch_default_is_batched() {
     // optimization is inert in production too.
     assert!(
         batched_ssm_copy_enabled(),
-        "ATLAS_NO_BATCHED_SSM_ROLLBACK is set in this environment"
+        "AVAROK_NO_BATCHED_SSM_ROLLBACK is set in this environment"
     );
 }
 

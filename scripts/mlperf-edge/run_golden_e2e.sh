@@ -9,7 +9,7 @@
 # not tunables. Changing any of them invalidates comparison with the recorded results.
 #
 # Required:
-#   ATLAS_BIN     path to a `spark` built with ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b
+#   AVAROK_BIN     path to a `spark` built with AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b
 #   HARNESS_DIR   path to the inference-endpoint (MLCommons edge-agentic) checkout
 #   BASE_CONFIG   path to the harness config.yaml to derive from
 # Optional:
@@ -20,22 +20,22 @@
 #   ND            speculative draft count; verify width K = ND + 1.
 #                 Default 3 => K=4, the width selected by the K-ladder.
 #   TAG           report-dir prefix. Default "golden".
-#   IMAGE         serve container. Default atlas-gb10:followups.
+#   IMAGE         serve container. Default avarok-gb10:followups.
 #   PORT          serve port. Default 8888.
 #
 # Example:
-#   ATLAS_BIN=$PWD/target/release/spark \
+#   AVAROK_BIN=$PWD/target/release/spark \
 #   HARNESS_DIR=/workspace/endpoints-fresh \
 #   BASE_CONFIG=/workspace/endpoints-fresh/results/defaults_20260721_173342/config.yaml \
 #     bash scripts/mlperf-edge/run_golden_e2e.sh
 set -euo pipefail
 
-ATLAS_BIN="${ATLAS_BIN:?path to the built spark binary}"
+AVAROK_BIN="${AVAROK_BIN:?path to the built spark binary}"
 HARNESS_DIR="${HARNESS_DIR:?path to the inference-endpoint checkout}"
 BASE_CONFIG="${BASE_CONFIG:?path to the harness base config.yaml}"
 ND="${ND:-3}"
 TAG="${TAG:-golden}"
-IMAGE="${IMAGE:-atlas-gb10:followups}"
+IMAGE="${IMAGE:-avarok-gb10:followups}"
 PORT="${PORT:-8888}"
 # SSM snapshot pool size. 128 is the submitted golden value. Slots cost ~151.5 MB
 # each and come straight out of the KV budget (128 -> 20.2 GB KV, 192 -> 10.8 GB),
@@ -47,9 +47,9 @@ SLOTS="${SLOTS:-128}"
 # config and must be stated whenever the resulting numbers are quoted.
 EXTRA_ENV="${EXTRA_ENV:-}"
 MODEL="centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf"
-CONTAINER="atlas-${TAG}-e2e"
+CONTAINER="avarok-${TAG}-e2e"
 
-[ -x "$ATLAS_BIN" ] || { echo "ATLAS_BIN is not executable: $ATLAS_BIN" >&2; exit 1; }
+[ -x "$AVAROK_BIN" ] || { echo "AVAROK_BIN is not executable: $AVAROK_BIN" >&2; exit 1; }
 [ -r "$BASE_CONFIG" ] || { echo "BASE_CONFIG is not readable: $BASE_CONFIG" >&2; exit 1; }
 
 cd "$HARNESS_DIR"
@@ -89,14 +89,14 @@ PY
 
 sudo docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 sleep 3
-# Frozen c2final env. NOTE on ATLAS_* presence-flags: for those, a value of 0 is
+# Frozen c2final env. NOTE on AVAROK_* presence-flags: for those, a value of 0 is
 # NOT "off" -- the flag must be absent. The ones meant to be off are simply not set.
 sudo docker run -d --name "$CONTAINER" --network host --gpus all --ipc=host \
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA_ENV \
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 $EXTRA_ENV \
   -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
-  -v "$ATLAS_BIN:/usr/local/bin/spark:ro" \
+  -v "$AVAROK_BIN:/usr/local/bin/spark:ro" \
   "$IMAGE" serve "$MODEL" \
   --host 0.0.0.0 --port "$PORT" --model-name "$MODEL" \
   --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
@@ -109,7 +109,7 @@ for _ in $(seq 1 180); do
   sudo docker ps --format '{{.Names}}' | grep -q "$CONTAINER" || { echo "SERVE_DIED"; exit 1; }
   sleep 5
 done
-echo "serve up (nd=${ND}, K=$((ND + 1)), slots=${SLOTS}, bin=${ATLAS_BIN})"
+echo "serve up (nd=${ND}, K=$((ND + 1)), slots=${SLOTS}, bin=${AVAROK_BIN})"
 
 # Gate C2 runs FIRST: an NVFP4 build can pass the correctness gates while emitting
 # garbage, so coherence + a real tool call are checked before committing to the

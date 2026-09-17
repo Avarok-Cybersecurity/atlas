@@ -4,7 +4,7 @@
 //! (`b + s0*w0 + s1*w1 + s2*w2 + s3*w3`), so anything short of BIT-IDENTICAL
 //! output is a bug, not rounding.
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     println!("=== causal_conv1d prefill: token-parallel vs serial ===");
     println!("dim={dim} seq_len={seq} d_conv={dconv}");
 
-    let be = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let be = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &be;
     let st = g.create_stream()?;
     let mut r = Rng(0x_C0FF_EE11);

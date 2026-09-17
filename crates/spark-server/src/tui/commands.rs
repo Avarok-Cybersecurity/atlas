@@ -222,7 +222,7 @@ fn cmd_gpu(app: &mut App) {
     match free {
         Some(f) => {
             app.ops.output.push(format!(
-                "  gpu free {f:.1} GB · baseline {baseline:.1} GB · atlas ≈ {:.1} GB",
+                "  gpu free {f:.1} GB · baseline {baseline:.1} GB · avarok ≈ {:.1} GB",
                 (baseline - f).max(0.0)
             ));
         }

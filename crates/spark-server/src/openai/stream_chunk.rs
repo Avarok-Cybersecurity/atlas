@@ -73,7 +73,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -99,7 +99,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -124,7 +124,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -156,7 +156,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -192,7 +192,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -225,7 +225,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -253,7 +253,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: Vec::new(),
             usage: Some(usage),
         }
@@ -271,7 +271,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {
@@ -298,7 +298,7 @@ impl ChatCompletionChunk {
             object: "chat.completion.chunk".to_string(),
             created: unix_timestamp(),
             model: model.to_string(),
-            system_fingerprint: Some("fp_atlas".to_string()),
+            system_fingerprint: Some("fp_avarok".to_string()),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: ChunkDelta {

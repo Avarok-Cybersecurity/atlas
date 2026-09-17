@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! MID-CHUNK SSM tail capture (default-on, opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+//! MID-CHUNK SSM tail capture (default-on, opt-out `AVAROK_SSM_TAIL_MIDCHUNK=0`).
 //!
-//! The clamp-based `ATLAS_SSM_TAIL_CKPT` path lands a chunk boundary on
+//! The clamp-based `AVAROK_SSM_TAIL_CKPT` path lands a chunk boundary on
 //! `ssm_tail_boundary(tb)` and saves the SSM snapshot there via an extra
 //! forward pass over the trailing tokens (~868 ms — cancels the replay win).
 //! This path instead lets the prefill chunk run its natural full span and
@@ -35,7 +35,7 @@
 //!      the tail's sibling in the index (both leased against eviction).
 //!
 //! All behavior is gated on `ssm_tail_midchunk_enabled()` — opt-out
-//! (`ATLAS_SSM_TAIL_MIDCHUNK=0`) is a no-op (returns `None`) and byte-identical
+//! (`AVAROK_SSM_TAIL_MIDCHUNK=0`) is a no-op (returns `None`) and byte-identical
 //! to prior behavior.
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
@@ -127,7 +127,7 @@ impl TransformerModel {
         if !spark_runtime::ssm_tail_midchunk_enabled() || !self.ssm_snapshots.is_enabled() {
             return None;
         }
-        // ONLY `atlas_scale` builds can actually fill this plan's `h_dsts`.
+        // ONLY `avarok_scale` builds can actually fill this plan's `h_dsts`.
         //
         // The mid-chunk capture splits the SSM recurrence at the tail boundary
         // and D2D-copies the live h_state into the reserved slot. That split
@@ -150,7 +150,7 @@ impl TransformerModel {
         // capture off, output is bit-identical to a cold run. Lift this the
         // moment the NVIDIA arm captures h_state — the plan is correct, it is
         // the writer that is missing.
-        if !cfg!(atlas_scale) {
+        if !cfg!(avarok_scale) {
             return None;
         }
         // Reuse gate: capture costs a per-prefill kernel split + D2D copy and

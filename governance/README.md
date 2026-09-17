@@ -1,7 +1,7 @@
 # governance/ — the PR journey ledger
 
 One file per pull request, `pr-<n>.jsonl`, each line one
-`atlas_governance::Event`. `.benchmarks/` answers *"did this commit pass?"*;
+`avarok_governance::Event`. `.benchmarks/` answers *"did this commit pass?"*;
 this directory answers *"how did this pull request get here?"* — what the
 advisory classifier thought, with what status, at what time.
 

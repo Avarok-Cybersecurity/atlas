@@ -3,11 +3,11 @@
 //! Host launch for K3 CUDA gated-NoPE MLA decode (`mla_decode` PTX module).
 //!
 //! Two kernels, one token: maybe_rope (NoPE skips rotate), then SDPA + gate.
-//! CPU oracle: [`atlas_core::kimi_k3::mla_decode_token`]. BoundLayer serve
+//! CPU oracle: [`avarok_core::kimi_k3::mla_decode_token`]. BoundLayer serve
 //! FullAttention default is this launch (`K3_CUDA_MLA=0` keeps CPU).
 
 use anyhow::{Context, Result, bail};
-use atlas_core::kimi_k3::{MlaConfig, MlaKv};
+use avarok_core::kimi_k3::{MlaConfig, MlaKv};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 

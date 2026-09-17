@@ -11,7 +11,7 @@
 # set of properties whose violation would be silent, discovered only on a
 # rented GPU:
 #
-#   (a) the default ATLAS_TARGET_HW per file. Copy one Dockerfile from the
+#   (a) the default AVAROK_TARGET_HW per file. Copy one Dockerfile from the
 #       other and forget this one line and you get two identical images under
 #       two names — a "b200" image full of sm_90a PTX that the arch preflight
 #       refuses on a B200, an hour of build time after the mistake.
@@ -47,29 +47,29 @@ for f in "$HOPPER" "$B200" "$WORKFLOW"; do
 done
 
 # Dockerfile instructions only — comments in these files legitimately discuss
-# NCCL_SOCKET_IFNAME, ATLAS_TARGET_HW and the rest, and a naive grep over the
+# NCCL_SOCKET_IFNAME, AVAROK_TARGET_HW and the rest, and a naive grep over the
 # raw text would pass on prose and fail on nothing.
 instructions() { sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$1"; }
 
 # ── (a) each file defaults to its own hardware set ────────────────────────────
 for pair in "hopper:$HOPPER" "b200:$B200"; do
   hw="${pair%%:*}"; f="${pair#*:}"
-  got="$(instructions "$f" | sed -n 's/^[[:space:]]*ARG[[:space:]]\{1,\}ATLAS_TARGET_HW=\(.*\)$/\1/p')"
-  [ -n "$got" ] || fail a "$f declares no \`ARG ATLAS_TARGET_HW=<default>\`"
+  got="$(instructions "$f" | sed -n 's/^[[:space:]]*ARG[[:space:]]\{1,\}AVAROK_TARGET_HW=\(.*\)$/\1/p')"
+  [ -n "$got" ] || fail a "$f declares no \`ARG AVAROK_TARGET_HW=<default>\`"
   [ "$(printf '%s\n' "$got" | wc -l | tr -d ' ')" = 1 ] \
-    || fail a "$f declares ARG ATLAS_TARGET_HW more than once: $got"
-  [ "$got" = "$hw" ] || fail a "$f defaults ATLAS_TARGET_HW to '$got', expected '$hw'"
-  ok a "$(basename "$(dirname "$f")")/Dockerfile defaults ATLAS_TARGET_HW=$hw"
+    || fail a "$f declares ARG AVAROK_TARGET_HW more than once: $got"
+  [ "$got" = "$hw" ] || fail a "$f defaults AVAROK_TARGET_HW to '$got', expected '$hw'"
+  ok a "$(basename "$(dirname "$f")")/Dockerfile defaults AVAROK_TARGET_HW=$hw"
 
   # The ARG has to reach the build environment, or it is decoration.
-  instructions "$f" | grep -qE '^[[:space:]]*ENV[[:space:]]+ATLAS_TARGET_HW=\$\{?ATLAS_TARGET_HW\}?[[:space:]]*$' \
-    || fail a "$f never exports ATLAS_TARGET_HW as an ENV from its ARG"
-  ok a "$(basename "$(dirname "$f")")/Dockerfile exports ATLAS_TARGET_HW to the build"
+  instructions "$f" | grep -qE '^[[:space:]]*ENV[[:space:]]+AVAROK_TARGET_HW=\$\{?AVAROK_TARGET_HW\}?[[:space:]]*$' \
+    || fail a "$f never exports AVAROK_TARGET_HW as an ENV from its ARG"
+  ok a "$(basename "$(dirname "$f")")/Dockerfile exports AVAROK_TARGET_HW to the build"
 
   # '*' = every model target under kernels/<hw>/.
-  instructions "$f" | grep -qE "^[[:space:]]*ARG[[:space:]]+ATLAS_TARGET_MODEL=[\"']?\*[\"']?[[:space:]]*$" \
-    || fail a "$f does not default ATLAS_TARGET_MODEL to '*'"
-  ok a "$(basename "$(dirname "$f")")/Dockerfile defaults ATLAS_TARGET_MODEL='*'"
+  instructions "$f" | grep -qE "^[[:space:]]*ARG[[:space:]]+AVAROK_TARGET_MODEL=[\"']?\*[\"']?[[:space:]]*$" \
+    || fail a "$f does not default AVAROK_TARGET_MODEL to '*'"
+  ok a "$(basename "$(dirname "$f")")/Dockerfile defaults AVAROK_TARGET_MODEL='*'"
 done
 
 # ── (b) no NCCL_* environment is baked into either image ──────────────────────
@@ -158,13 +158,13 @@ arches = {leg["hw"]: leg["arch"] for leg in legs}
 if arches != {"hopper": "sm_90a", "b200": "sm_100a"}:
     sys.exit(f"matrix arches are {arches}, expected hopper=sm_90a b200=sm_100a")
 
-# The workflow MENTIONS ATLAS_SKIP_BUILD in a comment on purpose (not set, and
+# The workflow MENTIONS AVAROK_SKIP_BUILD in a comment on purpose (not set, and
 # that is the point), so strip comments before looking for an assignment.
 # Setting it would emit the stub registry that build.rs writes without nvcc,
 # and ship a binary with no kernels — green, downloadable, and useless.
 body = "\n".join(re.sub(r"#.*$", "", line) for line in open(path).read().splitlines())
-if re.search(r"ATLAS_SKIP_BUILD\s*[:=]", body):
-    sys.exit("the workflow sets ATLAS_SKIP_BUILD — that would ship a stub PTX registry")
+if re.search(r"AVAROK_SKIP_BUILD\s*[:=]", body):
+    sys.exit("the workflow sets AVAROK_SKIP_BUILD — that would ship a stub PTX registry")
 
 print("workflow ok: both legs, hopper=sm_90a b200=sm_100a")
 PYEOF
@@ -194,8 +194,8 @@ else
     *) fail e "both) omits the b200/sm_100a leg: $both_line" ;;
   esac
   # Comments mention it on purpose; only an assignment is a bug.
-  if sed 's/#.*$//' "$WORKFLOW" | grep -qE 'ATLAS_SKIP_BUILD[[:space:]]*[:=]'; then
-    fail e "the workflow sets ATLAS_SKIP_BUILD — that would ship a stub PTX registry"
+  if sed 's/#.*$//' "$WORKFLOW" | grep -qE 'AVAROK_SKIP_BUILD[[:space:]]*[:=]'; then
+    fail e "the workflow sets AVAROK_SKIP_BUILD — that would ship a stub PTX registry"
   fi
   ok e "workflow covers both hardware sets (text mode — PyYAML unavailable)"
 fi

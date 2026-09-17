@@ -70,9 +70,9 @@ impl BlockDiffusionDraftHead {
         // and the accumulator's actual fill. Use the LAST `eff_ctx` ctx
         // positions (most recent) — drafter trained on locally recent
         // context, distant history adds noise to attention.
-        // ATLAS_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
+        // AVAROK_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
         // for A/B testing whether the drafter actually responds to ctx.
-        // ★ The head resolved every ATLAS_* variable below ONCE, when it was
+        // ★ The head resolved every AVAROK_* variable below ONCE, when it was
         // built. This function runs per decode step and its layer helpers run
         // `num_layers` times inside it, so a `std::env::var` here is an
         // allocation plus the process-wide environment lock on the drafter's
@@ -118,7 +118,7 @@ impl BlockDiffusionDraftHead {
 
         // Debug dump gated by env var: prints first 10 BF16 floats of key
         // intermediates so a Python reference run on the same checkpoint
-        // can be compared element-wise. Use ATLAS_DFLASH_DEBUG_DUMP=1.
+        // can be compared element-wise. Use AVAROK_DFLASH_DEBUG_DUMP=1.
         let debug_dump = levers.debug_dump;
         let dump_bf16 = |label: &str, ptr: spark_runtime::gpu::DevicePtr, n: usize| -> Result<()> {
             if !debug_dump {
@@ -139,14 +139,14 @@ impl BlockDiffusionDraftHead {
         };
 
         // ── Phase 2 Option B precompute (stage 3 — dump-only) ──────
-        // When ATLAS_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
+        // When AVAROK_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
         // path in parallel to (not replacing) the existing fc gemv loop
         // below. The precompute writes BF16 dump files to /tmp for the
         // pyref diff harness; it does NOT yet feed the layer body's
         // attention. Stage 4 will swap the layer body to read from the
         // paged cache and remove the per-row gemv path entirely.
         //
-        // Requires ATLAS_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
+        // Requires AVAROK_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
         // dump files; otherwise the kernel chain runs and discards
         // intermediates (useful for perf-only A/B).
         if levers.precompute
@@ -185,7 +185,7 @@ impl BlockDiffusionDraftHead {
         if let Some(base) = ctx_base_ptr {
             // Walk the LAST `eff_ctx` slots of the accumulator.
             let start_slot = ctx_total.saturating_sub(eff_ctx);
-            // ATLAS_DFLASH_DEBUG_FORCE_PATTERN=1 overwrites the captured
+            // AVAROK_DFLASH_DEBUG_FORCE_PATTERN=1 overwrites the captured
             // target_hidden_stack with a deterministic test pattern so a
             // PyTorch reference run on the same input produces directly
             // comparable intermediates. Pattern: row i, col j contains
@@ -214,8 +214,8 @@ impl BlockDiffusionDraftHead {
                     10,
                 )?;
             }
-            // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: write the full 10240-element
-            // target_hidden_stack (one ctx slot) to /tmp/atlas_target_hidden.bin
+            // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: write the full 10240-element
+            // target_hidden_stack (one ctx slot) to /tmp/avarok_target_hidden.bin
             // so a Python reference can run dflash.py forward on the same
             // input and compare predicted draft tokens vs Atlas drafts.
             // Also dumps last_token + drafter outputs separately for the
@@ -231,11 +231,11 @@ impl BlockDiffusionDraftHead {
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;
                 gpu.copy_d2h(base.offset(start_slot * ctx_slot_bytes), &mut buf)?;
-                if let Err(e) = std::fs::write("/tmp/atlas_target_hidden.bin", &buf) {
+                if let Err(e) = std::fs::write("/tmp/avarok_target_hidden.bin", &buf) {
                     tracing::warn!("DFLASH DUMP_FULL: target_hidden write failed: {e}");
                 } else {
                     tracing::info!(
-                        "DFLASH DUMP_FULL: wrote {} bytes ({} ctx slots × {} BF16 elements) to /tmp/atlas_target_hidden.bin (last_token={}, position={}, eff_ctx={})",
+                        "DFLASH DUMP_FULL: wrote {} bytes ({} ctx slots × {} BF16 elements) to /tmp/avarok_target_hidden.bin (last_token={}, position={}, eff_ctx={})",
                         n_bytes,
                         eff_ctx,
                         ctx_slot_bytes / 2,
@@ -264,11 +264,11 @@ impl BlockDiffusionDraftHead {
                     self.num_layers,
                     self.rope_theta,
                 );
-                if let Err(e) = std::fs::write("/tmp/atlas_dflash_meta.json", &meta) {
+                if let Err(e) = std::fs::write("/tmp/avarok_dflash_meta.json", &meta) {
                     tracing::warn!("DFLASH DUMP_FULL: meta JSON write failed: {e}");
                 } else {
                     tracing::info!(
-                        "DFLASH DUMP_FULL: wrote /tmp/atlas_dflash_meta.json companion to target_hidden"
+                        "DFLASH DUMP_FULL: wrote /tmp/avarok_dflash_meta.json companion to target_hidden"
                     );
                 }
             }
@@ -390,7 +390,7 @@ impl BlockDiffusionDraftHead {
                 eff_ctx * self.hidden_size * bf16,
             )?;
         }
-        // ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
+        // AVAROK_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection
         // when both Atlas and PyTorch see identical input.
@@ -482,7 +482,7 @@ impl BlockDiffusionDraftHead {
         // graph-ready), suppress_graphs not set, none of the debug dumps
         // enabled (those inject D2H/sync into the region and would taint
         // the graph). Default warm-up N=2 (override
-        // `ATLAS_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
+        // `AVAROK_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
         // ramp, and L2 warming all happen eagerly before capture freezes
         // a steady-state SASS pick.
         let graph_eligible = option_b_on
@@ -497,7 +497,7 @@ impl BlockDiffusionDraftHead {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !debug_dump
             // Eleven separate presence tests asked this one question. Note
-            // PRESENCE, not truth: `ATLAS_DFLASH_BLOCK_DUMP=0` suppresses
+            // PRESENCE, not truth: `AVAROK_DFLASH_BLOCK_DUMP=0` suppresses
             // capture while enabling no dump. That is the shipped behaviour
             // and it is pinned by a test, not inherited by accident.
             && !levers.any_diagnostic_armed;
@@ -523,7 +523,7 @@ impl BlockDiffusionDraftHead {
         // Build PagedLayerArgs once per layer — same args for pre_attn,
         // attention, and post_attn (the kernel only reads what it needs).
         // Friday id259: per-layer block dump arms on the same position gate as
-        // the logits/input dumps (ATLAS_DFLASH_BLOCK_DUMP_AT_POS, default 0).
+        // the logits/input dumps (AVAROK_DFLASH_BLOCK_DUMP_AT_POS, default 0).
         // ONE-SHOT: a static guard ensures the per-layer .bin files come from
         // the SAME propose as the one-shot logits/noise_embed dumps below.
         // Without this the per-layer files were overwritten every propose and
@@ -614,7 +614,7 @@ impl BlockDiffusionDraftHead {
                     // node trace; rt2-class GEMVs stream 180+ on this
                     // exact shape (batchm_bench lm_head row). Drafter-side
                     // numerics are correctness-free under strict-argmax
-                    // accept. ATLAS_NO_DFLASH_FP8_RT=1 restores the tile.
+                    // accept. AVAROK_NO_DFLASH_FP8_RT=1 restores the tile.
                     if self.kernels.fp8_gemv_rt2.0 != 0
                         && g <= 8
                         && h_local.is_multiple_of(16)
@@ -758,12 +758,12 @@ impl BlockDiffusionDraftHead {
             // logits-and-margins, not just argmax.
             //
             // Fires on the golden Option-B path (does NOT depend on eff_ctx>0,
-            // unlike the legacy DUMP_FULL). Gated ATLAS_DFLASH_BLOCK_DUMP=1,
+            // unlike the legacy DUMP_FULL). Gated AVAROK_DFLASH_BLOCK_DUMP=1,
             // one-shot. Writes:
-            //   /tmp/atlas_block_logits.bin   BF16 [γ, vocab]  (pre-argmax)
-            //   /tmp/atlas_block_drafts.json  {drafts:[..], meta..}
+            //   /tmp/avarok_block_logits.bin   BF16 [γ, vocab]  (pre-argmax)
+            //   /tmp/avarok_block_drafts.json  {drafts:[..], meta..}
             {
-                // ATLAS_DFLASH_BLOCK_DUMP_AT_POS=N defers the one-shot dump
+                // AVAROK_DFLASH_BLOCK_DUMP_AT_POS=N defers the one-shot dump
                 // until position >= N, so the dump fires DEEP in the sequence
                 // where absolute decode positions have diverged from ctx slot
                 // indices — the regime that exercises the id249 ctx-K RoPE
@@ -782,7 +782,7 @@ impl BlockDiffusionDraftHead {
                     let mut lbuf = vec![0u8; n_logits_bytes];
                     if let Err(e) = gpu.copy_d2h(self.scratch.logits, &mut lbuf) {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits copy failed: {e}");
-                    } else if let Err(e) = std::fs::write("/tmp/atlas_block_logits.bin", &lbuf) {
+                    } else if let Err(e) = std::fs::write("/tmp/avarok_block_logits.bin", &lbuf) {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits write failed: {e}");
                     } else {
                         // Live argmax drafts (γ × u32).
@@ -812,9 +812,9 @@ impl BlockDiffusionDraftHead {
                             self.target_layer_ids.len(),
                             self.rope_theta,
                         );
-                        let _ = std::fs::write("/tmp/atlas_block_drafts.json", meta);
+                        let _ = std::fs::write("/tmp/avarok_block_drafts.json", meta);
                         tracing::info!(
-                            "DFLASH BLOCK_DUMP: wrote {} γ×vocab logit bytes + drafts={:?} (last_token={}, position={}) to /tmp/atlas_block_*.{{bin,json}}",
+                            "DFLASH BLOCK_DUMP: wrote {} γ×vocab logit bytes + drafts={:?} (last_token={}, position={}) to /tmp/avarok_block_*.{{bin,json}}",
                             n_logits_bytes,
                             drafts,
                             last_token,
@@ -836,7 +836,7 @@ impl BlockDiffusionDraftHead {
             //   - the Option-B ctx args (kv_len / q_offset) the paged attention saw
             // PyTorch still diverges on Atlas's REAL inputs -> COMPUTE bug (a kernel
             // erodes it). PyTorch MATCHES on real inputs -> Atlas built the INPUTS
-            // wrong (position grid / mask embed / fc). Gated ATLAS_DFLASH_BLOCK_DUMP=1
+            // wrong (position grid / mask embed / fc). Gated AVAROK_DFLASH_BLOCK_DUMP=1
             // (same one-shot gate as the logits dump above, fires same call).
             {
                 if levers.block_dump_armed_at(position)
@@ -853,7 +853,7 @@ impl BlockDiffusionDraftHead {
                     {
                         tracing::warn!("DFLASH BLOCK_INPUT: noise embed copy failed: {e}");
                     } else {
-                        let _ = std::fs::write("/tmp/atlas_block_noise_embed.bin", &nbuf);
+                        let _ = std::fs::write("/tmp/avarok_block_noise_embed.bin", &nbuf);
                     }
                     // Position grid: on Option-B the ctx K sits at slots [0..ctx_count)
                     // and the γ queries at [q_offset..q_offset+γ). Record what the
@@ -879,7 +879,7 @@ impl BlockDiffusionDraftHead {
                             .map(|r| q_rope_pos_dump as usize + r)
                             .collect::<Vec<_>>(),
                     );
-                    let _ = std::fs::write("/tmp/atlas_block_input_meta.json", input_meta);
+                    let _ = std::fs::write("/tmp/avarok_block_input_meta.json", input_meta);
                     tracing::info!(
                         "DFLASH BLOCK_INPUT: wrote noise_embed ({}×{} BF16) + input_meta (q_offset={}, kv_len={}, position={})",
                         self.gamma,
@@ -1115,7 +1115,7 @@ impl BlockDiffusionDraftHead {
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        // ATLAS_DSPARK_SHIFT=1: SpecForge drafter convention. The checkpoint's
+        // AVAROK_DSPARK_SHIFT=1: SpecForge drafter convention. The checkpoint's
         // own dflash.py spec_generate maps row j's output to position
         // start+j+1 (the anchor row's output IS draft #1 — nothing is an
         // echo), where Atlas's z-lab convention reads row j at position j
@@ -1124,7 +1124,7 @@ impl BlockDiffusionDraftHead {
         // prediction past the block) lands in the discarded slot 0.
         // SpecForge shifted-row convention: auto-detected from the drafter
         // config (projector_type == "dspark"); env overrides both ways for
-        // A/B (`ATLAS_DSPARK_SHIFT=1` forces on, `=0` forces off).
+        // A/B (`AVAROK_DSPARK_SHIFT=1` forces on, `=0` forces off).
         let shift = levers.dspark_shift.unwrap_or(self.shifted_rows);
         if shift {
             drafts.rotate_right(1);
@@ -1171,7 +1171,7 @@ impl BlockDiffusionDraftHead {
             }
             drafts.truncate(keep.max(1));
         }
-        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
+        // AVAROK_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
         if ctx.stats.dumped.keyed("dflash_drafts") && (levers.debug_dump_full || levers.log_drafts)

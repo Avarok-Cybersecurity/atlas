@@ -116,10 +116,10 @@ def encode_image(max_dim: int = 320, quality: int = 85) -> str:
 # ── Container launch ────────────────────────────────────────────────────
 
 def launch_container(spec: ModelSpec, image_tag: str) -> str:
-    """Start a fresh atlas-gb10 container for the given model.  Returns
+    """Start a fresh avarok-gb10 container for the given model.  Returns
     the container name.  Blocks until the server logs 'Listening on'.
     """
-    name = f"atlas-vsweep-{spec.label}"
+    name = f"avarok-vsweep-{spec.label}"
     subprocess.run(["sudo", "docker", "rm", "-f", name],
                    check=False, capture_output=True)
     cmd = [
@@ -234,7 +234,7 @@ def main() -> int:
                    help="Skip container launch; probe an already-running server")
     p.add_argument("--model", default=None,
                    help="Run a single model by HF id (launches container)")
-    p.add_argument("--image-tag", default="atlas-gb10:qwen36-vision",
+    p.add_argument("--image-tag", default="avarok-gb10:qwen36-vision",
                    help="Docker image for auto-launch")
     p.add_argument("--output", default="/tmp/vision_sweep_results.md")
     args = p.parse_args()

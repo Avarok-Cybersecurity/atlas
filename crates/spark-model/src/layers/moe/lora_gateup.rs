@@ -134,7 +134,7 @@ impl MoeLayer {
         anyhow::ensure!(
             n_slots <= l.cap,
             "MoE expert LoRA decode gate/up-fold: n_slots ({n_slots}) exceeds LoRA scratch cap \
-             ({}); raise ATLAS_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
+             ({}); raise AVAROK_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
             l.cap
         );
         if let Some(ref gate) = l.gate_route {

@@ -13,13 +13,13 @@
 //! Reports per (variant × shape × M): rel-err, us/call, weight GB/s, speedup.
 //!
 //! Run:
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL='*' \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' \
 //!     cargo run -p spark-model --release --features cuda,gpu-examples \
 //!     --example q2_0_gemv_microtest
 
 use anyhow::Result;
 use half::{bf16, f16};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -215,7 +215,7 @@ fn run_variant(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     // Kernel handles.

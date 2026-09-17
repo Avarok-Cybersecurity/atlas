@@ -111,11 +111,11 @@ pub(crate) enum RowKernel {
 ///
 /// * `batchm_ready` — the `dense_gemv_bf16_batchm` handle resolved
 ///   (`try_kernel` misses are a silent 0; older kernel sets fall back).
-/// * `kv_gemv_pinned` — `ATLAS_MTP_KV_GEMV` present: the PRE-EXISTING lever
+/// * `kv_gemv_pinned` — `AVAROK_MTP_KV_GEMV` present: the PRE-EXISTING lever
 ///   that pins the small-N (K/V) projections to the per-row GEMV loop. It
 ///   keeps that meaning here rather than going inert at m == 8, the one width
 ///   where it used to bite and the new tier would otherwise swallow it.
-/// * `small_m_tier_off` — `ATLAS_NO_DRAFTER_SMALL_M_TIER=1`: restores the
+/// * `small_m_tier_off` — `AVAROK_NO_DRAFTER_SMALL_M_TIER=1`: restores the
 ///   pre-tier dispatch exactly, for a same-session A/B control.
 pub(crate) fn drafter_row_kernel(
     m: usize,
@@ -154,25 +154,25 @@ pub(crate) fn drafter_row_kernel(
     }
 }
 
-/// `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` — restore the pre-tier dispatch.
+/// `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` — restore the pre-tier dispatch.
 /// Read once (this is on the per-draft-position path: 8 projections x K
 /// draft positions x every step).
 pub(crate) fn small_m_tier_off() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OFF.get_or_init(|| {
-        std::env::var("ATLAS_NO_DRAFTER_SMALL_M_TIER")
+        std::env::var("AVAROK_NO_DRAFTER_SMALL_M_TIER")
             .ok()
             .as_deref()
             == Some("1")
     })
 }
 
-/// `ATLAS_MTP_KV_GEMV` (presence) — pin the small-N K/V projections to the
+/// `AVAROK_MTP_KV_GEMV` (presence) — pin the small-N K/V projections to the
 /// per-row GEMV loop. Pre-existing lever; hoisted out of the hot path into a
 /// `OnceLock` alongside the new one.
 pub(crate) fn kv_gemv_pinned() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_MTP_KV_GEMV").is_some())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_MTP_KV_GEMV").is_some())
 }
 
 #[cfg(test)]
@@ -244,7 +244,7 @@ mod tests {
         }
     }
 
-    /// `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` must reproduce the pre-tier decision
+    /// `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` must reproduce the pre-tier decision
     /// for EVERY (m, shape, other-lever) combination — that is what makes it
     /// a valid same-session A/B control for the ladder.
     #[test]
@@ -277,7 +277,7 @@ mod tests {
         }
     }
 
-    /// `ATLAS_MTP_KV_GEMV` keeps meaning "small-N K/V on the per-row loop" at
+    /// `AVAROK_MTP_KV_GEMV` keeps meaning "small-N K/V on the per-row loop" at
     /// every width, including m=8 where the new tier would otherwise silently
     /// swallow it. Large-N projections still batch.
     #[test]
@@ -287,13 +287,13 @@ mod tests {
             assert_eq!(
                 drafter_row_kernel(m, 1024, 5120, true, true, false),
                 RowKernel::GemvLoop,
-                "K/V at m={m} under ATLAS_MTP_KV_GEMV"
+                "K/V at m={m} under AVAROK_MTP_KV_GEMV"
             );
             // N=17408 FFN is not small-N; the lever does not reach it.
             assert_eq!(
                 drafter_row_kernel(m, 17408, 5120, true, true, false),
                 RowKernel::Batchm,
-                "ffn_gate at m={m} is unaffected by ATLAS_MTP_KV_GEMV"
+                "ffn_gate at m={m} is unaffected by AVAROK_MTP_KV_GEMV"
             );
         }
     }

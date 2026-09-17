@@ -11,7 +11,7 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Instead, please report vulnerabilities privately by emailing **security@avarok.net** with:
+Instead, please report vulnerabilities privately by emailing **security@atlas.net** with:
 
 1. **Description** — What the vulnerability is and its potential impact
 2. **Reproduction steps** — Minimal steps to reproduce the issue

@@ -21,7 +21,7 @@
 //! and the two sites are **chained** (attn then ffn) exactly as the decoder layer chains them, so
 //! a per-site pass that does not compose still fails here.
 //!
-//!   MHC_PACKET_DIR=/home/msi1/atlas-scratch/mhc-family \
+//!   MHC_PACKET_DIR=/home/msi1/avarok-scratch/mhc-family \
 //!   cargo run -p spark-model --release --example mhc_microtest \
 //!       --features cuda,gpu-examples
 

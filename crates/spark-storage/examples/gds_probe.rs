@@ -3,7 +3,7 @@
 // Phase-0 probe binary. Run with:
 //
 //     cargo run --release -p spark-storage --example gds-probe -- \
-//         --dir /workspace/atlas-swap-probe
+//         --dir /workspace/avarok-swap-probe
 //
 // Reports whether cuFile/GDS is available on the current host and benchmarks
 // the candidate backends. Output is human-readable and ends with a single

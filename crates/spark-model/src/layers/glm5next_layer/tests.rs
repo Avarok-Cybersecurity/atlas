@@ -3,7 +3,7 @@
 //! What can be asserted about the composite layer without a GPU: that the state kinds are not
 //! interchangeable, and that the wiring this layer executes is the wiring the skeleton records.
 
-use atlas_core::config::parse_config;
+use avarok_core::config::parse_config;
 
 use crate::layers::glm5next_skeleton::{Glm5NextTextSkeleton, Mixer, Mlp, ResidualStep, Site};
 

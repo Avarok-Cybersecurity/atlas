@@ -6,12 +6,12 @@
 
 use super::tests::native_fp8_gdn_layer;
 use super::*;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::MockGpuBackend;
 
 /// H100, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`, tip `5f78270dc`: with
-/// `ATLAS_CUBLAS_GEMM=1` this projection routed to `ops::cublas_bf16_proj`,
+/// `AVAROK_CUBLAS_GEMM=1` this projection routed to `ops::cublas_bf16_proj`,
 /// whose cached FP8→BF16 weight dequant allocated `167772160` bytes PER LAYER
 /// (`[10240,5120] + [6144,5120]` fused, x 2 B) outside the buffer ledger. One
 /// 28-token prefill consumed 6120 MiB and died at layer 36 with

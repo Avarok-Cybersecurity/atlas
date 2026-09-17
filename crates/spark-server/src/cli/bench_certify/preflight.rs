@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 /// What was observed.
 #[derive(Clone, Debug, Default)]
@@ -23,8 +23,8 @@ pub struct PreflightFacts {
     pub dirty_perf_paths: Vec<String>,
     pub signer: String,
     pub committed_signers: Vec<String>,
-    pub atlas_home: String,
-    pub atlas_home_writable: bool,
+    pub avarok_home: String,
+    pub avarok_home_writable: bool,
     pub other_spark_pids: Vec<u32>,
     /// `MemAvailable / MemTotal`; `None` when `/proc/meminfo` is unreadable.
     pub free_fraction: Option<f64>,
@@ -73,15 +73,15 @@ pub fn evaluate(f: &PreflightFacts) -> Vec<Finding> {
         out.push(Finding(format!(
             "signer {} ({}) is not committed in .github/record-signers/ — every record \
              this campaign writes would fail verification; commit the .pub (or point \
-             ATLAS_HOME at an identity that is committed)",
-            f.signer, f.atlas_home
+             AVAROK_HOME at an identity that is committed)",
+            f.signer, f.avarok_home
         )));
     }
-    if !f.atlas_home_writable {
+    if !f.avarok_home_writable {
         out.push(Finding(format!(
-            "ATLAS_HOME {} is not writable: the run history and the signing identity \
+            "AVAROK_HOME {} is not writable: the run history and the signing identity \
              live there",
-            f.atlas_home
+            f.avarok_home
         )));
     }
     if !f.other_spark_pids.is_empty() && !f.remote_only {
@@ -139,12 +139,12 @@ pub fn gather(
 ) -> Result<PreflightFacts> {
     let head = gate::git_sha(root)?;
     let dirty_perf_paths = gate::dirty_perf_paths(root)?;
-    let store = atlas_plugin::ArtifactStore::discover().context("locating ATLAS_HOME")?;
-    let atlas_home = store.root().display().to_string();
+    let store = avarok_plugin::ArtifactStore::discover().context("locating AVAROK_HOME")?;
+    let avarok_home = store.root().display().to_string();
     let identity = gate::signing::load_or_create(store.root())
-        .with_context(|| format!("loading the signing identity under {atlas_home}"))?;
+        .with_context(|| format!("loading the signing identity under {avarok_home}"))?;
     let committed_signers = gate::signing::committed_signers(root)?;
-    let atlas_home_writable = {
+    let avarok_home_writable = {
         let probe = store.root().join(".certify-write-probe");
         let ok = std::fs::write(&probe, b"").is_ok();
         let _ = std::fs::remove_file(&probe);
@@ -156,8 +156,8 @@ pub fn gather(
         dirty_perf_paths,
         signer: identity.fingerprint().to_string(),
         committed_signers,
-        atlas_home,
-        atlas_home_writable,
+        avarok_home,
+        avarok_home_writable,
         other_spark_pids: other_spark_pids(),
         free_fraction: free_fraction(),
         min_free_fraction,
@@ -216,8 +216,8 @@ mod tests {
             dirty_perf_paths: vec![],
             signer: "a27dbc8ed2fc2a31".into(),
             committed_signers: vec!["a27dbc8ed2fc2a31".into()],
-            atlas_home: "/x".into(),
-            atlas_home_writable: true,
+            avarok_home: "/x".into(),
+            avarok_home_writable: true,
             other_spark_pids: vec![],
             free_fraction: Some(0.95),
             min_free_fraction: 0.85,
@@ -274,7 +274,7 @@ mod tests {
             ),
             (
                 "home",
-                Box::new(|f| f.atlas_home_writable = false),
+                Box::new(|f| f.avarok_home_writable = false),
                 "not writable",
             ),
             (

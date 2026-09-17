@@ -21,7 +21,7 @@ use super::*;
 /// Presence, not value: `=0` neither enables an opt-in nor re-enables an
 /// opt-out. That is the shipped behaviour of every one of these (they were
 /// `std::env::var_os(..).is_some()` / `.is_none()`), and it is the trap
-/// `ATLAS_BF16_TC_PROJ` already falls into two tests above. Getting one
+/// `AVAROK_BF16_TC_PROJ` already falls into two tests above. Getting one
 /// backwards silently changes which GEMM every dense FFN layer launches.
 #[test]
 fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
@@ -43,13 +43,13 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
 
     // Every opt-in arms on presence alone, including `=0`.
     let armed: [(&str, fn(&ModelLevers) -> bool); 7] = [
-        ("ATLAS_BF16_TC_PREFILL", |l| l.bf16_tc_prefill),
-        ("ATLAS_FP8_M64_PREFILL", |l| l.fp8_m64_prefill),
-        ("ATLAS_INT8_PREFILL", |l| l.int8_prefill),
-        ("ATLAS_INT8_FAITH5", |l| l.int8_faith5),
-        ("ATLAS_FFN_MMQ", |l| l.ffn_mmq),
-        ("ATLAS_FFN_MMQ_DOWN_Q4K", |l| l.ffn_mmq_down_q4k),
-        ("ATLAS_FP4_PREFILL", |l| l.fp4_prefill),
+        ("AVAROK_BF16_TC_PREFILL", |l| l.bf16_tc_prefill),
+        ("AVAROK_FP8_M64_PREFILL", |l| l.fp8_m64_prefill),
+        ("AVAROK_INT8_PREFILL", |l| l.int8_prefill),
+        ("AVAROK_INT8_FAITH5", |l| l.int8_faith5),
+        ("AVAROK_FFN_MMQ", |l| l.ffn_mmq),
+        ("AVAROK_FFN_MMQ_DOWN_Q4K", |l| l.ffn_mmq_down_q4k),
+        ("AVAROK_FP4_PREFILL", |l| l.fp4_prefill),
     ];
     for (name, read) in armed {
         assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
@@ -61,10 +61,10 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
 
     // Every kill switch disables on presence alone, including `=0`.
     let killed: [(&str, fn(&ModelLevers) -> bool); 4] = [
-        ("ATLAS_NO_DECODE_SPLIT_SILU", |l| l.decode_split_silu),
-        ("ATLAS_NO_FFN_NVFP4_MMQ", |l| l.ffn_nvfp4_mmq),
-        ("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", |l| l.ffn_nvfp4_mmq_down),
-        ("ATLAS_DISABLE_PREFILL_V2", |l| l.prefill_v2),
+        ("AVAROK_NO_DECODE_SPLIT_SILU", |l| l.decode_split_silu),
+        ("AVAROK_NO_FFN_NVFP4_MMQ", |l| l.ffn_nvfp4_mmq),
+        ("AVAROK_NO_FFN_NVFP4_MMQ_DOWN", |l| l.ffn_nvfp4_mmq_down),
+        ("AVAROK_DISABLE_PREFILL_V2", |l| l.prefill_v2),
     ];
     for (name, read) in killed {
         assert!(!read(&resolve(&[(name, "1")])), "{name} did not kill");
@@ -76,8 +76,8 @@ fn the_dense_ffn_levers_are_presence_gated_and_their_polarities_hold() {
 
     // The two down-projection gates are independent of their gate/up
     // siblings — down is the heavy-tailed projection and has its own arm.
-    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ_DOWN", "1")]).ffn_nvfp4_mmq);
-    assert!(resolve(&[("ATLAS_NO_FFN_NVFP4_MMQ", "1")]).ffn_nvfp4_mmq_down);
+    assert!(resolve(&[("AVAROK_NO_FFN_NVFP4_MMQ_DOWN", "1")]).ffn_nvfp4_mmq);
+    assert!(resolve(&[("AVAROK_NO_FFN_NVFP4_MMQ", "1")]).ffn_nvfp4_mmq_down);
 }
 
 /// The MoE routed-prefill levers. Four opt-ins, one tri-state, one numeric —
@@ -97,17 +97,17 @@ fn the_decode_step_levers_keep_their_two_different_spellings() {
     assert!(!d.gdn_decode_graph);
 
     // Presence: any value arms it, `0` included.
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "1")]).ssm_save_dump);
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "0")]).ssm_save_dump);
-    assert!(resolve(&[("ATLAS_SSM_SAVE_DUMP", "")]).ssm_save_dump);
+    assert!(resolve(&[("AVAROK_SSM_SAVE_DUMP", "1")]).ssm_save_dump);
+    assert!(resolve(&[("AVAROK_SSM_SAVE_DUMP", "0")]).ssm_save_dump);
+    assert!(resolve(&[("AVAROK_SSM_SAVE_DUMP", "")]).ssm_save_dump);
 
     // Truthy: `1` or `true`, nothing else.
     for (name, read) in [
         (
-            "ATLAS_EP_GRAPHS",
+            "AVAROK_EP_GRAPHS",
             (|l: &ModelLevers| l.ep_graphs) as fn(&ModelLevers) -> bool,
         ),
-        ("ATLAS_GDN_DECODE_GRAPH", |l: &ModelLevers| {
+        ("AVAROK_GDN_DECODE_GRAPH", |l: &ModelLevers| {
             l.gdn_decode_graph
         }),
     ] {
@@ -130,7 +130,7 @@ fn the_decode_step_levers_keep_their_two_different_spellings() {
     }
     // The contrast, in the same test so the difference is visible: the
     // sibling truthy levers ARE case-insensitive and must stay that way.
-    assert!(resolve(&[("ATLAS_LORA_EAGER", "TRUE")]).lora_eager);
+    assert!(resolve(&[("AVAROK_LORA_EAGER", "TRUE")]).lora_eager);
 }
 
 /// The MoE-forward and MTP-drafter levers. All five are strict `=1` opt-ins
@@ -151,13 +151,13 @@ fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
     assert!(!d.mtp_debug_norms);
 
     let cases: [(&str, fn(&ModelLevers) -> bool); 5] = [
-        ("ATLAS_FP32_ROUTING", |l| l.fp32_routing),
-        ("ATLAS_FP32_GATE", |l| l.fp32_gate),
-        ("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL", |l| {
+        ("AVAROK_FP32_ROUTING", |l| l.fp32_routing),
+        ("AVAROK_FP32_GATE", |l| l.fp32_gate),
+        ("AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL", |l| {
             l.frankenstein_decode_via_prefill
         }),
-        ("ATLAS_K2_DIAG", |l| l.k2_diag),
-        ("ATLAS_MTP_DEBUG_NORMS", |l| l.mtp_debug_norms),
+        ("AVAROK_K2_DIAG", |l| l.k2_diag),
+        ("AVAROK_MTP_DEBUG_NORMS", |l| l.mtp_debug_norms),
     ];
     for (name, read) in cases {
         assert!(read(&resolve(&[(name, "1")])), "{name} did not arm at =1");
@@ -169,8 +169,8 @@ fn the_moe_forward_and_mtp_levers_are_strict_opt_ins() {
     }
     // The two FP32 levers are independent: the gate one is the batched-path
     // sibling, not an alias.
-    assert!(!resolve(&[("ATLAS_FP32_ROUTING", "1")]).fp32_gate);
-    assert!(!resolve(&[("ATLAS_FP32_GATE", "1")]).fp32_routing);
+    assert!(!resolve(&[("AVAROK_FP32_ROUTING", "1")]).fp32_gate);
+    assert!(!resolve(&[("AVAROK_FP32_GATE", "1")]).fp32_routing);
 }
 
 /// The confidence clamp, exercised through the PURE resolver.
@@ -216,11 +216,11 @@ fn the_draft_confidence_clamp_holds_at_both_ends() {
 
 /// One flag, two structs — and they must name the same variable.
 ///
-/// `ATLAS_DFLASH_DEBUG_DUMP_FULL` arms both halves of the DFlash reference
+/// `AVAROK_DFLASH_DEBUG_DUMP_FULL` arms both halves of the DFlash reference
 /// dump: the token sequence from `TransformerModel` and the tensors from the
 /// drafter head. `TransformerModel` cannot reach the head's `DFlashLevers`
 /// (`proposer` is a `dyn DraftProposer`), so each carries its own resolved
-/// copy — the same shape as `ATLAS_DSPARK_ANCHOR_BIAS`, which had two
+/// copy — the same shape as `AVAROK_DSPARK_ANCHOR_BIAS`, which had two
 /// implementations that nothing compared.
 ///
 /// Checked at the SOURCE rather than at runtime, because the runtime version
@@ -229,7 +229,7 @@ fn the_draft_confidence_clamp_holds_at_both_ends() {
 /// spelling is the whole failure mode.
 #[test]
 fn the_two_halves_of_the_dflash_dump_name_the_same_flag() {
-    const FLAG: &str = "ATLAS_DFLASH_DEBUG_DUMP_FULL";
+    const FLAG: &str = "AVAROK_DFLASH_DEBUG_DUMP_FULL";
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     for (rel, field) in [
         (
@@ -245,7 +245,7 @@ fn the_two_halves_of_the_dflash_dump_name_the_same_flag() {
             .unwrap_or_else(|| panic!("{rel} no longer resolves `{field}`"));
         // ★ EXACT, not `contains`. A first draft of this used
         // `line.contains(FLAG)` and its control passed: the typo injected to
-        // break it was `ATLAS_DFLASH_DEBUG_DUMP_FULL_TYPO`, which contains
+        // break it was `AVAROK_DFLASH_DEBUG_DUMP_FULL_TYPO`, which contains
         // the correct name as a prefix. A guard that cannot fail is worse
         // than no guard, so the quoted string is extracted and compared.
         let named = line.split('"').nth(1).unwrap_or_else(|| {
@@ -272,40 +272,40 @@ fn the_moe_prefill_levers_keep_the_tri_state_distinguishable() {
     );
     assert_eq!(d.moe_prefill_max_load_factor, None);
 
-    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_CUTLASS", "1")]).moe_grouped_cutlass);
-    assert!(resolve(&[("ATLAS_HOLO_MOE_GROUPED_DOWN", "1")]).moe_grouped_down);
-    assert!(resolve(&[("ATLAS_MOE_PREFILL_ZERO", "1")]).moe_prefill_zero);
-    assert!(resolve(&[("ATLAS_MOE_PREFILL_FP8_DOWN", "1")]).moe_prefill_fp8_down);
+    assert!(resolve(&[("AVAROK_HOLO_MOE_GROUPED_CUTLASS", "1")]).moe_grouped_cutlass);
+    assert!(resolve(&[("AVAROK_HOLO_MOE_GROUPED_DOWN", "1")]).moe_grouped_down);
+    assert!(resolve(&[("AVAROK_MOE_PREFILL_ZERO", "1")]).moe_prefill_zero);
+    assert!(resolve(&[("AVAROK_MOE_PREFILL_FP8_DOWN", "1")]).moe_prefill_fp8_down);
     // These four are value-gated, not presence-gated.
-    assert!(!resolve(&[("ATLAS_MOE_PREFILL_ZERO", "0")]).moe_prefill_zero);
+    assert!(!resolve(&[("AVAROK_MOE_PREFILL_ZERO", "0")]).moe_prefill_zero);
 
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "1")]).moe_prefill_exact_tiles,
+        resolve(&[("AVAROK_MOE_PREFILL_EXACT_TILES", "1")]).moe_prefill_exact_tiles,
         Some(true)
     );
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "0")]).moe_prefill_exact_tiles,
+        resolve(&[("AVAROK_MOE_PREFILL_EXACT_TILES", "0")]).moe_prefill_exact_tiles,
         Some(false),
         "`0` is an explicit OFF, not an absent lever — the p90 measured -5.0% \
          there and +4.9% at ON, so both directions must stay reachable"
     );
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_EXACT_TILES", "yes")]).moe_prefill_exact_tiles,
+        resolve(&[("AVAROK_MOE_PREFILL_EXACT_TILES", "yes")]).moe_prefill_exact_tiles,
         None
     );
 
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "4")]).moe_prefill_max_load_factor,
+        resolve(&[("AVAROK_MOE_PREFILL_MAX_LOAD_FACTOR", "4")]).moe_prefill_max_load_factor,
         Some(4)
     );
     // `0` means "no cap", which is `None` — not a cap of zero, which would
     // size every expert's tile bound to one tile and drop rows.
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "0")]).moe_prefill_max_load_factor,
+        resolve(&[("AVAROK_MOE_PREFILL_MAX_LOAD_FACTOR", "0")]).moe_prefill_max_load_factor,
         None
     );
     assert_eq!(
-        resolve(&[("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR", "x")]).moe_prefill_max_load_factor,
+        resolve(&[("AVAROK_MOE_PREFILL_MAX_LOAD_FACTOR", "x")]).moe_prefill_max_load_factor,
         None
     );
 }
@@ -342,13 +342,13 @@ fn the_nemotron_prefill_levers_are_presence_gated() {
     assert!(!d.shared_w4a4_down);
 
     let killed: [(&str, fn(&ModelLevers) -> bool); 5] = [
-        ("ATLAS_NO_SSM_W4A4", |l| l.ssm_w4a4),
-        ("ATLAS_NO_SSD", |l| l.ssd),
-        ("ATLAS_NO_SSM_PERSISTENT", |l| l.ssm_persistent),
-        ("ATLAS_MOE_NO_ZERO_INTERMEDIATES", |l| {
+        ("AVAROK_NO_SSM_W4A4", |l| l.ssm_w4a4),
+        ("AVAROK_NO_SSD", |l| l.ssd),
+        ("AVAROK_NO_SSM_PERSISTENT", |l| l.ssm_persistent),
+        ("AVAROK_MOE_NO_ZERO_INTERMEDIATES", |l| {
             l.moe_zero_intermediates
         }),
-        ("ATLAS_NO_SHARED_W4A4", |l| l.shared_w4a4),
+        ("AVAROK_NO_SHARED_W4A4", |l| l.shared_w4a4),
     ];
     for (name, read) in killed {
         assert!(!read(&resolve(&[(name, "1")])), "{name} did not kill");
@@ -359,11 +359,11 @@ fn the_nemotron_prefill_levers_are_presence_gated() {
     }
 
     let armed: [(&str, fn(&ModelLevers) -> bool); 3] = [
-        ("ATLAS_MOE_MAX_M_TILES_ESTIMATE", |l| {
+        ("AVAROK_MOE_MAX_M_TILES_ESTIMATE", |l| {
             l.moe_max_m_tiles_estimate
         }),
-        ("ATLAS_MOE_W4A4", |l| l.moe_w4a4),
-        ("ATLAS_SHARED_W4A4_DOWN", |l| l.shared_w4a4_down),
+        ("AVAROK_MOE_W4A4", |l| l.moe_w4a4),
+        ("AVAROK_SHARED_W4A4_DOWN", |l| l.shared_w4a4_down),
     ];
     for (name, read) in armed {
         assert!(read(&resolve(&[(name, "1")])), "{name} did not arm");
@@ -375,8 +375,8 @@ fn the_nemotron_prefill_levers_are_presence_gated() {
 
     // The shared-expert UP and DOWN halves are independent: down is the
     // heavy-tailed projection and does not inherit up's default.
-    assert!(!resolve(&[("ATLAS_NO_SHARED_W4A4", "1")]).shared_w4a4_down);
-    assert!(resolve(&[("ATLAS_SHARED_W4A4_DOWN", "1")]).shared_w4a4);
+    assert!(!resolve(&[("AVAROK_NO_SHARED_W4A4", "1")]).shared_w4a4_down);
+    assert!(resolve(&[("AVAROK_SHARED_W4A4_DOWN", "1")]).shared_w4a4);
 }
 
 /// The batched-decode five, whose spellings differ between NEIGHBOURING
@@ -398,13 +398,13 @@ fn the_batched_decode_levers_keep_their_neighbours_spellings() {
     // Strict `1`: `true` does NOT arm these.
     for (name, read) in [
         (
-            "ATLAS_HC_PERSEQ_DECODE",
+            "AVAROK_HC_PERSEQ_DECODE",
             (|l: &ModelLevers| l.hc_perseq_decode) as fn(&ModelLevers) -> bool,
         ),
-        ("ATLAS_DECODE_BATCH_LOG", |l: &ModelLevers| {
+        ("AVAROK_DECODE_BATCH_LOG", |l: &ModelLevers| {
             l.decode_batch_log
         }),
-        ("ATLAS_MS_PROFILE", |l: &ModelLevers| l.ms_profile),
+        ("AVAROK_MS_PROFILE", |l: &ModelLevers| l.ms_profile),
     ] {
         assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
         assert!(!read(&resolve(&[(name, "true")])), "{name} is strict `1`");
@@ -414,10 +414,10 @@ fn the_batched_decode_levers_keep_their_neighbours_spellings() {
     // Truthy but case-SENSITIVE: `true` arms, `TRUE` does not.
     for (name, read) in [
         (
-            "ATLAS_MLA_PERSEQ_FALLBACK",
+            "AVAROK_MLA_PERSEQ_FALLBACK",
             (|l: &ModelLevers| l.mla_perseq_fallback) as fn(&ModelLevers) -> bool,
         ),
-        ("ATLAS_CONC_HSD", |l: &ModelLevers| l.conc_hsd),
+        ("AVAROK_CONC_HSD", |l: &ModelLevers| l.conc_hsd),
     ] {
         assert!(read(&resolve(&[(name, "1")])), "{name} at =1");
         assert!(read(&resolve(&[(name, "true")])), "{name} at =true");
@@ -428,8 +428,8 @@ fn the_batched_decode_levers_keep_their_neighbours_spellings() {
         assert!(!read(&resolve(&[(name, "0")])), "{name} at =0");
     }
 
-    // ★ `ATLAS_MS_PROFILE` and `ATLAS_SSM_MS_PROFILE` are two live variables
+    // ★ `AVAROK_MS_PROFILE` and `AVAROK_SSM_MS_PROFILE` are two live variables
     // one underscore apart. Setting either must not move the other.
-    assert!(!resolve(&[("ATLAS_MS_PROFILE", "1")]).ssm_ms_profile);
-    assert!(!resolve(&[("ATLAS_SSM_MS_PROFILE", "1")]).ms_profile);
+    assert!(!resolve(&[("AVAROK_MS_PROFILE", "1")]).ssm_ms_profile);
+    assert!(!resolve(&[("AVAROK_SSM_MS_PROFILE", "1")]).ms_profile);
 }

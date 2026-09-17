@@ -72,10 +72,10 @@ fn the_ops_pane_keeps_the_newest_output_when_it_overflows() {
 #[test]
 fn an_echoed_command_is_marked_apart_from_the_output_it_produced() {
     let mut a = term(TermSub::Ops);
-    a.ops.output = vec!["❯ /gpu".into(), "atlas 57.2 GB".into()];
+    a.ops.output = vec!["❯ /gpu".into(), "avarok 57.2 GB".into()];
     let rows = screen(&a, 120, 40);
     assert!(has(&rows, "❯ /gpu"), "{rows:#?}");
-    assert!(has(&rows, "atlas 57.2 GB"));
+    assert!(has(&rows, "avarok 57.2 GB"));
 }
 
 #[test]

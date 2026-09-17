@@ -216,7 +216,7 @@ impl Qwen3AttentionLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        // ATLAS_FP32_ROUTING: attention layers also have an MoE FFN — emit the
+        // AVAROK_FP32_ROUTING: attention layers also have an MoE FFN — emit the
         // MoE-input norm in FP32 so their gates route at full precision too.
         if self.ffn.fp32_routing_active(ctx.levers) && self.residual_add_rms_norm_gatef32_k.0 != 0 {
             ops::residual_add_rms_norm_gatef32(
@@ -476,7 +476,7 @@ impl Qwen3AttentionLayer {
         // step of the first attention layer (and cost a hidden round-trip per
         // step even in eager mode).
         let diag_all =
-            std::env::var("ATLAS_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
+            std::env::var("AVAROK_DIAG_V4_ALL_LAYERS").is_ok_and(|v| v == "1" || v == "true");
         let diag_this = diag_all && !ctx.graph_capture;
 
         // 1. Expand single-stream embedding into hc_mult copies on first layer.

@@ -141,7 +141,7 @@ fn acquire_or_spill_frees_a_slot_under_full_pool() {
 
     // Register two resident snapshots (slots 0 and 1) for two prefixes, then
     // drain the free list so the pool is full. The prefixes are DEEP (2048
-    // tokens) so the spill-side cost gate (`ATLAS_SSM_SPILL_MIN_TOKENS`,
+    // tokens) so the spill-side cost gate (`AVAROK_SSM_SPILL_MIN_TOKENS`,
     // default 1024) takes its Spill arm — the shallow/Drop arm is covered by
     // `shallow_victim_is_dropped_but_still_yields_a_slot` below.
     let toks_a: Vec<u32> = (0..2048).collect();

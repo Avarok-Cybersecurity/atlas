@@ -8,7 +8,7 @@ struct Cache(PathBuf);
 
 impl Cache {
     fn new(name: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("atlas-dl-{name}"));
+        let p = std::env::temp_dir().join(format!("avarok-dl-{name}"));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).expect("temp cache");
         Self(p)

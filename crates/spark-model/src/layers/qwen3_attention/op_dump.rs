@@ -2,19 +2,19 @@
 
 //! Per-operation drift-dump helper for full-attention prefill.
 //!
-//! Companion to the existing `ATLAS_GDN_DUMP` infrastructure in
+//! Companion to the existing `AVAROK_GDN_DUMP` infrastructure in
 //! `super::super::qwen3_ssm::debug`. This one captures named operation
 //! outputs at user-selected absolute layer indices for the master drift
 //! table study (`bench/fp8_dgx2_drift/`).
 //!
 //! Activation:
-//!     `ATLAS_OP_DUMP=<dir>`                     (required to enable; no-op when unset)
-//!     ATLAS_OP_DUMP_LAYERS=0,7,11,15,19,23,...  (csv of absolute layer
+//!     `AVAROK_OP_DUMP=<dir>`                     (required to enable; no-op when unset)
+//!     AVAROK_OP_DUMP_LAYERS=0,7,11,15,19,23,...  (csv of absolute layer
 //!                                                indices; default = all)
-//!     ATLAS_OP_DUMP_OPS=q_proj,k_proj,...       (csv of op names; default = all)
+//!     AVAROK_OP_DUMP_OPS=q_proj,k_proj,...       (csv of op names; default = all)
 //!
 //! Filename convention:
-//!     `<ATLAS_OP_DUMP>/atlas_op_L{abs_layer}_{op}.bin`
+//!     `<AVAROK_OP_DUMP>/avarok_op_L{abs_layer}_{op}.bin`
 //! Format: headerless little-endian f32, last-token slice of `n_elements`.
 //! BF16 source tensors are widened to f32 on the host before write so
 //! the Python comparator can load them with a single np.fromfile call.
@@ -44,18 +44,18 @@ fn parse_csv_usize(env: &str) -> Vec<usize> {
         .unwrap_or_default()
 }
 
-/// Returns Some(dir) if ATLAS_OP_DUMP is set, the layer index is allowed,
+/// Returns Some(dir) if AVAROK_OP_DUMP is set, the layer index is allowed,
 /// and the op name is allowed. Returns None otherwise (no-op fast path).
 fn op_dump_dir(layer_idx: usize, op: &str) -> Option<String> {
-    let dir = std::env::var("ATLAS_OP_DUMP").ok()?;
+    let dir = std::env::var("AVAROK_OP_DUMP").ok()?;
     if dir.is_empty() {
         return None;
     }
-    let layers = parse_csv_usize("ATLAS_OP_DUMP_LAYERS");
+    let layers = parse_csv_usize("AVAROK_OP_DUMP_LAYERS");
     if !layers.is_empty() && !layers.contains(&layer_idx) {
         return None;
     }
-    let ops = parse_csv("ATLAS_OP_DUMP_OPS");
+    let ops = parse_csv("AVAROK_OP_DUMP_OPS");
     if !ops.is_empty() && !ops.iter().any(|o| o == op) {
         return None;
     }
@@ -64,7 +64,7 @@ fn op_dump_dir(layer_idx: usize, op: &str) -> Option<String> {
 
 /// Snapshot `n_elements` BF16 values starting at `ptr + byte_offset`,
 /// widen to f32 little-endian, write to
-/// `<ATLAS_OP_DUMP>/atlas_op_L{layer_idx}_{op}.bin`.
+/// `<AVAROK_OP_DUMP>/avarok_op_L{layer_idx}_{op}.bin`.
 pub(crate) fn dump_bf16(
     gpu: &dyn GpuBackend,
     ptr: DevicePtr,
@@ -92,11 +92,11 @@ pub(crate) fn dump_bf16(
         .map(|&b| f32::from_bits((b as u32) << 16))
         .collect();
     let bytes_f32: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let path = std::path::Path::new(&dir).join(format!("atlas_op_L{layer_idx}_{op}.bin"));
+    let path = std::path::Path::new(&dir).join(format!("avarok_op_L{layer_idx}_{op}.bin"));
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(&path, &bytes_f32)?;
     tracing::info!(
-        "ATLAS_OP_DUMP: wrote {} ({n_elements} f32, bf16-source)",
+        "AVAROK_OP_DUMP: wrote {} ({n_elements} f32, bf16-source)",
         path.display()
     );
     Ok(())
@@ -128,11 +128,11 @@ pub(crate) fn dump_f32(
         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, n_elements * 4) };
     gpu.copy_d2h(ptr.offset(byte_offset), bytes)?;
     let bytes_f32: Vec<u8> = buf.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let path = std::path::Path::new(&dir).join(format!("atlas_op_L{layer_idx}_{op}.bin"));
+    let path = std::path::Path::new(&dir).join(format!("avarok_op_L{layer_idx}_{op}.bin"));
     std::fs::create_dir_all(&dir).ok();
     std::fs::write(&path, &bytes_f32)?;
     tracing::info!(
-        "ATLAS_OP_DUMP: wrote {} ({n_elements} f32 native)",
+        "AVAROK_OP_DUMP: wrote {} ({n_elements} f32 native)",
         path.display()
     );
     Ok(())

@@ -11,9 +11,9 @@
 //     into pinned bounces, then `copy_h2d` to the HBM destinations.
 //
 // PIPELINED + DUAL-RAIL. Each RAIL is a QP on one CX7 adapter with its own ring
-// of `depth` registered bounce buffers (env `ATLAS_KV_PIPELINE_DEPTH`, default
-// 16). With `ATLAS_KV_DUAL_RAIL=1` the client opens 2 rails (env
-// `ATLAS_EXPERT_RDMA_DEV`/`GID` = rail 0, `ATLAS_KV_RAIL2_DEV`/`GID` = rail 1)
+// of `depth` registered bounce buffers (env `AVAROK_KV_PIPELINE_DEPTH`, default
+// 16). With `AVAROK_KV_DUAL_RAIL=1` the client opens 2 rails (env
+// `AVAROK_EXPERT_RDMA_DEV`/`GID` = rail 0, `AVAROK_KV_RAIL2_DEV`/`GID` = rail 1)
 // and stripes ops round-robin across both adapters — the two GB10 CX7 ports are
 // independent PCIe paths (~1.75x aggregate). The peer registers its arena once
 // per rail (shared physical pages, refcounted pinning → not N× RAM).
@@ -48,7 +48,7 @@ pub struct RdmaKvBackend {
     layout: GroupLayout,
     remote_base: u64,
     rr: usize, // round-robin rail cursor for writes
-    /// Zero-copy restore (ATLAS_KV_ZERO_COPY=1): RDMA READ lands directly into
+    /// Zero-copy restore (AVAROK_KV_ZERO_COPY=1): RDMA READ lands directly into
     /// the (UMA) destination, skipping the bounce + copy_h2d that otherwise caps
     /// restore at the copy-engine bandwidth.
     zero_copy: bool,
@@ -63,10 +63,10 @@ unsafe impl Sync for RdmaKvBackend {}
 impl RdmaKvBackend {
     /// Connect to a KV blade at `addr`, size + register the peer arena, bring up
     /// N rails (RC QPs across the CX7 adapters) via
-    /// [`atlas_rdma::railset::RailSet`], and allocate each rail's ring.
+    /// [`avarok_rdma::railset::RailSet`], and allocate each rail's ring.
     pub fn connect(addr: &str, layout: GroupLayout) -> Result<Self> {
-        use atlas_rdma::env::{first_set, first_set_u32};
-        use atlas_rdma::railset::{RailSet, RailSpec};
+        use avarok_rdma::env::{first_set, first_set_u32};
+        use avarok_rdma::railset::{RailSet, RailSpec};
 
         let group_bytes = layout.group_bytes() as usize;
         let num_groups = (layout.num_layers as u64)
@@ -76,26 +76,26 @@ impl RdmaKvBackend {
         let total_bytes = num_groups * layout.group_stride;
 
         // Rail devices: rail 0 from the expert env (shared CX7 link), rail 1 from
-        // the KV rail-2 env. Dual-rail only when ATLAS_KV_DUAL_RAIL=1. Fresh
+        // the KV rail-2 env. Dual-rail only when AVAROK_KV_DUAL_RAIL=1. Fresh
         // random 24-bit PSN per rail.
         let spec =
             |dev: String, gid: u32| RailSpec::new(dev, gid, rand::random::<u32>() & 0xff_ffff);
         let rail0 = spec(
-            first_set(&["ATLAS_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
-            first_set_u32(&["ATLAS_EXPERT_RDMA_GID"], 3),
+            first_set(&["AVAROK_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
+            first_set_u32(&["AVAROK_EXPERT_RDMA_GID"], 3),
         );
-        let dual = std::env::var("ATLAS_KV_DUAL_RAIL").ok().as_deref() == Some("1");
+        let dual = std::env::var("AVAROK_KV_DUAL_RAIL").ok().as_deref() == Some("1");
         let specs: Vec<RailSpec> = if dual {
             let rail1 = spec(
-                first_set(&["ATLAS_KV_RAIL2_DEV"], "rocep1s0f1"),
-                first_set_u32(&["ATLAS_KV_RAIL2_GID"], 3),
+                first_set(&["AVAROK_KV_RAIL2_DEV"], "rocep1s0f1"),
+                first_set_u32(&["AVAROK_KV_RAIL2_GID"], 3),
             );
             vec![rail0, rail1]
         } else {
             vec![rail0]
         };
         let n_rails = specs.len();
-        let depth: usize = first_set_u32(&["ATLAS_KV_PIPELINE_DEPTH"], 16).clamp(1, 128) as usize;
+        let depth: usize = first_set_u32(&["AVAROK_KV_PIPELINE_DEPTH"], 16).clamp(1, 128) as usize;
 
         let mut stream =
             TcpStream::connect(addr).with_context(|| format!("connect kv peer {addr}"))?;
@@ -164,7 +164,7 @@ impl RdmaKvBackend {
             layout,
             remote_base: base,
             rr: 0,
-            zero_copy: std::env::var("ATLAS_KV_ZERO_COPY").ok().as_deref() == Some("1"),
+            zero_copy: std::env::var("AVAROK_KV_ZERO_COPY").ok().as_deref() == Some("1"),
             _stream: stream,
         })
     }

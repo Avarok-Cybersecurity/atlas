@@ -167,7 +167,7 @@ fn a_shards_estimate_is_the_groups_share_floored_and_its_param_names_the_slice()
     assert_eq!(four[3].label(), "bfcl-subset[3/4]");
     // Declared estimates divide the same way.
     let eight = units(&["bfcl-subset"], &|_| None, &fresh_partition(8), &timing()).unwrap();
-    let declared = atlas_plugin::registry::find("bfcl-subset")
+    let declared = avarok_plugin::registry::find("bfcl-subset")
         .unwrap()
         .expected_secs;
     assert_eq!(eight[0].secs(), declared / 8 + timing().shard_overhead_s);

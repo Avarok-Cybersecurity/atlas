@@ -3,7 +3,7 @@
 //! [`RunDumps`] — the diagnostic file sinks a run writes to.
 //!
 //! Two `OnceLock<Option<Mutex<..>>>` file appenders, each opened lazily from an
-//! `ATLAS_*` path on its first write. Both are sinks for one run's decode
+//! `AVAROK_*` path on its first write. Both are sinks for one run's decode
 //! path, and holding them in process globals had two consequences:
 //!
 //! * The handle outlived the run that opened it, so a second model appended
@@ -25,9 +25,9 @@ use std::sync::Mutex;
 /// Diagnostic file sinks for one scheduler run.
 #[derive(Debug, Default)]
 pub struct RunDumps {
-    /// `ATLAS_LOGIT_DUMP=path` — per-position logits.
+    /// `AVAROK_LOGIT_DUMP=path` — per-position logits.
     pub logits: Option<Mutex<BufWriter<File>>>,
-    /// `ATLAS_ADADEC_DIAGNOSTIC=dir` — the adaptive-decode entropy trace.
+    /// `AVAROK_ADADEC_DIAGNOSTIC=dir` — the adaptive-decode entropy trace.
     pub adadec: Option<Mutex<File>>,
 }
 
@@ -35,9 +35,9 @@ impl RunDumps {
     /// Open whichever sinks this run's environment asks for.
     pub fn from_env() -> Self {
         Self {
-            logits: Self::open_append("ATLAS_LOGIT_DUMP", |p| p.to_path_buf())
+            logits: Self::open_append("AVAROK_LOGIT_DUMP", |p| p.to_path_buf())
                 .map(|f| Mutex::new(BufWriter::new(f))),
-            adadec: Self::open_append("ATLAS_ADADEC_DIAGNOSTIC", |p| {
+            adadec: Self::open_append("AVAROK_ADADEC_DIAGNOSTIC", |p| {
                 p.join("adadec_entropy.jsonl")
             })
             .map(Mutex::new),

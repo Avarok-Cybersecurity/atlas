@@ -2,14 +2,14 @@
 
 //! Startup check that every rank agrees on the scalars that shape the COLLECTIVE SCHEDULE.
 //!
-//! 🔴 Some tuning levers are not perf knobs. `ATLAS_GLM_PREFILL_ROWS` is read independently on
+//! 🔴 Some tuning levers are not perf knobs. `AVAROK_GLM_PREFILL_ROWS` is read independently on
 //! each rank by [`crate::layers::glm5next_layer::prefill_rows`], and it decides how many
 //! sub-chunks a prefill chunk is split into — i.e. **how many `reduce_partial` all-reduces the
 //! chunk issues and how wide each one is**. A mismatch between ranks is therefore not a perf
 //! skew: it is a mismatched collective schedule — a hang, or a reduce over the wrong extent.
 //!
 //! Until now the hazard was masked by the launch harness passing one env block to every rank.
-//! That is the harness being careful, not the engine being safe; `ATLAS_EP_PROTOCOL` carried the
+//! That is the harness being careful, not the engine being safe; `AVAROK_EP_PROTOCOL` carried the
 //! same exposure with only a doc comment ("both ranks must agree") behind it. This module makes
 //! it the engine's problem: rank 0 broadcasts its values, every rank compares against its own,
 //! and a disagreement bails at startup naming the offending lever.
@@ -17,7 +17,7 @@
 //! Cheap by construction — one broadcast of a handful of `u64`s, once, before the first token.
 //!
 //! 🪤 Levers that do **not** change the collective schedule do not belong here.
-//! `ATLAS_GLM_MOE_ROW_BATCH_MAX` is included anyway because a rank skew there is still a
+//! `AVAROK_GLM_MOE_ROW_BATCH_MAX` is included anyway because a rank skew there is still a
 //! confusing perf asymmetry, and the check costs nothing — but it is a *correctness* gate only
 //! for the schedule-shaping entries.
 
@@ -109,23 +109,23 @@ mod tests {
 
     #[test]
     fn agreement_is_silent() {
-        let items = [("ATLAS_GLM_PREFILL_ROWS", 8u64), ("ep_protocol_v2", 0)];
+        let items = [("AVAROK_GLM_PREFILL_ROWS", 8u64), ("ep_protocol_v2", 0)];
         assert!(mismatches(&items, &[8, 0], 1).is_empty());
     }
 
     #[test]
     fn a_single_disagreement_names_the_lever_and_both_values() {
-        let items = [("ATLAS_GLM_PREFILL_ROWS", 4u64), ("ep_protocol_v2", 0)];
+        let items = [("AVAROK_GLM_PREFILL_ROWS", 4u64), ("ep_protocol_v2", 0)];
         let bad = mismatches(&items, &[8, 0], 1);
         assert_eq!(
             bad,
-            vec!["ATLAS_GLM_PREFILL_ROWS: rank 1 has 4, rank 0 has 8"]
+            vec!["AVAROK_GLM_PREFILL_ROWS: rank 1 has 4, rank 0 has 8"]
         );
     }
 
     #[test]
     fn every_disagreement_is_reported_not_just_the_first() {
-        let items = [("ATLAS_GLM_PREFILL_ROWS", 4u64), ("ep_protocol_v2", 1)];
+        let items = [("AVAROK_GLM_PREFILL_ROWS", 4u64), ("ep_protocol_v2", 1)];
         assert_eq!(mismatches(&items, &[8, 0], 1).len(), 2);
     }
 }

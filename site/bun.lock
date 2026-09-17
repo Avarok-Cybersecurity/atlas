@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "atlas-site",
+      "name": "avarok-site",
       "devDependencies": {
         "@playwright/test": "^1.62.1",
         "@sveltejs/adapter-static": "^3.0.10",

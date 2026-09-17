@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::cli::bench_certify::plan::Estimate;
-use atlas_plugin::hardware::policy::Sensitivity;
+use avarok_plugin::hardware::policy::Sensitivity;
 use std::path::PathBuf;
 
 fn unit(id: &'static str, group: Option<&'static str>) -> Unit {

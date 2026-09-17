@@ -41,12 +41,12 @@ kernels/
             └── *.cu               e.g. qwen3.6-35b-a3b/nvfp4/inferspark_prefill_h128.cu
 ```
 
-A single `build.rs` (`crates/atlas-kernels/build.rs`) walks the tree,
+A single `build.rs` (`crates/avarok-kernels/build.rs`) walks the tree,
 reads `HARDWARE.toml` and `MODEL.toml`, and compiles every `.cu` for
 the **selected tuple** to PTX via `nvcc`. The build script:
 
-- Picks the tuple via env vars: `ATLAS_TARGET_HW`, `ATLAS_TARGET_MODEL`,
-  `ATLAS_TARGET_QUANT`. Each accepts `*` to wildcard ("all known
+- Picks the tuple via env vars: `AVAROK_TARGET_HW`, `AVAROK_TARGET_MODEL`,
+  `AVAROK_TARGET_QUANT`. Each accepts `*` to wildcard ("all known
   models", "all known quants").
 - Resolves model-specific overrides over shared kernels at the file-name
   level (per-model `dense_gemm.cu` wins over shared `dense_gemm.cu`).
@@ -55,7 +55,7 @@ the **selected tuple** to PTX via `nvcc`. The build script:
   PTX-string) pairs.
 - Marks `cargo:rerun-if-changed=` on every consumed file so incremental
   builds work.
-- Provides an `ATLAS_SKIP_BUILD=1` short-circuit that emits a stub
+- Provides an `AVAROK_SKIP_BUILD=1` short-circuit that emits a stub
   registry — used by CI for GPU-free `cargo check` / `clippy` runs.
 
 At runtime, `spark-runtime::gpu` loads the embedded PTX into the CUDA
@@ -77,13 +77,13 @@ driver and exposes kernel handles to the rest of the stack.
 **Worse:**
 - Every (model, quant) added is more `nvcc` invocations at build
   time. A full sweep build is several minutes. CI uses
-  `ATLAS_SKIP_BUILD=1` to dodge this for non-build steps.
+  `AVAROK_SKIP_BUILD=1` to dodge this for non-build steps.
 - The override-by-name resolution is implicit. A misnamed per-model
   override silently doesn't override anything; the build script logs
   shadows but the warning is easy to miss.
 - `MODEL.toml` is now a load-bearing configuration surface that lives
   outside Rust's type system. Schema drift is a real risk; we mitigate
-  with serde-derived parsers in `atlas-core`.
+  with serde-derived parsers in `avarok-core`.
 
 **New problems we created:**
 - Cross-tuple kernel sharing is awkward. If two models legitimately

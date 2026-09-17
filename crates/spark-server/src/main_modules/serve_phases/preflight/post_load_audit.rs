@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 

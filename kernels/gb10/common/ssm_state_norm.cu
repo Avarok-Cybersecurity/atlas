@@ -82,7 +82,7 @@ extern "C" __global__ void ssm_state_clamp_norm_fused(
     }
 }
 
-// ── FP16 h-state twin (ATLAS_SSM_H_FP16) ──────────────────────────────────
+// ── FP16 h-state twin (AVAROK_SSM_H_FP16) ──────────────────────────────────
 //
 // Additive: never aliases `ssm_state_clamp_norm_fused`, which stays the only
 // kernel the FP32 path ever launches. Identical arithmetic — the accumulation

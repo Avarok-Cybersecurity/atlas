@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """Kernel Structure Enforcer: validate the kernels/{hw} shadowing layout.
 
-The build (`crates/atlas-kernels/build.rs::collect_cu_files`) resolves each
+The build (`crates/avarok-kernels/build.rs::collect_cu_files`) resolves each
 model's kernel set by file stem: a file in `kernels/{hw}/{model}/{quant}/`
 shadows its same-stem namesake in `kernels/{hw}/common/`. This script guards
 that mechanism against the two defects that silently corrupt a build:
@@ -46,8 +46,8 @@ that actually shipped (the 27B's four multi-sequence GDN decode kernels, gone
 until 2026-07-26). Deciding it needs the entry points a source declares, which
 means resolving `#define KERNEL_NAME` + `#include` + token-paste macros, and
 then filtering by the per-target `[shadow_exempt]` tables. That resolver is
-`crates/atlas-kernels/build_shadow.rs`, and it is enforced by
-`crates/atlas-kernels/tests/kernel_shadow_detector.rs` in the same CI run as
+`crates/avarok-kernels/build_shadow.rs`, and it is enforced by
+`crates/avarok-kernels/tests/kernel_shadow_detector.rs` in the same CI run as
 this script. Reimplementing it here in Python would be a second, silently
 diverging copy of the rule — this note exists so the gap in THIS file reads as
 a decision rather than an oversight.
@@ -79,7 +79,7 @@ HW_SOURCE_EXT = {
 # Hardware trees whose `common/` MIRRORS another tree's: {mirror: origin}.
 # They compile the origin's kernels through relative symlinks, so a regular
 # file in their common/ is an override and must be declared. SSOT shared with
-# crates/atlas-kernels/tests/support/inherited.rs `INHERITED`; adding a target
+# crates/avarok-kernels/tests/support/inherited.rs `INHERITED`; adding a target
 # means adding it in both, which is the moment to decide what it inherits.
 MIRRORED_COMMON = {
     "b200": "gb10",

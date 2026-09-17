@@ -30,7 +30,7 @@
 //! on the weight store when the config is silent (emitting a warning,
 //! since a silent fallback is precisely what caused the original bug).
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::weight_map::Nvfp4Variant;

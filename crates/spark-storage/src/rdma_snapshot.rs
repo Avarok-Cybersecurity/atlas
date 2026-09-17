@@ -22,12 +22,12 @@
 // The real transport needs the CUDA pinned bounce + the verbs FFI; when either
 // is absent, a stub whose `connect` always errors lets dependents reference the
 // type unconditionally (the tier selector then falls back to host-RAM).
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 pub use imp::RdmaSnapshotArena;
-#[cfg(not(all(feature = "cuda", atlas_rdma_verbs)))]
+#[cfg(not(all(feature = "cuda", avarok_rdma_verbs)))]
 pub use stub::RdmaSnapshotArena;
 
-#[cfg(not(all(feature = "cuda", atlas_rdma_verbs)))]
+#[cfg(not(all(feature = "cuda", avarok_rdma_verbs)))]
 mod stub {
     use anyhow::{Result, bail};
     /// Placeholder when RDMA verbs / CUDA aren't built. `connect` always errors,
@@ -36,10 +36,10 @@ mod stub {
     pub struct RdmaSnapshotArena;
     impl RdmaSnapshotArena {
         pub fn connect(_addr: &str, _arena_bytes: u64, _blob_bytes: usize) -> Result<Self> {
-            bail!("RDMA snapshot tier not built (needs feature `cuda` + atlas_rdma_verbs)")
+            bail!("RDMA snapshot tier not built (needs feature `cuda` + avarok_rdma_verbs)")
         }
         pub fn connect_paging(_addr: &str, _arena_bytes: u64, _blob_bytes: usize) -> Result<Self> {
-            bail!("RDMA snapshot tier not built (needs feature `cuda` + atlas_rdma_verbs)")
+            bail!("RDMA snapshot tier not built (needs feature `cuda` + avarok_rdma_verbs)")
         }
         pub fn write(&self, _offset: u64, _bytes: &[u8]) -> Result<()> {
             unreachable!("stub RdmaSnapshotArena is never constructed")
@@ -59,7 +59,7 @@ mod stub {
     }
 }
 
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 mod imp {
     use std::io::Write;
     use std::net::TcpStream;
@@ -68,9 +68,9 @@ mod imp {
     use anyhow::{Result, bail};
 
     use crate::cuda_min::PinnedBuffer;
-    use atlas_rdma::env::{first_set, first_set_u32};
-    use atlas_rdma::railset::{RailSet, RailSpec};
-    use atlas_rdma::verbs::Verbs;
+    use avarok_rdma::env::{first_set, first_set_u32};
+    use avarok_rdma::railset::{RailSet, RailSpec};
+    use avarok_rdma::verbs::Verbs;
 
     /// One rail: its QP + a single persistent registered bounce (`blob_bytes`).
     struct SnapRail {
@@ -88,7 +88,7 @@ mod imp {
     struct ArenaInner {
         rails: Vec<SnapRail>,
         /// ONE contiguous `blob_bytes` staging buffer for the striped/pipelined
-        /// dual-rail path (ATLAS_SSM_STAGING); None = single-WR bounce fallback.
+        /// dual-rail path (AVAROK_SSM_STAGING); None = single-WR bounce fallback.
         staging: Option<PinnedBuffer>,
         rr: usize,
         next_wr: u64,
@@ -115,9 +115,9 @@ mod imp {
 
     impl RdmaSnapshotArena {
         /// Handshake with the snapshot peer at `addr` and register `blob_bytes`
-        /// bounces. Rail devices/GIDs reuse the KV env (`ATLAS_EXPERT_RDMA_DEV`/`GID`
-        /// = rail 0, `ATLAS_KV_RAIL2_DEV`/`GID` = rail 1, dual only when
-        /// `ATLAS_KV_DUAL_RAIL=1`). `arena_bytes` = `arena_slots × blob_bytes`.
+        /// bounces. Rail devices/GIDs reuse the KV env (`AVAROK_EXPERT_RDMA_DEV`/`GID`
+        /// = rail 0, `AVAROK_KV_RAIL2_DEV`/`GID` = rail 1, dual only when
+        /// `AVAROK_KV_DUAL_RAIL=1`). `arena_bytes` = `arena_slots × blob_bytes`.
         pub fn connect(addr: &str, arena_bytes: u64, blob_bytes: usize) -> Result<Self> {
             Self::connect_inner(addr, arena_bytes, blob_bytes, false)
         }
@@ -141,14 +141,14 @@ mod imp {
             let spec =
                 |dev: String, gid: u32| RailSpec::new(dev, gid, rand::random::<u32>() & 0xff_ffff);
             let rail0 = spec(
-                first_set(&["ATLAS_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
-                first_set_u32(&["ATLAS_EXPERT_RDMA_GID"], 3),
+                first_set(&["AVAROK_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
+                first_set_u32(&["AVAROK_EXPERT_RDMA_GID"], 3),
             );
-            let dual = std::env::var("ATLAS_KV_DUAL_RAIL").ok().as_deref() == Some("1");
+            let dual = std::env::var("AVAROK_KV_DUAL_RAIL").ok().as_deref() == Some("1");
             let specs: Vec<RailSpec> = if dual {
                 let rail1 = spec(
-                    first_set(&["ATLAS_KV_RAIL2_DEV"], "rocep1s0f1"),
-                    first_set_u32(&["ATLAS_KV_RAIL2_GID"], 3),
+                    first_set(&["AVAROK_KV_RAIL2_DEV"], "rocep1s0f1"),
+                    first_set_u32(&["AVAROK_KV_RAIL2_GID"], 3),
                 );
                 vec![rail0, rail1]
             } else {
@@ -171,10 +171,10 @@ mod imp {
             // [u8 n_rails] + one QP per rail.
             let mut rs = RailSet::begin(&mut stream, &specs)?;
 
-            // ONE contiguous staging buffer (ATLAS_SSM_STAGING) registered on EVERY
+            // ONE contiguous staging buffer (AVAROK_SSM_STAGING) registered on EVERY
             // rail → each rail gets its own lkey over the SAME memory, so a chunk
             // striped to any rail lands at its true offset (the inc-6 reassembly fix).
-            let staging_on = std::env::var("ATLAS_SSM_STAGING").ok().as_deref() == Some("1");
+            let staging_on = std::env::var("AVAROK_SSM_STAGING").ok().as_deref() == Some("1");
             let staging = if staging_on {
                 Some(PinnedBuffer::new(blob_bytes)?)
             } else {
@@ -328,7 +328,7 @@ mod imp {
         }
 
         /// Striped, pipelined, dual-rail transfer of ONE blob through the shared
-        /// contiguous staging buffer (ATLAS_SSM_STAGING). `write_src` set = WRITE
+        /// contiguous staging buffer (AVAROK_SSM_STAGING). `write_src` set = WRITE
         /// (memcpy in, stripe out); `read_dst` set = READ (stripe in, memcpy out).
         /// Chunks round-robin across rails, ≤ depth in-flight per rail (bounds the
         /// send queue). Because every rail registers the SAME staging buffer, chunk

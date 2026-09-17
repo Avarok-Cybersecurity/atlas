@@ -77,7 +77,7 @@ pub struct StatsModel {
     /// True once a real device reading has been taken.
     ///
     /// ★ The three figures below are plain `f64` and default to 0.0, so on a
-    /// box with no GPU or no NVML they render as `atlas 0.0 GB · free 0.0`
+    /// box with no GPU or no NVML they render as `avarok 0.0 GB · free 0.0`
     /// with a 0 % gauge — a MEASUREMENT OF ZERO rather than "unavailable".
     /// This file already gets that right for TTFT (an `Option` that renders as
     /// `—`); the GPU tile did not. Nothing else on this dashboard fabricates a
@@ -85,7 +85,7 @@ pub struct StatsModel {
     pub gpu_known: bool,
     pub gpu_free_gb: f64,
     pub gpu_total_gb: f64,
-    pub atlas_used_gb: f64,
+    pub avarok_used_gb: f64,
     pub host_avail_gb: f64,
     pub host_total_gb: f64,
     // Scheduler.
@@ -133,7 +133,7 @@ impl Default for StatsModel {
             gpu_known: false,
             gpu_free_gb: 0.0,
             gpu_total_gb: 0.0,
-            atlas_used_gb: 0.0,
+            avarok_used_gb: 0.0,
             host_avail_gb: 0.0,
             host_total_gb: 0.0,
             sched: None,
@@ -202,7 +202,7 @@ impl StatsModel {
         // TTFT histogram via the prometheus proto (bucket bounds + counts).
         self.ttft_buckets.clear();
         for mf in prometheus::gather() {
-            if mf.name() != "atlas_time_to_first_token_seconds" {
+            if mf.name() != "avarok_time_to_first_token_seconds" {
                 continue;
             }
             if let Some(m) = mf.get_metric().first() {
@@ -229,7 +229,7 @@ impl StatsModel {
         self.entropy_history.push(self.entropy);
 
         // Memory.
-        // Both reads must land: `atlas_used` is a DIFFERENCE of the two, so
+        // Both reads must land: `avarok_used` is a DIFFERENCE of the two, so
         // one without the other is not a smaller truth, it is a wrong number.
         match (
             super::gpu_free_bytes(),
@@ -238,7 +238,7 @@ impl StatsModel {
             (Some(free), Some(baseline)) => {
                 self.gpu_free_gb = free as f64 / GIB;
                 self.gpu_total_gb = baseline as f64 / GIB;
-                self.atlas_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
+                self.avarok_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
                 self.gpu_known = true;
             }
             _ => self.gpu_known = false,
@@ -260,7 +260,7 @@ fn spec_accept_from_gather() -> Vec<(String, u64, u64)> {
     use std::collections::BTreeMap;
     let mut per_k: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for mf in prometheus::gather() {
-        if mf.name() != "atlas_spec_decode_verify_total" {
+        if mf.name() != "avarok_spec_decode_verify_total" {
             continue;
         }
         for m in mf.get_metric() {

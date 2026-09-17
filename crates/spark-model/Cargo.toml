@@ -8,17 +8,17 @@ description = "Atlas Spark model — Qwen3 forward pass orchestration"
 [features]
 default = ["cuda"]
 # spark-model has no Metal port yet (Phases 4–7 add it). The cuda feature
-# forwards atlas-core/cuda + spark-runtime/cuda so the default Linux build
+# forwards avarok-core/cuda + spark-runtime/cuda so the default Linux build
 # remains unchanged after the workspace-level default-features = false on
-# atlas-core.
+# avarok-core.
 cuda = [
-    "atlas-core/cuda",
+    "avarok-core/cuda",
     "spark-runtime/cuda",
     "spark-storage/cuda",
     "spark-comm/cuda",
 ]
 metal = [
-    "atlas-core/metal",
+    "avarok-core/metal",
     "spark-runtime/metal",
     "spark-storage/metal",
     "spark-comm/metal",
@@ -34,9 +34,9 @@ metal-example = ["metal", "dep:tokenizers", "dep:memmap2", "dep:safetensors"]
 gpu-examples = []
 
 [dependencies]
-atlas-core = { workspace = true }
-atlas-kernels = { workspace = true }
-atlas-tier = { workspace = true }
+avarok-core = { workspace = true }
+avarok-kernels = { workspace = true }
+avarok-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.

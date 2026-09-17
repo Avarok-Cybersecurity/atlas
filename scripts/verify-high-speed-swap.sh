@@ -7,7 +7,7 @@
 #
 #     bash scripts/verify-high-speed-swap.sh \
 #         /path/to/qwen3-bf16-model \
-#         /mnt/nvme0/atlas-hsw-test
+#         /mnt/nvme0/avarok-hsw-test
 #
 # Exits 0 on success (outputs match within tolerance); non-zero on failure.
 
@@ -25,7 +25,7 @@ fi
 PORT_HSW=${PORT_HSW:-8889}
 PORT_REF=${PORT_REF:-8890}
 SPARK=${SPARK:-./target/release/spark}
-PROMPT_FILE=${PROMPT_FILE:-/tmp/atlas-hsw-prompt.txt}
+PROMPT_FILE=${PROMPT_FILE:-/tmp/avarok-hsw-prompt.txt}
 
 # Generate a 30K-token prompt if not provided. Use lorem ipsum repeated
 # to deterministic length.
@@ -45,7 +45,7 @@ mkdir -p "$HSW_DIR"
 
 # --- Run 1: --high-speed-swap on ---
 echo ">> Run 1: with --high-speed-swap"
-HSW_LOG=/tmp/atlas-hsw-with.log
+HSW_LOG=/tmp/avarok-hsw-with.log
 "$SPARK" serve "$MODEL" \
     --port "$PORT_HSW" \
     --max-seq-len 32768 \
@@ -99,7 +99,7 @@ sleep 5
 
 # --- Run 2: --high-speed-swap off (baseline) ---
 echo ">> Run 2: baseline (no HSS)"
-REF_LOG=/tmp/atlas-hsw-without.log
+REF_LOG=/tmp/avarok-hsw-without.log
 "$SPARK" serve "$MODEL" \
     --port "$PORT_REF" \
     --max-seq-len 32768 \

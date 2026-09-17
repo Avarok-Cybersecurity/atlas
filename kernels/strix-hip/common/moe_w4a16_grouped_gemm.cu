@@ -9,7 +9,7 @@
 // A real port would mirror w4a16_gemm.cu (NVFP4 nibble dequant + WMMA).
 //
 // NOTE: a separate, fully-ported MoE W4A16 GEMM already exists at
-// /workspace/atlas-port-work/ported/moe_w4a16_grouped_gemm.cu (the
+// /workspace/avarok-port-work/ported/moe_w4a16_grouped_gemm.cu (the
 // qwen3.6-27b/nvfp4 model variant). This common/ stub is only for the dense
 // build's registry and is never executed.
 

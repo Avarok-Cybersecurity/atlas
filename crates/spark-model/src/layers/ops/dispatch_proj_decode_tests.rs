@@ -87,7 +87,7 @@ fn the_w8a8_decode_arm_declines_above_the_band() {
 
 // ───────────────────────── lever + kill switch ─────────────────────────
 
-/// The scoped lever decides which FAMILIES take the arm. `ATLAS_CUBLAS_GEMM=ffn`
+/// The scoped lever decides which FAMILIES take the arm. `AVAROK_CUBLAS_GEMM=ffn`
 /// arming the SSM or attention projections is the exact #917 failure (10.3 GiB
 /// of off-ledger weight copies), so this clause is not a formality.
 #[test]
@@ -96,7 +96,7 @@ fn the_w8a8_decode_arm_needs_its_family_armed() {
     assert!(!selected(false, false, &attn_q(16)));
 }
 
-/// `ATLAS_NO_W8A8_DECODE_PROJ` (presence) drops every row count back to the
+/// `AVAROK_NO_W8A8_DECODE_PROJ` (presence) drops every row count back to the
 /// `w8a16_gemv_batch16` tiers, both families at once.
 #[test]
 fn the_kill_switch_deselects_every_row_count_and_family() {

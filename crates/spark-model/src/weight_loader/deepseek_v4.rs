@@ -15,7 +15,7 @@ mod mtp;
 pub(crate) use mtp::{DeepseekV4MtpModule, load_v4_mtp_module};
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;

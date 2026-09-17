@@ -89,8 +89,8 @@ Atlas Spark was a complete rewrite of the inference pipeline in pure Rust.
 
 ```
 15 Rust crates:
-├── atlas-core          Config, hardware detection, quantization metadata
-├── atlas-kernels       29 PTX modules embedded at build time (compiled from .cu)
+├── avarok-core          Config, hardware detection, quantization metadata
+├── avarok-kernels       29 PTX modules embedded at build time (compiled from .cu)
 ├── spark-runtime       CUDA driver API wrapper, KV cache, weight loader, buffer arena
 ├── spark-model         Model composition, layer traits, Qwen3 attention + SSM + MoE
 ├── spark-server        HTTP server, tokenizer, integration test
@@ -315,17 +315,17 @@ Phase 4: Performance Optimization (3.6 → 99.1 tok/s)
 ```bash
 # Start build container
 sudo docker run -d --name atlas-build --gpus all --ipc=host --entrypoint bash \
-  -v /workspace/atlas:/workspace/atlas avarok/dgx-vllm-nvfp4-kernel:v22 -c "sleep 86400"
+  -v /workspace/atlas:/workspace/atlas atlas/dgx-vllm-nvfp4-kernel:v22 -c "sleep 86400"
 sudo docker exec atlas-build bash -c \
   "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
 
 # Build (clear PTX cache when CUDA sources change)
 sudo docker exec -w /workspace/atlas atlas-build bash -c \
-  "source /root/.cargo/env && rm -rf target/release/build/atlas-kernels-* && cargo build --release"
+  "source /root/.cargo/env && rm -rf target/release/build/avarok-kernels-* && cargo build --release"
 
 # Unit tests (43 tests, no GPU required)
 sudo docker exec -w /workspace/atlas atlas-build bash -c \
-  "source /root/.cargo/env && cargo test -p spark-model -p spark-runtime -p atlas-kernels \
+  "source /root/.cargo/env && cargo test -p spark-model -p spark-runtime -p avarok-kernels \
    -p spark-server -p spark-comm --release"
 
 # Integration benchmark (GPU + weights, 200 tokens)

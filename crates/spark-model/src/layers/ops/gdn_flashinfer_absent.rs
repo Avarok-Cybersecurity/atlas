@@ -7,7 +7,7 @@
 //! built for Linux. Windows has neither, so the path is unavailable there.
 //!
 //! That is not a degradation introduced here: the feature is opt-in behind
-//! `ATLAS_GDN_FLASHINFER=1`, and its own docs note that "the binary builds and
+//! `AVAROK_GDN_FLASHINFER=1`, and its own docs note that "the binary builds and
 //! runs without the library". Both call sites are already guarded by
 //! [`available`] and fall back to the scalar FLA scan, so reporting `false`
 //! here reproduces exactly what a unix host does when the library is absent or

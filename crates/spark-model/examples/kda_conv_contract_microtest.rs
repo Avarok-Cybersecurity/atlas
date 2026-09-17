@@ -20,7 +20,7 @@
 //! ## State-width mapping
 //! HF keeps `kernel_size - 1 = 3` slots. Atlas keeps 4 and shifts LEFT before convolving, so
 //! the oldest slot is shifted out and never participates:
-//! `HF_state[0..3] == Atlas_state[1..4]` pre-shift. The Rust side widens HF's 3 into Atlas's 4.
+//! `HF_state[0..3] == Avarok_state[1..4]` pre-shift. The Rust side widens HF's 3 into Atlas's 4.
 //!
 //!   cargo run -p spark-model --release --example kda_conv_contract_microtest \
 //!       --features cuda,gpu-examples
@@ -28,7 +28,7 @@
 use anyhow::{Result, bail};
 use half::bf16;
 use serde_json::Value;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -149,7 +149,7 @@ fn l2_rows(x: &mut [f32], d: usize, upto: usize) {
 }
 
 fn main() -> Result<()> {
-    let g = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &g;
     let v: Value = serde_json::from_str(&GOLDEN)?;
     let f = &v["fixture"];
@@ -352,12 +352,12 @@ fn main() -> Result<()> {
     ok &= po_hf <= MAX_ABS_BF16;
 
     // Atlas's 4-wide final state vs HF's 3-wide: compare the overlapping window.
-    let atlas_tail: Vec<f32> = (0..dim)
+    let avarok_tail: Vec<f32> = (0..dim)
         .flat_map(|ch| (1..ks).map(move |i| (ch, i)))
         .map(|(ch, i)| p_state[ch * ks + i])
         .collect();
     let ps_hf = maxabs(
-        &sample(&atlas_tail, stride),
+        &sample(&avarok_tail, stride),
         &arr(&v, "prefill_state_sample"),
     );
     println!("  final conv state (Atlas[1..4] vs HF[0..3]) max_abs={ps_hf:.3e}");

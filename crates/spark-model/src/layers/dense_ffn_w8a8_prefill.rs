@@ -15,8 +15,8 @@
 //!     && proj_is_native_fp8(gate_proj)
 //! ```
 //!
-//! and `dense_fp8_enabled()` is `ATLAS_DENSE_FP8 == "1"`. `git grep
-//! ATLAS_DENSE_FP8` returns ONE hit — its own reader. No CI job, no
+//! and `dense_fp8_enabled()` is `AVAROK_DENSE_FP8 == "1"`. `git grep
+//! AVAROK_DENSE_FP8` returns ONE hit — its own reader. No CI job, no
 //! `BENCH.toml` entry and no gate sets it, so no certification record on any
 //! branch has ever exercised this code. Without it `self.fp8_weights` is
 //! `None`, `forward_prefill_inner` never reaches the selection below, and
@@ -30,8 +30,8 @@
 //!
 //! ```text
 //! default (NVFP4)                       1437.2 ms   1.00x
-//! ATLAS_DENSE_FP8=1, W8A16 (capped)     2555.8 ms   1.78x slower
-//! ATLAS_DENSE_FP8=1, W8A8  (no cap)     3343.3 ms   2.33x slower
+//! AVAROK_DENSE_FP8=1, W8A16 (capped)     2555.8 ms   1.78x slower
+//! AVAROK_DENSE_FP8=1, W8A8  (no cap)     3343.3 ms   2.33x slower
 //! ```
 //!
 //! So the ceiling below is worth 23.4% *within* the dense-FP8 path, and the
@@ -61,7 +61,7 @@
 //!
 //!   * cuBLASLt `fp8_gemm_act_weight_t_blkscaled` (weight as A with
 //!     BLK128x128 scales, activation as B with VEC128 scales — the DeepSeek
-//!     block-FP8 scheme), when `ATLAS_CUBLAS_GEMM=1`. The Hopper fast path.
+//!     block-FP8 scheme), when `AVAROK_CUBLAS_GEMM=1`. The Hopper fast path.
 //!     Its VEC128 scales go through `fp8_act_scale_to_kmajor` first: cuBLASLt
 //!     documents that operand's scales with the TOKEN index contiguous, which
 //!     is the transpose of what the quantizer writes (see
@@ -77,7 +77,7 @@
 //! vLLM's dynamic W8A8 arithmetic and a deliberate precision trade, not a bug:
 //! the microtest gates it at cosine >= 0.999 / relative RMS <= 2% against the
 //! W8A16 reference, and the serve logs the selected path once at INFO so which
-//! arithmetic ran is visible in any TTFT report. `ATLAS_FFN_W8A16_ONLY=1`
+//! arithmetic ran is visible in any TTFT report. `AVAROK_FFN_W8A16_ONLY=1`
 //! restores the old path byte-for-byte.
 
 use anyhow::Result;
@@ -88,10 +88,10 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{Fp8Weight, WeightQuantFormat};
 
-/// `ATLAS_FFN_W8A16_ONLY` kill switch: PRESENCE (any value, including empty)
+/// `AVAROK_FFN_W8A16_ONLY` kill switch: PRESENCE (any value, including empty)
 /// keeps the dense-FFN prefill on today's W8A16 kernels. Presence rather than
 /// `=1` because this is an escape hatch an operator reaches for while a serve
-/// is misbehaving, and `ATLAS_FFN_W8A16_ONLY=0` meaning "on" is a trap.
+/// is misbehaving, and `AVAROK_FFN_W8A16_ONLY=0` meaning "on" is a trap.
 ///
 /// `OnceLock`-cached: the selector runs per projection per layer per prefill
 /// (3 x num_layers times), and `std::env::var_os` walks the environment block
@@ -99,7 +99,7 @@ use crate::weight_map::{Fp8Weight, WeightQuantFormat};
 /// once at first prefill and a serve never rewrites its own environment.
 pub fn ffn_w8a16_only() -> bool {
     static ONLY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ONLY.get_or_init(|| std::env::var_os("ATLAS_FFN_W8A16_ONLY").is_some())
+    *ONLY.get_or_init(|| std::env::var_os("AVAROK_FFN_W8A16_ONLY").is_some())
 }
 
 /// The ceiling that applies to a projection of shape `[n, k]`.
@@ -133,7 +133,7 @@ pub(crate) fn max_m_for(n: u32, k: u32) -> u32 {
 ///
 /// * `m > 4` — M<=4 stays on the batch4 GEMV, which streams each weight once
 ///   and beats any MMA tile at those shapes.
-/// * `fp8_blockscaled_prefill` — the `ATLAS_FP8_SINGLE_SCALE` kill switch that
+/// * `fp8_blockscaled_prefill` — the `AVAROK_FP8_SINGLE_SCALE` kill switch that
 ///   already governs the attention W8A8 path.
 /// * `Fp8BlockScaled` — a per-ROW scale is a different `row_scale` layout; the
 ///   block-scaled GEMM would read it as `[N/128, K/128]`.
@@ -242,7 +242,7 @@ impl DenseFfnLayer {
     }
 
     /// `out[m, n] = a_fp8[m, k] @ weight[n, k]ᵀ` with both block-scale sets
-    /// folded in FP32 — cuBLASLt when `ATLAS_CUBLAS_GEMM` is set and the output
+    /// folded in FP32 — cuBLASLt when `AVAROK_CUBLAS_GEMM` is set and the output
     /// buffer has room for the padded M, else the in-tree kernel.
     ///
     /// `out_capacity_bytes` is the allocated size of `out`'s arena buffer. The
@@ -324,9 +324,9 @@ impl DenseFfnLayer {
         if ctx.stats.once("log:ffn_w8a8_prefill") {
             let how = if cublas { "cuBLASLt" } else { "kernel" };
             tracing::info!(
-                "[atlas] dense FFN prefill: W8A8 block-scaled via {how} \
+                "[avarok] dense FFN prefill: W8A8 block-scaled via {how} \
                  (per-token 1x128 act scales x 128x128 weight scales, FP32 epilogue; \
-                 vLLM-equivalent FP8 numerics). ATLAS_FFN_W8A16_ONLY=1 restores W8A16."
+                 vLLM-equivalent FP8 numerics). AVAROK_FFN_W8A16_ONLY=1 restores W8A16."
             );
         }
     }
@@ -336,7 +336,7 @@ impl DenseFfnLayer {
     pub(crate) fn log_w8a16_prefill_route(&self, ctx: &ForwardContext) {
         if ctx.stats.once("log:ffn_w8a16_prefill") {
             tracing::info!(
-                "[atlas] dense FFN prefill: W8A16 (BF16 act x FP8 weight). \
+                "[avarok] dense FFN prefill: W8A16 (BF16 act x FP8 weight). \
                  W8A8 not selected — see #917/#928."
             );
         }

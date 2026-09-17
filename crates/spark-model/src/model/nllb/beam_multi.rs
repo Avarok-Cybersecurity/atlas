@@ -52,7 +52,7 @@ struct Pending {
 }
 
 /// Per-phase wall-clock accumulator for the beam decode loop (opt-in via
-/// `ATLAS_NLLB_BEAM_PROFILE=1`). GPU phases are bracketed by a `sync()` so the
+/// `AVAROK_NLLB_BEAM_PROFILE=1`). GPU phases are bracketed by a `sync()` so the
 /// timing reflects real device work, not just launch-enqueue.
 #[derive(Default)]
 struct BeamProf {
@@ -88,7 +88,7 @@ impl NllbGpuModel {
         self.set_lora_active(slot0);
 
         let gpu = self.gpu.as_ref();
-        let prof = std::env::var("ATLAS_NLLB_BEAM_PROFILE")
+        let prof = std::env::var("AVAROK_NLLB_BEAM_PROFILE")
             .map(|v| v == "1")
             .unwrap_or(false);
         let t_enc = prof.then(std::time::Instant::now);
@@ -239,13 +239,13 @@ impl NllbGpuModel {
         // Device top-k only wins once the per-step full-logits D2H dominates —
         // measured break-even is ~64 rows (below it the kernel's sync+launch+
         // serial extract cost more than a small D2H + host `top_k`). So gate on
-        // the batch row count (ATLAS_NLLB_DEVICE_TOPK_MIN_ROWS, default 64);
-        // ATLAS_NLLB_HOST_TOPK=1 forces the host path (A/B + >16-beam requests).
+        // the batch row count (AVAROK_NLLB_DEVICE_TOPK_MIN_ROWS, default 64);
+        // AVAROK_NLLB_HOST_TOPK=1 forces the host path (A/B + >16-beam requests).
         let k = 2 * states.iter().map(|s| s.b).max().unwrap_or(1);
-        let host_forced = std::env::var("ATLAS_NLLB_HOST_TOPK")
+        let host_forced = std::env::var("AVAROK_NLLB_HOST_TOPK")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        let min_rows = std::env::var("ATLAS_NLLB_DEVICE_TOPK_MIN_ROWS")
+        let min_rows = std::env::var("AVAROK_NLLB_DEVICE_TOPK_MIN_ROWS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(64);
@@ -272,7 +272,7 @@ impl NllbGpuModel {
                 .collect();
         }
 
-        let prof = std::env::var("ATLAS_NLLB_BEAM_PROFILE")
+        let prof = std::env::var("AVAROK_NLLB_BEAM_PROFILE")
             .map(|v| v == "1")
             .unwrap_or(false);
         let mut pf = BeamProf::default();

@@ -41,7 +41,7 @@ fn land_targets_map_to_slot_subregions() {
     let layer = 3usize;
     assert_eq!(
         cfg.layer_type(layer),
-        atlas_core::config::LayerType::FullAttention
+        avarok_core::config::LayerType::FullAttention
     );
     let (out_dim, in_dim) = LoraModule::KProj.dims(&cfg);
     let max_rank = 8;

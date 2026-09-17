@@ -304,7 +304,7 @@ impl Qwen3AttentionLayer {
             nq * hd,
             stream,
         )?;
-        // ATLAS_OP_DUMP hooks: the assembled V and the attention output, the
+        // AVAROK_OP_DUMP hooks: the assembled V and the attention output, the
         // two tensors that decide an L=1 MLA result (softmax over one key is
         // 1.0, so the output reduces to V0 @ o_proj).
         if n > 0 {

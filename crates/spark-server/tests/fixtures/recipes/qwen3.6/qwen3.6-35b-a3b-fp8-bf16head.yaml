@@ -20,7 +20,7 @@ metadata:
     bf16 is the safest default; nvfp4-head is a near-neutral-wall, lower-VRAM
     sibling. The earlier "lm-head quant collapses quality" claim was opencode
     harness-hang contamination, fully retracted.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: fp8

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "atlas-blog",
+      "name": "avarok-blog",
       "devDependencies": {
         "@sveltejs/adapter-static": "^3.0.10",
         "@sveltejs/kit": "^2.70.2",

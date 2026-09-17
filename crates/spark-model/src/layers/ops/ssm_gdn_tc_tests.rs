@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! HOST SIMULATION of `gated_delta_rule_chunk_delta_h_tcfuse`'s index algebra,
-//! plus the `ATLAS_GDN_PREFILL_TC` lever grammar (#928).
+//! plus the `AVAROK_GDN_PREFILL_TC` lever grammar (#928).
 //!
 //! The kernel's risk is not its arithmetic — an `mma.sync` accumulates in f32
 //! whatever it is handed. The risk is the four maps that decide WHAT it is
@@ -376,7 +376,7 @@ fn the_production_geometry_is_accepted() {
 }
 
 /// A FALSE resolved bit refuses the spine even with the kernel present and the
-/// production geometry — which is what `ATLAS_GDN_PREFILL_TC=0` has to mean now
+/// production geometry — which is what `AVAROK_GDN_PREFILL_TC=0` has to mean now
 /// that `kernels/hopper` declares `[defaults] gdn_prefill_tc = true` (round 13)
 /// and the variable is the family's kill switch rather than its arming lever.
 /// The bit is RESOLVED by `target_defaults` and handed in; this layer never

@@ -16,7 +16,7 @@ impl NemotronMoeLayer {
     ///
     /// Native FP4 tensor cores: shared_up consumed in its ORIGINAL NVFP4 form
     /// (no FP8 or transposed copies), activations quantized to NVFP4 in one
-    /// pass. Same gates as the SSM W4A4 path; ATLAS_NO_SHARED_W4A4=1 disables.
+    /// pass. Same gates as the SSM W4A4 path; AVAROK_NO_SHARED_W4A4=1 disables.
     /// Native FP8 wins over w4a4. w4a4 quantizes the ACTIVATIONS to 4 bits as
     /// well as the weights, and it is the default for every prompt >= 512
     /// tokens — i.e. every real request — so leaving it ahead of the native

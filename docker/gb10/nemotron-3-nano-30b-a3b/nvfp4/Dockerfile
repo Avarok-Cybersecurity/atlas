@@ -1,12 +1,12 @@
 # Atlas Spark — NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4 on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/nemotron-3-nano-30b-a3b/nvfp4/Dockerfile -t atlas-nemotron .
+#   docker build -f docker/gb10/nemotron-3-nano-30b-a3b/nvfp4/Dockerfile -t avarok-nemotron .
 #
 # Run:
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-nemotron serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+#     avarok-nemotron serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
 
 # ── Build stage ──────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
@@ -26,9 +26,9 @@ COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=nemotron-3-nano-30b-a3b
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=nemotron-3-nano-30b-a3b
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

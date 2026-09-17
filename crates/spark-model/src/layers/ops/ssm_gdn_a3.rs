@@ -31,7 +31,7 @@ pub(crate) const GDN_TC_SMEM: u32 = GDN_TC_DIM * 136 * 2
     + GDN_TC_DIM * 72 * 2
     + (GDN_TC_CHUNK + 1) * 4;
 
-/// Why the `ATLAS_GDN_PREFILL_TC` spine is NOT running — `None` means it is.
+/// Why the `AVAROK_GDN_PREFILL_TC` spine is NOT running — `None` means it is.
 ///
 /// Pure so the grammar is testable without a GPU or the process environment.
 /// NAME THE GUARD THAT REJECTED: a perf path that asks to be enabled and
@@ -67,7 +67,7 @@ pub(crate) fn gdn_tc_spine_reject(
 #[path = "ssm_gdn_tc_tests.rs"]
 mod ssm_gdn_tc_tests;
 
-/// FLA multi-kernel chunked GDN prefill (`ATLAS_GDN_FLA=1`).
+/// FLA multi-kernel chunked GDN prefill (`AVAROK_GDN_FLA=1`).
 ///
 /// Three sequential launches on `stream` (CPU-serialized → no GPU sync needed):
 ///   1. recompute_wu  (grid [num_chunks, nv, batch], 128 thr): solve (I+L)U=βV,
@@ -91,11 +91,11 @@ pub fn gdn_prefill_fla(
     k_chunk_fwd_o_hopper: KernelHandle,
     k_chunk_delta_h: KernelHandle,
     // wmma + DV-block-split spine (gated_delta_rule_chunk_delta_h_tc_vblock). When
-    // non-zero AND ATLAS_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
+    // non-zero AND AVAROK_GDN_TC_VBLOCK=1, replaces the scalar ksplit spine (drop-in
     // ABI; grid y = batch·num_dv_blocks, smem 81KB vs 97KB). KernelHandle(0) = off.
     k_chunk_delta_h_tc_vblock: KernelHandle,
     // TENSOR-CORE spine (gated_delta_rule_chunk_delta_h_tcfuse), behind
-    // ATLAS_GDN_PREFILL_TC (presence, default OFF). Drop-in ABI == the fused
+    // AVAROK_GDN_PREFILL_TC (presence, default OFF). Drop-in ABI == the fused
     // spine; grid [nv, batch] and block 256 are unchanged, only the smem
     // footprint differs. KernelHandle(0) = absent from this image.
     k_chunk_delta_h_tcfuse: KernelHandle,
@@ -165,8 +165,8 @@ pub fn gdn_prefill_fla(
 
     // The TC prefill FAMILY lever, resolved ONCE for the three kernels it picks:
     // the twins here and the state spine below. `[defaults] gdn_prefill_tc`,
-    // `ATLAS_GDN_PREFILL_TC` overriding — a VALUE, not a presence check, so `=0`
-    // turns the family off. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is the A/B that
+    // `AVAROK_GDN_PREFILL_TC` overriding — a VALUE, not a presence check, so `=0`
+    // turns the family off. `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` is the A/B that
     // keeps the spine and pins these two to their parents.
     let tc_requested = super::target_defaults::resolved().gdn_prefill_tc.value;
     let (wu, fo) = gdn_hopper_remnants(
@@ -219,7 +219,7 @@ pub fn gdn_prefill_fla(
     // drops smem 99,336 -> 49,412 B. That is worth 2.01x over ksplit on the isolated
     // spine and ~68 ms of cold TTFT (one-variable A/B, same binary, 10 reps/leg).
     //
-    // `ATLAS_GDN_VTILE=1` raises the same core to SPLIT=4 / 512 threads for 2.15x.
+    // `AVAROK_GDN_VTILE=1` raises the same core to SPLIT=4 / 512 threads for 2.15x.
     // It is NOT the default: it regressed tool-calling accuracy below the gate
     // floors on BOTH models in a full record campaign —
     //   bfcl-subset (27B)  83.62 / 82.72  vs floors 83.42 / 83.32  FAIL
@@ -243,10 +243,10 @@ pub fn gdn_prefill_fla(
     // trajectory still moved BFCL by 1.4 points across 995 samples. Use the
     // ssm-poisoning tripwire before trusting any change to this kernel.
     let use_fused = k_chunk_delta_h_fused.0 != 0
-        && std::env::var("ATLAS_GDN_VTILE").ok().as_deref() != Some("0");
+        && std::env::var("AVAROK_GDN_VTILE").ok().as_deref() != Some("0");
     let use_tcvb = !use_fused
         && k_chunk_delta_h_tc_vblock.0 != 0
-        && std::env::var("ATLAS_GDN_TC_VBLOCK").ok().as_deref() == Some("1");
+        && std::env::var("AVAROK_GDN_TC_VBLOCK").ok().as_deref() == Some("1");
     const DV_BLK: u32 = 64; // matches the kernel's compile-time DV_BLK
     let num_dv_blk = (vd / DV_BLK).max(1); // 2 for Holo (vd=128)
     // tc_vblock smem: St[DV_BLK*kd] + ws[C*DV_BLK]f32 + buf[2][C*kd + C*DV_BLK] + gcb + decb
@@ -263,13 +263,13 @@ pub fn gdn_prefill_fla(
     // footprint the original (also double-buffered) spine uses — `smem_dh`. Under-
     // sizing this reads the second slot out of bounds, so the selector has to agree
     // with the kernel `init.rs` loaded for the same env value.
-    let pipe = std::env::var("ATLAS_GDN_PIPE").ok().as_deref() == Some("1");
+    let pipe = std::env::var("AVAROK_GDN_PIPE").ok().as_deref() == Some("1");
     let smem_fused = if pipe {
         smem_dh
     } else {
         C * kd * 2 + C * kd * 2 + C * vd * 2 + (C + 1) * 4
     };
-    let fused_block = match std::env::var("ATLAS_GDN_VTILE").ok().as_deref() {
+    let fused_block = match std::env::var("AVAROK_GDN_VTILE").ok().as_deref() {
         Some("1") if !pipe => 512u32, // SPLIT=4 build
         _ => 256u32,                  // SPLIT=2 build (default, and the pipe build)
     };
@@ -297,7 +297,7 @@ pub fn gdn_prefill_fla(
     // the ssm-poisoning tripwire, not a cosine.
     //
     // The enable bit comes from the COMPILED TARGET's `[defaults] gdn_prefill_tc`
-    // with `ATLAS_GDN_PREFILL_TC` overriding, the same rung as every other
+    // with `AVAROK_GDN_PREFILL_TC` overriding, the same rung as every other
     // lever (`layers::ops::target_defaults`). Every target declares it false, so
     // this is opt-in everywhere today; the row exists so the reason is written
     // down beside the arch it applies to, and so `init.rs` can gate the PROBE on
@@ -315,7 +315,7 @@ pub fn gdn_prefill_fla(
         qk_stride,
     );
     if tc_requested && let Some(why) = tc_reject {
-        tracing::warn!("ATLAS_GDN_PREFILL_TC set but the tensor-core spine is NOT running: {why}");
+        tracing::warn!("AVAROK_GDN_PREFILL_TC set but the tensor-core spine is NOT running: {why}");
     }
     let tc_ok = tc_reject.is_none();
     if tc_ok {
@@ -326,14 +326,14 @@ pub fn gdn_prefill_fla(
             gdn_tc_spine_route_line(num_v_heads, batch_size, smem_tcfuse)
         );
     }
-    // ── TMA path (ATLAS_GDN_TMA=1) ───────────────────────────────────────────
+    // ── TMA path (AVAROK_GDN_TMA=1) ───────────────────────────────────────────
     // Every precondition is CHECKED, not assumed. The descriptors are encoded
     // from the compile-time tile (K_DIM/V_DIM = 128, CHUNK = 64), so a runtime
     // head narrower than the tile would load the wrong columns SILENTLY — TMA
     // reports no error for a well-formed descriptor pointed at the wrong shape.
     // Varlen is excluded because `choff` then comes from `cu_chunks` and the
     // flat row count the descriptor needs is not known on the host.
-    let tma_requested = std::env::var("ATLAS_GDN_TMA").ok().as_deref() == Some("1");
+    let tma_requested = std::env::var("AVAROK_GDN_TMA").ok().as_deref() == Some("1");
     // ★ NAME THE GUARD THAT REJECTED. A perf path that asks to be enabled and
     // silently is not measures as "no effect" — PR #296 shipped exactly that
     // (an ldmatrix GEMM that fell back with no error while both gates stayed
@@ -342,10 +342,10 @@ pub fn gdn_prefill_fla(
     let tma_reject: Option<&str> = if !tma_requested {
         Some("not requested")
     } else if tc_ok {
-        // Both levers are set: TMA yields, because ATLAS_GDN_PREFILL_TC is the
+        // Both levers are set: TMA yields, because AVAROK_GDN_PREFILL_TC is the
         // one with a numerics contract to measure. Say so rather than silently
         // running one of the two.
-        Some("ATLAS_GDN_PREFILL_TC is active and takes precedence")
+        Some("AVAROK_GDN_PREFILL_TC is active and takes precedence")
     } else if k_chunk_delta_h_tma.0 == 0 {
         Some("kernel absent from this image")
     } else if is_varlen {
@@ -360,7 +360,7 @@ pub fn gdn_prefill_fla(
         None
     };
     if tma_requested && let Some(why) = tma_reject {
-        tracing::warn!("ATLAS_GDN_TMA=1 but the TMA spine is NOT running: {why}");
+        tracing::warn!("AVAROK_GDN_TMA=1 but the TMA spine is NOT running: {why}");
     }
     let tma_ok = tma_reject.is_none();
     if tma_ok {

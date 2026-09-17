@@ -240,7 +240,7 @@ pub struct HcWeights {
 ///   dispatch chain has **no W8A8 arm at all** — and `cache_skip` is the
 ///   first-chunk path (`trait_impl/prefill_inner.rs:138`, `seq_len_start == 0`)
 ///   taken by every request. Their twins are never dead.
-/// * **Q** on that chain is behind `ATLAS_ATTN_PREFILL_Q_T=1`
+/// * **Q** on that chain is behind `AVAROK_ATTN_PREFILL_Q_T=1`
 ///   (`cache_skip_qkv.rs:142`); otherwise it is reached only after the W8A8
 ///   arm in `prefill/paged_qkv.rs:220` declines.
 /// * **O** is routed to `prefill/paged_oproj.rs` from both chains, so it is

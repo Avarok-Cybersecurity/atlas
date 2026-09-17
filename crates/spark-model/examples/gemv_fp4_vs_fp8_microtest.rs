@@ -18,7 +18,7 @@
 //! out_proj 2048/4096.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -84,7 +84,7 @@ fn main() -> Result<()> {
 
     println!("=== decode GEMV A/B: N={n} K={k} (M=1)  iters={iters} ===");
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

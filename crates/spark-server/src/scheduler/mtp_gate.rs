@@ -41,7 +41,7 @@
 //!   baselines stale and pulls the next probe forward — the same policy as
 //!   a depth-regime change.
 //!
-//! `ATLAS_MTP_GATE_FORCE=1` (existing) bypasses the gate entirely.
+//! `AVAROK_MTP_GATE_FORCE=1` (existing) bypasses the gate entirely.
 
 use std::time::Duration;
 
@@ -73,20 +73,20 @@ fn env_usize(name: &str, default: usize) -> usize {
 }
 
 /// Serial tokens between MTP re-probes while in Serial mode. Default
-/// matches the proven `ATLAS_DFLASH_ADAPTIVE_REPROBE` policy (256).
+/// matches the proven `AVAROK_DFLASH_ADAPTIVE_REPROBE` policy (256).
 fn reprobe_tokens() -> usize {
-    env_usize("ATLAS_MTP_GATE_REPROBE", 256)
+    env_usize("AVAROK_MTP_GATE_REPROBE", 256)
 }
 
 /// MTP tokens between serial-baseline refreshes while in Mtp mode. One
 /// 16-step window per 1024 tokens bounds refresh overhead at ≤0.3% even if
 /// serial were 18% slower.
 fn serial_refresh_tokens() -> usize {
-    env_usize("ATLAS_MTP_GATE_REFRESH", 1024)
+    env_usize("AVAROK_MTP_GATE_REFRESH", 1024)
 }
 
 /// Spec-entry verify pin, in post-`</think>` tokens
-/// (`ATLAS_SPEC_ENTRY_PIN`; `0` disables). While a speculating sequence is
+/// (`AVAROK_SPEC_ENTRY_PIN`; `0` disables). While a speculating sequence is
 /// within this window the scheduler runs the MTP verify path even when the
 /// gate's throughput arbitration says Serial.
 ///
@@ -94,7 +94,7 @@ fn serial_refresh_tokens() -> usize {
 /// (M=1) and verify (batch-K) forwards sit on the batch-K numerics floor —
 /// at T=0 every observed flip between them fires within ~7 tokens of spec
 /// ENTRY (2026-07-07/08 calibration, the same measurement behind
-/// `ATLAS_DFLASH_RESUME_GUARD`). The gate arbitrates on WALL-CLOCK
+/// `AVAROK_DFLASH_RESUME_GUARD`). The gate arbitrates on WALL-CLOCK
 /// throughput, so which path serves an answer opening otherwise depends on
 /// how fast the binary happens to be — measured 2026-08-14 (bfcl-subset
 /// echolp, 134 samples): one build's gate dwelt in Serial across requests
@@ -105,7 +105,7 @@ fn serial_refresh_tokens() -> usize {
 /// trajectory a property of the model, not of the gate's stopwatch.
 ///
 /// Default 8: covers the measured ≤7-token flip window with one token of
-/// margin. Interaction with `ATLAS_DFLASH_RESUME_GUARD` (the serial-entry
+/// margin. Interaction with `AVAROK_DFLASH_RESUME_GUARD` (the serial-entry
 /// mirror of this pin): the resume guard is enforced UPSTREAM of the gate
 /// dispatch, so for post-think tokens `< guard` the sequence never reaches
 /// the gate arm and the pin is moot; a guard ≥ the pin disables it wholesale.
@@ -116,7 +116,7 @@ pub(crate) fn parse_entry_pin_tokens(env: Option<&str>) -> u32 {
 fn entry_pin_tokens() -> u32 {
     static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        parse_entry_pin_tokens(std::env::var("ATLAS_SPEC_ENTRY_PIN").ok().as_deref())
+        parse_entry_pin_tokens(std::env::var("AVAROK_SPEC_ENTRY_PIN").ok().as_deref())
     })
 }
 
@@ -130,7 +130,7 @@ pub fn entry_pin_forces_verify(min_post_think_emitted: u32) -> bool {
 /// Existing scheduler dispatch predicate for the throughput gate — not a
 /// second gate. Standard MTP verifies during `<think>` (ForcedThinkEnd
 /// stays on that path). DFlash raw-argmax stays serial-in-think unless
-/// `ATLAS_DFLASH_SPEC_THINK=1`.
+/// `AVAROK_DFLASH_SPEC_THINK=1`.
 pub fn spec_dispatch_eligible(
     inside_thinking: bool,
     post_think_emitted: u32,
@@ -144,7 +144,7 @@ pub fn spec_dispatch_eligible(
     if suppress_tool_call || disable_mtp {
         return false;
     }
-    // Speculation never enters `<think>` without the ATLAS_DFLASH_SPEC_THINK
+    // Speculation never enters `<think>` without the AVAROK_DFLASH_SPEC_THINK
     // opt-in, for BOTH lanes: batch-K verify is not byte-lossless at T=0 (the
     // numerics floor can flip a low-margin token mid-reasoning), and the
     // agentic-webserver gate measured the damage as deterministic 8-9/10

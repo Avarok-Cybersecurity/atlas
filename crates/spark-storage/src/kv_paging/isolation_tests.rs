@@ -2,7 +2,7 @@
 
 //! KV paging isolation pins — hardware-free, mirroring spark-model's
 //! `paging_isolation_tests.rs`. The "peer" here is the EXACT residency type
-//! the real peer's `SharedPaging` owns (`atlas_tier::Residency`, via the
+//! the real peer's `SharedPaging` owns (`avarok_tier::Residency`, via the
 //! `snapshot_swap` re-export), keyed purely by the u64 wire key — so these
 //! tests prove the client-side namespace fold is the only thing standing
 //! between two models (or two same-model clients) and silent KV cross-serve,
@@ -108,7 +108,7 @@ fn same_model_two_salts_do_not_cross_serve() {
 }
 
 // ── T3: same model + same salt is DETERMINISTIC across derivations (a
-// reconnect that pins ATLAS_KV_PAGING_SALT resumes its own keyspace). ───────
+// reconnect that pins AVAROK_KV_PAGING_SALT resumes its own keyspace). ───────
 
 #[test]
 fn same_model_same_salt_round_trips_across_instances() {

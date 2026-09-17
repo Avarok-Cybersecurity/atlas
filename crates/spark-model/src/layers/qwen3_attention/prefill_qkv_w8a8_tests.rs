@@ -150,7 +150,7 @@ fn not_selected_without_the_attn_scope() {
 
 #[test]
 fn kill_switch_refuses_even_with_the_scope_armed() {
-    // ATLAS_ATTN_QKV_W8A16_ONLY.
+    // AVAROK_ATTN_QKV_W8A16_ONLY.
     let (q, kv, a, s) = caps(M);
     assert!(!selected(
         true,

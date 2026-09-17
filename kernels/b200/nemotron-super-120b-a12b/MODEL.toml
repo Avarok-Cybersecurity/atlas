@@ -13,7 +13,7 @@ architecture = "hybrid_mamba2_latent_moe_attention"
 parameters = "120B"
 active_parameters = "12B"
 
-# Kernel-target resolution needles (atlas-kernels/src/resolve.rs). This
+# Kernel-target resolution needles (avarok-kernels/src/resolve.rs). This
 # target collides with nemotron-labs-3-puzzle-75b-a9b on (nemotron_h_puzzle,
 # 4096) — declared below so a single-target Super build can serve Puzzle
 # checkpoints — and build.rs requires colliding targets to declare needles.

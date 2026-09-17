@@ -2,9 +2,9 @@
 
 //! The contract between the two halves of the closure hash.
 //!
-//! `atlas-kernels/build.rs` computes a target's sources with `collect_cu_files`
+//! `avarok-kernels/build.rs` computes a target's sources with `collect_cu_files`
 //! and bakes the hash into the binary. The gate recomputes them with
-//! `atlas_plugin::gate::taxon::sources` and compares. Those are two separate
+//! `avarok_plugin::gate::taxon::sources` and compares. Those are two separate
 //! implementations of one rule, and if they ever disagree the hashes never
 //! match, every record is invalidated forever, and the failure is INVISIBLE —
 //! it looks exactly like "the kernels changed", which is the normal case.
@@ -14,8 +14,8 @@
 
 use std::path::{Path, PathBuf};
 
-use atlas_plugin::gate::closure::{Attestation, TargetClosure};
-use atlas_plugin::gate::taxon;
+use avarok_plugin::gate::closure::{Attestation, TargetClosure};
+use avarok_plugin::gate::taxon;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -28,13 +28,13 @@ fn repo_root() -> PathBuf {
 /// ★ The load-bearing test: for a binary built with real kernels, every baked
 /// hash must reproduce from the tree.
 ///
-/// Skipped when the binary carries no attestation — an `ATLAS_SKIP_BUILD=1`
+/// Skipped when the binary carries no attestation — an `AVAROK_SKIP_BUILD=1`
 /// build compiled nothing, so there is nothing to agree with. That means CI's
 /// no-GPU leg cannot run this; the GPU build is where it bites, which is also
 /// where the disagreement would matter.
 #[test]
 fn the_baked_attestation_reproduces_from_the_tree() {
-    let baked: Attestation = serde_json::from_str(atlas_kernels::TARGET_CLOSURES)
+    let baked: Attestation = serde_json::from_str(avarok_kernels::TARGET_CLOSURES)
         .expect("TARGET_CLOSURES must parse into the type the gate reads");
     if baked.is_empty() {
         eprintln!(
@@ -89,9 +89,9 @@ fn the_baked_attestation_reproduces_from_the_tree() {
                  never excuse this target again."
             )
         });
-        let current = atlas_closure::hash(
+        let current = avarok_closure::hash(
             &root,
-            &atlas_closure::ClosureInputs {
+            &avarok_closure::ClosureInputs {
                 sources,
                 configs: taxon::configs(&root, &target),
                 flags: recorded.flags.clone(),

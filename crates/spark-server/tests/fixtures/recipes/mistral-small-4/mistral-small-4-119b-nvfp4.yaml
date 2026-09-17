@@ -23,7 +23,7 @@ metadata:
 
     Known limitation: symbolic math ("2+2") less reliable than word
     math ("two plus two") — model quirk.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 119B
   model_dtype: nvfp4

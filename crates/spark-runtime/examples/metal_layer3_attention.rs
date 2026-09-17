@@ -6,13 +6,13 @@
 //!
 //! Run with:
 //!
-//!     ATLAS_TARGET_HW=metal \
-//!     ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-//!     ATLAS_TARGET_QUANT=mlx_int8 \
+//!     AVAROK_TARGET_HW=metal \
+//!     AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+//!     AVAROK_TARGET_QUANT=mlx_int8 \
 //!     cargo run --example metal_layer3_attention \
 //!         --features metal --no-default-features --release
 //!
-//! Override the model directory with `$ATLAS_MLX_MODEL_DIR`. The
+//! Override the model directory with `$AVAROK_MLX_MODEL_DIR`. The
 //! default is `~/models/Qwen3.5-4B-MLX-8bit/`.
 //!
 //! This is essentially the integration-test code from
@@ -46,14 +46,14 @@ fn bytes_to_bf16_vec(bytes: &[u8]) -> Vec<half::bf16> {
 
 fn main() -> Result<()> {
     // ── Locate + mmap the model ─────────────────────────────────
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("$HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
     let st_path = std::path::Path::new(&model_dir).join("model.safetensors");
     if !st_path.exists() {
         anyhow::bail!(
-            "model.safetensors not found at {} — set $ATLAS_MLX_MODEL_DIR or \
+            "model.safetensors not found at {} — set $AVAROK_MLX_MODEL_DIR or \
              run `git lfs clone https://huggingface.co/mlx-community/Qwen3.5-4B-MLX-8bit \
              ~/models/Qwen3.5-4B-MLX-8bit`",
             st_path.display()
@@ -63,12 +63,12 @@ fn main() -> Result<()> {
     let mmap = unsafe { memmap2::Mmap::map(&file).context("mmap")? };
     let st = SafeTensors::deserialize(&mmap).context("parse safetensors header")?;
 
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     if modules.is_empty() {
         anyhow::bail!(
             "metal kernel registry is empty — re-build with \
-             ATLAS_TARGET_HW=metal ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-             ATLAS_TARGET_QUANT=mlx_int8"
+             AVAROK_TARGET_HW=metal AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+             AVAROK_TARGET_QUANT=mlx_int8"
         );
     }
     println!("metal kernel registry: {} modules loaded", modules.len());

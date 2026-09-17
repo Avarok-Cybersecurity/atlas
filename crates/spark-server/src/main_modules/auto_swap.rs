@@ -53,7 +53,7 @@ pub(crate) fn decide(requested: &str, live_model: &str, catalogue: &[Recipe]) ->
     }
     match catalogue
         .iter()
-        .filter(|r| r.is_atlas())
+        .filter(|r| r.is_avarok())
         .find(|r| r.model == requested)
     {
         // A known model, and not the one running.

@@ -1895,8 +1895,8 @@ unsafe impl Send for CudaFunction {}
 unsafe impl Sync for CudaFunction {}
 
 impl CudaModule {
-    /// The raw driver handle for this loaded module. (Atlas vendor addition:
-    /// lets `AtlasRegistry` derive `cuModuleGetFunction` handles from the ONE
+    /// The raw driver handle for this loaded module. (Avarok vendor addition:
+    /// lets `AvarokRegistry` derive `cuModuleGetFunction` handles from the ONE
     /// module this struct loaded instead of JIT-compiling every PTX blob a
     /// second time through the raw driver API.) The handle stays owned by
     /// this `CudaModule`: callers must not `cuModuleUnload` it and must not

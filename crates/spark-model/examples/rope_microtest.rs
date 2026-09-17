@@ -4,7 +4,7 @@
 //!   cargo run -p spark-model --release --example rope_microtest --features cuda,gpu-examples -- [seq] [seed]
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 const HD: usize = 256;
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     let qc: Vec<f32> = qr.iter().map(|x| x.to_f32()).collect();
     let kc: Vec<f32> = kr.iter().map(|x| x.to_f32()).collect();
     // GPU
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
     let st = g.create_stream()?;
     let qp = ub(g, &q)?;

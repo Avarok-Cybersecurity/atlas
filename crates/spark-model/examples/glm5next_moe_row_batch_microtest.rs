@@ -25,7 +25,7 @@
 //!       --features cuda,gpu-examples
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -36,7 +36,7 @@ const K: usize = 1024; // input width (K/16 = 64 chunks, exercises the k16 tail 
 const NUM_EXPERTS: usize = 72;
 /// Both routings are exercised. 8 is GLM-5.3's `num_experts_per_tok`.
 const TOP_KS: [usize; 2] = [4, 8];
-/// Widest compiled tier — mirror of `ATLAS_MOE_BATCHM_ENTRY` in `w4a16_gemv.cu`.
+/// Widest compiled tier — mirror of `AVAROK_MOE_BATCHM_ENTRY` in `w4a16_gemv.cu`.
 const MAX_ROWS: usize = 8;
 /// `glm5next_moe_row_union` is ONE block; `rows * top_k` past this would drop entries.
 const MAX_UNION_IDS: usize = 64;
@@ -134,7 +134,7 @@ fn batched(
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let k_row = gpu.kernel("w4a16_gemv", "w4a16_gemv_sw_moe")?;
     let k_union = gpu.kernel("w4a16_gemv", "glm5next_moe_row_union")?;
     let k_b: Vec<KernelHandle> = (2..=MAX_ROWS)

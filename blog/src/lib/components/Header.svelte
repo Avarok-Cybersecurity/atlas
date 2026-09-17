@@ -3,17 +3,22 @@
   import { nav, githubUrl, MAIN_SITE, navCurrent } from '$lib/content.js';
   import GithubIcon from './GithubIcon.svelte';
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
 
   const current = (href) => navCurrent(page.url.pathname, href);
+  // Local review runs the marketing site on :5173. Production always uses MAIN_SITE.
+  const landing = import.meta.env.DEV ? 'http://127.0.0.1:5173/' : MAIN_SITE;
 </script>
 
 <header class="hdr">
   <div class="hdr-in">
-    <a class="brand" href="/" aria-label="Atlas blog, home">
-      <AtlasLockup kind="horizontal" label="Atlas" />
+    <div class="brand">
+      <a class="brand-mark" href={landing} aria-label="Atlas home">
+        <AtlasLockup kind="horizontal" />
+      </a>
       <span class="brand-div" aria-hidden="true"></span>
-      <span class="brand-sub">Blog</span>
-    </a>
+      <a class="brand-sub" href="/" aria-current={current('/') ? 'page' : undefined}>Blog</a>
+    </div>
 
     <nav class="nav" aria-label="Categories">
       {#each nav as l}
@@ -22,6 +27,7 @@
     </nav>
 
     <div class="hdr-right">
+      <ThemeToggle />
       <!-- The label is display:none below 460px, which removes it from the
            accessibility tree as well as the page — so the name has to be on the
            element, or the link has no accessible name at exactly the widths

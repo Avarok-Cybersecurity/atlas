@@ -122,7 +122,7 @@ impl DraftProposer for MtpHead {
     fn propose_batch_max(
         &self,
         buffers: &spark_runtime::buffers::BufferArena,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> usize {
         MtpHead::propose_batch_max(self, buffers, config)
     }

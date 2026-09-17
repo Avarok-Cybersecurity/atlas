@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Row-wise FP8 GDN prefill BF16-weight slab sizing, split out of `sizes.rs`
-//! (≤500 LoC cap). Env-gated — 0 (→ NULL) unless `ATLAS_FP8_ROWWISE=1`, so
+//! (≤500 LoC cap). Env-gated — 0 (→ NULL) unless `AVAROK_FP8_ROWWISE=1`, so
 //! every other recipe's ledger is byte-identical to before this entry existed.
 //!
 //! **WHY (#917 H100 receipt, 2026-09-11, `Qwen/Qwen3.8-27B-FP8`).** The
-//! `ATLAS_FP8_ROWWISE` GDN prefill arms dequantise their per-row FP8 weights
+//! `AVAROK_FP8_ROWWISE` GDN prefill arms dequantise their per-row FP8 weights
 //! to BF16 once and multiply with cuBLASLt, because
 //! `cublaslt::fp8_gemm_act_weight_t_rowwise` returns NOT_SUPPORTED on sm_121
 //! (measured 2026-08-15). That dequant used to be a lazy `gpu.alloc` memoised
@@ -17,7 +17,7 @@
 //! `BufferSizes::total_bytes()`), and the arms bump-carve their slices from
 //! it instead of allocating.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// BF16 bytes ONE GDN layer's row-wise prefill arms dequantise and keep:
 /// the fused `in_proj_qkvz` `[ssm_qkvz_size, hidden]` and `out_proj`
@@ -44,12 +44,12 @@ pub fn ssm_rowwise_w_bf16_layer_bytes(config: &ModelConfig) -> usize {
 /// The env predicate is character for character
 /// `weight_loader::qwen35_dense::rowwise_fp8::rowwise_fp8_enabled` — `== Ok("1")`,
 /// NOT presence. The two must agree: the loader installs the per-row weights
-/// on that predicate and the arms then require this slab, so `ATLAS_FP8_ROWWISE=0`
+/// on that predicate and the arms then require this slab, so `AVAROK_FP8_ROWWISE=0`
 /// must leave BOTH off.
 pub fn ssm_rowwise_w_bf16_bytes(config: &ModelConfig) -> usize {
     ssm_rowwise_w_bf16_bytes_for(
         config,
-        std::env::var("ATLAS_FP8_ROWWISE").as_deref() == Ok("1"),
+        std::env::var("AVAROK_FP8_ROWWISE").as_deref() == Ok("1"),
     )
 }
 

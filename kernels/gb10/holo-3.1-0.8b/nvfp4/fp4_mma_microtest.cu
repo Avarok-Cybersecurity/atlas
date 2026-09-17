@@ -28,7 +28,7 @@
 //     col n = t/4
 //
 // Quantization is done in a SEPARATE pre-pass (fp4_microtest_pack) that mirrors
-// atlas_cutlass_pack_bf16_act_nvfp4 EXACTLY (per-16-group scale = max_abs/6 as
+// avarok_cutlass_pack_bf16_act_nvfp4 EXACTLY (per-16-group scale = max_abs/6 as
 // ue4m3, e2m1 round-to-nearest) into NATURAL-layout buffers:
 //   packed[rows][K/2]   (low nibble = even k)
 //   scales[rows][K/16]  (raw ue4m3 byte per group)

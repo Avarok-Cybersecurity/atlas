@@ -8,7 +8,7 @@ host went down and took both properties with it.
 
 | Project | Serves | pages.dev |
 | --- | --- | --- |
-| `atlas-site` | `atlascybernetics.ai` | `atlas-site-80h.pages.dev` |
+| `avarok-site` | `atlascybernetics.ai` | `avarok-site-80h.pages.dev` |
 | `atlas-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
@@ -67,3 +67,25 @@ Redirect -> Edit**, on top of the Pages, DNS and Cache Purge permissions the
 rest of this setup uses. A token holding only some of those fails with
 `request is not authorized` on the ruleset write while still listing rulesets
 happily, which reads like a bug and is not one.
+
+## atlasinference.io -> atlascybernetics.ai
+
+`atlasinference.io` is a legacy hostname on the same `avarok-site` Pages
+project. It still answers 200 with the marketing site, including
+`/engine`. The public developer URL is `https://atlascybernetics.ai/engine`.
+
+`_redirects` host rules do not fire here (same measurement as `www`). Do
+this in the **atlasinference.io zone**, not in the Pages project:
+
+    expression: (http.host eq "atlasinference.io") or (http.host eq "www.atlasinference.io")
+    action:     redirect, 301
+    target:     concat("https://atlascybernetics.ai", http.request.uri.path)
+    preserve query string: yes
+
+**`atlasinference.io` and `www.atlasinference.io` must be detached from
+the Pages project** or the rule never runs — every request keeps returning
+200 with the site. After detaching, keep the DNS records as proxied CNAMEs
+onto `atlascybernetics.ai` (or the Pages `pages.dev`) so the rule sees the
+request.
+
+The origin standby vhost is `../nginx/atlasinference.io.conf`.

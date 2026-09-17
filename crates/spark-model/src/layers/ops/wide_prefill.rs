@@ -12,7 +12,7 @@ use spark_runtime::gpu::{GpuBackend, KernelHandle};
 /// be built for. ONE reader, because the name is chosen in `qwen3_attention::init`
 /// and the grid here, and a mismatch is silent.
 ///
-/// Default is the tensor-core instantiation (`BR=32`). `ATLAS_ATTN_512_TC=0`
+/// Default is the tensor-core instantiation (`BR=32`). `AVAROK_ATTN_512_TC=0`
 /// selects the scalar reference (`BR=16`) — kept reachable because it is the
 /// oracle the TC path was validated against (cosine 0.999998, 64.7x faster on
 /// S=1024/4q/2kv/causal).
@@ -25,7 +25,7 @@ pub fn wide_prefill_kernel(gpu: &dyn GpuBackend) -> (KernelHandle, u32) {
     // 512-wide heads into the 64-wide kernel — no error, wrong results. That is
     // the PR #296 failure class (a kernel handle absent, a silent fallback, and
     // both gates green), and this path very nearly reproduced it.
-    if std::env::var("ATLAS_ATTN_512_TC").ok().as_deref() != Some("0") {
+    if std::env::var("AVAROK_ATTN_512_TC").ok().as_deref() != Some("0") {
         let tc =
             crate::layers::try_kernel(gpu, "inferspark_prefill_512tc", "inferspark_prefill_512tc");
         if tc.0 != 0 {

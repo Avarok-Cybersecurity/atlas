@@ -108,10 +108,10 @@ fn kv_keeps_the_key_and_the_delimited_tail() {
 #[test]
 fn home_user_and_host_are_substituted() {
     let out = redact_line(
-        "claude@dgx1 wrote /home/claude/.cache/atlas/logs/x.log",
+        "claude@dgx1 wrote /home/claude/.cache/avarok/logs/x.log",
         &ctx(),
     );
-    assert_eq!(out, "«user»@«host» wrote ~/.cache/atlas/logs/x.log");
+    assert_eq!(out, "«user»@«host» wrote ~/.cache/avarok/logs/x.log");
 }
 
 #[test]

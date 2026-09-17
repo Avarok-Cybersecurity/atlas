@@ -201,7 +201,7 @@ impl TransformerModel {
                 // leaves the KV it wrote for position N-1 CORRUPTED, in a block
                 // SHARED with the prefix cache. `ctx.gdn_exact_replay`'s own doc
                 // in layer.rs describes this same poisoning for the GDN path.
-                // `ATLAS_MARCONI_EXACT=1` re-enables it for A/B.
+                // `AVAROK_MARCONI_EXACT=1` re-enables it for A/B.
                 let bypass_exact = snap_tok == matched
                     && matched == total
                     && !super::exact_leaf::marconi_exact_enabled();
@@ -255,7 +255,7 @@ impl TransformerModel {
                     // prefill, so without this every warm hit re-saved the
                     // leaf that then shadowed the anchor it had just used).
                     seq.tail_checkpoint_tokens = Some(snap_tok);
-                    if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+                    if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                         self.ssm_pool.debug_state_checksum(
                             seq.slot_idx,
                             self.gpu.as_ref(),
@@ -330,7 +330,7 @@ impl TransformerModel {
                 skip = false;
                 seq.marconi_exact_snap = None;
                 tracing::info!(
-                    "exact-leaf snapshot shortcut bypassed (default; ATLAS_MARCONI_EXACT=1 re-enables) \
+                    "exact-leaf snapshot shortcut bypassed (default; AVAROK_MARCONI_EXACT=1 re-enables) \
                      for {matched}-token full hit — recomputing all KV+SSM"
                 );
             }

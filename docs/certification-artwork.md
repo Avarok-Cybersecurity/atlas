@@ -35,7 +35,7 @@ Insert the closing `</g>` immediately before `</svg>`. Assert exactly one match
 for every anchor before writing (see `inject()` in `tools/gen_badges.py`).
 
 All defs ids are prefixed `cert-` and collide with nothing in the state SVGs
-(they only define `atlasGoldCut` and the `tip*` markers). Logo, title and
+(they only define `avarokGoldCut` and the `tip*` markers). Logo, title and
 subtitle stay where they are; everything from the stage banner down moves.
 
 ## 2. Masthead geometry (do not rearrange piecemeal)

@@ -25,7 +25,7 @@
 //! WHOLE KDA block and the all-reduce double-counted it: no crash, no shape error.
 
 use anyhow::{Context, Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
@@ -367,7 +367,7 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         // verify (ANOMALIES A65 — `Glm5NextLayer::prefill` hands `forward_k` `PREFILL_ROWS`
         // rows). Sizing to the verify width alone made `forward_k` bail the moment prefill
         // used it. Cost is per-layer scratch that scales with rows, not with context.
-        // 🪤 `prefill_rows()` too, not just the constant: `ATLAS_GLM_PREFILL_ROWS` can widen the
+        // 🪤 `prefill_rows()` too, not just the constant: `AVAROK_GLM_PREFILL_ROWS` can widen the
         // sub-chunk at launch, and a workspace built for the default would make `forward_k` bail
         // the first time the A/B lever was actually used.
         let verify_k = (crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M as usize)
@@ -415,9 +415,9 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
                     let w = build_dsa_weights(gpu, &dsa_cfg, &dsa_plan, &load)?;
                     Glm5NextMixer::Dsa(Box::new(Glm5NextDsaLayer {
                         // ON by default since A55 was closed (the `weights_proj` overrun
-                        // fix). Kill switch `ATLAS_GLM_DSA_ALLOC_PER_STEP=1` restores the
+                        // fix). Kill switch `AVAROK_GLM_DSA_ALLOC_PER_STEP=1` restores the
                         // per-step `gpu.alloc` + `gpu.free`.
-                        persist_bt: std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref()
+                        persist_bt: std::env::var("AVAROK_GLM_DSA_ALLOC_PER_STEP").as_deref()
                             != Ok("1"),
                         cfg: dsa_cfg,
                         weights: w,

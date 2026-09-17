@@ -2,9 +2,9 @@
 
 //! Native keep-packed Q2_0 buffer sizing, split out of `sizes.rs` (≤500 LoC
 //! cap). Both scratch buffers are env-gated — 0 (→ NULL) unless the respective
-//! `ATLAS_GGUF_NATIVE_Q2*` flag is set, so non-Q2 models pay nothing.
+//! `AVAROK_GGUF_NATIVE_Q2*` flag is set, so non-Q2 models pay nothing.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// Bytes for the native keep-packed Q2_0 prefill transient-dequant scratch: the
 /// LARGEST keep-packed projection `[N, K]` expanded to BF16 (2 bytes/elem). The
@@ -33,15 +33,15 @@ pub fn q2_dequant_scratch_bytes(config: &ModelConfig) -> usize {
 /// `(q2_dequant_scratch, q2_act_q8)` sizes for the arena. `m` = max batch
 /// tokens, `h` = hidden_size, `hd` = head_dim.
 ///
-/// - `q2_dequant_scratch` (Tier-1, `ATLAS_GGUF_NATIVE_Q2=1`): the widest
+/// - `q2_dequant_scratch` (Tier-1, `AVAROK_GGUF_NATIVE_Q2=1`): the widest
 ///   keep-packed projection expanded to BF16 (see [`q2_dequant_scratch_bytes`]).
-/// - `q2_act_q8` (Tier-2 MMQ, `ATLAS_GGUF_NATIVE_Q2_MMQ=1`): the q8_1 activation
+/// - `q2_act_q8` (Tier-2 MMQ, `AVAROK_GGUF_NATIVE_Q2_MMQ=1`): the q8_1 activation
 ///   scratch. Widest INPUT dim K — FFN gate/up (h) or down (intermediate), attn
 ///   qkv (h) or o (q_heads*head_dim), GDN qkvz (h). q8_1_mmq is 4 bytes/elem
 ///   over kpad (K rounded to 256), + 1MB margin — matches `q8_1_scratch_bytes`.
 pub fn q2_scratch_sizes(config: &ModelConfig, m: usize, h: usize, hd: usize) -> (usize, usize) {
-    let dequant_enabled = std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1");
-    let mmq_enabled = std::env::var("ATLAS_GGUF_NATIVE_Q2_MMQ").ok().as_deref() == Some("1");
+    let dequant_enabled = std::env::var("AVAROK_GGUF_NATIVE_Q2").ok().as_deref() == Some("1");
+    let mmq_enabled = std::env::var("AVAROK_GGUF_NATIVE_Q2_MMQ").ok().as_deref() == Some("1");
     q2_scratch_sizes_for(config, m, h, hd, dequant_enabled, mmq_enabled)
 }
 

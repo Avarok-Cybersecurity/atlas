@@ -37,11 +37,11 @@ def test_fib(name, system_prompt):
         "fibonacci(4)=3, fibonacci(5)=5. Use an iterative approach with variables a and b. "
         "Return ONLY the Python code, no explanation."})
     payload = json.dumps({"model": MODEL, "messages": messages, "max_tokens": 300, "temperature": 0})
-    with open("/tmp/atlas_test_payload.json", "w") as f:
+    with open("/tmp/avarok_test_payload.json", "w") as f:
         f.write(payload)
     result = subprocess.run(
         ["curl", "-s", "--max-time", "180", f"http://{HOST}/v1/chat/completions",
-         "-H", "Content-Type: application/json", "-d", "@/tmp/atlas_test_payload.json"],
+         "-H", "Content-Type: application/json", "-d", "@/tmp/avarok_test_payload.json"],
         capture_output=True, text=True)
     try:
         r = json.loads(result.stdout)

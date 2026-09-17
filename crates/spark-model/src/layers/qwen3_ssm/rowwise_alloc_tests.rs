@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Allocation contract for the two `ATLAS_FP8_ROWWISE` GDN prefill arms —
+//! Allocation contract for the two `AVAROK_FP8_ROWWISE` GDN prefill arms —
 //! `trait_prefill_proj.rs`'s `in_proj_qkvz` and `trait_prefill_helper.rs`'s
 //! `out_proj`.
 //!
@@ -25,7 +25,7 @@
 //! seam (`rowwise_qkvz_bf16` / `rowwise_out_proj_bf16`), which is the step
 //! that allocated, and NOT through the cuBLASLt matmul that follows it. That
 //! is not squeamishness about an FFI error: this binary also builds real
-//! `AtlasCudaBackend`s (`qsa_tests.rs`, `ngram_embed/tests.rs`), so a process
+//! `AvarokCudaBackend`s (`qsa_tests.rs`, `ngram_embed/tests.rs`), so a process
 //! CUDA context may well exist by the time these run, and handing
 //! `cublasLtMatmul` a `MockGpuBackend`'s fabricated device pointers would
 //! fault that shared context and take the rest of the suite with it. The arms
@@ -36,7 +36,7 @@
 use super::tests::native_fp8_gdn_layer;
 use super::*;
 use crate::weight_map::WeightQuantFormat;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::{BufferArena, BufferSizes, ssm_rowwise_w_bf16_bytes_for};
 use spark_runtime::gpu::mock::MockGpuBackend;
 
@@ -87,7 +87,7 @@ fn fp8_per_row(gpu: &MockGpuBackend, n: usize, k: usize) -> Fp8Weight {
     }
 }
 
-/// `ATLAS_FP8_ROWWISE` ARMED, without touching the process environment:
+/// `AVAROK_FP8_ROWWISE` ARMED, without touching the process environment:
 /// `set_var` is unsafe and process-global and would race every other test in
 /// this binary, so the ledger is built with the lever passed in and handed to
 /// `BufferArena::from_sizes` — the same bytes `BufferSizes::from_config` would
@@ -290,7 +290,7 @@ fn the_ledgered_slab_holds_exactly_every_gdn_layer_and_refuses_the_next() {
 }
 
 /// End to end through BOTH real arms, with the ledger entry ABSENT — the
-/// configuration a `ATLAS_FP8_ROWWISE=0` arena would present to row-wise
+/// configuration a `AVAROK_FP8_ROWWISE=0` arena would present to row-wise
 /// weights. Each arm must refuse before it reaches cuBLASLt, and neither may
 /// fall back to allocating its own BF16 twin.
 #[test]

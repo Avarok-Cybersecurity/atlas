@@ -14,10 +14,10 @@ import { MODEL_COLORS, UNKNOWN_MODEL_COLOR } from './series-colors.js';
  */
 const FLOOR = 3;
 
-const tokens = readFileSync(new URL('../../../web-shared/atlas-tokens.css', import.meta.url), 'utf8');
+const tokens = readFileSync(new URL('../../../web-shared/avarok-tokens.css', import.meta.url), 'utf8');
 const token = (name) => {
   const m = tokens.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
-  if (!m) throw new Error(`--${name} is not in web-shared/atlas-tokens.css`);
+  if (!m) throw new Error(`--${name} is not in web-shared/avarok-tokens.css`);
   return m[1];
 };
 

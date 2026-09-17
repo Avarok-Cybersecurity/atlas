@@ -171,7 +171,7 @@ impl HelpState {
     /// that fired while the operator looked elsewhere is otherwise gone
     /// without a trace.
     pub(super) fn fail(&mut self, message: String) {
-        tracing::warn!(target: "atlas_tui", "issue report: {message}");
+        tracing::warn!(target: "avarok_tui", "issue report: {message}");
         self.say(message.clone(), true);
         self.phase = ReportPhase::Failed { message };
     }

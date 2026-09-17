@@ -98,7 +98,7 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
             id,
             // `blobs/` is where huggingface-cli puts the real bytes, with
             // snapshots/ as symlinks into it — so `len()` of a snapshot entry
-            // would measure the link, not the model. Atlas's own downloader
+            // would measure the link, not the model. Avarok's own downloader
             // writes the files directly into snapshots/ and has no blobs/ at
             // all, which reported every model it fetched as 0 MB. Measure
             // whichever layout this model actually uses.
@@ -118,7 +118,7 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
             optimized: false,
         };
         if let Ok(json) = std::fs::read_to_string(snap.join("config.json"))
-            && let Ok(cfg) = atlas_core::config::parse_config(&json)
+            && let Ok(cfg) = avarok_core::config::parse_config(&json)
         {
             entry.model_type = cfg.model_type.clone();
             entry.layers = cfg.num_hidden_layers;
@@ -138,7 +138,7 @@ pub fn scan(cache_dir: Option<&Path>) -> Vec<LibraryEntry> {
             // An ambiguity error is shown as un-optimized: serving this
             // entry as-is WOULD refuse, which is what the flag reports.
             entry.optimized = matches!(
-                atlas_kernels::ptx_for_config(
+                avarok_kernels::ptx_for_config(
                     &cfg.model_type,
                     cfg.hidden_size,
                     &[entry.id.as_str()],
@@ -176,7 +176,7 @@ pub fn scan_in_background(
     // An empty list is what `scan` itself returns for an unreadable cache, so
     // it is also the honest answer when the scanner cannot start.
     crate::tui::worker::spawn(
-        "atlas-libscan",
+        "avarok-libscan",
         move || scan(owned.as_deref()),
         |_| Vec::new(),
     )

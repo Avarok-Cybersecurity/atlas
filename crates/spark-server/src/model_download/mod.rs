@@ -19,7 +19,7 @@
 //!
 //! The dashboard's rule holds here: the render thread never polls a future, it
 //! only `try_recv`s. The work runs on a plain `std::thread` named
-//! `atlas-download`, and progress arrives on a `std::sync::mpsc`. See
+//! `avarok-download`, and progress arrives on a `std::sync::mpsc`. See
 //! `recipe/fetch.rs` for the full statement and
 //! `.github/workflows/tui-threading.yml` for its enforcement.
 //!
@@ -40,7 +40,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub(crate) const HOST: &str = "https://huggingface.co";
-pub(crate) const AGENT: &str = concat!("atlas-spark/", env!("CARGO_PKG_VERSION"));
+pub(crate) const AGENT: &str = concat!("avarok-spark/", env!("CARGO_PKG_VERSION"));
 
 /// Progress from a running download. Terminal messages are `Done`, `Failed`
 /// and `Cancelled`; exactly one of them is sent.
@@ -170,7 +170,7 @@ pub fn start(repo: &str, cache_root: PathBuf) -> Handle {
     let cancel = Arc::new(AtomicBool::new(false));
     let owned = repo.to_string();
     let spawned = std::thread::Builder::new()
-        .name("atlas-download".into())
+        .name("avarok-download".into())
         .spawn({
             let tx = tx.clone();
             let cancel = Arc::clone(&cancel);

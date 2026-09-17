@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -64,10 +64,10 @@ fn compare(a: &[f32], b: &[f32]) -> (f32, f64) {
 }
 
 fn main() -> Result<()> {
-    let set = atlas_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
+    let set = avarok_kernels::ptx_for_config("qwen3_6_moe", 2048, &[], None)
         .expect("unambiguous")
         .expect("no ptx set");
-    let backend = AtlasCudaBackend::new(0, &set.modules)?;
+    let backend = AvarokCudaBackend::new(0, &set.modules)?;
     let gpu: &dyn GpuBackend = &backend;
     let k = gpu.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
     eprintln!("recompute_wu handle={}", k.0);
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
     // Production runs nt=16-64 (seq 1024-4096). The small shapes alone cannot
     // see an occupancy-bound regression, because at nt=1 the grid is 32 CTAs
     // over ~48 SMs and occupancy never binds.
-    let shapes: Vec<usize> = match std::env::var("ATLAS_WU_SHAPES") {
+    let shapes: Vec<usize> = match std::env::var("AVAROK_WU_SHAPES") {
         Ok(v) => v.split(',').filter_map(|x| x.trim().parse().ok()).collect(),
         Err(_) => vec![64usize, 128, 200],
     };

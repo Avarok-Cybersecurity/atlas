@@ -7,7 +7,7 @@ twice each (cold, then warm through the prefix cache), and verify both.
 """
 import os, json, os, sys, time, urllib.request
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888/v1/chat/completions")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888/v1/chat/completions")
 MODEL = os.environ.get("COHERENCE_MODEL", "laguna-s-2.1")
 
 # Explicit system prompt. Sending none leaves whatever the chat template bakes in

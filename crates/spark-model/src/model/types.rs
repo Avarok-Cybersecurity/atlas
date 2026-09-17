@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -76,7 +76,7 @@ pub struct TransformerModel {
     /// holder (including the `draft_lm_head_nvfp4` copy at `impl_a1.rs:157`)
     /// keeps a valid row-major pointer. Built once, immutable, never freed —
     /// so each per-`padded_n` CUDA graph binds one (kernel, tensor) pair.
-    /// `None` under `ATLAS_NO_LMHEAD_TGEMM=1`.
+    /// `None` under `AVAROK_NO_LMHEAD_TGEMM=1`.
     pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
     /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
@@ -102,8 +102,8 @@ pub struct TransformerModel {
     /// layer structs; kept here as the owner of the pool/tables and for
     /// status introspection.
     pub(super) lora: Option<crate::lora::LoraWeights>,
-    /// True when runtime adapter rotation is ARMED: `ATLAS_LORA_ROTATE=1`, or
-    /// `$ATLAS_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
+    /// True when runtime adapter rotation is ARMED: `AVAROK_LORA_ROTATE=1`, or
+    /// `$AVAROK_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
     /// capture) so a `set_active_lora` re-point is immediately live
     /// (eager-on-rotate). `false` (single startup adapter, no rotation env)
     /// keeps the decode-graph path byte-identical to today.
@@ -134,7 +134,7 @@ pub struct TransformerModel {
     /// layer where a near-tie argmax flip changes the emitted token. Memory
     /// records exactly that failure mode (stop/end-of-turn mis-ranking on DEEP
     /// agentic trajectories) for sub-bf16 lm_heads. Costs ~1% of step.
-    /// 0 when absent. Kill switch: ATLAS_NO_LMHEAD_LOSSLESS=1.
+    /// 0 when absent. Kill switch: AVAROK_NO_LMHEAD_LOSSLESS=1.
     pub(super) w4a16_gemm_t_bf16_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
@@ -160,12 +160,12 @@ pub struct TransformerModel {
     pub(super) dense_gemv_batchm_kernel: KernelHandle,
     /// Tensor-core BF16 decode GEMM with a 16-row M tile
     /// (`dense_gemm_m16_bf16`, #927/#928) — the 5..=16-row BF16 lm_head arm
-    /// behind `ATLAS_LM_HEAD_M16_TC`. 0 when the kernel set lacks it, which is
+    /// behind `AVAROK_LM_HEAD_M16_TC`. 0 when the kernel set lacks it, which is
     /// how a target without it declines silently. REASSOCIATES the K reduction
     /// against `dense_gemv_bf16_batchm`; rule in
     /// `trait_impl/lm_head_batched.rs::lm_head_m16_tc_route`.
     pub(super) lm_head_m16_tc_kernel: KernelHandle,
-    /// `N_TILE=64` twin of the above (`ATLAS_LM_HEAD_M16_TC_NTILE=64`).
+    /// `N_TILE=64` twin of the above (`AVAROK_LM_HEAD_M16_TC_NTILE=64`).
     /// 0 when absent — a `=64` request then falls back to the 32-wide kernel.
     pub(super) lm_head_m16_tc_n64_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
@@ -202,7 +202,7 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
-    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// Optional SSM snapshot spill tier (`AVAROK_SSM_TIER`). `None` (default)
     /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
     /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
     /// turn faults it back instead of recomputing. Threaded into
@@ -213,10 +213,10 @@ pub struct TransformerModel {
     pub(super) max_blocks_per_seq: u32,
     /// Permanent KV cache block for padding sequences in batched decode.
     pub(super) dummy_kv_block: u32,
-    /// Profile mode: skip graphs, sync+time each layer. Set ATLAS_PROFILE=1.
+    /// Profile mode: skip graphs, sync+time each layer. Set AVAROK_PROFILE=1.
     pub(super) profile: bool,
     /// One-shot profile flag for the next prefill request only. Set
-    /// ATLAS_PROFILE_FIRST=1 to capture per-step timing on the first prefill
+    /// AVAROK_PROFILE_FIRST=1 to capture per-step timing on the first prefill
     /// after startup without disabling CUDA graphs for subsequent decodes.
     /// Consumed (atomically swapped to false) by `prefill_chunk` / `prefill`.
     pub(super) profile_first_pending: std::sync::atomic::AtomicBool,
@@ -237,7 +237,7 @@ pub struct TransformerModel {
     /// hidden here FIRST (`stash_verify_hidden_rows`), then feeds the drafter
     /// from the stash (`save_hidden_for_mtp_from_stash`). NULL without MTP.
     pub(super) verify_hidden_stash: DevicePtr,
-    /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
+    /// AVAROK_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the
     /// feature is off or no proposer exists.
@@ -245,7 +245,7 @@ pub struct TransformerModel {
     /// (first_position, count) of the contiguous position range currently
     /// resident in the ring; a non-contiguous capture resets the range.
     pub(super) mtp_catchup_meta: parking_lot::Mutex<(usize, usize)>,
-    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// AVAROK_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
     /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
     /// h=5120). NULL unless the env is set AND an MTP proposer is built.
     /// Filled contiguously by the prefill chunk epilogues; consumed once by
@@ -283,7 +283,7 @@ pub struct TransformerModel {
     /// interleaved admission), C=2 TPOT 62 -> 79 ms and 30.8 -> 23.5 tok/s,
     /// reproduced twice. One counter, two meanings, was the whole bug.
     pub(super) mtp_store_gen_seq: std::sync::atomic::AtomicU64,
-    /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
+    /// AVAROK_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single
     /// slot: the carry is force-disabled outside single-sequence dispatch
@@ -295,7 +295,7 @@ pub struct TransformerModel {
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
     /// Absolute position interval of `mtp_prefill_hidden` rows, WITH the
     /// sequence generation that wrote them. Only maintained when
-    /// ATLAS_MTP_CARRY_DRAFTER is on.
+    /// AVAROK_MTP_CARRY_DRAFTER is on.
     ///
     /// ★ THE STAMP IS THE GUARD; the `alloc_sequence` reset is not. This doc
     /// used to claim the interval was "per-sequence by construction" because
@@ -369,7 +369,7 @@ pub struct TransformerModel {
     /// `(k, ssm-slot vector in batch order, ghost (slot, depth) pairs)` —
     /// see `verify_wy_cache_key` for the enumeration and the proof — so a
     /// step whose key matches what is already on the device may skip both.
-    /// Kill switch `ATLAS_NO_VERIFY_WY_CACHE` (PRESENCE) restores the
+    /// Kill switch `AVAROK_NO_VERIFY_WY_CACHE` (PRESENCE) restores the
     /// unconditional re-stage.
     pub(super) verify_wy_cache: Mutex<Option<Vec<u64>>>,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
@@ -404,11 +404,11 @@ pub struct TransformerModel {
     /// Small GPU buffer for EP token broadcast (4 bytes).
     pub(super) ep_cmd_buf: DevicePtr,
     /// EP wire-protocol version. When true, the seq_id-preamble protocol
-    /// extension from atlas#99 is active — every command broadcast is
+    /// extension from avarok#99 is active — every command broadcast is
     /// preceded by a `seq_id` broadcast so the worker can dispatch
     /// slot-bound work into the right `SequenceState` slot. When false,
     /// the legacy single-sequence protocol is used. Set at construction
-    /// from `ATLAS_EP_PROTOCOL` env var; both ranks must agree.
+    /// from `AVAROK_EP_PROTOCOL` env var; both ranks must agree.
     pub(super) ep_protocol_v2: bool,
     /// Self-speculative decoding mode: draft via layer-skipping (no MTP weights needed).
     pub(super) self_speculative: bool,
@@ -458,13 +458,13 @@ pub struct TransformerModel {
     /// Kernel handle for fused SSM state normalization (prevents state explosion
     /// during long chunked prefill — the SSM forgetting bug).
     pub(super) ssm_state_norm_kernel: KernelHandle,
-    /// FP16 h-state twin of the above (`ATLAS_SSM_H_FP16`). Selected from the
+    /// FP16 h-state twin of the above (`AVAROK_SSM_H_FP16`). Selected from the
     /// sequence's own `SsmLayerState::h_is_f16`, so the dispatch reads the
     /// invariant rather than assuming it.
     pub(super) ssm_state_norm_f16_kernel: KernelHandle,
     /// GPU buffer for ssm_state_clamp_norm_fused's pointer table `[num_ssm_layers]`.
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
-    /// One-shot FP32 -> FP16 h-state converter (`ATLAS_SSM_H_FP16`).
+    /// One-shot FP32 -> FP16 h-state converter (`AVAROK_SSM_H_FP16`).
     pub(super) ssm_h_f32_to_f16_kernel: KernelHandle,
     /// Its widening inverse. Used ONLY by the stage-3 f16-SIZED pool
     /// (`--ssm-h-dtype f16-pool`) on the BATCHED prefill path, whose GDN
@@ -630,7 +630,7 @@ impl TransformerModel {
     }
 
     pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
-        use atlas_core::scope::ModelResource;
+        use avarok_core::scope::ModelResource;
 
         let gpu: &dyn GpuBackend = self.gpu.as_ref();
         let mut first_error: Option<anyhow::Error> = None;

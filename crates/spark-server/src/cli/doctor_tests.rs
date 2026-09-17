@@ -6,7 +6,7 @@
 //! finding here is asserted in BOTH states.
 //!
 //! These drive the pure `check_*` functions rather than the binary, and set
-//! `ATLAS_HOME` around each. Env is process-global, so they run under one mutex.
+//! `AVAROK_HOME` around each. Env is process-global, so they run under one mutex.
 
 use super::{check_home, check_recipes, check_writable};
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -25,7 +25,7 @@ impl Dir {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let p = std::env::temp_dir().join(format!("atlas-doctor-{tag}-{n}"));
+        let p = std::env::temp_dir().join(format!("avarok-doctor-{tag}-{n}"));
         std::fs::create_dir_all(&p).expect("scratch");
         Self(p)
     }
@@ -38,13 +38,13 @@ impl Drop for Dir {
 
 fn with_home<T>(root: &std::path::Path, f: impl FnOnce() -> T) -> T {
     let _g = env_lock();
-    let prev = std::env::var_os("ATLAS_HOME");
+    let prev = std::env::var_os("AVAROK_HOME");
     // SAFETY: single-threaded within the env lock held above.
-    unsafe { std::env::set_var("ATLAS_HOME", root) };
+    unsafe { std::env::set_var("AVAROK_HOME", root) };
     let out = f();
     match prev {
-        Some(v) => unsafe { std::env::set_var("ATLAS_HOME", v) },
-        None => unsafe { std::env::remove_var("ATLAS_HOME") },
+        Some(v) => unsafe { std::env::set_var("AVAROK_HOME", v) },
+        None => unsafe { std::env::remove_var("AVAROK_HOME") },
     }
     out
 }
@@ -55,25 +55,25 @@ fn home_is_green_when_resolvable_and_names_its_provenance() {
     let f = with_home(&d.0, check_home);
     assert!(!f.problem, "{}", f.detail);
     assert!(
-        f.detail.contains("from ATLAS_HOME"),
+        f.detail.contains("from AVAROK_HOME"),
         "the provenance is the point: {}",
         f.detail
     );
 }
 
-/// RED. An empty `ATLAS_HOME` is a real configuration people produce with
-/// `export ATLAS_HOME=$SOMETHING_UNSET`.
+/// RED. An empty `AVAROK_HOME` is a real configuration people produce with
+/// `export AVAROK_HOME=$SOMETHING_UNSET`.
 #[test]
-fn home_goes_red_when_atlas_home_is_empty() {
+fn home_goes_red_when_avarok_home_is_empty() {
     let _g = env_lock();
-    let prev = std::env::var_os("ATLAS_HOME");
-    unsafe { std::env::set_var("ATLAS_HOME", "") };
+    let prev = std::env::var_os("AVAROK_HOME");
+    unsafe { std::env::set_var("AVAROK_HOME", "") };
     let f = check_home();
     match prev {
-        Some(v) => unsafe { std::env::set_var("ATLAS_HOME", v) },
-        None => unsafe { std::env::remove_var("ATLAS_HOME") },
+        Some(v) => unsafe { std::env::set_var("AVAROK_HOME", v) },
+        None => unsafe { std::env::remove_var("AVAROK_HOME") },
     }
-    assert!(f.problem, "an empty ATLAS_HOME must be a problem");
+    assert!(f.problem, "an empty AVAROK_HOME must be a problem");
     assert!(f.detail.contains("empty"), "{}", f.detail);
 }
 

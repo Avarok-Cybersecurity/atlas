@@ -39,14 +39,14 @@ impl BlockDiffusionDraftHead {
             .ok_or_else(|| anyhow::anyhow!("Invalid DFlash proposer state"))?;
 
         // ── I/O-PARITY DUMP: full ctx_hidden_acc accumulator at propose entry ──
-        // Gated ATLAS_DFLASH_CTX_PARITY_DUMP=1. One-shot. Writes the ENTIRE
+        // Gated AVAROK_DFLASH_CTX_PARITY_DUMP=1. One-shot. Writes the ENTIRE
         // accumulated 5×target_hidden context the drafter conditions on, so a
         // PyTorch/vLLM reference can diff slot-count + values against
         // `target_hidden_states[:num_context]` (vLLM feeds num_context = ALL
         // accepted-prefix tokens; this proves whether Atlas's accumulator has
         // the same BREADTH and the same per-slot 5-layer values).
         //
-        // Layout of /tmp/atlas_ctx_parity.bin: contiguous BF16,
+        // Layout of /tmp/avarok_ctx_parity.bin: contiguous BF16,
         // ctx_len slots × target_layer_ids.len() layers × target_hidden_size,
         // i.e. ctx_len × ctx_slot_bytes bytes. Companion JSON carries
         // ctx_len, n_layers, target_hidden_size, position, last_token so the
@@ -63,7 +63,7 @@ impl BlockDiffusionDraftHead {
                 let mut buf = vec![0u8; n_bytes];
                 ctx.gpu.synchronize(_stream)?;
                 ctx.gpu.copy_d2h(dstate.ctx_hidden_acc, &mut buf)?;
-                match std::fs::write("/tmp/atlas_ctx_parity.bin", &buf) {
+                match std::fs::write("/tmp/avarok_ctx_parity.bin", &buf) {
                     Ok(()) => {
                         let elems_per_slot = dstate.ctx_slot_bytes / 2;
                         let meta = format!(
@@ -75,9 +75,9 @@ impl BlockDiffusionDraftHead {
                             last_token,
                             n_bytes,
                         );
-                        let _ = std::fs::write("/tmp/atlas_ctx_parity.json", meta);
+                        let _ = std::fs::write("/tmp/avarok_ctx_parity.json", meta);
                         tracing::info!(
-                            "DFLASH CTX_PARITY: wrote {} bytes — ctx_len={} slots × {} BF16 elems/slot (position={}, last_token={}) to /tmp/atlas_ctx_parity.bin",
+                            "DFLASH CTX_PARITY: wrote {} bytes — ctx_len={} slots × {} BF16 elems/slot (position={}, last_token={}) to /tmp/avarok_ctx_parity.bin",
                             n_bytes,
                             dstate.ctx_len,
                             dstate.ctx_slot_bytes / 2,
@@ -236,7 +236,7 @@ impl BlockDiffusionDraftHead {
         // allocated bounds — drafter quality plateaus past a few hundred
         // ctx positions anyway.
         //
-        // ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND=1 disables the post-decode
+        // AVAROK_DFLASH_DEBUG_NO_DECODE_APPEND=1 disables the post-decode
         // append. The captured target_hidden_stack is the K-1 token of
         // the last K=2 verify (the draft, NOT the bonus). On REJECT
         // (the typical case during cold-start training-distribution
@@ -275,7 +275,7 @@ impl BlockDiffusionDraftHead {
         }
 
         // ── Phase 2 Option B: lazy block_table allocation ─────────────
-        // When ATLAS_DFLASH_OPTION_B=1 and the proposer hasn't yet
+        // When AVAROK_DFLASH_OPTION_B=1 and the proposer hasn't yet
         // allocated paged blocks, do it now. We allocate enough blocks
         // to cover the full ctx_hidden_acc plus a safety margin for γ.
         // Block_size matches from_weights.rs:68 (=16).
@@ -360,7 +360,7 @@ impl BlockDiffusionDraftHead {
             // go stale when later accepts move the live `position`. The old
             // path rebuilt the whole prefix every step (O(ctx_len²)).
             //
-            // Escape hatch: ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
+            // Escape hatch: AVAROK_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
             // full recompute (committed=0) for A/B accept-rate parity.
             let force_full = self.levers.full_precompute;
             // Clamp watermark defensively: a rewind should have reset it,
@@ -428,7 +428,7 @@ impl BlockDiffusionDraftHead {
             }
             dstate.ctx_count_drafter = dstate.ctx_len;
             // ── SERIAL-APPEND BOUNDARY PROOF (2026-07-08) ──
-            // With ATLAS_DFLASH_CTXLEN_PROBE=1, validate the ctx position
+            // With AVAROK_DFLASH_CTXLEN_PROBE=1, validate the ctx position
             // stamps are STRICTLY INCREASING across all populated slots —
             // contiguous appends, no double-append, no dropped stretch.
             // The think→spec seam (re-probe after a serial stretch) is
@@ -453,7 +453,7 @@ impl BlockDiffusionDraftHead {
             // ctx_len vs position EVERY propose so we can confirm whether
             // ctx_len GROWS with position (healthy) or STALLS at prompt length
             // (the bug — likely thinking-mode tokens not appending to ctx).
-            // Gated ATLAS_DFLASH_CTXLEN_PROBE=1, rate-limited to ~1/16 steps
+            // Gated AVAROK_DFLASH_CTXLEN_PROBE=1, rate-limited to ~1/16 steps
             // to avoid log flood.
             if self.levers.ctxlen_probe && position.is_multiple_of(16) {
                 tracing::info!(
@@ -464,7 +464,7 @@ impl BlockDiffusionDraftHead {
                     position.saturating_sub(dstate.ctx_len),
                 );
             }
-            // Ablation: ATLAS_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
+            // Ablation: AVAROK_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
             // in the layer body so paged attention only sees the γ K/V
             // we write in-layer. If accept rate is bad even here, the
             // bug is in the cache write/read path, not in precompute.
@@ -483,7 +483,7 @@ impl BlockDiffusionDraftHead {
             let arg = option_b_arg.ok_or_else(|| {
                 anyhow::anyhow!(
                     "batched DFlash propose requires Option B (paged drafter KV); \
-                     set ATLAS_DFLASH_OPTION_B=1 or let the batched path decline"
+                     set AVAROK_DFLASH_OPTION_B=1 or let the batched path decline"
                 )
             })?;
             sink.push(arg);
@@ -520,10 +520,10 @@ impl BlockDiffusionDraftHead {
         // SSM pool is pre-allocated for num_intermediates=17 (impl_a1.rs:129)
         // and the WY17 strided layout (inter_stride_floats = h_bytes/4) maps
         // 1:1 to ssm_pool.h_intermediate(layer, slot, i). Override with
-        // ATLAS_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
+        // AVAROK_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
         let cap = self.levers.draft_cap.unwrap_or(self.gamma);
 
-        // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
+        // AVAROK_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across
         // every noise row. Pairs with K2 TRACE in the scheduler.
         if self.levers.verify_trace {
