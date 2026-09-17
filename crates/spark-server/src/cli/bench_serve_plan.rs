@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 use super::bench_resolve::Resolved;
 
@@ -29,7 +29,7 @@ pub struct ServePlan {
     /// (`kernels/<hw>/HARDWARE.toml` `[benchmarks.limits]`): the memory floor
     /// a self-start applies and how long a server may take to come up.
     pub hardware: String,
-    pub limits: atlas_plugin::hardware::limits::Limits,
+    pub limits: avarok_plugin::hardware::limits::Limits,
 }
 
 impl ServePlan {
@@ -78,7 +78,7 @@ pub fn plan_serve(
         entry,
         hardware,
     } = super::bench_resolve::resolve(&baseline, serve_id, hardware, checkpoint)?;
-    let Some(limits) = atlas_plugin::hardware::limits::limits(&root, &hardware)? else {
+    let Some(limits) = avarok_plugin::hardware::limits::limits(&root, &hardware)? else {
         bail!(
             "kernels/{hardware}/HARDWARE.toml declares no [benchmarks.limits]: a gate run on this \
              class has no memory floor to check the box against and no boot timeout for its \
@@ -86,7 +86,7 @@ pub fn plan_serve(
         );
     };
 
-    let store = atlas_plugin::ArtifactStore::discover()?;
+    let store = avarok_plugin::ArtifactStore::discover()?;
     let index = crate::recipe::fetch::cached(store.root());
     let recipe = index
         .recipes
@@ -95,11 +95,15 @@ pub fn plan_serve(
         .with_context(|| {
             format!(
                 "recipe {recipe_id:?} is not in the local index ({} cached). The index is read \
-                 from {}/atlas-recipes/index.json.{} Populate it with:\n    spark sync-recipes\n\
+                 from {}.{} Populate it with:\n    spark sync-recipes\n\
                  (this used to say \"open the TUI Library once\", which a CI runner, a \
                  container, or a machine reached over ssh cannot do.)",
                 index.recipes.len(),
-                store.root().display(),
+                // Named through `cache_dir` so the path printed is the path
+                // read, including on a box that predates the rename.
+                crate::recipe::fetch::cache_dir(store.root())
+                    .join("index.json")
+                    .display(),
                 // Why the index is empty, when the index layer knows. Without
                 // it an index that exists and cannot be READ -- a `$HOME`
                 // owned by another uid is the measured case -- reads as one

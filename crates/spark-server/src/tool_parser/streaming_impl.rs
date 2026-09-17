@@ -9,11 +9,11 @@ impl StreamingToolDetector {
     }
 
     /// Build a detector with the request's tool schemas, enabling per-parameter
-    /// type coercion during live argument streaming. The `ATLAS_BUFFER_TOOL_ARGS`
+    /// type coercion during live argument streaming. The `AVAROK_BUFFER_TOOL_ARGS`
     /// env var (set to `1`/`true`) restores the legacy buffer-until-close path.
     pub fn new_with_tools(tools: Vec<ToolDefinition>) -> Self {
         let buffer_args = matches!(
-            std::env::var("ATLAS_BUFFER_TOOL_ARGS").as_deref(),
+            std::env::var("AVAROK_BUFFER_TOOL_ARGS").as_deref(),
             Ok("1") | Ok("true")
         );
         Self {

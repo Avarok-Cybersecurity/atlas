@@ -10,7 +10,7 @@
 use super::{NcolWidth, ncol_plan};
 
 /// Both handles present, lever on — the default state an operator who sets
-/// `ATLAS_ATTN_NCOL_GEMV` gets.
+/// `AVAROK_ATTN_NCOL_GEMV` gets.
 fn plan(m: usize, width: NcolWidth) -> Option<NcolWidth> {
     ncol_plan(m, width, true, true, true)
 }

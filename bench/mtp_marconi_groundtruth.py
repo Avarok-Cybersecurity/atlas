@@ -15,8 +15,8 @@ import os
 import sys
 import urllib.request
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888")
-MODEL = os.environ.get("ATLAS_MODEL", "model")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888")
+MODEL = os.environ.get("AVAROK_MODEL", "model")
 SYS = "You are a helpful assistant. Be thorough and precise."
 
 TOOLS = [{

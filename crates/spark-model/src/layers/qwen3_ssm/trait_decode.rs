@@ -94,7 +94,7 @@ impl Qwen3SsmLayer {
         }
 
         let normed2 = ctx.buffers.norm_output();
-        // ATLAS_FP32_ROUTING: emit the MoE-input norm in FP32 (router_in) so the
+        // AVAROK_FP32_ROUTING: emit the MoE-input norm in FP32 (router_in) so the
         // gate GEMM runs at full precision — removes the bf16-store rounding that
         // flips experts on gfx1151. bf16 normed2 + residual are unchanged.
         if self.ffn.fp32_routing_active(ctx.levers) && self.residual_add_rms_norm_gatef32_k.0 != 0 {

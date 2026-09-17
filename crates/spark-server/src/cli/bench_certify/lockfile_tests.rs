@@ -16,7 +16,7 @@ fn campaign(pid: Option<u32>) -> Campaign {
         pr: Some(1027),
         branch: "pr/x".into(),
         anchor_sha: "abc".into(),
-        atlas_home: "/home".into(),
+        avarok_home: "/home".into(),
         driver_pid: pid,
         driver_cmdline: None,
         started_at: None,

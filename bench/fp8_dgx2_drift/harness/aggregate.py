@@ -45,11 +45,11 @@ METRICS = [
     ("drift.write_content_is_bash_command", "drift_bash_as_content", "count"),
     ("drift.write_content_xml_attr_leak", "drift_xml_attr_leak", "count"),
     ("drift.write_content_newlines_collapsed_toml", "drift_toml_newlines_collapsed", "count"),
-    ("atlas.ws1_mask_active_fires", "atlas_ws1_mask_fires", "count"),
-    ("atlas.b1_drift_gauge_fires", "atlas_b1_drift_fires", "count"),
-    ("atlas.tier_5c_retries", "atlas_tier5c_retries", "count"),
-    ("atlas.a2_fuzzy_repair_fires", "atlas_a2_fuzzy_fires", "count"),
-    ("atlas.tool_call_lines", "atlas_tool_call_lines", "count"),
+    ("avarok.ws1_mask_active_fires", "avarok_ws1_mask_fires", "count"),
+    ("avarok.b1_drift_gauge_fires", "avarok_b1_drift_fires", "count"),
+    ("avarok.tier_5c_retries", "avarok_tier5c_retries", "count"),
+    ("avarok.a2_fuzzy_repair_fires", "avarok_a2_fuzzy_fires", "count"),
+    ("avarok.tool_call_lines", "avarok_tool_call_lines", "count"),
     ("wall_time_s", "wall_time_s", "count"),
 ]
 
@@ -70,7 +70,7 @@ def bootstrap_ci(values: list[float], n_boot: int = 10000, ci: float = 0.95) -> 
         return (0.0, 0.0)
     if len(values) == 1:
         return (values[0], values[0])
-    rnd = random.Random(0xA71A5)  # ~"ATLAS" — deterministic, doesn't matter
+    rnd = random.Random(0xA71A5)  # ~"AVAROK" — deterministic, doesn't matter
     means: list[float] = []
     n = len(values)
     for _ in range(n_boot):

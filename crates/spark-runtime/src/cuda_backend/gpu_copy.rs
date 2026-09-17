@@ -2,7 +2,7 @@
 
 //! The synchronous host/device copy family, as inherent methods.
 //!
-//! `impl GpuBackend for AtlasCudaBackend` cannot be split across files —
+//! `impl GpuBackend for AvarokCudaBackend` cannot be split across files —
 //! Rust requires one block per impl — so the trait body in `gpu_impl.rs`
 //! delegates these four to the implementations here. They carry an `_impl`
 //! suffix so an inherent method can never silently shadow the trait method
@@ -19,7 +19,7 @@
 //!   supply their own `len()`, so a host over-run is not expressible.
 //! * The DEVICE end is UNCHECKED. `copy_d2d_impl` in particular takes a bare
 //!   `bytes` that is validated against neither allocation. It cannot be checked
-//!   here: `AtlasCudaBackend::live_allocs` is a `HashSet<u64>` of base pointers
+//!   here: `AvarokCudaBackend::live_allocs` is a `HashSet<u64>` of base pointers
 //!   with no sizes, and callers legitimately pass interior pointers from
 //!   `DevicePtr::offset`, so there is nothing to compare against. Sizing a
 //!   device copy correctly is the CALLER's obligation.
@@ -35,15 +35,15 @@
 use std::ffi::c_void;
 
 use anyhow::{Result, bail};
-use atlas_core::registry::cuda_error_text;
+use avarok_core::registry::cuda_error_text;
 
 use super::{
-    AtlasCudaBackend, cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2,
+    AvarokCudaBackend, cuMemcpyDtoDAsync_v2, cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2,
     cuStreamQuery, cuStreamSynchronize,
 };
 use crate::gpu::DevicePtr;
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     pub(crate) fn copy_h2d_impl(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
         let status = unsafe {
             cuMemcpyHtoDAsync_v2(
@@ -105,7 +105,7 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemcpyDtoHAsync_v2 (on_stream) failed: status {status}");
         }
-        // ATLAS_D2H_SPIN_SYNC=1: poll cuStreamQuery instead of parking in the
+        // AVAROK_D2H_SPIN_SYNC=1: poll cuStreamQuery instead of parking in the
         // blocking sync. Diagnostic for the 130 ms verify stall (PROGRESS_LOG
         // 6.15/6.16): a blocked thread appears to leave the submission ring
         // unflushed until a ~130 ms driver housekeeping tick doorbells the
@@ -113,7 +113,7 @@ impl AtlasCudaBackend {
         // collapses to the real GPU time.
         let spin = {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_D2H_SPIN_SYNC").as_deref() == Ok("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_D2H_SPIN_SYNC").as_deref() == Ok("1"))
         };
         let sync = if spin {
             const CUDA_ERROR_NOT_READY: i32 = 600;

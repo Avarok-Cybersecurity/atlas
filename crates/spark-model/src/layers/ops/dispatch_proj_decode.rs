@@ -51,9 +51,9 @@ use super::{
     per_token_group_quant_fp8,
 };
 
-/// `ATLAS_NO_W8A8_DECODE_PROJ` kill switch: PRESENCE (any value, including
+/// `AVAROK_NO_W8A8_DECODE_PROJ` kill switch: PRESENCE (any value, including
 /// empty) keeps every 5..16-row decode projection on today's `w8a16_gemv_batch16`
-/// tiers. Presence rather than `=1` for the same reason `ATLAS_FFN_W8A16_ONLY`
+/// tiers. Presence rather than `=1` for the same reason `AVAROK_FFN_W8A16_ONLY`
 /// is presence-checked — an operator reaches for it while a serve is
 /// misbehaving, and `...=0` meaning "on" is a trap.
 ///
@@ -61,7 +61,7 @@ use super::{
 /// is what makes it safe to branch on under CUDA-graph capture.
 pub fn w8a8_decode_proj_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("ATLAS_NO_W8A8_DECODE_PROJ").is_some())
+    *OFF.get_or_init(|| std::env::var_os("AVAROK_NO_W8A8_DECODE_PROJ").is_some())
 }
 
 /// The row band this family owns: 5..=16 PADDED decode rows.
@@ -105,7 +105,7 @@ pub fn strided_out_extent_elems(m_pad: u32, ldc: u32, n: u32) -> usize {
 /// * `family_armed` — the caller's slice of [`super::CublasScope`]
 ///   (`cublas.ssm` / `cublas.attn`). Arming the dense FFN must not arm these;
 ///   that separation is the whole point of the scoped lever (#917's 10.3 GiB).
-/// * `!disabled` — the `ATLAS_NO_W8A8_DECODE_PROJ` kill switch.
+/// * `!disabled` — the `AVAROK_NO_W8A8_DECODE_PROJ` kill switch.
 /// * `DECODE_W8A8_ROWS.contains(&rows)` — the 5..=16 band, on the PADDED n.
 /// * `Fp8BlockScaled` — cuBLASLt is told the weight scales are a BLK128x128
 ///   grid; a per-row `row_scale` has a different shape and reads as garbage.
@@ -280,7 +280,7 @@ pub fn decode_w8a8_quant_act(
             stream,
         )?;
     } else {
-        // Measurement control only (`ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor`): the
+        // Measurement control only (`AVAROK_CUBLAS_SCALE_LAYOUT=rowmajor`): the
         // pad rows are a contiguous tail in THIS layout, so zero them here.
         let kg = k as usize / 128;
         if m_pad > rows {

@@ -43,7 +43,7 @@
 //!   memory became "token indices".
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
 pub mod attend;

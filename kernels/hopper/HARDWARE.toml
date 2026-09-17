@@ -14,7 +14,7 @@ compute_capability = "9.0"
 # different count logs a warning naming both numbers rather than silently
 # sizing a grid for the wrong machine (`arch_preflight::check_sm_count`).
 #
-# The defect it guards: `atlas_core::device::sm121::NUM_SMS = 48`, the GB10
+# The defect it guards: `avarok_core::device::sm121::NUM_SMS = 48`, the GB10
 # constant, compiled into an H100 build, where a grid sized from it ran 24 CTAs
 # on 132 SMs for a whole campaign. A one-line boot warning naming both numbers
 # is what would have caught it in round 1.
@@ -29,7 +29,7 @@ memory_gb = 80
 # Flags added to EVERY kernel compiled for this hardware, under
 # common/KERNEL.toml's and the model's (build_flags::merge_extra_flags).
 #
-# ATLAS_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
+# AVAROK_NO_WARP_BLOCKSCALE_MMA compiles out the W4A4 path in
 # qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu. Hopper has no NVFP4
 # datapath, so `cvt.rn.satfinite.e2m1x2.f32` and the warp-level
 # `mma.sync ... .kind::mxf4nvf4.block_scale` do not exist here — ptxas:
@@ -43,12 +43,12 @@ memory_gb = 80
 # kernels/gb10 — saying it per model would fork a shared file once per
 # model, which tests/inherited_targets.rs forbids.
 [build]
-extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
+extra_nvcc_flags = ["-DAVAROK_NO_WARP_BLOCKSCALE_MMA"]
 
 # ── Serving defaults for this target ───────────────────────────────────────
 #
-# SSOT for the per-target serving levers, baked into `atlas_kernels` by
-# build.rs (`build_defaults.rs`) as `atlas_kernels::TARGET_DEFAULTS` and read
+# SSOT for the per-target serving levers, baked into `avarok_kernels` by
+# build.rs (`build_defaults.rs`) as `avarok_kernels::TARGET_DEFAULTS` and read
 # by every resolver in spark-model BEFORE the environment.
 #
 # WHY IT IS HERE. Maintainer review, 2026-09-11 (tbraun96): "There is no arch
@@ -95,7 +95,7 @@ extra_nvcc_flags = ["-DATLAS_NO_WARP_BLOCKSCALE_MMA"]
 lm_head_batchm_max = 16
 # One strided recurrent launch per batch on the GDN decode path: +6% on the
 # serve, and md5-identical output to the per-sequence launches. This is the
-# row that used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in a launch script
+# row that used to be `AVAROK_SSM_BATCHED_RECURRENT=1` in a launch script
 # outside this repository.
 ssm_batched_recurrent = true
 # The tensor-core GDN chunked-PREFILL spine (#928). ON, and the largest measured
@@ -119,12 +119,12 @@ ssm_batched_recurrent = true
 # The kernel was developed and validated on GB10 and is arch-neutral; it is
 # declared in this target's `[kernels] overrides` rather than in the shared tree
 # only because rule S1 refuses new cross-hardware symlinks. See that entry.
-# `ATLAS_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
+# `AVAROK_GDN_PREFILL_TC=0` turns the whole family off, which is how the A/B is
 # re-run now that the positive arm is the default.
 #
 # It is a FAMILY lever: it also selects the two Hopper prefill remnant twins
 # declared below (`gdn_recompute_wu_hopper.cu`, `gdn_fwd_o_hopper.cu`), because
-# the three kernels are one pipeline. `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` is
+# the three kernels are one pipeline. `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` is
 # the one-variable A/B that keeps the spine and pins those two to their
 # parents; it is the ONLY way to run them apart, and round 13 ran it: cell T2
 # isolates the twins at -12.1%/-13.0% of C=1 TTFT on the two shapes
@@ -160,7 +160,7 @@ gdn_prefill_tc = true
 # instructions for the same bits.
 #
 # THE SERVING RECEIPT. Round 15 (1xH100 80GB HBM3, tip `8a6f50b61`) ran cell B0
-# (`ATLAS_SSM_BA_GATES_HOPPER=0`) against cell A15 (auto) on one binary, one
+# (`AVAROK_SSM_BA_GATES_HOPPER=0`) against cell A15 (auto) on one binary, one
 # variable: C=1 TTFT 498.2 -> 489.7 ms on 4096x512 (-8.5 ms) and 162.7 -> 160.5
 # on 1024x256 (-2.2 ms), both inside the range round 14 predicted from
 # instruction-issue counts (-7.9, band -6.0..-9.7, and -2.1). TPOT is identical
@@ -173,7 +173,7 @@ gdn_prefill_tc = true
 # the one-ulp KNOWN_BAD control refused), and A15/B0 are md5-identical on all
 # seven coherency exchanges. The roofline "60% of HBM" target in earlier notes
 # does NOT apply to this kernel: it is issue-bound, so the honest figure is
-# ~8 ms rather than ~26. `ATLAS_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
+# ~8 ms rather than ~26. `AVAROK_SSM_BA_GATES_HOPPER=0` is the one-variable A/B
 # that pins the parent.
 #
 # The launcher declines the twin below `2 * SM count` tokens and keeps the
@@ -222,7 +222,7 @@ ssm_ba_gates_hopper = true
 # The kernel is an ADDITION under `[kernels] overrides`, not an override of the
 # gb10 stem: both must be in the image at once, because the bit-equality gate
 # runs on device. gb10 and b200 carry neither this row's `true` nor the source.
-# `ATLAS_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
+# `AVAROK_FP8_ACT_QUANT_HOPPER=0` is the A/B. Numbers:
 # `FP8-ACT-QUANT-ATTRIBUTION.md`.
 fp8_act_quant_hopper = true
 # Split SiLU+down on the decode path — shipped ON everywhere.
@@ -241,14 +241,14 @@ decode_split_silu = true
 # (`tasks/determinism_investigation.md`) and it is preserved, not relaxed.
 #
 # `legacy` is the pre-#928 rule, `sm_count / (num_q_heads * split_ref_seqs)`,
-# which every other target keeps. `ATLAS_ATTN_DECODE_SPLITK=legacy|auto|N|0`
+# which every other target keeps. `AVAROK_ATTN_DECODE_SPLITK=legacy|auto|N|0`
 # is the A/B; `0`/`off` pins one split, which is what an H100 served before
 # this row existed, and the boot line renders that as `1 (env)`. The kernel
 # the policy then launches is named once per KV dtype on the decode route
 # line (`splitk_dispatch::route_line`).
 #
 # ⚠️ `0` AND `off` RESOLVE TO ONE SPLIT, and the boot line reports the RESOLVED
-# count, not the raw spelling — so `ATLAS_ATTN_DECODE_SPLITK=0` prints
+# count, not the raw spelling — so `AVAROK_ATTN_DECODE_SPLITK=0` prints
 # `attn_decode_splitk=1 (env)`. That is honest (one split IS no split-K, and
 # the dispatch then routes to the non-split entry rather than running the
 # split-K kernel at one split, which measures 15% SLOWER) but it surprised
@@ -271,8 +271,8 @@ attn_decode_splitk = "auto"
 # 177.60 -> 171.62 (-3.4%) long, TPOT +5.7% / +4.3%, deltas 30-95x the
 # rep-to-rep spread. C=1 is a measured null (the tier is 5..=32 rows only).
 # The ATTENTION half of the same kernel WINS -- see `attn_m16_tc` below, which
-# is why this is two rows. `ATLAS_FFN_M16_TC=1` re-runs the A/B;
-# `ATLAS_M16_TC=1` arms both halves, i.e. exactly what round 6 measured.
+# is why this is two rows. `AVAROK_FFN_M16_TC=1` re-runs the A/B;
+# `AVAROK_M16_TC=1` arms both halves, i.e. exactly what round 6 measured.
 ffn_m16_tc = false
 # `w8a16_gemm_m16{,_strided}` on the decode Q/K/V and o_proj (#927). ON. H100
 # round 9, cell W against cell U on the same binary: C=16 aggregate 235.47 ->
@@ -281,7 +281,7 @@ ffn_m16_tc = false
 # null, correct by construction because the tier is 5..16 rows only.
 #
 # SAME KERNEL FAMILY as `ffn_m16_tc` above, opposite verdict, which is the
-# whole reason there are two rows. `ATLAS_ATTN_M16_TC=0` is the one-variable
+# whole reason there are two rows. `AVAROK_ATTN_M16_TC=0` is the one-variable
 # A/B that pins the parent tiers.
 attn_m16_tc = true
 # `dense_gemm_m16_bf16` on the BF16 decode head (#927). ON. H100 round 9, cell
@@ -292,9 +292,9 @@ attn_m16_tc = true
 # 🔴 It REASSOCIATES the K reduction against `dense_gemv_bf16`, and at the LM
 # head that is a TOKEN-VISIBLE seam -- a near-tie argmax can flip -- not a
 # rounding detail. It is on here on a measured SERVE receipt, not a microtest,
-# and `ATLAS_LM_HEAD_M16_TC=0` restores the bit-exact tier.
+# and `AVAROK_LM_HEAD_M16_TC=0` restores the bit-exact tier.
 #
-# `ATLAS_LM_HEAD_M16_TC_NTILE=64` is the width knob. Round 9 cell Y2 measured
+# `AVAROK_LM_HEAD_M16_TC_NTILE=64` is the width knob. Round 9 cell Y2 measured
 # it a NULL at serving scale (245.30 / 50.71 ms against Y's 245.10 / 50.79, a
 # 0.08% difference against a 0.11-0.17% spread) even though the microtest
 # prefers n64 by 2-4%, so 32 ships and the route line says which ran.
@@ -303,9 +303,9 @@ lm_head_m16_tc = true
 # OFF, and the only row in this table with NO receipt in either direction: the
 # microtest exists, the serving A/B does not. It is declared so the kernel has
 # a documented way to be turned on for the measurement that would earn it --
-# `ATLAS_ATTN_NCOL_GEMV=1` -- not because it has been shown to pay.
+# `AVAROK_ATTN_NCOL_GEMV=1` -- not because it has been shown to pay.
 #
-# `ATLAS_NO_ATTN_DECODE_BATCH` still turns the whole batched attention-decode
+# `AVAROK_NO_ATTN_DECODE_BATCH` still turns the whole batched attention-decode
 # family off and OUTRANKS this row.
 attn_ncol_gemv = false
 # The FUSED dense-FFN gate+up decode GEMM (#927). ON. One block-scaled FP8
@@ -339,7 +339,7 @@ attn_ncol_gemv = false
 # SCOPED TO DECODE. At the prefill widths the same two GEMMs already run at
 # 68.6% of FP8 PEAK (M=4576) — compute-bound, where a launch saving buys
 # nothing — so the band stops at 16 rows and the prefill arm is untouched.
-# `ATLAS_FFN_GATEUP_FUSED=0` is the A/B. Round 16 is PENDING: no serving
+# `AVAROK_FFN_GATEUP_FUSED=0` is the A/B. Round 16 is PENDING: no serving
 # number is claimed for this row yet. Numbers:
 # `FFN-GATEUP-FUSION-ATTRIBUTION.md`.
 ffn_gateup_fused = true

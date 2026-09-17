@@ -25,7 +25,7 @@ impl Qwen3SsmLayer {
         qkvz_nvfp4: Option<QuantizedWeight>,
         qkvz_nvfp4_t: Option<QuantizedWeight>,
         out_proj_nvfp4_t: Option<QuantizedWeight>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let mut layer = Self::new(

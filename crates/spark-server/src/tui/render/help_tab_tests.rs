@@ -20,7 +20,7 @@ fn help(sub: HelpSub) -> App {
 
 fn composed() -> Composed {
     let body = format!(
-        "steps\n\n## Environment\n\nAtlas test\n\n## Server log (last 2 of 9 lines, redacted best-effort)\n\n```text\nline a\nline b\n```\n\n{}\n",
+        "steps\n\n## Environment\n\nAvarok test\n\n## Server log (last 2 of 9 lines, redacted best-effort)\n\n```text\nline a\nline b\n```\n\n{}\n",
         crate::tui::report::MARKER
     );
     Composed {
@@ -89,7 +89,7 @@ fn every_phase_renders_at_the_floor_sizes() {
 #[test]
 fn the_guide_names_the_version_the_exits_and_the_memory_only_promise() {
     let rows = screen(&help(HelpSub::Guide), 120, 40);
-    assert!(has(&rows, crate::cli::ATLAS_VERSION), "{rows:#?}");
+    assert!(has(&rows, crate::cli::AVAROK_VERSION), "{rows:#?}");
     assert!(has(&rows, "stops the SERVER"));
     assert!(has(&rows, "/detach"));
     assert!(has(&rows, "in memory only"));
@@ -129,7 +129,7 @@ fn the_preview_shows_counts_caveat_fence_and_marker() {
         "the fence is visible, so what ships is inspectable"
     );
     assert!(
-        has(&rows, "atlas-tui-report"),
+        has(&rows, "avarok-tui-report"),
         "the marker ships in the open"
     );
 }

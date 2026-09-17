@@ -40,7 +40,7 @@ fn all() -> Vec<Recipe> {
 fn the_whole_corpus_reads() {
     let all = all();
     assert_eq!(all.len(), 25);
-    assert_eq!(all.iter().filter(|r| r.is_atlas()).count(), 23);
+    assert_eq!(all.iter().filter(|r| r.is_avarok()).count(), 23);
     assert_eq!(
         all.iter().filter(|r| r.version == "1").count(),
         2,
@@ -58,7 +58,7 @@ fn the_whole_corpus_reads() {
 #[test]
 fn metadata_is_read_from_where_each_version_puts_it() {
     let all = all();
-    let v2 = all.iter().find(|r| r.is_atlas()).expect("a v2 recipe");
+    let v2 = all.iter().find(|r| r.is_avarok()).expect("a v2 recipe");
     assert!(!v2.maintainer.is_empty(), "v2 metadata block");
     // v1 has no metadata block at all; its description is top-level, and the
     // reader must find it there rather than reporting an empty card.
@@ -74,10 +74,10 @@ fn metadata_is_read_from_where_each_version_puts_it() {
 /// Covers the vendored corpus, not the live repo: an upstream recipe adding a
 /// key Atlas has no flag for is still unguarded, and is a known gap.
 #[test]
-fn every_atlas_recipe_produces_a_valid_serve_config() {
+fn every_avarok_recipe_produces_a_valid_serve_config() {
     let no_overrides = BTreeMap::new();
     let mut checked = 0;
-    for r in all().iter().filter(|r| r.is_atlas()) {
+    for r in all().iter().filter(|r| r.is_avarok()) {
         r.serve_args(&no_overrides)
             .unwrap_or_else(|e| panic!("{}: {e:#}", r.id));
         checked += 1;
@@ -110,7 +110,7 @@ fn a_single_node_recipe_does_not_pass_world_size() {
     let all = all();
     let solo = all
         .iter()
-        .find(|r| r.is_atlas() && r.min_nodes == 1)
+        .find(|r| r.is_avarok() && r.min_nodes == 1)
         .expect("a single-node recipe");
     let argv = solo.argv(&BTreeMap::new()).expect("renders");
     assert!(!argv.iter().any(|a| a == "--world-size"));
@@ -121,7 +121,7 @@ fn an_override_replaces_rather_than_appends() {
     let all = all();
     let r = all
         .iter()
-        .find(|r| r.is_atlas() && r.defaults.contains_key("max_model_len"))
+        .find(|r| r.is_avarok() && r.defaults.contains_key("max_model_len"))
         .expect("a recipe with a context length");
     let overrides = BTreeMap::from([("max_model_len".to_string(), "4096".to_string())]);
     let argv = r.argv(&overrides).expect("renders");
@@ -147,7 +147,10 @@ fn an_override_replaces_rather_than_appends() {
 #[test]
 fn an_unknown_override_is_refused_by_the_clap_round_trip() {
     let all = all();
-    let r = all.iter().find(|r| r.is_atlas()).expect("an atlas recipe");
+    let r = all
+        .iter()
+        .find(|r| r.is_avarok())
+        .expect("an avarok recipe");
     let overrides = BTreeMap::from([("nonsense".to_string(), "1".to_string())]);
     let err = format!("{:#}", r.serve_args(&overrides).expect_err("refused"));
     assert!(err.contains("nonsense"), "names the bad key: {err}");
@@ -164,8 +167,8 @@ fn a_setting_the_recipe_does_not_list_can_be_added() {
     let all = all();
     let r = all
         .iter()
-        .find(|r| r.is_atlas() && !r.defaults.contains_key("fp8_kv_calibration_tokens"))
-        .expect("an atlas recipe without the key");
+        .find(|r| r.is_avarok() && !r.defaults.contains_key("fp8_kv_calibration_tokens"))
+        .expect("an avarok recipe without the key");
     let overrides = BTreeMap::from([
         ("kv_cache_dtype".to_string(), "fp8".to_string()),
         ("fp8_kv_calibration_tokens".to_string(), "512".to_string()),
@@ -198,7 +201,7 @@ fn a_vllm_recipe_is_readable_but_not_launchable() {
     // Listed, never filtered — hiding 2 of 25 would contradict the corpus. But
     // rendering vLLM keys as Atlas flags would produce nonsense, so argv refuses.
     let all = all();
-    let v1 = all.iter().find(|r| !r.is_atlas()).expect("a vLLM recipe");
+    let v1 = all.iter().find(|r| !r.is_avarok()).expect("a vLLM recipe");
     assert!(!v1.model.is_empty(), "still readable for the list");
     let err = format!("{:#}", v1.argv(&BTreeMap::new()).expect_err("refused"));
     assert!(err.contains("runtime: atlas"), "{err}");
@@ -209,7 +212,7 @@ fn an_updated_date_is_read_from_metadata() {
     let text = "\
 recipe_version: \"2\"
 model: org/model
-container: atlas
+container: avarok
 metadata:
   updated: \"2026-08-01\"
 defaults:
@@ -227,7 +230,7 @@ fn a_recipe_without_a_date_still_parses_and_reports_none() {
     let text = "\
 recipe_version: \"2\"
 model: org/model
-container: atlas
+container: avarok
 metadata:
   maintainer: someone
 defaults:
@@ -284,7 +287,7 @@ fn every_recipe_can_be_served_hermetically() {
     // different rule and not the one under test. Filtering rather than
     // asserting past it, because the count check below then still has to hold
     // on what remains.
-    let recipes: Vec<Recipe> = all().into_iter().filter(|r| r.is_atlas()).collect();
+    let recipes: Vec<Recipe> = all().into_iter().filter(|r| r.is_avarok()).collect();
     // Vacuity: a sweep over nothing proves nothing.
     assert!(
         recipes.len() > 5,

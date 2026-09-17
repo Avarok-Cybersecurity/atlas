@@ -32,7 +32,7 @@
 //!       --example native_gdn_prefill_remnants_microtest
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -244,7 +244,7 @@ fn main() -> Result<()> {
     // touched.
     selfcheck_known_bad();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let fla = "gated_delta_rule_fla";
     let k_wu = g.kernel(fla, "gated_delta_rule_recompute_wu")?;

@@ -69,7 +69,7 @@
 //! model falls back to the pre-load free-memory yardstick and the log says
 //! which one was used and why.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::kv_cache::{KvCacheConfig, KvCacheDtype};
 
 use crate::cli;
@@ -85,18 +85,18 @@ const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 /// above this — chosen so the reservation stays a guard rail rather than a
 /// second, hidden concurrency cap.
 ///
-/// Lever: `ATLAS_KV_FLOOR_TOKENS=<n>` (0 disables the floor entirely).
+/// Lever: `AVAROK_KV_FLOOR_TOKENS=<n>` (0 disables the floor entirely).
 pub(super) const DEFAULT_KV_FLOOR_TOKENS: usize = 4096;
 
-/// `ATLAS_KV_FLOOR_TOKENS`, or [`DEFAULT_KV_FLOOR_TOKENS`].
+/// `AVAROK_KV_FLOOR_TOKENS`, or [`DEFAULT_KV_FLOOR_TOKENS`].
 ///
 /// An unparseable value takes the default rather than 0: silently removing
 /// the floor because of a typo is the failure this guard exists to prevent.
 pub(super) fn kv_floor_tokens() -> usize {
-    match std::env::var("ATLAS_KV_FLOOR_TOKENS") {
+    match std::env::var("AVAROK_KV_FLOOR_TOKENS") {
         Ok(v) => v.trim().parse().unwrap_or_else(|_| {
             tracing::warn!(
-                "ATLAS_KV_FLOOR_TOKENS='{v}' is not a token count — using the default {}",
+                "AVAROK_KV_FLOOR_TOKENS='{v}' is not a token count — using the default {}",
                 DEFAULT_KV_FLOOR_TOKENS,
             );
             DEFAULT_KV_FLOOR_TOKENS

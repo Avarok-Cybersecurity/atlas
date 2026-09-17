@@ -3,7 +3,7 @@
 
 `tests/run_all_models.py` (writer) and `tests/gate_results.py` (reader) must
 agree on where results live. They previously each carried their own answer —
-the orchestrator held an absolute `/workspace/atlas/tests/...` path into a
+the orchestrator held an absolute `/workspace/avarok/tests/...` path into a
 DIFFERENT working copy while the gate resolved `dirname(__file__)`. The two
 disagreed, so the gate could grade months-old JSON from another checkout as if
 it were the current run's output.

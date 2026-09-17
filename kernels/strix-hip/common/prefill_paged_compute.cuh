@@ -44,15 +44,15 @@
 // uint4 copies; commit/wait become no-ops. The NVIDIA/SCALE copy of this
 // header defines the same names as real cp.async. Per-tree behavior comes
 // purely from which header is included — no #if at the call sites.
-__device__ __forceinline__ void atlas_cp16(void* smem_dst, const void* gmem_src) {
+__device__ __forceinline__ void avarok_cp16(void* smem_dst, const void* gmem_src) {
     *reinterpret_cast<uint4*>(smem_dst) = *reinterpret_cast<const uint4*>(gmem_src);
 }
-__device__ __forceinline__ void atlas_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
+__device__ __forceinline__ void avarok_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
     if (pred) *reinterpret_cast<uint4*>(smem_dst) = *reinterpret_cast<const uint4*>(gmem_src);
     else      *reinterpret_cast<uint4*>(smem_dst) = make_uint4(0,0,0,0);
 }
-__device__ __forceinline__ void atlas_cp_commit() {}
-__device__ __forceinline__ void atlas_cp_wait()   {}
+__device__ __forceinline__ void avarok_cp_commit() {}
+__device__ __forceinline__ void avarok_cp_wait()   {}
 
 typedef __bf16 v16bf __attribute__((ext_vector_type(16)));
 typedef __fp16 v16h  __attribute__((ext_vector_type(16)));
@@ -65,10 +65,10 @@ typedef float  v8f   __attribute__((ext_vector_type(8)));
 // reference softmax over long attention rows (full-attention layers only;
 // GDN linear-attention layers don't use softmax). Default path is now the
 // hardware exp (matches the reference); the FA4-style polynomial is opt-in
-// via ATLAS_FAST_SOFTMAX_EXP. (HIP/gfx1151: __expf is the transcendental
+// via AVAROK_FAST_SOFTMAX_EXP. (HIP/gfx1151: __expf is the transcendental
 // SFU exp, the same accuracy class as the NVIDIA SFU __expf this replaces.)
 __device__ __forceinline__ float sw_exp(float x) {
-#ifdef ATLAS_FAST_SOFTMAX_EXP
+#ifdef AVAROK_FAST_SOFTMAX_EXP
     // FA4-style: degree-3 polynomial for 2^tf, max err ~0.5% at tf~1.
     float t = x * 1.4426950408889634f; // x * log2(e)
     float ti = floorf(t);
@@ -156,9 +156,9 @@ extern "C" __global__ void KERNEL_NAME(
     // 8× finer softmax-probability precision in the P×V WMMA, the largest
     // remaining attention-output drift source vs the FP32 PyTorch reference.
     // smem_V stays BF16 (the LOAD_KV_TILE macros write BF16); V is converted
-    // to FP16 per-MMA in registers. Bisect: ATLAS_DISABLE_FP16_PV reverts to
+    // to FP16 per-MMA in registers. Bisect: AVAROK_DISABLE_FP16_PV reverts to
     // the pre-#90 BF16 P×V (smem_P=BF16, __float2bfloat16 store, bf16 WMMA).
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
     __shared__ __nv_bfloat16 smem_P[BR][BC];
 #else
     __shared__ __half smem_P[BR][BC];
@@ -285,7 +285,7 @@ extern "C" __global__ void KERNEL_NAME(
             #pragma unroll
             for (unsigned int c = 0; c < BC; c++) {
                 float p = sw_exp(smem_S[r][c] - m_new);
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
                 smem_P[r][c] = __float2bfloat16(p);
 #else
                 smem_P[r][c] = __float2half(p);
@@ -317,12 +317,12 @@ extern "C" __global__ void KERNEL_NAME(
         // precision, same 16x16x16 wave32 tile/throughput. P is already FP16
         // in smem_P; V is converted BF16→FP16 in registers per-MMA. Q×K above
         // stays BF16 (Q/K come from the BF16 cache — no precision to recover).
-        // Bisect: ATLAS_DISABLE_FP16_PV restores the pre-#90 BF16 P×V WMMA.
+        // Bisect: AVAROK_DISABLE_FP16_PV restores the pre-#90 BF16 P×V WMMA.
         {
             #pragma unroll
             for (unsigned int ks = 0; ks < PV_K_STEPS; ks++) {
                 unsigned int k_off = ks * K16;
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
                 v16bf a;
                 #pragma unroll
                 for (int i = 0; i < 16; i++)
@@ -387,7 +387,7 @@ extern "C" __global__ void KERNEL_NAME(
 // kernels ARE still dispatched (paged_attn.rs picks them on chunk length
 // alone), so BR64 is clamped to 32 here both to keep LDS within RDNA3.5's
 // 64 KB cap and to make the tiling correct; the host grid is clamped to match
-// by cfg!(atlas_scale) in ops/prefill_attn_main_{a,b}.rs, and the two MUST
+// by cfg!(avarok_scale) in ops/prefill_attn_main_{a,b}.rs, and the two MUST
 // agree. (An earlier comment claimed a `force_br32_prefill` HARDWARE.toml key
 // routed dispatch away from them — no such routing existed, the key had no
 // reader, and it has been removed.) Mirrors inferspark_prefill_wmma.cu. The
@@ -452,7 +452,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
     __shared__ __nv_bfloat16 smem_K[BC][HDIM_PAD];
     __shared__ __nv_bfloat16 smem_V[BC][HDIM_PAD];
     // PR #90 Phase 2c: smem_P64 FP16 — same rationale as the BR=32 path.
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
     __shared__ __nv_bfloat16 smem_P[BR64][BC];
 #else
     __shared__ __half smem_P[BR64][BC];
@@ -567,7 +567,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             #pragma unroll
             for (unsigned int c = 0; c < BC; c++) {
                 float p = sw_exp(smem_S[r][c] - m_new);
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
                 smem_P[r][c] = __float2bfloat16(p);
 #else
                 smem_P[r][c] = __float2half(p);
@@ -597,7 +597,7 @@ extern "C" __global__ void PAGED_CONCAT(KERNEL_NAME, _64)(
             #pragma unroll
             for (unsigned int ks = 0; ks < PV_K_STEPS; ks++) {
                 unsigned int k_off = ks * K16;
-#ifdef ATLAS_DISABLE_FP16_PV
+#ifdef AVAROK_DISABLE_FP16_PV
                 v16bf a;
                 #pragma unroll
                 for (int i = 0; i < 16; i++)

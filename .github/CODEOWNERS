@@ -20,7 +20,7 @@
 
 # Compute path: kernel registration, model loaders, hot-path Rust.
 kernels/                                     @tbraun96 @rsafier @SeedSource @TheTom
-crates/atlas-kernels/                        @tbraun96 @rsafier @SeedSource @TheTom
+crates/avarok-kernels/                        @tbraun96 @rsafier @SeedSource @TheTom
 crates/spark-model/                          @tbraun96 @rsafier @SeedSource @TheTom
 crates/spark-runtime/                        @tbraun96 @rsafier @SeedSource @TheTom
 
@@ -29,11 +29,11 @@ crates/spark-server/                         @tbraun96 @rsafier @SeedSource @The
 
 # Multi-rank communication (NCCL / RDMA).
 crates/spark-comm/                           @tbraun96 @rsafier @SeedSource @TheTom
-crates/atlas-rdma/                           @tbraun96 @rsafier @SeedSource @TheTom
+crates/avarok-rdma/                           @tbraun96 @rsafier @SeedSource @TheTom
 
 # Storage / NVMe-backed swap.
 crates/spark-storage/                        @tbraun96 @rsafier @SeedSource @TheTom
-crates/atlas-tier/                           @tbraun96 @rsafier @SeedSource @TheTom
+crates/avarok-tier/                           @tbraun96 @rsafier @SeedSource @TheTom
 
 # Web properties. The blog is the one tree an editorial contributor owns:
 # @DrRainbows reviews and approves posts under `blog/` without gaining any

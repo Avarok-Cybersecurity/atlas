@@ -284,7 +284,7 @@ fn without_hermetic_neither_channel_is_touched() {
     assert_eq!(
         a.mtp_gate_force(),
         None,
-        "absent means the documented ATLAS_MTP_GATE_FORCE fallback decides"
+        "absent means the documented AVAROK_MTP_GATE_FORCE fallback decides"
     );
     let on = parse(&["--enable-prefix-caching"]);
     assert!(

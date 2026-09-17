@@ -137,7 +137,7 @@ pub fn build() -> Manifest {
 
     Manifest {
         schema_version: SCHEMA_VERSION,
-        spark_version: super::ATLAS_VERSION.to_owned(),
+        spark_version: super::AVAROK_VERSION.to_owned(),
         flags,
     }
 }

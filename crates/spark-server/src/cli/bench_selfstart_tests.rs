@@ -163,7 +163,7 @@ fn baseline_pins_are_applied_and_the_operator_wins_a_clash() {
         ("kv_cache_dtype".to_string(), "bf16".to_string()),
     ]);
     let requested = BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]);
-    let merged = atlas_plugin::gate::merge_serve_overrides(baseline, requested);
+    let merged = avarok_plugin::gate::merge_serve_overrides(baseline, requested);
     assert_eq!(
         merged.get("ssm_cache_slots").map(String::as_str),
         Some("256"),

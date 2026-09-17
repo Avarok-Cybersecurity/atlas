@@ -3,7 +3,7 @@
 //! `TransformerLayer` trait — composable per-layer forward/decode hooks.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 

@@ -9,7 +9,7 @@
 //!
 //! ⚠ The GEMM at the end of this path — `fp8_gemm_act_weight_t_rowwise` —
 //! returns NOT_SUPPORTED on sm_121 (measured 2026-08-15, reproduced through the
-//! block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and not the
+//! block-scaled path with `AVAROK_CUBLAS_FP8=1`, so it is the GEMM and not the
 //! weights). The mixed-precision loader therefore routes through a ONE-TIME
 //! ledgered BF16 dequant instead (`qwen3_ssm/rowwise_bf16.rs`, #917); see
 //! `weight_loader/qwen35_dense/rowwise_fp8.rs`. This module stays because the

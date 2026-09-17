@@ -5,10 +5,10 @@
 # Example: ./runner.sh turbo8 turbo8 0 0
 #
 # Output:
-#   /workspace/atlas-dumps/numdrift/phase2c-<config_name>/atlas_L*.bin
-#   /workspace/atlas-dumps/numdrift/phase2c-<config_name>/atlas_final_norm.bin
-#   /workspace/atlas-dumps/numdrift/phase2c-<config_name>/atlas_logits.bin
-#   /workspace/atlas-dumps/numdrift/phase2c-<config_name>/cosine.txt   <- summary table
+#   /workspace/avarok-dumps/numdrift/phase2c-<config_name>/avarok_L*.bin
+#   /workspace/avarok-dumps/numdrift/phase2c-<config_name>/avarok_final_norm.bin
+#   /workspace/avarok-dumps/numdrift/phase2c-<config_name>/avarok_logits.bin
+#   /workspace/avarok-dumps/numdrift/phase2c-<config_name>/cosine.txt   <- summary table
 #
 # Run sequentially per machine. Multi-config parallelism is across dgx1+dgx2.
 
@@ -19,26 +19,26 @@ KV_DTYPE="${2:?missing kv_cache_dtype}"
 KV_HP="${3:-0}"
 KV_CALIB="${4:-0}"
 
-OUT_DIR="/workspace/atlas-dumps/numdrift/phase2c-${CONFIG_NAME}"
-PROBE="/workspace/atlas-dumps/numdrift/atlas_turn11_probe.json"
-IMAGE="atlas-gb10:realfix2"
+OUT_DIR="/workspace/avarok-dumps/numdrift/phase2c-${CONFIG_NAME}"
+PROBE="/workspace/avarok-dumps/numdrift/avarok_turn11_probe.json"
+IMAGE="avarok-gb10:realfix2"
 
 mkdir -p "$OUT_DIR"
 
 echo "=== [${CONFIG_NAME}] config: dtype=${KV_DTYPE} hp=${KV_HP} calib=${KV_CALIB} ==="
 echo "=== [${CONFIG_NAME}] start: $(date -u +%H:%M:%S) ==="
 
-# Stop+rm any existing atlas-qwen
-sudo docker stop atlas-qwen 2>/dev/null || true
-sudo docker rm atlas-qwen 2>/dev/null || true
+# Stop+rm any existing avarok-qwen
+sudo docker stop avarok-qwen 2>/dev/null || true
+sudo docker rm avarok-qwen 2>/dev/null || true
 
-# Bounce with the target KV config + ATLAS_NEMO_DUMP env
-sudo docker run -d --name atlas-qwen \
+# Bounce with the target KV config + AVAROK_NEMO_DUMP env
+sudo docker run -d --name avarok-qwen \
   --network host --gpus all --ipc=host \
   -e RUST_LOG=info \
-  -e ATLAS_NEMO_DUMP="$OUT_DIR" \
+  -e AVAROK_NEMO_DUMP="$OUT_DIR" \
   -v /workspace/.cache/huggingface:/root/.cache/huggingface \
-  -v /workspace/atlas-dumps:/workspace/atlas-dumps \
+  -v /workspace/avarok-dumps:/workspace/avarok-dumps \
   "$IMAGE" \
   serve Qwen/Qwen3.6-35B-A3B-FP8 \
     --port 8888 --max-seq-len 65536 --max-batch-size 8 \
@@ -53,13 +53,13 @@ sudo docker run -d --name atlas-qwen \
 
 # Wait for server ready
 for i in {1..120}; do
-    if sudo docker logs atlas-qwen 2>&1 | grep -q "Listening on 127.0.0.1:8888"; then
+    if sudo docker logs avarok-qwen 2>&1 | grep -q "Listening on 127.0.0.1:8888"; then
         echo "=== [${CONFIG_NAME}] ready in ${i}s ==="
         break
     fi
-    if sudo docker logs atlas-qwen 2>&1 | grep -qE "panic|FATAL|Error:"; then
+    if sudo docker logs avarok-qwen 2>&1 | grep -qE "panic|FATAL|Error:"; then
         echo "=== [${CONFIG_NAME}] BOOT FAILED ==="
-        sudo docker logs atlas-qwen 2>&1 | tail -20 > "$OUT_DIR/boot-failure.log"
+        sudo docker logs avarok-qwen 2>&1 | tail -20 > "$OUT_DIR/boot-failure.log"
         exit 1
     fi
     sleep 1
@@ -73,17 +73,17 @@ curl -s -m 600 -X POST http://localhost:8888/v1/chat/completions \
     || { echo "[${CONFIG_NAME}] probe request failed"; exit 1; }
 
 # Verify dump completed (40 layers)
-N_LAYERS=$(ls "$OUT_DIR"/atlas_L*.bin 2>/dev/null | wc -l)
+N_LAYERS=$(ls "$OUT_DIR"/avarok_L*.bin 2>/dev/null | wc -l)
 if [[ "$N_LAYERS" != "40" ]]; then
     echo "=== [${CONFIG_NAME}] WARN: only ${N_LAYERS}/40 layers dumped ==="
 fi
 
-# Run cosine compare against HF reference at /workspace/atlas-dumps/numdrift/hf_*.bin
+# Run cosine compare against HF reference at /workspace/avarok-dumps/numdrift/hf_*.bin
 python3 - <<'PY' "$OUT_DIR" "$CONFIG_NAME" > "$OUT_DIR/cosine.txt"
 import sys, pathlib, numpy as np
 out_dir = pathlib.Path(sys.argv[1])
 cfg = sys.argv[2]
-hf = pathlib.Path("/workspace/atlas-dumps/numdrift")
+hf = pathlib.Path("/workspace/avarok-dumps/numdrift")
 
 def load(p):
     return np.frombuffer(p.read_bytes(), dtype="<f4")
@@ -94,7 +94,7 @@ def cos(a, b):
 
 coses = []
 for i in range(40):
-    ap = out_dir / f"atlas_L{i}.bin"
+    ap = out_dir / f"avarok_L{i}.bin"
     hp = hf / f"hf_L{i}.bin"
     if ap.exists() and hp.exists():
         coses.append(cos(load(ap), load(hp)))
@@ -102,8 +102,8 @@ for i in range(40):
         coses.append(float("nan"))
 
 fn = float("nan")
-if (out_dir / "atlas_final_norm.bin").exists() and (hf / "hf_final_norm.bin").exists():
-    fn = cos(load(out_dir / "atlas_final_norm.bin"), load(hf / "hf_final_norm.bin"))
+if (out_dir / "avarok_final_norm.bin").exists() and (hf / "hf_final_norm.bin").exists():
+    fn = cos(load(out_dir / "avarok_final_norm.bin"), load(hf / "hf_final_norm.bin"))
 
 print(f"{'config':25} {'mean':>7} {'min':>7} {'L0':>7} {'L20':>7} {'L31':>7} {'L35':>7} {'L37':>7} {'L39':>7} {'final':>7}")
 mean = float(np.nanmean(coses))

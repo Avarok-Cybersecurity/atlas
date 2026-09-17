@@ -15,8 +15,8 @@ W2 = int(sys.argv[2]) if len(sys.argv) > 2 else 4
 GAP = int(sys.argv[3]) if len(sys.argv) > 3 else 45
 REPS = int(sys.argv[4]) if len(sys.argv) > 4 else 180
 MAXTOK = int(sys.argv[5]) if len(sys.argv) > 5 else 1200
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888/v1/chat/completions")
-MODEL = os.environ.get("ATLAS_MODEL", "laguna-s-2.1")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888/v1/chat/completions")
+MODEL = os.environ.get("AVAROK_MODEL", "laguna-s-2.1")
 BASE = ("The paged KV cache stores per-layer key and value tensors in fixed-size blocks. "
         "Prefix caching reuses blocks across turns via a radix tree keyed on token spans. ")
 lock = threading.Lock()

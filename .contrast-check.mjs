@@ -28,13 +28,13 @@ const read = (p) => readFileSync(resolve(here, p), 'utf8');
 
 /* ---------- inputs, each from its single source of truth ---------- */
 
-const tokensCss = read('web-shared/atlas-tokens.css');
+const tokensCss = read('web-shared/avarok-tokens.css');
 const shader = read('web-shared/gl/chevron-field.glsl');
 const runtime = read('web-shared/gl/chevron-field.js');
 
 const token = (name) => {
   const m = tokensCss.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})`));
-  if (!m) throw new Error(`token --${name} not found in web-shared/atlas-tokens.css`);
+  if (!m) throw new Error(`token --${name} not found in web-shared/avarok-tokens.css`);
   return m[1];
 };
 

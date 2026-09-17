@@ -129,7 +129,7 @@ fn prepare(engine: &mut GrammarEngine, tools: &[ToolDefinition]) -> Prepared {
 fn await_snapshot(dir: &std::path::Path) -> Option<u64> {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
-        if let Ok(entries) = std::fs::read_dir(dir.join(".atlas-grammar-cache")) {
+        if let Ok(entries) = std::fs::read_dir(dir.join(".avarok-grammar-cache")) {
             for entry in entries.filter_map(Result::ok) {
                 // `.bin` is load-bearing, not decoration. `save_to_file`
                 // writes atomically as tmp + fsync + rename, and its temp
@@ -159,7 +159,7 @@ fn await_snapshot(dir: &std::path::Path) -> Option<u64> {
 
 fn scratch(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "atlas-918-{tag}-{}-{:?}",
+        "avarok-918-{tag}-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
@@ -266,7 +266,7 @@ fn a_snapshot_from_a_different_tokenizer_is_a_miss() {
     let eos = (other_vocab.len() - 1) as i32;
     let mut reader = GrammarEngine::new(&other_vocab, &[eos]).expect("engine builds");
     reader.attach_mask_cache(&dir);
-    let names: Vec<String> = std::fs::read_dir(dir.join(".atlas-grammar-cache"))
+    let names: Vec<String> = std::fs::read_dir(dir.join(".avarok-grammar-cache"))
         .unwrap()
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())

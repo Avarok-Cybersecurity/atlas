@@ -1,4 +1,4 @@
-"""Golden for PLE n-gram injection — Avarok #753 item C, PLAN.md phase D.
+"""Golden for PLE n-gram injection — Atlas #753 item C, PLAN.md phase D.
 
 PLE is the top correctness risk in this port, for two reasons that both fail
 SILENTLY:
@@ -170,7 +170,7 @@ def main() -> int:
     ap.add_argument('--snapshot', default=resolve_snapshot(DEFAULT_SNAP))
     ap.add_argument('--out', default=os.path.join(os.path.dirname(__file__),
                                                   'ple_golden.npz'))
-    ap.add_argument('--bin-dir', default=os.environ.get('ATLAS_PLE_TEST_DATA'))
+    ap.add_argument('--bin-dir', default=os.environ.get('AVAROK_PLE_TEST_DATA'))
     args = ap.parse_args()
 
     snap = args.snapshot

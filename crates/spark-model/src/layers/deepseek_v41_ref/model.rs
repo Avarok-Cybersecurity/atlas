@@ -357,11 +357,7 @@ pub fn forward(
         })
         .collect();
     let mut h: Vec<f32> = (0..s)
-        .flat_map(|tk| {
-            std::iter::repeat(embed[tk * dim..(tk + 1) * dim].to_vec())
-                .take(hc)
-                .flatten()
-        })
+        .flat_map(|tk| std::iter::repeat_n(embed[tk * dim..(tk + 1) * dim].to_vec(), hc).flatten())
         .collect();
     let mut pre_mix: Vec<f32> = (0..s)
         .flat_map(|_| (0..hc).map(|stream| if stream == 0 { 1.0 } else { 0.0 }))

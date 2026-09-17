@@ -12,7 +12,7 @@ import pathlib
 import sys
 import numpy as np
 
-ND = pathlib.Path("/workspace/atlas-dumps/numdrift")
+ND = pathlib.Path("/workspace/avarok-dumps/numdrift")
 
 
 def load(p: pathlib.Path) -> np.ndarray:
@@ -29,7 +29,7 @@ def per_layer(config_dir: pathlib.Path) -> list[float]:
     hf_dir = ND
     out: list[float] = []
     for i in range(40):
-        ap = config_dir / f"atlas_L{i}.bin"
+        ap = config_dir / f"avarok_L{i}.bin"
         hp = hf_dir / f"hf_L{i}.bin"
         if ap.exists() and hp.exists():
             a = load(ap)

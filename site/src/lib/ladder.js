@@ -13,11 +13,12 @@ const change = (a, b) => Math.round(((b - a) / a) * 1000) / 10;
 /**
  * How each engine scaled across the top two rungs.
  *
- * The baseline compared is whichever vLLM configuration *leads the lower
- * rung*, not whichever leads each rung independently. That matters: at C=128
+ * The baseline compared is `best_baseline_id` on the lower rung, not whichever
+ * vLLM configuration leads each rung independently. That matters: at C=128
  * vLLM's speculative build falls behind its own non-speculative one, so
- * "best at each rung" would silently switch configurations mid-comparison and
- * describe a scaling curve no single deployment ever had.
+ * "fastest at each rung" would silently switch configurations mid-comparison
+ * and describe a scaling curve no single deployment ever had. The published
+ * `best_baseline_id` is the matched MTP series on every rung.
  *
  * Returns null when the ladder has fewer than two rungs or the lower rung's
  * leading baseline was not run at the upper rung, because a missing datapoint

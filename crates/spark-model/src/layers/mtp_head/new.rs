@@ -21,7 +21,7 @@ impl MtpHead {
         // batched-propose lm_head through it is the exact weight at tile-GEMM
         // bandwidth. Caller passes `None` for dedicated draft heads.
         lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         quant: MtpQuantization,
         mtp_vocab_size: u32,
@@ -257,7 +257,7 @@ impl MtpHead {
         // the 4K era; agentic contexts of 10-20K tripped the stride ensure!
         // every step and made the batched propose permanently fall back to
         // per-sequence mode (PROGRESS_LOG 5.2/6.17). Floor 2048; override
-        // ATLAS_PROPOSE_META_STRIDE=<bytes>.
+        // AVAROK_PROPOSE_META_STRIDE=<bytes>.
         let propose_meta_stride =
             super::batch_caps::propose_meta_stride_env(max_seq_len, kv_config.block_size);
         let kv_cache = PagedKvCache::new(kv_config, mtp_num_blocks, gpu)?;
@@ -324,7 +324,7 @@ impl MtpHead {
         // PREFILL_CHUNK=512 rows). Dedicated rather than aliased onto the
         // shared arena so the pass has zero aliasing hazards; allocated only
         // when a consumer exists.
-        // The catch-up feed (ATLAS_MTP_CATCHUP) runs through the same batched
+        // The catch-up feed (AVAROK_MTP_CATCHUP) runs through the same batched
         // row writer as the drafter prefill and needs the same scratch.
         let prefill_scratch = if super::mtp_drafter_prefill_enabled(levers)
             || crate::speculative::mtp_catchup_enabled()
@@ -378,7 +378,7 @@ impl MtpHead {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             gemv_sw: crate::layers::ops::gemv_sw_from(
-                std::env::var("ATLAS_NO_GEMV_SW").ok().as_deref(),
+                std::env::var("AVAROK_NO_GEMV_SW").ok().as_deref(),
             ),
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
@@ -440,9 +440,9 @@ impl MtpHead {
             // (process-static: handle + env + weight presence), so per-n CUDA
             // graph captures of the batched propose can never see the
             // selection flip. Kill switch is PRESENCE-style per the house
-            // convention (`ATLAS_NO_MTP_LMHEAD_TGEMM=0` is NOT off).
+            // convention (`AVAROK_NO_MTP_LMHEAD_TGEMM=0` is NOT off).
             lm_head_nvfp4_t: lm_head_nvfp4_t
-                .filter(|_| std::env::var_os("ATLAS_NO_MTP_LMHEAD_TGEMM").is_none()),
+                .filter(|_| std::env::var_os("AVAROK_NO_MTP_LMHEAD_TGEMM").is_none()),
             w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
             argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             argmax_batch_lp_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch_lp"),

@@ -4,7 +4,7 @@
 //! arm (#927/#928).
 //!
 //! WHY. nsys on 1xH100 (round 7, 2026-09-11, Qwen/Qwen3.8-27B-FP8 with
-//! `--lm-head-dtype bf16` and `ATLAS_LM_HEAD_BATCHM_MAX=16`, decode batch 16)
+//! `--lm-head-dtype bf16` and `AVAROK_LM_HEAD_BATCHM_MAX=16`, decode batch 16)
 //! puts `dense_gemv_bf16_batchm` — the LM head — at **3,571 µs in ONE launch,
 //! 8.19% of the 43.6 ms step**, for a single pass over the 2.54 GB
 //! `[248077, 5120]` BF16 vocab weight. That is **~710 GB/s** against ~3,350
@@ -28,7 +28,7 @@
 //! `examples/native_bf16_lm_head_m16_microtest.rs`.
 //!
 //! At the LM head a near-tie argmax flip changes the emitted token, which is
-//! why the head arm is behind `ATLAS_LM_HEAD_M16_TC` and defaults OFF
+//! why the head arm is behind `AVAROK_LM_HEAD_M16_TC` and defaults OFF
 //! (`model/trait_impl/lm_head_batched.rs`).
 //!
 //! Unlike `w8a16_gemm_m16` there is no block scale and no dequant: B is already
@@ -50,7 +50,7 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 pub const DENSE_GEMM_M16_BF16_N_TILE: u32 = 32;
 
 /// The wide instantiation's N tile (`dense_gemm_m16_bf16_n64`, kernel
-/// `DGM16_N_TILE_WIDE`) — opt-in via `ATLAS_LM_HEAD_M16_TC_NTILE=64`. Halves
+/// `DGM16_N_TILE_WIDE`) — opt-in via `AVAROK_LM_HEAD_M16_TC_NTILE=64`. Halves
 /// the CTA count for a given N and halves the L2 traffic the re-read A tile
 /// costs. WHY it exists: `dense_gemm_m16_bf16.cu`.
 pub const DENSE_GEMM_M16_BF16_N_TILE_WIDE: u32 = 64;

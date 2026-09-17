@@ -2,7 +2,7 @@
 #
 # Sibling of MODEL.toml so the numbers sit beside the thing they describe;
 # hardware and model are implied by the path and cannot disagree with the
-# contents. Read by `atlas_plugin::gate::bench`.
+# contents. Read by `avarok_plugin::gate::bench`.
 #
 # ★ This file may land BEFORE the model's MODEL.toml/kernels do (they arrive in
 # a sibling change adding the qwen3.8-27b kernel target via a `kernel_source`
@@ -565,7 +565,7 @@ osl = "320"
 # only fires below 48 when the engine normally does 60 will not catch a 15%
 # regression at that rung -- but a tighter bar on this variance fails on noise,
 # and a gate that cries wolf gets switched off. The mid-ladder variance is the
-# same phenomenon atlas#812 is chasing; when that is root-caused these two can
+# same phenomenon avarok#812 is chasing; when that is root-caused these two can
 # be re-cut much tighter. Stated here so nobody reads C=8 as well-guarded.
 
 [benchmarks.metrics.c1_aggregate_tok_s]
@@ -602,7 +602,7 @@ osl = "320"
 #   C4   mean 49.56 sigma 1.495 — formula bar 45.07 against a current-regime
 #        minimum of 45.4. 0.7% is not a margin.
 #   C8   mean 63.05 sigma 1.609 — the block above defers this rung explicitly
-#        until atlas#812 is root-caused, and nothing here root-caused it.
+#        until avarok#812 is root-caused, and nothing here root-caused it.
 #   C16  mean 89.95 sigma 0.206 — looks tight in a fresh set, but its own
 #        history dips to 82.4 with NO regime change, so the formula bar (85.45)
 #        would have failed a run that was healthy. This is the rung that proves
@@ -748,7 +748,7 @@ its own committed history; crossing them is meaningless."""
 # trained block_size is 8.
 #
 # Three things that look like levers and are not:
-#   * ATLAS_MTP_MAX_SEQS cannot shrink the slot count. `mtp_state_slots_with`
+#   * AVAROK_MTP_MAX_SEQS cannot shrink the slot count. `mtp_state_slots_with`
 #     is `max_batch_size.min(cap.max(VERIFY_WY_TABLE_SEQS))` and that floor is
 #     32. Setting it to 8 changed nothing (verified). The floor only lifts
 #     BELOW bs=32, where max_batch_size becomes the binding term -- which is

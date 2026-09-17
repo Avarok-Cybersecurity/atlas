@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -172,25 +172,25 @@ impl TransformerModel {
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        // ATLAS_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
+        // AVAROK_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
         // stream-synchronize checkpoint after every layer, so an illegal
         // access is attributed to the exact layer instead of surfacing as an
-        // opaque status-700 on the post-graph D2H. Mirrors ATLAS_K2_DIAG on
+        // opaque status-700 on the post-graph D2H. Mirrors AVAROK_K2_DIAG on
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
-        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
+        let k4_diag = std::env::var("AVAROK_K4_DIAG").ok().as_deref() == Some("1");
         // Capture the multi-row verify under EP — ported verbatim from verify_c.rs (K=3),
         // where it is ON by default since 2026-08-29 and the six probes are byte-identical
         // to eager. Without this gate K=4 was eager-only under EP (`self.comm.is_some()`),
         // so no K=4 arm was ever comparable to the graphed K=3 number.
         //
-        // 🪤 Deliberately does NOT read `ATLAS_EP_GRAPHS`; see verify_c.rs for why the two
+        // 🪤 Deliberately does NOT read `AVAROK_EP_GRAPHS`; see verify_c.rs for why the two
         // are gated apart.
-        let ep_graphs = std::env::var("ATLAS_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        let ep_graphs = std::env::var("AVAROK_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
         // A56 instrument (see verify_c.rs). Implies GRAPHS + NOCACHE.
-        let graph_trace = std::env::var("ATLAS_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
         let ep_graphs = ep_graphs || graph_trace;
         let use_graphs =
             (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager && !k4_diag;
@@ -326,7 +326,7 @@ impl TransformerModel {
                 // No-op when DFlash is disabled.
                 self.try_dflash_capture(layer_idx, k - 1, stream)?;
 
-                // ATLAS_K4_DIAG checkpoint: surface an illegal access at the
+                // AVAROK_K4_DIAG checkpoint: surface an illegal access at the
                 // layer that raised it (eager mode only — sync is illegal
                 // under graph capture, and use_graphs is false when k4_diag).
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
@@ -382,10 +382,10 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=4 verify (slot={})", seq.slot_idx);
-                    // BISECT HATCH (ATLAS_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.
+                    // BISECT HATCH (AVAROK_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.
                     if let Some(ref mut cache) = graph_cache
                         && !graph_trace
-                        && !std::env::var("ATLAS_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
+                        && !std::env::var("AVAROK_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
                     {
                         cache.insert(seq.slot_idx, graph);
                     }

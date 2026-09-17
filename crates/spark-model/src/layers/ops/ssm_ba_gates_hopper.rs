@@ -82,11 +82,11 @@ pub fn ba_gates_min_tokens(sm_count: u32) -> u32 {
 }
 
 /// Is the twin selected? — `[defaults] ssm_ba_gates_hopper`, with
-/// `ATLAS_SSM_BA_GATES_HOPPER` overriding ([`super::target_defaults`]).
+/// `AVAROK_SSM_BA_GATES_HOPPER` overriding ([`super::target_defaults`]).
 ///
-/// No `ATLAS_NO_*` rung, unlike the GDN families: this lever has no accuracy
+/// No `AVAROK_NO_*` rung, unlike the GDN families: this lever has no accuracy
 /// question behind it, so there is nothing for a kill switch to outrank that
-/// `ATLAS_SSM_BA_GATES_HOPPER=0` does not already say.
+/// `AVAROK_SSM_BA_GATES_HOPPER=0` does not already say.
 pub fn ssm_ba_gates_hopper_enabled() -> bool {
     super::target_defaults::resolved().ssm_ba_gates_hopper.value
 }
@@ -252,11 +252,11 @@ pub fn ba_gates_log(pick: &BaGatesPick, requested: bool, m: u32) {
     SAID[idx].call_once(|| match why {
         Some(why) => tracing::info!(
             "SSM ba_gates: the Hopper twin is NOT running at M={m}: {why} \
-             (ATLAS_SSM_BA_GATES_HOPPER)"
+             (AVAROK_SSM_BA_GATES_HOPPER)"
         ),
         None => tracing::info!(
             "SSM ba_gates: dense_gemm_ba_gates_prefill_hopper \
-             (ATLAS_SSM_BA_GATES_HOPPER) M={m} block={BA_GATES_BLOCK} grid=(M,1,1)"
+             (AVAROK_SSM_BA_GATES_HOPPER) M={m} block={BA_GATES_BLOCK} grid=(M,1,1)"
         ),
     });
 }

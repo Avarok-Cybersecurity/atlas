@@ -62,7 +62,7 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let bs = kv_cache.block_size();
 
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -117,7 +117,7 @@ impl TransformerModel {
                 &format!("tail@{}/lo{}", tokens.len(), tail_lo),
             );
             tracing::warn!(
-                "ATLAS_BTBL[final@{}/skip{}] nblk={} bt={:?}",
+                "AVAROK_BTBL[final@{}/skip{}] nblk={} bt={:?}",
                 tokens.len(),
                 seq.marconi_skip_to,
                 seq.block_table.len(),
@@ -133,7 +133,7 @@ impl TransformerModel {
         self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // Diagnostic: post-norm hidden state
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
+        if std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let (vals, norm) = self.readback_bf16(normed, h.min(16))?;
             tracing::warn!(
@@ -143,7 +143,7 @@ impl TransformerModel {
         }
 
         // Per-layer divergence dump: final-norm output (input to lm_head).
-        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+        if let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
             && !dir.is_empty()
         {
             self.gpu.synchronize(stream)?;
@@ -151,7 +151,7 @@ impl TransformerModel {
             let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::create_dir_all(&dir).ok();
             std::fs::write(
-                std::path::Path::new(&dir).join("atlas_final_norm.bin"),
+                std::path::Path::new(&dir).join("avarok_final_norm.bin"),
                 &bytes,
             )
             .ok();
@@ -206,7 +206,7 @@ impl TransformerModel {
         };
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
-        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+        if let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
             && !dir.is_empty()
         {
             self.gpu.synchronize(stream)?;
@@ -222,15 +222,19 @@ impl TransformerModel {
                 .collect();
             let lbytes: Vec<u8> = logit_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::create_dir_all(&dir).ok();
-            std::fs::write(std::path::Path::new(&dir).join("atlas_logits.bin"), &lbytes).ok();
+            std::fs::write(
+                std::path::Path::new(&dir).join("avarok_logits.bin"),
+                &lbytes,
+            )
+            .ok();
             let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
             idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
             let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
-            tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
+            tracing::info!("AVAROK_NEMO_DUMP: top-10 logits = {top:?}");
         }
 
         // Diagnostic: logits stats
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
+        if std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let logits_ptr = self.buffers.logits();
             let n_logits = self.config.vocab_size;
@@ -348,7 +352,7 @@ impl TransformerModel {
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
         } else if self.ssm_snapshots.is_enabled() {
-            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(
                     seq.slot_idx,
                     self.gpu.as_ref(),

@@ -22,17 +22,17 @@ print('served text:', repr(r['choices'][0]['text']))
 # The engine's "moe_out" is the DENSE FFN delta; the shortcut MoE is dumped
 # separately as "shortcut_moe_out". Pair each against the stage of the same
 # meaning — conflating them compares different tensors and reads as a bug.
-pairs = [('sub0_input_norm_in', 'atlas_op_L0_input_norm_in.bin'),
-         ('sub0_input_norm_out', 'atlas_op_L0_input_norm_out.bin'),
-         ('sub0_post_attn_norm_out', 'atlas_op_L0_post_attn_norm_out.bin'),
-         ('sub0_shortcut_moe', 'atlas_op_L0_shortcut_moe_out.bin'),
-         ('sub0_dense_ffn', 'atlas_op_L0_moe_out.bin'),
-         ('sub1_input_norm_in', 'atlas_op_L1_input_norm_in.bin'),
-         ('sub1_input_norm_out', 'atlas_op_L1_input_norm_out.bin'),
-         ('sub1_post_attn_norm_out', 'atlas_op_L1_post_attn_norm_out.bin'),
-         ('sub1_dense_ffn', 'atlas_op_L1_moe_out.bin')]
+pairs = [('sub0_input_norm_in', 'avarok_op_L0_input_norm_in.bin'),
+         ('sub0_input_norm_out', 'avarok_op_L0_input_norm_out.bin'),
+         ('sub0_post_attn_norm_out', 'avarok_op_L0_post_attn_norm_out.bin'),
+         ('sub0_shortcut_moe', 'avarok_op_L0_shortcut_moe_out.bin'),
+         ('sub0_dense_ffn', 'avarok_op_L0_moe_out.bin'),
+         ('sub1_input_norm_in', 'avarok_op_L1_input_norm_in.bin'),
+         ('sub1_input_norm_out', 'avarok_op_L1_input_norm_out.bin'),
+         ('sub1_post_attn_norm_out', 'avarok_op_L1_post_attn_norm_out.bin'),
+         ('sub1_dense_ffn', 'avarok_op_L1_moe_out.bin')]
 
-print(f'{"stage":26s} {"|ref|":>9s} {"|atlas|":>9s} {"cos":>8s} {"relerr":>8s}')
+print(f'{"stage":26s} {"|ref|":>9s} {"|avarok|":>9s} {"cos":>8s} {"relerr":>8s}')
 for rk, fn in pairs:
     path = f'{D}/{fn}'
     if not os.path.exists(path):

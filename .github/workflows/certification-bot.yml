@@ -11,7 +11,7 @@ name: Certification bot
 # The previous state rides in an HTML marker inside that comment. It is DISPLAY
 # state only — it decides whether to show "a push knocked you back" rather than a
 # bare stage card. Nothing about whether a PR may merge is read from it, which is
-# the same line `atlas-governance` draws for the ledger: a verdict must never
+# the same line `avarok-governance` draws for the ledger: a verdict must never
 # depend on something the PR's own automation can write.
 on:
   pull_request_target:

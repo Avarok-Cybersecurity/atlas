@@ -12,7 +12,7 @@
 //! ## Why these are set, not read
 //!
 //! They were three independent `std::env::var` reads scattered across six call
-//! sites, each with its own convention (`ATLAS_SSM_H_FP16` presence-gated —
+//! sites, each with its own convention (`AVAROK_SSM_H_FP16` presence-gated —
 //! where `=0` meant ON — and the other two `== "1"`). That is how the same
 //! flag came to be decoded two different ways in one binary. They are now ONE
 //! cell, written once from [`set_from_cli`] before any model is built.
@@ -94,25 +94,25 @@ impl GdnFlags {
     /// `kernels/<hw>/HARDWARE.toml` `[defaults] ssm_batched_recurrent` —
     /// `hopper` declares it ON (+6% on the serve, md5-identical output to the
     /// per-sequence launches), `gb10` and `b200` declare it OFF, unchanged. It
-    /// used to be `ATLAS_SSM_BATCHED_RECURRENT=1` in an H100 launch script
+    /// used to be `AVAROK_SSM_BATCHED_RECURRENT=1` in an H100 launch script
     /// outside this repository, which is the structure the 2026-09-11
-    /// maintainer review asked for. `ATLAS_SSM_BATCHED_RECURRENT` still
+    /// maintainer review asked for. `AVAROK_SSM_BATCHED_RECURRENT` still
     /// overrides, and `=0` now means OFF rather than reading as absent (see
     /// `layers::ops::target_defaults`); everything that ever set it set it
     /// to `1`.
     ///
-    /// `ATLAS_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
+    /// `AVAROK_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
     /// every script and ledger in the campaign wrote it, and silently changing
     /// `=0` from ON to OFF would retroactively re-label measurements. New
     /// configuration should use `--ssm-h-dtype`.
     fn from_env() -> Self {
         Self {
-            h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
+            h_f16: std::env::var("AVAROK_SSM_H_FP16").is_ok(),
             // No environment fallback on purpose (house rule: no new env
             // knobs) — stage 3 has no CLI surface either until prefill
             // narrowing lands; only unit tests exercise the sizing.
             h_f16_pool: false,
-            fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
+            fused_norm: std::env::var("AVAROK_GDN_FUSED_NORM").as_deref() == Ok("1"),
             batched_recurrent: crate::layers::ops::target_defaults::resolved()
                 .ssm_batched_recurrent
                 .value,
@@ -181,7 +181,7 @@ pub const fn default_dflash_gamma(trained_block_size: usize) -> usize {
     }
 }
 
-/// `--ssm-h-dtype f16` (legacy `ATLAS_SSM_H_FP16`).
+/// `--ssm-h-dtype f16` (legacy `AVAROK_SSM_H_FP16`).
 pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16
 }
@@ -214,12 +214,12 @@ pub fn ssm_h_dtype_bits(dtype: Option<&str>) -> (bool, bool) {
     }
 }
 
-/// `--gdn-fused-norm` (legacy `ATLAS_GDN_FUSED_NORM=1`).
+/// `--gdn-fused-norm` (legacy `AVAROK_GDN_FUSED_NORM=1`).
 pub fn gdn_fused_norm_enabled() -> bool {
     flags().fused_norm
 }
 
-/// `--ssm-batched-recurrent` (legacy `ATLAS_SSM_BATCHED_RECURRENT=1`).
+/// `--ssm-batched-recurrent` (legacy `AVAROK_SSM_BATCHED_RECURRENT=1`).
 pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
 }
@@ -233,7 +233,7 @@ pub fn verify_exact_enabled() -> bool {
 }
 
 /// Batch width at which the multi-seq decode projections switch to the
-/// 128-row M-tile. `None` (kill switch `ATLAS_NO_SSM_M128`, PRESENCE check —
+/// 128-row M-tile. `None` (kill switch `AVAROK_NO_SSM_M128`, PRESENCE check —
 /// `=0` is NOT "off") keeps the 64-row twin at every width.
 ///
 /// 65 is the DERIVED crossover, not a tuned constant: `ceil(m/64) >
@@ -243,7 +243,7 @@ pub fn verify_exact_enabled() -> bool {
 pub(crate) fn ssm_m128_min_m() -> Option<u32> {
     static M: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     *M.get_or_init(|| {
-        if std::env::var("ATLAS_NO_SSM_M128").is_ok() {
+        if std::env::var("AVAROK_NO_SSM_M128").is_ok() {
             None
         } else {
             Some(65)
@@ -308,7 +308,7 @@ mod tests {
     }
 
     /// The environment fallback can NEVER turn exact verify on: there is no
-    /// `ATLAS_*` variable for it on purpose (house rule: no new env knobs),
+    /// `AVAROK_*` variable for it on purpose (house rule: no new env knobs),
     /// so a serve that skips `set_from_cli` still defaults to the WY arms.
     /// Deterministic despite reading the process environment, because only
     /// the `exact_verify` field is asserted and no variable feeds it.
@@ -317,7 +317,7 @@ mod tests {
         assert!(!GdnFlags::from_env().exact_verify);
         // Same rule for the stage-3 pool sizing: no env variable feeds it.
         // `--ssm-h-dtype f16-pool` is the ONLY way to publish it, so a
-        // legacy `ATLAS_SSM_H_FP16=1` script keeps the FP32-sized pool.
+        // legacy `AVAROK_SSM_H_FP16=1` script keeps the FP32-sized pool.
         assert!(!GdnFlags::from_env().h_f16_pool);
     }
 

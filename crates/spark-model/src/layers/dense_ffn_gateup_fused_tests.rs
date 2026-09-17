@@ -12,7 +12,7 @@ use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::dense_ffn::{DenseFfnLayer, DenseFfnWeights};
 use crate::layers::ops::{self, DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::{BufferArena, GATEUP_FUSED_MAX_M};
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -53,7 +53,7 @@ fn the_fused_arm_claims_exactly_the_five_to_sixteen_row_decode_band() {
     );
 }
 
-/// `ATLAS_FFN_GATEUP_FUSED=0`, and every target but hopper.
+/// `AVAROK_FFN_GATEUP_FUSED=0`, and every target but hopper.
 #[test]
 fn the_lever_off_declines_at_every_width() {
     for m in 1_u32..=32 {

@@ -13,7 +13,7 @@ use super::SlotArena;
 ///
 /// SAFETY: `base` must point at a live mapping of at least `num_slots *
 /// slot_bytes` bytes, page-aligned (mmap guarantees this), outliving the arena.
-/// (Peer-specific — deliberately NOT lifted into atlas-tier: the lifted crate
+/// (Peer-specific — deliberately NOT lifted into avarok-tier: the lifted crate
 /// carries no unsafe raw-pointer arena types.)
 pub struct MmapSlotArena {
     base: *mut u8,

@@ -4,7 +4,7 @@
 //! dispatch/loop/codec, connection-scoped pins.
 //!
 //! The residency-semantics test suite (disk cap, infinite depth, read-pins,
-//! reserved-slot pinning, overwrite/remove, size laws) moved to atlas-tier
+//! reserved-slot pinning, overwrite/remove, size laws) moved to avarok-tier
 //! with the core; the peer-specific MmapSlotArena test lives next to
 //! `mmap_arena.rs`.
 
@@ -165,7 +165,7 @@ fn v1_magic_is_affirmatively_rejected() {
 }
 
 /// WIRE-GOLDEN: the RAW one-sided mode header — `blob_bytes == 0` —
-/// exactly what a RAW one-sided KV client (ATLAS_KV_PAGING off) and the bounded/unified
+/// exactly what a RAW one-sided KV client (AVAROK_KV_PAGING off) and the bounded/unified
 /// snapshot fallback send in place of the retired bare `total_bytes`.
 #[test]
 fn v2_raw_mode_wire_golden() {

@@ -67,7 +67,7 @@
   }
   .cmd-copy:hover {
     border-color: var(--sx);
-    color: var(--sx);
+    color: var(--sx-text);
   }
   pre {
     padding: 0.75em 0.9em;

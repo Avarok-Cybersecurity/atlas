@@ -1,7 +1,7 @@
 #!/bin/bash
-# Script to count files recursively in /workspace/atlas/crates/
+# Script to count files recursively in /workspace/avarok/crates/
 
-TARGET_DIR="/workspace/atlas/crates/"
+TARGET_DIR="/workspace/avarok/crates/"
 
 if [ ! -d "$TARGET_DIR" ]; then
     echo "Error: Directory $TARGET_DIR does not exist."

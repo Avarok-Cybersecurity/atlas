@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The M16 tensor-core family of the target table (#927): `ffn_m16_tc`,
-//! `attn_m16_tc`, `lm_head_m16_tc`, `attn_ncol_gemv` and the `ATLAS_M16_TC`
+//! `attn_m16_tc`, `lm_head_m16_tc`, `attn_ncol_gemv` and the `AVAROK_M16_TC`
 //! umbrella.
 //!
 //! Split from `target_defaults_tests.rs` because the parent crossed the house
@@ -24,30 +24,33 @@ fn hopper_leaves_the_ffn_tensor_core_arm_off_by_declaration() {
     assert!(!empty(&GB10).ffn_m16_tc.value);
 }
 
-/// `ATLAS_FFN_M16_TC` is the A/B that re-runs it, in BOTH directions, and says
+/// `AVAROK_FFN_M16_TC` is the A/B that re-runs it, in BOTH directions, and says
 /// it came from the environment.
 #[test]
 fn the_ffn_tensor_core_arm_is_overridable_in_both_directions() {
-    let on = with(&HOPPER, &[("ATLAS_FFN_M16_TC", "1")]);
+    let on = with(&HOPPER, &[("AVAROK_FFN_M16_TC", "1")]);
     assert!(on.ffn_m16_tc.value && on.ffn_m16_tc.from_env());
     let armed = TargetDefaults {
         ffn_m16_tc: true,
         ..HOPPER
     };
-    let off = with(&armed, &[("ATLAS_FFN_M16_TC", "0")]);
+    let off = with(&armed, &[("AVAROK_FFN_M16_TC", "0")]);
     assert!(!off.ffn_m16_tc.value && off.ffn_m16_tc.from_env());
 }
 
-/// `ATLAS_M16_TC` is round 6's umbrella and still arms this arm — folded in by
+/// `AVAROK_M16_TC` is round 6's umbrella and still arms this arm — folded in by
 /// the RESOLVER, so it composes with the narrow variable rather than racing it.
 #[test]
 fn the_m16_umbrella_arms_the_ffn_arm_too() {
-    let on = with(&HOPPER, &[("ATLAS_M16_TC", "1")]);
+    let on = with(&HOPPER, &[("AVAROK_M16_TC", "1")]);
     assert!(on.ffn_m16_tc.value && on.ffn_m16_tc.from_env());
-    // The narrow variable WINS when both are set, so `ATLAS_FFN_M16_TC=0
-    // ATLAS_M16_TC=1` means what it reads as rather than depending on export
+    // The narrow variable WINS when both are set, so `AVAROK_FFN_M16_TC=0
+    // AVAROK_M16_TC=1` means what it reads as rather than depending on export
     // order.
-    let narrow_off = with(&HOPPER, &[("ATLAS_FFN_M16_TC", "0"), ("ATLAS_M16_TC", "1")]);
+    let narrow_off = with(
+        &HOPPER,
+        &[("AVAROK_FFN_M16_TC", "0"), ("AVAROK_M16_TC", "1")],
+    );
     assert!(!narrow_off.ffn_m16_tc.value);
 }
 
@@ -57,7 +60,8 @@ fn the_m16_umbrella_arms_the_ffn_arm_too() {
 fn the_serve_line_names_the_ffn_tensor_core_row() {
     assert!(format_levers(&empty(&HOPPER)).contains("ffn_m16_tc=off"));
     assert!(
-        format_levers(&with(&HOPPER, &[("ATLAS_FFN_M16_TC", "1")])).contains("ffn_m16_tc=on (env)")
+        format_levers(&with(&HOPPER, &[("AVAROK_FFN_M16_TC", "1")]))
+            .contains("ffn_m16_tc=on (env)")
     );
 }
 
@@ -72,11 +76,11 @@ fn hopper_arms_the_attention_tensor_core_tiers_by_declaration() {
     assert!(!empty(&GB10).attn_m16_tc.value);
 }
 
-/// `ATLAS_ATTN_M16_TC=0` is the one-variable A/B that pins the parent tiers,
+/// `AVAROK_ATTN_M16_TC=0` is the one-variable A/B that pins the parent tiers,
 /// and it reports that it came from the environment.
 #[test]
 fn the_attention_tiers_are_disarmable_from_the_environment() {
-    let off = with(&HOPPER, &[("ATLAS_ATTN_M16_TC", "0")]);
+    let off = with(&HOPPER, &[("AVAROK_ATTN_M16_TC", "0")]);
     assert!(!off.attn_m16_tc.value && off.attn_m16_tc.from_env());
     assert!(format_levers(&off).contains("attn_m16_tc=off (env)"));
 }
@@ -85,7 +89,7 @@ fn the_attention_tiers_are_disarmable_from_the_environment() {
 /// why it is folded in here and not at the consumer.
 #[test]
 fn the_m16_umbrella_arms_both_halves() {
-    let both = with(&GB10, &[("ATLAS_M16_TC", "1")]);
+    let both = with(&GB10, &[("AVAROK_M16_TC", "1")]);
     assert!(both.ffn_m16_tc.value && both.attn_m16_tc.value);
     assert!(both.ffn_m16_tc.from_env() && both.attn_m16_tc.from_env());
 }
@@ -97,22 +101,22 @@ fn the_m16_umbrella_arms_both_halves() {
 fn hopper_arms_the_tensor_core_head_and_the_umbrella_does_not() {
     assert!(empty(&HOPPER).lm_head_m16_tc.value);
     assert!(!empty(&GB10).lm_head_m16_tc.value);
-    let umbrella = with(&GB10, &[("ATLAS_M16_TC", "1")]);
+    let umbrella = with(&GB10, &[("AVAROK_M16_TC", "1")]);
     assert!(
         !umbrella.lm_head_m16_tc.value,
-        "ATLAS_M16_TC is round 6's, and round 6 did not measure the head"
+        "AVAROK_M16_TC is round 6's, and round 6 did not measure the head"
     );
-    let off = with(&HOPPER, &[("ATLAS_LM_HEAD_M16_TC", "0")]);
+    let off = with(&HOPPER, &[("AVAROK_LM_HEAD_M16_TC", "0")]);
     assert!(!off.lm_head_m16_tc.value && off.lm_head_m16_tc.from_env());
 }
 
 /// The N-column GEMV row is OFF on every target, and the row says why: no
-/// serving A/B exists for it anywhere. `ATLAS_ATTN_NCOL_GEMV` runs that A/B.
+/// serving A/B exists for it anywhere. `AVAROK_ATTN_NCOL_GEMV` runs that A/B.
 #[test]
 fn the_ncol_gemv_row_is_off_everywhere_and_armable() {
     assert!(!empty(&HOPPER).attn_ncol_gemv.value);
     assert!(!empty(&GB10).attn_ncol_gemv.value);
-    let on = with(&HOPPER, &[("ATLAS_ATTN_NCOL_GEMV", "1")]);
+    let on = with(&HOPPER, &[("AVAROK_ATTN_NCOL_GEMV", "1")]);
     assert!(on.attn_ncol_gemv.value && on.attn_ncol_gemv.from_env());
 }
 
@@ -126,10 +130,10 @@ fn the_attention_decode_batch_kill_switch_outranks_the_row() {
         ..HOPPER
     };
     for env in [
-        vec![("ATLAS_NO_ATTN_DECODE_BATCH", "1")],
+        vec![("AVAROK_NO_ATTN_DECODE_BATCH", "1")],
         vec![
-            ("ATLAS_NO_ATTN_DECODE_BATCH", "1"),
-            ("ATLAS_ATTN_NCOL_GEMV", "1"),
+            ("AVAROK_NO_ATTN_DECODE_BATCH", "1"),
+            ("AVAROK_ATTN_NCOL_GEMV", "1"),
         ],
     ] {
         let l = with(&armed, &env);

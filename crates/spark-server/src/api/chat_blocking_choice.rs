@@ -42,9 +42,9 @@ pub(super) fn build_choice_message(
     let mut finish_reason_i = response.finish_reason.clone();
 
     if tools_active {
-        if std::env::var("ATLAS_LOG_TOOL_RAW").as_deref() == Ok("1") {
+        if std::env::var("AVAROK_LOG_TOOL_RAW").as_deref() == Ok("1") {
             tracing::info!(
-                target: "atlas::tool_debug",
+                target: "avarok::tool_debug",
                 "raw pre-parse output (tools_active, choice {choice_idx}): {output_text_i:?}"
             );
         }

@@ -20,7 +20,7 @@
 // Numerics SSOT (Phase 2b, 2026-05-24): all f32 -> BF16 conversions in
 // this file use `__float2bfloat16(x)`, which on sm_80+ lowers to
 // `cvt.rn.bf16.f32` (round-to-nearest-even). This matches the
-// load-time CPU dequant in `atlas_core::numeric::f32_to_bf16` (the one
+// load-time CPU dequant in `avarok_core::numeric::f32_to_bf16` (the one
 // Rust copy), so the routed-expert kernel-side dequant agrees byte-exact
 // with the shared-expert load-time dequant AND with PyTorch's
 // `torch.float32 -> torch.bfloat16` reference.

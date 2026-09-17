@@ -8,11 +8,11 @@
 set -euo pipefail
 
 MODEL="${1:-MiniMaxAI/MiniMax-M2}"
-IMAGE="${IMAGE:-atlas-gb10:m3e}"
+IMAGE="${IMAGE:-avarok-gb10:m3e}"
 PORT="${PORT:-8888}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.88}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-16384}"
-CONTAINER="${CONTAINER:-atlas-minimax-bringup}"
+CONTAINER="${CONTAINER:-avarok-minimax-bringup}"
 
 echo "=== Atlas MiniMax single-node bring-up ==="
 echo "Model:    $MODEL"

@@ -5,7 +5,7 @@
 # (originally C++), eliminating the cxx FFI bridge and the C++
 # toolchain dependency. See PORT_PLAN.md for the port roadmap.
 # W7: the standalone `[workspace]` table was removed so this crate
-# joins the parent atlas workspace (registered in the root
+# joins the parent avarok workspace (registered in the root
 # `Cargo.toml` `members` list); `spark-server` depends on it directly.
 
 [package]

@@ -24,7 +24,7 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_list(f: &mut Frame, app: &App, area: Rect) {
-    let all = atlas_plugin::registry::all();
+    let all = avarok_plugin::registry::all();
     let n = all.len();
     let block = panel("SUITE ─".into(), true);
     let inner = block.inner(area);

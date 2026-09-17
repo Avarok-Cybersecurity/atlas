@@ -14,10 +14,10 @@ unsafe fn uma_bytes(buf: &PinnedBuffer, n: usize) -> &[u8] {
 }
 
 #[test]
-#[ignore = "requires GPU + live cache-peer at $ATLAS_KV_PEER"]
+#[ignore = "requires GPU + live cache-peer at $AVAROK_KV_PEER"]
 fn rdma_kv_round_trip() {
     let _ctx = CudaCtx::new(0).expect("cuda init");
-    let peer = std::env::var("ATLAS_KV_PEER").expect("set ATLAS_KV_PEER=host:port");
+    let peer = std::env::var("AVAROK_KV_PEER").expect("set AVAROK_KV_PEER=host:port");
     let layout = GroupLayout::new(2, 4, 2, 16, 128, 2, 4096);
     let bytes = layout.group_bytes() as usize;
     let mut be = RdmaKvBackend::connect(&peer, layout).expect("connect kv peer");
@@ -57,10 +57,10 @@ fn rdma_kv_round_trip() {
 }
 
 #[test]
-#[ignore = "requires GPU + live cache-peer at $ATLAS_KV_PEER"]
+#[ignore = "requires GPU + live cache-peer at $AVAROK_KV_PEER"]
 fn rdma_kv_bandwidth() {
     let ctx = CudaCtx::new(0).expect("cuda init");
-    let peer = std::env::var("ATLAS_KV_PEER").expect("set ATLAS_KV_PEER=host:port");
+    let peer = std::env::var("AVAROK_KV_PEER").expect("set AVAROK_KV_PEER=host:port");
     let layout = GroupLayout::new(16, 64, 8, 64, 128, 2, 4096);
     let gbytes = layout.group_bytes() as usize;
     let mut be = RdmaKvBackend::connect(&peer, layout).expect("connect kv peer");
@@ -80,7 +80,7 @@ fn rdma_kv_bandwidth() {
         })
         .collect();
     let src = vec![0xABu8; gbytes];
-    // UMA dst so zero-copy (ATLAS_KV_ZERO_COPY=1) can RDMA straight in.
+    // UMA dst so zero-copy (AVAROK_KV_ZERO_COPY=1) can RDMA straight in.
     let dst = PinnedBuffer::new(gbytes).unwrap();
     let dptr = dst.device_ptr().unwrap();
 

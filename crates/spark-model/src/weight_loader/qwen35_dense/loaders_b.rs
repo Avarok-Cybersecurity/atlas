@@ -4,7 +4,7 @@
 //! for the ≤500 LoC file-size cap. Called from the trait impl in the parent.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore};
 

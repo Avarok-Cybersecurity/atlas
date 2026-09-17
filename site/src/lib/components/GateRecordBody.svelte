@@ -41,7 +41,7 @@
     <dt>n</dt>
     <dd>{sampleCount(r)}</dd>
   {/if}
-  <dt>atlas</dt>
+  <dt>avarok</dt>
   <dd>{r.atlas_version}</dd>
 </dl>
 

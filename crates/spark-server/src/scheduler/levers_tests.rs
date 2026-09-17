@@ -15,11 +15,11 @@ fn the_five_opt_out_levers_ship_on() {
     // Each of these is spelled as a NEGATIVE env var. Collapsing them into
     // an opt-in resolver would silently disable five shipped behaviours.
     let d = SchedLevers::defaults();
-    assert!(d.fast_greedy_grammar, "ATLAS_DISABLE_FAST_GREEDY");
-    assert!(d.fast_masked, "ATLAS_DISABLE_FAST_MASKED");
-    assert!(d.mtp_minp, "ATLAS_NO_MTP_MINP");
-    assert!(d.mtp_verify_sample, "ATLAS_NO_MTP_VERIFY_SAMPLE");
-    assert!(d.forced_token_fastpath, "ATLAS_DISABLE_FORCED_TOKEN");
+    assert!(d.fast_greedy_grammar, "AVAROK_DISABLE_FAST_GREEDY");
+    assert!(d.fast_masked, "AVAROK_DISABLE_FAST_MASKED");
+    assert!(d.mtp_minp, "AVAROK_NO_MTP_MINP");
+    assert!(d.mtp_verify_sample, "AVAROK_NO_MTP_VERIFY_SAMPLE");
+    assert!(d.forced_token_fastpath, "AVAROK_DISABLE_FORCED_TOKEN");
 }
 
 /// The two turn-termination levers ship ON, and they accept `false` as
@@ -36,12 +36,12 @@ fn the_five_opt_out_levers_ship_on() {
 fn the_turn_termination_levers_ship_on_in_the_live_resolver() {
     // SAFETY: single-threaded test process; no other thread reads the env.
     unsafe {
-        std::env::remove_var("ATLAS_TOOL_RESPONSE_STOP");
-        std::env::remove_var("ATLAS_TOOL_EOS_ESCAPE");
+        std::env::remove_var("AVAROK_TOOL_RESPONSE_STOP");
+        std::env::remove_var("AVAROK_TOOL_EOS_ESCAPE");
     }
     let live = SchedLevers::from_env();
-    assert!(live.tool_response_stop, "ATLAS_TOOL_RESPONSE_STOP");
-    assert!(live.tool_eos_escape, "ATLAS_TOOL_EOS_ESCAPE");
+    assert!(live.tool_response_stop, "AVAROK_TOOL_RESPONSE_STOP");
+    assert!(live.tool_eos_escape, "AVAROK_TOOL_EOS_ESCAPE");
     assert!(SchedLevers::defaults().tool_response_stop);
     assert!(SchedLevers::defaults().tool_eos_escape);
 
@@ -92,11 +92,11 @@ fn every_opt_in_lever_ships_off() {
 #[test]
 fn spec_think_is_off_in_the_resolver_the_server_actually_uses() {
     // SAFETY: single-threaded test process; no other thread reads the env.
-    unsafe { std::env::remove_var("ATLAS_DFLASH_SPEC_THINK") };
+    unsafe { std::env::remove_var("AVAROK_DFLASH_SPEC_THINK") };
     let live = SchedLevers::from_env();
     assert!(
         !live.dflash_spec_think,
-        "ATLAS_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
+        "AVAROK_DFLASH_SPEC_THINK must stay OPT-IN: from_env() resolved it ON. \
          It is the one lever here that is not gated behind dflash_verify_raw_argmax, \
          so defaulting it on changes plain-MTP serving and deterministically \
          damages agentic trajectories. See mtp_gate::spec_dispatch_eligible."
@@ -131,7 +131,7 @@ fn the_loop_watchdog_is_toggleable_at_runtime() {
 fn an_absent_mtp_gate_flag_leaves_the_legacy_variable_reachable() {
     // The whole of the fix: publishing the clap default sealed
     // `MTP_GATE_FORCE_CLI` on every `spark serve`, so the
-    // `ATLAS_MTP_GATE_FORCE` fallback in `mtp_gate_force` could never run
+    // `AVAROK_MTP_GATE_FORCE` fallback in `mtp_gate_force` could never run
     // even though `--help` documents it. `None` must not seal.
     //
     // ★ The cell is process-global with no reset, so this is the only test
@@ -181,7 +181,7 @@ fn the_per_token_scheduler_path_does_not_read_the_environment() {
     // (file, functions still allowed to read)
     const GUARDED: [(&str, &[&str]); 7] = [
         ("emit_step.rs", &[]),
-        // Per VERIFY STEP. `ATLAS_DFLASH_EAGLE_FIX` was read from both of
+        // Per VERIFY STEP. `AVAROK_DFLASH_EAGLE_FIX` was read from both of
         // these, each with its own `!= Some("0")` — one variable, two
         // implementations, nothing comparing them.
         ("verify_dflash_step.rs", &[]),
@@ -260,10 +260,10 @@ fn the_per_token_scheduler_path_does_not_read_the_environment() {
 
 /// The verify-step levers, and the duplicate that motivated them.
 ///
-/// `ATLAS_DFLASH_EAGLE_FIX` ships ON since the 54.5 record config and was
+/// `AVAROK_DFLASH_EAGLE_FIX` ships ON since the 54.5 record config and was
 /// read from `verify_dflash_step.rs` AND `verify_k2_step.rs`, each per verify
 /// step with its own `!= Some("0")`. That is the same shape as
-/// `ATLAS_DSPARK_ANCHOR_BIAS`, which had two implementations that nothing
+/// `AVAROK_DSPARK_ANCHOR_BIAS`, which had two implementations that nothing
 /// compared until one of them was changed.
 ///
 /// Asserted against `from_env()` as well as `defaults()`, for the reason
@@ -279,10 +279,10 @@ fn the_verify_step_levers_hold_their_polarities() {
     assert!(!d.vision_timing);
 
     // SAFETY: single-threaded test process; no other thread reads the env.
-    unsafe { std::env::remove_var("ATLAS_DFLASH_EAGLE_FIX") };
+    unsafe { std::env::remove_var("AVAROK_DFLASH_EAGLE_FIX") };
     assert!(
         SchedLevers::from_env().dflash_eagle_fix,
-        "ATLAS_DFLASH_EAGLE_FIX must stay DEFAULT-ON in the resolver the \
+        "AVAROK_DFLASH_EAGLE_FIX must stay DEFAULT-ON in the resolver the \
          server actually uses — `defaults()` is a hand-written literal and \
          cannot catch a change here"
     );

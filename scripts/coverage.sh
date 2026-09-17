@@ -30,7 +30,7 @@ shift
 # Same no-GPU env CI's `test` job uses (.github/workflows/ci.yml): skip nvcc in
 # build.rs and short-circuit cudarc's driver probe. Exported here too so the
 # script behaves identically when a developer runs it on a GB10 box.
-export ATLAS_SKIP_BUILD="${ATLAS_SKIP_BUILD:-1}"
+export AVAROK_SKIP_BUILD="${AVAROK_SKIP_BUILD:-1}"
 export CUDARC_CUDA_VERSION="${CUDARC_CUDA_VERSION:-13000}"
 # Belt-and-braces for developers running this on a machine that DOES have a
 # GPU: every test that needs one is `#[ignore]`-gated, but hiding the device
@@ -45,14 +45,14 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 #
 #   vendor/                  vendored cudarc (upstream code, not ours to test)
 #   target/                  build-script output, incl. the generated
-#                            OUT_DIR/*_ptx.rs that atlas-kernels/spark-storage
+#                            OUT_DIR/*_ptx.rs that avarok-kernels/spark-storage
 #                            `include!`
 #   build.rs                 build scripts run at compile time, not under test
-#   crates/atlas-kernels/    entirely build.rs-generated PTX constants
+#   crates/avarok-kernels/    entirely build.rs-generated PTX constants
 #   crates/cufile-sys/       raw dlopen FFI to libcufile (GDS; dormant on GB10)
 #   crates/spark-comm/       raw FFI to libnccl; CI links a fail-fast stub
-#   atlas-rdma/src/verbs.rs  ibverbs FFI; `cfg(atlas_rdma_verbs)` is compiled
-#                            OUT under ATLAS_SKIP_BUILD. The rest of the crate
+#   avarok-rdma/src/verbs.rs  ibverbs FFI; `cfg(avarok_rdma_verbs)` is compiled
+#                            OUT under AVAROK_SKIP_BUILD. The rest of the crate
 #                            (wire codecs, railset, handshake) IS covered and
 #                            deliberately stays in the report.
 #   spark-model/.../ops/     thin `KernelLaunch` wrappers — one CUDA kernel
@@ -63,7 +63,7 @@ export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-}"
 #
 # ★ Any addition here needs a rationale on the line above it. An exclusion is
 #   how a coverage number quietly becomes a decoration.
-IGNORE_REGEX='(^|/)vendor/|(^|/)target/|/build\.rs$|(^|/)crates/(atlas-kernels|cufile-sys|spark-comm)/|(^|/)crates/atlas-rdma/src/verbs\.rs$|(^|/)crates/spark-model/src/layers/ops/|(^|/)crates/[^/]+/(tests|benches|examples)/'
+IGNORE_REGEX='(^|/)vendor/|(^|/)target/|/build\.rs$|(^|/)crates/(avarok-kernels|cufile-sys|spark-comm)/|(^|/)crates/avarok-rdma/src/verbs\.rs$|(^|/)crates/spark-model/src/layers/ops/|(^|/)crates/[^/]+/(tests|benches|examples)/'
 
 # Run and report are SPLIT on purpose (`clean` -> `--no-report` -> `report`,
 # cargo-llvm-cov's documented multi-step flow). The single-shot form generates

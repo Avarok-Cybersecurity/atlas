@@ -10,13 +10,13 @@ use anyhow::{Context, Result, bail};
 use half::bf16;
 use serde_json::Value;
 use spark_model::layers::ops::{Glm5NextMhcKernels, hc_head_mean, hc_post, hc_pre};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use std::collections::BTreeMap;
 
 pub(crate) fn run() -> Result<()> {
     let dir = std::env::var("MHC_PACKET_DIR")
-        .unwrap_or_else(|_| "/home/msi1/atlas-scratch/mhc-family".to_string());
+        .unwrap_or_else(|_| "/home/msi1/avarok-scratch/mhc-family".to_string());
     let g = Golden::load()?;
     let hid = g.fixture("hidden")? as usize;
     let hc = g.fixture("hc_mult")? as usize;
@@ -32,7 +32,7 @@ pub(crate) fn run() -> Result<()> {
          hc_eps={hc_eps:e} rms_norm_eps={norm_eps:e}"
     );
 
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     // Two mHC entry points, deliberately separate:
     //   `hyper_connection::hc_pre`   — DeepSeek-V4's, frozen, ends on an EXACT column projection.
     //   `glm5next_mhc::glm5next_hc_pre` — GLM's, same signature, that block removed.

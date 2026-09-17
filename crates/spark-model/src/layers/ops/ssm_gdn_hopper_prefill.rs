@@ -20,11 +20,11 @@
 //! 512 threads, and `wu`'s two forward substitutions, 79-85% of that kernel
 //! per its own 2026-08-22 solve-removed probe.
 //!
-//! ONE LEVER FOR THE FAMILY. `ATLAS_GDN_PREFILL_TC` already selects the
+//! ONE LEVER FOR THE FAMILY. `AVAROK_GDN_PREFILL_TC` already selects the
 //! tensor-core state spine; it now selects these two as well wherever the
 //! image carries them, because the three kernels are one pipeline and an
 //! operator who wants the TC prefill wants all of it. The A/B that needs them
-//! apart gets `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1`, which keeps the spine and
+//! apart gets `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1`, which keeps the spine and
 //! leaves `wu`/`fwd_o` on their parents — one variable, in the direction that
 //! is safe to be wrong about.
 
@@ -94,7 +94,7 @@ pub(crate) fn gdn_hopper_remnant_reject(
     if !requested {
         Some("not requested")
     } else if killed {
-        Some("ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1 pins wu/fwd_o to their parents")
+        Some("AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1 pins wu/fwd_o to their parents")
     } else if !kernel_present {
         Some("kernel absent from this image (kernels/hopper only)")
     } else if k_dim != GDN_HOPPER_DIM || v_dim != GDN_HOPPER_DIM || chunk != GDN_HOPPER_CHUNK {
@@ -162,7 +162,7 @@ pub(crate) fn gdn_hopper_remnant_log(name: &str, pick: &RemnantPick, requested: 
             tracing::warn!("GDN {name}: the Hopper twin is NOT running: {why}");
         }
         None => tracing::info!(
-            "GDN {name}: gated_delta_rule_{name}_hopper (ATLAS_GDN_PREFILL_TC) \
+            "GDN {name}: gated_delta_rule_{name}_hopper (AVAROK_GDN_PREFILL_TC) \
              block={} smem={}B",
             pick.block,
             pick.smem
@@ -174,11 +174,11 @@ pub(crate) fn gdn_hopper_remnant_log(name: &str, pick: &RemnantPick, requested: 
 /// Resolve BOTH remnants and log the verdicts, in one call.
 ///
 /// `requested` is the TC prefill FAMILY bit — `[defaults] gdn_prefill_tc` with
-/// `ATLAS_GDN_PREFILL_TC` overriding — resolved ONCE by the caller and handed
+/// `AVAROK_GDN_PREFILL_TC` overriding — resolved ONCE by the caller and handed
 /// down as a VALUE, because the same lever also selects the tensor-core state
 /// spine: two reads is two chances to disagree about what the operator asked
 /// for, and a presence check here would arm the twins for the explicit
-/// `ATLAS_GDN_PREFILL_TC=0` that turns the spine off — a prefill that is
+/// `AVAROK_GDN_PREFILL_TC=0` that turns the spine off — a prefill that is
 /// neither leg of the A/B.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gdn_hopper_remnants(
@@ -206,13 +206,13 @@ pub(crate) fn gdn_hopper_remnants(
     (wu, fo)
 }
 
-/// `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` — the one-variable A/B switch.
+/// `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` — the one-variable A/B switch.
 ///
 /// Read here rather than at the launch site so the two remnants cannot be
 /// enabled by different spellings, and so the tests can pin the spelling
 /// without touching the process environment.
 pub(crate) fn gdn_hopper_remnants_killed() -> bool {
-    std::env::var("ATLAS_NO_GDN_PREFILL_TC_REMNANTS")
+    std::env::var("AVAROK_NO_GDN_PREFILL_TC_REMNANTS")
         .ok()
         .as_deref()
         == Some("1")

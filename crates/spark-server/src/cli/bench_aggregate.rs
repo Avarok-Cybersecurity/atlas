@@ -11,8 +11,8 @@
 //! (`gate::group::select_partition`).
 
 use anyhow::{Result, bail};
-use atlas_plugin::benchmarks::bfcl::aggregate;
-use atlas_plugin::gate;
+use avarok_plugin::benchmarks::bfcl::aggregate;
+use avarok_plugin::gate;
 
 use super::bench_args::{AggregateArgs, OutputFormat};
 

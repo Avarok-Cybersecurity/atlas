@@ -53,7 +53,7 @@ fn every_tensor_is_intentionally_classified() {
 }
 
 /// Reconciled census — see
-/// `.planning/ATLAS-GLM5NEXT-SKILL-RECONCILIATION-20260826.md`.
+/// `.planning/AVAROK-GLM5NEXT-SKILL-RECONCILIATION-20260826.md`.
 /// The per-layer mixer tensors are the discriminator: KDA layers carry `A_log`,
 /// sparse-MLA layers carry `kv_b_proj`.
 #[test]

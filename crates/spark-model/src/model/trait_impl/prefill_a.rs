@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -504,7 +504,7 @@ impl TransformerModel {
             }
         }
 
-        // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
+        // AVAROK_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
         // hiddens for the whole-prompt drafter prefill. No-op when disabled.
         self.try_mtp_prefill_capture(seq, seq_len_start, proc_count, stream)?;
 

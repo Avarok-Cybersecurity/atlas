@@ -34,8 +34,8 @@ test('a fragment on the engine page cannot satisfy a homepage link', () => {
 
 test('homepage fragments resolve in built markup, including no-JS links', () => {
   const result = check(
-    { 'index.html': '<section id="verified"></section><noscript><a id="run" href="/engine.html#run">Install Atlas</a></noscript>' },
-    '<a href="https://atlascybernetics.ai/#verified">Benchmarks</a><a href="https://atlascybernetics.ai/index.html#run">Install Atlas</a>'
+    { 'index.html': '<section id="verified"></section><noscript><a id="run" href="/engine.html#run">Start Atlas</a></noscript>' },
+    '<a href="https://atlascybernetics.ai/#verified">Benchmarks</a><a href="https://atlascybernetics.ai/index.html#run">Start Atlas</a>'
   );
   expect(result.status).toBe(0);
   expect(result.stdout).toContain('all 2 cross-property fragment links resolve');
@@ -58,13 +58,22 @@ test('URL-encoded fragments match the browser destination', () => {
   expect(result.status).toBe(0);
 });
 
-test('an extensionless URL is not silently rewritten to an HTML filename', () => {
+test('extensionless /engine resolves against engine.html ids', () => {
   const result = check(
     { 'index.html': '<main id="home"></main>', 'engine.html': '<section id="verified"></section>' },
     '<a href="https://atlascybernetics.ai/engine#verified">Benchmarks</a>'
   );
+  expect(result.status).toBe(0);
+  expect(result.stdout).toContain('all 1 cross-property fragment links resolve');
+});
+
+test('a missing fragment on /engine still fails after the pretty-URL alias', () => {
+  const result = check(
+    { 'index.html': '<main id="home"></main>', 'engine.html': '<section id="verified"></section>' },
+    '<a href="https://atlascybernetics.ai/engine#nope">Benchmarks</a>'
+  );
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain('https://atlascybernetics.ai/engine#verified');
+  expect(result.stderr).toContain('https://atlascybernetics.ai/engine#nope');
 });
 
 test('removing every cross-property fragment link still fails the guard', () => {

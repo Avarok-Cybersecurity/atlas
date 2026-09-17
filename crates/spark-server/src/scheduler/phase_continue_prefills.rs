@@ -50,7 +50,7 @@ use spec_mixing::mixing_blocked_by_spec;
 /// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
 /// so calling on every chunk costs one scoped-cell load in the disabled case.
 /// On non-cuda backends the driver doesn't exist (it talks to the CUDA
-/// Driver API directly via `atlas_core::registry`), so this collapses to
+/// Driver API directly via `avarok_core::registry`), so this collapses to
 /// a no-op via the `#[cfg]` gate.
 pub(super) fn poll_innerq(model: &dyn Model) {
     model.poll_innerq();
@@ -106,7 +106,7 @@ pub(super) fn continue_in_progress_prefills(
     // ── Step 2 (spec): always-on fused mixed step ──
     //
     // slice_budget governs how many prefill tokens a fused mixed step
-    // injects. When ATLAS_HOLO_ALWAYS_MIXED is OFF the scheduler is
+    // injects. When AVAROK_HOLO_ALWAYS_MIXED is OFF the scheduler is
     // BYTE-IDENTICAL to today: binary should_prefill gate, full-chunk
     // budget (full_chunk == max_prefill_tokens, the current cap).
     //
@@ -134,7 +134,7 @@ pub(super) fn continue_in_progress_prefills(
         if fusable_mixed {
             // Compute the prefill slice (cost-driven; 0 == hard-deadline suppress).
             slice_budget = policy.prefill_slice_budget(&timings, max_prefill_tokens);
-            // ATLAS_MIXED_SLICE_TOKENS: experimental override of the
+            // AVAROK_MIXED_SLICE_TOKENS: experimental override of the
             // policy's full-chunk default. MEASURED on qwen4_exp
             // (2026-08-27): the Holo full-chunk lesson HOLDS here too — a
             // fused chunk has a ~1.1-1.3 s FLOOR regardless of slice size
@@ -147,7 +147,7 @@ pub(super) fn continue_in_progress_prefills(
             // 0/unset = policy default. Never overrides a hard suppress.
             static MIXED_SLICE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
             let cap = *MIXED_SLICE.get_or_init(|| {
-                std::env::var("ATLAS_MIXED_SLICE_TOKENS")
+                std::env::var("AVAROK_MIXED_SLICE_TOKENS")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0)
@@ -195,11 +195,11 @@ pub(super) fn continue_in_progress_prefills(
     // by construction at active.len() >= 2 — the MTP dispatch cap is 32, not
     // 1 — so this branch does run under a live speculative regime; see the
     // `spec_mixing` module doc for what that costs and why it stands.
-    // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
+    // BISECT: AVAROK_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
     // (pre-Q12 behavior) so we can isolate whether the chunked-prefill +
     // concurrent-decode crash originates in the Q12 batched-prefill
     // dispatch or pre-existing chunked-prefill state mutation.
-    let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
+    let q12_dispatch_disabled = std::env::var("AVAROK_BISECT_Q12_DISABLE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     // Prompt-logprob collection (legacy echo scoring) is single-stream
@@ -219,7 +219,7 @@ pub(super) fn continue_in_progress_prefills(
         && prefilling.len() >= 2
         && active.is_empty()
         && !model.is_ep();
-    // When ATLAS_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
+    // When AVAROK_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
     // case onto the single-stream fused path below (FIFO head prefill fused
     // with all active decodes via mixed_forward, sized by the slice budget)
     // instead of the serializing N-stream run_batched_mixed_step — that batched
@@ -338,7 +338,7 @@ pub(super) fn continue_in_progress_prefills(
                     // matcher); no-op without a grammar.
                     // P1-4 (2026-07-09): thread the resolved `min_p` —
                     // previously a hardcoded 0.0 inside the sampler.
-                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                    // Kill-switch: AVAROK_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         logits,

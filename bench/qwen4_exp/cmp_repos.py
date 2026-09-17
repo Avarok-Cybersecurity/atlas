@@ -17,7 +17,7 @@ REPOS = {
 
 
 def get(url):
-    req = urllib.request.Request(url, headers={'User-Agent': 'atlas-cmp'})
+    req = urllib.request.Request(url, headers={'User-Agent': 'avarok-cmp'})
     return json.load(urllib.request.urlopen(req, timeout=300))
 
 

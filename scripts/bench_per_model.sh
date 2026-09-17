@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench_per_model.sh — Rebuild atlas-gb10 + benchmark all models, per-model MD output.
+# bench_per_model.sh — Rebuild avarok-gb10 + benchmark all models, per-model MD output.
 #
 # Usage:
 #   bash scripts/bench_per_model.sh
@@ -8,7 +8,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IMAGE="atlas-gb10:latest"
+IMAGE="avarok-gb10:latest"
 PORT=8888
 HF_CACHE="${HOME}/.cache/huggingface"
 RESULTS_DIR="$REPO_ROOT/bench-results"
@@ -97,7 +97,7 @@ run_model() {
   local extra_args=("$@")
   local isls="${BENCH_ISLS:-$MOE_ISLS}"
   local concs="${BENCH_CONCS:-$MOE_CONCS}"
-  local container="atlas-bench"
+  local container="avarok-bench"
   local url="http://localhost:${PORT}"
 
   log "=== START: ${label} ==="
@@ -154,11 +154,11 @@ run_ep2_model() {
 
   log "=== START: ${label} (EP=2) ==="
 
-  sudo docker rm -f atlas-ep0 2>/dev/null || true
-  ssh "$worker_ip" "sudo docker rm -f atlas-ep1 2>/dev/null || true"
+  sudo docker rm -f avarok-ep0 2>/dev/null || true
+  ssh "$worker_ip" "sudo docker rm -f avarok-ep1 2>/dev/null || true"
 
   sudo docker run -d \
-    --name atlas-ep0 \
+    --name avarok-ep0 \
     --gpus all --ipc=host --network host \
     --device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1 \
     -e RUST_LOG=warn \
@@ -184,7 +184,7 @@ run_ep2_model() {
       --speculative --mtp-quantization nvfp4
 
   ssh "$worker_ip" "sudo docker run -d \
-    --name atlas-ep1 \
+    --name avarok-ep1 \
     --gpus all --ipc=host --network host \
     --device=/dev/infiniband --cap-add=IPC_LOCK --ulimit memlock=-1 \
     -e RUST_LOG=warn \
@@ -223,13 +223,13 @@ run_ep2_model() {
       2>&1) || bench_out="ERROR: bench failed"
   else
     local docker_log
-    docker_log=$(sudo docker logs atlas-ep0 2>&1 | tail -20)
+    docker_log=$(sudo docker logs avarok-ep0 2>&1 | tail -20)
     coherence_out="SKIPPED — server did not start"
     bench_out="SKIPPED — server did not start\n\nDocker log tail:\n${docker_log}"
   fi
 
-  sudo docker rm -f atlas-ep0 2>/dev/null || true
-  ssh "$worker_ip" "sudo docker rm -f atlas-ep1 2>/dev/null || true"
+  sudo docker rm -f avarok-ep0 2>/dev/null || true
+  ssh "$worker_ip" "sudo docker rm -f avarok-ep1 2>/dev/null || true"
 
   write_model_md "$outfile" "$label" "$model" \
     "EP=2, NVFP4 KV, MTP K=2, max-seq-len=4096" \

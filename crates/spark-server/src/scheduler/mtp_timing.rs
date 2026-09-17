@@ -2,7 +2,7 @@
 
 //! Env-gated phase timing for the MTP K=2 verify path (#237 fixed-overhead hunt).
 //!
-//! `ATLAS_MTP_TIMING=1` arms per-phase accumulators across the verify step:
+//! `AVAROK_MTP_TIMING=1` arms per-phase accumulators across the verify step:
 //! sync/EP/forward, the per-position host pipeline (D2H, dequant, processor
 //! stages, penalties, argmax), grammar mask fills (both `fill_bitmask` and the
 //! `forced_token` path, which computes a full mask of its own), SSM/proposer
@@ -13,7 +13,7 @@
 //! Purely diagnostic: zero behavioral effect, and near-zero cost when the env
 //! is unset (`RunTiming::armed` is a plain bool; `record` returns immediately).
 //!
-//! `ATLAS_MTP_GATE_FORCE=1` (diagnostic companion, wired in `scheduler::mod`)
+//! `AVAROK_MTP_GATE_FORCE=1` (diagnostic companion, wired in `scheduler::mod`)
 //! disarms the throughput gate so verify steps keep flowing even in a regime
 //! the gate would call net-negative — required to collect ~100 verify samples
 //! for attribution. Never set in production.
@@ -104,7 +104,7 @@ const NAMES: [&str; NUM_PHASES] = [
 /// scheduler context and should not grow one).
 #[derive(Debug)]
 pub struct RunTiming {
-    /// Armed by `ATLAS_MTP_TIMING=1`. When false every `record` is a
+    /// Armed by `AVAROK_MTP_TIMING=1`. When false every `record` is a
     /// predictable branch and nothing else.
     pub armed: bool,
     sum_us: [AtomicU64; NUM_PHASES],
@@ -120,7 +120,7 @@ pub struct RunTiming {
 
 impl RunTiming {
     pub fn from_env() -> Self {
-        Self::new(std::env::var("ATLAS_MTP_TIMING").ok().as_deref() == Some("1"))
+        Self::new(std::env::var("AVAROK_MTP_TIMING").ok().as_deref() == Some("1"))
     }
 
     pub fn new(armed: bool) -> Self {
@@ -166,7 +166,7 @@ impl Default for RunTiming {
     }
 }
 
-// `ATLAS_MTP_GATE_FORCE` is now `SchedLevers::mtp_gate_force`, read from
+// `AVAROK_MTP_GATE_FORCE` is now `SchedLevers::mtp_gate_force`, read from
 // `SchedCtx` where the gate is armed.
 
 /// Mark one verify step complete (records `StepTotal` from `step_start`) and
@@ -213,7 +213,7 @@ pub(crate) fn step_done(timing: &RunTiming, step_start: Instant, seq_len: usize)
 /// Error returns are counted too; they set `a.finished` and are rare, but an
 /// unusually low `total` beside a high step count implies they fired.
 ///
-/// Costs one `Instant::now()` when `ATLAS_MTP_TIMING` is unset, since
+/// Costs one `Instant::now()` when `AVAROK_MTP_TIMING` is unset, since
 /// `step_done` returns immediately when the sink is disarmed.
 pub(crate) struct StepTimer<'a> {
     start: Instant,

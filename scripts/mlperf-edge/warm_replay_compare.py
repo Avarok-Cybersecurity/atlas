@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verdict for the ATLAS_GDN_REGRESIDENT A/B.
+"""Verdict for the AVAROK_GDN_REGRESIDENT A/B.
 
 Two gates, both must hold before this is a fold candidate:
 
@@ -26,7 +26,7 @@ with open(sys.argv[1]) as fh:
 with open(sys.argv[2]) as fh:
     cnd = json.load(fh)
 
-print("=== ATLAS_GDN_REGRESIDENT A/B (warm Marconi replay path) ===")
+print("=== AVAROK_GDN_REGRESIDENT A/B (warm Marconi replay path) ===")
 print(f"base prompt: {ctl['base_chars']} chars\n")
 print(f"{'cell':11s} {'delta':>8s} {'control p50':>12s} {'regres p50':>12s} "
       f"{'speedup':>8s} {'saved':>9s} {'tokens':>8s}")

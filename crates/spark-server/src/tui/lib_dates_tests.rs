@@ -185,7 +185,7 @@ fn a_date_for_a_recipe_that_vanished_is_dropped_quietly() {
 #[test]
 #[ignore = "network"]
 fn the_real_flow_dates_a_real_recipe() {
-    let root = std::path::PathBuf::from("/workspace/.atlas");
+    let root = std::path::PathBuf::from("/workspace/.avarok");
     let mut s = LibState::default();
     s.attach(root, &[]);
     assert!(!s.index.recipes.is_empty(), "cached index must be present");

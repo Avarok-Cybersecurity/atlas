@@ -65,7 +65,7 @@ impl Qwen3AttentionLayer {
                 // the cache, which collapses long-context decode (the cache
                 // mixes WHT'd reads of Q with un-WHT'd K/V for tokens 1+).
                 // WHT bookend (Turbo3/4/8 with Walsh-Hadamard decorrelation).
-                // 2026-04-28: was temporarily gated behind ATLAS_TURBO_ENABLE_WHT=1
+                // 2026-04-28: was temporarily gated behind AVAROK_TURBO_ENABLE_WHT=1
                 // because FP8 per-group scales (~12% precision) compounded WHT
                 // round-trip errors catastrophically. Resolved by upgrading
                 // Turbo8 scales to BF16 (~0.4% precision); WHT is back on by

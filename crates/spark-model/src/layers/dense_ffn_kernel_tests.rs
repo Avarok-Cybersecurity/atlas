@@ -6,7 +6,7 @@ use super::{DenseFfnLayer, DenseFfnWeights};
 use crate::layer::{ForwardContext, MoeLoraRoute};
 use crate::layers::ops::{DerivedWeights, GemmDispatch, ModelLevers, ModelStats};
 use crate::weight_map::{Fp8Weight, QuantizedWeight, WeightQuantFormat};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend};
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
@@ -177,7 +177,7 @@ fn larger_native_ffn_uses_existing_pipelined_gemm() {
 /// tile GEMM it replaces also emitted one, but over an M-padded MMA tile.)
 ///
 /// Both cases set `batch16_enabled` because the tier is OPT-IN — this test
-/// describes what `ATLAS_FFN_BATCH16=1` buys, not what a serve does.
+/// describes what `AVAROK_FFN_BATCH16=1` buys, not what a serve does.
 #[test]
 fn five_to_sixteen_row_native_ffn_uses_the_batch16_gemv_when_armed() {
     for rows in [5, 8, 16] {

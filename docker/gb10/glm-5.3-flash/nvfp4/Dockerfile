@@ -41,21 +41,21 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates/ crates/
 COPY vendor/ vendor/
 COPY kernels/ kernels/
-# 🪤 REQUIRED, and every other gb10 Dockerfile is missing it. `atlas-plugin` pulls the
+# 🪤 REQUIRED, and every other gb10 Dockerfile is missing it. `avarok-plugin` pulls the
 # benchmark prompts in with `include_str!("../../../../tests/fixtures/bench_prompt_*.txt")`,
 # so a build without repo-root `tests/` dies at COMPILE time with four "couldn't read"
 # errors — after the CUDA kernels have already built, which makes it look like a kernel
 # problem. 784 KB.
 COPY tests/ tests/
 
-ENV ATLAS_TARGET_HW=gb10
+ENV AVAROK_TARGET_HW=gb10
 # 🪤 This must be the kernel-target directory name, `glm-5.3-flash` — the same
 # string `all_ptx_sets()` matches on. Two of the kernels the composite layer
 # resolves (`glm5next_dsa_mla_decode`, `glm5next_mla_latent_write`) live ONLY in
 # this target; building any other target yields an image whose GLM layer cannot
 # construct, and the failure is at first layer build, not at compile time.
-ENV ATLAS_TARGET_MODEL=glm-5.3-flash
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_MODEL=glm-5.3-flash
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

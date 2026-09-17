@@ -90,7 +90,7 @@ fn the_suite_list_shows_the_benchmarks_and_their_provenance() {
     // renders perfectly well a keypress away. Walk the cursor the way an
     // operator does instead, which is also the stronger claim: every entry is
     // REACHABLE, not merely present in the registry.
-    for (i, descriptor) in atlas_plugin::registry::all().iter().enumerate() {
+    for (i, descriptor) in avarok_plugin::registry::all().iter().enumerate() {
         a.bench.select(i);
         let out = render(&a, 160, 48);
         // Names can wrap at narrow widths; at 160 columns they must be intact.
@@ -99,7 +99,7 @@ fn the_suite_list_shows_the_benchmarks_and_their_provenance() {
     a.bench.select(0);
     let out = render(&a, 160, 48);
     assert!(out.contains("OFFICIAL"), "first-party badge is missing");
-    assert!(out.contains("Avarok"), "author is missing");
+    assert!(out.contains("Atlas"), "author is missing");
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn the_parameter_form_shows_every_field_plus_the_endpoint() {
 fn the_confirmation_modal_says_what_it_will_do() {
     let mut a = app();
     a.section = Section::Benchmarks;
-    let index = atlas_plugin::registry::all()
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.needs_confirmation)
         .expect("one benchmark runs shell");
@@ -158,7 +158,7 @@ fn the_history_pane_says_so_when_there_is_nothing_to_show() {
     a.bench_sub = BenchSub::History;
     let out = render(&a, 160, 48);
     assert!(out.contains("No runs recorded yet"));
-    assert!(out.contains(".atlas/runs"), "say where they will appear");
+    assert!(out.contains(".avarok/runs"), "say where they will appear");
 }
 
 #[test]
@@ -392,8 +392,8 @@ mod preflight {
         let mut app = on_params();
         app.bench.view = View::Run;
         let tail = "and this tail must still be on screen";
-        app.bench.log.push_back(atlas_plugin::LogLine {
-            level: atlas_plugin::LogLevel::Warn,
+        app.bench.log.push_back(avarok_plugin::LogLine {
+            level: avarok_plugin::LogLevel::Warn,
             text: format!(
                 "http://127.0.0.1:8888 is serving a model that did not answer as expected, \
                  which usually means the benchmark is aimed somewhere else — {tail}"

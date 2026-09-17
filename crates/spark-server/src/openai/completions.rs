@@ -171,7 +171,7 @@ pub struct CompletionResponse {
     pub model: String,
     pub choices: Vec<CompletionChoice>,
     pub usage: Usage,
-    /// Matches chat completions ("fp_atlas"); some SDKs read it for
+    /// Matches chat completions ("fp_avarok"); some SDKs read it for
     /// seed/determinism bookkeeping.
     pub system_fingerprint: String,
 }
@@ -209,7 +209,7 @@ impl CompletionResponse {
             model: model.to_string(),
             choices,
             usage,
-            system_fingerprint: "fp_atlas".to_string(),
+            system_fingerprint: "fp_avarok".to_string(),
         }
     }
 }

@@ -39,17 +39,17 @@
 // The strix-hip copy of this header degrades these to synchronous uint4
 // copies (AMD has no cp.async). Per-tree behavior comes purely from which
 // header is compiled — no #if at the call sites.
-__device__ __forceinline__ void atlas_cp16(void* smem_dst, const void* gmem_src) {
+__device__ __forceinline__ void avarok_cp16(void* smem_dst, const void* gmem_src) {
     unsigned _s = __cvta_generic_to_shared(smem_dst);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(_s), "l"(gmem_src));
 }
-__device__ __forceinline__ void atlas_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
+__device__ __forceinline__ void avarok_cp16_pred(void* smem_dst, const void* gmem_src, bool pred) {
     unsigned _s = __cvta_generic_to_shared(smem_dst);
     unsigned _b = pred ? 16u : 0u;
     asm volatile("cp.async.ca.shared.global [%0], [%1], 16, %2;" :: "r"(_s), "l"(gmem_src), "r"(_b));
 }
-__device__ __forceinline__ void atlas_cp_commit() { asm volatile("cp.async.commit_group;"); }
-__device__ __forceinline__ void atlas_cp_wait()   { asm volatile("cp.async.wait_group 0;"); }
+__device__ __forceinline__ void avarok_cp_commit() { asm volatile("cp.async.commit_group;"); }
+__device__ __forceinline__ void avarok_cp_wait()   { asm volatile("cp.async.wait_group 0;"); }
 
 // Phase 2b precision fix (2026-05-24): the degree-3 Taylor polynomial
 // here has up to 0.5% relative error at tf~1 (verified numerically vs
@@ -58,9 +58,9 @@ __device__ __forceinline__ void atlas_cp_wait()   { asm volatile("cp.async.wait_
 // measurable cosine drift. See sister fix in
 // `prefill_paged_compute.cuh::sw_exp` for the Qwen3.6 HDIM=256 path.
 // Default to accurate `__expf` (~2 ULP); polynomial available via
-// `ATLAS_FAST_SOFTMAX_EXP` opt-in.
+// `AVAROK_FAST_SOFTMAX_EXP` opt-in.
 __device__ __forceinline__ float sw_exp_512(float x) {
-#ifdef ATLAS_FAST_SOFTMAX_EXP
+#ifdef AVAROK_FAST_SOFTMAX_EXP
     float t = x * 1.4426950408889634f;
     float ti = floorf(t);
     float tf = t - ti;

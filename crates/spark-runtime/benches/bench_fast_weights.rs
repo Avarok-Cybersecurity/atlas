@@ -5,7 +5,7 @@
 //! host stage is the bottleneck (MockGpuBackend::copy_h2d is a `Vec::copy_from_slice`).
 //!
 //! Usage:
-//!   ATLAS_FAST_LOAD_BENCH_DIR=/path/to/model cargo run --release \
+//!   AVAROK_FAST_LOAD_BENCH_DIR=/path/to/model cargo run --release \
 //!       -p spark-runtime --features test-utils --bin bench_fast_weights
 //!
 //! The script runs each loader in COLD and WARM mode:
@@ -142,15 +142,22 @@ fn run_model(model_path: &Path) -> Option<Row> {
 }
 
 fn main() {
+    // FIRST statement, before any thread: this binary reads
+    // `AVAROK_FAST_LOAD_BENCH_DIR` below, and a caller on the old CLI still
+    // exports `ATLAS_FAST_LOAD_BENCH_DIR`. No banner here, unlike the server:
+    // this harness's output is scraped, and the usage hint below already names
+    // the current variable. See `avarok_core::env_compat`.
+    let _ = avarok_core::env_compat::mirror_legacy_env();
+
     let dirs: Vec<PathBuf> = std::env::args()
         .skip(1)
-        .chain(std::env::var("ATLAS_FAST_LOAD_BENCH_DIR").ok())
+        .chain(std::env::var("AVAROK_FAST_LOAD_BENCH_DIR").ok())
         .map(PathBuf::from)
         .collect();
 
     if dirs.is_empty() {
         eprintln!("Usage: bench_fast_weights <model_dir> [<model_dir>...]");
-        eprintln!("   or: ATLAS_FAST_LOAD_BENCH_DIR=/path/to/model bench_fast_weights");
+        eprintln!("   or: AVAROK_FAST_LOAD_BENCH_DIR=/path/to/model bench_fast_weights");
         std::process::exit(2);
     }
 

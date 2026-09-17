@@ -23,7 +23,7 @@
 //! `attn_layer_idx = 0` within it.
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
@@ -81,7 +81,7 @@ pub fn load_glm5next_mtp_module(
     let mlp_kernels = Glm5NextMlpKernels::resolve(gpu)?;
 
     let mixer = Glm5NextMixer::Dsa(Box::new(Glm5NextDsaLayer {
-        persist_bt: std::env::var("ATLAS_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1"),
+        persist_bt: std::env::var("AVAROK_GLM_DSA_ALLOC_PER_STEP").as_deref() != Ok("1"),
         cfg: dsa_cfg,
         weights: build_dsa_weights(gpu, &dsa_cfg, &dsa_plan, &load)?,
         kernels: dsa_layer_kernels,

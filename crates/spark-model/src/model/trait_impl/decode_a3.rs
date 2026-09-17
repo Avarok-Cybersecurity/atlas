@@ -66,7 +66,7 @@ impl TransformerModel {
                             s += v.abs();
                         }
                     }
-                    tracing::warn!("ATLAS_LAYER_H[step0] L{i} hidden_sabs={s:.6}");
+                    tracing::warn!("AVAROK_LAYER_H[step0] L{i} hidden_sabs={s:.6}");
                 }
             }
             // DFlash 5-layer hidden capture (no-op when proposer is not DFlash).

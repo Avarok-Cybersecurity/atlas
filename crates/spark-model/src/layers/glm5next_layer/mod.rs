@@ -176,7 +176,7 @@ pub struct Glm5NextLayer {
 /// there), so R = 8 takes the whole available win. ANOMALIES A65.
 pub(crate) const PREFILL_ROWS: usize = 16;
 
-/// `PREFILL_ROWS`, overridable at launch with `ATLAS_GLM_PREFILL_ROWS`.
+/// `PREFILL_ROWS`, overridable at launch with `AVAROK_GLM_PREFILL_ROWS`.
 ///
 /// 🔬 Kept as the A/B lever it was built as. It found A65's real defect (the DSA attend read
 /// `seq_lens[row]` / `block_tables[row]` out of a single-row buffer) by sweeping width against a
@@ -191,7 +191,7 @@ pub(crate) const PREFILL_ROWS: usize = 16;
 pub(crate) fn prefill_rows() -> usize {
     static ROWS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *ROWS.get_or_init(|| {
-        let r = std::env::var("ATLAS_GLM_PREFILL_ROWS")
+        let r = std::env::var("AVAROK_GLM_PREFILL_ROWS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|r| *r >= 1)

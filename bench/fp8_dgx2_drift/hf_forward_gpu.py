@@ -2,8 +2,8 @@
 """HF forward on dgx2 GPU. Runs ONE snapshot at a time (CLI arg: bf16|fp8).
 
 Loads the model directly onto the GB10 GPU (BF16), registers per-layer hooks,
-forwards the 10382-token prompt from /tmp/atlas_tokens_dgx2.json, dumps
-per-layer LAST-token hidden states to /workspace/atlas-dumps/fp8native_dgx2/.
+forwards the 10382-token prompt from /tmp/avarok_tokens_dgx2.json, dumps
+per-layer LAST-token hidden states to /workspace/avarok-dumps/fp8native_dgx2/.
 
   bf16  -> hf_bf16_L{0..39}.bin  (uses Qwen3.6-35B-A3B BF16 snapshot, the unquant ref)
   fp8   -> hf_fp8dq_L{0..39}.bin (uses FP8-dequanted BF16 snapshot, the ceiling ref)
@@ -22,8 +22,8 @@ from transformers import AutoModelForCausalLM
 
 BF16_SNAP = "/workspace/.cache/huggingface/hub/models--Qwen--Qwen3.6-35B-A3B/snapshots/995ad96eacd98c81ed38be0c5b274b04031597b0"
 FP8DQ_SNAP = "/workspace/.cache/huggingface/Qwen3.6-35B-A3B-FP8-dequanted-BF16"
-TOKENS_PATH = pathlib.Path("/tmp/atlas_tokens_dgx2.json")
-OUT_DIR = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
+TOKENS_PATH = pathlib.Path("/tmp/avarok_tokens_dgx2.json")
+OUT_DIR = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

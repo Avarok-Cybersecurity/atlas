@@ -5,12 +5,12 @@
 # Build (host must have `target/release/spark` already built):
 #   cargo build --release -p spark-server
 #   cp target/release/spark spark-fastbin
-#   docker build -f docker/gb10/Dockerfile.fast -t atlas-gb10:alpha-2.14 .
+#   docker build -f docker/gb10/Dockerfile.fast -t avarok-gb10:alpha-2.14 .
 #
 # The `target/` directory is in .dockerignore, so we stage the binary as
 # `spark-fastbin` at the repo root for the build context.
 
-FROM atlas-gb10:fix42
+FROM avarok-gb10:fix42
 
 COPY spark-fastbin /usr/local/bin/spark
 COPY jinja-templates/ /jinja-templates/

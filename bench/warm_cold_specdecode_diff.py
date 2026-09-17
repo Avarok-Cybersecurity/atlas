@@ -28,8 +28,8 @@ import sys
 import time
 import urllib.request
 
-URL = os.environ.get("ATLAS_URL", "http://localhost:8888")
-MODEL = os.environ.get("ATLAS_MODEL", "model")
+URL = os.environ.get("AVAROK_URL", "http://localhost:8888")
+MODEL = os.environ.get("AVAROK_MODEL", "model")
 MAX_TOKENS = int(os.environ.get("MAX_TOKENS", "96"))
 
 # Prompts chosen to (a) generate enough tokens to cross decode-checkpoint

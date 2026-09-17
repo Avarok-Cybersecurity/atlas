@@ -140,12 +140,12 @@ fn cutlass_bf16_holo_qkvz_bench_against_cublaslt() {
     ];
 
     let variants: [(&str, CutlassVariant); 6] = [
-        ("128x128", atlas_cutlass_bf16_gemm_act_weight_t),
-        ("128x256", atlas_cutlass_bf16_gemm_act_weight_t_128x256),
-        ("256x128", atlas_cutlass_bf16_gemm_act_weight_t_256x128),
-        ("64x128", atlas_cutlass_bf16_gemm_act_weight_t_64x128),
-        ("128x64", atlas_cutlass_bf16_gemm_act_weight_t_128x64),
-        ("64x64", atlas_cutlass_bf16_gemm_act_weight_t_64x64),
+        ("128x128", avarok_cutlass_bf16_gemm_act_weight_t),
+        ("128x256", avarok_cutlass_bf16_gemm_act_weight_t_128x256),
+        ("256x128", avarok_cutlass_bf16_gemm_act_weight_t_256x128),
+        ("64x128", avarok_cutlass_bf16_gemm_act_weight_t_64x128),
+        ("128x64", avarok_cutlass_bf16_gemm_act_weight_t_128x64),
+        ("64x64", avarok_cutlass_bf16_gemm_act_weight_t_64x64),
     ];
 
     for (name, m, n, k) in shapes {
@@ -256,12 +256,12 @@ fn cutlass_bf16_holo_decode_route_batch_shapes() {
         ("moe_down_routes_c16", 128, 2048, 512),
     ];
     let variants: [(&str, CutlassVariant); 6] = [
-        ("128x128", atlas_cutlass_bf16_gemm_act_weight_t),
-        ("128x256", atlas_cutlass_bf16_gemm_act_weight_t_128x256),
-        ("256x128", atlas_cutlass_bf16_gemm_act_weight_t_256x128),
-        ("64x128", atlas_cutlass_bf16_gemm_act_weight_t_64x128),
-        ("128x64", atlas_cutlass_bf16_gemm_act_weight_t_128x64),
-        ("64x64", atlas_cutlass_bf16_gemm_act_weight_t_64x64),
+        ("128x128", avarok_cutlass_bf16_gemm_act_weight_t),
+        ("128x256", avarok_cutlass_bf16_gemm_act_weight_t_128x256),
+        ("256x128", avarok_cutlass_bf16_gemm_act_weight_t_256x128),
+        ("64x128", avarok_cutlass_bf16_gemm_act_weight_t_64x128),
+        ("128x64", avarok_cutlass_bf16_gemm_act_weight_t_128x64),
+        ("64x64", avarok_cutlass_bf16_gemm_act_weight_t_64x64),
     ];
 
     for (name, m, n, k) in shapes {

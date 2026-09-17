@@ -122,7 +122,7 @@ export function _setRetryBaseMs(ms) {
   retryBaseMs = ms;
 }
 if (typeof window !== 'undefined') {
-  window.__atlasChatSetRetryBaseMs = _setRetryBaseMs;
+  window.__avarokChatSetRetryBaseMs = _setRetryBaseMs;
 }
 
 async function withRetry(operation) {

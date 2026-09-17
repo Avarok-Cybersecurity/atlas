@@ -72,7 +72,7 @@ fn selected_at_the_real_qkvz_shape_when_the_ssm_family_is_armed() {
 }
 
 /// The whole point of the scoped lever: arming the dense FFN must leave this
-/// projection on the in-tree kernel. `ATLAS_CUBLAS_GEMM=1` used to arm both,
+/// projection on the in-tree kernel. `AVAROK_CUBLAS_GEMM=1` used to arm both,
 /// and the SSM side cost 167772160 B of BF16 weight dequant per layer.
 #[test]
 fn not_selected_when_the_ssm_family_is_not_armed() {
@@ -174,7 +174,7 @@ fn not_selected_when_the_output_buffer_cannot_hold_the_padded_m() {
 #[test]
 fn not_selected_without_a_usable_kmajor_scale_adapter() {
     let f = WeightQuantFormat::Fp8BlockScaled;
-    // Guarded on the default layout: `ATLAS_CUBLAS_SCALE_LAYOUT=rowmajor` is a
+    // Guarded on the default layout: `AVAROK_CUBLAS_SCALE_LAYOUT=rowmajor` is a
     // deliberate measurement control that needs no adapter, and the selector
     // says so — but it is a process-wide `OnceLock`, so this test only claims
     // the default.

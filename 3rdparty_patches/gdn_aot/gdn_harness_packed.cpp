@@ -41,6 +41,6 @@ int main(){
   for(size_t i=0;i<n;i++){ float ov=__half2float(ho[i]); if(isnan(ov))nan++; double e=fabs(ov-ref[i]); if(e>maxe)maxe=e; so+=fabs(ov); dot+=(double)ov*ref[i]; no+=(double)ov*ov; nr+=(double)ref[i]*ref[i]; }
   double cos=dot/(sqrt(no)*sqrt(nr)+1e-12);
   printf("max_abs_err=%.6f |o|mean=%.6f cos=%.6f nan=%d\n", maxe, so/n, cos, nan);
-  printf("RESULT: %s\n",(cos>0.99&&nan==0&&so/n>1e-4)?"PASS - Atlas-native packed layout matches JIT reference":"MISMATCH");
+  printf("RESULT: %s\n",(cos>0.99&&nan==0&&so/n>1e-4)?"PASS - Avarok-native packed layout matches JIT reference":"MISMATCH");
   return 0;
 }

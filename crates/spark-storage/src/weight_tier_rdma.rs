@@ -19,10 +19,10 @@
 // bounce + copy_h2d overhead is negligible (unlike the 8 KiB KV groups that
 // needed zero-copy). Reuses the dual-rail striping template (tensor % n_rails).
 //
-// Like `expert_tier_rdma`, the verbs data path is gated on `atlas_rdma_verbs`;
+// Like `expert_tier_rdma`, the verbs data path is gated on `avarok_rdma_verbs`;
 // without rdma-core the loader compiles but `load` returns a clear runtime error
 // (the selection lives in the server's `load_weight_store`, keyed on
-// `$ATLAS_WEIGHT_PEER`).
+// `$AVAROK_WEIGHT_PEER`).
 
 use anyhow::Result;
 use std::path::Path;
@@ -34,7 +34,7 @@ use crate::weight_peer::WeightTensorRecord;
 
 /// Loads a model's resident weights from a `weight_peer` over one-sided RDMA.
 pub struct RdmaWeightLoader {
-    /// `host:port` of the weight peer (from `$ATLAS_WEIGHT_PEER`).
+    /// `host:port` of the weight peer (from `$AVAROK_WEIGHT_PEER`).
     pub peer_addr: String,
     /// Model id/path to request. When `None`, the loader sends the `model_dir`
     /// path passed to `load` (so the client and peer agree on the local path).
@@ -83,9 +83,9 @@ impl RdmaWeightLoader {
     /// `FastSafetensorsLoader::should_skip_tensor`), applied to a manifest
     /// record. `extra_weights` tensors (`rec.extra`) are NEVER skipped, matching
     /// the disk path's no-skip pass for `extra_weights.safetensors`.
-    // Only reached from the `atlas_rdma_verbs` load path; on a cuda host without
+    // Only reached from the `avarok_rdma_verbs` load path; on a cuda host without
     // rdma-core the whole data path runtime-bails, leaving this unreferenced.
-    #[cfg_attr(not(atlas_rdma_verbs), allow(dead_code))]
+    #[cfg_attr(not(avarok_rdma_verbs), allow(dead_code))]
     fn should_skip_tensor(&self, rec: &WeightTensorRecord) -> bool {
         if rec.extra {
             return false;
@@ -127,7 +127,7 @@ impl WeightLoader for RdmaWeightLoader {
     }
 }
 
-#[cfg(not(atlas_rdma_verbs))]
+#[cfg(not(avarok_rdma_verbs))]
 impl RdmaWeightLoader {
     fn load_impl(
         &self,
@@ -136,13 +136,13 @@ impl RdmaWeightLoader {
         _oom_reserve_bytes: usize,
     ) -> Result<WeightStore> {
         anyhow::bail!(
-            "$ATLAS_WEIGHT_PEER is set but this build has no rdma-core (atlas_rdma_verbs \
-             cfg); rebuild with rdma-core, or unset ATLAS_WEIGHT_PEER to load from disk"
+            "$AVAROK_WEIGHT_PEER is set but this build has no rdma-core (avarok_rdma_verbs \
+             cfg); rebuild with rdma-core, or unset AVAROK_WEIGHT_PEER to load from disk"
         )
     }
 }
 
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 impl RdmaWeightLoader {
     fn load_impl(
         &self,
@@ -161,9 +161,9 @@ impl RdmaWeightLoader {
         use crate::weight_peer::{
             rail_for_tensor, read_weight_manifest, tensor_remote_addr, write_model_request,
         };
-        use atlas_rdma::env::{first_nonempty, first_set_u32};
-        use atlas_rdma::railset::{RailSet, RailSpec};
-        use atlas_rdma::verbs::Verbs;
+        use avarok_rdma::env::{first_nonempty, first_set_u32};
+        use avarok_rdma::railset::{RailSet, RailSpec};
+        use avarok_rdma::verbs::Verbs;
         use spark_runtime::weights::{WeightDtype, WeightTensor};
 
         // 1. Connect + request the model + read the manifest.
@@ -227,27 +227,27 @@ impl RdmaWeightLoader {
         }
 
         // 4. Verbs handshake via RailSet. Rail 0 defaults to the shared expert
-        // CX7 link; dual-rail is opt-in (ATLAS_WEIGHT_DUAL_RAIL=1). ATLAS_WEIGHT_*
-        // overrides fall back to the ATLAS_EXPERT_* names so a single fabric
+        // CX7 link; dual-rail is opt-in (AVAROK_WEIGHT_DUAL_RAIL=1). AVAROK_WEIGHT_*
+        // overrides fall back to the AVAROK_EXPERT_* names so a single fabric
         // config serves both tiers (weight semantics: an exported-but-EMPTY
         // override is SKIPPED — `first_nonempty`). Fresh random 24-bit PSN/rail.
         let spec =
             |dev: String, gid: u32| RailSpec::new(dev, gid, rand::random::<u32>() & 0xff_ffff);
         let rail0 = spec(
             first_nonempty(
-                &["ATLAS_WEIGHT_RDMA_DEV", "ATLAS_EXPERT_RDMA_DEV"],
+                &["AVAROK_WEIGHT_RDMA_DEV", "AVAROK_EXPERT_RDMA_DEV"],
                 "roceP2p1s0f1",
             ),
-            first_set_u32(&["ATLAS_WEIGHT_RDMA_GID", "ATLAS_EXPERT_RDMA_GID"], 3),
+            first_set_u32(&["AVAROK_WEIGHT_RDMA_GID", "AVAROK_EXPERT_RDMA_GID"], 3),
         );
-        let dual = std::env::var("ATLAS_WEIGHT_DUAL_RAIL").ok().as_deref() == Some("1");
+        let dual = std::env::var("AVAROK_WEIGHT_DUAL_RAIL").ok().as_deref() == Some("1");
         let specs: Vec<RailSpec> = if dual {
             let rail1 = spec(
                 first_nonempty(
-                    &["ATLAS_WEIGHT_RAIL2_DEV", "ATLAS_EXPERT_RAIL2_DEV"],
+                    &["AVAROK_WEIGHT_RAIL2_DEV", "AVAROK_EXPERT_RAIL2_DEV"],
                     "rocep1s0f1",
                 ),
-                first_set_u32(&["ATLAS_WEIGHT_RAIL2_GID", "ATLAS_EXPERT_RAIL2_GID"], 3),
+                first_set_u32(&["AVAROK_WEIGHT_RAIL2_GID", "AVAROK_EXPERT_RAIL2_GID"], 3),
             );
             vec![rail0, rail1]
         } else {

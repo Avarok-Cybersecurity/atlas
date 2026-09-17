@@ -49,11 +49,11 @@ __device__ __forceinline__ unsigned char scl_enc_fp8(float v) {
 }
 
 // FP8 E4M3 standard decode (matches the quantizer; SCALE's __NV_E4M3 is non-standard).
-__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) { return scl_fp8(b); }
+__device__ __forceinline__ float avarok_e4m3_to_f32(unsigned char b) { return scl_fp8(b); }
 
 // Encode a pair of f32 → packed E4M3x2 (hi byte = e4m3(a_hi), lo byte = e4m3(b_lo)).
 // Pure bit-math; matches the NVIDIA cvt.rn.satfinite.e4m3x2.f32 semantics.
-__device__ __forceinline__ unsigned short atlas_cvt_e4m3x2_f32(float a_hi, float b_lo) {
+__device__ __forceinline__ unsigned short avarok_cvt_e4m3x2_f32(float a_hi, float b_lo) {
     unsigned a8 = (unsigned)scl_enc_fp8(a_hi);
     unsigned b8 = (unsigned)scl_enc_fp8(b_lo);
     return (unsigned short)((a8 << 8) | (b8 & 0xFFu));
@@ -380,7 +380,7 @@ extern "C" __global__ void fp8_gemm_t(
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
+                    b[k] = (__bf16)(float)avarok_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -440,7 +440,7 @@ extern "C" __global__ void predequant_nvfp4_to_fp8(
     float val_lo = E2M1_LUT[packed & 0xF] * sv;
     float val_hi = E2M1_LUT[packed >> 4] * sv;
 
-    unsigned short fp8_pair = atlas_cvt_e4m3x2_f32(val_hi, val_lo);
+    unsigned short fp8_pair = avarok_cvt_e4m3x2_f32(val_hi, val_lo);
     *(unsigned short*)&B_fp8[(unsigned long long)n * K + k_even] = fp8_pair;
 }
 
@@ -461,7 +461,7 @@ extern "C" __global__ void bf16_to_fp8(
     unsigned short bf1 = (unsigned short)(p >> 16);
     float f0 = __bfloat162float(__ushort_as_bfloat16(bf0));
     float f1 = __bfloat162float(__ushort_as_bfloat16(bf1));
-    unsigned short fp8_pair = atlas_cvt_e4m3x2_f32(f1, f0);
+    unsigned short fp8_pair = avarok_cvt_e4m3x2_f32(f1, f0);
     *(unsigned short*)&dst[idx] = fp8_pair;
 }
 
@@ -519,14 +519,14 @@ extern "C" __global__ void fp8_fp8_gemm_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
+                a[i] = (__bf16)(float)avarok_e4m3_to_f32(smem_Af[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \
                 v16bf b; \
                 _Pragma("unroll") \
                 for (int k = 0; k < 16; k++) \
-                    b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
+                    b[k] = (__bf16)(float)avarok_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
                 acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
             } \
         } \
@@ -941,7 +941,7 @@ void fp8_gemm_t_m128(
                     v16bf b; \
                     _Pragma("unroll") \
                     for (int k = 0; k < 16; k++) \
-                        b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
+                        b[k] = (__bf16)(float)avarok_e4m3_to_f32(smem_B[(b_buf)][nc][h * 16 + k]); \
                     acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
                 } \
             } \
@@ -1046,14 +1046,14 @@ void fp8_fp8_gemm_t_m128(
                 v16bf a; \
                 _Pragma("unroll") \
                 for (int i = 0; i < 16; i++) \
-                    a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af[(a_buf)][m_row][h * 16 + i]); \
+                    a[i] = (__bf16)(float)avarok_e4m3_to_f32(smem_Af[(a_buf)][m_row][h * 16 + i]); \
                 _Pragma("unroll") \
                 for (int nb = 0; nb < 8; nb++) { \
                     unsigned int nc = nb * 16 + (lane_id & 15); \
                     v16bf b; \
                     _Pragma("unroll") \
                     for (int k = 0; k < 16; k++) \
-                        b[k] = (__bf16)(float)atlas_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
+                        b[k] = (__bf16)(float)avarok_e4m3_to_f32(smem_Bf[(b_buf)][nc][h * 16 + k]); \
                     acc[nb] = __builtin_amdgcn_wmma_f32_16x16x16_bf16_w32(a, b, acc[nb]); \
                 } \
             } \

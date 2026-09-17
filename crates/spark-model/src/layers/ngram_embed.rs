@@ -46,7 +46,7 @@ pub struct NgramDims {
 }
 
 impl NgramDims {
-    pub fn from_config(c: &atlas_core::config::ModelConfig) -> Option<Self> {
+    pub fn from_config(c: &avarok_core::config::ModelConfig) -> Option<Self> {
         if c.ngram_vocab_size_ratio == 0 {
             return None;
         }

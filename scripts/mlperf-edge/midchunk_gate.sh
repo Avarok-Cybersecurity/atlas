@@ -1,5 +1,5 @@
 #!/bin/bash
-# Decisive gate for re-enabling ATLAS_SSM_TAIL_MIDCHUNK on the GB10 golden config.
+# Decisive gate for re-enabling AVAROK_SSM_TAIL_MIDCHUNK on the GB10 golden config.
 #
 # WHY A SECOND ROUND
 # The first A/B (ab_midchunk.sh) produced a split verdict that neither leg's
@@ -35,7 +35,7 @@
 # scales all three down by the same factor, so the subset stays representative
 # rather than reweighted.
 #
-# Usage: midchunk_gate.sh <atlas_bin> <outdir> [reps] [pct_scale]
+# Usage: midchunk_gate.sh <avarok_bin> <outdir> [reps] [pct_scale]
 set -u
 BIN="${1:?path to the built spark binary}"
 OUT="${2:?output dir}"
@@ -49,18 +49,18 @@ mkdir -p "$OUT"
 
 for leg in mc_off mc_on; do
   case $leg in
-    mc_off) MC="-e ATLAS_SSM_TAIL_MIDCHUNK=0" ;;   # today's frozen config
+    mc_off) MC="-e AVAROK_SSM_TAIL_MIDCHUNK=0" ;;   # today's frozen config
     mc_on)  MC="" ;;                               # the code's actual default
   esac
-  sudo docker rm -f atlas-mcg >/dev/null 2>&1; sleep 3
+  sudo docker rm -f avarok-mcg >/dev/null 2>&1; sleep 3
   # shellcheck disable=SC2086
-  sudo docker run -d --name atlas-mcg --network host --gpus all --ipc=host \
-    -e ATLAS_NO_FFN_NVFP4_MMQ=1 $MC -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-    -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 \
+  sudo docker run -d --name avarok-mcg --network host --gpus all --ipc=host \
+    -e AVAROK_NO_FFN_NVFP4_MMQ=1 $MC -e AVAROK_MTP_CATCHUP=0 \
+    -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+    -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \
-    atlas-gb10:followups serve "$MODEL" \
+    avarok-gb10:followups serve "$MODEL" \
     --host 0.0.0.0 --port $PORT --model-name "$MODEL" \
     --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
     --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -70,10 +70,10 @@ for leg in mc_off mc_on; do
   ok=0
   for _ in $(seq 1 180); do
     curl -sf -m4 http://localhost:$PORT/v1/models 2>/dev/null | grep -q Qwen && { ok=1; break; }
-    sudo docker ps --format '{{.Names}}' | grep -q atlas-mcg || { echo "SERVE_DIED leg=$leg"; break; }
+    sudo docker ps --format '{{.Names}}' | grep -q avarok-mcg || { echo "SERVE_DIED leg=$leg"; break; }
     sleep 5
   done
-  [ $ok -eq 1 ] || { sudo docker logs atlas-mcg 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
+  [ $ok -eq 1 ] || { sudo docker logs avarok-mcg 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
   echo "=== leg=$leg serve up (midchunk: ${MC:-<absent => ON>}) ==="
 
   # N reps of the MONOTONIC probe (forward-only conversation, the real pattern).
@@ -114,8 +114,8 @@ PY
       2>&1 | tail -40 | tee "$OUT/$leg.bfcl.log"
   cp "$HARNESS/$RD/report.txt" "$OUT/$leg.bfcl.report.txt" 2>/dev/null
 
-  sudo docker logs atlas-mcg 2>&1 | grep -c -aiE 'midchunk' > "$OUT/$leg.midchunk_hits.txt" || true
-  sudo docker rm -f atlas-mcg >/dev/null 2>&1
+  sudo docker logs avarok-mcg 2>&1 | grep -c -aiE 'midchunk' > "$OUT/$leg.midchunk_hits.txt" || true
+  sudo docker rm -f avarok-mcg >/dev/null 2>&1
 done
 
 echo "=== MIDCHUNK GATE SUMMARY ==="

@@ -61,27 +61,27 @@ behind specific subsystems — see the
   determinism 8/8 identical over three runs, and nsys pricing the two twins at
   4.28× (`chunk_fwd_o_hopper`) and 1.60× (`recompute_wu_hopper`) with the shared
   spine kernel unchanged at 0.99× as the internal control. `kernels/gb10` and
-  `kernels/b200` keep `false` — this is an H100 receipt. `ATLAS_GDN_PREFILL_TC=0`
-  turns the whole family off and `ATLAS_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
+  `kernels/b200` keep `false` — this is an H100 receipt. `AVAROK_GDN_PREFILL_TC=0`
+  turns the whole family off and `AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` keeps the
   spine while pinning the twins to their parents; both print on the serve's
   `target defaults (hopper): …` line. Numbers: `GDN-PREFILL-ATTRIBUTION.md`.
 - **Serving defaults are now per-hardware-target and live in the repository.**
   `kernels/<hw>/HARDWARE.toml` gained a `[defaults]` table, baked into the
-  binary by `build.rs` as `atlas_kernels::TARGET_DEFAULTS`. A kernel-path lever
+  binary by `build.rs` as `avarok_kernels::TARGET_DEFAULTS`. A kernel-path lever
   that differs between one target and another resolves from that declaration
   FIRST and the environment second, so a serve reproduces its measured
-  configuration with no `ATLAS_*` prefix at all, and prints one
+  configuration with no `AVAROK_*` prefix at all, and prints one
   `target defaults (<hw>): …` line naming every resolved value and which of them
   came from the environment. GB10's declaration restates the previous hardcoded
   defaults exactly, asserted as an equality in
-  `atlas-kernels/tests/target_defaults.rs`, so GB10 behaviour is unchanged. The
+  `avarok-kernels/tests/target_defaults.rs`, so GB10 behaviour is unchanged. The
   first lever to differ is `ssm_batched_recurrent`, which `kernels/hopper`
   declares ON.
-- **`ATLAS_SSM_BATCHED_RECURRENT=0` now means OFF.** It was read as `== "1"`,
+- **`AVAROK_SSM_BATCHED_RECURRENT=0` now means OFF.** It was read as `== "1"`,
   so `=0` was indistinguishable from absent — which cannot express "off" once a
   target's default can be ON, leaving an operator no way to turn a lever off
-  without editing a launch script. `VAR=1` is unchanged, and the `ATLAS_NO_*`
-  kill switches stay presence-gated. `ATLAS_GDN_PREFILL_TC` joins it as
+  without editing a launch script. `VAR=1` is unchanged, and the `AVAROK_NO_*`
+  kill switches stay presence-gated. `AVAROK_GDN_PREFILL_TC` joins it as
   `[defaults] gdn_prefill_tc`: it was presence-gated, so `=0` used to mean ON
   and now means OFF. Every A/B recipe for it set `=1` and is unaffected.
 - `kernels/<hw>/HARDWARE.toml` also gained `[hardware] sm_count`, cross-checked

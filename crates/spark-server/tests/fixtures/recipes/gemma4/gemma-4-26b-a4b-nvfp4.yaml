@@ -9,7 +9,7 @@ metadata:
     Gemma-4-26B-A4B — Google's hybrid Attention + MoE Gemma-4 with GeGLU
     activations. ~67 tok/s decode on a single GB10 per the Atlas
     performance table (`scripts/sweep_all_models.sh` baseline).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 26B
   model_dtype: nvfp4

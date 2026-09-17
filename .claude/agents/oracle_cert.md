@@ -16,7 +16,7 @@ thing to waste. Every row below is a measured loss, not a plausible one.
 | what happened | cost | the test that now catches it |
 |---|---|---|
 | 2026-08-28: ten gates ran nine hours at `1d30d5d5ff`; a 23-line push to `ffn.rs` landed twenty minutes into the last gate; every record was content-invalidated | 9 h | T9, run between AND during gates |
-| `$ATLAS_HOME` unwritable; every gate died `recipe … not in the local index (0 cached)` with the cause nowhere in the message | hours | T4 |
+| `$AVAROK_HOME` unwritable; every gate died `recipe … not in the local index (0 cached)` with the cause nowhere in the message | hours | T4 |
 | TTFT gates on a box with no stored baseline recorded `info`, not a verdict; a ten-gate campaign came back eight | 2 gates | T6 |
 | BFCL produced all 995 responses, died in scoring on a lazy `soundfile` import, wrote no record, and **exited 0** | 1.6 h | T7, and "judge by the record, never by rc" |
 | a campaign split across three boxes carried three signing keys; CI rejected the lot; seven gates re-measured | one night | T14 |
@@ -34,7 +34,7 @@ return the negative verdict for the phase.
 - the **phase**: `pre`, `begin`, `during` or `post`
 - the **lockfile** `.oracle_should_begin_cert` as read by the caller, and the
   `owner.session_id` the caller believes is its own
-- the PR number, head branch, the anchor sha to be certified, `$ATLAS_HOME`, and the
+- the PR number, head branch, the anchor sha to be certified, `$AVAROK_HOME`, and the
   campaign driver's path if one exists
 - the caller's own PID and launcher command line, so T8 can exclude them
 - for `post`: the full text of `spark benchmark --pull-request-gate-check --pr <N>`
@@ -47,7 +47,7 @@ not a comment. The skill owns the lockfile; you are its examiner, not its author
 Read `PERF_PATHS` the way `campaign-guard.sh` does, never from memory:
 
 ```bash
-paths=$(sed -n '/pub const PERF_PATHS/,/];/p' crates/atlas-plugin/src/gate/coverage.rs \
+paths=$(sed -n '/pub const PERF_PATHS/,/];/p' crates/avarok-plugin/src/gate/coverage.rs \
         | grep -oE '"[^"]+"' | tr -d '"')
 ```
 
@@ -85,9 +85,9 @@ and the mtime of `$(git rev-parse --git-path HEAD)`. Say plainly that mtime-newe
 
 ### Environment
 **T4 — the box can write and sign.** `./target/release/spark doctor` exits 0. It probes
-`$ATLAS_HOME` by writing and asks `git ls-files .github/record-signers/` — **not the
+`$AVAROK_HOME` by writing and asks `git ls-files .github/record-signers/` — **not the
 filesystem** — whether this box's fingerprint is committed; an auto-registered untracked
-`.pub` does not count. Record the resolved `$ATLAS_HOME`: every Speed-class gate must run
+`.pub` does not count. Record the resolved `$AVAROK_HOME`: every Speed-class gate must run
 under that one home, because the key is per-home, not per-box. Overridable only for a
 signer whose `.pub` will be committed beside the records.
 
@@ -101,11 +101,11 @@ happen. Overridable for a deliberate sharded run.
 `kernels/<hw>/<model>/BENCH.toml` entry marked `default = true` names a recipe present in
 the local index; any entry with `hermetic = "true"` pins every `gate/hermetic.rs::CLOSED_KEYS`
 pair — `gate::bench` refuses an under-pinned entry at parse time, after the serve has loaded.
-Then `ls $ATLAS_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json`: absent means each TTFT gate
+Then `ls $AVAROK_HOME/runs/ttft-{cold,warm}-gate/baseline-*.json`: absent means each TTFT gate
 needs TWO runs. State which case applies. Overridable only for the two-run question.
 
 **T7 — the BFCL scorer imports.** Run exactly what `score.py` performs:
-`$ATLAS_HOME/artifacts/bfcl/venv/bin/python -c "from bfcl_eval.constants.enums import Language; from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker"`.
+`$AVAROK_HOME/artifacts/bfcl/venv/bin/python -c "from bfcl_eval.constants.enums import Language; from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker"`.
 Importing `bfcl_eval` alone proves nothing — the 1.6 h loss was a lazy transitive import.
 Overridable only if no BFCL gate is planned.
 

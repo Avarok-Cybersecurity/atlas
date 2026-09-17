@@ -120,7 +120,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-closure"
+name = "atomic-waker"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "autocfg"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+
+[[package]]
+name = "avarok-closure"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
@@ -128,7 +140,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-core"
+name = "avarok-core"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
@@ -140,7 +152,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-governance"
+name = "avarok-governance"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
@@ -150,22 +162,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-kernels"
+name = "avarok-kernels"
 version = "1.0.0-beta-preview"
 dependencies = [
- "atlas-closure",
- "atlas-core",
+ "avarok-closure",
+ "avarok-core",
  "serde_json",
  "toml",
 ]
 
 [[package]]
-name = "atlas-plugin"
+name = "avarok-plugin"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-closure",
- "atlas-governance",
+ "avarok-closure",
+ "avarok-governance",
  "base64 0.22.1",
  "futures",
  "parking_lot",
@@ -179,7 +191,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-rdma"
+name = "avarok-rdma"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
@@ -187,12 +199,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-spark-bench"
+name = "avarok-spark-bench"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-core",
- "atlas-kernels",
+ "avarok-core",
+ "avarok-kernels",
  "criterion",
  "cudarc",
  "parking_lot",
@@ -202,25 +214,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "atlas-tier"
+name = "avarok-tier"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
  "getrandom 0.3.4",
  "libc",
 ]
-
-[[package]]
-name = "atomic-waker"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
-
-[[package]]
-name = "autocfg"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "axum"
@@ -2587,9 +2587,9 @@ name = "spark-model"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-core",
- "atlas-kernels",
- "atlas-tier",
+ "avarok-core",
+ "avarok-kernels",
+ "avarok-tier",
  "base64 0.22.1",
  "half",
  "image",
@@ -2624,8 +2624,8 @@ name = "spark-runtime"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-core",
- "atlas-kernels",
+ "avarok-core",
+ "avarok-kernels",
  "cudarc",
  "dispatch2",
  "half",
@@ -2649,10 +2649,10 @@ name = "spark-server"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-closure",
- "atlas-core",
- "atlas-kernels",
- "atlas-plugin",
+ "avarok-closure",
+ "avarok-core",
+ "avarok-kernels",
+ "avarok-plugin",
  "axum",
  "base64 0.22.1",
  "clap",
@@ -2695,9 +2695,9 @@ name = "spark-storage"
 version = "1.0.0-beta-preview"
 dependencies = [
  "anyhow",
- "atlas-core",
- "atlas-rdma",
- "atlas-tier",
+ "avarok-core",
+ "avarok-rdma",
+ "avarok-tier",
  "cufile-sys",
  "half",
  "io-uring",

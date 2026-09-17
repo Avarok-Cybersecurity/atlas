@@ -17,25 +17,25 @@ metadata:
 
     REQUIRES a build carrying Avarok-Cybersecurity/atlas PR #223
     (perf/qwen36-27b-prefill-nvfp4: attn transposed-NVFP4 routing,
-    ATLAS_FFN_NVFP4_MMQ, FlashInfer-GDN AOT bridge, tail SSM
+    AVAROK_FFN_NVFP4_MMQ, FlashInfer-GDN AOT bridge, tail SSM
     checkpoints). Not yet in a tagged container release — until then,
-    build the branch with ATLAS_TARGET_MODEL=qwen3.6-27b
-    ATLAS_TARGET_QUANT=nvfp4.
+    build the branch with AVAROK_TARGET_MODEL=qwen3.6-27b
+    AVAROK_TARGET_QUANT=nvfp4.
 
     Env stack (the record configuration; each flag is opt-in and
     independently coherence-gated 10/10):
-      ATLAS_FFN_NVFP4_MMQ=1     # vendored llama Blackwell FP4 block-scale
+      AVAROK_FFN_NVFP4_MMQ=1     # vendored llama Blackwell FP4 block-scale
                                 # MMQ for FFN gate/up (80 TFLOP/s vs 51)
-      ATLAS_GDN_REGRESIDENT=1   # register-resident GDN warm replay.
+      AVAROK_GDN_REGRESIDENT=1   # register-resident GDN warm replay.
                                 # HISTORICAL: this variable was live when the
                                 # record was set, but PR #369 folded the lever
                                 # default-ON and now only the kill switch
-                                # ATLAS_NO_GDN_REGRESIDENT=1 is read. Setting
+                                # AVAROK_NO_GDN_REGRESIDENT=1 is read. Setting
                                 # the line above today does nothing (the lever
                                 # is already on); it is kept so the recorded
                                 # configuration stays readable as written.
-      ATLAS_GDN_FLASHINFER=1    # FlashInfer GDN chunked prefill (+17-20%)
-      ATLAS_GDN_LIB=<repo>/3rdparty_patches/gdn_aot/libatlasgdn.so
+      AVAROK_GDN_FLASHINFER=1    # FlashInfer GDN chunked prefill (+17-20%)
+      AVAROK_GDN_LIB=<repo>/3rdparty_patches/gdn_aot/libatlasgdn.so
       CUTE_DSL_ARCH=sm_121a
       LD_LIBRARY_PATH must include the cute-dsl runtime
       (nvidia_cutlass_dsl/lib) and the CUDA libs.
@@ -50,7 +50,7 @@ metadata:
     up to 18.6k tokens/turn regardless of interval. See the
     qwen3.6-27b-nvfp4-unsloth-agentic recipe for the validated agentic
     golden config.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 27B
   model_dtype: nvfp4

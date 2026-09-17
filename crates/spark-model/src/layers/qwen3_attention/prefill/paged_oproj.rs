@@ -39,7 +39,7 @@ impl Qwen3AttentionLayer {
             && self.w4a4_gemm_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * (nq as usize) * (hd as usize)
-            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+            && std::env::var("AVAROK_ATTN_W4A4").is_ok();
         if w4a4 {
             let kd = nq * hd;
             let a4 = ctx.buffers.fp8_act();
@@ -82,7 +82,7 @@ impl Qwen3AttentionLayer {
         // outside the buffer ledger — the same leak that cost the SSM QKVZ arm
         // ~10.3 GiB and killed a 28-token H100 prefill at layer 36 (#917
         // round 3). It mattered again because the decode recipe arms
-        // `ATLAS_CUBLAS_GEMM=ffn,ssm,attn`. The W8A8 arm below IS the
+        // `AVAROK_CUBLAS_GEMM=ffn,ssm,attn`. The W8A8 arm below IS the
         // replacement: it now routes to cuBLASLt when `attn` is armed, with no
         // dequant and no allocation (`prefill_w8a8.rs`).
         // `alloc_tests.rs` drives this chain on a mock backend with the `attn`
@@ -343,7 +343,7 @@ impl Qwen3AttentionLayer {
                 )?;
             }
         }
-        // ATLAS_OP_DUMP hook: post-O-projection — this is the FULL attention
+        // AVAROK_OP_DUMP hook: post-O-projection — this is the FULL attention
         // block output (Q*K^T*V * O_proj). Compares 1:1 against the HF
         // module hooked on `full_attention.o_proj.forward` for the last
         // token. Use `n` as token-count so we slice the last token.

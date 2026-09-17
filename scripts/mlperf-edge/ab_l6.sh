@@ -1,11 +1,11 @@
 #!/bin/bash
 # L6 A/B: fuse the K=3 MTP-verify conv/norm epilogue. num-drafts=2 (verify
-# width = K=3) FIXED. Only toggled var: ATLAS_GDN_FUSED_VERIFY.
+# width = K=3) FIXED. Only toggled var: AVAROK_GDN_FUSED_VERIFY.
 #   leg A (unset) = per-token conv/norm epilogue (shipping baseline)
 #   leg B (=1)    = fused K=3 conv (gdn_verify_fused_conv_kn) + fused norm
 # Byte-identical is MANDATORY (cost-only fusion). GATE_FORCE=1 pins greedy.
 set -u
-IMG=atlas-gb10:followups
+IMG=avarok-gb10:followups
 BIN=/workspace/.wt-decode-fold/target/release/spark
 MODEL=centml/Qwen3.6-27B-NVFP4-W4A4-mlpinf
 HFCACHE=/workspace/.cache/huggingface
@@ -14,17 +14,17 @@ OUTDIR=/workspace/.wt-decode-fold/ab_l6
 mkdir -p "$OUTDIR"
 
 BASE_ENV=(
-  -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0
-  -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-  -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1
-  -e ATLAS_MTP_CARRY_DEBUG=1
+  -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0
+  -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+  -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1
+  -e AVAROK_MTP_CARRY_DEBUG=1
 )
 
 # leg <tag> <extra -e args...>
 leg() {
   local tag="$1"; shift
-  local CN="atlas-l6-$tag"
-  for c in $(sudo docker ps -q --filter "name=atlas-l6-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
+  local CN="avarok-l6-$tag"
+  for c in $(sudo docker ps -q --filter "name=avarok-l6-"); do sudo docker rm -f "$c" >/dev/null 2>&1; done
   sleep 4
   sudo docker run -d --name "$CN" --network host --gpus all --ipc=host \
     "${BASE_ENV[@]}" "$@" \
@@ -49,7 +49,7 @@ leg() {
 
 echo "### L6 K=3 conv/norm-fusion A/B — $(date)"
 leg A_unset || exit 1
-leg B_fused -e ATLAS_GDN_FUSED_VERIFY=1 || exit 1
+leg B_fused -e AVAROK_GDN_FUSED_VERIFY=1 || exit 1
 
 python3 - <<'PY'
 import json

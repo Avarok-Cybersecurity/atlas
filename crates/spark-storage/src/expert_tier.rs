@@ -21,7 +21,7 @@
 // a single byte the GEMM reads — which the Tier-1 parity test proves.
 
 use anyhow::{Context, Result, bail};
-use atlas_tier::pio;
+use avarok_tier::pio;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
@@ -242,9 +242,9 @@ impl ExpertTier for UmaArenaTier {
 
 /// Open the tier named by `backend` over a built store:
 ///   * `posix` / `uma` — read `dir` locally (bounce oracle / zero-copy).
-///   * `rdma`          — connect to `$ATLAS_EXPERT_PEER` over TWO-SIDED TCP.
-///   * `rdma-verbs`    — connect to `$ATLAS_EXPERT_PEER` over ONE-SIDED RDMA READ
-///     (verbs); device/GID from `$ATLAS_EXPERT_RDMA_DEV`/`$ATLAS_EXPERT_RDMA_GID`.
+///   * `rdma`          — connect to `$AVAROK_EXPERT_PEER` over TWO-SIDED TCP.
+///   * `rdma-verbs`    — connect to `$AVAROK_EXPERT_PEER` over ONE-SIDED RDMA READ
+///     (verbs); device/GID from `$AVAROK_EXPERT_RDMA_DEV`/`$AVAROK_EXPERT_RDMA_GID`.
 ///
 /// Both peer backends serve the store's records over the RoCE fabric.
 pub fn open_tier(
@@ -261,8 +261,8 @@ pub fn open_tier(
         let flag = if use_verbs { "rdma-verbs" } else { "rdma" };
         #[cfg(unix)]
         {
-            let addr = std::env::var("ATLAS_EXPERT_PEER").map_err(|_| {
-                anyhow::anyhow!("--expert-backend {flag} needs $ATLAS_EXPERT_PEER=host:port")
+            let addr = std::env::var("AVAROK_EXPERT_PEER").map_err(|_| {
+                anyhow::anyhow!("--expert-backend {flag} needs $AVAROK_EXPERT_PEER=host:port")
             })?;
             Ok(Box::new(crate::expert_tier_rdma::RdmaTier::connect(
                 &addr,
