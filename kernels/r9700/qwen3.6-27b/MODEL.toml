@@ -415,6 +415,20 @@ lower. The whole file is absent, so every entry point it declares is too. GDN
 prefill stays on the gated_delta_rule/_wy* kernels that do compile."""
 
 # ── The model dir's two drops ──────────────────────────────────────────────
+[expected_absent.w4a16_fp8_ldmab]
+fp8_fp8_gemm_ldmab = """
+gfx1201, SCALE 1.7.1: w4a16_fp8_ldmab.cu:107:9: error: this implementation
+does not provide a declaration of type 'fragment<nvcuda::wmma::accumulator,
+16, 8, 32, float, void>', which is needed to codegen this PTX instruction.
+The e4m3 mma.sync path again, the same gap that pins ATLAS_W4A16_VARIANT=v1.
+This was the 13th of the 13 gfx1201 census failures (180 of 193 clean).
+Dispatch: layers/ops/gemm_fp8_prefill.rs looks this kernel up with `?`, so
+if the FP8-weight prefill GEMM path is ever selected on this target the
+lookup is a hard error, not a silent fallback. On the NVFP4 targets the
+FP8 attention and SSM projections are requantized to NVFP4 at load
+(quantize_to_nvfp4 in the serve log), so that path is not reached; a
+native-FP8 checkpoint on r9700 would be, and needs a BF16-MMA port first."""
+
 [expected_absent.w4a16_v2]
 w4a16_gemm_t_m128_v2 = """
 gfx1201, SCALE 1.7.1: w4a16_gemm_v2.cu:241:5: error, the e4m3 MMA path. It is

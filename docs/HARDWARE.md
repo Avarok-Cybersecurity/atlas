@@ -456,7 +456,7 @@ below plus the one header that only they include. The subtraction is
 machine-checked from two sides: `kernels/r9700/HARDWARE.toml` `[kernels]
 absent` lists the eleven `common/` names and `scripts/check_kernel_shadows.py`
 RULE 3 fails if the set of gb10 entries this tree does not carry is anything
-other than that list, and all 15 entry points of the twelve dropped sources
+other than that list, and all 16 entry points of the thirteen dropped sources
 are declared `[expected_absent]` in both MODEL.tomls so the boot audit reports
 a stated absence instead of refusing to serve.
 
@@ -482,20 +482,20 @@ whose KERNEL.tomls are all symlinks. `qwen3.8-27b` is gb10's `MODEL.toml` with
 tree. There is no `BENCH.toml` and no `[benchmarks.limits]`: a target nobody
 has measured cannot be campaigned, which is the correct state for it.
 
-**Kernels absent on gfx1201.** Twelve sources, 15 entry points, all declared:
+**Kernels absent on gfx1201.** Thirteen sources, 16 entry points, all declared:
 
 | source | module | why |
 |---|---|---|
 | `inferspark_prefill_paged_bf16k_turbo{2,3,4}v.cu`, `_fp8k_turbo{2,3,4}v.cu`, `_turbo3k_turbo8v.cu`, `_turbo4k_turbo3v.cu`, `_turbo4k_turbo8v.cu` (9 files, 2 entry points each) | `prefill_paged_*` | `prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536)`. RDNA 4 has RDNA 3.5's 64 KB per-workgroup LDS cap, and this header has no `#if defined(__SCALE__) #define BR64 32` pin (it hardcodes `BR64 64` at line 449). FOLLOW-UP: adding that pin and the matching 32-row host grid stride brings all nine back. |
 | `prefill_paged_compute_asym.cuh` | (header) | Not compiled on its own, and nothing left in this tree includes it. Returns with the nine above. |
 | `gated_delta_rule_fla.cu` (14 entry points) | `gated_delta_rule_fla` | `114:19: error: unknown opcode: fence.proxy.async.shared::cta`, an sm_90 async-proxy fence SCALE does not lower, issued unconditionally. No follow-up pending: this needs SCALE codegen or a fence-free rewrite, not a tile-size pin. GDN prefill stays on the `gated_delta_rule` / `_wy*` kernels. |
+| `w4a16_fp8_ldmab.cu` | `w4a16_fp8_ldmab` | `107:9: error: this implementation does not provide a declaration of type 'fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>'`, the e4m3 `mma.sync` path. `gemm_fp8_prefill.rs` looks `fp8_fp8_gemm_ldmab` up with `?`, so a native-FP8 prefill on this target is a hard error; NVFP4 targets requantize their FP8 projections at load and never reach it. |
 | `w4a16_gemm_v2.cu` | `w4a16_v2` | `241:5: error` on the e4m3 MMA path, the same gap that makes `ATLAS_W4A16_VARIANT=v1` required here. |
 | `w4a4_gemm.cu` | `w4a4` | `41:8: error: unknown opcode`. The whole `w4a4` module is therefore absent, so BOTH `try_kernel` lookups (`dense_ffn.rs:445` `w4a4_gemm`, `qwen3_attention/init.rs:749` `w4a4_gemm_mfast`) return `KernelHandle(0)` and every `w4a4_gemm_k.0 != 0 && ... && fp4_prefill` guard is false. Nothing falls back to `w4a4_gemm` here, because there is no `w4a4_gemm`: the FP4-activation prefill path is simply unavailable and prefill runs the ordinary W4A16/BF16 route. |
 
-The census arithmetic does not quite close and is recorded as it stands: 193
-files minus 180 clean is 13 failures, and the twelve dropped sources account
-for twelve of them. One census failure is unaccounted for in this tree, and
-the next SCALE build on the board is what names it. Every file not named above
+The census arithmetic closes: 193 files minus 180 clean is 13 failures, and
+the thirteen dropped sources are exactly those 13 (the last one found was
+`w4a16_fp8_ldmab.cu`, e4m3 fragment at `107:9`). Every file not named above
 compiled, including all four files the old curated tree held as strix shadows,
 `gated_delta_rule_snap.cu`, `gdn_verify_fused_conv_kn_f32.cu`,
 `inferspark_prefill_paged_indirect.cu`, `nvfp4_mmq.cu`, `q2_0_mmq.cu`,

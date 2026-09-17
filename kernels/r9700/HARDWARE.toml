@@ -42,13 +42,13 @@ memory_gb = 32
 #     the model dispatches, and the qwen3.8-27b serve died in model build at
 #     `Kernel lookup dense_gemv_bf16_batch2::dense_gemv_bf16_batch2: Module
 #     load failed`. What replaced it is the subtractive gb10 mirror described
-#     below (169 common .cu plus 12 model .cu), sized by a per-file SCALE
+#     below (168 common .cu plus 12 model .cu), sized by a per-file SCALE
 #     compile census over ALL of kernels/gb10/common and
 #     kernels/gb10/qwen3.6-27b/nvfp4. The census reported 180 of 193 files
-#     clean. The twelve names this tree drops account for twelve of those
-#     thirteen failures, so ONE census failure is unaccounted for here and the
-#     next build on the board is what names it. The 94-kernel build line above
-#     is the old tree's and has not been re-measured.
+#     clean, and the thirteen names this tree drops are exactly those 13
+#     failures (the last one identified was w4a16_fp8_ldmab.cu, e4m3 fragment
+#     at 107:9). The 94-kernel build line above is the old tree's and has not
+#     been re-measured.
 #
 #   * The 64 KB LDS cap is REAL on RDNA 4, so the `#define BR64 32` prefill
 #     pin is REQUIRED here rather than inherited. A 73728-byte workgroup
@@ -116,7 +116,7 @@ memory_gb = 32
 #
 # The subtraction is the census, not taste. Every name in `[kernels] absent`
 # below FAILED to compile on a real R9700 (ROCm 7.2.0, SCALE 1.7.1), and all
-# 15 dropped entry points are declared `[expected_absent]` in both
+# 16 dropped entry points are declared `[expected_absent]` in both
 # MODEL.tomls, so the boot audit reports a stated absence instead of refusing
 # to serve. Twelve sources are dropped in all: ten from `common/` (nine
 # asymmetric-KV prefill kernels plus `gated_delta_rule_fla.cu`), one header
@@ -180,6 +180,7 @@ extra_nvcc_flags = ["-ffp-contract=off"]
 # `[expected_absent]` in the two MODEL.tomls.
 absent = [
   "gated_delta_rule_fla.cu",
+  "w4a16_fp8_ldmab.cu",
   "inferspark_prefill_paged_bf16k_turbo2v.cu",
   "inferspark_prefill_paged_bf16k_turbo3v.cu",
   "inferspark_prefill_paged_bf16k_turbo4v.cu",

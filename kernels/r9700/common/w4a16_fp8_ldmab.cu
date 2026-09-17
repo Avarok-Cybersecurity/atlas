@@ -1,1 +1,0 @@
-../../gb10/common/w4a16_fp8_ldmab.cu
