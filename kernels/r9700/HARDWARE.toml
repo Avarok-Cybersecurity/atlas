@@ -1,0 +1,65 @@
+[hardware]
+name = "r9700"
+vendor = "amd"
+# AMD Radeon AI PRO R9700 — RDNA 4, 64 CU, DISCRETE PCIe board (not an APU:
+# this is the first AMD target in the tree with its own VRAM rather than a
+# unified LPDDR5X pool shared with the CPU).
+# Compiled via SCALE (scale-lang.com) 1.7.1, exactly as `kernels/strix` is:
+# the unmodified CUDA .cu sources are recompiled for this AMD target, and
+# `arch` selects the per-arch SCALE toolchain dir (targets/gfx1201/bin/nvcc).
+arch = "gfx1201"
+compute_capability = "12.0.1"
+# GDDR6-18000 (effective), 256-bit bus → ~640 GB/s theoretical. 2.5x strix's
+# 256 GB/s and a discrete pool, so the APU sizing notes in
+# kernels/strix/HARDWARE.toml do NOT carry over.
+memory_bandwidth_gbps = 640
+memory_type = "GDDR6"
+# Dedicated VRAM on the board. Unlike strix's unified 64 GB, all of it is
+# GPU-visible — but 32 GB is HALF what the strix bring-up had, so model
+# sizing that fit there is not automatically a fit here.
+memory_gb = 32
+# The memory_* keys above have NO READER anywhere in the repo — they are
+# documentation and roofline input only, the same status they have in
+# kernels/gb10 and kernels/strix. See docs/HARDWARE.md and the removal note
+# in kernels/strix/HARDWARE.toml for what happened to two neighbouring keys
+# that pretended otherwise. Do not add a key here without a reader in the
+# same change.
+#
+# ── UNVERIFIED ON SILICON ──────────────────────────────────────────────────
+# Nothing below this line has run on an R9700. This target is a structural
+# mirror of `kernels/strix` (same SCALE toolchain, same vendor, same curated
+# 99-entry common/ set, same qwen3.6-27b kernel tree), and it therefore
+# INHERITS strix's gfx1151 bring-up decisions UNEXAMINED. Those inherited
+# decisions are exactly what the first bring-up must probe, and each is a
+# real open question on RDNA 4 rather than a settled fact:
+#
+#   * The 64 KB LDS `#define BR64 32` pin. `kernels/gb10/common/
+#     prefill_paged_compute.cuh` halves the prefill block-row tile under
+#     `#if defined(__SCALE__)` — for EVERY SCALE target, not for gfx1151
+#     specifically — and the matching 32-row host grid stride is selected by
+#     `cfg!(atlas_scale)` in `ops/prefill_attn_main_{a,b}.rs`. That pin was
+#     measured against RDNA 3.5's 64 KB/workgroup LDS cap. RDNA 4 may expose
+#     a different cap, in which case BR64 32 is leaving prefill throughput on
+#     the floor for no reason. PROBE THE CAP FIRST; the `__SCALE__` gate is
+#     vendor-wide, so relaxing it is a kernel-side change that affects strix
+#     too and needs its own measurement there.
+#
+#   * The three gfx1151 runtime shims in `serve-amd.sh`
+#     (ATLAS_FORCE_GLOBAL_GDN=1, ATLAS_W4A16_VARIANT=v1,
+#     ATLAS_NO_FP8_PREDEQUANT=1). All three are workarounds for gfx1151
+#     facts: the 64 KB LDS cap for the first, and SCALE's broken device-side
+#     FP8 encode on gfx1151 for the other two. RDNA 4 has NATIVE FP8 WMMA,
+#     so the FP8 pair may be unnecessary here — and unnecessary is expensive,
+#     because ATLAS_W4A16_VARIANT=v1 buys correctness with a BF16-MMA NVFP4
+#     GEMM instead of the native path. Probe each shim OFF, one at a time,
+#     against a coherence run before assuming it is needed.
+#
+#   * `qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false` and the
+#     retuned sampling block are gfx1151 OBSERVATIONS (a post-</think>
+#     content collapse on that silicon), copied here with the tree. They are
+#     not RDNA 4 measurements and must be re-harvested.
+#
+# No `[benchmarks.limits]` table: campaigning or self-serving a gate on this
+# class needs measured thermal/memory/timing/equivalence facts, and nobody
+# has measured them. A target that declares none cannot be campaigned, which
+# is the correct state for a target that has never booted.
