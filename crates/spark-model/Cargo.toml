@@ -33,6 +33,13 @@ metal-example = ["metal", "dep:tokenizers", "dep:memmap2", "dep:safetensors"]
 # CI runner). Build on a real GPU host with `--features gpu-examples`.
 gpu-examples = []
 
+[build-dependencies]
+# build.rs reads `[hardware].vendor` from kernels/<hw>/HARDWARE.toml to set
+# `atlas_scale` / `atlas_hip`. Same crate and same version spark-runtime's
+# build script already uses for the same file, so this adds nothing new to
+# the workspace build graph.
+toml = "0.8"
+
 [dependencies]
 atlas-core = { workspace = true }
 atlas-kernels = { workspace = true }
