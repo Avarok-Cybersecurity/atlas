@@ -27,9 +27,9 @@ pub struct ArtifactStore {
 }
 
 impl ArtifactStore {
-    /// Resolve the Atlas home. `AVAROK_HOME` wins when set (the escape hatch for
+    /// Resolve the Avarok home. `AVAROK_HOME` wins when set (the escape hatch for
     /// a read-only or shared `$HOME`); otherwise `$HOME/.avarok`, or the
-    /// pre-rename `$HOME/.atlas` on a box that still has one. A missing
+    /// pre-rename `$HOME/.avarok` on a box that still has one. A missing
     /// `$HOME` is an error, not a fallback to `/tmp` — a benchmark silently
     /// provisioning several GB somewhere unexpected is worse than a clear stop.
     ///
@@ -76,7 +76,7 @@ impl ArtifactStore {
 
 /// Write a compiled-in asset into `dir`, but only when the bytes differ.
 ///
-/// Provisioned scripts must track the binary that ships them — an Atlas upgrade
+/// Provisioned scripts must track the binary that ships them — an Avarok upgrade
 /// that changes the BFCL scorer has to overwrite the copy in `~/.avarok`, or the
 /// run would be scored by the previous release. Comparing content (rather than
 /// checking existence) keeps mtimes stable so downstream stamps stay valid.
@@ -217,9 +217,9 @@ mod tests {
     /// `HomeSource` doc records as having cost seven re-measured gates.
     #[test]
     fn a_box_with_only_the_pre_rename_home_resolves_to_it() {
-        let home = home_with("legacy-only", &[".atlas"]);
+        let home = home_with("legacy-only", &[".avarok"]);
         let got = resolved(&home);
-        assert_eq!(got.root, home.join(".atlas"));
+        assert_eq!(got.root, home.join(".avarok"));
         assert_eq!(got.source, HomeSource::LegacyHomeDefault);
         assert!(
             got.describe().contains(".avarok"),
@@ -233,7 +233,7 @@ mod tests {
     /// the two can never be live at the same time.
     #[test]
     fn the_current_home_wins_when_both_are_present() {
-        let home = home_with("both", &[".atlas", ".avarok"]);
+        let home = home_with("both", &[".avarok", ".avarok"]);
         let got = resolved(&home);
         assert_eq!(got.root, home.join(".avarok"));
         assert_eq!(got.source, HomeSource::HomeDefault);
@@ -253,7 +253,7 @@ mod tests {
     /// root gets that root.
     #[test]
     fn avarok_home_wins_over_a_pre_rename_directory() {
-        let home = home_with("env-wins", &[".atlas"]);
+        let home = home_with("env-wins", &[".avarok"]);
         let explicit = home.join("elsewhere");
         let got = resolve_from(
             Some(explicit.as_os_str().to_owned()),
@@ -265,10 +265,10 @@ mod tests {
     }
 
     /// `resolve_from` reads the filesystem and MUST NOT write to it: the whole
-    /// point of the fallback is that nobody's `~/.atlas` moves by surprise.
+    /// point of the fallback is that nobody's `~/.avarok` moves by surprise.
     #[test]
     fn resolving_creates_nothing() {
-        let home = home_with("no-side-effects", &[".atlas"]);
+        let home = home_with("no-side-effects", &[".avarok"]);
         let _ = resolved(&home);
         assert!(
             !home.join(".avarok").exists(),
@@ -278,7 +278,7 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(entries.len(), 1, "expected only .atlas, got {entries:?}");
+        assert_eq!(entries.len(), 1, "expected only .avarok, got {entries:?}");
     }
 
     #[test]

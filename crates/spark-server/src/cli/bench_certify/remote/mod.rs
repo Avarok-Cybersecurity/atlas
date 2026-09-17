@@ -54,7 +54,7 @@ pub struct Fleet {
 /// # Errors
 /// When atlasctl cannot be run, or no node at all is admitted.
 pub fn assemble(
-    atlasctl: &dyn atlasctl::Atlasctl,
+    atlasctl: &dyn atlasctl::Avarokctl,
     addrs: &[String],
     remote_only: bool,
     wanted: &node::Wanted,
@@ -126,7 +126,7 @@ pub struct Shared<'a> {
 /// One runner per node: this box's child spawner, or a remote driver.
 pub fn runners(
     fleet: &Fleet,
-    atlasctl: Arc<dyn atlasctl::Atlasctl>,
+    atlasctl: Arc<dyn atlasctl::Avarokctl>,
     run_id: &str,
     anchor_full: &str,
     cancel: Arc<AtomicBool>,

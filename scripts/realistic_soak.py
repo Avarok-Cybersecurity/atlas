@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Realistic real-world soak / stability + perf test for a running Atlas server.
+"""Realistic real-world soak / stability + perf test for a running Avarok server.
 
 Models production traffic, not a synthetic prompt loop. Each request is drawn
 from a realistic MIX:

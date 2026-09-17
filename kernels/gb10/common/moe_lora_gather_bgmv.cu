@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas DECODE-path MoE expert down_proj LoRA fold on SM121 (GB10). Two kernels
+// Avarok DECODE-path MoE expert down_proj LoRA fold on SM121 (GB10). Two kernels
 // — shrink then expand+fold — that fold, for the UNSORTED slot-major decode
 // activations, one installed LoRA per adapted expert, keyed per (token, slot)
 // row by the same `indices` array the fused expert GEMV already routed on:

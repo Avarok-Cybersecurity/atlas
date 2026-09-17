@@ -33,7 +33,7 @@
 // So this fixture is a valid negative for sm_90a and sm_100a, and INVALID for
 // the sm_120/sm_121 family — the mirror image of `known_bad_post_hopper.cu`,
 // which is valid everywhere EXCEPT sm_100a. Between them the gate has a
-// working negative for every architecture Atlas currently targets; the gate
+// working negative for every architecture Avarok currently targets; the gate
 // picks per arch and refuses to run where it has none.
 //
 // The operand shape is the one `kernels/gb10/qwen3.6-35b-a3b/nvfp4/

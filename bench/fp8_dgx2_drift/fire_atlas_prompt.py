@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fire the canonical 10382-token prompt at the dgx2 Atlas op-drift server
+"""Fire the canonical 10382-token prompt at the dgx2 Avarok op-drift server
 to trigger AVAROK_OP_DUMP / AVAROK_GDN_DUMP / AVAROK_NEMO_DUMP.
 
-We send the *token IDs* directly via /v1/completions `prompt` field (Atlas
+We send the *token IDs* directly via /v1/completions `prompt` field (Avarok
 accepts both strings and integer arrays per OpenAI spec).
 """
 from __future__ import annotations

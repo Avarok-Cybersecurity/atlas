@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // PLE — hashed n-gram injection into the hyper-connection highway.
-// Qwen3.8-Flash-Next, ONE layer (model layer 1). Atlas #753 item C.
+// Qwen3.8-Flash-Next, ONE layer (model layer 1). Avarok #753 item C.
 //
 // Reference: `Qwen4ExpTextPLELayer.forward`,
 // bench/qwen4_exp/ref/modeling_qwen4_exp.py L1168.

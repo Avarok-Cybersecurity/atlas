@@ -1,11 +1,11 @@
 # Workspace Layout
 
-Atlas is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
+Avarok is a **nineteen**-member Cargo workspace plus a build-time kernel tree (count them in the root `Cargo.toml` `members` list). This chapter maps every top-level directory to its role, and the crates to the axes of variation they each insulate.
 
 ## Repository tree (top level)
 
 ```
-atlas/
+avarok/
 ├── README.md                     headline, benchmarks, porting guides
 ├── QUICKSTART.md                 per-model Docker recipes
 ├── CONTRIBUTING.md, AGENTS.md    contributor workflow
@@ -107,14 +107,14 @@ docker/
 └── docker-guide.md                        build + run instructions
 ```
 
-The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avarok/atlas-gb10:latest`. Per-model Dockerfiles exist for operators who want a smaller image containing only one target — the kernel registry still uses `KernelTarget` at runtime, but only one target set is baked in.
+The multi-model `Dockerfile` at `docker/gb10/Dockerfile` is what ships as `avarok/avarok-gb10:latest`. Per-model Dockerfiles exist for operators who want a smaller image containing only one target — the kernel registry still uses `KernelTarget` at runtime, but only one target set is baked in.
 
 ## Docs, design records, history, releases
 
 Inside `docs/`:
 
-- `adr/` — architecture decision records (licensing, pure-Rust, hybrid SSM/attention, NVFP4/FP8 quantization, TP/EP composition, EP batched decode, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here. Top-level notes like `ARCHITECTURE.md`, `ATLAS_KERNELS.md`, and `HARDWARE.md` sit alongside them.
-- `ATLAS_SPARK_JOURNEY.md` — benchmark journey and retrospective across the Spark line. Useful context, but not a contract.
+- `adr/` — architecture decision records (licensing, pure-Rust, hybrid SSM/attention, NVFP4/FP8 quantization, TP/EP composition, EP batched decode, etc.). Treat these as the long-form rationale behind code changes; commit messages are deliberately terse and point here. Top-level notes like `ARCHITECTURE.md`, `AVAROK_KERNELS.md`, and `HARDWARE.md` sit alongside them.
+- `AVAROK_SPARK_JOURNEY.md` — benchmark journey and retrospective across the Spark line. Useful context, but not a contract.
 - `releases/` — human-readable release notes keyed by release (`README.md` plus per-release files).
 
 The book you're reading in `book/` synthesises all of this into a single narrative — it is *not* a canonical rewrite of those documents. The design records in `docs/adr/` remain the authoritative reference and the book links to them directly from the deep-dive chapters.

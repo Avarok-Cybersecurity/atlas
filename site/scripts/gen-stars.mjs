@@ -2,7 +2,7 @@
 // =============================================================================
 // gen-stars.mjs — generate src/lib/stars.generated.json from the GitHub API
 // -----------------------------------------------------------------------------
-// SSOT: the live GitHub star count + star history for Avarok-Cybersecurity/atlas
+// SSOT: the live GitHub star count + star history for Avarok-Cybersecurity/avarok
 //   fetched via the `gh` CLI (uses ambient auth — GH_TOKEN in CI, the logged-in
 //   user locally). This script is BEST-EFFORT: it MUST NEVER fail the build.
 //   On any error it re-emits the existing generated file unchanged, or writes a
@@ -25,8 +25,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const REPO_DIR = resolve(here, '..', '..');
 const OUT = resolve(here, '..', 'src', 'lib', 'stars.generated.json');
 
-const REPO = 'Avarok-Cybersecurity/atlas';
-const URL = 'https://github.com/Avarok-Cybersecurity/atlas';
+const REPO = 'Avarok-Cybersecurity/avarok';
+const URL = 'https://github.com/Avarok-Cybersecurity/avarok';
 const FALLBACK_COUNT = 546;
 
 function gh(args) {

@@ -1,6 +1,6 @@
 # The AI-Repository Harness
 
-How Atlas decides which expensive GPU benchmarks a pull request must pass,
+How Avarok decides which expensive GPU benchmarks a pull request must pass,
 proves that the recorded results came from the code they claim to describe,
 and keeps the remaining coverage debt visible instead of letting it become an
 assumption.
@@ -47,7 +47,7 @@ symbol names are the stable reference, line numbers will drift.
 <a name="the-problem"></a>
 ## 1. The problem, in one paragraph
 
-Atlas's correctness and performance gates run on real GPUs and cost real
+Avarok's correctness and performance gates run on real GPUs and cost real
 time — the two BFCL accuracy legs are ~3.5 GPU-hours *each*
 (`crates/avarok-plugin/src/benchmarks/bfcl/descriptors.rs:34`). CI cannot run
 them per-push, so the results are measured on a GPU box, committed to the
@@ -544,7 +544,7 @@ Mechanics worth knowing:
 
 - **Coverage is by content, never ancestry** (ADR-0013,
   `docs/adr/0013-gate-coverage-by-content-not-ancestry.md`;
-  `gate/check.rs:205-241`). Atlas squash-merges, so a record written on a PR
+  `gate/check.rs:205-241`). Avarok squash-merges, so a record written on a PR
   branch stops being an ancestor of anything the instant the PR lands — and
   that took main down: five real passing records for #389 read "not an
   ancestor" after the squash, main went red for three commits, and every PR

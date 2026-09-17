@@ -1,4 +1,4 @@
-# Atlas reproducible BUILD environment — pins every native/FFI dependency so a
+# Avarok reproducible BUILD environment — pins every native/FFI dependency so a
 # `cargo build` "just works" without remembering CUTLASS_HOME / FLASHINFER_HOME /
 # CUDA-13.2 / the GDN AOT libs. This is the env behind the hand-built
 # `avarok-holo:cuda13.2-fp4test` image, captured as code.

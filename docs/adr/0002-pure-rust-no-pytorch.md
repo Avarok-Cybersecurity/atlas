@@ -10,7 +10,7 @@ Python-orchestrated with C++/CUDA kernels. They inherit PyTorch's allocator,
 its dispatcher overhead, GIL contention, and a full PyTorch+CUDA runtime
 image (>5 GB).
 
-Atlas was built for a specific operator: NVIDIA DGX Spark GB10 (sm_121),
+Avarok was built for a specific operator: NVIDIA DGX Spark GB10 (sm_121),
 unified-memory Grace+Blackwell, 119 GB pooled. On that hardware we wanted:
 
 - Tight control of allocator behavior (paged KV cache, pinned bounce
@@ -32,7 +32,7 @@ Two candidate shapes:
 
 ## Decision
 
-Atlas is **pure Rust + cudarc** end-to-end. There is no PyTorch in the hot
+Avarok is **pure Rust + cudarc** end-to-end. There is no PyTorch in the hot
 path. Each supported model family has its own `TransformerLayer` impl in
 `crates/spark-model/src/layers/<arch>/`, its own `WeightLoader` for
 safetensors → typed-struct mapping, and its own per-quant CUDA kernels under

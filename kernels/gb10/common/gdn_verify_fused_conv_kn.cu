@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas fused generic-K MTP/DFlash-verify conv1d+L2norm — the K=17 (γ=16)
+// Avarok fused generic-K MTP/DFlash-verify conv1d+L2norm — the K=17 (γ=16)
 // generalization of gdn_verify_fused_conv_k2.
 //
 // The K=17 DFlash verify arm currently runs the conv epilogue as a PER-TOKEN

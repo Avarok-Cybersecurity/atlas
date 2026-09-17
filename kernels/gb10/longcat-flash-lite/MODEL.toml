@@ -49,7 +49,7 @@ model_type = "longcat_flash"
 # Straight from the checkpoint's generation_config.json (repetition_penalty
 # 1.06 / temperature 0.7 / top_p 0.95 / top_k 4). LongCat ships ONE recipe
 # rather than per-mode ones, so all four presets carry it — a request that
-# names no sampler gets what Meituan tuned, not Atlas's generic defaults.
+# names no sampler gets what Meituan tuned, not Avarok's generic defaults.
 #
 # top_k = 4 is unusually tight and it is deliberate: this model is a
 # 256-expert MoE with zero-computation experts and it degenerates when given
@@ -60,7 +60,7 @@ top_p = 0.95
 top_k = 4
 repetition_penalty = 1.06
 # The card asks for NO min-p and NO sigma filter. Declaring 0 explicitly is
-# how a model overrides Atlas's --default-min-p 0.08 / --default-top-n-sigma
+# how a model overrides Avarok's --default-min-p 0.08 / --default-top-n-sigma
 # 1.0, which would otherwise stack on top of an already-tight top_k = 4.
 min_p = 0.0
 top_n_sigma = 0.0
@@ -71,7 +71,7 @@ top_p = 0.95
 top_k = 4
 repetition_penalty = 1.06
 # The card asks for NO min-p and NO sigma filter. Declaring 0 explicitly is
-# how a model overrides Atlas's --default-min-p 0.08 / --default-top-n-sigma
+# how a model overrides Avarok's --default-min-p 0.08 / --default-top-n-sigma
 # 1.0, which would otherwise stack on top of an already-tight top_k = 4.
 min_p = 0.0
 top_n_sigma = 0.0
@@ -82,7 +82,7 @@ top_p = 0.95
 top_k = 4
 repetition_penalty = 1.06
 # The card asks for NO min-p and NO sigma filter. Declaring 0 explicitly is
-# how a model overrides Atlas's --default-min-p 0.08 / --default-top-n-sigma
+# how a model overrides Avarok's --default-min-p 0.08 / --default-top-n-sigma
 # 1.0, which would otherwise stack on top of an already-tight top_k = 4.
 min_p = 0.0
 top_n_sigma = 0.0
@@ -93,7 +93,7 @@ top_p = 0.95
 top_k = 4
 repetition_penalty = 1.06
 # The card asks for NO min-p and NO sigma filter. Declaring 0 explicitly is
-# how a model overrides Atlas's --default-min-p 0.08 / --default-top-n-sigma
+# how a model overrides Avarok's --default-min-p 0.08 / --default-top-n-sigma
 # 1.0, which would otherwise stack on top of an already-tight top_k = 4.
 min_p = 0.0
 top_n_sigma = 0.0
@@ -103,7 +103,7 @@ top_n_sigma = 0.0
 # targets (Mistral-Small-4, DeepSeek-V4-Flash).
 default_kv_dtype = "bf16"
 # Without this the [sampling.*] presets above apply only to non-core paths and
-# a plain /v1/completions or /v1/chat/completions still gets Atlas's generic
+# a plain /v1/completions or /v1/chat/completions still gets Avarok's generic
 # defaults — the presets look wired and are not. (Same trap that left every
 # qwen target on generic sampling.)
 use_sampling_presets_for_core = true

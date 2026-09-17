@@ -55,10 +55,10 @@ pub struct ChunkDelta {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::tool_parser::ChunkToolCall>>,
-    /// Refusal signal. Atlas emits this on a single terminal delta chunk
+    /// Refusal signal. Avarok emits this on a single terminal delta chunk
     /// (just before the `done` chunk) when the accumulated streamed
     /// content matches a known refusal pattern. OpenAI's streaming
-    /// refusal model is fragment-by-fragment; Atlas only classifies
+    /// refusal model is fragment-by-fragment; Avarok only classifies
     /// post-hoc so the signal lands as one chunk. Safety-aware clients
     /// that branch on `delta.refusal` will still see a non-null value.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -259,12 +259,12 @@ impl ChatCompletionChunk {
         }
     }
 
-    /// Delta chunk carrying only `refusal: "<sentence>"`. Atlas emits
+    /// Delta chunk carrying only `refusal: "<sentence>"`. Avarok emits
     /// this once, just before the terminal `done`/`usage_only` chunk,
     /// when `refusal::detect` classifies the accumulated streamed
     /// content as a refusal. OpenAI's streaming refusal model sends
     /// multiple `delta.refusal` fragments; we send a single post-hoc
-    /// signal because Atlas classifies after the stream is complete.
+    /// signal because Avarok classifies after the stream is complete.
     pub fn refusal_chunk(model: &str, id: &str, refusal: String) -> Self {
         Self {
             id: id.to_string(),

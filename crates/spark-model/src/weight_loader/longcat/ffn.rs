@@ -268,6 +268,7 @@ fn quant_expert_fp8(
     let q = crate::weight_map::quantize_to_fp8_blockscaled(&bf16, n, k, gpu, quantize_k, stream)?;
     // The kernel reads the BF16 source on `stream`; the free must not race it.
     gpu.synchronize(stream)?;
-    gpu.free(w.ptr)?;
+    // Through the store: no-op if the source lives in a loader arena.
+    store.release_ptr(gpu, w.ptr)?;
     Ok(q)
 }

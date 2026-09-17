@@ -31,10 +31,10 @@ html[data-theme="dark"] .marketing .m-hero-art img {
 .marketing .m-dark {
   --background: var(--atlas-ink);
   --foreground: #f5f7fb;
-  --primary: var(--atlas-purple);
+  --primary: var(--avarok-purple);
   --primary-foreground: var(--atlas-ink);
   --border: #30353d;
-  --ring: var(--atlas-purple);
+  --ring: var(--avarok-purple);
   --muted: #20242c;
   --muted-foreground: #a3aab7;
   --card: #181c22;
@@ -42,7 +42,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   --popover: #181c22;
   --popover-foreground: #f5f7fb;
   --accent: #24272d;
-  --accent-foreground: var(--atlas-cyan);
+  --accent-foreground: var(--avarok-cyan);
   --secondary: #20242c;
   --secondary-foreground: #f5f7fb;
   --input: #30353d;
@@ -95,7 +95,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   }
   ::selection {
     color: var(--atlas-ink);
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
   }
   .m-skip-link {
     position: fixed;
@@ -180,12 +180,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     transform: translateY(-2px);
   }
   .m-button-primary {
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
     color: var(--atlas-ink);
-    box-shadow: 0 4px 10px color-mix(in srgb, var(--atlas-purple) 15%, transparent);
+    box-shadow: 0 4px 10px color-mix(in srgb, var(--avarok-purple) 15%, transparent);
   }
   .m-button-primary:hover {
-    background: var(--atlas-cyan);
+    background: var(--avarok-cyan);
   }
   .m-button-dark {
     background: var(--t1);
@@ -205,7 +205,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     position: relative;
     overflow: hidden;
     isolation: isolate;
-    background: var(--atlas-paper);
+    background: var(--avarok-paper);
   }
   .m-hero-copy {
     position: relative;
@@ -233,8 +233,8 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--atlas-green);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--atlas-green) 12%, transparent);
+    background: var(--avarok-green);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--avarok-green) 12%, transparent);
   }
   h1 {
     font-size: clamp(62px, 6.6vw, 104px);
@@ -248,13 +248,13 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: var(--t1);
     font-weight: 450;
     font-style: normal;
-    box-shadow: inset 0 -0.12em 0 var(--atlas-purple);
+    box-shadow: inset 0 -0.12em 0 var(--avarok-purple);
   }
   .m-hero-description {
     font-size: 20px;
     line-height: 1.7;
     max-width: 460px;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin: 0 0 30px;
     letter-spacing: -0.02em;
   }
@@ -278,7 +278,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 9px;
     font-family: "SFMono-Regular", monospace;
     font-size: 13px;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-hero-note span {
     width: 5px;
@@ -432,7 +432,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px/1.7 "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     letter-spacing: 0.045em;
   }
   .m-ecosystem p strong {
@@ -475,7 +475,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 12px;
     max-width: 160px;
     font-size: 16px;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   @media (min-width: 1700px) {
     .m-header,
@@ -631,12 +631,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     margin: 0;
   }
   .m-soft-text {
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-section-intro {
     font-size: 19px;
     line-height: 1.7;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     width: 360px;
     max-width: 40%;
     margin: 0 0 4px;
@@ -647,16 +647,16 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 38px;
   }
   .m-benefits article {
-    border-top: 2px solid var(--atlas-purple);
+    border-top: 2px solid var(--avarok-purple);
     padding-top: 27px;
     display: flex;
     flex-direction: column;
   }
   .m-benefits article:nth-child(2) {
-    border-top-color: var(--atlas-cyan);
+    border-top-color: var(--avarok-cyan);
   }
   .m-benefits article:nth-child(3) {
-    border-top-color: var(--atlas-green);
+    border-top-color: var(--avarok-green);
   }
   .m-benefit-top {
     display: flex;
@@ -668,7 +668,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-benefits h3 {
     font-size: 25px;
@@ -680,7 +680,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-benefits p {
     font-size: 18px;
     line-height: 1.7;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     max-width: 360px;
     margin: 0 0 25px;
   }
@@ -701,7 +701,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     padding-bottom: 35px;
   }
   .m-possibilities .m-section-label {
-    color: var(--atlas-purple);
+    color: var(--avarok-purple);
   }
   .m-possibilities .m-soft-text {
     color: var(--atlas-tagline-dark);
@@ -743,7 +743,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     background: transparent !important;
   }
   .m-scenario-tab[aria-selected="true"]:after {
-    background: var(--atlas-purple) !important;
+    background: var(--avarok-purple) !important;
     bottom: -1px !important;
     height: 2px !important;
   }
@@ -791,10 +791,10 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: #c6ceda;
   }
   .m-scenario-copy li svg {
-    color: var(--atlas-green);
+    color: var(--avarok-green);
   }
   .m-scenario-copy .m-text-link {
-    color: var(--atlas-cyan);
+    color: var(--avarok-cyan);
   }
   .m-workflow {
     background: var(--atlas-ink);
@@ -821,7 +821,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 8px;
   }
   .m-workflow-top .m-status-dot {
-    background: var(--atlas-green);
+    background: var(--avarok-green);
   }
   .m-prompt-bubble {
     background: #20242a;
@@ -847,7 +847,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-engine-dot {
     width: 6px;
     height: 6px;
-    background: var(--atlas-green);
+    background: var(--avarok-green);
     border-radius: 50%;
     margin-left: auto;
   }
@@ -875,7 +875,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     height: 19px;
     margin-left: -19px;
     background: var(--atlas-ink);
-    color: var(--atlas-green);
+    color: var(--avarok-green);
   }
   .m-workflow-result {
     display: flex;
@@ -918,7 +918,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-evidence-copy > p:not(.m-eyebrow) {
     font-size: 19px;
     line-height: 1.75;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     max-width: 390px;
     margin: 27px 0;
   }
@@ -933,7 +933,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
   }
   .m-big-number {
     font-size: clamp(74px, 8vw, 120px);
@@ -971,7 +971,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     display: block;
     padding: 10px 12px;
     color: var(--atlas-ink);
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
     font-size: 13px;
     font-weight: 400;
     border-radius: 2px;
@@ -983,7 +983,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-benchmark-note {
     font-size: 13px;
     line-height: 1.65;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin: 20px 0 0;
   }
   .m-benchmark-note a {
@@ -999,10 +999,10 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     height: 4px;
     background: linear-gradient(
       to right,
-      var(--atlas-purple) 0% 25%,
-      var(--atlas-cyan) 25% 50%,
-      var(--atlas-green) 50% 75%,
-      var(--atlas-gold) 75% 100%
+      var(--avarok-purple) 0% 25%,
+      var(--avarok-cyan) 25% 50%,
+      var(--avarok-green) 50% 75%,
+      var(--avarok-gold) 75% 100%
     );
   }
   .m-start-section {
@@ -1026,7 +1026,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     color: var(--atlas-wordmark-dark);
   }
   .m-large-plus {
-    color: var(--atlas-gold);
+    color: var(--avarok-gold);
     font-size: 35px;
     font-weight: 200;
     line-height: 1;
@@ -1039,7 +1039,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     margin: 0 0 40px;
   }
   .m-start-section h2 > span {
-    color: var(--atlas-purple);
+    color: var(--avarok-purple);
   }
   .m-start-bottom {
     display: flex;
@@ -1059,12 +1059,12 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 35px;
   }
   .m-button-white {
-    background: var(--atlas-purple);
+    background: var(--avarok-purple);
     color: var(--atlas-ink);
     padding: 18px 24px;
   }
   .m-button-white:hover {
-    background: var(--atlas-cyan);
+    background: var(--avarok-cyan);
   }
   .m-github-link {
     display: flex;
@@ -1091,7 +1091,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 8px;
   }
   .m-footer {
-    background: var(--atlas-paper);
+    background: var(--avarok-paper);
     padding: 65px 7% 24px;
   }
   .m-footer-main {
@@ -1116,7 +1116,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   }
   .m-footer-main p {
     font-size: 16px;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin-top: 8px;
   }
   .m-footer-links {
@@ -1134,7 +1134,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     font:
       13px "SFMono-Regular",
       monospace;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     margin-bottom: 9px;
   }
   .m-footer-links a {
@@ -1152,7 +1152,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
     gap: 20px;
     border-top: 1px solid var(--border);
     padding-top: 23px;
-    color: var(--atlas-gray-text);
+    color: var(--avarok-gray-text);
     font-size: 13px;
   }
   @media (min-width: 1700px) {
@@ -1422,7 +1422,7 @@ html[data-theme="dark"] .marketing .m-hero-art img {
   .m-dark button:focus-visible,
   .m-dark [role="tabpanel"]:focus-visible,
   .m-start-section a:focus-visible {
-    outline: 3px solid var(--atlas-cyan);
+    outline: 3px solid var(--avarok-cyan);
     outline-offset: 5px;
   }
 }

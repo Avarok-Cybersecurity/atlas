@@ -113,10 +113,10 @@ if (!matched) die('no matched-parity baseline');
 
 // `variant`: another configuration of the SUBJECT engine (e.g. a different
 // drafter). Drawn on the chart, and deliberately absent from `rows`,
-// `ratio_vs_best`, `wins` and `summary` below: the published claim is Atlas
-// against the matched vLLM baseline, and admitting a second Atlas
+// `ratio_vs_best`, `wins` and `summary` below: the published claim is Avarok
+// against the matched vLLM baseline, and admitting a second Avarok
 // configuration would change what that number means. A variant is evidence
-// about Atlas, not evidence about the comparison.
+// about Avarok, not evidence about the comparison.
 //
 // It IS held to the same rung coverage as a baseline, for the same reason: a
 // line that stops partway along a log2 axis reads as a measurement, not as a
@@ -148,7 +148,7 @@ const rows = subject.rungs.map((row) => {
   const m = perBaseline.find((b) => b.id === matched.id);
   return {
     c: row.c,
-    atlas: row.tok_s,
+    avarok: row.tok_s,
     baselines: perBaseline,
     best_baseline_id: m.id,
     ratio_vs_best: r3(row.tok_s / m.tok_s),
@@ -175,7 +175,7 @@ const out = {
   subtitle: manifest.subtitle,
   aggregate: manifest.aggregate,
   results_doc: manifest.results_doc,
-  results_doc_url: `https://github.com/Avarok-Cybersecurity/atlas/blob/main/${manifest.results_doc}`,
+  results_doc_url: `https://github.com/Avarok-Cybersecurity/avarok/blob/main/${manifest.results_doc}`,
   workload: manifest.workload,
   box: manifest.box,
   harness_shas: manifest.harness_shas,

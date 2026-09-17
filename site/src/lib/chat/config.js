@@ -5,9 +5,9 @@
 
 // --- corpus (published by the AutoRepoRAG workflow to gh-pages) --------------
 export const CORPUS_GZ_URL =
-  'https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.gz';
+  'https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz';
 export const CORPUS_META_URL =
-  'https://avarok-cybersecurity.github.io/atlas/coderag/atlas-coderag.jsonl.meta.json';
+  'https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.meta.json';
 
 // --- OpenRouter --------------------------------------------------------------
 export const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1';
@@ -16,7 +16,7 @@ export const EMBEDDING_MODEL = 'nvidia/llama-nemotron-embed-vl-1b-v2:free';
 export const RERANK_MODEL = 'nvidia/llama-nemotron-rerank-vl-1b-v2:free';
 export const CHAT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
 // Attribution headers OpenRouter asks apps to send.
-export const APP_TITLE = 'Atlas Ask the Codebase';
+export const APP_TITLE = 'Avarok Ask the Codebase';
 export const SITE_ORIGIN = 'https://atlascybernetics.ai';
 // Retry policy for the shared free-tier capacity (ResourceExhausted bursts).
 export const OR_MAX_ATTEMPTS = 3;
@@ -33,22 +33,22 @@ export const RERANK_MULTIPLIER = 4;
 // between batches so the main thread stays responsive while indexing.
 export const UPSERT_BATCH = 256;
 // Name of the (single) LatticeDB collection holding the corpus.
-export const COLLECTION = 'atlas-code';
+export const COLLECTION = 'avarok-code';
 
 // --- vendored LatticeDB wasm (emitted by scripts/gen-lattice.mjs) ------------
 export const WASM_JS_URL = '/lattice/lattice_server.js';
 export const WASM_BIN_URL = '/lattice/lattice_server_bg.wasm';
 // Cache API bucket used only for the optional idle wasm prefetch.
-export const WASM_PREFETCH_CACHE = 'atlas-lattice-wasm';
+export const WASM_PREFETCH_CACHE = 'avarok-lattice-wasm';
 
 // --- storage -----------------------------------------------------------------
 // localStorage key holding the visitor's OpenRouter API key.
-export const LS_OPENROUTER_KEY = 'atlas-openrouter-key';
+export const LS_OPENROUTER_KEY = 'avarok-openrouter-key';
 // The visitor may point the answer model somewhere else, e.g. at the paid twin
 // of the default when their free daily allowance is spent. Retrieval models are
 // deliberately NOT overridable: the embedder has no paid endpoint at all, and a
 // different embedder would not match the vectors the corpus was built with.
-export const LS_CHAT_MODEL = 'atlas-openrouter-chat-model';
+export const LS_CHAT_MODEL = 'avarok-openrouter-chat-model';
 // OPFS file name for the decompressed corpus, keyed by corpus commit SHA.
 export const latticeFileName = (sha) => 'lattice-db-' + sha + '.jsonl';
 // Matches files produced by latticeFileName(); capture group 1 is the SHA.

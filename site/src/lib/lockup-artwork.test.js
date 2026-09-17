@@ -62,7 +62,7 @@ test('the lockup reads the logo greys, never the text ramp', () => {
   // theme darkens --t2/--t3 to clear WCAG AA on paper. Artwork bound to the
   // text ramp would recolour itself the next time the ramp moved.
   expect(lockup).toContain('id="atlas-word" fill="var(--logo-word)"');
-  expect(lockup).not.toMatch(/id="atlas-(word|tagline[^"]*)" fill="var\(--t[123]\)"/);
+  expect(lockup).not.toMatch(/id="avarok-(word|tagline[^"]*)" fill="var\(--t[123]\)"/);
 
   const block = (sel) => tokens.match(new RegExp(`${sel}\\s*\\{[\\s\\S]*?\\n\\}`))?.[0] ?? '';
   const dark = block(':root');

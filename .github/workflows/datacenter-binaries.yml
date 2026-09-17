@@ -4,7 +4,7 @@
 # (sm_90a: H100/H200) and B200 (sm_100a: B200/GB200) — on a GPU-free hosted
 # runner, and upload it as an artifact.
 #
-# WHY. Renting an H100 by the hour and then compiling Atlas on it spends the
+# WHY. Renting an H100 by the hour and then compiling Avarok on it spends the
 # expensive resource on work that needs no GPU. `nvcc --ptx -arch=sm_90a` is a
 # cross-compile and the kernels travel as PTX embedded in the binary, so the
 # whole thing builds on `ubuntu-latest`. `kernel-compile.yml` already proves
@@ -285,7 +285,7 @@ jobs:
           mkdir -p dist
           cp "$bin" dist/spark
           {
-            echo "atlas spark — datacentre build"
+            echo "avarok spark — datacentre build"
             echo "git_sha:        ${{ github.sha }}"
             echo "git_ref:        ${{ github.ref }}"
             echo "built_by:       .github/workflows/datacenter-binaries.yml"

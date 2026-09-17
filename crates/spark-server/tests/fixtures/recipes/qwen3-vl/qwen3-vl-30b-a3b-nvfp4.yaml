@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
@@ -10,8 +10,8 @@ metadata:
     NO SSM, head_dim=128, ungated Q), MoE without shared experts.
     Accepts images in OpenAI content-parts format (`{"type":
     "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`).
-    ~97 tok/s decode per the Atlas performance table (FP8 KV).
-  maintainer: atlas
+    ~97 tok/s decode per the Avarok performance table (FP8 KV).
+  maintainer: avarok
   category: vision
   model_params: 30B
   model_dtype: nvfp4

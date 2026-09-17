@@ -25,7 +25,7 @@ pub use super::wire::{
 pub type Refusal = (Exit, Option<ErrorObj>);
 
 /// The five verbs the driver needs.
-pub trait Atlasctl: Send + Sync {
+pub trait Avarokctl: Send + Sync {
     fn nodes(&self, addrs: &[String]) -> Result<Vec<NodeRow>>;
     fn submit(&self, node: &str, spec: &SubmitSpec) -> Result<Result<Submitted, Refusal>>;
     /// Stream events from `from_seq` until the job ends or the link is lost
@@ -50,11 +50,11 @@ pub trait Atlasctl: Send + Sync {
 }
 
 /// The real thing: `atlasctl` on PATH or as named.
-pub struct SubprocessAtlasctl {
+pub struct SubprocessAvarokctl {
     pub exe: PathBuf,
 }
 
-impl SubprocessAtlasctl {
+impl SubprocessAvarokctl {
     /// Find the binary. Absent → an error naming `--atlasctl`.
     pub fn locate(explicit: Option<&Path>) -> Result<Self> {
         let exe = match explicit {
@@ -110,7 +110,7 @@ fn error_of(line: &str) -> Option<ErrorObj> {
     serde_json::from_str(line).ok()
 }
 
-impl Atlasctl for SubprocessAtlasctl {
+impl Avarokctl for SubprocessAvarokctl {
     fn nodes(&self, addrs: &[String]) -> Result<Vec<NodeRow>> {
         let joined = addrs.join(",");
         let out = self

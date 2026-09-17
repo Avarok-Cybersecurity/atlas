@@ -3,15 +3,15 @@
 //! LongCat-Flash(-Lite) weight loader — the backbone behind the n-gram
 //! embeddings (`longcat_flash_ngram`).
 //!
-//! Architecture (HF `modeling_longcat_flash.py`), and how it maps onto Atlas:
+//! Architecture (HF `modeling_longcat_flash.py`), and how it maps onto Avarok:
 //!
 //! - Each CHECKPOINT layer is a dual-sublayer "shortcut" block: two MLA
 //!   attentions, two dense SwiGLU MLPs, and ONE shortcut MoE whose output is
 //!   computed on sublayer 1's post-attention normed input but added at the END
-//!   of sublayer 2. Atlas serves each SUBLAYER as one `Qwen3AttentionLayer`
+//!   of sublayer 2. Avarok serves each SUBLAYER as one `Qwen3AttentionLayer`
 //!   (`num_hidden_layers` is already 2x at parse), with the shortcut carried
 //!   between the pair via `set_shortcut_moe` / `set_shortcut_carry_in`.
-//! - MLA is the DeepSeek-lineage q-LoRA form Atlas already serves; the two
+//! - MLA is the DeepSeek-lineage q-LoRA form Avarok already serves; the two
 //!   LongCat deltas (interleaved rope, sqrt LoRA scaling) fold into the
 //!   WEIGHTS at load (see `prep`), so the runtime is unchanged.
 //! - The MoE router is softmax + `e_score_correction_bias` over
@@ -420,7 +420,7 @@ impl ModelWeightLoader for LongcatWeightLoader {
         _gpu: &dyn GpuBackend,
     ) -> Result<Option<MtpWeights>> {
         // The checkpoint ships `model.mtp.*`, but the MTP head shape is not
-        // the Qwen-style one Atlas builds. Ignored (matches HF's own
+        // the Qwen-style one Avarok builds. Ignored (matches HF's own
         // `_keys_to_ignore_on_load_unexpected = [r"model\\.mtp.*"]`).
         Ok(None)
     }

@@ -1,4 +1,4 @@
-# Codecov configuration for Atlas.
+# Codecov configuration for Avarok.
 #
 # Produced by .github/workflows/coverage.yml, which runs
 # `scripts/coverage.sh` (cargo-llvm-cov -> lcov.info) on a GPU-free

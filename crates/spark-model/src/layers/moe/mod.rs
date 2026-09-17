@@ -68,6 +68,9 @@ pub struct MoeLayer {
     moe_weighted_sum_blend: KernelHandle,
     residual_add: KernelHandle,
     moe_topk_batched: KernelHandle,
+    /// FP32-logit sibling of `moe_topk_batched`. `try_kernel`: a target
+    /// without it leaves the FP32 routing arm inert rather than refusing.
+    moe_topk_batched_f32: KernelHandle,
     // K=2 fused MoE kernel handles
     moe_expert_gate_up_shared_batch2: KernelHandle,
     moe_expert_silu_down_shared_batch2: KernelHandle,
@@ -76,6 +79,17 @@ pub struct MoeLayer {
     // K=3 fused MoE kernel handles
     moe_expert_gate_up_shared_batch3: KernelHandle,
     moe_expert_silu_down_shared_batch3: KernelHandle,
+    /// N-row decode MoE arm (#1060), rows 4..=8; a zero handle = arm absent.
+    moe_expert_gate_up_shared_batchn: KernelHandle,
+    moe_expert_silu_down_shared_batchn: KernelHandle,
+    moe_weighted_sum_blend_batchn: KernelHandle,
+    /// Router GEMV for 4..=8 rows (`w4a16_gemv_batch8`).
+    w4a16_gemv_batch8_k: KernelHandle,
+    /// Wide router GEMV (M<=16) for the K-row arm past 8 rows. Resolved
+    /// DIRECTLY rather than through `w4a16_gemv_tiers`: that table stops at 8
+    /// on purpose ("folding them in here would silently widen every site that
+    /// today caps at 8"), so this widens exactly one site.
+    w4a16_gemv_batch16_k: KernelHandle,
     moe_weighted_sum_blend_batch3: KernelHandle,
     w4a16_gemv_batch3: KernelHandle,
     // Generic token-major NVFP4 MoE kernels. Used as an opt-in decode
@@ -190,7 +204,7 @@ pub struct MoeLayer {
     /// Resolved once at construction.
     unified_layout: bool,
     /// `AVAROK_NVFP4_GATE_UP_M128=1` opts in to the M=128 fused gate+up
-    /// kernel (Block D #3, Atlas tile-shape rewrite). Halves block count
+    /// kernel (Block D #3, Avarok tile-shape rewrite). Halves block count
     /// at large prefill — better SM amortization on GB10's 25-SM budget.
     /// Currently only minimax-m2-229b ships the kernel; other models keep
     /// `moe_fused_gate_up_t_k64_m128 == KernelHandle(0)` and dispatch
@@ -229,7 +243,7 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64_e8m0: KernelHandle,
     moe_fused_gate_up_t_e8m0: KernelHandle,
     moe_fused_gate_up_t_k64_e8m0: KernelHandle,
-    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Atlas
+    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
     /// gates on `nvfp4_gate_up_m128` AND handle non-zero.
@@ -259,7 +273,7 @@ pub struct MoeLayer {
     // ── Sigmoid + correction-bias routing (DeepSeek-V3 / MiniMax-M2 style) ──
     /// Device pointer to `[num_experts]` correction bias. Populated from
     /// `MoeWeights.correction_bias` in `new()` when the loader sets it.
-    /// `None` = Atlas's default softmax path. When `Some`, every top-k
+    /// `None` = Avarok's default softmax path. When `Some`, every top-k
     /// dispatch site branches to `moe_topk_sigmoid` with this bias arg.
     correction_bias_dev: Option<DevicePtr>,
     /// Handle to `moe_topk_sigmoid` kernel. Lazy-loaded in `new()` even
@@ -368,6 +382,19 @@ pub struct MoeLayer {
     /// forward. Decode/verify paths are a phase-1 followup (they REFUSE rather
     /// than silently drop the delta — see `reject_decode_lora`).
     pub(crate) lora: Option<MoeLoraWeights>,
+    /// Native EXL3 routed experts (`AVAROK_EXL3_NATIVE_MOE=1`): dense LOCAL
+    /// per-projection pointer tables `[gate, up, down]` over the kept-packed
+    /// trellis tensors. `Some` = this layer's routed experts are served
+    /// through `exl3_mgemm` (the NVFP4 `experts`/`gate_ptrs` above hold
+    /// nulls); `None` = the standard NVFP4 tables serve them. Installed by
+    /// the loader via [`MoeLayer::set_exl3_experts`]
+    /// (`moe/ptr_table_build.rs`); consumed by the native dispatch arm.
+    pub(crate) exl3_expert_tables: Option<[Exl3ExpertPtrTable; 3]>,
+    /// Model-SHARED mgemm launch state (locks + slot-batched fp16/fp32
+    /// slabs + routing staging) for the native EXL3 expert path — one
+    /// allocation for all 48 layers (launches are primary-stream
+    /// serialized). Always `Some` iff `exl3_expert_tables` is.
+    pub(crate) exl3_moe_state: Option<std::sync::Arc<Exl3MoeState>>,
 }
 
 impl MoeLayer {
@@ -400,7 +427,10 @@ impl MoeLayer {
 mod tables;
 // Re-exported so every `moe::ExpertPtrTable`-style path in the sub-files keeps
 // resolving; the split is invisible to them.
-pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
+#[allow(unused_imports)] // Exl3 items are consumed by the loader + dispatch arms
+pub(crate) use tables::{
+    Bf16SharedExpert, Exl3ExpertPtrTable, Exl3MoeState, ExpertPtrTable, Fp8ExpertPtrTable,
+};
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
@@ -409,19 +439,27 @@ mod lora;
 mod lora_gateup;
 mod lora_router;
 pub(crate) use lora::MoeLoraWeights;
+#[cfg(test)]
+mod exl3_tables_tests;
 mod forward_atomic_c4;
 mod forward_batched;
 mod forward_batched_gate;
 mod forward_ep;
+mod forward_exl3;
+mod forward_exl3_router;
+mod forward_exl3_shared;
 mod forward_k2;
 mod forward_k3;
+mod forward_kn;
 mod forward_phase;
 mod forward_prefill;
 mod forward_prefill_bf16;
+mod forward_prefill_exl3;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
 mod forward_prefill_router;
+mod forward_prefill_topk;
 mod forward_token_major;
 mod helpers_a;
 mod helpers_b;

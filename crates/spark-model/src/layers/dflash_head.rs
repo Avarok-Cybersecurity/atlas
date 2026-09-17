@@ -463,7 +463,7 @@ pub struct BlockDiffusionDraftHead {
     /// Paged FP8 KV cache. One cache holding all `num_layers` drafter layers,
     /// laid out the same way the target's KV cache is — block-table-keyed,
     /// `num_layers × num_kv_heads × head_dim` per slot. Allocating a single
-    /// multi-layer cache (vs. one per drafter layer) matches Atlas's existing
+    /// multi-layer cache (vs. one per drafter layer) matches Avarok's existing
     /// `PagedKvCache` ABI and lets us reuse the existing `reshape_and_cache`
     /// kernel without per-layer dispatch overhead.
     pub kv_cache: Mutex<PagedKvCache>,
@@ -555,7 +555,7 @@ pub struct BlockDiffusionDraftHead {
     /// SpecForge shifted row convention (drafter config
     /// `dflash_config.projector_type == "dspark"`): row j's output is the
     /// token at position j+1, so the returned draft vector is rotated right
-    /// by one to line up with Atlas's z-lab-convention verify indexing.
+    /// by one to line up with Avarok's z-lab-convention verify indexing.
     /// Overridable for A/B via `AVAROK_DSPARK_SHIFT=0|1`.
     pub shifted_rows: bool,
 

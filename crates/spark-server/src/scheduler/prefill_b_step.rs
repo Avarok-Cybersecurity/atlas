@@ -194,6 +194,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
+            pending_drafts_lookup: false,
             inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -262,6 +263,8 @@ pub fn prefill_request(
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
         model.ep_broadcast_tokens(&prompt_tokens)?;
+        // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+        model.ep_exchange_vision(&prompt_tokens)?;
 
         let logits = model.prefill(&prompt_tokens, &mut seq, 0)?;
         // #131: constrain the FIRST token with the grammar too (and advance
@@ -394,6 +397,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
+            pending_drafts_lookup: false,
             inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -480,6 +484,7 @@ pub fn prefill_request(
         logit_bias,
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
+        pending_drafts_lookup: false,
         inside_thinking: spontaneous_think
             || born_inside_thinking(req_enable_thinking, think_end_token),
         enable_thinking: req_enable_thinking,

@@ -1,6 +1,6 @@
 # avarok-core
 
-**Role:** the type + trait vocabulary every other Atlas crate builds on.
+**Role:** the type + trait vocabulary every other Avarok crate builds on.
 **Key traits:** `ComputeTarget` (build-time compiler abstraction), `Vendor`, `DType`, `KernelTarget`, `TensorRef`, `ModelConfig`.
 **Dependencies:** none from the workspace — this is the bottom of the stack.
 

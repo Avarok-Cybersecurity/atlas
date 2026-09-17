@@ -140,7 +140,7 @@ pub struct GemmDispatch {
     /// cached dequant as cuBLASLt.
     pub cutlass_gemm: bool,
     /// Native CUTLASS NVFP4 GEMM: quantizes activations to CUTLASS NVFP4 and
-    /// consumes transposed Atlas NVFP4 weights after repacking scales into the
+    /// consumes transposed Avarok NVFP4 weights after repacking scales into the
     /// CUTLASS SM120 layout. Implies every per-projection NVFP4 flag below.
     pub cutlass_nvfp4_gemm: bool,
     pub cutlass_nvfp4_qkvz: bool,

@@ -124,7 +124,7 @@ pub struct MlperfAgentic {
     artifacts: Option<provision::Artifacts>,
     conversations: Vec<Conversation>,
     /// Flattened (conversation, client-turn) replay order — single-stream,
-    /// sequential, like every other Atlas accuracy leg. Concurrency (and the
+    /// sequential, like every other Avarok accuracy leg. Concurrency (and the
     /// official Pareto shape) is a full-leg question for after calibration.
     schedule: Vec<(usize, usize)>,
     cursor: usize,

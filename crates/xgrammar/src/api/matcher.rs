@@ -14,7 +14,7 @@
 //    `accept_token(i32, bool) -> bool` (extra debug flag).
 //
 // `fill_next_token_bitmask` here takes `&mut [i32]` directly (the
-// pure-Rust port has no FFI `DLTensor` boundary). Atlas's
+// pure-Rust port has no FFI `DLTensor` boundary). Avarok's
 // `grammar/state.rs` was repointed to pass its bitmask buffer slice;
 // see the W7 report for that one-file edit.
 
@@ -133,7 +133,7 @@ impl GrammarMatcher {
     /// The shortest grammar-legal close (as content token ids) that drives
     /// the grammar from its current state to one where a stop token is
     /// legal, or `None` if none exists within `max_bytes`. The matcher state
-    /// is unchanged. Powers Atlas budget-aware graceful close (#144).
+    /// is unchanged. Powers Avarok budget-aware graceful close (#144).
     ///
     /// Additive. See `crate::matcher::GrammarMatcher::find_completion_token_ids`.
     pub fn find_completion_token_ids(&mut self, max_bytes: usize) -> Option<Vec<i32>> {

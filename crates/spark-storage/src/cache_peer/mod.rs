@@ -22,7 +22,7 @@
 //   5. client does one-sided WRITE/READ; peer idles until the client hangs up,
 //      then unregisters + unmaps the blade.
 //
-// This module is split per the Atlas SDD file-size idiom:
+// This module is split per the Avarok SDD file-size idiom:
 //   `server_impl.rs` — accept loop, first-u64 dispatch, server-side rail
 //                      handshake holding the crate's SINGLE `reg_mr_rw` call
 //                      site (the access flag stays AT the call site — census-

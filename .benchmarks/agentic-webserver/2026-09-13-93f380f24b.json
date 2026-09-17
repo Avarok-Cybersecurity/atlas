@@ -239,9 +239,9 @@
   "verdict_reason": "10/10 webserver_ok · 10/10 followed_directions · 4.872s/turn ≤ 8.500 · Σwall 525s ≤ 1800s",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · decode_tps=42.08, followed_directions=10.00, iterations=10.00, s_per_turn=4.87, step:curled=10.00, step:ran_server=10.00, step:ran_tests=10.00, step:tore_down=10.00, step:wrote_project=10.00, step:wrote_tests=10.00, sum_agent_wall_s=516.45, sum_completion_tokens=21731.00, sum_tool_calls=100.00, sum_turns=106.00, sum_wall_s=525.23, webserver_ok=10.00 · Pass: 10/10 webserver_ok · 10/10 followed_directions · 4.872s/turn ≤ 8.500 · Σwall 525s ≤ 1800s",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

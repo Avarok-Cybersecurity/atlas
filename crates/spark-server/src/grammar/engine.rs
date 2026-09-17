@@ -89,7 +89,7 @@ impl GrammarEngine {
     /// takes the tokenizer's serialized JSON) instead of
     /// `TokenizerInfo::from_huggingface` (which takes a
     /// `tokenizers::Tokenizer` struct directly) — going through the
-    /// JSON string side-steps the version skew between Atlas's
+    /// JSON string side-steps the version skew between Avarok's
     /// `tokenizers = "0.21"` and xgrammar-rs's
     /// `tokenizers = "0.22"` (different `Tokenizer` types).
     pub fn from_tokenizer(

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Gate self-test, positive half: a kernel that compiles for every SM Atlas
+// Gate self-test, positive half: a kernel that compiles for every SM Avarok
 // targets. If THIS fails, the gate's toolchain discovery or flag handling is
 // broken and no result it prints means anything.
 

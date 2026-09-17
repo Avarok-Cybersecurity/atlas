@@ -262,9 +262,9 @@
   "verdict_reason": "shard 1/6 — overall 85.47 · normalized 88.18 · n=172 on this slice; the group's verdict is the aggregate over the whole partition",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · known_partition_sensitive=2.00, normalized_single_turn_score=88.18, overall_accuracy=85.47, samples=172.00, shard.count=6.00, shard.index=1.00, subset.irrelevance.hits=5.00, subset.irrelevance.n=5.00, subset.live_irrelevance.hits=16.00, subset.live_irrelevance.n=18.00, subset.live_multiple.hits=37.00, subset.live_multiple.n=41.00, subset.live_parallel.hits=3.00, subset.live_parallel.n=3.00, subset.live_parallel_multiple.hits=3.00, subset.live_parallel_multiple.n=4.00, subset.live_simple.hits=9.00, subset.live_simple.n=10.00, subset.multiple.hits=15.00, subset.multiple.n=16.00, subset.parallel.hits=14.00, subset.parallel.n=16.00, subset.parallel_multiple.hits=12.00, subset.parallel_multiple.n=16.00, subset.simple_java.hits=5.00, subset.simple_java.n=8.00, subset.simple_javascript.hits=2.00, subset.simple_javascript.n=4.00, subset.simple_python.hits=26.00, subset.simple_python.n=31.00, transport_errors=0.00 · Info: shard 1/6 — overall 85.47 · normalized 88.18 · n=172 on this slice; the group's verdict is the aggregate over the whole partition",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

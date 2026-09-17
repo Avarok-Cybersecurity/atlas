@@ -145,7 +145,7 @@ cce57d93  the concurrency campaign (245 files)
 
 ## 3. Benchmark gates — ALL PASS
 
-Image: **`avarok/atlas-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `AVAROK_TARGET_MODEL="*"` build).
+Image: **`avarok/avarok-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `AVAROK_TARGET_MODEL="*"` build).
 
 | gate | result | box | notes |
 |---|---|---|---|
@@ -165,7 +165,7 @@ baseline. The gate that does clear it is the later `d2800e3e` record
 (85.56 / 85.69) in §0. Comparing to a control run rather than to
 `BASELINE.json` is the mistake to avoid repeating — the JSON is the bar.
 
-Gate C's control was built fresh from `c19481aa` as `atlas-gb10:mainctl388` (do **not** reuse `mainctl-tui` — it predates main's tip by two days).
+Gate C's control was built fresh from `c19481aa` as `avarok-gb10:mainctl388` (do **not** reuse `mainctl-tui` — it predates main's tip by two days).
 
 ★ **Gate C's load-bearing evidence** is not the TTFT delta, it is: control serve compiles **158 modules** for `(sm_121, qwen3.6-27b, nvfp4)`, PR compiles **167**. The ported kernels are provably compiled in *and routed to* — that is the #296 silent-disable class excluded by evidence rather than assumed.
 
@@ -245,12 +245,12 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 
 | box | ip | at time of writing |
 |---|---|---|
-| dgx1 | 10.10.10.1 (local) | full C=1..128 Atlas-vs-vLLM sweep on the final image |
+| dgx1 | 10.10.10.1 (local) | full C=1..128 Avarok-vs-vLLM sweep on the final image |
 | dgx2 | 10.10.10.2 | **owner's interactive TUI session — do not touch** |
 | dgx3 | 10.10.10.3 | compile verification |
 
 **Rules that are not negotiable:**
-- **ONE bench per box.** Co-tenancy does not add noise, it **shifts the mean** — 16.3 GB of co-tenants cost Atlas **32% at C=16** while costing vLLM ~0%.
+- **ONE bench per box.** Co-tenancy does not add noise, it **shifts the mean** — 16.3 GB of co-tenants cost Avarok **32% at C=16** while costing vLLM ~0%.
 - **Parallelize ACROSS boxes**, never within one.
 - **Never kill/stop/signal another session's processes** or touch their worktrees (`/workspace/w55` on dgx3 belongs to another session). Move your own work instead.
 - **A cargo build is host-CPU load** that sails past `nvidia-smi` and `docker ps` and corrupts any timing leg. Never build on a box running a benchmark.
@@ -274,7 +274,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 7. ★ **SM clock: run the probe.** A **513 MHz clamp under load** makes every number 2.5–2.9× low while **every gate stays green**. Low variance is not health. Healthy is ~2400 MHz.
 
 ### Configuration
-8. ★ **`auto` is a DEFERRAL, not a value.** The 27B checkpoint declares `kv_cache_quant_algo: FP8`, so vLLM's `auto` resolved to fp8 while Atlas ran bf16 — confounding both a speed and an accuracy result.
+8. ★ **`auto` is a DEFERRAL, not a value.** The 27B checkpoint declares `kv_cache_quant_algo: FP8`, so vLLM's `auto` resolved to fp8 while Avarok ran bf16 — confounding both a speed and an accuracy result.
 9. ★ **`{"thinking": false}` is SILENTLY IGNORED.** The working key is `chat_template_kwargs:{"enable_thinking": false}`. No error, it just does nothing.
 10. ★ **`--num-drafts 1` is a NO-OP.** `config.rs:93` treats `1` as "unset", so MODEL.toml's `default_num_drafts=3` (K=4) wins. Every gate in the benchmark-pr skill passes `--num-drafts 1` believing it means K=2.
 11. ★ **A BFCL number is meaningless without its draw.** Always record `category_sample_pct` + N + the ordered-`sample_id` SHA. `echolp_subset27` (n=1004) vs the golden MLPerf draw (n=995) differ by ~1.8 on *normalized* while *overall* coincidentally matches to two decimals.
@@ -315,12 +315,12 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | finding | verdict |
 |---|---|
 | 18 s TTFT on nvidia 27B | **TUI clock bug**, not kernels, not grammar. True TTFT 410–493 ms (§5) |
-| BFCL "regression" to ~83 | **Not a regression** — Atlas +0.37 ahead on a common basis; 87.24 was inflated by a 4096-context sample exclusion |
+| BFCL "regression" to ~83 | **Not a regression** — Avarok +0.37 ahead on a common basis; 87.24 was inflated by a 4096-context sample exclusion |
 | C=1 "regression" | **The prompt**, +17.66%, not code |
 | Class-1 GEMV dispatch gap | **REFUTED** — −14.4% at C=16 / −29.4% at C=32; the fallback was faster |
 | 16.40 ms/step down_proj prize | **Never existed** — MMQ already owned it |
 | FP16 verbosity (Nemotron +37-40%) | **Did not reproduce** — +3.17% spec-ON, 0% spec-OFF |
-| Matched-KV C=64/128 inversion | −2% to −6%, not −4.5% to −11%; Atlas wins tok/s at all four points, loses purely on token count |
+| Matched-KV C=64/128 inversion | −2% to −6%, not −4.5% to −11%; Avarok wins tok/s at all four points, loses purely on token count |
 
 ### 8c. Remaining — immediate (blocks merging §4 work)
 
@@ -341,7 +341,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 | #86 | **Re-gate** wave 46's k64_n64 +1.60% — a single spec-ON pair drifts ±2% | rigor debt |
 | #89 | 4 shadow-dropped kernels are **candidates to measure**, not confirmed losses (Class-1 precedent) | measure |
 | #90 | Serve non-determinism is **concurrency-dependent** — bitwise output gating is valid at C=1 and only at C=1 | method |
-| #92 | Atlas **over-calls tools** where vLLM abstains — the whole BFCL gap is hallucination/irrelevance, not construction | accuracy lever |
+| #92 | Avarok **over-calls tools** where vLLM abstains — the whole BFCL gap is hallucination/irrelevance, not construction | accuracy lever |
 | #93 | Re-run wave 54's BFCL under **matched 16-bit KV** — the accuracy verdict is confounded the same way the speed one was | rigor debt |
 | #94 | Wave 56 refactor is **not neutral**: −0.67% spec-OFF at C=16, likely `ModelLevers` +8 bytes riding `ForwardContext` to every dispatch site | perf regression |
 | #95 | `sparkrun` silently drops all five GDN CLI flags — the recipe path is broken | bug |
@@ -388,7 +388,7 @@ Checked rc=0 (unresolved=0) against weights on dgx1/dgx3:
 | step3p7-flash | stepfun-ai Step-3.7-Flash-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash a1a4f6b0f249) — weights must be the **per-expert split** from `scripts/preprocess_step3p7_experts.py` (504 fused → 145,152 per-expert tensors); the fused checkpoint defeats the EP-aware pre-flight (estimates full 120 GB → OOM bail) | 35 |
 | qwen3.5-27b | Kbenkhaled/Qwen3.5-27B-NVFP4 via a **single-target build** (`AVAROK_TARGET_MODEL=qwen3.5-27b`, hash fdf6bfaf23db, dgx1) — the standard multi-target build routes this checkpoint to `qwen3.6-27b` (exact `(qwen3_5, 5120)` match beats this target's wildcard `(qwen3_5, None)`), so that leg was checked separately there (2026-08-03, hash 6a0211057c4a). This target's own set is smaller (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources). Includes the standard four GDN f16/half-register/smem honesty-note arms | 33 |
 
-**EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/atlas-gb10:7241a95`
+**EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/avarok-gb10:7241a95`
 with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IPC_LOCK
 --cap-add=SYS_NICE --ulimit memlock=-1 --security-opt seccomp=unconfined` + RoCEv2 NCCL env
 (`enp1s0f1np1`/`rocep1s0f1`, GID 3, Simple/Ring, BUFFSIZE 32M), the dev binary bind-mounted over

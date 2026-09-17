@@ -23,7 +23,7 @@ model: Qwen/Qwen3.6-27B
 max_nodes: 1
 
 metadata:
-  maintainer: atlas
+  maintainer: avarok
   category: agent
 "#,
     )
@@ -32,7 +32,7 @@ metadata:
     assert_eq!(scalar(&y, "model"), "Qwen/Qwen3.6-27B");
     assert_eq!(scalar(&y, "max_nodes"), "1");
     let meta = map(&y)["metadata"].clone();
-    assert_eq!(scalar(&meta, "maintainer"), "atlas");
+    assert_eq!(scalar(&meta, "maintainer"), "avarok");
 }
 
 #[test]

@@ -28,7 +28,7 @@ test.describe('@live real corpus', () => {
   test('a real question comes back cited when a key is provided', async ({ page }) => {
     test.skip(!LIVE_KEY, 'OPENROUTER_API_KEY not set — skipping the real-key leg');
     test.setTimeout(300_000);
-    await page.addInitScript((k) => localStorage.setItem('atlas-openrouter-key', k), LIVE_KEY);
+    await page.addInitScript((k) => localStorage.setItem('avarok-openrouter-key', k), LIVE_KEY);
     await page.goto('/engine');
     if (page.viewportSize().width <= 860) await page.locator('.nav-toggle').click();
     await page.locator('.nav-chat-btn:visible').first().click();

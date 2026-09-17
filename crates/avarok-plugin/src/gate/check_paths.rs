@@ -19,7 +19,7 @@ use std::path::Path;
 /// # This deliberately does NOT require ancestry
 ///
 /// It used to. `merge-base --is-ancestor record_sha head` gated the diff, and
-/// that was wrong in a way that took main down: **Atlas squash-merges.** A
+/// that was wrong in a way that took main down: **Avarok squash-merges.** A
 /// record is written on a PR branch, against a commit on that branch; the
 /// squash lands a brand-new commit on main with a different sha and no parent
 /// link to the branch. Every record the PR paid GPU hours for stops being an

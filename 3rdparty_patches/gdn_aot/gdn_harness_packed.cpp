@@ -4,13 +4,13 @@
 #include <math.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-extern "C" void atlas_gdn_load();
+extern "C" void avarok_gdn_load();
 extern "C" int atlas_gdn_prefill_packed(void*,void*,void*,void*,void*,void*,void*,float,int,int,int,int,int,int,int,int,void*);
 static std::pair<void*,long> rd(const char*p){ FILE*f=fopen(p,"rb"); fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET); void*h=malloc(n); fread(h,1,n,f); fclose(f); return {h,n}; }
 int main(){
   const int T=2048,nk=16,nv=32,kd=128,vd=128;
   const int key_dim=nk*kd, value_dim=nv*vd, conv_dim=2*key_dim+value_dim, gb=2*nv;
-  atlas_gdn_load();
+  avarok_gdn_load();
   auto [hq,_q]=rd("/tmp/gdn_ref/q.bin"); auto [hk,_k]=rd("/tmp/gdn_ref/k.bin"); auto [hv,_v]=rd("/tmp/gdn_ref/v.bin");
   auto [hg,_g]=rd("/tmp/gdn_ref/g.bin"); auto [hb,_b]=rd("/tmp/gdn_ref/beta.bin");
   // pack QKV [T,conv_dim] bf16

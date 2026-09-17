@@ -10,13 +10,13 @@
 //! top-k candidates on tool-result turns.
 //!
 //! Reported gain: -10% contextual hallucinations on summarisation /
-//! QA tasks. Most relevant to Atlas's tool-result paths where the
+//! QA tasks. Most relevant to Avarok's tool-result paths where the
 //! model fabricates beyond what the tool actually said (e.g.
 //! invented file contents).
 //!
 //! ## Scope
 //!
-//! Atlas's attention kernel currently doesn't expose per-head
+//! Avarok's attention kernel currently doesn't expose per-head
 //! attention sums. FlashInfer can return logsumexp (LSE) cheaply,
 //! and the per-head attention mass over a span is derivable from
 //! that — but that path needs kernel cooperation.

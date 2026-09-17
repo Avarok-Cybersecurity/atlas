@@ -242,6 +242,7 @@ fn qsa_prefill_attn_matches_cpu() {
         nkv as u32,
         hd as u32,
         scale,
+        false, // scalar kernel: one tile, flag ignored
         stream,
     )
     .unwrap();
@@ -298,88 +299,58 @@ fn qsa_prefill_attn_matches_cpu() {
     assert!(worst_cos > 0.999, "attention kernel diverges: {worst_cos}");
 }
 
-/// Minimal repro for the dense chunk-0 flash zeroing rows past ~1280 at
-/// qwen4_exp geometry (nq=24, nkv=2, hd=256, causal, seq 2809). Synthetic
-/// q/k/v, CPU reference at probe rows. If this passes, the corruption is in
-/// the K/V staging upstream of the kernel, not the kernel.
+/// The TC kernel carves its shared memory by hand from one `extern __shared__`
+/// block, and the launch passes a byte count computed on the Rust side. If the
+/// two ever disagree the kernel reads past its own arena — silently, since the
+/// allocation is whatever the launch asked for. Pin the number, and pin that
+/// the CTAs-per-SM the current tile size is meant to buy, because occupancy is
+/// what this kernel is short of (one CTA per SM measured +4.4% against a 23.4%
+/// profile share; TB 64 -> 16 took 2 CTAs to 5 and the kernel 72.8 -> 55.8 ms
+/// a layer, +4.3% / +5.6% end-to-end at 8K / 32K).
 #[test]
-#[ignore]
-fn flash64_long_seq_rows_repro() {
-    let set = avarok_kernels::ptx_for_exact_target("qwen3.8-flash-next", "nvfp4")
-        .expect("build with AVAROK_TARGET_MODEL='*'");
-    let gpu =
-        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend");
-    let g: &dyn GpuBackend = &gpu;
-    let stream = g.default_stream();
-    let k = g
-        .kernel("inferspark_prefill", "inferspark_prefill_64")
-        .unwrap();
-
-    let (n, nq, nkv, hd) = (2809usize, 24usize, 2usize, 256usize);
-    let mut seed = 0xBEEFu32;
-    let mut nextf = move || {
-        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-        ((seed >> 8) as f32 / (1 << 24) as f32) - 0.5
-    };
-    let bf = |v: f32| -> u16 { (v.to_bits() >> 16) as u16 };
-    let unbf = |u: u16| -> f32 { f32::from_bits((u as u32) << 16) };
-    let q_host: Vec<u16> = (0..n * nq * hd).map(|_| bf(nextf())).collect();
-    let k_host: Vec<u16> = (0..n * nkv * hd).map(|_| bf(nextf())).collect();
-    let v_host: Vec<u16> = (0..n * nkv * hd).map(|_| bf(nextf())).collect();
-    let as_bytes = |v: &[u16]| -> Vec<u8> { v.iter().flat_map(|x| x.to_le_bytes()).collect() };
-    let q_dev = upload(g, &as_bytes(&q_host));
-    let k_dev = upload(g, &as_bytes(&k_host));
-    let v_dev = upload(g, &as_bytes(&v_host));
-    let out_dev = g.alloc(n * nq * hd * 2).unwrap();
-    // Poison the output so unwritten rows are detectable.
-    let poison = vec![0x3Fu8; n * nq * hd * 2];
-    g.copy_h2d_async(&poison, out_dev, stream).unwrap();
-    let scale = 1.0 / (hd as f32).sqrt();
-
-    ops::prefill_attention_64(
-        g, k, q_dev, k_dev, v_dev, out_dev, n as u32, 1, nq as u32, nkv as u32, hd as u32, scale,
-        true, 0, stream,
-    )
-    .unwrap();
-    g.synchronize(stream).unwrap();
-    let got = dl_bf16(g, out_dev, n * nq * hd);
-
-    let group = nq / nkv;
-    for &row in &[100usize, 1024, 1200, 1279, 1280, 1290, 1500, 2051, 2808] {
-        // CPU reference for head 0 only (cheap).
-        let h = 0usize;
-        let kvh = h / group;
-        let qv: Vec<f32> = (0..hd)
-            .map(|d| unbf(q_host[(row * nq + h) * hd + d]))
-            .collect();
-        let mut m = f32::MIN;
-        let scores: Vec<f32> = (0..=row)
-            .map(|t| {
-                let base = (t * nkv + kvh) * hd;
-                let s: f32 = (0..hd).map(|d| qv[d] * unbf(k_host[base + d])).sum::<f32>() * scale;
-                m = m.max(s);
-                s
-            })
-            .collect();
-        let exps: Vec<f32> = scores.iter().map(|s| (s - m).exp()).collect();
-        let l: f32 = exps.iter().sum();
-        let mut refv = vec![0.0f32; hd];
-        for (t, e) in exps.iter().enumerate() {
-            let base = (t * nkv + kvh) * hd;
-            let w = e / l;
-            for d in 0..hd {
-                refv[d] += w * unbf(v_host[base + d]);
-            }
-        }
-        let gv = &got[(row * nq + h) * hd..(row * nq + h) * hd + hd];
-        let dot: f64 = gv
-            .iter()
-            .zip(&refv)
-            .map(|(a, b)| *a as f64 * *b as f64)
-            .sum();
-        let ng: f64 = gv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
-        let nr: f64 = refv.iter().map(|a| (*a as f64).powi(2)).sum::<f64>().sqrt();
-        let cos = dot / (ng * nr).max(1e-30);
-        println!("  flash64 row {row:>4}: cos={cos:.6} |got|={ng:.4} |ref|={nr:.4}");
-    }
+fn tc_prefill_attn_smem_is_five_ctas_per_sm() {
+    // hd 256, TB 16, M 16, pads 8/8/8/8 — see QSA_PATC_* in qsa_indexer.cu.
+    // KPAD and VPAD are both 8 because K and V are BOTH stored row-contiguous
+    // [token][hd] and both gathers store 16 B per thread, which needs the row
+    // to be a multiple of 8 BF16 (264 = 8*33; the old 260 was not). K used to
+    // be stored transposed with KPAD 2 for a bank reason that no longer
+    // applies — see the QSA_PATC_KPAD note for why that layout lost on both
+    // the store and the mma read.
+    //
+    // The prefill tile SHRANK 19712 -> 18944 when K took V's shape (both views
+    // are now TB*(HD+8) = 4224 elems, against the old max(4608, 4160)), then
+    // -> 18880 when the per-tile token-id staging array was dropped and the
+    // gathers began resolving token ids inline. Still 5 CTAs/SM; a 6th would
+    // need <= 17066. The verify tile went 49088 -> 48832 for the same reason.
+    //
+    // NB: a TB-16 token tile is NOT one selected KV block. ratio is 4, so
+    // `tok = my_list[t/ratio]*ratio + t%ratio` makes it FOUR distinct blocks.
+    // Both tiles are pinned: the launch passes one of these byte counts and the
+    // kernel carves its arena from it, so a drift in either is an OOB read.
+    assert_eq!(ops::QSA_PA_TC_SMEM, 48_832, "verify-tile layout drifted");
+    assert_eq!(
+        ops::QSA_PA_TC_SMEM_TB16,
+        18_880,
+        "prefill-tile layout drifted"
+    );
+    // Both bounds are known at compile time, so assert them at compile time:
+    // a runtime `assert!` over two constants is a lint (the compiler can see
+    // the answer) and, worse, it only fires if someone runs the test. As
+    // `const _`, a layout change that breaks either bound fails the BUILD.
+    // 102400 B per SM on GB10; two CTAs is the design point.
+    const _: () = assert!(
+        ops::QSA_PA_TC_SMEM <= ops::MAX_DYNAMIC_SMEM,
+        "QSA_PA_TC_SMEM is past the sm_121 opt-in ceiling"
+    );
+    const _: () = assert!(
+        2 * ops::QSA_PA_TC_SMEM <= 102_400,
+        "the verify tile dropped below two CTAs per SM"
+    );
+    const _: () = assert!(
+        5 * ops::QSA_PA_TC_SMEM_TB16 <= 102_400,
+        "the prefill tile dropped below five CTAs per SM"
+    );
 }
+
+#[path = "qsa_tests_prefill_tc.rs"]
+mod qsa_tests_prefill_tc;

@@ -225,9 +225,9 @@
   "verdict_reason": "257 samples byte-identical across 2 request orders",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · diverged=0.00, empty_replies=0.00, identical=257.00, orders=2.00, samples=257.00, unmeasured=0.00 · Pass: 257 samples byte-identical across 2 request orders",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

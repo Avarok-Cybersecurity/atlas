@@ -97,9 +97,9 @@ impl TransformerModel {
 
         // Zero-alloc metadata upload for K=3.
         let positions = [
-            seq.seq_len as u32,
-            (seq.seq_len + 1) as u32,
-            (seq.seq_len + 2) as u32,
+            seq.rope_pos_at(seq.seq_len),
+            seq.rope_pos_at(seq.seq_len + 1),
+            seq.rope_pos_at(seq.seq_len + 2),
         ];
         // SAFETY: `positions` is the 3-element `[u32; _]` literal directly
         // above (one entry per K=3 verify row), size 3 * 4 = 12 — exactly the
@@ -204,7 +204,14 @@ impl TransformerModel {
         // difference is a host value a replay would freeze. Implies GRAPHS + NOCACHE.
         let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
         let ep_graphs = ep_graphs || graph_trace;
-        let use_graphs = (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager;
+        // EXL3 veto: the native head / native MoE experts launch cooperatively,
+        // which is illegal under CUDA graph capture (see decode_a) — and stays
+        // illegal no matter what enables capture, so it ANDs onto the EP gate
+        // above rather than replacing it.
+        let use_graphs = (self.comm.is_none() || ep_graphs)
+            && !hss_engaged
+            && !lora_eager
+            && !self.exl3_graph_veto();
 
         let ctx = ForwardContext {
             buffers: &self.buffers,

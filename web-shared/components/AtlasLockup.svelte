@@ -1,9 +1,9 @@
 <!--
-  The Atlas brand artwork, as vector definitions.
+  The Avarok brand artwork, as vector definitions.
 
   Lifted verbatim from the brand reference (etc/site-blog): the mark is three
   chevrons at stroke 76, arm 320x280, gap 280, box 956x636; the wordmark and
-  both taglines are the real outlines, including the Atlas signature "A" with
+  both taglines are the real outlines, including the Avarok signature "A" with
   its arrow shaft. This is the artwork, not a redraw of it — the guidelines
   forbid recolouring, outlining and glow, and the only substitution made here is
   swapping the literal brand greys and chevron hues for the tokens that hold
@@ -21,7 +21,7 @@
   the four greys to those files, so this component can never drift into a redraw.
 
   Rendered once per document by <AtlasLockup kind="defs" />, then referenced by
-  <use href="#atlas-mark"> from every lockup on the page.
+  <use href="#avarok-mark"> from every lockup on the page.
 
   Sizing is by WIDTH, because the guideline minimums are widths:
   logo-horizontal >= 120px, logo-full >= 220px. Clear space (one chevron gap,
@@ -37,22 +37,22 @@
   /* The name belongs to the artwork, so a caller that passes no label still
      announces the right thing rather than a generic "logo". */
   const NAMES = {
-    mark: 'Atlas',
-    horizontal: 'Atlas',
-    full: 'Atlas Inference Engine',
-    corp: 'Atlas Cybernetics Corp'
+    mark: 'Avarok',
+    horizontal: 'Avarok',
+    full: 'Avarok Inference Engine',
+    corp: 'Avarok Cybernetics Corp'
   };
-  let name = $derived(label ?? NAMES[kind] ?? 'Atlas');
+  let name = $derived(label ?? NAMES[kind] ?? 'Avarok');
 </script>
 
 {#if kind === 'defs'}
-<svg class="atlas-defs" width="0" height="0" aria-hidden="true" focusable="false">
+<svg class="avarok-defs" width="0" height="0" aria-hidden="true" focusable="false">
   <defs>
     <linearGradient id="gold-cut" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0.5" stop-color="var(--ch-green)"/><stop offset="0.5" stop-color="var(--ch-gold)"/>
     </linearGradient>
     <!-- Mark: three chevrons. Stroke 76, arm 320×280, gap 280, box 956×636. -->
-    <g id="atlas-mark" fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
+    <g id="avarok-mark" fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
       <path d="M38 38L358 318L38 598" stroke="var(--ch-violet)"/>
       <path d="M318 38L638 318L318 598" stroke="var(--ch-cyan)"/>
       <path d="M598 38L918 318L598 598" stroke="url(#gold-cut)"/>
@@ -69,12 +69,12 @@
 </svg>{:else if kind === 'mark'}
   <svg class="logo logo-m {klass}" style={width ? `width:${width}px` : null} viewBox="0 0 956 636" role="img" aria-label={name}>
     <title>{name}</title>
-    <use href="#atlas-mark" />
+    <use href="#avarok-mark" />
   </svg>
 {:else if kind === 'full'}
   <svg class="logo logo-f {klass}" style={width ? `width:${width}px` : null} viewBox="0 0 1317.5 390" role="img" aria-label={name}>
     <title>{name}</title>
-    <g transform="translate(0 17.8) scale(0.5)"><use href="#atlas-mark" /></g>
+    <g transform="translate(0 17.8) scale(0.5)"><use href="#avarok-mark" /></g>
     <use href="#atlas-word" />
     <use href="#atlas-tagline" />
   </svg>
@@ -86,24 +86,24 @@
        not artwork. -->
   <svg class="logo logo-c {klass}" style={width ? `width:${width}px` : null} viewBox="0 0 1329.9 390" role="img" aria-label={name}>
     <title>{name}</title>
-    <g transform="translate(0 17.8) scale(0.5)"><use href="#atlas-mark" /></g>
+    <g transform="translate(0 17.8) scale(0.5)"><use href="#avarok-mark" /></g>
     <use href="#atlas-word" />
     <use href="#atlas-tagline-corp" />
   </svg>
   <svg class="logo logo-c-narrow {klass}" viewBox="0 0 1230.82 335.8" aria-hidden="true" focusable="false">
-    <g transform="translate(0 17.8) scale(0.5)"><use href="#atlas-mark" /></g>
+    <g transform="translate(0 17.8) scale(0.5)"><use href="#avarok-mark" /></g>
     <use href="#atlas-word" />
   </svg>
 {:else}
   <svg class="logo logo-h {klass}" style={width ? `width:${width}px` : null} viewBox="0 0 1230.82 335.8" role="img" aria-label={name}>
     <title>{name}</title>
-    <g transform="translate(0 17.8) scale(0.5)"><use href="#atlas-mark" /></g>
+    <g transform="translate(0 17.8) scale(0.5)"><use href="#avarok-mark" /></g>
     <use href="#atlas-word" />
   </svg>
 {/if}
 
 <style>
-  .atlas-defs { position: absolute; }
+  .avarok-defs { position: absolute; }
   .logo { display: block; height: auto; }
   /* Clear space is one chevron gap: x = 140 lockup units, which is
      140/1230.82 = 11.37% of the horizontal lockup's rendered width and

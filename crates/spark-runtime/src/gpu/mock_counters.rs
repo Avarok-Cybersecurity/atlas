@@ -75,4 +75,20 @@ impl MockGpuBackend {
     pub fn host_pinned_alloc_count(&self) -> usize {
         self.host_pinned_allocs.load(Ordering::Relaxed)
     }
+
+    /// `(kernel handle, bytes)` per `set_kernel_max_dynamic_smem` call, in
+    /// call order.
+    pub fn max_dynamic_smem_calls(&self) -> Vec<(u64, usize)> {
+        self.max_dynamic_smem.lock().clone()
+    }
+
+    /// Launches that went through the cooperative path. A grid.sync() kernel
+    /// on the eager path deadlocks real hardware, so the ROUTE is the assertion.
+    pub fn cooperative_launch_count(&self) -> usize {
+        self.launches
+            .lock()
+            .iter()
+            .filter(|l| l.cooperative)
+            .count()
+    }
 }

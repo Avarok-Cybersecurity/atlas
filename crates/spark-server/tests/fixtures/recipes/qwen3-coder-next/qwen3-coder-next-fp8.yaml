@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: Qwen/Qwen3-Coder-Next-FP8
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
@@ -11,7 +11,7 @@ metadata:
     GB10 with no conversion overhead). Same architecture as
     qwen3_next, only `rope_theta=5M` differs.
 
-    Production constraints from the Atlas FP8-native bring-up:
+    Production constraints from the Avarok FP8-native bring-up:
       * `kv_cache_dtype: bf16` — FP8 KV is incompatible with this model
       * `ssm_cache_slots: 0` — Marconi snapshot lookup misses cause SSM
         state divergence in multi-turn
@@ -21,8 +21,8 @@ metadata:
 
     Known limitation: agentic quality degrades after ~5–8 tool-use
     turns (model emits malformed XML, loops). Document but accept —
-    this is a model issue, not an Atlas one.
-  maintainer: atlas
+    this is a model issue, not an Avarok one.
+  maintainer: avarok
   category: agent
   model_params: 80B
   model_dtype: fp8

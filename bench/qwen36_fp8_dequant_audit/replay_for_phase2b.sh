@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 2b replay: feed the same 30-turn / 18920-token prompt to the RNE-image
-# Atlas server and capture per-layer AVAROK_NEMO_DUMP at /workspace/avarok-dumps/numdrift/rne/.
+# Avarok server and capture per-layer AVAROK_NEMO_DUMP at /workspace/avarok-dumps/numdrift/rne/.
 #
 # Prereqs:
 #   - avarok-qwen container running on `avarok-gb10:fp8-dequant-rne` image with

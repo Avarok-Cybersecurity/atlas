@@ -2,7 +2,7 @@
 //! Fixture, guarded allocation and f64 references shared by
 //! `native_gdn_prefill_remnants_microtest` (#928).
 //!
-//! Split out of that example only because Atlas caps a Rust source at 500 LoC;
+//! Split out of that example only because Avarok caps a Rust source at 500 LoC;
 //! it is one oracle, and nothing else includes this file. Lives under
 //! `examples/common/` so cargo does not pick it up as an example target of its
 //! own — `examples/*.rs` is auto-discovered, `examples/common/*.rs` is not.

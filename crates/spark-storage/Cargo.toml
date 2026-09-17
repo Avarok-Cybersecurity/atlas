@@ -3,7 +3,7 @@ name = "spark-storage"
 version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
-description = "Atlas: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
+description = "Avarok: high-speed NVMe-backed KV cache offload (cuFile/GDS + io_uring)"
 
 [features]
 default = ["cuda"]

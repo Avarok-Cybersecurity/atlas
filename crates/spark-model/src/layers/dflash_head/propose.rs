@@ -43,7 +43,7 @@ impl BlockDiffusionDraftHead {
         // accumulated 5×target_hidden context the drafter conditions on, so a
         // PyTorch/vLLM reference can diff slot-count + values against
         // `target_hidden_states[:num_context]` (vLLM feeds num_context = ALL
-        // accepted-prefix tokens; this proves whether Atlas's accumulator has
+        // accepted-prefix tokens; this proves whether Avarok's accumulator has
         // the same BREADTH and the same per-slot 5-layer values).
         //
         // Layout of /tmp/avarok_ctx_parity.bin: contiguous BF16,
@@ -97,7 +97,7 @@ impl BlockDiffusionDraftHead {
         //
         // Reference: `dflash.py` (in the drafter's HF snapshot) lines 60-95
         // for the per-layer attention pattern. Per-layer flow (one call into
-        // Atlas's existing op wrappers per bullet):
+        // Avarok's existing op wrappers per bullet):
         //
         // For each layer in `self.layers`:
         //   ops::rms_norm(self.kernels.rms_norm, stream_buf, layer.input_layernorm,
@@ -153,7 +153,7 @@ impl BlockDiffusionDraftHead {
         //
         // Open design questions for ctx-conditioned drafting (later iter):
         //   1. ctx_len = ? — vLLM accumulates per-token captures across all
-        //      decoded positions; Atlas currently captures only the latest
+        //      decoded positions; Avarok currently captures only the latest
         //      step's 5 hiddens (model-level single slot). Per-sequence
         //      accumulator needs to land in DflashProposerState.
         //   2. Asymmetric q_len (γ) vs k_len (γ + ctx_len) — either pad q
@@ -540,7 +540,7 @@ impl BlockDiffusionDraftHead {
         // `last_token`, and the drafter denoises it trivially back to
         // itself — that's the "bonus" position. The first USEFUL draft
         // lives at noise_row[1] (input = mask, predicts position+1).
-        // vLLM ignores row 0 via `token_indices_to_sample`. Atlas was
+        // vLLM ignores row 0 via `token_indices_to_sample`. Avarok was
         // reading row 0 as draft[0], giving 0% K=2 accept on z-lab
         // DFlash drafters; dropping it lifts accept to ~80%.
         //

@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Never publish from a fork: a fork running this would try to create a
     # release on its own repo with our tag scheme, and fail confusingly.
-    if: github.repository == 'Avarok-Cybersecurity/atlas'
+    if: github.repository == 'Avarok-Cybersecurity/avarok'
     outputs:
       should_build: ${{ steps.decide.outputs.should_build }}
       build_number: ${{ steps.decide.outputs.build_number }}
@@ -214,7 +214,7 @@ jobs:
             echo "entry's \`note\` field."
           } > notes.md
           gh release create "$BUILD" \
-            --title "Atlas $BUILD" \
+            --title "Avarok $BUILD" \
             --notes-file notes.md \
             --prerelease \
             --target "$SHA" \

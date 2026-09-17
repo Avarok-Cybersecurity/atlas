@@ -14,7 +14,7 @@
 #   - Passwordless SSH from head (HEAD_IP env) to worker (WORKER_IP env)
 #   - avarok-deepseek-v4:latest Docker image on both nodes
 #     Build: docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t avarok-deepseek-v4 .
-#   - Same image tag on BOTH nodes (mixing Atlas versions across ranks
+#   - Same image tag on BOTH nodes (mixing Avarok versions across ranks
 #     causes NCCL to hang at ncclCommInitRank).
 #   - Model weights cached on both nodes (~/.cache/huggingface)
 #   - RDMA kernel support on host (IB device at /dev/infiniband)
@@ -37,7 +37,7 @@ EXTRA_FLAGS="${EXTRA_FLAGS:-}"
 # DeepSeek-V4 has no MTP weights in the public checkpoint, so
 # --speculative is OFF on both ranks.
 
-echo "=== Atlas DeepSeek-V4-Flash EP=2 bring-up (RDMA-enabled) ==="
+echo "=== Avarok DeepSeek-V4-Flash EP=2 bring-up (RDMA-enabled) ==="
 echo "Model:   $MODEL"
 echo "Image:   $IMAGE"
 echo "Head:    $HEAD_IP (rank 0, HTTP on $PORT)"

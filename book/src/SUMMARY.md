@@ -40,7 +40,7 @@
 - [Speculative Decoding (MTP)](./deep-dives/mtp.md)
 - [Constrained Decoding (XGrammar)](./deep-dives/xgrammar.md)
 
-# Part V — Operating Atlas
+# Part V — Operating Avarok
 
 - [OpenAI-Compatible Server](./operations/server.md)
 - [Tool Calling & Streaming](./operations/tools.md)

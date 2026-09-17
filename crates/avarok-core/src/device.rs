@@ -50,7 +50,7 @@ mod cuda_impl {
     }
 
     impl AvarokDevice {
-        /// Initialize an Atlas device on the given GPU ordinal.
+        /// Initialize an Avarok device on the given GPU ordinal.
         pub fn new(ordinal: usize) -> Result<Self> {
             let ctx = CudaContext::new(ordinal).map_err(AvarokError::CudaDriver)?;
             Ok(Self { ctx, ordinal })

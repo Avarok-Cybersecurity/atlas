@@ -1,16 +1,16 @@
 ---
-title: Seven Tenets Powering Atlas Inference Accelerated Workloads
-dek: Atlas Inference is a free and open source LLM inference engine written from scratch in Rust. These are the seven philosophical tenets we started it on, and why we left the Python vLLM stack to do it.
+title: Seven Tenets Powering Avarok Inference Accelerated Workloads
+dek: Avarok Inference is a free and open source LLM inference engine written from scratch in Rust. These are the seven philosophical tenets we started it on, and why we left the Python vLLM stack to do it.
 categories: [engineering, design]
 date: 2026-08-31
-keywords: [rust inference engine, vllm alternative, open source llm inference, monorepo, ai friendly repository, hardware specific kernels, sbio, atlas inference]
+keywords: [rust inference engine, vllm alternative, open source llm inference, monorepo, ai friendly repository, hardware specific kernels, sbio, avarok inference]
 og-image: /images/og/seven-tenets-powering-atlas-inference.webp
 author: thomas-braun
 draft: false
 ---
 _Special note to readers: this is our first post. As a long-time writer, before AI became notorious for using em dashes, I wrote at great length on topics ranging from philosophy, programming, theology, cybernetics, and more. As a writer, I use em dashes relatively frequently to help make sentences flow better and draw attention to nuance. If something is AI-generated, we will let you know. We believe the human element is special; the spirit of writing ought not to be rendered vanquished by AI._
 
-**[Atlas Inference](https://atlascybernetics.ai)**
+**[Avarok Inference](https://atlascybernetics.ai)**
 
 ![A polished silicon wafer leaning against a block of rusted iron.](/images/posts/seven-tenets-powering-atlas-inference/00-rust-silicon.webp)
 
@@ -18,7 +18,7 @@ _Images generated with AI (ironically)._
 
 Earlier this year, we began developing an inference engine in order to take an ecosystem — often widely fragmented — from a proof of concept to a professional software product. Given that many data scientists and researchers worked on vLLM, naturally, they used the language they were most _comfortable_ with: Python. We applaud their contribution to the world, proving we can run AI almost anywhere (given sufficient hardware resources). Given the ecosystem is external-dependency heavy, as well as lacking the rigor of professional software architecture practices, we decided to start from scratch, embracing several philosophical tenets.
 
-**Seven Tenets Powering Atlas Inference Accelerated Workloads**
+**Seven Tenets Powering Avarok Inference Accelerated Workloads**
 
 _The First as a Note on Philosophy_
 
@@ -38,7 +38,7 @@ The third tenet is to ensure the repository is, by design, a monorepo. By taking
 
 ![One tree trunk and its whole root system held in a single volume of earth.](/images/posts/seven-tenets-powering-atlas-inference/04-roots.webp)
 
-Why would this be important? Well, last October, when the DGX Sparks were released, I spent months trying to improve vLLM. The time it took to observe a kernel's effect on the accuracy and performance was simply too long to make for an effective way to improve kernels fast enough. By abandoning the data-scientist ecosystem around December/January, and, starting over from scratch in my native language (i.e., Rust), I was able to very quickly iterate and improve kernels. Months later, research articles came out on AI-generated kernels using self-improving iterative loops. Recursion. The realm of academia — in part — had caught up to where we, at Atlas, were at.
+Why would this be important? Well, last October, when the DGX Sparks were released, I spent months trying to improve vLLM. The time it took to observe a kernel's effect on the accuracy and performance was simply too long to make for an effective way to improve kernels fast enough. By abandoning the data-scientist ecosystem around December/January, and, starting over from scratch in my native language (i.e., Rust), I was able to very quickly iterate and improve kernels. Months later, research articles came out on AI-generated kernels using self-improving iterative loops. Recursion. The realm of academia — in part — had caught up to where we, at Avarok, were at.
 
 _The fourth tenet_ is to design kernels to be **specific per hardware per model**. While many kernels may be re-used across the same hardware set for various models, designing the kernel selection mechanism to allow one kernel to _shadow_ another... enabled optimization techniques specific to one model's architecture. Squeezing out more performance like this gets you more data center per data center.
 

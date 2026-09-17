@@ -1,4 +1,4 @@
-# Porting Atlas to AMD Strix Halo (gfx1151) via SCALE
+# Porting Avarok to AMD Strix Halo (gfx1151) via SCALE
 
 Status: **working end-to-end** (branch `port/amd-strix-halo`). First target
 model `qwen3.6-27b` served `Qwen/Qwen3.6-27B-FP8` generates **coherent output**
@@ -7,11 +7,11 @@ This guide is reproducible from a clean checkout on native Ubuntu.
 
 > **Requires SCALE ≥ 1.7.1.** 1.7.0 SIGSEGVs in the HSA queue-create path on
 > gfx1151 (wrong CWSR size for RDNA 3.5); 1.7.1 bundles ROCm 7.2.3 which reads
-> `cwsr_size` from sysfs and fixes it. See `atlas-issues-found.md`.
+> `cwsr_size` from sysfs and fixes it. See `avarok-issues-found.md`.
 
 SCALE (scale-lang.com, Spectral Compute) recompiles **unmodified CUDA** for
 AMD GPUs. It is a drop-in `nvcc` shim (clang-19 based) that provides the CUDA
-runtime/driver/math APIs for AMD. The Atlas philosophy here mirrors Spectral's
+runtime/driver/math APIs for AMD. The Avarok philosophy here mirrors Spectral's
 advice: start from "it compiles", add a `#if defined(__SCALE__)` shim only
 where the compiler genuinely cannot hide a hardware difference, and send
 Spectral clean repros for compiler defects.
@@ -75,7 +75,7 @@ tar -xf s171.tar.xz                      # → ~/scale171/scale-1.7.1-Linux
 export SCALE_HOME=~/scale171/scale-1.7.1-Linux
 ```
 
-`SCALE_HOME` is honored by the Atlas build (`find_scale_dir`). A SCALE root
+`SCALE_HOME` is honored by the Avarok build (`find_scale_dir`). A SCALE root
 contains `bin/scaleenv` and `targets/<arch>/bin/nvcc`.
 
 ### 1.2 Host toolchain prerequisites (bare Ubuntu / WSL)
@@ -104,7 +104,7 @@ understands CUDA). Point your editor LSP at
 ## 2. SCALE mechanics (verified facts)
 
 - **No `--ptx`.** SCALE rejects `--ptx`, `--genco`, `-fatbin`, `--emit-llvm`.
-  It emits an **AMD GPU code object** (ELF relocatable), not PTX text. Atlas's
+  It emits an **AMD GPU code object** (ELF relocatable), not PTX text. Avarok's
   device-compile flag is **`--cuda-device-only -c`**.
 - **Target selection** = the per-arch toolchain dir
   `targets/gfx1151/bin/nvcc` (equivalent to `source bin/scaleenv gfx1151`
@@ -217,14 +217,14 @@ file-format question:**
   (`cudaTypedefs.h`), but **what artifact its `cuModuleLoadData` accepts is
   unproven** without the AMD runtime live.
 
-Atlas's model = embed PTX text, `cuModuleLoadData` at runtime (driver JIT),
+Avarok's model = embed PTX text, `cuModuleLoadData` at runtime (driver JIT),
 launch by name via the registry. SCALE's native model = offload-bundle device
 code into the binary, auto-registered, launched by C++ symbol. **Two paths:**
   1. **SCALE-native (lower risk):** AMD build compiles kernels into the
      binary via SCALE's normal flow; the registry resolves kernels by symbol
      instead of `cuModuleLoadData`(blob). Bigger avarok-core/spark-runtime
      change but uses SCALE exactly as designed.
-  2. **Atlas-style:** device-link relocatables → a loadable code object,
+  2. **Avarok-style:** device-link relocatables → a loadable code object,
      embed bytes, `cuModuleLoadData` it. Needs SCALE to support loading a
      hand-produced code object — unproven.
 **Decision deferred until the AMD runtime is live (needs the Windows AMD

@@ -22,7 +22,7 @@
 //!
 //! * Supported mode pairs are VEC128/VEC128, VEC128/BLK128x128 and
 //!   BLK128x128/VEC128; BLK128x128 on BOTH A and B is listed unsupported. The
-//!   A=BLK128x128 (weight) + B=VEC128 (activation) pairing Atlas uses is
+//!   A=BLK128x128 (weight) + B=VEC128 (activation) pairing Avarok uses is
 //!   therefore legal as written — the pairing was never the bug.
 //! * Scaling-factor start addresses must be 16 B aligned, and the matmul's M
 //!   and N "must be multiples of 4" — which is what the caller's ceil16(M) pad
@@ -39,7 +39,7 @@
 //!   `[N/128, K/128]` weight-scale grid whenever L is already a multiple of 4
 //!   — see [`blk128x128_stride_ok`]. The weight side needed no change.
 //!
-//! Atlas maps `out[M,N] = act[M,K] @ weight[N,K]ᵀ` onto cuBLASLt as
+//! Avarok maps `out[M,N] = act[M,K] @ weight[N,K]ᵀ` onto cuBLASLt as
 //! `D[N,M] = opT(weightᶜ[K,N]) · opN(actᶜ[K,M])`, so the library's M is the
 //! weight's N and the library's N is the token count. Read the doc quotes
 //! above with that substitution: the VEC128 "N-major" operand is the
@@ -78,7 +78,7 @@ pub fn vec128_b_elems(m_pad: usize, k: usize) -> usize {
 /// satisfies the BLK128x128 column-stride rule ("must be a multiple of 4"),
 /// i.e. whether `L = ceil(K/128)` needs no padding to `L4`.
 ///
-/// True for every shape Atlas serves today (K=5120 → L=40, K=17408 → L=136),
+/// True for every shape Avarok serves today (K=5120 → L=40, K=17408 → L=136),
 /// which is why the weight scales pass through untouched. A K that breaks it
 /// would need a padded copy, so the dispatch gate checks this rather than
 /// assuming it.

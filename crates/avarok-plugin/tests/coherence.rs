@@ -150,7 +150,7 @@ async fn a_failed_probe_warns_but_still_runs_the_benchmark() {
 
 /// `/v1/models` must be readable through **chunked** framing.
 ///
-/// This is the bug that made the model check silently useless: Atlas replies
+/// This is the bug that made the model check silently useless: Avarok replies
 /// with `Transfer-Encoding: chunked`, so the body carries hex length prefixes
 /// and a terminating `0\r\n\r\n`. A plain `from_str` from the first `{` fails
 /// on those trailing bytes, `list_models` errored, and the wrong-model warning

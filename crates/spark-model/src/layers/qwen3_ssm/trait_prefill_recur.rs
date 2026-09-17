@@ -137,23 +137,57 @@ impl Qwen3SsmLayer {
         // shim (ops::gdn_flashinfer). FLA ladder below is the fallback when flag/lib absent.
         if !ctx.gdn_exact_replay && kd == 128 && vd == 128 && ops::gdn_flashinfer::available() {
             let scale = 1.0f32 / (kd as f32).sqrt();
-            return ops::gdn_flashinfer::flashinfer_gdn_prefill(
-                ctx.gpu,
-                q_ptr,
-                gates_buf,
-                gdn_out_buf,
-                h_state,
-                scale,
-                k,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                gb_stride,
-                1,
-                stream,
-            );
+            let bf16 = 2usize;
+            let value_dim = nv * vd;
+            // One segment of the scan. The managed shim is documented
+            // MULTI-CHUNK CORRECT — it reads the incoming `h_state` as its
+            // initial state and writes the final one back in Avarok S[k][v]
+            // layout — so segments chain exactly the way the split4 path's do.
+            let seg = |start: usize, len: u32| -> Result<()> {
+                ops::gdn_flashinfer::flashinfer_gdn_prefill(
+                    ctx.gpu,
+                    q_ptr.offset(start * conv_dim * bf16),
+                    gates_buf.offset(start * gb_stride as usize * fp32),
+                    gdn_out_buf.offset(start * value_dim * bf16),
+                    h_state,
+                    scale,
+                    len,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    gb_stride,
+                    1,
+                    stream,
+                )
+            };
+            // MID-CHUNK tail capture, same contract as the split4 arm above.
+            // Without it this path runs the whole chunk in one call and never
+            // lands an h_state in its reserved snapshot slot — so a later warm
+            // hit logs "prefix cache hit ... but no SSM snapshot — recomputing
+            // all KV" and the prefix cache buys nothing on the SSM layers.
+            if let (Some(cap), Some(idx)) = (ctx.midchunk_capture.as_ref(), midcap_idx) {
+                let cl = cap.cap_local;
+                if cl > 0 && (cl as u32) < k {
+                    let mut start = 0usize;
+                    if let Some(ce) = cap.cap_local_early {
+                        seg(0, ce as u32)?;
+                        ctx.gpu.copy_d2d_async(
+                            h_state,
+                            cap.h_dsts_early[idx],
+                            cap.h_bytes,
+                            stream,
+                        )?;
+                        start = ce;
+                    }
+                    seg(start, (cl - start) as u32)?;
+                    ctx.gpu
+                        .copy_d2d_async(h_state, cap.h_dsts[idx], cap.h_bytes, stream)?;
+                    return seg(cl, k - cl as u32);
+                }
+            }
+            return seg(0, k);
         }
 
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags

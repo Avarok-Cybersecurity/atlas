@@ -9,7 +9,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
-//! Atlas Spark — shared modules for integration tests.
+//! Avarok Spark — shared modules for integration tests.
 
 pub mod tokenizer;
 

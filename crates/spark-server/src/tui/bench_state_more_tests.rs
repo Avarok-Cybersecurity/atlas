@@ -294,7 +294,10 @@ fn a_selected_benchmark_reports_its_own_provenance() {
         s.select(i);
         let meta = s.plugin_metadata();
         assert_ne!(meta.description, "no benchmark selected");
-        assert!(meta.official, "everything in the registry ships with Atlas");
+        assert!(
+            meta.official,
+            "everything in the registry ships with Avarok"
+        );
         assert!(!meta.bug_report_url.is_empty());
     }
 }

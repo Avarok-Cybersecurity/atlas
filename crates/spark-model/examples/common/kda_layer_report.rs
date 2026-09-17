@@ -32,7 +32,7 @@ pub(crate) struct Row {
     pub(crate) floor_a: f64,
     /// **B** — bf16 golden vs fp32 golden: the activation-dtype budget.
     pub(crate) floor_b: f64,
-    /// **D** — GPU vs a CPU reference on Atlas's exact bf16 ladder: kernel residual only.
+    /// **D** — GPU vs a CPU reference on Avarok's exact bf16 ladder: kernel residual only.
     pub(crate) floor_d: f64,
     pub(crate) gpu_vs_bf16: f64,
     pub(crate) gpu_vs_f32: f64,

@@ -11,7 +11,7 @@ use super::tests::baseline;
 use super::*;
 
 /// Oracle: `avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS` — the registry of
-/// box classes Atlas recognises — crossed with the Hopper campaign's premise
+/// box classes Avarok recognises — crossed with the Hopper campaign's premise
 /// that no H100 record exists yet.
 ///
 /// The two refusals are DIFFERENT actions for the operator. "Unknown" means the
@@ -32,7 +32,7 @@ fn a_registered_box_class_with_no_record_says_to_go_measure_it() {
             "names the state, not a typo: {msg}"
         );
         assert!(
-            !msg.contains("not a box class Atlas knows"),
+            !msg.contains("not a box class Avarok knows"),
             "a registered id must not read as a typo: {msg}"
         );
     }

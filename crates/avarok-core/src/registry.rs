@@ -109,7 +109,7 @@ pub fn is_teardown_noop(status: i32) -> bool {
 #[derive(Clone, Copy)]
 pub struct RawCudaFunc(pub *mut c_void);
 // SAFETY: CUfunction handles returned by `cuModuleGetFunction` remain valid
-// for the lifetime of the owning CUcontext (the Atlas registry binds the
+// for the lifetime of the owning CUcontext (the Avarok registry binds the
 // process-wide context once at startup and never destroys it). The handle
 // itself is opaque metadata — actual kernel launches go through cuLaunchKernel
 // with caller-supplied stream synchronisation, so `Sync` does not imply
@@ -299,7 +299,7 @@ impl AvarokRegistry {
             // `c_char = i8` (x86_64) and `c_char = u8` (aarch64); we use
             // `.cast()` rather than `as *const i8` so clippy's
             // `unnecessary_cast` is satisfied on x86_64 builds while the
-            // call still type-checks on aarch64 (Atlas's actual GB10 target).
+            // call still type-checks on aarch64 (Avarok's actual GB10 target).
             unsafe { cuModuleGetFunction(&mut func, *raw_mod, c_name.as_ptr().cast()) };
         if status != 0 {
             return Err(AvarokError::ModuleLoad(format!(
@@ -326,7 +326,7 @@ impl AvarokRegistry {
         Vec::new()
     }
 
-    /// Get the raw CUstream handle for Atlas's own stream.
+    /// Get the raw CUstream handle for Avarok's own stream.
     pub fn raw_stream(&self) -> u64 {
         self.host.stream.cu_stream() as u64
     }
@@ -421,7 +421,7 @@ impl AvarokRegistry {
     ///
     /// # Safety
     /// - `kernel_params` must contain valid pointers to arguments matching the kernel signature.
-    /// - `stream_ptr` must be a valid CUstream handle (or 0 to use Atlas's own stream).
+    /// - `stream_ptr` must be a valid CUstream handle (or 0 to use Avarok's own stream).
     /// - `raw_func` must be a valid CUfunction obtained from `raw_function_cached`.
     pub unsafe fn launch_on_stream(
         &self,
@@ -433,7 +433,7 @@ impl AvarokRegistry {
         // Always use the caller's stream directly. When stream_ptr=0, CUDA
         // treats it as the legacy default stream which has implicit
         // synchronization with all other streams in the same context.
-        // Never fall back to Atlas's private stream — that breaks ordering
+        // Never fall back to Avarok's private stream — that breaks ordering
         // with PyTorch operations and prevents CUDA graph capture.
         let stream = stream_ptr;
         // Opt in to >48KB dynamic shared memory when requested.

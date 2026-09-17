@@ -1,14 +1,14 @@
-# Contributing to Atlas
+# Contributing to Avarok
 
-WE thank you for your interest in Atlas! This document explains how to contribute effectively.
+WE thank you for your interest in Avarok! This document explains how to contribute effectively.
 
 ## Philosophy
 
-Atlas follows the **AI Kernel HyperCompiling** philosophy: for every `(Hardware, Model_q)` tuple, there exists a set of kernels producing the highest performance such that it performs at the hardware's theoretical peak. Contributions should align with this — we value specialization over generalization.
+Avarok follows the **AI Kernel HyperCompiling** philosophy: for every `(Hardware, Model_q)` tuple, there exists a set of kernels producing the highest performance such that it performs at the hardware's theoretical peak. Contributions should align with this — we value specialization over generalization.
 
 ### AI-First Codebase
 
-Atlas is an **AI-first codebase**. We're reversing the conventional logic:
+Avarok is an **AI-first codebase**. We're reversing the conventional logic:
 
 - **All PRs are expected to be AI-generated.** Use the best AI tools available to write your kernels, Rust code, and benchmarks.
 - **Human-written code must be justified.** If you submit code written without AI assistance, you must explicitly denote which parts are human-authored and explain why a human wrote it better than an AI could.
@@ -280,7 +280,7 @@ Invariants an agent must not violate:
 
 ### Authorship, and why we ask
 
-Atlas is an **AI-first codebase**, and the PR template's Authorship field is not
+Avarok is an **AI-first codebase**, and the PR template's Authorship field is not
 bookkeeping — it is the measurement. We expect essentially every PR to be
 AI-generated, and we are tracking the exceptions on purpose.
 

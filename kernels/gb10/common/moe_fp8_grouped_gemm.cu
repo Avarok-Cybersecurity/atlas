@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas FP8 Grouped MoE GEMM — Sorted expert dispatch with FP8 E4M3 block-scaled weights.
+// Avarok FP8 Grouped MoE GEMM — Sorted expert dispatch with FP8 E4M3 block-scaled weights.
 //
 // C[M_expert,N] = A[M_expert,K] (BF16) @ dequant(B_expert[N,K] (FP8 E4M3))
 //

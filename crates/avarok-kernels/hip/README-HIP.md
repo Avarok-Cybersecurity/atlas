@@ -1,6 +1,6 @@
 # Native ROCm/HIP build path (no SCALE) — gfx1151 / Strix Halo
 
-Goal: run Atlas on AMD GPUs **without SCALE**, by compiling the existing CUDA
+Goal: run Avarok on AMD GPUs **without SCALE**, by compiling the existing CUDA
 kernels with `hipcc` and replacing SCALE's `libcuda.so` with a thin HIP shim.
 Status: **build path validated; full-model serve pending build-system wiring +
 a GPU window.** See `../../../.claude` memory `project_hip_port_strix` for the
@@ -64,6 +64,6 @@ smem loads (correctness-first; lose pipelining). For the NVFP4 **dense** model:
 
 **D. Serve + measure (GPU window — bounce the SCALE demo server):** `spark serve
 Qwen/Qwen3.6-27B-FP8 …`; coherence check (temp=0 prompts); decode tok/s via
-`~/bench-atlas.sh` (target 20). Decode needs **zero** MMA ports, so even with
+`~/bench-avarok.sh` (target 20). Decode needs **zero** MMA ports, so even with
 stubbed prefill-extras the decode number is measurable once prefill (w4a16_gemm +
 inferspark_prefill) works.

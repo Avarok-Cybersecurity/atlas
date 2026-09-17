@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 /// A fixture as the API wants it: a base64 `data:` URI.
 ///
-/// Atlas deliberately rejects `http(s)` image URLs and tells the caller to
+/// Avarok deliberately rejects `http(s)` image URLs and tells the caller to
 /// send a data URI instead, so this is the only shape that works today. When
 /// the opt-in remote-fetch flag lands, this stays the benchmark's shape
 /// regardless — a benchmark that depended on the server making outbound

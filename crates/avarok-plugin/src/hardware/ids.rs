@@ -17,10 +17,10 @@
 //! correcting the spelling, and a caller told the wrong one hunts for a typo
 //! that is not there.
 //!
-//! [`KNOWN_HARDWARE_IDS`] is that registry — the ids Atlas recognises,
+//! [`KNOWN_HARDWARE_IDS`] is that registry — the ids Avarok recognises,
 //! independent of what has been measured on them.
 
-/// Every box class Atlas recognises, whether or not any gate has a record on
+/// Every box class Avarok recognises, whether or not any gate has a record on
 /// it yet.
 ///
 /// SSOT for `--hardware` validation. An id belongs here once the project has
@@ -72,7 +72,7 @@ pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
     // silicon and same kernel set, its own baseline key, for exactly the
     // reason `gh200` has one. B300 / GB300 are SM 10.3 and get NEITHER — a
     // different arch (`sm_103a`, not forward-compatible from `sm_100a`) that
-    // Atlas ships no target for, so registering them would promise a build
+    // Avarok ships no target for, so registering them would promise a build
     // that does not exist.
     "b200",
     "gb200",
@@ -123,7 +123,7 @@ const SKU_TOKENS: [(&str, &str); 7] = [
 /// `None` means "no opinion", not "unknown box": the caller keeps its existing
 /// normalisation, which never merges two parts. That is why `"NVIDIA B300"`
 /// and the A100 capacities are absent rather than mapped — a wrong merge is
-/// silent, a missing entry costs one line. B300/GB300 are SM 10.3 and Atlas
+/// silent, a missing entry costs one line. B300/GB300 are SM 10.3 and Avarok
 /// compiles nothing for them; the A100 capacities differ only in memory, so a
 /// family-level guess would merge two parts whose numbers are not comparable.
 ///
@@ -143,7 +143,7 @@ pub fn hardware_id_from_gpu_name(name: &str) -> Option<&'static str> {
         })
 }
 
-/// True when `id` names a box class Atlas recognises.
+/// True when `id` names a box class Avarok recognises.
 ///
 /// Case- and shape-sensitive on purpose: the id is a directory name and a
 /// baseline key, so `H100` is not `h100` any more than it is on disk.
@@ -166,7 +166,7 @@ mod tests {
     }
 
     /// Oracle: the same contract, negative side. `h800` is a real NVIDIA part
-    /// that Atlas has never registered, and `H100` is the right part spelled
+    /// that Avarok has never registered, and `H100` is the right part spelled
     /// the wrong way — a baseline key is a directory name, so case matters.
     #[test]
     fn an_unregistered_or_miscased_id_is_not_known() {
@@ -174,7 +174,7 @@ mod tests {
         assert!(!is_known_hardware_id("H100"));
         assert!(!is_known_hardware_id(""));
         // B300 / GB300 are SM 10.3 (`sm_103a`), a different architecture from
-        // B200's 10.0 with no forward compatibility between them, and Atlas
+        // B200's 10.0 with no forward compatibility between them, and Avarok
         // ships no target for either. They hold the slot `b200` held before
         // `kernels/b200/` landed.
         assert!(!is_known_hardware_id("b300"));
@@ -248,8 +248,8 @@ mod tests {
         for name in [
             // Blackwell ULTRA. B300/GB300 are SM 10.3 and `sm_103a` PTX is a
             // different, non-interchangeable target from B200's `sm_100a`;
-            // Atlas compiles neither. Filing them under `b200` would score a
-            // box Atlas cannot even build for against B200 thresholds.
+            // Avarok compiles neither. Filing them under `b200` would score a
+            // box Avarok cannot even build for against B200 thresholds.
             "NVIDIA B300",
             "NVIDIA GB300",
             "NVIDIA A100-SXM4-40GB",

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Grouped W4A16 GEMM for MoE — 35B model shadow.
+// Avarok Grouped W4A16 GEMM for MoE — 35B model shadow.
 //
 // Optimizations over parent:
 // - Transposed kernel: cp.async 2-stage double-buffered pipeline
@@ -942,7 +942,7 @@ extern "C" __global__ void moe_w4a16_fused_gate_up_t_k64(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// K64 fused gate+up MoE GEMM with M=128 tile (Block D #3 — Atlas pattern).
+// K64 fused gate+up MoE GEMM with M=128 tile (Block D #3 — Avarok pattern).
 //
 // Doubles M_TILE from 64 → 128: halves block count for large prefill,
 // reduces launch amortization at 25-SM GB10. Same K=64 cp.async pipeline

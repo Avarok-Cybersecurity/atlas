@@ -148,7 +148,7 @@ pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetec
         // short-arg tool calls; counting those as "short" tripped the
         // recent_short>=5 spinning suppressor and hard-masked the NEXT
         // tool_call, killing the build→error→fix→rebuild loop after ~5 turns
-        // (Atlas capped at ~4-5 turns vs vLLM's 12-17 on the same task).
+        // (Avarok capped at ~4-5 turns vs vLLM's 12-17 on the same task).
         // Genuine repeated-tool-call loops are caught separately by
         // `loop_detector::detect` (the Suppress verdict above); spinning here
         // should only fire on consecutive short PURE-TEXT turns (no action).

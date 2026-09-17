@@ -149,7 +149,7 @@ pub(crate) async fn build_and_serve(
     let addr = format!("{bind}:{port}");
     if bind == "0.0.0.0" {
         tracing::warn!(
-            "Atlas is listening on {addr} — reachable from any host on the network. \
+            "Avarok is listening on {addr} — reachable from any host on the network. \
              If this machine is on a shared LAN or has a public IP, pass \
              --bind 127.0.0.1 (or set --require-auth and a real firewall) before \
              accepting traffic."

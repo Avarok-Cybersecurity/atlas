@@ -142,7 +142,7 @@ impl KatEquality {
     /// not a stylistic choice: this gate exists to say whether BFCL's own
     /// conditions are order-independent, so a body that differed would answer
     /// about a regime nobody measures. `include_usage` is added because
-    /// `completion_tokens` must be the SERVER's count — Atlas ships a short
+    /// `completion_tokens` must be the SERVER's count — Avarok ships a short
     /// reply as one SSE delta, so counting deltas under-counts silently, and
     /// an under-count that happens to be equal both times would read as
     /// agreement.

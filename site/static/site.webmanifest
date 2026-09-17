@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Atlas Inference Engine",
-  "short_name": "Atlas",
+  "name": "Avarok Inference Engine",
+  "short_name": "Avarok",
   "description": "Pure Rust inference, from the device in your hand to the datacenter rack.",
   "lang": "en",
   "dir": "ltr",

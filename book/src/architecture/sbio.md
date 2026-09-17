@@ -1,10 +1,10 @@
 # SBIO: Business Logic vs I/O
 
-**SBIO** — *Separation of Business logic and I/O* — is the user-level naming of a specific pattern the Atlas codebase applies aggressively: business logic never performs I/O directly. It calls a trait. Real I/O is implemented behind that trait. Tests swap in mock implementations.
+**SBIO** — *Separation of Business logic and I/O* — is the user-level naming of a specific pattern the Avarok codebase applies aggressively: business logic never performs I/O directly. It calls a trait. Real I/O is implemented behind that trait. Tests swap in mock implementations.
 
-The payoff is concrete. The Atlas test suite runs ~80% of the code without a GPU. You can verify the scheduler's fairness properties, the OpenAI/Anthropic protocol parsers, the sampler's numeric behavior, the tokenizer's template expansion, and every weight loader's shape checks on a vanilla Linux laptop. The only tests that need a GB10 are the ones that exercise a real CUDA kernel end-to-end.
+The payoff is concrete. The Avarok test suite runs ~80% of the code without a GPU. You can verify the scheduler's fairness properties, the OpenAI/Anthropic protocol parsers, the sampler's numeric behavior, the tokenizer's template expansion, and every weight loader's shape checks on a vanilla Linux laptop. The only tests that need a GB10 are the ones that exercise a real CUDA kernel end-to-end.
 
-## The I/O surfaces in Atlas
+## The I/O surfaces in Avarok
 
 Four kinds of I/O happen at runtime. Each goes through a dedicated trait:
 
@@ -131,7 +131,7 @@ SBIO is a discipline, not a mechanism. But because the trait surface is small, t
 
 The rule is: **I/O goes through a trait; business logic goes nowhere near a syscall.** Three concrete checks when you're about to merge:
 
-1. The file you edited — does it import `cudarc`, `nccl_sys`, `std::net`, or `std::fs`? If it's inside `spark-model`, `spark-server`'s non-handler code, or any `atlas-*` primitive crate, the answer should be *no*. Route through the matching trait.
+1. The file you edited — does it import `cudarc`, `nccl_sys`, `std::net`, or `std::fs`? If it's inside `spark-model`, `spark-server`'s non-handler code, or any `avarok-*` primitive crate, the answer should be *no*. Route through the matching trait.
 2. Is the function unit-tested *without* `#[ignore]`? If yes, it's on the SBIO side of the line. If no, either move it over or explain in the PR why not.
 3. If you're adding a new trait method, ask: is there a no-op mock impl that makes sense? If not, the method is probably the wrong shape.
 

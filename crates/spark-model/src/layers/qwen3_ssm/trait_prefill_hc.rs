@@ -215,19 +215,41 @@ impl Qwen3SsmLayer {
             num_tokens * h,
             stream,
         );
-        ops::hc_post_site(
+        // INTRA-LAYER FOLD — the twin of the attention path's in
+        // `qwen3_attention/trait_impl/prefill_inner.rs`, and the one that
+        // carries 36 of the 48 folded sites (3:1 GDN:attention interleave).
+        // This `hc_post` and the MoE sublayer's `hc_pre` below have nothing
+        // between them but a tap, so the residual add rides into that
+        // collapse's stage kernel. ONE function decides, for both halves.
+        let fold_gdn = ops::hc_post_folds_into_next_pre(
             ctx.gpu,
-            self.hc_post_k,
             hc,
-            out_proj_buf,
+            &hc.ffn,
             streams,
-            post,
-            comb,
             streams,
+            ctx.buffers.hc_lowrank_scratch(),
             n,
             h as u32,
-            stream,
-        )?;
+            /* taps_inert */ !crate::layers::ple::dump::taps_armed(),
+        );
+        let deferred = if fold_gdn {
+            Some(ops::HcDeferredPost::new(out_proj_buf, post))
+        } else {
+            ops::hc_post_site(
+                ctx.gpu,
+                self.hc_post_k,
+                hc,
+                out_proj_buf,
+                streams,
+                post,
+                comb,
+                streams,
+                n,
+                h as u32,
+                stream,
+            )?;
+            None
+        };
 
         stage!("hc_post_attn");
         // Tapped BEFORE the MoE on purpose: reproducing this point in the
@@ -244,9 +266,11 @@ impl Qwen3SsmLayer {
 
         // ── MoE sublayer ──
         // `prefill_block` returned `ctx.buffers.moe_output()`, which the FFN
-        // is about to overwrite — safe only because the `hc_post` above has
-        // already consumed it into the highway. Keep that order.
-        ops::hc_pre_site(
+        // is about to overwrite — safe only because `out_proj_buf` has been
+        // consumed into the highway by the time `hc_small_m_ffn` runs. Unfused
+        // that is the `hc_post` above; FOLDED it is this call's stage kernel,
+        // which still precedes the FFN on the same stream. Keep that order.
+        ops::hc_pre_site_folding(
             ctx.gpu,
             self.hc_pre_k,
             streams,
@@ -259,10 +283,19 @@ impl Qwen3SsmLayer {
             n,
             h as u32,
             eps,
+            deferred,
             stream,
         )?;
         stage!("hc_pre_ffn");
-        self.ffn.forward_prefill(hidden, num_tokens, ctx, stream)?;
+        // Small-M FFN: at K=2/K=3 rows this body is a speculative VERIFY, not a
+        // real prefill. forward_prefill routes the MoE through the grouped GEMM,
+        // which streams every expert's weights and so costs ~9ms/layer almost
+        // independently of row count (measured: T=16 6.7-9.6ms, T=28 8.5-12.3ms
+        // — 1.75x the rows for 1.2x the time). The fused K=2/K=3 kernels do the
+        // same rows in 5 launches at decode cost. Both write moe_output(), so
+        // this is a kernel-shape substitution, not a math change.
+        // AVAROK_QWEN4EXP_HC_SMALL_M_FFN=0 restores the grouped path for A/B.
+        self.hc_small_m_ffn(hidden, num_tokens, ctx, stream)?;
         stage!("moe");
         ops::hc_post_site(
             ctx.gpu,

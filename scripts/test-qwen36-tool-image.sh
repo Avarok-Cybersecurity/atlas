@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Download + serve + smoke-test the Qwen3.6-35B-A3B (vision) model on Atlas,
+# Download + serve + smoke-test the Qwen3.6-35B-A3B (vision) model on Avarok,
 # exercising the issue-#165 fix: an image attached to a *tool result* must
 # reach the vision encoder (it used to be silently dropped).
 #
@@ -42,7 +42,7 @@ READY_TIMEOUT="${READY_TIMEOUT:-900}"   # seconds to wait for weights to load
 # max_tokens before any content. Disable it for deterministic, fast tests.
 DISABLE_THINKING="${DISABLE_THINKING:-1}"   # 1 = pass --disable-thinking
 # Dir holding libnccl.so / libnccl.so.2 for a source-built binary (optional).
-# Atlas links NCCL; if your shell doesn't already resolve it, point this at a
+# Avarok links NCCL; if your shell doesn't already resolve it, point this at a
 # dir containing the symlinks and it's prepended to LD_LIBRARY_PATH.
 NCCL_DIR="${NCCL_DIR:-}"
 
@@ -130,7 +130,7 @@ download_model() {
 
 start_server() {
   [[ -x "${SPARK_BIN}" ]] || die "spark binary not found/executable at '${SPARK_BIN}'.
-Build it from the feat/canonical-chat-ir branch first. Atlas links NCCL, so the
+Build it from the feat/canonical-chat-ir branch first. Avarok links NCCL, so the
 linker needs a dir containing libnccl.so on LIBRARY_PATH (NCCL_DIR below is only
 the RUNTIME path):
     LIBRARY_PATH=\$NCCL_DIR AVAROK_TARGET_MODEL=qwen3.6-35b-a3b \\
@@ -186,7 +186,7 @@ PY
 }
 
 # ─────────────────────────────── run ────────────────────────────────────────
-log "Atlas Qwen3.6-35B-A3B vision / tool-image test"
+log "Avarok Qwen3.6-35B-A3B vision / tool-image test"
 log "repo=${HF_REPO}  served-as=${SERVED_NAME}  endpoint=${BASE_URL}"
 
 download_model

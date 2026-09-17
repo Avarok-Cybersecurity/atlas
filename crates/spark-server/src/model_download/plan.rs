@@ -35,7 +35,7 @@ const METADATA: &[&str] = &[
     "processor_config.json",
 ];
 
-/// Weight formats Atlas cannot load, and directories that duplicate the model.
+/// Weight formats Avarok cannot load, and directories that duplicate the model.
 ///
 /// `original/` in particular is why an unfiltered mirror costs double: Llama
 /// and Gemma repos ship the reference checkpoint there alongside the
@@ -102,7 +102,7 @@ pub fn select(files: &[RemoteFile]) -> Vec<RemoteFile> {
     out
 }
 
-/// Does this plan contain anything Atlas could actually load?
+/// Does this plan contain anything Avarok could actually load?
 ///
 /// A repo publishing only GGUF is a real and common case — the whole plan
 /// filters away and the download would "succeed" having fetched a tokenizer.

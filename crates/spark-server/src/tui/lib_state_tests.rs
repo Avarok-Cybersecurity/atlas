@@ -244,10 +244,10 @@ fn a_refresh_without_a_store_is_a_no_op_not_a_panic() {
 
 #[test]
 fn a_field_error_carries_the_actionable_line_not_the_header() {
-    // "Atlas CLI: 1 invalid flag combination" tells the reader nothing they do
+    // "Avarok CLI: 1 invalid flag combination" tells the reader nothing they do
     // not already know. The form must show WHAT is wrong and HOW to fix it.
     let report = concat!(
-        "Atlas CLI: 1 invalid flag combination — fix before serving:\n\n",
+        "Avarok CLI: 1 invalid flag combination — fix before serving:\n\n",
         "  [1] --ep-size 2 exceeds --world-size 1.\n",
         "      why: expert parallelism cannot span more ranks than exist.\n",
         "      fix: raise --world-size to at least --ep-size, or lower --ep-size.\n"
@@ -258,7 +258,7 @@ fn a_field_error_carries_the_actionable_line_not_the_header() {
         line.contains("raise --world-size"),
         "carries the fix: {line}"
     );
-    assert!(!line.contains("Atlas CLI:"), "not the header: {line}");
+    assert!(!line.contains("Avarok CLI:"), "not the header: {line}");
     assert!(!line.contains('\n'), "one line, for one field: {line}");
 }
 

@@ -214,8 +214,13 @@ fn the_failure_table_row_by_row() {
 
 #[test]
 fn composed_body_carries_text_env_marker_in_order() {
-    let c = compose_body("it broke", "Atlas 1.0 · c0ffee · linux/aarch64", None, None)
-        .expect("compose");
+    let c = compose_body(
+        "it broke",
+        "Avarok 1.0 · c0ffee · linux/aarch64",
+        None,
+        None,
+    )
+    .expect("compose");
     let text = c.body.find("it broke").expect("user text");
     let env = c.body.find("## Environment").expect("env");
     let marker = c.body.find(MARKER).expect("marker");

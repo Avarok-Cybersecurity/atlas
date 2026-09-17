@@ -2,7 +2,7 @@
 
 //! Refuse to load kernels the GPU cannot run, BEFORE the driver does it badly.
 //!
-//! Atlas compiles one SM architecture per build, and the driver's answer to a
+//! Avarok compiles one SM architecture per build, and the driver's answer to a
 //! mismatch is `CUDA_ERROR_NO_BINARY_FOR_GPU` (or
 //! `CUDA_ERROR_UNSUPPORTED_PTX_VERSION`) raised inside `cuModuleLoadData` — an
 //! error that names neither the arch in the binary nor the card in the box. An

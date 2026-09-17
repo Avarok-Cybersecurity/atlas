@@ -5,7 +5,7 @@
 //
 // The Windows HIP headers do NOT declare the CUDA-style, mask-argument warp
 // intrinsics (`__shfl_*_sync`, `__any_sync`, `__all_sync`, `__activemask`)
-// that Linux ROCm provides, so Atlas's unmodified CUDA kernels fail to compile
+// that Linux ROCm provides, so Avarok's unmodified CUDA kernels fail to compile
 // there with hundreds of `use of undeclared identifier '__shfl_down_sync'`.
 // Each is mapped onto the base HIP intrinsic (`__shfl*`, `__any`, `__all`,
 // `__ballot`); the warp mask is advisory on AMD's single-wavefront execution

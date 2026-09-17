@@ -5,7 +5,7 @@ what the negative control proved. Newest entries at the bottom.
 
 ## The gate
 
-`/workspace/atlas-blog/.gate.sh` (untracked; mirrors what `.github/workflows/site.yml`
+`/workspace/avarok-blog/.gate.sh` (untracked; mirrors what `.github/workflows/site.yml`
 runs in CI) — for each of `site/` and `blog/`:
 
 1. `bun test src/lib` — unit tests
@@ -33,7 +33,7 @@ Green. Any red after this point belongs to this work until proven otherwise.
 
 **Found.** Two premises needed correcting before any code was written.
 
-1. *The working tree was stale.* `/workspace/atlas` sits on
+1. *The working tree was stale.* `/workspace/avarok` sits on
    `fix/ssm-rollback-hardening` and its `site/` is the old **light** "warm
    workshop" system (`--bg: #f4f0e8`, copper `#b5622f`). `origin/main` has since
    moved to the **deep violet workstation** system (`--bg: #14111f`, accent
@@ -41,7 +41,7 @@ Green. Any red after this point belongs to this work until proven otherwise.
    `--ch-violet #BE9DF8`, `--ch-cyan #49C3DB`, `--ch-green #12B981`,
    `--ch-gold #EFB338`. Those are *byte-identical* to the four chevron constants
    in the supplied scaffold. All work happens in a clean worktree at
-   `/workspace/atlas-blog` cut from `origin/main`, never in `/workspace/atlas`.
+   `/workspace/avarok-blog` cut from `origin/main`, never in `/workspace/avarok`.
 
 2. *Consequently the brief's ambiguity dissolves.* "Use the look and feel of the
    main website" and "the same color scheme" are already 90% satisfied by the
@@ -62,7 +62,7 @@ ground, so this is not a rounding concern. That re-derivation is the
 ## Wave 2 — the origin vhost
 
 **Changed.** `blog/deploy/nginx/blog.atlasinference.io.conf` is the SSOT for the
-vhost; it is installed on the atlas origin as
+vhost; it is installed on the avarok origin as
 `/etc/nginx/sites-available/00-blog.atlasinference.io.conf` and symlinked into
 `sites-enabled`. Docroot `/var/www/blog.atlasinference.io/html`, owned
 `ubuntu:ubuntu` — the same user the marketing-site deploy already rsyncs as
@@ -260,10 +260,10 @@ artwork. Two things were wrong:
 
 1. The blog was on `#14111f` — the marketing site's ramp — not the reference's
    `#0F1216`.
-2. The blog's header and footer used `favicon.svg` plus the word "Atlas" set in
+2. The blog's header and footer used `favicon.svg` plus the word "Avarok" set in
    the UI font. The reference uses the **real lockup**: the mark, the wordmark
-   outlines including the Atlas signature "A" with its arrow shaft, and the
-   tagline. Confirmed by the user: *"the Atlas 'A' does not have an arrow on the
+   outlines including the Avarok signature "A" with its arrow shaft, and the
+   tagline. Confirmed by the user: *"the Avarok 'A' does not have an arrow on the
    current blog, yet the inputted reference does use it."*
 
 **Decided with the user:** both properties move onto the reference ramp, so
@@ -806,7 +806,7 @@ by it.
 
 | asked for | state |
 |---|---|
-| nginx vhost on the atlas server | **live**, in-repo as SSOT, security headers proved by request |
+| nginx vhost on the avarok server | **live**, in-repo as SSOT, security headers proved by request |
 | `blog/` SvelteKit site from `etc/site-blog` | **live**, index / post / tag / author / RSS / sitemap / 404 |
 | raw WebGL chevron field, **not** three.js | raw WebGL2, 2.52 KB brotli; the three.js variant was never wired in |
 | per-merge deploy inside the existing `site.yml` job | wired into `unit`, `build` and `deploy`; the live check is its own job so it can actually run |

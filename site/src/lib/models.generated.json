@@ -55,7 +55,7 @@
         "name": "Qwen3.5",
         "recipes": [
           {
-            "displayName": "Qwen3.5 0.8B BF16 Atlas",
+            "displayName": "Qwen3.5 0.8B BF16 Avarok",
             "hfId": "Qwen/Qwen3.5-0.8B",
             "params": "0.8B",
             "quant": "none",

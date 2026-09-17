@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM v2 — MiniMax-only shadow kernel.
+// Avarok W4A16 GEMM v2 — MiniMax-only shadow kernel.
 //
 // Baseline (`w4a16_gemm_t_m128` in `w4a16_gemm.cu`):
 //   - 128 (M) × 128 (N) × 32 (K per step) CTA tile

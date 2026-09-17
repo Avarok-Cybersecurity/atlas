@@ -10,12 +10,12 @@ extern "C" void avarok_transpose_heads(float* S, int nheads, int N, void* stream
 static gdn_holo_0_Kernel_Module_t g_module;
 static int g_loaded = 0;
 
-extern "C" void atlas_gdn_load() {
+extern "C" void avarok_gdn_load() {
   if (!g_loaded) { gdn_holo_0_Kernel_Module_Load(&g_module); g_loaded = 1; }
 }
 
 // q,k,v,o: fp16 device ptrs; alpha,beta,state,init_state: fp32; tensormaps: scratch; cu_seqlens: int64.
-extern "C" int atlas_gdn_prefill(
+extern "C" int avarok_gdn_prefill(
     void* q, void* k, void* v, void* o,
     void* alpha, void* beta, void* state, void* init_state,
     void* tensormaps, void* cu_seqlens,

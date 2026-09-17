@@ -27,7 +27,7 @@ Per-launch the backend unpacks the kernel args into `void*[]`, sets the stream, 
 
 ## The paged KV cache (`kv_cache.rs`)
 
-Atlas uses paged attention (à la vLLM) with block-level allocation. Core types:
+Avarok uses paged attention (à la vLLM) with block-level allocation. Core types:
 
 ```rust
 pub enum KvCacheDtype {
@@ -42,7 +42,7 @@ pub enum KvCacheDtype {
 
 `PagedKvCache` holds a pool of fixed-size blocks (configurable, typically 16 tokens per block). `KvCacheConfig` derives pool sizing from `ModelConfig` + `--max-seq-len` + `--max-batch-size`. Allocation is O(1) from a free list; eviction is handled by the scheduler.
 
-The **TurboQuant** family (`turbo3`, `turbo4`, `turbo8`) is specific to Atlas: Walsh-Hadamard rotation followed by Lloyd-Max quantization to optimal Gaussian codebook levels. For the same bit rate, turbo4 has ~2× lower MSE than NVFP4 on the kinds of activations transformers produce, because WHT flattens outliers before quantization. See `docs/turboquant-plus.md` and [FP8](../deep-dives/fp8.md) / [NVFP4](../deep-dives/nvfp4.md) chapters.
+The **TurboQuant** family (`turbo3`, `turbo4`, `turbo8`) is specific to Avarok: Walsh-Hadamard rotation followed by Lloyd-Max quantization to optimal Gaussian codebook levels. For the same bit rate, turbo4 has ~2× lower MSE than NVFP4 on the kinds of activations transformers produce, because WHT flattens outliers before quantization. See `docs/turboquant-plus.md` and [FP8](../deep-dives/fp8.md) / [NVFP4](../deep-dives/nvfp4.md) chapters.
 
 ## Prefix caching (`prefix_cache.rs`, `radix_tree.rs`)
 
@@ -82,7 +82,7 @@ A known bug with `temperature=0 && repetition_penalty=0` was fixed in wave-8 of 
 
 ## Fast weight loader (`fast_weights/`)
 
-Atlas's production weight loader. Modeled on `scitix/InstantTensor`:
+Avarok's production weight loader. Modeled on `scitix/InstantTensor`:
 
 - Each safetensors shard is opened with `O_DIRECT` (bypasses the page cache — critical on GB10 where the page cache shares physical memory with the GPU).
 - One reader thread pre-fetches the next tensor's bytes into a page-aligned buffer.

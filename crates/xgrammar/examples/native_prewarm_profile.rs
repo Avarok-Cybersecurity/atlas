@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! CPU-only timing of grammar exported from Atlas's native tool compiler.
+//! CPU-only timing of grammar exported from Avarok's native tool compiler.
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use xgrammar::compiler::{CompiledGrammar, CompiledGrammarImpl, GrammarCompiler, RuleLevelCache};

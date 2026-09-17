@@ -94,7 +94,11 @@ pub(crate) fn preflight_reserve(
             .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
             .unwrap_or_else(|| args.resolved_dflash_gamma(None))
     } else {
-        args.resolved_num_drafts()
+        // Same widening as the allocator — lookup drafts verify wider than the
+        // head drafts, and preflight sizing that disagrees with
+        // `SsmStatePool::new` is exactly the divergence this file warns about
+        // elsewhere. SSOT: `ssm_reserve::mtp_pool_draft_width`.
+        spark_model::ssm_reserve::mtp_pool_draft_width(args.resolved_num_drafts(), args.ep_size > 1)
     };
     let ssm_pool_bytes = spark_model::ssm_reserve::ssm_pool_reserve_bytes(
         args.max_batch_size,

@@ -10,7 +10,7 @@ const data = {
   rows: [
     {
       c: 8,
-      atlas: 60,
+      avarok: 60,
       best_baseline_id: "fast",
       baselines: [
         { id: "slow", tok_s: 30 },
@@ -19,7 +19,7 @@ const data = {
     },
     {
       c: 1,
-      atlas: 10,
+      avarok: 10,
       best_baseline_id: "slow",
       baselines: [{ id: "slow", tok_s: 8, label: "Baseline slow" }],
     },
@@ -39,7 +39,7 @@ test("a future slower run is represented honestly and bars stay in range", () =>
     rows: [
       {
         c: 16,
-        atlas: 40,
+        avarok: 40,
         best_baseline_id: "base",
         baselines: [{ id: "base", tok_s: 50, label: "Baseline" }],
       },
@@ -53,9 +53,9 @@ test("a future slower run is represented honestly and bars stay in range", () =>
 test("missing or invalid evidence cannot turn into a marketing claim", () => {
   for (const fixture of [
     { rows: [] },
-    { rows: [{ c: 8, atlas: 10, best_baseline_id: "missing", baselines: [] }] },
+    { rows: [{ c: 8, avarok: 10, best_baseline_id: "missing", baselines: [] }] },
     {
-      rows: [{ c: 8, atlas: 10, best_baseline_id: "zero", baselines: [{ id: "zero", tok_s: 0 }] }],
+      rows: [{ c: 8, avarok: 10, best_baseline_id: "zero", baselines: [{ id: "zero", tok_s: 0 }] }],
     },
   ]) {
     expect(() => benchmarkHighlight(fixture)).toThrow();
@@ -69,7 +69,7 @@ test("legacy technical fragments keep their precise destination and query", () =
     "#verified",
     "#models",
     "#run",
-    "#why-atlas",
+    "#why-avarok",
     "#not-a-section",
     "#%E0%A4%A",
   ]) {

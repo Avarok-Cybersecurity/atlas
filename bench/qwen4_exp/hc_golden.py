@@ -1,4 +1,4 @@
-"""Golden for the mHC low-rank residual — Atlas #753 item B, PLAN.md phase A.
+"""Golden for the mHC low-rank residual — Avarok #753 item B, PLAN.md phase A.
 
 `kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu` and
 `ops/hyper_connection_lowrank.rs` were written from the reference and compared

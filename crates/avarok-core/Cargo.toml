@@ -3,7 +3,7 @@ name = "avarok-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Atlas: shared types, model config parsing, registry, and per-target build manifests for the Atlas inference engine."
+description = "Avarok: shared types, model config parsing, registry, and per-target build manifests for the Avarok inference engine."
 repository.workspace = true
 
 [features]

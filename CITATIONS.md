@@ -1,7 +1,7 @@
 # CITATIONS
 
 This branch (`feature/tq-plus-integration`) integrates TurboQuant+ work from
-prior art that upstream Atlas does not credit. Local-only development; not for
+prior art that upstream Avarok does not credit. Local-only development; not for
 publication or upstream PR.
 
 ## Prior art (in order it should be cited)
@@ -20,12 +20,12 @@ publication or upstream PR.
   near-optimal distortion at all bit widths; the paper reports absolute
   quality neutrality at 3.5 bits per channel and marginal degradation
   at 2.5 bpc on KV cache quantization.
-- Atlas's `wht_bf16.cu` implemented plain WHT (no random sign mask) —
+- Avarok's `wht_bf16.cu` implemented plain WHT (no random sign mask) —
   strictly weaker than the canonical Randomized Hadamard form.
 
 ### 2. `TheTom/turboquant_plus` — TurboQuant+ umbrella research repo
 - Primary research dumping ground for the TQ+ work that spans multiple
-  downstream inference engines (Atlas, llama.cpp, vLLM, etc.).
+  downstream inference engines (Avarok, llama.cpp, vLLM, etc.).
   [https://github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus)
 - ~15 papers under `docs/papers/` plus reference quant/dequant
   implementations and bench harnesses. Where the per-feature designs
@@ -41,7 +41,7 @@ publication or upstream PR.
 - The sign arrays vendored into `kernels/gb10/common/tq_plus_signs.cuh`
   are byte-identical to `TURBO_WHT_SIGNS1`/`TURBO_WHT_SIGNS2` in
   `turbo-quant.cuh` (seed=42 Rademacher draws).
-- The CLI surface `turbo3 / turbo4 / turbo8` that Atlas adopted matches
+- The CLI surface `turbo3 / turbo4 / turbo8` that Avarok adopted matches
   this fork's prior public CLI.
 
 ### 4. TurboQuant+ paper set — per-feature designs
@@ -60,7 +60,7 @@ Pieces relevant to this branch's port sequence, all from
 - `triattention-v3.md` — long-context attention eviction policy.
 - `moe-v-compression-frontier.md` — V compression for MoE models specifically.
 
-## What this branch changes vs upstream Atlas (`87b7bb3`)
+## What this branch changes vs upstream Avarok (`87b7bb3`)
 
 ### Two-sided Rademacher signs in WHT (commit `3822f8a`)
 
@@ -72,7 +72,7 @@ Pieces relevant to this branch's port sequence, all from
 | `qwen3_attention/init.rs` | loads inverse kernel |
 | `qwen3_attention/decode/attention_forward.rs:478` | routes iWHT to `wht_bf16_k_inv` |
 
-With `TQ_PLUS_SIGNS` undefined: kernels are byte-equivalent to upstream Atlas
+With `TQ_PLUS_SIGNS` undefined: kernels are byte-equivalent to upstream Avarok
 (A/B baseline). With it defined: hd=128 forward + inverse rotations carry the
 canonical two-sided sign masks; attention dot product preserved since
 `(S2·H·S1)·(S1·H·S2)^T = I`.
@@ -110,7 +110,7 @@ gates the load. Port of Tom's `de44bfe60` (+22% decode at 32K M5 in
 
 ### LA-V7 boundary-V protection
 
-Verified: Atlas's `--kv-high-precision-layers` already implements first-N +
+Verified: Avarok's `--kv-high-precision-layers` already implements first-N +
 last-N → BF16 in `build_layer_kv_dtypes`. Default `"auto"` (=2) covers Tom's
 LA-V7 primitive. Per-layer dtype vector flows through scheduler/dispatch. No
 port work needed.
@@ -127,7 +127,7 @@ infrastructure drop — integration with `wht_bf16_inplace` requires that
 kernel to take a per-tensor `scale_inv` pointer arg (Q gets `scale_inv`, K
 gets `scale` after WHT, V gets nothing). Tom's reference design in
 `ggml-cuda/turbo-wht.cu` templates on `direction` and passes `scale_inv`
-nullable through op_params. Atlas's kernel signature can grow a 4th `kind`
+nullable through op_params. Avarok's kernel signature can grow a 4th `kind`
 parameter (Q=0, K=1, V=2, output=3) once Rust callers are updated to thread
 the tensor kind in. Calibration controller exported as `extern "C"` so a
 Rust shim can drive it from a CLI flag like `--innerq-tokens=N`.
@@ -185,7 +185,7 @@ Remaining work for true asymmetric:
 
 ## License note
 
-Upstream Atlas is AGPLv3 + a CLA assigning commercial relicense rights to a
+Upstream Avarok is AGPLv3 + a CLA assigning commercial relicense rights to a
 proprietary Enterprise Edition. This branch is **local-only**; do not push to
 any public fork or upstream PR. If TQ+ work needs to be made public, file a
 new fork under Tom Turney's account with full prior-art chain (1) → (2) → (3)

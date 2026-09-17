@@ -30,7 +30,7 @@ The candidate approaches:
 
 ## Decision
 
-Atlas defines `LayerType` in `avarok-core` as a closed enum:
+Avarok defines `LayerType` in `avarok-core` as a closed enum:
 
 ```rust
 pub enum LayerType {

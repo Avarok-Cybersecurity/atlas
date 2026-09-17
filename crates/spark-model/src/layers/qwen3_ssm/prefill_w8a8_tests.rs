@@ -133,7 +133,7 @@ fn not_selected_for_unaligned_shapes() {
     // per 128-wide K group, so a ragged tail has no scale.
     assert!(!case(QKVZ, H + 1));
     // K/128 not a multiple of 4: cuBLAS requires that column stride to be one
-    // ("Scaling factors layouts"), and Atlas hands the grid over as-is.
+    // ("Scaling factors layouts"), and Avarok hands the grid over as-is.
     assert!(!case(QKVZ, 128 * 3));
     assert!(case(QKVZ, 128 * 4));
 }

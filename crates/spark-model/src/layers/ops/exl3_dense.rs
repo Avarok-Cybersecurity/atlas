@@ -1,0 +1,273 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Native dense-linear dispatch over a packed EXL3 (QTIP trellis) weight —
+//! the reusable arm behind `AVAROK_EXL3_NATIVE_DENSE=1` for qwen4_exp's GDN
+//! (`in_proj_qkv`, `in_proj_z`, `out_proj`) and attention (`q/k/v/o_proj`)
+//! projections. No new matmul kernels: everything routes through the proven
+//! [`exl3_gemv`] / [`exl3_gemm`] wrappers; this module owns the BF16
+//! boundary, the row batching, and the concurrency contract.
+//!
+//! Data path per call (all stream-ordered, no host sync, no allocation):
+//!
+//! ```text
+//!   m <= 8, K outside 2..=4 (every dense projection at 4.05bpw):
+//!            exl3_gemm_abf16_obf16 — ONE launch: BF16 A converted in the
+//!            input-Hadamard prologue, fp32 C into stage.c_f32, BF16(C)
+//!            stored into dst (contiguous or pitched) by the output-Hadamard
+//!            epilogue. Bit-identical to the bracketed form below; kill
+//!            switch AVAROK_EXL3_NO_FUSED_EGRESS (presence) restores
+//!            exl3_gemm_abf16 + exl3_f32_to_bf16[_2d].
+//!   m <= 8, K in 2..=4:
+//!            A bf16 --exl3_bf16_to_f16--> stage.a_f16 (raw fp16), then
+//!            exl3_gemv (fp32 C into stage.c_f32; gemm fallthrough when the
+//!            GEMV heuristic declines) --exl3_f32_to_bf16[_2d]--> dst
+//!   m >  8 : A bf16 --exl3_bf16_to_f16--> stage.a_f16, then
+//!            per row batch of stage.rows_cap:
+//!              contiguous dst: exl3_gemm fp16 C straight into dst, then
+//!                              exl3_f16_to_bf16 IN PLACE (lm_head precedent)
+//!              strided dst:    exl3_gemm fp16 C into stage.c_f16, then
+//!                              exl3_f16_to_bf16_2d into the arena rows
+//!   m >= AVAROK_EXL3_DENSE_RECONSTRUCT_ROWS (default 512; AVAROK_NO_EXL3_DENSE_RECONSTRUCT kills):
+//!            reconstruct the weight to BF16 once, dense_gemm_bf16_pipelined
+//!            straight into dst (or staged + one 2-D copy when strided) —
+//!            `exl3_dense/reconstruct.rs`; numerics differ from the tiers above
+//! ```
+//!
+//! `A_had` (the kernels' rotation scratch) is a SEPARATE slab, never aliased
+//! to A here: a shared-A group ([`exl3_dense_linear_shared_a`], GDN qkv+z or
+//! attention q/k/v) ingresses once and lets each weight rotate the same raw A
+//! under its own `suh`.
+//!
+//! Concurrency: one [`Exl3LaunchState::section`] wraps the whole call (host
+//! mutex + device fence — see `exl3_dense/launch_state.rs`), shared with the
+//! MoE arm. Cooperative launches are not graph-capturable: the calling arm
+//! must sit behind the model's `exl3_graph_veto` and refuse `graph_capture`.
+
+use std::sync::OnceLock;
+
+use anyhow::{Result, ensure};
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::weights::exl3::{Exl3Codebook, Exl3Weight};
+
+// Explicit `#[path]`: `ops.rs` loads THIS file with one too (the exl3_matmul
+// precedent).
+#[path = "exl3_dense/launch_state.rs"]
+mod launch_state;
+pub use launch_state::{Exl3LaunchState, Exl3Section};
+#[path = "exl3_dense/stage.rs"]
+mod stage;
+pub use stage::{EXL3_DENSE_STAGE_ROWS_DEFAULT, Exl3DenseStage};
+#[path = "exl3_dense/reconstruct.rs"]
+mod reconstruct;
+pub use reconstruct::{
+    EXL3_DENSE_RECONSTRUCT_DEFAULT_ROWS, EXL3_DENSE_RECONSTRUCT_KILL_ENV,
+    EXL3_DENSE_RECONSTRUCT_MIN_ROWS, EXL3_DENSE_RECONSTRUCT_ROWS_ENV, Exl3ReconScratch,
+    parse_reconstruct_rows, reconstruct_rows_from_env, reconstruct_scratch_bytes,
+    reconstruct_tier_takes,
+};
+
+use super::exl3_matmul::{
+    EXL3_GEMM_K_BITS, EXL3_GEMV_MAX_M, exl3_bf16_to_f16, exl3_f16_to_bf16, exl3_f16_to_bf16_2d,
+    exl3_f32_to_bf16, exl3_f32_to_bf16_2d, exl3_gemm, exl3_gemm_abf16, exl3_gemm_abf16_obf16,
+    exl3_gemm_serves_k, exl3_gemv, exl3_gemv_serves_k,
+};
+
+/// Fused BF16 egress on the dense decode arm (default ON): the m <= 8,
+/// K-outside-2..=4 GEMM stores BF16(C) from its epilogue and the separate
+/// `exl3_f32_to_bf16[_2d]` launch is skipped. `AVAROK_EXL3_NO_FUSED_EGRESS`
+/// (PRESENCE — `=0` is not off, house convention) restores the two-launch
+/// form for A/B; the two are byte-identical by construction, so the switch
+/// exists to measure the launch saving, not to guard numerics.
+pub fn exl3_fused_egress_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        let fused = std::env::var_os("AVAROK_EXL3_NO_FUSED_EGRESS").is_none();
+        // Logged once so an A/B record can prove which arm was live (the
+        // "inert arm" trap: a wrong binary or an env that never reached the
+        // process measures nothing).
+        tracing::info!(
+            fused,
+            "EXL3 dense decode egress: {} (AVAROK_EXL3_NO_FUSED_EGRESS {})",
+            if fused {
+                "fused into the GEMM epilogue (_abf16_obf16)"
+            } else {
+                "separate exl3_f32_to_bf16 launch"
+            },
+            if fused { "unset" } else { "set" }
+        );
+        fused
+    })
+}
+
+/// One packed dense linear as the kernels address it: device pointers +
+/// geometry + the KERNEL codebook index (1 = MCG, 2 = MUL1). Built from the
+/// loader's [`Exl3Weight`] via [`Exl3DenseWeight::from_exl3`]; `Copy` so a
+/// layer can carry it inline like the other weight descriptors.
+#[derive(Debug, Clone, Copy)]
+pub struct Exl3DenseWeight {
+    /// u16 trellis `[in/16, out/16, 16K]`.
+    pub trellis: DevicePtr,
+    /// f16 `[in_dim]` input Hadamard signs.
+    pub suh: DevicePtr,
+    /// f16 `[out_dim]` output Hadamard signs.
+    pub svh: DevicePtr,
+    pub in_dim: usize,
+    pub out_dim: usize,
+    pub k_bits: u32,
+    /// Kernel codebook index: 1 = MCG, 2 = MUL1.
+    pub cb: u32,
+}
+
+impl Exl3DenseWeight {
+    /// Validate against the compiled dense envelope (K in
+    /// [`EXL3_GEMM_K_BITS`] = {2,3,4,5,6,8} — every K with gemm instances;
+    /// K in 2..=4 additionally has the m<=8 GEMV tier, the rest take the
+    /// f32-C GEMM at every m — cb MCG/MUL1, dims % 128) and convert the
+    /// codebook. The serving policy (`exl3_native_supported`) is the loader's
+    /// predicate, applied before this; the two sets are the same today.
+    pub fn from_exl3(w: &Exl3Weight) -> Result<Self> {
+        let cb = match w.cb {
+            Exl3Codebook::Mcg => 1,
+            Exl3Codebook::Mul1 => 2,
+            Exl3Codebook::Inst3 => {
+                anyhow::bail!("EXL3 dense: codebook 3INST has no compiled kernel instances")
+            }
+        };
+        ensure!(
+            exl3_gemm_serves_k(w.k_bits),
+            "EXL3 dense: K={} has no compiled gemm instances (have {EXL3_GEMM_K_BITS:?})",
+            w.k_bits
+        );
+        ensure!(
+            w.in_dim >= 128
+                && w.in_dim.is_multiple_of(128)
+                && w.out_dim >= 128
+                && w.out_dim.is_multiple_of(128),
+            "EXL3 dense: [{} -> {}] dims must be multiples of 128",
+            w.in_dim,
+            w.out_dim
+        );
+        ensure!(
+            !w.trellis.is_null() && !w.suh.is_null() && !w.svh.is_null(),
+            "EXL3 dense: null trellis/suh/svh pointer"
+        );
+        Ok(Self {
+            trellis: w.trellis,
+            suh: w.suh,
+            svh: w.svh,
+            in_dim: w.in_dim,
+            out_dim: w.out_dim,
+            k_bits: w.k_bits,
+            cb,
+        })
+    }
+
+    /// Resident packed bytes (trellis + suh + svh + codebook flag) — the
+    /// same accounting as `Exl3Weight::packed_bytes`, for the load log.
+    pub fn packed_bytes(&self) -> usize {
+        self.in_dim * self.out_dim * self.k_bits as usize / 8 + (self.in_dim + self.out_dim) * 2 + 4
+    }
+
+    /// What the same linear costs as dense BF16 `[out, in]`.
+    pub fn bf16_bytes(&self) -> usize {
+        self.in_dim * self.out_dim * 2
+    }
+}
+
+impl TryFrom<&Exl3Weight> for Exl3DenseWeight {
+    type Error = anyhow::Error;
+    fn try_from(w: &Exl3Weight) -> Result<Self> {
+        Self::from_exl3(w)
+    }
+}
+
+impl TryFrom<Exl3Weight> for Exl3DenseWeight {
+    type Error = anyhow::Error;
+    fn try_from(w: Exl3Weight) -> Result<Self> {
+        Self::from_exl3(&w)
+    }
+}
+
+/// Destination of one projection: BF16 rows starting at `ptr`, either
+/// contiguous (`ld == None`, row stride = `out_dim`) or pitched into a wider
+/// arena row (`ld = Some(row stride in ELEMENTS)`, e.g. the GDN `[Q|K|V|Z]`
+/// row of 16384 with `ptr` offset to the block's first column).
+#[derive(Debug, Clone, Copy)]
+pub struct Exl3DenseOut {
+    pub ptr: DevicePtr,
+    pub ld: Option<usize>,
+    /// GEMM tier (m > 8) accumulates and stores C in fp32 (split-K partials
+    /// included) before the BF16 egress, instead of fp16 C converted in
+    /// place. Upstream pins the GDN / attention BLOCK outputs (out_proj,
+    /// o_proj — the projections that feed the residual stream) to fp32
+    /// `out_dtype`; fp16 C there would be a precision/range seam between the
+    /// m<=8 tier (always fp32 C) and prefill, and a rotated split-K partial
+    /// can exceed the final output by up to sqrt(128)x. Costs the stage's
+    /// `rows_cap x max_out_f32` f32 slab and an f32->bf16 pass.
+    pub fp32: bool,
+}
+
+impl Exl3DenseOut {
+    pub fn contiguous(ptr: DevicePtr) -> Self {
+        Self {
+            ptr,
+            ld: None,
+            fp32: false,
+        }
+    }
+    pub fn strided(ptr: DevicePtr, ld_elems: usize) -> Self {
+        Self {
+            ptr,
+            ld: Some(ld_elems),
+            fp32: false,
+        }
+    }
+    /// Request fp32 C on the GEMM tier (see the field doc).
+    pub fn with_fp32(self) -> Self {
+        Self { fp32: true, ..self }
+    }
+}
+
+/// `dst = A @ W` for ONE packed weight. `a_bf16`: BF16 `[m, in_dim]`
+/// contiguous; `out`: BF16 `[m, out_dim]` contiguous or pitched. Any `m`.
+pub fn exl3_dense_linear(
+    gpu: &dyn GpuBackend,
+    w: &Exl3DenseWeight,
+    a_bf16: DevicePtr,
+    out: Exl3DenseOut,
+    m: usize,
+    stage: &Exl3DenseStage,
+    stream: u64,
+) -> Result<()> {
+    exl3_dense_linear_shared_a(gpu, &[(*w, out)], a_bf16, m, stage, stream)
+}
+
+/// Several packed weights over the SAME activation (GDN `in_proj_qkv` +
+/// `in_proj_z`; attention `q/k/v`): ingress once, one matmul per weight,
+/// all under ONE dispatch section. Every weight must share `in_dim`.
+pub fn exl3_dense_linear_shared_a(
+    gpu: &dyn GpuBackend,
+    ws: &[(Exl3DenseWeight, Exl3DenseOut)],
+    a_bf16: DevicePtr,
+    m: usize,
+    stage: &Exl3DenseStage,
+    stream: u64,
+) -> Result<()> {
+    dense_linear_shared_a(
+        gpu,
+        ws,
+        a_bf16,
+        m,
+        stage,
+        stream,
+        exl3_fused_egress_enabled(),
+    )
+}
+
+#[cfg(test)]
+#[path = "exl3_dense/tests.rs"]
+mod tests;
+
+#[path = "exl3_dense_shared_a.rs"]
+mod exl3_dense_shared_a;
+pub(crate) use exl3_dense_shared_a::*;

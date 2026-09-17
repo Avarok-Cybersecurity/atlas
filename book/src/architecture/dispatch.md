@@ -1,6 +1,6 @@
 # Kernel Dispatch Pipeline
 
-One Atlas binary contains kernels for every `(Hardware, Model, Quantization)` target it was built for. This chapter traces a single chat completion from the moment the HTTP request arrives to the moment a kernel launches on the GPU, so you know exactly where each piece of dispatch lives.
+One Avarok binary contains kernels for every `(Hardware, Model, Quantization)` target it was built for. This chapter traces a single chat completion from the moment the HTTP request arrives to the moment a kernel launches on the GPU, so you know exactly where each piece of dispatch lives.
 
 ## The high-level flow
 
@@ -55,7 +55,7 @@ When the user runs `spark serve <model-id>`, `spark-server/src/main.rs` does the
 3. **Resolve the KernelTarget.** Given `model_type` and the selected quantization (from config or `--kv-cache-dtype` when overriding), `avarok-kernels::select_target(hw, model, quant)` looks up the matching `KernelTarget`. Fail fast with a clear error if there's no match.
 4. **Instantiate the GpuBackend.** `AvarokCudaBackend::new(gpu_ordinal, &ptx_set.modules)` uploads every embedded PTX module for the chosen target to the GPU, via `cuModuleLoadData`. Kernel handles are cached per `(module_name, function_name)` pair.
 5. **Instantiate the ModelWeightLoader.** `spark_model::factory::loader_for_config(&config)` matches on the canonical `model_type` and returns `Box<dyn ModelWeightLoader>`.
-6. **Load weights.** The loader translates HF weight names (`model.layers.0.self_attn.q_proj.weight`) into Atlas layer types (`Qwen3AttentionLayer`), going through `WeightStore` (the `O_DIRECT` fast path) and the quantization helpers in `spark_model::weight_map`.
+6. **Load weights.** The loader translates HF weight names (`model.layers.0.self_attn.q_proj.weight`) into Avarok layer types (`Qwen3AttentionLayer`), going through `WeightStore` (the `O_DIRECT` fast path) and the quantization helpers in `spark_model::weight_map`.
 7. **Build layer trait objects.** Each loaded layer becomes a `Box<dyn TransformerLayer>` stored in the `InferenceEngine`.
 8. **Capture CUDA graphs.** For each supported batch size, `engine.capture_graph(bs)` runs a single decode step inside a graph region. Subsequent decodes replay the graph — one GPU launch for the whole forward pass.
 9. **Bind the HTTP endpoint.** `axum::Router::new()...serve(&addr)` starts listening.

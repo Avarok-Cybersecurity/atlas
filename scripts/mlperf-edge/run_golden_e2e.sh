@@ -2,7 +2,7 @@
 # Golden end-to-end run for the MLCommons edge-agentic harness on GB10 (DGX Spark).
 #
 # This is the ONE reproduce entry point for the numbers in
-# docs/campaigns/gb10-decode-fold-2026-07/. It serves Atlas with the frozen
+# docs/campaigns/gb10-decode-fold-2026-07/. It serves Avarok with the frozen
 # "c2final" configuration and runs both harness phases (1007 perf + 995 BFCL).
 #
 # The serve flags and env below are the frozen submission config -- pinned values,

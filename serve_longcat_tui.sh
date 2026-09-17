@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve LongCat-Flash-Lite with Atlas and bring up the TUI dashboard (the TUI
+# Serve LongCat-Flash-Lite with Avarok and bring up the TUI dashboard (the TUI
 # is automatic on an interactive terminal — do NOT pipe this, or it disables
 # itself and you get the plain log stream).
 #
@@ -20,13 +20,13 @@
 # (AVAROK_URL defaults to http://localhost:8888/v1/chat/completions), so the
 # agentic harnesses point at this with no extra flags.
 #
-# ONE Atlas instance at a time: --gpu-memory-utilization RESERVES its whole
+# ONE Avarok instance at a time: --gpu-memory-utilization RESERVES its whole
 # fraction of the box up front, so a second server will fail its OOM
 # pre-flight. Kill the running one by PID first.
 #
 # ── PRECISION LEVERS (all default OFF; measured 2026-08-26) ──
 #
-# LongCat ships plain BF16 with no NVFP4/FP8 calibration metadata, so Atlas
+# LongCat ships plain BF16 with no NVFP4/FP8 calibration metadata, so Avarok
 # runtime-quantizes everything to NVFP4 at load. That is lossy. Three env
 # flags buy it back, measured against the reference logits in
 # bench/ngram_ref/longcat_forward_golden.npz via bench/ngram_ref/logit_quality.py

@@ -21,6 +21,12 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Native EXL3 routed experts (forward_prefill_exl3.rs): delegates for
+        // ALL token counts — every body below reads NVFP4 pointer tables that
+        // hold NULLS for kept-packed experts (silent zero routed output).
+        if self.exl3_native_active() {
+            return self.forward_prefill_exl3(input, num_tokens, ctx, stream);
+        }
         // Native-HIP (gfx1151) has NO ported grouped-GEMM MoE path:
         // moe_fp8_grouped_gemm is a compile stub (kernels/strix-hip/.../
         // moe_fp8_grouped_gemm.cu writes nothing) and the grouped prefill
@@ -179,6 +185,56 @@ impl MoeLayer {
         super::dump::dump_gate_input(ctx.gpu, stream, router_in, n, h)?;
         // 1. Gate GEMM: [N, H] × [H, num_experts] → [N, num_experts]
         let gate_logits = ctx.buffers.gate_logits();
+        // ── FP32 prefill routing (AVAROK_MOE_PREFILL_FP32_ROUTING=1) ──
+        // Top-k is DISCRETE, so selection only changes if a perturbation
+        // exceeds the k-th/(k+1)-th logit gap. With BF16 logits that gap is
+        // ~1 ULP on average and 23-48% of tokens are an EXACT TIE
+        // (AVAROK_MOE_ROUTER_MARGIN=1), which is why the router GEMM is pinned:
+        // any kernel change reorders ties. Widening the logits is the way out.
+        //
+        // The post-top-k aliasing of `gate_logits` as scratch (sorted ids /
+        // offsets / token_to_perm, below) is UNTOUCHED — the f32 logits live in
+        // their own buffer, so the arena layout and every other consumer of
+        // `gate_logits` are unaffected.
+        //
+        // Every conjunct is load-bearing: the hash-routing, correction-bias and
+        // NVFP4-gate paths each score experts differently and are out of scope.
+        let fp32_route = ctx.levers.moe_prefill_fp32_routing
+            && self.dense_gemm_f32out.0 != 0
+            && self.moe_topk_batched_f32.0 != 0
+            && self.gate_nvfp4.is_none()
+            && self.correction_bias_dev.is_none()
+            && self.tid2eid_dev.is_none();
+        let route_logits = if fp32_route {
+            ctx.buffers.gate_logits_f32()
+        } else {
+            gate_logits
+        };
+        {
+            static WHY: std::sync::Once = std::sync::Once::new();
+            WHY.call_once(|| {
+                tracing::info!(
+                    lever = ctx.levers.moe_prefill_fp32_routing,
+                    gemm_f32out = self.dense_gemm_f32out.0 != 0,
+                    topk_f32 = self.moe_topk_batched_f32.0 != 0,
+                    no_gate_nvfp4 = self.gate_nvfp4.is_none(),
+                    no_corr_bias = self.correction_bias_dev.is_none(),
+                    no_tid2eid = self.tid2eid_dev.is_none(),
+                    active = fp32_route,
+                    "MoE prefill FP32-routing preconditions"
+                )
+            });
+        }
+        if fp32_route {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::info!(
+                    num_experts,
+                    top_k,
+                    "MoE prefill routing arm: FP32 logits through top-k"
+                )
+            });
+        }
         if let Some(fp8) = self.gate_fp8 {
             ops::fp8_gemm_n128(
                 ctx.gpu,
@@ -219,7 +275,33 @@ impl MoeLayer {
                 stream,
             )?;
         }
+        if fp32_route {
+            // f32-out GEMM. NOTE this also changes WHICH kernel runs: the
+            // dedicated scalar router kernel only writes BF16, so precision and
+            // kernel move together here and a quality delta cannot be
+            // attributed to precision alone.
+            ops::dense_gemm(
+                ctx.gpu,
+                self.dense_gemm_f32out,
+                router_in,
+                &self.weights.gate,
+                route_logits,
+                n,
+                num_experts,
+                h,
+                stream,
+            )?;
+        }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
+        super::dump::dump_router_margin(
+            ctx.gpu,
+            stream,
+            route_logits,
+            n,
+            num_experts,
+            top_k,
+            fp32_route,
+        )?;
         prof_step!("gate_gemm");
 
         // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
@@ -227,97 +309,22 @@ impl MoeLayer {
         // delta is installed (AVAROK_LORA_EXPERTS=1).
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
 
-        // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
-        //    + correction bias (detected via `correction_bias_dev`);
-        //    every other model takes the softmax path (no behavior
-        //    change — this is additive).
+        // 2. Batched topK dispatch — hoisted to forward_prefill_topk.rs on
+        //    the 500-LoC cap; behavior identical.
         let scratch = ctx.buffers.scratch();
         let indices_dev = scratch;
         let weights_dev = scratch.offset(total_expanded as usize * 4);
-        if let Some(tid2eid) = self.tid2eid_dev {
-            // DeepSeek-V4 hash routing (hash_moe layer): static
-            // `tid2eid[token_id]` selection, sqrtsoftplus-weighted.
-            let token_ids = ctx.token_ids.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "DeepSeek-V4 hash-MoE layer requires ForwardContext.token_ids (prefill grouped)"
-                )
-            })?;
-            ops::moe_hash_route_batched(
-                ctx.gpu,
-                self.moe_hash_route_batched_k,
-                gate_logits,
-                tid2eid,
-                token_ids,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                ctx.config.routed_scaling_factor as f32,
-                n,
-                stream,
-            )?;
-        } else if let Some(bias) = self.correction_bias_dev {
-            // DeepSeek-V4 scores experts with sqrtsoftplus (NOT sigmoid); the
-            // bias selects experts, weights gather pre-bias scores. Other
-            // sigmoid+bias models (DeepSeek-V3 / MiniMax-M2) keep sigmoid.
-            if ctx.config.scoring_func == "sqrtsoftplus" {
-                ops::moe_topk_sqrtsoftplus_batched(
-                    ctx.gpu,
-                    self.moe_topk_sqrtsoftplus_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            } else if ctx.config.scoring_func == "softmax" {
-                self.router_softmax_bias_batched(
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    n,
-                    ctx,
-                    stream,
-                )?;
-            } else {
-                ops::moe_topk_sigmoid_batched(
-                    ctx.gpu,
-                    self.moe_topk_sigmoid_batched_k,
-                    gate_logits,
-                    bias,
-                    indices_dev,
-                    weights_dev,
-                    num_experts,
-                    top_k,
-                    ctx.config.norm_topk_prob,
-                    ctx.config.routed_scaling_factor as f32,
-                    n,
-                    stream,
-                )?;
-            }
-        } else {
-            ops::moe_topk_softmax_batched(
-                ctx.gpu,
-                self.moe_topk_batched,
-                gate_logits,
-                indices_dev,
-                weights_dev,
-                num_experts,
-                top_k,
-                ctx.config.norm_topk_prob,
-                n,
-                stream,
-            )?;
-        }
+        self.prefill_topk_dispatch(
+            route_logits,
+            fp32_route,
+            indices_dev,
+            weights_dev,
+            num_experts,
+            top_k,
+            n,
+            ctx,
+            stream,
+        )?;
         super::dump::dump_expert_ids(ctx.gpu, stream, indices_dev, weights_dev, n, top_k)?;
         prof_step!("topk");
 

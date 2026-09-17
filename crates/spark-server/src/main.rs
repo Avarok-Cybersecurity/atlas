@@ -9,7 +9,7 @@
 #![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::doc_overindented_list_items)]
 
-//! Atlas Spark — pure Rust LLM inference server.
+//! Avarok Spark — pure Rust LLM inference server.
 //!
 //! Startup sequence:
 //! 1. Parse CLI args
@@ -39,6 +39,7 @@ mod ids;
 mod ir;
 mod llmlingua;
 mod lookback_lens;
+mod lookup_drafts;
 mod loop_detector;
 mod loop_simhash;
 mod lqer;
@@ -68,9 +69,8 @@ mod tscg;
 pub mod tui;
 
 use anyhow::Result;
-use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::Command;
 use crate::main_modules::serve;
 
 pub(crate) use crate::main_modules::AppState;
@@ -80,7 +80,7 @@ pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
 fn main() -> Result<()> {
     // FIRST statement, before the runtime, any subscriber, any GPU context and
-    // any spawned thread: mirroring copies `ATLAS_*` onto `AVAROK_*` with
+    // any spawned thread: mirroring copies `AVAROK_*` onto `AVAROK_*` with
     // `setenv`, which is only sound while this process is single threaded. The
     // CLI that launches the server still exports the legacy names, and every
     // `AVAROK_*` read downstream happens after this point.
@@ -90,8 +90,8 @@ fn main() -> Result<()> {
         // Plain stderr on purpose: no subscriber exists yet, and this line must
         // survive both the plain and the TUI startup paths.
         eprintln!(
-            "spark: mirrored {} legacy ATLAS_* variables onto AVAROK_* \
-             (set AVAROK_* directly; the ATLAS_* names are deprecated)",
+            "spark: mirrored {} legacy AVAROK_* variables onto AVAROK_* \
+             (set AVAROK_* directly; the AVAROK_* names are deprecated)",
             mirrored_legacy_env.len()
         );
     }
@@ -111,7 +111,13 @@ fn main() -> Result<()> {
 async fn serve_main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
-    let cli = Cli::parse();
+    //
+    // A positional MODEL that names a serve preset (`spark serve
+    // qwen3.8-flash-next-exl3`) is expanded HERE — flag defaults appended and
+    // re-parsed, `AVAROK_*` defaults published — so the host, the dashboard and
+    // the validator all see the configuration that will actually run. For
+    // every other invocation this is `Cli::parse()`.
+    let (cli, preset) = main_modules::serve_presets::parse_cli()?;
 
     // Answered before anything else initialises. This prints a document and
     // exits: no subscriber, no TUI, no GPU. A dashboard would take the
@@ -176,6 +182,12 @@ async fn serve_main() -> Result<()> {
         tui::init::install_tty_subscriber(progress_tx);
         Some(progress_rx)
     };
+
+    // The preset's decisions were made before a subscriber existed; record
+    // them now, first thing in the log, where a reproduction starts reading.
+    if let Some(applied) = &preset {
+        main_modules::serve_presets::log_applied(applied);
+    }
 
     // Race the server against shutdown. No spawn: `serve()` is a real future that
     // yields while its blocking startup runs on the blocking pool, so pinning it

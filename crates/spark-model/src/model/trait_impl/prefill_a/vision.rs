@@ -71,6 +71,7 @@ impl TransformerModel {
             images.len(),
             total_merged
         );
+        dump_vision_out(self.gpu.as_ref(), ve, total_merged);
         Ok(())
     }
 
@@ -149,5 +150,49 @@ impl TransformerModel {
             total_merged
         );
         Ok(out)
+    }
+}
+
+/// `AVAROK_VISION_DUMP=<path>` — write the encoder's packed output to a file so
+/// it can be diffed against a reference implementation.
+///
+/// The tower is architecturally Qwen3VL-Moe's (every `vision_config` key is
+/// accepted by `Qwen3VLMoeVisionConfig`, and all 333 `model.visual.*` tensors
+/// match its state dict exactly), so the same weights load into transformers
+/// and the merged patch embeddings are directly comparable. Without this the
+/// only observable is the model's ANSWER, which cannot separate a tower defect
+/// from the model being weak at a task.
+///
+/// Layout: raw BF16, `[total_merged, out_hidden_size]`, row-major — the same
+/// buffer the splice reads. One file per encode, truncated each time.
+/// Diagnostic only: no-op unless the variable is set.
+fn dump_vision_out(
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    ve: &crate::layers::vision_encoder::VisionEncoder,
+    total_merged: usize,
+) {
+    let path = match std::env::var("AVAROK_VISION_DUMP") {
+        Ok(p) if !p.is_empty() => p,
+        _ => return,
+    };
+    let bytes = total_merged * ve.out_hidden_size * 2;
+    let mut host = vec![0u8; bytes];
+    let out = match ve.scratch_buf_out() {
+        Some(p) => p,
+        None => {
+            tracing::warn!("AVAROK_VISION_DUMP: no vision scratch yet");
+            return;
+        }
+    };
+    if let Err(e) = gpu.copy_d2h(out, &mut host) {
+        tracing::warn!("AVAROK_VISION_DUMP: device read failed: {e:#}");
+        return;
+    }
+    match std::fs::write(&path, &host) {
+        Ok(()) => tracing::info!(
+            "AVAROK_VISION_DUMP: wrote {total_merged} x {} BF16 ({bytes} B) to {path}",
+            ve.out_hidden_size
+        ),
+        Err(e) => tracing::warn!("AVAROK_VISION_DUMP: write {path} failed: {e}"),
     }
 }

@@ -11,6 +11,15 @@ use crate::api::InferenceRequest;
 use crate::grammar::GrammarEngine;
 
 #[allow(clippy::too_many_arguments)]
+/// `AVAROK_PREFILL_CODISPATCH=1` (or `true`): the single end-to-end flag for
+/// cross-request co-dispatch of fresh prompts. Read per call rather than
+/// latched, so the gate line below reports the value actually in force.
+fn codispatch_flag_on() -> bool {
+    std::env::var("AVAROK_PREFILL_CODISPATCH")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 pub(super) fn start_new_requests(
     model: &dyn Model,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
@@ -36,15 +45,35 @@ pub(super) fn start_new_requests(
     // prefill so they batch into one forward via run_batched_prefill_step (which
     // sees prefilling.len() >= 2 → can_batch_prefill_only). Vision excluded: a
     // shared prepare_vision_embed buffer would cross-contaminate stacked streams.
-    let want_codispatch = std::env::var("AVAROK_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let want_codispatch = codispatch_flag_on()
         && chunked
         && new_reqs.len() >= 2
         && active.is_empty()
         && prefilling.is_empty()
         && !model.is_ep()
         && !new_reqs.iter().any(|r| r.has_image_pixels());
+    // One-shot attribution for "why did co-dispatch not batch?". Each of these
+    // five is individually capable of silently keeping every stream on the
+    // per-stream round-robin, which reads as "batched prefill does nothing"
+    // rather than as a gate that never opened — the exact failure the
+    // 2026-09-06 A/B hit (arm_live.txt recorded neither an ARM nor a DECLINED
+    // line because `kernel_batched_eligible` is downstream of this). Same
+    // pattern as the DFlash batched-verify gate line in `mtp_step.rs`.
+    if codispatch_flag_on() {
+        static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WHY.get_or_init(|| {
+            tracing::info!(
+                new_reqs = new_reqs.len(),
+                active = active.len(),
+                prefilling = prefilling.len(),
+                chunked,
+                is_ep = model.is_ep(),
+                vision = new_reqs.iter().any(|r| r.has_image_pixels()),
+                want_codispatch,
+                "prefill co-dispatch gate (first tick with requests)"
+            );
+        });
+    }
     // VARLEN batched prefill (`--prefill-varlen-batch`): defer chunk-0 whenever
     // there is (or will be) company to batch with — >=2 co-admitted this tick,
     // OR streams already prefilling that a late arrival can join next wave.
@@ -84,7 +113,13 @@ pub(super) fn start_new_requests(
     let vision_codispatch = std::env::var("AVAROK_VISION_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    const VISION_P_MAX: usize = 6400; // VisionEncoder scratch cap (Σ pre-merge patches)
+    // 🪤 WAS a hardcoded `6400`, which is FALLBACK_MAX_PATCHES and NOT what this
+    // checkpoint runs — the encoder reports 16384. A literal here is a second
+    // source of truth for a number the encoder already owns, and it was silently
+    // 2.56x too small. This arm only ever UNDER-admitted, so the disagreement
+    // never surfaced as a fault; it just declined work it could have taken.
+    // `model` is in scope, so ask it.
+    let vision_p_max: usize = model.vision_capacity().map(|c| c.p_max).unwrap_or(6400);
     let mut vision_slices: Vec<VisionSlice> = vec![VisionSlice::default(); new_reqs.len()];
     if vision_codispatch && chunked {
         let mut batched_idx: Vec<usize> = Vec::new();
@@ -111,7 +146,7 @@ pub(super) fn start_new_requests(
                 .iter()
                 .map(|it| it.t_len() * it.grid_h * it.grid_w)
                 .sum();
-            if running_patches + req_patches > VISION_P_MAX {
+            if running_patches + req_patches > vision_p_max {
                 overflow = true;
                 break;
             }

@@ -7,7 +7,7 @@
 //! the glue module owns the absmax kernel launch and the BF16 staging, this
 //! module owns nothing but arithmetic.
 //!
-//! Atlas #919: the serve log line
+//! Avarok #919: the serve log line
 //! `FP8 KV cache with online calibration (checkpoint ships no k/v scales):
 //!  freezing per-tensor scales on the first observed tokens.`
 //! meant exactly that — the freeze fired on the FIRST `observe`, so a 24k

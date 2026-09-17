@@ -23,6 +23,11 @@ use super::super::compact::openai_error_response;
 pub(crate) struct VideoDecode<'a> {
     pub(crate) ffmpeg: &'a spark_model::video_decode_ffmpeg::FfmpegPolicy,
     pub(crate) fps: f32,
+    /// How to spend the row budget when a clip asks for more than the encoder
+    /// holds. See `VideoFitPolicy` — the trade between temporal coverage and
+    /// per-frame detail is workload-dependent, so it is a setting rather than
+    /// a constant.
+    pub(crate) fit_policy: spark_model::video_preprocess::VideoFitPolicy,
 }
 
 /// Per-message data: role, content text, optional structured
@@ -167,6 +172,9 @@ fn resolve_media_uri(
 pub(super) fn build_msg_entries(
     vision_config: Option<&VisionConfig>,
     vision_max_pixels: Option<usize>,
+    // ViT scratch bounds, read from the encoder at boot. `None` on a
+    // text-only serve, which never reaches the media loop anyway.
+    vision_capacity: Option<spark_model::VisionCapacity>,
     remote_images: &super::remote_image::RemoteImagePolicy,
     video: &VideoDecode<'_>,
     input: &[Message],
@@ -272,7 +280,7 @@ pub(super) fn build_msg_entries(
         // Wave 3 (2026-05-26): `AVAROK_STRIP_REASONING_HISTORY=1` drops
         // historical reasoning_content entirely. Matches MLC commit
         // d75d64e (Apr 2026) `strip_reasoning_in_history` for qwen3,
-        // whose PR description matches Atlas's Wave-1 failure mode
+        // whose PR description matches Avarok's Wave-1 failure mode
         // verbatim: echoing prior `<think>` traces makes the next turn
         // emit `<|im_end|>` prematurely AND seeds loop-attractor drift
         // on prior-failed-attempt token patterns (the `lean://` loop
@@ -371,7 +379,7 @@ pub(super) fn build_msg_entries(
     // bare label `User Context:`). Models react to a content-free system
     // directive by producing terse / prematurely-terminated output
     // (isolated 2026-05-17: removing it 3x'd generation length on the
-    // 3D-chess prompt). We can't fix the client, so Atlas adapts: treat
+    // 3D-chess prompt). We can't fix the client, so Avarok adapts: treat
     // such a message as absent so a degenerate client prompt can't poison
     // generation. Conservative — only an empty body or a single short
     // bare `Label:` line qualifies; any substantive prompt is untouched.
@@ -429,6 +437,15 @@ pub(super) fn build_msg_entries(
                         vision_max_pixels,
                         video.fps,
                         video.ffmpeg,
+                        // Fit this clip to what the encoder can actually hold.
+                        // Without a capacity (text-only serve, or a model with
+                        // no encoder) there is nothing to fit against and the
+                        // previous behaviour stands.
+                        vision_capacity.map(|c| spark_model::video_preprocess::VideoBudget {
+                            rows: c.out_rows,
+                            area_max: vision_max_pixels,
+                            policy: video.fit_policy,
+                        }),
                     ) {
                         Ok(v) => spark_model::VisionItem {
                             groups: v.groups,
@@ -459,6 +476,61 @@ pub(super) fn build_msg_entries(
                 );
             }
             image_pixels.push(item);
+        }
+    }
+
+    // ── Refuse an oversized batch HERE, at the door ──
+    //
+    // The only bound today is `check_packed_rows` INSIDE the vision encoder.
+    // By the time it fires the client has paid for decode, preprocessing and
+    // scheduler admission, and gets a 500 for something knowable from the
+    // request alone. Worse, the error it raises is a prefill-start failure,
+    // which reads like a server fault rather than "your clip is too big".
+    //
+    // BOTH bounds are checked, because they fail differently and a request can
+    // pass one and fail the other:
+    //   * Σ merged rows > out_rows — the VIDEO case. All of a clip's temporal
+    //     groups arrive as ONE media item and encode as ONE batch, so a
+    //     per-item cap never sees the sum. This is the 131,670-vs-16,384 case.
+    //   * one image's patches > p_max — the STILL case. A single 4096² image
+    //     passes the sum check and dies later in `check_pixel_len`, because
+    //     p_max sizes the QUADRATIC attention scratch and is per-image.
+    //
+    // 🪤 Advisory only until the fit lands: this converts a 500 into a 400 with
+    // the numbers in it. It does NOT make large videos work — that is the
+    // auto-fit, and this refusal stays afterwards as the last line of defence
+    // (a video once wrote 4.7x past this allocation, raised
+    // CUDA_ERROR_ILLEGAL_ADDRESS, and poisoned the context so the process
+    // answered 503 to every later request, for every tenant, until restart).
+    if let Some(cap) = vision_capacity
+        && !image_pixels.is_empty()
+    {
+        let total_rows: usize = image_pad_counts.iter().sum();
+        if total_rows > cap.out_rows {
+            return Err(openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "This request's media needs {total_rows} vision rows but the encoder                      holds {}. A video arrives as one media item whose temporal groups                      encode as a single batch, so a long clip exceeds the budget even                      though each frame is small. Send fewer frames (lower fps), a shorter                      clip, or smaller frames.",
+                    cap.out_rows
+                ),
+            ));
+        }
+        if let Some(vcfg) = vision_config {
+            let merge = vcfg.spatial_merge_size.max(1);
+            for (i, it) in image_pixels.iter().enumerate() {
+                // pad_count is MERGED rows; pre-merge patches are merge^2 times
+                // that per temporal group. p_max bounds ONE image's patches.
+                let per_group = it.grid_h * it.grid_w;
+                if per_group > cap.p_max {
+                    return Err(openai_error_response(
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "Media item {i} is {}x{} patches ({per_group}) but the encoder                              holds {} per image. Reduce the resolution, or lower                              --vision-max-pixels. (merge={merge})",
+                            it.grid_h, it.grid_w, cap.p_max
+                        ),
+                    ));
+                }
+            }
         }
     }
 

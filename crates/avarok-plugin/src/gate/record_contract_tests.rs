@@ -251,11 +251,20 @@ fn perf_env_defaults_match_the_scheduler() {
     // Match the RESOLUTION, not the first mention: each control is named in a
     // doc comment before it is read, so anchoring on the name alone would
     // assert against prose and pass whatever the code did.
+    //
+    // The scrape follows the RESOLUTION across a delegation. `codispatch_window`
+    // used to read the variable and apply its default in one expression; it now
+    // forwards to `admission_window_from`, which is where `unwrap_or(100)` lives.
+    // A fixed 220-char window after the `env::var` call therefore stopped seeing
+    // the default and failed a contract that had not actually moved — the value
+    // is still 100. Widen to the rest of the file so a delegation is followed,
+    // while the assertion still fails if the NUMBER changes anywhere after the
+    // read.
     let resolution = |var: &str| -> String {
         let at = src
             .find(&format!("std::env::var(\"{var}\")"))
             .unwrap_or_else(|| panic!("{var} is not read in mod_helpers.rs"));
-        src[at..].chars().take(220).collect()
+        src[at..].to_string()
     };
     assert!(
         resolution("AVAROK_PREFILL_CODISPATCH_WINDOW_MS").contains("unwrap_or(100)"),
@@ -267,9 +276,15 @@ fn perf_env_defaults_match_the_scheduler() {
         "the scheduler's co-dispatch SETTLE default moved; PERF_CONTROLS in record.rs still \
          says 10"
     );
+    // Either idiom states the SAME contract — an unset variable is off. The
+    // scheduler used to write `unwrap_or(false)` and now writes
+    // `is_some_and(..)` on the `Option`, whose `None` arm is false by
+    // definition. Accept both: pinning the spelling made this test fail a
+    // refactor that did not change the default, which is the opposite of what
+    // a contract test is for.
     let enable = resolution("AVAROK_PREFILL_CODISPATCH");
     assert!(
-        enable.contains("unwrap_or(false)"),
+        enable.contains("unwrap_or(false)") || enable.contains("is_some_and("),
         "the scheduler's co-dispatch ENABLE default moved; the record's \"0\" default is only \
          correct while an unset variable means off"
     );

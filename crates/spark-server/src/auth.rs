@@ -2,14 +2,14 @@
 
 //! Bearer-token authentication for the HTTP API.
 //!
-//! Atlas serves an OpenAI-compatible API; every mainstream client library
+//! Avarok serves an OpenAI-compatible API; every mainstream client library
 //! (`openai`, `litellm`, `anthropic`, opencode, OpenWebUI) sends
 //! `Authorization: Bearer <key>` by default, so bearer tokens are the only
 //! auth scheme that preserves drop-in client compatibility. mTLS and signed
 //! requests would force every user to re-tool their client, so we don't ship
-//! them. (If an enterprise customer needs mTLS in front of Atlas, the
+//! them. (If an enterprise customer needs mTLS in front of Avarok, the
 //! standard answer is a reverse proxy — nginx, Envoy, Caddy — terminating
-//! TLS and forwarding to Atlas on localhost.)
+//! TLS and forwarding to Avarok on localhost.)
 //!
 //! Tokens are loaded once at startup. Two sources are supported:
 //!   - `--auth-tokens-file <PATH>`: one token per line, blank lines and

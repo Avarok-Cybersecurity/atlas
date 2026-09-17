@@ -3,7 +3,7 @@
 //! answer turns into, in the campaign's own outcome vocabulary.
 use super::super::super::plan::{Estimate, Unit};
 use super::super::atlasctl::{
-    Atlasctl, AttachEnd, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
+    AttachEnd, Avarokctl, ErrorObj, Exit, FetchedFile, NodeRow, Refusal, StreamEvent, SubmitSpec,
     Submitted,
 };
 use super::*;
@@ -144,7 +144,7 @@ impl Script {
     }
 }
 
-impl Atlasctl for Script {
+impl Avarokctl for Script {
     fn nodes(&self, _: &[String]) -> Result<Vec<NodeRow>> {
         unreachable!()
     }

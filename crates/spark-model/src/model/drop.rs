@@ -35,5 +35,12 @@ impl Drop for TransformerModel {
         // same ownership shape as `drop_pinned_staging`. No-op when the tier
         // never ran (the buffer is allocated on first spill).
         self.ssm_snapshots.free_staging(self.gpu.as_ref());
+        // Same shape again for the aux collect's gather blob.
+        self.aux_staging.free(self.gpu.as_ref());
+        // Drop the EXL3 smem-raise memo with the model whose module handles it
+        // caches: CUfunction addresses are recycled across a load/unload, and a
+        // stale "already raised" entry makes the next model's first EXL3 GEMM
+        // fail for want of its 90KB.
+        crate::layers::ops::forget_smem_raises();
     }
 }

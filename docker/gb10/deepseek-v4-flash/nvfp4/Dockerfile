@@ -1,4 +1,4 @@
-# Atlas Spark — DeepSeek-V4-Flash-NVFP4 on GB10
+# Avarok Spark — DeepSeek-V4-Flash-NVFP4 on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/deepseek-v4-flash/nvfp4/Dockerfile -t avarok-deepseek-v4 .

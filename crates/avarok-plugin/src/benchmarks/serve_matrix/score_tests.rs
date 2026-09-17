@@ -160,7 +160,7 @@ fn unmeasurable_throughput_is_not_a_failure() {
 #[test]
 fn a_round_served_by_the_wrong_checkpoint_fails_however_well_it_answers() {
     // The failure mode this bar exists for: a swap that did not take, or that
-    // failed and auto-restored the previous model. Atlas answers a completion
+    // failed and auto-restored the previous model. Avarok answers a completion
     // under whatever name it is sent, so every other probe still passes and
     // the numbers get filed under a checkpoint that was never loaded.
     let mut s = clean();

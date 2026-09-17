@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K=3 verification (2-pass).
+// Avarok WY-Chunkwise Gated Delta Rule — K=3 verification (2-pass).
 //
 // Computes all 3 H^T @ k_t dot products in a single pass over H, applies
 // WY algebraic correction using 3 k_dot scalars, then applies all 3 state

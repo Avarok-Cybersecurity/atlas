@@ -94,7 +94,7 @@ golden = {"fixture": {"hidden": HIDDEN, "heads": H, "head_dim": D, "tokens": T,
 hidden_states = _fixed((B, T, HIDDEN), 0)
 
 # Post-conv q/k/v. The short conv is deliberately OUT of scope here: it is classed REUSE against
-# Atlas's existing fused conv+SiLU+L2 kernel, and folding it in would couple two independent checks.
+# Avarok's existing fused conv+SiLU+L2 kernel, and folding it in would couple two independent checks.
 q_in = _fixed((B, T, H, D), 1)
 k_in = _fixed((B, T, H, D), 2)
 v_in = _fixed((B, T, H, D), 3)

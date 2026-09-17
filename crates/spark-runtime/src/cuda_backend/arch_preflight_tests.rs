@@ -37,6 +37,7 @@ fn a_hopper_target(ptx_arch: &'static str) -> TargetPtxSet {
         dflash: None,
         shadowed_dropped: &[],
         expected_absent: &[],
+        serve_presets: &[],
     }
 }
 

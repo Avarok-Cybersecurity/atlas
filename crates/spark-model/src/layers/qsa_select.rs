@@ -153,8 +153,34 @@ impl QsaIndexer {
         // First selective GLOBAL position, and its chunk-local row.
         let first_sel_pos = bound.max(seq_start);
         let n_sel_total = total - first_sel_pos;
+        // Phase accounting for stage 2, which the chunk-0 profile put at 77%
+        // of the attention block (919 ms of 1188). Four phases share that bar
+        // and they want very different fixes, so accumulate each across slabs
+        // and log ONE line per call. Same env var as the other profilers.
+        let s2prof = {
+            static P: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *P.get_or_init(|| std::env::var("AVAROK_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+        };
+        let mut us_proj = 0u128;
+        let mut us_score = 0u128;
+        let mut us_topk = 0u128;
+        let mut us_attn = 0u128;
+        macro_rules! s2mark {
+            ($acc:expr, $t:expr) => {
+                if s2prof {
+                    gpu.synchronize(stream).ok();
+                    $acc += $t.elapsed().as_micros();
+                    $t = std::time::Instant::now();
+                }
+            };
+        }
+        let mut s2t = std::time::Instant::now();
         let mut slab = 0usize;
         while slab < n_sel_total {
+            if s2prof {
+                gpu.synchronize(stream).ok();
+                s2t = std::time::Instant::now();
+            }
             let rows = ROWS.min(n_sel_total - slab);
             let first_pos = first_sel_pos + slab; // GLOBAL position
             let first_row = first_pos - seq_start; // chunk-local buffer row
@@ -195,6 +221,8 @@ impl QsaIndexer {
                 && self.n_heads == 4
                 && self.hd == 128
                 && std::env::var("AVAROK_QSA_SCORE_SCALAR").as_deref() != Ok("1");
+            s2mark!(us_proj, s2t);
+
             if tc {
                 ops::qsa_score_rows_tc(
                     gpu,
@@ -227,35 +255,108 @@ impl QsaIndexer {
                 )?;
             }
 
-            // Host top-k per row (sync D2H drains the stream first). Torch
-            // tie-break: larger score first, lower index on ties.
-            let mut raw = vec![0u8; rows * stride * 4];
-            gpu.copy_d2h_on_stream(scores, &mut raw, stream)?;
-            let sc: Vec<f32> = raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            let mut host_lists = vec![0u8; rows * topk * 4];
-            for r in 0..rows {
-                let complete = (first_pos + r + 1) / ratio;
-                let row_sc = &sc[r * stride..r * stride + complete];
-                let mut order: Vec<u32> = (0..complete as u32).collect();
-                order.sort_by(|&a, &b| {
-                    row_sc[b as usize]
-                        .partial_cmp(&row_sc[a as usize])
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(a.cmp(&b))
-                });
-                for (i, b) in order[..topk].iter().enumerate() {
-                    host_lists[(r * topk + i) * 4..(r * topk + i) * 4 + 4]
-                        .copy_from_slice(&(*b as i32).to_le_bytes());
+            // Device top-k when the kernel is present: the host path below
+            // D2H's every block score and sorts per row on the CPU, which
+            // measured as the dominant prefill cost once the dense attention
+            // was skipped (~18 MB copied + 8192 sorts of 562, per attention
+            // layer per chunk, at 36K context).
+            // AVAROK_QSA_HOST_TOPK=1 forces the CPU path for A/B.
+            let host_topk = {
+                static H: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                *H.get_or_init(|| std::env::var("AVAROK_QSA_HOST_TOPK").as_deref() == Ok("1"))
+            };
+            s2mark!(us_score, s2t);
+            if !host_topk && self.k_topk_rows_k.0 != 0 {
+                ops::qsa_topk_rows(
+                    gpu,
+                    self.k_topk_rows_k,
+                    scores,
+                    lists,
+                    rows as u32,
+                    stride as u32,
+                    topk as u32,
+                    first_pos as u32,
+                    self.ratio,
+                    stream,
+                )
+                .context("QSA prefill top-k (device)")?;
+            } else {
+                // Host top-k per row (sync D2H drains the stream first). Torch
+                // tie-break: larger score first, lower index on ties.
+                let mut raw = vec![0u8; rows * stride * 4];
+                gpu.copy_d2h_on_stream(scores, &mut raw, stream)?;
+                let sc: Vec<f32> = raw
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let mut host_lists = vec![0u8; rows * topk * 4];
+                for r in 0..rows {
+                    let complete = (first_pos + r + 1) / ratio;
+                    let row_sc = &sc[r * stride..r * stride + complete];
+                    let mut order: Vec<u32> = (0..complete as u32).collect();
+                    order.sort_by(|&a, &b| {
+                        row_sc[b as usize]
+                            .partial_cmp(&row_sc[a as usize])
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(a.cmp(&b))
+                    });
+                    for (i, b) in order[..topk].iter().enumerate() {
+                        host_lists[(r * topk + i) * 4..(r * topk + i) * 4 + 4]
+                            .copy_from_slice(&(*b as i32).to_le_bytes());
+                    }
                 }
+                gpu.copy_h2d_async(&host_lists, lists, stream)?;
             }
-            gpu.copy_h2d_async(&host_lists, lists, stream)?;
 
-            ops::qsa_prefill_attn(
+            // Tensor-core twin when the geometry matches (hd 256, nq <= 16,
+            // nkv 1 — see `qsa_prefill_attn_tc_ok`). One CTA per row with every
+            // head together, instead of one CTA per (row, head) re-streaming
+            // the same K/V: the scalar kernel measured 23.4% of an 8K prefill
+            // at 1.94 TFLOP/s. AVAROK_QSA_PA_SCALAR=1 forces the original.
+            s2mark!(us_topk, s2t);
+            let pa_tc = self.k_prefill_attn_tc_k.0 != 0
+                && ops::qsa_prefill_attn_tc_ok(nq, self.nkv_attn, self.hd_attn)
+                && std::env::var("AVAROK_QSA_PA_SCALAR").as_deref() != Ok("1");
+            {
+                // Engagement, once: a kernel that never loaded and a lever that
+                // does nothing look identical from throughput alone.
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    tracing::info!(
+                        tc = pa_tc,
+                        nq,
+                        nkv = self.nkv_attn,
+                        hd = self.hd_attn,
+                        "QSA prefill attention: {}",
+                        if pa_tc {
+                            "TENSOR-CORE (one CTA per row)"
+                        } else {
+                            "scalar (one CTA per row,head)"
+                        }
+                    );
+                });
+            }
+            // ONE decision, so the size always describes the handle. `wide` is
+            // true only when the TB-16 entry point actually loaded, so a
+            // missing kernel degrades to the TB-64 tile AND its size.
+            //   Prefill: thousands of CTAs, so 5 CTAs/SM beats busy warps.
+            //   Verify:  ~18 CTAs against 48 SMs — occupancy is not the
+            //            constraint, warp utilisation is. Unchanged tile.
+            let wide = ops::qsa_pa_tc_wide(rows as u32) && self.k_prefill_attn_tc16_k.0 != 0;
+            let pa_kernel = if pa_tc {
+                ops::qsa_prefill_attn_tc
+            } else {
+                ops::qsa_prefill_attn
+            };
+            pa_kernel(
                 gpu,
-                self.k_prefill_attn_k,
+                if !pa_tc {
+                    self.k_prefill_attn_k
+                } else if wide {
+                    self.k_prefill_attn_tc16_k
+                } else {
+                    self.k_prefill_attn_tc_k
+                },
                 q_roped.offset(first_row * q_row * 2),
                 k_pool,
                 v_pool,
@@ -271,9 +372,17 @@ impl QsaIndexer {
                 self.nkv_attn,
                 self.hd_attn,
                 inv_sqrt_d,
+                wide,
                 stream,
             )?;
+            s2mark!(us_attn, s2t);
             slab += rows;
+        }
+        if s2prof {
+            tracing::info!(
+                "qsa-s2 rows={n_sel_total} [qk_proj+qprep]={us_proj}us [score]={us_score}us \
+                 [topk]={us_topk}us [attn]={us_attn}us"
+            );
         }
         if diag {
             let mut sel_last = vec![0u8; q_row * 2];

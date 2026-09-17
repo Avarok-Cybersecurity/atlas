@@ -10,6 +10,26 @@ use super::super::Qwen3AttentionLayer;
 use crate::layer::{BatchedAttnMetadata, ForwardContext};
 use crate::layers::ops;
 
+/// One-shot engagement telemetry for the prefill RoPE route.
+///
+/// A rotary route that silently degrades is invisible in every shape check —
+/// the tensors are the right size and the text stays fluent — so the route
+/// has to say which arm it took at least once per process. This is how the
+/// missing MRoPE arm was caught: the streams were uploaded and nothing read
+/// them.
+pub(in crate::layers::qwen3_attention) fn log_rope_route(route: &'static str) {
+    use std::sync::Mutex;
+    static SEEN: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    // Once per DISTINCT route, not once per process: a single line cannot say
+    // whether a later request took a different arm, and that ambiguity is
+    // exactly what hides a route that degrades only for some prompts.
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if !seen.contains(&route) {
+        seen.push(route);
+        tracing::info!("Prefill RoPE route (cache-skip): {}", route);
+    }
+}
+
 impl Qwen3AttentionLayer {
     /// Prefill attention with optional KV cache write skip for prefix caching.
     ///
@@ -119,6 +139,35 @@ impl Qwen3AttentionLayer {
         } else {
             None
         };
+
+        // Sub-stage profiler: chunk-0 attention is the `attn_core` bar, and
+        // ranking a kernel fix needs it split into projections / the dense
+        // flash pass / QSA stage-2 / o_proj. Same env var as the layer-level
+        // profilers, so one run attributes the whole model.
+        static CPROF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        static CPROF_LEFT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(200);
+        let cprof = *CPROF
+            .get_or_init(|| std::env::var("AVAROK_QWEN4EXP_PREFILL_PROF").as_deref() == Ok("1"))
+            && CPROF_LEFT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) > 0;
+        let mut ct = if cprof {
+            ctx.gpu.synchronize(stream).ok();
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+        macro_rules! cstage {
+            ($name:expr) => {
+                if let Some(t0) = ct.as_mut() {
+                    ctx.gpu.synchronize(stream).ok();
+                    tracing::info!(
+                        "attn-core T={num_tokens} [{}]: {}us",
+                        $name,
+                        t0.elapsed().as_micros()
+                    );
+                    *t0 = std::time::Instant::now();
+                }
+            };
+        }
 
         // ── 0. Convert activations BF16 → FP8 once for all Q/K/V projections ──
         // FP8×FP8 GEMM is ~10% faster than BF16×FP8 for Q proj, more than
@@ -462,7 +511,48 @@ impl Qwen3AttentionLayer {
                 stream,
             )
             .map_err(|e| anyhow::anyhow!("rope_proportional failed: {e}"))?;
+        } else if self.mrope_interleaved && self.rope_mrope_interleaved_k.0 != 0 {
+            log_rope_route("mrope_interleaved (T,H,W)");
+            // The (T, H, W) streams are built for every vision prompt and
+            // uploaded to the GPU, but this path had no route that READ them:
+            // the only MRoPE arm here was the fused-Q one behind
+            // AVAROK_ATTN_PREFILL_FUSED_QROPE, off by default, so a cache-skip
+            // prefill fell through to scalar `ops::rope` on the T stream
+            // alone. `paged.rs` has carried this branch all along, which is
+            // why the defect only showed on prompts short enough to skip the
+            // paged route — i.e. every ordinary single-image request.
+            //
+            // T is CONSTANT across one image (t_len = 1 makes `base + g`
+            // collapse to `base`), so dropping H and W did not merely blur
+            // position, it gave all of an image's patches the SAME rotary
+            // position. The tower was exact and the splice was in order; the
+            // model still read the picture as an unordered bag of patches,
+            // naming colours correctly while placing none of them.
+            ops::rope_mrope_interleaved(
+                ctx.gpu,
+                self.rope_mrope_interleaved_k,
+                q_contiguous,
+                k_contiguous,
+                positions,
+                positions_h,
+                positions_w,
+                n,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("rope_mrope_interleaved failed: {e}"))?;
         } else {
+            log_rope_route(if self.mrope_interleaved {
+                "SCALAR — mrope configured but kernel handle missing"
+            } else {
+                "scalar (text-only model)"
+            });
             ops::rope(
                 ctx.gpu,
                 self.rope_k,
@@ -580,6 +670,8 @@ impl Qwen3AttentionLayer {
             );
         }
 
+        cstage!("qkv_rope_cache");
+
         // ── 8. Flash Attention on contiguous Q/K/V (BR=64 for long sequences) ──
         let attn_out = ctx.buffers.attn_output();
         let inv_sqrt_d = self.effective_attn_scale(hd);
@@ -660,7 +752,32 @@ impl Qwen3AttentionLayer {
                 );
             }
             let tp2 = std::time::Instant::now();
-            ops::prefill_attention_64(
+            // ── PARTIAL dense skip ──
+            // QSA stage 2 (section 8b) OVERWRITES every row past the inert
+            // bound, so the dense pass only has to produce rows BELOW it. The
+            // dense cost is quadratic in the rows it covers, so at a 7.8K
+            // chunk with a ~2035 bound this drops ~93% of the pass while the
+            // rows that survive stay bit-identical.
+            //
+            // The existing whole-chunk `skip_dense_attn` cannot fire here: it
+            // needs `seq_len_start >= inert_bound`, and this body is chunk 0.
+            // Conditions are the same strict set, because a wrong skip leaves
+            // attn_out UNINITIALISED rather than wrong-but-plausible: stage 2
+            // must be armed (`prefill_select_active` mirrors the
+            // AVAROK_QSA_NO_PREFILL_SELECT kill switch), it must actually run
+            // (`num_tokens > inert_bound`, its own guard in section 8b), and
+            // single-stream only (8b refuses batched metadata).
+            let dense_q_rows = match self.qsa.as_ref() {
+                Some(q)
+                    if batched_meta.is_none()
+                        && q.prefill_select_active()
+                        && num_tokens > q.inert_bound() =>
+                {
+                    (q.inert_bound() as u32).min(flash_seq_len)
+                }
+                _ => flash_seq_len,
+            };
+            ops::prefill_attention_64_qrows(
                 ctx.gpu,
                 self.prefill_attn_64_k,
                 q_contiguous,
@@ -668,6 +785,7 @@ impl Qwen3AttentionLayer {
                 v_contiguous,
                 attn_out,
                 flash_seq_len,
+                dense_q_rows,
                 flash_batch,
                 nq,
                 nkv,
@@ -731,6 +849,8 @@ impl Qwen3AttentionLayer {
             )?;
         }
 
+        cstage!("attn_dense");
+
         // ── 8b. QSA stage-2: per-query prefill selection (Qwen3.8-Flash-
         // Next). Rows past the inert bound get their attention CONTEXT
         // overwritten with attention over exactly their reference-selected
@@ -761,6 +881,8 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+
+        cstage!("attn_qsa_sel");
 
         // ── 9. Sigmoid gate × attn_out (gated only) — single batched kernel ──
         if self.gated {
@@ -860,6 +982,7 @@ impl Qwen3AttentionLayer {
 
         // ── 10. O projection GEMM ── (extracted to paged_oproj.rs)
         let o_out = self.prefill_attention_paged_oproj(attn_out, n, h, nq, hd, ctx, stream)?;
+        cstage!("o_proj");
         aprof!("o_proj", t0);
         Ok(o_out)
     }

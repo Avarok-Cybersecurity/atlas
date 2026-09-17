@@ -164,3 +164,10 @@ bench/qwen4_exp/qwen4exp_forward_golden.npz
 # .stale./.released. rotations. An interlock, never meant to travel.
 /.oracle_should_begin_cert*
 .certify/
+
+# Working notes for a piece of work in progress: A/B logs, captured runs, boot
+# scripts, checkpoint headers, and snapshots of upstream sources read while
+# porting them. The record of HOW something was measured, which belongs on the
+# box that measured it — the conclusions travel in the commit messages and in
+# docs/. Committing it once put 465 files and 7.8 MB into a single PR.
+.research/

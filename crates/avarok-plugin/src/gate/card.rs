@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Shareable result cards: a benchmark record rendered onto the Atlas card.
+//! Shareable result cards: a benchmark record rendered onto the Avarok card.
 //!
 //! # One template, a mapping per benchmark
 //!

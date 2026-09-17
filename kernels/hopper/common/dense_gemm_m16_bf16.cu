@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas DENSE BF16 tensor-core decode GEMM — 16-row M tile.
+// Avarok DENSE BF16 tensor-core decode GEMM — 16-row M tile.
 //
 //   C[M,N] = A[M,K] (BF16) * B[N,K]^T (BF16),  1 <= M <= 16
 //

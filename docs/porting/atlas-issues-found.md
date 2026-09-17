@@ -1,6 +1,6 @@
-# Atlas issues found during the Strix Halo (gfx1151 / SCALE) port
+# Avarok issues found during the Strix Halo (gfx1151 / SCALE) port
 
-Running log of bugs, waste, and design smells uncovered while bringing Atlas up
+Running log of bugs, waste, and design smells uncovered while bringing Avarok up
 on AMD Strix Halo. "Atlas-side" = our code; "SCALE-side" = Spectral's compiler/
 runtime. Issues that also affect the GB10/CUDA build are flagged **(also GB10)**.
 
@@ -82,18 +82,18 @@ gives **no warning** when a requested quant dir is absent or when a `common/`
 file shadows nothing/everything. A missing quant dir should warn or fail fast
 (PCND), not silently fall back to whatever `common/` has.
 
-## #S3 — `cuModuleGetFunction` succeeds for a missing kernel 📋 SCALE-side (+ Atlas hardening)
+## #S3 — `cuModuleGetFunction` succeeds for a missing kernel 📋 SCALE-side (+ Avarok hardening)
 When a module is missing a kernel symbol, SCALE 1.7.1's `cuModuleGetFunction`
 returns **success** with a bogus handle; the failure only surfaces later as
 `CUDA_ERROR_INVALID_IMAGE` at `cuLaunchKernel`, with no kernel name in the error.
-This made #S2 hard to localize. Worth (a) reporting to Spectral, and (b) Atlas
+This made #S2 hard to localize. Worth (a) reporting to Spectral, and (b) Avarok
 hardening: include the `module::func` name in the launch-failure error so a bad
 image is immediately attributable. (NVIDIA returns `CUDA_ERROR_NOT_FOUND` here.)
 
 ## #4 — memlock default too low for large-model pinning 🩹 environment
 Bare-metal Strix default `memlock` = 8 GB; weight-load host pinning needs more.
 The DGX container used `--ulimit memlock=-1`. Worked around with a
-`limits.d` drop-in (`<user> - memlock unlimited`). Not an Atlas bug, but Atlas
+`limits.d` drop-in (`<user> - memlock unlimited`). Not an Avarok bug, but Avarok
 docs should call out the requirement for non-container hosts. (Was not the real
 OOM cause — see #A1 — but would have bitten regardless.)
 
@@ -164,7 +164,7 @@ Notes / follow-ups:
 
 ---
 
-## #A3 — Generation runs but output is gibberish (open, Atlas/SCALE numerics, gfx1151)
+## #A3 — Generation runs but output is gibberish (open, Avarok/SCALE numerics, gfx1151)
 After #A1/#A2/#M1, the full pipeline runs end-to-end on Strix (prefill via the
 global-memory split4 GDN path -> decode -> tokens), 40 tok at 9.7 tok/s,
 TTFT 2.7 s, no crashes. But output is incoherent from token 1

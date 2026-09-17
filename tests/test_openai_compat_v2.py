@@ -1,5 +1,5 @@
 """
-E2E smoke test for Atlas OpenAI API compatibility PR 4 (remaining gaps).
+E2E smoke test for Avarok OpenAI API compatibility PR 4 (remaining gaps).
 
 Covers items shipped after alpha-2.44:
   1. previous_response_id (stateful /v1/responses resume)
@@ -10,7 +10,7 @@ Covers items shipped after alpha-2.44:
   6. URL annotation extractor improvements
   7. 501 stubs on unsupported endpoints
 
-Assumes an Atlas server is running on localhost:8888 (set AVAROK_URL to
+Assumes an Avarok server is running on localhost:8888 (set AVAROK_URL to
 override). The rate-limit test requires the server was started with
 AVAROK_RATE_LIMIT_RPM=3 so a small burst exhausts the bucket; if not set,
 the rate-limit assertion is skipped with a note.

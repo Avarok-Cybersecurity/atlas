@@ -9,6 +9,18 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use super::super::VisionEncoder;
 
 impl VisionEncoder {
+    /// The scratch bounds, for callers that must refuse a request before the
+    /// forward pass allocates or writes anything. See [`VisionCapacity`].
+    pub fn capacity(&self) -> super::super::VisionCapacity {
+        super::super::VisionCapacity {
+            p_max: self.p_max,
+            // buf_out holds `out_rows` rows, which defaults to p_max and is raised
+            // with AVAROK_VISION_OUT_ROWS. Linear in rows, unlike the quadratic
+            // attention scratch that p_max sizes.
+            out_rows: self.out_rows,
+        }
+    }
+
     /// Copy a BF16 device buffer to another device buffer via the
     /// existing `vision_bf16_copy` element kernel. The kernel takes a
     /// u32 element count (not bytes).

@@ -15,7 +15,7 @@
 //! triangle, or a chunk-boundary ordering error all break it while still looking plausible.
 //!
 //! ## Shared memory is a correctness blocker here
-//! Atlas's CUDA backend has no `cuFuncSetAttribute` opt-in, so a block cannot exceed the
+//! Avarok's CUDA backend has no `cuFuncSetAttribute` opt-in, so a block cannot exceed the
 //! DEFAULT 48 KiB (49152 B); GB10's 101376 B ceiling is unreachable. Requirements are asserted
 //! against 49152 before every launch — see `smem_*`.
 //!

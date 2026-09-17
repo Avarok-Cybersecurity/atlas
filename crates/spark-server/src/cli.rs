@@ -31,7 +31,7 @@ pub use validate::validate_serve_args;
 ///
 /// Read from `Cargo.toml` rather than written out here, so the version a build
 /// reports and the version it was packaged as cannot drift. Anything that needs
-/// to record which Atlas produced an artifact should use this rather than
+/// to record which Avarok produced an artifact should use this rather than
 /// re-deriving it.
 pub const AVAROK_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -39,7 +39,7 @@ pub const AVAROK_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(
     name = "spark",
     version = AVAROK_VERSION,
-    about = "Atlas Spark — pure Rust LLM inference server"
+    about = "Avarok Spark — pure Rust LLM inference server"
 )]
 pub struct Cli {
     #[command(subcommand)]

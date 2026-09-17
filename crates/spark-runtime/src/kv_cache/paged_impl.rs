@@ -72,6 +72,7 @@ impl PagedKvCache {
             block_ref_counts,
             config,
             trace: BlockTrace::new(num_blocks),
+            publishes_stats: false,
         })
     }
 
@@ -87,6 +88,7 @@ impl PagedKvCache {
             self.trace
                 .record(idx as usize, "alloc", 1, std::panic::Location::caller());
         }
+        self.publish_stats();
         Ok(idx)
     }
 
@@ -160,6 +162,7 @@ impl PagedKvCache {
             self.trace
                 .record(idx as usize, "try_alloc", 1, std::panic::Location::caller());
         }
+        self.publish_stats();
         Some(idx)
     }
 
@@ -214,6 +217,7 @@ impl PagedKvCache {
         }
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(block_idx);
+            self.publish_stats();
             true
         } else {
             false
@@ -281,12 +285,35 @@ impl PagedKvCache {
         }
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(idx as u32);
+            self.publish_stats();
         }
     }
 
     /// Current reference count for a block.
     pub fn ref_count(&self, block_idx: u32) -> u32 {
         self.block_ref_counts[block_idx as usize]
+    }
+
+    /// Publish pool occupancy to the `/metrics` gauge. Called from every site
+    /// that changes the free list, so the gauge cannot silently drift.
+    #[inline]
+    fn publish_stats(&self) {
+        // 🪤 SEVERAL POOLS EXIST — MTP heads and the DFlash head each build
+        // their own PagedKvCache. They all used to publish into the one
+        // global, so the gauge reported whichever pool was touched last and
+        // produced impossible pairs (used=1 against free=65543 of 77808).
+        // Only the pool the scheduler actually allocates sequences from is
+        // meaningful here, and it opts in via `mark_primary`.
+        if self.publishes_stats {
+            crate::kv_cache::stats::publish(self.num_blocks, self.free_blocks.len());
+        }
+    }
+
+    /// Mark this pool as the one `/metrics` reports. Called once, by the
+    /// factory, for the sequence-serving cache.
+    pub fn mark_primary(&mut self) {
+        self.publishes_stats = true;
+        self.publish_stats();
     }
 
     /// Number of free blocks.

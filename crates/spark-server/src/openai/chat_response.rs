@@ -41,7 +41,7 @@ pub struct Usage {
     pub completion_tokens: usize,
     pub total_tokens: usize,
     /// Prefix-cache + audio token breakdown of the prompt (OpenAI-compatible).
-    /// Populated when Atlas's prefix cache served any portion of the prompt.
+    /// Populated when Avarok's prefix cache served any portion of the prompt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<PromptTokensDetails>,
     /// Reasoning + audio + prediction breakdown of the completion
@@ -62,7 +62,7 @@ pub struct Usage {
 pub struct PromptTokensDetails {
     /// Tokens served by the prefix cache (no prefill compute cost).
     pub cached_tokens: usize,
-    /// Audio-input tokens. Always 0 on Atlas until audio modality lands.
+    /// Audio-input tokens. Always 0 on Avarok until audio modality lands.
     pub audio_tokens: usize,
 }
 
@@ -74,15 +74,15 @@ pub struct CompletionTokensDetails {
     /// `completion_tokens` as well — this is the portion attributable to
     /// chain-of-thought.
     pub reasoning_tokens: usize,
-    /// Audio-output tokens. Always 0 on Atlas until audio modality lands.
+    /// Audio-output tokens. Always 0 on Avarok until audio modality lands.
     pub audio_tokens: usize,
-    /// Predicted tokens that matched generation. Atlas has no client-supplied
+    /// Predicted tokens that matched generation. Avarok has no client-supplied
     /// `prediction` feature; this reports the SPECULATIVE-DECODE draft tokens
     /// the MTP verify step accepted for this request — the same "predicted
     /// tokens that matched generation" meaning, with the server as the
     /// predictor. 0 when speculation is off or nothing was accepted.
     pub accepted_prediction_tokens: usize,
-    /// Predicted-output tokens that were rejected. Always 0 on Atlas —
+    /// Predicted-output tokens that were rejected. Always 0 on Avarok —
     /// rejected MTP drafts are not client-billable and are not reported here.
     pub rejected_prediction_tokens: usize,
 }

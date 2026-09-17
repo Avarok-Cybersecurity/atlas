@@ -196,7 +196,7 @@ impl BlockDiffusionDraftHead {
         // py:386–391  `all_kv = all_kv_flat.view(n,L,2,nkv,hd)
         //                          .permute(2,1,0,3,4).contiguous()`
         //              `all_k = all_kv[0]`  → [L, n, nkv, hd] contiguous.
-        // Atlas: copy_d2d row-by-row to build the same [L, n, kv_dim] layout
+        // Avarok: copy_d2d row-by-row to build the same [L, n, kv_dim] layout
         // in mlp_intermediate (borrowed; not used until step 3j of the
         // γ-block layer loop). Capacity: n_attn × inter × 2 >> L×n×kv_dim×2.
         let all_k_stage = self.scratch.mlp_intermediate;
@@ -235,7 +235,7 @@ impl BlockDiffusionDraftHead {
         // py:403–418  `all_k_flat = all_k_normed.view(L * n, kv)`
         //              `ops.rotary_embedding(positions_repeated, all_k_flat,
         //                None, head_size, cos_sin_cache, is_neox)`
-        // Atlas: rope_yarn with seq_len=L*n, num_q_heads=0 (K-only).
+        // Avarok: rope_yarn with seq_len=L*n, num_q_heads=0 (K-only).
         //   K buffer = all_k_stage[0..L*n*kv_dim].
         //   positions = norm_buf (L*n i32 written in step 4).
         // Grid: [num_kv_heads, ceil(L*n / pos_per_block), 1] — all CTAs

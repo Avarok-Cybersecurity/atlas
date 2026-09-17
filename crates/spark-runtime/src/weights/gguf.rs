@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Generic GGUF weight loader for Atlas.
+//! Generic GGUF weight loader for Avarok.
 //!
 //! Loads any GGUF checkpoint the same way [`super::SafetensorsLoader`] loads
 //! safetensors: mmap the file, walk its tensors, land each one GPU-resident in
@@ -15,7 +15,7 @@
 //! types lacking a GPU kernel and the correctness oracle under `MockGpuBackend`
 //! (which cannot execute kernels).
 //!
-//! GGUF `dims` are ggml-order (fastest-varying first); Atlas/HF shapes are the
+//! GGUF `dims` are ggml-order (fastest-varying first); Avarok/HF shapes are the
 //! reverse, so each tensor's shape is reversed before it enters the store.
 //!
 //! The PrismML `Q2_0` (id 42) group size is not encoded in the type id. It
@@ -277,7 +277,7 @@ impl super::WeightLoader for GgufLoader {
             .to_lowercase();
 
         // Qwen3.5/3.6 GDN-hybrid GGUFs (llama.cpp `qwen35` converter) encode a
-        // handful of GDN / RMSNorm tensor VALUES differently than Atlas's
+        // handful of GDN / RMSNorm tensor VALUES differently than Avarok's
         // kernels expect (norm +1 offset, `A_log = ln(-ssm_a)`, and a value-head
         // reorder). Read the GDN head geometry once so `load_pass` can invert
         // them per tensor (see `value_transform`).

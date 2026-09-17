@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: nvidia/Qwen3.6-27B-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:latest
+runtime: avarok
+container: avarok/avarok-gb10:latest
 max_nodes: 1
 
 metadata:
@@ -15,7 +15,7 @@ metadata:
     median 2217-2253 ms via tail SSM checkpoints (beats llama.cpp's 2401
     on the identical 22-turn driver).
 
-    REQUIRES a build carrying Avarok-Cybersecurity/atlas PR #223
+    REQUIRES a build carrying Avarok-Cybersecurity/avarok PR #223
     (perf/qwen36-27b-prefill-nvfp4: attn transposed-NVFP4 routing,
     AVAROK_FFN_NVFP4_MMQ, FlashInfer-GDN AOT bridge, tail SSM
     checkpoints). Not yet in a tagged container release — until then,
@@ -45,12 +45,12 @@ metadata:
     256-token micro-chunking is gone) and warm restores work even at
     interval 0; 16 remains a good default for branchy/partial-prefix
     reuse. For DEEP multi-turn conversations (100+ turns) also require
-    atlas#287 (snapshot-eviction fix, merged 2026-07-10, in :dev from
+    avarok#287 (snapshot-eviction fix, merged 2026-07-10, in :dev from
     2026-07-11): without it the warm-restore anchor freezes and replays
     up to 18.6k tokens/turn regardless of interval. See the
     qwen3.6-27b-nvfp4-unsloth-agentic recipe for the validated agentic
     golden config.
-  maintainer: atlas
+  maintainer: avarok
   category: agent
   model_params: 27B
   model_dtype: nvfp4

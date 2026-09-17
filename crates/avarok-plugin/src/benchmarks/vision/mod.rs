@@ -22,7 +22,7 @@
 //!
 //! `tests/vision_sweep.py` grades Mona Lisa recognition on a PASS/PARTIAL/FAIL
 //! keyword rubric across models, and `tests/vit_reference_check.py` diffs
-//! Atlas's ViT layer-by-layer against an HF reference to localise a first
+//! Avarok's ViT layer-by-layer against an HF reference to localise a first
 //! divergence. Both remain; neither asserts token geometry, and neither would
 //! have caught the resolution cap. This is the third thing — a registered
 //! benchmark, so it can become a gate — and it reuses their fixture ladder

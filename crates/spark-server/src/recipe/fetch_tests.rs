@@ -26,8 +26,8 @@ impl Drop for Dir {
 }
 
 fn a_recipe() -> String {
-    "recipe_version: \"2\"\nmodel: Qwen/Qwen3.6-27B\nruntime: atlas\ncontainer: c\n\
-     metadata:\n  description: test\n  maintainer: atlas\ndefaults:\n  port: 8888\n"
+    "recipe_version: \"2\"\nmodel: Qwen/Qwen3.6-27B\nruntime: avarok\ncontainer: c\n\
+     metadata:\n  description: test\n  maintainer: avarok\ndefaults:\n  port: 8888\n"
         .to_string()
 }
 
@@ -187,7 +187,7 @@ fn live_fetch_against_github() {
     assert_eq!(index.recipes.len(), 25, "the corpus is 25 recipes");
     assert_eq!(index.recipes.iter().filter(|r| r.is_avarok()).count(), 23);
     assert_eq!(index.tree_sha.len(), 40, "a full tree sha");
-    // Every Atlas recipe upstream must still produce a valid serve config —
+    // Every Avarok recipe upstream must still produce a valid serve config —
     // this is the guard the vendored fixtures cannot give, because it sees the
     // LIVE repo rather than the snapshot.
     for r in index.recipes.iter().filter(|r| r.is_avarok()) {

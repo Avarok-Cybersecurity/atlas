@@ -162,12 +162,12 @@ pub(crate) fn audit_adapter(
             // Under AVAROK_LORA_ALLOW_PARTIAL the user has already been warned,
             // by name, that these modules are skipped; `validate_peft_config`
             // is the gate that decides. Bailing again here would make the
-            // opt-in unusable, since a module Atlas cannot apply is by
+            // opt-in unusable, since a module Avarok cannot apply is by
             // definition a module that matches no pair.
             if super::env::allow_partial_targets() {
                 tracing::warn!(
                     "LoRA PARTIAL LOAD: target_modules entry '{t}' matched no \
-                     adapter tensor Atlas can place — skipped."
+                     adapter tensor Avarok can place — skipped."
                 );
                 continue;
             }

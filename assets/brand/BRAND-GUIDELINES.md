@@ -1,6 +1,6 @@
-# Atlas — brand guidelines
+# Avarok — brand guidelines
 
-The same rules as `Atlas-Brand-Guidelines.pdf`, in text, for pasting into a wiki
+The same rules as `Avarok-Brand-Guidelines.pdf`, in text, for pasting into a wiki
 or a contributor doc.
 
 ## Which lockup

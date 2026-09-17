@@ -1,4 +1,4 @@
-# Atlas blog — https://blog.atlascybernetics.ai
+# Avarok blog — https://blog.atlascybernetics.ai
 #
 # Notes from the inference layer, on an open source project. Being found is the
 # point, so nothing here is disallowed.

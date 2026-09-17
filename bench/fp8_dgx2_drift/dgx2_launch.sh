@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch Atlas FP8-native server on dgx2 with AVAROK_NEMO_DUMP enabled.
+# Launch Avarok FP8-native server on dgx2 with AVAROK_NEMO_DUMP enabled.
 # Mirror the dgx1 avarok-qwen-final config minus the request-dump path.
 set -euo pipefail
 

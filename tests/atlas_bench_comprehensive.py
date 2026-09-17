@@ -11,14 +11,14 @@ Reports median per metric (per-run min/max stashed in JSON for reviewers
 to compute their own variance).
 
 Usage:
-  python3 atlas_bench_comprehensive.py \\
+  python3 avarok_bench_comprehensive.py \\
     --image avarok-gb10-tqplus \\
     --model-path /home/pidtom/models/qwen3.6-35b-fp8 \\
     --config-name "tqplus-default" \\
     --dtypes fp8,nvfp4,bf16,turbo2,turbo3,turbo4,turbo8 \\
     --out /tmp/bench_tqplus_default.json
 
-  python3 atlas_bench_comprehensive.py \\
+  python3 avarok_bench_comprehensive.py \\
     --image avarok-gb10-tqplus \\
     --model-path /home/pidtom/models/qwen3.6-35b-fp8 \\
     --config-name "tqplus-innerq" \\

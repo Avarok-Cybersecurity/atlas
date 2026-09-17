@@ -3,7 +3,7 @@ name = "cufile-sys"
 version = "1.0.0-beta-preview"
 edition = "2024"
 license.workspace = true
-description = "Atlas: minimal raw FFI types and dlopen wrapper for libcufile (NVIDIA GPUDirect Storage)"
+description = "Avarok: minimal raw FFI types and dlopen wrapper for libcufile (NVIDIA GPUDirect Storage)"
 
 [dependencies]
 libloading = "0.8"

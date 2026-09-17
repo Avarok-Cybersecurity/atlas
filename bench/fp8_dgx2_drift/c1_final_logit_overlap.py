@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C1 (2026-05-26) — top-K final-logit overlap, Atlas FP8 vs HF BF16.
+"""C1 (2026-05-26) — top-K final-logit overlap, Avarok FP8 vs HF BF16.
 
 Uses the existing per-layer hidden-state dumps at
 /workspace/avarok-dumps/fp8native_dgx2/ to compute the FINAL token-level

@@ -58,6 +58,7 @@ pub(super) fn from_values(
         kv_poison: opt_in(value("AVAROK_KV_POISON").as_deref()),
         drafter,
         gdn_regresident: value("AVAROK_NO_GDN_REGRESIDENT").as_deref() != Some("1"),
+        gdn_fla_under_prefix_cache: opt_in(value("AVAROK_GDN_FLA_UNDER_PREFIX_CACHE").as_deref()),
         gdn_batched_fla: opt_in(value("AVAROK_GDN_BATCHED_FLA").as_deref()),
         gdn_wy17: opt_out(value("AVAROK_GDN_WY17").as_deref()),
         gdn_wyn: opt_out(value("AVAROK_GDN_WYN").as_deref()),
@@ -69,6 +70,7 @@ pub(super) fn from_values(
         moe_union_stats: opt_in(value("AVAROK_MOE_UNION_STATS").as_deref()),
         fp32_routing: opt_in(value("AVAROK_FP32_ROUTING").as_deref()),
         fp32_gate: opt_in(value("AVAROK_FP32_GATE").as_deref()),
+        moe_prefill_fp32_routing: opt_in(value("AVAROK_MOE_PREFILL_FP32_ROUTING").as_deref()),
         frankenstein_decode_via_prefill: opt_in(
             value("AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL").as_deref(),
         ),
@@ -102,6 +104,7 @@ pub(super) fn from_values(
         prefill_v2: !present("AVAROK_DISABLE_PREFILL_V2"),
         moe_grouped_cutlass: opt_in(value("AVAROK_HOLO_MOE_GROUPED_CUTLASS").as_deref()),
         moe_grouped_down: opt_in(value("AVAROK_HOLO_MOE_GROUPED_DOWN").as_deref()),
+        moe_row_hist: opt_in(value("AVAROK_MOE_ROW_HIST").as_deref()),
         moe_prefill_exact_tiles: match value("AVAROK_MOE_PREFILL_EXACT_TILES").as_deref() {
             Some("0") => Some(false),
             Some("1") => Some(true),

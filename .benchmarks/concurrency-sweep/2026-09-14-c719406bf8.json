@@ -286,9 +286,9 @@
   "verdict_reason": "8 cells, zero errors, zero vacuous — every populated floor met (C1 21.3/20.1 · C2 31.9/24.1 · C4 53.7/35.7 · C8 66.6/45.7 · C16 91.2/82.5 · C32 105.1/96.8 · C64 116.9/107.6 · C128 116.6/107.6 · peak 116.9/107.6)",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · c128_accept_len=1.00, c128_aggregate_tok_s=116.58, c128_ttft_p50_ms=57436.34, c16_accept_len=1.47, c16_aggregate_tok_s=91.24, c16_ttft_p50_ms=7918.13, c1_accept_len=2.21, c1_aggregate_tok_s=21.28, c1_ttft_p50_ms=153.63, c2_accept_len=2.01, c2_aggregate_tok_s=31.94, c2_ttft_p50_ms=308.26, c32_accept_len=1.32, c32_aggregate_tok_s=105.13, c32_ttft_p50_ms=15256.45, c4_accept_len=1.89, c4_aggregate_tok_s=53.68, c4_ttft_p50_ms=792.30, c64_accept_len=1.00, c64_aggregate_tok_s=116.86, c64_ttft_p50_ms=29127.24, c8_accept_len=1.37, c8_aggregate_tok_s=66.63, c8_ttft_p50_ms=1697.31, cache_uncontrolled_cells=0.00, min_cached_prompt_pct=0.00, min_cached_prompt_tokens=0.00, min_completion_tokens=274.00, non_mtp_arm_cells=5.00, peak_aggregate_tok_s=116.86, vacuous_cells=0.00 · Pass: 8 cells, zero errors, zero vacuous — every populated floor met (C1 21.3/20.1 · C2 31.9/24.1 · C4 53.7/35.7 · C8 66.6/45.7 · C16 91.2/82.5 · C32 105.1/96.8 · C64 116.9/107.6 · C128 116.6/107.6 · peak 116.9/107.6)",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

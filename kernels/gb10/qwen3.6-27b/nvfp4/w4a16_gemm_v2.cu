@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM v2 — qwen3.6-27b shadow kernel.
+// Avarok W4A16 GEMM v2 — qwen3.6-27b shadow kernel.
 //
 // PROVENANCE: byte-copy of the proven minimax-m2-229b / step3p7-flash
 // `w4a16_gemm_v2.cu` (md5 63519fe1, identical in both dirs) with ONE

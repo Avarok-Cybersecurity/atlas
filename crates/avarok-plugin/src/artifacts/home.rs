@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Which directory is the Atlas home, and whether this process can use it.
+//! Which directory is the Avarok home, and whether this process can use it.
 //!
 //! Split out of `artifacts.rs` because the two answer different questions: this
 //! file decides WHERE the home is (and says where the answer came from, which
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-/// Where the Atlas home came from.
+/// Where the Avarok home came from.
 ///
 /// Kept alongside the path because the path alone has never been enough. On
 /// 2026-09-05 three boxes ran one campaign with two different `AVAROK_HOME`
@@ -26,7 +26,7 @@ pub enum HomeSource {
     /// Derived from `$HOME`.
     HomeDefault,
     /// Derived from `$HOME`, but pointing at the directory this home had
-    /// before the ATLAS to AVAROK rename. See [`AvarokHome::resolve`].
+    /// before the AVAROK to AVAROK rename. See [`AvarokHome::resolve`].
     LegacyHomeDefault,
 }
 
@@ -37,13 +37,13 @@ impl HomeSource {
             Self::Env => "from AVAROK_HOME",
             Self::HomeDefault => "default, $HOME/.avarok",
             Self::LegacyHomeDefault => {
-                "pre-rename default, $HOME/.atlas (rename it to ~/.avarok to end this fallback)"
+                "pre-rename default, $HOME/.avarok (rename it to ~/.avarok to end this fallback)"
             }
         }
     }
 }
 
-/// A resolved Atlas home and its provenance.
+/// A resolved Avarok home and its provenance.
 #[derive(Clone, Debug)]
 pub struct AvarokHome {
     /// The directory itself.
@@ -52,7 +52,7 @@ pub struct AvarokHome {
     pub source: HomeSource,
 }
 
-/// What is wrong with an Atlas home, if anything.
+/// What is wrong with an Avarok home, if anything.
 ///
 /// Every variant is a condition that has actually cost time here, and each is
 /// reported as itself rather than collapsing into "0 recipes cached" — the
@@ -102,15 +102,15 @@ impl AvarokHome {
     /// directory is already there.
     ///
     /// `AVAROK_HOME` wins, then `$HOME/.avarok`, with one exception: a box
-    /// installed before the ATLAS to AVAROK rename keeps its state in
-    /// `$HOME/.atlas`, so when `$HOME/.avarok` does not exist and
-    /// `$HOME/.atlas` is a directory, the old one is resolved instead. That
+    /// installed before the AVAROK to AVAROK rename keeps its state in
+    /// `$HOME/.avarok`, so when `$HOME/.avarok` does not exist and
+    /// `$HOME/.avarok` is a directory, the old one is resolved instead. That
     /// directory holds the certification signing identity, `artifacts/` and
     /// `runs/`; ignoring it would mint a second signer and re-provision every
     /// benchmark on a machine that had already done both.
     ///
     /// Beyond the `is_dir()` probe this creates nothing, moves nothing and
-    /// writes nothing. Migrating is the operator's call, and `mv ~/.atlas
+    /// writes nothing. Migrating is the operator's call, and `mv ~/.avarok
     /// ~/.avarok` is what ends the fallback: doing it here would relocate
     /// several GB as a side effect of reading a path.
     pub fn resolve() -> Result<Self> {
@@ -161,9 +161,9 @@ pub(super) fn resolve_from(
     let root = home.join(".avarok");
     // Only while the current name is absent: once `~/.avarok` exists it always
     // wins, so a migrated box never reads the directory it left behind.
-    if !root.exists() && home.join(".atlas").is_dir() {
+    if !root.exists() && home.join(".avarok").is_dir() {
         return Ok(AvarokHome {
-            root: home.join(".atlas"),
+            root: home.join(".avarok"),
             source: HomeSource::LegacyHomeDefault,
         });
     }

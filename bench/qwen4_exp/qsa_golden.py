@@ -1,4 +1,4 @@
-"""Golden for the QSA indexer — Atlas #753 phase G.
+"""Golden for the QSA indexer — Avarok #753 phase G.
 
 Runs the real `Qwen4ExpTextQSAIndexer` (transformers >= 5.16 ships qwen4_exp
 natively, byte-identical to ref/modeling_qwen4_exp.py) on real checkpoint

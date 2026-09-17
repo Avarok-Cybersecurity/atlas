@@ -137,7 +137,7 @@ fn draw_cards(f: &mut Frame, app: &App, area: Rect) {
                 if recipe.is_avarok() {
                     String::new()
                 } else {
-                    format!("  ⊘ {}", recipe.runtime.as_deref().unwrap_or("non-atlas"))
+                    format!("  ⊘ {}", recipe.runtime.as_deref().unwrap_or("non-avarok"))
                 },
                 theme::dim(),
             ),

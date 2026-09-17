@@ -11,7 +11,7 @@
 # nothing. `provision_tests::each_clip_really_is_the_container_it_claims`
 # checks the magic bytes and is what catches a regression here.
 #
-# The 6 MB assets/atlas-demo.mp4 is deliberately NOT exempted — it is what the
+# The 6 MB assets/avarok-demo.mp4 is deliberately NOT exempted — it is what the
 # blanket rule is for.
 crates/avarok-plugin/assets/video/*.mp4 -filter -diff -merge -text
 tests/fixtures/videos/*.mp4 -filter -diff -merge -text

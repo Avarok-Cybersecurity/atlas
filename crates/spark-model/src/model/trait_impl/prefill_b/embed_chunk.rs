@@ -37,8 +37,6 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
-        // BF16 residual is the shipping config (2 bytes/element).
-        let elem_bytes = 2usize;
 
         // ── 1. Embed chunk tokens → [chunk_len, H] contiguous at hidden_dst ──
         // Upload token IDs to device and do a single batched embed kernel launch
@@ -138,36 +136,127 @@ impl TransformerModel {
             }
         }
 
-        // ── 1b. Overwrite image_pad token positions with vision encoder embeddings ──
-        // Vision embeddings are pre-computed by prepare_vision_embed() and stored in
-        // the VisionEncoder's buf_out buffer ([total_patches, out_hidden_size] BF16).
+        // The vision splice is a SEPARATE method because it has to run from
+        // TWO places, and for a long time it only ran from one. See
+        // `prefill_b_splice_vision_at`.
+        self.prefill_b_splice_vision_at(tokens, chunk_start, chunk_len, hidden_dst, stream)?;
+
+        Ok(())
+    }
+
+    /// Overwrite this range's vision-pad rows with the encoder's patch
+    /// embeddings. Split out of `prefill_b_embed_chunk_at` so the warm-prefix
+    /// re-embed can apply it too.
+    ///
+    /// WHY THAT MATTERS: on a prefix-cache hit, `proc_range` RE-EMBEDS the
+    /// uncached suffix into `hidden` at row 0 with a plain `batched_embed`,
+    /// deliberately overwriting what phase 1 wrote. Phase 1 had already spliced
+    /// the picture in at the pad rows of the FULL chunk; the re-embed then
+    /// replaced those rows with the pads' raw token embeddings, and nothing put
+    /// the picture back. The model processed a prompt whose image rows were
+    /// literally the `<|image_pad|>` vocab vector, and answered fluently from
+    /// the surrounding text — measured 2026-09-15: same prompt, temp 0, cold
+    /// said "three chevron-like shapes ... light purple ... cyan" (correct) and
+    /// warm said "a rectangular box with a lid ... briefcase". No test caught
+    /// it because no test warmed a prefix and then asked about an image.
+    ///
+    /// The encoder row index is ABSOLUTE — seeded with the pads in
+    /// `tokens[..chunk_start]` — so a range starting after earlier media still
+    /// indexes its own patches. The caller must still never begin a range
+    /// INSIDE a pad run, or that item's patches are split across two seeds.
+    pub(in crate::model) fn prefill_b_splice_vision_at(
+        &self,
+        tokens: &[u32],
+        chunk_start: usize,
+        chunk_len: usize,
+        hidden_dst: spark_runtime::gpu::DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let h = self.config.hidden_size;
+        let elem_bytes = 2usize;
+        let pending = *self.vision_embed_patches.lock();
+        // Log BEFORE the guard, and on every rank. Under TP the ranks each
+        // embed the same tokens and all-reduce every layer, so a rank that
+        // skips the splice keeps the raw pad-token embedding at exactly
+        // the positions the other rank filled with the picture. Logging
+        // only inside the guard cannot show that: the rank that never
+        // splices is the one that stays silent.
         {
-            let pending = *self.vision_embed_patches.lock();
-            if pending > 0
-                && let Some(ve) = &self.vision_encoder
+            let (ipad, vpad) = self.vision_pad_ids();
+            let pads = tokens[chunk_start..chunk_start + chunk_len]
+                .iter()
+                .filter(|&&t| t == ipad || t == vpad)
+                .count();
+            if pads > 0 {
+                tracing::info!(
+                    "Vision splice: {pads} pad tokens in chunk, {pending} encoder rows available"
+                );
+            }
+        }
+        if pending > 0
+            && let Some(ve) = &self.vision_encoder
+        {
+            let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
+            // EITHER pad token. Matching only the image one meant a
+            // video's positions were skipped entirely — no encoder row was
+            // copied over them, the hidden state kept the raw token
+            // embedding, and the model described a featureless gray field
+            // while every token count looked correct.
+            let (image_pad, video_pad) = self.vision_pad_ids();
+            // Co-dispatch: this request's slice starts at vision_row_base
+            // in the shared packed buf_out (0 for the legacy single encode).
+            let row_base = *self.vision_row_base.lock();
+            // ABSOLUTE pad count, not a per-range one. `img_idx` indexes the
+            // encoder's packed output, which is ordered over the WHOLE prompt,
+            // so it must be seeded with the pads that came BEFORE this range —
+            // otherwise row 0 of buf_out is handed to whatever media happens to
+            // start the range.
+            //
+            // Caught by video-fidelity's `video-before-image` leg: with the
+            // range starting after a video's pads, the image's first pad took
+            // encoder row 0 — the VIDEO's first patch — so the reading came
+            // back [red, green, blue] (the clip) with the image's yellow
+            // missing entirely. The same error applies to an image whose pad
+            // run is split across two prefill chunks, where the second chunk
+            // used to restart at row 0.
+            //
+            // chunk_start == 0 (the cold, full-chunk path) makes this 0, so
+            // that path is byte-unchanged.
+            let mut img_idx = super::upload_meta::mrope_pos::pad_rows_before(
+                &tokens[..chunk_start],
+                image_pad,
+                video_pad,
+            );
+            for (i, &tok) in chunk_tokens.iter().enumerate() {
+                if tok == image_pad || tok == video_pad {
+                    let src = ve
+                        .scratch()
+                        .buf_out
+                        .offset((row_base + img_idx) * ve.out_hidden_size * 2);
+                    let dst = hidden_dst.offset(i * h * elem_bytes);
+                    self.gpu
+                        .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
+                    img_idx += 1;
+                }
+            }
+            // AVAROK_SPLICE_DUMP: the hidden chunk AFTER the overwrite.
+            // The encoder dump proves what buf_out HOLDS; only this proves
+            // what the language model actually RECEIVES — that every
+            // encoder row reached a pad position, in order, at the right
+            // magnitude relative to the text rows around it.
+            if let Ok(path) = std::env::var("AVAROK_SPLICE_DUMP")
+                && !path.is_empty()
             {
-                let chunk_tokens = &tokens[chunk_start..chunk_start + chunk_len];
-                // EITHER pad token. Matching only the image one meant a
-                // video's positions were skipped entirely — no encoder row was
-                // copied over them, the hidden state kept the raw token
-                // embedding, and the model described a featureless gray field
-                // while every token count looked correct.
-                let (image_pad, video_pad) = self.vision_pad_ids();
-                // Co-dispatch: this request's slice starts at vision_row_base
-                // in the shared packed buf_out (0 for the legacy single encode).
-                let row_base = *self.vision_row_base.lock();
-                let mut img_idx = 0usize; // pad-token count within the chunk
-                for (i, &tok) in chunk_tokens.iter().enumerate() {
-                    if tok == image_pad || tok == video_pad {
-                        let src = ve
-                            .scratch()
-                            .buf_out
-                            .offset((row_base + img_idx) * ve.out_hidden_size * 2);
-                        let dst = hidden_dst.offset(i * h * elem_bytes);
-                        self.gpu
-                            .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
-                        img_idx += 1;
-                    }
+                self.gpu.synchronize(stream).ok();
+                let bytes = chunk_len * h * elem_bytes;
+                let mut host = vec![0u8; bytes];
+                if self.gpu.copy_d2h(hidden_dst, &mut host).is_ok() {
+                    let _ = std::fs::write(&path, &host);
+                    tracing::info!(
+                        "AVAROK_SPLICE_DUMP: start={chunk_start} rows={chunk_len} x {h} \
+                             ({elem_bytes} B/elem), {img_idx} pads spliced of {pending} \
+                             encoder rows -> {path}"
+                    );
                 }
             }
         }

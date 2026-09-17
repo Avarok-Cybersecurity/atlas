@@ -127,9 +127,9 @@ pub(super) fn effective_min_p(
 ///  * `FinalDecode` → the caller passes the effective `temperature`, the
 ///    per-token `seed` and the base `logit_bias` (`ActiveSeq.logit_bias`,
 ///    cloned) it computed for this step.
-///  * `Verify` → the MTP verify/bootstrap emission is a penalty-aware
-///    greedy ARGMAX, so callers pass `temperature = 0.0`, `seed = None`,
-///    empty base bias.
+///  * `Verify` → callers pass neutral sampling fields and empty base bias;
+///    the builder reads the request bias from `a`, including at the fast-path
+///    eligibility gates. Verify sampling is selected after post-processing.
 pub(super) fn penalty_params_for(
     a: &ActiveSeq,
     kind: PositionKind,
@@ -137,17 +137,18 @@ pub(super) fn penalty_params_for(
     seed: Option<u64>,
     base_logit_bias: Vec<(u32, f32)>,
 ) -> SamplingParams {
-    // `Verify` positions are a penalty-aware greedy ARGMAX, so the contract
-    // is temperature 0.0, no seed, no caller-supplied base bias. Pin it so a
-    // future caller can't silently pass stochastic params on the speculative
-    // path. The A4 floor below is appended for BOTH kinds (intended delta).
+    // Verify callers request penalty parameters only. Sampling shape is
+    // selected downstream, while the request bias must apply to every token.
     debug_assert!(
         kind != PositionKind::Verify
             || (temperature == 0.0 && seed.is_none() && base_logit_bias.is_empty()),
         "Verify positions must pass temperature=0.0, seed=None, empty base bias"
     );
     let in_tool = a.inside_tool_body && !a.inside_thinking;
-    let mut logit_bias = base_logit_bias;
+    let mut logit_bias = match kind {
+        PositionKind::FinalDecode => base_logit_bias,
+        PositionKind::Verify => a.logit_bias.clone(),
+    };
 
     // #192: the `<tool_call>` opener nudge must not act INSIDE a tool body
     // (spurious mid-value re-open — see `strip_in_tool_opener_bias`).
@@ -630,7 +631,7 @@ pub fn sample_first_token(
 #[cfg(test)]
 mod penalty_scope_tests {
     //! #192: the per-tool-call-segment penalty history scope and the in-tool
-    //! opener-bias strip — the two levers that stop Atlas's own sampling
+    //! opener-bias strip — the two levers that stop Avarok's own sampling
     //! machinery from garbling the SECOND parallel tool call (live 2026-07-02,
     //! hermes on Qwen3.6-27B-NVFP4: call 2 scaffold flipped to space-prefixed
     //! BPE variants `Berlin </ parameter >` + a spurious mid-value

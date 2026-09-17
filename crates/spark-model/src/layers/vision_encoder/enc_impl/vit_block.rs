@@ -10,6 +10,12 @@ use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 use super::super::{ViTBlock, VisionEncoder};
 
 impl VisionEncoder {
+    /// Packed merged-patch output of the last encode, for `AVAROK_VISION_DUMP`.
+    /// `None` before the first image allocates the scratch group.
+    pub fn scratch_buf_out(&self) -> Option<spark_runtime::gpu::DevicePtr> {
+        self.scratch.get().map(|s| s.buf_out)
+    }
+
     /// ViT GEMM with bias: C[m,n] = A[m,k] @ B[n,k]^T + bias[n] (BF16).
     /// Prefers the tensor-core `dense_gemm_bf16_pipelined` (~40× the scalar
     /// `vision_gemm_bias` on the ViT's large-M shapes) + a fused bias-add; falls
@@ -175,7 +181,7 @@ impl VisionEncoder {
         let h = self.hidden_size as u32;
         let p32 = p as u32;
         let qkv_n = (3 * self.num_heads * self.head_dim) as u32; // 3456
-        let inter = self.intermediate_size as u32; // 4304
+        let inter = self.intermediate_size as u32; // 4304, or the padded tensor width
         let n_h = p * self.hidden_size;
         // Attention-kernel shared memory: scores[p] + q_rope[head_dim].
         let sm_bytes = (p + self.head_dim) * std::mem::size_of::<f32>();
@@ -349,7 +355,7 @@ impl VisionEncoder {
         let h = self.hidden_size as u32;
         let pt = p_total as u32;
         let qkv_n = (3 * self.num_heads * self.head_dim) as u32; // 3456
-        let inter = self.intermediate_size as u32; // 4304
+        let inter = self.intermediate_size as u32; // 4304, or the padded tensor width
         let n_h = p_total * self.hidden_size;
 
         // --- Attention sub-block ---

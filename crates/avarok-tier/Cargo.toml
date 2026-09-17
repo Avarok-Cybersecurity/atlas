@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Atlas: generic tiered-cache core (SlotArena / SwapStore / Residency) — CUDA- and verbs-free"
+description = "Avarok: generic tiered-cache core (SlotArena / SwapStore / Residency) — CUDA- and verbs-free"
 
 # HARD CONSTRAINT: this crate is the CUDA-free, verbs-free paging core the peer
 # daemons build on. Its dependency budget is anyhow (+ libc for the O_DIRECT

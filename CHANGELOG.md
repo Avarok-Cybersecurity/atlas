@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Atlas are documented here. The format is based on
+All notable changes to Avarok are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 For per-release deep dives — kernel-level wins, the engineering history
 behind specific subsystems — see the
-[Atlas Spark Journey](docs/ATLAS_SPARK_JOURNEY.md).
+[Avarok Spark Journey](docs/AVAROK_SPARK_JOURNEY.md).
 
 ## [Unreleased]
 
@@ -128,11 +128,11 @@ behind specific subsystems — see the
   20-27 GB when values below the ~0.88 default were used.  This blocked
   multi-service co-residency on shared-memory systems (e.g. DGX Spark
   GB10).  The flag now behaves as documented: `0.50` on a 120 GB device
-  caps Atlas at ~60 GB total.  (#180)
+  caps Avarok at ~60 GB total.  (#180)
 
 ## [0.1.0] — 2026-05-06
 
-Initial public release. Atlas is a pure-Rust LLM inference engine
+Initial public release. Avarok is a pure-Rust LLM inference engine
 targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
 (Hardware × Model × Quantization) targets.
 
@@ -166,15 +166,15 @@ targeting NVIDIA GB10 (DGX Spark, SM121) with twelve hand-tuned
   Qwen3.6 / Qwen3-Next / Qwen3-VL / Gemma-4 / Mistral-Small-4 /
   MiniMax-M2.7 / Nemotron-H families.
 - mdBook documentation at `book/src/`, rustdoc at `target/doc/`,
-  Docker image `avarok/atlas-gb10:latest`.
+  Docker image `avarok/avarok-gb10:latest`.
 
 ### Engineering notes
 
 For the kernel-level perf history — long-context regression sweeps,
 the parking_lot migration, the libcuda + libnccl CI stubs, the
 multi-stage scheduler refactor — see
-[`docs/ATLAS_SPARK_JOURNEY.md`](docs/ATLAS_SPARK_JOURNEY.md) and the
+[`docs/AVAROK_SPARK_JOURNEY.md`](docs/AVAROK_SPARK_JOURNEY.md) and the
 [`book/`](book/) chapters under `deep-dives/`.
 
-[Unreleased]: https://github.com/Avarok-Cybersecurity/atlas/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Avarok-Cybersecurity/atlas/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Avarok-Cybersecurity/avarok/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Avarok-Cybersecurity/avarok/releases/tag/v0.1.0

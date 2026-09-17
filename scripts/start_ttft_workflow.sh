@@ -14,7 +14,7 @@ LAST_MSG="$TASK_DIR/ttft-overnight-last-message.txt"
 MODE="${1:-main}"
 
 MAIN_PROMPT=$(cat <<'EOF'
-Atlas repo. Tonight's primary goal is to reduce long-context TTFT for 16K+ prompts, especially 32K and 64K, toward roughly 20% of the former latency baseline while preserving TPOT and coherence.
+Avarok repo. Tonight's primary goal is to reduce long-context TTFT for 16K+ prompts, especially 32K and 64K, toward roughly 20% of the former latency baseline while preserving TPOT and coherence.
 
 Keep your role as planner/reviewer.
 Use claude_workhorse as the implementation workhorse only for bounded slices.
@@ -44,7 +44,7 @@ EOF
 )
 
 NUDGE_PROMPT=$(cat <<'EOF'
-Atlas repo. This is an overnight rescue/nudge run for the long-context TTFT effort.
+Avarok repo. This is an overnight rescue/nudge run for the long-context TTFT effort.
 
 The standing goal remains:
 - reduce long-context TTFT for 16K+ prompts, especially 32K and 64K, toward roughly 20% of the former latency baseline

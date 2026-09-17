@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve Qwen3.8-Flash-Next (model_type qwen4_exp) — port tracked in Atlas #753.
+# Serve Qwen3.8-Flash-Next (model_type qwen4_exp) — port tracked in Avarok #753.
 #
 # ⚠ SERVING IS NOT WIRED YET. This currently gets as far as LOADING: the
 # hyper-connection residual, the QSA indexer and the PLE n-gram injection are
@@ -17,7 +17,7 @@
 #   ./serve_qwen4exp_tui.sh                       # Inferact, port 8889
 #   QWEN4EXP_PATH=/path/to/radixark ./serve_qwen4exp_tui.sh
 #
-# ONE Atlas instance at a time: --gpu-memory-utilization RESERVES its whole
+# ONE Avarok instance at a time: --gpu-memory-utilization RESERVES its whole
 # fraction up front, so a second server fails its OOM pre-flight.
 set -euo pipefail
 cd "$(dirname "$0")"

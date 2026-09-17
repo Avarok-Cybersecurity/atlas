@@ -258,7 +258,7 @@ run_ep2_model() {
 # ── Initialize markdown ───────────────────────────────────────────────────────
 log "Initializing $OUTPUT"
 cat > "$OUTPUT" << HEADER
-# Atlas GB10 — Full Model Benchmark Results
+# Avarok GB10 — Full Model Benchmark Results
 
 **Date:** $(date '+%Y-%m-%d')
 **Hardware:** 2× NVIDIA GB10 Grace Blackwell (119.7 GB GPU memory each)

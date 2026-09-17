@@ -5,7 +5,7 @@ PR #388 definitive concurrency ladder — C=1..128, one client, both engines.
 Pinned by recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml. Every measurement
 knob is a constant or a required argument; nothing is defaulted silently.
 
-Methodology (identical for Atlas and vLLM — the SAME client drives both, which
+Methodology (identical for Avarok and vLLM — the SAME client drives both, which
 is the point: two harnesses measuring two engines is not an A/B):
   * regime decode_short: ISL 128 / OSL 1024
   * one rep = one batch of C concurrent streaming requests; wall = batch wall
@@ -16,7 +16,7 @@ is the point: two harnesses measuring two engines is not an A/B):
     enable_prefix_caching cannot serve a repeat from cache — not within a run
     and not across two runs against the same server (see make_prompt)
   * completion_tokens/prompt_tokens read from the usage frame, not counted deltas
-    (Atlas batches a short reply into ONE SSE delta)
+    (Avarok batches a short reply into ONE SSE delta)
 """
 
 import argparse
@@ -41,10 +41,10 @@ except ImportError:  # pragma: no cover - exercised by the --check-shapes gate
 # ── pinned constants (recipe: benchmark.prompt / benchmark.sampling) ──
 #
 # VARIED filler, byte-identical to the corpus in
-# crates/atlas-plugin/src/benchmarks/stats.rs. Its comment states the reason and
+# crates/avarok-plugin/src/benchmarks/stats.rs. Its comment states the reason and
 # this run confirmed it the hard way: UNIFORM repetition ("The quick brown fox…"
-# over and over, the corpus bench-atlas-concurrency.py uses) drives the model
-# into degenerate repetitive output. On Atlas that trips the SimHash
+# over and over, the corpus bench-avarok-concurrency.py uses) drives the model
+# into degenerate repetitive output. On Avarok that trips the SimHash
 # semantic-loop watchdog, which ENDS the stream — one C=2 request finished at
 # 213 of 1024 tokens. vLLM has no such watchdog, so the two engines would have
 # emitted wildly different token counts and the ladder would have been
@@ -124,7 +124,7 @@ def set_nonce_base(base: int) -> int:
 
 
 def make_prompt(isl_tokens: int) -> str:
-    """Word-for-word the shape of atlas-plugin's `stats::make_prompt`: the chat
+    """Word-for-word the shape of avarok-plugin's `stats::make_prompt`: the chat
     template contributes ~12 tokens, the rest is `needed` filler words, and the
     nonce prefix forces a prefix-cache MISS so every request does real prefill.
 
@@ -160,11 +160,11 @@ async def one_request(session, url, model, prompt, osl):
         "max_tokens": osl,
         "temperature": TEMPERATURE,
         # ★ PARITY (2026-08-17): both engines must apply the SAME sampling work.
-        # Atlas's MODEL.toml non_thinking preset injects presence_penalty=1.5 when
+        # Avarok's MODEL.toml non_thinking preset injects presence_penalty=1.5 when
         # the request omits it; vLLM defaults to 0. That is not a like-for-like
-        # comparison — Atlas was doing extra per-token logit work AND emitting
+        # comparison — Avarok was doing extra per-token logit work AND emitting
         # different text. Sending these explicitly pins both engines to identical
-        # sampling. (Measured worth to Atlas at C=8: +7.8%, because the penalty
+        # sampling. (Measured worth to Avarok at C=8: +7.8%, because the penalty
         # path disables four fast-greedy sampling paths.)
         "presence_penalty": 0.0,
         "frequency_penalty": 0.0,

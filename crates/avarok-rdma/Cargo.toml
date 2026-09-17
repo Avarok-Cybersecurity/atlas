@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Atlas: one-sided RDMA verbs primitive (C shim + safe Rust wrapper) — CUDA-free"
+description = "Avarok: one-sided RDMA verbs primitive (C shim + safe Rust wrapper) — CUDA-free"
 # `links` makes this the one crate that may compile rdma_shim.c (cargo hard-fails
 # a second `links = "avarok_rdma_shim"`), and — the load-bearing part — lets our
 # build script publish `cargo:has_verbs=1`, which direct dependents' build

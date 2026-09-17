@@ -69,7 +69,7 @@ pub(crate) fn parse_minimax_m2(raw: &serde_json::Value) -> Result<ModelConfig> {
 
     // MTP: MiniMax exposes `use_mtp` + `num_mtp_modules` + `mtp_transformer_layers`.
     // We already deserialize those fields above via serde default. Reflect
-    // `num_mtp_modules * mtp_transformer_layers` into the existing Atlas
+    // `num_mtp_modules * mtp_transformer_layers` into the existing Avarok
     // `mtp_num_hidden_layers` counter so downstream buffer sizing still works.
     let use_mtp = raw
         .get("use_mtp")

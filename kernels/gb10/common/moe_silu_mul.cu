@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas MoE element-wise SiLU activation + multiply.
+// Avarok MoE element-wise SiLU activation + multiply.
 //
 // output[i] = silu(gate[i]) * up[i]
 // where silu(x) = x * sigmoid(x)

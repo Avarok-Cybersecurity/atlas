@@ -10,7 +10,7 @@
 //!
 //! NOTE: the device copies made here become garbage once the adapter is
 //! packed into the fixed-address LoRA pool and are never freed (no weight
-//! dealloc anywhere in Atlas). Accepted leak at adapter scale (~MBs).
+//! dealloc anywhere in Avarok). Accepted leak at adapter scale (~MBs).
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -133,7 +133,7 @@ mod tests {
     /// `lora_A` + `lora_B`), loads it on a live CUDA device, and asserts every
     /// returned tensor is BF16 and round-trips bit-exact.
     ///
-    /// Gated `#[ignore]` (Atlas convention) because `AvarokCudaBackend::new`
+    /// Gated `#[ignore]` (Avarok convention) because `AvarokCudaBackend::new`
     /// touches the CUDA driver; a GPU-less `cargo test` skips it. Opt in with
     /// `-- --ignored`.
     #[test]

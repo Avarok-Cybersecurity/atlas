@@ -2,7 +2,7 @@
 
 //! One call site per mHC entry point, for both variants.
 //!
-//! Atlas now runs two different hyper-connection families over the same
+//! Avarok now runs two different hyper-connection families over the same
 //! `[T, hc_mult, H]` FP32 highway:
 //!
 //! * DeepSeek-V4's — a Sinkhorn-normalized mix over `hc_fn`/`hc_scale`/
@@ -31,6 +31,8 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 
 use super::hyper_connection as sinkhorn;
 use super::hyper_connection_lowrank as lowrank;
+use super::hyper_connection_lowrank_head as lowrank_head;
+use super::hyper_connection_post_fold::HcDeferredPost;
 use crate::layers::qwen3_attention::{HcHeadWeights, HcSiteWeights, HcWeights};
 
 /// Which family a site's weights select.
@@ -87,8 +89,48 @@ pub fn hc_pre_site(
     norm_eps: f32,
     stream: u64,
 ) -> Result<()> {
+    hc_pre_site_folding(
+        gpu,
+        kernel,
+        streams,
+        site,
+        hc,
+        y_out,
+        post_out,
+        comb_out,
+        scratch,
+        num_tokens,
+        hidden_size,
+        norm_eps,
+        None,
+        stream,
+    )
+}
+
+/// [`hc_pre_site`] that also settles the PREVIOUS site's `hc_post`, which that
+/// site skipped because
+/// [`hc_post_folds_into_next_pre`](super::hyper_connection_post_fold::hc_post_folds_into_next_pre)
+/// said this collapse would apply it. Only the low-rank family can fold; a
+/// `deferred` on a Sinkhorn site is a wiring bug, not a fallback.
+#[allow(clippy::too_many_arguments)]
+pub fn hc_pre_site_folding(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    streams: DevicePtr,
+    site: &HcSiteWeights,
+    hc: &HcWeights,
+    y_out: DevicePtr,
+    post_out: DevicePtr,
+    comb_out: DevicePtr,
+    scratch: DevicePtr,
+    num_tokens: u32,
+    hidden_size: u32,
+    norm_eps: f32,
+    deferred: Option<HcDeferredPost>,
+    stream: u64,
+) -> Result<()> {
     match &site.lowrank {
-        Some(w) => lowrank::hc_pre_lowrank(
+        Some(w) => lowrank::hc_pre_lowrank_folding(
             gpu,
             kernel,
             streams,
@@ -100,26 +142,38 @@ pub fn hc_pre_site(
             hidden_size,
             hc.hc_mult as u32,
             norm_eps,
+            deferred,
             stream,
         ),
-        None => sinkhorn::hc_pre(
-            gpu,
-            kernel,
-            streams,
-            site.hc_fn,
-            site.hc_scale,
-            site.hc_base,
-            y_out,
-            post_out,
-            comb_out,
-            num_tokens,
-            hidden_size,
-            hc.hc_mult as u32,
-            hc.sinkhorn_iters as u32,
-            norm_eps,
-            hc.hc_eps,
-            stream,
-        ),
+        None => {
+            // Consume before bailing, so the "never applied" bomb does not go
+            // off on top of the real error and bury it.
+            if let Some(d) = deferred {
+                let _ = d.apply();
+                anyhow::bail!(
+                    "an hc_post was folded into a SINKHORN hc_pre, which stages no \
+                     BF16 `normed` and could never apply it"
+                );
+            }
+            sinkhorn::hc_pre(
+                gpu,
+                kernel,
+                streams,
+                site.hc_fn,
+                site.hc_scale,
+                site.hc_base,
+                y_out,
+                post_out,
+                comb_out,
+                num_tokens,
+                hidden_size,
+                hc.hc_mult as u32,
+                hc.sinkhorn_iters as u32,
+                norm_eps,
+                hc.hc_eps,
+                stream,
+            )
+        }
     }
 }
 
@@ -146,7 +200,7 @@ pub fn hc_post_site(
 ) -> Result<()> {
     match HcVariant::of(hc) {
         // `post` IS the injection vector here; `comb` is not read.
-        HcVariant::LowRank => lowrank::hc_post_lowrank(
+        HcVariant::LowRank => lowrank_head::hc_post_lowrank(
             gpu,
             kernel,
             block_out,
@@ -194,7 +248,7 @@ pub fn hc_head_site(
     stream: u64,
 ) -> Result<()> {
     match &head.lowrank {
-        Some(w) => lowrank::hc_head_lowrank(
+        Some(w) => lowrank_head::hc_head_lowrank(
             gpu,
             kernel,
             streams,

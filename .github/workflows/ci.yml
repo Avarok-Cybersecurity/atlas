@@ -699,7 +699,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # scripts/launch-atlas-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
+      # scripts/launch-avarok-glm53-tp2ep2.sh interpolates $EXTRA_ARGS into a
       # remote shell command. The contract it documents -- simple
       # space-separated tokens -- was never enforced, so a value carrying `;`,
       # `$(...)`, a glob or a newline reached the remote shell as syntax. The
@@ -711,10 +711,10 @@ jobs:
         run: |
           set -euo pipefail
           bash -n \
-            scripts/launch-atlas-glm53-tp2ep2.sh \
+            scripts/launch-avarok-glm53-tp2ep2.sh \
             scripts/lib/glm53-launch-safety.sh \
-            scripts/test-launch-atlas-glm53-safety.sh
-          scripts/test-launch-atlas-glm53-safety.sh
+            scripts/test-launch-avarok-glm53-safety.sh
+          scripts/test-launch-avarok-glm53-safety.sh
 
   test:
     name: cargo test --workspace

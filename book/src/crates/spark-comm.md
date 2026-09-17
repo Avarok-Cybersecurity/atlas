@@ -5,7 +5,7 @@
 
 ## Why this is its own crate
 
-Multi-GPU in Atlas is **Expert Parallelism (EP)** — the MoE experts of models beyond one GB10's weight budget (122B, 119B, 229B) are split across two nodes connected via RoCEv2. Token dispatch between ranks goes through NCCL all-reduces and send/recv.
+Multi-GPU in Avarok is **Expert Parallelism (EP)** — the MoE experts of models beyond one GB10's weight budget (122B, 119B, 229B) are split across two nodes connected via RoCEv2. Token dispatch between ranks goes through NCCL all-reduces and send/recv.
 
 `spark-comm` isolates the NCCL surface so that:
 
@@ -94,6 +94,6 @@ The unit tests for the expert-parallel layer code do not instantiate `NcclBacken
 
 - **No kernel code.** The EP=2 token-dispatch logic lives in Rust at `crates/spark-model/src/layers/moe/forward_ep.rs`, and the routed grouped-GEMM kernel in `kernels/gb10/<model>/<quant>/moe_w4a16_grouped_gemm.cu`.
 - **No scheduler logic.** That's `spark-server::scheduler`.
-- **No RDMA-specific code.** Atlas talks through NCCL; NCCL talks through `libibverbs`/`librdmacm`. We do not bypass.
+- **No RDMA-specific code.** Avarok talks through NCCL; NCCL talks through `libibverbs`/`librdmacm`. We do not bypass.
 
 Adding a new collective-ops library is a single `impl CommBackend` in a new module here plus a selection arm in `spark-server::main` that picks the right backend given the vendor.

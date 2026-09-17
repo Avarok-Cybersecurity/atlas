@@ -1,6 +1,6 @@
 # The Merge Lattice
 
-Atlas gates every pull request on five benchmarks. Two of them are BFCL accuracy
+Avarok gates every pull request on five benchmarks. Two of them are BFCL accuracy
 legs that take about three and a half GPU-hours each, on hardware there is not
 much of. So the question *"which of these does this change actually need?"* is
 worth several hours of a person's day, every time it is answered wrongly.

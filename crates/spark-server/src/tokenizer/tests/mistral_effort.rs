@@ -5,10 +5,10 @@
 //!
 //! Mistral is the only other template family that consumes the
 //! `reasoning_effort` Jinja variable, so it pins the OTHER half of the
-//! 2026-08-15 unset-default change: Atlas's cross-template fallback moved
+//! 2026-08-15 unset-default change: Avarok's cross-template fallback moved
 //! from `"high"` (which Qwen3.8 escalated to its most expensive `xhigh`
 //! directive) to the neutral `"medium"`. Mistral's ladder is binary
-//! (`none|high`), so its Atlas-owned override maps `medium` → `high` —
+//! (`none|high`), so its Avarok-owned override maps `medium` → `high` —
 //! keeping the unset Mistral render byte-identical to the pre-change
 //! behavior while Qwen3.8 drops to its neutral tier.
 

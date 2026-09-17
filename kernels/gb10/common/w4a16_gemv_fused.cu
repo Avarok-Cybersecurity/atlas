@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMV Fused — dual projection + silu-input variants.
+// Avarok W4A16 GEMV Fused — dual projection + silu-input variants.
 //
 // Reduces shared expert kernels from 4 to 2 per layer (saves 96 launches total):
 //   Before: gate (1) + up (1) + silu_mul (1) + down (1) = 4 per layer × 48 = 192

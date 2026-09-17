@@ -144,7 +144,7 @@ fn run_model(model_path: &Path) -> Option<Row> {
 fn main() {
     // FIRST statement, before any thread: this binary reads
     // `AVAROK_FAST_LOAD_BENCH_DIR` below, and a caller on the old CLI still
-    // exports `ATLAS_FAST_LOAD_BENCH_DIR`. No banner here, unlike the server:
+    // exports `AVAROK_FAST_LOAD_BENCH_DIR`. No banner here, unlike the server:
     // this harness's output is scraped, and the usage hint below already names
     // the current variable. See `avarok_core::env_compat`.
     let _ = avarok_core::env_compat::mirror_legacy_env();

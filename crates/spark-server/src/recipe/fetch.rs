@@ -54,7 +54,7 @@ use super::fetch_github::{self, try_refresh};
 
 pub(super) const REPO: &str = "Avarok-Cybersecurity/atlas-recipes";
 pub(super) const CACHE: &str = "atlas-recipes";
-/// The cache directory this held before the ATLAS to AVAROK rename.
+/// The cache directory this held before the AVAROK to AVAROK rename.
 ///
 /// Every box that synced before the rename already has its index here, and
 /// reading only the new name would present a populated machine as an empty
@@ -134,7 +134,7 @@ impl Index {
             "This machine has no route to github.com. Set HTTPS_PROXY to a host \
              that does — recipes are then fetched through it — or copy the \
              cached index (~/.avarok/atlas-recipes/index.json, or \
-             ~/.atlas/atlas-recipes/index.json on a box that predates the \
+             ~/.avarok/atlas-recipes/index.json on a box that predates the \
              rename) from a machine that can reach it."
         } else if lowered.contains("403") || lowered.contains("rate") {
             "GitHub is rate-limiting this IP. The listing costs one API call per \
@@ -156,7 +156,7 @@ pub(super) fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The recipe cache under `root`, which is the Atlas home.
+/// The recipe cache under `root`, which is the Avarok home.
 ///
 /// `<root>/atlas-recipes` normally. A box that synced before the rename has
 /// its index under `<root>/atlas-recipes` instead, so that directory is

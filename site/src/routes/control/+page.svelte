@@ -240,10 +240,10 @@
 </script>
 
 <svelte:head>
-  <title>Control plane — Atlas</title>
+  <title>Control plane — Avarok</title>
   <meta
     name="description"
-    content="Manage the Atlas agents on your own machines: node health, pairing, topology and multi-node launches. Everything stays on your LAN."
+    content="Manage the Avarok agents on your own machines: node health, pairing, topology and multi-node launches. Everything stays on your LAN."
   />
 </svelte:head>
 
@@ -361,7 +361,7 @@
                 <p class="ld-error" role="alert">{fleet.detail}</p>
               {/if}
               <p>
-                Atlas runs on your hardware, not ours. Install the agent on a machine
+                Avarok runs on your hardware, not ours. Install the agent on a machine
                 and this page becomes its control panel.
               </p>
               <InstallSteps />

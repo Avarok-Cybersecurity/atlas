@@ -2,7 +2,7 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
-//! Atlas plugins — and the benchmark suite the `spark serve` TUI drives.
+//! Avarok plugins — and the benchmark suite the `spark serve` TUI drives.
 //!
 //! Two layers:
 //!

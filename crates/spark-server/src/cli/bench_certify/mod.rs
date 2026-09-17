@@ -197,7 +197,7 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
     let fleet = if args.with_nodes.is_empty() {
         None
     } else {
-        let atlasctl = remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?;
+        let atlasctl = remote::atlasctl::SubprocessAvarokctl::locate(args.atlasctl.as_deref())?;
         let wanted = remote::node::Wanted {
             hardware: &hardware,
             committed_signers: &facts.committed_signers,
@@ -302,8 +302,8 @@ pub async fn certify_cmd(args: CertifyArgs) -> Result<i32> {
             campaign,
         )?,
         Some(f) => {
-            let atlasctl: Arc<dyn remote::atlasctl::Atlasctl> = Arc::new(
-                remote::atlasctl::SubprocessAtlasctl::locate(args.atlasctl.as_deref())?,
+            let atlasctl: Arc<dyn remote::atlasctl::Avarokctl> = Arc::new(
+                remote::atlasctl::SubprocessAvarokctl::locate(args.atlasctl.as_deref())?,
             );
             let run_id = format!("{}-{}", &anchor[..anchor.len().min(10)], now);
             let runners = remote::runners(

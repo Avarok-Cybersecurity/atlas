@@ -35,7 +35,7 @@
       <div class="m-workflow">
         <div class="m-workflow-top"><span><span class="m-status-dot"></span>{scenario.badge}</span><span>ILLUSTRATIVE FLOW</span></div>
         <div class="m-prompt-bubble">{scenario.prompt}<Icon name="ArrowUpRight" size={16} /></div>
-        <div class="m-workflow-engine"><img src="/brand/mark-compact.svg" alt="" width="28" height="28" /><span>Powered by Atlas</span><span class="m-engine-dot"></span></div>
+        <div class="m-workflow-engine"><img src="/brand/mark-compact.svg" alt="" width="28" height="28" /><span>Powered by Avarok</span><span class="m-engine-dot"></span></div>
         <ol>{#each scenario.steps as step}<li><span class="m-flow-check"><Icon name="Check" size={12} /></span>{step}</li>{/each}</ol>
         <div class="m-workflow-result"><Icon name="Sparkles" /><span>{scenario.output}</span><Icon name="ArrowRight" /></div>
       </div>

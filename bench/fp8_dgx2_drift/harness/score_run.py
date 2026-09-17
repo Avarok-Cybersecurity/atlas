@@ -3,7 +3,7 @@
 
 Extracts structured drift metrics from:
   - The opencode JSONL stdout (tool calls, content, timing)
-  - The Atlas server's stderr/stdout (logged via docker logs)
+  - The Avarok server's stderr/stdout (logged via docker logs)
   - The actual filesystem state of the target directory
 
 Usage:

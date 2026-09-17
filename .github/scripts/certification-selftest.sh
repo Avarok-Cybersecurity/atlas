@@ -141,19 +141,19 @@ mkdir -p "$TMP/wf/.github/workflows"; cp .github/scripts/assert-cmd-runner-safe.
 # CONTROL x3: each shape that would let a fork run code on our hardware.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
+jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4, with: { ref: main } }] } }
 Y
 want_rc 1 "control: pull_request trigger on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request_target: { types: [opened] } }
-jobs: { j: { runs-on: [self-hosted, atlas-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
+jobs: { j: { runs-on: [self-hosted, avarok-cmd], steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }] } }
 Y
 want_rc 1 "control: checks out the PR head on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { issue_comment: { types: [created] } }
-jobs: { j: { runs-on: atlas-cmd, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: avarok-cmd, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: checkout with no explicit ref on the command runner" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -162,7 +162,7 @@ want_rc 1 "control: checkout with no explicit ref on the command runner" \
 # same-repo comparison in `runs-on`. These three controls are that property.
 cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
-jobs: { j: { runs-on: atlas-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
+jobs: { j: { runs-on: avarok-pr-cheap, steps: [{ uses: actions/checkout@v4 }] } }
 Y
 want_rc 1 "control: cheap pool on pull_request with no same-repo guard" \
   sh -c "cd '$TMP/wf' && python3 assert-cmd-runner-safe.py"
@@ -178,7 +178,7 @@ cat > "$TMP/wf/.github/workflows/a.yml" <<'Y'
 on: { pull_request: { types: [opened] } }
 jobs:
   j:
-    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'atlas-pr-cheap' || 'ubuntu-latest' }}"
+    runs-on: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'avarok-pr-cheap' || 'ubuntu-latest' }}"
     steps: [{ uses: actions/checkout@v4, with: { ref: "${{ github.event.pull_request.head.sha }}" } }]
 Y
 want_rc 1 "control: cheap pool guarded but checking out a fork ref" \
@@ -1139,7 +1139,7 @@ STUB
   # filter. Grepping for the marker alone matched the lookup and reported a
   # certificate that was never posted -- the assertion could not tell "asked
   # whether one exists" from "posted one". Require the POST too.
-  certed()  { grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; }
+  certed()  { grep -qE 'POST.*issues/1/comments.*avarok-certificate' "$TMP/bcalls"; }
 
   # CONTROL: the render tools are installed with `|| true`, so ask what happens
   # when that install fails. Before the guard, `rsvg-convert` was then missing,
@@ -1220,8 +1220,8 @@ PY
   # The marker is both the lookup key and the memory of the previous state, and
   # BOTH halves live in the state it carries. A substring grep of the step's
   # source could not see that: deleting the `:$STATE` leaves the string
-  # `atlas-certification-state` in the file, so this check stayed green while
-  # the lookup's `contains("<!-- atlas-certification-state:")` matched nothing,
+  # `avarok-certification-state` in the file, so this check stayed green while
+  # the lookup's `contains("<!-- avarok-certification-state:")` matched nothing,
   # `prev` was empty on every run, and the bot posted a fresh comment per event
   # instead of editing one -- the thread of stale states the marker exists to
   # prevent. Assert the marker the bot actually EMITS, and that the lookup's own
@@ -1230,7 +1230,7 @@ PY
   LOOKUP=$(python3 - <<'PY'
 import re, pathlib
 t = pathlib.Path(".github/workflows/certification-bot.yml").read_text()
-m = re.search(r'contains\("(<!-- atlas-certification-state[^"]*)"\)', t)
+m = re.search(r'contains\("(<!-- avarok-certification-state[^"]*)"\)', t)
 print(m.group(1) if m else "")
 PY
 )
@@ -1305,7 +1305,7 @@ STUB
   ( PATH="$TMP/bin:$PATH" BCALLS="$TMP/bcalls" REPO=o/r PR=1 DEFAULT_BRANCH=main \
     STATE=pr-certification-merged HEADLINE=h COMMENT_ID= HEAD_SHA=abc1234567 \
     bash "$TMP/bot.sh" >/dev/null 2>&1 )
-  if grep -qE 'POST.*issues/1/comments.*atlas-certificate' "$TMP/bcalls"; then
+  if grep -qE 'POST.*issues/1/comments.*avarok-certificate' "$TMP/bcalls"; then
     if grep -q 'bot-cards/pr-1-' "$TMP/bcalls"; then
       bad "control: it linked an image that was never uploaded"
     else
@@ -2283,8 +2283,8 @@ case "\$url" in
   */control)      [ "$1" = break ] && { printf '000'; exit 7; }; printf '200'; exit 0 ;;
   */control.html) printf '<title>Control plane</title>' ;;
   */install.sh)   printf '#!/bin/sh\nexit 0\n' ;;
-  */install.ps1)  printf '# atlas installer\n' ;;
-  *)              printf '<title>Atlas, pure Rust inference</title>' ;;
+  */install.ps1)  printf '# avarok installer\n' ;;
+  *)              printf '<title>Avarok, pure Rust inference</title>' ;;
 esac
 exit 0
 STUB

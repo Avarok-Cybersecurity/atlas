@@ -6,12 +6,12 @@ NVMe gather is bit-exact. The model still does not produce coherent text. That
 combination says the fault is in the COMPOSITION, which per-kernel probes
 cannot see.
 
-So reproduce the same taps Atlas writes (`AVAROK_QWEN4EXP_DUMP`) and diff.
+So reproduce the same taps Avarok writes (`AVAROK_QWEN4EXP_DUMP`) and diff.
 
 WHAT MAKES THIS AFFORDABLE. The obvious blocker is the 512-expert MoE on every
 layer. Two things get around it:
 
-  * Atlas taps the highway at the SUB-LAYER boundary — after a block's
+  * Avarok taps the highway at the SUB-LAYER boundary — after a block's
     `hc_post`, before the next `hc_pre`. Reproducing `L00_post_gdn` therefore
     needs layer 0's GDN projections and NOTHING ELSE. No experts at all.
   * Where experts are unavoidable, top-10 routing over a short prompt touches
@@ -221,7 +221,7 @@ def main() -> int:
     if got is not None:
         qkv_w = load(snap, index, f'{lp}.linear_attn.in_proj_qkv.weight').float()
         z_w = load(snap, index, f'{lp}.linear_attn.in_proj_z.weight').float()
-        # Atlas stores the concat as sequential [Q|K|V|Z].
+        # Avarok stores the concat as sequential [Q|K|V|Z].
         want_qkvz = torch.cat([mixed @ qkv_w.T, mixed @ z_w.T], dim=-1)
         compare('L00 qkvz preconv', got, want_qkvz.detach().numpy())
 

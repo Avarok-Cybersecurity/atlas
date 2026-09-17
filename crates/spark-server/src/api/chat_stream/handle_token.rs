@@ -39,7 +39,7 @@ type DeltaVec = Vec<StreamDelta>;
 /// because of an orphan `<parameter=` / `<tool_call>` opener without
 /// a matching close). When the model degenerates into a doom-loop of
 /// partial-envelope leakage — observed 2026-05-24 on
-/// opencode-hotfix.jsonl seq=10: 8192 tokens emitted after Atlas
+/// opencode-hotfix.jsonl seq=10: 8192 tokens emitted after Avarok
 /// rejected a `write({})` call, all suppressed by the sanitizer, no
 /// content-loop watchdog fire (the period exceeded 64) — this
 /// threshold ends the stream cleanly instead of burning to
@@ -747,7 +747,7 @@ fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) ->
 /// 1. Append `new_chars` to the accumulator.
 /// 2. Search the accumulator for any stop string.
 /// 3a. On hit, truncate the accumulator AND the emittable delta at
-///     the match position (Atlas never echoes the stop literal).
+///     the match position (Avarok never echoes the stop literal).
 /// 3b. On miss, hold back the last `buffer_len` bytes; emit
 ///     everything between the previously emitted offset and the
 ///     hold-back boundary, snapped to a valid UTF-8 char boundary.

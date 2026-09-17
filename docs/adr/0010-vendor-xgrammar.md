@@ -6,7 +6,7 @@ replaced by a from-scratch **pure-Rust port** living in-tree at
 `crates/xgrammar` (workspace member, no `build.rs`, no `cxx` bridge, no C++
 toolchain). `vendor/xgrammar-rs/` no longer exists; `vendor/` holds only
 `cudarc`. The *Context* below still explains why a fork was unavoidable — the
-ByteLevel-BPE `VocabType` bug is what forced Atlas off upstream — but every
+ByteLevel-BPE `VocabType` bug is what forced Avarok off upstream — but every
 "Decision" and "Consequences" claim about a vendored fork is historical. See
 `crates/xgrammar/DESIGN.md` and `crates/xgrammar/PORT_PLAN.md` for what shipped.
 **Date:** 2026-04-17
@@ -34,7 +34,7 @@ itself, not just our wrapper.
 
 ## Decision
 
-Atlas **vendors xgrammar-rs** under `vendor/xgrammar-rs/` with a
+Avarok **vendors xgrammar-rs** under `vendor/xgrammar-rs/` with a
 build-time fetch (no submodules, no live network at build). The
 `Cargo.toml` references the vendored copy by path.
 
@@ -44,7 +44,7 @@ Modifications applied to the vendored fork:
 - Build-script fixes for the kernels we hit on `nvcc` 13 / Rust 1.93.
 - Minor type-shim differences for our cudarc bindings.
 
-Upstream-friendly changes are PR'd back; Atlas-specific glue stays
+Upstream-friendly changes are PR'd back; Avarok-specific glue stays
 local. The vendored copy is **pinned to a specific upstream commit
 hash** (called out in the build script) so we can compare against
 upstream periodically.
@@ -62,7 +62,7 @@ upstream periodically.
 
 **Worse:**
 - We carry maintenance for the fork. Every upstream bug-fix is a
-  rebase; every Atlas-local change is a divergence we must justify.
+  rebase; every Avarok-local change is a divergence we must justify.
 - License compatibility check (xgrammar is Apache-2.0; AGPL-3.0 can
   consume Apache-2.0, so we are clear). Future xgrammar relicensing
   would force us to evaluate.

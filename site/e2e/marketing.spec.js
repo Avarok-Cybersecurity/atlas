@@ -21,7 +21,7 @@ test('developers can reach the complete engine and return home', async ({ page }
   await page.getByRole('link', { name: 'Developers', exact: true }).click();
   await expect(page).toHaveURL(/\/engine$/);
   await expect(page.locator('#verified')).toBeVisible();
-  await page.getByRole('link', { name: 'Atlas home', exact: true }).first().click();
+  await page.getByRole('link', { name: 'Avarok home', exact: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Intelligence, on your terms.' })).toBeVisible();
 });
 

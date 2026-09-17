@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W8A16 Pipelined Dequant+GEMM — Fix-A tensor-core rewrite.
+// Avarok W8A16 Pipelined Dequant+GEMM — Fix-A tensor-core rewrite.
 //
 // C[M,N] = A[M,K] (BF16 activations) * dequant(B[N,K] (FP8 E4M3 weights))
 //

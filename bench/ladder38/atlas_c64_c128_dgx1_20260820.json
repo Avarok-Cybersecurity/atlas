@@ -1,5 +1,5 @@
 {
-  "label": "atlas-hi-dgx1",
+  "label": "avarok-hi-dgx1",
   "url": "http://127.0.0.1:8899",
   "model": "unsloth/Qwen3.8-27B-NVFP4",
   "isl": 128,

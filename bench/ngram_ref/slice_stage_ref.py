@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Per-SUBLAYER reference intermediates for layer 0, to bisect the Atlas
+"""Per-SUBLAYER reference intermediates for layer 0, to bisect the Avarok
 LongCat backbone against `AVAROK_OP_DUMP` output.
 
 Emits, for the LAST token of the 16-token fixture (the slice `dump_bf16`

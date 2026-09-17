@@ -16,7 +16,7 @@
 //!
 //! KEY ARCHITECTURAL DIFFERENCE: Step 3.7 stores expert weights as FUSED
 //! tensors — one tensor per projection type containing ALL 288 experts
-//! concatenated. Atlas needs per-expert QuantizedWeight entries, so we
+//! concatenated. Avarok needs per-expert QuantizedWeight entries, so we
 //! slice by computing byte offsets into the fused GPU allocations.
 //!
 //! NVFP4 format: ModelOpt style with `weight`, `weight_scale`, `weight_scale_2`,

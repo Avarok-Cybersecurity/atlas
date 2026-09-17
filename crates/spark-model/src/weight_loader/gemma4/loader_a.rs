@@ -164,7 +164,7 @@ pub(super) fn load_layers_impl(
             tracing::debug!("L{i}: sliding attention (Q_dim={q_out_dim}, K_dim={kv_out_dim})");
         }
 
-        // Attention quantization choice for Gemma-4. Atlas's runtime
+        // Attention quantization choice for Gemma-4. Avarok's runtime
         // BF16→NVFP4 path uses a single per-tensor absmax for scale2,
         // which loses precision in low-magnitude rows when the tensor
         // has a few outlier rows (Gemma-4-31B's calibration boost
@@ -321,7 +321,7 @@ pub(super) fn load_layers_impl(
             (Some(q), Some(k), Some(v))
         };
         // Honor Nvidia ModelOpt's official ignore list for Gemma-4:
-        // ALL self_attn projections (q/k/v/o) stay BF16. Atlas
+        // ALL self_attn projections (q/k/v/o) stay BF16. Avarok
         // previously quantized o_proj unconditionally, losing ~7 bits
         // per layer to per-tensor absmax across 60 layers — a major
         // contributor to the creative-collapse drift. When bf16_attn
@@ -509,7 +509,7 @@ pub(super) fn load_layers_impl(
         // `Gemma4RMSNorm(head_dim, with_scale=False)` for v_norm AND
         // line 1220 applies `value_states = self.v_norm(value_states)`
         // unconditionally on every layer that owns its own KV state).
-        // Atlas previously only allocated this for K=V (full-attention)
+        // Avarok previously only allocated this for K=V (full-attention)
         // layers, leaving the 50/60 sliding layers without v_norm.
         // Missing v_norm leaves V un-rescaled — over 50 layers the
         // attention output drifts enough to flip greedy argmax tiebreaks

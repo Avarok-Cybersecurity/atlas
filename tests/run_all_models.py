@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Atlas multi-model test orchestrator.
+Avarok multi-model test orchestrator.
 
 Pairs models across a head node and an optional worker node, runs
 `single_gpu_suite.py` against each, collects JSON results, and writes a
@@ -52,7 +52,7 @@ HF_CACHE_HEAD = os.environ.get("AVAROK_HF_CACHE_HEAD", _default_hf_cache)
 HF_CACHE_WORKER = os.environ.get("AVAROK_HF_CACHE_WORKER", _default_hf_cache)
 STARTUP_TIMEOUT = 600  # seconds
 
-# Address the served HTTP listener binds to. Atlas's `--bind` defaults to
+# Address the served HTTP listener binds to. Avarok's `--bind` defaults to
 # 127.0.0.1 — right for a fresh install, fatal here: this harness probes the
 # head server from the host namespace and the worker server across the network,
 # and a loopback bind inside a container is reachable from neither (every probe
@@ -79,7 +79,7 @@ class TestSpec:
     # If the suite takes too long or longctx is not meaningful, skip it:
     skip_longctx: bool = False
     # Mark vision-capable models so the suite runs its image test (`--vision`).
-    # Only set on checkpoints that actually carry a vision tower AND whose Atlas
+    # Only set on checkpoints that actually carry a vision tower AND whose Avarok
     # kernel target ships a vision_encoder module.
     vision: bool = False
     # ── Multi-rank (head + worker) parallelism ──
@@ -89,7 +89,7 @@ class TestSpec:
     #   tp_size=1, ep_size=2 → pure EP=2 (legacy EP2_ROUNDS path)
     #   tp_size=2, ep_size=1 → pure TP=2 attention shard, no expert sharding
     #   tp_size=2, ep_size=2 → TP+EP overlapping (both groups share comm)
-    # Atlas auto-derives world_size from tp×ep when world_size<=1; on the
+    # Avarok auto-derives world_size from tp×ep when world_size<=1; on the
     # overlapping topology the two groups share the same NCCL comm.
     tp_size: int = 1
     ep_size: int = 1
@@ -235,7 +235,7 @@ TP2_ROUNDS: List[TestSpec] = [
 
 # Mixed TP=2 + EP=2 (overlapping topology on 2 ranks). Both groups share
 # the same NCCL communicator — TP shards attention across {0,1} while EP
-# also routes experts across {0,1}. Atlas's TP Phase-1 work (commit 8bd91ba
+# also routes experts across {0,1}. Avarok's TP Phase-1 work (commit 8bd91ba
 # on master-rewrite) verified MiniMax M2.7 stays coherent here, with a
 # documented ~12% cold TTFT win at 4096 tok over EP-only.
 TPEP_ROUNDS = [
@@ -358,7 +358,7 @@ def ready_marker(port: int) -> str:
     """
     # Matched case-insensitively against a lower-cased log: the server does not
     # start the line with the word. It logs
-    #   `Atlas is listening on 0.0.0.0:8888 — reachable from any host ...`
+    #   `Avarok is listening on 0.0.0.0:8888 — reachable from any host ...`
     # so the old exact substring `Listening on 0.0.0.0:8888` matched nothing,
     # wait_listening never saw the server come up, and EVERY model in the roster
     # failed on a 600s startup timeout while the container sat there serving
@@ -613,7 +613,7 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
     is required for NCCL discovery. The legacy name is preserved for back-compat;
     behaviour generalises by reading `spec.tp_size` and `spec.ep_size`. When
     both default to 1, we fall back to the historical pure-EP=2 launch
-    (world_size=2, ep_size=2 implied by Atlas's auto-derive logic).
+    (world_size=2, ep_size=2 implied by Avarok's auto-derive logic).
     """
     # Default: pure EP=2 (back-compat for existing EP2_ROUNDS specs that
     # don't set tp_size/ep_size explicitly).
@@ -621,7 +621,7 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
     ep = spec.ep_size if spec.tp_size > 1 or spec.ep_size > 1 else 2
     # On 2-GPU GB10: tp==ep means overlapping topology (single comm), tp*ep==4
     # would be orthogonal mesh (needs 4 GPUs — out of scope). Worker rank
-    # uses port 0 (no HTTP). Atlas auto-derives world_size from tp_size /
+    # uses port 0 (no HTTP). Avarok auto-derives world_size from tp_size /
     # ep_size when world_size<=1, so we still pass --world-size 2 to keep
     # the rank-discovery channel deterministic.
     args = [
@@ -933,7 +933,7 @@ def main():
 
     # TP=2 (pure) — uses the same multi-rank launch path as EP=2; only the
     # tp_size/ep_size on the spec differ. The serve-cmd builder reads them
-    # and passes --tp-size/--ep-size to Atlas; the run_ep2_round() driver
+    # and passes --tp-size/--ep-size to Avarok; the run_ep2_round() driver
     # is already topology-agnostic (head HTTP + worker rank-1 join).
     if run_tp2:
         for spec in TP2_ROUNDS:

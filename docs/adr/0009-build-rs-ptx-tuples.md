@@ -5,7 +5,7 @@
 
 ## Context
 
-Atlas's CUDA kernels are written per **(hardware, model, quant)** tuple.
+Avarok's CUDA kernels are written per **(hardware, model, quant)** tuple.
 A NVFP4 grouped-GEMM tuned for Qwen3.6-35B on GB10 is not the same code
 as the FP8 dense GEMM for Mistral-Small-4 on the same hardware, even
 though they share device code style.
@@ -27,7 +27,7 @@ sweep binaries (everything)?".
 
 ## Decision
 
-Atlas uses approach (3) with a directory tree:
+Avarok uses approach (3) with a directory tree:
 
 ```
 kernels/

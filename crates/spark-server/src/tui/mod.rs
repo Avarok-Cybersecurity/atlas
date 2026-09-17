@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Atlas TUI — the ratatui dashboard for `spark serve`.
+//! Avarok TUI — the ratatui dashboard for `spark serve`.
 //!
 //! Activation is strictly opt-out-safe: [`plain_mode`] must return `false`
 //! before any TUI machinery is touched, and when it returns `true` the caller

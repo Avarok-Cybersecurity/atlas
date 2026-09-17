@@ -1,5 +1,5 @@
 /* =============================================================================
-   Atlas responsive layer. SSOT for every viewport rule on the site, plus the
+   Avarok responsive layer. SSOT for every viewport rule on the site, plus the
    mobile nav drawer it depends on. Loaded LAST (see routes/+layout.svelte) so
    it narrows the desktop-first system in app.css.
 

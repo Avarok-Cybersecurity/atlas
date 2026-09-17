@@ -95,6 +95,110 @@ impl VisionEncoder {
         // for image work — `forward` delegates here — so a text-only serve
         // never reaches this line and never pays the ~2.2 GB.
         self.scratch_init(gpu)?;
+
+        // ── Chunk to the scratch instead of retreating to one image at a time ──
+        //
+        // The ViT scratch is sized for Σp ≤ p_max, and a clip of any length
+        // blows past it: 3 minutes of 360p is 180 groups × 364 = 65,520
+        // patches against a 16,384 ceiling. The previous answer was a
+        // per-image fallback — correct, but it pays 27 block launches PER
+        // GROUP and gets no GEMM reuse across groups at all.
+        //
+        // Greedy chunking gets the batching back: pack as many whole groups
+        // as fit p_max, run the batched sequence once per chunk. ViT attention
+        // is per image over disjoint slices, and every M-agnostic stage is
+        // elementwise in the row, so a chunk boundary changes no arithmetic —
+        // the result is bit-identical to encoding those images one at a time.
+        let mut sizes = Vec::with_capacity(images.len());
+        for (i, (_px, gh, gw)) in images.iter().enumerate() {
+            let p = gh * gw;
+            // ★ FAILS CLOSED. Chunking splits BETWEEN images, never inside
+            // one, so a single image larger than the whole scratch cannot be
+            // chunked — and the old per-image fallback did not refuse it, it
+            // wrote p patches into a buf_h1 sized for p_max. `msg_entry`
+            // refuses this at the HTTP edge with a 400; arriving here means a
+            // caller bypassed that, so say so rather than corrupt memory.
+            anyhow::ensure!(
+                p <= self.p_max,
+                "vision image {i} is {p} patches, over the encoder's {} per-image \
+                 capacity — one image cannot be split across ViT batches",
+                self.p_max
+            );
+            sizes.push(p);
+        }
+
+        // ── The per-image path stays, as the oracle this one is checked against ──
+        //
+        // `forward_image_at_a_time` is the reference: one image, one full
+        // kernel sequence, buffers at offset 0, nothing shared. It is the only
+        // caller of `patch_embed` / `resample_pos_embed` / `build_rope_cossin`
+        // / `vit_block`, so deleting it would take the whole single-image
+        // implementation with it — and that implementation is what makes
+        // "chunking is bit-identical" a claim anyone can re-check rather than
+        // a comment. `AVAROK_VISION_NO_BATCH=1` selects it.
+        if std::env::var("AVAROK_VISION_NO_BATCH").is_ok_and(|v| v != "0") {
+            let sms = self.spatial_merge_size.max(1);
+            let sms2 = sms * sms;
+            let mp_i: Vec<usize> = sizes.iter().map(|p| p / sms2).collect();
+            let mut mp_off = Vec::with_capacity(mp_i.len());
+            let mut acc = 0usize;
+            for mp in &mp_i {
+                mp_off.push(acc);
+                acc += mp;
+            }
+            tracing::info!(
+                images = images.len(),
+                "AVAROK_VISION_NO_BATCH: encoding one image at a time (reference path)"
+            );
+            return self.forward_image_at_a_time(images, &sizes, &mp_i, &mp_off, sms, gpu, stream);
+        }
+
+        let mut out = Vec::with_capacity(images.len());
+        let (mut start, mut mp_base, mut chunks) = (0usize, 0usize, 0usize);
+        while start < images.len() {
+            let mut end = start;
+            let mut acc = 0usize;
+            while end < images.len() && acc + sizes[end] <= self.p_max {
+                acc += sizes[end];
+                end += 1;
+            }
+            debug_assert!(end > start, "the per-image guard above rules this out");
+            chunks += 1;
+            // Deepstack regions are packed at (k+1)·Σmerged_p of THIS call, so
+            // they only have a well-defined home when the batch is a single
+            // chunk. A split batch therefore writes final-merger rows only —
+            // the same choice the per-image fallback made, and the rows it
+            // skips are the LLM-unused ones.
+            let single = chunks == 1 && end == images.len();
+            let rows =
+                self.forward_batched_span(&images[start..end], mp_base, single, gpu, stream)?;
+            mp_base += rows.iter().map(|(_, _, mp)| *mp).sum::<usize>();
+            out.extend(rows);
+            start = end;
+        }
+        if chunks > 1 {
+            tracing::debug!(
+                chunks,
+                images = images.len(),
+                p_max = self.p_max,
+                "ViT batch split across scratch-sized chunks"
+            );
+        }
+        Ok(out)
+    }
+
+    /// One scratch-sized ViT batch, writing its merged rows at `mp_base`.
+    ///
+    /// `allow_deepstack` is false for a split batch — see `forward_batched`.
+    #[allow(clippy::too_many_arguments)]
+    fn forward_batched_span(
+        &self,
+        images: &[(&[f32], usize, usize)],
+        mp_base: usize,
+        allow_deepstack: bool,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Vec<(usize, usize, usize)>> {
         let sms2 = self.spatial_merge_size * self.spatial_merge_size;
         let sms = self.spatial_merge_size.max(1);
         let n_img = images.len();
@@ -110,18 +214,22 @@ impl VisionEncoder {
             let p = gh * gw;
             let mp = p / sms2;
             p_off.push(p_total);
-            mp_off.push(mp_total);
+            mp_off.push(mp_base + mp_total);
             p_i.push(p);
             mp_i.push(mp);
             p_total += p;
             mp_total += mp;
         }
 
-        // Callers cap Σp ≤ p_max; defend here with a still-correct per-image
-        // fallback that packs buf_out the same way.
-        if p_total > self.p_max {
-            return self.forward_oversized_fallback(images, &p_i, &mp_i, &mp_off, sms, gpu, stream);
-        }
+        // `forward_batched` sized this chunk to fit; both bounds are still
+        // asserted here because this writes through raw device offsets and a
+        // silent overrun is the one failure this encoder must never have.
+        anyhow::ensure!(
+            p_total <= self.p_max,
+            "ViT chunk of {p_total} patches exceeds scratch capacity {}",
+            self.p_max
+        );
+        check_packed_rows(&mp_i, &mp_off, self.out_rows)?;
 
         let _sec0 = std::time::Instant::now();
         // 1. Per-image host prep, packed into the SHARED buffers at p_off[i].
@@ -188,7 +296,8 @@ impl VisionEncoder {
                 &format!("block{block_idx:02}"),
                 stream,
             )?;
-            if let Some((ds_idx, &ds_block)) = next_ds
+            if allow_deepstack
+                && let Some((ds_idx, &ds_block)) = next_ds
                 && block_idx + 1 == ds_block
             {
                 // snapshot buf_h1 → buf_h2 (out-of-place merger; residual stream
@@ -256,7 +365,11 @@ impl VisionEncoder {
         }
         // Dump the full packed region (final + deepstack) so N=1 == the old
         // `total_rows` span exactly (byte-identity validation).
-        let dump_rows = (1 + self.deepstack_indexes.len()) * mp_total;
+        let dump_rows = if allow_deepstack {
+            (1 + self.deepstack_indexes.len()) * mp_total
+        } else {
+            mp_total
+        };
         Self::maybe_dump_buf(
             gpu,
             self.scratch().buf_out,
@@ -271,13 +384,17 @@ impl VisionEncoder {
             .collect())
     }
 
-    /// Fallback for Σp > p_max: encode each image alone (full single-image
-    /// kernel sequence) writing its final-merger rows into the PACKED buf_out
-    /// at mp_off[i]. NO deepstack write (LLM-unused; a packed deepstack region
-    /// could overrun under an oversized batch). The scheduler caps Σp ≤ p_max
-    /// so this is normally unreachable — a correctness guard only.
+    /// REFERENCE PATH: encode each image alone (full single-image kernel
+    /// sequence) writing its final-merger rows into the PACKED buf_out at
+    /// mp_off[i]. NO deepstack write (LLM-unused; a packed deepstack region
+    /// could overrun under an oversized batch).
+    ///
+    /// Selected by `AVAROK_VISION_NO_BATCH=1`. Nothing is shared between
+    /// images here — no packed offsets, no batched GEMM — so it is the
+    /// oracle the chunked path is compared against when someone needs to
+    /// confirm that batching and chunk boundaries change no arithmetic.
     #[allow(clippy::too_many_arguments)]
-    fn forward_oversized_fallback(
+    fn forward_image_at_a_time(
         &self,
         images: &[(&[f32], usize, usize)],
         p_i: &[usize],
@@ -287,7 +404,7 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
-        check_packed_rows(mp_i, mp_off, self.p_max)?;
+        check_packed_rows(mp_i, mp_off, self.out_rows)?;
         let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);

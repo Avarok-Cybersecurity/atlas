@@ -14,7 +14,7 @@ GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.88}"
 MAX_SEQ_LEN="${MAX_SEQ_LEN:-16384}"
 CONTAINER="${CONTAINER:-avarok-minimax-bringup}"
 
-echo "=== Atlas MiniMax single-node bring-up ==="
+echo "=== Avarok MiniMax single-node bring-up ==="
 echo "Model:    $MODEL"
 echo "Image:    $IMAGE"
 echo "Port:     $PORT"

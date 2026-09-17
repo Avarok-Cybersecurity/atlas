@@ -28,7 +28,7 @@ use std::time::Duration;
 /// `AVAROK_REPORT_CLIENT_ID` / `AVAROK_REPORT_REPO` rather than shipping issues
 /// into the upstream tracker.
 pub const OFFICIAL_CLIENT_ID: &str = "Iv23liAv6nlb4RaYaJSp";
-pub const OFFICIAL_REPO: &str = "Avarok-Cybersecurity/atlas";
+pub const OFFICIAL_REPO: &str = "Avarok-Cybersecurity/avarok";
 
 /// Hidden marker a repo Action keys the `tui-report` label on. The API
 /// silently DROPS `labels` sent by users without push access, so the app
@@ -373,7 +373,7 @@ pub struct Composed {
 /// no commit stamp, not wonder whether the reporter deleted the line.
 pub fn env_line(model: &str, engine_ready: bool) -> String {
     format!(
-        "Atlas {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
+        "Avarok {} · {} · {}/{} · model: {} · engine ready: {engine_ready}",
         crate::cli::AVAROK_VERSION,
         option_env!("AVAROK_BUILD_COMMIT").unwrap_or("commit unknown"),
         std::env::consts::OS,

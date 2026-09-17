@@ -1,10 +1,10 @@
-# Atlas Architecture
+# Avarok Architecture
 
 A 5-minute tour of the crate graph, the build pipeline, and the request lifecycle.
 
 ## Crate graph
 
-Atlas is a single Cargo workspace with 15 crates organized into four layers:
+Avarok is a single Cargo workspace with 15 crates organized into four layers:
 
 ```
                          ┌─────────────────────────┐

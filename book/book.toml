@@ -1,7 +1,7 @@
 [book]
-title = "The Atlas Book"
-authors = ["Atlas Contributors"]
-description = "A comprehensive guide to Atlas — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
+title = "The Avarok Book"
+authors = ["Avarok Contributors"]
+description = "A comprehensive guide to Avarok — pure-Rust LLM inference for hyperoptimized (Hardware, Model, Quantization) kernel targets."
 language = "en"
 multilingual = false
 src = "src"
@@ -14,16 +14,16 @@ create-missing = false
 default-theme = "navy"
 preferred-dark-theme = "navy"
 site-url = "/"
-git-repository-url = "https://github.com/Avarok-Cybersecurity/atlas"
+git-repository-url = "https://github.com/Avarok-Cybersecurity/avarok"
 git-repository-icon = "fa-github"
-edit-url-template = "https://github.com/Avarok-Cybersecurity/atlas/edit/main/book/{path}"
+edit-url-template = "https://github.com/Avarok-Cybersecurity/avarok/edit/main/book/{path}"
 no-section-label = false
 # Tokens first, then the skin that consumes them. avarok-tokens.css is a symlink
 # to web-shared/avarok-tokens.css — the same file the site and blog import, so
 # the three properties cannot drift. mdBook reads through the link and copies
 # the CONTENT into the output.
 additional-css = ["theme/css/avarok-tokens.css", "theme/css/avarok.css"]
-# Atlas uses system font stacks (--font-sans / --font-mono), so mdBook's
+# Avarok uses system font stacks (--font-sans / --font-mono), so mdBook's
 # bundled Open Sans and Source Code Pro are ~100 KB of unused payload.
 copy-fonts = false
 

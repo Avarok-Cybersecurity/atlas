@@ -30,7 +30,7 @@ big dense FFNs (better fit for TP).
 
 ## Decision
 
-Atlas supports **all three modes via a single `--tp-size N --ep-size M`
+Avarok supports **all three modes via a single `--tp-size N --ep-size M`
 flag pair**:
 
 | Mode | `--tp-size` | `--ep-size` | Use when |

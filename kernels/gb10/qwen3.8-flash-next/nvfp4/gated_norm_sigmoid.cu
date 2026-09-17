@@ -8,7 +8,7 @@
 // with SiLU, which is what `common/rms_norm.cu` hardcodes — correct there,
 // wrong here, on the output of all 36 GDN layers.
 //
-// Found by the phase-E bisect (Atlas #753): with the recurrence PROVEN
+// Found by the phase-E bisect (Avarok #753): with the recurrence PROVEN
 // textbook-correct (token-0 output parallel to v, magnitude ratio 1.00) and
 // every input verified, the norm stage still diverged at cos 0.81 — and the
 // reference module disagreed with its own printed source, because the

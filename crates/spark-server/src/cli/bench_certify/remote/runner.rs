@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use super::super::plan::Unit;
 use super::super::runner::{GateRunner, RunCtx, RunOutcome, classify};
-use super::atlasctl::{Atlasctl, AttachEnd, Exit, StreamEvent, SubmitSpec};
+use super::atlasctl::{AttachEnd, Avarokctl, Exit, StreamEvent, SubmitSpec};
 use super::node::Node;
 use super::place::{Expect, place};
 
@@ -29,7 +29,7 @@ pub const MAX_REATTACH: u32 = 10;
 pub const JOB_KEY_MAX: usize = 64;
 
 pub struct RemoteRunner {
-    pub atlasctl: Arc<dyn Atlasctl>,
+    pub atlasctl: Arc<dyn Avarokctl>,
     pub node: Node,
     /// Distinguishes this campaign's jobs from a previous one's on the node.
     pub run_id: String,

@@ -80,7 +80,7 @@ const LIVE_REASONING: usize = 4;
 /// `followed_directions`, and re-running until green is not a gate.
 ///
 /// At 0 the sampler is argmax (`adaptive_sampler::should_use_greedy` short-
-/// circuits on `base_temperature == 0.0`), and Atlas is bitwise-deterministic
+/// circuits on `base_temperature == 0.0`), and Avarok is bitwise-deterministic
 /// at batch 1 — which is what this benchmark runs, one agent at a time. Greedy
 /// decoding is a necessary condition for a repeatable trajectory, not a
 /// sufficient one: see [`norm`] for the other half.
@@ -105,7 +105,7 @@ pub(super) const DRAIN_GRACE: Duration = Duration::from_secs(2);
 /// window: without "keep thinking short", reasoning alone walks the session into
 /// the degeneration zone the harness header describes.
 const AGENT_PROMPT: &str = "\
-You are a coding assistant running locally on Atlas Spark. No data leaves this machine.
+You are a coding assistant running locally on Avarok Spark. No data leaves this machine.
 
 You have access to tools for interacting with the filesystem and running commands:
 - **bash**: Execute shell commands (ls, cat, grep, find, git, etc.)

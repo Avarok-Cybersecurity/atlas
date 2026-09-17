@@ -49,7 +49,7 @@ pub(super) fn run_standard_chunk_loop(
     // requests (Q12: avoids back-to-back chunked prefill monopolising
     // the scheduler).
     let remaining = p.prompt_tokens.len() - p.chunk_offset;
-    // MLA correctness gate: Atlas has no `prefill_attention_paged_mla_*`
+    // MLA correctness gate: Avarok has no `prefill_attention_paged_mla_*`
     // kernel; the existing MLA prefill at qwen3_attention/prefill.rs:1723
     // only attends over the current chunk's K/V, so multi-chunk prefill
     // silently corrupts attention output. Force single-chunk until a
@@ -170,6 +170,15 @@ pub(super) fn run_standard_chunk_loop(
         ) {
             Ok(result) => {
                 p.chunk_offset += chunk_len;
+                sched.snapshot.note_prefill_chunk(chunk_len, false);
+                // Prompt tokens counted AT INGEST, as each chunk lands. Counting them
+                // at request completion (the old site) credited the whole prompt to the
+                // moment the RESPONSE finished — seconds or minutes after the prefill
+                // actually ran — so the Stats page's prefill rate was attributed to the
+                // wrong instant entirely. Semantics are unchanged: this is the same
+                // "prompt_tokens" the API reports (cache-hit tokens included; the
+                // computed-vs-cached split is the prefix-cache panel's job).
+                crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
                 tracing::info!(
                     "Mixed forward: prefill {}/{} tokens + {} decode",
                     p.chunk_offset,
@@ -253,6 +262,8 @@ pub(super) fn run_standard_chunk_loop(
         model.ep_broadcast_cmd(p.chunk_offset as u32)?;
         model.ep_broadcast_cmd(p.prompt_tokens.len() as u32)?;
         model.ep_broadcast_tokens(&p.prompt_tokens)?;
+        // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+        model.ep_exchange_vision(&p.prompt_tokens)?;
         Ok(())
     })();
     if let Err(e) = ep_ok {
@@ -316,6 +327,8 @@ pub(super) fn run_standard_chunk_loop(
     match chunk_res {
         Ok(logits) => {
             p.chunk_offset += chunk_len;
+            sched.snapshot.note_prefill_chunk(chunk_len, false);
+            crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
             tracing::info!(
                 "Prefill chunk {}/{} tokens",
                 p.chunk_offset,

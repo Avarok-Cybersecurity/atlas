@@ -11,7 +11,7 @@
 //! - YaRN rope scaling
 //!
 //! Fallback strategy: parse config correctly, register model type, and
-//! populate standard Atlas fields. Novel features (CSA/HCA, mHC) are
+//! populate standard Avarok fields. Novel features (CSA/HCA, mHC) are
 //! stored in config but ignored by the initial fallback loader.
 
 use anyhow::{Context, Result};
@@ -39,7 +39,7 @@ pub fn parse_deepseek_v4(json: &str) -> Result<ModelConfig> {
     let mut config: ModelConfig =
         serde_json::from_str(&json_fixed).context("Failed to parse deepseek_v4 config.json")?;
 
-    // Map DeepSeek field names → Atlas canonical names
+    // Map DeepSeek field names → Avarok canonical names
     if config.num_experts == 0 && config.n_routed_experts > 0 {
         config.num_experts = config.n_routed_experts;
     }

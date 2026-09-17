@@ -245,12 +245,143 @@ fn decode_gif(bytes: &[u8]) -> Result<(Vec<RgbImage>, f32)> {
 
 /// Full pipeline: a base64 `data:` URI holding an animated container becomes
 /// temporal groups of patches.
+/// How to spend a fixed row budget when a clip asks for more than it.
+///
+/// The budget is a CONSERVED PRODUCT — `groups * frame_area <= rows * 1024` —
+/// so every choice is a point on one hyperbola and there is no policy that
+/// wins for every clip. A security camera wants every second at any
+/// resolution; a UI recording wants legible text and can drop frames. The
+/// server cannot know which, so the caller picks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoFitPolicy {
+    /// Keep every temporal group, shrink each frame. Full temporal coverage,
+    /// possibly unreadable detail. Matches the HF Qwen3-VL video processor,
+    /// whose declared budget is a TOTAL `t*h*w` rather than a per-frame cap.
+    #[default]
+    Coverage,
+    /// Keep the frame size, drop groups. Legible frames, motion missed
+    /// between samples.
+    Detail,
+    /// Split the deficit geometrically: an 8x overshoot becomes ~2.83x on
+    /// each axis.
+    Balanced,
+}
+
+/// The row budget a clip must fit inside, and how to spend it.
+#[derive(Debug, Clone, Copy)]
+pub struct VideoBudget {
+    /// Merged rows this clip may occupy. The encoder's `out_rows`, or a
+    /// smaller share when a request carries several media items.
+    pub rows: usize,
+    /// Per-frame area ceiling already in force (`--vision-max-pixels`).
+    pub area_max: Option<usize>,
+    pub policy: VideoFitPolicy,
+}
+
+/// What the fit decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VideoFit {
+    pub n_groups: usize,
+    /// Per-frame pixel budget the resize must respect.
+    pub area_per_group: usize,
+    /// True when the clip already fitted and nothing was changed.
+    pub unchanged: bool,
+}
+
+/// Merged rows one frame of `area` pixels costs.
+///
+/// A merged row is `spatial_merge^2` patches of `patch^2` pixels — 2*2 * 16*16
+/// = 1024 px at this checkpoint's geometry. Exact for areas that are whole
+/// multiples of the grid unit, which `target_size_for` guarantees.
+fn rows_for_area(area: usize, patch: usize, merge: usize) -> usize {
+    let per_row = patch * patch * merge * merge;
+    if per_row == 0 {
+        return usize::MAX;
+    }
+    area.div_ceil(per_row)
+}
+
+/// Choose `(groups, per-frame area)` so the clip fits its row budget.
+///
+/// ★ A NO-OP WHEN THE CLIP ALREADY FITS. That is the property the whole gate
+/// suite depends on: every fixture in vision-fidelity and video-fidelity fits,
+/// so their token counts must not move by one.
+///
+/// 🪤 The floor is ONE grid cell (`patch*merge` squared). Below that a frame
+/// has no representable size, so a budget too small for even one cell per
+/// group forces groups down instead — refusing is the caller's job, not the
+/// fit's.
+pub fn fit_video(
+    native_area: usize,
+    n_groups_req: usize,
+    budget: VideoBudget,
+    patch: usize,
+    merge: usize,
+) -> VideoFit {
+    let cell = patch * merge;
+    let floor_area = cell * cell;
+    let area_req = budget.area_max.map_or(native_area, |m| native_area.min(m));
+    let rows_req = rows_for_area(area_req, patch, merge);
+    let cost = n_groups_req.saturating_mul(rows_req);
+
+    if n_groups_req == 0 || budget.rows == 0 || cost <= budget.rows {
+        return VideoFit {
+            n_groups: n_groups_req,
+            area_per_group: area_req,
+            unchanged: true,
+        };
+    }
+
+    let per_row = patch * patch * merge * merge;
+    let area_for_groups = |n: usize| -> usize {
+        if n == 0 {
+            return floor_area;
+        }
+        ((budget.rows / n) * per_row).max(floor_area)
+    };
+
+    let (n, a) = match budget.policy {
+        VideoFitPolicy::Coverage => {
+            if n_groups_req > budget.rows {
+                // Not even one cell per group: coverage is impossible, keep as
+                // many groups as there are rows.
+                (budget.rows.max(1), floor_area)
+            } else {
+                (n_groups_req, area_for_groups(n_groups_req))
+            }
+        }
+        VideoFitPolicy::Detail => {
+            let n = (budget.rows / rows_req.max(1)).max(1);
+            (n, area_req)
+        }
+        VideoFitPolicy::Balanced => {
+            // k = overshoot; take sqrt(k) off the group count and recompute the
+            // area from the groups actually chosen, so integer rounding is
+            // absorbed and the product bound holds by construction rather than
+            // by a second check.
+            let k = (cost as f64) / (budget.rows as f64);
+            let n = (((n_groups_req as f64) / k.sqrt()).floor() as usize).max(1);
+            let n = n.min(budget.rows.max(1));
+            (n, area_for_groups(n))
+        }
+    };
+    VideoFit {
+        n_groups: n,
+        area_per_group: a,
+        unchanged: false,
+    }
+}
+
 pub fn preprocess_video(
     data_uri: &str,
     vcfg: &VisionConfig,
     max_pixels: Option<usize>,
     target_fps: f32,
     ffmpeg: &crate::video_decode_ffmpeg::FfmpegPolicy,
+    // Row budget to fit inside. `None` keeps the previous behaviour byte for
+    // byte: no fit is computed and no geometry moves. Every existing caller
+    // passes None until the HTTP layer knows the encoder's capacity.
+    budget: Option<VideoBudget>,
 ) -> Result<PreprocessedVideo> {
     ensure!(
         vcfg.patch_size > 0 && vcfg.spatial_merge_size > 0 && vcfg.temporal_patch_size > 0,
@@ -259,12 +390,25 @@ pub fn preprocess_video(
     let (frames, native_fps) = decode_frames(data_uri, target_fps, ffmpeg)?;
     let tp = vcfg.temporal_patch_size;
 
+    // ★ `--video-max-frames` HAS TO REACH THE SAMPLER, NOT JUST FFMPEG'S ARGV.
+    //
+    // It was only ever spelled into `-frames:v`, so the sampler kept using the
+    // 768 constant: raising the flag did nothing (the sampler cut back to 768)
+    // and the GIF path, which never goes near ffmpeg, was bounded by the
+    // constant alone and so ignored the flag outright. Reading the policy here
+    // is the one place that covers BOTH decoders. Defaults are unchanged —
+    // FfmpegPolicy::default() and the CLI both say 768, the same constant.
+    let max_frames = if ffmpeg.max_frames > 0 {
+        ffmpeg.max_frames
+    } else {
+        DEFAULT_MAX_FRAMES
+    };
     let keep = sample_indices(
         frames.len(),
         native_fps,
         target_fps,
         DEFAULT_MIN_FRAMES,
-        DEFAULT_MAX_FRAMES,
+        max_frames,
         tp,
     );
     ensure!(!keep.is_empty(), "frame sampling selected no frames");
@@ -285,7 +429,112 @@ pub fn preprocess_video(
     // count assumes a single grid.
     let first = &frames[keep[0]];
     let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
-    let (th, tw) = target_size_for(first.height(), first.width(), grid_unit, max_pixels);
+
+    // ── Fit the clip to its row budget ──
+    //
+    // This is the ONLY point where both halves of the trade are known: `keep`
+    // has fixed the group count and `first` carries the native frame size. A
+    // policy upstream of the decode would have to guess one of them; one
+    // downstream would be looking at rows already committed.
+    //
+    // `fit_video` is a no-op when the clip already fits, which is what keeps
+    // every gate fixture's token count byte-identical.
+    let mut keep = keep;
+    let mut eff_max_pixels = max_pixels;
+    if let Some(b) = budget {
+        let tp_groups = keep.len() / tp;
+        let native_area = (first.height() as usize) * (first.width() as usize);
+        let fit = fit_video(
+            native_area,
+            tp_groups,
+            b,
+            vcfg.patch_size,
+            vcfg.spatial_merge_size,
+        );
+        if !fit.unchanged {
+            // Drop whole GROUPS, never part of one: a partial group would be
+            // padded into a frame the model never saw.
+            let want_frames = (fit.n_groups * tp).min(keep.len());
+            if want_frames < keep.len() {
+                // Re-sample ACROSS the clip rather than truncating to a prefix
+                // — the same mistake `-frames:v` makes in the ffmpeg path.
+                let stride = keep.len() as f64 / want_frames as f64;
+                let spanned: Vec<usize> = (0..want_frames)
+                    .map(|i| keep[((i as f64) * stride) as usize])
+                    .collect();
+                keep = spanned;
+            }
+            eff_max_pixels = Some(match eff_max_pixels {
+                Some(m) => m.min(fit.area_per_group),
+                None => fit.area_per_group,
+            });
+            tracing::info!(
+                policy = ?b.policy,
+                budget_rows = b.rows,
+                groups_before = tp_groups,
+                groups_after = keep.len() / tp,
+                native_area,
+                area_after = fit.area_per_group,
+                "video does not fit its row budget: refitted (a silent rescale is \
+                 the trap --vision-max-pixels already fell into, so this says so)"
+            );
+        }
+    }
+    let keep = keep;
+
+    // 🚩 THE GRID ROUNDS UP, SO THE FIT'S AREA IS NOT THE FINAL COST.
+    //
+    // `fit_video` budgets an AREA, but `target_size_for` then snaps the frame
+    // to whole grid units and rounds UP. 720 px is 22.5 grid units at this
+    // checkpoint's 32-px unit, so a 1280x720 frame becomes 1280x736 and costs
+    // 920 merged rows where the area implies 900 — and 145 groups of that
+    // overshoot the budget by 2,328 rows. Budgeting the area alone therefore
+    // lands just OVER on exactly the sizes people actually send.
+    //
+    // So the rounding is MEASURED, not predicted: size the frame, cost it with
+    // the real grid, shrink, repeat. Each pass scales by the overshoot it just
+    // measured, so it converges in a pass or two, and every exit is a frame
+    // that has been costed rather than estimated.
+    let (mut th, mut tw) =
+        target_size_for(first.height(), first.width(), grid_unit, eff_max_pixels);
+    if let Some(b) = budget {
+        let groups_now = (keep.len() / tp).max(1);
+        let sms2 = vcfg.spatial_merge_size * vcfg.spatial_merge_size;
+        let cell = (grid_unit as usize) * (grid_unit as usize);
+        for _ in 0..8 {
+            let rows = ((th as usize / vcfg.patch_size) * (tw as usize / vcfg.patch_size) / sms2)
+                * groups_now;
+            if rows <= b.rows {
+                break;
+            }
+            let area = (th as usize) * (tw as usize);
+            let shrunk =
+                (((area as f64) * (b.rows as f64) / (rows as f64)).floor() as usize).max(cell);
+            let next = eff_max_pixels.map_or(shrunk, |m| m.min(shrunk));
+            // No progress is possible once the cap stops moving or the grid
+            // snaps back to the same frame: stop rather than spin. The caller
+            // still refuses an over-budget request, so this fails closed.
+            if eff_max_pixels == Some(next) {
+                break;
+            }
+            eff_max_pixels = Some(next);
+            let (nh, nw) =
+                target_size_for(first.height(), first.width(), grid_unit, eff_max_pixels);
+            if nh == th && nw == tw {
+                break;
+            }
+            tracing::debug!(
+                rows,
+                budget_rows = b.rows,
+                from = format!("{th}x{tw}"),
+                to = format!("{nh}x{nw}"),
+                "grid rounding pushed the fitted frame over budget: tightening"
+            );
+            th = nh;
+            tw = nw;
+        }
+    }
+    let (th, tw) = (th, tw);
 
     let ps = vcfg.patch_size;
     let grid_h = (th as usize) / ps;
@@ -340,3 +589,172 @@ pub fn preprocess_video(
 #[cfg(test)]
 #[path = "video_preprocess_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    // This checkpoint's geometry: 16-px patches, 2x2 merge -> 1024 px/row.
+    const PATCH: usize = 16;
+    const MERGE: usize = 2;
+    const PER_ROW: usize = PATCH * PATCH * MERGE * MERGE; // 1024
+    const CELL: usize = PATCH * MERGE; // 32 -> floor area 1024
+
+    fn budget(rows: usize, policy: VideoFitPolicy) -> VideoBudget {
+        VideoBudget {
+            rows,
+            area_max: None,
+            policy,
+        }
+    }
+
+    /// The property every gate depends on: a clip that already fits is not
+    /// touched. If this breaks, all 14 vision cells and all 14 video legs move.
+    #[test]
+    fn a_clip_that_fits_is_left_exactly_alone() {
+        // 4 groups of 224x224 = 49 rows each = 196 rows, far under 16384.
+        let f = fit_video(
+            224 * 224,
+            4,
+            budget(16384, VideoFitPolicy::Coverage),
+            PATCH,
+            MERGE,
+        );
+        assert!(f.unchanged, "a fitting clip must report unchanged");
+        assert_eq!(f.n_groups, 4);
+        assert_eq!(f.area_per_group, 224 * 224);
+        // ...and under every policy, not just the default.
+        for p in [VideoFitPolicy::Detail, VideoFitPolicy::Balanced] {
+            let f = fit_video(224 * 224, 4, budget(16384, p), PATCH, MERGE);
+            assert!(f.unchanged, "{p:?} must also leave a fitting clip alone");
+            assert_eq!(f.n_groups, 4);
+        }
+    }
+
+    /// Every policy must land inside the budget. This is the bound the encoder
+    /// would otherwise enforce by refusing the request.
+    #[test]
+    fn every_policy_lands_inside_the_row_budget() {
+        let rows = 16384;
+        // The observed failure: 384 groups of ~592x592 = 134.8 M px, 8.04x over.
+        let native = 592 * 592;
+        for p in [
+            VideoFitPolicy::Coverage,
+            VideoFitPolicy::Detail,
+            VideoFitPolicy::Balanced,
+        ] {
+            let f = fit_video(native, 384, budget(rows, p), PATCH, MERGE);
+            assert!(!f.unchanged, "{p:?}: an 8x overshoot must be fitted");
+            let cost = f.n_groups * f.area_per_group.div_ceil(PER_ROW);
+            assert!(
+                cost <= rows,
+                "{p:?}: fitted to {} groups x {} px = {cost} rows, over budget {rows}",
+                f.n_groups,
+                f.area_per_group
+            );
+            assert!(f.n_groups >= 1, "{p:?}: must keep at least one group");
+            assert!(
+                f.area_per_group >= CELL * CELL,
+                "{p:?}: must not go below one grid cell"
+            );
+        }
+    }
+
+    /// COVERAGE keeps time, DETAIL keeps pixels. The whole point of having
+    /// both is that they differ on the same clip.
+    #[test]
+    fn coverage_keeps_groups_and_detail_keeps_area() {
+        let rows = 16384;
+        let native = 592 * 592;
+        let cov = fit_video(
+            native,
+            384,
+            budget(rows, VideoFitPolicy::Coverage),
+            PATCH,
+            MERGE,
+        );
+        let det = fit_video(
+            native,
+            384,
+            budget(rows, VideoFitPolicy::Detail),
+            PATCH,
+            MERGE,
+        );
+        assert_eq!(cov.n_groups, 384, "coverage keeps every group");
+        assert!(cov.area_per_group < native, "coverage pays in pixels");
+        assert_eq!(
+            det.area_per_group, native,
+            "detail keeps the native frame size"
+        );
+        assert!(det.n_groups < 384, "detail pays in groups");
+        // BALANCED sits between them on both axes.
+        let bal = fit_video(
+            native,
+            384,
+            budget(rows, VideoFitPolicy::Balanced),
+            PATCH,
+            MERGE,
+        );
+        assert!(bal.n_groups > det.n_groups && bal.n_groups < cov.n_groups);
+        assert!(bal.area_per_group > cov.area_per_group && bal.area_per_group < det.area_per_group);
+    }
+
+    /// The degenerate end: more groups than rows. Coverage cannot give every
+    /// group even one cell, so it must give up groups rather than emit a
+    /// zero-area frame.
+    #[test]
+    fn more_groups_than_rows_still_produces_a_representable_frame() {
+        let f = fit_video(
+            592 * 592,
+            5000,
+            budget(100, VideoFitPolicy::Coverage),
+            PATCH,
+            MERGE,
+        );
+        assert_eq!(
+            f.area_per_group,
+            CELL * CELL,
+            "must fall back to one grid cell"
+        );
+        assert!(f.n_groups <= 100 && f.n_groups >= 1);
+        let cost = f.n_groups * f.area_per_group.div_ceil(PER_ROW);
+        assert!(
+            cost <= 100,
+            "even the degenerate case must fit: {cost} > 100"
+        );
+    }
+
+    /// A frame so large that one group alone busts the budget: DETAIL cannot
+    /// keep the native size, but must still return something encodable.
+    #[test]
+    fn a_single_oversized_group_is_clamped_not_zeroed() {
+        let f = fit_video(
+            4096 * 4096,
+            1,
+            budget(16, VideoFitPolicy::Detail),
+            PATCH,
+            MERGE,
+        );
+        assert!(f.n_groups >= 1, "never zero groups");
+        assert!(f.area_per_group >= CELL * CELL);
+    }
+
+    /// `area_max` (--vision-max-pixels) is a ceiling the fit must respect, and
+    /// it must never UPSCALE a frame that is already smaller.
+    #[test]
+    fn area_max_caps_but_never_upscales() {
+        let b = VideoBudget {
+            rows: 16384,
+            area_max: Some(224 * 224),
+            policy: VideoFitPolicy::Coverage,
+        };
+        let big = fit_video(4096 * 4096, 2, b, PATCH, MERGE);
+        assert!(big.area_per_group <= 224 * 224, "area_max must cap");
+        let small = fit_video(64 * 64, 2, b, PATCH, MERGE);
+        assert_eq!(
+            small.area_per_group,
+            64 * 64,
+            "a small frame must not be upscaled"
+        );
+    }
+}

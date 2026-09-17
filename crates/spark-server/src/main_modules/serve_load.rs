@@ -358,7 +358,7 @@ pub(crate) fn load_model(
     // Text-only kernel target + a checkpoint that ships a vision tower: honor the
     // TARGET spec and serve text-only rather than failing the build at
     // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
-    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Atlas
+    // Kbenkhaled/Qwen3.5-27B-NVFP4) carry a `vision_config`, but their Avarok
     // kernel target (qwen3.5-27b) ships no `vision_encoder` PTX module. Drop the
     // vision tower to text-only; image inputs are unsupported until the target
     // is rebuilt with vision.
@@ -486,7 +486,7 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(5, "weight load");
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
-    let store = serve_phases::load_weight_store(
+    let mut store = serve_phases::load_weight_store(
         &args,
         &config,
         &model_dir,
@@ -495,6 +495,43 @@ pub(crate) fn load_model(
         ep_size,
         oom_reserve_bytes,
     )?;
+
+    // 3a. Out-of-index sidecar shards: every `*.safetensors` the checkpoint
+    // keeps outside `model.safetensors.index.json` that no loader owns
+    // (the EXL3 export's `vision_k6.safetensors` ViT tower on 4.05bpw, its
+    // MTP mixer patch on the other branches). Registered BEFORE the EXL3
+    // pass so their trellis linears materialize like the indexed ones, under
+    // the SAME skip policy the main shards got. No-op without such files,
+    // and gated to EXL3 stores: a non-EXL3 model dir with a stray un-indexed
+    // *.safetensors (an adapter, a hand-copied export) must not have it
+    // uploaded under new names, uncounted by the pre-flight estimate.
+    if spark_runtime::weights::exl3::store_has_exl3(&store) {
+        let policy = serve_phases::main_shard_skip_policy(&args, &config, ep_rank, ep_size);
+        spark_model::weight_map::register_exl3_sidecar_shards(
+            gpu.as_ref(),
+            &mut store,
+            &model_dir,
+            oom_reserve_bytes,
+            &|name| policy.should_skip_tensor(name),
+        )
+        .context("out-of-index sidecar shard registration failed")?;
+    }
+
+    // 3a-bis. EXL3 (QTIP trellis) checkpoints: rewrite trellis linears into
+    // loader-consumable tensors NOW, before the preflight and quant-format
+    // detection below read the store (both key off `.weight`-style names
+    // that an EXL3 store does not have yet). No-op for every other format;
+    // `build_model` carries an idempotent second call for non-serve entry
+    // points. See spark-model weight_map/exl3_materialize.rs.
+    spark_model::weight_map::materialize_exl3(gpu.as_ref(), &mut store)
+        .context("EXL3 checkpoint materialization failed")?;
+    // The EXL3 export keeps the PLE n-gram tables in a standalone
+    // `ngram_embedding.safetensors` (exl3_ngram_trellis row format) outside
+    // the weight index — register its tensors (trellis deferred for the
+    // NVMe row cache, id tables + head_bias uploaded) so the PLE loader
+    // finds them. No-op when the file is absent.
+    spark_model::weight_map::register_exl3_ngram_sidecar(gpu.as_ref(), &mut store, &model_dir)
+        .context("EXL3 ngram sidecar registration failed")?;
 
     // 3b. Auto-detect weight key prefix for nested models.
     spark_runtime::weights::auto_detect_weight_prefix(&store, &mut config);
@@ -628,6 +665,21 @@ pub(crate) fn load_model(
     // listener, the TUI thread, the OOM watchdog), and a concurrent getenv
     // during setenv is UB.
     config.profile = args.profile;
+    // Operator kill switch for the batched mHC decode MoE FFN. Only ever
+    // turns the batching OFF, so a model config that already disabled it stays
+    // disabled when the flag is absent.
+    if args.hc_per_row_moe_decode {
+        config.hc_batched_moe_decode = false;
+    }
+    tracing::info!(
+        "mHC decode MoE FFN: {} (hc_batched_moe_decode={})",
+        if config.hc_batched_moe_decode {
+            "BATCHED — one n-row dispatch per layer per step"
+        } else {
+            "per-sequence loop (kill switch engaged)"
+        },
+        config.hc_batched_moe_decode,
+    );
     serve_phases::cap_vocab_size_to_tokenizer(&model_dir, &mut config);
     let serve_phases::KvCacheConfig {
         effective_kv_dtype_str: _,
@@ -817,6 +869,52 @@ pub(crate) fn load_model(
     }
     let model = model_opt.expect("head retains model on rank 0");
 
+    // Read the ViT scratch bounds ONCE, here, while the model is in scope and
+    // before it is handed to the scheduler. The encoder is the only authority:
+    // `max_pixels` is what was ASKED for and `CEILING_MAX_PATCHES` may have
+    // clamped it (it does on this checkpoint), so deriving the bound from
+    // config would disagree with the buffer that actually exists.
+    let vision_capacity = model.vision_capacity().map(|c| {
+        // ── A row the context cannot hold is not capacity ──
+        //
+        // Every merged row becomes exactly one prompt token, so the encoder's
+        // row budget is only real up to the context length. Raising
+        // AVAROK_VISION_OUT_ROWS past what the context can hold would admit a
+        // clip the buffer fits and the SEQUENCE cannot — the failure then
+        // lands mid-prefill, after decode, preprocessing and scheduling have
+        // all been paid for, which is the late-failure shape this whole
+        // feature exists to remove.
+        //
+        // Half the context is the cap. A video that fills the entire window
+        // leaves no room for the question about it, and at 720p/1fps (450
+        // rows per second of clip) half of a 256K window is still ~4.9
+        // minutes of native-resolution video.
+        let ctx_cap = (args.max_seq_len / 2).max(1);
+        let out_rows = c.out_rows.min(ctx_cap);
+        if out_rows != c.out_rows {
+            tracing::warn!(
+                asked = c.out_rows,
+                ctx_cap,
+                max_seq_len = args.max_seq_len,
+                "vision row budget clamped to half the context — the encoder \
+                 buffer is larger than any sequence could carry"
+            );
+        }
+        spark_model::VisionCapacity { out_rows, ..c }
+    });
+    if let Some(c) = vision_capacity {
+        tracing::info!(
+            p_max = c.p_max,
+            out_rows = c.out_rows,
+            secs_720p = c.out_rows / 450,
+            "Vision capacity: {} patches per image, {} merged rows per batch \
+             (~{}s of 720p at 1fps)",
+            c.p_max,
+            c.out_rows,
+            c.out_rows / 450
+        );
+    }
+
     // Build EOS token list from generation_config.json (authoritative) or config.json fallback
     let mut eos_tokens = serve_phases::load_eos_tokens(&model_dir, &config);
 
@@ -846,7 +944,7 @@ pub(crate) fn load_model(
     )?;
 
     // (AM1 attractor-mask registration removed 2026-06-03 — see
-    // decode_logits_seq.rs / compile_tools.rs; `lean` was an Atlas-only
+    // decode_logits_seq.rs / compile_tools.rs; `lean` was an Avarok-only
     // decode artifact, now fixed at the grammar `first_char` rule.)
 
     // Tokenizer-derived runtime: vocab cap, reasoning parser, think tokens,
@@ -1248,6 +1346,7 @@ pub(crate) fn load_model(
         .unwrap_or_default();
 
     let state = Arc::new(AppState {
+        vision_capacity,
         tokenizer,
         model_name,
         adapter_name: nllb_adapter_name

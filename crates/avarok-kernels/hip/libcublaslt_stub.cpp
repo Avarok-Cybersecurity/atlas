@@ -2,7 +2,7 @@
 //
 // cuBLASLt stub for the HIP target. spark links `-lcublasLt` unconditionally,
 // but the cuBLASLt GEMM path is opt-in (AVAROK_CUBLAS_GEMM=1) — the default
-// runtime uses Atlas's own hand-written GEMMs. There is no hipBLASLt mapping
+// runtime uses Avarok's own hand-written GEMMs. There is no hipBLASLt mapping
 // here yet, so every entry point returns a non-success cuBLASLt status (1 =
 // CUBLAS_STATUS_NOT_INITIALIZED). If AVAROK_CUBLAS_GEMM is ever set on AMD, the
 // create call fails and the caller must fall back rather than run a wrong GEMM.

@@ -37,7 +37,7 @@ pub const SAMPLE_EVERY: u32 = 10;
 ///
 /// Reachable only where the terminal reports key-up at all — the Windows
 /// console, which emits a record for both edges natively, and the kitty
-/// keyboard protocol under `REPORT_EVENT_TYPES`. Atlas pushes no keyboard
+/// keyboard protocol under `REPORT_EVENT_TYPES`. Avarok pushes no keyboard
 /// enhancement flags (see [`super::terminal_guard::TerminalGuard::enter`]), so
 /// on a unix tty this guard never fires; on Windows it is the difference
 /// between one keystroke doing one thing and every keystroke being applied

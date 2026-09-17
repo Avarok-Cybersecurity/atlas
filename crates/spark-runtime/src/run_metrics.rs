@@ -3,7 +3,7 @@
 //! Run mailboxes — the observability surfaces that stay process-global on
 //! purpose, and the one call that keeps them honest across a model swap.
 //!
-//! Most model-derived state in Atlas is carried: `SchedCtx`, `ForwardContext`,
+//! Most model-derived state in Avarok is carried: `SchedCtx`, `ForwardContext`,
 //! `ModelLevers`, `OpCache`. A handful of counters cannot be, because their
 //! *readers* cannot be handed a carrier — `/metrics` answers from an HTTP
 //! handler thread and the dashboard polls from the TUI thread, both while the
@@ -147,7 +147,7 @@ mod tests {
     /// That was correct while a backend was built exactly once per process: the
     /// reset ran before anything could observe the counter. Hot-swap builds one
     /// per load, and the same value is exported on /metrics as
-    /// `atlas_prefix_cache_hits_total`, declared `TYPE counter` — so the old
+    /// `avarok_prefix_cache_hits_total`, declared `TYPE counter` — so the old
     /// behaviour resets a live counter, which Prometheus reads as a restart.
     ///
     /// A new run still starts from the bottom; the counter is no longer the
@@ -186,7 +186,7 @@ mod swap_counter_tests {
     /// them, and an exact assertion here was flaky on the first run of four.
     #[test]
     fn a_new_run_does_not_move_the_counters_prometheus_exports() {
-        // atlas_prefix_cache_hits_total is declared TYPE counter, and a counter
+        // avarok_prefix_cache_hits_total is declared TYPE counter, and a counter
         // must only ever climb. Zeroing it was harmless when a backend was
         // built once per process; hot-swap builds one per load, so the same
         // call would reset a live counter and read to Prometheus as a restart.

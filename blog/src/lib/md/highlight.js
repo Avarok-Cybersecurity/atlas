@@ -25,7 +25,7 @@ export async function makeHighlighter() {
         const known = LANGS.includes(lang) ? lang : 'text';
         return shiki.codeToHtml(code, {
           lang: known,
-          theme: 'atlas',
+          theme: 'avarok',
           colorReplacements: COLOR_REPLACEMENTS
         });
       }

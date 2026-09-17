@@ -82,22 +82,22 @@ def report(name, a, b, segs, head_dim):
         off += sl
 
 
-print("=== GDN layer-0 chain diff (A3B; Atlas vs source-grounded HF oracle) ===")
+print("=== GDN layer-0 chain diff (A3B; Avarok vs source-grounded HF oracle) ===")
 print(f"avarok={A}")
 print(f"hf   ={H}")
 
 # A3B: conv segments q|k|v = 2048|2048|4096 = 8192 total
 # recurrence/gnorm value-space single v segment = 4096
-report("conv1d   (Atlas conv  ~ HF conv1d post-silu)",
+report("conv1d   (Avarok conv  ~ HF conv1d post-silu)",
        rd(f"{A}/gdnsub_step0_L0_conv.bin"), rd(f"{H}/gdnref_L0_conv1d.bin"),
        [("q", 2048), ("k", 2048), ("v", 4096)], 128)
-report("l2norm   (Atlas l2 (post-l2norm of q,k)  ~ HF n/a — Atlas-only sanity)",
+report("l2norm   (Avarok l2 (post-l2norm of q,k)  ~ HF n/a — Avarok-only sanity)",
        rd(f"{A}/gdnsub_step0_L0_l2.bin"), rd(f"{H}/gdnref_L0_conv1d.bin"),
        [("q", 2048), ("k", 2048), ("v", 4096)], 128)
-report("recur    (Atlas gdn   ~ HF recur_in/pre-norm)",
+report("recur    (Avarok gdn   ~ HF recur_in/pre-norm)",
        rd(f"{A}/gdnsub_step0_L0_gdn.bin"), rd(f"{H}/gdnref_L0_recur_in.bin"),
        [("v", 4096)], 128)
-report("gnorm    (Atlas gnorm ~ HF norm gated-rmsnorm)",
+report("gnorm    (Avarok gnorm ~ HF norm gated-rmsnorm)",
        rd(f"{A}/gdnsub_step0_L0_gnorm.bin"), rd(f"{H}/gdnref_L0_norm.bin"),
        [("v", 4096)], 128)
 

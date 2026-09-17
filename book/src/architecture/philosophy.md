@@ -1,6 +1,6 @@
 # Philosophy: AI Kernel HyperCompiling
 
-Part I's Philosophy chapter answered *why* Atlas specializes. This chapter answers *how the specialization thesis forces specific design choices in the code*, and what you should see — or, if you're writing a PR, what you should preserve — when you read the codebase.
+Part I's Philosophy chapter answered *why* Avarok specializes. This chapter answers *how the specialization thesis forces specific design choices in the code*, and what you should see — or, if you're writing a PR, what you should preserve — when you read the codebase.
 
 The single design rule that every choice below derives from is:
 
@@ -31,7 +31,7 @@ So a leaf holds *only its divergences*, not a full kernel set — `qwen3.6-27b/n
 carries 11 `.cu`, `qwen3.6-35b-a3b/nvfp4` carries 5, `qwen3-next-80b-a3b/nvfp4`
 carries 3, over the 160 in `common/`. Two leaves therefore **do** share source for
 everything neither of them overrides; what is guaranteed is that where a target
-*does* diverge, it diverges in a file nothing else compiles. When we say "Atlas
+*does* diverge, it diverges in a file nothing else compiles. When we say "Avarok
 ships N targets," we mean N independent leaves — 22 of them on GB10 today.
 
 The corollary is a real failure class: because shadowing is whole-file, a shadow
@@ -83,7 +83,7 @@ This is what the user instructions call **SBIO** (Separation of Business logic f
 
 Every general-purpose framework has, somewhere, a codepath that compiles kernels at runtime. PyTorch has `torch.compile`. vLLM has Triton JIT. TensorRT-LLM has TRT engine builds. Each of those is a slow path the first time you hit a new shape, and an ongoing operational surface the ops team has to manage (cache directories, warm-up scripts, cold-start budgets).
 
-Atlas has none of it. `avarok-kernels/build.rs` enumerates every `(H, M_q)` target matching the `AVAROK_TARGET_*` env vars, compiles every `.cu` file for every matching target, and emits one auto-generated `target_ptx.rs` that is `include!`'d into the crate. The release binary contains every PTX module we ship. Startup is "mmap the binary, upload PTX to the GPU, capture CUDA graphs for a handful of batch sizes, done".
+Avarok has none of it. `avarok-kernels/build.rs` enumerates every `(H, M_q)` target matching the `AVAROK_TARGET_*` env vars, compiles every `.cu` file for every matching target, and emits one auto-generated `target_ptx.rs` that is `include!`'d into the crate. The release binary contains every PTX module we ship. Startup is "mmap the binary, upload PTX to the GPU, capture CUDA graphs for a handful of batch sizes, done".
 
 This is what "embedded in the binary" means throughout the book. It is the concrete mechanism by which specialization does not cost operator pain.
 
@@ -103,10 +103,10 @@ The same image works across all supported targets. The startup dispatcher picks 
 
 Every subsequent chapter is an elaboration of one of the consequences above. The [workspace layout chapter](./workspace.md) walks the directory tree. The [dispatch chapter](./dispatch.md) traces a single request from HTTP to kernel launch. The [SBIO chapter](./sbio.md) shows how the testability claim actually holds.
 
-The deep-dive chapters in Part IV show what the kernels look like — what a hand-tuned kernel set per target buys you, and how you'd write new ones when you're porting Atlas to your own `(H, M_q)` target.
+The deep-dive chapters in Part IV show what the kernels look like — what a hand-tuned kernel set per target buys you, and how you'd write new ones when you're porting Avarok to your own `(H, M_q)` target.
 
 ## Reading the architecture categorically
 
-The design choices above have precise names in category theory. The target set `𝒯 = Hw × Mod × Quant` is a categorical **product**; the crate split is that product made syntactically real, which is why orthogonality of axes is a structural fact and not a convention. The kernel registry is a **coproduct** (disjoint union of per-target PTX sets), which is why adding a summand cannot regress existing summands. The `GpuBackend` trait defines an **algebraic theory** with two ship-worthy models — `AvarokCudaBackend` and `MockGpuBackend` — and that is what makes the test suite runnable without a GPU. A general framework is, in this vocabulary, an engine that factors `Kernels : 𝒯 → 𝐒𝐞𝐭` through a smaller "essence" category; Atlas refuses the factoring, and the 3.6× gap against vLLM is the cost of the factoring that Atlas does not pay.
+The design choices above have precise names in category theory. The target set `𝒯 = Hw × Mod × Quant` is a categorical **product**; the crate split is that product made syntactically real, which is why orthogonality of axes is a structural fact and not a convention. The kernel registry is a **coproduct** (disjoint union of per-target PTX sets), which is why adding a summand cannot regress existing summands. The `GpuBackend` trait defines an **algebraic theory** with two ship-worthy models — `AvarokCudaBackend` and `MockGpuBackend` — and that is what makes the test suite runnable without a GPU. A general framework is, in this vocabulary, an engine that factors `Kernels : 𝒯 → 𝐒𝐞𝐭` through a smaller "essence" category; Avarok refuses the factoring, and the 3.6× gap against vLLM is the cost of the factoring that Avarok does not pay.
 
 The appendix [A Category-Theoretic Perspective](../appendix/category-theory.md) works through each of these structures at appendix length. It is a design reference, not a prerequisite.

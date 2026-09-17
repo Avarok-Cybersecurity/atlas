@@ -14,7 +14,7 @@
 //!
 //! ## Scope
 //!
-//! Atlas's actual MoE forward kernel lives in `avarok-kernels`, not
+//! Avarok's actual MoE forward kernel lives in `avarok-kernels`, not
 //! here. This module ships the **policy primitives** that decide:
 //!
 //!   1. Given a router's softmax distribution and the configured

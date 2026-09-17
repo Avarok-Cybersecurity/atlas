@@ -57,13 +57,13 @@ forward substitutions (79–85 % of it, per the in-file 2026-08-22 measurement).
 
 ## FLA reference structure (for comparison; no code taken)
 
-FLA's `chunk_gated_delta_rule` uses the same three-pass WY decomposition Atlas
+FLA's `chunk_gated_delta_rule` uses the same three-pass WY decomposition Avarok
 mirrors: (1) chunk-parallel, build `T = (I + tril(diag(β)·K·Kᵀ, -1))⁻¹` and form
 `W = T·(β·e^{g}·K)`, `U = T·(β·V)`; (2) `chunk_fwd_h`, serial over chunks,
 `h_{c+1} = e^{g_last}·h_c + K̃_cᵀ·(U_c − W_c·h_c)`; (3) `chunk_fwd_o`,
 chunk-parallel again. The difference is entirely in pass (2): FLA runs both
 per-chunk `[64×128]×[128×128]` products as **BF16 tensor-core matmuls with FP32
-accumulation** (`tl.dot`), keeping the state in the FP32 accumulator. Atlas does
+accumulation** (`tl.dot`), keeping the state in the FP32 accumulator. Avarok does
 the identical algebra in scalar FP32; (1) and (3) are already equivalent.
 
 ## The lever, and what it measured
@@ -271,7 +271,7 @@ AVAROK_NO_GDN_PREFILL_TC_REMNANTS=1` (spine only), **T1** `AVAROK_GDN_PREFILL_TC
 | 4593/512 C=16 TTFT | 7 524.7 ms | 4 786.1 | **4 145.5** | **-44.9%** | -13.4% |
 
 T1's short-prompt C=1 TTFT of **162.4 ms beats vLLM 0.28.0's 179 ms on the same
-box** — the first metric in this campaign where Atlas leads.
+box** — the first metric in this campaign where Avarok leads.
 
 **Quality.** Coherency 4/4 on T1 (`'391'`, `'Tokyo'`, `'rotaregirfer'` all OK);
 determinism **8/8 md5-identical across 3 runs**; zero content-loop, fuzzy or

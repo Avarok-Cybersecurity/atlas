@@ -27,7 +27,7 @@
 //!   not exist.
 //! * 🪤 **The final collapse is an UNWEIGHTED MEAN.** `Glm5NextTextHyperHead` has no
 //!   parameters and the checkpoint carries **zero** `hc_head` tensors — unlike DeepSeek-V4,
-//!   whose `hc_head` is a learned sigmoid-weighted sum. Atlas's `hc_head` CUDA kernel is the
+//!   whose `hc_head` is a learned sigmoid-weighted sum. Avarok's `hc_head` CUDA kernel is the
 //!   DeepSeek one; for GLM it is **ADAPT, not REUSE**.
 //! * 🪤 **`hc_*_fn` is BF16 on disk**; only `base`/`scale` are F32. The `hc_pre` kernel takes
 //!   `f32*`, so binding must upcast.
@@ -451,7 +451,7 @@ pub struct StateBudget {
     /// 🪤 REPLICATED, not sharded: the indexer is `DsaShard::Replicated` (`dsa/tp.rs`), so
     /// [`Self::per_rank`] must not divide it.
     pub dsa_indexer_per_token: usize,
-    /// mHC highway per TOKEN — `hc_mult x hidden` fp32 in Atlas (bf16 in HF; see the OPEN
+    /// mHC highway per TOKEN — `hc_mult x hidden` fp32 in Avarok (bf16 in HF; see the OPEN
     /// highway-dtype item). Activation-lifetime, not persistent across steps.
     pub mhc_highway_per_token: usize,
     /// MoE routing scratch per token: logits + top-k ids + weights.

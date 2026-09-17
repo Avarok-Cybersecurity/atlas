@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Serve a model with Atlas on AMD GPUs (SCALE runtime). Verified coherent on
+# Serve a model with Avarok on AMD GPUs (SCALE runtime). Verified coherent on
 # gfx1151 / Strix Halo with Qwen/Qwen3.6-27B-FP8. See
 # docs/porting/amd-strix-halo-scale.md.
 set -euo pipefail

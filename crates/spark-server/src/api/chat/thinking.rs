@@ -45,7 +45,13 @@ pub(super) fn generation_max_tokens(
     tools_active: bool,
     tool_max_tokens: usize,
 ) -> usize {
-    if tools_active {
+    // `--tool-max-tokens 0` = UNLIMITED (the client's own max_tokens is the
+    // only bound, vLLM parity). Without this arm 0 goes through the `min` and
+    // clamps a tool turn to ZERO tokens — the flag's documented escape hatch
+    // would be its most destructive setting. The cap's job is to bound a model
+    // that never emits a closing tool tag; an operator who has measured that
+    // their model does must be able to say so.
+    if tools_active && tool_max_tokens > 0 {
         max_tokens.min(tool_max_tokens)
     } else {
         max_tokens

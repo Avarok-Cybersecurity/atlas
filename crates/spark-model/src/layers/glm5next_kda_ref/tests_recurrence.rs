@@ -113,7 +113,7 @@ fn sub_op_8_chunked_prefill_pads() {
 }
 
 /// Prefill 4 tokens, then decode tokens 4 and 5 one at a time off the carried state. This is the
-/// transition Atlas's scheduler will actually drive, and it is the one a single-step gate test
+/// transition Avarok's scheduler will actually drive, and it is the one a single-step gate test
 /// cannot catch.
 #[test]
 fn sub_op_8_prefill_then_decode_continuation() {
@@ -187,7 +187,7 @@ fn sub_op_9_rms_norm_gated() {
 }
 
 /// `rms_norm_eps` comes from config (1e-5 here). vLLM never passes it and gets the same value from
-/// a library default — a coincidence Atlas must not inherit.
+/// a library default — a coincidence Avarok must not inherit.
 #[test]
 fn sub_op_9_eps_is_load_bearing() {
     let g = Golden::load();
@@ -287,7 +287,7 @@ fn hf_self_checks_were_clean() {
 // ─────────────────────────── prenorm contract (Slice 4 trap)
 
 /// `kda_recurrent` normalises q/k internally (HF's contract); `kda_recurrent_prenorm`
-/// does not (Atlas's contract, where the conv fuses the L2). Passing already-normalised
+/// does not (Avarok's contract, where the conv fuses the L2). Passing already-normalised
 /// vectors to the former is *nearly* a no-op in fp32, which is exactly what makes it
 /// dangerous: on bf16-rounded inputs the second normalisation RESTORES the norm the
 /// rounding destroyed, so the reference silently disagrees with a kernel that consumes
@@ -346,7 +346,7 @@ fn prenorm_and_internal_norm_agree_only_on_unit_input() {
 
 /// Slice 6: the chunked path needs the same prenorm split the recurrent path got in Slice 4.
 ///
-/// Atlas's prefill L2 (`l2_norm_bf16`) writes **bf16**, so the chunked kernel is always fed
+/// Avarok's prefill L2 (`l2_norm_bf16`) writes **bf16**, so the chunked kernel is always fed
 /// already-normalised bf16 vectors. Routing those through [`kda_chunked`] would re-normalise
 /// them and silently restore the rounding the bf16 write destroyed — the Slice-4 hazard, which
 /// looked exactly like a kernel bug when it appeared on the recurrent path.

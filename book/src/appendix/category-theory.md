@@ -1,8 +1,8 @@
 # A Category-Theoretic Perspective
 
-The Atlas book argues its case in prose. The prose carries the claim: for every `(Hardware, Model, Quantization)` target, there exists a kernel configuration that runs at the hardware's theoretical peak; general frameworks cannot reach that peak because they pay a genericity tax; Atlas refuses the tax by specializing per target while keeping abstractions *above* the kernel layer.
+The Avarok book argues its case in prose. The prose carries the claim: for every `(Hardware, Model, Quantization)` target, there exists a kernel configuration that runs at the hardware's theoretical peak; general frameworks cannot reach that peak because they pay a genericity tax; Avarok refuses the tax by specializing per target while keeping abstractions *above* the kernel layer.
 
-Category theory gives precise names for the structures that claim leans on. This appendix names them. It is not a proof of performance, not a tutorial in category theory, and not required reading for anyone wanting to run or extend Atlas. It is a lens. Read it if you want to see the same design with fewer words.
+Category theory gives precise names for the structures that claim leans on. This appendix names them. It is not a proof of performance, not a tutorial in category theory, and not required reading for anyone wanting to run or extend Avarok. It is a lens. Read it if you want to see the same design with fewer words.
 
 Standard references for the underlying mathematics: Saunders Mac Lane, *Categories for the Working Mathematician* (second edition); Emily Riehl, *Category Theory in Context* (freely available). Everything below uses only the first two chapters of either.
 
@@ -12,11 +12,11 @@ Standard references for the underlying mathematics: Saunders Mac Lane, *Categori
 
 A **category** is a collection of objects together with arrows (morphisms) between them, closed under composition and equipped with an identity arrow on every object. In symbols: `ob(𝒯)` is a class, and for every ordered pair `A, B ∈ ob(𝒯)` there is a set `𝒯(A, B)` of arrows.
 
-Atlas's target category `𝒯` has one object per supported `(H, M, q)` triple. In code, these objects are `avarok_core::target::KernelTarget` values — `GB10_QWEN35_NVFP4`, `GB10_QWEN3_NVFP4`, `GB10_QWEN35_122B_NVFP4`, and nine siblings. The `const` declarations in `crates/avarok-core/src/target.rs` are a literal list of `ob(𝒯)`.
+Avarok's target category `𝒯` has one object per supported `(H, M, q)` triple. In code, these objects are `avarok_core::target::KernelTarget` values — `GB10_QWEN35_NVFP4`, `GB10_QWEN3_NVFP4`, `GB10_QWEN35_122B_NVFP4`, and nine siblings. The `const` declarations in `crates/avarok-core/src/target.rs` are a literal list of `ob(𝒯)`.
 
 The non-obvious choice is the morphism set: **for every distinct pair `A ≠ B`, `𝒯(A, B) = ∅`**. The only arrows are identities. `𝒯` is a *discrete* category.
 
-This choice matters. A non-identity arrow `f : A → B` would mean "a canonical way to go from kernel set `A` to kernel set `B`" — a declared compatibility. Such compatibilities are temptations that collapse specialization: the moment you posit `f : (GB10, Qwen3.5-35B, NVFP4) → (GB10, Qwen3-Next-80B, NVFP4)`, you have committed to a kernel set that serves both, or at least to a shared essence that both factor through. That is the shape of vLLM. Atlas refuses by making `𝒯` discrete.
+This choice matters. A non-identity arrow `f : A → B` would mean "a canonical way to go from kernel set `A` to kernel set `B`" — a declared compatibility. Such compatibilities are temptations that collapse specialization: the moment you posit `f : (GB10, Qwen3.5-35B, NVFP4) → (GB10, Qwen3-Next-80B, NVFP4)`, you have committed to a kernel set that serves both, or at least to a shared essence that both factor through. That is the shape of vLLM. Avarok refuses by making `𝒯` discrete.
 
 The specialization thesis, in one sentence: **`𝒯` is discrete, and all performance claims are local to an object**.
 
@@ -105,7 +105,7 @@ Kernels_𝒢  :  𝒯  ──F──►  ℰ  ──G──►  𝐒𝐞𝐭
 
 The factoring is attractive because the image of `F` can be small: you write one kernel in `ℰ` and cover many objects of `𝒯`. The cost is paid by `G`: every time `G` realises a morphism from the `ℰ`-image down to a specific `𝒯`-object, real work happens — a branch, a dispatch, a JIT compilation, a dequant-to-BF16 fallback. Those costs are the **genericity tax**.
 
-Atlas refuses the factoring. There is no `ℰ`. `Kernels : 𝒯 → 𝐒𝐞𝐭` is defined directly, object by object, with no intermediate. This is why `avarok-kernels` has no runtime compilation and no dispatch branching: there is nothing to branch over.
+Avarok refuses the factoring. There is no `ℰ`. `Kernels : 𝒯 → 𝐒𝐞𝐭` is defined directly, object by object, with no intermediate. This is why `avarok-kernels` has no runtime compilation and no dispatch branching: there is nothing to branch over.
 
 The 3.6× gap on Qwen3.5-35B against NVIDIA's vLLM is the cost of NVIDIA's `G` on that particular object. The benchmarks in [Benchmarks](../operations/benchmarks.md) report what the cost is, per kernel and end-to-end, across the whole matrix.
 
@@ -125,7 +125,7 @@ Nothing in the book changes when you put on the categorical lens. What changes i
 
 ## 9. What this perspective does not prove
 
-Category theory names structures. It does not measure throughput, does not verify kernel correctness, does not port Atlas to a new hardware vendor, and does not write tool-call parsers. Everything the formalism claims follows from the code already being organised along these lines; the formalism is a mirror, not an engine.
+Category theory names structures. It does not measure throughput, does not verify kernel correctness, does not port Avarok to a new hardware vendor, and does not write tool-call parsers. Everything the formalism claims follows from the code already being organised along these lines; the formalism is a mirror, not an engine.
 
 In particular:
 

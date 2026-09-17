@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W8A16 GEMV, HOPPER-TUNED — fused FP8-E4M3 weight dequant + BF16 GEMV
+// Avarok W8A16 GEMV, HOPPER-TUNED — fused FP8-E4M3 weight dequant + BF16 GEMV
 // for M=1 decode (#928).
 //
 //   out[n] = sum_k A[0,k] * E4M3[B[n,k]] * block_scale[n/128, k/128]

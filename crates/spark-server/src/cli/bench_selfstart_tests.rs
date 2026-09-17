@@ -64,7 +64,7 @@ fn a_clean_box_serves_at_the_recipes_utilisation() {
 
 #[test]
 fn a_co_tenanted_box_is_refused_with_the_remedies() {
-    // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Atlas 32 %
+    // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Avarok 32 %
     // at C=16 while costing vLLM ~0, so this corrupts the measurement long
     // before it OOM-freezes the box.
     let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b", 0.85).expect_err("refused");

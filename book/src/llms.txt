@@ -1,6 +1,6 @@
-# The Atlas Book
+# The Avarok Book
 
-> Documentation for Atlas — an open source, pure Rust and CUDA LLM inference
+> Documentation for Avarok — an open source, pure Rust and CUDA LLM inference
 > engine. One ~75 MB binary, no Python, no PyTorch.
 
 This is the reference documentation. It covers installing and running the
@@ -44,7 +44,7 @@ and published alongside it.
 - [Speculative Decoding (MTP)](https://docs.atlascybernetics.ai/deep-dives/mtp.html)
 - [Constrained Decoding (XGrammar)](https://docs.atlascybernetics.ai/deep-dives/xgrammar.html)
 
-## Part V — Operating Atlas
+## Part V — Operating Avarok
 
 - [OpenAI-Compatible Server](https://docs.atlascybernetics.ai/operations/server.html)
 - [Tool Calling & Streaming](https://docs.atlascybernetics.ai/operations/tools.html)
@@ -73,8 +73,8 @@ and published alongside it.
 
 ## Optional
 
-- [Atlas Inference](https://atlascybernetics.ai): the project site — also at https://atlascybernetics.ai/llms.txt
+- [Avarok Inference](https://atlascybernetics.ai): the project site — also at https://atlascybernetics.ai/llms.txt
 - [Engineering blog](https://blog.atlascybernetics.ai): measured notes — also at https://blog.atlascybernetics.ai/llms.txt
-- [Source](https://github.com/Avarok-Cybersecurity/atlas): pure Rust and CUDA, AGPL-3.0-only
+- [Source](https://github.com/Avarok-Cybersecurity/avarok): pure Rust and CUDA, AGPL-3.0-only
 - [Recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes): the model SSOT
 - [Discord](https://discord.gg/RQcGakU2jW)

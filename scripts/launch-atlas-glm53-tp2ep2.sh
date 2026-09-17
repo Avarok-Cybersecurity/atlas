@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/glm53-launch-safety.sh
 source "$SCRIPT_DIR/lib/glm53-launch-safety.sh"
 
-IMAGE="${IMAGE:-atlas-glm53:t3}"
+IMAGE="${IMAGE:-avarok-glm53:t3}"
 MODEL_DIR="${MODEL_DIR:-/home/cluster/glm53-ckpt}"
 NODES=(10.10.10.1 10.10.10.2)
 MASTER=10.10.10.1
@@ -57,7 +57,7 @@ readonly SAFE_EXTRA_ARGS
 for RANK in 0 1; do
   IP=${NODES[$RANK]}
   PORT=$((8888 + RANK))
-  NAME="atlas-glm53-r${RANK}"
+  NAME="avarok-glm53-r${RANK}"
   echo "=== rank $RANK on $IP (port $PORT) ==="
   ssh "cluster@$IP" "docker rm -f $NAME 2>/dev/null; \
     docker run -d --name $NAME \
@@ -91,12 +91,12 @@ cat <<'EOF'
 === both ranks started ===
 
 FABRIC CHECK (do this before anything else):
-  ssh cluster@10.10.10.1 'docker logs atlas-glm53-r0 2>&1 | grep -E "NET/IB|NET/Socket"'
+  ssh cluster@10.10.10.1 'docker logs avarok-glm53-r0 2>&1 | grep -E "NET/IB|NET/Socket"'
     NET/IB + both rails  -> good
     NET/Socket           -> STOP
 
 PROGRESS:
-  ssh cluster@10.10.10.1 'docker logs -f atlas-glm53-r0'
+  ssh cluster@10.10.10.1 'docker logs -f avarok-glm53-r0'
 
 RESIDENCY (GB10 is unified memory — read the NODE, never docker stats):
   ssh cluster@10.10.10.1 'free -g | sed -n 2p'

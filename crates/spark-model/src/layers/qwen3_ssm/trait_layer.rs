@@ -27,11 +27,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        if let Some(ple) = self.ple.as_ref() {
-            let st = ple_seq_state(ple, state, gpu)?;
-            ple.prestage(st, &[token], gpu, stream)?;
-        }
-        Ok(())
+        self.decode_prestage_body(token, state, gpu, stream)
     }
 
     fn has_aux_state(&self) -> bool {
@@ -40,9 +36,47 @@ impl TransformerLayer for Qwen3SsmLayer {
 
     /// PLE's per-seq host hash on the hc multi-seq decode path is
     /// capture-illegal (pageable reads); the single-decode path prestages
-    /// around it, the batched path does not — veto batched graphs.
+    /// around it, the batched path does not — veto batched graphs. Native
+    /// EXL3 MoE experts launch cooperatively (never capturable) — same veto,
+    /// keyed on the layer itself rather than the lm_head coincidence.
     fn decode_graph_unsupported(&self) -> bool {
-        self.ple.is_some()
+        self.ple.is_some() || self.exl3_graph_veto()
+    }
+
+    fn exl3_graph_veto(&self) -> bool {
+        // Native EXL3 GDN projections (AVAROK_EXL3_NATIVE_DENSE=1) are the
+        // same cooperative-launch class as the MoE experts.
+        self.ffn.exl3_native_moe() || self.exl3_gdn.is_some()
+    }
+
+    fn snapshot_aux_plan(&self, state: &dyn LayerState) -> crate::layer::AuxSnapshotPlan {
+        use crate::layer::AuxSnapshotPlan as P;
+        let Some(ple) = self.ple.as_ref() else {
+            return P::Batched { bytes: 0 };
+        };
+        match state
+            .as_any()
+            .downcast_ref::<crate::layer::SsmLayerState>()
+            .and_then(|s| s.ple.as_ref())
+        {
+            Some(st) => P::Batched {
+                bytes: ple.aux_blob_len(st),
+            },
+            None if state.as_any().is::<crate::layer::SsmLayerState>() => P::Batched { bytes: 0 },
+            // Unexpected state type — let the legacy path raise the downcast
+            // error instead of contributing nothing.
+            None => P::Unbatched,
+        }
+    }
+
+    fn snapshot_aux_into(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+        dst: &mut [u8],
+    ) -> Result<()> {
+        self.snapshot_aux_into_body(state, gpu, stream, dst)
     }
 
     fn snapshot_aux(
@@ -51,19 +85,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Option<Vec<u8>>> {
-        let Some(ple) = self.ple.as_ref() else {
-            return Ok(None);
-        };
-        let ssm = state
-            .as_any()
-            .downcast_ref::<crate::layer::SsmLayerState>()
-            .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
-        match ssm.ple.as_ref() {
-            Some(st) => Ok(Some(ple.snapshot_aux(st, gpu, stream)?)),
-            // Sequence never ran this layer (snapshot before first pass):
-            // nothing to carry, and restore-side declines aux-less slots.
-            None => Ok(None),
-        }
+        self.snapshot_aux_body(state, gpu, stream)
     }
 
     fn restore_aux(
@@ -73,12 +95,33 @@ impl TransformerLayer for Qwen3SsmLayer {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        let ple = self
-            .ple
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("restore_aux: no PLE on this layer"))?;
-        let st = ple_seq_state(ple, state, gpu)?;
-        ple.restore_aux(st, blob, gpu, stream)
+        self.restore_aux_body(state, blob, gpu, stream)
+    }
+
+    /// PLE's half of the K-row verify commit: rewind the rolling conv +
+    /// history window to the snapshot taken after row `row`.
+    ///
+    /// Only meaningful after `decode_batched_inner_hc` ran — that is what
+    /// records the per-row snapshots. No PLE on this layer, or no sequence
+    /// state yet, means nothing was advanced and there is nothing to rewind.
+    fn commit_verify_row(
+        &self,
+        state: &mut dyn LayerState,
+        row: usize,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        self.commit_verify_row_body(state, row, gpu, stream)
+    }
+
+    fn replay_verify_rows(
+        &self,
+        state: &mut dyn LayerState,
+        num_accepted: usize,
+        ctx: &crate::layer::ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.replay_verify_rows_body(state, num_accepted, ctx, stream)
     }
 
     fn decode_prestage_rearm(&self, state: &mut dyn LayerState) {
@@ -136,16 +179,16 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // v1 is C=1 only under an mHC highway: these paths keep their own
-        // residual bookkeeping, which the highway replaces. Refusing is the
-        // point — a batched GDN step running on an unmixed stream produces
-        // plausible, wrong activations. Atlas #753.
-        self.refuse_batched_under_hc("decode_batched")?;
-        self.decode_batched_inner(
+        self.decode_batched_body(
             hidden,
             residual,
             num_tokens,
-            super::trait_decode_batched::GdnStates::Single(state),
+            state,
+            _kv_cache,
+            _seq_len,
+            _block_table,
+            _disk_block_ids,
+            _disk_last_offloaded_per_layer,
             ctx,
             stream,
         )
@@ -163,11 +206,20 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.refuse_batched_under_hc("decode_verify_multi")?;
         anyhow::ensure!(
             states.len() == n_seqs && ks.len() == n_seqs,
             "decode_verify_multi: states/ks/n mismatch"
         );
+        // Highway models take the bracketed body: the non-hc path below
+        // maintains its OWN residual, which the highway replaces, so running
+        // it here would count every block output twice (the defect
+        // `refuse_batched_under_hc` guarded until this existed — #753 item B
+        // for the verify axis, the analogue of `trait_decode_multi_seq/hc.rs`
+        // for decode).
+        if self.hc.is_some() {
+            return self
+                .decode_verify_multi_inner_hc(hidden, n_seqs, ks, states, wy_tables, ctx, stream);
+        }
         let num_tokens: usize = ks.iter().sum();
         self.decode_batched_inner(
             hidden,
@@ -229,13 +281,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // Under an mHC highway the residual bookkeeping is completely
-        // different — the highway IS the residual — so this is a second entry
-        // path, not a flag on the first. See `trait_prefill_hc.rs`.
-        if self.hc.is_some() {
-            return self.prefill_inner_hc(hidden, num_tokens, state, seq_len_start, ctx, stream);
-        }
-        self.prefill_inner(
+        self.prefill_body(
             hidden,
             residual,
             num_tokens,
@@ -395,7 +441,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        self.prefill_phase3_inner(
+        self.prefill_phase3_body(
             hidden,
             residual,
             num_tokens,
@@ -449,3 +495,6 @@ fn ple_seq_state<'a>(
     }
     Ok(ssm.ple.as_mut().expect("just created"))
 }
+
+#[path = "trait_layer_bodies.rs"]
+mod trait_layer_bodies;

@@ -239,7 +239,11 @@ pub fn step_verify_dflash_batched(
         }
         let prop_idx: Vec<usize> = group.to_vec();
         let tokens: Vec<u32> = prop_idx.iter().map(|&i| batch[i].last_token).collect();
-        let positions: Vec<usize> = prop_idx.iter().map(|&i| batch[i].seq.seq_len).collect();
+        // Rotary positions, not token indices (SequenceState::rope_pos).
+        let positions: Vec<usize> = prop_idx
+            .iter()
+            .map(|&i| batch[i].seq.rope_pos() as usize)
+            .collect();
         let stash_idx: Vec<usize> = prop_idx.clone();
         let result = {
             let mut seq_refs: Vec<&mut SequenceState> = Vec::with_capacity(prop_idx.len());

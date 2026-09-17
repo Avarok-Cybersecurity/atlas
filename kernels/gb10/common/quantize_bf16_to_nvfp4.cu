@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas BF16 → NVFP4 runtime weight quantization.
+// Avarok BF16 → NVFP4 runtime weight quantization.
 //
 // Two-phase quantization at model load time:
 //   Phase 1: nvfp4_global_absmax — find max |weight| across entire matrix

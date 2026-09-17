@@ -121,7 +121,7 @@ pub(crate) fn run() -> Result<()> {
             }
             // 🔴 NEGATIVE CONTROL for the clamp asymmetry. Recompute the activation on the
             // host from the SAME gate/up the GPU produced, but with the WRONG (symmetric) gate
-            // clamp, and require Atlas to be far from it. Without this, a kernel that clamps
+            // clamp, and require Avarok to be far from it. Without this, a kernel that clamps
             // `gate` on both sides passes every positive check — the two agree exactly wherever
             // `gate > -limit`, which is everywhere at the default input scale.
             if rn == "clamp64" {
@@ -223,7 +223,7 @@ pub(crate) fn run() -> Result<()> {
             );
         }
 
-        // ── floor C: Atlas's CUDA dequant vs the independent ModelOpt reference ──
+        // ── floor C: Avarok's CUDA dequant vs the independent ModelOpt reference ──
         for proj in ["gate_proj", "up_proj", "down_proj"] {
             let &(pp, sp, s2, n, k) = &wp[proj];
             let d_out = gpu.alloc(n * k * 2)?;
@@ -240,7 +240,7 @@ pub(crate) fn run() -> Result<()> {
             gpu.synchronize(0)?;
             let got = down_bf16(&gpu, d_out, n * k)?;
             let want = g.get(&sec, &format!("deq_{proj}"))?;
-            // 🔴 Floor C is a BIT-EXACTNESS test, not a tolerance. Atlas writes bf16, so round
+            // 🔴 Floor C is a BIT-EXACTNESS test, not a tolerance. Avarok writes bf16, so round
             // the fp32 reference to bf16 FIRST and then demand equality: two independent decoders
             // of the same packed bits must produce the same numbers. Comparing an fp32 reference
             // against a bf16 result and calling the gap "the dequant floor" would hide a real
@@ -267,7 +267,7 @@ pub(crate) fn run() -> Result<()> {
             });
             if mismatches != 0 {
                 bail!(
-                    "expert {e} {proj}: Atlas's CUDA dequant disagrees with the ModelOpt \
+                    "expert {e} {proj}: Avarok's CUDA dequant disagrees with the ModelOpt \
                      reference on {mismatches} of {} sampled elements",
                     want_b.0.len()
                 );

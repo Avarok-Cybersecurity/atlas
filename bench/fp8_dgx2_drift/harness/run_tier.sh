@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Run N opencode probes sequentially against the currently-running Atlas
+# Run N opencode probes sequentially against the currently-running Avarok
 # container (and optionally a remote vLLM via SSH tunnel) and score each one.
-# Intended for statistical comparison of Atlas drift-mitigation tiers
+# Intended for statistical comparison of Avarok drift-mitigation tiers
 # (N≥10 per tier required to overcome the FP8 per-run variance).
 #
 # Usage:
@@ -42,7 +42,7 @@ COSINE_MODE=0
 SKIP_WARMUP=0
 REMOTE_ONLY=0
 BAIL=0
-# --claude-code: drive Claude Code (the `claude` CLI) against Atlas instead of
+# --claude-code: drive Claude Code (the `claude` CLI) against Avarok instead of
 # opencode, via `sudo -u claude env ANTHROPIC_BASE_URL=... claude -p ...`.
 # Reproduces the non-opencode-client looping/garbling failure. Defaults to
 # plan mode (CC_PERMISSION_MODE), the regime in which the failure was reported.
@@ -255,10 +255,10 @@ run_one() {
   # --dir sets opencode's working directory; the model sees only "current
   # working directory" in the prompt, never the absolute path.
   if [[ "${CLAUDE_CODE}" == "1" ]]; then
-    # Drive Claude Code against Atlas. Runs as user `claude` with its real
+    # Drive Claude Code against Avarok. Runs as user `claude` with its real
     # ~/.claude config (model=claude-opus-4-8, alwaysThinking, effort=high) so
     # this faithfully reproduces the reported failure regime. ANTHROPIC_BASE_URL
-    # routes to Atlas; cwd is the target dir (claude has no --dir flag). Default
+    # routes to Avarok; cwd is the target dir (claude has no --dir flag). Default
     # plan mode (CC_PERMISSION_MODE) — the regime in which the loop was reported.
     # Prompt is piped via stdin (NOT a positional): claude's `--add-dir` is
     # variadic and would otherwise swallow a trailing prompt arg. cwd is the
@@ -324,7 +324,7 @@ run_one() {
   # the scorer's curl then hit, producing false positives/negatives. The scorer
   # now uses an ephemeral port (so it is already isolated), but we reap the leak
   # at the source too. Identify victims PRECISELY by working directory == this
-  # run's target dir, so we never touch the Atlas container or anything else.
+  # run's target dir, so we never touch the Avarok container or anything else.
   # Same-user processes (opencode runs as us), no sudo needed.
   if [[ -n "${TARGET}" && -d "${TARGET}" ]]; then
     _tdir_real=$(readlink -f "${TARGET}" 2>/dev/null || echo "${TARGET}")
@@ -336,7 +336,7 @@ run_one() {
     done
   fi
 
-  # Atlas log window for THIS run only (local only).
+  # Avarok log window for THIS run only (local only).
   if [[ "${label}" == "local" ]]; then
     START_TS_INT=${START_TS%.*}
     sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true

@@ -82,7 +82,7 @@ using StandardAttention = DefaultAttention</*use_custom_mask=*/false,
 // qo_idx < qo_len. That is exactly StandardAttention's behaviour, so full
 // -attention layers pass window_left = -1 and SWA layers pass 511.
 //
-// Atlas's own kernel masks when (q - k) >= sliding_window
+// Avarok's own kernel masks when (q - k) >= sliding_window
 // (kernels/gb10/common/inferspark_prefill.cu:754-762), so the FlashInfer
 // equivalent is window_left = sliding_window - 1.
 using WindowedAttention = DefaultAttention</*use_custom_mask=*/false,

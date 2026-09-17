@@ -4,7 +4,7 @@
 //!
 //! A KAT asserts that a given input produces a given output. That assertion is
 //! only meaningful if the output is a function of THAT input — so no state
-//! produced while serving one request may reach another. Several Atlas
+//! produced while serving one request may reach another. Several Avarok
 //! subsystems exist precisely to carry state across requests, because carrying
 //! it is usually the whole point; under a KAT they are the bug.
 //!

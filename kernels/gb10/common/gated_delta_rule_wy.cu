@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — 2-pass GDN for speculative verification.
+// Avarok WY-Chunkwise Gated Delta Rule — 2-pass GDN for speculative verification.
 //
 // Uses the WY (Woodbury-Young) representation from GatedDeltaNet (ICLR 2025)
 // to compute all H^T @ k_t dot products in a single pass over H, then applies

@@ -55,7 +55,7 @@
       {
         '@type': 'Organization',
         '@id': `${SITE}#org`,
-        name: 'Atlas Inference',
+        name: 'Avarok Inference',
         url: SITE,
         logo: `${SITE}icon-512.png`,
         description: tagline,
@@ -65,7 +65,7 @@
         '@type': 'WebSite',
         '@id': `${SITE}#site`,
         url: SITE,
-        name: 'Atlas Inference',
+        name: 'Avarok Inference',
         description: tagline,
         inLanguage: 'en',
         publisher: { '@id': `${SITE}#org` }
@@ -73,8 +73,8 @@
       {
         '@type': 'SoftwareApplication',
         '@id': `${SITE}#app`,
-        name: 'Atlas Inference Engine',
-        alternateName: 'Atlas',
+        name: 'Avarok Inference Engine',
+        alternateName: 'Avarok',
         applicationCategory: 'DeveloperApplication',
         applicationSubCategory: 'LLM inference engine',
         operatingSystem: 'Linux',

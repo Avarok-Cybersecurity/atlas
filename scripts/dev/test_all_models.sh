@@ -1,5 +1,5 @@
 #!/bin/bash
-# Atlas comprehensive model test suite
+# Avarok comprehensive model test suite
 # Usage: ./test_all_models.sh <model_id> <port> [extra_args...]
 # Output: JSON lines to stdout
 

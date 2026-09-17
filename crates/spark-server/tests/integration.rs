@@ -611,7 +611,7 @@ fn prompt_logprobs_collection_during_prefill() -> Result<()> {
     Ok(())
 }
 
-/// Free device memory according to the SYSTEM, not to Atlas.
+/// Free device memory according to the SYSTEM, not to Avarok.
 ///
 /// Deliberately external: a leak test that asks the allocator under test how
 /// much it thinks it freed would pass on a bug in that very accounting. The

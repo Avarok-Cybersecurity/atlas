@@ -226,7 +226,7 @@ pub(crate) async fn rate_limit_middleware(
 /// the rate limiter already set.
 ///
 /// They are a FALLBACK, not an override. The call site's comment used to read
-/// "Atlas does not enforce rate limits" and the loop used `insert`, which was
+/// "Avarok does not enforce rate limits" and the loop used `insert`, which was
 /// true when written and became false when the limiter landed: this layer runs
 /// outside `rate_limit_middleware`, so it overwrote the real numbers with
 /// "unlimited, nothing used, no reset" on every response. A client honouring

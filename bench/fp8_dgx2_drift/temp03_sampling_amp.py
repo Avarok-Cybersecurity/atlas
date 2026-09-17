@@ -104,7 +104,7 @@ def main():
         pv = softmax_T(Lv, T); pa = softmax_T(La, T)
         t = tvd(pv, pa)
         klva = kl(pv, pa)
-        # prob mass that Atlas places on vLLM's top-1 token (i.e. agreement prob)
+        # prob mass that Avarok places on vLLM's top-1 token (i.e. agreement prob)
         p_agree = float(pa[av])
         p_v_top1 = float(pv[av])
         # probability the two engines sample DIFFERENT tokens in one independent draw

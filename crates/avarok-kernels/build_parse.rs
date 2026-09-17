@@ -12,6 +12,10 @@ use super::{DflashRaw, ModelTypeMatch, SamplingCat};
 mod behavior;
 pub(super) use behavior::*;
 
+#[path = "build_parse_presets.rs"]
+mod presets;
+pub(super) use presets::*;
+
 pub(super) fn parse_kernel_toml(
     kernel_dir: &std::path::Path,
     vendor: &str,

@@ -4,10 +4,10 @@ hooks for the master drift table.
 
 For every transformer layer (40 layers, 10 full-attn at L3,7,11,...,39 and 30
 linear-attn / SSM at the rest), register forward hooks on every named
-submodule that maps to an Atlas op-dump. Captures the LAST token of each
+submodule that maps to an Avarok op-dump. Captures the LAST token of each
 op's output as f32 to `<dir>/hf_op_L{i}_{op}.bin`.
 
-Atlas op names → HF module mapping (per layer):
+Avarok op names → HF module mapping (per layer):
   - input_norm_in    : input to `input_layernorm` (= residual stream, captured
                        via the layer's __call__ pre-hook on hidden_states arg)
   - input_norm_out   : output of `input_layernorm`

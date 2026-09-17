@@ -12,7 +12,7 @@
 //!   * Head-wise attention gate (g_proj)
 //!   * Partial RoPE 0.5 (64 of 128 dims)
 //!
-//! Field mapping from Step 3.7 config.json → Atlas ModelConfig:
+//! Field mapping from Step 3.7 config.json → Avarok ModelConfig:
 //!   moe_num_experts       → num_experts
 //!   moe_top_k             → num_experts_per_tok
 //!   moe_intermediate_size → moe_intermediate_size
@@ -108,7 +108,7 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
     config.weight_prefix = "model.language_model".to_string();
 
     // ── MoE field mapping ───────────────────────────────────────────────
-    // Step 3.7 uses different field names than Atlas defaults
+    // Step 3.7 uses different field names than Avarok defaults
     if config.num_experts == 0 {
         config.num_experts = text_config
             .get("moe_num_experts")
@@ -156,7 +156,7 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
     // KNOWN LIMITATION: Step 3.7 uses per-layer rope_theta and
     // partial_rotary_factors arrays (theta=5e6 for full-attention layers,
     // theta=1e4 for sliding layers; prf=0.5 for full, 1.0 for sliding).
-    // Atlas ModelConfig currently supports only a single scalar for each.
+    // Avarok ModelConfig currently supports only a single scalar for each.
     // We take the first element (full-attention value). This means sliding
     // layers will use incorrect RoPE parameters — acceptable for initial
     // bring-up but will need per-layer support for correct output.
@@ -283,7 +283,7 @@ pub(crate) fn parse_step3p7(raw: &serde_json::Value) -> Result<ModelConfig> {
     // per head), unlike Qwen 3.5's interleaved Q+G pattern where the gate
     // has the same dimension as Q.
     //
-    // Atlas's gated attention pipeline assumes Q+G are interleaved in a
+    // Avarok's gated attention pipeline assumes Q+G are interleaved in a
     // single [2*q_dim, hidden] weight, and the deinterleave+sigmoid_gate_mul
     // kernels work element-wise. Step 3.7's per-head gate would require a
     // different kernel (broadcast over head_dim) or weight tiling.

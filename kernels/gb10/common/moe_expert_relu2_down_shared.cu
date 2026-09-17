@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Fused MoE Expert relu²+down GEMV — for 2-projection experts (Nemotron-H).
+// Avarok Fused MoE Expert relu²+down GEMV — for 2-projection experts (Nemotron-H).
 //
 // Nemotron-H MoE experts have only up_proj + down_proj (no gate_proj).
 // Activation: relu(x)^2 (ReLU-squared) instead of SiLU(gate)*up.

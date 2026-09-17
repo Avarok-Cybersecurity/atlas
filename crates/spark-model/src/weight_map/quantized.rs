@@ -35,7 +35,7 @@ pub enum WeightQuantFormat {
     /// Consumed by `w8a16_gemv` / `w8a16_gemm`.
     Fp8PerRow,
     /// FP8 E4M3 weight + per-block BF16 dequant scale (`[N/BS, K/BS]` BF16).
-    /// Standard Qwen-team FP8 release format (BS=128). NO Atlas kernel
+    /// Standard Qwen-team FP8 release format (BS=128). NO Avarok kernel
     /// currently consumes this directly for SSM — kernels expect either
     /// dequant-to-BF16-then-NVFP4 (current path) or single-scale FP8.
     /// **Block-scaled FP8 GEMV/GEMM is the missing kernel** (open task).
@@ -62,6 +62,15 @@ pub enum WeightQuantFormat {
     /// native `q2_0_gemv` decode GEMV. Consumed only by that kernel — feeding
     /// these bytes through any other GEMV/GEMM is silent garbage.
     PackedQ2_0,
+    /// Keep-packed EXL3 (QTIP trellis, `AVAROK_EXL3_NATIVE=1`): u16 trellis
+    /// codes `[in/16, out/16, 16*K]` + exact-f16 `suh`/`svh` Hadamard sign
+    /// vectors, decoded in-kernel by the fused `exl3_matmul` GEMV/GEMM
+    /// (cooperative launches; see `layers/ops/exl3_matmul.rs`). Consumed only
+    /// by those kernels — the trellis bytes are code STREAMS, not values, so
+    /// feeding them through any other GEMV/GEMM is silent garbage. This tag is
+    /// also the future `experts_scale_kind` value for a grouped-MoE trellis
+    /// arm (the `Mxfp4E8m0` precedent).
+    Exl3Trellis,
 }
 
 impl WeightQuantFormat {

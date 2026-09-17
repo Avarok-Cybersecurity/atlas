@@ -3,7 +3,7 @@
 //!
 //! ★ REFERENCE IMPLEMENTATION — A BENCHMARK TARGET, NOT A DEPENDENCY.
 //!
-//! Atlas ships its OWN kernels. CUTLASS is wrapped here for exactly one
+//! Avarok ships its OWN kernels. CUTLASS is wrapped here for exactly one
 //! purpose: to be the opponent we measure against and beat. **Nothing in a
 //! default build or a default serve calls a single line of it.**
 //!
@@ -15,7 +15,7 @@
 //!   2. RUNTIME — the dispatch arms are opt-in behind `AVAROK_CUTLASS_GEMM=1`.
 //!      The default is OFF.
 //!
-//! So the honest reading of an Atlas performance number is that Atlas kernels
+//! So the honest reading of an Avarok performance number is that Avarok kernels
 //! produced it, because a default binary cannot reach this code. Export the
 //! env var and you are measuring CUTLASS — label the number that way.
 //!

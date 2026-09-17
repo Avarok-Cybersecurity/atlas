@@ -3,7 +3,7 @@
 **Date**: 2026-06-03 → 2026-06-05 (3-day integration sprint)
 **Node**: DGX Spark (GB10, 121.7 GB unified memory)
 **Checkpoint**: `stepfun-ai/Step-3.7-Flash-NVFP4` (121 GB, 14 safetensors)
-**PR**: [#119](https://github.com/Avarok-Cybersecurity/atlas/pull/119)
+**PR**: [#119](https://github.com/Avarok-Cybersecurity/avarok/pull/119)
 **Branch**: `feat/step3p7-flash`
 
 ---
@@ -26,9 +26,9 @@
 ## Model Architecture
 
 Step 3.7 Flash is a **196B MoE** with **~11B active** per forward pass.
-Architecture is a hybrid of patterns Atlas already supports:
+Architecture is a hybrid of patterns Avarok already supports:
 
-| Property | Step 3.7 | Nearest Atlas Model |
+| Property | Step 3.7 | Nearest Avarok Model |
 |----------|----------|-------------------|
 | Expert routing | Sigmoid, 288 top-8 | MiniMax M2 (sigmoid, 256 top-8) |
 | Shared expert | 1280 intermediate | Qwen 3.5 (shared expert) |
@@ -58,7 +58,7 @@ layer type: every full-attention layer gets the large theta (long-range
 positional encoding), every sliding-attention layer gets the small theta
 (local positional encoding within the 512-token window).
 
-> **Known limitation**: Atlas `ModelConfig` stores a single `rope_theta`
+> **Known limitation**: Avarok `ModelConfig` stores a single `rope_theta`
 > scalar. The current parser takes element [0] (5,000,000 — the
 > full-attention value). Sliding-attention layers receive the wrong theta.
 > Correct fix requires per-layer theta in `ModelConfig` or a dispatch
@@ -88,11 +88,11 @@ model.layers.3.moe.gate_proj.weight_scale_2  shape: [288]             (FP32)
 model.layers.3.moe.gate_proj.input_scale     shape: [288]             (FP32)
 ```
 
-This creates two problems for Atlas:
+This creates two problems for Avarok:
 
 1. **OOM on single-Spark**: The fused checkpoint is 121 GB on disk. After
    CUDA init + 90 PTX modules, ~115 GB remains — not enough.
-2. **EP incompatibility**: Atlas EP filtering relies on
+2. **EP incompatibility**: Avarok EP filtering relies on
    `parse_expert_index()` finding `.experts.N.` in tensor names. Fused
    tensor names have no per-expert index, so EP can't skip remote experts.
 
@@ -163,7 +163,7 @@ Six iterative builds to reach clean compilation:
 | 6 | `tracing` crate unavailable in `avarok-core` | Removed tracing call |
 
 **Final build**: Clean. 90 kernel modules compiled. Docker image
-`atlas-step3p7:latest` (2.79 GB).
+`avarok-step3p7:latest` (2.79 GB).
 
 ---
 
@@ -171,9 +171,9 @@ Six iterative builds to reach clean compilation:
 
 ### Launch Command
 ```bash
-sudo docker run --name atlas-step3p7 --gpus all --ipc=host --network host \
+sudo docker run --name avarok-step3p7 --gpus all --ipc=host --network host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  atlas-step3p7:latest serve stepfun-ai/Step-3.7-Flash-NVFP4 \
+  avarok-step3p7:latest serve stepfun-ai/Step-3.7-Flash-NVFP4 \
     --port 8888 --kv-cache-dtype fp8 --kv-high-precision-layers auto \
     --gpu-memory-utilization 0.92 --scheduling-policy slai \
     --max-seq-len 8192 --speculative 0 --ssm-cache-slots 0
@@ -194,7 +194,7 @@ sudo docker run --name atlas-step3p7 --gpus all --ipc=host --network host \
 allocating CUDA context + 90 PTX modules + buffer arena, only ~115 GB
 remains. This is a fundamental size constraint — the model is 6 GB
 larger than Qwen3.5-122B (90 GB) and 26 GB larger than Nemotron-Super
-(94 GB), the two largest models Atlas currently serves on single-GPU.
+(94 GB), the two largest models Avarok currently serves on single-GPU.
 
 **Path forward**: EP=2 with the split checkpoint. Each rank loads 144 of
 288 experts, reducing per-node weight footprint to ~61 GB (estimated).
@@ -207,7 +207,7 @@ designed to be served.
 
 A complete review of the 5,816-line diff was performed using Claude Code
 with Opus 4.8. Nine findings ranked by severity; six addressed in commit
-[`c78f626`](https://github.com/marksunner/atlas/commit/c78f626a93654680649991316ba0d36d66808762):
+[`c78f626`](https://github.com/marksunner/avarok/commit/c78f626a93654680649991316ba0d36d66808762):
 
 ### Bugs Fixed
 
@@ -225,7 +225,7 @@ with Opus 4.8. Nine findings ranked by severity; six addressed in commit
 | # | Issue | Impact | Notes |
 |---|-------|--------|-------|
 | 7 | Per-layer `rope_theta` collapsed to scalar | Quality degradation at margin | Requires `ModelConfig` schema change |
-| 8 | `layer_types` distinction (full vs sliding) discarded | All layers get `sliding_window=512` | Correct for sliding layers; full-attention layers shouldn't window but Atlas applies globally |
+| 8 | `layer_types` distinction (full vs sliding) discarded | All layers get `sliding_window=512` | Correct for sliding layers; full-attention layers shouldn't window but Avarok applies globally |
 | 9 | `shared_expert_gate` dummy (2 bytes) vs blend kernel expectation | Potential OOB read if blend kernel fires | Step 3.7 shared expert is unconditional — verify blend kernel not on dispatch path |
 
 ---
@@ -300,19 +300,19 @@ is well within range.
 
 ## Next Steps
 
-1. **[P0] EP=2 runtime validation**: Run Atlas with the split checkpoint
+1. **[P0] EP=2 runtime validation**: Run Avarok with the split checkpoint
    across two DGX Sparks. Verify weight loading, expert routing, and
    inference quality. Hardware is available (Spark 4 + Spark 6, QSFP
    200 Gbps interconnect verified).
 2. **[P1] Per-layer rope_theta**: Propose `ModelConfig` schema extension
    or per-layer override mechanism. This is the single largest quality
    gap — 500× theta difference between full and sliding layers.
-3. **[P1] Sliding vs full attention dispatch**: Investigate whether Atlas
+3. **[P1] Sliding vs full attention dispatch**: Investigate whether Avarok
    runtime can conditionally apply `sliding_window` per layer based on
    `layer_types`. Currently all layers receive `sliding_window=512`.
 4. **[P2] MTP support**: Step 3.7 has 3 MTP draft modules (layers 45–47).
    Loader currently returns empty for MTP tensors. Enabling speculative
-   decoding requires mapping these to Atlas's MTP framework.
+   decoding requires mapping these to Avarok's MTP framework.
 5. **[P2] Benchmark**: Once serving, run the standard test suite
    (coherence, tool calls, TPS, long context) and add results to
    `tests/SINGLE_GPU_RESULTS.md`.
@@ -343,7 +343,7 @@ is well within range.
 ### Crash Analysis: q_proj ≠ hidden_size
 
 Step 3.7's Q projection output (8192 = 64 heads × 128 dim) is **2×**
-the hidden dimension (4096). Every other Atlas model has
+the hidden dimension (4096). Every other Avarok model has
 `q_heads * head_dim == hidden_size`. If attention kernels size buffers
 by `hidden_size`, the Q projection overflows.
 

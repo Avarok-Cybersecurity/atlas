@@ -124,7 +124,7 @@ tool_call_parser = "poolside_v1"
 # generic generation_config.json retains 1.0 / 1.0 evaluation defaults.
 use_sampling_presets_for_core = true
 # OpenCode already supplies its cwd in the native system prompt. Reinjecting a
-# second Atlas-specific environment block made Laguna fixate on path discovery.
+# second Avarok-specific environment block made Laguna fixate on path discovery.
 disable_cwd_hint_injection = true
 
 [[model_types]]

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run smoke test + coherence + concurrency benchmark for all 6 Atlas models.
+# Run smoke test + coherence + concurrency benchmark for all 6 Avarok models.
 # Single-node models: max-batch-size=16, concs=1,2,4,8,16
 # 27B Dense: conc=1 only (too slow for batched decode)
 # 122B EP=2: conc=1 only (EP forces batch=1)
@@ -118,7 +118,7 @@ run_model() {
     echo "  Done: $name"
 }
 
-echo "=== Atlas Concurrency Benchmark Sweep ==="
+echo "=== Avarok Concurrency Benchmark Sweep ==="
 echo "Date: $(date)"
 echo "Image: $IMAGE"
 echo ""

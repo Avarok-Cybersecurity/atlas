@@ -223,6 +223,7 @@ pub fn start_chunked_prefill(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
+            pending_drafts_lookup: false,
             inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
@@ -294,6 +295,8 @@ pub fn start_chunked_prefill(
             model.ep_broadcast_cmd(0)?; // chunk_start
             model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
             model.ep_broadcast_tokens(&prompt_tokens)?;
+            // Vision payload travels with the tokens (see Model::ep_exchange_vision):
+            model.ep_exchange_vision(&prompt_tokens)?;
             Ok(())
         })() {
             let msg = format!("deferred prefill EP broadcast failed: {e:#}");
@@ -385,6 +388,10 @@ pub fn start_chunked_prefill(
         if let Some(s) = vision_slice {
             model.set_vision_slice_base(s.patch_row_offset, s.grid_index_offset, s.num_images);
         }
+        // AFTER the slice base is set, so the worker receives the same bases the
+        // head will splice and walk with. This is the vision prefill path — the
+        // one that was shipping an image to rank 0 only.
+        model.ep_exchange_vision(&prompt_tokens)?;
         let _pt0 = std::time::Instant::now();
         let chunk_res = model.prefill_chunk(
             &prompt_tokens,
@@ -409,6 +416,13 @@ pub fn start_chunked_prefill(
         chunk_res
     })();
 
+    // FIRST chunk ingested here — the continue-prefills path only ever sees
+    // chunks 2..n, so counting solely there under-reported every request by
+    // exactly one `max_prefill_tokens` (measured: 4423 counted vs 12618
+    // API prompt_tokens on a 12.6k prompt, an 8192 shortfall).
+    if prefill_result.is_ok() {
+        crate::metrics::PROMPT_TOKENS_TOTAL.inc_by(chunk_len as u64);
+    }
     let logits = match prefill_result {
         Ok(l) => l,
         Err(e) => {
@@ -568,6 +582,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
+                pending_drafts_lookup: false,
                 inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
@@ -657,6 +672,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
+                pending_drafts_lookup: false,
                 inside_thinking: spontaneous_think
                     || born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,

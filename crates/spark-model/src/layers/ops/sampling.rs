@@ -175,4 +175,37 @@ pub fn batched_embed_fp8(
         .launch(stream)
 }
 
+/// EXL3 `exl3_ngram_trellis` variant of [`batched_embed`]: the arena holds
+/// RAW packed rows (`1 + 160*K/16` u16 words: fp16 row scale + tail-biting
+/// trellis ring); the kernel decodes on read (mul1 codebook), applies the
+/// row scale and the per-head bias (`head = row_index % num_heads`, the
+/// PLE gather's `[tokens, heads]` order), and writes BF16 rows of 160.
+///
+/// Kernel: `batched_embed_exl3(slots, arena, head_bias, output, num_heads,
+/// k_bits)` — block 192 covers the fixed ROW_DIM=160 lanes.
+#[allow(clippy::too_many_arguments)]
+pub fn batched_embed_exl3(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    slot_ids_dev: DevicePtr,
+    arena: DevicePtr,
+    head_bias: DevicePtr,
+    output: DevicePtr,
+    num_rows: u32,
+    num_heads: u32,
+    k_bits: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_rows, 1, 1])
+        .block([192, 1, 1])
+        .arg_ptr(slot_ids_dev)
+        .arg_ptr(arena)
+        .arg_ptr(head_bias)
+        .arg_ptr(output)
+        .arg_u32(num_heads)
+        .arg_u32(k_bits)
+        .launch(stream)
+}
+
 // ── MoE routing ──────────────────────────────────────────────────

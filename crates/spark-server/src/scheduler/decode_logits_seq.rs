@@ -17,7 +17,6 @@ use super::*;
 /// Process logits for a single active sequence: dequant, adjust, sample, return token + optional logprobs.
 #[allow(clippy::too_many_arguments)]
 pub fn process_seq_logits(
-    _model: &dyn Model,
     a: &mut ActiveSeq,
     buf: &[u8],
     i: usize,
@@ -199,7 +198,7 @@ pub fn process_seq_logits(
     let sampled = sample_with_params_history(f32_bytes, &sampler_shape, &[]);
 
     // Complete per-step logit dump (#222): AVAROK_LOGIT_DUMP=<file>. Captures
-    // top-K + every applied bias + sampled, for Atlas↔vLLM divergence
+    // top-K + every applied bias + sampled, for Avarok↔vLLM divergence
     // analysis. Inert unless the env var is set. NOTE: with the unified
     // pipeline `f32_logits` is now masked AND penalised here (the penalties
     // were folded in by `process_position_logits`); the bias field reports

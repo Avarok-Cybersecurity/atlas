@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas Dense GEMM kernel for SM121 (GB10).
+// Avarok Dense GEMM kernel for SM121 (GB10).
 //
 // C = A * B^T  where:
 //   A: [M, K] BF16 (activations, row-major)

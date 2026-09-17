@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Supported quantization and precision types for Atlas kernels.
+/// Supported quantization and precision types for Avarok kernels.
 ///
 /// Each variant maps to a specific bit-width and numeric format used by
 /// SM121 tensor cores or CUDA ALU paths.

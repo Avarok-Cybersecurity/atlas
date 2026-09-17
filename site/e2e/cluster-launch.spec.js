@@ -32,7 +32,7 @@ test.describe('@live cluster launch', () => {
       // never dials, `fleet.mode` never reaches 'live', and every assertion
       // below times out waiting for a surface that cannot mount. A @live spec
       // that cannot pass is worse than no spec, because it reads as coverage.
-      window.localStorage.setItem('atlas.agent.token', t);
+      window.localStorage.setItem('avarok.agent.token', t);
     }, TOKEN);
   });
 

@@ -28,7 +28,7 @@ pub struct PluginMetadata {
     pub help_url: &'static str,
     pub bug_report_url: &'static str,
     pub license: &'static str,
-    /// True only for plugins shipped inside Atlas itself.
+    /// True only for plugins shipped inside Avarok itself.
     ///
     /// The badge this drives is a trust signal, so it is deliberately not
     /// something a plugin sets to `true` by writing a nice-looking string —
@@ -38,24 +38,24 @@ pub struct PluginMetadata {
 }
 
 impl PluginMetadata {
-    /// A first-party Atlas plugin. Every field except the description is the
+    /// A first-party Avarok plugin. Every field except the description is the
     /// same for all of them, so this is the one place they are written.
     pub const fn avarok(description: &'static str) -> Self {
         Self {
             description,
             version: env!("CARGO_PKG_VERSION"),
-            author: "Atlas Cybersecurity",
+            author: "Avarok Cybersecurity",
             author_url: "https://atlascybernetics.ai",
             email: "support@avarok.net",
-            repository: "https://github.com/Avarok-Cybersecurity/atlas",
+            repository: "https://github.com/Avarok-Cybersecurity/avarok",
             help_url: "https://docs.atlascybernetics.ai/benchmarks",
-            bug_report_url: "https://github.com/Avarok-Cybersecurity/atlas/issues/new",
+            bug_report_url: "https://github.com/Avarok-Cybersecurity/avarok/issues/new",
             license: "AGPL-3.0-only",
             official: true,
         }
     }
 
-    /// A plugin from outside the Atlas tree. `official` is forced false.
+    /// A plugin from outside the Avarok tree. `official` is forced false.
     #[allow(clippy::too_many_arguments)]
     pub const fn third_party(
         description: &'static str,
@@ -112,12 +112,12 @@ mod tests {
             PluginMetadata {
                 description: "a benchmark",
                 version: env!("CARGO_PKG_VERSION"),
-                author: "Atlas Cybersecurity",
+                author: "Avarok Cybersecurity",
                 author_url: "https://atlascybernetics.ai",
                 email: "support@avarok.net",
-                repository: "https://github.com/Avarok-Cybersecurity/atlas",
+                repository: "https://github.com/Avarok-Cybersecurity/avarok",
                 help_url: "https://docs.atlascybernetics.ai/benchmarks",
-                bug_report_url: "https://github.com/Avarok-Cybersecurity/atlas/issues/new",
+                bug_report_url: "https://github.com/Avarok-Cybersecurity/avarok/issues/new",
                 license: "AGPL-3.0-only",
                 official: true,
             }

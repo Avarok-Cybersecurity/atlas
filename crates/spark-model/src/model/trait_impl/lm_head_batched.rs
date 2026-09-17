@@ -137,7 +137,7 @@ fn lm_head_m16_tc_env() -> (bool, u32) {
 /// cp.async pipeline advances 64 elements per step and its 16-byte weight-row
 /// chunks need `k % 8 == 0` anyway, so a K that is not a whole number of steps
 /// has no correct route and the tier must decline rather than launch and be
-/// wrong. Every Atlas BF16 head satisfies it (Qwen3.8-27B: K=5120).
+/// wrong. Every Avarok BF16 head satisfies it (Qwen3.8-27B: K=5120).
 ///
 /// Returns the launcher, its handle and the CTA width that will actually run —
 /// a shadow built before the wide arm existed has no `_n64`, so a `=64` request
@@ -296,6 +296,14 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let logits = self.buffers.logits();
         let v = self.config.vocab_size;
+        if let Some(ref exl3) = self.lm_head_exl3 {
+            // Native EXL3 head (LEADING arm, mirrors `lm_head_batched`).
+            // Cooperative launches — this path never runs under graph capture
+            // (installing the head vetoes decode graphs at both decision
+            // points; see model/lm_head_exl3.rs module docs).
+            self.lm_head_exl3_project(exl3, normed, padded_n, logits, stream)?;
+            return Ok(logits);
+        }
         if let Some(ref fp8) = self.lm_head_fp8 {
             for i in 0..padded_n {
                 ops::dense_gemv_fp8w(

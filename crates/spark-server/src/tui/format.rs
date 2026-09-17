@@ -24,7 +24,7 @@
 use crate::scheduler::snapshot::MtpModeSnap;
 
 /// One binary GiB. The whole UI's divisor, and the same one `nvidia-smi`,
-/// `free` and the HF cache report in — an Atlas number a user cross-checks
+/// `free` and the HF cache report in — an Avarok number a user cross-checks
 /// against those must not differ by 7%.
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 const MIB: u64 = 1024 * 1024;
@@ -41,10 +41,10 @@ const KIB: f64 = 1024.0;
 /// The label is wrong by IEC 80000-13, which reserves `GB` for 10⁹ and calls
 /// this a `GiB`. It stays anyway, and the reason is that a unit label is not a
 /// standards citation — it is what lets a reader match this number to another
-/// number they are already looking at. Every source an Atlas operator
+/// number they are already looking at. Every source an Avarok operator
 /// cross-checks against is 1024-based and labels it `GB`: `nvidia-smi`,
 /// `free -g`, `df -h`, `htop`, and the HF cache's own reporting. Switching to
-/// `GiB` would make Atlas the only correct thing on a screen full of `GB`, and
+/// `GiB` would make Avarok the only correct thing on a screen full of `GB`, and
 /// the reader's first conclusion would be that the two disagree by 7%.
 ///
 /// Nothing in the tree divides by 10⁹ any more, so there is no second reading

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Generate Atlas PR-certification masthead components (header band, QR plaque,
+"""Generate Avarok PR-certification masthead components (header band, QR plaque,
 silver stamp, gold seal) and inject them into copies of the state diagrams.
 
 All badge geometry is original artwork drawn programmatically (arcs, scallops,
@@ -75,7 +75,7 @@ def sine_ring(rc, amp, n, phase=0.0, step=2):
     return " ".join(d)
 
 # ------------------------------------------------------------------ QR ------
-QR_URL = "https://github.com/Avarok-Cybersecurity/atlas/pull/840"
+QR_URL = "https://github.com/Avarok-Cybersecurity/avarok/pull/840"
 QR_X, QR_Y, QR_M = 968, 8, 4  # plaque origin, module size
 
 def qr_group(url=QR_URL, x=QR_X, y=QR_Y, m=QR_M, side=None):
@@ -210,7 +210,7 @@ def stamp_group(user="stamper-login", sha="0000000000",
     <circle r="54.5" fill="none" stroke="#40454E" stroke-width="0.9" opacity="0.45"/>
     <path d="{spec}" fill="none" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" opacity="0.4"/>
     {ring_text("PR CERTIFICATION", 45, 8.5, "#454B55", "top")}
-    {ring_text("\u25c6 ATLAS /stamp \u25c6", 55, 8.5, "#454B55", "bottom")}
+    {ring_text("\u25c6 AVAROK /stamp \u25c6", 55, 8.5, "#454B55", "bottom")}
     <circle r="40.5" fill="none" stroke="#8A9099" stroke-width="0.8" opacity="0.7"/>
     <text y="-22" font-size="7.5" fill="#454B55" font-weight="700" letter-spacing="1.6" text-anchor="middle">STAMPED BY</text>
     <rect x="58" y="-11" width="9" height="24" fill="#000000" opacity="0.18"/>
@@ -242,7 +242,7 @@ def seal_group(user="sealer-login", sha="0000000000",
     <circle r="60" fill="none" stroke="#6B4A0E" stroke-width="0.9" opacity="0.45"/>
     <path d="{spec}" fill="none" stroke="#FFF8DC" stroke-width="4" stroke-linecap="round" opacity="0.45"/>
     {ring_text("CODEOWNER SEAL", 49, 9, "#4A3407", "top")}
-    {ring_text("\u25c6 ATLAS /seal \u25c6", 58, 9, "#4A3407", "bottom")}
+    {ring_text("\u25c6 AVAROK /seal \u25c6", 58, 9, "#4A3407", "bottom")}
     <path d="{g1}" fill="none" stroke="#A66B14" stroke-width="0.8" opacity="0.75"/>
     <path d="{g2}" fill="none" stroke="#A66B14" stroke-width="0.8" opacity="0.75"/>
     <circle r="37" fill="none" stroke="#A66B14" stroke-width="0.7" opacity="0.6"/>
@@ -285,7 +285,7 @@ LOGO = """  <g transform="translate(64 22) scale(0.06918)">
     <g fill="none" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
       <path d="M38 38L358 318L38 598" stroke="#BE9DF8"/>
       <path d="M318 38L638 318L318 598" stroke="#49C3DB"/>
-      <path d="M598 38L918 318L598 598" stroke="url(#cert-atlasGoldCut)"/>
+      <path d="M598 38L918 318L598 598" stroke="url(#cert-avarokGoldCut)"/>
     </g>
   </g>
 """
@@ -295,10 +295,10 @@ def standalone_header(pr, author):
     return (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
             f'viewBox="0 0 1200 208" width="1200" height="208" '
             f'font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" '
-            f'role="img" aria-label="Atlas PR certification header band">\n'
-            f'  <title>Atlas — PR certification header band</title>\n'
+            f'role="img" aria-label="Avarok PR certification header band">\n'
+            f'  <title>Avarok — PR certification header band</title>\n'
             + DEFS
-            + '  <linearGradient id="cert-atlasGoldCut" x1="0" y1="0" x2="0" y2="1">'
+            + '  <linearGradient id="cert-avarokGoldCut" x1="0" y1="0" x2="0" y2="1">'
               '<stop offset="0.5" stop-color="#12B981"/><stop offset="0.5" stop-color="#EFB338"/></linearGradient>\n'
             + '  <rect width="1200" height="208" fill="#0F1216"/>\n'
             + LOGO
@@ -311,10 +311,10 @@ def standalone_header(pr, author):
 def standalone_badge(kind):
     if kind == "stamp":
         body = stamp_group("m-ferraro", "3f9c2d81ab", transform="translate(150 108) rotate(-5)")
-        w, h, label = 300, 216, "Atlas silver certification stamp"
+        w, h, label = 300, 216, "Avarok silver certification stamp"
     else:
         body = seal_group("a-hoffmann", "3f9c2d81ab", transform="translate(160 112) rotate(3.5)")
-        w, h, label = 320, 232, "Atlas gold codeowner seal"
+        w, h, label = 320, 232, "Avarok gold codeowner seal"
     return (f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
             f'viewBox="0 0 {w} {h}" width="{w}" height="{h}" '
             f'font-family="Inter, ui-sans-serif, system-ui, Segoe UI, Helvetica, Arial, sans-serif" '
@@ -326,7 +326,7 @@ def standalone_qr():
     w = side + 36
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {w}" width="{w}" height="{w}" '
             f'role="img" aria-label="QR code linking to the pull request">\n'
-            f'  <title>Atlas PR link QR plaque</title>\n'
+            f'  <title>Avarok PR link QR plaque</title>\n'
             f'  <rect width="{w}" height="{w}" fill="#0F1216"/>\n' + qr + '</svg>\n')
 
 # ------------------------------------------------------------- build --------

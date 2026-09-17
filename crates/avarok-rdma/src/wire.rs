@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// The RDMA handshake wire codecs, shared by every Atlas RDMA client and the
+// The RDMA handshake wire codecs, shared by every Avarok RDMA client and the
 // peer daemons (the daemons re-export these, so client and server speak one
 // codec).
 //

@@ -1,6 +1,6 @@
 # Adding a new hardware target or model family
 
-Atlas's compute stack is structured around **(hardware, model, quant) tuples**.
+Avarok's compute stack is structured around **(hardware, model, quant) tuples**.
 Each tuple is a self-contained body of work: kernels are written, tuned, and
 tested per-tuple. This document explains how to extend the matrix.
 
@@ -103,7 +103,7 @@ variant, etc.), you'll also need to:
 
 ## Adding a new hardware target
 
-Atlas's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
+Avarok's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
 (H100/H200, sm_90a)** and **B200 (B200/GB200, sm_100a)**; `strix`/`strix-hip`
 (AMD gfx1151) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
 for a consumer Blackwell board, or sm_103 for Blackwell Ultra (B300/GB300) —
@@ -298,7 +298,7 @@ to report results. A gate whose failure path has never executed is not
 evidence.
 
 The negative fixture is chosen **per arch**, because no single instruction is
-absent from every architecture Atlas targets:
+absent from every architecture Avarok targets:
 
 | arch under test | negative fixture | why it fails there |
 |---|---|---|
@@ -418,7 +418,7 @@ shipped target" rather than a rebuild instruction that would fail the same way.
 
 ## Adding a new quantization scheme
 
-Atlas supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
+Avarok supports NVFP4 (E2M1 + FP8 scales), FP8 block-scaled, BF16 raw.
 To add a new scheme (e.g., MX4, INT4):
 
 1. **`crates/avarok-core/src/config.rs`**: extend the quant detection
@@ -481,7 +481,7 @@ Hopper and fail for gb10. The
 their BR=32 siblings) rejected for `sm_121f` on CUDA 13.0.88. That is a
 pre-existing gb10 finding, independent of the Hopper and B200 targets; the
 inventory, receipts and runtime trace live with the campaign notes in
-Avarok-Cybersecurity/atlas#899.
+Avarok-Cybersecurity/avarok#899.
 
 ### Device validation
 
@@ -491,7 +491,7 @@ Once compiled:
 # Smoke test
 docker run --gpus all --ipc=host -p 8888:8888 \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  atlas-gb10:latest \
+  avarok-gb10:latest \
   serve <new-model-hf-id> --max-seq-len 4096 --max-batch-size 1
 
 curl http://localhost:8888/v1/chat/completions -d '{"model":"...","messages":[{"role":"user","content":"hi"}]}'

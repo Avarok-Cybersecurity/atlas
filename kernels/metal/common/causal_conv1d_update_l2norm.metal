@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Atlas fused causal-conv1d update + SiLU + per-head L2-norm —
+// Avarok fused causal-conv1d update + SiLU + per-head L2-norm —
 // MSL port of `kernels/gb10/common/causal_conv1d.cu::
 // causal_conv1d_update_l2norm`. Same name + arg layout so the
 // existing spark-model `ops::conv1d_update_l2norm` orchestration

@@ -545,7 +545,7 @@ max_model_len = "4096"
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
 # each parameter's own schema kind, exactly like --param KEY=VALUE.
-# 1..128 as of 2026-08-29: the published Atlas-vs-vLLM ladder quotes C=1..128,
+# 1..128 as of 2026-08-29: the published Avarok-vs-vLLM ladder quotes C=1..128,
 # and a certification that stopped at 16 left the four widest rungs of the
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder
 # and the one most easily lost silently.
@@ -1010,7 +1010,7 @@ min = 1.0
 #   * the KV cache -- --kv-cache-dtype bf16 changed nothing, byte for byte;
 #   * this checkpoint's double-quantisation (see the loader note below) --
 #     Qwen/Qwen3.8-27B-FP8, the same weights in the block-scaled FP8 format
-#     Atlas loads natively, failed the same way.
+#     Avarok loads natively, failed the same way.
 #
 # The cause: the fixture's green was HTML green #008000, the one HALF-bright
 # colour among three full-bright ones, because ffmpeg resolves the NAME
@@ -1025,7 +1025,7 @@ min = 1.0
 #
 # ★ SEPARATE FINDING, NOT FIXED: this checkpoint is `format = mixed-precision`
 # -- attention q/k/v/o, the GDN projections and lm_head are FP8 with a
-# PER-CHANNEL scale, and only the MLP is NVFP4. Atlas's native w8a16 path
+# PER-CHANNEL scale, and only the MLP is NVFP4. Avarok's native w8a16 path
 # needs a [N/128, K/128] block grid, so a per-row scale is deliberately
 # refused (it would read another row's multiplier and produce garbage
 # logits) and those tensors are dequantised to BF16 and RE-quantised to

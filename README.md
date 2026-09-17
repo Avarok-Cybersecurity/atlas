@@ -2,7 +2,7 @@
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-corp-ondark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full-corp.svg">
-    <img src="assets/brand/logo-full-corp-ondark.svg" alt="Atlas Cybernetics Corp" width="660">
+    <img src="assets/brand/logo-full-corp-ondark.svg" alt="Avarok Cybernetics Corp" width="660">
   </picture>
 </h1>
 
@@ -23,22 +23,22 @@
   <img alt="AMD supported" src="https://img.shields.io/badge/AMD-ED1C24?style=flat-square&logo=amd&logoColor=white">
   <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPLv3-yellow?style=flat-square"></a>
   <img alt="Pure Rust runtime" src="https://img.shields.io/badge/runtime-pure%20Rust-orange?style=flat-square">
-  <a href="https://hub.docker.com/r/avarok/atlas-gb10"><img alt="Docker Hub: avarok/atlas-gb10" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Fatlas--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
+  <a href="https://hub.docker.com/r/avarok/avarok-gb10"><img alt="Docker Hub: avarok/avarok-gb10" src="https://img.shields.io/badge/Docker%20Hub-avarok%2Favarok--gb10-2496ED?style=flat-square&logo=docker&logoColor=white"></a>
   <a href="https://discord.gg/RQcGakU2jW"><img alt="Discord member count" src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fdiscord.com%2Fapi%2Fv10%2Finvites%2FRQcGakU2jW%3Fwith_counts%3Dtrue&query=%24.approximate_member_count&label=discord&suffix=%20members&style=flat-square&logo=discord&logoColor=white&color=5865F2"></a>
 </p>
 
 <p align="center">
-  <a href="assets/atlas-demo.mp4"><img alt="Terminal demo of Atlas serving a model on a DGX Spark — click for the full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
+  <a href="assets/avarok-demo.mp4"><img alt="Terminal demo of Avarok serving a model on a DGX Spark — click for the full-quality MP4" src="assets/avarok-demo.gif" width="820" /></a>
 </p>
 
-**Atlas** is an open-source **LLM inference engine** written in pure **Rust and CUDA**. It serves an **OpenAI-compatible server** (plus Anthropic and Responses APIs) from a single ~75 MB binary — no Python, no PyTorch, no runtime compilation — with hand-tuned **CUDA kernels** per (hardware × model × quantization) target, **NVFP4 and FP8 quantization**, **speculative decoding** (MTP draft heads and DFlash block diffusion), radix-tree prefix caching, and expert parallelism across nodes. It is verified today on the NVIDIA **DGX Spark** (**GB10**, **Blackwell** SM121), compiles the same CUDA source for AMD Strix Halo (gfx1151) through [SCALE](https://docs.scale-lang.com/stable/), and on the published GB10 concurrency ladder it out-serves vLLM at every rung from C=1 to C=128 — [conditions below](#performance).
+**Avarok** is an open-source **LLM inference engine** written in pure **Rust and CUDA**. It serves an **OpenAI-compatible server** (plus Anthropic and Responses APIs) from a single ~75 MB binary — no Python, no PyTorch, no runtime compilation — with hand-tuned **CUDA kernels** per (hardware × model × quantization) target, **NVFP4 and FP8 quantization**, **speculative decoding** (MTP draft heads and DFlash block diffusion), radix-tree prefix caching, and expert parallelism across nodes. It is verified today on the NVIDIA **DGX Spark** (**GB10**, **Blackwell** SM121), compiles the same CUDA source for AMD Strix Halo (gfx1151) through [SCALE](https://docs.scale-lang.com/stable/), and on the published GB10 concurrency ladder it out-serves vLLM at every rung from C=1 to C=128 — [conditions below](#performance).
 
 Receipts, not adjectives:
 
 - Our fused Qwen Gated DeltaNet kernel is [merged into Hugging Face Transformers](https://github.com/huggingface/transformers/pull/46423).
 - We sit on the MLCommons Edge-LLM taskforce and [helped shape the MLPerf Inference v6.1 edge agentic benchmark](https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/); our v6.1 submission is in (closed edge division, GB10 and gfx1151 from the same CUDA source), with results under embargo until MLCommons publishes.
 - Every release image passes a serve gate: boot, coherence, tool calls, and throughput within tolerance of a committed baseline. A release that ships slower than its baseline fails the gate.
-- The engineering story is written up in the open on the [Atlas blog](https://blog.atlascybernetics.ai), starting with [the seven tenets behind the engine](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference).
+- The engineering story is written up in the open on the [Avarok blog](https://blog.atlascybernetics.ai), starting with [the seven tenets behind the engine](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference).
 
 ---
 
@@ -50,7 +50,7 @@ Receipts, not adjectives:
 - [⚡ Performance](#performance)
 - [🗜️ KV Cache Quantization](#kv-cache)
 - [🏛️ Architecture](#architecture)
-- [🧭 Why Atlas Exists](#philosophy)
+- [🧭 Why Avarok Exists](#philosophy)
 - [🔌 Adding a New Hardware Target](#new-hardware)
 - [🧬 Adding a New Model](#new-model)
 - [🔬 Kernel Debugging](#debugging)
@@ -79,7 +79,7 @@ The script downloads a prebuilt `atlasctl`, verifies its checksum, and installs 
 The whole supported model matrix lives in one image. Pull it, mount your HuggingFace cache, and point `serve` at any model ID from the [model table](#models).
 
 > [!TIP]
-> The recipes below are tuned for **maximum accuracy under agentic-coding workloads** — 64K context, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the exact configurations we use to drive opencode / Claude Code / Cline through Atlas on a single Spark.
+> The recipes below are tuned for **maximum accuracy under agentic-coding workloads** — 64K context, BF16 MTP draft head (highest acceptance rate ⇒ highest end-to-end throughput), prefix caching for multi-turn tool loops, and FP8 KV cache with `auto`-promoted boundary layers. These are the exact configurations we use to drive opencode / Claude Code / Cline through Avarok on a single Spark.
 
 #### Recipe 0 — no flags, pick a model in the TUI
 
@@ -89,7 +89,7 @@ Omit the model ID and `serve` boots into the Library — pick a model and recipe
 docker run -it --rm --network host --gpus all --ipc=host \
   -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
   -v "${HOME}/.avarok:/root/.avarok" \
-  avarok/atlas-gb10:latest serve
+  avarok/avarok-gb10:latest serve
 ```
 
 - `-it` — the TUI needs a real terminal to render (and Esc to quit).
@@ -98,21 +98,21 @@ docker run -it --rm --network host --gpus all --ipc=host \
 - `--gpus all` — hands the GB10 to the container.
 - `--ipc=host` — host-sized shared memory; the Docker default 64 MB `/dev/shm` is too small for CUDA.
 - `-v ~/.cache/huggingface` — reuse the host's model cache instead of re-downloading weights.
-- `-v ~/.avarok` — persist Atlas state (recipes, benchmark records, artifacts) across runs.
+- `-v ~/.avarok` — persist Avarok state (recipes, benchmark records, artifacts) across runs.
 
-<a id="run-atlas"></a>
+<a id="run-avarok"></a>
 
 #### Recipe A — Qwen3.6-35B-A3B (FP8 hybrid MoE, the daily driver)
 
 35 B params, 3 B active, GDN + attention + 256-expert MoE, MRoPE-positioned vision tower (text-only here).
 
 ```bash
-docker pull avarok/atlas-gb10:latest
+docker pull avarok/avarok-gb10:latest
 
-sudo docker run -d --name atlas \
+sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Qwen/Qwen3.6-35B-A3B-FP8 \
     --port 8888 \
     --max-seq-len 65536 \
@@ -133,17 +133,17 @@ Why these flags:
 - `--scheduling-policy slai` — SLAi scheduler. **Not the default** — `serve` defaults to `fifo`, so this flag has to be passed to get SLO-aware ordering. It reorders concurrent sequences to keep MTP verify batches dense and prefills shortest-prompt-first.
 - `--enable-prefix-caching` — radix-tree prefix cache; tool-use sessions reuse the system prompt + tool-defs + earlier turns.
 - `--speculative --num-drafts 2` — MTP draft head proposes 2 tokens per step. **No `--mtp-quantization` flag** ⇒ defaults to **BF16**, which gives the highest acceptance rate (lossier MTP projections lower acceptance and usually *worsen* end-to-end tok/s, despite the faster draft forward).
-- `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Atlas auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
+- `--tool-call-parser qwen3_coder` — explicit Qwen XML tool format. Avarok auto-resolves the right parser from `tool_defaults.toml` per model; pass it anyway in production scripts.
 
 #### Recipe B — Qwen3.5-35B-A3B (NVFP4, ~131 tok/s with MTP K=2)
 
 The fastest model in the matrix on a single Spark.
 
 ```bash
-sudo docker run -d --name atlas \
+sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-35B-A3B-NVFP4 \
     --port 8888 \
     --max-seq-len 65536 \
@@ -160,13 +160,13 @@ sudo docker run -d --name atlas \
 
 #### Recipe C — Qwen3.5-122B-A10B (NVFP4, single Spark)
 
-The 122B NVFP4 weights + Atlas runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so this recipe sacrifices `--speculative` (the MTP draft head + draft KV costs ~1.5 GB) to keep a real 16 K context window. Verified end-to-end: model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly.
+The 122B NVFP4 weights + Avarok runtime overhead leave only ~2 GB for KV cache on a 119.7 GB GB10, so this recipe sacrifices `--speculative` (the MTP draft head + draft KV costs ~1.5 GB) to keep a real 16 K context window. Verified end-to-end: model loads, `/v1/chat/completions` answers correctly, 4-way concurrent serves cleanly.
 
 ```bash
-sudo docker run -d --name atlas \
+sudo docker run -d --name avarok \
   --network host --gpus all --ipc=host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
-  avarok/atlas-gb10:latest \
+  avarok/avarok-gb10:latest \
   serve Sehyo/Qwen3.5-122B-A10B-NVFP4 \
     --port 8888 \
     --max-seq-len 16384 \
@@ -185,13 +185,13 @@ For 122B with **both** `--speculative` *and* a 64 K window, move to EP=2 across 
 
 ### Hitting the endpoint
 
-Atlas speaks the OpenAI, Anthropic, and Responses APIs on the same port. `curl`, the OpenAI SDK, Open WebUI, opencode, Cline, Claude Code — point them at port 8888:
+Avarok speaks the OpenAI, Anthropic, and Responses APIs on the same port. `curl`, the OpenAI SDK, Open WebUI, opencode, Cline, Claude Code — point them at port 8888:
 
 ```bash
 curl http://localhost:8888/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model":"atlas",
+    "model":"avarok",
     "messages":[{"role":"user","content":"Hello!"}],
     "max_tokens":256
   }'
@@ -200,7 +200,7 @@ curl http://localhost:8888/v1/chat/completions \
 Per-model recipes (vision input, video input, multi-node EP=2, single-GPU 122B with the tighter budget) live in [`QUICKSTART.md`](QUICKSTART.md), and the long-form manual is at [docs.atlascybernetics.ai](https://docs.atlascybernetics.ai).
 
 > [!NOTE]
-> **Video input requires `ffmpeg` on the host.** Images need nothing extra, and animated GIF decodes in-process — but MP4/MOV, WebM and AVI (H.264, H.265, VP9, AV1) are decoded by running `ffmpeg`, which must be installed and enabled with `--video-allow-ffmpeg`. Atlas deliberately does not link a video decoder; see [`QUICKSTART.md`](QUICKSTART.md) for the recipe and the reasoning. Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
+> **Video input requires `ffmpeg` on the host.** Images need nothing extra, and animated GIF decodes in-process — but MP4/MOV, WebM and AVI (H.264, H.265, VP9, AV1) are decoded by running `ffmpeg`, which must be installed and enabled with `--video-allow-ffmpeg`. Avarok deliberately does not link a video decoder; see [`QUICKSTART.md`](QUICKSTART.md) for the recipe and the reasoning. Build-from-source instructions are in [`CONTRIBUTING.md`](CONTRIBUTING.md), and the kernel build pipeline is documented in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#build-pipeline).
 
 <a id="hardware"></a>
 
@@ -211,7 +211,7 @@ One engine, one kernel tree per target, no generic fallbacks. Each directory und
 | Target | Silicon | Status |
 |---|---|---|
 | **NVIDIA DGX Spark** (`kernels/gb10`) | GB10 Grace-Blackwell, SM121, ~120 GB unified LPDDR5X | **Verified.** The reference platform — every release passes the serve gate here |
-| **AMD Strix Halo** (`kernels/strix`, `kernels/strix-hip`) | Ryzen AI Max+ 395, RDNA 3.5 iGPU, gfx1151 | The **same unmodified CUDA sources**, recompiled for AMD via [SCALE](https://docs.scale-lang.com/stable/) — no hand-ported kernels (`strix-hip` is the HIP-toolchain build variant of the same sources). AMD provided the Strix Halo desktop we brought Atlas up on and included in our MLPerf Inference v6.1 submission |
+| **AMD Strix Halo** (`kernels/strix`, `kernels/strix-hip`) | Ryzen AI Max+ 395, RDNA 3.5 iGPU, gfx1151 | The **same unmodified CUDA sources**, recompiled for AMD via [SCALE](https://docs.scale-lang.com/stable/) — no hand-ported kernels (`strix-hip` is the HIP-toolchain build variant of the same sources). AMD provided the Strix Halo desktop we brought Avarok up on and included in our MLPerf Inference v6.1 submission |
 | **Apple Silicon** (`kernels/metal`) | Metal 3.1, M2+ | Early bring-up — small-model targets only |
 | **Multi-node** | 2× GB10 over RoCEv2 | EP=2 expert parallelism shipped as recipes; a 4-node EP=4 topology exists for the 397B target |
 
@@ -221,7 +221,7 @@ Porting to new silicon is a scoped piece of work, not an architectural change �
 
 ## 📦 Supported Models
 
-Every supported model runs off one multi-model binary; the right kernel set is selected at startup from the model's `config.json`. No swapping images, no rebuilding, no per-model magic — just point Atlas at a HuggingFace ID.
+Every supported model runs off one multi-model binary; the right kernel set is selected at startup from the model's `config.json`. No swapping images, no rebuilding, no per-model magic — just point Avarok at a HuggingFace ID.
 
 | Family | Model | HuggingFace ID | Params / active | Architecture |
 |---|---|---|---:|---|
@@ -246,7 +246,7 @@ The [`kernels/gb10/`](kernels/gb10/) tree carries additional targets in various 
 This is a starting point, not a destination. The plug-and-play design below exists precisely so that AMD, Apple Silicon, Intel, and the next round of Blackwell parts can land here as community contributions, and so that next quarter's model families slot in the same way this quarter's Qwens did. We did the hard part — bolting in the abstractions while bringing up the first wave of targets — so that adding the next one is a weekend, not a quarter.
 
 > [!TIP]
-> **New to Atlas on a Spark?** The [**GB10 Deployment & Compatibility Guide**](docs/GB10_DEPLOYMENT_GUIDE.md) is the one page to read first: which model and quant fit your box and your goal, what to do when it OOMs, the known gotchas, and what "verified" means — then it hands you the exact recipe.
+> **New to Avarok on a Spark?** The [**GB10 Deployment & Compatibility Guide**](docs/GB10_DEPLOYMENT_GUIDE.md) is the one page to read first: which model and quant fit your box and your goal, what to do when it OOMs, the known gotchas, and what "verified" means — then it hands you the exact recipe.
 
 <a id="performance"></a>
 
@@ -254,11 +254,11 @@ This is a starting point, not a destination. The plug-and-play design below exis
 
 We are not going to spend much real estate on benchmark theatre. Every number below carries its conditions, and every harness that produced one is in this repository. If you reproduce a faster competing number, file an issue — we would rather be measured than congratulated.
 
-### Atlas vs vLLM under concurrency (the number that matters)
+### Avarok vs vLLM under concurrency (the number that matters)
 
-Agentic work does not arrive one conversation at a time. It arrives as fleets of tool-calling agents, and the engine underneath is judged where requests pile up. On the published concurrency ladder Atlas out-serves vLLM at **every rung from C=1 to C=128**, against whichever vLLM configuration is faster at that rung:
+Agentic work does not arrive one conversation at a time. It arrives as fleets of tool-calling agents, and the engine underneath is judged where requests pile up. On the published concurrency ladder Avarok out-serves vLLM at **every rung from C=1 to C=128**, against whichever vLLM configuration is faster at that rung:
 
-| Concurrency | Atlas (tok/s) | vLLM + MTP | vLLM, no spec | Atlas vs best vLLM |
+| Concurrency | Avarok (tok/s) | vLLM + MTP | vLLM, no spec | Avarok vs best vLLM |
 |---:|---:|---:|---:|---:|
 | 1 | 23.6 | 19.7 | 11.0 | 1.20× |
 | 2 | 41.0 | 37.1 | 21.3 | 1.11× |
@@ -269,7 +269,7 @@ Agentic work does not arrive one conversation at a time. It arrives as fleets of
 | 64 | 386.6 | 361.4 | 312.3 | 1.07× |
 | 128 | **478.1** | 358.6 | 390.4 | **1.22×** |
 
-**Conditions**: `unsloth/Qwen3.8-27B-NVFP4` (dense 27B hybrid, 48 GDN + 16 attention layers), Atlas 1.0.0-beta-preview vs vLLM 0.27.1, same GB10 box, same checkpoint, same client, back-to-back legs. ISL 128 / OSL 1024, temperature 0, seed 42, thinking disabled on both engines, presence/frequency penalties pinned to 0.0 on both, mean aggregate tok/s over 3 timed reps with 1 warmup discarded. The margin is widest at the top because between C=64 and C=128 Atlas keeps scaling while vLLM's faster mid-ladder configuration (MTP) falls below its own C=64. The full campaign log — including the rungs we lost along the way — is in [`bench/ladder38/RESULTS.md`](bench/ladder38/RESULTS.md).
+**Conditions**: `unsloth/Qwen3.8-27B-NVFP4` (dense 27B hybrid, 48 GDN + 16 attention layers), Avarok 1.0.0-beta-preview vs vLLM 0.27.1, same GB10 box, same checkpoint, same client, back-to-back legs. ISL 128 / OSL 1024, temperature 0, seed 42, thinking disabled on both engines, presence/frequency penalties pinned to 0.0 on both, mean aggregate tok/s over 3 timed reps with 1 warmup discarded. The margin is widest at the top because between C=64 and C=128 Avarok keeps scaling while vLLM's faster mid-ladder configuration (MTP) falls below its own C=64. The full campaign log — including the rungs we lost along the way — is in [`bench/ladder38/RESULTS.md`](bench/ladder38/RESULTS.md).
 
 ### Single-stream throughput on one GB10
 
@@ -293,12 +293,12 @@ The numbers below are what the binary in this repository does on a single NVIDIA
 
 ### Speculative decoding: MTP and DFlash
 
-Atlas ships two speculative paths, mutually exclusive per serve:
+Avarok ships two speculative paths, mutually exclusive per serve:
 
 - **MTP draft heads** (`--speculative`) — the checkpoint's own multi-token-prediction head proposes K tokens per step, verified with WY-chunkwise GDN kernels. K=2 is the measured-fastest width on Qwen3.5-35B-A3B (the 131 tok/s row above).
-- **DFlash block diffusion** (`--dflash`) — pairs the target with a small drafter (e.g. `z-lab/Qwen3.6-35B-A3B-DFlash`) that emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states ([Z Lab, arXiv:2602.06036](https://arxiv.org/abs/2602.06036)). Atlas serves the measured record shape by default: γ resolves to the drafter's trained block size + 2.
+- **DFlash block diffusion** (`--dflash`) — pairs the target with a small drafter (e.g. `z-lab/Qwen3.6-35B-A3B-DFlash`) that emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states ([Z Lab, arXiv:2602.06036](https://arxiv.org/abs/2602.06036)). Avarok serves the measured record shape by default: γ resolves to the drafter's trained block size + 2.
 
-Honest status of DFlash on GB10: with the DFlash2 drafter for Qwen3.8-27B at default flags, Atlas reaches **66.6 tok/s at C=1** — a **single-stream** number, and only that. At higher concurrency DFlash2 is currently a net loss on this hardware (measured −7.1% at C=8 and −29.1% at C=16 versus the same engine without the drafter). That gap is a known, tracked open item, and the `concurrency-sweep-dflash2` gate runs the full ladder with the drafter armed on every relevant PR so it cannot regress silently. If you serve concurrent agent traffic today, MTP or the plain engine is the right choice.
+Honest status of DFlash on GB10: with the DFlash2 drafter for Qwen3.8-27B at default flags, Avarok reaches **66.6 tok/s at C=1** — a **single-stream** number, and only that. At higher concurrency DFlash2 is currently a net loss on this hardware (measured −7.1% at C=8 and −29.1% at C=16 versus the same engine without the drafter). That gap is a known, tracked open item, and the `concurrency-sweep-dflash2` gate runs the full ladder with the drafter armed on every relevant PR so it cannot regress silently. If you serve concurrent agent traffic today, MTP or the plain engine is the right choice.
 
 ### Kernel-level receipts
 
@@ -308,7 +308,7 @@ The kernel-by-kernel comparison against PyTorch eager lives in the [benchmarks c
 
 ## 🗜️ KV Cache Quantization
 
-Atlas stores attention key/value state in a quantized format selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
+Avarok stores attention key/value state in a quantized format selected via `--kv-cache-dtype`. Lower bit-widths fit more tokens in GPU memory at the cost of precision; the Turbo family adds Walsh-Hadamard rotation and Lloyd-Max optimal codebooks to recover accuracy at the same bit rate. Mix dtypes per layer with `--kv-high-precision-layers` to keep boundary layers at BF16 while compressing the middle.
 
 | CLI flag | Bits/element | Scale overhead | Technique | When to use |
 |---|---:|---|---|---|
@@ -451,9 +451,9 @@ flowchart TB
 
 <a id="philosophy"></a>
 
-## 🧭 Why Atlas Exists
+## 🧭 Why Avarok Exists
 
-Atlas began as a response to a widely felt problem with Python inference stacks: a shifting ecosystem of dependencies, patches, and cross-dependencies where the workaround that ran your model yesterday needs a nightly branch and a new workaround today. That is how you build a proof of concept, not a software ecosystem. We are grateful to the data scientists who proved what LLMs can do; Atlas is the software engineers taking the torch and building the version designed to withstand the test of time. The full argument is in [Seven Tenets Powering Atlas Inference](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) on the blog; the short version:
+Avarok began as a response to a widely felt problem with Python inference stacks: a shifting ecosystem of dependencies, patches, and cross-dependencies where the workaround that ran your model yesterday needs a nightly branch and a new workaround today. That is how you build a proof of concept, not a software ecosystem. We are grateful to the data scientists who proved what LLMs can do; Avarok is the software engineers taking the torch and building the version designed to withstand the test of time. The full argument is in [Seven Tenets Powering Avarok Inference](https://blog.atlascybernetics.ai/posts/seven-tenets-powering-atlas-inference) on the blog; the short version:
 
 | Choice | Why |
 |---|---|
@@ -461,11 +461,11 @@ Atlas began as a response to a widely felt problem with Python inference stacks:
 | **Pure Rust + CUDA** | The whole stack is inspectable by one person, HTTP to kernel dispatch. No Python, no interpreter in the hot path, no runtime compilation — kernels are compiled to native binaries at build time and embedded in the binary |
 | **Hardware × model specific kernels** | Each (hardware, model, quantization) tuple gets its own tuned kernel set, with per-model kernels shadowing common ones. No compromises, no generalizations |
 | **Monorepo** | One place for all the code means agents and humans alike can absorb, index, and improve the whole system — and compile-and-image cycles run in minutes, not most of an hour |
-| **Community-first** | The test fleet is the community running Atlas on its own hardware. Model requests, regressions, and wins all route through [Discord](https://discord.gg/RQcGakU2jW) |
+| **Community-first** | The test fleet is the community running Avarok on its own hardware. Model requests, regressions, and wins all route through [Discord](https://discord.gg/RQcGakU2jW) |
 | **Theory-friendly** | Research on quality, alignment, or speed should be integrable cleanly. PoC PRs explaining what, why, and how are welcome |
 | **Plug-and-play abstractions** | Tight trait boundaries keep business logic identical across all hardware/model combinations; only the concrete implementations differ |
 
-Similar to how llama.cpp was built to prove you don't need five- or six-figure GPUs to run LLMs, Atlas exists to keep forcing the narrative that as hardware advances, inference should not cost premium cloud-API prices. Maximizing speed for each hardware/model combination is what makes meaningfully powerful LLMs truly useful on hardware you own.
+Similar to how llama.cpp was built to prove you don't need five- or six-figure GPUs to run LLMs, Avarok exists to keep forcing the narrative that as hardware advances, inference should not cost premium cloud-API prices. Maximizing speed for each hardware/model combination is what makes meaningfully powerful LLMs truly useful on hardware you own.
 
 ### AI-authored PRs are the default, and the target
 
@@ -516,7 +516,7 @@ Same story, smaller surface. Implement `ModelWeightLoader` (one struct; the exis
 
 ## 🔬 Kernel Debugging
 
-Atlas exposes a focused set of **environment-gated diagnostic dumps** for tracking down quality regressions — magnitude drift, expert-routing skew, MoE under-counting, and the rest of the bug class where the kernels run cleanly but the output slowly degrades. The dumps are zero-overhead when their env var is unset (single `var()` lookup per call, no GPU sync, no copy) so leaving the production binary instrumented is safe.
+Avarok exposes a focused set of **environment-gated diagnostic dumps** for tracking down quality regressions — magnitude drift, expert-routing skew, MoE under-counting, and the rest of the bug class where the kernels run cleanly but the output slowly degrades. The dumps are zero-overhead when their env var is unset (single `var()` lookup per call, no GPU sync, no copy) so leaving the production binary instrumented is safe.
 
 **For the full diagnostic playbook** — including the cheapest-signal-first elimination ladder, how to build a byte-exact HF CPU oracle, the per-layer divergence comparator, and the methodological reversals that cost us hours — see [**`DEBUGGING_METHODOLOGY.md`**](DEBUGGING_METHODOLOGY.md). What follows is the env-var reference.
 
@@ -561,9 +561,9 @@ There is no longer an FP8 grouped-GEMM v1/v2 selector: `moe_fp8_grouped_gemm` is
 
 The order matters; this is the same workflow that found and fixed three compounding MoE bugs (commits `6a5fd3d`, `34626d3`, `adf39ce`, `ffdb41d`) on the Qwen3.6-A3B long-context investigation:
 
-1. **Build an HF reference oracle.** A single-precision forward pass through HF Transformers on the same token IDs (read them back from Atlas's `/tokenize` — *do not* re-render the chat template), with `output_hidden_states=True` and per-layer hooks on `mlp.gate`, `mlp.shared_expert`, and `mlp.shared_expert_gate`. Record `\|x\|` + `first5` per layer for the last token.
-2. **Spin up Atlas with `-e AVAROK_DUMP_EXPERT_IDS=1`.** Fire the same prompt. The MoE markers above give you per-layer Atlas values comparable to the oracle.
-3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Atlas| / |HF|` and `overlap = |top-K_Avarok ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
+1. **Build an HF reference oracle.** A single-precision forward pass through HF Transformers on the same token IDs (read them back from Avarok's `/tokenize` — *do not* re-render the chat template), with `output_hidden_states=True` and per-layer hooks on `mlp.gate`, `mlp.shared_expert`, and `mlp.shared_expert_gate`. Record `\|x\|` + `first5` per layer for the last token.
+2. **Spin up Avarok with `-e AVAROK_DUMP_EXPERT_IDS=1`.** Fire the same prompt. The MoE markers above give you per-layer Avarok values comparable to the oracle.
+3. **Per-layer comparator.** A short script (the comparator pattern is captured in [`DEBUGGING_METHODOLOGY.md` §4](DEBUGGING_METHODOLOGY.md#4-per-layer-divergence-comparator)) prints `ratio = |Avarok| / |HF|` and `overlap = |top-K_Avarok ∩ top-K_HF|` per layer. The first layer where the ratio falls outside `[0.95, 1.05]` or overlap drops below 6/8 is your first-divergent layer — start drilling there.
 
 For the 2026-05-20 MoE bug hunt this localized the issue from "16K context produces gibberish" to "L0 MoE output magnitude 3.4× too large because of three compounding bugs: v1 grouped-GEMM, missing zero-init, broken `max_m_tiles` heuristic" within a few iterations. After all three fixes, all 40 layers landed in `[0.977, 1.021]` of HF baseline — at the FP8 quantization noise floor.
 
@@ -636,7 +636,7 @@ The action is in [**Discord**](https://discord.gg/RQcGakU2jW) — we are in ther
 - **Run the serve matrix** on your own hardware and report what you see — regressions and wins both get featured. Start with the [GB10 Deployment Guide](docs/GB10_DEPLOYMENT_GUIDE.md).
 - **Add or tune a recipe** in [atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes) — recipes are the model SSOT.
 - **Write kernels** in Rust and CUDA — hand-tuned attention, MoE, GDN, Mamba-2 for Blackwell. Register-level work, no generic fallbacks.
-- **Docs, triage, ideas** — improve the guides, triage issues, or open a thread in [Discussions](https://github.com/Avarok-Cybersecurity/atlas/discussions).
+- **Docs, triage, ideas** — improve the guides, triage issues, or open a thread in [Discussions](https://github.com/Avarok-Cybersecurity/avarok/discussions).
 - **Follow along** on the [blog](https://blog.atlascybernetics.ai) and on [X @AtlasInferenceX](https://x.com/AtlasInferenceX).
 
 Contributor workflow, code standards, and the PR gate contract are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Contributions ship in the Community Edition under AGPLv3, and the [CLA](CLA.md) permits re-licensing for the Enterprise Edition. Please also see the [Code of Conduct](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
@@ -645,14 +645,14 @@ Contributor workflow, code standards, and the PR gate contract are in [`CONTRIBU
 
 ## 📚 Citations
 
-We did not invent the kernels we ship. We picked the right ideas from the right papers, fused them together, and tuned them for one chip until they pinned the bandwidth ceiling. Atlas owes a direct intellectual debt to:
+We did not invent the kernels we ship. We picked the right ideas from the right papers, fused them together, and tuned them for one chip until they pinned the bandwidth ceiling. Avarok owes a direct intellectual debt to:
 
 - **FlashAttention-2** — Tri Dao. *FlashAttention-2: Faster Attention with Better Parallelism and Work Partitioning.* ICLR 2024. [arXiv:2307.08691](https://arxiv.org/abs/2307.08691) — tiled online softmax, Q/K/V SMEM staging, causal masking. Foundation of our prefill kernel.
 - **FlashAttention-4** — Shah, Bikshandi, Zhang, Thakkar, Ramani, Dao. *FlashAttention-4: Taming the Hardware.* 2025. [arXiv:2603.05451](https://arxiv.org/abs/2603.05451) — conditional softmax rescaling and software polynomial `sw_exp` (3 FMA + `ldexpf` instead of going through the SFU). Both shipped in our GQA-fused paged Flash Attention.
 - **FlashInfer** — Ye, Chen, Lai, Zhao, Zheng, Shao, Hou, Jin, Zuo, Yin, Chen, Ceze. *FlashInfer: Efficient and Customizable Attention Engine for LLM Inference Serving.* MLSys 2025 (Best Paper). [arXiv:2501.01005](https://arxiv.org/abs/2501.01005) — block-sparse paged KV cache, page index prefetch to SMEM, the gather-SMEM-MMA pattern for scattered pages. Informed our paged attention design.
 - **SageAttention 3** — Zhang, Huang, Zhang, Wei, Zhu, Chen. *SageAttention3: Microscaling FP4 Attention on Blackwell GPUs.* NeurIPS 2025 Spotlight. [arXiv:2505.11594](https://arxiv.org/abs/2505.11594) — FP4 attention with FP8 per-block microscales. On the SM121 roadmap once silicon-level FP4 MMA arrives upstream.
 - **LeanAttention** — Roy, Vassilieva, Willke, Mendis. *LeanAttention: Hardware-Aware Scalable Attention for LLM Inference.* 2024. [arXiv:2405.10480](https://arxiv.org/abs/2405.10480) — stream-K tile scheduling for near-100% SM occupancy in split-K decode attention. Planned next.
-- **DFlash** — Z Lab. *Block-diffusion speculative decoding.* [arXiv:2602.06036](https://arxiv.org/abs/2602.06036) — a small drafter emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states. The basis of Atlas's `--dflash` speculative path.
+- **DFlash** — Z Lab. *Block-diffusion speculative decoding.* [arXiv:2602.06036](https://arxiv.org/abs/2602.06036) — a small drafter emits γ tokens per step via bidirectional in-block attention conditioned on captured target hidden states. The basis of Avarok's `--dflash` speculative path.
 - **TurboQuant** — Zandieh, Daliri, Hadian, Mirrokni. *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.* arXiv preprint, April 2025. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874) — Randomized Hadamard Transform + Lloyd-Max codebook for KV cache compression. The implementation in our `kernels/gb10/common/wht_bf16.cu` + `reshape_and_cache_turbo.cu` follows the **TurboQuant+** extensions (matched-norm L2 correction, sparse V dequant, asymmetric K/V, InnerQ per-channel equalisation) collected at [`TheTom/turboquant_plus`](https://github.com/TheTom/turboquant_plus) (research umbrella) with the llama.cpp engine reference at [`TheTom/llama-cpp-turboquant`](https://github.com/TheTom/llama-cpp-turboquant); per-feature reproduction and prior-art chain in [`docs/turboquant-plus.md`](docs/turboquant-plus.md).
 
 The full acknowledgment list is in [`CITATIONS.md`](CITATIONS.md). If you wrote one of these papers and you spot a misattribution or a wrong technique credit on our side, open an issue. We would rather be corrected than wrong.
@@ -661,12 +661,12 @@ The full acknowledgment list is in [`CITATIONS.md`](CITATIONS.md). If you wrote 
 
 ## ⚖️ License and Enterprise Edition
 
-Atlas operates under a **dual-license** model. Both are real, both are intentional, and neither is a teaser for the other.
+Avarok operates under a **dual-license** model. Both are real, both are intentional, and neither is a teaser for the other.
 
-1. **[Community Edition](LICENSE) — AGPLv3.** Free, open, copyleft. Use it for yourself to run inference on your own hardware, research, hobby projects, side-projects, and/or hosted demos, as examples. If you want to make money from Atlas, purchase a commercial license.
-2. **Enterprise Edition — commercial license.** If you need to ship Atlas inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, [contact us](https://atlascybernetics.ai). Enterprise customers also receive prioritized model and hardware ports.
+1. **[Community Edition](LICENSE) — AGPLv3.** Free, open, copyleft. Use it for yourself to run inference on your own hardware, research, hobby projects, side-projects, and/or hosted demos, as examples. If you want to make money from Avarok, purchase a commercial license.
+2. **Enterprise Edition — commercial license.** If you need to ship Avarok inside a closed-source product, run it as a SaaS backend without inheriting the AGPLv3 source-disclosure obligation, or simply want a support relationship with the people who wrote the kernels, [contact us](https://atlascybernetics.ai). Enterprise customers also receive prioritized model and hardware ports.
 
-This split exists for a single reason: the commercial license keeps us building Atlas full-time, and the AGPL community license keeps the project honest. Contributions are covered by the [CLA](CLA.md), which permits Enterprise re-licensing while you retain ownership of your contribution. What is in this repository is what we run.
+This split exists for a single reason: the commercial license keeps us building Avarok full-time, and the AGPL community license keeps the project honest. Contributions are covered by the [CLA](CLA.md), which permits Enterprise re-licensing while you retain ownership of your contribution. What is in this repository is what we run.
 
 ---
 

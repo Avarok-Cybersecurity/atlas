@@ -24,7 +24,7 @@
       </span>
       <ThemeToggle />
       <a class="ghost" href={LINKS.avarokRepo} rel="noopener noreferrer">
-        GitHub<span class="visually-hidden"> — Atlas repository (opens on github.com)</span>
+        GitHub<span class="visually-hidden"> — Avarok repository (opens on github.com)</span>
       </a>
     </div>
   </div>

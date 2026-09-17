@@ -1,4 +1,4 @@
-# typos (https://github.com/crate-ci/typos) config for Atlas.
+# typos (https://github.com/crate-ci/typos) config for Avarok.
 #
 # Ignore directories that mirror upstream content we don't control —
 # `test_data/` holds verbatim HuggingFace `config.json` snapshots whose
@@ -140,6 +140,14 @@ exclud = "exclud"
 # would simply stop the rule matching and leave draft chapters unstyled. Same
 # rationale as `numer` above — a third-party identifier, not prose we wrote.
 existant = "existant"
+# `suh` / `svh` — EXL3's own tensor names: the input-side and output-side
+# Hadamard sign/scale vectors in `W = diag(suh) . H128 . W_hat . H128 . diag(svh)`.
+# They appear in our loader, ops and kernels because that is what the format
+# calls them, so spelling them "such" would rename a checkpoint tensor to an
+# English word. `svh` is not flagged today; it is listed so the pair stays
+# together if the dictionary ever grows.
+suh = "suh"
+svh = "svh"
 # `sxl` — "sum of x*l" accumulator in the GPU Q4_K weight quantizer
 # (q4k_quantize.cu), a faithful port of llama.cpp's make_qkx3_quants
 # least-squares fit (sl/sl2/sxl naming kept 1:1 with upstream). Not `xsl`.
@@ -188,6 +196,13 @@ extend-exclude = [
     # (`dout` = gradient-w.r.t.-output, standard kernel naming). Third-party
     # derived material, like `vendor/`.
     "3rdparty_patches/",
+    # Vendored exllamav3 EXL3 kernel sources, mirrored from
+    # `.research/exllamav3_ref/`. Upstream identifiers read as typos and are not:
+    # `WNT` (adjacent n-tiles per warp) and `TWORDS` (uint32 per 16x16 tile) are
+    # its tile constants, `setp` is the PTX set-predicate instruction inside an
+    # asm block, and `interm`/`halfs` are its own abbreviations. Same footing as
+    # `q4k_vendor/` below — we do not ship typo fixes upstream from here.
+    "kernels/gb10/common/exl3_vendor/",
     # Vendored llama.cpp/ggml CUDA MMQ sources (MIT). Upstream identifiers
     # (`n_leafs`, `GGML_OP_CPY`, `ggml_arange`, ...) read as typos but are
     # canonical; we don't ship typo fixes upstream from here, like `vendor/`.

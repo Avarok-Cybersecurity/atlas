@@ -1,4 +1,4 @@
-# Ternary-Bonsai-27B on Atlas — Serving Receipt
+# Ternary-Bonsai-27B on Avarok — Serving Receipt
 
 The validated, reproducible configuration for serving `prism-ml/Ternary-Bonsai-27B`
 (ternary Q2_0 Qwen3.6-27B GDN-hybrid + vision) on a single NVIDIA GB10 (sm_121, ~120 GB
@@ -27,9 +27,9 @@ Coherent throughout. Both wins are orthogonal: native-Q2 cuts **weight bandwidth
 
 | Component | Value |
 |---|---|
-| Container | `atlas-gb10:b12x-ready` (cargo/rustc, CUDA 13.2, `libcute_dsl_runtime.so`, `CUTE_DSL_ARCH=sm_121a`, FlashInfer at `/opt/flashinfer`) |
+| Container | `avarok-gb10:b12x-ready` (cargo/rustc, CUDA 13.2, `libcute_dsl_runtime.so`, `CUTE_DSL_ARCH=sm_121a`, FlashInfer at `/opt/flashinfer`) |
 | Binary | Host-built `spark` **runs as-is in the container** (glibc 2.39 both, cudart.so.13 soname-compat). No in-container rebuild needed for the production stack. |
-| GDN-FI AOT lib | `3rdparty_patches/gdn_aot/libatlasgdn.so` (prebuilt; syms `atlas_gdn_load`, `atlas_gdn_prefill_packed_managed`; transpose handoff fixed) |
+| GDN-FI AOT lib | `3rdparty_patches/gdn_aot/libatlasgdn.so` (prebuilt; syms `avarok_gdn_load`, `atlas_gdn_prefill_packed_managed`; transpose handoff fixed) |
 | Model files | `/tank/hf/hub/models--prism-ml--Ternary-Bonsai-27B-gguf/.../` (Q2_0 backbone + mmproj) |
 
 Build (only needed if changing code): all targets, no nccl —
@@ -88,7 +88,7 @@ spark serve --model-from-path <dir> --bind 127.0.0.1 --port <p> \
 
 ```bash
 docker run --rm --gpus all --network host \
-  -v /home/ms/atlas/.claude/worktrees/ternary-bonsai:/work \
+  -v /home/ms/avarok/.claude/worktrees/ternary-bonsai:/work \
   -v /tank:/tank -v <modeldir-parent>:/models \
   -e LD_LIBRARY_PATH=/usr/local/cuda-13.2/compat:/work/3rdparty_patches/gdn_aot:/usr/local/lib:/usr/local/cuda/lib64 \
   -e CUTE_DSL_ARCH=sm_121a \
@@ -97,7 +97,7 @@ docker run --rm --gpus all --network host \
   -e AVAROK_GDN_FLASHINFER=1 \
   -e AVAROK_PREFILL_CODISPATCH=1 -e AVAROK_PREFILL_CODISPATCH_WINDOW_MS=80 \
   -e AVAROK_KV_OVERCOMMIT=1 \
-  --entrypoint bash atlas-gb10:b12x-ready -c \
+  --entrypoint bash avarok-gb10:b12x-ready -c \
   '/work/target/release/spark serve --model-from-path /models/bonsai-vision \
      --bind 127.0.0.1 --port 8880 --scheduling-policy slai --tbt-deadline-ms 100 \
      --max-batch-size 8 --max-num-seqs 8 --max-prefill-tokens 16384 \

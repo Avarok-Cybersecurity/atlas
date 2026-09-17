@@ -66,7 +66,7 @@ pub fn is_gdn_key(key: &str) -> bool {
         return false;
     };
     // `linear_attn.out_proj` is SUPPORTED, so it is not skippable — skipping
-    // it would silently drop a delta Atlas can actually apply. Only the
+    // it would silently drop a delta Avarok can actually apply. Only the
     // input-side projections, which still have no delta path, are skippable.
     tail.starts_with("linear_attn.") && tail != "linear_attn.out_proj"
 }

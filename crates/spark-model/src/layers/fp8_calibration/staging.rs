@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! BF16 staging for the FP8 KV calibration window (Atlas #919).
+//! BF16 staging for the FP8 KV calibration window (Avarok #919).
 //!
 //! ## Why this exists
 //!

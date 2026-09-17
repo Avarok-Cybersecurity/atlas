@@ -113,7 +113,7 @@ pub trait Probe: Send + Sync {
 /// The real probe: this box through `HardwareState`, a remote node through
 /// `atlasctl bench nodes`.
 pub struct FleetProbe {
-    pub atlasctl: std::sync::Arc<dyn super::atlasctl::Atlasctl>,
+    pub atlasctl: std::sync::Arc<dyn super::atlasctl::Avarokctl>,
 }
 
 impl Probe for FleetProbe {

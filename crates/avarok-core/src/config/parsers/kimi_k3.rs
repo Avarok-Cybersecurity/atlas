@@ -221,7 +221,7 @@ fn overlay_k3_flags(config: &mut ModelConfig, text: &serde_json::Value) -> Resul
     Ok(())
 }
 
-/// Convert HF layer-index lists to 0-based Atlas indices.
+/// Convert HF layer-index lists to 0-based Avarok indices.
 ///
 /// Official K3 lists are 1-based (`full_attn_layers` ends at 93). Decide that
 /// from the **union** of kda + full — KDA's max is 91, so a per-list check

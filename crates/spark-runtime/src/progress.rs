@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Structured startup-progress events for the Atlas TUI.
+//! Structured startup-progress events for the Avarok TUI.
 //!
 //! Call sites next to the existing human-readable log lines emit ADDITIONAL
 //! `debug!`-level events under the dedicated [`TARGET`]. They are invisible on

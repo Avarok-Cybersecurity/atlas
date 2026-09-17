@@ -99,7 +99,7 @@ fn the_suite_list_shows_the_benchmarks_and_their_provenance() {
     a.bench.select(0);
     let out = render(&a, 160, 48);
     assert!(out.contains("OFFICIAL"), "first-party badge is missing");
-    assert!(out.contains("Atlas"), "author is missing");
+    assert!(out.contains("Avarok"), "author is missing");
 }
 
 #[test]

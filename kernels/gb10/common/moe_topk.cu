@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas MoE Top-K Softmax kernel for SM121 (GB10).
+// Avarok MoE Top-K Softmax kernel for SM121 (GB10).
 //
 // GPU-side replacement for CPU top-K routing.
 // Eliminates D2H copy of gate logits + CPU sort + CPU softmax.
@@ -313,8 +313,16 @@ extern "C" __global__ void moe_topk_softmax_f32(
 // gate_logits:    [N, num_experts] BF16
 // expert_indices: [N, top_k] u32
 // expert_weights: [N, top_k] f32
-extern "C" __global__ void moe_topk_softmax_batched(
-    const __nv_bfloat16* __restrict__ gate_logits,  // [N, num_experts]
+// Widen either supported logit type to f32. The top-k body works entirely on
+// an f32 shared array, so the input dtype touches exactly one line.
+__device__ __forceinline__ float moe_topk_to_f32(__nv_bfloat16 v) {
+    return __bfloat162float(v);
+}
+__device__ __forceinline__ float moe_topk_to_f32(float v) { return v; }
+
+template <typename T>
+__device__ __forceinline__ void moe_topk_softmax_batched_core(
+    const T* __restrict__ gate_logits,              // [N, num_experts]
     unsigned int* __restrict__ expert_indices,       // [N, top_k]
     float* __restrict__ expert_weights,              // [N, top_k]
     unsigned int num_experts,
@@ -334,13 +342,13 @@ extern "C" __global__ void moe_topk_softmax_batched(
     const unsigned int num_warps = BLOCK_SIZE / 32;
 
     // Per-token pointer offsets
-    const __nv_bfloat16* my_gate = gate_logits + token * num_experts;
+    const T* my_gate = gate_logits + token * num_experts;
     unsigned int* my_indices = expert_indices + token * top_k;
     float* my_weights = expert_weights + token * top_k;
 
     unsigned int actual_n = num_experts < MAX_EXPERTS ? num_experts : MAX_EXPERTS;
     for (unsigned int i = tid; i < actual_n; i += BLOCK_SIZE) {
-        s_vals[i] = __bfloat162float(my_gate[i]);
+        s_vals[i] = moe_topk_to_f32(my_gate[i]);
     }
     for (unsigned int i = actual_n + tid; i < MAX_EXPERTS; i += BLOCK_SIZE) {
         s_vals[i] = -1e30f;
@@ -435,4 +443,41 @@ extern "C" __global__ void moe_topk_softmax_batched(
             }
         }
     }
+}
+
+// The two entry points over the shared core. TWO ENTRIES rather than one
+// nullable-dtype argument so nsys can attribute them separately and so a
+// target lacking the f32 arm degrades to the bf16 one by handle.
+//
+// WHY AN F32 ARM EXISTS. The logits are the input to a DISCRETE top-k, so the
+// selected experts can only change if a perturbation exceeds the gap between
+// the k-th and (k+1)-th logit. Measured on qwen3.8-flash-next at 8K
+// (AVAROK_MOE_ROUTER_MARGIN=1): with BF16 logits, 23-48% of tokens have an
+// EXACT TIE at that boundary and the mean gap is ~1 ULP, so for about a third
+// of tokens the routing is decided by the sort's tie-break rather than by the
+// model. An 8-bit mantissa cannot separate 512 experts landing in a narrow
+// range. Carrying the logits in f32 gives the comparison a 24-bit mantissa and
+// lets the router decide.
+extern "C" __global__ void moe_topk_softmax_batched(
+    const __nv_bfloat16* __restrict__ gate_logits,
+    unsigned int* __restrict__ expert_indices,
+    float* __restrict__ expert_weights,
+    unsigned int num_experts,
+    unsigned int top_k,
+    unsigned int normalize
+) {
+    moe_topk_softmax_batched_core<__nv_bfloat16>(
+        gate_logits, expert_indices, expert_weights, num_experts, top_k, normalize);
+}
+
+extern "C" __global__ void moe_topk_softmax_batched_f32(
+    const float* __restrict__ gate_logits,
+    unsigned int* __restrict__ expert_indices,
+    float* __restrict__ expert_weights,
+    unsigned int num_experts,
+    unsigned int top_k,
+    unsigned int normalize
+) {
+    moe_topk_softmax_batched_core<float>(
+        gate_logits, expert_indices, expert_weights, num_experts, top_k, normalize);
 }

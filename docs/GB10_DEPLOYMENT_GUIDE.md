@@ -1,6 +1,6 @@
-# Atlas on DGX Spark GB10 — Deployment & Compatibility Guide
+# Avarok on DGX Spark GB10 — Deployment & Compatibility Guide
 
-New to Atlas on a Spark? Start here. Read this **before** you pick a model: which
+New to Avarok on a Spark? Start here. Read this **before** you pick a model: which
 model and quant fit your box and your goal, what to do when it OOMs, and the
 gotchas that cost an evening — then it points you at the exact copy-paste recipe.
 
@@ -9,7 +9,7 @@ elsewhere:
 
 | For… | Read |
 |------|------|
-| Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@atlas` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
+| Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@avarok` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
 | Deployment *modes* (single-GPU, EP=2/TP=2, NVMe swap) | [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) |
 | Release/image pipeline, and the native binary | the `avarok-release` skill (`.claude/skills/avarok-release/`) |
 | Adding a new model/hardware target | [`docs/HARDWARE.md`](HARDWARE.md) · [`AGENTS.md`](../AGENTS.md) |
@@ -31,7 +31,7 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 | CPU arch | aarch64 |
 | **Min driver** | **580** (CUDA 13.0). The engine embeds PTX and re-JITs to your SM at launch — no `nvcc` at runtime, but the driver floor is hard. |
 | Multi-node | 2× DGX Spark over RoCEv2 (`enp1s0f0np0`) for EP=2 |
-| Image | `avarok/atlas-gb10:latest` — one **multi-model** binary; the right kernel set is auto-selected at startup from the model's `config.json` |
+| Image | `avarok/avarok-gb10:latest` — one **multi-model** binary; the right kernel set is auto-selected at startup from the model's `config.json` |
 
 **Prerequisites**, in order:
 1. NVIDIA driver ≥ 580 — verify: `nvidia-smi` shows CUDA 13.0+. (There is no
@@ -40,7 +40,7 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
    driver/PTX-load error at startup, not a friendly message.)
 2. NVIDIA Container Toolkit (for the Docker path).
 3. A clean GPU before launch: `nvidia-smi` should show no other process holding
-   VRAM. Atlas sizes its KV cache from *free* memory at boot.
+   VRAM. Avarok sizes its KV cache from *free* memory at boot.
 4. HuggingFace cache mounted (`-v ~/.cache/huggingface:/root/.cache/huggingface`).
    Weights download on first run — **plan disk**: checkpoints range ~15 GB (27–35B
    NVFP4) to ~81 GB (122B). See §5 for the one download gotcha.
@@ -50,7 +50,7 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 
 ## 2. Model × quant compatibility matrix
 
-Every model below runs on the **same** `avarok/atlas-gb10:latest` image. "Quant"
+Every model below runs on the **same** `avarok/avarok-gb10:latest` image. "Quant"
 is the **weight** format of the HuggingFace checkpoint you point `serve` at; the
 nvfp4 kernel bundle carries native FP8 and BF16 paths too, so an FP8 checkpoint
 serves correctly on the same image (runtime gate:
@@ -77,6 +77,7 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 | **Mistral-Small-4-119B** | `mistralai/Mistral-Small-4-119B-2603-NVFP4` | 119B / 6.5B | NVFP4 | MLA + MoE | ~33 | 8K | **`--kv-cache-dtype bf16` required** (FP8/NVFP4 KV breaks the MLA latent); tool parser is a known gap; registry-only |
 | **Gemma-4-31B** | `nvidia/Gemma-4-31B-IT-NVFP4` | 31B dense | NVFP4 | dense, sliding+full attn | ~9 | 16K | Vision; `gemma4` tool parser; registry-only (no per-model image) |
 | **Gemma-4-26B-A4B** | `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16` | 26B / 4B | **NVFP4A16** | MoE GeGLU | ~67 | 16K | 4-bit weights / 16-bit activations; registry-only |
+| **Qwen3.8-Flash-Next** (EXL3) | `turboderp/Qwen3.8-Flash-Next-exl3` @ branch `4.05bpw_h6_ng6` | 180B / 10B | **EXL3 4.05 bpw** | hybrid GDN + QSA sparse attn + mHC + PLE n-gram + 512-expert MoE, MTP | — | 128K | **Named preset**: `spark serve qwen3.8-flash-next-exl3` bakes in the gate-passing flags and `AVAROK_*` gates (native EXL3 kernels, **bf16 KV required**, 2 MTP drafts, 4 sequences x 128K, prefix caching, thinking preserved across turns, util 0.72; 2026-09-06 prefill levers: 1024-row fused MoE tier, 512-row dense reconstruct tier). Measured 2026-09-06: ~480 tok/s prefill at 8K/11K, ~30 tok/s decode with 2 drafts. Kernel target `qwen3.8-flash-next`; the NVFP4 checkpoints of this model still serve by HF id. Measurements: `.research/exl3_decode_perf/` on `wip/exl3-research` |
 
 ### Large models (single-node tight, or scale out to EP=2 / EP=4)
 
@@ -88,7 +89,26 @@ at conc=1; it trades against batch size and KV dtype (see §4).
 
 **"registry-only"** = the kernels are in the multi-model image and it serves fine,
 but there's no turnkey per-model `docker/gb10/<m>/` Dockerfile — run it against
-`avarok/atlas-gb10:latest` with the recipe flags.
+`avarok/avarok-gb10:latest` with the recipe flags.
+
+**Named presets.** A kernel target's `MODEL.toml` may declare `[[serve_presets]]`:
+one checkpoint (HF id + branch) together with the `spark serve` flags and the
+`AVAROK_*` gates it was validated under. `spark serve <preset-name>` expands the
+preset at startup — the flag defaults are appended and re-parsed by clap, the
+environment defaults are set only where unset — and logs every value it decided.
+Anything you pass explicitly (a flag, or a variable already in your environment)
+wins, and the log says so. The first preset is `qwen3.8-flash-next-exl3`:
+
+```bash
+hf download turboderp/Qwen3.8-Flash-Next-exl3 --revision 4.05bpw_h6_ng6
+spark serve qwen3.8-flash-next-exl3
+# or, with a local copy of that checkpoint:
+spark serve qwen3.8-flash-next-exl3 --model-from-path /path/to/qwen38-flash-next-4.05bpw
+```
+
+Preset names are distinct from kernel-target names (`--kernel-target` still takes
+the directory name) and from HF ids, so nothing about `spark serve <hf-id>` or
+`--model-from-path` changes.
 
 **⚠️ SSOT drifts to be aware of** (registry `MODEL.toml` vs the deployable recipe
 id; tracked for reconciliation — the recipe id is what to pull):
@@ -125,7 +145,7 @@ launch with the recipe's `max_model_len`; trade context against batch/KV via §4
 | **Smallest / dense reasoning** | `Qwen3.5-27B-NVFP4` or `Qwen3.6-27B-FP8` | Dense hybrids; ~14–15 tok/s, low VRAM |
 
 Then copy that model's recipe from [`QUICKSTART.md`](../QUICKSTART.md) or run
-`sparkrun run @atlas/<recipe-stem>`. Deviate from the flagship only with a reason —
+`sparkrun run @avarok/<recipe-stem>`. Deviate from the flagship only with a reason —
 the recipe defaults encode gate-passing choices.
 
 ---
@@ -195,7 +215,7 @@ The gotchas that cost people an evening, in one place:
    path:
    ```bash
    hf download Sehyo/Qwen3.5-35B-A3B-NVFP4 --local-dir /models/qwen3.5-35b
-   docker run ... -v /models/qwen3.5-35b:/model avarok/atlas-gb10:latest \
+   docker run ... -v /models/qwen3.5-35b:/model avarok/avarok-gb10:latest \
      serve --model-from-path /model --speculative --num-drafts 1
    ```
 2. **High-speed swap silently does nothing / permission errors.** `io_uring`
@@ -233,7 +253,7 @@ curl http://localhost:8888/health           # liveness
 curl http://localhost:8888/metrics          # Prometheus exposition
 # Coherence smoke — deterministic, should print exactly "4":
 curl -s http://localhost:8888/v1/chat/completions -H 'Content-Type: application/json' -d \
-  '{"model":"atlas","messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}],"max_tokens":16,"temperature":0}'
+  '{"model":"avarok","messages":[{"role":"user","content":"What is 2+2? Reply with just the number."}],"max_tokens":16,"temperature":0}'
 ```
 Logs go to stdout (`docker logs <container>`); `RUST_LOG` controls verbosity
 (`info` default, `debug` for kernel traces).
@@ -277,9 +297,9 @@ is rare and OOM-prone for these models. The 397B needs **EP=4** (4 nodes).
 
 ## 8. What "verified" means (so you can trust an image)
 
-An Atlas image is only cut after it passes the **serve matrix** — every model×quant
+An Avarok image is only cut after it passes the **serve matrix** — every model×quant
 in §2 boots, stays coherent, and holds four quality signals. If you're evaluating
-Atlas or reproducing a claim, these are the signals and where they live:
+Avarok or reproducing a claim, these are the signals and where they live:
 
 | Signal | What it proves | How it's checked |
 |--------|----------------|------------------|
@@ -301,4 +321,4 @@ clean checkout against a running server.
 - [`QUICKSTART.md`](../QUICKSTART.md) — the copy-paste recipes this guide routes to.
 - [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) — deployment modes + NVMe swap internals.
 - [`CONTRIBUTING.md`](../CONTRIBUTING.md) · [`AGENTS.md`](../AGENTS.md) — building & contributing.
-- [`atlas-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) — the serve-config SSOT (`sparkrun run @atlas/<recipe>`).
+- [`atlas-recipes`](https://github.com/Avarok-Cybersecurity/atlas-recipes) — the serve-config SSOT (`sparkrun run @avarok/<recipe>`).

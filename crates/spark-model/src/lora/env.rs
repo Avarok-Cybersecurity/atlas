@@ -160,7 +160,7 @@ pub fn validate_peft_config(peft: &PeftAdapterConfig, max_lora_rank: usize) -> R
 }
 
 /// `AVAROK_LORA_ALLOW_PARTIAL=1` — load an adapter that names target modules
-/// Atlas cannot apply, skipping those and applying the rest.
+/// Avarok cannot apply, skipping those and applying the rest.
 ///
 /// Delegates to the avarok-core definition rather than re-reading the env:
 /// the parse-time allow-list down there is the FIRST gate an adapter meets,

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Atlas W8A8 + FP32 epilogue GEMM — vLLM-equivalent FP8 numerics.
+// Avarok W8A8 + FP32 epilogue GEMM — vLLM-equivalent FP8 numerics.
 //
 //   C[M, N] = bf16(   Σ_g  ( Σ_(k in g)  A_fp8[m, k] * B_fp8[n, k] ) * a_scale[m, g] * b_scale[n/128, g] )
 //

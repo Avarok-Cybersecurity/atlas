@@ -47,7 +47,7 @@ unsafe extern "C" {
 /// Ragged batched prefill attention, BF16, **head_dim=128** (Laguna), GQA.
 ///
 /// Same contract as [`super::ragged_prefill_bf16_hd256`] but with a sliding-window
-/// bound. `sliding_window` is the Atlas convention (mask when `q - k >= w`,
+/// bound. `sliding_window` is the Avarok convention (mask when `q - k >= w`,
 /// see `kernels/gb10/common/inferspark_prefill.cu`); pass `None` for the
 /// full-attention layers. It is converted to FlashInfer's `window_left`
 /// (= `w - 1`) internally.
@@ -84,7 +84,7 @@ pub fn ragged_prefill_bf16_hd128(
         if qo_indptr_h.len() != (batch + 1) as usize || kv_indptr_h.len() != (batch + 1) as usize {
             bail!("indptr host slices must be batch+1 long");
         }
-        // Atlas masks at (q - k) >= w; FlashInfer keeps kv within window_left of
+        // Avarok masks at (q - k) >= w; FlashInfer keeps kv within window_left of
         // the query, so window_left = w - 1. w == 0 means "no window".
         let window_left: i32 = match sliding_window {
             Some(w) if w > 0 => (w - 1) as i32,

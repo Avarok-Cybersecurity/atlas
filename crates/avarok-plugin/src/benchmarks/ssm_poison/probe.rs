@@ -130,7 +130,7 @@ pub const TURNS: [&str; 4] = [
 /// aggregated text, not the framing. `stream_options.include_usage` is the
 /// OpenAI contract for usage on a stream: without it, correct
 /// `completion_tokens` and the `cached_tokens` attestation the vacuity
-/// check reads are an Atlas-specific courtesy, and running the gate against
+/// check reads are an Avarok-specific courtesy, and running the gate against
 /// a contract-faithful server would silently zero both.
 ///
 /// Plain greedy body. The gate run pins TWO things via the serve config, both

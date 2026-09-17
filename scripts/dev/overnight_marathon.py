@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Atlas Overnight Marathon Test Suite
+Avarok Overnight Marathon Test Suite
 Runs all models in parallel across 2 DGX Spark nodes for 7+ hours.
 Self-repairs issues and produces a final summary table.
 

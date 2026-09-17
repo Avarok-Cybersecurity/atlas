@@ -9,7 +9,7 @@ host went down and took both properties with it.
 | Project | Serves | pages.dev |
 | --- | --- | --- |
 | `avarok-site` | `atlascybernetics.ai` | `avarok-site-80h.pages.dev` |
-| `atlas-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
+| `avarok-blog` | `blog.atlascybernetics.ai` | `atlas-blog-3ja.pages.dev` |
 
 Both are **Direct Upload** projects, not Pages' git integration. The build in
 `.github/workflows/site.yml` needs an `atlas-recipes` checkout and a GitHub

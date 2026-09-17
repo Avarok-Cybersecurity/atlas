@@ -1,6 +1,6 @@
 name: CodeRAG
 
-# Builds the "Ask the codebase" corpus. Every merge to main that touches Atlas
+# Builds the "Ask the codebase" corpus. Every merge to main that touches Avarok
 # source chunks + embeds the changed code (incremental against the previously
 # published corpus, so steady state embeds only what moved) and publishes a
 # self-verifying lattice-jsonl corpus — gzip twin + metadata — for the website

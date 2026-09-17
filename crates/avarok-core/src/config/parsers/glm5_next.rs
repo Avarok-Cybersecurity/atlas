@@ -84,7 +84,7 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
         serde_json::from_str(&text_json).context("Failed to parse glm5_next text_config")?;
     let text = &text;
 
-    // Canonical model_type. The inner object says `glm5_next_text`; Atlas keys
+    // Canonical model_type. The inner object says `glm5_next_text`; Avarok keys
     // dispatch off the outer family name.
     config.model_type = "glm5_next".to_string();
 
@@ -142,7 +142,7 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
 
     // ---- KDA linear attention --------------------------------------------
     // The checkpoint carries these under `linear_attn_config`, not as the
-    // flat `linear_*` keys Atlas uses for Qwen GDN.
+    // flat `linear_*` keys Avarok uses for Qwen GDN.
     let lac = text.get("linear_attn_config");
     if let Some(lac) = lac {
         let g = |k: &str| lac.get(k).and_then(|v| v.as_u64()).map(|v| v as usize);
@@ -217,7 +217,7 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
 
     // ---- Dense-vs-routed MLP split ---------------------------------------
     // `first_k_dense_replace = 3`: layers 0..=2 carry a dense MLP, every later text layer
-    // routes to experts. Nothing in Atlas read this before, so `mlp_only_layers` came out
+    // routes to experts. Nothing in Avarok read this before, so `mlp_only_layers` came out
     // EMPTY and the whole stack looked routed — a dense layer bound as MoE looks for
     // `mlp.experts.*` that do not exist. Cross-checked against the textual
     // `mlp_layer_types` array when the checkpoint carries one, the same way
@@ -226,7 +226,7 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
 
     // ---- SwiGLU clamp -----------------------------------------------------
     // 🔴 GLM clamps its SwiGLU and the clamp is ASYMMETRIC (`gate` upper-bounded only, `up`
-    // both ways). Nothing in Atlas read this before, so the value would have had to be
+    // both ways). Nothing in Avarok read this before, so the value would have had to be
     // hardcoded at a call site or defaulted to "no clamp" — and an absent clamp is INVISIBLE
     // on well-scaled activations, firing only on the tails. Read it, never guess it.
     config.swiglu_limit = match text.get("swiglu_limit").and_then(|v| v.as_f64()) {
@@ -515,7 +515,7 @@ fn refuse_shared_indexer(text: &serde_json::Value, config: &ModelConfig) -> Resu
     if !shared.is_empty() {
         bail!(
             "DSA layer(s) {shared:?} use SHARED indexing (reuse the previous full layer's \
-             top-k). Atlas runs a per-layer indexer and does not propagate selections, so \
+             top-k). Avarok runs a per-layer indexer and does not propagate selections, so \
              these layers would attend to the wrong token set — a wrong answer, not a \
              crash. GLM-5.3-Flash-NVFP4 is entirely \"full\"; implement prev_topk_indices \
              propagation before serving a checkpoint that is not."
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(dsa, vec![3, 7, 11, 15, 19, 23, 27, 31, 35, 39, 43]);
     }
 
-    /// 🔴 A shared DSA layer must attend to the UPSTREAM layer's token set. Atlas runs a
+    /// 🔴 A shared DSA layer must attend to the UPSTREAM layer's token set. Avarok runs a
     /// per-layer indexer and does not propagate, so this is a wrong answer with no crash
     /// — refused at load.
     #[test]
@@ -734,7 +734,7 @@ mod tests {
     }
 
     /// 🪤 GLM-5.3 is **MLA AND NoPE at the same time** — the exact combination
-    /// that broke Atlas's MLA decode dispatch.
+    /// that broke Avarok's MLA decode dispatch.
     ///
     /// `qwen3_attention/decode/run_paged_decode.rs` used to select the MLA
     /// compressed-cache decode with `mla.rope > 0`, treating "has a RoPE

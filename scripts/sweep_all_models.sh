@@ -84,7 +84,7 @@ test_model() {
 }
 
 echo "=========================================="
-echo "Atlas Model Sweep — $(date)"
+echo "Avarok Model Sweep — $(date)"
 echo "=========================================="
 echo ""
 

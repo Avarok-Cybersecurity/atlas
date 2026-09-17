@@ -488,7 +488,7 @@ fn activation_scratch_holds_the_widest_ffn_projection() {
 fn cublas_arm_requires_a_multiple_of_four_weight_scale_column_stride() {
     // cuBLASLt's BLK128x128 factors are K-major with "the stride between the
     // consecutive columns ... a multiple of 4" (cuBLAS "Scaling factors
-    // layouts"), and Atlas hands over the checkpoint's `[N/128, K/128]` grid
+    // layouts"), and Avarok hands over the checkpoint's `[N/128, K/128]` grid
     // as-is — so K/128 must be a multiple of 4, i.e. K % 512 == 0. Both FFN
     // contraction dims satisfy it; the gate exists for the ones that would not.
     use spark_runtime::cublaslt::scale_layout::blk128x128_stride_ok;

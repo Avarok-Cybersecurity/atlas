@@ -1,0 +1,211 @@
+# Benchmarks for Qwen3.8-Flash-Next, and the thresholds its gate records must
+# meet. Sibling of MODEL.toml so the numbers sit beside the thing they describe;
+# hardware and model are implied by the path and cannot disagree with the
+# contents. Read by `avarok_plugin::gate::bench`.
+#
+# ── Every entry here is the TWO-NODE NVFP4 profile ──────────────────────────
+#
+# Served by the `qwen3.8-flash-next-nvfp4-tp2-ep2` preset in MODEL.toml, which
+# is TP=2 over EP=2 across two GB10s.
+#
+# ⚠ `recipe` names `qwen3.8/qwen3.8-flash-next-nvfp4-ep2`, which DOES NOT EXIST
+# in `atlas-recipes` yet. It is written here because the binding is the only
+# machine-readable link from a benchmark to the serve config its thresholds were
+# measured under, and the schema requires one. What it does NOT mean: that
+# `--pull-request-gate` can self-start this. Self-start provisions one box and
+# these numbers are a two-node measurement, so the gate is scored from an
+# operator-started pair either way — which is why the missing recipe costs
+# nothing today and must still be added before anyone reads the binding as a
+# promise. The existing `qwen3.8/qwen3.8-flash-next-nvfp4` is NOT it: single
+# node, the Inferact checkpoint rather than NVIDIA's, 2048 context, batch 1, no
+# speculation, and its own text says it is "not a performance profile".
+#
+# Run these against a server the operator started:
+#
+#     spark serve qwen3.8-flash-next-nvfp4-tp2-ep2 --rank 0 --master-addr <ip>
+#     spark serve qwen3.8-flash-next-nvfp4-tp2-ep2 --rank 1 --master-addr <ip>
+#     spark benchmark run <gate> --url http://<rank0>:8888 \
+#         --model qwen3.8-flash-next-nvfp4-tp2-ep2
+#
+# Three things that are easy to get wrong, each of which costs a whole run:
+#
+#   • BUILD WITH `CUTLASS_HOME` SET (and default cargo features, which keep
+#     NCCL). The preset sets AVAROK_HOLO_MOE_GROUPED_CUTLASS=1, and a binary
+#     built without it loads every weight and THEN dies with "CUTLASS support
+#     was not built". On these boxes that is CUTLASS_HOME=/home/ms/cutlass,
+#     FLASHINFER_HOME=/home/ms/flashinfer, and
+#     RUSTFLAGS=-L/home/ms/nccl/build/lib (libnccl is an out-of-tree build and
+#     is not on the default linker or loader path).
+#   • `--video-allow-ffmpeg` on the SERVER, for video-fidelity. See that entry.
+#   • `--param iterations=3` on agentic-webserver. The benchmark's own default
+#     is 10; the record below pins `iterations` at min=max=3, so a default run
+#     records iterations=10 and FAILS the bound no matter how many pass. It
+#     also wants `--yes`, because it executes model-authored shell.
+#
+# `default = false` on every entry: the gb10 default for each of these three
+# gates already belongs to another target (vision-fidelity and
+# agentic-webserver to qwen3.6-35b-a3b, video-fidelity to qwen3.6-27b), and a
+# second `true` would silently move which checkpoint the gate scores.
+#
+# REFERENCE RUNS: 2026-09-13, dgx-00 + gx10-9959, binary 5e9774929
+# (pr973-ep-prefix-cache). Cold prefill on the same boot was 1423 tok/s at 7858
+# tokens and 1407 at 10751, both uncached, MEDIAN OF 3 — the first request at
+# each length read 1130 and 1205, which is warmup and not a regression. Quote
+# the median; a single cold pair understates this config by ~20%.
+#
+# Supersedes the records taken on bc6a2a407, which read 1478 / 1435 prefill
+# (those were single cold measurements, hence the note above).
+
+# ── vision-fidelity ─────────────────────────────────────────────────────────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.8-Flash-Next-NVFP4"
+gate = "vision-fidelity"
+recipe = "qwen3.8/qwen3.8-flash-next-nvfp4-ep2"
+label = "Qwen3.8-Flash-Next NVFP4 (NVIDIA ModelOpt), TP=2 x EP=2"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-09-13, two GB10s, binary 5e9774929: PASS — 14/14 geometry cells \
+matched, 3/3 probes, 10/10 integrity legs, control held, 3/3 concurrency levels clean. \
+Identical counts on bc6a2a407 before the 500-LoC split and the CHKI guard, which is the \
+point of re-measuring: those were mechanical moves and the gate says so. \
+★ `concurrency_levels_clean` is the load-bearing threshold here and the reason this entry \
+exists. It read 0/3 before the 2026-09-13 vision work and 2/3 after the first two fixes; \
+only the third made it 3/3. The three defects it covers are all INVISIBLE to the geometry \
+cells, which stayed 14/14 throughout: (1) under TP>1 only rank 0 received the image, so \
+every other rank all-reduced a hidden state with no picture in it and the model described \
+a blurred impression fluently; (2) the batched prefill stager has no MRoPE arm, so a \
+second in-flight request turned an image into a flat run of positions; (3) the cross-rank \
+batched verify is not output-equivalent at batch width >= 4 unless the three non-bit-exact \
+arm groups are switched off, which the preset does. Any of those regressing shows up HERE \
+and nowhere else in this gate. || The geometry counts are ABSOLUTE correctness bounds and \
+take no noise — token count is a property of the preprocessor, not the checkpoint, so a \
+move means the resolver or the merge arithmetic changed. || Walls are recorded, not \
+asserted: C=1/C=2/C=4 were 2233/4200/8715 ms (2120/4174/8130 on bc6a2a407), and vision \
+prefill serializes today, so a ceiling here would be a box-speed bound rather than a \
+correctness one."""
+
+[benchmarks.metrics.geometry_matched]
+min = 14.0
+
+[benchmarks.metrics.geometry_asserted]
+min = 14.0
+
+[benchmarks.metrics.probes_passed]
+min = 3.0
+
+[benchmarks.metrics.integrity_passed]
+min = 10.0
+
+[benchmarks.metrics.integrity_measured]
+min = 10.0
+
+# The regression detector for all three 2026-09-13 defects. 3 = C=1, C=2 and
+# C=4 each returned every reply correct, with one geometry, matching the C=1
+# baseline. Do not lower this to accept a draw.
+[benchmarks.metrics.concurrency_levels_clean]
+min = 3.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
+
+# ── video-fidelity ──────────────────────────────────────────────────────────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.8-Flash-Next-NVFP4"
+gate = "video-fidelity"
+recipe = "qwen3.8/qwen3.8-flash-next-nvfp4-ep2"
+label = "Qwen3.8-Flash-Next NVFP4 (NVIDIA ModelOpt), TP=2 x EP=2"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-09-13, two GB10s, binary 5e9774929: PASS — 14/14 legs, 0 skipped, \
+control held. C=1/C=2/C=4 all correct at 655/1234/2388 ms (658/1228/2461 on bc6a2a407). \
+★ THE SERVER MUST BE STARTED WITH `--video-allow-ffmpeg`. The preset deliberately does NOT \
+set it: the flag makes the server exec another program per video request, and a deployment \
+acquires that by asking rather than by upgrading. It is NOT pinned in \
+[benchmarks.serve_overrides] because these runs are operator-started, whose records carry \
+no overrides — a pin here would be demanded on the record and fail every legitimate \
+two-node run. Without the flag every MP4/MOV leg returns HTTP 400 and the gate reports \
+8/8 passed with 6 SKIPPED, which reads exactly like a model that cannot see video and is \
+not one; `legs_skipped` below is what refuses that reading. || This gate went 1/8 legs with \
+6 skipped to 14/14 on 2026-09-13. The leg that matters most is the REVERSED colour clip: \
+before the fix the model returned the first two of four colours on it, which is the \
+signature of an image arriving as an unordered bag of patches rather than a grid."""
+
+[benchmarks.metrics.legs_passed]
+min = 14.0
+
+[benchmarks.metrics.legs_asserted]
+min = 14.0
+
+# Zero, not "most": a skipped leg is an unasked question, and six of them are
+# what a missing --video-allow-ffmpeg looks like from the outside.
+[benchmarks.metrics.legs_skipped]
+max = 0.0
+
+[benchmarks.metrics.control_held]
+min = 1.0
+
+# ── agentic-webserver ───────────────────────────────────────────────────────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.8-Flash-Next-NVFP4"
+gate = "agentic-webserver"
+recipe = "qwen3.8/qwen3.8-flash-next-nvfp4-ep2"
+label = "Qwen3.8-Flash-Next NVFP4 (NVIDIA ModelOpt), TP=2 x EP=2"
+default = false
+status = "measured"
+note = """\
+REFERENCE RUN 2026-09-13, two GB10s, binary 5e9774929, greedy (the harness's own \
+temperature-0 / seed-0 pins), iterations = 3: 3/3 webserver_ok, 3/3 followed_directions, \
+27 turns, 6.225 s/turn, Sigma-wall 170.8 s, decode 35.1 tok/s. Per run: 9 turns/60.2 s, \
+10/58.9, 8/51.7 — all 6/6 steps. On bc6a2a407 the same gate read 22 turns, 6.945 s/turn, \
+155.6 s: s/turn IMPROVED ~10% while turns/run rose ~23%, so the extra wall is the agent \
+taking more steps, not the engine getting slower. \
+★ The counts are ABSOLUTE and take no noise; the wall and turn ceilings are BLOWUP \
+DETECTORS with deliberate headroom, not perf gates. They are set roughly 4x and 5x over \
+the reference because agentic wall carries large per-iteration outliers and a tight bound \
+would fail healthy builds — the same reasoning as the 35B entry's Sigma-wall. || \
+`iterations` is PINNED at 3: a count bound alone does not describe the run behind it, and \
+`webserver_ok >= 3` is satisfied by 3 successes out of 10. || HISTORY worth keeping: this \
+gate read 2/3 with 17/20/2 turns until the agentic sandbox learned to symlink `./target` at \
+the warm cargo target dir. The agent kept hitting `./target/debug/<bin>: No such file` \
+because the warm cache redirects CARGO_TARGET_DIR, then spent turns rediscovering it — an \
+ENVIRONMENTAL artifact charged to the model, and the same class the warm cache exists to \
+remove. Turns roughly halved and the third iteration started passing. If this gate \
+regresses to ~17+ turns per run, suspect the sandbox environment before the engine. || \
+THE TURN COUNT HAS A HEAVY TAIL, and `sum_turns` has less headroom than it looks. A \
+10-iteration run on 5e9774929 went 11/10/12/11/12/14 turns and then 40 — 6/6 steps at \
+exactly the 40-turn cap, one turn from failing. That run was the FASTEST of the set at \
+5.51 s/turn, so the tail is the agent wandering, never the engine. The wander: the \
+sandbox has network ON by deliberate choice (see warm.rs — a generation pinning a dep \
+outside the pre-warmed set must still resolve, or it is a false build failure), but \
+NOTHING TELLS THE AGENT THAT, so it spent its opening turns probing \
+~/.cargo/registry/cache, concluded it was offline, pinned itself to `cargo --offline`, \
+and then burned ~25 turns on a `BodyExt::collect().aggregate()` -> `impl Buf` / \
+`.to_vec()` loop, hypothesising a `bytes` version mismatch that only makes sense under \
+the offline pin it had chosen. Telling the agent the environment in its prompt is the \
+fix; it was left alone here so the numbers stay comparable to bc6a2a407. Three 40-turn \
+runs would land on sum_turns=120 exactly."""
+
+[benchmarks.metrics.webserver_ok]
+min = 3.0
+
+[benchmarks.metrics.followed_directions]
+min = 3.0
+
+[benchmarks.metrics.iterations]
+min = 3.0
+max = 3.0
+
+# Blowup detectors, not perf gates — see the note.
+[benchmarks.metrics.sum_turns]
+max = 120.0
+
+[benchmarks.metrics.sum_wall_s]
+max = 900.0
+
+[benchmarks.metrics.s_per_turn]
+max = 20.0

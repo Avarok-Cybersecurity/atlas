@@ -141,7 +141,7 @@ pub const CONTENT_LOOP_MIN_TOKENS: u32 = 48;
 pub const CONTENT_LOOP_CHECK_STRIDE: u32 = 16;
 // 2026-05-24 sweep #2: MIN_REPEATS bumped 2 → 3 to match vLLM's
 // `RepetitionDetectionParams.min_count` default. The earlier value of
-// 2 was tuned for Atlas's pre-anchored substring-scan detector, where
+// 2 was tuned for Avarok's pre-anchored substring-scan detector, where
 // 4 tokens of matching tail was strong evidence of a loop. After the
 // switch to vLLM's end-anchored algorithm (commit 1bb82ed), 2 repeats
 // of period-2 (= 4 tokens) became a false-positive on legitimate
@@ -751,17 +751,17 @@ pub fn detect_content_token_loop_normalized_with(
     )
 }
 
-/// 2026-05-24 v3: ALGORITHM REPLACE. Switched from Atlas's scan-anywhere
+/// 2026-05-24 v3: ALGORITHM REPLACE. Switched from Avarok's scan-anywhere
 /// substring detector to vLLM's anchored-at-end algorithm (vLLM main
 /// `v1/core/sched/utils.py::_has_repeating_pattern`, GitHub
 /// vllm-project/vllm; verified identical in 0.17.0 + current main).
 ///
-/// **Why**: Atlas's scan-anywhere algorithm fires on ANY period match
+/// **Why**: Avarok's scan-anywhere algorithm fires on ANY period match
 /// in the last 280 tokens — including OLD patterns the model has
 /// already moved past. Manifests as false-positive cutoffs on
 /// numbered lists ("Step 1: Step 2: Step 3: Verify Cargo.toml" has
 /// period-2 in the `[Step,N]` tail BEFORE the prose continuation, so
-/// Atlas would fire even though the model is no longer looping).
+/// Avarok would fire even though the model is no longer looping).
 ///
 /// **vLLM's algorithm**: take the LAST `pattern_len` tokens as a fixed
 /// anchor; check whether the preceding `(min_repeats - 1)` windows of

@@ -13,7 +13,7 @@ use super::{HISTORY_BUDGET, LIVE_REASONING, LIVE_TOOL_RESULTS};
 
 /// The `tool_call_id` this conversation carries — **ours, never the server's.**
 ///
-/// Atlas mints ids from a per-process counter (`call_0000000000000004`), so the
+/// Avarok mints ids from a per-process counter (`call_0000000000000004`), so the
 /// same turn of the same work is labelled differently depending on how many
 /// tool calls that server has answered since it started. Echoing it wrote a
 /// value from outside the run into the model's context, where it changes the

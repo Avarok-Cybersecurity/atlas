@@ -16,7 +16,7 @@ DEST=/usr/lib/x86_64-linux-gnu
 CUDA_STUBS=/usr/local/cuda/targets/x86_64-linux/lib/stubs
 
 cat > /tmp/libcuda_stub.c <<'EOF'
-/* Stub for every CUDA driver API symbol that any Atlas crate
+/* Stub for every CUDA driver API symbol that any Avarok crate
  * links against (spark-storage, avarok-core::registry, cudarc).
  * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
  * Generated for CI link-time only; never exercised at runtime
@@ -58,6 +58,17 @@ int cuLaunchKernel(void *f, unsigned int gx, unsigned int gy, unsigned int gz,
                    unsigned int sm, void *s, void **p, void **e) {
     (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz;
     (void)sm; (void)s; (void)p; (void)e; return 100;
+}
+/* Cooperative launch — the EXL3 native trellis GEMM/GEMV path. Same shape as
+ * cuLaunchKernel minus the trailing `extra`, which the cooperative entry point
+ * does not take. Added with the native matmul; without it `cargo test
+ * --workspace` fails at LINK time on a no-GPU runner, which reads as a broken
+ * test suite rather than a missing stub. */
+int cuLaunchCooperativeKernel(void *f, unsigned int gx, unsigned int gy, unsigned int gz,
+                              unsigned int bx, unsigned int by, unsigned int bz,
+                              unsigned int sm, void *s, void **p) {
+    (void)f; (void)gx; (void)gy; (void)gz; (void)bx; (void)by; (void)bz;
+    (void)sm; (void)s; (void)p; return 100;
 }
 /* Events */
 int cuEventCreate(void **a, unsigned int b) { (void)a; (void)b; return 100; }

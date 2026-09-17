@@ -13,8 +13,10 @@
 use std::sync::atomic::Ordering;
 
 mod no_caching;
+mod ssm_anchor;
 mod tier_evict;
 pub use no_caching::NoPrefixCaching;
+pub use ssm_anchor::SsmAnchor;
 pub use tier_evict::TierEvict;
 
 // The three counters that lived here are fields of the single run mailbox,
@@ -200,6 +202,28 @@ pub trait PrefixCache: Send + Sync {
     /// Task #24: keyed by `adapter_id` so a cross-adapter peek reports a miss.
     fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize, _adapter_id: u64) -> usize {
         0
+    }
+
+    /// Marconi re-anchor: the deepest SSM snapshot for `tokens` whose depth is
+    /// `<= max_tokens`, WITHOUT walking the KV radix or taking block refs.
+    ///
+    /// `lookup` hands back the deepest snapshot at or below the matched
+    /// prefix. When the restore site declines that anchor — an exact
+    /// full-prompt leaf is bypassed by default (see `prefill_b/prefix_lookup`)
+    /// — the caller passes `max_tokens = prompt_len - 1` to fall back to the
+    /// next-deepest anchor (an intermediate checkpoint) instead of recomputing
+    /// the whole prefix. Same candidate filter as `lookup` (prefix-hash match,
+    /// tail snapshots session-gated, adapter-keyed, resident or spilled).
+    /// `SsmAnchor::NONE` when nothing qualifies — the default for caches that
+    /// hold no snapshots.
+    fn lookup_ssm_anchor(
+        &self,
+        _tokens: &[u32],
+        _max_tokens: usize,
+        _session_hash: u64,
+        _adapter_id: u64,
+    ) -> SsmAnchor {
+        SsmAnchor::NONE
     }
 
     /// Insert a completed prefill's blocks into the cache.

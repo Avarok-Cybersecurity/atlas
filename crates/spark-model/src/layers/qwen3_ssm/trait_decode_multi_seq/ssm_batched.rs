@@ -87,13 +87,16 @@ impl Qwen3SsmLayer {
         // kernel it actually dispatches so the BF16 build engages the batched
         // fast path instead of silently dropping to the per-seq loop. The FP8
         // sub-case (qkvz_fp8w Some) is byte-identical to the old gate.
-        let qkvz_ok = (self.qkvz_nvfp4.is_none()
-            && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
-                || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
+        // Native EXL3 (packed in_proj pair, any n) is admitted explicitly.
+        let qkvz_ok = self.exl3_gdn.is_some()
+            || (self.qkvz_nvfp4.is_none()
+                && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
+                    || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
             || (self.qkvz_nvfp4.is_some()
                 && ((self.w4a16_batchm.has_base() && n <= 16) || tc_wide_ok));
         let out_ok = self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
+            || self.exl3_gdn.is_some()
             || self.qkvz_nvfp4.is_some();
         // Tier-1c keep-packed Q2_0 has no batched packed GEMM; decline so the
         // per-seq fallback (`ssm_forward` → `q2_0_gemv_vec`) handles it.
@@ -105,32 +108,10 @@ impl Qwen3SsmLayer {
             || !out_ok
             || self.qkvz_q2.is_some()
         {
-            // Say WHY, once. Declining is silent otherwise, and the fallback
-            // re-streams the ~50 MB QKVZ/out_proj weights once per sequence —
-            // the difference between decode that scales with N and decode that
-            // does not. A whole campaign phase was spent measuring the symptom
-            // (SSM time linear in N) without knowing which condition failed.
+            // Say WHY, once (`ssm_batched_log.rs`).
             if n >= 2 {
-                static WHY: std::sync::Once = std::sync::Once::new();
-                let (sq, fc, fg, qk, op) = (
-                    self.sequential_qkvz,
-                    use_f32_conv,
-                    use_f32_gdn,
-                    qkvz_ok,
-                    out_ok,
-                );
-                let nvfp4 = self.qkvz_nvfp4.is_some();
-                let b4 = self.w4a16_batchm.has_base();
-                let tct = self.qkvz_nvfp4_t.is_some() && self.out_proj_nvfp4_t.is_some();
-                WHY.call_once(|| {
-                    tracing::info!(
-                        "SSM batched projections DECLINED (n={n}): sequential_qkvz={sq} \
-                         f32_conv={fc} f32_gdn={fg} qkvz_ok={qk} out_ok={op} \
-                         [qkvz_nvfp4={nvfp4} w4a16_gemv_batch4={b4} tc_twins={tct} \
-                         tc_wide_ok={tc_wide_ok}] — falling back to the \
-                         per-seq loop, which re-reads QKVZ/out_proj weights n times"
-                    );
-                });
+                let flags = [use_f32_conv, use_f32_gdn, qkvz_ok, out_ok];
+                self.log_batched_proj_declined(n, flags, tc_wide_ok);
             }
             return Ok(false);
         }

@@ -85,7 +85,7 @@ pub struct CompletionRequest {
     /// Legacy integer logprobs (OpenAI spec 0-5): return the logprob of
     /// each token plus the `logprobs` most-likely alternatives. Applies
     /// to generated tokens, and to prompt tokens when `echo` is set.
-    /// Atlas accepts up to 20 (clamped), matching the chat endpoint.
+    /// Avarok accepts up to 20 (clamped), matching the chat endpoint.
     pub logprobs: Option<u8>,
     /// Number of completions per prompt (OpenAI spec default 1).
     /// Choices are ordered prompt-major: index = prompt_i * n + n_i.
@@ -94,7 +94,7 @@ pub struct CompletionRequest {
     /// `include_usage`: emit a final usage-only chunk before `[DONE]`
     /// when streaming (same semantics as chat completions).
     pub stream_options: Option<StreamOptions>,
-    /// Accepted for OpenAI compatibility; not used by Atlas (no abuse
+    /// Accepted for OpenAI compatibility; not used by Avarok (no abuse
     /// telemetry). Rejecting it would break SDK forward-compat.
     #[allow(dead_code)]
     pub user: Option<String>,

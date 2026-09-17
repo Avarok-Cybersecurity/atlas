@@ -9,16 +9,16 @@ use std::ffi::c_void;
 #[cfg(avarok_cutlass)]
 use super::*;
 
-/// Repack an Atlas E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
+/// Repack an Avarok E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
 /// swizzle atom (`tile_atom_to_shape_SFB`, ue4m3) that the grouped collective
 /// reads. M-independent (the SFB atom depends only on N,K) so this runs once
 /// per expert at load. `scale_out` must hold the swizzled SFB region the
 /// grouped kernel consumes.
 ///
-/// `src_n_major` selects the SOURCE layout: `false` = Atlas-transposed
+/// `src_n_major` selects the SOURCE layout: `false` = Avarok-transposed
 /// `[K/16,N]`, `true` = checkpoint-native `[N,K/16]`. The N-major mode lets a
 /// checkpoint that already ships `[N,K/16]` scales (Laguna) build SFB without
-/// first materialising an Atlas-transposed copy. Output layout is identical
+/// first materialising an Avarok-transposed copy. Output layout is identical
 /// either way.
 pub fn pack_weight_sfb(
     scale_in: u64,
@@ -53,7 +53,7 @@ pub fn pack_weight_sfb(
 }
 
 /// Pack BF16 row-major weight `[N,K]` into the native CUTLASS NVFP4 layout:
-/// packed `[N,K/2]` (N-major, K-contiguous — NOT the Atlas transposed `[K/2,N]`)
+/// packed `[N,K/2]` (N-major, K-contiguous — NOT the Avarok transposed `[K/2,N]`)
 /// and E4M3 scales `[K/16,N]`. `weight_scale_2` is assumed to be 1.0 by the
 /// caller when feeding this into the native CUTLASS wrapper.
 pub fn pack_bf16_weight_to_nvfp4_t(
@@ -88,7 +88,7 @@ pub fn pack_bf16_weight_to_nvfp4_t(
     }
 }
 
-/// Transpose an Atlas-packed NVFP4 weight from the checkpoint/hand-kernel
+/// Transpose an Avarok-packed NVFP4 weight from the checkpoint/hand-kernel
 /// `[K/2, N]` layout into CUTLASS's `[N, K/2]` layout (the byte order the
 /// native NVFP4 GEMM consumes for the ColumnMajor B operand). Pure byte
 /// transpose; nibble pairing within each byte is preserved. `dst_packed` must

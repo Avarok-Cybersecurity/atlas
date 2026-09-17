@@ -38,6 +38,10 @@ pub mod target_defaults;
 mod dispatch_proj_rowwise;
 #[path = "ops/embeddings.rs"]
 mod embeddings;
+#[path = "ops/exl3_dense.rs"]
+mod exl3_dense;
+#[path = "ops/exl3_matmul.rs"]
+mod exl3_matmul;
 #[path = "ops/fp8_act_quant.rs"]
 mod fp8_act_quant;
 // WHEN the Hopper FP8 act-quant twin runs: the CTA floor, its lever and the
@@ -104,10 +108,19 @@ mod hyper_connection;
 #[path = "ops/hyper_connection_dispatch.rs"]
 mod hyper_connection_dispatch;
 #[path = "ops/hyper_connection_lowrank.rs"]
-mod hyper_connection_lowrank;
+pub(crate) mod hyper_connection_lowrank;
+#[path = "ops/hyper_connection_lowrank_head.rs"]
+mod hyper_connection_lowrank_head;
+#[path = "ops/hyper_connection_lowrank_rows.rs"]
+mod hyper_connection_lowrank_rows;
+#[cfg(test)]
+#[path = "ops/hyper_connection_lowrank_rows_tests.rs"]
+mod hyper_connection_lowrank_rows_tests;
 #[cfg(test)]
 #[path = "ops/hyper_connection_lowrank_tests.rs"]
 mod hyper_connection_lowrank_tests;
+#[path = "ops/hyper_connection_post_fold.rs"]
+pub(crate) mod hyper_connection_post_fold;
 #[path = "ops/kv_cache.rs"]
 mod kv_cache;
 #[path = "ops/kv_cache_fp8k.rs"]
@@ -216,6 +229,8 @@ pub use dispatch_proj::*;
 pub use dispatch_proj_decode::*;
 pub use dispatch_proj_rowwise::*;
 pub use embeddings::*;
+pub use exl3_dense::*;
+pub use exl3_matmul::*;
 pub use fp8_act_quant::*;
 pub use fp8_act_quant_floor::*;
 pub use fp8_gemv_batch::*;
@@ -234,6 +249,8 @@ pub use glm5next_mhc::*;
 pub use hyper_connection::*;
 pub use hyper_connection_dispatch::*;
 pub use hyper_connection_lowrank::*;
+pub use hyper_connection_lowrank_head::*;
+pub use hyper_connection_post_fold::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;

@@ -262,5 +262,5 @@ jobs:
       - name: Report a failed Codecov upload
         if: env.CODECOV_TOKEN != '' && steps.codecov.outcome == 'failure'
         run: |
-          echo "::warning title=Codecov upload failed::The token authenticated but the upload was rejected. If this says 'Repository not found', Avarok-Cybersecurity/atlas has not been added to Codecov yet — do that at https://app.codecov.io and this passes with no workflow change. lcov.info is attached to this run as an artifact either way."
+          echo "::warning title=Codecov upload failed::The token authenticated but the upload was rejected. If this says 'Repository not found', Avarok-Cybersecurity/avarok has not been added to Codecov yet — do that at https://app.codecov.io and this passes with no workflow change. lcov.info is attached to this run as an artifact either way."
 

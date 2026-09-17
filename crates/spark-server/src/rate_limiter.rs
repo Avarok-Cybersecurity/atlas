@@ -8,8 +8,8 @@
 //!
 //! Identity resolution order (first match wins):
 //! 1. `Authorization: Bearer <token>` — the authenticated client's key.
-//! 2. First entry of `X-Forwarded-For` — when Atlas sits behind a reverse
-//!    proxy or load balancer. Trusted because Atlas is typically deployed
+//! 2. First entry of `X-Forwarded-For` — when Avarok sits behind a reverse
+//!    proxy or load balancer. Trusted because Avarok is typically deployed
 //!    behind a tenant-operated proxy.
 //! 3. Socket peer address — fallback for unauthenticated direct calls.
 //!

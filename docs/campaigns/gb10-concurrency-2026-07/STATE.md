@@ -20,7 +20,7 @@
   env incl. `AVAROK_MTP_GATE_FORCE=1`. Binary: pushed tip of PR #369.
 - vLLM serve: `sparkrun-eugr-vllm:latest` (vLLM 0.23.1rc1.dev207), `--max-num-seqs 128`,
   `--max-model-len 32768`, util 0.85.
-- Synthetic scoreboard: `bench/bench-atlas-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
+- Synthetic scoreboard: `bench/bench-avarok-concurrency.py`, C=[1,2,4,8,16], default 4 ISL/OSL
   regimes (≤4096); agentic-harness `target_concurrency` sweep follows as a second driver.
 
 ## Log (appended by drivers)
@@ -2668,7 +2668,7 @@ retires the whole gate, not just the failing arm.**
 ## 2026-08-03 — C=1..128 sweep re-verification on the final image (8c #4, CLOSED)
 
 Leg results land in `/workspace/w55_sweep/results/` (driver `/workspace/w55_sweep/w55_conc_ladder.py`,
-sha256 6412b12d). Image `avarok/atlas-gb10:7241a95` = gate image = this branch modulo bench-only
+sha256 6412b12d). Image `avarok/avarok-gb10:7241a95` = gate image = this branch modulo bench-only
 harness deltas, so this IS the #388 binary's sweep. Recipe-derived serve
 (`serve_avarok.sh` ← `recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml`): util 0.85, bs 128, bf16 KV,
 spec-on num-drafts 3, ssm-h f16 + fused-norm, thinking OFF on BOTH engines

@@ -13,7 +13,7 @@
 //!   HF   `g_i = g[:, i][..., None].exp()`
 //!   vLLM `b_state *= exp(b_gate[None, :])`
 //!   CPU  `let decay = gate[base + kd].exp();`
-//! Atlas's own GDN is the OPPOSITE on both axes — `compute_gdn_gates` stores `__expf(g)`
+//! Avarok's own GDN is the OPPOSITE on both axes — `compute_gdn_gates` stores `__expf(g)`
 //! and `gated_delta_rule_decode` takes `exp(g_t)`, one scalar per head. Mixing the two
 //! conventions is a silent double-exp or missing-exp.
 //!

@@ -30,7 +30,7 @@
 //!
 //! # TTFT semantics (session-scoped SSM snapshots, 2026-03-27)
 //!
-//! Atlas uses Marconi prefix caching with per-session SSM snapshot isolation.
+//! Avarok uses Marconi prefix caching with per-session SSM snapshot isolation.
 //! SSM snapshots are tagged with a session hash (hash of the first 64 prompt
 //! tokens); cross-session snapshot restore is rejected and the SSM state is
 //! recomputed. Therefore, with the same prompt every run (this benchmark's

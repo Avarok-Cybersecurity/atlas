@@ -7,7 +7,7 @@
 
 use serde::Deserialize;
 
-/// Drafter HF `config.json` (subset Atlas consumes). Mirrors
+/// Drafter HF `config.json` (subset Avarok consumes). Mirrors
 /// `z-lab/Qwen3.6-35B-A3B-DFlash/config.json` field names verbatim so
 /// `serde_json::from_str` works directly on the raw file.
 #[derive(Debug, Clone, Deserialize)]
@@ -38,7 +38,7 @@ pub struct DflashConfig {
     /// build the inv_freq table at construction time.
     /// `alias = "rope_parameters"`: newer transformers releases (RadixArk
     /// DSpark, incoai DFlash2) ship the block under that key — without the
-    /// alias Atlas silently drops the scaling (the RadixArk config.json had
+    /// alias Avarok silently drops the scaling (the RadixArk config.json had
     /// to be hand-patched before this).
     #[serde(default, alias = "rope_parameters")]
     pub rope_scaling: Option<DflashRopeScaling>,
@@ -72,7 +72,7 @@ fn default_rope_theta() -> f32 {
     10_000_000.0
 }
 
-/// Subset of HF `rope_scaling` block consumed by Atlas. Mirrors the field
+/// Subset of HF `rope_scaling` block consumed by Avarok. Mirrors the field
 /// names in `transformers`' Qwen3 config so `serde_json::from_str` works
 /// directly on the drafter's `config.json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -107,7 +107,7 @@ pub struct DflashSubConfig {
     pub target_layer_ids: Vec<usize>,
     /// Draft flavor tag. `"dspark"` marks a SpecForge-lineage drafter, whose
     /// row convention is SHIFTED (row j's output = token at position j+1; the
-    /// anchor row's output is draft #1) versus the z-lab convention Atlas's
+    /// anchor row's output is draft #1) versus the z-lab convention Avarok's
     /// forward was built for (row j predicts at j, row 0 = echo). The runtime
     /// keys the draft-vector rotation off this tag. DFlash2 checkpoints have
     /// no tag and keep the z-lab convention (verified against z-lab

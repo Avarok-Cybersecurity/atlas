@@ -2,7 +2,7 @@
 
 //! HTTP byte accounting for the TUI Server Stats panel.
 //!
-//! Request side: `Content-Length` when the client declares it (all real Atlas
+//! Request side: `Content-Length` when the client declares it (all real Avarok
 //! clients do — JSON bodies). Response side: a wrapping `http_body::Body`
 //! counts frames as they are actually written, so streaming/SSE responses —
 //! where `Content-Length` does not exist — are counted correctly.

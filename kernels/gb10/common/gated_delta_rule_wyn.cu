@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas WY-Chunkwise Gated Delta Rule — K∈{5..16} verification (wyN).
+// Avarok WY-Chunkwise Gated Delta Rule — K∈{5..16} verification (wyN).
 //
 // K-templated generalization of gated_delta_rule_wy17.cu (which itself
 // generalizes wy4). One __device__ impl, instantiated for the chain-verify

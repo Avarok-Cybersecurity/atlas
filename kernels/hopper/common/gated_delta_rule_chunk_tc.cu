@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN chunked-prefill state spine, TENSOR-CORE build (#928).
+// Avarok GDN chunked-prefill state spine, TENSOR-CORE build (#928).
 //
 // SSOT for why this exists — `GDN-PREFILL-ATTRIBUTION.md`, from the 1xH100
 // nsys round-9 capture (2026-09-11, Qwen3.8-27B-FP8, nv=48/nk=16/hd=128):

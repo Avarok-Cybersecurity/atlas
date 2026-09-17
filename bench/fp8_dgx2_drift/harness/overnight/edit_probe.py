@@ -4,10 +4,10 @@
 Seeds an EXISTING cargo project whose src/lib.rs has 3 trivially-easy `todo!()`
 stubs pinned by tests, and instructs the agent to EDIT the stubs (not rewrite
 the file). Coding is trivial on purpose so a failure points at the agentic
-mechanics / Atlas tool path (Edit old_string/new_string arg handling, multi-turn
+mechanics / Avarok tool path (Edit old_string/new_string arg handling, multi-turn
 read→edit→verify, tool-arg corruption) rather than model coding competence.
 
-Runs BOTH clients against the live Atlas at :8888, then `cargo test`. Writes
+Runs BOTH clients against the live Avarok at :8888, then `cargo test`. Writes
 /workspace/editprobe_<client>.json with completeness + the cargo tail.
 
 Usage: edit_probe.py [opencode|claude-code|both]

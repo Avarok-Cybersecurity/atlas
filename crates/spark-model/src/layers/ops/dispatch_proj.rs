@@ -358,7 +358,7 @@ pub fn cublas_bf16_proj_dense(
 /// `AVAROK_CUTLASS_GEMM=1` and OFF by default; a build without `CUTLASS_HOME`
 /// cannot reach it at all. It exists so a shape can be A/B'd against the
 /// industry reference on the same box — if CUTLASS wins a shape, the fix is
-/// a faster Atlas kernel, not a promotion. See the module docs on
+/// a faster Avarok kernel, not a promotion. See the module docs on
 /// `spark_runtime::cutlass` for the full rationale (SSOT).
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_bf16_proj(
@@ -378,10 +378,10 @@ pub fn cutlass_bf16_proj(
 
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through native CUTLASS
 /// NVFP4. The activation is packed to CUTLASS NVFP4 inside the runtime wrapper.
-/// `weight_t` must be Atlas's transposed NVFP4 layout `[K/2,N]` plus
+/// `weight_t` must be Avarok's transposed NVFP4 layout `[K/2,N]` plus
 /// `[K/16,N]` scales, as produced by `QuantizedWeight::transpose_for_gemm`.
 #[allow(clippy::too_many_arguments)]
-/// Transpose a native NVFP4 checkpoint weight from Atlas `[K/2,N]` into the
+/// Transpose a native NVFP4 checkpoint weight from Avarok `[K/2,N]` into the
 /// CUTLASS `[N,K/2]` byte layout the GEMM consumes, caching the result by
 /// source weight ptr. Without this the ColumnMajor B operand is read
 /// transposed and the GEMM produces garbage (cos≈0 vs reference).
@@ -464,7 +464,7 @@ fn cutlass_nvfp4_weight_from_fp8_cached(
 
 /// Native CUTLASS NVFP4 projection for FP8 checkpoint weights. The FP8 weight
 /// is dequantized to BF16 using the existing cache, then packed once into
-/// Atlas-transposed NVFP4 data/scales and reused for future calls.
+/// Avarok-transposed NVFP4 data/scales and reused for future calls.
 #[allow(clippy::too_many_arguments)]
 pub fn cutlass_nvfp4_proj_from_fp8(
     // The backend and this model's derived-weight cache travel together

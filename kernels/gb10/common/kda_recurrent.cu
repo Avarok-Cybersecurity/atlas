@@ -20,7 +20,7 @@
 //   vLLM fused_recurrent.py:                   b_state *= exp(b_gate[None, :])
 //   Slice 2 CPU reference:                     let decay = gate[base + kd].exp();
 //
-// ⚠️ Atlas's OWN Qwen GDN uses the OPPOSITE convention on BOTH axes:
+// ⚠️ Avarok's OWN Qwen GDN uses the OPPOSITE convention on BOTH axes:
 // `ssm_preprocess.cu::compute_gdn_gates` stores `gate_tok[vh] = __expf(g)` — already
 // exponentiated — and `gated_delta_rule.cu::gated_delta_rule_decode` documents its
 // input as `const float* gate  // [batch, num_v_heads] exp(g_t) decay`, one SCALAR
@@ -36,7 +36,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // INPUT CONTRACT
 // ─────────────────────────────────────────────────────────────────────────────
-// `q` and `k` arrive **already L2-normalised** — Atlas's convention, where
+// `q` and `k` arrive **already L2-normalised** — Avarok's convention, where
 // `causal_conv1d_update_l2norm` fuses conv + SiLU + L2 upstream. HF instead carries
 // raw q/k into its kernel and normalises there (`use_qk_l2norm_in_kernel=True`); the
 // two are the same computation in a different place. `scale` (= 1/sqrt(D)) is applied
@@ -48,7 +48,7 @@
 // LAYOUT AND WHY IT IS THIS ONE
 // ─────────────────────────────────────────────────────────────────────────────
 // state is [H, K, V], K-major — HF's `last_recurrent_state` shape (B, H, k_dim, v_dim)
-// and Atlas's existing `h_state_bytes` comment `FP32 [nv, kd, vd]`. vLLM stores the
+// and Avarok's existing `h_state_bytes` comment `FP32 [nv, kd, vd]`. vLLM stores the
 // transpose [H, V, K]; same math, different traversal.
 //
 // One thread per V, looping K sequentially in ascending order. That choice does two
@@ -137,8 +137,8 @@ extern "C" __global__ void kda_recurrent_decode_f32(
     KDA_REC_BODY(KDA_REC_IDENT)
 }
 
-// Production entry point: bf16 q/k/v (Atlas's conv writes bf16). Gate, beta, state and
-// output stay fp32 — the recurrent state is fp32 by REFERENCE SEMANTICS, not by Atlas
+// Production entry point: bf16 q/k/v (Avarok's conv writes bf16). Gate, beta, state and
+// output stay fp32 — the recurrent state is fp32 by REFERENCE SEMANTICS, not by Avarok
 // policy: HF stores it via `last_recurrent_state.to(torch.float32)` and vLLM's
 // `MambaStateDtypeCalculator.kda_state_dtype` returns `(conv_dtype, torch.float32)`.
 extern "C" __global__ void kda_recurrent_decode_bf16(

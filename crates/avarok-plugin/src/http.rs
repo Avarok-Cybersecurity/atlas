@@ -242,7 +242,7 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
 ///
 /// [`probe`] checks only the status line; this parses the body, which is the
 /// difference between "something is listening" and "it is serving what you
-/// asked for". Atlas answers a completion regardless of the `model` field, so
+/// asked for". Avarok answers a completion regardless of the `model` field, so
 /// a wrong name is otherwise invisible until the numbers look strange.
 /// What a NON-STREAMING `/v1/chat/completions` returned.
 #[derive(Debug, Default, Clone)]
@@ -446,7 +446,7 @@ pub async fn list_models(target: &TargetEndpoint, timeout: Duration) -> Result<V
     let start = body
         .find('{')
         .context("no JSON in the /v1/models response")?;
-    // Parse the FIRST value and ignore whatever follows. Atlas replies with
+    // Parse the FIRST value and ignore whatever follows. Avarok replies with
     // `Transfer-Encoding: chunked`, so the body carries hex length prefixes and
     // a terminating `0\r\n\r\n`; plain `from_str` fails on those trailing
     // bytes, which is exactly how this check came to be silently useless
@@ -529,7 +529,7 @@ async fn get_models(target: &TargetEndpoint, timeout: Duration) -> Result<String
         .with_context(|| format!("reading models from {}", target.base_url))
 }
 
-/// `GET <path>` and parse the FIRST JSON value of the reply (Atlas answers
+/// `GET <path>` and parse the FIRST JSON value of the reply (Avarok answers
 /// chunked, so the raw body carries framing after the document).
 pub async fn get_json(
     target: &TargetEndpoint,

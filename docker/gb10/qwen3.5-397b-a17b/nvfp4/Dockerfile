@@ -1,4 +1,4 @@
-# Atlas Spark — Qwen3.5-397B-A17B-NVFP4 on GB10 (4-node EP=4)
+# Avarok Spark — Qwen3.5-397B-A17B-NVFP4 on GB10 (4-node EP=4)
 #
 # Build from repo root:
 #   docker build -f docker/gb10/qwen3.5-397b-a17b/nvfp4/Dockerfile -t avarok-397b .

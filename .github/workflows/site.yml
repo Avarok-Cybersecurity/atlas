@@ -254,8 +254,8 @@ jobs:
               *) echo "::error::build/$1 has title \"$got\", expected one containing \"$2\""; fail=1 ;;
             esac
           }
-          check index.html     'Atlas, pure Rust inference'
-          check engine.html    'Atlas engine, pure Rust inference'
+          check index.html     'Avarok, pure Rust inference'
+          check engine.html    'Avarok engine, pure Rust inference'
           check control.html   'Control plane'
           check diligence.html 'Verification steps'
           exit "$fail"
@@ -301,7 +301,7 @@ jobs:
           for f in build/posts/*.html; do
             got=$(grep -o '<title>[^<]*' "$f" | head -1)
             case "$got" in
-              '<title>'*' — Atlas blog') echo "ok   ${f#build/} -> $got" ;;
+              '<title>'*' — Avarok blog') echo "ok   ${f#build/} -> $got" ;;
               *) echo "::error::${f#build/} has title \"$got\""; fail=1 ;;
             esac
           done
@@ -328,7 +328,7 @@ jobs:
   # Two publish targets, deliberately two jobs.
   #
   # Cloudflare Pages is what the DNS points at, so it is the one that gates
-  # `verify`. atlas is kept byte-current as a warm standby but must never be
+  # `verify`. avarok is kept byte-current as a warm standby but must never be
   # able to stop a publish: the origin went down entirely once, and with both
   # legs in one job that outage would also have blocked the edge deploy that
   # exists precisely to survive it. Hence a separate job, `continue-on-error`.
@@ -416,7 +416,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy site \
-            --project-name=atlas-site \
+            --project-name=avarok-site \
             --branch=main \
             --commit-dirty=true
 
@@ -427,7 +427,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           npx --yes wrangler@4 pages deploy blog \
-            --project-name=atlas-blog \
+            --project-name=avarok-blog \
             --branch=main \
             --commit-dirty=true
 
@@ -445,7 +445,7 @@ jobs:
     # like the thing serving traffic.
     environment:
       name: production-site
-    name: Mirror to atlas via rsync (standby)
+    name: Mirror to avarok via rsync (standby)
     needs: [build, unit]
     if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
     runs-on: ubuntu-latest
@@ -527,7 +527,7 @@ jobs:
           then
             echo "mirrored the marketing site to ${DEPLOY_SSH_HOST}"
           else
-            echo "::warning title=atlas mirror did not run::rsync of the marketing site to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+            echo "::warning title=avarok mirror did not run::rsync of the marketing site to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
           fi
 
       - name: Mirror blog
@@ -557,7 +557,7 @@ jobs:
           then
             echo "mirrored the blog to ${DEPLOY_SSH_HOST}"
           else
-            echo "::warning title=atlas mirror did not run::rsync of the blog to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
+            echo "::warning title=avarok mirror did not run::rsync of the blog to ${DEPLOY_SSH_HOST} failed. The standby is STALE. Cloudflare Pages is unaffected and still serving."
           fi
 
 

@@ -44,7 +44,7 @@ fn request_body_is_greedy_pinned_seed_stream() {
     let body = request_body("m", &messages, 256);
     // The OpenAI streaming contract only ships `usage` when asked. Without
     // this, `completion_tokens` and the `cached_tokens` vacuity attestation
-    // depend on Atlas volunteering usage frames — correct against Atlas,
+    // depend on Avarok volunteering usage frames — correct against Avarok,
     // silently zero against any contract-faithful server.
     // Thinking is disabled via the serve configuration, not via a
     // per-request chat_template_kwargs field. The complete object below owns

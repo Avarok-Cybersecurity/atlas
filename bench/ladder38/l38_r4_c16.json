@@ -1,5 +1,5 @@
 {
-  "label": "atlas38_r4_c16",
+  "label": "avarok38_r4_c16",
   "url": "http://localhost:8888",
   "model": "unsloth/Qwen3.8-27B-NVFP4",
   "isl": 128,

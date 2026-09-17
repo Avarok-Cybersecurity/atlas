@@ -167,7 +167,7 @@ pub fn register(root: &Path, identity: &Identity) -> Result<bool> {
     }
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
     let armored = format!(
-        "# Atlas record signer {}\n# Ed25519 public key, base64. Added automatically on first use.\n{}\n",
+        "# Avarok record signer {}\n# Ed25519 public key, base64. Added automatically on first use.\n{}\n",
         identity.fingerprint(),
         b64(identity.public_key_bytes())
     );

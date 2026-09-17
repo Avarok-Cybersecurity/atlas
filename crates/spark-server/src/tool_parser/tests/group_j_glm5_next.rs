@@ -18,7 +18,7 @@
 //!
 //! 🔴 The bug these guard: with no `[model_type]` entry,
 //! `resolve_tool_call_parser` returns `None`, which makes `tools_active` false
-//! in `api/chat/prepare.rs` — Atlas then silently DROPS the caller's `tools`
+//! in `api/chat/prepare.rs` — Avarok then silently DROPS the caller's `tools`
 //! before rendering the chat template. The model is never told the tools exist
 //! and replies "I don't actually have any tools available in this
 //! conversation." No parse error, no warning, a 200, and a plausible answer.
@@ -163,7 +163,7 @@ fn untyped_wire_values_are_coerced_to_the_schema() {
     );
 }
 
-/// Replay parity: what Atlas writes back into assistant history must be what
+/// Replay parity: what Avarok writes back into assistant history must be what
 /// the template itself would have written, or the second turn of every
 /// multi-turn tool scenario diverges from training. The template's rule
 /// (line 129 of chat_template.jinja) is: a string value is emitted raw, any

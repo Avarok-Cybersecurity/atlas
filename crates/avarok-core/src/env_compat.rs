@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Backwards compatibility shim for the `ATLAS_*` to `AVAROK_*` env rename.
+//! Backwards compatibility shim for the `AVAROK_*` to `AVAROK_*` env rename.
 //!
-//! The repo-wide rebrand moved every variable the server reads from `ATLAS_*`
+//! The repo-wide rebrand moved every variable the server reads from `AVAROK_*`
 //! to `AVAROK_*`, but the CLI that launches the server lives in a different
 //! repository and still exports the old names (recipes set things like
-//! `ATLAS_MTP_DCUT_RATIO`, `ATLAS_FP8_ROWWISE`, `ATLAS_GDN_FLASHINFER`,
-//! `ATLAS_GDN_LIB` and `ATLAS_TARGET_MODEL`; the agent sets `ATLAS_HOME`).
+//! `AVAROK_MTP_DCUT_RATIO`, `AVAROK_FP8_ROWWISE`, `AVAROK_GDN_FLASHINFER`,
+//! `AVAROK_GDN_LIB` and `AVAROK_TARGET_MODEL`; the agent sets `AVAROK_HOME`).
 //! Without this shim a server built from the renamed tree ignores all of them
 //! silently, which looks exactly like a recipe that does nothing.
 //!
@@ -15,19 +15,19 @@
 //! the crates need no per-site fallback.
 //!
 //! REMOVAL POINT: delete this module, its call sites in `main`, and the
-//! `ATLAS_SKIP_BUILD` fallback in `avarok-kernels/build.rs` once the CLI ships
-//! `AVAROK_*` names and no supported release still emits `ATLAS_*`.
+//! `AVAROK_SKIP_BUILD` fallback in `avarok-kernels/build.rs` once the CLI ships
+//! `AVAROK_*` names and no supported release still emits `AVAROK_*`.
 
 use std::ffi::OsString;
 
 /// The name every legacy variable starts with. Matched as an exact ASCII
 /// prefix, so sibling namespaces such as `ATLASCTL_*` are left alone.
-const LEGACY_PREFIX: &str = "ATLAS_";
+const LEGACY_PREFIX: &str = "AVAROK_";
 
 /// The name the renamed tree reads.
 const CURRENT_PREFIX: &str = "AVAROK_";
 
-/// Mirror every `ATLAS_*` variable onto its `AVAROK_*` name when the new
+/// Mirror every `AVAROK_*` variable onto its `AVAROK_*` name when the new
 /// name is unset. Returns the mirrored keys (new names). Must run before any
 /// thread is spawned; call it first thing in `main`.
 ///
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn legacy_key_is_mirrored_onto_the_new_name() {
         let _guard = env_guard();
-        let legacy = format!("ATLAS_{}", unique("MIRRORED"));
+        let legacy = format!("AVAROK_{}", unique("MIRRORED"));
         let current = format!("AVAROK_{}", unique("MIRRORED"));
         unset(&current);
         set(&legacy, "recipe-value");
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn existing_new_name_is_not_overwritten() {
         let _guard = env_guard();
-        let legacy = format!("ATLAS_{}", unique("KEPT"));
+        let legacy = format!("AVAROK_{}", unique("KEPT"));
         let current = format!("AVAROK_{}", unique("KEPT"));
         // Set the winner first so no interleaving can mirror the legacy name
         // before the new name exists.
@@ -170,9 +170,9 @@ mod tests {
     fn atlasctl_prefix_is_left_alone() {
         let _guard = env_guard();
         // `ATLASCTL_` shares the first five letters but is a different
-        // namespace: the prefix match is on `ATLAS_`, underscore included.
+        // namespace: the prefix match is on `AVAROK_`, underscore included.
         let legacy = format!("ATLASCTL_{}", unique("UNTOUCHED"));
-        let would_be = format!("AVAROKCTL_{}", unique("UNTOUCHED"));
+        let would_be = format!("ATLASCTL_{}", unique("UNTOUCHED"));
         set(&legacy, "control-plane-value");
 
         let mirrored = mirror_legacy_env();

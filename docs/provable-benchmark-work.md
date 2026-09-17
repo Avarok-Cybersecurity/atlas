@@ -1,5 +1,5 @@
 # Proving Benchmark Work to a GPU-less Verifier
-## A layered design for the Atlas gate record pipeline
+## A layered design for the Avarok gate record pipeline
 
 ---
 
@@ -113,7 +113,7 @@ The README claim — *"Records are Ed25519-signed against the commit that produc
 
 **Phase 4 (TOPLOC):**
 - Serve-path hook: top-128 of last hidden state per 32 decode tokens → per-sample blob → same Merkle tree. Calibration run: dgx1 vs. dgx2 replay of a known-good record to set NVFP4 tolerances; commit thresholds to `BENCH.toml`.
-- Ship `atlas bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
+- Ship `avarok bench audit <record>`: any GB10 replays k samples via prefill and checks commitments.
 
 **Phase 5 (co-sign):**
 - `gate/signing.rs`: accept a second detached signature over identical record bytes; peer derives k=16 indices as `HMAC(nonce, "audit") mod N`, re-runs, checks TOPLOC agreement, signs. `check.rs`: require two distinct registered fingerprints for records after a new cutover constant.

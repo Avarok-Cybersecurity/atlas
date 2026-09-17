@@ -3,7 +3,7 @@
 /**
  * Single source of truth for every externally-visible string and URL on the
  * site. Nothing here is a placeholder claim: if a fact is not verifiable from
- * the Atlas repository it does not belong in this file.
+ * the Avarok repository it does not belong in this file.
  */
 
 export const NAME = 'Dez';
@@ -13,7 +13,7 @@ export const TAGLINE =
   'Dez: The free and open-source IDE for the local inference-first paradigm';
 
 export const DESCRIPTION =
-  'An IDE built on the Atlas Inference Engine, WebGPU, Rust and 100% WebAssembly. ' +
+  'An IDE built on the Avarok Inference Engine, WebGPU, Rust and 100% WebAssembly. ' +
   'Models run locally in your browser — no server round-trip, no API key.';
 
 /** Honest development status. This is a placeholder site, not a launch. */
@@ -25,9 +25,9 @@ export const STATUS = {
 } as const;
 
 export const LINKS = {
-  avarokRepo: 'https://github.com/Avarok-Cybersecurity/atlas',
+  avarokRepo: 'https://github.com/Avarok-Cybersecurity/avarok',
   avarokSite: 'https://atlascybernetics.ai',
-  avarokLicense: 'https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE',
+  avarokLicense: 'https://github.com/Avarok-Cybersecurity/avarok/blob/main/LICENSE',
   discord: 'https://discord.gg/RQcGakU2jW',
   webgpu: 'https://www.w3.org/TR/webgpu/'
 } as const;
@@ -65,7 +65,7 @@ export const FEATURES: readonly Feature[] = [
     id: 'oss',
     title: 'Free and open source',
     body:
-      'Dez follows Atlas: source-available to read, fork and audit under the AGPL-3.0. ' +
+      'Dez follows Avarok: source-available to read, fork and audit under the AGPL-3.0. ' +
       'A tool you run on your own hardware should be a tool you can inspect.'
   }
 ] as const;
@@ -79,9 +79,9 @@ export interface PipelineStage {
 export const PIPELINE: readonly PipelineStage[] = [
   {
     step: '01',
-    title: 'Atlas, in Rust',
+    title: 'Avarok, in Rust',
     body:
-      'Atlas is a pure-Rust LLM inference engine: scheduler, model graph and hardware-specific ' +
+      'Avarok is a pure-Rust LLM inference engine: scheduler, model graph and hardware-specific ' +
       'kernels behind tight trait boundaries, with no Python runtime anywhere in the request path.'
   },
   {
@@ -89,13 +89,13 @@ export const PIPELINE: readonly PipelineStage[] = [
     title: 'Compiled to WebAssembly',
     body:
       'That same Rust core is compiled to WebAssembly instead of a native binary. The scheduling ' +
-      'and tokenisation logic is the code Atlas already runs on servers — retargeted, not rewritten.'
+      'and tokenisation logic is the code Avarok already runs on servers — retargeted, not rewritten.'
   },
   {
     step: '03',
     title: 'Dispatched over WebGPU',
     body:
-      'Atlas is built around swappable hardware backends. In the browser that backend is WebGPU: ' +
+      'Avarok is built around swappable hardware backends. In the browser that backend is WebGPU: ' +
       'compute shaders do the matrix work, and WebAssembly drives them.'
   },
   {

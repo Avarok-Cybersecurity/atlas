@@ -1,6 +1,6 @@
 # OpenAI-Compatible Server
 
-Atlas serves via `spark-server` — an OpenAI and Anthropic compatible HTTP API over axum. This chapter is the operator's reference for CLI flags, protocols supported, and the knobs that matter in production. The authoritative flag list is always `spark serve --help`; the headings below match the groupings in the CLI so cross-referencing is easy.
+Avarok serves via `spark-server` — an OpenAI and Anthropic compatible HTTP API over axum. This chapter is the operator's reference for CLI flags, protocols supported, and the knobs that matter in production. The authoritative flag list is always `spark serve --help`; the headings below match the groupings in the CLI so cross-referencing is easy.
 
 ## CLI structure
 
@@ -28,7 +28,7 @@ Every runtime configuration flag has a long-form name. Most are documented inlin
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--gpu-memory-utilization` | `0.90` | Fraction of GPU memory Atlas will claim |
+| `--gpu-memory-utilization` | `0.90` | Fraction of GPU memory Avarok will claim |
 | `--max-seq-len` | `32768` | Maximum sequence length in tokens; sizes KV pool |
 | `--max-batch-size` | `8` | Max concurrent sequences per decode step |
 | `--max-prefill-tokens` | `8192` | Chunked-prefill budget per iteration; sizes scratch |
@@ -60,7 +60,7 @@ BF16, which also shrinks the KV pool. Pass an explicit non-zero value if you wan
 to control it; there is no spelling of this flag that promotes nothing under a
 turbo dtype.
 
-See [FP8](../deep-dives/fp8.md) and [NVFP4](../deep-dives/nvfp4.md) for the trade-offs. Atlas's recommendation per model family:
+See [FP8](../deep-dives/fp8.md) and [NVFP4](../deep-dives/nvfp4.md) for the trade-offs. Avarok's recommendation per model family:
 
 - Qwen3.5 family → `nvfp4` KV.
 - Qwen3.6 / Nemotron-H → `fp8` with calibration.
@@ -131,14 +131,14 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 | `--adaptive-sampling` | off | Entropy-gated greedy path |
 | `--default-top-n-sigma` | `1.0` | Default σ for top-n-sigma sampler |
 | `--default-min-p` | `0.08` | Default min-p |
-| `--swap-space-gb` | `3` | Disk-backed KV swap at `/tmp/atlas-swap/` |
+| `--swap-space-gb` | `3` | Disk-backed KV swap at `/tmp/avarok-swap/` |
 | `--request-timeout` | `300` | Per-request seconds, 0 disables |
 
 ## Endpoints
 
 | Route | Protocol | Notes |
 |---|---|---|
-| `GET /v1/models` | OpenAI | Returns one `ModelInfo` (Atlas serves one model per process) |
+| `GET /v1/models` | OpenAI | Returns one `ModelInfo` (Avarok serves one model per process) |
 | `POST /v1/chat/completions` | OpenAI | Chat; streaming via SSE when `stream: true` |
 | `POST /v1/completions` | OpenAI (legacy) | Plain completion |
 | `POST /v1/responses` | OpenAI Responses | Stateful; supports `conversation_id` |
@@ -194,7 +194,7 @@ anything is released.
 
 ## Chat templating
 
-Tokenization uses the HF `tokenizers` crate plus `minijinja` for chat templates. Atlas ships its own template overrides for a handful of models in `jinja-templates/<family>.j2` when the upstream template has known issues (e.g. template-forced `<think>` seeding). Naming convention: filename matches the HF repo.
+Tokenization uses the HF `tokenizers` crate plus `minijinja` for chat templates. Avarok ships its own template overrides for a handful of models in `jinja-templates/<family>.j2` when the upstream template has known issues (e.g. template-forced `<think>` seeding). Naming convention: filename matches the HF repo.
 
 ## Observability
 
@@ -207,7 +207,7 @@ Prometheus-style metrics are exposed on `/metrics` (optional — gated behind a 
 - `spark_kv_pool_utilization_ratio`
 - `spark_active_sequences`
 
-Structured logs go to stderr; they're the primary operational signal. Atlas logs a brief line per completed request (model, prompt tokens, generated tokens, TTFT, elapsed, tools used). Per-token DECODE spam is deliberately not logged — it's useless.
+Structured logs go to stderr; they're the primary operational signal. Avarok logs a brief line per completed request (model, prompt tokens, generated tokens, TTFT, elapsed, tools used). Per-token DECODE spam is deliberately not logged — it's useless.
 
 ## A safe production config (Qwen3.5-35B, agents)
 

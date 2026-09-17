@@ -72,6 +72,17 @@ pub struct ModelLevers {
     pub gdn_wy17: bool,
     /// WY-N GDN recurrence variant. Ships ON; `AVAROK_GDN_WYN=0` opts out.
     pub gdn_wyn: bool,
+    /// KILL SWITCH (`AVAROK_GDN_FLA_UNDER_PREFIX_CACHE=1`): let a COLD prefill
+    /// pass keep the FLA chunked recurrence even when the prefix cache is
+    /// active on a hybrid-SSM model. Default OFF, i.e. the fix is on.
+    ///
+    /// FLA's 64-token chunk grid is anchored at the start of the pass, so its
+    /// output depends on where the prompt was cut. A warm Marconi replay cuts
+    /// at the snapshot instead, and was already pinned to the token-sequential
+    /// ladder — so cold and warm ran DIFFERENT kernels either side of the
+    /// restore boundary (measured 3.045e-03 relative divergence at GDN layer 0
+    /// with bit-identical inputs). See `crate::model::gdn_replay`.
+    pub gdn_fla_under_prefix_cache: bool,
 
     // ── FFN / MoE ──
     /// Lossless single-warp decode GEMV (`w4a16_gemv_sw`, `w4a16_gemv_dual_sw`).
@@ -98,6 +109,29 @@ pub struct ModelLevers {
     /// `AVAROK_FP32_GATE=1` — the batched-gate sibling of
     /// [`Self::fp32_routing`].
     pub fp32_gate: bool,
+    /// `AVAROK_MOE_PREFILL_FP32_ROUTING=1` — carry the PREFILL router logits in
+    /// FP32 from the gate GEMM through top-k.
+    ///
+    /// The decode-side siblings [`Self::fp32_routing`] / [`Self::fp32_gate`]
+    /// already exist for this exact problem ("removing the bf16-store rounding
+    /// that flips experts on gfx1151"); the prefill path never had one.
+    ///
+    /// Why it matters HERE: top-k is a DISCRETE function of the logits, so the
+    /// selection can only change if a perturbation exceeds the gap between the
+    /// k-th and (k+1)-th. Measured on qwen3.8-flash-next at 8K with
+    /// AVAROK_MOE_ROUTER_MARGIN=1, BF16 logits give 23-48% EXACT TIES at that
+    /// boundary and a mean gap of ~1 ULP — so for about a third of tokens the
+    /// routing is decided by the sort's tie-break, not by the model, and no
+    /// error bound can protect an alternative kernel.
+    ///
+    /// ★ NOT BIT-EXACT, and not intended to be: it CHANGES routing for the
+    /// tied tokens. It needs the quality gates, never an equivalence test.
+    ///
+    /// ★ TWO VARIABLES AT ONCE: the dedicated scalar router kernel only writes
+    /// BF16, so the FP32 arm necessarily also changes which GEMM runs. A
+    /// quality change cannot be attributed to precision alone without a third
+    /// arm that keeps the kernel and widens only the store.
+    pub moe_prefill_fp32_routing: bool,
     /// `AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL=1` — route the five DFlash
     /// capture layers' decode through the PREFILL MoE kernel, on the
     /// hypothesis that the decode MoE kernel is the dominant cause of low
@@ -196,6 +230,21 @@ pub struct ModelLevers {
     /// tail shows it, so both directions must stay reachable. Graph capture
     /// forces it off regardless — the bound is read back from device memory.
     pub moe_prefill_exact_tiles: Option<bool>,
+    /// `AVAROK_MOE_ROW_HIST=1` — DIAGNOSTIC. Log the per-expert row
+    /// distribution once per layer per prefill chunk.
+    ///
+    /// MoE is the prefill wall (37.9% of an 8K prefill, 2026-09-15) and it is
+    /// COMPUTE-bound, not bandwidth-bound: 19.3 TFLOP/rank against a 597 ms
+    /// floor at this box's demonstrated 32.4 TFLOP/s, measured ~1287 ms — so
+    /// ~46% of the achievable rate, with only ~111 ms of weight bytes to
+    /// remove. That makes it a TILE-EFFICIENCY problem, and the distribution
+    /// below is what says which kind.
+    ///
+    /// `grid.y` is sized from the MAX rows over experts and every expert
+    /// launches that many M-tiles (with an early return), so a skewed router
+    /// is paid by ALL of them. This reports both halves: how many tiles are
+    /// launched versus how many hold real rows, and how full those are.
+    pub moe_row_hist: bool,
     /// `AVAROK_MOE_PREFILL_MAX_LOAD_FACTOR=<n>` — cap the per-expert tile
     /// bound at n times the average when exact tiles are off. `None` (unset
     /// or `0`) means the worst case.

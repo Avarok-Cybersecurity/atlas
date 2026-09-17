@@ -27,7 +27,7 @@
 //! * 🪤 **`squeeze(1)` is a shape-only fix.** `[dim, 1, ks]` and `[dim, ks]` have identical
 //!   row-major bytes, so nothing moves — but a loader trusting `shape.len() == 2` rejects the
 //!   tensor outright. [`binding`] asserts rank 3 and squeezes exactly once.
-//! * 🪤 **`o_norm` is ADAPT, not REUSE.** Every Atlas gated RMSNorm applies **SiLU** to the gate
+//! * 🪤 **`o_norm` is ADAPT, not REUSE.** Every Avarok gated RMSNorm applies **SiLU** to the gate
 //!   (`kernels/gb10/common/rms_norm.cu`); GLM's `Glm5NextTextRMSNormGated` sets
 //!   `activation = "sigmoid"`. Shapes, dtypes and launch geometry all agree, which is why it was
 //!   first mis-classified. Hence `kda_o_norm_gated_*` in `kernels/gb10/common/kda_layer_ops.cu`.
@@ -35,11 +35,11 @@
 //!   is no caller-supplied output stride, so the three q/k/v projections **cannot** be aimed at
 //!   offsets inside one `[T, 3*qkv]` buffer. They would overwrite each other for `T > 1`, while
 //!   being silently correct at `T = 1`. Hence the separate parts buffer plus `kda_pack_qkv_bf16`.
-//! * **Conv state widths differ.** HF keeps `kernel - 1` slots, Atlas keeps `kernel` and shifts
-//!   left before convolving, so `HF[0..k-1] == Atlas[1..k]` and Atlas slot 0 is a don't-care.
+//! * **Conv state widths differ.** HF keeps `kernel - 1` slots, Avarok keeps `kernel` and shifts
+//!   left before convolving, so `HF[0..k-1] == Avarok[1..k]` and Avarok slot 0 is a don't-care.
 //! * **Decode conv fuses L2; prefill does not** and needs a separate `l2_norm_bf16` over q|k.
 //!   q/k are normalised **exactly once**; **V never**.
-//! * **The recurrent state is FP32 by reference semantics**, not Atlas policy — HF stores it via
+//! * **The recurrent state is FP32 by reference semantics**, not Avarok policy — HF stores it via
 //!   `.to(torch.float32)` and vLLM's `kda_state_dtype` hardcodes fp32.
 
 pub mod binding;
@@ -55,7 +55,7 @@ use crate::layers::ops;
 use crate::weight_map::DenseWeight;
 
 /// Dynamic shared memory available with no `cuFuncSetAttribute` opt-in in `AvarokCudaBackend`.
-/// GB10 reports `sharedMemPerBlockOptin = 101376`, real but unreachable from Atlas today.
+/// GB10 reports `sharedMemPerBlockOptin = 101376`, real but unreachable from Avarok today.
 pub const SMEM_CEILING: usize = 49_152;
 
 const BLOCK: u32 = 128;
@@ -99,7 +99,7 @@ impl Glm5NextKdaConfig {
     pub fn recurrent_state_elems(&self) -> usize {
         self.heads * self.head_dim * self.head_dim
     }
-    /// FP32 `[conv_dim, conv_kernel]` — Atlas's width, one slot wider than HF's.
+    /// FP32 `[conv_dim, conv_kernel]` — Avarok's width, one slot wider than HF's.
     pub fn conv_state_elems(&self) -> usize {
         self.conv_dim() * self.conv_kernel
     }
@@ -238,9 +238,9 @@ impl Glm5NextKdaKernels {
 /// `(conv_dtype, torch.float32)` regardless of `mamba_cache_dtype`. `--ssm-h-dtype f16` is not
 /// available to KDA without deviating from the reference.
 ///
-/// 🪤 The conv buffer is Atlas's **`conv_kernel`-wide** convention, one slot wider than HF's
-/// `conv_kernel - 1`: Atlas shifts left before convolving, so slot 0 is shifted out and never
-/// participates. `HF[0..k-1] == Atlas[1..k]` pre-shift. Any code moving state between the two
+/// 🪤 The conv buffer is Avarok's **`conv_kernel`-wide** convention, one slot wider than HF's
+/// `conv_kernel - 1`: Avarok shifts left before convolving, so slot 0 is shifted out and never
+/// participates. `HF[0..k-1] == Avarok[1..k]` pre-shift. Any code moving state between the two
 /// conventions must apply that offset.
 #[derive(Clone, Copy, Debug)]
 pub struct KdaSeqState {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run HF[BF16-unquant] AND HF[FP8->BF16] forward on a freshly-dumped Atlas
+"""Run HF[BF16-unquant] AND HF[FP8->BF16] forward on a freshly-dumped Avarok
 prompt-token sequence, emitting per-layer hidden states for both.
 
 Output layout:
@@ -7,7 +7,7 @@ Output layout:
   /workspace/avarok-dumps/fp8native_dgx2/hf_fp8dq_L{0..39}.bin
 
 Inputs:
-  /tmp/avarok_tokens_dgx2.json  — tokens dumped by Atlas via AVAROK_DFLASH_DEBUG_DUMP_FULL=1
+  /tmp/avarok_tokens_dgx2.json  — tokens dumped by Avarok via AVAROK_DFLASH_DEBUG_DUMP_FULL=1
 
 Usage: python3 hf_dual_forward.py [bf16|fp8|both]
 """

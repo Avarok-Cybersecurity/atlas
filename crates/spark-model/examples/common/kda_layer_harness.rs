@@ -217,7 +217,7 @@ pub(crate) fn run_suite(
         let rec = rng.scaled(sz_state, 0.1);
         (round_bf16(&hidden), hidden, conv3, rec)
     };
-    // HF's `kernel-1` slots -> Atlas's `kernel`; slot 0 is shifted out before the conv.
+    // HF's `kernel-1` slots -> Avarok's `kernel`; slot 0 is shifted out before the conv.
     let widen = |c3: &[f32]| -> Vec<f32> {
         let mut s = vec![0.0f32; cd * dm.ks];
         for ch in 0..cd {

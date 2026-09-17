@@ -2,7 +2,8 @@
 
 //! K=3 verify step.
 
-use super::*;
+use super::verify_k2_step::commit_verify_aux_or_finish;
+pub use super::*;
 
 // The AtomicU64 counters that lived here are now `SchedCtx::stats`
 // (`scheduler::spec_stats::SpecStats`), so a run's acceptance rate describes
@@ -31,101 +32,6 @@ const K3_SUMMARY_PERIOD: u64 = 100;
 // was wrong this measures the drafter on a counterfactual context — which is
 // exactly the comparison we want (same position, unbiased sample of contexts).
 
-#[inline]
-fn k3_record_positional(
-    sched: &crate::scheduler::sched_ctx::SchedCtx,
-    d1_match: bool,
-    d2_match: bool,
-    seq_len: usize,
-) {
-    sched
-        .stats
-        .k3_steps
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if d1_match {
-        sched
-            .stats
-            .k3_d1_match
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if d2_match {
-            sched
-                .stats
-                .k3_d2_match_cond
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-    if d2_match {
-        sched
-            .stats
-            .k3_d2_match_uncond
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-    if sched
-        .stats
-        .k3_steps
-        .load(std::sync::atomic::Ordering::Relaxed)
-        >= K3_SUMMARY_PERIOD
-    {
-        let steps = sched
-            .stats
-            .k3_steps
-            .swap(0, std::sync::atomic::Ordering::Relaxed)
-            .max(1);
-        let d1 = sched
-            .stats
-            .k3_d1_match
-            .swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2u = sched
-            .stats
-            .k3_d2_match_uncond
-            .swap(0, std::sync::atomic::Ordering::Relaxed);
-        let d2c = sched
-            .stats
-            .k3_d2_match_cond
-            .swap(0, std::sync::atomic::Ordering::Relaxed);
-        let p1 = (d1 as f64) / (steps as f64);
-        let p2_uncond = (d2u as f64) / (steps as f64);
-        let p2_cond = if d1 > 0 {
-            (d2c as f64) / (d1 as f64)
-        } else {
-            f64::NAN
-        };
-        tracing::info!(
-            "K3 positional: steps={steps} p1={p1:.3} p2_uncond={p2_uncond:.3} \
-             p2_cond={p2_cond:.3} (d1={d1} d2u={d2u} d2c={d2c}) seq_len={seq_len} \
-             [p2_uncond ~= p2_cond => position 2 genuinely worse; \
-              p2_uncond ~= p1 => p2_cond is survivorship]"
-        );
-    }
-}
-
-#[inline]
-fn k3_record_outcome(
-    sched: &crate::scheduler::sched_ctx::SchedCtx,
-    num_accepted: usize,
-    seq_len: usize,
-) {
-    let counter = match num_accepted {
-        2 => &sched.stats.k3_accept[2],
-        1 => &sched.stats.k3_accept[1],
-        _ => &sched.stats.k3_accept[0],
-    };
-    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let total = sched.stats.k3_accept[2].load(std::sync::atomic::Ordering::Relaxed)
-        + sched.stats.k3_accept[1].load(std::sync::atomic::Ordering::Relaxed)
-        + sched.stats.k3_accept[0].load(std::sync::atomic::Ordering::Relaxed);
-    if total >= K3_SUMMARY_PERIOD {
-        let a2 = sched.stats.k3_accept[2].swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a1 = sched.stats.k3_accept[1].swap(0, std::sync::atomic::Ordering::Relaxed);
-        let a0 = sched.stats.k3_accept[0].swap(0, std::sync::atomic::Ordering::Relaxed);
-        let total = (a2 + a1 + a0).max(1);
-        let mean = (2 * a2 + a1) as f64 / total as f64;
-        tracing::info!(
-            "K3 summary: {a2} accept-2 / {a1} accept-1 / {a0} reject in last {total} steps (mean accepted={mean:.2}) seq_len={seq_len}"
-        );
-    }
-}
-
 /// K=3 verify: [last_token, draft1, draft2] → [v0, v1, v2]. Three outcomes.
 ///
 /// `verify_ctx` carries the tokenizer special-token IDs the
@@ -140,6 +46,21 @@ pub fn step_verify_k3(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
+    // `AVAROK_MTP_TIMING=1` summary for the K=3 path — the SHIPPED config.
+    //
+    // The identical hole `verify_k4_step` documents, one rung down. The
+    // per-phase `record()` calls already fire here (the picks route through
+    // `verify_pipeline_helper`), but nothing called `step_done`, so the
+    // accumulators filled and no summary was ever emitted. K=4 got the guard
+    // when `--num-drafts 3` was the shipped config; the preset now ships
+    // `num_drafts = 2`, which dispatches HERE, so the instrument stopped
+    // covering what we actually serve. A 2000-token probe produced zero
+    // timing lines.
+    //
+    // A Drop guard rather than hand-placed calls, for the reason given there:
+    // the accept branches and early error returns would drift out of date.
+    let _step_timer = crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, a.seq.seq_len);
+
     if let Err(e) = model.sync_secondary() {
         tracing::error!("sync_secondary: {e:#}");
         super::lifecycle::fail_sequence(a, format!("sync_secondary: {e:#}"));
@@ -193,6 +114,18 @@ pub fn step_verify_k3(
     };
     let verify_us = t_verify.elapsed().as_micros();
     a.last_token_time = Instant::now();
+    if !dflash_verify_raw_argmax {
+        super::verify_mtp_wide::finish(
+            model,
+            a,
+            sched,
+            &drafts[..2],
+            num_drafts,
+            verify_ctx,
+            &result_vec,
+        );
+        return;
+    }
     let (v0_argmax, v1_argmax, v2_argmax) = (result_vec[0], result_vec[1], result_vec[2]);
 
     let (v0, v1, v2) = if dflash_verify_raw_argmax && !sched.levers.dflash_masked_verify {
@@ -222,6 +155,17 @@ pub fn step_verify_k3(
     } else {
         2
     };
+
+    // Context-vs-emit ledger (debug): pins that this branch commits to the
+    // model exactly what it emits to the client. See `verify_ledger`.
+    crate::scheduler::verify_ledger::trace_ctx_vs_emit(
+        "K3",
+        a,
+        3,
+        &[v0, v1, v2],
+        drafts,
+        num_accepted,
+    );
 
     // Shadow top-k target line (AVAROK_MTP_SHADOW_TOPK): joins offline with
     // the drafter's SHADOW_TOPK lines — draft i (drafter pos base+i) vs v_i.
@@ -341,6 +285,9 @@ pub fn step_verify_k3(
             );
             return;
         }
+        if !commit_verify_aux_or_finish(model, a, 3, 3) {
+            return;
+        }
         if let Err(e) = model.save_hidden_for_mtp(2, 0) {
             tracing::error!("save_hidden_for_mtp(2): {e:#}");
             return;
@@ -384,6 +331,13 @@ pub fn step_verify_k3(
                 a,
                 format!("commit_accepted_prefix (K=3 accept-2): {e:#}"),
             );
+            return;
+        }
+        // TWO of three rows committed: the carries must land on row 1, not on
+        // row 0. This is the branch a single row-0 snapshot got wrong, and
+        // K=3's `num_accepted <= 2 < k` means EVERY K=3 step takes a partial
+        // branch — there is no full-accept path here that could hide it.
+        if !commit_verify_aux_or_finish(model, a, 2, 3) {
             return;
         }
         emit_token(a, drafts[0], verify_lps.first().cloned(), sched);
@@ -437,6 +391,9 @@ pub fn step_verify_k3(
             );
             return;
         }
+        if !commit_verify_aux_or_finish(model, a, 1, 3) {
+            return;
+        }
         emit_token(a, v0, verify_lps.first().cloned(), sched);
         if a.finished {
             return;
@@ -470,3 +427,7 @@ pub fn step_verify_k3(
         k3_record_outcome(sched, 0, a.seq.seq_len);
     }
 }
+
+#[path = "verify_k3_record.rs"]
+mod verify_k3_record;
+pub(crate) use verify_k3_record::*;

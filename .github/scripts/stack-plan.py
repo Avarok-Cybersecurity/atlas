@@ -32,7 +32,7 @@ import subprocess
 import sys
 import collections
 
-REPO = "Avarok-Cybersecurity/atlas"
+REPO = "Avarok-Cybersecurity/avarok"
 PERF_PATHS = (
     "crates", "kernels", "Cargo.toml", "Cargo.lock",
     "vendor", "jinja-templates", "rust-toolchain.toml", "3rdparty_patches",

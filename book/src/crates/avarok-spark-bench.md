@@ -1,6 +1,6 @@
 # avarok-spark-bench
 
-**Role:** the benchmark harness that produces every throughput number in this book. HTTP client that targets a running Atlas Spark server and measures token rate, TTFT, and concurrency behaviour.
+**Role:** the benchmark harness that produces every throughput number in this book. HTTP client that targets a running Avarok Spark server and measures token rate, TTFT, and concurrency behaviour.
 **Key file:** `src/lib.rs`.
 
 ## Design
@@ -38,7 +38,7 @@ The canonical shapes live in `bench/` at the repo root (the harness loads JSON f
 
 ```bash
 # Start a server somewhere
-docker run -d ... avarok/atlas-gb10:latest serve <model>
+docker run -d ... avarok/avarok-gb10:latest serve <model>
 
 # In another terminal
 export AVAROK_BENCH_URL=http://localhost:8888
@@ -62,7 +62,7 @@ pub fn require_server() -> String {
     let url = server_url();
     match ureq::get(&format!("{url}/health")).call() {
         Ok(resp) if resp.status() == 200 => url,
-        _ => panic!("Server not reachable at {url}. Start Atlas Spark first."),
+        _ => panic!("Server not reachable at {url}. Start Avarok Spark first."),
     }
 }
 ```
@@ -77,7 +77,7 @@ Every bench starts with this. Failing fast if the server isn't up beats a confus
 
 ## What this crate is not
 
-- Not a generic LLM benchmark tool. It knows about Atlas's server and its SSE streaming format.
+- Not a generic LLM benchmark tool. It knows about Avarok's server and its SSE streaming format.
 - Not a load tester. For that you want `vegeta` or `locust` pointed at the same server.
 - Not a kernel micro-benchmark. Those live in `avarok-spark-bench`'s sister tests under each primitive crate's `benches/`, Criterion-driven, no HTTP.
 

@@ -131,6 +131,55 @@ pub fn prefill_attention_64(
     sliding_window: u32,
     stream: u64,
 ) -> Result<()> {
+    prefill_attention_64_qrows(
+        gpu,
+        kernel,
+        q,
+        k,
+        v,
+        output,
+        seq_len,
+        seq_len,
+        batch,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+        inv_sqrt_d,
+        causal,
+        sliding_window,
+        stream,
+    )
+}
+
+/// `prefill_attention_64` that computes only the FIRST `q_rows` query rows.
+///
+/// The kernel takes its query rows from `blockIdx.y * BR64` and uses `seq_len`
+/// only for the K range and the causal mask, so a shorter grid.y computes a
+/// PREFIX of the rows and leaves the rest of `output` untouched — while the
+/// rows it does compute stay bit-identical to the full launch.
+///
+/// ⚠ Rows in `[q_rows, seq_len)` keep whatever was already in `output`. Only
+/// call this when something else definitely writes them (QSA stage 2 does,
+/// for every row past the inert bound).
+#[allow(clippy::too_many_arguments)]
+pub fn prefill_attention_64_qrows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k: DevicePtr,
+    v: DevicePtr,
+    output: DevicePtr,
+    seq_len: u32,
+    q_rows: u32,
+    batch: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    inv_sqrt_d: f32,
+    causal: bool,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
     // BR64 = query rows processed per CTA. The kernel clamps this to 32 on the
     // AMD targets (gfx1151 64 KB LDS cap: inferspark_prefill.cu's
     // `#if __SCALE__ || __HIP_PLATFORM_AMD__ #define BR64 32`). The grid stride
@@ -141,7 +190,7 @@ pub fn prefill_attention_64(
     // (byte-identical). See the @human-review note in inferspark_prefill.cu.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
-        .grid([num_q_heads, div_ceil(seq_len, br), batch])
+        .grid([num_q_heads, div_ceil(q_rows.min(seq_len).max(1), br), batch])
         .block([256, 1, 1])
         .arg_ptr(q)
         .arg_ptr(k)

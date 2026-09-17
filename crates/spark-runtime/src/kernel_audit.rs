@@ -15,7 +15,7 @@
 //!     pipelined-GEMM regression where `w8a16_gemm_pipelined` resolved to 0
 //!     and QKVZ fell back to the ~4.6× slower `w8a16_gemm`).
 //!
-//! Every kernel lookup in Atlas is EAGER: each one sits in a constructor on the
+//! Every kernel lookup in Avarok is EAGER: each one sits in a constructor on the
 //! `serve_phases::build_model` path, so by the time the model is built the
 //! audit holds the COMPLETE `(module, func)` set this model asks for. That is
 //! what makes [`seal`] meaningful — after it, a lookup is by definition a late
@@ -41,7 +41,7 @@ static SEALED: AtomicBool = AtomicBool::new(false);
 /// `--dangerously-allow-unresolved-kernel-lookups`, as handed to [`seal`].
 static ALLOW_UNRESOLVED: AtomicBool = AtomicBool::new(false);
 /// Unresolved lookups for the live model: the gate's count, plus any late
-/// miss recorded after the seal. Exported as `atlas_kernel_lookups_unresolved`.
+/// miss recorded after the seal. Exported as `avarok_kernel_lookups_unresolved`.
 static UNRESOLVED: AtomicU64 = AtomicU64::new(0);
 /// One-shot latch so a late miss inside a hot loop warns once, not per token.
 static LATE_WARNED: AtomicBool = AtomicBool::new(false);
@@ -100,7 +100,7 @@ fn late_miss(module: &str, func: &str, site: &'static Location<'static>) {
                  because --dangerously-allow-unresolved-kernel-lookups was passed. \
                  Performance may be seriously degraded. We recommend you open a GitHub issue \
                  and/or open a PR to solve this issue. \
-                 (atlas_kernel_lookups_unresolved counts every occurrence.)",
+                 (avarok_kernel_lookups_unresolved counts every occurrence.)",
                 site.file(),
                 site.line(),
             );
@@ -142,7 +142,7 @@ pub fn unseal() {
 }
 
 /// Unresolved kernel lookups for the live model. Exported on `/metrics` as
-/// `atlas_kernel_lookups_unresolved` so a gate can assert `== 0` without
+/// `avarok_kernel_lookups_unresolved` so a gate can assert `== 0` without
 /// parsing logs.
 pub fn unresolved_lookups() -> u64 {
     UNRESOLVED.load(Ordering::Relaxed)

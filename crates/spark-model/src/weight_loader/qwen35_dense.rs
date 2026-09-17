@@ -313,7 +313,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         );
 
         // Native FP8 SSM prefill GEMM (Qwen3.6-27B-FP8 root-cause fix,
-        // commit 3ebc08a). Atlas's prior SSM in_proj_qkv path was
+        // commit 3ebc08a). Avarok's prior SSM in_proj_qkv path was
         // FP8 → BF16 → NVFP4 → BF16 (in `w4a16_gemm` dequant) → MMA — a
         // double-quant chain whose NVFP4 hop's ~4-bit per-group precision
         // is dominated by signal at q/v but attenuated into a k-direction
@@ -866,7 +866,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             // fed to the GPU quantize_to_nvfp4 above. Prefill AND decode
                             // always dispatch the NVFP4 weights, so the BF16 copies are
                             // dead once quantized. Free them instead of retaining a full
-                            // second copy of every projection (Atlas issue #A1).
+                            // second copy of every projection (Avarok issue #A1).
                             gpu.free(q_dense.weight)?;
                             gpu.free(k_dense.weight)?;
                             gpu.free(v_dense.weight)?;
@@ -1475,7 +1475,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     let qkvz_dense =
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
                     // qkv/z BF16 are only inputs to the concat above; free them now
-                    // rather than leaking them for the layer's lifetime (Atlas issue #A1).
+                    // rather than leaking them for the layer's lifetime (Avarok issue #A1).
                     gpu.free(qkv_dense.weight)?;
                     gpu.free(z_dense.weight)?;
 
@@ -1688,7 +1688,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // SSM prefill/decode always dispatch qkvz_nvfp4/_t and the NVFP4
                     // out_proj; the BF16 qkvz_dense / out_proj_dense were only quantize
                     // inputs. Free them rather than keep a third full-precision copy of
-                    // the largest SSM tensor across every layer (Atlas issue #A1).
+                    // the largest SSM tensor across every layer (Avarok issue #A1).
                     gpu.free(qkvz_dense.weight)?;
                     gpu.free(out_proj_dense.weight)?;
 

@@ -33,7 +33,7 @@ namespace tq_plus {
 
 // Device state — driven by the host-side calibration controller
 // (innerq_driver.rs). Defined in tq_plus_innerq_apply.cu, the SAME TU as the
-// only kernels that read/write it: Atlas loads each .cu as its own PTX module
+// only kernels that read/write it: Avarok loads each .cu as its own PTX module
 // with no -rdc device linking, so `extern __device__` never resolves across
 // modules — state and its consumers must share one TU. If a new TU includes
 // this header without carrying the definitions, nvcc #20044-D ("extern

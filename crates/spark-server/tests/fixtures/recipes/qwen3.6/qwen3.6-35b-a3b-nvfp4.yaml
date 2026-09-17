@@ -1,7 +1,7 @@
 recipe_version: "2"
 model: nvidia/Qwen3.6-35B-A3B-NVFP4
-runtime: atlas
-container: avarok/atlas-gb10:dev
+runtime: avarok
+container: avarok/avarok-gb10:dev
 max_nodes: 1
 
 metadata:
@@ -14,9 +14,9 @@ metadata:
     unsloth/Qwen3.6-35B-A3B-NVFP4. On 2026-07-10 unsloth re-quantized and
     re-uploaded that repo as a MIXED-PRECISION checkpoint — NVFP4 for
     layers 0-31, FP8 E4M3 with a per-row `weight_scale` for the shared
-    experts of layers 32-39 — which no Atlas release could load ("Weight
+    experts of layers 32-39 — which no Avarok release could load ("Weight
     'model.language_model.layers.32.mlp.shared_expert.gate_proj.weight_global_scale'
-    not found in store"). Atlas loads that layout as of atlas#297, but the
+    not found in store"). Avarok loads that layout as of avarok#297, but the
     default recipes now track the nvidia checkpoint, whose on-disk format
     has been stable since 2026-05-29 and does not move under users. The
     unsloth build is still available as qwen3.6-35b-a3b-nvfp4-unsloth.
@@ -24,7 +24,7 @@ metadata:
     num_drafts is pinned to 1 deliberately. `speculative: true` on its own
     does NOT select an MTP depth — it falls back to MODEL.toml's
     `default_num_drafts`, so pin it explicitly. Re-measured on this
-    checkpoint against avarok/atlas-gb10:dev, N=10, single sequence,
+    checkpoint against avarok/avarok-gb10:dev, N=10, single sequence,
     400-token greedy generation (2026-07-12):
 
       K=1     116.5 tok/s  (median; min 105.3, max 116.9)  <-- optimum
@@ -41,18 +41,18 @@ metadata:
     evidence the depth is profitable — only a no-spec A/B is.
 
     Serving params: calibrated fp8 KV (this checkpoint ships no k/v
-    scales, so calibration is required or Atlas refuses to serve;
+    scales, so calibration is required or Avarok refuses to serve;
     validated 2026-06-06 — quality holds vs bf16 within N=10 noise),
     kv_high_precision_layers auto, slai scheduling, native bf16 MTP draft
     head (downcasting lowers draft acceptance). qwen3_coder with
     disable_tool_grammar true is mandatory for parallel tool calls —
     grammar-constraining collapses them to 0.00 on BFCL.
 
-    Requires avarok/atlas-gb10:dev (>= 2026-07-10T19:18Z), which carries
-    the SSM snapshot-eviction fix (atlas#287). Without it, deep multi-turn
+    Requires avarok/avarok-gb10:dev (>= 2026-07-10T19:18Z), which carries
+    the SSM snapshot-eviction fix (avarok#287). Without it, deep multi-turn
     conversations freeze the warm-restore anchor and replay up to 18.6k
     tokens/turn through the GDN layers (TTFT tail to 40 s).
-  maintainer: atlas
+  maintainer: avarok
   category: agent
   model_params: 35B
   model_dtype: nvfp4
@@ -76,7 +76,7 @@ defaults:
   enable_prefix_caching: true
   # fp8 KV requires online K/V scale calibration on this checkpoint (no
   # shipped k/v scales) — without it, bare fp8 KV clips to E4M3 [-448,448]
-  # and Atlas refuses to serve. kv_high_precision_layers auto keeps
+  # and Avarok refuses to serve. kv_high_precision_layers auto keeps
   # sink+output bf16.
   fp8_kv_calibration_tokens: 256
   kv_high_precision_layers: auto

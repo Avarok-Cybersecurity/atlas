@@ -276,9 +276,9 @@
   "verdict_reason": "8 cells, zero errors, zero vacuous — every populated floor met (C1 18.2/17.2 · C2 28.0/24.1 · C4 45.4/35.7 · C8 56.9/45.7 · C16 87.8/82.5 · C32 103.9/96.8 · C64 115.4/107.6 · C128 114.9/107.6 · peak 115.4/107.6)",
   "summary": "unsloth/Qwen3.8-27B-NVFP4 · c128_aggregate_tok_s=114.91, c128_ttft_p50_ms=58325.35, c16_aggregate_tok_s=87.76, c16_ttft_p50_ms=8652.58, c1_aggregate_tok_s=18.19, c1_ttft_p50_ms=158.68, c2_aggregate_tok_s=28.00, c2_ttft_p50_ms=2015.48, c32_aggregate_tok_s=103.89, c32_ttft_p50_ms=15525.92, c4_aggregate_tok_s=45.35, c4_ttft_p50_ms=2699.41, c64_aggregate_tok_s=115.39, c64_ttft_p50_ms=29668.35, c8_aggregate_tok_s=56.90, c8_ttft_p50_ms=4741.24, cache_uncontrolled_cells=0.00, min_cached_prompt_pct=99.54, min_cached_prompt_tokens=656.00, min_completion_tokens=270.00, peak_aggregate_tok_s=115.39, vacuous_cells=0.00 · Pass: 8 cells, zero errors, zero vacuous — every populated floor met (C1 18.2/17.2 · C2 28.0/24.1 · C4 45.4/35.7 · C8 56.9/45.7 · C16 87.8/82.5 · C32 103.9/96.8 · C64 115.4/107.6 · C128 114.9/107.6 · peak 115.4/107.6)",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

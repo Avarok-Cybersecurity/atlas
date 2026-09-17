@@ -123,10 +123,10 @@ impl Recipe {
         })
     }
 
-    /// Whether this recipe drives Atlas. A `vllm` recipe is listed but cannot
+    /// Whether this recipe drives Avarok. A `vllm` recipe is listed but cannot
     /// be launched from here.
     pub fn is_avarok(&self) -> bool {
-        self.runtime.as_deref() == Some("atlas")
+        self.runtime.as_deref() == Some("avarok")
     }
 
     /// The full `spark serve` argv, with `overrides` replacing recipe values.
@@ -152,9 +152,9 @@ impl Recipe {
     ) -> Result<Vec<String>> {
         if !self.is_avarok() {
             bail!(
-                "{} is a {} recipe — only `runtime: atlas` recipes can be served from here",
+                "{} is a {} recipe — only `runtime: avarok` recipes can be served from here",
                 self.id,
-                self.runtime.as_deref().unwrap_or("non-atlas")
+                self.runtime.as_deref().unwrap_or("non-avarok")
             );
         }
         let mut merged = self.defaults.clone();

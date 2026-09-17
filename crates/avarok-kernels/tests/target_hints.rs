@@ -19,7 +19,7 @@
 //! ORACLE: the `[hardware]` tables themselves. Every NVIDIA hardware set must
 //! declare a `compute_capability` that `target_hint` maps back to that set's
 //! own directory name. A new `kernels/<hw>/` whose CC the hint does not know
-//! fails here rather than silently telling operators of that GPU that Atlas
+//! fails here rather than silently telling operators of that GPU that Avarok
 //! ships nothing for them.
 
 use std::path::{Path, PathBuf};

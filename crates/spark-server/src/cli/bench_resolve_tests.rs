@@ -68,7 +68,7 @@ fn an_explicit_box_class_picks_its_entry() {
 }
 
 /// Oracle: `bench_resolve::resolve`'s own contract — "every refusal names both
-/// what was asked for and what exists". `h800` is a real NVIDIA part that Atlas
+/// what was asked for and what exists". `h800` is a real NVIDIA part that Avarok
 /// has never registered as a box class, so it exercises the branch a typo
 /// reaches. (It used to be spelled `h100`; that id is a registered Hopper slot
 /// now, so it tests the OTHER refusal below.)
@@ -80,7 +80,7 @@ fn an_unknown_box_class_names_what_exists() {
     assert!(msg.contains("h800"), "{msg}");
     assert!(msg.contains("gb10"), "lists what it has: {msg}");
     assert!(
-        msg.contains("not a box class Atlas knows"),
+        msg.contains("not a box class Avarok knows"),
         "says WHY it is unresolvable, so a typo is distinguishable from an \
          unmeasured box: {msg}"
     );

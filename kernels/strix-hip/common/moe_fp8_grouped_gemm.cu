@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas FP8 Grouped MoE GEMM — HIP/gfx1151 (AMD WMMA) port of the NVIDIA
+// Avarok FP8 Grouped MoE GEMM — HIP/gfx1151 (AMD WMMA) port of the NVIDIA
 // mma.sync grid-compaction kernel (kernels/gb10/common/moe_fp8_grouped_gemm.cu).
 //
 //   C[M_expert, N] = A[M_expert, K] (BF16 acts) @ dequant(B_expert[N, K] (FP8 E4M3))

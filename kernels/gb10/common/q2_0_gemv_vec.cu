@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas native ternary Q2_0 decode GEMV — CANDIDATE B (vectorized codes + smem A-stage).
+// Avarok native ternary Q2_0 decode GEMV — CANDIDATE B (vectorized codes + smem A-stage).
 //
 //   out[m,n] = sum_k A[m,k] * (code(n,k) - 1) * d(n, k/group)
 //

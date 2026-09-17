@@ -54,7 +54,7 @@ AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*' \
   to the same toolchain for reproducibility.
 
 ### Model images
-- `docker/gb10/Dockerfile` = the **all-models** image (`avarok/atlas-gb10:*`).
+- `docker/gb10/Dockerfile` = the **all-models** image (`avarok/avarok-gb10:*`).
 - `docker/gb10/<model>/nvfp4/Dockerfile` = per-model slim images (10 exist). Each
   hardcodes `AVAROK_TARGET_MODEL=<slug> AVAROK_TARGET_QUANT=nvfp4`. Note only a
   `nvfp4/` subdir exists per model — the nvfp4 bundle carries the FP8 + BF16 code
@@ -69,7 +69,7 @@ AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL='*' AVAROK_TARGET_QUANT='*' \
 ```bash
 SHA=$(git rev-parse --short=7 HEAD)
 docker build -f docker/gb10/Dockerfile --build-arg AVAROK_GIT_SHA="$SHA" \
-  -t avarok/atlas-gb10:"$SHA" .
+  -t avarok/avarok-gb10:"$SHA" .
 ```
 
 **Always tag with the git SHA first.** It is the only identifier that answers
@@ -83,7 +83,7 @@ The runtime stage of `docker/gb10/Dockerfile` now declares the matching `ARG` +
 recorded in the image. Answer the staleness question directly:
 
 ```bash
-docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' avarok/atlas-gb10:latest
+docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' avarok/avarok-gb10:latest
 ```
 
 (The per-model single-model Dockerfiles don't yet carry the `ARG` — add the same
@@ -91,8 +91,8 @@ two lines there if you ship a per-model image and want its provenance.)
 
 ### Offline distribution (`docker save`)
 ```bash
-docker save avarok/atlas-gb10:"$SHA" | zstd -T0 -o atlas-gb10-"$SHA".tar.zst
-# receiver:  zstd -dc atlas-gb10-<sha>.tar.zst | docker load
+docker save avarok/avarok-gb10:"$SHA" | zstd -T0 -o avarok-gb10-"$SHA".tar.zst
+# receiver:  zstd -dc avarok-gb10-<sha>.tar.zst | docker load
 ```
 Use this when there's no registry access, or to hand a verified image to a user
 directly (RoCE-copy dgx1→dgx2, or attach to a GitHub Release alongside the distro
@@ -105,8 +105,8 @@ moving tags (`:dev`, `:nightly`, `:latest`) advance together onto the same
 verified `:sha` — they are never built independently.
 
 ```bash
-for T in nightly dev latest; do docker tag avarok/atlas-gb10:"$SHA" avarok/atlas-gb10:"$T"; done
-for T in "$SHA" nightly dev latest; do docker push avarok/atlas-gb10:"$T"; done
+for T in nightly dev latest; do docker tag avarok/avarok-gb10:"$SHA" avarok/avarok-gb10:"$T"; done
+for T in "$SHA" nightly dev latest; do docker push avarok/avarok-gb10:"$T"; done
 ```
 
 Preconditions the skill enforces before printing this:
@@ -114,7 +114,7 @@ Preconditions the skill enforces before printing this:
 2. The build came from the intended ref — **build from `main` tip**, not whatever
    branch happens to be checked out on the build host (a real past footgun; that
    checkout is often a feature branch). Verify: `git rev-parse --short=7 origin/main == $SHA`.
-3. Docker is logged in as `atlas` on the pushing host.
+3. Docker is logged in as `avarok` on the pushing host.
 
 After push, **record the shipped SHA** so `:latest`'s provenance is durable — append
 to `docs/releases/` or rely on the image label from the ARG fix above.

@@ -49,7 +49,7 @@ pub async fn cancel_response(axum::extract::Path(id): axum::extract::Path<String
     openai_error_response_with_param(
         StatusCode::BAD_REQUEST,
         format!(
-            "Response '{id}' cannot be cancelled: Atlas completes responses synchronously. Cancel only applies when the request was created with `background: true`, which this server does not support."
+            "Response '{id}' cannot be cancelled: Avarok completes responses synchronously. Cancel only applies when the request was created with `background: true`, which this server does not support."
         ),
         Some("id"),
         Some("response_not_cancellable"),
@@ -81,18 +81,47 @@ pub async fn metrics_handler() -> impl IntoResponse {
     let _ = write!(
         text,
         "\
-        # HELP atlas_prefix_cache_hits_total Prefix cache lookups that found cached blocks\n\
-        # TYPE atlas_prefix_cache_hits_total counter\n\
-        atlas_prefix_cache_hits_total {hits}\n\
-        # HELP atlas_prefix_cache_misses_total Prefix cache lookups with no match\n\
-        # TYPE atlas_prefix_cache_misses_total counter\n\
-        atlas_prefix_cache_misses_total {misses}\n\
-        # HELP atlas_prefix_cache_hit_tokens_total Tokens reused from prefix cache\n\
-        # TYPE atlas_prefix_cache_hit_tokens_total counter\n\
-        atlas_prefix_cache_hit_tokens_total {hit_tokens}\n\
-        # HELP atlas_prefix_cache_hit_rate Prefix cache hit rate (0-1)\n\
-        # TYPE atlas_prefix_cache_hit_rate gauge\n\
-        atlas_prefix_cache_hit_rate {hit_rate:.4}\n"
+        # HELP avarok_prefix_cache_hits_total Prefix cache lookups that found cached blocks\n\
+        # TYPE avarok_prefix_cache_hits_total counter\n\
+        avarok_prefix_cache_hits_total {hits}\n\
+        # HELP avarok_prefix_cache_misses_total Prefix cache lookups with no match\n\
+        # TYPE avarok_prefix_cache_misses_total counter\n\
+        avarok_prefix_cache_misses_total {misses}\n\
+        # HELP avarok_prefix_cache_hit_tokens_total Tokens reused from prefix cache\n\
+        # TYPE avarok_prefix_cache_hit_tokens_total counter\n\
+        avarok_prefix_cache_hit_tokens_total {hit_tokens}\n\
+        # HELP avarok_prefix_cache_hit_rate Prefix cache hit rate (0-1)\n\
+        # TYPE avarok_prefix_cache_hit_rate gauge\n\
+        avarok_prefix_cache_hit_rate {hit_rate:.4}\n"
+    );
+
+    // KV block pool. The resource a long run actually exhausts, and until
+    // 2026-09-17 the only one with no gauge: a BFCL shard wedged two ranks and
+    // /metrics could not have shown it coming. `used` is the one to watch —
+    // it includes blocks held by the prefix cache, which is what fills up.
+    let kv_total = spark_runtime::kv_cache::stats::total_blocks();
+    let kv_free = spark_runtime::kv_cache::stats::free_blocks();
+    let kv_used = spark_runtime::kv_cache::stats::used_blocks();
+    let kv_used_frac = if kv_total > 0 {
+        kv_used as f64 / kv_total as f64
+    } else {
+        0.0
+    };
+    let _ = write!(
+        text,
+        "\
+        # HELP avarok_kv_blocks_total KV cache blocks in the pool\n\
+        # TYPE avarok_kv_blocks_total gauge\n\
+        avarok_kv_blocks_total {kv_total}\n\
+        # HELP avarok_kv_blocks_free KV cache blocks on the free list\n\
+        # TYPE avarok_kv_blocks_free gauge\n\
+        avarok_kv_blocks_free {kv_free}\n\
+        # HELP avarok_kv_blocks_used KV blocks held by a sequence or the prefix cache\n\
+        # TYPE avarok_kv_blocks_used gauge\n\
+        avarok_kv_blocks_used {kv_used}\n\
+        # HELP avarok_kv_blocks_used_ratio Fraction of the KV block pool in use (0-1)\n\
+        # TYPE avarok_kv_blocks_used_ratio gauge\n\
+        avarok_kv_blocks_used_ratio {kv_used_frac:.4}\n"
     );
 
     // Entropy monitoring (global atomics from spark-runtime sampler)
@@ -112,23 +141,23 @@ pub async fn metrics_handler() -> impl IntoResponse {
     let _ = write!(
         text,
         "\
-        # HELP atlas_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
-        # TYPE atlas_kernel_lookups_unresolved gauge\n\
-        atlas_kernel_lookups_unresolved {unresolved}\n"
+        # HELP avarok_kernel_lookups_unresolved Kernel lookups that did not resolve for the live model\n\
+        # TYPE avarok_kernel_lookups_unresolved gauge\n\
+        avarok_kernel_lookups_unresolved {unresolved}\n"
     );
 
     let _ = write!(
         text,
         "\
-        # HELP atlas_token_entropy_last Most recent per-token entropy (nats)\n\
-        # TYPE atlas_token_entropy_last gauge\n\
-        atlas_token_entropy_last {entropy:.4}\n\
-        # HELP atlas_low_entropy_tokens_total Tokens with entropy below 0.3\n\
-        # TYPE atlas_low_entropy_tokens_total counter\n\
-        atlas_low_entropy_tokens_total {low_entropy}\n\
-        # HELP atlas_low_entropy_ratio Fraction of tokens with entropy below 0.3\n\
-        # TYPE atlas_low_entropy_ratio gauge\n\
-        atlas_low_entropy_ratio {low_ratio:.4}\n"
+        # HELP avarok_token_entropy_last Most recent per-token entropy (nats)\n\
+        # TYPE avarok_token_entropy_last gauge\n\
+        avarok_token_entropy_last {entropy:.4}\n\
+        # HELP avarok_low_entropy_tokens_total Tokens with entropy below 0.3\n\
+        # TYPE avarok_low_entropy_tokens_total counter\n\
+        avarok_low_entropy_tokens_total {low_entropy}\n\
+        # HELP avarok_low_entropy_ratio Fraction of tokens with entropy below 0.3\n\
+        # TYPE avarok_low_entropy_ratio gauge\n\
+        avarok_low_entropy_ratio {low_ratio:.4}\n"
     );
 
     (

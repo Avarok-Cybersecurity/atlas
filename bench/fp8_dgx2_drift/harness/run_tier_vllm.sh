@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Variant of run_tier.sh for running against a REMOTE vLLM endpoint
-# (no local docker container). Used to A/B vLLM-FP8 on dgx2 vs Atlas
+# (no local docker container). Used to A/B vLLM-FP8 on dgx2 vs Avarok
 # on dgx1 with the same N=10 cargo_valid harness, and to validate
 # the new harness infrastructure (warm-up halt + webserver test).
 #

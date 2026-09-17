@@ -31,7 +31,7 @@
   <div class="grid2">
     <Kv
       rows={[
-        ['code', `Atlas ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
+        ['code', `Avarok ${claim.build}`, 'plus the certified SHA and the merge commit, all three named'],
         ['baseline', 'container digest', 'sha256, not a tag — the same digest across every leg'],
         ['harness', 'sha256 in every output', 'the script hashes its own source into the JSON it writes'],
         ['weights', claim.checkpoint, 'HF repo, pinned revision'],
@@ -224,7 +224,7 @@
     />
     <ul class="links">
       <li><span class="mono">results</span><a class="link" href={links.results} target="_blank" rel="noopener">{claim.resultsDoc}</a></li>
-      <li><span class="mono">source</span><a class="link" href={links.repo} target="_blank" rel="noopener">github.com/Avarok-Cybersecurity/atlas</a></li>
+      <li><span class="mono">source</span><a class="link" href={links.repo} target="_blank" rel="noopener">github.com/Avarok-Cybersecurity/avarok</a></li>
       <li><span class="mono">gates</span><a class="link" href={links.gateDoc} target="_blank" rel="noopener">what “verified” means</a></li>
     </ul>
   </div>

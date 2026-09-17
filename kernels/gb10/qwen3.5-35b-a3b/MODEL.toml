@@ -59,7 +59,7 @@ effective_context = 24576
 # and tool-call regressions on agentic clients. Reverted to the
 # band-aid pattern that produced a clean opencode session. The
 # elaborate `[sampling.tools]` LZ+DRY stack below was already
-# well-tuned by Atlas team prior — kept verbatim.
+# well-tuned by Avarok team prior — kept verbatim.
 [sampling.thinking_text]
 temperature = 0.6
 top_p = 0.95

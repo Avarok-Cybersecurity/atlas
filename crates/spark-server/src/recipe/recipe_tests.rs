@@ -67,12 +67,12 @@ fn metadata_is_read_from_where_each_version_puts_it() {
     assert!(v1.maintainer.is_empty(), "v1 genuinely has no maintainer");
 }
 
-/// **The drift guard.** Every Atlas recipe must render to argv that clap parses
+/// **The drift guard.** Every Avarok recipe must render to argv that clap parses
 /// *and* the validator approves — the failure this module exists to prevent is
 /// a recipe that produces a wrong serve config, not one that fails to read.
 ///
 /// Covers the vendored corpus, not the live repo: an upstream recipe adding a
-/// key Atlas has no flag for is still unguarded, and is a known gap.
+/// key Avarok has no flag for is still unguarded, and is a known gap.
 #[test]
 fn every_avarok_recipe_produces_a_valid_serve_config() {
     let no_overrides = BTreeMap::new();
@@ -199,12 +199,12 @@ fn an_addition_that_maps_to_no_flag_is_refused() {
 #[test]
 fn a_vllm_recipe_is_readable_but_not_launchable() {
     // Listed, never filtered — hiding 2 of 25 would contradict the corpus. But
-    // rendering vLLM keys as Atlas flags would produce nonsense, so argv refuses.
+    // rendering vLLM keys as Avarok flags would produce nonsense, so argv refuses.
     let all = all();
     let v1 = all.iter().find(|r| !r.is_avarok()).expect("a vLLM recipe");
     assert!(!v1.model.is_empty(), "still readable for the list");
     let err = format!("{:#}", v1.argv(&BTreeMap::new()).expect_err("refused"));
-    assert!(err.contains("runtime: atlas"), "{err}");
+    assert!(err.contains("runtime: avarok"), "{err}");
 }
 
 #[test]
@@ -282,8 +282,8 @@ fn the_commit_date_fallback_resolves_against_the_real_repo() {
 /// a key hermetic closes should fail HERE, offline, in milliseconds.
 #[test]
 fn every_recipe_can_be_served_hermetically() {
-    // Only `runtime: atlas` recipes can be served from here AT ALL — a
-    // non-atlas one is refused before any flag is looked at, which is a
+    // Only `runtime: avarok` recipes can be served from here AT ALL — a
+    // non-avarok one is refused before any flag is looked at, which is a
     // different rule and not the one under test. Filtering rather than
     // asserting past it, because the count check below then still has to hold
     // on what remains.

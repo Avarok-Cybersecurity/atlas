@@ -376,7 +376,7 @@ impl DeepseekV4MtpHead {
             // kernel name, so a low-rank head arriving here would be
             // dispatched as Sinkhorn and read `hc_fn`/`hc_scale`/`hc_base`,
             // which are NULL on that variant. Qwen's MTP is dropped for v1
-            // (Atlas #753 item I); if it is ever revived this becomes a
+            // (Avarok #753 item I); if it is ever revived this becomes a
             // dispatch, not an assert.
             anyhow::ensure!(
                 head.lowrank.is_none(),

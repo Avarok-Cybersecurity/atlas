@@ -5,7 +5,7 @@
 
 ## Context
 
-Atlas is a from-scratch CUDA inference engine that's competitive with
+Avarok is a from-scratch CUDA inference engine that's competitive with
 production stacks (vLLM, TensorRT-LLM) for the model families it covers. We
 want the code public so users can audit kernels and contribute new
 hardware/model support, but we also want to retain the option to monetize
@@ -15,12 +15,12 @@ code.
 The candidate license shape was:
 
 1. **MIT / Apache-2.0** — maximally permissive. Anyone can fork, rebrand,
-   sell hosted Atlas without contributing back. Disqualified: we want
+   sell hosted Avarok without contributing back. Disqualified: we want
    improvements made by service providers to flow back upstream.
 2. **GPL-3.0** — strong copyleft, but the network-use loophole means a SaaS
-   provider can run modified Atlas internally without ever distributing the
+   provider can run modified Avarok internally without ever distributing the
    binary, and thus owes nothing back.
-3. **AGPL-3.0** — closes the SaaS loophole: if you offer Atlas-as-a-service
+3. **AGPL-3.0** — closes the SaaS loophole: if you offer Avarok-as-a-service
    over a network, you must publish your modifications.
 4. **Source-available custom license** (e.g. BSL, Elastic) — discourages
    contributions from users who treat license proliferation as a smell. The
@@ -32,11 +32,11 @@ every contributor for re-permission.
 
 ## Decision
 
-- Atlas ships under **AGPL-3.0-only** (`LICENSE` in repo root, SPDX headers
+- Avarok ships under **AGPL-3.0-only** (`LICENSE` in repo root, SPDX headers
   on every source file enforced by `.licenserc.yaml` + a CI job).
-- Every contributor signs the Atlas **CLA** (`CLA.md`) before their first
-  PR is merged. The CLA grants Atlas an irrevocable license to redistribute
-  the contribution under any future Atlas-chosen license, while leaving
+- Every contributor signs the Avarok **CLA** (`CLA.md`) before their first
+  PR is merged. The CLA grants Avarok an irrevocable license to redistribute
+  the contribution under any future Avarok-chosen license, while leaving
   copyright with the contributor.
 - The PR template includes a CLA checkbox; merging without it is a
   reviewer-blocking issue.
@@ -55,8 +55,8 @@ every contributor for re-permission.
 - Some contributors and companies refuse to sign CLAs as a matter of
   policy. We will lose those contributions.
 - AGPL-3.0 is incompatible with several permissive ecosystems
-  (e.g. you cannot embed Atlas into a permissively licensed library
-  without re-licensing the whole thing). Users who want Atlas as a
+  (e.g. you cannot embed Avarok into a permissively licensed library
+  without re-licensing the whole thing). Users who want Avarok as a
   library, not a service, may need a commercial license from us.
 - Enforcement of AGPL §13 (network-use disclosure) requires us to actually
   notice violations — practical enforcement is limited.

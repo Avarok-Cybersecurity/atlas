@@ -458,7 +458,7 @@ fn advance_name_run(name_run: &mut Option<(String, u32)>, name: &str) -> u32 {
 /// guard tripped, by which point ~MB-long degenerate commands had
 /// already flooded the stream and the .git/ artifact pollution was
 /// already created. Three same-name calls is the empirical threshold
-/// at which opencode itself bails to the user for permission. Atlas
+/// at which opencode itself bails to the user for permission. Avarok
 /// matching this means we end the response slightly before opencode
 /// would surrender, giving the outer retry loop a clean signal.
 ///
@@ -475,9 +475,18 @@ fn advance_name_run(name_run: &mut Option<(String, u32)>, name: &str) -> u32 {
 /// are still caught earlier by the F11 within-response dedup.
 const MAX_CONSEC_SAME_NAME_CALLS: u32 = 8;
 
+/// `AVAROK_NO_TOOL_DEDUP=1`: stop the F11 within-response dedup from ENDING the
+/// response on repeated identical streaming tool calls. It ends one response,
+/// not the loop — the client simply sends the next request — so with it off you
+/// see the raw repetition instead of a truncated turn.
+fn no_tool_dedup() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("AVAROK_NO_TOOL_DEDUP").as_deref() == Ok("1"))
+}
+
 pub(super) fn handle_tool_call_end(state: &mut StreamState, _ctx: &StreamCtx, idx: usize) {
     if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
-        if state.tool_arg_dedup_within.check(&name, &args_json) {
+        if !no_tool_dedup() && state.tool_arg_dedup_within.check(&name, &args_json) {
             tracing::warn!(
                 tool = %name,
                 "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"

@@ -2,7 +2,7 @@
 
 //! The one place that turns a safetensors `data_offsets` pair into a byte span.
 //!
-//! A checkpoint is third-party data: Atlas loads it by URL, so every number in
+//! A checkpoint is third-party data: Avarok loads it by URL, so every number in
 //! the header is attacker-controlled until it has been checked. The header
 //! declares each tensor as `"data_offsets": [start, end]` relative to the data
 //! section, and the naive `end - start` is a `u64` subtraction that WRAPS on a

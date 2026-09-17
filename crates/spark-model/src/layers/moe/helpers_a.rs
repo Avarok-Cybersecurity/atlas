@@ -422,7 +422,7 @@ impl MoeLayer {
         let num = self.weights.experts.len();
         // Swizzled SFB atom size (bytes): round_up(N,128) * round_up(K/16,4).
         let sfb_len = |n: usize, k: usize| n.div_ceil(128) * 128 * (k / 16).div_ceil(4) * 4;
-        // Prefer the Atlas-transposed [K/16,N] scales when they exist. Without
+        // Prefer the Avarok-transposed [K/16,N] scales when they exist. Without
         // them (a checkpoint served straight from its native tables, e.g.
         // Laguna with the unified transpose disabled) fall back to the
         // ORIGINAL [N,K/16] scales and tell the packer to read N-major — the
@@ -494,6 +494,55 @@ impl MoeLayer {
         self._cutlass_sfb_owned = owned;
         tracing::info!(
             "CUTLASS grouped SFB: built {num} experts gate/up (N={inter} K={h}) + down (N={h} K={inter})"
+        );
+        Ok(())
+    }
+}
+
+impl MoeLayer {
+    /// Build ONLY the shared expert's Avarok-transposed NVFP4 twins.
+    ///
+    /// qwen4_exp's loader deliberately never builds transposed twins: for the
+    /// 512 ROUTED experts they cost ~7 GB out of the KV budget, so it serves
+    /// the checkpoint-native n-major scales and takes
+    /// `build_cutlass_grouped_sfb`'s n-major fallback. The SHARED expert is
+    /// three weights per layer, ~2.8 MB, and without a transposed twin it
+    /// falls all the way through `run_shared_expert_prefill` to plain
+    /// `w4a16_gemm` — measured at 6.5 TFLOP/s against the routed experts'
+    /// 32.4 TFLOP/s on the same chunk, five times less arithmetic for the
+    /// same 571 ms. This builds just those three so the CUTLASS NVFP4 arm
+    /// has an operand.
+    pub(crate) fn build_shared_nvfp4_transposed(
+        &mut self,
+        gpu: &dyn spark_runtime::gpu::GpuBackend,
+        shared_inter: usize,
+        h: usize,
+    ) -> anyhow::Result<()> {
+        if shared_inter == 0 || self.weights.shared_expert.gate_proj.is_null() {
+            return Ok(());
+        }
+        if self.shared_gate_t.is_some() {
+            return Ok(());
+        }
+        self.shared_gate_t = Some(self.weights.shared_expert.gate_proj.transpose_for_gemm(
+            gpu,
+            shared_inter,
+            h,
+        )?);
+        self.shared_up_t = Some(self.weights.shared_expert.up_proj.transpose_for_gemm(
+            gpu,
+            shared_inter,
+            h,
+        )?);
+        self.shared_down_t = Some(self.weights.shared_expert.down_proj.transpose_for_gemm(
+            gpu,
+            h,
+            shared_inter,
+        )?);
+        tracing::info!(
+            shared_inter,
+            h,
+            "MoE shared expert: built NVFP4 transposed twins for the CUTLASS arm"
         );
         Ok(())
     }

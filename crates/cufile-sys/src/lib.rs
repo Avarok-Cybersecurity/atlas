@@ -4,7 +4,7 @@
 //!
 //! Loaded via dlopen so a binary can probe whether GDS is available
 //! without failing to launch when `libcufile.so` is absent. Only the
-//! symbols Atlas actually uses for the high-speed-swap path are bound
+//! symbols Avarok actually uses for the high-speed-swap path are bound
 //! here; extend as needed.
 //!
 //! GDS is not currently supported on GB10 hardware (see

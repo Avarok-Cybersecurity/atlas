@@ -50,7 +50,7 @@ export function avarokMarkdown({ staticDir = 'static' } = {}) {
   };
 
   return {
-    name: 'atlas-markdown',
+    name: 'avarok-markdown',
     async markup({ content, filename }) {
       if (!filename?.endsWith('.md')) return undefined; // .svelte posts untouched
       if (!highlighter) highlighter = await makeHighlighter();

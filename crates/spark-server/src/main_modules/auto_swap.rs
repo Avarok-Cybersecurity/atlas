@@ -3,7 +3,7 @@
 //! Ollama-style auto-swap: a request naming a different known model loads it.
 //!
 //! **Deliberately narrow.** Clients send arbitrary strings in `model` — the
-//! benchmark harness sends whatever `--model` was typed, and Atlas has always
+//! benchmark harness sends whatever `--model` was typed, and Avarok has always
 //! answered regardless (`lora_control.rs`: any unknown name falls through to
 //! the installed adapter, never a 400). Turning a cosmetic mismatch into an
 //! error would break every existing caller, and turning it into a swap would

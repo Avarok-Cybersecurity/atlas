@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas BF16 Grouped MoE GEMM — for FP8-source models dequanted to BF16 at load.
+// Avarok BF16 Grouped MoE GEMM — for FP8-source models dequanted to BF16 at load.
 //
 // C[M_expert,N] = A[M_expert,K] (BF16) @ B_expert[N,K] (BF16)
 //
@@ -13,7 +13,7 @@
 //     single-level FP32 accumulator across the full K loop. No LUT, no scale.
 //
 // Rationale: the cosine harness in `bench/fp8_dgx2_drift/cosine_run.py`
-// confirmed Atlas's existing FP8 path has only ~0.001 cosine/layer headroom
+// confirmed Avarok's existing FP8 path has only ~0.001 cosine/layer headroom
 // vs a perfect FP8 dequant reference (mean C cosine 0.995). The remaining
 // ~0.004/layer drift to BF16-reference (A vs C: 0.996 vs 0.995 mean) comes
 // from FP8 quantization itself. Loading BF16 weights eliminates the

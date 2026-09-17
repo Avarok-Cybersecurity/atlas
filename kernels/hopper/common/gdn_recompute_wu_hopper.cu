@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN chunked-prefill WY pass — Hopper (sm_90a) twin of
+// Avarok GDN chunked-prefill WY pass — Hopper (sm_90a) twin of
 // `gated_delta_rule_recompute_wu` (#928).
 //
 // SSOT for every number below: `GDN-PREFILL-ATTRIBUTION.md`, nsys round 9,

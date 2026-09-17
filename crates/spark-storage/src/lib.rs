@@ -3,7 +3,7 @@
 #![deny(warnings)]
 #![deny(clippy::all)]
 
-// Atlas spark-storage: high-speed NVMe-backed KV cache offload.
+// Avarok spark-storage: high-speed NVMe-backed KV cache offload.
 //
 // Phase 0 of `--high-speed-swap` (see plan at
 // /workspace/.claude/plans/i-want-to-ensure-valiant-bunny.md): runtime probe

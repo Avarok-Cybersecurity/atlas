@@ -159,7 +159,7 @@ pub struct NodeInfo {
     #[serde(default)]
     pub atlas_repo: Option<RepoInfo>,
     #[serde(default)]
-    pub atlas_home: Option<String>,
+    pub avarok_home: Option<String>,
     #[serde(default)]
     pub signer_fp: Option<String>,
     #[serde(default)]

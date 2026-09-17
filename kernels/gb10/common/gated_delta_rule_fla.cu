@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas GDN prefill — FLA-style MULTI-KERNEL decomposition (the path to beat
+// Avarok GDN prefill — FLA-style MULTI-KERNEL decomposition (the path to beat
 // vLLM). The single-fused chunk64 kernel was boxed in (serial-per-chunk in one
 // CTA → 0.38-0.69x). FLA's speed comes from splitting into passes where the BIG
 // matmuls are PARALLEL over all chunks (full 48-SM occupancy) and only a small

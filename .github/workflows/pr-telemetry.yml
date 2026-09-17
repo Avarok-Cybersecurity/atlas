@@ -155,7 +155,7 @@ jobs:
     # `discussions`, not `issues`: this report is a standing document that
     # rewrites itself every four hours, and an issue nobody ever closes reads as
     # a task left unfinished. The thread it maintains is
-    # https://github.com/Avarok-Cybersecurity/atlas/discussions/619 — the old
+    # https://github.com/Avarok-Cybersecurity/avarok/discussions/619 — the old
     # issue #434 carries a pointer to it.
     permissions:
       discussions: write
@@ -176,6 +176,6 @@ jobs:
           # action says so and exits 0 rather than commenting somewhere arbitrary.
           discussion-number: ${{ vars.PR_TELEMETRY_DISCUSSION }}
           # Must match telemetry::MARKER_START, which is what the renderer emits.
-          marker: "<!-- atlas-pr-telemetry:start -->"
+          marker: "<!-- avarok-pr-telemetry:start -->"
           body-file: body.md
           token: ${{ github.token }}

@@ -228,9 +228,9 @@
   "verdict_reason": "overall 86.55 (baseline min 86.10) · normalized 86.95 (baseline min 86.50) · n=1004 — clears this checkpoint's committed bars",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · normalized_single_turn_score=86.95, overall_accuracy=86.55, samples=1004.00 · Pass: overall 86.55 (baseline min 86.10) · normalized 86.95 (baseline min 86.50) · n=1004 — clears this checkpoint's committed bars",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

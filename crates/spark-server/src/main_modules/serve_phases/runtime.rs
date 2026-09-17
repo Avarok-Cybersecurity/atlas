@@ -265,7 +265,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &avarok_kernels
     // Phase-C ROM (arXiv:2603.22016) scaffold. A trained repetition-onset
     // detection head can be dropped in via MODEL.toml [behavior].rom_head;
     // the runtime would load the artifact and call `set_rom_head`. No
-    // trained head ships with Atlas, so when `rom_head` is empty (the
+    // trained head ships with Avarok, so when `rom_head` is empty (the
     // default) the F2 confidence heuristic stays as the fallback —
     // unchanged. Loading the artifact is intentionally a future step:
     // only the optional hook (the `RomHead` trait seam) is wired now.
@@ -312,7 +312,7 @@ pub(crate) fn resolve_model_name(
             model_dir
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "atlas".to_string())
+                .unwrap_or_else(|| "avarok".to_string())
         })
 }
 

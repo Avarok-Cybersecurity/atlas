@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stream a chat completion from Atlas via SSE.
-# Atlas exposes the OpenAI-compatible /v1/chat/completions endpoint,
+# Stream a chat completion from Avarok via SSE.
+# Avarok exposes the OpenAI-compatible /v1/chat/completions endpoint,
 # so any OpenAI streaming client works.
 #
 # Usage:

@@ -338,9 +338,10 @@ pub(super) fn step_mtp_bootstrap_batched(
                     .iter()
                     .map(|&s| refs[proposing[s]].last_token)
                     .collect();
+                // Rotary positions, not token indices (SequenceState::rope_pos).
                 let positions: Vec<usize> = group
                     .iter()
-                    .map(|&s| refs[proposing[s]].seq.seq_len)
+                    .map(|&s| refs[proposing[s]].seq.rope_pos() as usize)
                     .collect();
                 let stash_idx: Vec<usize> = group.to_vec();
                 let result = {

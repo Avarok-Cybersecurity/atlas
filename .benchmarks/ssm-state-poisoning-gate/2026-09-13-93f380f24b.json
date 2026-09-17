@@ -221,9 +221,9 @@
   "verdict_reason": "1 of 12 replays byte-identical, 11 jittered within bounds (restore anchor selection varies between rounds on a healthy engine), 0 collapsed",
   "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · collapsed=0.00, invariant=1.00, jittered=11.00, min_cached_prompt_tokens=1026.00, rounds=12.00, sum_wall_s=85.52, tool_path_divergences=0.00, tool_paths=3.00, unmeasured=0.00 · Pass: 1 of 12 replays byte-identical, 11 jittered within bounds (restore anchor selection varies between rounds on a healthy engine), 0 collapsed",
   "perf_env": {
-    "ATLAS_PREFILL_CODISPATCH": "0",
-    "ATLAS_PREFILL_CODISPATCH_SETTLE_MS": "10",
-    "ATLAS_PREFILL_CODISPATCH_WINDOW_MS": "100"
+    "AVAROK_PREFILL_CODISPATCH": "0",
+    "AVAROK_PREFILL_CODISPATCH_SETTLE_MS": "10",
+    "AVAROK_PREFILL_CODISPATCH_WINDOW_MS": "100"
   },
   "closure": {
     "gb10/deepseek-v4-flash/nvfp4": {

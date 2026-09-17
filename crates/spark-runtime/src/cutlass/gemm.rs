@@ -51,7 +51,7 @@ pub fn bf16_gemm_act_weight_t(
 /// Native CUTLASS NVFP4 dense projection:
 /// `out[M,N] = quant_nvfp4(act[M,K]) @ weight_t[N,K]^T -> BF16`.
 ///
-/// `weight_packed_t` and `weight_scale_t` are Atlas's transposed NVFP4
+/// `weight_packed_t` and `weight_scale_t` are Avarok's transposed NVFP4
 /// prefill layout: packed data `[K/2,N]`, scales `[K/16,N]`. The wrapper
 /// repacks activation and scale tensors into CUTLASS's SM120 blockscaled
 /// layouts in the shared CUTLASS workspace before dispatch.

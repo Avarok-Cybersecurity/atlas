@@ -9,7 +9,7 @@
 //!
 //! NOTE on leaks: the intermediate `WeightStore` device copies of the
 //! unpadded A/B tensors become garbage after pool packing and are never
-//! freed (no dealloc on weight structs anywhere in Atlas). Accepted at
+//! freed (no dealloc on weight structs anywhere in Avarok). Accepted at
 //! holo adapter scale (~tens of MiB).
 //!
 //! SDD facade: the surface is split by functional seam into `types` (the

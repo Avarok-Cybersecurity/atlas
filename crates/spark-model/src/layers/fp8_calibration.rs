@@ -17,7 +17,7 @@
 //! loops, empty completions). That is why the 2026-07-25 hardening froze the
 //! scale on the FIRST observe.
 //!
-//! # Atlas #919
+//! # Avarok #919
 //!
 //! Freezing on the first observe made `--fp8-kv-calibration-tokens 256` a lie.
 //! Every H100 serve log showed

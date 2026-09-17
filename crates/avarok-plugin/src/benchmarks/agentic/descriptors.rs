@@ -29,14 +29,14 @@ pub const METADATA: PluginMetadata = PluginMetadata::avarok(SUMMARY);
 /// Until that lands, the flip described below can still happen.
 /// In `auto`, the MTP gate is a bandit arbiter that switches MTP<->serial at
 /// runtime on **wall-clock** tok/s EWMAs. Speculation is NOT output-neutral at
-/// temperature 0 on Atlas today, so a throughput-timed path switch makes greedy
+/// temperature 0 on Avarok today, so a throughput-timed path switch makes greedy
 /// decode depend on how fast the box happened to be.
 ///
 /// ★★ THAT NON-NEUTRALITY IS A BUG, NOT A PROPERTY OF SPECULATION, and an
 /// earlier version of this comment read as though it were the latter.
 /// Speculative decoding is output-equivalent BY CONSTRUCTION: the drafter
 /// proposes, the target verifies, and at temperature 0 the emitted sequence
-/// must be bit-identical to plain greedy. Atlas violates it because restoring
+/// must be bit-identical to plain greedy. Avarok violates it because restoring
 /// SSM/conv state after a rejected draft does not reproduce what a fresh
 /// prefill of the same tokens would produce — recorded 2026-07-22 as
 /// "restore != fresh prefill, diverges ~token 250", with an OPEN workstream to

@@ -3,7 +3,7 @@
 //! mHC on the GDN layer.
 //!
 //! Qwen3.8-Flash-Next carries a `hc_mult`-wide residual highway on ALL 48
-//! layers, 36 of which are GDN. DeepSeek-V4 — the model Atlas built mHC for —
+//! layers, 36 of which are GDN. DeepSeek-V4 — the model Avarok built mHC for —
 //! is all-attention, so `Qwen3SsmLayer` never needed to know about it.
 //!
 //! The forward paths live in `trait_prefill_hc.rs` and `trait_decode_hc.rs`;
@@ -30,7 +30,7 @@ impl Qwen3SsmLayer {
     ///
     /// Those paths keep their own residual bookkeeping, which the highway
     /// replaces — running them would add each block output to the residual a
-    /// second time. v1 is C=1 only on this model (Atlas #753), and refusing
+    /// second time. v1 is C=1 only on this model (Avarok #753), and refusing
     /// is the point: a batched GDN step on an unmixed stream produces
     /// plausible, wrong activations with nothing in the log.
     ///
@@ -43,7 +43,7 @@ impl Qwen3SsmLayer {
             "qwen3_ssm::{path}: the mHC highway has no batched GDN path yet. \
              This model serves at concurrency 1; the batched paths maintain \
              their own residual, which the highway replaces, so running them \
-             would count every block output twice. Atlas #753 item B."
+             would count every block output twice. Avarok #753 item B."
         );
         Ok(())
     }

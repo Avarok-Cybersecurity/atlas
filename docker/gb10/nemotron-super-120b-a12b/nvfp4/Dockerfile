@@ -1,4 +1,4 @@
-# Atlas Spark — NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 on GB10
+# Avarok Spark — NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 on GB10
 #
 # Build from repo root:
 #   docker build -f docker/gb10/nemotron-super-120b-a12b/nvfp4/Dockerfile -t avarok-super-120b .

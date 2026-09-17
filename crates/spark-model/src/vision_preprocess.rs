@@ -112,7 +112,7 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
     // error or look broken, it simply answers about a sideways picture, which
     // is the failure mode this whole benchmark family exists to catch.
     //
-    // Measured on 2026-08-14: Atlas ignored the tag entirely. Every viewer the
+    // Measured on 2026-08-14: Avarok ignored the tag entirely. Every viewer the
     // user compares against — their phone, their browser, their file manager —
     // honours it, so "what the model saw" and "what the user saw" silently
     // disagreed on a large fraction of real photographs.
@@ -263,7 +263,7 @@ pub fn preprocess_image(data_uri: &str, vcfg: &VisionConfig) -> Result<(Vec<f32>
 }
 
 /// Preprocess an image with an optional max-pixels cap, matching vLLM-style
-/// multimodal processor controls. `None` preserves Atlas' historical 1280px
+/// multimodal processor controls. `None` preserves Avarok' historical 1280px
 /// long-side cap.
 pub fn preprocess_image_with_max_pixels(
     data_uri: &str,

@@ -12,7 +12,7 @@
 //
 // The rejection is a static `__shared__` array over the per-entry shared
 // limit. It is a LIMIT, not an instruction, so unlike the per-arch negative
-// fixtures next to this one it is rejected on every architecture Atlas
+// fixtures next to this one it is rejected on every architecture Avarok
 // targets and there is no arch table to keep current. Dynamic shared memory
 // would not do -- `extern __shared__` is sized at launch and ptxas never sees
 // a size to reject.

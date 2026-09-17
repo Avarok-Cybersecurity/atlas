@@ -18,7 +18,7 @@ pub struct Transcript {
     /// normalises key order and whitespace, which would mask a real difference.
     pub tool_calls: Vec<(String, String)>,
     pub finish_reason: Option<String>,
-    /// From `usage.completion_tokens`, never a delta count: Atlas ships a short
+    /// From `usage.completion_tokens`, never a delta count: Avarok ships a short
     /// reply as ONE SSE delta, so counting deltas under-counts silently.
     pub completion_tokens: usize,
     /// Diagnostic ONLY — never part of equality. It distinguishes "diverged

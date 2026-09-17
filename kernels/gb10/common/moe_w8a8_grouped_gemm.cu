@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Atlas W8A8 + FP32 epilogue MoE Grouped GEMM — vLLM-equivalent numerics.
+// Avarok W8A8 + FP32 epilogue MoE Grouped GEMM — vLLM-equivalent numerics.
 //
 // Same shape/layout as `moe_fp8_grouped_gemm.cu` but:
 //   - A is FP8 E4M3 (one byte per element), pre-quantized per-token-per-128

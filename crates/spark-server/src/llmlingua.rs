@@ -13,7 +13,7 @@
 //!
 //! This module ships the **token-keep-decision interface**. The
 //! actual classifier (ONNX, candle, or a remote API) is plugged in
-//! via the [`KeepClassifier`] trait. Atlas integrators can:
+//! via the [`KeepClassifier`] trait. Avarok integrators can:
 //!
 //!   - Load the LLMLingua-2 ONNX model (~280MB) at startup.
 //!   - Or wire a smaller distilled classifier.

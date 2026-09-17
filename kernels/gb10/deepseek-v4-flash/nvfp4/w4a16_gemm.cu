@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Atlas W4A16 GEMM — 35B model shadow.
+// Avarok W4A16 GEMM — 35B model shadow.
 //
 // Optimizations:
 // - w4a16_gemm_t: cp.async 2-stage double-buffered pipeline (overlaps next tile

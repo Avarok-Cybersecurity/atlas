@@ -1,4 +1,4 @@
-# Atlas Kernel Registry
+# Avarok Kernel Registry
 
 Tracking every kernel, its baseline comparison, and optimizations applied.
 
@@ -43,7 +43,7 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 
 #### Benchmarks
 
-| Shape (M×N×K) | Atlas TC | cuBLAS | Notes |
+| Shape (M×N×K) | Avarok TC | cuBLAS | Notes |
 |---------------|----------|--------|-------|
 | 64×64×64 | 0.011ms | 0.009ms | 1.2× cuBLAS |
 | 80×512×2048 | 0.120ms | 0.009ms | MoE gate_up projection |
@@ -97,13 +97,13 @@ Tracking every kernel, its baseline comparison, and optimizations applied.
 
 #### Grouped GEMM Benchmarks (Qwen3-Next shapes)
 
-| Operation | Atlas W4A16 | cuBLAS per-expert (BF16) | Speedup |
+| Operation | Avarok W4A16 | cuBLAS per-expert (BF16) | Speedup |
 |-----------|------------|--------------------------|---------|
 | Gate-up: 800×1024×2048 | **5.58ms** | 7.14ms | **1.28×** |
 | Down: 800×2048×512 | **2.83ms** | — | — |
 | Full pipeline | **8.39ms** | — | — |
 
-**Atlas beats cuBLAS** for MoE workload because:
+**Avarok beats cuBLAS** for MoE workload because:
 1. Single kernel launch vs 256 per-expert cuBLAS launches
 2. 3.6× less weight data to read (FP4 vs BF16)
 3. Fused dequant in shared memory (no intermediate BF16 materialization)

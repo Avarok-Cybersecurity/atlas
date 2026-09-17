@@ -23,7 +23,7 @@ TP_SIZE="${TP_SIZE:-1}"
 EP_SIZE="${EP_SIZE:-2}"
 EXTRA_FLAGS="${EXTRA_FLAGS:-}"          # e.g. "--high-speed-swap"
 
-echo "=== Atlas MiniMax EP=2 bring-up (RDMA-enabled) ==="
+echo "=== Avarok MiniMax EP=2 bring-up (RDMA-enabled) ==="
 echo "Model:   $MODEL"
 echo "Image:   $IMAGE"
 echo "Head:    $HEAD_IP (rank 0, HTTP on $PORT)"

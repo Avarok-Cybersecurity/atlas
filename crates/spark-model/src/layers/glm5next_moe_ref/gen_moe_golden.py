@@ -126,7 +126,7 @@ for L in LAYERS:
 
     # ── fixtures ──
     # 🪤 Every fixture is BF16-ROUNDED HERE, once. `__inputs` emits exactly these values and the
-    # Atlas side feeds exactly these values, so the two sides start from an identical tensor.
+    # Avarok side feeds exactly these values, so the two sides start from an identical tensor.
     # Emitting a bf16-rounded input while ROUTING on the original fp32 vector made the fp32
     # router logits differ by ~2.6e-3 on the synthetic fixtures — a harness bug that looked
     # exactly like a kernel residual.
@@ -146,7 +146,7 @@ for L in LAYERS:
           f"(median {float(gap.median()):.3e})", file=sys.stderr)
 
     # Inputs are emitted ONCE per layer, UNSTRIDED: `real32`/`nearcut` come from the real
-    # prefix and cannot be regenerated from an LCG on the Atlas side, and an input read from a
+    # prefix and cannot be regenerated from an LCG on the Avarok side, and an input read from a
     # strided sample would not be the input at all.
     inp = {}
     for rn, x in fx.items():

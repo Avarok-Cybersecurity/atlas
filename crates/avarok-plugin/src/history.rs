@@ -9,7 +9,7 @@
 //! * **No configuration.** A number with no parameters and no target is not a
 //!   result — you cannot tell what was measured, against which endpoint, or
 //!   reproduce it. So a record now carries every parameter (defaults included,
-//!   not just overrides), the target, the source, and the Atlas version.
+//!   not just overrides), the target, the source, and the Avarok version.
 //! * **One-second filenames.** Two runs of the same benchmark in the same
 //!   second overwrote each other. The second one just vanished. Records are now
 //!   keyed by nanosecond with an explicit collision guard, so that is
@@ -139,7 +139,7 @@ impl RunRecord {
 
     /// Rehydrate the stored parameters against a live schema.
     ///
-    /// Routed through each spec's `ParamKind`, so a value from an older Atlas
+    /// Routed through each spec's `ParamKind`, so a value from an older Avarok
     /// whose bounds have since tightened is reported rather than accepted.
     pub fn values(&self, specs: &[ParamSpec]) -> Result<ParamValues> {
         let pairs = self

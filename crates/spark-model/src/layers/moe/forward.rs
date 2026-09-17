@@ -94,9 +94,9 @@ impl MoeLayer {
         // MoE kernel is the dominant cause of low DFlash drafter acceptance.
         //
         // Other (non-capture) layers fall through to the normal scalar decode path,
-        // preserving Atlas's TPS on the bulk of the network. The 5 capture layers
+        // preserving Avarok's TPS on the bulk of the network. The 5 capture layers
         // pay ~250 µs each (microbench), totalling ≈1.25 ms per token (negligible
-        // at Atlas's ~58 ms/token decode latency).
+        // at Avarok's ~58 ms/token decode latency).
         if self.is_dflash_capture_layer && ctx.levers.frankenstein_decode_via_prefill {
             // One-time per-process log so we can verify the env-gated route is hit.
             if ctx.stats.once("log:moe_route") {
@@ -315,6 +315,23 @@ impl MoeLayer {
                 })
                 .collect();
             tracing::info!("  MoE experts: {:?}, weights: {:.4?}", indices, weights);
+        }
+
+        // ── Native EXL3 routed experts (AVAROK_EXL3_NATIVE_MOE=1) ──
+        // Ahead of every materialized arm: the NVFP4 tables hold nulls when
+        // the experts were kept packed. Routing above (GEMV router + top-k)
+        // is reused as-is; the arm reads `indices_dev`/`weights_dev` from
+        // scratch, folds the probs into the down mgemm, and handles the
+        // shared expert + EP tail itself.
+        if self.exl3_native_active() {
+            return self.forward_exl3_after_routing(
+                input,
+                1,
+                indices_dev,
+                weights_dev,
+                ctx,
+                stream,
+            );
         }
 
         // Apply pre-expert norm AFTER routing, BEFORE expert dispatch (Gemma-4 26B).

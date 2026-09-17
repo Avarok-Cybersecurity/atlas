@@ -96,10 +96,12 @@ pub(crate) fn prepare_chat_prompt(
     } = msg_entry::build_msg_entries(
         state.vision_config.as_ref(),
         state.vision_max_pixels,
+        state.vision_capacity,
         &state.remote_image_policy,
         &msg_entry::VideoDecode {
             ffmpeg: &state.video_ffmpeg,
             fps: state.video_fps,
+            fit_policy: Default::default(),
         },
         &req.messages,
         tools_active,

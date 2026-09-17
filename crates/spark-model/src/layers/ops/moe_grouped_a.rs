@@ -318,7 +318,7 @@ pub fn moe_permute_tokens(
         .launch(stream)
 }
 
-/// K64 fused gate+up GEMM — M=128 variant (Block D #3 — Atlas pattern).
+/// K64 fused gate+up GEMM — M=128 variant (Block D #3 — Avarok pattern).
 ///
 /// Doubles M_TILE from 64 → 128. Caller must compute `max_m_tiles_m128`
 /// using divisor 128 (vs 64 for the M=64 variant). Grid covers the same

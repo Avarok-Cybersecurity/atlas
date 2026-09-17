@@ -82,7 +82,7 @@ pub(crate) fn sigmoid(x: f32) -> f32 {
 }
 
 /// L2 over `head_dim` rows of the first `qk` channels, `1/sqrt(sum + eps)`, result bf16 —
-/// what BOTH Atlas conv paths produce. V is left alone.
+/// what BOTH Avarok conv paths produce. V is left alone.
 pub(crate) fn l2_qk_bf16(x: &mut [f32], dm: Dims, eps: f32, row_stride: usize, pure: bool) {
     for tok in x.chunks_exact_mut(row_stride) {
         for grp in tok[..dm.qk()].chunks_exact_mut(dm.d) {
@@ -155,7 +155,7 @@ pub(crate) fn cpu_conv_prefill(
     out
 }
 
-/// Every observable stage, on the host, in fp32 values that carry Atlas's exact bf16 ladder.
+/// Every observable stage, on the host, in fp32 values that carry Avarok's exact bf16 ladder.
 pub(crate) struct Stages {
     pub(crate) qkv_proj: Vec<f32>,
     pub(crate) q: Vec<f32>,

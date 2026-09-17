@@ -1,4 +1,4 @@
-# Atlas kernel target: stepfun-ai/Step-3.7-Flash-NVFP4 — GB10 / NVFP4.
+# Avarok kernel target: stepfun-ai/Step-3.7-Flash-NVFP4 — GB10 / NVFP4.
 #
 # Step 3.7 Flash is a 196B MoE (11B active per token) with:
 #   * 45 hidden layers: 3 dense FFN (layers 0-2) + 42 MoE (layers 3-44)

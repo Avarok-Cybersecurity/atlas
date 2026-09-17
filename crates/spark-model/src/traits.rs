@@ -77,6 +77,24 @@ pub struct SequenceState {
     pub block_table: Vec<u32>,
     /// Current sequence length (prompt + generated).
     pub seq_len: usize,
+    /// MRoPE position offset: `rope_position - token_index`, HF's `rope_deltas`.
+    ///
+    /// A vision item occupies `t_len * gh * gw` PAD TOKENS but advances the
+    /// rotary position by only `max(t_len, gh, gw)` — a 7x7 image is 49 tokens
+    /// and 7 positions. So after any image the rotary stream runs BEHIND the
+    /// token index, and every position taken afterwards has to carry the
+    /// difference or it lands in a gap the prompt never occupied.
+    ///
+    /// Decode read `seq.seq_len` directly, which is the TOKEN index: a single
+    /// small image put every generated token 42 positions past the end of its
+    /// own prompt, and a 448x448 image put it 182 past. The model answered
+    /// fluently and wrongly — it could see the picture, and believed it was
+    /// far away.
+    ///
+    /// `0` for every text-only sequence (no pad run, no divergence), so the
+    /// shift is a strict no-op outside multimodal serving. Negative by
+    /// construction once vision is present.
+    pub mrope_delta: i64,
     /// Per-layer state (EmptyLayerState for attention, SsmLayerState for SSM).
     pub layer_states: Vec<Box<dyn LayerState>>,
     /// Per-sequence state for speculative decoding proposer (None if no proposer).
@@ -148,7 +166,7 @@ pub struct SequenceState {
     /// read by the scheduler to populate
     /// `usage.prompt_tokens_details.cached_tokens`.
     ///
-    /// Atlas #919: this used to be `cached_prefix_tokens`, which reports the
+    /// Avarok #919: this used to be `cached_prefix_tokens`, which reports the
     /// lookup result — so a request that matched 48 tokens and then recomputed
     /// all of them (no SSM snapshot / exact-leaf bypass / declined Marconi
     /// restore) advertised `cached_tokens: 48` next to a full-prefill log line.
@@ -288,6 +306,24 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// Rotary position for the token at `token_index`.
+    ///
+    /// The token index and the rotary position are the same number for a
+    /// text-only sequence and diverge at the first image: a vision item spans
+    /// many pad TOKENS but only `max(t_len, gh, gw)` POSITIONS. Every rotary
+    /// position taken after a prompt's vision run has to come from here, while
+    /// KV slot math, block indices and sequence lengths keep using the raw
+    /// token index — mixing the two is what put generated tokens in a
+    /// positional gap their own prompt never occupied.
+    pub fn rope_pos_at(&self, token_index: usize) -> u32 {
+        (token_index as i64 + self.mrope_delta).max(0) as u32
+    }
+
+    /// Rotary position for the token about to be generated.
+    pub fn rope_pos(&self) -> u32 {
+        self.rope_pos_at(self.seq_len)
+    }
+
     /// A detached, host-only sequence state: no GPU resources, no SSM
     /// slot, no layer states, every counter zeroed. The single source
     /// for the "empty sequence" field defaults — construction sites
@@ -299,6 +335,7 @@ impl SequenceState {
     /// crate-private by design.
     pub fn host_only(slot_idx: usize) -> Self {
         SequenceState {
+            mrope_delta: 0,
             tokens: Vec::new(),
             block_table: Vec::new(),
             seq_len: 0,

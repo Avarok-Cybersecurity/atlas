@@ -176,7 +176,7 @@ fn truncate_counts_characters_not_bytes() {
 
 #[test]
 fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
-    // THE case this check exists for: Atlas answers a completion whatever
+    // THE case this check exists for: Avarok answers a completion whatever
     // model name it is sent, so the questions cannot see the mistake. Only the
     // model list can — and it must lead, because a wrong name explains any
     // oddity downstream of it.
@@ -195,7 +195,7 @@ fn a_wrong_model_name_is_reported_ahead_of_the_answers() {
     assert_eq!(
         concern,
         "http://127.0.0.1:8888 is serving nvidia/Qwen3.6-27B-NVFP4 — not \"does/not-exist\", \
-         which this benchmark is set to request. Atlas answers whatever model name it is sent, \
+         which this benchmark is set to request. Avarok answers whatever model name it is sent, \
          so the run WILL produce numbers; they will just be for a different model than the one named."
     );
     assert!(!report.is_clean());

@@ -454,8 +454,36 @@ pub(crate) fn ensure_blocks_through_prefill(
         // Ask the prefix cache to free a block via LRU eviction, as many times
         // as it takes (one eviction can free zero blocks — see
         // `alloc_block_evicting`).
-        let blk = alloc_block_evicting(kv_cache, prefix_cache)
-            .ok_or_else(|| anyhow::anyhow!("KV cache exhausted: no free blocks"))?;
+        let blk = alloc_block_evicting(kv_cache, prefix_cache).ok_or_else(|| {
+            // ★ SAY WHY, HERE, WHERE THE NUMBERS STILL EXIST.
+            //
+            // This used to read "KV cache exhausted: no free blocks" and
+            // nothing else. That is the same sentence whether the pool is
+            // pinned by live sequences, held by an un-evictable cache, or
+            // genuinely sized too small -- three different problems with three
+            // different fixes. The one line that distinguished them
+            // (`alloc_block_evicting`'s "evicted N node(s) without freeing a
+            // block") is `debug!`, and nothing runs at debug in production, so
+            // a real exhaustion on 2026-09-17 produced a message that could
+            // not be acted on at all.
+            //
+            // Everything below is already in hand at this point; printing it
+            // costs one formatted string on a path that is about to fail.
+            let (entries, _) = prefix_cache.stats();
+            anyhow::anyhow!(
+                "KV cache exhausted: no free blocks after eviction \
+                 (blocks total={} free={}, prefix-cache entries={} snapshots={}, \
+                 this seq holds {} block(s), needs abs_block_idx={}) \
+                 — every prefix-cache node left is still referenced by a live \
+                 sequence, so eviction had nothing to give",
+                kv_cache.num_blocks(),
+                kv_cache.num_free_blocks(),
+                entries,
+                prefix_cache.snapshot_count(),
+                seq.block_table.len(),
+                abs_block_idx,
+            )
+        })?;
         fill_fresh_block(kv_cache, blk, gpu, stream, kv_poison)?;
         seq.block_table.push(blk);
         if cap.is_some() {

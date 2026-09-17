@@ -72,7 +72,7 @@ struct ProvisionSummary {
 /// Provision (or verify) the BFCL artifacts. Idempotent.
 pub async fn ensure(store: &ArtifactStore, handle: &PluginHandle) -> Result<Artifacts> {
     let dir = store.plugin_dir(PLUGIN_ID)?;
-    // Scripts are rewritten whenever the shipped bytes differ, so an Atlas
+    // Scripts are rewritten whenever the shipped bytes differ, so an Avarok
     // upgrade that changes the scorer cannot leave the previous release's copy
     // scoring runs in ~/.avarok.
     write_asset(&dir, "requirements.txt", REQUIREMENTS)?;

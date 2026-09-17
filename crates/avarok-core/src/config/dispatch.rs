@@ -244,14 +244,14 @@ fn parse_config_dispatch(json: &str) -> Result<ModelConfig> {
         "nemotron_h" | "nemotron_h_puzzle" => {
             // Puzzle: num_hidden_layers is JSON null and the hybrid schedule lives
             // in layers_block_type / block_configs (per-block MoE channel pruning).
-            // Rewrite the JSON so serde can deserialize, then map to Atlas fields.
+            // Rewrite the JSON so serde can deserialize, then map to Avarok fields.
             let mut raw_mut = raw.clone();
             if top_model_type == "nemotron_h_puzzle" {
                 apply_nemotron_puzzle_json(&mut raw_mut)?;
             }
             let mut config: ModelConfig = serde_json::from_value(raw_mut.clone())
                 .context("Failed to parse nemotron_h config.json")?;
-            // Map Nemotron-H field names → Atlas canonical names
+            // Map Nemotron-H field names → Avarok canonical names
             if config.num_experts == 0 && config.n_routed_experts > 0 {
                 config.num_experts = config.n_routed_experts;
             }
@@ -431,7 +431,7 @@ fn apply_nemotron_puzzle_json(raw: &mut serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-/// Map Puzzle `layers_block_type` / `block_configs` onto Atlas layer schedule.
+/// Map Puzzle `layers_block_type` / `block_configs` onto Avarok layer schedule.
 fn apply_nemotron_puzzle_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     let block_types = raw
         .get("layers_block_type")

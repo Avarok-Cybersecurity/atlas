@@ -64,7 +64,7 @@ extern "C" __global__ void avarok_q8_1_quantize_ds4(
         const float* x, void* vy, long ne00, long s01, long ne0, int ne1) {
     quantize_mmq_q8_1_worker<MMQ_Q8_1_DS_LAYOUT_DS4, float>(x, nullptr, vy, ne00, s01, 0, 0, ne0, ne1, 1);
 }
-// bf16-input variant (Atlas activations are bf16) — avoids a bf16->f32 cast + scratch.
+// bf16-input variant (Avarok activations are bf16) — avoids a bf16->f32 cast + scratch.
 extern "C" __global__ void avarok_q8_1_quantize_ds4_bf16(
         const __nv_bfloat16* x, void* vy, long ne00, long s01, long ne0, int ne1) {
     quantize_mmq_q8_1_worker<MMQ_Q8_1_DS_LAYOUT_DS4, __nv_bfloat16>(x, nullptr, vy, ne00, s01, 0, 0, ne0, ne1, 1);
