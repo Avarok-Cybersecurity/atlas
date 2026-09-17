@@ -222,6 +222,10 @@ fn fallback_variants_are_distinct() {
         RollbackOutcome::Fallback(RollbackFallback::NoBoundary),
         RollbackOutcome::Fallback(RollbackFallback::CapReached),
     );
+    assert_ne!(
+        RollbackOutcome::Fallback(RollbackFallback::LayerStateNotRewindable),
+        RollbackOutcome::Fallback(RollbackFallback::NoSsmSnapshot),
+    );
     assert_eq!(
         RollbackOutcome::RolledBack { dropped: 7 },
         RollbackOutcome::RolledBack { dropped: 7 },

@@ -61,4 +61,16 @@ impl crate::layer::TransformerLayer for DeepSeekV41Layer {
     fn decode_multi_seq_unsupported(&self) -> bool {
         true
     }
+
+    /// Lowering `seq_len` rewinds none of this layer's state: the shared
+    /// compressed-row count only grows (`SharedV41::compress_len`), the
+    /// ratio-2 compressor holds a partial group of the dropped tokens, and
+    /// the engram hasher's n-gram history ends in them. A watchdog rollback
+    /// then re-steers from a corrupted context (09-16: the second MinHeap
+    /// request spliced `_wHere` at the boundary and degenerated from
+    /// there). Declined until a rewind exists; the loop watchdog still
+    /// ends the response.
+    fn decode_rollback_unsupported(&self) -> bool {
+        true
+    }
 }
