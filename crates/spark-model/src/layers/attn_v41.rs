@@ -1,0 +1,1059 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// provenance-id: 526f6e616c6420522e205374657369616b
+
+//! DeepSeek-V4.1 Flash attention on the GPU: one forward for every layer.
+//!
+//! V4.1 has three kinds of attention layer, told apart by `compress_ratio`:
+//! ratio 0 attends over a sliding window of its own fp8 latent rows; ratio 1
+//! and ratio 2 attend over that window PLUS a set of compressed positions chosen
+//! by an indexer from a latent cache that only the four `kv_source_layer_ids`
+//! produce (the `SharedAttentionRuntime`: four layers write, forty read). The
+//! index selection itself is computed by eight `index_source_layer_ids` and
+//! reused by the layers between them; layer `candidate_source_layer` also
+//! publishes a block-level candidate mask the later index sources respect.
+//!
+//! This module is the production form of `deepseek_v41_ref::compress::attention_any`,
+//! stage for stage, and is held to it layer by layer in `attn_v41_tests.rs`:
+//! * GEMMs on `common/dense_gemm_bf16` (f32 accumulate, bf16 out = `linear_bf16`);
+//! * RMSNorm, RoPE, the fp8/fp4 quantisers, the compressor pooling, the
+//!   indexer scores, sparse attention with the sink and the grouped output
+//!   projection on `kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu`;
+//! * the two top-k selections (candidate blocks, index positions) on the CPU
+//!   through the reference's `torch_cpu_topk_set`, because the reference
+//!   returns torch's CPU tie order among equal scores and a kernel that picks
+//!   any other set diverges from it on exactly those queries. The scores are
+//!   bf16-valued and few (`[tokens, width]`), so this costs a download, not a
+//!   kernel.
+//!
+//! Layer state (window ring, compressor partial group, the two caches) and the
+//! shared slots live on the device; the shared index selection and candidate
+//! mask are host vectors, as the reference keeps them.
+
+use anyhow::{Context, Result, ensure};
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::kernel_args::KernelLaunch;
+
+use crate::layers::deepseek_v41_ref::attn::{freqs_cis, window_topk_idxs};
+use crate::layers::deepseek_v41_ref::compress::{
+    FP4_BLOCK, LATENT_BLOCK, select_candidate_blocks, torch_cpu_topk_set, yarn_freqs_cis,
+};
+use crate::layers::ops;
+use crate::weight_map::DenseWeight;
+
+const MODULE: &str = "attn_v41";
+const GEMM_MODULE: &str = "gemm";
+/// One warp per quantiser block; 8 warps per launch block.
+const QUANT_BLOCKS_PER_LAUNCH: u32 = 8;
+
+/// Model-wide attention geometry, from `ModelConfig`.
+#[derive(Clone, Debug)]
+pub struct AttnV41Cfg {
+    pub dim: usize,
+    pub n_heads: usize,
+    pub head_dim: usize,
+    pub rope_dim: usize,
+    pub q_rank: usize,
+    pub o_rank: usize,
+    pub groups: usize,
+    pub window: usize,
+    pub eps: f32,
+    pub index_heads: usize,
+    pub index_hd: usize,
+    pub index_topk: usize,
+    pub cand_topk_blocks: usize,
+    pub cand_block: usize,
+    pub max_seq: usize,
+    pub max_tokens: usize,
+    pub rope_theta: f32,
+    pub compress_rope_theta: f32,
+    pub rope_factor: f32,
+    pub orig_seq: usize,
+    pub beta_fast: f32,
+    pub beta_slow: f32,
+}
+
+impl AttnV41Cfg {
+    pub fn gw(&self) -> usize {
+        self.n_heads * self.head_dim / self.groups
+    }
+}
+
+/// What one layer is, in the shared runtime.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LayerRole {
+    pub ratio: usize,
+    pub is_kv_source: bool,
+    pub is_index_source: bool,
+    pub is_candidate_source: bool,
+    pub uses_candidates: bool,
+}
+
+/// Compressor weights (kv sources only). At ratio > 1 `kv` and `gate` are f32
+/// `[hd, dim]` as the checkpoint stores them; at ratio 1 `kv` is bf16.
+pub struct CompressorWeightsGpu {
+    pub kv: DevicePtr,
+    pub gate: Option<DevicePtr>,
+    /// f32 `[hd]`
+    pub norm: DevicePtr,
+}
+
+/// Indexer weights (index sources only); `wk` / `k_norm` on kv sources.
+pub struct IndexerWeightsGpu {
+    /// bf16 `[index_heads * index_hd, q_rank]`
+    pub wq_b: DevicePtr,
+    /// bf16 `[index_heads, dim]`
+    pub weights_proj: DevicePtr,
+    /// bf16 `[index_hd, hd]`
+    pub wk: Option<DevicePtr>,
+    /// f32 `[index_hd]`
+    pub k_norm: Option<DevicePtr>,
+}
+
+/// One layer's resident attention weights. bf16 `[out, in]` unless noted.
+pub struct AttnV41LayerWeights {
+    pub role: LayerRole,
+    /// f32 `[n_heads]`
+    pub sink: DevicePtr,
+    pub wq_a: DevicePtr,
+    /// f32 `[q_rank]`
+    pub q_norm: DevicePtr,
+    pub wq_b: DevicePtr,
+    pub wkv: DevicePtr,
+    /// f32 `[hd]`
+    pub kv_norm: DevicePtr,
+    /// `[groups * o_rank, gw]`
+    pub wo_a: DevicePtr,
+    /// `[dim, groups * o_rank]`
+    pub wo_b: DevicePtr,
+    pub comp: Option<CompressorWeightsGpu>,
+    pub idx: Option<IndexerWeightsGpu>,
+}
+
+/// One layer's device state across prefill and decode.
+pub struct AttnV41LayerState {
+    /// bf16 `[window, hd]`
+    window: DevicePtr,
+    /// f32 `[ratio, hd]` x 2, the partial group of a ratio-2 compressor
+    comp_state: Option<(DevicePtr, DevicePtr)>,
+    /// bf16 `[max_groups, hd]` (kv sources)
+    compress_kv: Option<DevicePtr>,
+    /// bf16 `[max_groups, index_hd]` (kv sources)
+    index_k: Option<DevicePtr>,
+}
+
+impl AttnV41LayerState {
+    pub fn new(gpu: &dyn GpuBackend, c: &AttnV41Cfg, role: LayerRole) -> Result<Self> {
+        let window = gpu.alloc(c.window * c.head_dim * 2)?;
+        gpu.memset(window, 0, c.window * c.head_dim * 2)?;
+        let (comp_state, compress_kv, index_k) = if role.is_kv_source {
+            let ratio = role.ratio.max(1);
+            let groups = c.max_seq / ratio;
+            let a = gpu.alloc(ratio * c.head_dim * 4)?;
+            let b = gpu.alloc(ratio * c.head_dim * 4)?;
+            gpu.memset(a, 0, ratio * c.head_dim * 4)?;
+            // score state starts at -inf as the reference's does
+            let neg: Vec<u8> =
+                std::iter::repeat_n(f32::NEG_INFINITY.to_le_bytes(), ratio * c.head_dim)
+                    .flatten()
+                    .collect();
+            gpu.copy_h2d(&neg, b)?;
+            let ckv = gpu.alloc(groups.max(1) * c.head_dim * 2)?;
+            gpu.memset(ckv, 0, groups.max(1) * c.head_dim * 2)?;
+            let ik = gpu.alloc(groups.max(1) * c.index_hd * 2)?;
+            gpu.memset(ik, 0, groups.max(1) * c.index_hd * 2)?;
+            (Some((a, b)), Some(ckv), Some(ik))
+        } else {
+            (None, None, None)
+        };
+        Ok(AttnV41LayerState {
+            window,
+            comp_state,
+            compress_kv,
+            index_k,
+        })
+    }
+
+    pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
+        gpu.free(self.window)?;
+        if let Some((a, b)) = self.comp_state {
+            gpu.free(a)?;
+            gpu.free(b)?;
+        }
+        if let Some(p) = self.compress_kv {
+            gpu.free(p)?;
+        }
+        if let Some(p) = self.index_k {
+            gpu.free(p)?;
+        }
+        Ok(())
+    }
+}
+
+/// The `SharedAttentionRuntime`: what source layers publish for the layers
+/// below them.
+#[derive(Default)]
+pub struct SharedV41 {
+    /// the current kv source's latent cache and how many groups it holds
+    pub compress_kv: Option<DevicePtr>,
+    pub compress_len: usize,
+    /// the current kv source's index-key cache
+    pub index_k: Option<DevicePtr>,
+    /// `[queries][topk]`, offset for the window rows, -1 = absent
+    pub topk_idxs: Vec<i32>,
+    pub topk: usize,
+    /// `[queries][cand_width]`
+    pub candidates: Vec<bool>,
+    pub cand_width: usize,
+}
+
+/// The intermediates of one layer's forward, for oracles and for the caller.
+pub struct AttnV41Run {
+    /// bf16 `[tokens, n_heads, hd]`, after RoPE
+    pub q: DevicePtr,
+    /// window rows: the chunk's own rows on prefill, the ring on decode
+    pub rows_a: DevicePtr,
+    pub rows_a_len: usize,
+    /// compressed rows (the kv source's cache) and how many are attended
+    pub rows_b: Option<DevicePtr>,
+    pub rows_b_len: usize,
+    /// `[tokens][topk]`, window slots then compressed positions (offset by `rows_a_len`)
+    pub idx: Vec<i32>,
+    pub topk: usize,
+    /// bf16 `[tokens, n_heads, hd]`, pre inverse rotation
+    pub o: DevicePtr,
+    /// bf16 `[tokens, dim]`
+    pub out: DevicePtr,
+}
+
+struct Kernels {
+    gemm: KernelHandle,
+    rmsnorm_bf16: KernelHandle,
+    rmsnorm_f32: KernelHandle,
+    rope: KernelHandle,
+    act_quant: KernelHandle,
+    fp4_quant: KernelHandle,
+    gemm_f32: KernelHandle,
+    pool: KernelHandle,
+    index_score: KernelHandle,
+    sparse_attn: KernelHandle,
+    slice_cols: KernelHandle,
+    scatter_cols: KernelHandle,
+    scale_bf16: KernelHandle,
+}
+
+/// The attention runtime: kernels, RoPE tables, and workspaces for up to
+/// `max_tokens` positions per call.
+pub struct AttnV41 {
+    pub cfg: AttnV41Cfg,
+    k: Kernels,
+    fc_plain: DevicePtr,
+    fc_yarn: DevicePtr,
+    // workspaces
+    qr_raw: DevicePtr,
+    qr: DevicePtr,
+    q: DevicePtr,
+    kv_raw: DevicePtr,
+    kv: DevicePtr,
+    o: DevicePtr,
+    o_rot: DevicePtr,
+    og: DevicePtr,
+    slice_in: DevicePtr,
+    slice_out: DevicePtr,
+    out: DevicePtr,
+    pos: DevicePtr,
+    head_pos: DevicePtr,
+    idx_pos: DevicePtr,
+    grp_pos: DevicePtr,
+    idx_dev: DevicePtr,
+    ckv: DevicePtr,
+    cscore: DevicePtr,
+    pooled: DevicePtr,
+    latent_raw: DevicePtr,
+    latent: DevicePtr,
+    ik_raw: DevicePtr,
+    ik: DevicePtr,
+    iq: DevicePtr,
+    iw_raw: DevicePtr,
+    iw: DevicePtr,
+    score: DevicePtr,
+}
+
+fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
+    let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+    let p = gpu.alloc(bytes.len().max(4))?;
+    gpu.copy_h2d(&bytes, p)?;
+    Ok(p)
+}
+
+fn upload_i32(gpu: &dyn GpuBackend, dst: DevicePtr, v: &[i32]) -> Result<()> {
+    let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+    gpu.copy_h2d(&bytes, dst)
+}
+
+fn at(p: DevicePtr, byte_off: usize) -> DevicePtr {
+    DevicePtr(p.0 + byte_off as u64)
+}
+
+impl AttnV41 {
+    pub fn new(gpu: &dyn GpuBackend, cfg: AttnV41Cfg) -> Result<Self> {
+        ensure!(
+            cfg.rope_dim.is_multiple_of(2) && cfg.rope_dim / 2 <= 256,
+            "rope_dim {} not supported",
+            cfg.rope_dim
+        );
+        ensure!(
+            (cfg.head_dim * cfg.n_heads).is_multiple_of(cfg.groups),
+            "n_heads * hd not divisible by groups"
+        );
+        ensure!(
+            cfg.head_dim.is_multiple_of(32) && cfg.index_hd.is_multiple_of(32),
+            "head dims must be multiples of the 32-block"
+        );
+        let k = Kernels {
+            gemm: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
+            rmsnorm_bf16: gpu.kernel(MODULE, "attn_v41_rmsnorm_bf16")?,
+            rmsnorm_f32: gpu.kernel(MODULE, "attn_v41_rmsnorm_f32")?,
+            rope: gpu.kernel(MODULE, "attn_v41_rope")?,
+            act_quant: gpu.kernel(MODULE, "attn_v41_act_quant_fp8")?,
+            fp4_quant: gpu.kernel(MODULE, "attn_v41_fp4_quant")?,
+            gemm_f32: gpu.kernel(MODULE, "attn_v41_gemm_f32")?,
+            pool: gpu.kernel(MODULE, "attn_v41_pool")?,
+            index_score: gpu.kernel(MODULE, "attn_v41_index_score")?,
+            sparse_attn: gpu.kernel(MODULE, "attn_v41_sparse_attn")?,
+            slice_cols: gpu.kernel(MODULE, "attn_v41_slice_cols")?,
+            scatter_cols: gpu.kernel(MODULE, "attn_v41_scatter_cols")?,
+            scale_bf16: gpu.kernel(MODULE, "attn_v41_scale_bf16")?,
+        };
+        let plain = freqs_cis(cfg.rope_dim, cfg.max_seq, cfg.rope_theta);
+        let yarn = yarn_freqs_cis(
+            cfg.rope_dim,
+            cfg.max_seq,
+            cfg.orig_seq,
+            cfg.compress_rope_theta,
+            cfg.rope_factor,
+            cfg.beta_fast,
+            cfg.beta_slow,
+        );
+        let flat = |v: &[(f32, f32)]| -> Vec<f32> { v.iter().flat_map(|&(c, s)| [c, s]).collect() };
+        let fc_plain = upload_f32(gpu, &flat(&plain))?;
+        let fc_yarn = upload_f32(gpu, &flat(&yarn))?;
+        let m = cfg.max_tokens;
+        let (nh, hd, nhi, ihd) = (cfg.n_heads, cfg.head_dim, cfg.index_heads, cfg.index_hd);
+        let max_width = cfg.max_seq;
+        let max_topk = cfg.window + cfg.index_topk;
+        let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
+        Ok(AttnV41 {
+            qr_raw: alloc(m * cfg.q_rank * 2)?,
+            qr: alloc(m * cfg.q_rank * 2)?,
+            q: alloc(m * nh * hd * 2)?,
+            kv_raw: alloc(m * hd * 2)?,
+            kv: alloc(m * hd * 2)?,
+            o: alloc(m * nh * hd * 2)?,
+            o_rot: alloc(m * nh * hd * 2)?,
+            og: alloc(m * cfg.groups * cfg.o_rank * 2)?,
+            slice_in: alloc(m * cfg.gw() * 2)?,
+            slice_out: alloc(m * cfg.o_rank * 2)?,
+            out: alloc(m * cfg.dim * 2)?,
+            pos: alloc(m * 4)?,
+            head_pos: alloc(m * nh * 4)?,
+            idx_pos: alloc(m * nhi * 4)?,
+            grp_pos: alloc(m * 4)?,
+            idx_dev: alloc(m * max_topk * 4)?,
+            ckv: alloc(m * hd * 4)?,
+            cscore: alloc(m * hd * 4)?,
+            pooled: alloc(m * hd * 4)?,
+            latent_raw: alloc(m * hd * 2)?,
+            latent: alloc(m * hd * 2)?,
+            ik_raw: alloc(m * ihd * 2)?,
+            ik: alloc(m * ihd * 2)?,
+            iq: alloc(m * nhi * ihd * 2)?,
+            iw_raw: alloc(m * nhi * 2)?,
+            iw: alloc(m * nhi * 2)?,
+            score: alloc(m * max_width * 4)?,
+            cfg,
+            k,
+            fc_plain,
+            fc_yarn,
+        })
+    }
+
+    fn gemm(
+        &self,
+        gpu: &dyn GpuBackend,
+        a: DevicePtr,
+        w: DevicePtr,
+        c: DevicePtr,
+        m: usize,
+        n: usize,
+        kk: usize,
+        stream: u64,
+    ) -> Result<()> {
+        ops::dense_gemm(
+            gpu,
+            self.k.gemm,
+            a,
+            &DenseWeight { weight: w },
+            c,
+            m as u32,
+            n as u32,
+            kk as u32,
+            stream,
+        )
+    }
+
+    fn rmsnorm(
+        &self,
+        gpu: &dyn GpuBackend,
+        f32_in: bool,
+        x: DevicePtr,
+        w: DevicePtr,
+        out: DevicePtr,
+        rows: usize,
+        dim: usize,
+        stream: u64,
+    ) -> Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        KernelLaunch::new(
+            gpu,
+            if f32_in {
+                self.k.rmsnorm_f32
+            } else {
+                self.k.rmsnorm_bf16
+            },
+        )
+        .grid([rows as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(x)
+        .arg_ptr(w)
+        .arg_ptr(out)
+        .arg_u32(dim as u32)
+        .arg_f32(self.cfg.eps)
+        .launch(stream)
+    }
+
+    fn rope(
+        &self,
+        gpu: &dyn GpuBackend,
+        x: DevicePtr,
+        pos: DevicePtr,
+        rows: usize,
+        row_len: usize,
+        yarn: bool,
+        inverse: bool,
+        stream: u64,
+    ) -> Result<()> {
+        if rows == 0 {
+            return Ok(());
+        }
+        KernelLaunch::new(gpu, self.k.rope)
+            .grid([rows as u32, 1, 1])
+            .block([(self.cfg.rope_dim / 2).max(32) as u32, 1, 1])
+            .arg_ptr(x)
+            .arg_ptr(pos)
+            .arg_ptr(if yarn { self.fc_yarn } else { self.fc_plain })
+            .arg_u32(row_len as u32)
+            .arg_u32(self.cfg.rope_dim as u32)
+            .arg_u32(inverse as u32)
+            .launch(stream)
+    }
+
+    fn act_quant(
+        &self,
+        gpu: &dyn GpuBackend,
+        x: DevicePtr,
+        n_values: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let n_blocks = n_values / 32;
+        if n_blocks == 0 {
+            return Ok(());
+        }
+        KernelLaunch::new(gpu, self.k.act_quant)
+            .grid([(n_blocks as u32).div_ceil(QUANT_BLOCKS_PER_LAUNCH), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(x)
+            .arg_u32(n_blocks as u32)
+            .launch(stream)
+    }
+
+    fn fp4_quant(
+        &self,
+        gpu: &dyn GpuBackend,
+        x: DevicePtr,
+        n_values: usize,
+        block: usize,
+        e4m3_scale: bool,
+        stream: u64,
+    ) -> Result<()> {
+        let n_blocks = n_values / block;
+        if n_blocks == 0 {
+            return Ok(());
+        }
+        KernelLaunch::new(gpu, self.k.fp4_quant)
+            .grid([(n_blocks as u32).div_ceil(QUANT_BLOCKS_PER_LAUNCH), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(x)
+            .arg_u32(n_blocks as u32)
+            .arg_u32(block as u32)
+            .arg_u32(e4m3_scale as u32)
+            .launch(stream)
+    }
+
+    /// The compressor's latent for this call (pre-RoPE, bf16 in `self.latent`),
+    /// or `None` while a ratio-2 group is still filling. Returns the group count.
+    fn compressor(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        st: &AttnV41LayerState,
+        x: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<Option<usize>> {
+        let c = &self.cfg;
+        let comp = w
+            .comp
+            .as_ref()
+            .context("kv source without compressor weights")?;
+        let hd = c.head_dim;
+        let ratio = w.role.ratio;
+        if ratio == 1 {
+            self.gemm(gpu, x, comp.kv, self.latent_raw, m, hd, c.dim, stream)?;
+            self.rmsnorm(
+                gpu,
+                false,
+                self.latent_raw,
+                comp.norm,
+                self.latent,
+                m,
+                hd,
+                stream,
+            )?;
+            return Ok(Some(m));
+        }
+        let gate = comp.gate.context("ratio > 1 compressor without wgate")?;
+        let (kv_state, score_state) = st.comp_state.context("compressor state")?;
+        let gemm_f32 = |wt: DevicePtr, out: DevicePtr| {
+            KernelLaunch::new(gpu, self.k.gemm_f32)
+                .grid([(hd as u32).div_ceil(16), (m as u32).div_ceil(16), 1])
+                .block([16, 16, 1])
+                .arg_ptr(x)
+                .arg_ptr(wt)
+                .arg_ptr(out)
+                .arg_u32(m as u32)
+                .arg_u32(hd as u32)
+                .arg_u32(c.dim as u32)
+                .launch(stream)
+        };
+        gemm_f32(comp.kv, self.ckv)?;
+        gemm_f32(gate, self.cscore)?;
+        let row = hd * 4;
+        let (src_kv, src_score, groups) = if start_pos == 0 {
+            let remainder = m % ratio;
+            let cutoff = m - remainder;
+            if remainder > 0 {
+                gpu.synchronize(stream)?;
+                gpu.copy_d2d(at(self.ckv, cutoff * row), kv_state, remainder * row)?;
+                gpu.copy_d2d(at(self.cscore, cutoff * row), score_state, remainder * row)?;
+            }
+            if m < ratio {
+                return Ok(None);
+            }
+            (self.ckv, self.cscore, cutoff / ratio)
+        } else {
+            let slot = start_pos % ratio;
+            gpu.synchronize(stream)?;
+            gpu.copy_d2d(self.ckv, at(kv_state, slot * row), row)?;
+            gpu.copy_d2d(self.cscore, at(score_state, slot * row), row)?;
+            if !(start_pos + 1).is_multiple_of(ratio) {
+                return Ok(None);
+            }
+            (kv_state, score_state, 1)
+        };
+        KernelLaunch::new(gpu, self.k.pool)
+            .grid([groups as u32, 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(src_kv)
+            .arg_ptr(src_score)
+            .arg_ptr(self.pooled)
+            .arg_u32(ratio as u32)
+            .arg_u32(hd as u32)
+            .launch(stream)?;
+        self.rmsnorm(
+            gpu,
+            true,
+            self.pooled,
+            comp.norm,
+            self.latent,
+            groups,
+            hd,
+            stream,
+        )?;
+        Ok(Some(groups))
+    }
+
+    /// Group positions of `groups` new latents: `g * ratio` on prefill, the
+    /// group's first position on decode.
+    fn group_positions(groups: usize, ratio: usize, start_pos: usize) -> Vec<i32> {
+        if start_pos == 0 {
+            (0..groups).map(|g| (g * ratio) as i32).collect()
+        } else {
+            vec![(start_pos + 1 - ratio) as i32]
+        }
+    }
+
+    /// The indexer: publishes index keys (kv sources), scores the compressed
+    /// positions, selects candidates and the top-k on the CPU. Returns
+    /// `([tokens][topk], topk)` offset by `offset`.
+    #[allow(clippy::too_many_arguments)]
+    fn indexer(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        st: &AttnV41LayerState,
+        shared: &mut SharedV41,
+        x: DevicePtr,
+        latent_groups: Option<usize>,
+        m: usize,
+        start_pos: usize,
+        offset: usize,
+        stream: u64,
+    ) -> Result<(Vec<i32>, usize)> {
+        let c = &self.cfg;
+        let iw = w
+            .idx
+            .as_ref()
+            .context("index source without indexer weights")?;
+        let ratio = w.role.ratio;
+        let (nhi, ihd, hd) = (c.index_heads, c.index_hd, c.head_dim);
+        let end_pos = start_pos + m;
+        if let (Some(groups), Some(cache)) = (latent_groups, st.index_k) {
+            let wk = iw.wk.context("kv source without index wk")?;
+            let k_norm = iw.k_norm.context("kv source without index k_norm")?;
+            self.gemm(gpu, self.latent, wk, self.ik_raw, groups, ihd, hd, stream)?;
+            self.rmsnorm(
+                gpu,
+                false,
+                self.ik_raw,
+                k_norm,
+                self.ik,
+                groups,
+                ihd,
+                stream,
+            )?;
+            upload_i32(
+                gpu,
+                self.grp_pos,
+                &Self::group_positions(groups, ratio, start_pos),
+            )?;
+            self.rope(gpu, self.ik, self.grp_pos, groups, ihd, true, false, stream)?;
+            self.fp4_quant(gpu, self.ik, groups * ihd, FP4_BLOCK, false, stream)?;
+            gpu.synchronize(stream)?;
+            gpu.copy_d2d(
+                self.ik,
+                at(cache, (start_pos / ratio) * ihd * 2),
+                groups * ihd * 2,
+            )?;
+            shared.index_k = Some(cache);
+        }
+        let index_k = shared
+            .index_k
+            .context("indexer before any index keys were published")?;
+        // queries
+        self.gemm(
+            gpu,
+            self.qr,
+            iw.wq_b,
+            self.iq,
+            m,
+            nhi * ihd,
+            c.q_rank,
+            stream,
+        )?;
+        let ihpos: Vec<i32> = (0..m)
+            .flat_map(|t| std::iter::repeat_n((start_pos + t) as i32, nhi))
+            .collect();
+        upload_i32(gpu, self.idx_pos, &ihpos)?;
+        self.rope(
+            gpu,
+            self.iq,
+            self.idx_pos,
+            m * nhi,
+            ihd,
+            true,
+            false,
+            stream,
+        )?;
+        self.fp4_quant(gpu, self.iq, m * nhi * ihd, FP4_BLOCK, false, stream)?;
+        // head weights: bf16(bf16(x . wproj) * ihd^-0.5 * nh^-0.5)
+        self.gemm(gpu, x, iw.weights_proj, self.iw_raw, m, nhi, c.dim, stream)?;
+        let wscale = (ihd as f32).powf(-0.5) * (nhi as f32).powf(-0.5);
+        KernelLaunch::new(gpu, self.k.scale_bf16)
+            .grid([((m * nhi) as u32).div_ceil(256), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(self.iw_raw)
+            .arg_ptr(self.iw)
+            .arg_u32((m * nhi) as u32)
+            .arg_f32(wscale)
+            .launch(stream)?;
+        let width = end_pos / ratio;
+        ensure!(
+            width * m <= c.max_seq * c.max_tokens,
+            "index width {width} x {m} exceeds the workspace"
+        );
+        KernelLaunch::new(gpu, self.k.index_score)
+            .grid([(width as u32).div_ceil(256), m as u32, 1])
+            .block([256, 1, 1])
+            .arg_ptr(self.iq)
+            .arg_ptr(index_k)
+            .arg_ptr(self.iw)
+            .arg_ptr(self.score)
+            .arg_u32(width as u32)
+            .arg_u32(nhi as u32)
+            .arg_u32(ihd as u32)
+            .launch(stream)?;
+        gpu.synchronize(stream)?;
+        let mut bytes = vec![0u8; m * width * 4];
+        gpu.copy_d2h(self.score, &mut bytes)?;
+        let mut score: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let compress_lens: Vec<usize> = if start_pos == 0 {
+            (0..m).map(|t| (t + 1) / ratio).collect()
+        } else {
+            vec![width; m]
+        };
+        if start_pos == 0 {
+            for t in 0..m {
+                for p in compress_lens[t]..width {
+                    score[t * width + p] = f32::NEG_INFINITY;
+                }
+            }
+        }
+        if w.role.is_candidate_source {
+            shared.candidates = select_candidate_blocks(
+                &score,
+                m,
+                width,
+                &compress_lens,
+                c.cand_topk_blocks,
+                c.cand_block,
+            );
+            shared.cand_width = width;
+        } else if w.role.uses_candidates {
+            ensure!(
+                shared.candidates.len() == m * width,
+                "candidate mask is {} for {} x {width}",
+                shared.candidates.len(),
+                m
+            );
+            for (s, &keep) in score.iter_mut().zip(&shared.candidates) {
+                if !keep {
+                    *s = f32::NEG_INFINITY;
+                }
+            }
+        }
+        let topk = c.index_topk.min(end_pos / ratio);
+        let mut out = Vec::with_capacity(m * topk);
+        for t in 0..m {
+            let row = &score[t * width..(t + 1) * width];
+            let mut picked = torch_cpu_topk_set(row, topk);
+            picked.sort_unstable();
+            for i in picked {
+                out.push(if i < compress_lens[t] {
+                    (i + offset) as i32
+                } else {
+                    -1
+                });
+            }
+        }
+        Ok((out, topk))
+    }
+
+    /// One layer's attention for `m` tokens at `start_pos`: `x` is the normed
+    /// input `[m, dim]` bf16; the output is `[m, dim]` bf16 in `run.out`.
+    pub fn forward(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        st: &mut AttnV41LayerState,
+        shared: &mut SharedV41,
+        x: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<AttnV41Run> {
+        let c = &self.cfg;
+        ensure!(
+            m >= 1 && m <= c.max_tokens,
+            "attn_v41: {m} tokens outside 1..={}",
+            c.max_tokens
+        );
+        ensure!(
+            start_pos + m <= c.max_seq,
+            "attn_v41: position {} beyond max_seq {}",
+            start_pos + m,
+            c.max_seq
+        );
+        let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
+        let yarn = w.role.ratio > 0;
+        let pos: Vec<i32> = (0..m).map(|t| (start_pos + t) as i32).collect();
+        let hpos: Vec<i32> = pos
+            .iter()
+            .flat_map(|&p| std::iter::repeat_n(p, nh))
+            .collect();
+        upload_i32(gpu, self.pos, &pos)?;
+        upload_i32(gpu, self.head_pos, &hpos)?;
+
+        // q: low-rank, normed, up-projected, rotated
+        self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
+        self.rmsnorm(
+            gpu,
+            false,
+            self.qr_raw,
+            w.q_norm,
+            self.qr,
+            m,
+            c.q_rank,
+            stream,
+        )?;
+        self.gemm(gpu, self.qr, w.wq_b, self.q, m, nh * hd, c.q_rank, stream)?;
+        self.rope(gpu, self.q, self.head_pos, m * nh, hd, yarn, false, stream)?;
+
+        // kv: one latent row per token, normed, rotated, fp8
+        self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
+        self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
+        self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
+        self.act_quant(gpu, self.kv, m * hd, stream)?;
+        gpu.synchronize(stream)?;
+
+        // the window ring
+        let win = c.window;
+        let row = hd * 2;
+        let (rows_a, rows_a_len) = if start_pos == 0 {
+            if m <= win {
+                gpu.copy_d2d(self.kv, st.window, m * row)?;
+            } else {
+                let cutoff = m % win;
+                let tail = at(self.kv, (m - win) * row);
+                gpu.copy_d2d(tail, at(st.window, cutoff * row), (win - cutoff) * row)?;
+                gpu.copy_d2d(at(tail, (win - cutoff) * row), st.window, cutoff * row)?;
+            }
+            (self.kv, m)
+        } else {
+            let slot = start_pos % win;
+            gpu.copy_d2d(self.kv, at(st.window, slot * row), row)?;
+            (st.window, win)
+        };
+        let (mut idx, mut topk) = window_topk_idxs(win, m, start_pos);
+
+        let (mut rows_b, mut rows_b_len) = (None, 0usize);
+        if w.role.ratio > 0 {
+            let ratio = w.role.ratio;
+            let offset = rows_a_len;
+            let compress_len = (start_pos + m) / ratio;
+            let latent_groups = if w.role.is_kv_source {
+                let g = self.compressor(gpu, w, st, x, m, start_pos, stream)?;
+                shared.compress_kv = st.compress_kv;
+                g
+            } else {
+                None
+            };
+            let (cidx, ctopk) = if !w.role.is_index_source {
+                (shared.topk_idxs.clone(), shared.topk)
+            } else if compress_len == 0 {
+                (Vec::new(), 0)
+            } else {
+                let r = self.indexer(
+                    gpu,
+                    w,
+                    st,
+                    shared,
+                    x,
+                    latent_groups,
+                    m,
+                    start_pos,
+                    offset,
+                    stream,
+                )?;
+                shared.topk_idxs = r.0.clone();
+                shared.topk = r.1;
+                r
+            };
+            if let Some(groups) = latent_groups {
+                let cache = st.compress_kv.context("kv source without a latent cache")?;
+                upload_i32(
+                    gpu,
+                    self.grp_pos,
+                    &Self::group_positions(groups, ratio, start_pos),
+                )?;
+                self.rope(
+                    gpu,
+                    self.latent,
+                    self.grp_pos,
+                    groups,
+                    hd,
+                    true,
+                    false,
+                    stream,
+                )?;
+                self.fp4_quant(gpu, self.latent, groups * hd, LATENT_BLOCK, true, stream)?;
+                gpu.synchronize(stream)?;
+                gpu.copy_d2d(
+                    self.latent,
+                    at(cache, (start_pos / ratio) * row),
+                    groups * row,
+                )?;
+                shared.compress_kv = Some(cache);
+                shared.compress_len = shared.compress_len.max(start_pos / ratio + groups);
+            }
+            rows_b = Some(
+                shared
+                    .compress_kv
+                    .context("compressed layer before any kv source published")?,
+            );
+            rows_b_len = compress_len;
+            ensure!(
+                cidx.len() == m * ctopk,
+                "index selection is {} for {m} x {ctopk}",
+                cidx.len()
+            );
+            let mut merged = Vec::with_capacity(m * (topk + ctopk));
+            for t in 0..m {
+                merged.extend_from_slice(&idx[t * topk..(t + 1) * topk]);
+                merged.extend_from_slice(&cidx[t * ctopk..(t + 1) * ctopk]);
+            }
+            idx = merged;
+            topk += ctopk;
+        }
+        ensure!(
+            topk <= win + c.index_topk && topk <= 2048,
+            "attn_v41: topk {topk} exceeds the workspace"
+        );
+        upload_i32(gpu, self.idx_dev, &idx)?;
+
+        // sparse attention with the sink, then the inverse rotation
+        let scale = (hd as f32).powf(-0.5);
+        KernelLaunch::new(gpu, self.k.sparse_attn)
+            .grid([m as u32, nh as u32, 1])
+            .block([256, 1, 1])
+            .arg_ptr(self.q)
+            .arg_ptr(rows_a)
+            .arg_ptr(rows_b.unwrap_or(rows_a))
+            .arg_u32(rows_a_len as u32)
+            .arg_ptr(self.idx_dev)
+            .arg_ptr(w.sink)
+            .arg_ptr(self.o)
+            .arg_u32(nh as u32)
+            .arg_u32(hd as u32)
+            .arg_u32(topk as u32)
+            .arg_f32(scale)
+            .launch(stream)?;
+        // `run.o` is the pre-rotation output (the reference's `sa_o`); the
+        // inverse rotation runs on a copy
+        gpu.synchronize(stream)?;
+        let o_copy = self.o_rot;
+        gpu.copy_d2d(self.o, o_copy, m * nh * hd * 2)?;
+        self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
+
+        // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
+        let gw = c.gw();
+        for g in 0..c.groups {
+            KernelLaunch::new(gpu, self.k.slice_cols)
+                .grid([m as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(o_copy)
+                .arg_ptr(self.slice_in)
+                .arg_u32((nh * hd) as u32)
+                .arg_u32((g * gw) as u32)
+                .arg_u32(gw as u32)
+                .launch(stream)?;
+            self.gemm(
+                gpu,
+                self.slice_in,
+                at(w.wo_a, g * c.o_rank * gw * 2),
+                self.slice_out,
+                m,
+                c.o_rank,
+                gw,
+                stream,
+            )?;
+            KernelLaunch::new(gpu, self.k.scatter_cols)
+                .grid([m as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(self.slice_out)
+                .arg_ptr(self.og)
+                .arg_u32((c.groups * c.o_rank) as u32)
+                .arg_u32((g * c.o_rank) as u32)
+                .arg_u32(c.o_rank as u32)
+                .launch(stream)?;
+        }
+        self.gemm(
+            gpu,
+            self.og,
+            w.wo_b,
+            self.out,
+            m,
+            dim,
+            c.groups * c.o_rank,
+            stream,
+        )?;
+        gpu.synchronize(stream)?;
+        Ok(AttnV41Run {
+            q: self.q,
+            rows_a,
+            rows_a_len,
+            rows_b,
+            rows_b_len,
+            idx,
+            topk,
+            o: self.o,
+            out: self.out,
+        })
+    }
+
+    pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
+        for p in [
+            self.fc_plain,
+            self.fc_yarn,
+            self.qr_raw,
+            self.qr,
+            self.q,
+            self.kv_raw,
+            self.kv,
+            self.o,
+            self.o_rot,
+            self.og,
+            self.slice_in,
+            self.slice_out,
+            self.out,
+            self.pos,
+            self.head_pos,
+            self.idx_pos,
+            self.grp_pos,
+            self.idx_dev,
+            self.ckv,
+            self.cscore,
+            self.pooled,
+            self.latent_raw,
+            self.latent,
+            self.ik_raw,
+            self.ik,
+            self.iq,
+            self.iw_raw,
+            self.iw,
+            self.score,
+        ] {
+            gpu.free(p)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "attn_v41_tests.rs"]
+mod tests;

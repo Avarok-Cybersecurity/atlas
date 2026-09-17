@@ -29,6 +29,28 @@ impl GgufMeta for GgufFile {
     fn get_arr_len(&self, key: &str) -> Option<usize> {
         GgufFile::arr_len(self, key)
     }
+    /// Integer array, every element widened to u64.
+    ///
+    /// Accepts any integer element type: DeepSeek-V4.1 ships
+    /// `attention.compress_ratios` and `engram.layer_ids` as int32 but
+    /// `engram.{multipliers,primes,offsets}` as uint64, and a caller asking for
+    /// "the numbers in this array" should not have to know which. Returns
+    /// `None` if the key is absent or ANY element is not an integer, rather
+    /// than silently dropping elements.
+    fn get_u64_arr(&self, key: &str) -> Option<Vec<u64>> {
+        let arr = GgufFile::get(self, key)?.as_array()?;
+        arr.iter()
+            .map(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+            })
+            .collect()
+    }
+    /// Float array, every element widened to f64. Same all-or-nothing rule.
+    fn get_f64_arr(&self, key: &str) -> Option<Vec<f64>> {
+        let arr = GgufFile::get(self, key)?.as_array()?;
+        arr.iter().map(|v| v.as_f64()).collect()
+    }
 }
 
 /// Build a [`ModelConfig`] from the `.gguf` in `model_dir`, with no `config.json`.

@@ -3,7 +3,9 @@
 // GPU dequant: raw packed GGUF quant blocks -> BF16, on device.
 //
 // Scope: the hot P0 ggml types for flagship GGUFs -- Q8_0, Q4_K, Q6_K -- plus
-// the PrismML-private Q2_0 group-N (id 42). Each kernel maps ONE CUDA block to
+// the PrismML-private Q2_0 group-N (id 42), plus Q2_K and Q3_K for the K-quant
+// checkpoints (DeepSeek-V4.1 Flash Q2_K: attention, embed and the engram tables
+// are Q2_K, the routed down projections Q3_K). Each kernel maps ONE CUDA block to
 // ONE GGUF (super-)block and fans per-element work across threads. Input is the
 // raw little-endian block bytes already uploaded h2d; output is contiguous BF16
 // [n_blocks * QK]. Block byte-strides are passed as params (never hardcoded) so
@@ -124,6 +126,92 @@ extern "C" __global__ void dequant_q6_k_to_bf16(
         q -= 32;
         float sc = (float)sc_all[sco + is + 2u * g];
         o[y] = __float2bfloat16(d * sc * (float)q);
+    }
+}
+
+// ---- Q2_K : { u8 scales[16]; u8 qs[64]; f16 d; f16 dmin }, QK=256, 84 B ----
+// Two 128-elem halves (n); within a half, 4 shift groups j (2-bit codes at
+// shift 2j), each of two 16-lane runs (sub) with their own 4-bit scale/min
+// byte: is = n*8 + 2j + sub. value = d*(sc & 0xF)*code - dmin*(sc >> 4).
+// Mirrors dequant_cpu::blocks::dequant_q2_k in element order and op order.
+extern "C" __global__ void dequant_q2_k_to_bf16(
+    const unsigned char* __restrict__ blocks,
+    __nv_bfloat16* __restrict__ out,
+    unsigned int n_blocks,
+    unsigned int block_bytes)        // 84
+{
+    unsigned int b = blockIdx.x;
+    if (b >= n_blocks) return;
+    const unsigned char* blk    = blocks + (unsigned long long)b * block_bytes;
+    const unsigned char* scales = blk;
+    const unsigned char* qs     = blk + 16;
+    float d    = dq_rd_f16(blk + 80);
+    float dmin = dq_rd_f16(blk + 82);
+    __nv_bfloat16* o = out + (unsigned long long)b * 256u;
+
+    for (unsigned int y = threadIdx.x; y < 256u; y += blockDim.x) {
+        unsigned int n   = y >> 7;           // half 0/1
+        unsigned int w   = y & 127u;
+        unsigned int j   = w >> 5;           // shift group 0..3
+        unsigned int sub = (w >> 4) & 1u;    // 16-lane run 0/1
+        unsigned int l   = w & 15u;
+        unsigned int is  = n * 8u + 2u * j + sub;
+        unsigned char sc = scales[is];
+        float dl = d * (float)(sc & 0x0F);
+        float ml = dmin * (float)(sc >> 4);
+        unsigned char q = qs[n * 32u + sub * 16u + l];
+        int code = (int)((q >> (2u * j)) & 3u);
+        o[y] = __float2bfloat16(dl * (float)code - ml);
+    }
+}
+
+// ---- Q3_K : { u8 hmask[32]; u8 qs[64]; u8 scales[12]; f16 d }, QK=256, 110 B --
+// Same halves / shift groups / 16-lane runs as Q2_K. The 6-bit scales unpack
+// from 12 bytes exactly as ggml (kmask1/kmask2 shuffle) into 16 int8, centred
+// by -32. The high bit of each 3-bit code comes from hmask, one mask bit per
+// (half, shift group): m = 1 << (4n + j). value = d*(sc-32)*(code - (hbit ? 0 : 4)).
+// Mirrors dequant_cpu::blocks::dequant_q3_k.
+extern "C" __global__ void dequant_q3_k_to_bf16(
+    const unsigned char* __restrict__ blocks,
+    __nv_bfloat16* __restrict__ out,
+    unsigned int n_blocks,
+    unsigned int block_bytes)        // 110
+{
+    unsigned int b = blockIdx.x;
+    if (b >= n_blocks) return;
+    const unsigned char* blk   = blocks + (unsigned long long)b * block_bytes;
+    const unsigned char* hmask = blk;
+    const unsigned char* qs    = blk + 32;
+    const unsigned char* raw   = blk + 96;
+    float d_all = dq_rd_f16(blk + 108);
+    __nv_bfloat16* o = out + (unsigned long long)b * 256u;
+
+    // scale unpack (ggml): aux[0..3] from three LE u32 of the 12 raw bytes
+    const unsigned int KM1 = 0x03030303u, KM2 = 0x0f0f0f0fu;
+    unsigned int a0 = (unsigned int)raw[0] | ((unsigned int)raw[1] << 8) | ((unsigned int)raw[2] << 16) | ((unsigned int)raw[3] << 24);
+    unsigned int a1 = (unsigned int)raw[4] | ((unsigned int)raw[5] << 8) | ((unsigned int)raw[6] << 16) | ((unsigned int)raw[7] << 24);
+    unsigned int tmp = (unsigned int)raw[8] | ((unsigned int)raw[9] << 8) | ((unsigned int)raw[10] << 16) | ((unsigned int)raw[11] << 24);
+    unsigned int aux[4];
+    aux[2] = ((a0 >> 4) & KM2) | (((tmp >> 4) & KM1) << 4);
+    aux[3] = ((a1 >> 4) & KM2) | (((tmp >> 6) & KM1) << 4);
+    aux[0] = (a0 & KM2) | (((tmp >> 0) & KM1) << 4);
+    aux[1] = (a1 & KM2) | (((tmp >> 2) & KM1) << 4);
+
+    for (unsigned int y = threadIdx.x; y < 256u; y += blockDim.x) {
+        unsigned int n   = y >> 7;
+        unsigned int w   = y & 127u;
+        unsigned int j   = w >> 5;
+        unsigned int sub = (w >> 4) & 1u;
+        unsigned int l   = w & 15u;
+        unsigned int is  = n * 8u + 2u * j + sub;
+        int sc = (int)(signed char)((aux[is >> 2] >> (8u * (is & 3u))) & 0xFFu);
+        float dl = d_all * (float)(sc - 32);
+        unsigned char m = (unsigned char)(1u << (4u * n + j));
+        unsigned int idx = sub * 16u + l;
+        int h = (hmask[idx] & m) ? 0 : 4;
+        unsigned char q = qs[n * 32u + idx];
+        int code = (int)((q >> (2u * j)) & 3u) - h;
+        o[y] = __float2bfloat16(dl * (float)code);
     }
 }
 

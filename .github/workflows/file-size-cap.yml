@@ -288,6 +288,24 @@ jobs:
             # Pushed over 500 purely by `cargo fmt` wrapping the kernel-launch
             # arg chains. Clean split tracked as follow-up.
             "crates/spark-model/src/layers/vision_encoder/enc_impl/vit_block.rs"
+            # ── DeepSeek-V4.1 Flash port (#1094 → #1099) carry-over ──
+            # 8 files the V4.1 port lands over the cap, allow-listed to ship
+            # the port the way the V4 entries below shipped DS4F: the attention
+            # runtime (indexer + compressor + sparse attention in one forward),
+            # the loader with its real-weight oracle, the streamed MoE, the
+            # hyper-connection layer, the two CPU reference modules the GPU
+            # oracles diff against, and the two GGUF files the split-shard
+            # ingestion grew. Every one is gated by an oracle that runs today,
+            # which is what makes the split safe after landing rather than
+            # inside the stack. Clean split tracked in #1100.
+            "crates/spark-model/src/layers/attn_v41.rs"
+            "crates/spark-model/src/weight_loader/deepseek_v41.rs"
+            "crates/spark-model/src/layers/deepseek_v41_ref/compress.rs"
+            "crates/spark-model/src/layers/moe_v41.rs"
+            "crates/spark-model/src/layers/deepseek_v41_layer.rs"
+            "crates/spark-model/src/layers/deepseek_v41_ref/model.rs"
+            "crates/spark-runtime/src/weights/gguf.rs"
+            "crates/spark-runtime/src/weights/gguf/names.rs"
             # ── PR #186 (DeepSeek-V4-Flash port) carry-over ──
             # 12 files the V4 port lands over the cap. Allow-listed to ship DS4F
             # to users (today it's runnable only by building the #186 branch);
