@@ -72,6 +72,7 @@ impl PagedKvCache {
             block_ref_counts,
             config,
             trace: BlockTrace::new(num_blocks),
+            publishes_stats: false,
         })
     }
 
@@ -297,7 +298,22 @@ impl PagedKvCache {
     /// that changes the free list, so the gauge cannot silently drift.
     #[inline]
     fn publish_stats(&self) {
-        crate::kv_cache::stats::publish(self.num_blocks, self.free_blocks.len());
+        // 🪤 SEVERAL POOLS EXIST — MTP heads and the DFlash head each build
+        // their own PagedKvCache. They all used to publish into the one
+        // global, so the gauge reported whichever pool was touched last and
+        // produced impossible pairs (used=1 against free=65543 of 77808).
+        // Only the pool the scheduler actually allocates sequences from is
+        // meaningful here, and it opts in via `mark_primary`.
+        if self.publishes_stats {
+            crate::kv_cache::stats::publish(self.num_blocks, self.free_blocks.len());
+        }
+    }
+
+    /// Mark this pool as the one `/metrics` reports. Called once, by the
+    /// factory, for the sequence-serving cache.
+    pub fn mark_primary(&mut self) {
+        self.publishes_stats = true;
+        self.publish_stats();
     }
 
     /// Number of free blocks.

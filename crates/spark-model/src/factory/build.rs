@@ -1175,7 +1175,11 @@ pub fn build_model(
             );
         }
     }
-    let kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
+    let mut kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
+    // THE pool the scheduler allocates sequences from, so it is the one
+    // `/metrics` reports. The MTP and DFlash heads build their own and stay
+    // silent — see `PagedKvCache::publish_stats`.
+    kv_cache.mark_primary();
 
     // ── Step 6: Assemble model ──
     // Capture pointers for any post-construction sharing (DFlash drafter

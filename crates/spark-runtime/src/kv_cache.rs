@@ -23,29 +23,42 @@ pub(crate) const NVFP4_GROUP_SIZE: usize = 16;
 /// Published from the few places that change the free list, so it costs two
 /// relaxed stores on paths that were already mutating a Vec.
 pub mod stats {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static TOTAL: AtomicUsize = AtomicUsize::new(0);
-    static FREE: AtomicUsize = AtomicUsize::new(0);
+    /// `total << 32 | free`. ONE word, because two words tear.
+    ///
+    /// 🪤 Read as two separate atomics this reported `used=1` while
+    /// `free=65543` of a 77808-block pool — arithmetic that cannot happen,
+    /// because the pair came from two different reads. Packing them makes
+    /// every read self-consistent by construction.
+    static PACKED: AtomicU64 = AtomicU64::new(0);
 
     pub(crate) fn publish(total: usize, free: usize) {
-        TOTAL.store(total, Ordering::Relaxed);
-        FREE.store(free, Ordering::Relaxed);
+        PACKED.store(
+            ((total as u64) << 32) | (free as u64 & 0xFFFF_FFFF),
+            Ordering::Relaxed,
+        );
     }
 
-    /// Blocks in the pool. 0 before any KV cache is built.
+    fn read() -> (usize, usize) {
+        let v = PACKED.load(Ordering::Relaxed);
+        ((v >> 32) as usize, (v & 0xFFFF_FFFF) as usize)
+    }
+
+    /// Blocks in the primary pool. 0 before any KV cache is built.
     pub fn total_blocks() -> usize {
-        TOTAL.load(Ordering::Relaxed)
+        read().0
     }
 
-    /// Blocks currently on the free list.
+    /// Blocks currently on the primary pool's free list.
     pub fn free_blocks() -> usize {
-        FREE.load(Ordering::Relaxed)
+        read().1
     }
 
     /// Blocks held by a sequence or the prefix cache.
     pub fn used_blocks() -> usize {
-        total_blocks().saturating_sub(free_blocks())
+        let (t, f) = read();
+        t.saturating_sub(f)
     }
 }
 
@@ -463,6 +476,10 @@ pub struct PagedKvCache {
     config: KvCacheConfig,
     /// Per-block refcount event history (`ATLAS_KV_TRACE=1`; inert otherwise).
     trace: block_trace::BlockTrace,
+    /// Whether this pool feeds the `/metrics` gauge. Set by `mark_primary`
+    /// on the sequence-serving cache only — the MTP and DFlash heads build
+    /// their own pools and must not overwrite it.
+    publishes_stats: bool,
 }
 
 mod block_trace;
