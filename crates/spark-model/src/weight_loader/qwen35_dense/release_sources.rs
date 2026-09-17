@@ -3,21 +3,20 @@
 //! The release-on-consume sites of the Qwen3.5-dense loader, and the residency
 //! line they are judged on.
 //!
-//! **WHY (`docs/porting/r9700-residency.md`).** On an AMD Radeon AI PRO R9700
-//! (gfx1201, 31.9 GB, SCALE 1.7.1), 2026-09-17, serving
+//! **WHY (`docs/porting/r9700-residency.md`).** Measured on gfx1201 (AMD
+//! Radeon AI PRO R9700, 31.9 GB, SCALE 1.7.1, ROCm 7.2.0), 2026-09-17, serving
 //! `unsloth/Qwen3.8-27B-NVFP4`: all 21.81 GiB of the checkpoint uploads, and
 //! the serve then dies in `load_layers` at layer 28 of 64 with `cuMemAlloc_v2
-//! failed: status 2, requested 167772160 bytes` against a ledger holding
-//! 33.73 GB. **9.94 GiB of the store is dead at that moment.** That checkpoint
-//! is `format = mixed-precision`: attention q/k/v/o, the GDN projections, the
-//! layer-56..63 MLPs and `lm_head` ship as FP8 E4M3 with a per-CHANNEL `[N,1]`
-//! scale, which no `w8a16` kernel can index, so every one of them is
-//! dequantised to BF16 and requantised to NVFP4 at load. The E4M3 bytes are
-//! read exactly once, by the dequant kernel, and then sit there.
+//! failed: status 2, requested 167772160 bytes` against 33.73 GB of live
+//! allocations. **9.94 GiB of the store is dead at that moment.** That
+//! checkpoint is `format = mixed-precision`: attention q/k/v/o, the GDN
+//! projections, the layer-56..63 MLPs and `lm_head` ship as FP8 E4M3 with a
+//! per-CHANNEL `[N,1]` scale, which no `w8a16` kernel can index, so every one
+//! of them is dequantised to BF16 and requantised to NVFP4 at load. The E4M3
+//! bytes are read exactly once, by the dequant kernel, and then sit there.
 //!
-//! `prune_after_load` is the existing answer to this shape and it is four
-//! minutes and thirty-six layers too late here: the board is full during the
-//! layer loop.
+//! `prune_after_load` is the existing answer to this shape, and it is
+//! thirty-six layers too late here: the board is full during the layer loop.
 //!
 //! **The soundness rule, stated once.** A release site claims a tensor only
 //! when `{prefix}.weight` is `FP8E4M3`. That is not a heuristic, it is the
@@ -60,13 +59,13 @@ use spark_runtime::weights::{WeightDtype, WeightStore, release_sources_enabled};
 /// accounting surfaced").** `dense_auto` returns the STORE's pointer unchanged
 /// for a BF16 tensor and a fresh allocation for an FP8 one, so a loader that
 /// frees its input after a copy is freeing store memory on exactly the
-/// checkpoints whose tensors are BF16 — and the store still lists the entry, so
+/// checkpoints whose tensors are BF16, and the store still lists the entry, so
 /// teardown frees it a second time. The free itself is RIGHT at every call site
 /// below (the bytes really are dead, and keeping them is the duplicate the site
 /// exists to avoid); what is wrong is the route.
 ///
 /// This changes no residency at all: the same pointer is freed either way. What
-/// it changes is what the store believes afterwards — `contains` and `get` stop
+/// it changes is what the store believes afterwards: `contains` and `get` stop
 /// claiming a tensor whose memory is gone, `free_matching` and teardown skip it,
 /// and a reader that runs too late gets the named "RELEASED on consume" error
 /// instead of whatever the allocator handed out next.
@@ -128,7 +127,7 @@ impl SourceReleaser {
     pub(super) fn new() -> Self {
         let enabled = release_sources_enabled();
         tracing::info!(
-            "AVAROK_LOAD_RELEASE_SOURCES={} — consumed FP8 checkpoint tensors are {} \
+            "AVAROK_LOAD_RELEASE_SOURCES={}: consumed FP8 checkpoint tensors are {} \
              (default on this build: {}). See docs/porting/r9700-residency.md.",
             u8::from(enabled),
             if enabled {
@@ -190,7 +189,7 @@ impl SourceReleaser {
     ///
     /// `layer-owned` is the ledger's live total minus what the store still
     /// holds, which is exactly "everything a loader allocated on top of the
-    /// checkpoint" — the quantity `docs/porting/r9700-residency.md` puts at
+    /// checkpoint", the quantity `docs/porting/r9700-residency.md` puts at
     /// 25.25 GiB and the one the two-layout verdict turns on. Omitted rather
     /// than guessed when the backend keeps no ledger.
     pub(super) fn summary(&self, store: &WeightStore, gpu: &dyn GpuBackend) -> String {

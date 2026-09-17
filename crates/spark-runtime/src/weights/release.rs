@@ -4,15 +4,15 @@
 //! finished turning it into a layer-owned allocation.
 //!
 //! **WHY.** On a 32 GB discrete board the store's dead weight is the difference
-//! between loading and not. Measured on an AMD Radeon AI PRO R9700 (gfx1201,
-//! 31.9 GB, SCALE 1.7.1) with `unsloth/Qwen3.8-27B-NVFP4`, 2026-09-17: the
-//! whole 21.81 GiB checkpoint uploads, and the serve then dies in model build
-//! at layer 28 of 64 with `cuMemAlloc_v2 failed: status 2, requested
-//! 167772160 bytes` while the ledger holds 33.73 GB live. **9.94 GiB of the
-//! store is DEAD at that moment** — FP8 attention, GDN and tail-MLP
-//! projections that have already been dequantised to BF16 and requantised to
-//! NVFP4, whose only consumer copied them. Full accounting, with the ledger
-//! sweep reproduced site by site from the shapes:
+//! between loading and not. Measured on gfx1201 (AMD Radeon AI PRO R9700,
+//! 31.9 GB, SCALE 1.7.1, ROCm 7.2.0), 2026-09-17, with
+//! `unsloth/Qwen3.8-27B-NVFP4`: the whole 21.81 GiB checkpoint uploads, and the
+//! serve then dies in model build at layer 28 of 64 with `cuMemAlloc_v2 failed:
+//! status 2, requested 167772160 bytes` against 33.73 GB of live allocations.
+//! **9.94 GiB of the store is DEAD at that moment**: FP8 attention, GDN and
+//! tail-MLP projections that have already been dequantised to BF16 and
+//! requantised to NVFP4, whose only consumer copied them. Full accounting,
+//! reproduced site by site from the shapes:
 //! `docs/porting/r9700-residency.md`.
 //!
 //! **Why it is not on everywhere.** On GB10 the same 9.94 GiB is a rounding
@@ -150,7 +150,7 @@ mod tests {
         assert!(s.mark("a.weight", 1024), "first release is recorded");
         assert!(
             !s.mark("a.weight", 1024),
-            "a second release must be refused — the pointer is already gone"
+            "a second release must be refused: the pointer is already gone"
         );
         assert_eq!(s.len(), 1);
         assert_eq!(s.bytes(), 1024, "the refused release must not be counted");

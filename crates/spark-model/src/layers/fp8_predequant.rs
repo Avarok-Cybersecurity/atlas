@@ -2,9 +2,9 @@
 
 //! Whether this build may pre-dequantise NVFP4 weights to FP8 for prefill.
 //!
-//! **WHY (live on an AMD Radeon AI PRO R9700, gfx1201, SCALE 1.7.1,
-//! 2026-09-17).** `Ornith-1.0-9B` loads, builds and boots, and then every
-//! request dies at layer 0:
+//! **WHY.** Measured on gfx1201 (AMD Radeon AI PRO R9700, SCALE 1.7.1,
+//! ROCm 7.2.0), 2026-09-17: `Ornith-1.0-9B` loads, builds and boots, and then
+//! every request dies at layer 0:
 //!
 //! ```text
 //! ssm prefill: out_proj GEMM failed: Kernel lookup
@@ -26,10 +26,10 @@
 //!    attention chain onto FP8 activations with `self.q_fp8.is_some()`.
 //! 3. `ops::fp8_gemm_n128` (`ops/gemm_fp8_prefill.rs:48`) is DEFAULT-ON to the
 //!    `ldmatrix.x4` kernel and looks it up with a hard `?`. `w4a16_fp8_ldmab.cu`
-//!    is the thirteenth gfx1201 census failure and is not in this target's tree
-//!    at all, so the lookup is an error rather than a fallback.
+//!    is one of the 13 gfx1201 census failures and is not in this target's
+//!    tree at all, so the lookup is an error rather than a fallback.
 //!
-//! Every arm below step 2 already handles `None` — the SSM helper falls to
+//! Every arm below step 2 already handles `None`: the SSM helper falls to
 //! `w4a16_gemm_n128` and then to `w4a16_gemm`, attention's `use_fp8_act` goes
 //! false and its chain reaches the NVFP4 arms, and the MoE's three shared-expert
 //! copies are each read behind an `if let Some`. So the fix is to not BUILD the
@@ -37,10 +37,9 @@
 //! degrades on its own.
 //!
 //! **This is what `AVAROK_NO_FP8_PREDEQUANT=1` was for.** The Strix recipe
-//! carried it; `serve-amd.sh` dropped it in the commit that says "Neither name
-//! has a reader anywhere in this tree", which was true — the reader had been
-//! lost, not the need. This module is the reader, and it adds the probe the env
-//! var should never have been the only line of defence for.
+//! carried it, and `serve-amd.sh` dropped it once the reader was lost. This
+//! module is the reader, and it adds the probe the env var should never have
+//! been the only line of defence for.
 //!
 //! **NVIDIA is unchanged.** With the variable unset and the kernels present,
 //! [`decide`] returns `None` and every caller does exactly what it did before.
@@ -89,7 +88,7 @@ pub struct Fp8PrefillKernels {
     pub m128: bool,
 }
 
-/// The decision. Pure — no environment reads, no lookups.
+/// The decision. Pure: no environment reads, no lookups.
 ///
 /// EVERY arm the dispatch could take must resolve, not just the preferred one.
 /// `fp8_gemm_n128` picks between ldmab and scalar on `K % 32`, which is a
@@ -129,7 +128,7 @@ pub fn decide(no_predequant: Option<&str>, k: Fp8PrefillKernels) -> Option<Prede
 /// not `try_kernel`: it is a module some targets do not compile, and the boot
 /// audit treats a failed lookup as a dispatch site on a silent fallback path
 /// and refuses to serve. A target that never built the module has no silent
-/// fallback to record — it has the only path it has. `w4a16` itself is built
+/// fallback to record, since it has the only path it has. `w4a16` is built
 /// everywhere, so its three entry points are ordinary optional lookups.
 pub fn skip_reason(gpu: &dyn GpuBackend) -> Option<PredequantSkip> {
     let resolves = |m: &str, f: &str| crate::layers::try_kernel(gpu, m, f).0 != 0;

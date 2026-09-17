@@ -196,13 +196,11 @@ impl AvarokCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        // RULE 1: the DEVICE figure is not necessarily the driver's. See
-        // `meminfo_source`: on a SCALE build that found its board in amdgpu
-        // sysfs, the kernel's TTM counters replace `cuMemGetInfo`'s free leg,
-        // because SCALE's runtime charges ~16 MiB of phantom usage per
-        // allocation and a 1953-tensor load drove this call to 0.05 GB with
-        // 9 GB genuinely free (measured 2026-09-17, gfx1201 / SCALE 1.7.1 /
-        // ROCm 7.2.0). Unchanged on NVIDIA, where the driver IS the source.
+        // RULE 1: the DEVICE figure is not necessarily the driver's. On a
+        // SCALE build that found its board in amdgpu sysfs, the kernel's TTM
+        // counters replace `cuMemGetInfo`'s free leg; see the module docs on
+        // `meminfo_source`. Unchanged on NVIDIA, where the driver IS the
+        // source.
         let device = super::meminfo_source::device_free(free, total);
         // RULE 2: host `MemAvailable` substitutes for the device-free
         // figure ONLY on an integrated GPU. A no-op on any discrete board,

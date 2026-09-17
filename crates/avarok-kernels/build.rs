@@ -564,21 +564,20 @@ fn main() {
     // ── Name the modules that compiled to an EMPTY code object ──
     // An optional module whose whole body sits behind a capability guard
     // (`nvfp4_mmq.cu` inside `#if defined(BLACKWELL_MMA_AVAILABLE)`) still
-    // compiles, successfully, to an object with no kernels in it. The build log
-    // said nothing about that, and on SCALE 1.7.1 / gfx1201 the first sign of it
-    // was a CUDA_ERROR_INVALID_IMAGE (200) at the first launch, because that
-    // driver answers `cuModuleGetFunction` for a name the object does not
-    // define. `avarok_core::registry` now refuses those lookups at load time;
-    // this is the same reading, done here, so the names are in the build log
-    // BEFORE anyone serves the target.
+    // compiles, successfully, to an object with no kernels in it, and on SCALE
+    // the driver hands out a handle for a name that object does not define.
+    // `avarok_core::elf_symbols` documents the mechanism and
+    // `avarok_core::registry` refuses those lookups at load time; this is the
+    // same reading, done here, so the names are in the build log BEFORE anyone
+    // serves the target.
     //
     // The symbol reader is the registry's, included by path rather than copied,
     // so the build and the runtime can never disagree about what an object
-    // defines. It parses ELF64 LE only, and returns None for anything else
-    // (PTX text, a metallib, a clang offload bundle), so only the binary
-    // (SCALE/HIP) targets are reported on and no NVIDIA build changes.
-    // Never fatal: an empty optional module is a legitimate state, the one the
-    // runtime guard is built to serve through.
+    // defines. It parses ELF64 LE only and returns None for anything else (PTX
+    // text, a metallib, a clang offload bundle), so only the binary (SCALE/HIP)
+    // targets are reported on and no NVIDIA build changes. Never fatal: an
+    // empty optional module is a legitimate state, the one the runtime guard is
+    // built to serve through.
     // This build script emits `rerun-if-changed` directives, which switches off
     // cargo's default "any file in the package" trigger, and the reader is not
     // in this package at all, so it needs saying.

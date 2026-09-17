@@ -7,7 +7,7 @@
 
 use super::*;
 
-/// Every kernel present — an NVIDIA build, and the state the whole guard has to
+/// Every kernel present: an NVIDIA build, and the state the whole guard has to
 /// leave alone.
 fn all_present() -> Fp8PrefillKernels {
     Fp8PrefillKernels {

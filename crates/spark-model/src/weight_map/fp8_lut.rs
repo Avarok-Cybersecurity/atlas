@@ -187,7 +187,7 @@ pub(super) fn fp8_e8m0_to_f32(bits: u8) -> f32 {
 /// SwiGLU FFN instead of a mixture of experts.
 /// `build_transposed` selects whether the three `_t` twins the fast
 /// `w4a16_gemm_t_m128` prefill arms read are built at all. `false` leaves them
-/// `None`, which `dense_ffn.rs`'s `w4_gemm!` handles with its `_ =>` arm — the
+/// `None`, which `dense_ffn.rs`'s `w4_gemm!` handles with its `_ =>` arm: the
 /// untransposed `w4a16_gemm`, ~7 TFLOP/s against ~51 on the Gemma-4-31B
 /// measurement. It is 8.96 GiB on Qwen3.8-27B and the only reason to take that
 /// trade is a board the model does not otherwise fit;

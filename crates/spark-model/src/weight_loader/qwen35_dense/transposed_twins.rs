@@ -6,13 +6,13 @@
 //! **WHY (`docs/porting/r9700-residency.md`).** Atlas keeps each NVFP4
 //! projection in TWO layouts: the packed `[N, K/2]` original that decode reads,
 //! and a transposed `[K, N/2]` twin that the fast prefill GEMMs
-//! (`w4a16_gemm_t_m128` and its v2/k64 siblings) consume. On an AMD Radeon AI
-//! PRO R9700 (gfx1201, 31.9 GB) serving `unsloth/Qwen3.8-27B-NVFP4` the twins
-//! are **12.74 GiB** — 8.96 GiB dense FFN, 2.90 GiB SSM, 0.88 GiB attention.
-//! The residency ledger for that serve puts the whole model at 47.07 GiB;
-//! release-on-consume and the attention dequant-leak fix take it to 35.18 GiB,
-//! which still does not load on a 32 GB board. Dropping the twins takes it to
-//! 21.25 GiB, which does.
+//! (`w4a16_gemm_t_m128` and its v2/k64 siblings) consume. Measured on gfx1201
+//! (AMD Radeon AI PRO R9700, 31.9 GB, SCALE 1.7.1, ROCm 7.2.0), 2026-09-17,
+//! serving `unsloth/Qwen3.8-27B-NVFP4`: the twins are **12.74 GiB** (8.96 GiB
+//! dense FFN, 2.90 GiB SSM, 0.88 GiB attention) of a 47.07 GiB resident set.
+//! Release-on-consume and the attention dequant-leak fix take that to
+//! 35.18 GiB, which still does not load on a 32 GB board; dropping the twins
+//! takes it to 21.25 GiB, which does.
 //!
 //! **What it costs, and on which board.** With the twins absent every fast arm
 //! of `dense_ffn.rs`'s `w4_gemm!` is skipped and prefill lands on the plain
@@ -21,8 +21,8 @@
 //! **~7.0 TFLOP/s against ~51 TFLOP/s for `t_m128`**, a 7x slower FFN prefill,
 //! and that is why the default on every non-SCALE target is still "build them".
 //!
-//! ⚠️ **On gfx1201 the sign is reversed.** The R9700 prefill measurement of
-//! 2026-09-17 (Ornith-1.0-9B with the twins, Qwen3.8-27B without) puts
+//! **On gfx1201 the sign is reversed.** The R9700 prefill measurement
+//! (Ornith-1.0-9B with the twins, Qwen3.8-27B without) puts
 //! `w4a16_gemm_t_m128` at **~1 TFLOP/s against ~4 TFLOP/s for the plain
 //! `w4a16_gemm`**. The 7-vs-51 figures above were never measured on SCALE and
 //! must not be quoted for it. So on this target the twins cost 12.74 GiB AND
@@ -57,27 +57,27 @@
 //! therefore drops that too: `Qwen3SsmLayer::predequant_for_prefill`
 //! (`qwen3_ssm/init_fp8.rs:110`) builds the `out_proj` FP8 predequant only
 //! `if self.out_proj_nvfp4_t.is_some()`. That is a further 1.41 GiB saved on
-//! Qwen3.8-27B (30 MiB x48) and it is deliberate, not incidental — the FP8
+//! Qwen3.8-27B (30 MiB x48) and it is deliberate, not incidental: the FP8
 //! predequant exists to feed the same transposed prefill GEMM.
 //!
 //! **What this lever does NOT govern, and must not.** The attention
 //! `Fp8WeightTransposed` twins that `transpose_fp8_for_prefill_selected` builds
 //! are a different family on a different route: they exist only under the
-//! native-FP8 overlay (`AVAROK_DENSE_FP8=1` on a block-scaled FP8 checkpoint,
-//! which is not the layout this work is about), they are already selected per
-//! projection by `Fp8TwinSet` and the #915 plan, and `fp8_residency.rs` records
-//! that the K and V members are dereferenced UNCONDITIONALLY on the first
-//! prefill chunk of every request (`prefill/cache_skip_qkv.rs:218`/`:235`, a
-//! chain with no W8A8 arm). Declining to build those is a null-pointer kernel
-//! launch on the first token, not a slower GEMM. `fp8_residency.rs` owns that
-//! family; this module owns the NVFP4 one, and the two must not be merged.
+//! native-FP8 overlay (`AVAROK_DENSE_FP8=1` on a block-scaled FP8 checkpoint),
+//! they are already selected per projection by `Fp8TwinSet` and the #915 plan,
+//! and `fp8_residency.rs` records that the K and V members are dereferenced
+//! UNCONDITIONALLY on the first prefill chunk of every request
+//! (`prefill/cache_skip_qkv.rs:218`/`:235`, a chain with no W8A8 arm).
+//! Declining to build those is a null-pointer kernel launch on the first
+//! token, not a slower GEMM. `fp8_residency.rs` owns that family; this module
+//! owns the NVFP4 one, and the two must not be merged.
 //!
 //! **What a proper fix looks like**, so this knob is not mistaken for one: a
 //! prefill GEMM that reads the PACKED `[N, K/2]` layout directly with a
 //! transposed tile walk, the way `w4a16_gemm` already does at scalar speed but
 //! with the 128x128 cp.async tiling the `_t` kernels have. Then there is no
-//! second layout to build or skip, on any target. This module buys a serve
-//! tonight; it does not buy the kernel.
+//! second layout to build or skip, on any target. This module buys a serve; it
+//! does not buy the kernel.
 
 use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
@@ -89,7 +89,7 @@ use spark_runtime::gpu::GpuBackend;
 /// set. gemma4's `ffn_transpose_fits` reserves 2 GiB for the same job and is
 /// asked about ONE family; this is asked about all three at once, on a board
 /// whose whole failure mode is running out during the layer loop, so it
-/// reserves the number the ledger actually names.
+/// reserves the measured number.
 const SERVE_RESERVE_BYTES: usize = 4 * 1024 * 1024 * 1024;
 
 /// What `AVAROK_LOAD_TRANSPOSED_TWINS` selects.
@@ -144,7 +144,7 @@ pub(super) fn decide(env: Option<&str>, is_scale: bool) -> TwinPolicy {
 /// Bytes one NVFP4 `QuantizedWeight` costs: packed `[N, K/2]` E2M1 nibbles plus
 /// the `[N, K/16]` per-group scale byte. Same arithmetic as
 /// `fp8_residency::nvfp4_bytes`, and a transposed twin costs exactly this
-/// again — `transpose_for_gemm_gs` (`weight_map/quantized.rs:261`-`262`)
+/// again: `transpose_for_gemm_gs` (`weight_map/quantized.rs:261`-`262`)
 /// allocates the same two sizes.
 fn nvfp4_bytes(n: usize, k: usize) -> usize {
     n * k / 2 + n * k / 16
@@ -188,7 +188,7 @@ impl TwinBytes {
 }
 
 /// What the twins WOULD cost for this model, from the same shape arithmetic
-/// `docs/porting/r9700-residency.md` reproduces the measured ledger with.
+/// `docs/porting/r9700-residency.md` reproduces the measured allocations with.
 ///
 /// Takes the resolved `layer_types` rather than re-deriving them, because
 /// `load_layers` resolves an explicit `config.layer_types` list ahead of the
@@ -228,7 +228,7 @@ pub(super) fn projected_bytes(config: &ModelConfig, layer_types: &[LayerType]) -
 ///
 /// One field: the policy and the projected bytes are reported on the load line
 /// and then thrown away, because nothing downstream may re-derive the decision
-/// — a second answer that disagreed with the first would leave prefill
+/// A second answer that disagreed with the first would leave prefill
 /// straddling two dispatch arms, which is the failure this type exists to make
 /// impossible.
 #[derive(Clone, Copy, Debug)]

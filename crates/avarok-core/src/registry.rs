@@ -137,15 +137,11 @@ pub struct AvarokRegistry {
     /// For every binary (code-object) module whose symbol table could be read,
     /// the kernel names that object actually DEFINES.
     ///
-    /// The driver is not a reliable oracle for this. An optional module whose
-    /// whole body sits behind a capability guard (`nvfp4_mmq.cu` inside
-    /// `#if defined(BLACKWELL_MMA_AVAILABLE)`) compiles to an object with no
-    /// kernels in it. On NVIDIA `cuModuleGetFunction` then answers "not found"
-    /// and `try_kernel` turns that into `KernelHandle(0)`. Observed on SCALE
-    /// 1.7.1 / gfx1201 it answers SUCCESS with a handle backed by no code, and
-    /// the first launch dies with `CUDA_ERROR_INVALID_IMAGE (200)` on
-    /// `nvfp4_mmq::avarok_nvfp4_repack`. So the registry asks the object, not
-    /// the driver, and refuses the lookup itself.
+    /// The driver is not a reliable oracle for this: SCALE answers
+    /// `cuModuleGetFunction` with SUCCESS for a name the object does not
+    /// define, and the launch through that handle is the first thing that
+    /// notices. See the module docs on [`crate::elf_symbols`]. So the registry
+    /// asks the object, not the driver, and refuses the lookup itself.
     ///
     /// A module is ABSENT from this map when it is text (PTX, the unchanged
     /// path) or when its bytes could not be parsed, and an absent module is not

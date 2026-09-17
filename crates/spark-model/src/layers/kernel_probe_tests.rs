@@ -36,12 +36,10 @@ fn a_module_the_target_never_built_is_not_looked_up() {
 
 /// A module the target DID build, holding a name its code object does not
 /// define. `avarok_core::registry` refuses that lookup itself rather than
-/// trusting the driver: observed on SCALE 1.7.1 / gfx1201, `cuModuleGetFunction`
-/// on the compiled-out `nvfp4_mmq` returns SUCCESS with a handle backed by no
-/// code, and the first launch through it dies with CUDA_ERROR_INVALID_IMAGE
-/// (200) on `avarok_nvfp4_repack`. The refusal is an ordinary `Err`, so the
-/// optional-kernel probe degrades to handle 0 exactly as it does on NVIDIA,
-/// where the same lookup fails with "not found".
+/// trusting the driver, for the reason `avarok_core::elf_symbols` documents.
+/// The refusal is an ordinary `Err`, so the optional-kernel probe degrades to
+/// handle 0 exactly as it does on NVIDIA, where the same lookup fails with
+/// "not found".
 #[test]
 fn a_refused_lookup_degrades_to_handle_zero() {
     let gpu = MockGpuBackend::new();

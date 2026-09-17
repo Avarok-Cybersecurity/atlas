@@ -499,10 +499,8 @@ impl Drop for AvarokCudaBackend {
 ///
 /// 1. The DEVICE leg comes from `meminfo_source`, which is the driver
 ///    everywhere except a SCALE build that found its board's amdgpu sysfs
-///    node. SCALE's `cuMemGetInfo` charges ~16 MiB of phantom usage per
-///    allocation, so on the R9700 this poll read 0.05 GB free with 9 GB
-///    actually free: a watchdog reading that would have killed a healthy
-///    server, and a TUI gauge pinned at empty.
+///    node. SCALE's `cuMemGetInfo` free figure is not truthful there; the
+///    module docs on `cuda_backend::meminfo_source` have the measurement.
 /// 2. Host `MemAvailable` stands in for that figure ONLY on an INTEGRATED
 ///    GPU (GB10 and friends), where `cuMemGetInfo` reports Linux MemFree and
 ///    so omits reclaimable buff/cache. On a discrete card host RAM is a

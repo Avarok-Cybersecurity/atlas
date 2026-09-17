@@ -3,7 +3,7 @@
 //! Exact-integer pins for the transposed-twin projection and the lever table.
 //!
 //! The numbers asserted below are the ones `docs/porting/r9700-residency.md`
-//! reports from the R9700 ledger sweep of `unsloth/Qwen3.8-27B-NVFP4`
+//! reports from the R9700 allocation ledger for `unsloth/Qwen3.8-27B-NVFP4`
 //! (8.96 GiB dense FFN, 2.90 GiB SSM, 0.88 GiB attention, 12.74 GiB total).
 //! This test is the join between that measurement and the arithmetic the
 //! `auto` probe decides on: if the projection drifts from the ledger, the probe
@@ -76,10 +76,10 @@ fn cycle4(n: usize) -> Vec<LayerType> {
 }
 
 /// ★ The join with the measured ledger. Every term is asserted in whole MiB
-/// because every term IS a whole number of MiB at these shapes — a projection
+/// because every term IS a whole number of MiB at these shapes: a projection
 /// that lands on a fraction has taken a wrong dimension somewhere.
 #[test]
-fn qwen38_27b_twins_reproduce_the_r9700_ledger() {
+fn qwen38_27b_twins_reproduce_the_r9700_allocation_ledger() {
     let c = qwen38_27b();
     let b = projected_bytes(&c, &c.layer_types);
 
@@ -105,9 +105,9 @@ fn qwen38_27b_twins_reproduce_the_r9700_ledger() {
 }
 
 /// The small sibling this target serves while the 27B does not fit. Not a
-/// measured number — nothing has been served on this board — but it is the
-/// same arithmetic, and it is what the `auto` probe will compare against
-/// 31.9 GB, so it is worth being able to read off a test rather than a serve.
+/// measured number, since neither small model has been served on this board,
+/// but it is the same arithmetic, and it is what the `auto` probe compares
+/// against 31.9 GB, so it is worth reading off a test rather than a serve.
 #[test]
 fn ornith_9b_twins_are_a_third_of_the_27b() {
     let c = ornith_9b();
@@ -122,8 +122,8 @@ fn ornith_9b_twins_are_a_third_of_the_27b() {
 }
 
 /// A model with no GDN layers must price no GDN twins, and one with no full
-/// attention no attention twins. The FFN term counts EVERY layer either way —
-/// this architecture carries a dense FFN on every mixer.
+/// attention no attention twins. The FFN term counts EVERY layer either way,
+/// because this architecture carries a dense FFN on every mixer.
 #[test]
 fn the_projection_follows_the_layer_type_list() {
     let mut c = qwen38_27b();

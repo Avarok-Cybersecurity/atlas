@@ -37,7 +37,7 @@
 /// TWO KINDS OF ID LIVE HERE, and the difference is worth stating because it
 /// is not visible from the strings:
 ///
-/// * **architecture classes** — `gb10`, `hopper`, `b200`, `metal`, `strix`,
+/// * **architecture classes**: `gb10`, `hopper`, `b200`, `metal`, `strix`,
 ///   `r9700`.
 ///   These are `kernels/<hw>/` directory names. One kernel set is compiled per
 ///   architecture, so this is the unit a `-arch=` and a PTX artefact exist for.
@@ -84,7 +84,7 @@ pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
     // interchangeable numbers.
     "strix",
     "strix-hip",
-    // AMD Radeon AI PRO R9700 — gfx1201, RDNA 4, discrete PCIe. `kernels/r9700/`,
+    // AMD Radeon AI PRO R9700: gfx1201, RDNA 4, discrete PCIe. `kernels/r9700/`,
     // compiled through the same SCALE toolchain as `strix` and a separate class
     // for the same reason `strix` and `strix-hip` are separate from each other:
     // different silicon, and in this case a different memory system entirely
@@ -124,7 +124,7 @@ const SKU_TOKENS: [(&str, &str); 9] = [
     ("b200", "b200"),
     ("gb200", "gb200"),
     ("mi300x", "mi300x"),
-    // AMD Radeon AI PRO R9700 — `kernels/r9700/`, gfx1201, RDNA 4. Both
+    // AMD Radeon AI PRO R9700: `kernels/r9700/`, gfx1201, RDNA 4. Both
     // spellings land on the same class; see the note above on why the arch
     // string is here and `gfx1151` deliberately is not.
     ("r9700", "r9700"),
@@ -338,7 +338,7 @@ mod tests {
 
     /// Oracle: what an R9700 box actually reports, and the one real trap in
     /// reading it. `lspci` on the bring-up machine answers only
-    /// `[AMD/ATI] Device [1002:7551]` — a numeric id with no name in it — and
+    /// `[AMD/ATI] Device [1002:7551]`, a numeric id with no name in it, and
     /// what `rocminfo` writes in its marketing-name field on this part has
     /// not been captured. So the arch string is the spelling that can be
     /// relied on, and it carries the entry; the marketing name is mapped too,

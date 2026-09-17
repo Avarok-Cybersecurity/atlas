@@ -381,7 +381,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         let route_env = RouteEnv::from_env();
         let mut residency = DerivedResidency::default();
         // Release-on-consume. Default ON under `cfg!(avarok_scale)`, OFF
-        // otherwise — an NVIDIA build with AVAROK_LOAD_RELEASE_SOURCES unset
+        // otherwise: an NVIDIA build with AVAROK_LOAD_RELEASE_SOURCES unset
         // takes every branch below as `false` and allocates and frees exactly
         // what it did before this existed. `release_sources.rs` carries the
         // soundness rule and the R9700 measurement that motivates it.
@@ -521,7 +521,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             if ffn_nvfp4 && !twins.build {
                 residency.skip(transposed_twins::ffn_twin_bytes(h, ffn_inter(config)));
             }
-            // RELEASE SITE 1 — dense FFN. On a mixed-precision checkpoint the
+            // RELEASE SITE 1, dense FFN. On a mixed-precision checkpoint the
             // tail layers (56..63 of Qwen3.8-27B) ship gate/up/down as FP8
             // E4M3 with a per-row scale inside an otherwise-NVFP4 net;
             // `quantized_any` detects that per key and routes them through
@@ -533,7 +533,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // GUARDED on `!ffn_fp8`: `load_ffn_fp8` below binds `.weight`
             // ZERO-COPY, and `AVAROK_DENSE_FP8_KEEP_NVFP4` is a state where
             // BOTH `ffn_nvfp4` and `ffn_fp8` are true. Guarded on `!ffn_q2`
-            // for the same reason — `set_q2_weights` borrows the store's
+            // for the same reason: `set_q2_weights` borrows the store's
             // packed blocks. The packed-NVFP4 layers are not claimed at all:
             // they have no `.weight` key, so `consumed_fp8_source` says no.
             if ffn_nvfp4 && !ffn_fp8 && !ffn_q2 {
@@ -800,30 +800,27 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                     )?;
                                     // THE LEAK, FIXED UNCONDITIONALLY. Every
                                     // sibling site frees its dequant
-                                    // intermediate — the
+                                    // intermediate (the
                                     // `Standard | Fp8Dequanted` attention arm
-                                    // below, the SSM path, `quantized_from_fp8`
-                                    // and the `Bf16Raw` arm of `quantized_any`
-                                    // — and this one never did. It is the 28
-                                    // stale `quant_helpers.rs:98` allocations
-                                    // the R9700 ledger sweep shows at layer 28,
-                                    // 200 MiB per full-attention layer and
-                                    // 3.12 GiB across the sixteen, on every
-                                    // target including NVIDIA. It is a plain
-                                    // bug, not a residency policy, and it rode
-                                    // `AVAROK_LOAD_RELEASE_SOURCES` for one
-                                    // commit only because that change was not
-                                    // allowed to move NVIDIA behaviour.
+                                    // below, the SSM path,
+                                    // `quantized_from_fp8` and the `Bf16Raw`
+                                    // arm of `quantized_any`), and this one
+                                    // never did: 200 MiB per full-attention
+                                    // layer, 3.12 GiB across the sixteen, on
+                                    // every target including NVIDIA, and the
+                                    // 28 stale `quant_helpers.rs:98`
+                                    // allocations the R9700 allocation ledger
+                                    // shows at layer 28.
                                     //
-                                    // What "byte-identical on NVIDIA" protects
+                                    // It is not gated on
+                                    // `AVAROK_LOAD_RELEASE_SOURCES`, because
+                                    // what "byte-identical on NVIDIA" protects
                                     // is which values the GEMMs read, and this
                                     // buffer has no reader: `quantize_to_nvfp4`
                                     // has already consumed it into a fresh
                                     // NVFP4 allocation and `AttentionWeights`
                                     // keeps only that result and the two norm
-                                    // pointers. An allocation nothing reads is
-                                    // not behaviour, and 3.12 GiB of it is not
-                                    // a knob.
+                                    // pointers.
                                     //
                                     // ORDERING: `quantize_to_nvfp4`
                                     // synchronizes `stream` before returning
@@ -858,7 +855,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             };
                             let [q, k, v, o] = load_qkvo_tp(config, load_nvfp4)?;
                             releaser.note_leaked_free(leaked_here.get());
-                            // RELEASE SITE 2 — attention q/k/v/o. The four
+                            // RELEASE SITE 2, attention q/k/v/o. The four
                             // projections of this checkpoint family are FP8
                             // E4M3 with a per-CHANNEL `[N,1]` scale and carry
                             // no `weight_packed`, so the arm above dequanted
@@ -1668,8 +1665,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // Through the store, because on a `Bf16Raw` GDN checkpoint
                     // these ARE the store's pointers: `load_ssm_proj` falls
                     // through to `dense_auto`, which hands back `w.ptr`
-                    // uncopied for a BF16 tensor. The free is right either way
-                    // — the concat copied them — but done with a bare
+                    // uncopied for a BF16 tensor. The free is right either
+                    // way, since the concat copied them, but done with a bare
                     // `gpu.free` it left the store listing memory that is gone,
                     // and teardown freed it again. `free_maybe_store_owned`
                     // compares pointers, so a dequant output or a TP shard
@@ -1919,7 +1916,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         out_proj_dense.weight,
                     )?;
 
-                    // RELEASE SITE 3 — GDN projections. On this checkpoint
+                    // RELEASE SITE 3, GDN projections. On this checkpoint
                     // family `in_proj_qkv`/`in_proj_z`/`out_proj` are FP8 E4M3
                     // with a per-CHANNEL scale, which `proj_is_fp8_any_scale`
                     // correctly refuses (a `w8a16` kernel would index it as a
@@ -1931,8 +1928,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     //
                     // `out_proj` is EXCLUDED under `AVAROK_FP8_ROWWISE=1`:
                     // `load_fp8_per_row` returns `weight: w.ptr`, so
-                    // `out_proj_rowwise` — installed a few lines below by
-                    // `set_fp8_rowwise_prefill_weights` — is the store's own
+                    // `out_proj_rowwise`, installed a few lines below by
+                    // `set_fp8_rowwise_prefill_weights`, is the store's own
                     // bytes. `qkvz_rowwise` is a `concat_fp8_per_row` COPY, so
                     // the two in_proj tensors are dead either way.
                     {

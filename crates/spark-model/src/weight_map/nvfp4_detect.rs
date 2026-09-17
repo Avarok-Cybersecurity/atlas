@@ -334,7 +334,7 @@ pub(crate) fn quantized_any(
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
             //
-            // THROUGH THE STORE, because `w` came straight from `store.get` —
+            // THROUGH THE STORE, because `w` came straight from `store.get`,
             // this is the store's own pointer, not an intermediate. The free is
             // right, for the reason above; the ROUTE was wrong. A bare
             // `gpu.free` left the entry listed, so teardown freed the same

@@ -50,9 +50,10 @@ pub(crate) struct Defaults {
 /// ★ These are the values every resolver in spark-model hardcoded before this
 /// table existed, which is what makes the table additive: `kernels/metal`,
 /// `kernels/strix`, `kernels/strix-hip` and `kernels/r9700` declare nothing
-/// and are byte-for-byte unaffected. `kernels/gb10` declares exactly these values EXPLICITLY —
-/// not to change anything, but so the file that describes GB10 says what GB10
-/// serves with, and so `tests/target_defaults.rs` can assert the two agree.
+/// and are byte-for-byte unaffected. `kernels/gb10` declares exactly these
+/// values EXPLICITLY, not to change anything, but so the file that describes
+/// GB10 says what GB10 serves with, and so `tests/target_defaults.rs` can
+/// assert the two agree.
 pub(crate) fn baseline(hw: &str) -> Defaults {
     Defaults {
         hw: hw.to_string(),
