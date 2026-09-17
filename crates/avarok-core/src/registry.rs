@@ -14,16 +14,26 @@
 //!   unsafe { reg.stream.launch_builder(&func).arg(&ptr).launch(cfg)?; }
 //!   reg.stream.synchronize()?;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{CString, c_void};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use cudarc::driver::{CudaContext, CudaFunction, CudaModule, CudaStream, LaunchConfig};
 use cudarc::nvrtc::Ptx;
 
 pub use crate::cuda_host::{CudaHost, host, release};
-use crate::elf_symbols::defined_function_symbols;
 use crate::error::{AvarokError, Result};
+
+mod driver_errors;
+mod launch_errors;
+mod symbol_guard;
+
+pub use driver_errors::{CUDA_ERROR_DEINITIALIZED, cuda_error_text, is_teardown_noop};
+pub use launch_errors::{func_attribute_failure_message, kernel_label, launch_failure_message};
+pub use symbol_guard::{is_undefined, undefined_symbol_message};
+
+use launch_errors::KernelNames;
+use symbol_guard::BinaryKernels;
 
 // Raw CUDA driver API. (`cuModuleLoadData`/`cuModuleUnload` left this list
 // when the raw handles became views into the cudarc-loaded modules — the
@@ -44,8 +54,6 @@ unsafe extern "C" {
         extra: *mut *mut c_void,
     ) -> i32;
     fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
-    fn cuGetErrorName(error: i32, pStr: *mut *const i8) -> i32;
-    fn cuGetErrorString(error: i32, pStr: *mut *const i8) -> i32;
     // Resolve a `__device__` symbol in a loaded CUmodule into a device pointer
     // + size in bytes. Used by drivers that need to read/write device globals
     // (e.g. InnerQ calibration state) without round-tripping through a kernel.
@@ -58,52 +66,6 @@ unsafe extern "C" {
     fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
     fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
     fn cuStreamSynchronize(stream: u64) -> i32;
-}
-
-/// Resolve a CUresult status code into `"<NAME>: <description>"` via
-/// cuGetErrorName + cuGetErrorString. Returns "CUDA_UNKNOWN" / "(no message)"
-/// if the driver doesn't recognize the code.
-pub fn cuda_error_text(status: i32) -> String {
-    use std::ffi::CStr;
-    let mut name_ptr: *const i8 = std::ptr::null();
-    let mut msg_ptr: *const i8 = std::ptr::null();
-    let name = unsafe {
-        if cuGetErrorName(status, &mut name_ptr) == 0 && !name_ptr.is_null() {
-            CStr::from_ptr(name_ptr as *const std::os::raw::c_char)
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "CUDA_UNKNOWN".to_string()
-        }
-    };
-    let msg = unsafe {
-        if cuGetErrorString(status, &mut msg_ptr) == 0 && !msg_ptr.is_null() {
-            CStr::from_ptr(msg_ptr as *const std::os::raw::c_char)
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "(no message)".to_string()
-        }
-    };
-    format!("{name} ({status}): {msg}")
-}
-
-/// `CUDA_ERROR_DEINITIALIZED`. The driver tears the primary context down in its
-/// own `atexit` handler, which can run before our `Drop` impls do. Every
-/// module unload and every host free then reports this code.
-///
-/// It is **not a failure**: a module cannot leak out of a context that no
-/// longer exists, and the memory it occupied went with it. Reporting 158 of
-/// them at exit is pure noise that buries anything real.
-pub const CUDA_ERROR_DEINITIALIZED: i32 = 4;
-
-/// Whether a CUresult means "the context is already gone, nothing to do".
-///
-/// Also covers `CUDA_ERROR_INVALID_CONTEXT` (201) and
-/// `CUDA_ERROR_CONTEXT_IS_DESTROYED` (709), which arrive by the same route
-/// depending on how far the driver got before we ran.
-pub fn is_teardown_noop(status: i32) -> bool {
-    matches!(status, CUDA_ERROR_DEINITIALIZED | 201 | 709)
 }
 
 /// Wrapper for raw CUfunction handle (Send+Sync safe — handles are context-wide).
@@ -134,30 +96,11 @@ pub struct AvarokRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
-    /// For every binary (code-object) module whose symbol table could be read,
-    /// the kernel names that object actually DEFINES.
-    ///
-    /// The driver is not a reliable oracle for this: SCALE answers
-    /// `cuModuleGetFunction` with SUCCESS for a name the object does not
-    /// define, and the launch through that handle is the first thing that
-    /// notices. See the module docs on [`crate::elf_symbols`]. So the registry
-    /// asks the object, not the driver, and refuses the lookup itself.
-    ///
-    /// A module is ABSENT from this map when it is text (PTX, the unchanged
-    /// path) or when its bytes could not be parsed, and an absent module is not
-    /// guarded: the driver's answer stands, exactly as before.
-    binary_kernels: HashMap<&'static str, HashSet<String>>,
-    /// Raw CUfunction handle -> `"module::kernel"`, for every function this
-    /// registry has resolved.
-    ///
-    /// A `RawCudaFunc` is a bare driver pointer: once it reaches
-    /// [`AvarokRegistry::launch_on_stream`] there is nothing left in it that
-    /// says what the kernel was, which is why a failed launch used to report
-    /// only a grid and a CUresult. This is the reverse map, and it is written
-    /// exactly once per kernel in [`AvarokRegistry::raw_function_cached`] (model
-    /// init) and read ONLY from a failure path, so a launch pays nothing for
-    /// it: no lookup, no lock, no branch on the hot path.
-    func_names: Mutex<HashMap<u64, String>>,
+    /// Which kernels each binary module actually defines, and the refusal
+    /// of a lookup that cannot succeed.
+    binary_kernels: BinaryKernels,
+    /// What each raw CUfunction handle IS, for the diagnostics.
+    func_names: KernelNames,
 }
 
 impl Drop for AvarokRegistry {
@@ -228,9 +171,7 @@ impl AvarokRegistry {
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
-        let mut binary_kernels: HashMap<&'static str, HashSet<String>> = HashMap::new();
-        let mut binary_count = 0usize;
-        let mut empty_modules: Vec<&'static str> = Vec::new();
+        let mut binary_kernels = BinaryKernels::new();
         for &(name, blob) in kernel_blobs {
             // NVIDIA emits PTX (ASCII text); SCALE/AMD (gfx1151) and HIP
             // emit a binary code object (ELF / clang offload bundle).
@@ -242,27 +183,9 @@ impl AvarokRegistry {
                 || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
 
             // Which kernels does this code object actually define? Read once,
-            // here, while the blob is in hand. Text (PTX) modules are not
-            // sniffed: the NVIDIA path never had this problem.
+            // here, while the blob is in hand.
             if is_binary {
-                binary_count += 1;
-                match defined_function_symbols(blob) {
-                    Some(defined) => {
-                        if defined.is_empty() {
-                            empty_modules.push(name);
-                        }
-                        binary_kernels.insert(name, defined);
-                    }
-                    None => {
-                        // Not an ELF64 LE image (a clang offload bundle, say).
-                        // Nothing to guard with, so nothing is guarded: the
-                        // driver answers as it always did.
-                        eprintln!(
-                            "avarok: WARN: module '{name}': code object carries no readable ELF \
-                             symbol table; kernel lookups fall through to the driver"
-                        );
-                    }
-                }
+                binary_kernels.scan(name, blob);
             }
 
             // Load via cudarc (safe API) — backs `function()` lookups.
@@ -291,32 +214,14 @@ impl AvarokRegistry {
             modules.insert(name, module);
         }
 
-        if binary_count > 0 {
-            // avarok-core carries no `tracing` (see the note in `Drop`), so the
-            // one summary line goes to stderr like every other registry report.
-            empty_modules.sort_unstable();
-            let empty = empty_modules
-                .iter()
-                .map(|m| {
-                    format!(
-                        "; module '{m}' defines no kernels on this target \
-                         (optional module compiled out)"
-                    )
-                })
-                .collect::<String>();
-            eprintln!(
-                "avarok: {binary_count} binary kernel module(s), {} with a readable symbol table{}",
-                binary_kernels.len(),
-                empty
-            );
-        }
+        binary_kernels.report();
 
         Ok(AvarokRegistry {
             host,
             modules,
             raw_modules,
             binary_kernels,
-            func_names: Mutex::new(HashMap::new()),
+            func_names: KernelNames::new(),
         })
     }
 
@@ -326,7 +231,7 @@ impl AvarokRegistry {
             .modules
             .get(module_name)
             .ok_or_else(|| AvarokError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
-        self.reject_undefined(module_name, func_name)?;
+        self.binary_kernels.reject(module_name, func_name)?;
         module
             .load_function(func_name)
             .map_err(|e| AvarokError::ModuleLoad(format!("{module_name}::{func_name}: {e}")))
@@ -367,7 +272,7 @@ impl AvarokRegistry {
             .raw_modules
             .get(module_name)
             .ok_or_else(|| AvarokError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
-        self.reject_undefined(module_name, func_name)?;
+        self.binary_kernels.reject(module_name, func_name)?;
         let c_name = CString::new(func_name).map_err(|e| {
             AvarokError::ModuleLoad(format!("{module_name}::{func_name}: CString: {e}"))
         })?;
@@ -390,31 +295,9 @@ impl AvarokRegistry {
         // This is the only place the registry mints one, so the map covers
         // every handle any launch can later fail on.
         self.func_names
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .insert(func as u64, format!("{module_name}::{func_name}"));
+            .record(func as u64, format!("{module_name}::{func_name}"));
         let _ = cache.set(raw);
         Ok(raw)
-    }
-
-    /// Refuse a lookup the module's own code object says cannot succeed.
-    ///
-    /// Only binary modules with a parsed symbol table are checked. Everything
-    /// else (PTX, an unparsable object, a module that is not loaded at all)
-    /// returns `Ok(())` and the driver decides, as it always did.
-    ///
-    /// The caller in `spark-model` is
-    /// `layers::kernel_probe::try_kernel`, which matches on ANY `Err` and
-    /// returns `KernelHandle(0)`, so an optional kernel guarded here degrades
-    /// to the same "not present" it degrades to on NVIDIA.
-    fn reject_undefined(&self, module_name: &str, func_name: &str) -> Result<()> {
-        if is_undefined(self.binary_kernels.get(module_name), func_name) {
-            return Err(AvarokError::ModuleLoad(undefined_symbol_message(
-                module_name,
-                func_name,
-            )));
-        }
-        Ok(())
     }
 
     /// Retire the raw handles. Idempotent; `Drop` calls it.
@@ -426,14 +309,9 @@ impl AvarokRegistry {
     /// that no raw handle survives its module: the maps are torn down
     /// together, raw side first.
     pub(crate) fn unload_raw(&mut self) -> Vec<String> {
-        // The names describe handles that are about to become stale; they go
-        // with them.
-        self.func_names
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .clear();
+        self.func_names.clear();
         self.raw_modules.drain().for_each(drop);
-        self.binary_kernels.drain().for_each(drop);
+        self.binary_kernels.clear();
         self.modules.drain().for_each(drop);
         Vec::new()
     }
@@ -600,154 +478,10 @@ impl AvarokRegistry {
     /// is free where it is used (a launch has already failed) and would not
     /// be on the launch itself.
     pub fn func_label(&self, raw_func: RawCudaFunc) -> String {
-        let handle = raw_func.0 as u64;
-        let guard = self
-            .func_names
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        kernel_label(guard.get(&handle).map(String::as_str), handle)
+        self.func_names.label(raw_func.0 as u64)
     }
-}
-
-/// Name a kernel handle for a diagnostic.
-///
-/// `name` is `None` for a handle this registry never minted (nothing in Avarok
-/// produces one today, but `RawCudaFunc` is a public tuple struct anyone can
-/// construct), in which case the pointer is all there is to report.
-///
-/// Pure: no driver call, so the wording is unit-testable on a host with no GPU.
-pub fn kernel_label(name: Option<&str>, handle: u64) -> String {
-    match name {
-        Some(name) => format!("{name} (fn@{handle:#x})"),
-        None => format!("<unregistered kernel> (fn@{handle:#x})"),
-    }
-}
-
-/// The text of a `cuLaunchKernel` failure. `label` comes from
-/// [`AvarokRegistry::func_label`] and `err_text` from [`cuda_error_text`], both
-/// of which are resolved by the caller so this stays pure and testable.
-pub fn launch_failure_message(
-    label: &str,
-    err_text: &str,
-    grid: [u32; 3],
-    block: [u32; 3],
-    shared_mem: u32,
-) -> String {
-    format!(
-        "cuLaunchKernel failed for {label}: {err_text} \
-         (grid=[{},{},{}], block=[{},{},{}], shared_mem={shared_mem})",
-        grid[0], grid[1], grid[2], block[0], block[1], block[2]
-    )
-}
-
-/// Whether a lookup is provably doomed: the module is binary, its symbol
-/// table parsed, and `func_name` is not in it.
-///
-/// `None` (a PTX module, an unparsable object, a module that is not loaded)
-/// is never a refusal. Split out from [`AvarokRegistry::reject_undefined`] so
-/// the decision itself is testable on a host with no CUDA context.
-pub fn is_undefined(defined: Option<&HashSet<String>>, func_name: &str) -> bool {
-    defined.is_some_and(|set| !set.contains(func_name))
-}
-
-/// The text of a lookup refused because the module's code object does not
-/// define the name. Pure, so the wording is unit-testable with no GPU.
-pub fn undefined_symbol_message(module_name: &str, func_name: &str) -> String {
-    format!(
-        "{module_name}::{func_name}: not defined in this target's code object \
-         (optional module compiled out?)"
-    )
-}
-
-/// The text of a `cuFuncSetAttribute(MAX_DYNAMIC_SHARED=..)` failure. Same
-/// division of labour as [`launch_failure_message`].
-pub fn func_attribute_failure_message(label: &str, shared_mem: u32, err_text: &str) -> String {
-    format!("cuFuncSetAttribute(MAX_DYNAMIC_SHARED={shared_mem}) failed for {label}: {err_text}")
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::{
-        func_attribute_failure_message, is_undefined, kernel_label, launch_failure_message,
-        undefined_symbol_message,
-    };
-
-    #[test]
-    fn launch_failure_names_the_kernel() {
-        let msg = launch_failure_message(
-            &kernel_label(
-                Some("qwen3.6-27b_nvfp4::dense_gemv_bf16_batch2"),
-                0x7f0c_1234_5678,
-            ),
-            "CUDA_ERROR_INVALID_IMAGE (200): invalid image",
-            [5440, 1, 1],
-            [256, 1, 1],
-            0,
-        );
-        assert_eq!(
-            msg,
-            "cuLaunchKernel failed for qwen3.6-27b_nvfp4::dense_gemv_bf16_batch2 \
-             (fn@0x7f0c12345678): CUDA_ERROR_INVALID_IMAGE (200): invalid image \
-             (grid=[5440,1,1], block=[256,1,1], shared_mem=0)"
-        );
-    }
-
-    #[test]
-    fn unregistered_handle_still_reports_the_pointer() {
-        let msg = launch_failure_message(
-            &kernel_label(None, 0x42),
-            "CUDA_ERROR_INVALID_VALUE (1): invalid argument",
-            [1, 2, 3],
-            [64, 1, 1],
-            8192,
-        );
-        assert_eq!(
-            msg,
-            "cuLaunchKernel failed for <unregistered kernel> (fn@0x42): \
-             CUDA_ERROR_INVALID_VALUE (1): invalid argument \
-             (grid=[1,2,3], block=[64,1,1], shared_mem=8192)"
-        );
-    }
-
-    /// The refusal names both halves and says why, because on SCALE the
-    /// alternative was a launch-time `CUDA_ERROR_INVALID_IMAGE` with nothing
-    /// in it about an optional module.
-    #[test]
-    fn an_undefined_symbol_is_refused_by_name() {
-        assert_eq!(
-            undefined_symbol_message("nvfp4_mmq", "avarok_nvfp4_repack"),
-            "nvfp4_mmq::avarok_nvfp4_repack: not defined in this target's code object \
-             (optional module compiled out?)"
-        );
-    }
-
-    /// The three answers a code object can give, and what each one licenses.
-    #[test]
-    fn only_a_parsed_set_that_lacks_the_name_refuses_a_lookup() {
-        let defines: HashSet<String> = ["avarok_nvfp4_repack".to_string()].into_iter().collect();
-        // Present: the driver is asked, as always.
-        assert!(!is_undefined(Some(&defines), "avarok_nvfp4_repack"));
-        // Parsed and absent: refused here, before any driver call. This is
-        // nvfp4_mmq on gfx1201: SCALE would answer SUCCESS for this name.
-        assert!(is_undefined(Some(&defines), "avarok_nvfp4_quantize"));
-        // An optional module compiled out defines nothing at all.
-        assert!(is_undefined(Some(&HashSet::new()), "avarok_nvfp4_repack"));
-        // No parsed set (PTX, or an object we could not read): never refused.
-        assert!(!is_undefined(None, "avarok_nvfp4_quantize"));
-    }
-
-    #[test]
-    fn attribute_failure_names_the_kernel() {
-        assert_eq!(
-            func_attribute_failure_message(
-                &kernel_label(Some("common::prefill_paged"), 0xabc),
-                65536,
-                "CUDA_ERROR_INVALID_VALUE (1): invalid argument"
-            ),
-            "cuFuncSetAttribute(MAX_DYNAMIC_SHARED=65536) failed for common::prefill_paged \
-             (fn@0xabc): CUDA_ERROR_INVALID_VALUE (1): invalid argument"
-        );
-    }
-}
+#[path = "registry_tests.rs"]
+mod registry_tests;
