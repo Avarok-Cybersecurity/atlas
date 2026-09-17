@@ -133,7 +133,7 @@ pub fn find_gguf_shards(first: &Path) -> Result<GgufShardSet> {
     let mut paths = vec![first.to_path_buf()];
     let mut seen = vec![0usize; count];
     seen[0] = g.tensors.len();
-    for i in 1..count {
+    for (i, slot) in seen.iter_mut().enumerate().skip(1) {
         let p = dir.join(format!("{stem}-{:05}-of-{count:05}.gguf", i + 1));
         if !p.exists() {
             bail!(
@@ -166,7 +166,7 @@ pub fn find_gguf_shards(first: &Path) -> Result<GgufShardSet> {
                 p.display()
             );
         }
-        seen[i] = g2.tensors.len();
+        *slot = g2.tensors.len();
         paths.push(p);
     }
 
