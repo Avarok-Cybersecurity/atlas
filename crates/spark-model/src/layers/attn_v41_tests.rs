@@ -26,10 +26,10 @@ fn f32_of_bf16(b: u16) -> f32 {
 }
 
 #[cfg(feature = "cuda")]
-fn backend() -> spark_runtime::cuda_backend::AtlasCudaBackend {
-    let set = atlas_kernels::ptx_for_exact_target("deepseek-v4-flash", "nvfp4")
+fn backend() -> spark_runtime::cuda_backend::AvarokCudaBackend {
+    let set = avarok_kernels::ptx_for_exact_target("deepseek-v4-flash", "nvfp4")
         .expect("deepseek-v4-flash/nvfp4 not in this build");
-    spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &set.modules).expect("CUDA backend")
+    spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &set.modules).expect("CUDA backend")
 }
 
 /// Run the reference for the three regimes, keeping every trace.
