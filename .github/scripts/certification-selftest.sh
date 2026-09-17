@@ -1528,14 +1528,21 @@ want_rc_msg 1 "no longer calls release-build.yml" \
 # Run the step's REAL shell, extracted from the workflow, so the control cannot
 # drift from what CI executes.
 mkdir -p "$TMP/bo"
-python3 - "$TMP/bo/step.sh" "$TMP/bo/scan_dirs" <<'PY'
+# The body moved into `.github/scripts/check-no-block-on.sh`; the workflow
+# passes it SCAN_DIRS. The SCRIPT is the thing under test and the dirs come
+# from the workflow that calls it -- reading the dirs out of the script would
+# be testing the script against itself, and a rename of either tree would be
+# invisible again, which is the defect this control exists for.
+cp .github/scripts/check-no-block-on.sh "$TMP/bo/step.sh"
+python3 - "$TMP/bo/scan_dirs" <<'PY'
 import pathlib, sys, yaml
 d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
 job = d["jobs"]["no-blocking-on-the-render-thread"]
-steps = [s for s in job["steps"] if s.get("name", "").startswith("Check the render thread")]
-assert len(steps) == 1, f"expected one render-thread step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
-pathlib.Path(sys.argv[2]).write_text(steps[0]["env"]["SCAN_DIRS"])
+steps = [s for s in job["steps"] if "check-no-block-on.sh" in (s.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the render-thread script, found {len(steps)}"
+env = {**(job.get("env") or {}), **(steps[0].get("env") or {})}
+assert "SCAN_DIRS" in env, "the workflow no longer passes SCAN_DIRS to the render-thread gate"
+pathlib.Path(sys.argv[1]).write_text(env["SCAN_DIRS"])
 PY
 BO_DIRS=$(cat "$TMP/bo/scan_dirs")
 
@@ -1566,14 +1573,17 @@ want_rc_msg 1 "must never poll a future" \
 # catch it: the find lives in a process substitution whose status is not the
 # command's.
 mkdir -p "$TMP/fs"
-python3 - "$TMP/fs/step.sh" <<'PY'
-import pathlib, sys, yaml
+# Same move: the cap now lives in `.github/scripts/check-file-size-cap.sh`.
+# The assertion that the workflow still CALLS it stays here, so a body
+# extracted and left unwired is caught instead of quietly untested.
+python3 - <<'PY'
+import pathlib, yaml
 d = yaml.safe_load(pathlib.Path(".github/workflows/file-size-cap.yml").read_text())
 steps = [s for s in d["jobs"]["check-file-sizes"]["steps"]
-         if s.get("name", "").startswith("Check no .rs file")]
-assert len(steps) == 1, f"expected one file-size step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+         if "check-file-size-cap.sh" in (s.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the cap script, found {len(steps)}"
 PY
+cp .github/scripts/check-file-size-cap.sh "$TMP/fs/step.sh"
 want_rc 0 "the 500-LoC cap passes on the real tree" bash "$TMP/fs/step.sh"
 
 mkdir -p "$TMP/fs/nocrates"
@@ -2223,13 +2233,19 @@ fi
 # workflow's push `paths:` filter, so renaming one is exactly the change that
 # would have hit it -- and it would have taken the gate with it, silently.
 mkdir -p "$TMP/tt"
-python3 - > "$TMP/tt/step.sh" <<'TTX'
+# The step is now a one-line call to `.github/scripts/check-no-block-on.sh`,
+# so the SCRIPT is what these controls must run -- extracting the step body
+# would only test `bash .github/scripts/...`, which resolves to nothing inside
+# the scratch tree and passes vacuously. Assert the workflow still calls it,
+# then copy the script itself.
+python3 - <<'TTX'
 import yaml, pathlib
 d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
-for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]:
-    if "run" in st:
-        print(st["run"]); break
+steps = [st for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]
+         if "check-no-block-on.sh" in (st.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the render-thread script, found {len(steps)}"
 TTX
+cp .github/scripts/check-no-block-on.sh "$TMP/tt/step.sh"
 tt_tree() {  # tt_tree <clean|dirty|renamed>
   rm -rf "$TMP/tt/w"; mkdir -p "$TMP/tt/w/crates/spark-server/src/tui"
   case "$1" in
@@ -2246,15 +2262,25 @@ tt_tree() {  # tt_tree <clean|dirty|renamed>
 # and the grep cannot disagree about which trees they cover, and a hard-coded
 # copy here would be a third opinion able to drift from both.
 TT_SCAN_DIRS=$(python3 - <<'SDPY'
-import yaml
+import re, yaml, pathlib
+# SCAN_DIRS is the workflow's when it sets one, and otherwise the script's own
+# default -- the point is that the existence assertion and the grep cannot
+# disagree about which trees they cover, so this reads whichever ONE value is
+# in force rather than repeating it here as a third opinion able to drift.
 d = yaml.safe_load(open(".github/workflows/tui-threading.yml"))
 jid = list(d["jobs"])[0]
-for st in d["jobs"][jid]["steps"]:
-    if st.get("env", {}).get("SCAN_DIRS"):
-        print(st["env"]["SCAN_DIRS"]); break
+job = d["jobs"][jid]
+found = (job.get("env") or {}).get("SCAN_DIRS")
+for st in job["steps"]:
+    found = found or (st.get("env") or {}).get("SCAN_DIRS")
+if not found:
+    src = pathlib.Path(".github/scripts/check-no-block-on.sh").read_text()
+    m = re.search(r'SCAN_DIRS:=([^}]+)\}', src)
+    found = m.group(1).strip().strip('"') if m else ""
+print(found)
 SDPY
 )
-[ -n "$TT_SCAN_DIRS" ] || bad "setup: could not read SCAN_DIRS out of tui-threading.yml"
+[ -n "$TT_SCAN_DIRS" ] || bad "setup: could not read SCAN_DIRS out of tui-threading.yml or check-no-block-on.sh"
 tt_run() { ( cd "$TMP/tt/w" && SCAN_DIRS="$TT_SCAN_DIRS" bash "$1" ) >"$TMP/tt/out" 2>&1; echo $?; }
 
 if [ -s "$TMP/tt/step.sh" ]; then
