@@ -1,8 +1,9 @@
 # R9700 weight residency: where the 32 GB goes
 
-**Board:** AMD Radeon AI PRO R9700, gfx1201, 32624 MiB VRAM (31.9 GB), SCALE
-1.7.1.
-**Branch:** `amd/r9700-target` at `34176fc7f`.
+Measured on gfx1201 (AMD Radeon AI PRO R9700, 32624 MiB VRAM / 31.9 GB, SCALE
+1.7.1, ROCm 7.2.0), 2026-09-17. Every number below is from that board and that
+toolchain unless it names another.
+
 **Checkpoint:** `unsloth/Qwen3.8-27B-NVFP4`, a compressed-tensors
 `format = mixed-precision` release: FP8 E4M3 with a per-CHANNEL `[N,1]` scale
 for `self_attn.{q,k,v,o}_proj`, `linear_attn.{in_proj_qkv,in_proj_z,out_proj}`,
@@ -28,10 +29,10 @@ the BF16 `[Q|K|V|Z]` concatenation `gpu_concat_rows` builds at
 `weight_loader/qwen35_dense.rs:1476`. Layer 28 is a linear-attention layer and
 that is its first large allocation.
 
-The allocation ledger at that moment: **2631 allocations, 33.73 GB live**, no
-owner. sysfs VRAM peak 34.1 GB, i.e. the board was full.
+Live device allocations at that moment: **2631 allocations, 33.73 GB**, with
+no owner released. sysfs VRAM peak 34.1 GB, i.e. the board was full.
 
-## The ledger reproduces exactly from the code
+## The allocation sweep reproduces exactly from the code
 
 This is the part worth trusting the rest of the document on. Every site in the
 sweep is predicted to the tenth of a MiB by shape arithmetic over
@@ -44,7 +45,7 @@ FFN has been built and whose three SSM projections have been dequantised.
 Layer types alternate on a period of 4, so indices 3, 7, 11, 15, 19, 23, 27 are
 the seven full-attention layers already built and 21 are SSM.
 
-| ledger site | measured | predicted | what it is |
+| allocation site | measured | predicted | what it is |
 |---|---|---|---|
 | `fast_weights/mod.rs:434` | 22,332.5 MiB x1968 | 21.81 GiB | the store, one `gpu.alloc(meta.len)` per checkpoint tensor |
 | `weight_map/quantized.rs:261` | 5,202.5 MiB x157 | 84 FFN + 3 (layer 28) x 42.5 + 28 attn x (30/2.5/2.5/15) + 42 SSM x (40/15) = **5,202.5** | transposed packed NVFP4 |
@@ -122,18 +123,17 @@ a single-layout prefill kernel) closes the gap.
 ### The lever that closes it, and what it costs
 
 `AVAROK_LOAD_TRANSPOSED_TWINS` (`weight_loader/qwen35_dense/transposed_twins.rs`)
-is `1` (build every twin; the pre-lever behaviour byte for byte, and the default
-on every non-SCALE target), `0` (build none) or `auto` (build them only if
-`gpu.free_memory()` after the checkpoint is resident exceeds their projected
-bytes plus a 4 GiB reserve for the KV cache, the buffer arena and the vision
-encoder's working set). Unset takes `cfg!(avarok_scale)`, which since 2026-09-17
-is **`0`** on SCALE rather than `auto`. See "The cost" below. `serve-amd.sh`
-exports `0` for r9700.
+is `1` (build every twin, which is the default on every non-SCALE target), `0`
+(build none) or `auto` (build them only if `gpu.free_memory()` after the
+checkpoint is resident exceeds their projected bytes plus a 4 GiB reserve for
+the KV cache, the buffer arena and the vision encoder's working set). Unset
+takes `cfg!(avarok_scale)`, which is **`0`** on SCALE rather than `auto`; see
+"The cost" below. `serve-amd.sh` exports `0` for r9700.
 
-The projection is the SAME arithmetic that reproduces the measured ledger above,
-and `transposed_twins_tests.rs` pins it to the whole MiB against these numbers,
-so a drift between the projection and the ledger is a test failure rather than a
-probe deciding about a model that is not the one being loaded:
+The projection is the SAME arithmetic that reproduces the measured allocations
+above, and `transposed_twins_tests.rs` pins it to the whole MiB against these
+numbers, so a drift between the projection and the measurement is a test failure
+rather than a probe deciding about a model that is not the one being loaded:
 
 | model | dense FFN | SSM | attention | total |
 |---|---|---|---|---|
@@ -145,20 +145,19 @@ when q/k/v share one `weight_scale_2`, which this checkpoint's per-projection
 absmax makes false (see item 4 of the ranked list), and pricing a copy that is
 usually absent would make `auto` refuse room it does not need.
 
-**The cost, and the measurement that reversed its sign on this board.** With the
-twins absent every fast arm of `w4_gemm!` is skipped and FFN prefill lands on
-the plain `w4a16_gemm`. That was expected to be expensive: on **GB10**,
-`w4a16_gemm` measured ~7.0 TFLOP/s against ~51 for `w4a16_gemm_t_m128` on
-Gemma-4-31B, a 7x slower FFN prefill, and that is still why every non-SCALE
-target builds the twins.
+**The cost.** With the twins absent every fast arm of `w4_gemm!` is skipped and
+FFN prefill lands on the plain `w4a16_gemm`. That was expected to be expensive:
+on **GB10**, `w4a16_gemm` measured ~7.0 TFLOP/s against ~51 for
+`w4a16_gemm_t_m128` on Gemma-4-31B, a 7x slower FFN prefill, and that is still
+why every non-SCALE target builds the twins.
 
-⚠️ **On gfx1201 it is the opposite.** The R9700 prefill measurement of
-2026-09-17 (Ornith-1.0-9B with the twins against Qwen3.8-27B without) puts
+**On gfx1201 the sign is the other way.** The R9700 prefill measurement
+(Ornith-1.0-9B with the twins against Qwen3.8-27B without) puts
 `w4a16_gemm_t_m128` at **~1 TFLOP/s and the plain `w4a16_gemm` at ~4 TFLOP/s**.
 The twin arm is the slower one here, so the 12.74 GiB buys nothing back and the
-SCALE default is now `0`. The 7-vs-51 figures were never measured on SCALE and
-this document should not have carried them forward as if they were. The SSM and
-attention sides remain unmeasured on both targets.
+SCALE default is `0`. The 7-vs-51 pair is GB10's and was never measured on
+SCALE; it must not be quoted for gfx1201. The SSM and attention sides remain
+unmeasured on both targets.
 Decode is untouched: it reads the packed original either way. Two further
 consequences are deliberate: dropping the SSM twin also drops the 1.41 GiB
 `out_proj` FP8 predequant (`qwen3_ssm/init_fp8.rs:110` keys off
@@ -170,8 +169,8 @@ free.
 the packed `[N, K/2]` layout directly with a transposed tile walk, with the
 128x128 `cp.async` tiling the `_t` kernels have. Then there is no second layout
 to build or skip, on any target. On GB10 that removes the 7x; on gfx1201, where
-the `_t` arm is the slower of the two, it removes a copy that was buying nothing
-back. This lever buys a serve.
+the `_t` arm is the slower of the two, it removes a copy that buys nothing back.
+This lever buys a serve.
 
 ## DEAD versus ALIVE: the per-site argument
 
@@ -232,23 +231,22 @@ let src = if store.contains(&format!("{prefix}.weight_packed")) {
 equivalent: the `Standard | Fp8Dequanted` attention arm at `:870-873`, the SSM
 path at `:1479` and `:1693`, `quantized_from_fp8` at `nvfp4_detect.rs:369`, and
 the `Bf16Raw` arm of `quantized_any` at `:325-332`. This one does not, and it
-is exactly the 28 stale allocations the ledger shows.
+is exactly the 28 stale allocations the sweep shows.
 
 Cost on this checkpoint: 200 MiB per full-attention layer, **3.12 GiB (3.36 GB)
 across the 16**. It fires on any CompressedTensors checkpoint whose attention
 projections are not NVFP4-packed, which is the whole unsloth mixed-precision
 family, on every target including NVIDIA.
 
-**FIXED UNCONDITIONALLY**, one commit after it was first written down. It rode
-`AVAROK_LOAD_RELEASE_SOURCES` only because that change was not allowed to move
-NVIDIA behaviour, and on re-reading that constraint does not cover this: what
-"byte-identical on NVIDIA" protects is which values the GEMMs read, and this
-buffer has no reader: `quantize_to_nvfp4` has already consumed it into a fresh
-NVFP4 allocation and `AttentionWeights` keeps only that result and the two norm
-pointers. An allocation nothing reads is not behaviour. The FP8 dtype test stays
-and is not the knob in disguise: it is the proof that `dense_bf16` is a fresh
-allocation rather than the store's own pointer, which `dense_auto` returns
-uncopied for a BF16 tensor.
+**Fixed unconditionally.** It briefly rode `AVAROK_LOAD_RELEASE_SOURCES`, on
+the constraint that the change must not move NVIDIA behaviour, and that
+constraint does not cover this: what "byte-identical on NVIDIA" protects is
+which values the GEMMs read, and this buffer has no reader. `quantize_to_nvfp4`
+has already consumed it into a fresh NVFP4 allocation and `AttentionWeights`
+keeps only that result and the two norm pointers. An allocation nothing reads is
+not behaviour. The FP8 dtype test stays and is not the knob in disguise: it is
+the proof that `dense_bf16` is a fresh allocation rather than the store's own
+pointer, which `dense_auto` returns uncopied for a BF16 tensor.
 
 ### `spark-model/build.rs` documents a free that does not exist
 
@@ -345,10 +343,10 @@ surface as wrong logits rather than a fault. Correctness over speed.
 
 ## Two latent double-frees this accounting surfaced
 
-Neither is fixed here: both are on paths this checkpoint does not take, and
-neither can be gated on a serve tonight. They belong in the record because they
-are the same mistake `release_tensor` exists to make impossible, and because
-switching them to it is a one-line fix with identical steady-state residency.
+Neither is fixed here: both are on paths this checkpoint does not take. They
+belong in the record because they are the same mistake `release_tensor` exists
+to make impossible, and because switching them to it is a one-line fix with
+identical steady-state residency.
 
 **`qwen35_dense.rs:1479-1480`** frees `qkv_dense.weight` and `z_dense.weight`
 unconditionally after the concat. Those come from `load_ssm_proj` to
@@ -373,42 +371,37 @@ the same pointer and records it, so both become correct by substitution.
 
 0. **Route the two direct store frees above through `release_tensor`.** No
    residency change at all, and it removes a double free that fires on every
-   `Bf16Raw` checkpoint. Listed first because it is the cheapest and the only
-   item that is a correctness fix rather than a memory one. **DONE**, plus a
-   third of identical shape on the keep-packed Q2_0 GDN arm that this list did
-   not walk. `free_maybe_store_owned` compares POINTERS rather than dtypes, so a
-   TP shard, a dequant output and a concat, all of which reach those sites
-   through the same variable, keep the plain `gpu.free` they had.
+   `Bf16Raw` checkpoint. First because it is the cheapest and the only item
+   that is a correctness fix rather than a memory one. **DONE**, plus a third
+   of identical shape on the keep-packed Q2_0 GDN arm. `free_maybe_store_owned`
+   compares POINTERS rather than dtypes, so a TP shard, a dequant output and a
+   concat, all of which reach those sites through the same variable, keep the
+   plain `gpu.free` they had.
 1. **Release the FP8 `lm_head`** behind a `!config.lm_head_fp8 &&
    !use_speculative` guard. 1.18 GiB, no kernel work. **DONE**, as
-   `lm_head_setup::release_lm_head_source`. It did not need the loader trait to
-   learn about the LM-head route after all: `build_model` already holds the
-   store, the config and `dflash_args` at the point `setup_lm_heads` returns,
-   and that point is also the last one BEFORE the KV sizer reads
-   `free_memory()`, which matters, because a release the sizer cannot see is a
-   release the KV cache does not get. `prune_after_load` would have been too
-   late for exactly that reason. The guard grew a fourth term the list did not
-   name: the checkpoint's `lm_head` must actually be FP8, because that is what
-   proves `load_lm_head` made a copy rather than handing back the store's own
-   pointer.
+   `lm_head_setup::release_lm_head_source`, called from `build_model` right
+   after `setup_lm_heads`. That point is the last one BEFORE the KV sizer reads
+   `free_memory()`, which matters: a release the sizer cannot see is a release
+   the KV cache does not get, and `prune_after_load` would have been too late
+   for exactly that reason. The guard carries a fourth term: the checkpoint's
+   `lm_head` must actually be FP8, because that is what proves `load_lm_head`
+   made a copy rather than handing back the store's own pointer.
 2. **Do not build the transposed dense FFN twins.** 8.96 GiB, the single
    largest item left. `DenseFfnWeights::{gate,up,down}_proj_t` are already
    `Option`, and `gemma4/loader_a.rs:30-52` is a working precedent
-   (`ffn_transpose_fits`, `AVAROK_GEMMA4_FFN_TRANSPOSE=0`). The cost is written
-   down in that same comment and it is large: with all three `None` every fast
-   arm of `w4_gemm!` is skipped and prefill lands on plain `w4a16_gemm`, which
-   the Gemma-4-31B measurement puts at ~7.0 TFLOP/s against ~51 TFLOP/s for
-   `t_m128`. Call it a 7x slower FFN prefill. On a board that otherwise cannot
-   load the model at all, that trade is available; it should be a knob with a
-   measured A/B, not a silent default. **DONE**, as
-   `AVAROK_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one lever
-   for all three families rather than three, because a build that skips one and
-   builds the others has no state anyone measured. **The A/B is now RUN, and it
-   went the other way**: on gfx1201 `w4a16_gemm_t_m128` measures ~1 TFLOP/s and
-   the plain `w4a16_gemm` ~4 (R9700 prefill, 2026-09-17, 9B with the twins
-   against 27B without). The 7x above is GB10's and was never SCALE's, so the
-   SCALE default moved from `auto` to `0`: dropping the twins is not a trade
-   here, it is free.
+   (`ffn_transpose_fits`, `AVAROK_GEMMA4_FFN_TRANSPOSE=0`). With all three
+   `None` every fast arm of `w4_gemm!` is skipped and prefill lands on plain
+   `w4a16_gemm`, which the Gemma-4-31B measurement on GB10 puts at
+   ~7.0 TFLOP/s against ~51 TFLOP/s for `t_m128`, a 7x slower FFN prefill. On a
+   board that otherwise cannot load the model at all that trade is available,
+   but it should be a knob with a measured A/B, not a silent default. **DONE**,
+   as `AVAROK_LOAD_TRANSPOSED_TWINS` above, together with items 3 and 4: one
+   lever for all three families rather than three, because a build that skips
+   one and builds the others has no state anyone measured. The A/B has been run
+   on gfx1201 and went the other way: `w4a16_gemm_t_m128` measures ~1 TFLOP/s
+   and the plain `w4a16_gemm` ~4. The 7x is GB10's and was never SCALE's, so
+   the SCALE default is `0`: dropping the twins is not a trade here, it is
+   free.
 3. **Do not build the transposed SSM twins.** 2.90 GiB. `qkvz_nvfp4_t` and
    `out_proj_nvfp4_t` are `Option` and every consumer is guarded
    (`trait_prefill_proj.rs:120`, `:327`, `trait_decode_batched.rs:424`, `:483`),
@@ -440,9 +433,3 @@ the same pointer and records it, so both become correct by substitution.
    leg.
 7. **Serve a smaller model.** 27B at 4-bit plus a second 4-bit layout plus a KV
    cache is simply not a 32 GB workload on this loader today.
-
-## What was NOT verified on macOS
-
-`cargo check -p spark-model` does not build on macOS (pre-existing Linux-only
-libc symbols in `spark-storage`), so every `spark-model` change in this work is
-reviewed by reading, not by the compiler. The R9700 build is the real gate.

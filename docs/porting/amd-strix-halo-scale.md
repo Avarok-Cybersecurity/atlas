@@ -39,7 +39,7 @@ export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRAR
 export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — one runtime knob is required on gfx1151 (see §4). AVAROK_FORCE_GLOBAL_GDN
+# Serve: one runtime knob is required on gfx1151 (see §4). AVAROK_FORCE_GLOBAL_GDN
 # and AVAROK_NO_FP8_PREDEQUANT used to be exported here; neither has a reader in
 # the tree any more. AVAROK_NO_GDN_FP8_PREFILL exists but is NOT set on strix:
 # the coherent gfx1151 runs never set it (see kernels/strix/HARDWARE.toml).
@@ -62,7 +62,7 @@ AVAROK_TARGET_HW=r9700 ./build-amd.sh
 AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
 ```
 
-Sections 1–6 below explain each step, the SCALE mechanics, and why each
+Sections 1 to 6 below explain each step, the SCALE mechanics, and why each
 runtime knob is needed.
 
 ---
@@ -310,7 +310,7 @@ export CUDARC_CUDA_VERSION=12080
 rm -rf target/release/build/avarok-kernels-*      # stale-cache guard on .cu change
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — the gfx1151 runtime knob (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
+# Serve: the gfx1151 runtime knob (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
 export AVAROK_W4A16_VARIANT=v1
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
