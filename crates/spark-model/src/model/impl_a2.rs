@@ -378,8 +378,10 @@ impl TransformerModel {
     /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
     /// - 0xFFFFFFF5: MTP propose → last_token, position, num_drafts, hidden_idx
-    /// - 0xFFFFFFF6: decode Marconi checkpoint (A109) → 6-word payload, one
-    ///   bulk broadcast; saves the same (slot, token, session) rank 0 saved
+    /// - 0xFFFFFFF6/7: reserved for the DFlash lane (EP_CMD_VERIFY_KGAMMA / ctx-commit)
+    /// - 0xFFFFFFF8: decode Marconi checkpoint (A109, moved from F6 by A113) →
+    ///   6-word payload, one bulk broadcast; saves the same (slot, token,
+    ///   session) rank 0 saved
     /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
     pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
         // 🔴 The RECEIVE is the only fatal half. If it fails the link to the head is gone

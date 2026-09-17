@@ -40,13 +40,20 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 ///
 /// Wire shape: the `(seq_id, cmd)` preamble, then ONE bulk broadcast of
 /// [`EP_CKPT_WORDS`] u32 — see [`encode_ckpt_payload`].
-pub(in crate::model) const EP_CMD_DECODE_CKPT: u32 = 0xFFFF_FFF6;
+///
+/// A113 (2026-09-16): moved from `0xFFFF_FFF6` to `0xFFFF_FFF8` — that value
+/// was independently assigned on the DFlash lane (`EP_CMD_VERIFY_KGAMMA`,
+/// `speculative.rs`), and the two lanes never built against each other until
+/// campaign integration surfaced the collision as an `unreachable_patterns`
+/// compile error, not a textual merge conflict.
+pub(in crate::model) const EP_CMD_DECODE_CKPT: u32 = 0xFFFF_FFF8;
 
 // Opcode band, checked at compile time. Worker commands must sit ABOVE the
 // token range (`0..=0xFFFF_FFEF` is dispatched as a decode token id) and must
 // not collide with a code already on the wire: F0 prefill chunk, F1
-// alloc-slot, F2/F3/F4 verify K=2/3/4, F5 MTP propose, FF shutdown, E0
-// batched decode (matched before the token fallthrough).
+// alloc-slot, F2/F3/F4 verify K=2/3/4, F5 MTP propose, F6/F7 reserved for the
+// DFlash lane, FF shutdown, E0 batched decode (matched before the token
+// fallthrough).
 const _: () = assert!(
     EP_CMD_DECODE_CKPT > 0xFFFF_FFEF,
     "EP_CMD_DECODE_CKPT would be dispatched as a decode token id"
@@ -78,6 +85,14 @@ const _: () = assert!(
 const _: () = assert!(
     EP_CMD_DECODE_CKPT != crate::speculative::EP_CMD_MTP_PROPOSE,
     "collides with MTP propose"
+);
+const _: () = assert!(
+    EP_CMD_DECODE_CKPT != 0xFFFF_FFF6,
+    "reserved: DFlash EP_CMD_VERIFY_KGAMMA (A113)"
+);
+const _: () = assert!(
+    EP_CMD_DECODE_CKPT != 0xFFFF_FFF7,
+    "reserved: DFlash ctx-commit (A113)"
 );
 const _: () = assert!(EP_CMD_DECODE_CKPT != 0xFFFF_FFFF, "collides with shutdown");
 
