@@ -48,6 +48,10 @@ use crate::layers::glm5next_skeleton::{Glm5NextTextSkeleton, Mixer, Mlp};
 use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX_TOKENS, mix_hc};
 use crate::weight_map::DenseWeight;
 
+#[cfg(test)]
+mod plan_cast_tests;
+mod plan_dtype;
+
 pub struct Glm5NextWeightLoader;
 
 /// A `[layer]`-relative tensor name, fully qualified for this checkpoint.
@@ -126,6 +130,16 @@ fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
 pub(super) struct LayerSource {
     names: Vec<String>,
     tensors: std::collections::BTreeMap<String, (WeightDtype, Vec<usize>, Vec<u8>)>,
+    /// Plan-dtype copies of the tensors whose on-disk width is not the width the
+    /// attention binders bind at — see [`plan_dtype`]. Consulted by the RAW path
+    /// ([`KdaTensorSource::get`]) and by nothing else: `f32` keeps reading the
+    /// checkpoint's own bytes, so the DSA absorb math and the F32 `ape` upload
+    /// still see every bit the export carries.
+    ///
+    /// **Empty for `LibertAIDAI/GLM-5.3-Flash-NVFP4`**, whose attention stack is
+    /// BF16 throughout — that checkpoint allocates nothing here and takes the
+    /// same code path it always did.
+    plan_cast: std::collections::BTreeMap<String, (WeightDtype, Vec<u8>)>,
 }
 
 impl LayerSource {
@@ -133,6 +147,7 @@ impl LayerSource {
         let prefix = format!("model.language_model.layers.{layer}.");
         let mut names = Vec::new();
         let mut tensors = std::collections::BTreeMap::new();
+        let mut plan_cast = std::collections::BTreeMap::new();
         let rels: Vec<String> = store
             .names()
             .filter_map(|n| n.strip_prefix(&prefix).map(|r| r.to_string()))
@@ -147,12 +162,22 @@ impl LayerSource {
             }
             names.push(rel.to_string());
             let t = store.get(&format!("{prefix}{rel}"))?;
-            tensors.insert(
-                rel.to_string(),
-                (t.dtype, t.shape.clone(), host_bytes(gpu, t)?),
-            );
+            let bytes = host_bytes(gpu, t)?;
+            // 🪤 Storage width is an EXPORT choice, not a model change. NVIDIA's
+            // `nvidia/GLM-5.3-Flash-NVFP4` writes the non-quantised attention
+            // tensors at F32 where `LibertAIDAI/GLM-5.3-Flash-NVFP4` writes
+            // BF16 — same numbers, twice the bytes. Materialise the plan-dtype
+            // copy the RAW path needs, and only for the tensors that need it.
+            if let Some(cast) = plan_dtype::cast_to_plan_dtype(rel, t.dtype, &bytes)? {
+                plan_cast.insert(rel.to_string(), cast);
+            }
+            tensors.insert(rel.to_string(), (t.dtype, t.shape.clone(), bytes));
         }
-        Ok(Self { names, tensors })
+        Ok(Self {
+            names,
+            tensors,
+            plan_cast,
+        })
     }
 
     pub(super) fn f32(&self, name: &str) -> Result<Vec<f32>> {
@@ -176,7 +201,16 @@ impl LayerSource {
 
 impl KdaTensorSource for LayerSource {
     fn get(&self, name: &str) -> Option<RawTensor<'_>> {
-        let (dtype, shape, bytes) = self.tensors.get(name)?;
+        let (dtype, shape, bytes) = match self.plan_cast.get(name) {
+            // The export stored this one at a width the plan does not bind at;
+            // hand over the plan-dtype copy. Absent for every checkpoint whose
+            // attention stack is already at the plan's widths.
+            Some((dtype, bytes)) => (dtype, &self.tensors.get(name)?.1, bytes),
+            None => {
+                let (dtype, shape, bytes) = self.tensors.get(name)?;
+                (dtype, shape, bytes)
+            }
+        };
         // 🪤 A KDA block is entirely BF16 except `A_log`/`dt_bias`, which are F32. Anything
         // else here is not a KDA tensor, and the binder must see the absence rather than a
         // coerced dtype — it refuses on a dtype mismatch precisely because a cast would
