@@ -676,6 +676,27 @@ exists to feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with
 them, because it is residency-neutral only while there are `_t` copies for it to
 free.
 
+**`--text-only`: the vision tower, for a serve that only ever sends text.**
+`unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it,
+because the checkpoint declares a `vision_config`. That is **~1.65 GiB** of the
+store, resident for the life of the process, charged against the same budget as
+the weights, the buffer arena and the KV cache — and on this board a sequence's
+KV at 4096 tokens is only ~0.3 GB, so the tower is worth several batch slots.
+`--text-only` clears `config.vision` before the weight store is built, so the
+tower's bytes are never read from disk, never bound and never resident (the load
+log prints the GB it did not read). Image and video inputs are then refused with
+a **400** naming the reason, rather than silently dropped. Default OFF: a VL
+checkpoint serves with vision unless this says otherwise.
+
+The same flag closes a spelling gap worth knowing about. The load-time skip and
+`build_model`'s unbound-tower reclaim both match `model.visual.*`,
+`model.vision*` and `visual.*`, but `Qwen35WeightLoader::load_vision_encoder`
+also probes **`model.language_model.visual.*`**, which every
+`AutoModelForImageTextToText` re-quant uses. A checkpoint in that layout had a
+tower that was read from disk, never bound and never freed. Both sites now call
+one predicate, `fast_weights::is_vision_tensor`, and it carries the fourth
+spelling.
+
 **A proper fix is a kernel, not this knob**: a prefill GEMM that reads the
 packed `[N, K/2]` layout directly with a transposed tile walk, the way
 `w4a16_gemm` already does at scalar speed but with the 128x128 `cp.async`
@@ -783,6 +804,8 @@ export ATLAS_W4A16_VARIANT=v1
 export ATLAS_NO_GDN_FP8_PREFILL=1     # bisect candidate, not a pin
 export ATLAS_NO_FP8_PREDEQUANT=1      # belt; the loader probes for this anyway
 export ATLAS_LOAD_TRANSPOSED_TWINS=0  # fits 32 GB; the plain arm is also faster here
+# --text-only drops the checkpoint's ~1.65 GiB vision tower before load. Add it
+# for a text deployment; leave it off if images are ever sent (400 otherwise).
 target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
 ```
 

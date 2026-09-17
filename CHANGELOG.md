@@ -11,6 +11,23 @@ behind specific subsystems — see the
 ## [Unreleased]
 
 ### Added
+- **`--text-only`: serve a multimodal checkpoint without its vision tower.**
+  `unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it
+  because the checkpoint declares a `vision_config` — ~1.65 GiB resident for the
+  life of the process, charged against the same budget as the weights, the
+  buffer arena and the KV cache. On a 32 GB R9700, where one sequence's KV at
+  4096 tokens is ~0.3 GB, that is several batch slots for a deployment that only
+  ever sends text. The flag clears `config.vision` before the weight store is
+  built, so the tower's bytes are never read from disk, never bound and never
+  resident; the load log prints the GB it did not read. Image and video inputs
+  are refused with a 400 naming the reason instead of being silently dropped.
+  Default off. Same change closes a spelling gap: the load-time skip and
+  `build_model`'s unbound-tower reclaim matched three prefixes, while
+  `Qwen35WeightLoader::load_vision_encoder` also probes
+  `model.language_model.visual.*` (every `AutoModelForImageTextToText`
+  re-quant), so a tower in that layout was read, never bound and never freed.
+  Both sites now call one predicate, `fast_weights::is_vision_tensor`, and it
+  carries the fourth spelling.
 - **`ATLAS_LOAD_TRANSPOSED_TWINS`, a lever for the transposed second weight
   layout.** Atlas keeps every NVFP4 projection in two layouts: the packed
   `[N, K/2]` original decode reads, and a transposed `[K, N/2]` twin the fast

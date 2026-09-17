@@ -343,16 +343,21 @@ pub fn build_model(
     // the loaders that bind zero-copy from these very pointers. The day a GLM
     // vision encoder lands, this stops firing on its own.
     if vision_encoder.is_none() {
+        // The predicate is `fast_weights::is_vision_tensor`, not a copy of it.
+        // It used to be a copy, and the copy had drifted: neither spelling list
+        // carried `model.language_model.visual.`, which
+        // `Qwen35WeightLoader::load_vision_encoder` probes and which every
+        // AutoModelForImageTextToText re-quant uses. A tower in that layout was
+        // read from disk, not bound, and not freed.
         let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
-            name.starts_with("model.visual.")
-                || name.starts_with("model.vision")
-                || name.starts_with("visual.")
+            spark_runtime::fast_weights::is_vision_tensor(name)
         })?;
         if n > 0 {
             tracing::info!(
-                "Vision tower: {n} tensors ({:.2} GiB) released — this build binds no vision \
-                 encoder for model_type '{}', so the tower was resident and unreachable. \
-                 Text capability is unchanged; image input was already unsupported here.",
+                "Vision tower: {n} tensors ({:.2} GiB) released — this serve binds no vision \
+                 encoder for model_type '{}' (a text-only port, a kernel target without the \
+                 vision_encoder module, or --text-only), so the tower was resident and \
+                 unreachable. Text capability is unchanged; image input is refused at the API.",
                 bytes as f64 / (1024.0 * 1024.0 * 1024.0),
                 config.model_type,
             );

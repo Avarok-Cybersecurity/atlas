@@ -355,6 +355,24 @@ pub(crate) fn load_model(
         ptx_set.modules.len(),
     );
 
+    // --text-only: the OPERATOR asking for the same thing the kernel-target check
+    // below asks for on the target's behalf. Both reach it the same way — clear
+    // `config.vision` before the weight store is built — because that one field
+    // is what `load_vision_encoder` reads, what `skip_vision` is derived from
+    // and what the API's image-input check consults. Setting it here means the
+    // tower is never read from disk rather than read, ignored and reclaimed.
+    if args.text_only {
+        if config.vision.is_some() {
+            tracing::info!(
+                "--text-only: dropping this checkpoint's vision tower before load. \
+                 Image and video inputs will be refused with a 400."
+            );
+            config.vision = None;
+        } else {
+            tracing::info!("--text-only: this checkpoint has no vision tower; nothing to drop.");
+        }
+    }
+
     // Text-only kernel target + a checkpoint that ships a vision tower: honor the
     // TARGET spec and serve text-only rather than failing the build at
     // `vision_encoder module not loaded`. Some VL checkpoints (e.g.

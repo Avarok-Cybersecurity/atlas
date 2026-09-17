@@ -472,6 +472,22 @@ pub struct ServeArgs {
     #[arg(long, default_value = "default")]
     pub lm_head_dtype: String,
 
+    /// Serve a multimodal checkpoint TEXT-ONLY: do not load its vision tower.
+    ///
+    /// The tower is resident for the life of the process and is charged against
+    /// the same budget as the weights, the buffer arena and the KV cache — on
+    /// `unsloth/Qwen3.8-27B-NVFP4` it is ~1.65 GiB of a 32 GB board, which on
+    /// that board is several batch slots' worth of KV. A deployment that only
+    /// ever sends text pays that for nothing.
+    ///
+    /// Sets `config.vision = None` before the weight store is built, so the
+    /// tower's bytes are never read from disk (`skip_vision`), never bound, and
+    /// never resident. Image and video inputs are then refused at the API with
+    /// a 400 rather than silently dropped. Default off: a VL checkpoint serves
+    /// with vision unless this says otherwise.
+    #[arg(long, default_value_t = false)]
+    pub text_only: bool,
+
     /// Boundary attention layers to keep at BF16 KV cache precision (first N + last N).
     /// Protects attention sink tokens (early layers) and output quality (final layers)
     /// from quantization error while saving memory on middle layers.
