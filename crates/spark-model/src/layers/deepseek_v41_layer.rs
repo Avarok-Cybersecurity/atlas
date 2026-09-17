@@ -1061,12 +1061,23 @@ impl crate::layer::TransformerLayer for DeepSeekV41Layer {
         }))
     }
 
-    /// The captured segments bake this sequence's buffers; they go with it.
+    /// The captured segments bake this sequence's buffers; they go with it,
+    /// and so do the buffers themselves. `alloc_state` allocates the window
+    /// ring, the compressor's partial group, the latent cache and the
+    /// index-key cache per sequence with `gpu.alloc`, so a release that only
+    /// destroyed the graphs left all four on the device for the life of the
+    /// process. The latent cache alone is `max_seq / ratio` rows of 512 bf16
+    /// (4 MiB at 4096 tokens, ratio 1), so every request left on the order
+    /// of 15 to 25 MiB across the forty layers, and it never came back.
+    ///
+    /// Order matters. The graphs replay kernels whose arguments are these
+    /// addresses, so they are destroyed first and the buffers freed after.
     fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
-        if let Some(st) = state.as_any_mut().downcast_mut::<V41LayerState>()
-            && let Some(g) = st.graphs.take()
-        {
-            g.destroy(gpu)?;
+        if let Some(st) = state.as_any_mut().downcast_mut::<V41LayerState>() {
+            if let Some(g) = st.graphs.take() {
+                g.destroy(gpu)?;
+            }
+            st.attn.free(gpu)?;
         }
         Ok(())
     }
