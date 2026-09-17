@@ -269,22 +269,38 @@ anything. It is one `cuStreamSynchronize` per release batch at load time, on a
 path that already costs minutes, against a class of corruption that would
 surface as wrong logits rather than a fault. Correctness over speed.
 
-## A latent double-free this accounting surfaced
+## Two latent double-frees this accounting surfaced
 
-Not fixed here, because it is on a path this checkpoint does not take, but it
-belongs in the record.
+Neither is fixed here: both are on paths this checkpoint does not take, and
+neither can be gated on a serve tonight. They belong in the record because they
+are the same mistake `release_tensor` exists to make impossible, and because
+switching them to it is a one-line fix with identical steady-state residency.
 
-`qwen35_dense.rs:1479-1480` frees `qkv_dense.weight` and `z_dense.weight`
+**`qwen35_dense.rs:1479-1480`** frees `qkv_dense.weight` and `z_dense.weight`
 unconditionally after the concat. Those come from `load_ssm_proj` to
 `dense_auto`, which returns the STORE's pointer for a BF16 tensor. On a
 `Bf16Raw` GDN checkpoint the loader therefore frees store memory the store still
 lists, and `WeightStore::release` frees it again at teardown. The same shape
-applies to `out_proj_dense` at `:1693`. The new `release_tensor` bookkeeping
-cannot see it, because the free goes through `gpu.free` directly rather than
-through the store.
+applies to `out_proj_dense` at `:1693`.
+
+**`nvfp4_detect.rs:332`**, the `Bf16Raw` arm of `quantized_any`, does
+`gpu.free(w.ptr)` where `w` came straight from `store.get`. Its own comment
+explains why the free is right (a 35B BF16 MoE would otherwise hold both the
+~60 GB of BF16 experts and the ~22 GB of NVFP4 copies) and it is right. What is
+wrong is the route: the store keeps the entry, so teardown frees it again. This
+one fires on EVERY `Bf16Raw` checkpoint, which is every raw BF16 fine-tune Atlas
+serves.
+
+The new bookkeeping cannot see either, because the free goes through `gpu.free`
+directly rather than through the store. `store.release_tensor(gpu, name)` frees
+the same pointer and records it, so both become correct by substitution.
 
 ## Ranked list: what would have to change to fit
 
+0. **Route the two direct store frees above through `release_tensor`.** No
+   residency change at all, and it removes a double free that fires on every
+   `Bf16Raw` checkpoint. Listed first because it is the cheapest and the only
+   item that is a correctness fix rather than a memory one.
 1. **Release the FP8 `lm_head`** behind a `!config.lm_head_fp8 &&
    !use_speculative` guard. 1.18 GiB, no kernel work, needs the loader trait to
    learn about the LM-head route or `prune_after_load` to do it after

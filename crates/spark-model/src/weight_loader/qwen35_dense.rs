@@ -265,10 +265,15 @@ fn ffn_gateup_fused_selected(
 pub mod fp8_residency;
 mod loaders_b;
 pub mod predicted_residency;
+// Release-on-consume: which checkpoint tensors this loader frees during the
+// layer loop, why each is provably dead, and the residency line it is judged
+// on. Measured basis: `docs/porting/r9700-residency.md`.
+mod release_sources;
 mod rowwise_fp8;
 
 use crate::layers::qwen3_attention::Fp8TwinSet;
 use fp8_residency::{DerivedResidency, RouteEnv};
+use release_sources::SourceReleaser;
 
 pub struct Qwen35DenseWeightLoader;
 
@@ -369,6 +374,12 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // `fp8_residency.rs`.
         let route_env = RouteEnv::from_env();
         let mut residency = DerivedResidency::default();
+        // Release-on-consume. Default ON under `cfg!(atlas_scale)`, OFF
+        // otherwise — an NVIDIA build with ATLAS_LOAD_RELEASE_SOURCES unset
+        // takes every branch below as `false` and allocates and frees exactly
+        // what it did before this existed. `release_sources.rs` carries the
+        // soundness rule and the R9700 measurement that motivates it.
+        let mut releaser = SourceReleaser::new();
 
         for (i, lt) in layer_types.iter().enumerate() {
             if i % 8 == 0 {
@@ -483,6 +494,28 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 }
             };
             residency.twins.ffn_nvfp4 |= ffn_nvfp4;
+            // RELEASE SITE 1 — dense FFN. On a mixed-precision checkpoint the
+            // tail layers (56..63 of Qwen3.8-27B) ship gate/up/down as FP8
+            // E4M3 with a per-row scale inside an otherwise-NVFP4 net;
+            // `quantized_any` detects that per key and routes them through
+            // `quantized_from_fp8`, which dequants to BF16, requantises to
+            // NVFP4 and frees its own intermediate. `DenseFfnWeights` then
+            // holds only the NVFP4 result and its transposed twin, so the
+            // checkpoint's E4M3 bytes are dead. 1.99 GiB across the eight.
+            //
+            // GUARDED on `!ffn_fp8`: `load_ffn_fp8` below binds `.weight`
+            // ZERO-COPY, and `ATLAS_DENSE_FP8_KEEP_NVFP4` is a state where
+            // BOTH `ffn_nvfp4` and `ffn_fp8` are true. Guarded on `!ffn_q2`
+            // for the same reason — `set_q2_weights` borrows the store's
+            // packed blocks. The packed-NVFP4 layers are not claimed at all:
+            // they have no `.weight` key, so `consumed_fp8_source` says no.
+            if ffn_nvfp4 && !ffn_fp8 && !ffn_q2 {
+                let projs: Vec<String> = ["gate_proj", "up_proj", "down_proj"]
+                    .iter()
+                    .map(|n| format!("{lp}.mlp.{n}"))
+                    .collect();
+                releaser.release_projections(store, gpu, stream, &projs)?;
+            }
             let mut dffn = DenseFfnLayer::new(ffn_weights, gpu)?;
             if ffn_q2 {
                 dffn.set_q2_weights(
@@ -694,6 +727,11 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         Nvfp4Variant::CompressedTensors => {
                             // NVFP4-from-disk path: column-parallel Q/K/V, row-parallel O.
                             let group_size = 16usize;
+                            // See RELEASE SITE 2 below. `Cell` because the
+                            // closure is an `Fn` handed to `load_qkvo_tp`, so
+                            // it cannot hold `&mut SourceReleaser`.
+                            let release_srcs = releaser.enabled();
+                            let leaked_here = std::cell::Cell::new(0usize);
                             let load_nvfp4 = |name: &str,
                                               full_n: usize,
                                               full_k: usize,
@@ -715,7 +753,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 } else {
                                     let dense_bf16 =
                                         dense_auto(store, &format!("{prefix}.weight"), gpu)?;
-                                    quantize_to_nvfp4(
+                                    let q = quantize_to_nvfp4(
                                         &dense_bf16,
                                         full_n,
                                         full_k,
@@ -723,7 +761,42 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                         absmax_k,
                                         quantize_k,
                                         stream,
-                                    )?
+                                    )?;
+                                    // LEAK. Every sibling site frees its
+                                    // dequant intermediate — the
+                                    // `Standard | Fp8Dequanted` attention arm
+                                    // below, the SSM path, `quantized_from_fp8`
+                                    // and the `Bf16Raw` arm of `quantized_any`
+                                    // — and this one never did. It is the 28
+                                    // stale `quant_helpers.rs:98` allocations
+                                    // the R9700 ledger sweep shows at layer 28,
+                                    // 200 MiB per full-attention layer and
+                                    // 3.12 GiB across the sixteen, on every
+                                    // target including NVIDIA.
+                                    //
+                                    // Fixing it outright would change NVIDIA
+                                    // behaviour, which this change is not
+                                    // allowed to do, so it rides the same knob.
+                                    // It should become unconditional once an
+                                    // NVIDIA serve has confirmed it: see the
+                                    // open-questions block in
+                                    // kernels/r9700/HARDWARE.toml.
+                                    //
+                                    // `quantize_to_nvfp4` synchronizes `stream`
+                                    // before returning (loaders_fp8.rs:247) and
+                                    // the dequant was enqueued on the same
+                                    // stream, so the buffer is idle here. The
+                                    // FP8 test is what proves `dense_bf16` is a
+                                    // fresh allocation rather than the store's
+                                    // own pointer, which `dense_auto` returns
+                                    // uncopied for a BF16 tensor.
+                                    if release_srcs
+                                        && release_sources::consumed_fp8_source(store, &prefix)
+                                    {
+                                        gpu.free(dense_bf16.weight)?;
+                                        leaked_here.set(leaked_here.get() + full_n * full_k * 2);
+                                    }
+                                    q
                                 };
                                 if tp_size == 1 {
                                     return Ok(src);
@@ -736,6 +809,29 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 Ok(sharded)
                             };
                             let [q, k, v, o] = load_qkvo_tp(config, load_nvfp4)?;
+                            releaser.note_leaked_free(leaked_here.get());
+                            // RELEASE SITE 2 — attention q/k/v/o. The four
+                            // projections of this checkpoint family are FP8
+                            // E4M3 with a per-CHANNEL `[N,1]` scale and carry
+                            // no `weight_packed`, so the arm above dequanted
+                            // and requantised every one of them.
+                            // `AttentionWeights` keeps the NVFP4 result and the
+                            // two norm pointers; nothing aliases the E4M3
+                            // bytes. 1.56 GiB across the sixteen layers.
+                            //
+                            // No `attn_fp8` guard is needed here and one would
+                            // be misleading: the FP8 overlay requires
+                            // `Nvfp4Variant::Fp8Dequanted`, so it cannot be
+                            // live inside this `CompressedTensors` arm. The
+                            // `Fp8Dequanted` attention arms are deliberately
+                            // NOT release sites for that reason.
+                            {
+                                let projs: Vec<String> = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                                    .iter()
+                                    .map(|n| format!("{p}.{n}"))
+                                    .collect();
+                                releaser.release_projections(store, gpu, stream, &projs)?;
+                            }
                             let dummy = DenseWeight {
                                 weight: spark_runtime::gpu::DevicePtr::NULL,
                             };
@@ -1692,6 +1788,31 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     gpu.free(qkvz_dense.weight)?;
                     gpu.free(out_proj_dense.weight)?;
 
+                    // RELEASE SITE 3 — GDN projections. On this checkpoint
+                    // family `in_proj_qkv`/`in_proj_z`/`out_proj` are FP8 E4M3
+                    // with a per-CHANNEL scale, which `proj_is_fp8_any_scale`
+                    // correctly refuses (a `w8a16` kernel would index it as a
+                    // `[N/128, K/128]` grid), so the native-FP8 GDN arm above
+                    // did not fire and this path dequanted all three to BF16,
+                    // concatenated, requantised to NVFP4 and has just freed
+                    // both intermediates. 5.16 GiB across the 48 layers, the
+                    // single largest item in the residency table.
+                    //
+                    // `out_proj` is EXCLUDED under `ATLAS_FP8_ROWWISE=1`:
+                    // `load_fp8_per_row` returns `weight: w.ptr`, so
+                    // `out_proj_rowwise` — installed a few lines below by
+                    // `set_fp8_rowwise_prefill_weights` — is the store's own
+                    // bytes. `qkvz_rowwise` is a `concat_fp8_per_row` COPY, so
+                    // the two in_proj tensors are dead either way.
+                    {
+                        let mut projs =
+                            vec![format!("{la}.in_proj_qkv"), format!("{la}.in_proj_z")];
+                        if out_proj_rowwise.is_none() {
+                            projs.push(format!("{la}.out_proj"));
+                        }
+                        releaser.release_projections(store, gpu, stream, &projs)?;
+                    }
+
                     let ssm = SsmWeights {
                         in_proj_qkvz: DenseWeight {
                             weight: spark_runtime::gpu::DevicePtr::NULL,
@@ -1771,6 +1892,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // proved unreachable. Emitted unconditionally — a residency regression
         // that only shows under a debug flag is one nobody sees.
         tracing::info!("{}", residency.summary(store.resident_bytes()));
+        // The residency line of the R9700 work: the store's half and the
+        // layer-owned half of the same total, with what release-on-consume
+        // gave back named in between. `DerivedResidency` above counts only the
+        // copies THIS loader adopted; this one counts everything the ledger
+        // sees, so the two together say whether an unexplained gap exists.
+        // Emitted unconditionally, for the reason the line above gives.
+        tracing::info!("{}", releaser.summary(store, gpu));
         for (label, bytes, count) in store.derived().by_label() {
             tracing::debug!(
                 "  derived-weight owner: {:>9.1} MB x{:<5} {label}",

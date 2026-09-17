@@ -318,6 +318,21 @@ impl WeightStore {
         Ok(bytes)
     }
 
+    /// The dtype the CHECKPOINT shipped for `name`, whether or not its bytes
+    /// are still resident.
+    ///
+    /// For code that is asking what the FILE contains rather than what it can
+    /// read: quantisation-variant detection is the whole motivating case, and
+    /// it runs both before the layer loop and again after it (from
+    /// `load_mtp_weights`, `prune_after_load` and `detect_quant_format`). It
+    /// has to give the same answer both times, and it cannot if a projection
+    /// released on consume makes its dtype probe fall through to a different
+    /// arm. Residency is a different question and [`Self::get`] answers that
+    /// one.
+    pub fn checkpoint_dtype(&self, name: &str) -> Option<WeightDtype> {
+        self.weights.get(name).map(|t| t.dtype)
+    }
+
     /// Bytes freed by [`Self::release_tensor`] over this store's lifetime.
     pub fn released_bytes(&self) -> usize {
         self.released.bytes()

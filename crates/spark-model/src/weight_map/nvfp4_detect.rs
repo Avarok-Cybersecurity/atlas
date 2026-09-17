@@ -143,11 +143,15 @@ pub fn detect_nvfp4_variant(
             format!("{pfx}.mlp.gate_proj.weight"),
             format!("{pfx}.self_attn.q_proj.weight"),
         ] {
-            if store
-                .get(&key)
-                .map(|w| w.dtype == WeightDtype::FP8E4M3)
-                .unwrap_or(false)
-            {
+            // `checkpoint_dtype`, not `get`: this asks what the FILE ships.
+            // Under `ATLAS_LOAD_RELEASE_SOURCES` the loader frees exactly
+            // these projections once it has requantised them, and this
+            // function is called again afterwards (`load_mtp_weights`,
+            // `prune_after_load`, `detect_quant_format`). Probing through
+            // `get` would make a block-FP8 compressed-tensors checkpoint
+            // detect as `Fp8Dequanted` before the layer loop and `Standard`
+            // after it.
+            if store.checkpoint_dtype(&key) == Some(WeightDtype::FP8E4M3) {
                 return Nvfp4Variant::Fp8Dequanted;
             }
         }
