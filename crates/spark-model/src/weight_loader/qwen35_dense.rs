@@ -767,7 +767,6 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             // See RELEASE SITE 2 below. `Cell` because the
                             // closure is an `Fn` handed to `load_qkvo_tp`, so
                             // it cannot hold `&mut SourceReleaser`.
-                            let release_srcs = releaser.enabled();
                             let leaked_here = std::cell::Cell::new(0usize);
                             let load_nvfp4 = |name: &str,
                                               full_n: usize,
@@ -799,8 +798,9 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                         quantize_k,
                                         stream,
                                     )?;
-                                    // LEAK. Every sibling site frees its
-                                    // dequant intermediate — the
+                                    // THE LEAK, FIXED UNCONDITIONALLY. Every
+                                    // sibling site frees its dequant
+                                    // intermediate — the
                                     // `Standard | Fp8Dequanted` attention arm
                                     // below, the SSM path, `quantized_from_fp8`
                                     // and the `Bf16Raw` arm of `quantized_any`
@@ -809,27 +809,38 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                     // the R9700 ledger sweep shows at layer 28,
                                     // 200 MiB per full-attention layer and
                                     // 3.12 GiB across the sixteen, on every
-                                    // target including NVIDIA.
+                                    // target including NVIDIA. It is a plain
+                                    // bug, not a residency policy, and it rode
+                                    // `ATLAS_LOAD_RELEASE_SOURCES` for one
+                                    // commit only because that change was not
+                                    // allowed to move NVIDIA behaviour.
                                     //
-                                    // Fixing it outright would change NVIDIA
-                                    // behaviour, which this change is not
-                                    // allowed to do, so it rides the same knob.
-                                    // It should become unconditional once an
-                                    // NVIDIA serve has confirmed it: see the
-                                    // open-questions block in
-                                    // kernels/r9700/HARDWARE.toml.
+                                    // What "byte-identical on NVIDIA" protects
+                                    // is which values the GEMMs read, and this
+                                    // buffer has no reader: `quantize_to_nvfp4`
+                                    // has already consumed it into a fresh
+                                    // NVFP4 allocation and `AttentionWeights`
+                                    // keeps only that result and the two norm
+                                    // pointers. An allocation nothing reads is
+                                    // not behaviour, and 3.12 GiB of it is not
+                                    // a knob.
                                     //
-                                    // `quantize_to_nvfp4` synchronizes `stream`
-                                    // before returning (loaders_fp8.rs:247) and
-                                    // the dequant was enqueued on the same
-                                    // stream, so the buffer is idle here. The
-                                    // FP8 test is what proves `dense_bf16` is a
-                                    // fresh allocation rather than the store's
-                                    // own pointer, which `dense_auto` returns
-                                    // uncopied for a BF16 tensor.
-                                    if release_srcs
-                                        && release_sources::consumed_fp8_source(store, &prefix)
-                                    {
+                                    // ORDERING: `quantize_to_nvfp4`
+                                    // synchronizes `stream` before returning
+                                    // (loaders_fp8.rs:247) and the dequant was
+                                    // enqueued on the same stream, so the
+                                    // buffer is idle here.
+                                    //
+                                    // THE FP8 TEST STAYS, and it is not the
+                                    // knob in disguise: it is what proves
+                                    // `dense_bf16` is a FRESH allocation rather
+                                    // than the store's own pointer, which
+                                    // `dense_auto` returns uncopied for a BF16
+                                    // tensor. Freeing it on a BF16 checkpoint
+                                    // would be the double free the two sites
+                                    // below were just routed through
+                                    // `release_tensor` to avoid.
+                                    if release_sources::consumed_fp8_source(store, &prefix) {
                                         gpu.free(dense_bf16.weight)?;
                                         leaked_here.set(leaked_here.get() + full_n * full_k * 2);
                                     }
@@ -1318,7 +1329,16 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             .build
                             .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
                             .transpose()?;
-                        gpu.free(out_proj_dense.weight)?;
+                        // Same aliasing as the main GDN path below: `dense_auto`
+                        // returns the store's pointer for a BF16 `out_proj`, and
+                        // the sidecar that dequants a Q2 checkpoint's reorder
+                        // tensors produces exactly that.
+                        release_sources::free_maybe_store_owned(
+                            store,
+                            gpu,
+                            &format!("{la}.out_proj.weight"),
+                            out_proj_dense.weight,
+                        )?;
                         let ssm = SsmWeights {
                             in_proj_qkvz: DenseWeight {
                                 weight: spark_runtime::gpu::DevicePtr::NULL,
@@ -1644,8 +1664,28 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
                     // qkv/z BF16 are only inputs to the concat above; free them now
                     // rather than leaking them for the layer's lifetime (Atlas issue #A1).
-                    gpu.free(qkv_dense.weight)?;
-                    gpu.free(z_dense.weight)?;
+                    //
+                    // Through the store, because on a `Bf16Raw` GDN checkpoint
+                    // these ARE the store's pointers: `load_ssm_proj` falls
+                    // through to `dense_auto`, which hands back `w.ptr`
+                    // uncopied for a BF16 tensor. The free is right either way
+                    // — the concat copied them — but done with a bare
+                    // `gpu.free` it left the store listing memory that is gone,
+                    // and teardown freed it again. `free_maybe_store_owned`
+                    // compares pointers, so a dequant output or a TP shard
+                    // still takes the plain path.
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.in_proj_qkv.weight"),
+                        qkv_dense.weight,
+                    )?;
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.in_proj_z.weight"),
+                        z_dense.weight,
+                    )?;
 
                     let ba_dense =
                         interleave_ba(&in_proj_a, &in_proj_b, dims.full_nv, dims.full_nk, h, gpu)?;
@@ -1869,7 +1909,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // inputs. Free them rather than keep a third full-precision copy of
                     // the largest SSM tensor across every layer (Atlas issue #A1).
                     gpu.free(qkvz_dense.weight)?;
-                    gpu.free(out_proj_dense.weight)?;
+                    // `qkvz_dense` above is always a fresh concat (or a fresh TP
+                    // shard of one), so it can never be the store's. `out_proj_dense`
+                    // can: same `Bf16Raw` aliasing as the two in_proj frees above.
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.out_proj.weight"),
+                        out_proj_dense.weight,
+                    )?;
 
                     // RELEASE SITE 3 — GDN projections. On this checkpoint
                     // family `in_proj_qkv`/`in_proj_z`/`out_proj` are FP8 E4M3

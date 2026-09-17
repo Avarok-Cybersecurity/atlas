@@ -50,8 +50,46 @@
 //! surfaces as wrong logits rather than a fault.
 
 use anyhow::Result;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::{WeightDtype, WeightStore, release_sources_enabled};
+
+/// Free a buffer that MAY be the store's own pointer for `name`, through the
+/// store when it is and directly when it is not.
+///
+/// **WHY (`docs/porting/r9700-residency.md`, "Two latent double-frees this
+/// accounting surfaced").** `dense_auto` returns the STORE's pointer unchanged
+/// for a BF16 tensor and a fresh allocation for an FP8 one, so a loader that
+/// frees its input after a copy is freeing store memory on exactly the
+/// checkpoints whose tensors are BF16 — and the store still lists the entry, so
+/// teardown frees it a second time. The free itself is RIGHT at every call site
+/// below (the bytes really are dead, and keeping them is the duplicate the site
+/// exists to avoid); what is wrong is the route.
+///
+/// This changes no residency at all: the same pointer is freed either way. What
+/// it changes is what the store believes afterwards — `contains` and `get` stop
+/// claiming a tensor whose memory is gone, `free_matching` and teardown skip it,
+/// and a reader that runs too late gets the named "RELEASED on consume" error
+/// instead of whatever the allocator handed out next.
+///
+/// NOT gated on `ATLAS_LOAD_RELEASE_SOURCES`. That knob decides whether to free
+/// a LIVE store tensor early; this decides how to record a free that already
+/// happens on every target. A correctness fix that only applies where a
+/// residency knob is on is not a correctness fix.
+pub(super) fn free_maybe_store_owned(
+    store: &WeightStore,
+    gpu: &dyn GpuBackend,
+    name: &str,
+    ptr: DevicePtr,
+) -> Result<()> {
+    // Pointer identity, not a dtype guess: a TP shard, a dequant and a concat
+    // all reach these sites through the same variable, and only the aliased
+    // case may go through the store.
+    if store.get(name).is_ok_and(|w| w.ptr == ptr) {
+        store.release_tensor(gpu, name)?;
+        return Ok(());
+    }
+    gpu.free(ptr)
+}
 
 /// True when `{prefix}.weight` is an FP8 E4M3 tensor, i.e. one that reached
 /// its layer through a fresh allocation and whose checkpoint bytes are
@@ -106,10 +144,6 @@ impl SourceReleaser {
             store_count: 0,
             leaked_bytes: 0,
         }
-    }
-
-    pub(super) fn enabled(&self) -> bool {
-        self.enabled
     }
 
     /// Record a derived buffer this loader freed that it previously leaked.
