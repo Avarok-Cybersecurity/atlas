@@ -257,3 +257,106 @@ fn poolside_grammar_matches_qwen3_coder_on_empty_required_strings() {
         "poolside must not be the one parser that lets an empty required string through"
     );
 }
+
+// ── A117 (2026-09-17): required strings must be non-BLANK, not just ────────
+// non-empty. tool-eval-bench TC-43 on GLM-5.3-Flash evaded the A85 guard
+// with `web_search {"query":" "}` (a single space) — the empty-string guard
+// alone does not stop whitespace-only values. See `poolside_v1`'s
+// `req_value` rule.
+
+/// A single space is exactly the TC-43 evasion: the value is non-empty, so
+/// the pre-A117 guard let it through.
+#[test]
+fn poolside_grammar_rejects_single_space_required_string() {
+    let compiled = compile(&web_search_tool_defs());
+    let single_space = "<tool_call>web_search<arg_key>query</arg_key>\
+                        <arg_value> </arg_value></tool_call>";
+
+    assert!(
+        !grammar_accepts(&compiled, single_space),
+        "a single-space required string must be un-generatable"
+    );
+}
+
+/// Whitespace-only isn't just ASCII space: tab + newline with no other
+/// content must also be rejected.
+#[test]
+fn poolside_grammar_rejects_tabs_and_newline_required_string() {
+    let compiled = compile(&web_search_tool_defs());
+    let blank = "<tool_call>web_search<arg_key>query</arg_key>\
+                <arg_value>\t\n</arg_value></tool_call>";
+
+    assert!(
+        !grammar_accepts(&compiled, blank),
+        "a tab/newline-only required string must be un-generatable"
+    );
+}
+
+/// The empty string must still be rejected post-A117 (behaviour carried
+/// over unchanged from A85/PR #1103, not just re-derived from the new rule).
+#[test]
+fn poolside_grammar_still_rejects_empty_required_string() {
+    let compiled = compile(&web_search_tool_defs());
+    let empty = "<tool_call>web_search<arg_key>query</arg_key>\
+                <arg_value></arg_value></tool_call>";
+
+    assert!(
+        !grammar_accepts(&compiled, empty),
+        "an empty required string must remain un-generatable"
+    );
+}
+
+/// A single non-whitespace character is enough — the guard requires ONE
+/// non-blank byte, not any minimum length beyond that.
+#[test]
+fn poolside_grammar_accepts_single_char_required_string() {
+    let compiled = compile(&web_search_tool_defs());
+    let one_char = "<tool_call>web_search<arg_key>query</arg_key>\
+                    <arg_value>a</arg_value></tool_call>";
+
+    assert!(grammar_accepts(&compiled, one_char));
+}
+
+/// The FIRST character after `<arg_value>` may still be whitespace — the
+/// guard requires a non-blank byte SOMEWHERE in the value, not that the
+/// value starts with one.
+#[test]
+fn poolside_grammar_accepts_leading_space_before_required_content() {
+    let compiled = compile(&web_search_tool_defs());
+    let leading_space = "<tool_call>web_search<arg_key>query</arg_key>\
+                         <arg_value> a</arg_value></tool_call>";
+
+    assert!(
+        grammar_accepts(&compiled, leading_space),
+        "leading whitespace before real content must remain ACCEPTED"
+    );
+}
+
+/// Non-string required parameters are untouched by the A117 guard: `seats`
+/// (required, type `number`) is unconstrained content, exactly as before.
+#[test]
+fn poolside_grammar_required_non_string_still_unconstrained() {
+    let compiled = compile(&mixed_tool_defs());
+    let ok = "<tool_call>book<arg_key>seats</arg_key>\
+             <arg_value>4</arg_value></tool_call>";
+
+    assert!(grammar_accepts(&compiled, ok));
+}
+
+/// Optional strings are explicitly OUT OF SCOPE for A117 (the PR #1103
+/// commit message scoped the empty-string guard to required strings only,
+/// and this ticket doesn't widen that). A whitespace-only optional value
+/// is accepted today and must remain accepted — `optpair`'s `value ::=
+/// value_part*` rule is untouched by this change.
+#[test]
+fn poolside_grammar_optional_string_whitespace_only_unchanged() {
+    let compiled = compile(&mixed_tool_defs());
+    let optional_space = "<tool_call>book<arg_key>note</arg_key>\
+                          <arg_value> </arg_value></tool_call>";
+
+    assert!(
+        grammar_accepts(&compiled, optional_space),
+        "A117 must not touch optional strings: whitespace-only optional \
+         values are accepted both before and after this change"
+    );
+}
