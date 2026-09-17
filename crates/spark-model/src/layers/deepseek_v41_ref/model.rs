@@ -364,7 +364,7 @@ pub fn forward(
         })
         .collect();
     let mut pre_mix: Vec<f32> = (0..s)
-        .flat_map(|_| (0..hc).map(|cpy| if cpy == 0 { 1.0 } else { 0.0 }))
+        .flat_map(|_| (0..hc).map(|stream| if stream == 0 { 1.0 } else { 0.0 }))
         .collect();
     let icfg = c.indexer_cfg();
     let mut traces = Vec::with_capacity(c.n_layers);

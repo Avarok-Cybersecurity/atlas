@@ -53,7 +53,7 @@ fn block_geom(t: DqType) -> (usize, usize) {
 }
 
 /// Raw bytes of expert `e` inside a stacked `[k, n, experts]` tensor (GGUF dims innermost-first).
-fn expert_slice<'a>(l: &'a Located, e: usize) -> (&'a [u8], usize) {
+fn expert_slice(l: &Located, e: usize) -> (&[u8], usize) {
     let dims = &l.info.dims;
     assert_eq!(
         dims.len(),
