@@ -57,6 +57,13 @@ pub struct AppState {
     pub vision_config: Option<atlas_core::config::VisionConfig>,
     /// Optional vLLM-style image area cap applied before vision patching.
     pub vision_max_pixels: Option<usize>,
+    /// The ViT scratch bounds, read ONCE from the encoder at boot.
+    ///
+    /// Lets the chat path refuse an oversized request before decode, rather
+    /// than letting it reach `check_packed_rows` inside the forward pass — a
+    /// 500 for something the request itself already determines.
+    /// `None` on a text-only serve.
+    pub vision_capacity: Option<spark_model::VisionCapacity>,
     /// Whether (and how) to fetch `image_url` parts carrying an http(s) URL.
     /// Default-disabled; see `api::chat::remote_image` for why this one
     /// capability is opt-in rather than default-ON with a kill-switch.

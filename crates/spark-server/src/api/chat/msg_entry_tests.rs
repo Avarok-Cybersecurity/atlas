@@ -119,6 +119,7 @@ mod build_tests {
         match build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -126,6 +127,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             msgs,
             tools_active,
@@ -172,6 +174,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -179,6 +182,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             false,
@@ -213,6 +217,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -220,6 +225,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             false,
@@ -235,6 +241,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -242,6 +249,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             false,
@@ -263,6 +271,7 @@ mod build_tests {
         let out = build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -270,6 +279,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &messages,
             true,
@@ -303,6 +313,7 @@ mod build_tests {
         match build_msg_entries(
             None,
             None,
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -310,6 +321,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &[url_msg],
             false,
@@ -333,6 +345,9 @@ mod build_tests {
         let enabled = build_msg_entries(
             None,
             None,
+            // No encoder on this path, so no capacity to fit against: the
+            // budget is None and preprocessing behaves exactly as before.
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -340,6 +355,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             true,
@@ -357,6 +373,9 @@ mod build_tests {
         let disabled = build_msg_entries(
             None,
             None,
+            // No encoder on this path, so no capacity to fit against: the
+            // budget is None and preprocessing behaves exactly as before.
+            None,
             &crate::api::chat::remote_image::RemoteImagePolicy::default(),
             &crate::api::chat::msg_entry::VideoDecode {
                 ffmpeg: &spark_model::video_decode_ffmpeg::FfmpegPolicy {
@@ -364,6 +383,7 @@ mod build_tests {
                     ..Default::default()
                 },
                 fps: 2.0,
+                fit_policy: Default::default(),
             },
             &msgs,
             true,

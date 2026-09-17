@@ -113,7 +113,13 @@ pub(super) fn start_new_requests(
     let vision_codispatch = std::env::var("ATLAS_VISION_CODISPATCH")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    const VISION_P_MAX: usize = 6400; // VisionEncoder scratch cap (Σ pre-merge patches)
+    // 🪤 WAS a hardcoded `6400`, which is FALLBACK_MAX_PATCHES and NOT what this
+    // checkpoint runs — the encoder reports 16384. A literal here is a second
+    // source of truth for a number the encoder already owns, and it was silently
+    // 2.56x too small. This arm only ever UNDER-admitted, so the disagreement
+    // never surfaced as a fault; it just declined work it could have taken.
+    // `model` is in scope, so ask it.
+    let vision_p_max: usize = model.vision_capacity().map(|c| c.p_max).unwrap_or(6400);
     let mut vision_slices: Vec<VisionSlice> = vec![VisionSlice::default(); new_reqs.len()];
     if vision_codispatch && chunked {
         let mut batched_idx: Vec<usize> = Vec::new();
@@ -140,7 +146,7 @@ pub(super) fn start_new_requests(
                 .iter()
                 .map(|it| it.t_len() * it.grid_h * it.grid_w)
                 .sum();
-            if running_patches + req_patches > VISION_P_MAX {
+            if running_patches + req_patches > vision_p_max {
                 overflow = true;
                 break;
             }

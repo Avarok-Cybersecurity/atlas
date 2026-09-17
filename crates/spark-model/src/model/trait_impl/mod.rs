@@ -76,6 +76,12 @@ impl Model for TransformerModel {
     ) -> Result<Vec<(usize, usize, usize, usize)>> {
         self.prepare_vision_embed_batched_dispatch(per_request)
     }
+    /// The encoder's own scratch bounds, for the HTTP-layer early refusal.
+    /// `None` when this model has no vision encoder (text-only serve).
+    fn vision_capacity(&self) -> Option<crate::layers::vision_encoder::VisionCapacity> {
+        self.vision_encoder.as_ref().map(|ve| ve.capacity())
+    }
+
     fn set_vision_slice_base(&self, row_base: usize, grid_base: usize, owned_images: usize) {
         *self.vision_row_base.lock() = row_base;
         *self.vision_grid_base.lock() = grid_base;

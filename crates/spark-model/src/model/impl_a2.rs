@@ -346,11 +346,15 @@ impl TransformerModel {
             .checked_mul(ve.out_hidden_size)
             .and_then(|e| e.checked_mul(2))
             .ok_or_else(|| anyhow::anyhow!("ep_exchange_vision: row payload overflows"))?;
+        // Bound against the ROW budget: this writes into buf_out, whose size is
+        // `out_rows`, not `p_max`. 🪤 Head and worker must derive out_rows from
+        // the SAME config or the broadcast length disagrees across ranks — the
+        // rank-1-blind failure class.
         anyhow::ensure!(
-            n_rows <= ve.p_max,
-            "ep_exchange_vision: {n_rows} rows exceed encoder capacity {} — the \
-             broadcast would write past buf_out",
-            ve.p_max
+            n_rows <= ve.out_rows,
+            "ep_exchange_vision: {n_rows} rows exceed the encoder row budget {} — \
+             the broadcast would write past buf_out",
+            ve.out_rows
         );
         comm.broadcast(ve.scratch().buf_out.0, byte_len, 0)?;
 
