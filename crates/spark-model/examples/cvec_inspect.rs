@@ -62,7 +62,11 @@ fn main() -> anyhow::Result<()> {
         smin = smin.min(scales[il]);
         smax = smax.max(scales[il]);
         let row = &table[il * hidden..(il + 1) * hidden];
-        let n = row.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+        let n = row
+            .iter()
+            .map(|x| (*x as f64) * (*x as f64))
+            .sum::<f64>()
+            .sqrt();
         assert!((n - 1.0).abs() < 1e-5, "layer {il} stored norm {n}");
     }
     println!("  per-layer scale: min={smin} max={smax}  (stored rows all unit norm)");
@@ -70,7 +74,10 @@ fn main() -> anyhow::Result<()> {
     // Cross-layer coherence: one feature carried across depth, or per-layer
     // noise? Near-orthogonal rows would mean the latter.
     let dot = |x: &[f32], y: &[f32]| -> f64 {
-        x.iter().zip(y).map(|(p, q)| (*p as f64) * (*q as f64)).sum()
+        x.iter()
+            .zip(y)
+            .map(|(p, q)| (*p as f64) * (*q as f64))
+            .sum()
     };
     let mut adj = Vec::new();
     for w in active.windows(2) {

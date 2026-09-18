@@ -57,7 +57,11 @@ fn unit(hidden: usize, seed: usize) -> Vec<f32> {
     let mut v: Vec<f32> = (0..hidden)
         .map(|i| (((i * 2654435761 + seed * 40503) % 1000) as f32 / 500.0) - 1.0)
         .collect();
-    let n = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let n = v
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     for x in v.iter_mut() {
         *x = (*x as f64 / n) as f32;
     }
@@ -75,7 +79,10 @@ fn spec(start: usize, end: usize, scale: f32, mode: CvecMode) -> ControlVectorSp
 }
 
 fn norm(row: &[f32]) -> f64 {
-    row.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt()
+    row.iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt()
 }
 
 #[test]
@@ -105,8 +112,13 @@ fn project_mode_folds_the_norm_into_the_scale() {
     // vector. Mirroring that is what makes a scaled file portable both ways.
     let h = 16;
     let scaled: Vec<f32> = unit(h, 1).iter().map(|x| x * 3.0).collect();
-    let (table, scales) =
-        build_table(&gguf(&[(1, scaled)]), &spec(1, 1, 1.0, CvecMode::Project), h, 4).unwrap();
+    let (table, scales) = build_table(
+        &gguf(&[(1, scaled)]),
+        &spec(1, 1, 1.0, CvecMode::Project),
+        h,
+        4,
+    )
+    .unwrap();
 
     assert!((scales[1] - 3.0).abs() < 1e-5, "scale was {}", scales[1]);
     assert!((norm(&table[h..2 * h]) - 1.0).abs() < 1e-5);
@@ -116,8 +128,13 @@ fn project_mode_folds_the_norm_into_the_scale() {
 fn user_scale_multiplies_the_folded_norm() {
     let h = 16;
     let scaled: Vec<f32> = unit(h, 1).iter().map(|x| x * 2.0).collect();
-    let (_, scales) =
-        build_table(&gguf(&[(1, scaled)]), &spec(1, 1, 0.5, CvecMode::Project), h, 4).unwrap();
+    let (_, scales) = build_table(
+        &gguf(&[(1, scaled)]),
+        &spec(1, 1, 0.5, CvecMode::Project),
+        h,
+        4,
+    )
+    .unwrap();
     assert!((scales[1] - 1.0).abs() < 1e-5, "scale was {}", scales[1]);
 }
 
@@ -125,8 +142,13 @@ fn user_scale_multiplies_the_folded_norm() {
 fn add_mode_keeps_the_raw_vector_and_the_user_scale() {
     let h = 16;
     let raw: Vec<f32> = unit(h, 1).iter().map(|x| x * 4.0).collect();
-    let (table, scales) =
-        build_table(&gguf(&[(1, raw.clone())]), &spec(1, 1, 0.1, CvecMode::Add), h, 4).unwrap();
+    let (table, scales) = build_table(
+        &gguf(&[(1, raw.clone())]),
+        &spec(1, 1, 0.1, CvecMode::Add),
+        h,
+        4,
+    )
+    .unwrap();
 
     assert!((scales[1] - 0.1).abs() < 1e-6);
     // NOT normalized: the additive arm's magnitude is part of the vector.
@@ -273,8 +295,13 @@ fn rejects_a_layer_zero_direction() {
 
 #[test]
 fn rejects_a_non_gguf_file() {
-    let e = build_table(b"not a gguf at all", &spec(1, 1, 1.0, CvecMode::Project), 16, 4)
-        .unwrap_err()
-        .to_string();
+    let e = build_table(
+        b"not a gguf at all",
+        &spec(1, 1, 1.0, CvecMode::Project),
+        16,
+        4,
+    )
+    .unwrap_err()
+    .to_string();
     assert!(e.contains("control-vector GGUF"), "{e}");
 }

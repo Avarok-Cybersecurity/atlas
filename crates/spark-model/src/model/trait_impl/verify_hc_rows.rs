@@ -443,11 +443,9 @@ impl TransformerModel {
                     )?;
                 }
                 self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
-                // INVARIANT: every exit from this loop body applies the
-                // control vector exactly once, over all K rows at
-                // `hc_row_offset = 0`. The per-row bodies above steer nothing
-                // themselves — they run at `row_ctx`, one row each, and the
-                // highway is only complete for this layer once they all have.
+                // INVARIANT: all THREE exits below steer once, over all K rows
+                // at offset 0 — the per-row bodies run at `row_ctx` and the
+                // highway is only complete once they all have.
                 self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
                 continue;
             }
@@ -465,7 +463,6 @@ impl TransformerModel {
                     &ctx,
                     stream,
                 )?;
-                // See the INVARIANT above: this exit steers too.
                 self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
                 continue;
             }
@@ -484,7 +481,6 @@ impl TransformerModel {
                 stream,
             )?;
             self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
-            // See the INVARIANT above: the fallthrough K-row body steers too.
             self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
         }
         drop(kv_cache);

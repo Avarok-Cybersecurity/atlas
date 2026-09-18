@@ -204,7 +204,10 @@ pub fn build_table(
         }
     }
 
-    ensure!(found > 0, "control vector: the file has no `direction.*` tensors");
+    ensure!(
+        found > 0,
+        "control vector: the file has no `direction.*` tensors"
+    );
     let active = scales.iter().filter(|s| **s != 0.0).count();
     ensure!(
         active > 0,

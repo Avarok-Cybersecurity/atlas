@@ -175,7 +175,11 @@ fn filter_adapter_cohort(
     let cohort = active
         .first()
         .map(|a| (a.seq.adapter_slot, a.seq.cvec_id))
-        .or_else(|| prefilling.first().map(|p| (p.seq.adapter_slot, p.seq.cvec_id)));
+        .or_else(|| {
+            prefilling
+                .first()
+                .map(|p| (p.seq.adapter_slot, p.seq.cvec_id))
+        });
     // Nothing in flight: the FIRST request of this wave defines the cohort.
     // Without this, two requests naming different adapters that arrive in the
     // same wave are both admitted into an empty batch and poison each other —
@@ -188,10 +192,7 @@ fn filter_adapter_cohort(
         },
     };
     let variant = |slot, cvec| {
-        spark_model::control_vector_registry::compose_variant_id(
-            model.adapter_id_for(slot),
-            cvec,
-        )
+        spark_model::control_vector_registry::compose_variant_id(model.adapter_id_for(slot), cvec)
     };
     let cohort_id = variant(cohort_slot, cohort_cvec);
     let (admitted, deferred): (Vec<_>, Vec<_>) = new_reqs

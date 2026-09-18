@@ -5,7 +5,10 @@
 use super::*;
 
 fn table() -> Vec<(String, u64)> {
-    vec![("refusal".to_string(), 0xAAAA), ("style".to_string(), 0xBBBB)]
+    vec![
+        ("refusal".to_string(), 0xAAAA),
+        ("style".to_string(), 0xBBBB),
+    ]
 }
 
 #[test]

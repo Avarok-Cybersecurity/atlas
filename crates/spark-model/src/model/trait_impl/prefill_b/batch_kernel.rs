@@ -614,7 +614,14 @@ impl TransformerModel {
             // cu_seqlens SSOT (Σ proc_count under varlen), not `proc_count *
             // n`, which over-counts on a partial cache hit and would steer
             // phantom rows past the packed data.
-            self.cvec_after_layer(&ctx, "prefill_batched", cvec_id, layer_idx, gdn_bufs.total_len, stream)?;
+            self.cvec_after_layer(
+                &ctx,
+                "prefill_batched",
+                cvec_id,
+                layer_idx,
+                gdn_bufs.total_len,
+                stream,
+            )?;
         }
 
         // DIAG: detect cross-stream physical-block sharing (co-dispatch KV

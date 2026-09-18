@@ -211,13 +211,10 @@ impl InferenceRequest {
         }
     }
 
-    /// Per-request control-vector identity (`0` = no steering). Copied onto
-    /// `SequenceState.cvec_id` at prefill, and composed with the adapter id
-    /// into the prefix-cache variant key.
+    /// Control-vector identity (`0` = none); composed into the variant key.
     pub fn cvec_id(&self) -> u64 {
         match self {
-            InferenceRequest::Blocking { cvec_id, .. } => *cvec_id,
-            InferenceRequest::Streaming { cvec_id, .. } => *cvec_id,
+            Self::Blocking { cvec_id, .. } | Self::Streaming { cvec_id, .. } => *cvec_id,
         }
     }
 
