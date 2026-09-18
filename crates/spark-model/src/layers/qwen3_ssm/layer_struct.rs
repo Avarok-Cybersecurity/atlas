@@ -14,11 +14,11 @@
 //! be visible to nobody but this file. `pub(super)` from here reaches exactly
 //! the set it reached before.
 
-use spark_runtime::gpu::{DevicePtr, KernelHandle};
 use crate::layers::FfnComponent;
 use crate::layers::ops;
 use crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers;
 use crate::weight_map::{DenseWeight, Fp8Weight, QuantizedWeight, SsmWeights};
+use spark_runtime::gpu::{DevicePtr, KernelHandle};
 
 /// Qwen3-Next SSM/GDN layer (36 of 48 layers).
 ///

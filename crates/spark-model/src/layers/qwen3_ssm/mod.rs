@@ -28,7 +28,6 @@ mod layer_struct;
 mod ple_seq;
 pub use layer_struct::Qwen3SsmLayer;
 
-
 // Kernel-selection helpers moved to `kernel_select.rs` (≤500 LoC split).
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────

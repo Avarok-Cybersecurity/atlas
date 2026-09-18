@@ -220,10 +220,12 @@ impl BlockDiffusionDraftHead {
             // (byte-identical output; 2-stage ran at ~1/3 of DRAM peak at
             // M=64). `AVAROK_DFLASH_FP8_GEMM_P2=1` pins the 2-stage original.
             fp8_gemm_n128_row_scaled: {
-                let pin_p2 = std::env::var("AVAROK_DFLASH_FP8_GEMM_P2").ok().as_deref() == Some("1");
+                let pin_p2 =
+                    std::env::var("AVAROK_DFLASH_FP8_GEMM_P2").ok().as_deref() == Some("1");
                 // Preference: `_k64` (64 B per weight row per K step) ->
                 // `_p4` (4-stage ring) -> original. All three byte-identical.
-                let pin_p4 = std::env::var("AVAROK_DFLASH_FP8_GEMM_P4").ok().as_deref() == Some("1");
+                let pin_p4 =
+                    std::env::var("AVAROK_DFLASH_FP8_GEMM_P4").ok().as_deref() == Some("1");
                 let mut h = spark_runtime::gpu::KernelHandle(0);
                 if !pin_p2 && !pin_p4 {
                     h = crate::layers::try_kernel(gpu, "w4a16", "fp8_gemm_t_row_scaled_k64");
