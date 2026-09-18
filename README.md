@@ -1,8 +1,8 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-corp-ondark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full-corp.svg">
-    <img src="assets/brand/logo-full-corp-ondark.svg" alt="Atlas Cybernetics Corp" width="660">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-full-ondark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/logo-full.svg">
+    <img src="assets/brand/logo-full-ondark.svg" alt="Avarok Inference Engine" width="660">
   </picture>
 </h1>
 

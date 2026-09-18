@@ -7,7 +7,11 @@ hand-corrected path as before; "varok" was set in the kit's wordmark typeface
 Avarok artwork, measured letter by letter, so the outline is the artwork and
 not a re-typeset approximation. `src/wordmark-paths.json` holds the outlines
 and the numbers; the masters in this directory are generated from it. The
-legal name in the corp lockup is unchanged until the company says otherwise.
+corporate lockup sets the wordmark over "Cybernetics Corp". With the wordmark
+now Avarok it would read "Avarok Cybernetics Corp", a legal name the company has
+not adopted: the entity is Atlas Cybernetics Corp. So the corporate lockup is
+not rendered anywhere until that is decided. Its masters exist and stay in
+step with the wordmark. The README and the blog footer use the full lockup.
 
 The same rules as `Atlas-Brand-Guidelines.pdf`, in text, for pasting into a wiki
 or a contributor doc.

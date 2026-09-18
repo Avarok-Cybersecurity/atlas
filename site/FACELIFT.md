@@ -196,7 +196,12 @@ hosted, because the brand kit's slide and letterhead templates use them.
 2. **Sales contact.** The site uses Kyle's address from the deck. A `sales@`
    alias would keep a personal inbox off a public page. One line in `brand.js`.
 3. **Form endpoint.** Do we want demo requests in a CRM? Then set `formEndpoint`.
-4. **The legal name.** Does the corp lockup stay "Atlas Cybernetics Corp"?
+4. **The legal name.** The corporate lockup sets the wordmark over "Cybernetics
+   Corp", so it now reads "Avarok Cybernetics Corp", which is not the entity's
+   name. It is therefore rendered nowhere: the README header and the blog
+   footer use the full lockup. If the company adopts that name, switch both
+   back to `kind="corp"` and the corp masters. The footers still say Atlas
+   Cybernetics Corp. in text, which is true today.
 5. **Author titles on the blog.** Changed from Atlas to Avarok. The people
    named should confirm their own.
 6. **Founders section.** Skipped for now on instruction. The company page has
