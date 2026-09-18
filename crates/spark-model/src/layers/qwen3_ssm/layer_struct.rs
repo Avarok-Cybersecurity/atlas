@@ -310,7 +310,7 @@ pub struct Qwen3SsmLayer {
     pub(super) gdn_wy3_resident_k: KernelHandle,
     pub(super) gdn_wy4_k: KernelHandle,
     /// Write-on-accept K=4 twin + its post-verdict fold (2026-09-03).
-    /// `KernelHandle(0)` when the module is absent; `AVAROK_NO_GDN_WOA=1`
+    /// `KernelHandle(0)` when the module is absent; `AVAROK_GDN_WOA` (opt-in; see gdn_flags.rs)
     /// disables. `woa_armed` is set by the batched verify that launched the
     /// twin and consumed by `gdn_fold_accepted`.
     pub(super) gdn_wy4_woa_k: KernelHandle,
