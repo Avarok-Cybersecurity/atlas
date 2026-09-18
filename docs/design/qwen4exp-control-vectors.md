@@ -19,10 +19,15 @@ between cases:
 Every path that ran collapsed its cosine: `pre` 0.0105-0.0137 -> `post`
 0.000000. 37 CPU tests, clippy clean.
 
-Not yet done: the nine forward paths a single-rank 8K run cannot reach are
-listed by the probe rather than silently passing (see §5), and no
-behavioural/KL measurement has been taken — the transfer question in §2 is
-still open.
+Also validated at **TP=2 x EP=2** (dgx-00 + gx10-9959): both ranks emit
+identical probe tables (41 decode / 82 prefill_chunked / 3441 verify_rows, same
+cvec id, `pre` matching to 6dp), which is the evidence the rank-replicated
+highway did not diverge. Getting there required transporting `cvec_id` to rank
+1 — see §8.
+
+Not yet done: the nine forward paths these runs cannot reach are listed by the
+probe rather than silently passing (see §5), and no KL measurement has been
+taken.
 
 ## 1. What the artifact actually is
 
@@ -99,11 +104,20 @@ Weight quantization never enters the arithmetic. There is no such thing as an
 "NVFP4 control vector" — the vector stays F32 (480 KB for all 48 layers) and
 the dot product accumulates in FP32.
 
-The *one* genuinely NVFP4-dependent question is *provenance*: this direction was
-extracted from **unsloth UD-Q2_K_XL** activations under llama.cpp, not from
-Atlas's NVFP4 graph. Whether it transfers is empirical, and §5 gives the cheap
-test. Refusal directions are generally robust across quantization, so the
-expectation is that it transfers — but that is a hypothesis, not a result.
+The *one* genuinely NVFP4-dependent question was *provenance*: this direction
+was extracted from **unsloth UD-Q2_K_XL** activations under llama.cpp, not from
+Atlas's NVFP4 graph.
+
+**Answered: it transfers.** Measured by Richard on the NVFP4 serve — 8/8 on
+prompts the base model refuses, where the steered arm answers correctly. A
+direction derived from a Q2_K_XL quant is behaviourally live on NVFP4, which
+retires the derivation fallback in §5 to a contingency rather than a planned
+step.
+
+Two things that pass rate does NOT establish: the distributional cost (no KL
+against the un-steered serve), and the effect on harmless prompts — the shipped
+`.json` reports movement on its harmless set too, and a rank-1 ablation at
+s=1.0 is a blunt instrument.
 
 For the record, LoRA is separately unwired here: `lora/loading.rs:29` rejects
 every family but `qwen3_5` dense, `holo3_1_moe` and `qwen3_6_moe`, and the
