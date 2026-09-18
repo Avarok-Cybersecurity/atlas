@@ -85,6 +85,11 @@ fn d2h_trace_tick() {
 /// Enqueue an H2D copy on `stream` and return without waiting. Shared by both
 /// async H2D entry points so the two differ ONLY in the ordering they add
 /// afterwards, never in the copy itself.
+fn h2d_sync_all() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_H2D_SYNC").is_ok_and(|v| v == "1"))
+}
+
 fn h2d_enqueue(src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
     let status =
         unsafe { cuMemcpyHtoDAsync_v2(dst.0, src.as_ptr() as *const c_void, src.len(), stream) };
@@ -392,6 +397,21 @@ impl GpuBackend for AvarokCudaBackend {
 
     fn copy_h2d_async(&self, src: &[u8], dst: DevicePtr, stream: u64) -> Result<()> {
         h2d_enqueue(src, dst, stream)?;
+        // ATLAS_H2D_SYNC=1 (diagnostic): drain the stream after every transient
+        // H2D so the source provably outlives the copy. On an integrated GPU
+        // with unified addressing (GB10) the driver may DMA a pageable source
+        // directly rather than stage it, and a caller that drops the buffer
+        // on return then races the copy engine.
+        if h2d_sync_all() {
+            let sync = unsafe { cuStreamSynchronize(stream) };
+            if sync != 0 {
+                bail!(
+                    "cuStreamSynchronize after H2D failed: {}",
+                    cuda_error_text(sync)
+                );
+            }
+            return Ok(());
+        }
         // The trait promises the caller may drop `src` right now. From PAGEABLE
         // memory the driver already made that true by staging the bytes before
         // returning. From PAGE-LOCKED memory it did not — the DMA engine reads
