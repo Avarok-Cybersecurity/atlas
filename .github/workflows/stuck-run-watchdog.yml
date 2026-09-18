@@ -61,6 +61,9 @@ jobs:
           # hosted pool is never touched, short enough that a wedged concurrency
           # group is released within one working pause.
           THRESHOLD: ${{ github.event.inputs.threshold_minutes || '25' }}
+          # Past this, an unreleasable run is treated as a GitHub-side wedge:
+          # warned about, not failed on. See the release loop.
+          WEDGE_HOURS: '24'
           # The schedule must act; a manual invocation defaults to looking only.
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run || 'false' }}
         run: |
@@ -110,6 +113,7 @@ jobs:
             exit 0
           fi
 
+          unreleased=''
           for id in $stuck; do
             name=$(printf '%s' "$enriched" | jq -r --argjson i "$id" '.[] | select(.id == $i) | .name')
             url="https://github.com/$REPO/actions/runs/$id"
@@ -123,6 +127,41 @@ jobs:
             if err=$(gh api -X POST "repos/$REPO/actions/runs/$id/force-cancel" 2>&1); then
               echo "::warning title=Released a stuck run::$name ($url) had created no jobs for over ${THRESHOLD}m and was holding its concurrency group. Force-cancelled."
             else
-              echo "::error title=Could not release a stuck run::$name ($url): $err"
+              # Old enough that it is a GitHub-side wedge, not a live blockage.
+              # Seen on atlas: runs `queued` with no jobs since 2026-09-13 refused
+              # BOTH force-cancel ("has not been queued yet") and DELETE (403).
+              # Nothing this job holds can touch them. Failing every sweep over
+              # them would email someone every fifteen minutes and train everyone
+              # to ignore the watchdog, so they warn instead.
+              #
+              # That does not hide a live blockage. If an old wedge holds a
+              # concurrency group, the runs queued behind it are themselves
+              # FRESH stuck runs, and those still fail this job.
+              created=$(printf '%s' "$enriched" | jq -r --argjson i "$id" '.[] | select(.id == $i) | .created_at')
+              age_h=$(( ( $(date -u +%s) - $(date -u -d "$created" +%s) ) / 3600 ))
+              if [ "$age_h" -ge "$WEDGE_HOURS" ]; then
+                echo "::warning title=GitHub-side wedge, needs GitHub Support::$name ($url) has been stuck ${age_h}h. Force-cancel refused: $err. Deletion is refused for these too. Report run $id to GitHub Support; nothing here can clear it."
+              else
+                echo "::error title=Could not release a stuck run::$name ($url): $err"
+                unreleased="$unreleased $id"
+              fi
             fi
           done
+
+          # A failed release must fail the JOB, not just annotate it. The first
+          # version of this loop logged ::error and exited 0, so for five days
+          # the watchdog ran every few hours, failed to release two runs, and
+          # reported success each time -- the "green hides the failure" shape it
+          # exists to catch, reproduced in the guard itself. Nobody reads the
+          # annotations on a green run.
+          #
+          # The case that exposed it: GitHub refuses force-cancel on a run that
+          # is `queued` with no jobs but "has not been queued yet" underneath
+          # (seen on a dynamic CodeQL run and a comment-triggered run). Nothing
+          # this job holds can release those; deleting the run record can. That
+          # is irreversible, so it is a human's call, and this names the command
+          # rather than doing it.
+          if [ -n "$unreleased" ]; then
+            echo "::error title=Stuck runs need a human::these could not be released:$unreleased. Retry is automatic every sweep; a run still refusing after ${WEDGE_HOURS}h is a GitHub-side wedge (force-cancel and DELETE both refuse it) and needs GitHub Support."
+            exit 1
+          fi
