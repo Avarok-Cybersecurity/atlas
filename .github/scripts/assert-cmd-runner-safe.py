@@ -40,6 +40,31 @@ PR_POOLS = (
     ("atlas-pr-cheap", "PR_CHEAP_RUNNER"),
     ("atlas-pr-rust", "PR_RUST_RUNNER"),
 )
+# The self-hosted macOS box is a THIRD pool with a third bargain. It is a
+# workstation that opts in for a while, so it is routed by variable
+# (MACOS_RUNNER_LABEL, repointed by cmd-runner-health.yml) rather than by the
+# fleet gate — the same exemption the command runner has, for the same reason.
+# What it is NOT exempt from is the fork rule: `metal-device-parity` ran on
+# [self-hosted, macOS, ARM64] with no same-repo guard, so a fork's PR would
+# have executed on that Mac. Neither the workflow nor this script covered it.
+MAC_POOL_MARKERS = ("MACOS_RUNNER_LABEL", "atlas-macos-burst")
+MAC_SELF_HOSTED = ("self-hosted", "macOS")
+
+
+def uses_mac_pool(job):
+    """Does this job route to the self-hosted Mac, by label or by variable?"""
+    blob = " ".join(str(job.get("runs-on")).split())
+    if any(m in blob for m in MAC_POOL_MARKERS):
+        return True
+    return all(m in blob for m in MAC_SELF_HOSTED)
+
+
+def mac_guarded(job):
+    """Same-repo guard anywhere the router can see it: runs-on or the job `if`."""
+    blob = " ".join((str(job.get("runs-on")) + " " + str(job.get("if", ""))).split())
+    return SAME_REPO_GUARD in blob or "head.repo.fork" in blob
+
+
 PR_LABEL = PR_POOLS[0][0]
 PR_VAR = PR_POOLS[0][1]
 # The exact comparison that keeps a fork off our hardware. Matched as a
@@ -150,6 +175,14 @@ def main():
                             f"{pool} — an explicit fork ref defeats the "
                             f"same-repo guard."
                         )
+            if uses_mac_pool(job) and triggers & FORK_CONTROLLED and not mac_guarded(job):
+                problems.append(
+                    f"{path.name}:{name} runs on the self-hosted macOS box "
+                    f"under a pull_request trigger without a same-repo guard "
+                    f"in runs-on or in the job's `if` — a fork's PR would "
+                    f"execute on that Mac. Route forks to macos-14, or add "
+                    f"{SAME_REPO_GUARD}."
+                )
             if not uses_cmd_runner(job):
                 continue
             bad = triggers & FORK_CONTROLLED
@@ -202,7 +235,8 @@ def main():
     print(
         f"no workflow on '{LABEL}' checks out untrusted code; every "
         f"job on {[p[0] for p in PR_POOLS]} under a pull_request trigger carries "
-        f"the same-repo guard, one expression per pool; and every job on those "
+        f"the same-repo guard, one expression per pool; the self-hosted macOS "
+        f"box is fork-guarded too; and every job on those "
         f"pools carries the fleet gate."
     )
     return 0
