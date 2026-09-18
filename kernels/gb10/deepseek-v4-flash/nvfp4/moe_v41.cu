@@ -65,6 +65,21 @@ extern "C" __global__ void moe_v41_scatter_add(
     for (unsigned int d = threadIdx.x; d < dim; d += blockDim.x) dst[d] += __bfloat162float(s[d]);
 }
 
+// acc[:] += src[0, :] + src[1, :] + ... + src[n_rows-1, :], added one row at a
+// time in row order (the same rounding sequence as n_rows sequential
+// accumulate launches). The single-token routed path: every expert row lands
+// in the ONE token row, so scatter_add's distinct-rows precondition does not
+// hold there and this kernel replaces it. Grid: ceil(dim / 256). Block: 256.
+extern "C" __global__ void moe_v41_sum_rows(
+    float* __restrict__ acc, const __nv_bfloat16* __restrict__ src,
+    const unsigned int n_rows, const unsigned int dim) {
+    const unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= dim) return;
+    float a = acc[d];
+    for (unsigned int r = 0; r < n_rows; ++r) a += __bfloat162float(src[(size_t)r * dim + d]);
+    acc[d] = a;
+}
+
 // Router logits at decode: one thread per (token, expert) output, strict
 // k = 0..K-1 accumulation in fp32 with the same expression as
 // dense_gemm_bf16_f32out, so the logits are bit-identical to the tiled kernel

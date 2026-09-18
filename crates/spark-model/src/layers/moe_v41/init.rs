@@ -38,6 +38,7 @@ impl MoeV41 {
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
                 gather: gpu.kernel(MODULE, "moe_v41_gather_rows")?,
                 scatter_add: gpu.kernel(MODULE, "moe_v41_scatter_add")?,
+                sum_rows: gpu.kernel(MODULE, "moe_v41_sum_rows")?,
                 quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
                 quant_d4: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d4_bf16")?,
                 mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
