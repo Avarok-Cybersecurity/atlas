@@ -123,12 +123,20 @@ def run_arm(base, model, arm, max_tokens, fh):
               flush=True)
         return None
     med = statistics.median(ratios)
+    # An arm that stopped writing code in half its responses is not measuring
+    # comment density any more, and its surviving ratio is drawn from whichever
+    # few answers still had a code block. Report the number, but disqualify it
+    # from the dose-response — otherwise one broken arm at the end of the ladder
+    # reads as "not ordered by dose" and impeaches the arms that are fine.
+    disqualified = nocode * 2 >= len(PROMPTS)
     print(f'  {arm:<12} comment ratio {med:5.3f}   '
           f'median {statistics.median(toks):6.0f} tok   '
           f'n={len(ratios)}/{len(PROMPTS)}'
           f'{f"   NO-CODE {nocode}" if nocode else ""}'
-          f'{f"   TRUNC {trunc}" if trunc else ""}', flush=True)
-    return med
+          f'{f"   TRUNC {trunc}" if trunc else ""}'
+          f'{"   DISQUALIFIED: stopped writing code" if disqualified else ""}',
+          flush=True)
+    return None if disqualified else med
 
 
 def main():
