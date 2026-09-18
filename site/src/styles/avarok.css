@@ -35,7 +35,11 @@
   font-feature-settings: 'kern' 1;
 }
 .av *, .av *::before, .av *::after { box-sizing: border-box; }
-.av a { color: inherit; text-decoration: none; }
+/* :where() keeps this reset at the specificity of a bare `a`. Written as
+   `.av a` it outranked every single class that colours a link, so primary
+   buttons inherited the page ink (near black on violet in the light theme,
+   2.86:1) and twenty five accent links rendered as plain text. */
+:where(.av) a { color: inherit; text-decoration: none; }
 .av a:focus-visible, .av button:focus-visible, .av input:focus-visible, .av select:focus-visible, .av textarea:focus-visible {
   outline: 2.5px solid var(--accent); outline-offset: 3px; border-radius: 4px;
 }

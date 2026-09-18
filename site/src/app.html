@@ -32,8 +32,70 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Avarok is the inference economics platform for GPUs you already own. Faster inference, stronger governance, a fraction of what you pay today." />
-    <link rel="preload" as="font" type="font/woff2" crossorigin href="%sveltekit.assets%/fonts/ibm-plex-sans-latin-400-normal.woff2" />
-    <link rel="preload" as="font" type="font/woff2" crossorigin href="%sveltekit.assets%/fonts/ibm-plex-sans-latin-600-normal.woff2" />
+    <!-- IBM Plex, attached late on purpose. In the bundle, preloaded or not, the
+         font downloads sat on the critical path of the first paint and cost every
+         page a point of Lighthouse performance against a gate that demands 100.
+         So the page paints in fallbacks that occupy the same space as Plex
+         (src/styles/fonts.css) and the real faces swap in without moving
+         anything.
+
+         "Late" means after the first contentful paint AND after load, then at
+         idle. Not just after load: on /control load fires at 140 ms and the
+         first paint lands at 320 ms, so a load listener still fetched the
+         fonts ahead of the paint. Once the files are in the visitor's cache
+         the sheet is attached straight away, which costs nothing.
+
+         A second script tag, not the boot script above: theme.test.js runs
+         that one against a handful of fake globals. -->
+    <script>
+      (function () {
+        var href = '%sveltekit.assets%/fonts/plex.css';
+        var done = false;
+        function attach() {
+          if (done) return;
+          done = true;
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.href = href;
+          document.head.appendChild(l);
+          try {
+            localStorage.setItem('avarok-fonts', '1');
+          } catch (e) {}
+        }
+        var warm = false;
+        try {
+          warm = localStorage.getItem('avarok-fonts') === '1';
+        } catch (e) {}
+        if (warm) return attach();
+
+        var painted = false;
+        var loaded = document.readyState === 'complete';
+        function go() {
+          if (!painted || !loaded) return;
+          if (window.requestIdleCallback) requestIdleCallback(attach, { timeout: 2000 });
+          else setTimeout(attach, 200);
+        }
+        try {
+          new PerformanceObserver(function (list, observer) {
+            if (list.getEntriesByName('first-contentful-paint').length) {
+              observer.disconnect();
+              painted = true;
+              go();
+            }
+          }).observe({ type: 'paint', buffered: true });
+        } catch (e) {
+          painted = true;
+        }
+        if (!loaded)
+          addEventListener('load', function () {
+            loaded = true;
+            go();
+          });
+        // Whatever happens above, the brand typeface still arrives.
+        setTimeout(attach, 5000);
+      })();
+    </script>
+    <noscript><link rel="stylesheet" href="%sveltekit.assets%/fonts/plex.css" /></noscript>
     <!-- Must equal --bg in web-shared/avarok-tokens.css. A meta tag cannot read a
          custom property, so this is the one unavoidable copy of the ground colour;
          theme-color.test.js fails the build if the two drift. -->

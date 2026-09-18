@@ -59,6 +59,44 @@ function avarokGenerators() {
 
 export default defineConfig({
   plugins: [glslStrip(), avarokGenerators(), sveltekit()],
+  build: {
+    rolldownOptions: {
+      output: {
+        // Two named chunks instead of one chunk per component.
+        //
+        // The bundler gives every module its own chunk when a different set of
+        // routes shares it, and the marketing site is thirty routes sharing
+        // forty small components in different combinations. The front page
+        // came out at 50 requests where main's made 27. Lighthouse serves over
+        // HTTP/1.1, six connections at a time, so each extra small file is a
+        // queued round trip ahead of the first paint: that alone held every
+        // page at 99 against a gate that demands 100.
+        //
+        //   av-chrome   what every route loads: the header, the footer, the
+        //               names and the nav tree, the page registry
+        //   av-ui       the marketing components
+        //
+        // Page copy (src/lib/content/home.js and friends) is deliberately NOT
+        // grouped: each stays its own file, loaded only by the pages that
+        // print it. The developer pages load av-chrome and nothing else from
+        // here, so their code is chunked exactly as before.
+        codeSplitting: {
+          groups: [
+            {
+              name: 'av-chrome',
+              priority: 30,
+              test: /[\\/](src[\\/]lib[\\/]components[\\/]avarok[\\/](SiteNav|SiteFooter)\.svelte|src[\\/]lib[\\/]content[\\/](brand|index|faq)\.js|web-shared[\\/]components[\\/](AtlasLockup|ThemeToggle)\.svelte|web-shared[\\/]theme\.js)/
+            },
+            {
+              name: 'av-ui',
+              priority: 20,
+              test: /[\\/]src[\\/]lib[\\/](components[\\/]avarok[\\/]|reveal\.js)/
+            }
+          ]
+        }
+      }
+    }
+  },
   server: {
     // app.css and the field import from web-shared/, outside this app's root.
     // The build resolves it regardless; the dev server has to be told.

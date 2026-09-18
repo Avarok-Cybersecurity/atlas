@@ -1,0 +1,56 @@
+/* =============================================================================
+   IBM Plex Sans and IBM Plex Mono, self hosted. SIL Open Font License, see the
+   two licence files beside this one. Latin subsets from the @fontsource
+   packages.
+
+   This sheet is deliberately NOT part of the site's bundle. src/app.html
+   attaches it after first paint on a first visit and at once on later visits.
+   Measured against the Lighthouse gate, which demands 100: with these faces in
+   the bundle every page dropped to 99, preloaded or not, because the font
+   downloads sat on the critical path of the first paint. With no web fonts at
+   all every page scored 100. Attached late, the page paints first in the
+   metric matched fallbacks (src/styles/fonts.css), and these swap in without
+   moving anything.
+   ========================================================================== */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./ibm-plex-sans-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./ibm-plex-sans-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('./ibm-plex-mono-latin-600-normal.woff2') format('woff2');
+}

@@ -27,7 +27,7 @@
     </div>
     {#each footer.cols as col}
       <div class="av-footer-col">
-        <h4>{col.heading}</h4>
+        <h2>{col.heading}</h2>
         {#each col.links as l}
           <a href={l.href} target={l.external ? '_blank' : undefined} rel={l.external ? 'noopener' : undefined}>{l.text}{#if l.external}<span aria-hidden="true"> ↗</span>{/if}</a>
         {/each}
@@ -57,7 +57,9 @@
   .av-footer-badge:hover { opacity: 1; }
   .av-footer-badge img { width: 132px; height: auto; }
   :global(html:not([data-theme='light'])) .av-footer-badge img { filter: grayscale(1) invert(1) brightness(1.15); }
-  .av-footer-col h4 { margin: 0 0 0.8rem; font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); font-weight: 600; }
+  /* h2, not h4. The footer follows a page whose last heading is an h2, and a
+     jump to h4 is an invalid heading order. The size is set here, not by level. */
+  .av-footer-col h2 { margin: 0 0 0.8rem; font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t3); font-weight: 600; }
   .av-footer-col a { display: block; font-size: 0.86rem; color: var(--t2); text-decoration: none; margin-bottom: 0.5rem; transition: color 0.15s; }
   .av-footer-col a:hover { color: var(--accent); }
   .av-footer-legal { border-top: 1px solid var(--border); }

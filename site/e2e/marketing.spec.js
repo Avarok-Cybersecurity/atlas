@@ -104,7 +104,7 @@ test.describe('navigation', () => {
     await page.goto(routes.pricing);
     await expect(page.locator('.av-brand')).toHaveAttribute('href', '/');
     for (const label of ['Platform', 'Solutions', 'Resources', 'Company']) {
-      await expect(page.locator('.av-footer h3, .av-footer h4', { hasText: label }).first()).toBeVisible();
+      await expect(page.locator('.av-footer h2', { hasText: label }).first()).toBeVisible();
     }
   });
 });

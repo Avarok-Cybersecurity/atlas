@@ -3,6 +3,15 @@
   or click. Mobile: a drawer with the same tree as accordions. Both render
   from `nav` in src/lib/content/brand.js, so a link exists once.
 
+  A menu's contents are rendered only while it is open. Rendered and hidden,
+  the three mega menus and the drawer, which repeats every link, doubled the
+  DOM of every page on the site (228 elements to 458 on /control) and that
+  main thread work landed before the first paint: it held the developer pages
+  at 99 in Lighthouse against a gate that demands 100. The empty containers
+  stay in the DOM so aria-controls always has a target. Every link here is
+  also in the footer, which is always rendered, so nothing is lost to a
+  crawler or to a visitor without JavaScript.
+
   Scoped styles on purpose: this component mounts on the marketing routes and
   on the developer routes (/engine, /control), which load different global
   stylesheets. Nothing here depends on either.
@@ -79,6 +88,7 @@
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
               </button>
               <div class="av-mega" id={`av-mega-${g.label}`} hidden={open !== g.label}>
+                {#if open === g.label}
                 <div class="av-mega-in" class:is-wide={g.columns.length > 1}>
                   {#each g.columns as col}
                     <div class="av-mega-col">
@@ -99,6 +109,7 @@
                     </div>
                   {/each}
                 </div>
+                {/if}
               </div>
             </li>
           {:else}
@@ -118,6 +129,7 @@
   </div>
 
   <div id="av-drawer" class="av-drawer" hidden={!drawer}>
+    {#if drawer}
     {#each nav.groups as g}
       {#if g.columns}
         <div class="av-drawer-group">
@@ -138,6 +150,7 @@
       {/if}
     {/each}
     <a class="av-cta av-cta-block" href={nav.cta.href} onclick={closeAll}>{nav.cta.text}</a>
+    {/if}
   </div>
 </header>
 {#if drawer}

@@ -1,56 +1,55 @@
 /* =============================================================================
-   IBM Plex Sans and IBM Plex Mono, self hosted.
+   The fallback faces IBM Plex swaps in over.
 
-   The typeface the brand kit's slide and document templates are set in.
-   Latin subsets from the @fontsource packages, SIL Open Font License (see
-   static/fonts/IBM-PLEX-*-LICENSE.txt). Self hosted rather than Google Fonts
-   on purpose: the Lighthouse gate asserts zero third party requests, and a
-   font fetched from another origin is one. `font-display: swap` keeps first
-   paint on the system stack the tokens fall back to.
+   The Plex faces themselves are in static/fonts/plex.css, a sheet src/app.html
+   attaches after first paint (that file says why: the Lighthouse gate demands
+   100 and web fonts in the bundle cost every page a point). So the first paint
+   is always in a fallback, and the fallback has to occupy exactly the space
+   Plex will.
 
-   The token file names the families (web-shared/avarok-tokens.css); this
-   file only loads them, so the blog, which does not ship the files, keeps
-   working on its fallbacks.
+   These two families do that. They are local Arial and Courier New, scaled
+   with size-adjust so their average advance equals Plex's, and given Plex's
+   ascent and descent, so a line of text is the same width and height before
+   and after the swap: the first paint is the largest paint and nothing moves.
+   Before them, a plain swap re-flowed the headline wider on every page, and on
+   /engine the hero receipt was first set in a narrower monospace and shifted
+   by 0.117 when Plex Mono replaced it, which alone took that page from 100 to
+   96.
+
+   The numbers come from the font files, the way next/font computes them:
+   average advance over English letter frequencies, Plex divided by fallback.
+   Plex Mono and Courier New share a 0.6 em advance, so that pair needs no
+   scaling at all. Arial, Helvetica and Liberation Sans share their metrics, as
+   do Courier New and Liberation Mono, so one set of numbers covers Windows,
+   macOS and Linux. If none is installed the family is skipped and the system
+   stack in the tokens takes over.
+
+   The token file names the families (web-shared/avarok-tokens.css). The blog
+   ships neither this file nor the fonts and keeps working on its system stack.
    ========================================================================== */
 @font-face {
-  font-family: 'IBM Plex Sans';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+  font-family: 'Plex Sans Fallback';
+  font-weight: 400 500;
+  src: local('Arial'), local('Helvetica'), local('Liberation Sans');
+  size-adjust: 101.13%;
+  ascent-override: 101.36%;
+  descent-override: 27.19%;
+  line-gap-override: 0%;
 }
 @font-face {
-  font-family: 'IBM Plex Sans';
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+  font-family: 'Plex Sans Fallback';
+  font-weight: 600 700;
+  src: local('Arial Bold'), local('Arial-BoldMT'), local('Helvetica Bold'), local('Helvetica-Bold'), local('Liberation Sans Bold');
+  size-adjust: 97.01%;
+  ascent-override: 105.66%;
+  descent-override: 28.35%;
+  line-gap-override: 0%;
 }
 @font-face {
-  font-family: 'IBM Plex Sans';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Sans';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-sans-latin-700-normal.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
-}
-@font-face {
-  font-family: 'IBM Plex Mono';
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url('/fonts/ibm-plex-mono-latin-600-normal.woff2') format('woff2');
+  font-family: 'Plex Mono Fallback';
+  src: local('Courier New'), local('Liberation Mono'), local('Courier');
+  size-adjust: 99.98%;
+  ascent-override: 102.52%;
+  descent-override: 27.5%;
+  line-gap-override: 0%;
 }
