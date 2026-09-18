@@ -190,6 +190,8 @@ allow_list=(
   # (per-file Ctx/State or sub-module extraction, Atlas idiom).
   "crates/avarok-kernels/build.rs"
   "crates/spark-model/examples/gdn_fla_e2e_gateb.rs"
+  # 2026-09-17: 511 LoC, grew by the watchdog rollback decline (DeepSeek-V4.1); split tracked in #1100.
+  "crates/spark-server/src/scheduler/rollback.rs"
   "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
   "crates/spark-model/src/layers/moe/forward.rs"
   "crates/spark-model/src/layers/mtp_head/forward.rs"
