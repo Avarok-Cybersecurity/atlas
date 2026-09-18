@@ -183,6 +183,9 @@ allow_list=(
   "crates/spark-model/src/layers/deepseek_v41_ref/model.rs"
   "crates/spark-runtime/src/weights/gguf.rs"
   "crates/spark-runtime/src/weights/gguf/names.rs"
+  # 2026-09-17: 511 LoC, crossed by the loop watchdog declining its rollback
+  # on a layer that cannot rewind (DeepSeek-V4.1, #1099). Split tracked in #1100.
+  "crates/spark-server/src/scheduler/rollback.rs"
   "crates/spark-model/src/layers/moe/forward_prefill_fp8.rs"
   "crates/spark-model/src/layers/moe/forward.rs"
   "crates/spark-model/src/layers/mtp_head/forward.rs"
