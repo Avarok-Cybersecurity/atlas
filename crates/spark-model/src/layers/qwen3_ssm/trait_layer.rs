@@ -9,6 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::Qwen3SsmLayer;
+use super::ple_seq::ple_seq_state;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
@@ -481,21 +482,4 @@ impl TransformerLayer for Qwen3SsmLayer {
         };
         ple.release_seq_state(&mut st, gpu)
     }
-}
-
-/// The PLE per-seq carry from a sequence's [`SsmLayerState`], lazily created
-/// on first use. Errors if the state is not an `SsmLayerState`.
-fn ple_seq_state<'a>(
-    ple: &crate::layers::ple::PleLayer,
-    state: &'a mut dyn LayerState,
-    gpu: &dyn GpuBackend,
-) -> Result<&'a mut crate::layers::ple::PleSeqState> {
-    let ssm = state
-        .as_any_mut()
-        .downcast_mut::<crate::layer::SsmLayerState>()
-        .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
-    if ssm.ple.is_none() {
-        ssm.ple = Some(ple.new_seq_state(gpu)?);
-    }
-    Ok(ssm.ple.as_mut().expect("just created"))
 }
