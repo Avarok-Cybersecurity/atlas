@@ -1,6 +1,6 @@
 // =============================================================================
-// /why-avarok. The lead page a buyer reads after the deck. Same three pillars
-// as the deck, each with what it is, how it is built, why it changes the
+// /why-avarok. The lead page a buyer reads after the pitch. The same three
+// pillars, each with what it is, how it is built, why it changes the
 // outcome and why it is hard to copy, then the chain, the delivery path and
 // the proof of value.
 // =============================================================================

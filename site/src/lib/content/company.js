@@ -91,8 +91,8 @@ export const careers = {
     { title: 'Receipts, not adjectives', body: 'Every claim ships with the measurement behind it, including the rungs we lost on the way.' },
     { title: 'A founding team', body: 'Small enough that the first hires decide how the company works.' }
   ],
-  // The deck calls these the crucial first hires. It does not say a search is
-  // open for any of them, so the page does not say "openings".
+  // These are the first hires the company plans. Nothing says a search is open
+  // for any of them yet, so the page does not say "openings".
   rolesTitle: 'The first hires',
   rolesHeading: 'Four roles we are building toward',
   roles: [

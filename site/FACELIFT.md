@@ -107,8 +107,8 @@ published ladder. `PROPOSED` is a price we have proposed and can change. `USER`
 is the visitor's to edit. The 70% claim on the front page is the second
 scenario with its defaults, and the page says "modeled".
 
-**Prices are proposed.** The pricing page says so on every tier. They came from
-the go to market plan and have not been approved as a public list.
+**Prices are proposed.** The pricing page says so on every tier. They have not
+been approved as a public list.
 
 **No customer logos.** The logo wall shows where the team worked before, under
 a line that says so, with a note that these are not customers or endorsements.
@@ -216,7 +216,7 @@ hosted, because the brand kit's slide and letterhead templates use them.
 ## Open questions for the team
 
 1. **Prices.** Are the proposed list prices approved to be public?
-2. **Sales contact.** The site uses Kyle's address from the deck. A `sales@`
+2. **Sales contact.** The site uses Kyle's direct address. A `sales@`
    alias would keep a personal inbox off a public page. One line in `brand.js`.
 3. **Form endpoint.** Do we want demo requests in a CRM? Then set `formEndpoint`.
 4. **The legal name.** The corporate lockup sets the wordmark over "Cybernetics
