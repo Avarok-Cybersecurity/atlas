@@ -854,13 +854,35 @@ pub(crate) fn load_model(
     // and nothing downstream would attribute that to the vector. Each load
     // logs the file's SHA-256, so comparing the two ranks' boot logs settles
     // it in one grep.
-    let cvec_specs = cli::control_vector_args::resolve(
-        &args.control_vector,
-        &args.control_vector_layers,
-        &args.control_vector_scale,
-        &args.control_vector_mode,
-        config.num_hidden_layers,
-    )?;
+    // `--disable-control-vectors` short-circuits the whole thing rather than
+    // loading and then refusing to use them. Nothing resident means no device
+    // memory held, no per-layer hook, and `decode_graphs_allowed` naturally
+    // true — the graph-eligibility question answers itself instead of needing
+    // a second switch to reason about.
+    let cvec_specs = if args.disable_control_vectors {
+        if !args.control_vector.is_empty() {
+            tracing::warn!(
+                "--disable-control-vectors: NOT loading the {} declared vector(s) ({}). \
+                 Requests naming one will get a 400 rather than being served unsteered.",
+                args.control_vector.len(),
+                args.control_vector
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        Vec::new()
+    } else {
+        cli::control_vector_args::resolve(
+            &args.control_vector,
+            &args.control_vector_layers,
+            &args.control_vector_scale,
+            &args.control_vector_mode,
+            config.num_hidden_layers,
+            &config.model_type,
+        )?
+    };
     // (name, id) mirrored into AppState so a request handler resolves a
     // selection without reaching for the model, the same way adapter_names is.
     let mut cvec_registered: Vec<(String, u64)> = Vec::with_capacity(cvec_specs.len());
@@ -876,6 +898,42 @@ pub(crate) fn load_model(
         );
     }
 
+    // Validate the server default HERE, at boot, rather than on the first
+    // request that omits the field. A typo in an operator flag should stop the
+    // serve coming up, not surface later as a 500 on somebody else's traffic.
+    if let Some(d) = args.default_control_vector.as_deref() {
+        anyhow::ensure!(
+            !args.disable_control_vectors,
+            "--default-control-vector {d} with --disable-control-vectors: these \
+             contradict each other. Drop one."
+        );
+        anyhow::ensure!(
+            cvec_registered.iter().any(|(n, _)| n == d),
+            "--default-control-vector '{d}' names a vector that no --control-vector \
+             declares (declared: {})",
+            if cvec_registered.is_empty() {
+                "none".to_string()
+            } else {
+                cvec_registered
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        tracing::info!(
+            "control vector '{d}' is the SERVER DEFAULT: requests that omit \
+             `control_vector` get it. Sending null, false or \"\" still means no \
+             steering."
+        );
+    }
+
+    if args.control_vector_capture {
+        model
+            .arm_control_vector_capture()
+            .context("--control-vector-capture")?;
+    }
+
     // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
     // by here the audit holds this model's COMPLETE lookup set — see
     // `serve_phases::kernel_gate`, which owns the report, the gate and
@@ -884,6 +942,21 @@ pub(crate) fn load_model(
     // and exits with the unresolved count as the process status.
     spark_runtime::progress::phase(7, "kernel audit");
     serve_phases::audit_and_gate(&args, &ptx_set)?;
+
+    // Agree with the other ranks about the control-vector registry BEFORE the
+    // worker enters its command loop.
+    //
+    // The per-request check already refuses an id a worker cannot resolve, so
+    // a divergence never steers half the model — but it refuses mid-request,
+    // and the head cannot turn that into a response, so the caller waits out
+    // its own timeout. Failing closed as a hang is still a bad failure.
+    //
+    // Checking here removes the possibility rather than improving the symptom,
+    // and it is the natural place: both ranks run this line, and a collective
+    // is a barrier.
+    model
+        .ep_check_control_vector_registry()
+        .context("control-vector registry handshake")?;
 
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;
@@ -1378,6 +1451,7 @@ pub(crate) fn load_model(
         tokenizer,
         model_name,
         control_vectors: cvec_registered,
+        default_control_vector: args.default_control_vector.clone(),
         adapter_name: nllb_adapter_name
             .clone()
             .or_else(|| lora_states.first().map(|l| l.name.clone())),
@@ -1391,7 +1465,12 @@ pub(crate) fn load_model(
         )),
         max_seq_len: args.max_seq_len,
         request_tx,
-        rotation_tx: if lora_states.is_empty() {
+        // Armed for LoRA rotation OR control-vector capture: the channel is
+        // generic scheduler-command plumbing and its LoRA-only gate was
+        // incidental. Capture's reset/dump ride it precisely because it is
+        // drained at QUIESCENCE, which is the property that keeps a dump from
+        // landing mid-forward.
+        rotation_tx: if lora_states.is_empty() && !args.control_vector_capture {
             None
         } else {
             Some(rotation_tx)

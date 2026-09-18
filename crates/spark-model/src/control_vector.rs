@@ -63,6 +63,10 @@ pub struct ControlVectorSpec {
     pub layer_start: usize,
     pub layer_end: usize,
     pub mode: CvecMode,
+    /// The model this is being loaded onto, checked against the file's
+    /// `controlvector.model_hint`. `None` skips the check — used by the
+    /// CPU-only unit tests, which have no model.
+    pub model_type: Option<String>,
 }
 
 /// A loaded control vector, owned by the model and borrowed by the forward
@@ -79,9 +83,13 @@ pub struct ControlVector {
     project_k: KernelHandle,
     add_k: KernelHandle,
     cos_k: KernelHandle,
-    /// SHA-256 of the vector file. Logged at boot so an EP/TP rank that loaded
-    /// a different file is detectable rather than silently divergent.
+    /// SHA-256 of the vector file.
     pub sha256: String,
+    /// The resolved configuration, retained because the request-visible
+    /// identity has to depend on it — see [`Self::config_identity`].
+    scale: f32,
+    layer_start: usize,
+    layer_end: usize,
     /// `AVAROK_CVEC_PROBE=1`: log `mean|cos(h, v)|` either side of every
     /// application. Resolved ONCE here and carried, per the levers rule — the
     /// consumer runs per layer per forward pass, which is exactly where an
@@ -92,6 +100,61 @@ pub struct ControlVector {
     /// costs essentially nothing, because decode graphs measured
     /// speed-neutral on this model (16.4 replay vs 16.5 eager).
     probe: bool,
+}
+
+/// Reduce a model identifier to its comparable core.
+///
+/// `controlvector.model_hint` follows llama.cpp's naming and Atlas's
+/// `model_type` follows its own, so the SAME model is spelled `qwen4exp` in the
+/// published refusal projection and `qwen4_exp` in this engine. Comparing those
+/// literally would reject the one artifact this feature shipped for, which is
+/// why the check normalises rather than demanding equality: lowercase, and drop
+/// everything that is not alphanumeric.
+fn normalize_model_id(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Reject a file that is not a control vector, or is one for another model.
+///
+/// Geometry alone does not establish identity. Two unrelated models can share a
+/// hidden size, and a direction derived for one applied to the other is not an
+/// error anywhere downstream — it is a quiet quality regression with no counter
+/// that would ever attribute it.
+fn validate_identity(gguf: &GgufFile, spec: &ControlVectorSpec) -> Result<()> {
+    // Both known producers write this: llama.cpp's exporter and
+    // `scripts/derive_control_vector.py`. Requiring it costs nothing real and
+    // turns "someone passed a model shard by mistake" into an immediate,
+    // legible failure rather than a confusing tensor-name error.
+    let arch = gguf.get_str("general.architecture").unwrap_or_default();
+    ensure!(
+        arch == "controlvector",
+        "control vector {}: general.architecture is {:?}, expected \"controlvector\". \
+         This file is not a control vector.",
+        spec.path.display(),
+        arch
+    );
+
+    // Advisory in the file, load-bearing here. Absent is tolerated — older
+    // hand-built vectors predate the convention — but a hint that disagrees
+    // with the model is refused.
+    if let (Some(hint), Some(model)) = (
+        gguf.get_str("controlvector.model_hint"),
+        spec.model_type.as_deref(),
+    ) && normalize_model_id(hint) != normalize_model_id(model)
+    {
+        bail!(
+            "control vector {}: controlvector.model_hint is {hint:?} but this model is \
+             {model:?}. A direction derived on a different model is not an error further \
+             down — matching hidden sizes make it load and steer, and the only symptom is \
+             output that is quietly worse. Re-derive against this model, or pass the \
+             intended file.",
+            spec.path.display()
+        );
+    }
+    Ok(())
 }
 
 /// The host half of the load: parse the GGUF and build the `[n_layer, hidden]`
@@ -124,9 +187,13 @@ pub fn build_table(
     );
 
     let gguf = GgufFile::parse(bytes).context("parsing the control-vector GGUF")?;
+    validate_identity(&gguf, spec)?;
     let mut table = vec![0.0f32; n_layer * hidden];
     let mut scales = vec![0.0f32; n_layer];
     let mut found = 0usize;
+    // Row norms of the ACTIVE layers under `add`, to catch a unit-normalised
+    // file being used with the operator that needs raw magnitudes.
+    let mut add_norms: Vec<f64> = Vec::new();
 
     for t in &gguf.tensors {
         let Some(suffix) = t.name.strip_prefix("direction.") else {
@@ -200,8 +267,49 @@ pub fn build_table(
                 }
                 scales[il] = spec.scale * norm as f32;
             }
-            CvecMode::Add => scales[il] = spec.scale,
+            CvecMode::Add => {
+                let norm = (row.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>()).sqrt();
+                ensure!(
+                    norm > 0.0,
+                    "control vector: {:?} is the zero vector, which would \
+                     silently no-op this layer",
+                    t.name
+                );
+                add_norms.push(norm);
+                scales[il] = spec.scale;
+            }
         }
+    }
+
+    // `add` applies the row VERBATIM under one global scalar, so a file of
+    // unit rows is the wrong artifact for it — and wrong in the quietest
+    // possible way. The published projection vector is unit-normalised, and
+    // using it here at scale 1.0 displaces the residual stream by ~1 against a
+    // norm of order 1e0..1e1, i.e. a nudge that produces output indistinguishable
+    // from no steering at all. That reads in a results table as "add mode does
+    // nothing" — a dose of zero published as a null result. It cost a full
+    // sweep here before anything noticed.
+    //
+    // Detected by MEASURING rather than by metadata, so it also catches the
+    // llama.cpp-era files that predate any magnitude convention. A genuine
+    // raw-magnitude file cannot look like this: |mean-diff| tracks the stream
+    // norm, which grows an order of magnitude across depth, so every active
+    // layer landing within 1% of exactly 1.0 is a normalisation signature and
+    // nothing else.
+    if spec.mode == CvecMode::Add
+        && add_norms.len() > 1
+        && add_norms.iter().all(|n| (n - 1.0).abs() < 1e-2)
+    {
+        bail!(
+            "control vector {}: every layer has |v| ~ 1.0, so this is a UNIT-normalised \
+             file, and it was loaded in `add` mode.\n`add` applies the row verbatim under \
+             one global scale, so unit rows make the dose meaningless — typically far too \
+             small to do anything, which looks exactly like the vector having no effect.\n\
+             Use the raw-magnitude file for `add` (`derive_control_vector.py --magnitude \
+             raw`), or use `project` mode with this one, which folds each row's norm into \
+             the per-layer scale and is what unit rows are for.",
+            spec.path.display()
+        );
     }
 
     ensure!(
@@ -267,8 +375,56 @@ impl ControlVector {
             add_k: gpu.kernel("control_vector", "cvec_add_highway")?,
             cos_k: gpu.kernel("control_vector", "cvec_cos_highway")?,
             sha256,
+            scale: spec.scale,
+            layer_start: spec.layer_start,
+            layer_end: spec.layer_end,
             probe: std::env::var("AVAROK_CVEC_PROBE").as_deref() == Ok("1"),
         })
+    }
+
+    /// Everything that changes the arithmetic, as one canonical string.
+    ///
+    /// The per-request id is derived from this and not from the name alone,
+    /// and that distinction is the whole point. Two ranks can each register
+    /// `"refusal"` while loading different FILES, MODES, SCALES or LAYER
+    /// RANGES. A name-derived id matches in every one of those cases, the
+    /// worker's "do I have this id?" check passes, and the ranks then steer
+    /// differently — silently, because nothing in the protocol disagrees. The
+    /// halves of the model simply compute different things.
+    ///
+    /// Folding the configuration in makes the ids *diverge* whenever the
+    /// configuration diverges, so the existing worker-side check stops being
+    /// decorative and starts failing closed.
+    ///
+    /// It also retires a second hazard: a different file loaded under an
+    /// existing name now yields a different id, so prefix-cache entries
+    /// computed under the old vector can no longer be served as hits.
+    ///
+    /// `scale` is hashed via `to_bits` because it is a config value being
+    /// compared for exact identity, not a number being compared for
+    /// closeness: 1.0 and 1.0000001 are different configurations and must get
+    /// different ids. (`to_bits` also makes this total — there is no NaN
+    /// scale, since the parser rejects non-finite values, but relying on that
+    /// from a distance would be fragile.)
+    pub fn config_identity(&self) -> String {
+        format!(
+            "sha256={} mode={:?} scale=0x{:08x} layers={}..={}",
+            self.sha256,
+            self.mode,
+            self.scale.to_bits(),
+            self.layer_start,
+            self.layer_end,
+        )
+    }
+
+    /// Free the device table.
+    ///
+    /// Consuming, because the table pointer is the whole object: anything that
+    /// could still call `apply` after this would be reading freed memory, and
+    /// taking ownership makes that a compile error rather than a rule.
+    pub fn release(self, gpu: &dyn GpuBackend) -> Result<()> {
+        gpu.free(self.directions)
+            .context("freeing the control-vector table")
     }
 
     /// Whether the cosine probe is armed. Read per layer, so this must stay a

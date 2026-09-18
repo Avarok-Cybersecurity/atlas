@@ -158,6 +158,14 @@ use crate::scheduling_policy::SchedulingPolicy;
 pub enum LoraCommand {
     /// Rotate the globally-active adapter to a RESIDENT slot by NAME.
     Rotate(String),
+    /// Zero the control-vector capture accumulator. Runs on this channel
+    /// because the channel is drained only at QUIESCENCE — a reset or dump
+    /// that landed mid-forward would leave a partial pass in the sum, which
+    /// is invisible in the resulting vector.
+    CaptureReset,
+    /// Write the capture accumulator to a path; the ack carries the token
+    /// count it represents.
+    CaptureDump(std::path::PathBuf),
     /// Dynamically LOAD the adapter at `dir` into pool `slot` (pool-size-1
     /// per-request weight change) and make it that slot's resident adapter.
     LoadIntoSlot {
@@ -193,6 +201,9 @@ pub enum LoraCommand {
 #[derive(Debug, Clone)]
 pub enum LoraAck {
     Done,
+    /// Tokens the dumped capture accumulator represents — the divisor the
+    /// offline derive step needs to turn the running sum into a mean.
+    Captured(u64),
     Promoted {
         slot: usize,
         evicted: Option<String>,
@@ -512,6 +523,14 @@ pub fn run(
             let rotations = std::mem::take(&mut pending.0.lock().rotations);
             for (cmd, ack) in rotations {
                 let res = match cmd {
+                    LoraCommand::CaptureReset => model
+                        .reset_control_vector_capture()
+                        .map(|()| LoraAck::Done)
+                        .map_err(|e| format!("{e:#}")),
+                    LoraCommand::CaptureDump(path) => model
+                        .dump_control_vector_capture(&path)
+                        .map(LoraAck::Captured)
+                        .map_err(|e| format!("{e:#}")),
                     LoraCommand::Rotate(name) => {
                         let r = model
                             .set_active_lora(&name)

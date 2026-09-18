@@ -1,0 +1,200 @@
+Explain in thorough detail, covering background, trade-offs and examples, how a hash table resolves collisions.
+Give a comprehensive walkthrough of how binary search works on a sorted array, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how to reverse a singly linked list in place, with plenty of context, alternatives and practical guidance.
+Describe at length what the difference between a stack and a queue is, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how quicksort partitions an array, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully why merge sort is stable and quicksort is not, including the reasoning behind each part and several illustrative examples.
+Unpack how a balanced binary search tree keeps its height logarithmic in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how a trie stores strings for fast prefix lookup, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how breadth-first search explores a graph, spelling out every step and explaining why each one matters.
+Walk me through how Dijkstra's algorithm finds shortest paths in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how dynamic programming avoids recomputing subproblems, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how a bloom filter trades accuracy for memory thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how reference counting differs from tracing garbage collection, covering what happens, why it matters and how it compares to the alternatives.
+Explain how a Python list comprehension differs from a for loop exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on what Python decorators do, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how Python generators produce values lazily.
+Give a comprehensive walkthrough of how the Global Interpreter Lock affects Python threading, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how virtual environments isolate Python dependencies, with plenty of context, alternatives and practical guidance.
+Describe at length how Rust ownership rules prevent data races, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on what the difference between String and str slices in Rust is, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how the Rust borrow checker reasons about lifetimes, including the reasoning behind each part and several illustrative examples.
+Unpack how Rust traits differ from interfaces in other languages in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how Result and Option encourage explicit error handling in Rust, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how the JavaScript event loop schedules callbacks, spelling out every step and explaining why each one matters.
+Walk me through how promises differ from plain callbacks in JavaScript in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on what closures are in JavaScript, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how the this keyword is bound in JavaScript thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how structural typing works in TypeScript, covering what happens, why it matters and how it compares to the alternatives.
+Explain how pointers and arrays relate to each other in C exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on what undefined behaviour means in C, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a compiler optimisation pass transforms code.
+Give a comprehensive walkthrough of how a linker resolves symbols between object files, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of what the difference between a static and a dynamic library is, with plenty of context, alternatives and practical guidance.
+Describe at length how virtual functions are dispatched in C++, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on what RAII means in C++, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how move semantics avoid unnecessary copies in C++, including the reasoning behind each part and several illustrative examples.
+Unpack how Go goroutines are scheduled onto operating system threads in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how Go channels coordinate concurrent work, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how a just-in-time compiler speeds up hot code paths, spelling out every step and explaining why each one matters.
+Walk me through how a generational garbage collector decides what to free in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how database indexes speed up queries, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how a query planner chooses a join strategy thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on what database normalisation is for, covering what happens, why it matters and how it compares to the alternatives.
+Explain how transactions provide atomicity and isolation exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on what the difference between an inner and an outer join is, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a write-ahead log protects a database from crashes.
+Give a comprehensive walkthrough of how connection pooling improves database throughput, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how git stores commits as a directed acyclic graph, with plenty of context, alternatives and practical guidance.
+Describe at length what git rebase does compared with git merge, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a merge conflict is resolved in git, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how git branches are simply pointers to commits, including the reasoning behind each part and several illustrative examples.
+Unpack how git bisect finds the commit that introduced a bug in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of what the git staging area is for, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how a pull request review workflow keeps a codebase healthy, spelling out every step and explaining why each one matters.
+Walk me through how to write a clear and useful commit message in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how unit tests differ from integration tests, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how test-driven development changes the way you write code thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how mocking isolates the unit under test, covering what happens, why it matters and how it compares to the alternatives.
+Explain how code coverage metrics can mislead you exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how property-based testing finds edge cases, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a continuous integration pipeline catches regressions early.
+Give a comprehensive walkthrough of how a debugger sets a breakpoint, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how to read a stack trace to locate a bug, with plenty of context, alternatives and practical guidance.
+Describe at length how print debugging compares with stepping through a debugger, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a memory profiler helps you find a leak, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how a flame graph shows where time is spent, including the reasoning behind each part and several illustrative examples.
+Unpack how rubber-duck debugging helps you find your own mistakes in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how to make an intermittent bug reproducible, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how HTTP request and response headers work, spelling out every step and explaining why each one matters.
+Walk me through what the difference between an HTTP GET and a POST is in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how REST and GraphQL APIs differ, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how DNS turns a domain name into an IP address thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how TCP guarantees ordered delivery, covering what happens, why it matters and how it compares to the alternatives.
+Explain how a CDN reduces page load time exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how HTTP caching headers control freshness, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how WebSockets keep a connection open.
+Give a comprehensive walkthrough of how a load balancer distributes traffic across servers, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how containers isolate processes from the host, with plenty of context, alternatives and practical guidance.
+Describe at length what the difference between a container image and a running container is, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a Dockerfile builds up image layers, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how Kubernetes keeps a deployment at the desired replica count, including the reasoning behind each part and several illustrative examples.
+Unpack how infrastructure as code makes environments reproducible in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how a reverse proxy sits in front of an application server, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how virtual memory maps pages to physical RAM, spelling out every step and explaining why each one matters.
+Walk me through how a CPU cache hierarchy reduces memory latency in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how context switching works in an operating system, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how a deadlock arises between two locks thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how a mutex differs from a semaphore, covering what happens, why it matters and how it compares to the alternatives.
+Explain how copy-on-write makes forking a process cheap exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how file permissions work on a Unix system, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a shell pipe connects the output of one command to another.
+Give a comprehensive walkthrough of how the shell expands globs and variables, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how environment variables are inherited by child processes, with plenty of context, alternatives and practical guidance.
+Describe at length how an init system supervises long-running services, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how cron schedules recurring jobs, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how regular expressions match text in grep, including the reasoning behind each part and several illustrative examples.
+Unpack how sed and awk process text streams in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how rsync transfers only the changed parts of a file, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how a lexer and a parser turn source code into a syntax tree, spelling out every step and explaining why each one matters.
+Walk me through how an interpreter differs from a compiler in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how a garbage-collected language manages heap memory, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how tail call optimisation removes stack frames thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how recursion consumes stack space, covering what happens, why it matters and how it compares to the alternatives.
+Explain how big-O notation describes algorithmic growth exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how amortised analysis explains dynamic array resizing, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how floating-point numbers are represented in binary.
+Give a comprehensive walkthrough of why adding 0.1 and 0.2 does not give exactly 0.3 in most languages, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how Unicode and UTF-8 encode text, with plenty of context, alternatives and practical guidance.
+Describe at length how a semantic version number communicates compatibility, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a package manager resolves dependency versions, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how a monorepo differs from many small repositories, including the reasoning behind each part and several illustrative examples.
+Unpack how feature flags let a team ship unfinished work safely in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how to write code review comments that are kind and useful, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how technical debt accumulates in a codebase, spelling out every step and explaining why each one matters.
+Walk me through how refactoring differs from rewriting in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how pair programming spreads knowledge across a team, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how documentation and inline comments serve different purposes thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how a style guide and an autoformatter reduce bikeshedding, covering what happens, why it matters and how it compares to the alternatives.
+Explain how an event-driven architecture decouples services exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how caching layers are invalidated without serving stale data, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a rainbow forms in the sky.
+Give a comprehensive walkthrough of why the sky appears blue, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how the tides are driven by the moon's gravity, with plenty of context, alternatives and practical guidance.
+Describe at length how plate tectonics shapes mountain ranges, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a hurricane draws energy from warm ocean water, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how the water cycle moves moisture around the planet, including the reasoning behind each part and several illustrative examples.
+Unpack how sedimentary rock layers record geological time in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how radiocarbon dating estimates the age of organic material, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how the periodic table is organised, spelling out every step and explaining why each one matters.
+Walk me through how a catalyst speeds up a chemical reaction in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on why ice floats on liquid water, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how soap molecules lift grease off a surface thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how a refrigerator moves heat out of its interior, covering what happens, why it matters and how it compares to the alternatives.
+Explain how an internal combustion engine turns fuel into motion exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how an electric motor turns current into rotation, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how a transformer changes voltage.
+Give a comprehensive walkthrough of how solar panels convert light into electricity, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how a lithium-ion battery stores and releases charge, with plenty of context, alternatives and practical guidance.
+Describe at length how noise-cancelling headphones cancel out sound waves, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a microwave oven heats food, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how camera lenses focus light onto a sensor, including the reasoning behind each part and several illustrative examples.
+Unpack how fibre-optic cable carries light over long distances in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how GPS satellites let a receiver work out its position, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how radio waves carry a signal, spelling out every step and explaining why each one matters.
+Walk me through how a transistor switches current in a semiconductor in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how a bridge distributes load through its structure, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how an aeroplane wing generates lift thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how a sailing boat can make progress against the wind, covering what happens, why it matters and how it compares to the alternatives.
+Explain how a moving bicycle stays upright exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how sound travels differently through air and water, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how the Doppler effect changes the pitch of a passing siren.
+Give a comprehensive walkthrough of how telescopes gather light from distant stars, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how a star like the sun produces energy, with plenty of context, alternatives and practical guidance.
+Describe at length how the seasons arise from the tilt of the Earth's axis, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how a compass needle aligns with the Earth's magnetic field, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how natural selection changes a population over generations, including the reasoning behind each part and several illustrative examples.
+Unpack how DNA stores genetic information in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how enzymes speed up biological reactions, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how bees pollinate flowering plants, spelling out every step and explaining why each one matters.
+Walk me through how a compost heap turns kitchen scraps into soil in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how statistics distinguishes correlation from causation, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how a controlled experiment isolates a single variable thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how compound interest grows a balance over time, covering what happens, why it matters and how it compares to the alternatives.
+Explain how probability explains the birthday paradox exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how prime numbers underpin modular arithmetic, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how the Fibonacci sequence shows up in nature.
+Give a comprehensive walkthrough of how a map projection distorts the shape of the globe, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how paper is made from wood pulp, with plenty of context, alternatives and practical guidance.
+Describe at length how a suspension bridge's cables carry tension, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how photosynthesis converts sunlight into chemical energy, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how to brew a good cup of coffee at home, including the reasoning behind each part and several illustrative examples.
+Unpack how bread dough rises with yeast in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how searing meat changes its flavour, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how to sharpen a kitchen knife, spelling out every step and explaining why each one matters.
+Walk me through how to keep fresh herbs usable for longer in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how to make a simple tomato sauce from scratch, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how to fold a fitted sheet neatly thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how to get a coffee stain out of a shirt, covering what happens, why it matters and how it compares to the alternatives.
+Explain how to change a bicycle tyre exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how to read a train timetable, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how to pack a suitcase efficiently.
+Give a comprehensive walkthrough of how to plan a walking route in an unfamiliar city, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how to pick ripe avocados at the shop, with plenty of context, alternatives and practical guidance.
+Describe at length how to water houseplants without overwatering them, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how to start a small herb garden on a balcony, covering the concepts, the steps and the trade-offs involved.
+Take your time and explain fully how to assemble a flat-pack bookshelf, including the reasoning behind each part and several illustrative examples.
+Unpack how to hang a picture straight on a wall in depth: the background, how it works, when to use it, and where people commonly go wrong.
+I would like a long, thorough treatment of how to tie a secure knot for a clothesline, with analogies, examples and a discussion of the alternatives.
+Elaborate extensively on how to pitch a tent in windy weather, spelling out every step and explaining why each one matters.
+Walk me through how to read contour lines on a hiking map in as much detail as you can, covering the theory, the practice and the common mistakes.
+Produce a comprehensive explainer on how to keep a sourdough starter alive, including definitions, mechanics, trade-offs and concrete examples.
+Discuss how to make cold-brew tea thoroughly, exploring the background, the details, the caveats and a few concrete examples.
+Give me the full picture on how to organise a bookshelf by subject, covering what happens, why it matters and how it compares to the alternatives.
+Explain how to write a clear thank-you note exhaustively, as if you were writing a chapter of a reference book, with examples and commentary.
+Go deep on how to take a good photograph in low light, covering first principles, the practical details, the failure modes and worked examples.
+Explain in thorough detail, covering background, trade-offs and examples, how to tune a guitar by ear.
+Give a comprehensive walkthrough of how to learn a new language with daily practice, including the motivation, the common pitfalls and worked examples.
+Write an in-depth explanation of how to keep a daily journal that you actually stick with, with plenty of context, alternatives and practical guidance.
+Describe at length how to plan a week of meals on a budget, elaborating on the underlying mechanics, the edge cases and the typical use cases.
+Provide a detailed, well-structured tutorial on how to make a paper aeroplane that flies far, covering the concepts, the steps and the trade-offs involved.

@@ -82,6 +82,10 @@ pub struct TransformerModel {
     /// after construction, like `weight_store`. See
     /// `crate::control_vector_registry`.
     pub(super) control_vectors: crate::control_vector_registry::ControlVectorRegistry,
+    /// Per-layer activation capture for DERIVING a control vector. `None`
+    /// unless the operator armed it at boot; it adds a reduction per layer per
+    /// forward, so it is a derivation mode rather than a serving one.
+    pub(super) cvec_capture: Option<crate::control_vector_capture::ControlVectorCapture>,
     pub(super) embed_tokens: DenseWeight,
     /// Fused n-gram input embedding (LongCat family), when the architecture
     /// has one. `Mutex` because the forward path is `&self` while the row
@@ -753,6 +757,16 @@ impl TransformerModel {
         }
         attempt("kv cache", self.kv_cache.lock().release(gpu));
         attempt("buffer arena", self.buffers.release(gpu));
+        // Both of these are raw `gpu.alloc`s owned here. The backend's
+        // end-of-life sweep does reclaim them, so leaving them out was never a
+        // permanent leak — but the sweep reports whatever it reclaims as
+        // UNOWNED, so ordinary teardown printed a warning naming allocations
+        // that in fact had a perfectly good owner. Releasing them explicitly
+        // keeps that warning meaning what it says.
+        attempt("control vectors", self.control_vectors.release(gpu));
+        if let Some(cap) = self.cvec_capture.take() {
+            attempt("control-vector capture", cap.release(gpu));
+        }
         // Weights LAST: the layers hold pointers into them, so they must not be
         // freed until everything that reads them is gone.
         if let Some(mut store) = self.weight_store.take() {

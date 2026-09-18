@@ -29,6 +29,7 @@ fn main() -> anyhow::Result<()> {
         layer_start: arg(4, 4),
         layer_end: arg(5, 44),
         mode: CvecMode::Project,
+        model_type: None,
     };
 
     let bytes = std::fs::read(&spec.path)?;

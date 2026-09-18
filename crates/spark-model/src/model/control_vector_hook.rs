@@ -48,6 +48,111 @@ use crate::layer::ForwardContext;
 use crate::model::TransformerModel;
 
 impl TransformerModel {
+    /// Agree with the other ranks about what is registered, at BOOT.
+    ///
+    /// The per-request check in `impl_a2` already refuses an id it cannot
+    /// resolve, so a divergence never steers half the model. But it refuses
+    /// *during a request*, and the head has no path to turn that into a
+    /// response — the caller waits until its own timeout. Failing closed as a
+    /// thirty-minute hang is still a bad failure.
+    ///
+    /// This removes the possibility instead of improving the symptom. If the
+    /// registries agree here, no id the head can later send is unresolvable on
+    /// a worker, so the per-request check becomes unreachable — which is what
+    /// it should have been all along. It stays in place regardless: cheap, and
+    /// "unreachable" is a claim about today's call graph, not a guarantee.
+    ///
+    /// Placed before the worker enters its command loop, where both ranks run
+    /// the same code and a collective is a natural barrier.
+    pub fn ep_check_control_vector_registry(&self) -> Result<()> {
+        let Some(comm) = self.comm.as_ref() else {
+            return Ok(()); // single process: nobody to disagree with
+        };
+        let world = comm.world_size();
+        if world <= 1 {
+            return Ok(());
+        }
+        let local = self.control_vectors.fingerprint();
+
+        // All-gather, not broadcast-and-compare. A broadcast tells the workers
+        // what the head has, so only a worker can detect a divergence — the
+        // head proceeds, logs agreement it never verified, and serves on with a
+        // dead worker. Requests then hang exactly as before, one layer further
+        // out. Every rank has to be able to refuse, so every rank needs every
+        // fingerprint.
+        //
+        // `all_gather` is the right primitive because it moves `Uint8`: raw
+        // bytes, reduced by nothing. `all_reduce` is hard-wired to bf16 (it is
+        // the activation reducer) and would put these through a float.
+        let send = self.gpu.alloc(8)?;
+        let recv = self.gpu.alloc(8 * world)?;
+        let gathered = (|| -> Result<Vec<u64>> {
+            self.gpu.copy_h2d(&local.to_le_bytes(), send)?;
+            comm.all_gather(send.0, recv.0, 8)?;
+            self.gpu.synchronize(self.gpu.default_stream())?;
+            let mut buf = vec![0u8; 8 * world];
+            self.gpu.copy_d2h(recv, &mut buf)?;
+            Ok(buf
+                .chunks_exact(8)
+                .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                .collect())
+        })();
+        // Free both before propagating: a boot that is about to fail should not
+        // also leak, and these are the only two allocations on this path.
+        let free_err = self.gpu.free(send).and_then(|()| self.gpu.free(recv));
+        let gathered = gathered?;
+        free_err?;
+
+        if gathered.iter().any(|&f| f != local) {
+            let mine = self
+                .control_vectors
+                .entries()
+                .map(|e| {
+                    format!(
+                        "  '{}' id={:#018x} {}",
+                        e.name,
+                        e.id,
+                        e.vector.config_identity()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mine = if mine.is_empty() {
+                "  (none)".to_string()
+            } else {
+                mine
+            };
+            let table = gathered
+                .iter()
+                .enumerate()
+                .map(|(r, f)| {
+                    format!(
+                        "  rank {r}: {f:#018x}{}",
+                        if r == comm.rank() { " (this rank)" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "control-vector registries differ across ranks:\n{table}\nThe \
+                 fingerprint covers every registered vector's NAME and its \
+                 CONFIGURATION — file sha256, mode, scale, layer range — so this \
+                 catches a different file, scale, mode or range under the same name, \
+                 not just a missing one.\nThis rank has:\n{mine}\nCompare against the \
+                 other ranks' `control vector '<name>' identity:` lines. Refusing to \
+                 start: the alternative is a request that hangs when it first selects \
+                 a vector."
+            );
+        }
+        if local != 0 {
+            tracing::info!(
+                "control-vector registry agrees across {world} ranks \
+                 (fingerprint {local:#018x})"
+            );
+        }
+        Ok(())
+    }
+
     /// Load and register a control vector under `name`. Boot-time only; any
     /// failure aborts.
     ///
@@ -77,6 +182,50 @@ impl TransformerModel {
             )
         })?;
         self.control_vectors.insert(name.to_string(), cv)
+    }
+
+    /// Arm per-layer activation capture for DERIVING a vector.
+    ///
+    /// Same mHC requirement as installing one: the thing being measured is the
+    /// highway, so a model without one has nothing to capture.
+    pub fn arm_control_vector_capture(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            self.config.hc_mult > 0,
+            "control-vector capture needs an mHC highway to measure, and \
+             model_type {:?} has hc_mult = 0",
+            self.config.model_type
+        );
+        self.cvec_capture = Some(crate::control_vector_capture::ControlVectorCapture::new(
+            self.gpu.as_ref(),
+            self.config.num_hidden_layers,
+            self.config.hidden_size,
+        )?);
+        Ok(())
+    }
+
+    /// Zero the capture accumulator — run between the positive and negative
+    /// corpus passes.
+    pub fn reset_control_vector_capture(&self) -> Result<()> {
+        let cap = self
+            .cvec_capture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("control-vector capture is not armed"))?;
+        cap.reset(self.gpu.as_ref())
+    }
+
+    /// Write the capture accumulator to `path`; returns the token count it
+    /// represents (the divisor for the mean).
+    pub fn dump_control_vector_capture(&self, path: &std::path::Path) -> Result<u64> {
+        let cap = self
+            .cvec_capture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("control-vector capture is not armed"))?;
+        cap.dump(self.gpu.as_ref(), path)
+    }
+
+    /// Tokens folded into the capture so far, or `None` when not armed.
+    pub fn control_vector_capture_tokens(&self) -> Option<u64> {
+        self.cvec_capture.as_ref().map(|c| c.tokens())
     }
 
     /// Whether any control vector is registered.
@@ -118,7 +267,27 @@ impl TransformerModel {
         num_tokens: usize,
         stream: u64,
     ) -> Result<()> {
-        if cvec_id == 0 || num_tokens == 0 {
+        if num_tokens == 0 {
+            return Ok(());
+        }
+        // Capture runs FIRST and unconditionally, because derivation must see
+        // UNSTEERED activations — measuring the model after steering it would
+        // fold the vector back into the direction derived from it. It also runs
+        // before the `cvec_id == 0` return, since a derivation pass by
+        // definition selects no vector.
+        if let Some(cap) = self.cvec_capture.as_ref() {
+            let stride = ctx.config.hc_mult * ctx.config.hidden_size * 4;
+            let base = DevicePtr(ctx.buffers.hc_streams().0 + (ctx.hc_row_offset * stride) as u64);
+            cap.accumulate(
+                ctx.gpu,
+                base,
+                layer_idx,
+                num_tokens,
+                ctx.config.hc_mult,
+                stream,
+            )?;
+        }
+        if cvec_id == 0 {
             return Ok(());
         }
         let Some(cv) = self.control_vectors.resolve(cvec_id) else {

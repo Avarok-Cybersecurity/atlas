@@ -201,11 +201,13 @@ pub async fn completions(
         Err(resp) => return resp,
     };
 
-    // Per-request activation steering: resolve the optional `control_vector`
-    // NAME to a registry id. Absent = 0 = no steering; unknown = 400.
+    // Per-request activation steering: resolve the `control_vector` directive
+    // to a registry id. Omitted takes the server default (none, unless one is
+    // configured); null/false/"" is explicitly no steering; unknown = 400.
     let cvec_id = match super::control_vector_control::resolve_request_cvec_id(
         &state.control_vectors,
-        req.control_vector.as_deref(),
+        &req.control_vector,
+        state.default_control_vector.as_deref(),
     ) {
         Ok(id) => id,
         Err(resp) => return resp,

@@ -15,8 +15,17 @@
 //! because the hash alone would still collide on the children map. Control
 //! vectors ride the same channel rather than growing a second one.
 //!
-//! The identity is derived from the vector's NAME, like `adapter_id_hash`, so
-//! it survives registry reordering, and `0` is reserved for "no vector".
+//! The identity is derived from the vector's NAME **and its loaded
+//! configuration** — file hash, mode, scale and layer range — so it survives
+//! registry reordering while still differing whenever the arithmetic differs.
+//! `0` is reserved for "no vector".
+//!
+//! Hashing the name alone was the original design and was wrong in a way that
+//! only shows up multi-rank: each rank builds its registry from its own
+//! command line, so both can register `"refusal"` from different files or at
+//! different scales, the ids match, the worker's id check passes, and the two
+//! halves of the model steer differently with nothing to report it. See
+//! [`crate::control_vector::ControlVector::config_identity`].
 //!
 //! # One composition function
 //!
@@ -42,15 +51,33 @@ pub struct ControlVectorRegistry {
     entries: Vec<ControlVectorEntry>,
 }
 
-/// Name-derived control-vector identity. FNV-1a, same construction as
-/// `lora::key::adapter_id_hash`, with `0` reserved for "no vector" so a serve
-/// with none hashes byte-identically to one built before this existed.
-pub fn cvec_id_hash(name: &str) -> u64 {
+/// Control-vector identity: FNV-1a over the name AND the loaded configuration.
+///
+/// Same construction as `lora::key::adapter_id_hash`, with `0` reserved for
+/// "no vector" so a serve with none hashes byte-identically to one built
+/// before this existed.
+///
+/// `config` must be [`ControlVector::config_identity`] — the file hash, mode,
+/// scale bits and layer range. Hashing the name alone is not enough and the
+/// difference is a correctness bug rather than a nicety: under EP/TP each rank
+/// builds its own registry from its own command line, so two ranks can both
+/// register `"refusal"` from different files, at different scales, over
+/// different layers. With a name-derived id those all collide, the worker's
+/// id check passes, and the ranks steer differently with nothing to report it.
+///
+/// The two are separated by a byte that cannot occur in either (`\0`), so
+/// `("ab", "c")` and `("a", "bc")` cannot hash alike.
+pub fn cvec_id_hash(name: &str, config: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325; // FNV-1a basis
-    for &b in name.as_bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3); // FNV-1a prime
-    }
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3); // FNV-1a prime
+        }
+    };
+    feed(name.as_bytes());
+    feed(b"\0");
+    feed(config.as_bytes());
     if h == 0 { 1 } else { h }
 }
 
@@ -100,6 +127,29 @@ pub fn batch_cvec_id(seqs: &[&mut crate::traits::SequenceState]) -> u64 {
     first.cvec_id
 }
 
+/// The fingerprint of a set of control-vector ids.
+///
+/// Split out from [`ControlVectorRegistry::fingerprint`] because the registry
+/// cannot be populated without a GPU (a `ControlVector` owns device memory),
+/// and the properties that matter here — order independence, and `0` for
+/// nothing registered — are properties of the ids alone. A boot-time refusal
+/// is a bad thing to leave untested.
+fn fingerprint_of_ids(ids: impl Iterator<Item = u64>) -> u64 {
+    let mut ids: Vec<u64> = ids.collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    ids.sort_unstable();
+    let mut h: u64 = 0xcbf29ce484222325;
+    for id in ids {
+        for b in id.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
 impl ControlVectorRegistry {
     /// Add a loaded vector. Rejects a duplicate name, and a name whose hash
     /// collides with an existing one — astronomically unlikely, but a
@@ -109,13 +159,20 @@ impl ControlVectorRegistry {
             !self.entries.iter().any(|e| e.name == name),
             "control vector '{name}' is already registered"
         );
-        let id = cvec_id_hash(&name);
+        let config = vector.config_identity();
+        let id = cvec_id_hash(&name, &config);
         if let Some(other) = self.entries.iter().find(|e| e.id == id) {
             anyhow::bail!(
                 "control vector '{name}' hashes to the same id as '{}' — rename one",
                 other.name
             );
         }
+        // Emitted at boot on EVERY rank so a cross-rank divergence can be
+        // diffed directly instead of inferred from four separate log lines.
+        // The id is now a function of this string, so two ranks printing
+        // different lines here WILL disagree on the id and fail closed at the
+        // first steered request rather than serving a half-steered model.
+        tracing::info!("control vector '{name}' identity: id=0x{id:016x} {config}");
         self.entries.push(ControlVectorEntry { name, id, vector });
         Ok(id)
     }
@@ -141,6 +198,45 @@ impl ControlVectorRegistry {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.entries.iter().map(|e| e.name.as_str())
+    }
+
+    /// Every registered entry, for diagnostics that must show the full
+    /// identity rather than just the name. Since the id covers the
+    /// configuration too, "which names are registered" is no longer enough to
+    /// explain why a lookup missed.
+    pub fn entries(&self) -> impl Iterator<Item = &ControlVectorEntry> {
+        self.entries.iter()
+    }
+
+    /// One number standing for "what this rank has registered".
+    ///
+    /// Each id already covers its vector's name AND configuration, so hashing
+    /// the ids covers everything that could differ. Sorted first, because the
+    /// registry is in command-line order and two ranks given the same vectors
+    /// in a different order are NOT misconfigured — insisting they match would
+    /// turn a harmless difference into a boot failure.
+    ///
+    /// `0` for an empty registry, which makes "neither rank has any" agree
+    /// without special-casing.
+    pub fn fingerprint(&self) -> u64 {
+        fingerprint_of_ids(self.entries.iter().map(|e| e.id))
+    }
+
+    /// Free every vector's device table and empty the registry.
+    ///
+    /// Called from `release_pools` alongside the other owned pools. The first
+    /// failure is returned but every entry is still attempted, so one bad free
+    /// cannot strand the rest.
+    pub fn release(&mut self, gpu: &dyn spark_runtime::gpu::GpuBackend) -> anyhow::Result<()> {
+        let mut first_err = Ok(());
+        for entry in self.entries.drain(..) {
+            if let Err(e) = entry.vector.release(gpu)
+                && first_err.is_ok()
+            {
+                first_err = Err(e);
+            }
+        }
+        first_err
     }
 
     /// The vector a request selected, or `None` for "no vector".

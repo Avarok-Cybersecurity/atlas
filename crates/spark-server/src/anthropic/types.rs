@@ -27,6 +27,18 @@ pub struct MessagesRequest {
     pub stream: bool,
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
+    /// Per-request activation steering, same three-state directive as Chat
+    /// Completions: omitted takes the server default, `null`/`false`/`""` is
+    /// explicitly none, a string selects that vector.
+    ///
+    /// Carried here so this surface is not second-class: the IR has had the
+    /// field all along, and hard-coding it meant a caller on this API silently
+    /// could not use a feature the deployment had enabled.
+    #[serde(
+        default,
+        deserialize_with = "crate::api::control_vector_directive::deserialize_cvec_directive"
+    )]
+    pub control_vector: crate::api::control_vector_directive::CvecDirective,
 }
 
 /// System content: either a plain string or an array of content blocks.

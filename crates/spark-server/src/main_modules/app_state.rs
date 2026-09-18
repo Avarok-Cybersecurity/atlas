@@ -48,6 +48,11 @@ pub struct AppState {
     /// a selection without reaching for the model. Empty = no steering is
     /// available and any named `control_vector` is a 400.
     pub control_vectors: Vec<(String, u64)>,
+    /// `--default-control-vector`: what a request that OMITS the field gets.
+    /// `None` means omitting it is no steering, which is the behaviour when
+    /// no default is configured. Validated at boot, so if this is `Some` the
+    /// name is known to be registered.
+    pub default_control_vector: Option<String>,
     /// The currently-active adapter (updated by `POST /v1/lora/active`). Starts
     /// at slot 0. Purely for status/advertise; the scheduler's model owns the
     /// authoritative active slot.
@@ -350,9 +355,13 @@ impl AppState {
                 }
             }
             Ok(Ok(Ok(LoraAck::Promoted { slot, evicted }))) => Ok((slot as i32, evicted)),
-            Ok(Ok(Ok(LoraAck::Done))) => Err(PromoteReject::Peer(
-                "scheduler returned a non-promote ack for a promote".to_string(),
-            )),
+            // A capture ack cannot arrive here: promotion never sends a
+            // capture command. Treated like the `Done` mismatch below.
+            Ok(Ok(Ok(LoraAck::Captured(_)))) | Ok(Ok(Ok(LoraAck::Done))) => {
+                Err(PromoteReject::Peer(
+                    "scheduler returned a non-promote ack for a promote".to_string(),
+                ))
+            }
         }
     }
 
@@ -394,9 +403,13 @@ impl AppState {
                 }
             }
             Ok(Ok(Ok(LoraAck::Promoted { slot, evicted }))) => Ok((slot as i32, evicted)),
-            Ok(Ok(Ok(LoraAck::Done))) => Err(PromoteReject::Peer(
-                "scheduler returned a non-promote ack for a disk promote".to_string(),
-            )),
+            // A capture ack cannot arrive here: promotion never sends a
+            // capture command. Treated like the `Done` mismatch below.
+            Ok(Ok(Ok(LoraAck::Captured(_)))) | Ok(Ok(Ok(LoraAck::Done))) => {
+                Err(PromoteReject::Peer(
+                    "scheduler returned a non-promote ack for a disk promote".to_string(),
+                ))
+            }
         }
     }
 }

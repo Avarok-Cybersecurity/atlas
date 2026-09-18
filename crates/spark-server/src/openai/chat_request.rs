@@ -17,11 +17,19 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub adapter: Option<String>,
     /// Per-request control vector (activation steering) by NAME, from
-    /// `--control-vector NAME=PATH`. `None` or `null` = NO steering, which is
-    /// a first-class answer here unlike the LoRA slot — steering has to be
-    /// switchable off per request or it cannot be A/B'd. Unknown name = 400.
-    #[serde(default)]
-    pub control_vector: Option<String>,
+    /// `--control-vector NAME=PATH`, as a THREE-state directive: omitted takes
+    /// the server default, `null`/`false`/`""` is explicitly NO steering, a
+    /// string selects that vector, and an unknown name is a 400.
+    ///
+    /// Explicit-off is a first-class answer here unlike the LoRA slot —
+    /// steering has to be switchable off per request or it cannot be A/B'd —
+    /// and it has to be distinguishable from "not mentioned" or a server
+    /// default could not exist without changing what omitting the field means.
+    #[serde(
+        default,
+        deserialize_with = "crate::api::control_vector_directive::deserialize_cvec_directive"
+    )]
+    pub control_vector: crate::api::control_vector_directive::CvecDirective,
     /// NLLB per-request source/target language names (tokenizer-resolved).
     #[serde(default)]
     pub src_lang: Option<String>,

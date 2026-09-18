@@ -231,6 +231,18 @@ impl Model for TransformerModel {
     ) -> Result<u64> {
         self.load_control_vector(name, spec)
     }
+    fn ep_check_control_vector_registry(&self) -> Result<()> {
+        TransformerModel::ep_check_control_vector_registry(self)
+    }
+    fn arm_control_vector_capture(&mut self) -> Result<()> {
+        TransformerModel::arm_control_vector_capture(self)
+    }
+    fn reset_control_vector_capture(&self) -> Result<()> {
+        TransformerModel::reset_control_vector_capture(self)
+    }
+    fn dump_control_vector_capture(&self, path: &std::path::Path) -> Result<u64> {
+        TransformerModel::dump_control_vector_capture(self, path)
+    }
     fn adapter_id_for(&self, slot: i32) -> u64 {
         self.adapter_id_for_slot(slot)
     }
