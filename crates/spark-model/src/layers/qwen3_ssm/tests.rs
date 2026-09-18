@@ -3,6 +3,7 @@
 //! Extracted piecewise from `qwen3_ssm/mod.rs` (500-LoC cap).
 
 use super::*;
+use crate::weight_map::Fp8Weight;
 use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::mock::{MockArg, MockGpuBackend, MockLaunch};
 

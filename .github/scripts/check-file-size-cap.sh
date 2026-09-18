@@ -22,6 +22,23 @@ set -euo pipefail
 # split. Adding to this list requires a rationale comment AND
 # a tracking issue.
 allow_list=(
+  # 2026-09-04 GDN batched-verify line (#844): 470 -> 513 LoC. NOT split
+  # because the file is ONE function -- `impl TransformerModel` opens at line
+  # 38 and `decode_verify_graphed_dispatch` runs to the end, so there is no
+  # piecewise seam to cut on. The other two files this line pushed over the cap
+  # WERE split in this commit (qwen3_ssm/mod.rs 506 -> 86 by moving the struct
+  # declaration, trait_layer.rs 501 -> 485 by moving its one free fn), so this
+  # entry is the residue, not the habit. Tracked: #872
+  "crates/spark-model/src/model/trait_impl/verify_b.rs"
+  # 2026-09-04 GDN batched-verify line (#837/#838/#844/#845): 481 -> 507 LoC
+  # from the K=5..16 pointer-table registries. NOT split because the file is
+  # effectively ONE function: `impl Qwen3SsmLayer` opens at line 7 and
+  # `pub fn new(` runs past 500, so there is no piecewise seam. The two other
+  # files this line pushed over the cap WERE split (verify_a.rs 638 -> 417+254,
+  # ssm_gdn_b.rs 569 -> 205+399, bodies verified byte-identical). Splitting a
+  # ~500-line constructor is a design decision for the SSM owner, not a
+  # mechanical move. Tracked: #872
+  "crates/spark-model/src/layers/qwen3_ssm/init.rs"
   # 2026-08-15 concurrency cycle (#525): grew past 500 in this stack's
   # instrumentation work. Reduce when feasible.
   "crates/avarok-plugin/src/benchmarks/concurrency.rs"

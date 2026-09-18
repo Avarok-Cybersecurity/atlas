@@ -41,6 +41,7 @@ mod sequence;
 mod speculative;
 pub(in crate::model) mod ssm_fault_in;
 mod verify_a;
+mod verify_a_ssm;
 mod verify_b;
 mod verify_c;
 mod verify_c2;
@@ -848,6 +849,77 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
+    fn gdn_fold_accepted(
+        &self,
+        slots: &[usize],
+        accepted_rows: &[u32],
+        k_rows: usize,
+    ) -> Result<bool> {
+        use crate::layer::{VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS};
+        if self.gdn_woa_na_tab.is_null()
+            || self.verify_wy_tables.is_null()
+            || accepted_rows.is_empty()
+            || accepted_rows.len() > VERIFY_WY_TABLE_SEQS
+        {
+            return Ok(false);
+        }
+        let mut host = [0u32; VERIFY_WY_TABLE_SEQS];
+        host[..accepted_rows.len()].copy_from_slice(accepted_rows);
+        let bytes: Vec<u8> = host.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let stream = self.gpu.default_stream();
+        self.gpu
+            .copy_h2d_async(&bytes, self.gdn_woa_na_tab, stream)?;
+        let mut ssm_idx = 0usize;
+        let mut any = false;
+        for (i, layer) in self.layers.iter().enumerate() {
+            if self.config.layer_type(i) != avarok_core::config::LayerType::LinearAttention {
+                continue;
+            }
+            let h_table = self
+                .verify_wy_tables
+                .offset(ssm_idx * VERIFY_WY_LAYER_STRIDE_BYTES);
+            any |= layer.gdn_fold_accepted(
+                self.gpu.as_ref(),
+                h_table,
+                self.gdn_woa_na_tab,
+                k_rows,
+                accepted_rows.len(),
+                stream,
+            )?;
+            ssm_idx += 1;
+        }
+        // ★ RECORD THE OUTCOME UNCONDITIONALLY.
+        //
+        // This was `if any { clear(); extend() }`, so a fold that folded
+        // NOTHING left the PREVIOUS batch's slot list in place. The reader
+        // (async_chkpt.rs:237) looks its own `slot_idx` up in that list and
+        // destructively consumes the entry to decide whether `h` still needs
+        // restoring from the checkpoint — and slot indices are reused across
+        // requests. So a sequence could find a stale entry belonging to an
+        // earlier batch, conclude its state had been folded, and skip the
+        // restore, carrying a wrong GDN state forward.
+        //
+        // Measured cost of that (concurrency-sweep, gb10, 2026-09-18): the
+        // model begins paraphrasing itself at C=4 and C=8, the SimHash
+        // semantic-loop watchdog cuts the response, and the cell reports a
+        // truncated delivery with finish=length. Fires at C=4/C=8 were 4/1
+        // and 6/4 across two runs against main's 0/0; with the fold disabled
+        // entirely (the fold is now default-OFF) they were 0/1 and the run passed
+        // 8/8 cells with zero vacuous, matching main's profile exactly.
+        //
+        // Clearing on every call makes the list mean "the slots folded by the
+        // MOST RECENT fold", which is the only claim the reader can safely
+        // consume.
+        {
+            let mut f = self.gdn_woa_folded_slots.lock();
+            f.clear();
+            if any {
+                f.extend_from_slice(slots);
+            }
+        }
+        Ok(any)
+    }
+
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,
@@ -955,5 +1027,67 @@ impl TransformerModel {
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gdn_woa_folded_slots_tests {
+    /// The record must mean "the slots folded by the MOST RECENT fold".
+    ///
+    /// Models the two implementations directly, because the real path needs a
+    /// GPU and 36 SSM layers: `record_old` is what shipped
+    /// (`if any { clear(); extend() }`), `record_new` is the fix. The reader is
+    /// `async_chkpt.rs:237` — find your slot, consume it, and if it was there,
+    /// skip restoring `h`.
+    fn record_old(list: &mut Vec<usize>, any: bool, slots: &[usize]) {
+        if any {
+            list.clear();
+            list.extend_from_slice(slots);
+        }
+    }
+    fn record_new(list: &mut Vec<usize>, any: bool, slots: &[usize]) {
+        list.clear();
+        if any {
+            list.extend_from_slice(slots);
+        }
+    }
+    /// The reader: true = "folded, do not restore h".
+    fn consume(list: &mut Vec<usize>, slot: usize) -> bool {
+        match list.iter().position(|&s| s == slot) {
+            Some(p) => {
+                list.swap_remove(p);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A fold that folds NOTHING must not leave a previous batch's slots
+    /// readable. Slot indices are reused across requests, so a stale entry
+    /// makes the next occupant of that slot skip its `h` restore.
+    #[test]
+    fn a_no_op_fold_does_not_leave_a_stale_claim() {
+        let mut new = vec![];
+        record_new(&mut new, true, &[1, 2, 3, 4]); // batch A folded
+        for s in [1, 2, 3, 4] {
+            assert!(consume(&mut new, s), "batch A's own slots are folded");
+        }
+        record_new(&mut new, false, &[7]); // batch B folded nothing
+        assert!(
+            !consume(&mut new, 7),
+            "slot 7 was NOT folded and must restore h"
+        );
+
+        // CONTROL: the shipped version fails this. Slot 3 is refilled by a new
+        // request while batch A's entry is still listed, and the no-op fold
+        // does not clear it.
+        let mut old = vec![];
+        record_old(&mut old, true, &[1, 2, 3, 4]);
+        record_old(&mut old, false, &[7]); // no-op: list survives untouched
+        assert!(
+            consume(&mut old, 3),
+            "the shipped behaviour leaves slot 3 claimed — this assertion \
+             documents the bug, and its inverse is the fix above"
+        );
     }
 }
