@@ -336,3 +336,97 @@ fn run_case(tokens: usize) {
     moe.free(g).unwrap();
     arena.free(g).unwrap();
 }
+
+/// The single-token arm (`routed_m1`) used to finish with one `scatter_add`
+/// launch, one block per expert row, every block adding into the same `acc`
+/// row: an inter-block data race that made every decode step
+/// nondeterministic. `moe_v41_sum_rows` replaced it. This runs that arm at
+/// the model's activated-expert count and requires the output to be the
+/// same bytes on every run. Before the fix this failed on the first repeat.
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn single_token_expert_sum_is_bit_identical_across_runs() {
+    use spark_runtime::gpu::GpuBackend;
+    use spark_runtime::weights::expert_stream::PinnedArena;
+    const TOPK_MODEL: usize = 6; // deepseek41.expert_used_count
+    const REPEATS: usize = 6;
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let cfg = MoeV41Cfg {
+        dim: DIM,
+        inter: INTER,
+        n_routed: N_ROUTED,
+        topk: TOPK_MODEL,
+        gate_temp: 1.0,
+        norm_topk_prob: true,
+        route_scale: 1.5,
+        swiglu_limit: 10.0,
+        max_tokens: 1,
+    };
+    let ex = Experts {
+        gate: (0..N_ROUTED)
+            .map(|e| build_blocks(INTER, DIM, 84, &[80, 82], 0x1000 + e as u32))
+            .collect(),
+        up: (0..N_ROUTED)
+            .map(|e| build_blocks(INTER, DIM, 84, &[80, 82], 0x2000 + e as u32))
+            .collect(),
+        down: (0..N_ROUTED)
+            .map(|e| build_blocks(DIM, INTER, 110, &[108], 0x3000 + e as u32))
+            .collect(),
+        reads: Mutex::new(0),
+    };
+    let gate_w = rand_bf16(N_ROUTED * DIM, 0x77, 0.05);
+    let gate_bias: Vec<f32> = (0..N_ROUTED).map(|e| (e as f32 - 3.5) * 0.01).collect();
+    let s1 = rand_bf16(INTER * DIM, 0x81, 0.05);
+    let s2 = rand_bf16(DIM * INTER, 0x82, 0.05);
+    let s3 = rand_bf16(INTER * DIM, 0x83, 0.05);
+    let x = rand_bf16(DIM, 0x99, 1.0);
+    let up = |v: &[f32]| {
+        let b = bf16_bytes(v);
+        let p = g.alloc(b.len()).unwrap();
+        g.copy_h2d(&b, p).unwrap();
+        p
+    };
+    let lw = MoeV41LayerWeights {
+        layer: 7,
+        gate_w: up(&gate_w),
+        gate_bias: gate_bias.clone(),
+        shared_w1: ResidentMat::Bf16(up(&s1)),
+        shared_w2: ResidentMat::Bf16(up(&s2)),
+        shared_w3: ResidentMat::Bf16(up(&s3)),
+    };
+    let x_dev = up(&x);
+    let moe = MoeV41::new(g, cfg).unwrap();
+    let layout = ex.slot_layout();
+    let arena = PinnedArena::alloc(g, N_ROUTED * layout.bytes).unwrap();
+    let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout).unwrap();
+
+    let mut outputs: Vec<Vec<u8>> = Vec::with_capacity(REPEATS);
+    for run in 0..REPEATS {
+        let (out_dev, _weights, indices) = moe
+            .forward(g, &lw, &mut lru, &ex, x_dev, 1, 2, stream)
+            .unwrap();
+        let uniq: std::collections::HashSet<usize> = indices.iter().copied().collect();
+        assert_eq!(uniq.len(), TOPK_MODEL, "one token picks {} distinct experts", TOPK_MODEL);
+        let mut ob = vec![0u8; DIM * 2];
+        g.copy_d2h(out_dev, &mut ob).unwrap();
+        assert!(
+            ob.chunks_exact(2)
+                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                .all(|v| v.is_finite()),
+            "run {run}: non-finite output"
+        );
+        outputs.push(ob);
+    }
+    for (i, o) in outputs.iter().enumerate().skip(1) {
+        assert_eq!(
+            o, &outputs[0],
+            "single-token MoE output differs between run 0 and run {i}: the expert-row sum is not deterministic"
+        );
+    }
+    println!("  single-token forward at topk {TOPK_MODEL}: {REPEATS} runs bit-identical");
+
+    moe.free(g).unwrap();
+    arena.free(g).unwrap();
+}

@@ -271,7 +271,7 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
             );
         }
     }
-    for s in states {
+    for mut s in states {
         s.free(g).unwrap();
     }
     attn.free(g).unwrap();
