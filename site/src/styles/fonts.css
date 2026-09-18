@@ -1,0 +1,56 @@
+/* =============================================================================
+   IBM Plex Sans and IBM Plex Mono, self hosted.
+
+   The typeface the brand kit's slide and document templates are set in.
+   Latin subsets from the @fontsource packages, SIL Open Font License (see
+   static/fonts/IBM-PLEX-*-LICENSE.txt). Self hosted rather than Google Fonts
+   on purpose: the Lighthouse gate asserts zero third party requests, and a
+   font fetched from another origin is one. `font-display: swap` keeps first
+   paint on the system stack the tokens fall back to.
+
+   The token file names the families (web-shared/avarok-tokens.css); this
+   file only loads them, so the blog, which does not ship the files, keeps
+   working on its fallbacks.
+   ========================================================================== */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-sans-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/ibm-plex-mono-latin-600-normal.woff2') format('woff2');
+}

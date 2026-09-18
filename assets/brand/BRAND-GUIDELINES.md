@@ -1,4 +1,13 @@
-# Atlas — brand guidelines
+# Avarok — brand guidelines
+
+**September 2026 rebrand.** The wordmark reads Avarok. The mark, the palette,
+the clear space and the minimum sizes are unchanged. The arrow A is the same
+hand-corrected path as before; "varok" was set in the kit's wordmark typeface
+(DejaVu Sans Book) at the lowercase size and letter rhythm of the approved
+Avarok artwork, measured letter by letter, so the outline is the artwork and
+not a re-typeset approximation. `src/wordmark-paths.json` holds the outlines
+and the numbers; the masters in this directory are generated from it. The
+legal name in the corp lockup is unchanged until the company says otherwise.
 
 The same rules as `Atlas-Brand-Guidelines.pdf`, in text, for pasting into a wiki
 or a contributor doc.
