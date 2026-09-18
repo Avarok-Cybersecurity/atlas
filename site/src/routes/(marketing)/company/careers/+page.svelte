@@ -18,7 +18,7 @@
   <section class="av-section" id="roles">
     <div class="av-container">
       <div class="av-head-split av-reveal">
-        <div><p class="av-eyebrow">{c.rolesTitle}</p><h2 class="av-h2">{c.roles.length} openings</h2></div>
+        <div><p class="av-eyebrow">{c.rolesTitle}</p><h2 class="av-h2">{c.rolesHeading}</h2></div>
         <p class="av-lede" style="max-width:40ch">{c.how}</p>
       </div>
       <div class="av-accordion av-reveal">
@@ -34,5 +34,5 @@
       </div>
     </div>
   </section>
-  <CtaBand title="Do not see your role?" body="Send the note anyway. The best hires so far were people who showed up with a pull request." primary={c.cta} secondary={{ text: 'Good first issues', href: `${links.github}/labels/good%20first%20issue`, external: true }} />
+  <CtaBand title="Do not see your role?" body="Send the note anyway. A pull request against the engine is the best introduction there is." primary={c.cta} secondary={{ text: 'Good first issues', href: `${links.github}/labels/good%20first%20issue`, external: true }} />
 </PageShell>

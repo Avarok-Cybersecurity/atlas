@@ -36,7 +36,7 @@ export const pages = [
   { path: routes.contributors, title: T('Contributors'), description: 'Everyone who has landed code in the Avarok repository, called out by name.', priority: 0.5 },
   { path: routes.labs, title: T('Avarok Labs'), description: 'The research arm. Kernels, compression, speculative decoding, memory, compilers, protocols, agentic benchmarks and day zero model bring ups.', priority: 0.7 },
   { path: routes.company, title: T('About'), description: 'It started with two words. The story, the mission and the principles behind Avarok.', priority: 0.7 },
-  { path: routes.careers, title: T('Careers'), description: 'Build the layer between the GPU and the invoice. Open roles on the founding team.', priority: 0.6 },
+  { path: routes.careers, title: T('Careers'), description: 'Build the layer between the GPU and the invoice. The first hires on the founding team.', priority: 0.6 },
   { path: routes.contact, title: T('Contact'), description: 'Sales, technical, partnerships, security and press. Every path lands with a founder.', priority: 0.7 },
   { path: routes.trust, title: T('Trust center'), description: 'Architecture, data handling, assurance and licensing. What we run, what we claim, and what we do not.', priority: 0.7 },
   { path: '/404', title: T('Not found'), description: 'That page is not here. The front page has the pitch, the benchmarks have the numbers, and the open source page has the install command.', noindex: true, sitemap: false }

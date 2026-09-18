@@ -91,7 +91,10 @@ export const careers = {
     { title: 'Receipts, not adjectives', body: 'Every claim ships with the measurement behind it, including the rungs we lost on the way.' },
     { title: 'A founding team', body: 'Small enough that the first hires decide how the company works.' }
   ],
-  rolesTitle: 'Open roles',
+  // The deck calls these the crucial first hires. It does not say a search is
+  // open for any of them, so the page does not say "openings".
+  rolesTitle: 'The first hires',
+  rolesHeading: 'Four roles we are building toward',
   roles: [
     { title: 'Kernel Engineer', location: 'Location by agreement', team: 'Engine', body: 'CUDA and Rust. Attention, MoE, GDN and quantized GEMM kernels per hardware target, with a certified benchmark on every merge. Hopper and Blackwell are the next campaigns.' },
     { title: 'Founding Platform and Distributed Systems Engineer', location: 'Location by agreement', team: 'Control', body: 'The control plane. Routing, rollout, autoscaling, repair and policy across mixed NVIDIA and AMD fleets, in Rust, on Kubernetes, in the customer’s account and ours.' },
@@ -202,7 +205,7 @@ export const companyCta = {
   title: 'Come build with us, or come buy from us.',
   body: 'Both conversations start the same way. Tell us what you run.',
   primary: { text: 'Book a demo', href: routes.demo },
-  secondary: { text: 'Open roles', href: routes.careers }
+  secondary: { text: 'The first hires', href: routes.careers }
 };
 
 export { company };

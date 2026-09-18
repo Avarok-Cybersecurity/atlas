@@ -43,7 +43,7 @@ domain are the same ones. The legal entity is Atlas Cybernetics Corp.
 - [Contributors · Avarok](https://atlascybernetics.ai/resources/contributors): Everyone who has landed code in the Avarok repository, called out by name.
 - [Avarok Labs · Avarok](https://atlascybernetics.ai/labs): The research arm. Kernels, compression, speculative decoding, memory, compilers, protocols, agentic benchmarks and day zero model bring ups.
 - [About · Avarok](https://atlascybernetics.ai/company): It started with two words. The story, the mission and the principles behind Avarok.
-- [Careers · Avarok](https://atlascybernetics.ai/company/careers): Build the layer between the GPU and the invoice. Open roles on the founding team.
+- [Careers · Avarok](https://atlascybernetics.ai/company/careers): Build the layer between the GPU and the invoice. The first hires on the founding team.
 - [Contact · Avarok](https://atlascybernetics.ai/contact): Sales, technical, partnerships, security and press. Every path lands with a founder.
 - [Trust center · Avarok](https://atlascybernetics.ai/trust): Architecture, data handling, assurance and licensing. What we run, what we claim, and what we do not.
 

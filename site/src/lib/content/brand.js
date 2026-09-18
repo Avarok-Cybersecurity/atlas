@@ -193,7 +193,7 @@ export const nav = {
           heading: 'Avarok',
           items: [
             { text: 'About Avarok', blurb: 'The team and the two words that started it', href: routes.company },
-            { text: 'Careers', blurb: 'Open roles on the founding team', href: routes.careers },
+            { text: 'Careers', blurb: 'The first hires on the founding team', href: routes.careers },
             { text: 'Trust center', blurb: 'Security posture, licensing and disclosure', href: routes.trust },
             { text: 'Contact', blurb: 'Sales, partnerships, hardware and press', href: routes.contact }
           ]
