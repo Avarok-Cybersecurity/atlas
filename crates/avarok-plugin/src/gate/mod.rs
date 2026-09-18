@@ -310,6 +310,8 @@ mod coverage_promotion_tests;
 #[cfg(test)]
 #[path = "coverage_tests.rs"]
 mod coverage_tests;
+#[cfg(test)]
+mod metal_open_gate_tests;
 
 /// Squash-merge coverage. Split from `coverage_tests.rs` for the 500-LoC cap.
 #[cfg(test)]
