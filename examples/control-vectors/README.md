@@ -25,9 +25,33 @@ Because **the effect is a number.** Steering verbosity moves
 vector judged by reading prose can only be argued about; this one either moves
 the count or it doesn't.
 
-It also shows off both operators. `project` *removes* the verbosity axis
-(→ neutral); `add` with a signed scale *displaces* along it, giving a dial in
-both directions.
+It also separates the two operators, and the separation turned out to be the
+main lesson. `add` with a signed scale *displaces* along the axis and gives a
+real dial in both directions. `project` does not, and structurally cannot:
+`h -= s·(h·v)v` is quadratic in `v`, so negating the vector changes nothing.
+Projection removes an axis; it does not travel along one.
+
+Measured, same direction and layers on one serve:
+
+| operator | scale | median Δ `completion_tokens` |
+|---|---|---|
+| `add` | −0.10 | −90.0% *(too far — answers end mid-sentence)* |
+| `add` | −0.05 | **−54.9%** |
+| `add` | −0.02 | −20.8% |
+| `add` | +0.02 | +63.5% |
+| `add` | +0.05 | +225.4% |
+| `add` | +0.10 | saturates and degrades |
+| `project` | 0.5 / 1.0 / 2.0 | +49.5% / +25.8% / +40.2% — all *longer*, not ordered by dose |
+| `project` | 4.0 | output destroyed |
+
+The `add` ladder is monotone through zero with 6/6 sign agreement in every arm.
+The `project` ladder never shortens at any scale, including `s=2`, which
+reflects the component and in theory should. What it measures instead is that
+**perturbation lengthens output** — an unrelated refusal vector moved length
++8.6% the same way.
+
+So: **`project` to ablate a feature, `add` to move along an axis.** Refusal is
+the former (there is no useful "more refusal"); verbosity is the latter.
 
 ## The corpus is the whole ballgame
 
