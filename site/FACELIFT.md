@@ -180,6 +180,7 @@ hosted, because the brand kit's slide and letterhead templates use them.
 | Contrast | `bun .contrast-check.mjs` from the repository root | Text contrast in both themes |
 | Titles | In `.github/workflows/site.yml` | Each route kept its own title |
 | Cross links | `bun blog/e2e/check-crosslinks.mjs site/build blog/build` | The blog's links into this site resolve |
+| Cache rules | Part of the unit suite, `headers.test.js` | Every page has one rule in `static/_headers`, none has two, the file fits Pages' limit |
 | Lighthouse | In CI | Performance, accessibility, best practices and SEO at 1.0 |
 
 ## Decisions, and why
@@ -198,6 +199,17 @@ hosted, because the brand kit's slide and letterhead templates use them.
   `media-brief/RATIONALE.md` has the full reasoning.
 - **The mp4 is listed before the webm.** For flat interface footage H.264 came
   out smaller than VP9 at the same legibility.
+- **Fonts arrive after the first paint.** The Lighthouse gate demands 100 and
+  main, on system fonts, scores it. IBM Plex in the bundle cost every page a
+  point. So the page paints in fallback faces scaled from the font files to
+  occupy the space Plex will (`src/styles/fonts.css`), and `src/app.html`
+  attaches `static/fonts/plex.css` after the first paint on a first visit and
+  at once on later ones. The swap moves nothing.
+- **Two named chunks, and menus rendered on demand.** One chunk per component
+  made the front page 50 requests to main's 27, and three hidden mega menus
+  plus a drawer doubled the DOM of every page. `vite.config.js` groups the
+  chrome and the components, and `SiteNav` renders a menu only while it is
+  open. Both were measured against main's build before and after.
 - **A mouse click never closes a hover opened menu.** People hover, then click.
   A plain toggle shut the menu under their cursor. Keyboard and touch toggle.
 
@@ -225,10 +237,17 @@ hosted, because the brand kit's slide and letterhead templates use them.
    line in `labs.tracks` in `src/lib/content/resources.js` adds it.
 10. **Raw video takes.** About 34 MB of generated footage sits uncommitted in
     `media-brief/takes/`. Committing it means LFS. The team's call.
-11. **Cloudflare Pages paths.** The build writes both `platform.html` and a
+11. **The standby origin.** `deploy/nginx/atlascybernetics.ai.conf` rewrites clean
+    URLs for three routes by name: `engine`, `control`, `diligence`. CI does not
+    deploy that file, and I did not edit infrastructure I cannot test. Cloudflare
+    Pages, which serves the site, needs nothing. If the standby ever takes
+    traffic, the thirty new routes need the same rewrite there, for example
+    `rewrite ^/([a-z0-9-]+(/[a-z0-9-]+)*)$ /$1.html break;` after excluding
+    `_app`, `media`, `fonts`, `logos`, `brand` and `lattice`.
+12. **Cloudflare Pages paths.** The build writes both `platform.html` and a
    `platform/` directory of child pages. Pages serves `/platform` from the
    file. Worth one look on the preview deployment.
-12. **Domain.** `atlascybernetics.ai` is unchanged. `SITE` in `brand.js` is the
+13. **Domain.** `atlascybernetics.ai` is unchanged. `SITE` in `brand.js` is the
     one constant to move when DNS does.
 
 ## How to throw it away
