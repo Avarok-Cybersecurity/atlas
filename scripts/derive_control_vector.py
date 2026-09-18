@@ -95,6 +95,12 @@ def main():
     ap.add_argument('--model-hint', default='qwen4exp')
     ap.add_argument('--layers', default=None,
                     help='A-B inclusive; layers outside are zeroed and omitted')
+    ap.add_argument('--magnitude', choices=('unit', 'raw'), default='unit',
+                    help='unit: normalise each layer to length 1 — for PROJECT '
+                         'mode, which uses direction only (default). '
+                         'raw: keep |mean-diff| per layer — for ADD mode, '
+                         'which applies the row verbatim under one global '
+                         'scale and so needs the per-layer magnitude.')
     args = ap.parse_args()
 
     pos, pos_tok = read_dump(args.positive)
@@ -122,15 +128,37 @@ def main():
 
     norms = np.linalg.norm(keep, axis=1)
     live = norms > 0
-    keep[live] /= norms[live][:, None]
+    unit = keep.copy()
+    unit[live] /= norms[live][:, None]
 
-    idx = write_gguf(args.out, keep, args.model_hint)
-    print(f'wrote {args.out}: {len(idx)} directions, layers {min(idx)}..{max(idx)}')
+    # Which magnitude to WRITE depends on the operator the file is for, and
+    # getting it wrong is silent rather than loud.
+    #
+    #   project (h -= s*(h.v)v) only uses the DIRECTION: `ControlVector::load`
+    #   folds a stored row's norm into the per-layer scale, so unit rows at
+    #   user scale 1.0 reproduce llama.cpp exactly. Magnitude is redundant.
+    #
+    #   add (h += s*row) uses the row VERBATIM with one GLOBAL scalar. Unit
+    #   rows therefore ask a single number to serve every layer at once — and
+    #   |mean-diff| spans ~11x across a typical active range (0.20 to 2.13 over
+    #   layers 4..44 for the shipped verbosity example). Any global scalar is
+    #   then simultaneously too large somewhere and too small somewhere else,
+    #   and the usual outcome is a dose of nearly zero reported as "add mode
+    #   does nothing".
+    #
+    # Keeping the raw magnitudes makes scale 1.0 mean "one unit of the measured
+    # contrast, correctly weighted at every layer", so 2.0 and 4.0 are honest
+    # multiples and a dose-response curve is interpretable.
+    out_rows = unit if args.magnitude == 'unit' else keep
+    idx = write_gguf(args.out, out_rows, args.model_hint)
+    print(f'wrote {args.out}: {len(idx)} directions, layers {min(idx)}..{max(idx)}'
+          f'  [magnitude={args.magnitude}'
+          f'{" - for project mode" if args.magnitude == "unit" else " - for add mode"}]')
     print(f'raw |mean-diff| per layer: min={norms[live].min():.6f} '
           f'max={norms[live].max():.6f} median={np.median(norms[live]):.6f}')
     # Cross-layer coherence: one feature carried across depth, or noise? Random
     # directions in `hidden` dims would sit near zero.
-    a = keep[lo:hi + 1][norms[lo:hi + 1] > 0]
+    a = unit[lo:hi + 1][norms[lo:hi + 1] > 0]
     if len(a) > 1:
         cos = a @ a.T
         n = cos.shape[0]
