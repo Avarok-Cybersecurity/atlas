@@ -460,6 +460,7 @@ impl TransformerModel {
                 graph_capture: ctx.graph_capture,
                 decode_step: false,
                 gdn_exact_replay: false,
+                gdn_write_on_accept: false,
                 token_ids: None,
                 host_token_ids: None,
                 // #30: forward the parent's routing (None on this decode-profiling
@@ -663,6 +664,7 @@ impl TransformerModel {
             graph_capture: false, // Eager mode — no CUDA graph
             decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: None,
             host_token_ids: None,
             routed_lora_layers: None, // #30: offline single-seq decode; no prefill route.
