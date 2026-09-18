@@ -9,6 +9,10 @@
 // bytes and nothing is re-typed here.
 //
 //   bun x --bun vite build && node scripts/media/og.mjs
+//   node scripts/media/og.mjs --blog     the blog's card, blog/static/og-image.png
+//
+// The blog shares the lockup and the type, so its card comes from here too,
+// with the blog's own title and host. The blog app has no browser of its own.
 // =============================================================================
 
 import { chromium } from '@playwright/test';
@@ -18,12 +22,14 @@ import { fileURLToPath } from 'node:url';
 import { serve } from './serve.mjs';
 import { SITE } from '../../src/lib/content/brand.js';
 import { hero } from '../../src/lib/content/home.js';
+import { SITE as BLOG_SITE, blog } from '../../../blog/src/lib/content.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const site = resolve(here, '..', '..');
 const repo = resolve(site, '..');
 const BUILD = resolve(site, 'build');
-const OUT = resolve(site, 'static', 'og-image.png');
+const BLOG = process.argv.includes('--blog');
+const OUT = BLOG ? resolve(repo, 'blog', 'static', 'og-image.png') : resolve(site, 'static', 'og-image.png');
 
 if (!existsSync(resolve(BUILD, 'index.html'))) {
   console.error(`og: no build at ${BUILD}. Run \`bun x --bun vite build\` in site/ first.`);
@@ -31,7 +37,8 @@ if (!existsSync(resolve(BUILD, 'index.html'))) {
 }
 
 const lockup = readFileSync(resolve(repo, 'assets/brand/logo-full-ondark.svg'), 'utf8').replace(/<\?xml[^>]*>\s*/, '');
-const lines = Array.isArray(hero.title) ? hero.title : String(hero.title).split('\n');
+const siteLines = Array.isArray(hero.title) ? hero.title : String(hero.title).split('\n');
+const lines = BLOG ? [blog.title, blog.card] : siteLines;
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 const html = `<!doctype html>
@@ -59,7 +66,7 @@ const html = `<!doctype html>
     <div class="lockup">${lockup}</div>
     <h1>${lines.map((l, i) => `<span class="${i === lines.length - 1 && lines.length > 1 ? 'dim' : ''}">${esc(l)}</span>`).join('')}</h1>
   </div>
-  <div class="foot">${esc(new URL(SITE).host)}</div>
+  <div class="foot">${esc(new URL(BLOG ? BLOG_SITE : SITE).host)}</div>
 </body></html>`;
 
 const server = await serve(BUILD);

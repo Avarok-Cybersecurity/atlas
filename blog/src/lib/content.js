@@ -17,7 +17,10 @@
 export const cleanSlug = (s) => s.replace(/\.html$/, '');
 
 export const SITE = 'https://blog.atlascybernetics.ai';
-export const MAIN_SITE = 'https://atlascybernetics.ai';
+// `VITE_MAIN_SITE=http://127.0.0.1:5173 bun run dev` points the links back at a
+// local copy of the main site, for demoing both apps from one machine. Unset,
+// which is every real build, they go to the live site.
+export const MAIN_SITE = (import.meta.env ?? {}).VITE_MAIN_SITE || 'https://atlascybernetics.ai';
 export const DOCS_SITE = 'https://docs.atlascybernetics.ai';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 // Must match site/src/lib/data.js. An invite code is not derivable from
@@ -29,6 +32,9 @@ export const blog = {
   name: 'Avarok blog',
   kicker: 'blog.atlascybernetics.ai',
   title: 'Notes from the inference layer',
+  // The second line of the share card, static/og-image.png. Regenerate the card
+  // with `node scripts/media/og.mjs --blog` from site/ after changing either.
+  card: 'Kernel work, benchmarks, product notes.',
   lede:
     'Kernel work, measured benchmarks, and what it takes to run frontier models on hardware you own. ' +
     'Everything we publish is reproducible from a commit.',
