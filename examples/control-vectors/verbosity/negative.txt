@@ -1,0 +1,200 @@
+In one sentence, explain how a hash table resolves collisions.
+Briefly describe how binary search works on a sorted array, one sentence only.
+Summarise how to reverse a singly linked list in place in a single sentence.
+Give a one-sentence answer on what the difference between a stack and a queue is.
+Tell me how quicksort partitions an array in under twenty words.
+As briefly as possible, explain why merge sort is stable and quicksort is not.
+No detail needed, just state how a balanced binary search tree keeps its height logarithmic in one sentence.
+Answer with a single concise sentence: explain how a trie stores strings for fast prefix lookup.
+Very briefly, describe how breadth-first search explores a graph.
+Give the shortest accurate explanation of how Dijkstra's algorithm finds shortest paths.
+One sentence, no elaboration: explain how dynamic programming avoids recomputing subproblems.
+Keep it short and explain how a bloom filter trades accuracy for memory in one line.
+TL;DR please: summarise how reference counting differs from tracing garbage collection in one sentence.
+Quick answer only, in one sentence: explain how a Python list comprehension differs from a for loop.
+In one sentence, explain what Python decorators do.
+Briefly describe how Python generators produce values lazily, one sentence only.
+Summarise how the Global Interpreter Lock affects Python threading in a single sentence.
+Give a one-sentence answer on how virtual environments isolate Python dependencies.
+Tell me how Rust ownership rules prevent data races in under twenty words.
+As briefly as possible, explain what the difference between String and str slices in Rust is.
+No detail needed, just state how the Rust borrow checker reasons about lifetimes in one sentence.
+Answer with a single concise sentence: explain how Rust traits differ from interfaces in other languages.
+Very briefly, describe how Result and Option encourage explicit error handling in Rust.
+Give the shortest accurate explanation of how the JavaScript event loop schedules callbacks.
+One sentence, no elaboration: explain how promises differ from plain callbacks in JavaScript.
+Keep it short and explain what closures are in JavaScript in one line.
+TL;DR please: summarise how the this keyword is bound in JavaScript in one sentence.
+Quick answer only, in one sentence: explain how structural typing works in TypeScript.
+In one sentence, explain how pointers and arrays relate to each other in C.
+Briefly describe what undefined behaviour means in C, one sentence only.
+Summarise how a compiler optimisation pass transforms code in a single sentence.
+Give a one-sentence answer on how a linker resolves symbols between object files.
+Tell me what the difference between a static and a dynamic library is in under twenty words.
+As briefly as possible, explain how virtual functions are dispatched in C++.
+No detail needed, just state what RAII means in C++ in one sentence.
+Answer with a single concise sentence: explain how move semantics avoid unnecessary copies in C++.
+Very briefly, describe how Go goroutines are scheduled onto operating system threads.
+Give the shortest accurate explanation of how Go channels coordinate concurrent work.
+One sentence, no elaboration: explain how a just-in-time compiler speeds up hot code paths.
+Keep it short and explain how a generational garbage collector decides what to free in one line.
+TL;DR please: summarise how database indexes speed up queries in one sentence.
+Quick answer only, in one sentence: explain how a query planner chooses a join strategy.
+In one sentence, explain what database normalisation is for.
+Briefly describe how transactions provide atomicity and isolation, one sentence only.
+Summarise what the difference between an inner and an outer join is in a single sentence.
+Give a one-sentence answer on how a write-ahead log protects a database from crashes.
+Tell me how connection pooling improves database throughput in under twenty words.
+As briefly as possible, explain how git stores commits as a directed acyclic graph.
+No detail needed, just state what git rebase does compared with git merge in one sentence.
+Answer with a single concise sentence: explain how a merge conflict is resolved in git.
+Very briefly, describe how git branches are simply pointers to commits.
+Give the shortest accurate explanation of how git bisect finds the commit that introduced a bug.
+One sentence, no elaboration: explain what the git staging area is for.
+Keep it short and explain how a pull request review workflow keeps a codebase healthy in one line.
+TL;DR please: summarise how to write a clear and useful commit message in one sentence.
+Quick answer only, in one sentence: explain how unit tests differ from integration tests.
+In one sentence, explain how test-driven development changes the way you write code.
+Briefly describe how mocking isolates the unit under test, one sentence only.
+Summarise how code coverage metrics can mislead you in a single sentence.
+Give a one-sentence answer on how property-based testing finds edge cases.
+Tell me how a continuous integration pipeline catches regressions early in under twenty words.
+As briefly as possible, explain how a debugger sets a breakpoint.
+No detail needed, just state how to read a stack trace to locate a bug in one sentence.
+Answer with a single concise sentence: explain how print debugging compares with stepping through a debugger.
+Very briefly, describe how a memory profiler helps you find a leak.
+Give the shortest accurate explanation of how a flame graph shows where time is spent.
+One sentence, no elaboration: explain how rubber-duck debugging helps you find your own mistakes.
+Keep it short and explain how to make an intermittent bug reproducible in one line.
+TL;DR please: summarise how HTTP request and response headers work in one sentence.
+Quick answer only, in one sentence: explain what the difference between an HTTP GET and a POST is.
+In one sentence, explain how REST and GraphQL APIs differ.
+Briefly describe how DNS turns a domain name into an IP address, one sentence only.
+Summarise how TCP guarantees ordered delivery in a single sentence.
+Give a one-sentence answer on how a CDN reduces page load time.
+Tell me how HTTP caching headers control freshness in under twenty words.
+As briefly as possible, explain how WebSockets keep a connection open.
+No detail needed, just state how a load balancer distributes traffic across servers in one sentence.
+Answer with a single concise sentence: explain how containers isolate processes from the host.
+Very briefly, describe what the difference between a container image and a running container is.
+Give the shortest accurate explanation of how a Dockerfile builds up image layers.
+One sentence, no elaboration: explain how Kubernetes keeps a deployment at the desired replica count.
+Keep it short and explain how infrastructure as code makes environments reproducible in one line.
+TL;DR please: summarise how a reverse proxy sits in front of an application server in one sentence.
+Quick answer only, in one sentence: explain how virtual memory maps pages to physical RAM.
+In one sentence, explain how a CPU cache hierarchy reduces memory latency.
+Briefly describe how context switching works in an operating system, one sentence only.
+Summarise how a deadlock arises between two locks in a single sentence.
+Give a one-sentence answer on how a mutex differs from a semaphore.
+Tell me how copy-on-write makes forking a process cheap in under twenty words.
+As briefly as possible, explain how file permissions work on a Unix system.
+No detail needed, just state how a shell pipe connects the output of one command to another in one sentence.
+Answer with a single concise sentence: explain how the shell expands globs and variables.
+Very briefly, describe how environment variables are inherited by child processes.
+Give the shortest accurate explanation of how an init system supervises long-running services.
+One sentence, no elaboration: explain how cron schedules recurring jobs.
+Keep it short and explain how regular expressions match text in grep in one line.
+TL;DR please: summarise how sed and awk process text streams in one sentence.
+Quick answer only, in one sentence: explain how rsync transfers only the changed parts of a file.
+In one sentence, explain how a lexer and a parser turn source code into a syntax tree.
+Briefly describe how an interpreter differs from a compiler, one sentence only.
+Summarise how a garbage-collected language manages heap memory in a single sentence.
+Give a one-sentence answer on how tail call optimisation removes stack frames.
+Tell me how recursion consumes stack space in under twenty words.
+As briefly as possible, explain how big-O notation describes algorithmic growth.
+No detail needed, just state how amortised analysis explains dynamic array resizing in one sentence.
+Answer with a single concise sentence: explain how floating-point numbers are represented in binary.
+Very briefly, describe why adding 0.1 and 0.2 does not give exactly 0.3 in most languages.
+Give the shortest accurate explanation of how Unicode and UTF-8 encode text.
+One sentence, no elaboration: explain how a semantic version number communicates compatibility.
+Keep it short and explain how a package manager resolves dependency versions in one line.
+TL;DR please: summarise how a monorepo differs from many small repositories in one sentence.
+Quick answer only, in one sentence: explain how feature flags let a team ship unfinished work safely.
+In one sentence, explain how to write code review comments that are kind and useful.
+Briefly describe how technical debt accumulates in a codebase, one sentence only.
+Summarise how refactoring differs from rewriting in a single sentence.
+Give a one-sentence answer on how pair programming spreads knowledge across a team.
+Tell me how documentation and inline comments serve different purposes in under twenty words.
+As briefly as possible, explain how a style guide and an autoformatter reduce bikeshedding.
+No detail needed, just state how an event-driven architecture decouples services in one sentence.
+Answer with a single concise sentence: explain how caching layers are invalidated without serving stale data.
+Very briefly, describe how a rainbow forms in the sky.
+Give the shortest accurate explanation of why the sky appears blue.
+One sentence, no elaboration: explain how the tides are driven by the moon's gravity.
+Keep it short and explain how plate tectonics shapes mountain ranges in one line.
+TL;DR please: summarise how a hurricane draws energy from warm ocean water in one sentence.
+Quick answer only, in one sentence: explain how the water cycle moves moisture around the planet.
+In one sentence, explain how sedimentary rock layers record geological time.
+Briefly describe how radiocarbon dating estimates the age of organic material, one sentence only.
+Summarise how the periodic table is organised in a single sentence.
+Give a one-sentence answer on how a catalyst speeds up a chemical reaction.
+Tell me why ice floats on liquid water in under twenty words.
+As briefly as possible, explain how soap molecules lift grease off a surface.
+No detail needed, just state how a refrigerator moves heat out of its interior in one sentence.
+Answer with a single concise sentence: explain how an internal combustion engine turns fuel into motion.
+Very briefly, describe how an electric motor turns current into rotation.
+Give the shortest accurate explanation of how a transformer changes voltage.
+One sentence, no elaboration: explain how solar panels convert light into electricity.
+Keep it short and explain how a lithium-ion battery stores and releases charge in one line.
+TL;DR please: summarise how noise-cancelling headphones cancel out sound waves in one sentence.
+Quick answer only, in one sentence: explain how a microwave oven heats food.
+In one sentence, explain how camera lenses focus light onto a sensor.
+Briefly describe how fibre-optic cable carries light over long distances, one sentence only.
+Summarise how GPS satellites let a receiver work out its position in a single sentence.
+Give a one-sentence answer on how radio waves carry a signal.
+Tell me how a transistor switches current in a semiconductor in under twenty words.
+As briefly as possible, explain how a bridge distributes load through its structure.
+No detail needed, just state how an aeroplane wing generates lift in one sentence.
+Answer with a single concise sentence: explain how a sailing boat can make progress against the wind.
+Very briefly, describe how a moving bicycle stays upright.
+Give the shortest accurate explanation of how sound travels differently through air and water.
+One sentence, no elaboration: explain how the Doppler effect changes the pitch of a passing siren.
+Keep it short and explain how telescopes gather light from distant stars in one line.
+TL;DR please: summarise how a star like the sun produces energy in one sentence.
+Quick answer only, in one sentence: explain how the seasons arise from the tilt of the Earth's axis.
+In one sentence, explain how a compass needle aligns with the Earth's magnetic field.
+Briefly describe how natural selection changes a population over generations, one sentence only.
+Summarise how DNA stores genetic information in a single sentence.
+Give a one-sentence answer on how enzymes speed up biological reactions.
+Tell me how bees pollinate flowering plants in under twenty words.
+As briefly as possible, explain how a compost heap turns kitchen scraps into soil.
+No detail needed, just state how statistics distinguishes correlation from causation in one sentence.
+Answer with a single concise sentence: explain how a controlled experiment isolates a single variable.
+Very briefly, describe how compound interest grows a balance over time.
+Give the shortest accurate explanation of how probability explains the birthday paradox.
+One sentence, no elaboration: explain how prime numbers underpin modular arithmetic.
+Keep it short and explain how the Fibonacci sequence shows up in nature in one line.
+TL;DR please: summarise how a map projection distorts the shape of the globe in one sentence.
+Quick answer only, in one sentence: explain how paper is made from wood pulp.
+In one sentence, explain how a suspension bridge's cables carry tension.
+Briefly describe how photosynthesis converts sunlight into chemical energy, one sentence only.
+Summarise how to brew a good cup of coffee at home in a single sentence.
+Give a one-sentence answer on how bread dough rises with yeast.
+Tell me how searing meat changes its flavour in under twenty words.
+As briefly as possible, explain how to sharpen a kitchen knife.
+No detail needed, just state how to keep fresh herbs usable for longer in one sentence.
+Answer with a single concise sentence: explain how to make a simple tomato sauce from scratch.
+Very briefly, describe how to fold a fitted sheet neatly.
+Give the shortest accurate explanation of how to get a coffee stain out of a shirt.
+One sentence, no elaboration: explain how to change a bicycle tyre.
+Keep it short and explain how to read a train timetable in one line.
+TL;DR please: summarise how to pack a suitcase efficiently in one sentence.
+Quick answer only, in one sentence: explain how to plan a walking route in an unfamiliar city.
+In one sentence, explain how to pick ripe avocados at the shop.
+Briefly describe how to water houseplants without overwatering them, one sentence only.
+Summarise how to start a small herb garden on a balcony in a single sentence.
+Give a one-sentence answer on how to assemble a flat-pack bookshelf.
+Tell me how to hang a picture straight on a wall in under twenty words.
+As briefly as possible, explain how to tie a secure knot for a clothesline.
+No detail needed, just state how to pitch a tent in windy weather in one sentence.
+Answer with a single concise sentence: explain how to read contour lines on a hiking map.
+Very briefly, describe how to keep a sourdough starter alive.
+Give the shortest accurate explanation of how to make cold-brew tea.
+One sentence, no elaboration: explain how to organise a bookshelf by subject.
+Keep it short and explain how to write a clear thank-you note in one line.
+TL;DR please: summarise how to take a good photograph in low light in one sentence.
+Quick answer only, in one sentence: explain how to tune a guitar by ear.
+In one sentence, explain how to learn a new language with daily practice.
+Briefly describe how to keep a daily journal that you actually stick with, one sentence only.
+Summarise how to plan a week of meals on a budget in a single sentence.
+Give a one-sentence answer on how to make a paper aeroplane that flies far.
