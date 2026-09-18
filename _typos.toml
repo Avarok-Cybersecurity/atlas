@@ -160,6 +160,17 @@ byt = "byt"
 pn = "pn"
 shs = "shs"
 
+# `Synopsys` is a company, not a misspelling of `synopsis`. It appears on the
+# marketing site's prior roles wall and in the file name of its mark
+# (site/static/logos/synopsys.svg), so both cases are needed.
+Synopsys = "Synopsys"
+synopsys = "synopsys"
+# `wdth` is the OpenType registered axis tag for width. It appears verbatim in
+# the IBM Plex licence text shipped beside the self hosted fonts
+# (`IBMPlexSans-Italic[wdth,wght].ttf`), which is a legal notice and must not
+# be edited.
+wdth = "wdth"
+
 [default.extend-identifiers]
 # `PNGs` — the plural of PNG, in the vision-fixture provisioning commentary.
 # The checker splits an uppercase run followed by a lowercase tail, so it sees
