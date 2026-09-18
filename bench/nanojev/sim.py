@@ -158,6 +158,25 @@ def make_example(rng: random.Random, rho: float, kind: str, size: int, wall_prob
             "rho": rho,
         }
 
+    if kind == "wall":
+        # Pure perception: no actuator, no arithmetic, answer visible in the
+        # 5x5 view. This is the control that makes a poor `noul` score
+        # interpretable -- a model that fails here cannot read the grid at all,
+        # and one that passes here but fails `noul` is failing the probability
+        # computation specifically, which is a different (and for a System One
+        # model, arguably unfair) demand.
+        di = rng.randrange(len(DIRS))
+        w = g.wall_vector()[di]
+        return {
+            "kind": "wall",
+            "view": view,
+            "question": f"Is the cell immediately {DIRS[di]} of the agent a wall?",
+            "labels": ["no", "yes"],
+            "truth": [1.0 - w, float(w)],
+            "outcome": int(w),
+            "rho": rho,
+        }
+
     if kind == "choice":
         # A distribution, not a one-hot: see the module docstring.
         temp = 0.25
@@ -247,7 +266,8 @@ def main():
     ap.add_argument("--rho", type=float, default=0.8, help="actuator reliability")
     ap.add_argument("--size", type=int, default=8, help="grid side")
     ap.add_argument("--wall-prob", type=float, default=0.3)
-    ap.add_argument("--kinds", default="noul,choice,score")
+    ap.add_argument("--kinds", default="noul,choice,score",
+                    help="any of: noul, choice, score, wall")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
