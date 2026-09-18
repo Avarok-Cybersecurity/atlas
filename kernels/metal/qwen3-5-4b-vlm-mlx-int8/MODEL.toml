@@ -1,0 +1,54 @@
+[model]
+name = "qwen3-5-4b-vlm-mlx-int8"
+hf_id = "mlx-community/Qwen3.5-4B-MLX-8bit"
+params = "4B"
+active_params = "4B"
+# Hybrid SSM (linear_attention/GDN) + full_attention layer pattern,
+# 4:1 ratio per text_config.layer_types in the upstream config.json.
+# Vision tower is loaded separately at runtime; its kernels live under
+# this model dir's `mlx_int8/` subtree.
+layers_attention = 36
+layers_ssm = 0
+moe_experts = 0
+moe_topk = 0
+hidden_dim = 2560
+head_dim = 256
+q_heads = 16
+kv_heads = 2
+
+# Match arm consumed by spark-model::factory::loader_for_config (Phase 6).
+# Upstream config has `model_type = "qwen3_5"` and
+# `architectures = ["Qwen3_5ForConditionalGeneration"]`. The factory
+# arm distinguishes VL via `architectures` (Phase 6 extends parsing).
+[[model_types]]
+model_type = "qwen3_5_vl"
+hidden_size = 2560
+
+# Sampling presets — mirror the upstream Qwen3.5 dense recommendations.
+[sampling.thinking_text]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[behavior]
+default_kv_dtype = "bf16"
+thinking_default = false

@@ -1,0 +1,7 @@
+[build]
+# Per-quant ADDITIONS to the common KERNEL.toml's flags (build.rs merges
+# common first, then this list, deduped). Empty = inherit common
+# (-ffast-math, -DTQ_PLUS_SIGNS).
+extra_metal_flags = []
+
+[modules]
