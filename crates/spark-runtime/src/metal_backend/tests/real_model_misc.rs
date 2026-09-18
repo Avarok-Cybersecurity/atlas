@@ -185,8 +185,17 @@ fn metal_real_model_chain_norm_then_qproj() {
     backend
         .launch_typed(
             gemv_kernel,
-            [n, 1, 1],
-            [64, 1, 1],
+            // ★ THE KERNEL'S DOCUMENTED CONTRACT, not a guess.
+            // mlx_int8_gemv.metal:31 states `ceil(N/4)` threadgroups of 128
+            // threads, and computes `row = tg_idx * ROWS_PER_TG + simd_group_id`
+            // with ROWS_PER_TG = 4. At 64 threads there are only TWO
+            // simdgroups, so simd_group_id is 0 or 1 and every row with
+            // r mod 4 in {2,3} is NEVER WRITTEN -- half the output, scattered
+            // rather than truncated, which is why it read as a numerics bug.
+            // Production (weights/mlx_int8.rs:217) always obeyed the contract;
+            // only these two tests did not.
+            [n.div_ceil(4), 1, 1],
+            [128, 1, 1],
             0,
             backend.default_stream(),
             &[
