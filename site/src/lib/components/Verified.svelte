@@ -53,7 +53,7 @@
         <h3>{verified.scale.title}</h3>
         <p>{verified.scale.lead}</p>
         <p class="scale-figure">
-          From C={top.from} to C={top.to}, Atlas adds
+          From C={top.from} to C={top.to}, Avarok adds
           <strong class="scale-up">{signed(top.atlas)}</strong> throughput while
           {top.label} adds <strong class="scale-flat">{signed(top.baseline)}</strong>.
         </p>

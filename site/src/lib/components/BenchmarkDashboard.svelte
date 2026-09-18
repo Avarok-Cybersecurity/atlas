@@ -80,7 +80,7 @@
     class="bd"
     role="dialog"
     aria-modal="true"
-    aria-label="Atlas benchmark dashboard"
+    aria-label="Avarok benchmark dashboard"
     tabindex="-1"
     bind:this={dialogEl}
     use:modal

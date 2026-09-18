@@ -117,13 +117,13 @@ export const announcement = {
   // "In active development" is stated rather than implied — an operator who
   // reads this and then finds an unfinished fleet manager was misled by us, not
   // by their own optimism.
-  note: 'Sparkrun has been retired: Atlas now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.',
+  note: 'Sparkrun has been retired: Avarok now ships atlasctl, our own control plane for enterprise fleet management and telemetry. In active development.',
   // A third row rather than a longer second one, for the same reason the note
   // is its own row: the launcher change and the browser client are separate
   // pieces of news, and running them together reads as one long sentence about
   // neither. The ask for feedback is only honest if it is easy to act on, so it
   // carries the link rather than the words "let us know".
-  pwa: 'Atlas Fleet Manager, the PWA that runs models straight from your browser, is still under development. Feedback is welcome.',
+  pwa: 'Avarok Fleet Manager, the PWA that runs models straight from your browser, is still under development. Feedback is welcome.',
   pwaCtaText: 'Open an issue',
   pwaCtaUrl: issuesUrl
 };
@@ -135,7 +135,7 @@ export const nav = {
     { text: 'News', href: `${ENGINE}#news` },
     { text: 'Hardware', href: `${ENGINE}#hardware` },
     { text: 'Models', href: `${ENGINE}#models` },
-    { text: 'Start Atlas', href: `${ENGINE}#run` },
+    { text: 'Start Avarok', href: `${ENGINE}#run` },
     { text: 'Control', href: CONTROL },
     { text: 'Blog', href: blogUrl }
   ],
@@ -148,7 +148,7 @@ export const hero = {
   badge: 'Open source. Pure Rust and CUDA. Verified on GB10.',
   headline: ['One inference engine, from the device in your hand', 'to the datacenter rack.'],
   sub:
-    'Atlas is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.',
+    'Avarok Engine is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.',
   challenge: {
     claim: 'First token in under 90 seconds on a DGX Spark.',
     lead: 'Do not take our word for it.',
@@ -156,7 +156,7 @@ export const hero = {
       'Median of our GB10 runs, model cached, atlas 59616dc, Jul 2026. Same command below, run it and time it yourself.'
   },
   primaryCta: 'Star on GitHub',
-  secondaryCta: 'Start Atlas',
+  secondaryCta: 'Start Avarok',
   discordCta: 'Join the Discord'
 };
 
@@ -186,16 +186,16 @@ export const news = {
       featured: true,
       title: 'We helped build the MLPerf Edge Agentic benchmark',
       body:
-        'MLCommons published the new MLPerf Inference v6.1 edge agentic benchmark and Atlas Inference is named as a contributor alongside NVIDIA. It measures multi turn agentic LLMs on a single edge accelerator, BFCL v4 for accuracy and replayed agentic coding trajectories for performance. We helped shape it because it is the benchmark that actually looks like the work.',
+        'MLCommons published the new MLPerf Inference v6.1 edge agentic benchmark and names us as a contributor alongside NVIDIA, under our former name, Atlas Inference. It measures multi turn agentic LLMs on a single edge accelerator, BFCL v4 for accuracy and replayed agentic coding trajectories for performance. We helped shape it because it is the benchmark that actually looks like the work.',
       cta: 'Read the MLCommons announcement',
       url: mlcommonsArticleUrl
     },
     {
       tag: 'AMD',
       date: 'July 2026',
-      title: 'Atlas running on AMD Strix Halo',
+      title: 'Avarok Engine running on AMD Strix Halo',
       body:
-        'AMD provided a Strix Halo desktop and we brought Atlas to it through SCALE, custom kernels and all. That machine is the box we ran and submitted MLPerf on. One codebase now covers both vendors with no HIP port and no second kernel tree.',
+        'AMD provided a Strix Halo desktop and we brought the engine to it through SCALE, custom kernels and all. That machine is the box we ran and submitted MLPerf on. One codebase now covers both vendors with no HIP port and no second kernel tree.',
       cta: 'See the post on X',
       url: xUrl
     },
@@ -204,7 +204,7 @@ export const news = {
       date: 'Submitted',
       title: 'Our MLPerf submission is in',
       body:
-        'Atlas is submitted to MLPerf Inference v6.1 in the closed edge division, the same CUDA source across NVIDIA GB10 and AMD gfx1151. Results stay under embargo until MLCommons publishes.',
+        'Avarok Engine is submitted to MLPerf Inference v6.1 in the closed edge division, the same CUDA source across NVIDIA GB10 and AMD gfx1151. Results stay under embargo until MLCommons publishes.',
       cta: 'Follow along in Discord',
       url: discordUrl
     }
@@ -216,9 +216,12 @@ export const stars = {
   label: '// 07 · community',
   title: 'Built in the open, starred in the open.',
   sub:
-    'Atlas went from one Reddit post to a community running it on their own hardware. The curve below is live, regenerated from the GitHub API on every deploy.',
+    'The engine went from one Reddit post to a community running it on their own hardware. The curve below is live, regenerated from the GitHub API on every deploy.',
   cta: 'Star the repo'
 };
+
+// Verbatim, old product name included. An attributed quote is never edited.
+export const testimonialsNote = "Quotes are verbatim. Atlas was the engine's name until the September 2026 rebrand to Avarok.";
 
 export const testimonials = [
   {
@@ -249,7 +252,7 @@ export const community = {
   label: '// come build with us',
   title: 'The action is in Discord.',
   body:
-    'Hundreds of builders are running Atlas on their own hardware right now. We are in there every day, shipping fixes, taking model requests, and tuning kernels in the open. Your machine is the test fleet and your voice sets the roadmap.',
+    'Hundreds of builders are running Avarok Engine on their own hardware right now. We are in there every day, shipping fixes, taking model requests, and tuning kernels in the open. Your machine is the test fleet and your voice sets the roadmap.',
   cta: 'Join the Discord',
   sub: 'Active every day.'
 };
@@ -288,7 +291,7 @@ export const mlperfCopy = {
 
 export const mlcommons = {
   line:
-    'Atlas is a member of MLCommons and sits on the Edge LLM taskforce, where we helped shape the new v6.1 edge agentic benchmark. MLCommons names Atlas Inference as a contributor in the announcement.',
+    'Avarok is a member of MLCommons and sits on the Edge LLM taskforce, where we helped shape the new v6.1 edge agentic benchmark. MLCommons names us as a contributor in the announcement, under our former name, Atlas Inference.',
   linkText: 'read the announcement',
   url: mlcommonsArticleUrl
 };
@@ -370,7 +373,7 @@ export const contribute = {
   label: '// 08 · build with us',
   title: 'Your machine is the test fleet.',
   sub:
-    'Atlas grows from the machines it runs on. Every path below is real and linked. Contributions ship in the Community Edition under AGPLv3, and the CLA lets us re license for the Enterprise Edition.',
+    'Avarok Engine grows from the machines it runs on. Every path below is real and linked. Contributions ship in the Community Edition under AGPLv3, and the CLA lets us re license for the Enterprise Edition.',
   paths: [
     {
       title: 'Run the serve matrix',
@@ -415,14 +418,14 @@ export const roadmap = {
     {
       title: 'Intel Arc Pro B70',
       status: 'In talks',
-      body: 'Active conversations with Intel about bringing Atlas to the Arc Pro B70. Nothing is signed yet, and this card will say so until it is.',
+      body: 'Active conversations with Intel about bringing the engine to the Arc Pro B70. Nothing is signed yet, and this card will say so until it is.',
       cta: 'Follow along in Discord',
       url: discordUrl
     },
     {
       title: 'AMD Strix Halo',
       status: 'MLPerf submitted',
-      body: 'Native gfx1151 through SCALE. AMD provided a Strix Halo desktop and we brought Atlas to it, custom kernels and all.',
+      body: 'Native gfx1151 through SCALE. AMD provided a Strix Halo desktop and we brought the engine to it, custom kernels and all.',
       cta: 'PR #187',
       url: strixPrUrl
     },
@@ -464,16 +467,16 @@ export const faq = {
   sub: 'Short answers, each one backed by something on this page or in the repo.',
   items: [
     {
-      q: 'What is Atlas?',
-      a: 'An open source LLM inference engine written in pure Rust and CUDA. It serves an OpenAI-compatible API from a single binary, with no Python and no PyTorch in the serving path. One codebase covers the range, from edge-class accelerators through workstations to expert-parallel deployments across nodes.'
+      q: 'What is Avarok Engine?',
+      a: 'An open source LLM inference engine written in pure Rust and CUDA, formerly named Atlas. It serves an OpenAI-compatible API from a single binary, with no Python and no PyTorch in the serving path. One codebase covers the range, from edge-class accelerators through workstations to expert-parallel deployments across nodes.'
     },
     {
-      q: 'What hardware does Atlas run on?',
+      q: 'What hardware does Avarok Engine run on?',
       a: 'NVIDIA DGX Spark (GB10) is verified today, and AMD Strix Halo (gfx1151) runs the same CUDA source compiled through SCALE by Spectral Compute — one codebase, no HIP port. Both were submitted to MLPerf Inference v6.1 in the closed edge division.'
     },
     {
-      q: 'Is Atlas faster than vLLM on a DGX Spark?',
-      a: 'On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.333x against the matched vLLM + MTP configuration. The margin is widest at the top, because between C=64 and C=128 Atlas keeps scaling and the matched vLLM configuration flattens. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.'
+      q: 'Is Avarok Engine faster than vLLM on a DGX Spark?',
+      a: 'On the published concurrency ladder, yes at every rung from C=1 to C=128, by 1.012x to 1.333x against the matched vLLM + MTP configuration. The margin is widest at the top, because between C=64 and C=128 Avarok Engine keeps scaling and the matched vLLM configuration flattens. Same box, same checkpoint, same client, same prompts, greedy sampling with matched penalties. The full campaign log, including the rungs we lost on the way, is in the repo.'
     },
     {
       q: 'How do I install it?',
@@ -489,14 +492,14 @@ export const faq = {
     },
     {
       q: 'Why does concurrency matter more than single-stream speed?',
-      a: 'Because agentic systems do not send one request at a time. A fleet of tool-calling agents sharing a context bus arrives as many concurrent streams, so the engine is judged where the requests pile up. On the published ladder Atlas keeps gaining throughput from C=64 to C=128 while the leading vLLM configuration does not, and an engine that flattens under load caps how many agents a given box can actually run.'
+      a: 'Because agentic systems do not send one request at a time. A fleet of tool-calling agents sharing a context bus arrives as many concurrent streams, so the engine is judged where the requests pile up. On the published ladder Avarok Engine keeps gaining throughput from C=64 to C=128 while the leading vLLM configuration does not, and an engine that flattens under load caps how many agents a given box can actually run.'
     },
     {
-      q: 'What license is Atlas under, and can I use it commercially?',
-      a: 'The Community Edition is AGPL-3.0-only. Contributions are covered by a CLA that permits re-licensing for the Enterprise Edition. If you are running Atlas in production or need different terms, email us.'
+      q: 'What license is Avarok Engine under, and can I use it commercially?',
+      a: 'The Community Edition is AGPL-3.0-only. Contributions are covered by a CLA that permits re-licensing for the Enterprise Edition. If you are running Avarok Engine in production or need different terms, email us.'
     },
     {
-      q: 'Does Atlas run multi-node?',
+      q: 'Does Avarok Engine run multi-node?',
       a: 'Yes. EP=2 expert parallelism across two DGX Sparks is supported and shipped as recipes; those cards are marked EP=2 in the model list. A three-node GB10 topology is being wired up now.'
     }
   ]
@@ -512,7 +515,7 @@ export const reachout = {
     {
       emoji: '💼',
       title: 'Business',
-      body: 'Running Atlas in production or evaluating the Enterprise Edition. Tell us what you need and we will scope it with you.'
+      body: 'Running Avarok in production or evaluating the Enterprise Edition. Tell us what you need and we will scope it with you.'
     },
     {
       emoji: '🤝',
@@ -522,7 +525,7 @@ export const reachout = {
     {
       emoji: '🔧',
       title: 'Hardware',
-      body: 'Silicon you want Atlas running on. Tell us about it and we will scope a bring up.'
+      body: 'Silicon you want Avarok Engine running on. Tell us about it and we will scope a bring up.'
     }
   ],
   emails: contactEmails,
@@ -539,7 +542,7 @@ export const codeChat = {
   label: '// 11 \u00b7 ask the codebase',
   title: 'Ask the codebase.',
   sub:
-    'The whole Atlas repo is embedded into a vector lattice that runs right here in your browser. Ask a question, get an answer with file and line receipts.',
+    'The whole Avarok repo is embedded into a vector lattice that runs right here in your browser. Ask a question, get an answer with file and line receipts.',
   boot: [
     'atlas code lattice online',
     'retrieval runs locally in wasm, only the model call leaves this page',

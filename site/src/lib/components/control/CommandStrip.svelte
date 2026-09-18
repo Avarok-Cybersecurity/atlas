@@ -62,9 +62,9 @@
 
 <header class="cmd" aria-label="Fleet command strip">
   <div class="cmd-left">
-    <a class="cmd-mark" href="/" aria-label="Atlas home" data-sveltekit-reload>
+    <a class="cmd-mark" href="/" aria-label="Avarok home" data-sveltekit-reload>
       <img src="/favicon.svg" alt="" width="20" height="20" />
-      <span>Atlas</span>
+      <span>Avarok</span>
     </a>
     <span class="cmd-chip" class:cmd-chip-amber={fleet.controlOnly}>
       {fleet.controlOnly ? 'control-only' : 'live'}
