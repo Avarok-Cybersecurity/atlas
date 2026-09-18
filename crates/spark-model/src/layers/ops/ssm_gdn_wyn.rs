@@ -333,7 +333,7 @@ pub fn gdn_decode_wy4_woa(
         .launch(stream)
 }
 
-/// Post-verdict fold (`gated_delta_rule_wy4_fold`): applies rows 0..na_tab[b]
+/// Post-verdict fold (`gated_delta_rule_wy4_fold`): applies rows `0..na_tab[b]`
 /// of the stashed updates to H, one read + one write per state.
 #[allow(clippy::too_many_arguments)]
 pub fn gdn_wy4_fold(
