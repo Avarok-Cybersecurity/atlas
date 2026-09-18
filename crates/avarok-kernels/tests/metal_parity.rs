@@ -21,6 +21,13 @@
 //! avarok-kernels --test metal_parity`. The emitted file is the starting point
 //! for hand-editing, not a build artefact: rows carry judgement (tier, test
 //! name, mutations, the exception rationale) that no generator can invent.
+//!
+//! Two sets means two directions. `[[kernel]]` rows constrain the gb10 set;
+//! `[[metal]]` rows constrain the Metal set: every resolved Metal entry point
+//! is a `mapped` target or is declared `metal_only` (nothing on the CUDA side
+//! does its job), `counterpart` (the gb10 kernel in `gb10 =` does, but the
+//! contract differs or nothing measures it) or `stub` (empty body, read from
+//! source, never mappable). Without it, 73 Metal kernels were invisible.
 
 #[allow(dead_code)]
 #[path = "../build_shadow.rs"]
@@ -90,24 +97,37 @@ fn resolved(root: &Path, dir: &str, ext: &str) -> BTreeSet<(String, String)> {
 /// parser in the dependency graph of the build's own resolver.
 #[derive(Debug, Default)]
 struct Row {
+    table: String,
     source: String,
     entry: String,
     state: String,
     metal: Option<String>,
+    gb10: Option<String>,
     test: Option<String>,
     why: Option<String>,
 }
+
+/// The tables the manifest may carry. Anything else is refused: the parser
+/// attributes a key to the row above it, so an unknown header folds silently.
+const TABLES: &[&str] = &["kernel", "metal"];
 
 fn parse_manifest(text: &str) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut cur: Option<Row> = None;
     for line in text.lines() {
         let t = line.trim();
-        if t == "[[kernel]]" {
+        if let Some(name) = t.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+            assert!(
+                TABLES.contains(&name),
+                "{MANIFEST}: unknown table [[{name}]]; its keys would land in the row above"
+            );
             if let Some(r) = cur.take() {
                 rows.push(r);
             }
-            cur = Some(Row::default());
+            cur = Some(Row {
+                table: name.to_string(),
+                ..Row::default()
+            });
             continue;
         }
         let Some(r) = cur.as_mut() else { continue };
@@ -121,6 +141,7 @@ fn parse_manifest(text: &str) -> Vec<Row> {
             "entry" => r.entry = v,
             "state" => r.state = v,
             "metal" => r.metal = Some(v),
+            "gb10" => r.gb10 = Some(v),
             "test" => r.test = Some(v),
             "why" => r.why = Some(v),
             _ => {}
@@ -156,6 +177,44 @@ const PLACEHOLDERS: &[&str] = &[
     "tbd",
 ];
 
+/// The one reason standard: gb10-side exceptions and every `[[metal]]` row go
+/// through here, so no row kind gets a second, weaker floor.
+fn assert_reason(label: &str, kind: &str, why: Option<&str>) {
+    let why = why.unwrap_or("");
+    assert!(
+        why.len() >= 80,
+        "{label} is {kind} with a {}-char reason; 80 is the floor, because a \
+         one-line reason is how 'no Metal analogue' comes to mean 'nobody tried'",
+        why.len()
+    );
+    let lower = why.to_lowercase();
+    for p in PLACEHOLDERS {
+        assert!(
+            !lower.starts_with(p) && lower != *p,
+            "{label} {kind} reason is the placeholder {p:?}"
+        );
+    }
+}
+
+/// True when `entry` in the Metal source `src` is declared with an empty body
+/// (`kernel void name(...) {}`), which is how lora_bgmv.metal spells a stub.
+/// Read from source, not the manifest, so editing a row cannot promote a stub.
+fn empty_body(root: &Path, src: &str, entry: &str) -> bool {
+    let text = std::fs::read_to_string(root.join(src)).unwrap_or_default();
+    let Some(start) = text.find(&format!("kernel void {entry}(")) else {
+        return false;
+    };
+    let mut depth = 0i32;
+    let close = text[start..].char_indices().find(|&(_, c)| {
+        depth += (c == '(') as i32 - (c == ')') as i32;
+        c == ')' && depth == 0
+    });
+    close.is_some_and(|(i, _)| {
+        let after = text[start + i + 1..].chars().filter(|c| !c.is_whitespace());
+        after.take(2).collect::<String>() == "{}"
+    })
+}
+
 #[test]
 fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
     let root = repo_root();
@@ -190,7 +249,9 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
              with AVAROK_METAL_PARITY_EMIT=1."
         )
     });
-    let rows = parse_manifest(&text);
+    let all = parse_manifest(&text);
+    let metal_rows: Vec<&Row> = all.iter().filter(|r| r.table == "metal").collect();
+    let rows: Vec<&Row> = all.iter().filter(|r| r.table == "kernel").collect();
     assert!(
         !rows.is_empty(),
         "{MANIFEST} parsed to ZERO rows. A manifest that says nothing cannot \
@@ -200,7 +261,7 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
     // 1. every resolved gb10 (path, entry) appears exactly once
     let keyed: BTreeMap<(String, String), &Row> = rows
         .iter()
-        .map(|r| ((r.source.clone(), r.entry.clone()), r))
+        .map(|r| ((r.source.clone(), r.entry.clone()), *r))
         .collect();
     let missing: Vec<_> = gb10
         .difference(&keyed.keys().cloned().collect())
@@ -219,29 +280,9 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
     );
 
     // 2. an exception's reason must be a reason
-    for r in &rows {
-        if r.state != "exception" {
-            continue;
-        }
-        let why = r.why.as_deref().unwrap_or("");
-        assert!(
-            why.len() >= 80,
-            "{}::{} is an exception with a {}-char reason; 80 is the floor, \
-             because a one-line reason is how 'no Metal analogue' comes to mean \
-             'nobody tried'",
-            r.source,
-            r.entry,
-            why.len()
-        );
-        let lower = why.to_lowercase();
-        for p in PLACEHOLDERS {
-            assert!(
-                !lower.starts_with(p) && lower != *p,
-                "{}::{} exception reason is the placeholder {p:?}",
-                r.source,
-                r.entry
-            );
-        }
+    for r in rows.iter().filter(|r| r.state == "exception") {
+        let label = format!("{}::{}", r.source, r.entry);
+        assert_reason(&label, "an exception", r.why.as_deref());
     }
 
     // 3. a mapped row must name a Metal entry point that actually resolves
@@ -325,14 +366,105 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
         );
     }
 
+    // ── The other direction: every resolved Metal entry point is accounted for.
+    //
+    // Everything above constrains the gb10 set only; the mapped rows name 10
+    // of 83 Metal kernels and nothing said the other 73 were looked at. A map
+    // that constrains one of two sets is not 1:1, so a Metal entry point that
+    // is neither a mapped target nor declared in a `[[metal]]` row fails by name.
+    let mut by_name: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (src, name) in &metal {
+        by_name.entry(name).or_default().push(src);
+    }
+    for (name, srcs) in &by_name {
+        let n = srcs.len();
+        assert!(
+            n == 1,
+            "Metal entry {name:?} resolves in {n} sources {srcs:?}; `metal =` is ambiguous"
+        );
+    }
+    let mapped_targets: BTreeSet<&str> = rows
+        .iter()
+        .filter(|r| r.state == "mapped")
+        .filter_map(|r| r.metal.as_deref())
+        .collect();
+    for m in &mapped_targets {
+        let src = by_name[m][0];
+        assert!(
+            !empty_body(&root, src, m),
+            "mapped target {m:?} has an EMPTY body in {src}; a stub is not a port"
+        );
+    }
+    let mut declared: BTreeSet<(String, String)> = BTreeSet::new();
+    for r in &metal_rows {
+        let label = format!("[[metal]] {}::{}", r.source, r.entry);
+        let key = (r.source.clone(), r.entry.clone());
+        assert!(
+            metal.contains(&key),
+            "{label} does not resolve in kernels/metal: the row outlived the kernel, \
+             and a stale row is how a deleted kernel stays 'accounted for'"
+        );
+        assert!(declared.insert(key), "{label} is declared twice");
+        assert!(
+            !mapped_targets.contains(r.entry.as_str()),
+            "{label} is a mapped target AND declared {}; it is one or the other",
+            r.state
+        );
+        assert!(
+            ["metal_only", "counterpart", "stub"].contains(&r.state.as_str()),
+            "{label} has state {:?}; [[metal]] rows are metal_only, counterpart or stub",
+            r.state
+        );
+        assert_eq!(
+            r.gb10.is_some(),
+            r.state != "metal_only",
+            "{label}: metal_only names no gb10 kernel; counterpart and stub name theirs in `gb10 =`"
+        );
+        assert_eq!(
+            r.state == "stub",
+            empty_body(&root, &r.source, &r.entry),
+            "{label}: stub and an empty body go together; a body that does work must be measured"
+        );
+        if let Some(g) = r.gb10.as_deref() {
+            let (src, entry) = g.split_once("::").unwrap_or_else(|| {
+                panic!("{label}: `gb10 =` must be \"<source>::<entry>\", got {g:?}")
+            });
+            assert!(
+                gb10.contains(&(src.to_string(), entry.to_string())),
+                "{label} names gb10 counterpart {g:?}, which does not resolve in kernels/gb10"
+            );
+        }
+        assert_reason(&label, &r.state, r.why.as_deref());
+    }
+    let unaccounted: Vec<_> = metal
+        .iter()
+        .filter(|k| !mapped_targets.contains(k.1.as_str()) && !declared.contains(k))
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "{} resolved Metal kernel(s) are neither a mapped target nor declared in a \
+         [[metal]] row: {:?}. The map constrains both sets or it is not 1:1.",
+        unaccounted.len(),
+        unaccounted.iter().take(5).collect::<Vec<_>>()
+    );
+
     let mapped = rows.iter().filter(|r| r.state == "mapped").count();
     let exc = rows.iter().filter(|r| r.state == "exception").count();
     let unported = rows.iter().filter(|r| r.state == "unported").count();
+    let count = |s: &str| metal_rows.iter().filter(|r| r.state == s).count();
+    let (mo, cp, st) = (count("metal_only"), count("counterpart"), count("stub"));
+    let (mt, total) = (
+        mapped_targets.len(),
+        mapped_targets.len() + metal_rows.len(),
+    );
     println!("gb10 resolved: {}", gb10.len());
     println!("metal resolved: {}", metal.len());
     println!(
         "rows: {} (mapped {mapped}, exception {exc}, unported {unported})",
         rows.len()
+    );
+    println!(
+        "metal: {mt} mapped targets + {mo} metal_only + {cp} counterpart + {st} stub = {total}"
     );
 }
 
