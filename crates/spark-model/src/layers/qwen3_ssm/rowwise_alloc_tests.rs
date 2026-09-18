@@ -35,6 +35,7 @@
 
 use super::tests::native_fp8_gdn_layer;
 use super::*;
+use crate::weight_map::Fp8Weight;
 use crate::weight_map::WeightQuantFormat;
 use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::{BufferArena, BufferSizes, ssm_rowwise_w_bf16_bytes_for};

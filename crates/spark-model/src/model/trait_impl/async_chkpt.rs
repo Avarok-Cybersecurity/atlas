@@ -229,6 +229,20 @@ impl TransformerModel {
     ) -> Result<()> {
         use crate::layer::SsmLayerState;
 
+        // Write-on-accept: the post-verdict fold already committed this
+        // slot's h states (all accepted rows, full or partial). Only the
+        // conv state needs the intermediate restore below.
+        let h_folded = {
+            let mut f = self.gdn_woa_folded_slots.lock();
+            match f.iter().position(|&s| s == seq.slot_idx) {
+                Some(p) => {
+                    f.swap_remove(p);
+                    true
+                }
+                None => false,
+            }
+        };
+
         // Width invariant. Together with the `num_accepted == 0` guard below
         // this pins the reachable intermediate index to exactly [0, k-2],
         // which is the invariant the fused K=2/3/4 verify paths rely on when
@@ -310,11 +324,13 @@ impl TransformerModel {
             // intermediate (state after token `num_accepted-1`).
             let slot = seq.slot_idx;
             let inter_idx = num_accepted - 1;
-            h_plan.push(StateCopy {
-                src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
-                dst: ssm.h_state,
-                bytes: h_bytes,
-            });
+            if !h_folded {
+                h_plan.push(StateCopy {
+                    src: self.ssm_pool.h_intermediate(ssm_layer_idx, slot, inter_idx),
+                    dst: ssm.h_state,
+                    bytes: h_bytes,
+                });
+            }
             conv_plan.push(StateCopy {
                 src: self
                     .ssm_pool

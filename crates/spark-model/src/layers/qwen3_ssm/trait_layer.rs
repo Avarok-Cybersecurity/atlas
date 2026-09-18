@@ -9,9 +9,60 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::Qwen3SsmLayer;
+use super::ple_seq::ple_seq_state;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
+    fn gdn_fold_accepted(
+        &self,
+        gpu: &dyn GpuBackend,
+        h_table: DevicePtr,
+        na_tab: DevicePtr,
+        k_rows: usize,
+        n: usize,
+        stream: u64,
+    ) -> Result<bool> {
+        // Flag-driven, not host-armed: the batched verify replays as a CUDA
+        // graph, so the only reliable record of WHICH kernel ran is the device
+        // word the woa twin writes inside the graph. The fold kernel reads it
+        // and either folds the stash (woa ran) or performs the parent's
+        // partial-accept restore from the Hi tables (parent ran). Either way
+        // h is committed here, so the caller skips its h restore.
+        let _ = self
+            .woa_armed
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        if !super::gdn_flags::gdn_woa_enabled()
+            || self.gdn_wy4_fold_k.0 == 0
+            || self.gdn_wy4_clear_k.0 == 0
+            || self.woa_flag.is_null()
+            || h_table.is_null()
+        {
+            return Ok(false);
+        }
+        let [nk, nv, kd, vd] = self.woa_dims;
+        let hi_tables = h_table.offset(crate::layer::VERIFY_WY_TABLE_STRIDE_BYTES);
+        crate::layers::ops::gdn_wy4_fold(
+            gpu,
+            self.gdn_wy4_fold_k,
+            h_table,
+            self.woa_stash,
+            na_tab,
+            hi_tables,
+            crate::layer::VERIFY_WY_TABLE_SEQS as u32,
+            self.woa_flag,
+            k_rows as u32,
+            n as u32,
+            nk as u32,
+            nv as u32,
+            kd as u32,
+            vd as u32,
+            self.woa_stash_seq_floats as u32,
+            stream,
+        )?;
+        crate::layers::ops::gdn_wy4_flag_clear(gpu, self.gdn_wy4_clear_k, self.woa_flag, stream)?;
+        Ok(true)
+    }
+
     /// Downcast hook so the LoRA install walk can reach this layer's MoE FFN
     /// (Feature-1: routed-expert/router deltas exist on GDN layers too).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -431,21 +482,4 @@ impl TransformerLayer for Qwen3SsmLayer {
         };
         ple.release_seq_state(&mut st, gpu)
     }
-}
-
-/// The PLE per-seq carry from a sequence's [`SsmLayerState`], lazily created
-/// on first use. Errors if the state is not an `SsmLayerState`.
-fn ple_seq_state<'a>(
-    ple: &crate::layers::ple::PleLayer,
-    state: &'a mut dyn LayerState,
-    gpu: &dyn GpuBackend,
-) -> Result<&'a mut crate::layers::ple::PleSeqState> {
-    let ssm = state
-        .as_any_mut()
-        .downcast_mut::<crate::layer::SsmLayerState>()
-        .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
-    if ssm.ple.is_none() {
-        ssm.ple = Some(ple.new_seq_state(gpu)?);
-    }
-    Ok(ssm.ple.as_mut().expect("just created"))
 }
