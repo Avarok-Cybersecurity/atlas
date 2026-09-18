@@ -65,7 +65,14 @@ mod no_device_rule_tests {
     #[test]
     fn only_an_explicit_one_declares_a_device_less_run() {
         assert!(no_device_is_declared(Some("1")));
-        for v in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some(" 1")] {
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some(" 1"),
+        ] {
             assert!(
                 !no_device_is_declared(v),
                 "{v:?} must NOT count as a declaration"

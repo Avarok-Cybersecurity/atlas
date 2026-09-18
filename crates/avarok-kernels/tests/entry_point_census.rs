@@ -51,10 +51,14 @@ fn sources(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             let p = e.path();
-            let Ok(md) = std::fs::symlink_metadata(&p) else { continue };
+            let Ok(md) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
             if md.file_type().is_symlink() {
                 continue;
             }
@@ -93,7 +97,9 @@ fn census(dir: &Path, ext: &str) -> BTreeMap<String, Vec<String>> {
 fn literal_lookups(root: &Path) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for rs in sources(&root.join("crates"), "rs") {
-        let Ok(text) = std::fs::read_to_string(&rs) else { continue };
+        let Ok(text) = std::fs::read_to_string(&rs) else {
+            continue;
+        };
         for marker in ["kernel(", "try_kernel(", "try_target_kernel("] {
             let mut from = 0usize;
             while let Some(i) = text[from..].find(marker) {
@@ -115,9 +121,9 @@ fn literal_lookups(root: &Path) -> BTreeSet<(String, String)> {
                     .filter(|s| !s.is_empty() && s.len() < 80)
                     .collect();
                 if strings.len() == 2
-                    && strings.iter().all(|s| {
-                        s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                    })
+                    && strings
+                        .iter()
+                        .all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
                 {
                     out.insert((strings[0].to_string(), strings[1].to_string()));
                 }
@@ -135,7 +141,10 @@ fn literal_lookups(root: &Path) -> BTreeSet<(String, String)> {
 /// string literals reports them as absent. A family that matches nothing is a
 /// dead dispatch path, which is why the empty case is a failure.
 const DYNAMIC_FAMILIES: &[(&str, &str)] = &[
-    ("w4a16_gemv_batch", "crates/spark-model/src/layers/w4a16_gemv_tiers.rs"),
+    (
+        "w4a16_gemv_batch",
+        "crates/spark-model/src/layers/w4a16_gemv_tiers.rs",
+    ),
     ("gated_delta_rule_wy", "the wyN dispatcher"),
     ("w4a16_gemv_sw_moe_batchm_m", "the MoE batch-M arms"),
 ];
@@ -193,12 +202,18 @@ fn census_resolves_both_kernel_trees_and_every_dispatch_site() {
     // conflict per kernel added, and the manifest consumes this output.
     println!("gb10 entry points resolved : {}", gb10.len());
     println!("metal entry points resolved: {}", metal.len());
-    println!("literal (module, kernel) lookups in crates/: {}", looked_up.len());
+    println!(
+        "literal (module, kernel) lookups in crates/: {}",
+        looked_up.len()
+    );
     println!("gb10 names declared in more than one source: {}", dup.len());
     for d in dup.iter().take(20) {
         println!("  multi-source: {d}");
     }
-    println!("lookups resolving to no kernel in either tree: {}", unresolved.len());
+    println!(
+        "lookups resolving to no kernel in either tree: {}",
+        unresolved.len()
+    );
     for u in unresolved.iter().take(40) {
         println!("  unresolved: {u}");
     }
