@@ -126,7 +126,7 @@ impl RdmaLoraLoader {
     }
 }
 
-#[cfg(all(feature = "cuda", not(avarok_rdma_verbs)))]
+#[cfg(all(avarok_cuda, not(avarok_rdma_verbs)))]
 impl RdmaLoraLoader {
     /// Stub: no rdma-core in this build.
     pub fn stage_into_slot(
@@ -141,7 +141,7 @@ impl RdmaLoraLoader {
     }
 }
 
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 impl RdmaLoraLoader {
     /// Connect, request the adapter, and RDMA-READ each `lora_A/lora_B` tensor
     /// into its pool-slot sub-region (single rail — an adapter is one small

@@ -3,7 +3,7 @@
 //! Metal-build stub of the cuda-only `cutlass` module.
 //!
 //! The real [`crate::cutlass`] module (CUTLASS NVFP4/BF16 GEMMs + weight
-//! packing) is gated behind `feature = "cuda"` because it `#include`s CUTLASS
+//! packing) is gated behind `avarok_cuda` because it `#include`s CUTLASS
 //! C++ headers that do not exist on macOS. spark-model names these entry
 //! points unconditionally, so the metal build (`cargo check --features metal`,
 //! cuda off) needs the symbols to resolve even though FP4/FP8 inference never

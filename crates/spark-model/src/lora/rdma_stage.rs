@@ -233,7 +233,7 @@ pub fn slot_bytes(cfg: &ModelConfig, max_rank: usize) -> usize {
 /// Fetch a peer-staged adapter's manifest over the `weight_peer` control
 /// channel (connect → request → read manifest, then drop the connection).
 /// Needed to build landing targets before the loader's own verbs handshake.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub fn fetch_adapter_manifest(peer_addr: &str, adapter_id: &str) -> Result<WeightManifest> {
     use std::net::TcpStream;
 

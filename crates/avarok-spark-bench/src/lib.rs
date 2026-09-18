@@ -11,7 +11,7 @@
 // `gpu` wraps `cudarc` + raw CUDA driver FFI, so it's only available when
 // the cuda feature is on. The HTTP-level benchmarks below are platform-
 // agnostic and stay unconditionally exported.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod gpu;
 
 use std::io::BufRead;

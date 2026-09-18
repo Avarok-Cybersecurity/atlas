@@ -56,7 +56,7 @@ impl Model for TransformerModel {
 
     /// Poll this model's own InnerQ driver. A miss is logged, never fatal — it
     /// is a diagnostic lever, not part of serving.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     fn poll_innerq(&self) {
         if let Some(driver) = self.innerq.as_ref()
             && let Err(e) = driver.maybe_finalize(128)
@@ -233,11 +233,11 @@ impl Model for TransformerModel {
     ) -> Result<()> {
         // Disk staging is plain file I/O and is portable; only the PEER path
         // needs RDMA. Still cuda-gated, since it lands into a device pool.
-        #[cfg(feature = "cuda")]
+        #[cfg(avarok_cuda)]
         {
             self.swap_lora_slot_from_disk(dir, name, slot)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(avarok_cuda))]
         {
             let _ = (dir, name, slot);
             anyhow::bail!("LoRA disk swap requires the cuda feature")
@@ -250,11 +250,11 @@ impl Model for TransformerModel {
         name: &str,
         peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
-        #[cfg(all(feature = "cuda", unix))]
+        #[cfg(all(avarok_cuda, unix))]
         {
             self.promote_lora_slot_from_peer(peer_addr, adapter_id, name, peft)
         }
-        #[cfg(not(all(feature = "cuda", unix)))]
+        #[cfg(not(all(avarok_cuda, unix)))]
         {
             let _ = (peer_addr, adapter_id, name, peft);
             anyhow::bail!("LoRA peer promotion stages over RDMA (rdma-core); unix-only")
@@ -265,11 +265,11 @@ impl Model for TransformerModel {
         dir: &std::path::Path,
         name: &str,
     ) -> Result<(usize, Option<String>)> {
-        #[cfg(feature = "cuda")]
+        #[cfg(avarok_cuda)]
         {
             self.promote_lora_slot_from_disk(dir, name)
         }
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(avarok_cuda))]
         {
             let _ = (dir, name);
             anyhow::bail!("LoRA disk promotion requires the cuda feature")

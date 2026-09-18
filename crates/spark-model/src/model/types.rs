@@ -114,7 +114,7 @@ pub struct TransformerModel {
     /// rather than parked in a static: it writes `__device__` globals in THIS
     /// model's modules, so it must not outlive the model. Reached from the
     /// scheduler through `Model::poll_innerq`.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     pub(super) innerq: Option<crate::layers::qwen3_attention::InnerQDriver>,
     pub(super) rms_norm_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,

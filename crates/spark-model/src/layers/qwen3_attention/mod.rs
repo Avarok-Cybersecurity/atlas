@@ -39,7 +39,7 @@ mod op_dump;
 // which is itself gated on the `cuda` feature. Mirror that gate here so the
 // metal-only build of spark-model (`--no-default-features --features metal`)
 // compiles on Apple Silicon without dragging in `avarok_core::registry`.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod innerq_driver;
 mod prefill;
 // The cuBLASLt W8A8 prefill arm that replaced `AVAROK_CUBLAS_GEMM=attn`'s
@@ -51,7 +51,7 @@ mod trait_impl;
 mod types;
 mod types_weights;
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use innerq_driver::InnerQDriver;
 // V4: re-export the new hyper-connection / compressor weight types alongside the
 // existing ones. These are only constructed under DeepSeek-V4 detection.

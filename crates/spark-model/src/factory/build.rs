@@ -71,7 +71,7 @@ pub fn build_model(
     // `NllbGpuModel`, which reads its weights from the standard `store` — this
     // returns BEFORE `loader_for_config`, so the decoder-only weight loader
     // (and its fail-fast) never runs on this path.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     if matches!(config.model_type.as_str(), "m2m_100" | "nllb") {
         let (src, tgt) = nllb_lang.ok_or_else(|| {
             anyhow::anyhow!(
@@ -96,7 +96,7 @@ pub fn build_model(
         )?;
         return Ok(Box::new(model));
     }
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(avarok_cuda))]
     let _ = (nllb_lang, nllb_lora_dir);
 
     // ── Step 1: Select weight loader (only model-specific dispatch) ──

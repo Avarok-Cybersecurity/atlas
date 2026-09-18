@@ -35,7 +35,7 @@ const MAX_EXIT_CODE: usize = 255;
 /// not the caller's: `ptx_set.target.arch` is the base SM with the feature
 /// suffix stripped, and judging that would wave `sm_90a` kernels onto a
 /// CC 10.0 device.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub(crate) fn gate_device_arch(
     checking: bool,
     ptx_set: &avarok_kernels::TargetPtxSet,
@@ -51,7 +51,7 @@ pub(crate) fn gate_device_arch(
 
 /// Retain the preflight error while reporting an early `--check-kernels` refusal.
 /// No kernel-audit count is available before the backend has been constructed.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub(crate) fn gate_arch_preflight(
     checking: bool,
     ptx_set: &avarok_kernels::TargetPtxSet,
@@ -73,7 +73,7 @@ pub(crate) fn gate_arch_preflight(
     result
 }
 
-#[cfg(any(feature = "cuda", test))]
+#[cfg(any(avarok_cuda, test))]
 fn arch_refusal_json(
     checking: bool,
     model: &str,
@@ -277,11 +277,11 @@ fn check_json_from(summary: &CheckSummary) -> String {
 /// whose driver refuses the query, because a check that reported a guessed
 /// compute capability would be worse than one that reported none.
 fn current_device_cc() -> Option<(u32, u32)> {
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     {
         spark_runtime::cuda_backend::arch_preflight::device_compute_capability().ok()
     }
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(avarok_cuda))]
     {
         None
     }
@@ -398,7 +398,7 @@ mod tests {
     /// Oracle: the actual runtime compatibility decision, before any GPU or
     /// kernel lookup. A mismatch must survive as structured failure evidence.
     #[test]
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     fn early_arch_refusals_report_the_same_numeric_device_contract() {
         for arch in ["sm_90a", "sm_100a"] {
             let error = spark_runtime::cuda_backend::arch_preflight::check_arch(arch, (12, 1))

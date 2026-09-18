@@ -24,7 +24,7 @@ pub enum NgramTable {
     /// 121 GB box: the tables are the model's largest tensors and its least
     /// bandwidth-hungry (12 rows ~ 3 KB per token), so demoting them buys
     /// back tens of GB for KV.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     Cached(Box<spark_storage::NgramRowCache>),
 }
 

@@ -56,9 +56,9 @@ pub(crate) mod trait_impl;
 pub(crate) mod types;
 
 // Served NLLB-200 / M2M-100 encoder-decoder model (CUDA/GB10 serving path).
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod nllb;
-#[cfg(all(test, not(feature = "cuda")))]
+#[cfg(all(test, not(avarok_cuda)))]
 #[path = "nllb/host_tests.rs"]
 mod nllb_host_tests;
 

@@ -14,25 +14,25 @@
 //! bounded slot window costs a few hundred MB instead of 62.8 GB (BF16) or
 //! 31.4 GB (FP8) — and that memory goes to KV instead.
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use anyhow::Context;
 use anyhow::Result;
 use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use crate::layers::ngram_embed::NgramTable;
 use crate::layers::ngram_embed::{NgramDims, NgramEmbedding};
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use crate::weight_map::dense;
 
 /// Resident rows per table. 65536 slots x 512 B = 33.5 MB per table, so all
 /// 12 cost ~402 MB — against 62.8 GB for the same tables held BF16-resident.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 const DEFAULT_SLOTS: usize = 65536;
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 fn slots_from_env() -> usize {
     std::env::var("AVAROK_NGRAM_CACHE_SLOTS")
         .ok()
@@ -43,7 +43,7 @@ fn slots_from_env() -> usize {
 
 /// Build the n-gram embedding, or `None` when this checkpoint has no n-gram
 /// trio in its config (every non-LongCat model).
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub(super) fn build(
     store: &WeightStore,
     config: &ModelConfig,
@@ -131,7 +131,7 @@ pub(super) fn build(
 /// n-gram embedding", and quietly answering that for a model that does have
 /// one is how you end up serving a plain gather and wondering why the output
 /// is fluent nonsense.
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 pub(super) fn build(
     _store: &WeightStore,
     config: &ModelConfig,

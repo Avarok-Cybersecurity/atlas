@@ -396,7 +396,7 @@ impl PleLayer {
             .lock()
             .map_err(|_| anyhow::anyhow!("PLE table mutex poisoned"))?;
         let table_va = match &mut *table {
-            #[cfg(feature = "cuda")]
+            #[cfg(avarok_cuda)]
             NgramTable::Cached(cache) => {
                 // Host resolves row -> slot (the ids are host-side anyway) and
                 // faults missing rows off NVMe into the pinned, GPU-addressable
