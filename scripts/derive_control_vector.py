@@ -51,7 +51,7 @@ def read_dump(path):
     return sums.reshape(n_layer, hidden).copy(), tokens
 
 
-def write_gguf(path, directions, model_hint):
+def write_gguf(path, directions, model_hint, magnitude):
     """Write `direction.N` F32 tensors, matching llama.cpp's control-vector layout."""
     n_layer, hidden = directions.shape
     # Layer 0 never carries a direction (llama.cpp has none and the engine
@@ -66,10 +66,19 @@ def write_gguf(path, directions, model_hint):
     out += struct.pack('<I', GGUF_MAGIC)
     out += struct.pack('<I', 3)                      # version
     out += struct.pack('<Q', len(idx))               # tensor count
-    out += struct.pack('<Q', 3)                      # kv count
+    out += struct.pack('<Q', 4)                      # kv count — MUST match the
+    #                                                  number of KV pairs below;
+    #                                                  a reader trusts this count
+    #                                                  and would otherwise parse
+    #                                                  a key as a tensor entry.
     out += s('general.architecture') + struct.pack('<I', 8) + s('controlvector')
     out += s('controlvector.model_hint') + struct.pack('<I', 8) + s(model_hint)
     out += s('controlvector.layer_count') + struct.pack('<I', 5) + struct.pack('<i', max(idx))
+    # Which operator this file is FOR. The loader can also detect a unit
+    # file by measuring, which is what catches the llama.cpp-era vectors
+    # that predate any such key; this states it outright so the mistake is
+    # visible in `inspect_control_vector.py` before anyone serves it.
+    out += s('controlvector.magnitude') + struct.pack('<I', 8) + s(magnitude)
 
     off = 0
     for il in idx:
@@ -150,7 +159,7 @@ def main():
     # contrast, correctly weighted at every layer", so 2.0 and 4.0 are honest
     # multiples and a dose-response curve is interpretable.
     out_rows = unit if args.magnitude == 'unit' else keep
-    idx = write_gguf(args.out, out_rows, args.model_hint)
+    idx = write_gguf(args.out, out_rows, args.model_hint, args.magnitude)
     print(f'wrote {args.out}: {len(idx)} directions, layers {min(idx)}..{max(idx)}'
           f'  [magnitude={args.magnitude}'
           f'{" - for project mode" if args.magnitude == "unit" else " - for add mode"}]')

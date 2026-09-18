@@ -185,6 +185,23 @@ impl ControlVectorRegistry {
         self.entries.iter()
     }
 
+    /// Free every vector's device table and empty the registry.
+    ///
+    /// Called from `release_pools` alongside the other owned pools. The first
+    /// failure is returned but every entry is still attempted, so one bad free
+    /// cannot strand the rest.
+    pub fn release(&mut self, gpu: &dyn spark_runtime::gpu::GpuBackend) -> anyhow::Result<()> {
+        let mut first_err = Ok(());
+        for entry in self.entries.drain(..) {
+            if let Err(e) = entry.vector.release(gpu)
+                && first_err.is_ok()
+            {
+                first_err = Err(e);
+            }
+        }
+        first_err
+    }
+
     /// The vector a request selected, or `None` for "no vector".
     ///
     /// `None` is a FIRST-CLASS answer here, unlike the LoRA pool where a

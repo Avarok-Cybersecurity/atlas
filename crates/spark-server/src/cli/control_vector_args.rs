@@ -9,9 +9,11 @@
 //! the layer range — the two parameters whose wrongness is hardest to see in
 //! the output.
 //!
-//! Every modifier is optional. Defaults are the published refusal-projection
-//! configuration: projection mode at scale 1.0 over every layer the file
-//! carries.
+//! Scale and mode are optional and default to 1.0 and `project`. The layer
+//! range is NOT optional in the same way: it comes from the flag, else from a
+//! curated per-model table, else it is an error. It never falls back to "every
+//! layer the file carries", which is not a configuration anything was measured
+//! at.
 
 use anyhow::{Result, bail};
 use spark_model::control_vector::{ControlVectorSpec, CvecMode};
@@ -82,12 +84,6 @@ fn lookup<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// Turn the four flag vectors into one spec per named vector.
-///
-/// `n_layer` supplies the default layer range — every layer the file can carry
-/// (`1..=n_layer-1`; layer 0 never has a direction). It has to come from the
-/// loaded model, which is why this resolves at install time and not at parse
-/// time.
 /// The layer range to use when the operator gave none, by `model_type`.
 ///
 /// Curated, not inferred: each entry is a range that vectors for that model
@@ -115,6 +111,13 @@ fn default_layers(model_type: &str, n_layer: usize) -> Option<(usize, usize)> {
     (hi < n_layer).then_some((lo, hi))
 }
 
+/// Turn the four flag vectors into one spec per named vector.
+///
+/// `n_layer` and `model_type` both come from the loaded model, which is why
+/// this resolves at install time rather than at parse time: the layer range
+/// falls back to a curated per-model value, and the model identity is carried
+/// into the spec so the loader can check it against the file's
+/// `controlvector.model_hint`.
 pub fn resolve(
     vectors: &[(String, String)],
     layers: &[(String, String)],
@@ -171,7 +174,7 @@ pub fn resolve(
         // carry a direction that is real but not one you want to act on.
         //
         // A curated default is a different thing from an inferred one. 4..44 is
-        // what all three known qwen3_exp vectors use — the published refusal
+        // what all three known qwen4_exp vectors use — the published refusal
         // projection and both derived here — which makes it a property of the
         // MODEL rather than of any one vector. Recording that is useful;
         // guessing from tensor count is not.
@@ -214,6 +217,7 @@ pub fn resolve(
                 layer_start,
                 layer_end,
                 mode,
+                model_type: Some(model_type.to_string()),
             },
         ));
     }

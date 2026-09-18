@@ -120,6 +120,16 @@ impl ControlVectorCapture {
         self.tokens.load(Ordering::Relaxed)
     }
 
+    /// Free the FP64 accumulator.
+    ///
+    /// Consuming, for the same reason as `ControlVector::release`: the device
+    /// buffer is the object, so anything able to accumulate after this would be
+    /// writing into freed memory.
+    pub fn release(self, gpu: &dyn GpuBackend) -> Result<()> {
+        gpu.free(self.acc)
+            .context("freeing the control-vector capture accumulator")
+    }
+
     /// Zero the accumulator. Run between the positive and negative corpus
     /// passes — forgetting this silently averages the two together, which
     /// produces a near-zero difference and looks like "the direction is weak"

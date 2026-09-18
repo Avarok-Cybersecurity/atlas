@@ -757,6 +757,16 @@ impl TransformerModel {
         }
         attempt("kv cache", self.kv_cache.lock().release(gpu));
         attempt("buffer arena", self.buffers.release(gpu));
+        // Both of these are raw `gpu.alloc`s owned here. The backend's
+        // end-of-life sweep does reclaim them, so leaving them out was never a
+        // permanent leak — but the sweep reports whatever it reclaims as
+        // UNOWNED, so ordinary teardown printed a warning naming allocations
+        // that in fact had a perfectly good owner. Releasing them explicitly
+        // keeps that warning meaning what it says.
+        attempt("control vectors", self.control_vectors.release(gpu));
+        if let Some(cap) = self.cvec_capture.take() {
+            attempt("control-vector capture", cap.release(gpu));
+        }
         // Weights LAST: the layers hold pointers into them, so they must not be
         // freed until everything that reads them is gone.
         if let Some(mut store) = self.weight_store.take() {
