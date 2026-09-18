@@ -325,15 +325,14 @@ pub(super) fn resume_preempted_seq(model: &dyn Model, p: PreemptedSeq) -> Result
     // EP: mirror the non-chunked prefill preamble so the worker mirrors the
     // re-prefill (no-ops on non-EP models).
     let prefill_result = (|| -> Result<()> {
-        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
-        model.ep_broadcast_cmd(tokens.len() as u32)?;
-        model.ep_broadcast_cmd(0)?;
-        model.ep_broadcast_cmd(tokens.len() as u32)?;
-        // The per-request control-vector selection — not derivable from the
-        // token stream, so it must be transported or rank 1 steers nothing.
-        model.ep_broadcast_cmd(seq.cvec_id as u32)?; // cvec lo
-        model.ep_broadcast_cmd((seq.cvec_id >> 32) as u32)?; // cvec hi
-        model.ep_broadcast_tokens(&tokens)?;
+        // One call: the preamble sequence lives in `Model::ep_broadcast_prefill_preamble`
+        model.ep_broadcast_prefill_preamble(
+            seq.slot_idx as u32,
+            tokens.len(),
+            0,
+            &tokens,
+            seq.cvec_id,
+        )?;
         // Vision payload travels with the tokens (see Model::ep_exchange_vision):
         model.ep_exchange_vision(&tokens)?;
         model.prefill(&tokens, &mut seq, 0)?;

@@ -257,17 +257,14 @@ pub(super) fn run_standard_chunk_loop(
     // ── Standard path: prefill chunk only, decode separately ──
     // EP: broadcast chunk tokens to worker (bulk, single NCCL op).
     let ep_ok = (|| -> Result<()> {
-        model.ep_broadcast_cmd_for_seq(p.seq.slot_idx as u32, 0xFFFFFFF0)?;
-        model.ep_broadcast_cmd(chunk_len as u32)?;
-        model.ep_broadcast_cmd(p.chunk_offset as u32)?;
-        model.ep_broadcast_cmd(p.prompt_tokens.len() as u32)?;
-        // Control-vector selection — MUST be sent by EVERY 0xFFFFFFF0 emitter.
-        // The worker reads two words here unconditionally, so an emitter that
-        // skips them leaves the stream misaligned and the worker parses token
-        // data as the id.
-        model.ep_broadcast_cmd(p.seq.cvec_id as u32)?; // cvec lo
-        model.ep_broadcast_cmd((p.seq.cvec_id >> 32) as u32)?; // cvec hi
-        model.ep_broadcast_tokens(&p.prompt_tokens)?;
+        // One call: the preamble sequence lives in `Model::ep_broadcast_prefill_preamble`
+        model.ep_broadcast_prefill_preamble(
+            p.seq.slot_idx as u32,
+            chunk_len,
+            p.chunk_offset,
+            &p.prompt_tokens,
+            p.seq.cvec_id,
+        )?;
         // Vision payload travels with the tokens (see Model::ep_exchange_vision):
         model.ep_exchange_vision(&p.prompt_tokens)?;
         Ok(())
