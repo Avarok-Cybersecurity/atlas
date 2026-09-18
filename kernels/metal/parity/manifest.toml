@@ -15,7 +15,9 @@
 [[kernel]]
 source = "kernels/gb10/common/argmax_bf16.cu"
 entry  = "argmax_bf16"
-state  = "unported"
+state  = "mapped"
+metal  = "argmax_bf16"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/argmax_bf16.cu"
@@ -85,7 +87,9 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/dense_gemm_bf16.cu"
 entry  = "dense_gemm_bf16"
-state  = "unported"
+state  = "mapped"
+metal  = "dense_gemm_bf16"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/dense_gemm_bf16.cu"
@@ -135,7 +139,9 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/dense_gemv_bf16.cu"
 entry  = "dense_gemv_bf16"
-state  = "unported"
+state  = "mapped"
+metal  = "dense_gemv_bf16"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/dense_gemv_bf16.cu"
@@ -1055,7 +1061,9 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/kv_cache_append.cu"
 entry  = "kv_cache_append"
-state  = "unported"
+state  = "mapped"
+metal  = "kv_cache_append"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/lora_bgmv.cu"
@@ -2680,12 +2688,16 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/wht_bf16.cu"
 entry  = "wht_bf16_inplace"
-state  = "unported"
+state  = "mapped"
+metal  = "wht_bf16_inplace"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/wht_bf16.cu"
 entry  = "wht_bf16_inplace_inv"
-state  = "unported"
+state  = "mapped"
+metal  = "wht_bf16_inplace_inv"
+tier   = "T1"
 
 [[kernel]]
 source = "kernels/gb10/common/widen_block_scale_f32.cu"
