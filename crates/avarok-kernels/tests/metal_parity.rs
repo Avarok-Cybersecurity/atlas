@@ -94,6 +94,7 @@ struct Row {
     entry: String,
     state: String,
     metal: Option<String>,
+    test: Option<String>,
     why: Option<String>,
 }
 
@@ -120,6 +121,7 @@ fn parse_manifest(text: &str) -> Vec<Row> {
             "entry" => r.entry = v,
             "state" => r.state = v,
             "metal" => r.metal = Some(v),
+            "test" => r.test = Some(v),
             "why" => r.why = Some(v),
             _ => {}
         }
@@ -249,6 +251,43 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
             metal_names.contains(&m.to_string()),
             "{}::{} maps to Metal kernel {m:?}, which does not resolve in \
              kernels/metal. A row cannot claim a kernel that is not there.",
+            r.source,
+            r.entry
+        );
+    }
+
+    // ── A `mapped` row must name a test that EXISTS.
+    //
+    // Without this the checker accepts any row whose `metal` value resolves,
+    // which is satisfied by a NAME MATCH. 28 of the 83 Metal kernels share a
+    // name with exactly one gb10 entry point, so the checker would have
+    // certified 2.8% of a 1:1 map on the strength of spelling. "Mapped" has to
+    // mean something would go red if the kernel were wrong.
+    let mut test_src = String::new();
+    let tdir = root.join("crates/spark-runtime/src/metal_backend/tests");
+    if let Ok(rd) = std::fs::read_dir(&tdir) {
+        for e in rd.flatten() {
+            if e.path().extension().and_then(|s| s.to_str()) == Some("rs") {
+                test_src.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+            }
+        }
+    }
+    assert!(
+        !test_src.is_empty(),
+        "read no Metal test sources from {}. That is 'could not look', and          every mapped row's test would then pass unchecked.",
+        tdir.display()
+    );
+    for r in rows.iter().filter(|r| r.state == "mapped") {
+        let t = r.test.as_deref().unwrap_or("");
+        assert!(
+            !t.is_empty(),
+            "{}::{} is mapped but names no test. A row without one claims a              mapping nothing would notice breaking.",
+            r.source,
+            r.entry
+        );
+        assert!(
+            test_src.contains(&format!("fn {t}(")),
+            "{}::{} names test {t:?}, which does not exist under              crates/spark-runtime/src/metal_backend/tests/",
             r.source,
             r.entry
         );

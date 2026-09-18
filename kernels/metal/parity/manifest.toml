@@ -18,6 +18,7 @@ entry  = "argmax_bf16"
 state  = "mapped"
 metal  = "argmax_bf16"
 tier   = "T1"
+test   = "metal_argmax_bf16_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/argmax_bf16.cu"
@@ -90,6 +91,7 @@ entry  = "dense_gemm_bf16"
 state  = "mapped"
 metal  = "dense_gemm_bf16"
 tier   = "T1"
+test   = "metal_dense_gemm_bf16_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/dense_gemm_bf16.cu"
@@ -142,6 +144,7 @@ entry  = "dense_gemv_bf16"
 state  = "mapped"
 metal  = "dense_gemv_bf16"
 tier   = "T1"
+test   = "metal_dense_gemv_bf16_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/dense_gemv_bf16.cu"
@@ -1064,6 +1067,7 @@ entry  = "kv_cache_append"
 state  = "mapped"
 metal  = "kv_cache_append"
 tier   = "T1"
+test   = "metal_kv_cache_append_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/lora_bgmv.cu"
@@ -2691,6 +2695,7 @@ entry  = "wht_bf16_inplace"
 state  = "mapped"
 metal  = "wht_bf16_inplace"
 tier   = "T1"
+test   = "metal_wht_bf16_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/wht_bf16.cu"
@@ -2698,6 +2703,7 @@ entry  = "wht_bf16_inplace_inv"
 state  = "mapped"
 metal  = "wht_bf16_inplace_inv"
 tier   = "T1"
+test   = "metal_wht_bf16_inverse_roundtrip"
 
 [[kernel]]
 source = "kernels/gb10/common/widen_block_scale_f32.cu"
