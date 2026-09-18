@@ -132,6 +132,16 @@ fn parse_manifest(text: &str) -> Vec<Row> {
     rows
 }
 
+/// Body of the top-level `fn name(` in `src`: from its signature to the first
+/// column-0 `}` after it. The test sources are rustfmt'd, so that brace closes
+/// the function. `None` when no such function is declared.
+fn fn_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let start = src.find(&format!("fn {name}("))?;
+    let rest = &src[start..];
+    let end = rest.find("\n}\n").map_or(rest.len(), |i| i + 1);
+    Some(&rest[..end])
+}
+
 const MANIFEST: &str = "kernels/metal/parity/manifest.toml";
 
 /// Placeholders that are not a reason. An exception's `why` has to say what is
@@ -288,6 +298,28 @@ fn the_map_covers_both_sets_and_refuses_when_it_cannot_read_them() {
         assert!(
             test_src.contains(&format!("fn {t}(")),
             "{}::{} names test {t:?}, which does not exist under              crates/spark-runtime/src/metal_backend/tests/",
+            r.source,
+            r.entry
+        );
+
+        // ── ...and that test must LAUNCH the row's Metal kernel.
+        //
+        // "Exists" is satisfied by naming ANY test in the directory: nothing
+        // above stops a gelu row from citing `metal_silu_gate_matches_reference`,
+        // which exists, passes, and never touches gelu (measured: the checker
+        // accepted exactly that). Every parity test looks its kernel up as
+        // `backend.kernel("<module>", "<entry>")`, so the entry point must
+        // appear as a string literal inside the named test's body. This is
+        // the floor beneath the campaign's mutation registry, not a substitute
+        // for it: it proves the test ran this kernel, not that it would
+        // notice the kernel being wrong.
+        let m = r.metal.as_deref().unwrap_or("");
+        let body = fn_body(&test_src, t).expect("existence asserted just above");
+        assert!(
+            body.contains(&format!("\"{m}\"")),
+            "{}::{} names test {t:?}, whose body never launches Metal kernel \
+             {m:?} (no \"{m}\" literal in it). A test that exists but drives a \
+             different kernel is evidence about that kernel, not about this row.",
             r.source,
             r.entry
         );

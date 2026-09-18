@@ -341,6 +341,12 @@ source = "kernels/gb10/common/gated_delta_rule.cu"
 entry  = "gated_delta_rule_chunk3"
 state  = "unported"
 
+# gated_delta_rule_decode stays unported although kernels/metal/common/
+# gated_delta_rule_decode.metal is a line-for-line port. Its only test,
+# metal_gated_delta_rule_decode_matches_reference, drives inputs whose output
+# is about 0.001 against a 0.02 absolute bound, so the hk_dot correction, the
+# q dot and the 1/sqrt(k_dim) scaling are invisible to it; only the in-place
+# state update is checked. Promote once the test can see those terms.
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule.cu"
 entry  = "gated_delta_rule_decode"
@@ -2137,7 +2143,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/residual_add.cu"
 entry  = "sigmoid_gate_mul"
-state  = "unported"
+state  = "mapped"
+metal  = "sigmoid_gate"
+tier   = "T1"
+test   = "metal_sigmoid_gate_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/residual_add.cu"
@@ -2152,7 +2161,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/residual_add.cu"
 entry  = "silu_mul_separate"
-state  = "unported"
+state  = "mapped"
+metal  = "silu_gate"
+tier   = "T1"
+test   = "metal_silu_gate_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/common/residual_add.cu"
@@ -3068,7 +3080,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gelu.cu"
 entry  = "gelu_tanh"
-state  = "unported"
+state  = "mapped"
+metal  = "gelu"
+tier   = "T1"
+test   = "metal_gelu_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/inferspark_prefill_512.cu"
@@ -3238,7 +3253,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
 entry  = "rms_norm"
-state  = "unported"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
@@ -3353,7 +3371,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
 entry  = "rms_norm"
-state  = "unported"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
@@ -3508,7 +3529,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
 entry  = "rms_norm"
-state  = "unported"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
@@ -3718,7 +3742,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
 entry  = "rms_norm"
-state  = "unported"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
@@ -3933,7 +3960,10 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
 entry  = "rms_norm"
-state  = "unported"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
 
 [[kernel]]
 source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
