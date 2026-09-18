@@ -28,3 +28,10 @@ README.md merge=union
 # Union keeps both sides' lines, and `Journey::deduplicated` collapses any
 # duplicate on read — identity excludes `at`, so a replay converges.
 governance/*.jsonl merge=union
+
+# The bounded-FIFO archive index. Append-only for the same reason the ledgers
+# are, and gets the same conflict-free merge: two harvests evicting different
+# PRs concurrently produce two different tails of the same file, and union is
+# exactly the right resolution. The header row is written once and unions
+# idempotently with itself.
+governance/archive.csv merge=union

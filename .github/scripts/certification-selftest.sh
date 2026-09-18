@@ -657,6 +657,51 @@ if [ -s "$TMP/rbsum.sh" ]; then
   want_rc_msg 0 "builds_binaries=true" \
     "classify: a schedule event never fast-paths and emits all four outputs" \
     wildcard_classify
+
+  # ── The API path: the classifier no longer reads a clone ──────────────────
+  # The rows above drive stdin mode, which is unchanged. These drive the
+  # pull_request/merge_group branches, where the file list now comes from
+  # `gh api`. Both new failure modes must land on "build everything", because
+  # a classifier that cannot see the diff must never fast-path past a gate.
+  mkdir -p "$TMP/cdbin"
+  api_classify() {   # api_classify <event> <gh stub body>
+    cat > "$TMP/cdbin/gh" <<STUB
+#!/usr/bin/env bash
+$2
+STUB
+    chmod +x "$TMP/cdbin/gh"
+    # ★ The `| cat` is load-bearing. `emit` writes to $GITHUB_OUTPUT, which is
+    # /dev/stdout here; when stdout is a regular FILE (which want_rc_msg makes
+    # it) that second open gets its own offset 0, and the script's later
+    # diagnostics — written through the shell's own fd, also at 0 — overwrite
+    # the emitted lines. Piping makes stdout a pipe, where both writes append.
+    # The `classify()` helper above is immune only because it already pipes.
+    env PATH="$TMP/cdbin:$PATH" GITHUB_OUTPUT=/dev/stdout GITHUB_EVENT_NAME="$1" \
+        REPO=o/r PR_NUM=1 MG_BASE_SHA=aaa MG_HEAD_SHA=bbb GH_TOKEN=t \
+        bash .github/scripts/classify-diff.sh 2>&1 | cat
+  }
+  want_rc_msg 0 "builds_binaries=false" "classify: a docs-only PR is fast-pathed from the API list" \
+    api_classify pull_request 'printf "docs/x.md\nREADME.md\n"'
+  want_rc_msg 0 "builds_binaries=true" "classify: one crates/ file from the API list builds" \
+    api_classify pull_request 'printf "docs/x.md\ncrates/spark-model/src/lib.rs\n"'
+  # CONTROL: an UNANSWERED api is not an empty diff. Before the API move this
+  # branch could not exist; after it, `files=""` on error would have classified
+  # as "nothing changed" and silently set web_touched=false.
+  want_rc_msg 0 "could not list the PR's files" \
+    "control: an API failure refuses to classify rather than reading as an empty diff" \
+    api_classify pull_request 'echo "gh: Bad credentials (HTTP 401)" >&2; exit 1'
+  # CONTROL: the endpoint truncates. 3000 for pulls/files, 300 for compare —
+  # at the ceiling every rule below would be reasoning about a partial diff.
+  want_rc_msg 0 "the API list is truncated" \
+    "control: a >=3000-file PR is not classified from a truncated list" \
+    api_classify pull_request 'seq 1 3000 | sed "s|^|docs/f|;s|$|.md|"'
+  want_rc_msg 0 "may be truncated" \
+    "control: a >=300-file queue entry is not classified from a truncated compare" \
+    api_classify merge_group 'seq 1 300 | sed "s|^|docs/f|;s|$|.md|"'
+  # ...and the truncation guards must answer BUILD, not skip.
+  want_rc_msg 0 "builds_binaries=true" \
+    "control: a truncated list answers build-everything, never fast-path" \
+    api_classify pull_request 'seq 1 3000 | sed "s|^|docs/f|;s|$|.md|"'
 else
   bad "could not extract the dry-run summary shell from release-build.yml"
 fi
@@ -1483,14 +1528,21 @@ want_rc_msg 1 "no longer calls release-build.yml" \
 # Run the step's REAL shell, extracted from the workflow, so the control cannot
 # drift from what CI executes.
 mkdir -p "$TMP/bo"
-python3 - "$TMP/bo/step.sh" "$TMP/bo/scan_dirs" <<'PY'
+# The body moved into `.github/scripts/check-no-block-on.sh`; the workflow
+# passes it SCAN_DIRS. The SCRIPT is the thing under test and the dirs come
+# from the workflow that calls it -- reading the dirs out of the script would
+# be testing the script against itself, and a rename of either tree would be
+# invisible again, which is the defect this control exists for.
+cp .github/scripts/check-no-block-on.sh "$TMP/bo/step.sh"
+python3 - "$TMP/bo/scan_dirs" <<'PY'
 import pathlib, sys, yaml
 d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
 job = d["jobs"]["no-blocking-on-the-render-thread"]
-steps = [s for s in job["steps"] if s.get("name", "").startswith("Check the render thread")]
-assert len(steps) == 1, f"expected one render-thread step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
-pathlib.Path(sys.argv[2]).write_text(steps[0]["env"]["SCAN_DIRS"])
+steps = [s for s in job["steps"] if "check-no-block-on.sh" in (s.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the render-thread script, found {len(steps)}"
+env = {**(job.get("env") or {}), **(steps[0].get("env") or {})}
+assert "SCAN_DIRS" in env, "the workflow no longer passes SCAN_DIRS to the render-thread gate"
+pathlib.Path(sys.argv[1]).write_text(env["SCAN_DIRS"])
 PY
 BO_DIRS=$(cat "$TMP/bo/scan_dirs")
 
@@ -1521,14 +1573,17 @@ want_rc_msg 1 "must never poll a future" \
 # catch it: the find lives in a process substitution whose status is not the
 # command's.
 mkdir -p "$TMP/fs"
-python3 - "$TMP/fs/step.sh" <<'PY'
-import pathlib, sys, yaml
+# Same move: the cap now lives in `.github/scripts/check-file-size-cap.sh`.
+# The assertion that the workflow still CALLS it stays here, so a body
+# extracted and left unwired is caught instead of quietly untested.
+python3 - <<'PY'
+import pathlib, yaml
 d = yaml.safe_load(pathlib.Path(".github/workflows/file-size-cap.yml").read_text())
 steps = [s for s in d["jobs"]["check-file-sizes"]["steps"]
-         if s.get("name", "").startswith("Check no .rs file")]
-assert len(steps) == 1, f"expected one file-size step, found {len(steps)}"
-pathlib.Path(sys.argv[1]).write_text(steps[0]["run"])
+         if "check-file-size-cap.sh" in (s.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the cap script, found {len(steps)}"
 PY
+cp .github/scripts/check-file-size-cap.sh "$TMP/fs/step.sh"
 want_rc 0 "the 500-LoC cap passes on the real tree" bash "$TMP/fs/step.sh"
 
 mkdir -p "$TMP/fs/nocrates"
@@ -2178,13 +2233,19 @@ fi
 # workflow's push `paths:` filter, so renaming one is exactly the change that
 # would have hit it -- and it would have taken the gate with it, silently.
 mkdir -p "$TMP/tt"
-python3 - > "$TMP/tt/step.sh" <<'TTX'
+# The step is now a one-line call to `.github/scripts/check-no-block-on.sh`,
+# so the SCRIPT is what these controls must run -- extracting the step body
+# would only test `bash .github/scripts/...`, which resolves to nothing inside
+# the scratch tree and passes vacuously. Assert the workflow still calls it,
+# then copy the script itself.
+python3 - <<'TTX'
 import yaml, pathlib
 d = yaml.safe_load(pathlib.Path(".github/workflows/tui-threading.yml").read_text())
-for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]:
-    if "run" in st:
-        print(st["run"]); break
+steps = [st for st in d["jobs"]["no-blocking-on-the-render-thread"]["steps"]
+         if "check-no-block-on.sh" in (st.get("run") or "")]
+assert len(steps) == 1, f"expected one step calling the render-thread script, found {len(steps)}"
 TTX
+cp .github/scripts/check-no-block-on.sh "$TMP/tt/step.sh"
 tt_tree() {  # tt_tree <clean|dirty|renamed>
   rm -rf "$TMP/tt/w"; mkdir -p "$TMP/tt/w/crates/spark-server/src/tui"
   case "$1" in
@@ -2201,15 +2262,25 @@ tt_tree() {  # tt_tree <clean|dirty|renamed>
 # and the grep cannot disagree about which trees they cover, and a hard-coded
 # copy here would be a third opinion able to drift from both.
 TT_SCAN_DIRS=$(python3 - <<'SDPY'
-import yaml
+import re, yaml, pathlib
+# SCAN_DIRS is the workflow's when it sets one, and otherwise the script's own
+# default -- the point is that the existence assertion and the grep cannot
+# disagree about which trees they cover, so this reads whichever ONE value is
+# in force rather than repeating it here as a third opinion able to drift.
 d = yaml.safe_load(open(".github/workflows/tui-threading.yml"))
 jid = list(d["jobs"])[0]
-for st in d["jobs"][jid]["steps"]:
-    if st.get("env", {}).get("SCAN_DIRS"):
-        print(st["env"]["SCAN_DIRS"]); break
+job = d["jobs"][jid]
+found = (job.get("env") or {}).get("SCAN_DIRS")
+for st in job["steps"]:
+    found = found or (st.get("env") or {}).get("SCAN_DIRS")
+if not found:
+    src = pathlib.Path(".github/scripts/check-no-block-on.sh").read_text()
+    m = re.search(r'SCAN_DIRS:=([^}]+)\}', src)
+    found = m.group(1).strip().strip('"') if m else ""
+print(found)
 SDPY
 )
-[ -n "$TT_SCAN_DIRS" ] || bad "setup: could not read SCAN_DIRS out of tui-threading.yml"
+[ -n "$TT_SCAN_DIRS" ] || bad "setup: could not read SCAN_DIRS out of tui-threading.yml or check-no-block-on.sh"
 tt_run() { ( cd "$TMP/tt/w" && SCAN_DIRS="$TT_SCAN_DIRS" bash "$1" ) >"$TMP/tt/out" 2>&1; echo $?; }
 
 if [ -s "$TMP/tt/step.sh" ]; then
@@ -2575,6 +2646,84 @@ want_rc 2 "control: unreadable input is refused, not passed" \
   sh -c "printf 'not json' | python3 $STUCK"
 want_rc 2 "control: a payload with no threshold is refused" \
   sh -c "printf '%s' '{\"runs\":[]}' | python3 $STUCK"
+
+echo "== queue-bounce diagnosis =="
+# Two conditions give the identical symptom -- green at the PR head, red in the
+# merge group -- and the old step asserted the first one unconditionally. #941
+# was the second and the annotation named the wrong cause for eleven groups.
+# So the assertion here is DISCRIMINATION: each shape must produce ITS OWN
+# verdict, which is exactly what a diagnostic that always prints one answer
+# fails.
+QB_COV=crates/avarok-plugin/src/gate/coverage.rs
+# A fake repo root, because the script reads the perf-path list from its own
+# ../.. -- copying the const in is what makes the SSOT parse part of the test.
+qb_repo() {
+  local r="$TMP/qb-$1"; mkdir -p "$r/.github/scripts" "$r/$(dirname "$QB_COV")" "$r/crates" "$r/docs"
+  cp "$ROOT/.github/scripts/diagnose-queue-bounce.sh" "$r/.github/scripts/"
+  cp "$ROOT/$QB_COV" "$r/$QB_COV"
+  git -C "$r" -c init.defaultBranch=main init -q
+  git -C "$r" config user.email t@example.invalid; git -C "$r" config user.name t
+  echo base > "$r/crates/base.rs"; git -C "$r" add -A; git -C "$r" commit -qm M0
+  echo "$r"
+}
+# One word per outcome, so a wrong verdict is a diff and not a reading exercise.
+qb() {
+  local r=$1 base=$2 head=$3 out
+  out=$(bash "$r/.github/scripts/diagnose-queue-bounce.sh" "$base" "$head" 2>&1)
+  case "$out" in
+    *"could not look"*)       echo CANNOTLOOK ;;
+    *"composed beneath you"*) case "$out" in *"main moved under you"*) echo BOTH;; *) echo BENEATH;; esac ;;
+    *"main moved under you"*) echo MOVED ;;
+    *"not a queue condition"*) echo NEITHER ;;
+    *) echo "UNRECOGNISED:$out" ;;
+  esac
+}
+# Shape B: nothing beneath, main took a perf commit after the records.
+qbB=$(qb_repo b)
+git -C "$qbB" checkout -q -b pr
+echo p > "$qbB/crates/p.rs"; git -C "$qbB" add -A; git -C "$qbB" commit -qm "the PR's own perf commit"
+qbBP=$(git -C "$qbB" rev-parse HEAD); git -C "$qbB" checkout -q main
+echo y > "$qbB/crates/y.rs"; git -C "$qbB" add -A; git -C "$qbB" commit -qm "main: a perf commit landing after the campaign"
+qbBM=$(git -C "$qbB" rev-parse HEAD)
+git -C "$qbB" checkout -q -b grp "$qbBM"; git -C "$qbB" merge -q --no-ff "$qbBP" -m "merge group"
+want_out MOVED "a moved main is named as a moved main" qb "$qbB" "$qbBM" HEAD
+# Shape A: another entry composed beneath, main unchanged.
+qbA=$(qb_repo a); qbAM=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b e1; echo a > "$qbA/crates/a.rs"; git -C "$qbA" add -A; git -C "$qbA" commit -qm "entry1 perf commit"
+qbAE1=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b e2 "$qbAM"; echo b > "$qbA/crates/b.rs"; git -C "$qbA" add -A; git -C "$qbA" commit -qm "entry2 perf commit"
+qbAE2=$(git -C "$qbA" rev-parse HEAD)
+git -C "$qbA" checkout -q -b g "$qbAM"; git -C "$qbA" merge -q --no-ff "$qbAE1" -m "group: entry1"
+git -C "$qbA" merge -q --no-ff "$qbAE2" -m "group: entry2"
+want_out BENEATH "a PR composed beneath another is named as composition" qb "$qbA" "$qbAM" HEAD
+# CONTROL: main moved, but on docs only. Records survive that, so neither
+# condition holds -- and a verdict here would mean the perf-path filter is
+# decorative.
+qbC=$(qb_repo c)
+git -C "$qbC" checkout -q -b pr; echo p > "$qbC/crates/p.rs"; git -C "$qbC" add -A; git -C "$qbC" commit -qm own
+qbCP=$(git -C "$qbC" rev-parse HEAD); git -C "$qbC" checkout -q main
+echo d > "$qbC/docs/d.md"; git -C "$qbC" add -A; git -C "$qbC" commit -qm "main: docs only"
+qbCM=$(git -C "$qbC" rev-parse HEAD)
+git -C "$qbC" checkout -q -b grp "$qbCM"; git -C "$qbC" merge -q --no-ff "$qbCP" -m mg
+want_out NEITHER "control: a docs-only move on main is not a queue condition" qb "$qbC" "$qbCM" HEAD
+# CONTROL: the perf-path list is the gate's, not a copy. Truncate the const and
+# the script must refuse to answer -- a short list would report "main moved on
+# nothing" for the shape that just tested MOVED, which is a false all-clear.
+qbD=$(qb_repo d)
+git -C "$qbD" checkout -q -b pr; echo p > "$qbD/crates/p.rs"; git -C "$qbD" add -A; git -C "$qbD" commit -qm own
+qbDP=$(git -C "$qbD" rev-parse HEAD); git -C "$qbD" checkout -q main
+echo y > "$qbD/crates/y.rs"; git -C "$qbD" add -A; git -C "$qbD" commit -qm "main perf"
+qbDM=$(git -C "$qbD" rev-parse HEAD)
+git -C "$qbD" checkout -q -b grp "$qbDM"; git -C "$qbD" merge -q --no-ff "$qbDP" -m mg
+: > "$qbD/$QB_COV"
+want_out CANNOTLOOK "control: an unparseable PERF_PATHS refuses to answer" qb "$qbD" "$qbDM" HEAD
+# CONTROL: a base sha the clone does not have is "could not look", never
+# "nothing happened" -- the distinction this whole file exists to keep.
+qbE=$(qb_repo e)
+want_out CANNOTLOOK "control: an absent base sha is could-not-look, not all-clear" \
+  qb "$qbE" 0000000000000000000000000000000000000000 HEAD
+# CONTROL: no base sha at all.
+want_out CANNOTLOOK "control: a missing base argument refuses" qb "$qbE" "" HEAD
 
 echo
 echo "  $PASS passed, $FAIL failed"
