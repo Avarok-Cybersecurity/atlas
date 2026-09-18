@@ -15,13 +15,61 @@ use crate::metal_backend::MetalGpuBackend;
 ///
 /// Callers should `let Some(backend) = maybe_backend() else { return };`
 /// at the top of each test fn.
+/// Is this run ALLOWED to have no Metal device?
+///
+/// Pure, so the rule can be tested without a device and without touching the
+/// process environment from a parallel test.
+pub(super) fn no_device_is_declared(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
 pub(super) fn maybe_backend() -> Option<MetalGpuBackend> {
     let modules = avarok_kernels::metallib_modules();
     match MetalGpuBackend::new(0, &modules) {
         Ok(b) => Some(b),
         Err(e) => {
-            eprintln!("skipping metal_backend test: {e}");
+            // ★ A SKIPPED LEG MUST NOT READ AS A PASS.
+            //
+            // 43 call sites spell the skip `let Some(b) = maybe_backend() else
+            // { return };`, and libtest counts an early return as `ok`. So on a
+            // host with no Metal device this suite reports GREEN having executed
+            // nothing -- indistinguishable from a suite that ran and passed, and
+            // the required context `cargo test --features metal (macOS aarch64)`
+            // is exactly that suite.
+            //
+            // The fix is not to stop skipping; a device-less runner is a real
+            // thing. It is to make the run DECLARE it, once, in its environment,
+            // so that "we could not look" stops being spelled the same way as
+            // "we looked and it was fine".
+            if !no_device_is_declared(std::env::var("AVAROK_METAL_NO_DEVICE").ok().as_deref()) {
+                panic!(
+                    "no Metal device ({e}), and AVAROK_METAL_NO_DEVICE is not set.\n\
+                     A leg that genuinely has no device must say so: set \
+                     AVAROK_METAL_NO_DEVICE=1 on that step. Without it, skipping \
+                     would report this suite as passing having executed nothing."
+                );
+            }
+            eprintln!("skipping metal_backend test (AVAROK_METAL_NO_DEVICE=1 declared): {e}");
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod no_device_rule_tests {
+    use super::no_device_is_declared;
+
+    /// The declaration is EXACTLY "1". Anything else -- unset, empty, "0",
+    /// "true", "yes" -- leaves the panic armed, because a typo in a CI step
+    /// must not silently re-open the hole this closes.
+    #[test]
+    fn only_an_explicit_one_declares_a_device_less_run() {
+        assert!(no_device_is_declared(Some("1")));
+        for v in [None, Some(""), Some("0"), Some("true"), Some("yes"), Some(" 1")] {
+            assert!(
+                !no_device_is_declared(v),
+                "{v:?} must NOT count as a declaration"
+            );
         }
     }
 }

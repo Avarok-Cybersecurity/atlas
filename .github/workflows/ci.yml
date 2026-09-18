@@ -840,6 +840,20 @@ jobs:
       # run on a developer machine; default `cargo test` skips them.
       - name: cargo test -p spark-runtime --features metal
         env:
+          # ★ DECLARED PER RUNNER, NEVER UNCONDITIONALLY.
+          #
+          # `maybe_backend()` now PANICS when it cannot open a device unless
+          # this says the run has none: 43 call sites spell the skip as an
+          # early return and libtest counts that as a pass, so a device-less
+          # host reported this required context GREEN having executed nothing.
+          #
+          # But this job's `runs-on` resolves to the hosted macos-14 OR to the
+          # self-hosted Mac, depending on MACOS_RUNNER_LABEL and whether the PR
+          # is from a fork. Setting the variable unconditionally would re-open
+          # the hole on the box that actually has a GPU -- there, a missing
+          # device is a real failure and must be loud. `runner.environment` is
+          # the only thing that knows which machine this landed on.
+          AVAROK_METAL_NO_DEVICE: ${{ runner.environment == 'github-hosted' && '1' || '' }}
           # ★ AVAROK_SKIP_BUILD=0, overriding the workflow-level "1".
           #
           # Reached independently three times (TheTom's #907, #909, #911); this
