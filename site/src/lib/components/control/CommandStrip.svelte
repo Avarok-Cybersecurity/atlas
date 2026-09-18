@@ -2,7 +2,7 @@
 <script>
   // Region A of the bridge: 48px of who-and-how-bad.
   //
-  // Left, identity and trust: the Atlas mark (the way back to the site the
+  // Left, identity and trust: the Avarok mark (the way back to the site the
   // rest of this surface deliberately is not), the connection chip, and the
   // trust counts — vouched counted apart from paired, because second-hand
   // identity must never wear a verified pin's clothes.
