@@ -566,6 +566,14 @@ impl TransformerModel {
         let kv_write_starts: Vec<usize> = per_stream.iter().map(|m| m.kv_write_start_eff).collect();
 
         // Outer layer loop with mixed dispatch.
+        // Batch-uniform by the admission cohort filter. Read here rather than
+        // inside the loop, where `streams` is mutably borrowed for the
+        // per-layer seq refs.
+        let cvec_id = streams.first().map_or(0, |s| s.seq.cvec_id);
+        debug_assert!(
+            streams.iter().all(|s| s.seq.cvec_id == cvec_id),
+            "batched prefill mixes control-vector selections"
+        );
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             // Gather per-stream seq refs for this layer.
             let mut seqs_vec: Vec<&mut SequenceState> =
@@ -606,7 +614,7 @@ impl TransformerModel {
             // cu_seqlens SSOT (Σ proc_count under varlen), not `proc_count *
             // n`, which over-counts on a partial cache hit and would steer
             // phantom rows past the packed data.
-            self.cvec_after_layer(&ctx, "prefill_batched", layer_idx, gdn_bufs.total_len, stream)?;
+            self.cvec_after_layer(&ctx, "prefill_batched", cvec_id, layer_idx, gdn_bufs.total_len, stream)?;
         }
 
         // DIAG: detect cross-stream physical-block sharing (co-dispatch KV

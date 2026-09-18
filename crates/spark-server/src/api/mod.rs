@@ -41,6 +41,7 @@ pub mod completions_logprobs;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod control_vector_control;
 pub mod lora_control;
 pub mod misc_handlers;
 pub mod models;

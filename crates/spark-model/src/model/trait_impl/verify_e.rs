@@ -244,6 +244,7 @@ impl TransformerModel {
         let n = seqs.len();
         // Row offsets: sequence i owns rows [off[i], off[i+1]). RAGGED since
         // D-Cut; `off[i] = i*k` is the uniform special case.
+        let cvec_id = crate::control_vector_registry::batch_cvec_id(seqs);
         let mut off: Vec<usize> = Vec::with_capacity(n + 1);
         let mut acc = 0usize;
         for &k in ks {
@@ -1060,7 +1061,7 @@ impl TransformerModel {
                 // per-row/per-seq contexts steer nothing themselves, because
                 // the highway is only complete for this layer once they have
                 // all run.
-                self.cvec_after_layer(&ctx, "verify_batched", layer_idx, r_total, stream)?;
+                self.cvec_after_layer(&ctx, "verify_batched", cvec_id, layer_idx, r_total, stream)?;
 
                 if let Some(t0) = t_layer {
                     // SYNC: the launches above are async, so without this the

@@ -30,6 +30,8 @@ pub(super) struct BlockingPathArgs {
     pub session_hash: u64,
     /// M2 per-request LoRA routing: resolved adapter slot (`-1` = defer to active).
     pub adapter_slot: i32,
+    /// Resolved control-vector id (`0` = no steering).
+    pub cvec_id: u64,
     /// Resolved source-language token id (0 = deployment default).
     pub src_lang_id: u32,
     /// Resolved target-language token id (0 = deployment default).
@@ -76,6 +78,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
         prompt_tokens,
         session_hash,
         adapter_slot,
+        cvec_id,
         src_lang_id,
         tgt_lang_id,
         num_beams,
@@ -129,6 +132,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> super::chat::Ch
             prompt_tokens: prompt_tokens.clone(),
             session_hash,
             adapter_slot,
+            cvec_id,
             src_lang_id,
             tgt_lang_id,
             num_beams,

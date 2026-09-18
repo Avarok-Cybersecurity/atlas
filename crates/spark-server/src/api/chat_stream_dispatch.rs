@@ -27,6 +27,8 @@ pub(super) async fn dispatch_streaming(
     session_hash: u64,
     // M2 per-request LoRA routing: resolved adapter slot (-1 = defer to active).
     adapter_slot: i32,
+    // Resolved control-vector id (0 = no steering).
+    cvec_id: u64,
     // Resolved source-language token id (0 = deployment default).
     src_lang_id: u32,
     // Resolved target-language token id (0 = deployment default).
@@ -85,6 +87,7 @@ pub(super) async fn dispatch_streaming(
         prompt_tokens,
         session_hash,
         adapter_slot,
+        cvec_id,
         src_lang_id,
         tgt_lang_id,
         num_beams,

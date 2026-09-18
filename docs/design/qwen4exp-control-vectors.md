@@ -3,20 +3,26 @@
 WIP note. Branch `wip/qwen4exp-control-vector`, cut from the #1063 head
 (`4a253306e`).
 
-**Status.** The apply path is implemented and the boot-time arm works:
-`control_vector.cu` (kernel, proven against a CPU reference),
-`spark-model/src/control_vector.rs` (GGUF load + validation, 15 CPU tests),
-`model/control_vector_hook.rs` (the hook), and 14 call sites across the 11
-model-level layer loops. Not yet done: the serve flags (§3.5), the cosine-probe
-gate wired into a run (§5), per-request selection (§8), and any measurement on
-real weights — **nothing here has been run against the model**. The transfer
-question in §2 is still open.
+**Status.** Implemented and validated on real NVFP4 weights, INCLUDING
+per-request selection (§8).
 
-Motivating artifact:
-[`Cudecnik/Qwen3.8-Flash-Next-refusal-projection`](https://huggingface.co/Cudecnik/Qwen3.8-Flash-Next-refusal-projection)
-— a per-layer refusal direction for `qwen4exp`, published as a llama.cpp GGUF
-control vector plus two llama.cpp patches. We want the same capability against
-Atlas's NVFP4 serve.
+Validated live on a single-rank Flash-Next NVFP4 serve, one boot, no restart
+between cases:
+
+| request | http | steering |
+|---|---|---|
+| `"control_vector": "refusal"` | 200 | 41 decode + 82 prefill_chunked + 465 verify_rows probe lines |
+| field omitted | 200 | none |
+| `"control_vector": null` | 200 | none |
+| `"control_vector": "bogus"` | 400 | none |
+
+Every path that ran collapsed its cosine: `pre` 0.0105-0.0137 -> `post`
+0.000000. 37 CPU tests, clippy clean.
+
+Not yet done: the nine forward paths a single-rank 8K run cannot reach are
+listed by the probe rather than silently passing (see §5), and no
+behavioural/KL measurement has been taken — the transfer question in §2 is
+still open.
 
 ## 1. What the artifact actually is
 
@@ -411,3 +417,29 @@ adapter" once a pool is resident (`lora_control.rs:27`), which is a known wart.
 A refusal-steering vector should not inherit it: "off" has to be expressible
 per request, which means the cvec id must have a real zero and the request
 field must distinguish absent from "none".
+
+### What was built
+
+Implemented as described above. Concretely:
+
+- `spark-model/src/control_vector_registry.rs` — the registry, `cvec_id_hash`
+  (name-derived, never 0) and `compose_variant_id`, which is the ONLY place an
+  adapter id and a cvec id are combined. Both pins are asserted by test:
+  `compose(a, 0) == a` and `compose(0, 0) == 0`.
+- `SequenceState.cvec_id` carries the raw selection; `SequenceState.adapter_id`
+  now carries the COMPOSED variant, which is what the prefix cache and the
+  admission cohort both read.
+- `scheduler/admission.rs` cohorts on the composed variant, so a request
+  selecting a different vector (or none) is deferred until the batch drains
+  rather than mixed into it — the hook applies one vector to the whole highway,
+  so a mixed batch would steer some rows and not others.
+- `api/control_vector_control.rs` resolves the request's `control_vector` NAME.
+  Absent / `null` / `""` = no steering; an unknown name is a 400 listing what is
+  registered, never a silent fallthrough to unsteered.
+- `TransformerModel::decode_graphs_allowed()` keeps decode eager while any
+  vector is registered, because a captured graph bakes in the vector pointer.
+  Belt-and-braces for qwen4_exp, which does not currently use decode graphs.
+
+The request surface is `control_vector` on `/v1/chat/completions` and
+`/v1/completions`. The Anthropic and Responses surfaces accept requests and
+pass `None`; adding the field there is a one-line change in each `to_ir`.

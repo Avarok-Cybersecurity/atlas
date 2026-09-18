@@ -38,6 +38,8 @@ pub(super) struct CompletionParams {
     /// M2 per-request LoRA routing: resolved adapter slot (`-1` = defer to
     /// the installed active adapter).
     pub adapter_slot: i32,
+    /// Resolved control-vector id (`0` = no steering).
+    pub cvec_id: u64,
     /// Resolved source-language token id (0 = deployment default).
     pub src_lang_id: u32,
     /// Resolved target-language token id (0 = deployment default).
@@ -79,6 +81,7 @@ pub(super) async fn run_blocking(
                 prompt_tokens: Arc::new(prompt_tokens.clone()),
                 session_hash,
                 adapter_slot: p.adapter_slot,
+                cvec_id: p.cvec_id,
                 src_lang_id: p.src_lang_id,
                 tgt_lang_id: p.tgt_lang_id,
                 num_beams: p.num_beams,

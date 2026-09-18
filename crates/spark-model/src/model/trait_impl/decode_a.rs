@@ -299,6 +299,13 @@ impl TransformerModel {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
             && !dump_step0
+            // A captured graph bakes in the control vector's device pointer and
+            // scale, so replaying it for a request that selected a DIFFERENT
+            // vector — or none — would steer with the wrong one, silently,
+            // since the output is well-formed either way. Same hazard LoRA
+            // answers with `lora_eager`. Measured speed-NEUTRAL on GB10 for
+            // this model (16.4 replay vs 16.5 eager), so it costs ~nothing.
+            && self.decode_graphs_allowed()
             && !lora_eager
             && !layer_veto
             // The native EXL3 lm_head runs INSIDE decode_forward_body, and its

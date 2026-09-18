@@ -358,8 +358,9 @@ pub trait Model: Send + Sync {
     /// is no counter that would ever show it.
     fn install_control_vector(
         &mut self,
+        _name: &str,
         _spec: &crate::control_vector::ControlVectorSpec,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         bail!(
             "this model does not support control vectors (they need an mHC \
              residual highway to act on)"

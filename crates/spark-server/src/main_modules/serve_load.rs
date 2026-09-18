@@ -861,27 +861,19 @@ pub(crate) fn load_model(
         &args.control_vector_mode,
         config.num_hidden_layers,
     )?;
-    if cvec_specs.len() > 1 {
-        // The model holds ONE vector and the hook applies it to the whole
-        // highway, so a second would silently replace the first. Refuse
-        // rather than serve the last-listed one under every name. Lifting
-        // this needs the per-request registry — see §8 of
-        // docs/design/qwen4exp-control-vectors.md.
-        anyhow::bail!(
-            "--control-vector given {} times ({}); only one can be active at a \
-             time until per-request selection lands",
-            cvec_specs.len(),
-            cvec_specs
-                .iter()
-                .map(|(n, _)| n.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
+    // (name, id) mirrored into AppState so a request handler resolves a
+    // selection without reaching for the model, the same way adapter_names is.
+    let mut cvec_registered: Vec<(String, u64)> = Vec::with_capacity(cvec_specs.len());
     for (name, spec) in &cvec_specs {
-        model
-            .install_control_vector(spec)
+        let id = model
+            .install_control_vector(name, spec)
             .with_context(|| format!("--control-vector {name}"))?;
+        cvec_registered.push((name.clone(), id));
+        tracing::info!(
+            "control vector '{name}' registered as id {id:#018x}; select it \
+             per-request with {{\"control_vector\": \"{name}\"}} (omit, or send \
+             null, for no steering)"
+        );
     }
 
     // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
@@ -1385,6 +1377,7 @@ pub(crate) fn load_model(
         vision_capacity,
         tokenizer,
         model_name,
+        control_vectors: cvec_registered,
         adapter_name: nllb_adapter_name
             .clone()
             .or_else(|| lora_states.first().map(|l| l.name.clone())),

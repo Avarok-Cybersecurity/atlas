@@ -17,6 +17,12 @@ pub struct CompletionRequest {
     /// (byte-identical to today); unknown = 400. See `ChatCompletionRequest`.
     #[serde(default)]
     pub adapter: Option<String>,
+    /// Per-request control vector (activation steering) by NAME, from
+    /// `--control-vector NAME=PATH`. `None` or `null` = NO steering, which is
+    /// a first-class answer here unlike the LoRA slot — steering has to be
+    /// switchable off per request or it cannot be A/B'd. Unknown name = 400.
+    #[serde(default)]
+    pub control_vector: Option<String>,
     /// Optional source-language token name. Resolved to a token id via the
     /// server tokenizer at request time. Unset = deployment default (0);
     /// unknown token = 400.

@@ -226,9 +226,10 @@ impl Model for TransformerModel {
     }
     fn install_control_vector(
         &mut self,
+        name: &str,
         spec: &crate::control_vector::ControlVectorSpec,
-    ) -> Result<()> {
-        self.load_control_vector(spec)
+    ) -> Result<u64> {
+        self.load_control_vector(name, spec)
     }
     fn adapter_id_for(&self, slot: i32) -> u64 {
         self.adapter_id_for_slot(slot)

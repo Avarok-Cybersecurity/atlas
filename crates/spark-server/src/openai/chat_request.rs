@@ -16,6 +16,12 @@ pub struct ChatCompletionRequest {
     /// unknown = 400. Resolved to a pool slot at request time.
     #[serde(default)]
     pub adapter: Option<String>,
+    /// Per-request control vector (activation steering) by NAME, from
+    /// `--control-vector NAME=PATH`. `None` or `null` = NO steering, which is
+    /// a first-class answer here unlike the LoRA slot — steering has to be
+    /// switchable off per request or it cannot be A/B'd. Unknown name = 400.
+    #[serde(default)]
+    pub control_vector: Option<String>,
     /// NLLB per-request source/target language names (tokenizer-resolved).
     #[serde(default)]
     pub src_lang: Option<String>,

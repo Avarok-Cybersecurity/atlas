@@ -147,11 +147,28 @@ pub struct SequenceState {
     /// unconditionally at admission. `0` = drawn outside `alloc_sequence` (the
     /// mock and test fakes), and never matches anything.
     pub mtp_store_gen: u64,
-    /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
-    /// prefix hash so two adapters that share a token prefix never reuse each
-    /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
-    /// behavior is byte-identical until a LoRA path stamps a non-zero id).
+    /// Prefix-cache namespace for this sequence's model VARIANT. Folded into
+    /// the prefix hash and given a disjoint radix root, so two variants that
+    /// share a token prefix never reuse each other's blocks. `0` = base (a
+    /// strict no-op in the fold, so behavior is byte-identical until something
+    /// stamps a non-zero id).
+    ///
+    /// Named `adapter_id` because LoRA was the first variant axis; it now
+    /// carries the COMPOSED identity from
+    /// [`crate::control_vector_registry::compose_variant_id`] — adapter ⊕
+    /// control vector. Anything else that changes forward-pass arithmetic
+    /// belongs in that composition too, not in a second field: the cache and
+    /// the admission cohort both read this one value, and computing them apart
+    /// is how they drift.
     pub adapter_id: u64,
+    /// Which control vector this request selected; `0` = none. Distinct from
+    /// `adapter_id` above, which is the composed cache key — this is the raw
+    /// selection the forward pass resolves against the registry.
+    ///
+    /// `0` genuinely means "no steering", unlike the LoRA slot where `-1`
+    /// defers to the installed active adapter and nothing means base. Steering
+    /// has to be switchable off per request or it cannot be A/B'd.
+    pub cvec_id: u64,
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
@@ -350,6 +367,7 @@ impl SequenceState {
             // Not from `alloc_sequence`, so it owns no hidden rows.
             mtp_store_gen: 0,
             adapter_id: 0,
+            cvec_id: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
             reused_prefix_tokens: 0,

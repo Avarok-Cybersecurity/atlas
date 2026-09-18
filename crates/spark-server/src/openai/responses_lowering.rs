@@ -150,6 +150,8 @@ pub fn lower_responses_to_chat(
     Ok(ChatCompletionRequest {
         model: r.model,
         adapter: None,
+        // The Responses surface has no control-vector field yet; no steering.
+        control_vector: None,
         src_lang: None,
         tgt_lang: None,
         num_beams: None,

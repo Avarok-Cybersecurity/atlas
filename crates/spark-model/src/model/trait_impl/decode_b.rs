@@ -46,6 +46,10 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<crate::traits::MixedForwardResult> {
         let n_decode = decode_tokens.len();
+        // The two halves of a mixed step are separate requests, so they carry
+        // their own selections — they are NOT cohort-uniform with each other.
+        let cvec_decode = crate::control_vector_registry::batch_cvec_id(decode_seqs);
+        let cvec_prefill = prefill_seq.cvec_id;
         let n_prefill = prefill_chunk_len;
         // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
@@ -554,7 +558,7 @@ impl TransformerModel {
                     stream,
                 )?;
                 // Activation steering, decode half: rows [0, padded_n).
-                self.cvec_after_layer(&decode_ctx, "mixed_decode", layer_idx, padded_n, stream)?;
+                self.cvec_after_layer(&decode_ctx, "mixed_decode", cvec_decode, layer_idx, padded_n, stream)?;
 
                 // 6b. Prefill: 1 sequence × M tokens on hidden[padded_n*H..]
                 layer.prefill(
@@ -577,7 +581,7 @@ impl TransformerModel {
                 // offsets, and `prefill_ctx.hc_row_offset` is what moves the
                 // base. A single call at offset 0 would steer the decode rows
                 // twice and the prefill rows not at all.
-                self.cvec_after_layer(&prefill_ctx, "mixed_prefill", layer_idx, proc_count, stream)?;
+                self.cvec_after_layer(&prefill_ctx, "mixed_prefill", cvec_prefill, layer_idx, proc_count, stream)?;
             }
 
             // ── Step 0 (spec blocker B1): per-chunk SSM state normalize ──

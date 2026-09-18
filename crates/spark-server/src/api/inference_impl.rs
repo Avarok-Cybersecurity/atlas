@@ -211,6 +211,16 @@ impl InferenceRequest {
         }
     }
 
+    /// Per-request control-vector identity (`0` = no steering). Copied onto
+    /// `SequenceState.cvec_id` at prefill, and composed with the adapter id
+    /// into the prefix-cache variant key.
+    pub fn cvec_id(&self) -> u64 {
+        match self {
+            InferenceRequest::Blocking { cvec_id, .. } => *cvec_id,
+            InferenceRequest::Streaming { cvec_id, .. } => *cvec_id,
+        }
+    }
+
     /// Per-request source-language token id (0 = deployment default). Copied
     /// onto `SequenceState.src_lang_id` by the scheduler at prefill.
     pub fn src_lang_id(&self) -> u32 {

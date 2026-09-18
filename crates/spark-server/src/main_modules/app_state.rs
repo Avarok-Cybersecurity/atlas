@@ -43,6 +43,11 @@ pub struct AppState {
     /// Advertised by /v1/models; a name here is a valid `POST /v1/lora/active`
     /// target. Empty when no adapter is loaded.
     pub adapter_names: Vec<String>,
+    /// Registered control vectors as (NAME, id), mirrored from the model at
+    /// startup the same way `adapter_names` is, so a request handler resolves
+    /// a selection without reaching for the model. Empty = no steering is
+    /// available and any named `control_vector` is a 400.
+    pub control_vectors: Vec<(String, u64)>,
     /// The currently-active adapter (updated by `POST /v1/lora/active`). Starts
     /// at slot 0. Purely for status/advertise; the scheduler's model owns the
     /// authoritative active slot.
