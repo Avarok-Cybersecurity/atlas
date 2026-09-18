@@ -29,6 +29,11 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 /// `ATLAS_DS41_PREFILL_GEMV=1`, read once: prefill groups of more than eight
 /// rows run through the decode GEMV arm in chunks of eight (see `forward`).
+fn m1_loop() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_DS41_M1_LOOP").is_ok_and(|v| v == "1"))
+}
+
 fn prefill_gemv() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_DS41_PREFILL_GEMV").is_ok_and(|v| v == "1"))
@@ -390,7 +395,11 @@ impl MoeV41 {
         gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
         gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
         gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
-        if m == 1 {
+        // ATLAS_DS41_M1_LOOP=1 (diagnostic): run the single token through the
+        // per-expert loop below (one-row groups on the decode GEMV) instead of
+        // the pointer-table arm, to tell the two apart.
+        let m1_arm = m == 1 && !m1_loop();
+        if m1_arm {
             // the single-token arm: the token is every expert's activation, so
             // quantise it once and run each projection as one launch over the
             // experts (pointer table), the routing weight folded in at the
@@ -405,7 +414,7 @@ impl MoeV41 {
         // block 64 for Q2_K. A diagnostic: it makes prefill and decode
         // numerically the same path at the cost of the tensor-core arm.
         let prefill_gemv = prefill_gemv();
-        for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
+        for &(a0, off, r) in plan.iter().filter(|_| !m1_arm) {
             let slot = slots[a0];
             let rows_ptr = DevicePtr(self.rows_dev.0 + (off * 4) as u64);
             let w_ptr = DevicePtr(self.weight_dev.0 + (off * 4) as u64);
