@@ -137,3 +137,71 @@ fn id_zero_resolves_to_no_vector() {
     assert!(reg.by_id(0).is_none());
     assert!(reg.by_id(cvec_id_hash("refusal", &cfg_a())).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// The boot-time fingerprint.
+//
+// This decides whether a multi-rank serve STARTS, so its failure modes are:
+// refusing a correct pair (an outage caused by the check itself), or accepting
+// a divergent one (the hang it exists to prevent).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn nothing_registered_fingerprints_to_zero() {
+    // Not an arbitrary sentinel: it makes "neither rank loaded any vector"
+    // agree without the callers special-casing the empty registry.
+    assert_eq!(fingerprint_of_ids(std::iter::empty()), 0);
+}
+
+#[test]
+fn a_registry_with_vectors_is_never_zero() {
+    // Otherwise a loaded rank could agree with an empty one.
+    for ids in [vec![1u64], vec![u64::MAX], vec![1, 2, 3]] {
+        assert_ne!(
+            fingerprint_of_ids(ids.iter().copied()),
+            0,
+            "{ids:?} collided with the empty sentinel"
+        );
+    }
+}
+
+#[test]
+fn command_line_order_does_not_matter() {
+    // Two ranks given the same vectors in a different order are NOT
+    // misconfigured. Hashing in registry order would fail that boot, which
+    // turns a harmless difference into an outage.
+    let a = fingerprint_of_ids([11u64, 22, 33].into_iter());
+    let b = fingerprint_of_ids([33u64, 11, 22].into_iter());
+    let c = fingerprint_of_ids([22u64, 33, 11].into_iter());
+    assert_eq!(a, b);
+    assert_eq!(a, c);
+}
+
+#[test]
+fn a_different_set_fingerprints_differently() {
+    let base = fingerprint_of_ids([11u64, 22, 33].into_iter());
+    // One vector missing — the "forgot to pass the flag on rank 1" case.
+    assert_ne!(base, fingerprint_of_ids([11u64, 22].into_iter()));
+    // One vector extra.
+    assert_ne!(base, fingerprint_of_ids([11u64, 22, 33, 44].into_iter()));
+    // One vector different — the id already covers name AND configuration,
+    // so this stands in for a different file, scale, mode or layer range.
+    assert_ne!(base, fingerprint_of_ids([11u64, 22, 34].into_iter()));
+}
+
+#[test]
+fn the_fingerprint_tracks_a_real_configuration_change() {
+    // End to end through the id hash: the same name and file at a different
+    // scale must move the fingerprint, because that is the divergence a
+    // name-only id could not see.
+    let ids = |scale: f32| {
+        [
+            cvec_id_hash("refusal", &cfg("aaaa", "Project", 1.0, 4, 44)),
+            cvec_id_hash("verbose", &cfg("bbbb", "Add", scale, 4, 44)),
+        ]
+    };
+    assert_ne!(
+        fingerprint_of_ids(ids(-0.15).into_iter()),
+        fingerprint_of_ids(ids(-0.25).into_iter()),
+    );
+}

@@ -127,6 +127,29 @@ pub fn batch_cvec_id(seqs: &[&mut crate::traits::SequenceState]) -> u64 {
     first.cvec_id
 }
 
+/// The fingerprint of a set of control-vector ids.
+///
+/// Split out from [`ControlVectorRegistry::fingerprint`] because the registry
+/// cannot be populated without a GPU (a `ControlVector` owns device memory),
+/// and the properties that matter here — order independence, and `0` for
+/// nothing registered — are properties of the ids alone. A boot-time refusal
+/// is a bad thing to leave untested.
+fn fingerprint_of_ids(ids: impl Iterator<Item = u64>) -> u64 {
+    let mut ids: Vec<u64> = ids.collect();
+    if ids.is_empty() {
+        return 0;
+    }
+    ids.sort_unstable();
+    let mut h: u64 = 0xcbf29ce484222325;
+    for id in ids {
+        for b in id.to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
 impl ControlVectorRegistry {
     /// Add a loaded vector. Rejects a duplicate name, and a name whose hash
     /// collides with an existing one — astronomically unlikely, but a
@@ -183,6 +206,20 @@ impl ControlVectorRegistry {
     /// explain why a lookup missed.
     pub fn entries(&self) -> impl Iterator<Item = &ControlVectorEntry> {
         self.entries.iter()
+    }
+
+    /// One number standing for "what this rank has registered".
+    ///
+    /// Each id already covers its vector's name AND configuration, so hashing
+    /// the ids covers everything that could differ. Sorted first, because the
+    /// registry is in command-line order and two ranks given the same vectors
+    /// in a different order are NOT misconfigured — insisting they match would
+    /// turn a harmless difference into a boot failure.
+    ///
+    /// `0` for an empty registry, which makes "neither rank has any" agree
+    /// without special-casing.
+    pub fn fingerprint(&self) -> u64 {
+        fingerprint_of_ids(self.entries.iter().map(|e| e.id))
     }
 
     /// Free every vector's device table and empty the registry.

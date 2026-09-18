@@ -943,6 +943,21 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(7, "kernel audit");
     serve_phases::audit_and_gate(&args, &ptx_set)?;
 
+    // Agree with the other ranks about the control-vector registry BEFORE the
+    // worker enters its command loop.
+    //
+    // The per-request check already refuses an id a worker cannot resolve, so
+    // a divergence never steers half the model — but it refuses mid-request,
+    // and the head cannot turn that into a response, so the caller waits out
+    // its own timeout. Failing closed as a hang is still a bad failure.
+    //
+    // Checking here removes the possibility rather than improving the symptom,
+    // and it is the natural place: both ranks run this line, and a collective
+    // is a barrier.
+    model
+        .ep_check_control_vector_registry()
+        .context("control-vector registry handshake")?;
+
     // Phase 6.3 — HSS config built early so the EP worker can install it.
     let early_high_speed_swap_cfg = serve_phases::build_high_speed_swap_config(&args)?;
 

@@ -386,6 +386,15 @@ pub trait Model: Send + Sync {
         )
     }
 
+    /// Confirm every rank registered the same control vectors, at boot.
+    ///
+    /// A no-op without EP/TP, and for models that do not support vectors at
+    /// all — those cannot have registered any, so there is nothing to
+    /// disagree about.
+    fn ep_check_control_vector_registry(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Task #24: stable adapter_id (KV/prefix-cache identity) for a per-request
     /// pool-slot selector. `slot` follows `SequenceState.adapter_slot`: `>= 0`
     /// picks that resident slot, `-1` defers to the installed active adapter.
