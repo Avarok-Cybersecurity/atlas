@@ -28,6 +28,12 @@ function avarokGenerators() {
       run('gen-benchmarks.mjs');
       run('gen-gates.mjs');
       run('gen-ladder.mjs');
+      // The product updates page renders CHANGELOG.md. Structural, like gen-gates.
+      run('gen-changelog.mjs');
+      // Reduces gates and models to the few counts the marketing pages print, so
+      // none of them has to load the 1 MB gate record set. After gen-gates and
+      // gen-models, which it reads.
+      run('gen-live.mjs');
       // Depends on the four above: llms.txt restates their numbers for answer
       // engines, so it must be written after they are.
       run('gen-llms.mjs');
@@ -39,6 +45,13 @@ function avarokGenerators() {
         run('gen-stars.mjs');
       } catch (err) {
         this.warn(`gen-stars failed (non-fatal): ${err && err.message ? err.message : err}`);
+      }
+      // The contributors page renders the GitHub contributor list. Best-effort,
+      // like gen-stars: the committed file stands in when the API is unreachable.
+      try {
+        run('gen-contributors.mjs');
+      } catch (err) {
+        this.warn(`gen-contributors failed (non-fatal): ${err && err.message ? err.message : err}`);
       }
     }
   };

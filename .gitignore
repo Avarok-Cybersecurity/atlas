@@ -28,6 +28,11 @@ docker/gb10/spark-fastbin
 /site/build/
 /site/.svelte-kit/
 /site/.vite/
+# Raw screen recordings, the input to site/scripts/media/encode.mjs
+/site/.media-raw/
+# Raw generated video takes. Large, and video goes through LFS here, so whether
+# to commit them is the team's call. The stills and the ledger are committed.
+/site/media-brief/takes/*.mp4
 
 # Editor / agent scratch. `.claude/skills/` is deliberately TRACKED — repo
 # skills (avarok-release, measurement-discipline) are shared process, not

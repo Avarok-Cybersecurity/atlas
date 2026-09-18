@@ -1,0 +1,100 @@
+{
+  "art-aisle": {
+    "alt": "A dark datacenter aisle with rows of racks receding to a vanishing point, status lights in green and cyan.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/deployment",
+      "/solutions/enterprise-datacenter"
+    ]
+  },
+  "art-desk-box": {
+    "alt": "A small desktop compute box on a dark desk with a lavender status light.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge",
+      "/pricing"
+    ]
+  },
+  "art-enclave": {
+    "alt": "A sealed server room behind a glass wall, lit in cyan, seen from a dark corridor.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/security"
+    ]
+  },
+  "art-finance": {
+    "alt": "A steel corridor leading to server racks behind a mesh cage, lit in amber gold.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/financial-services"
+    ]
+  },
+  "art-gov": {
+    "alt": "A concrete secure facility corridor with a closed steel door and cyan light from a rack room beyond.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/government-defense"
+    ]
+  },
+  "art-grid": {
+    "alt": "A grid of compute modules with points of light moving along the channels between them.",
+    "width": 1280,
+    "height": 720,
+    "pages": []
+  },
+  "art-health": {
+    "alt": "A hospital service corridor at night leading to a compute room glowing green behind frosted glass.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/healthcare"
+    ]
+  },
+  "art-hyperscale": {
+    "alt": "A vast data hall with rack rows running to the horizon under cyan lit cable trays.",
+    "width": 1280,
+    "height": 576,
+    "pages": [
+      "/solutions/hyperscalers",
+      "/solutions/neoclouds"
+    ]
+  },
+  "art-legal": {
+    "alt": "A law library aisle whose shelves turn into server racks, lit in lavender.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/legal"
+    ]
+  },
+  "art-power": {
+    "alt": "A datacenter switchgear room with copper busbars and a row of amber indicator lamps.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/economics"
+    ]
+  },
+  "art-prisms": {
+    "alt": "Chevron shaped glass prisms refracting lavender, cyan, green and gold light.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/why-avarok"
+    ]
+  },
+  "art-research": {
+    "alt": "An accelerator board on an open test stand on a research bench, lit in green.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/research",
+      "/labs"
+    ]
+  }
+}

@@ -3,10 +3,11 @@
   <head>
     <script>
       (function () {
-        // apply also queues the hero fetch, because the home page hero is a
-        // single image whose source is only known once the theme is settled.
-        // Starting the preload here puts the request at the point in the head
-        // where the preload scanner would have found an eager src.
+        // apply also queues the hero poster fetch on the front page. The hero
+        // is a product clip behind a poster, and the poster is the largest
+        // paint on the page, so it is requested from the head rather than
+        // when the parser reaches it. One file serves both themes: the console
+        // it shows is dark chrome in either.
         function apply(t) {
           document.documentElement.setAttribute('data-theme', t);
           if (location.pathname !== '/' && location.pathname !== '/index.html') return;
@@ -14,7 +15,7 @@
           l.rel = 'preload';
           l.as = 'image';
           l.setAttribute('fetchpriority', 'high');
-          l.href = t === 'dark' ? '/brand/atlas-hero-dark.webp' : '/brand/atlas-hero.webp';
+          l.href = '/media/console-ask.webp';
           document.head.appendChild(l);
         }
         try {
@@ -30,7 +31,9 @@
     </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Atlas is an open source, pure Rust and CUDA LLM inference engine hand tuned for NVIDIA DGX Spark. What ships is what we verify." />
+    <meta name="description" content="Avarok is the inference economics platform for GPUs you already own. Faster inference, stronger governance, a fraction of what you pay today." />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="%sveltekit.assets%/fonts/ibm-plex-sans-latin-400-normal.woff2" />
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="%sveltekit.assets%/fonts/ibm-plex-sans-latin-600-normal.woff2" />
     <!-- Must equal --bg in web-shared/avarok-tokens.css. A meta tag cannot read a
          custom property, so this is the one unavoidable copy of the ground colour;
          theme-color.test.js fails the build if the two drift. -->
@@ -51,28 +54,28 @@
     <link rel="icon" type="image/png" sizes="32x32" href="%sveltekit.assets%/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="%sveltekit.assets%/favicon-16.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="%sveltekit.assets%/apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-title" content="Atlas" />
+    <meta name="apple-mobile-web-app-title" content="Avarok" />
     <link rel="manifest" href="%sveltekit.assets%/site.webmanifest" />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="Atlas, one inference engine from handheld to datacenter" />
-    <meta property="og:description" content="Open source, pure Rust + CUDA. One engine from edge accelerators to datacenter racks. Verified on DGX Spark (GB10) and running on AMD Strix Halo. Submitted to MLPerf Inference v6.1. Every number is a receipt." />
-    <meta property="og:site_name" content="Atlas Inference" />
+    <meta property="og:title" content="Avarok, the inference economics platform" />
+    <meta property="og:description" content="Faster inference, stronger governance, a fraction of what you pay today. Runs your models faster on the GPUs you own, keeps every prompt inside your perimeter, and shows your CFO what each workload costs." />
+    <meta property="og:site_name" content="Avarok" />
     <meta property="og:locale" content="en_US" />
     <meta property="og:image" content="https://atlascybernetics.ai/og-image.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Atlas, pure Rust inference from the device in your hand to the datacenter rack" />
+    <meta property="og:image:alt" content="Avarok, the inference economics platform" />
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@AtlasInferenceX" />
     <meta name="twitter:creator" content="@AtlasInferenceX" />
-    <meta name="twitter:title" content="Atlas, one inference engine from handheld to datacenter" />
-    <meta name="twitter:description" content="Open source, pure Rust + CUDA. Verified on DGX Spark. Every number is a receipt." />
+    <meta name="twitter:title" content="Avarok, the inference economics platform" />
+    <meta name="twitter:description" content="Faster inference, stronger governance, a fraction of what you pay today. Every number is a receipt." />
     <meta name="twitter:image" content="https://atlascybernetics.ai/og-image.png" />
-    <meta name="twitter:image:alt" content="Atlas, pure Rust inference from the device in your hand to the datacenter rack" />
+    <meta name="twitter:image:alt" content="Avarok, the inference economics platform" />
 
     <!-- The plain-text brief answer engines read. Generated from the same
          sources as the page by scripts/gen-llms.mjs. -->

@@ -9,9 +9,11 @@
 //   MLPerf status from mlperf.json. Nothing here can drift from the page,
 //   because there is no second copy to drift.
 //
-// Prose that is genuinely editorial (what Atlas is, what it is not) is read out
-//   of src/lib/data.js, the same file the page renders — so a copy change lands
-//   in both places at once.
+// Prose that is genuinely editorial (what the engine is, what it is not) is read
+//   out of src/lib/data.js, the same file the developer page renders, and the
+//   company, platform, page list and pricing come from src/lib/content/, the
+//   same modules the marketing pages render — so a copy change lands in both
+//   places at once.
 //
 // Hard-fails on a missing source, because a silently truncated llms.txt still
 //   looks like a complete one (PCND).
@@ -22,11 +24,13 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const site = resolve(here, '..');
 const read = (p) => JSON.parse(readFileSync(resolve(site, p), 'utf8'));
+// A file URL, not a path: node on Windows refuses to import 'C:\...'.
+const load = (p) => import(pathToFileURL(resolve(site, p)).href);
 
 const models = read('src/lib/models.generated.json');
 const ladder = read('src/lib/ladder.generated.json');
@@ -35,8 +39,15 @@ const bench = read('src/lib/benchmarks.generated.json');
 
 // data.js is an ES module of plain exports; importing it keeps the copy in one
 // place instead of restating it here.
-const data = await import(resolve(site, 'src/lib/data.js'));
-const { tagline, hero, githubUrl, recipesUrl, discordUrl, xUrl, guideUrl, hardware } = data;
+const data = await load('src/lib/data.js');
+const { hero, githubUrl, recipesUrl, discordUrl, xUrl, guideUrl, hardware } = data;
+
+// The marketing copy. These modules import nothing but each other, so they
+// load here exactly as the pages load them.
+const { pages, company, SITE } = await load('src/lib/content/index.js');
+const home = await load('src/lib/content/home.js');
+const pricing = await load('src/lib/content/pricing.js');
+if (!pages?.length) throw new Error('gen-llms: the page registry is empty');
 
 const recipes = models.flatMap((v) =>
   v.subfamilies.flatMap((f) => f.recipes.map((r) => ({ vendor: v.vendor, family: f.name, ...r })))
@@ -52,9 +63,40 @@ const lines = [];
 const push = (...l) => lines.push(...l);
 
 push(
-  '# Atlas Inference Engine',
+  `# ${company.name}`,
   '',
-  `> ${tagline}`,
+  `> ${home.hero.title.join(' ')}`,
+  '',
+  home.hero.lede,
+  '',
+  `${company.name} was named Atlas until September 2026. The engine, the repository and the`,
+  'domain are the same ones. The legal entity is Atlas Cybernetics Corp.',
+  '',
+  '## The platform',
+  '',
+  `- ${company.engine}: the open source inference engine, pure Rust and CUDA, AGPL-3.0-only.`,
+  `- ${company.control}: the governance and control plane. Signed recipes, canary rollouts, routing, fleet policy.`,
+  `- ${company.economics}: cost per workload, chargeback, stranded capacity and payback, from runtime telemetry.`,
+  '',
+  '## Pages',
+  ''
+);
+for (const pg of pages.filter((x) => !x.noindex)) {
+  push(`- [${pg.title}](${SITE}${pg.path === '/' ? '' : pg.path}): ${pg.description}`);
+}
+push(
+  '',
+  '## Pricing',
+  '',
+  'Proposed list prices, subject to contract. The pricing page carries the payback model.',
+  ''
+);
+for (const t of pricing.tiers) {
+  push(`- ${t.name}: ${t.price}${t.per ? ` ${t.per}` : ''}`);
+}
+push(
+  '',
+  `## ${company.engine}`,
   '',
   `${hero.sub}`,
   '',
@@ -62,7 +104,7 @@ push(
   'the range, from edge-class accelerators through workstations to expert-parallel',
   'deployments across nodes.',
   '',
-  '## What it runs on',
+  '### What it runs on',
   ''
 );
 for (const c of hardware.cards) {
@@ -71,17 +113,17 @@ for (const c of hardware.cards) {
 
 push(
   '',
-  '## Measured performance',
+  '### Measured performance',
   '',
   `${ladder.title}. ${ladder.subtitle}.`,
   `Aggregate: ${ladder.aggregate}. Box: ${ladder.box.name}, ${ladder.box.gpu}.`,
   `Workload: ISL ${w.isl_tokens} / OSL ${w.osl_tokens} tokens, temperature ${w.temperature},`,
   `seed ${w.seed}, ${w.reps} timed reps after ${w.warmup} warmup. ${w.sampling_parity}.`,
   '',
-  `Result: Atlas wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
+  `Result: ${company.engine} wins ${s.won} of ${s.rungs} rungs, margin ${fmt(s.min_ratio)}x to ${fmt(s.max_ratio)}x`,
   'against the matched vLLM + MTP configuration at each concurrency.',
   '',
-  '| concurrency | Atlas tok/s | matched vLLM tok/s | ratio |',
+  `| concurrency | ${company.engine} tok/s | matched vLLM tok/s | ratio |`,
   '| --- | --- | --- | --- |'
 );
 for (const r of ladder.rows) {
@@ -97,17 +139,17 @@ push(
   ''
 );
 
-push('## Install', '', '```sh', data.runCommand, '```', '', 'Or without piping to a shell:', '', '```sh', data.quickInstall, data.runCommandRaw, '```', '');
+push('### Install', '', '```sh', data.runCommand, '```', '', 'Or without piping to a shell:', '', '```sh', data.quickInstall, data.runCommandRaw, '```', '');
 
 push(
-  `## Models (${recipes.length} recipes)`,
+  `### Models (${recipes.length} recipes)`,
   '',
   'Every model below maps to one recipe in atlas-recipes; the site cannot list a',
   'model that has no recipe. Run any of them with `atlasctl run <id>`.',
   ''
 );
 for (const vendor of [...new Set(recipes.map((r) => r.vendor))]) {
-  push(`### ${vendor}`, '');
+  push(`#### ${vendor}`, '');
   for (const r of recipes.filter((x) => x.vendor === vendor)) {
     push(`- \`${r.recipeId}\` — ${r.displayName}, ${r.params ?? 'n/a'} ${r.quant}, ${r.topology}, \`${r.hfId}\``);
   }

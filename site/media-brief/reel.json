@@ -1,0 +1,134 @@
+{
+  "note": "The cut for the product film. scripts/media/reel.mjs assembles it. Every caption must be a line the site already says: the script checks each sentence against src/lib/content and refuses to build a film that says something the pages do not.",
+  "size": [
+    1280,
+    720
+  ],
+  "fps": 30,
+  "crossfade": 0.45,
+  "window": {
+    "x": 128,
+    "y": 36,
+    "w": 1024,
+    "h": 576,
+    "radius": 14
+  },
+  "segments": [
+    {
+      "id": "hall",
+      "kind": "ambient",
+      "slot": "broll-hall",
+      "take": "V06-broll-hall.mp4",
+      "in": 0.6,
+      "out": 5.4,
+      "label": "The problem",
+      "caption": "Your GPUs report tokens per second."
+    },
+    {
+      "id": "power",
+      "kind": "ambient",
+      "slot": "broll-power",
+      "take": "V07-broll-power.mp4",
+      "in": 0.4,
+      "out": 5.0,
+      "label": "The problem",
+      "caption": "Your CFO pays in dollars per workload."
+    },
+    {
+      "id": "lockup",
+      "kind": "lockup",
+      "slot": "broll-tokens",
+      "take": "V02-broll-tokens.mp4",
+      "in": 0.5,
+      "out": 4.9,
+      "caption": "Inference economics, reimagined.",
+      "why": "Not the chevron footage: generated chevrons behind the real mark read as a second, distorted logo."
+    },
+    {
+      "id": "deploy",
+      "kind": "product",
+      "slot": "console-deploy",
+      "in": 1.5,
+      "out": 15.2,
+      "speed": 1.75,
+      "label": "Deploy",
+      "caption": "Started on a single box. Built to run a fleet."
+    },
+    {
+      "id": "ask",
+      "kind": "product",
+      "slot": "console-ask",
+      "in": 0.8,
+      "out": 17.9,
+      "speed": 2.0,
+      "label": "Ask",
+      "caption": "Pick a model. Pick a grid. Start."
+    },
+    {
+      "id": "queue",
+      "kind": "product",
+      "slot": "console-queue",
+      "in": 1.2,
+      "out": 14.2,
+      "speed": 1.8,
+      "label": "Queue",
+      "caption": "Bring up the links. Queue the project."
+    },
+    {
+      "id": "fleet",
+      "kind": "product",
+      "slot": "console-fleet",
+      "in": 1.0,
+      "out": 13.6,
+      "speed": 1.9,
+      "label": "Fleet",
+      "caption": "Every node, every kernel, every rollout."
+    },
+    {
+      "id": "economics",
+      "kind": "product",
+      "slot": "console-economics",
+      "in": 1.0,
+      "out": 12.4,
+      "speed": 1.8,
+      "label": "Economics",
+      "caption": "Dollars per workload, not tokens per second."
+    },
+    {
+      "id": "governance",
+      "kind": "product",
+      "slot": "console-governance",
+      "in": 1.0,
+      "out": 12.4,
+      "speed": 1.9,
+      "label": "Governance",
+      "caption": "Every token has a receipt."
+    },
+    {
+      "id": "enclave",
+      "kind": "ambient",
+      "slot": "broll-enclave",
+      "take": "V04-broll-enclave.mp4",
+      "in": 0.5,
+      "out": 5.0,
+      "label": "Security",
+      "caption": "Nothing leaves your perimeter."
+    },
+    {
+      "id": "rack",
+      "kind": "ambient",
+      "slot": "broll-rack",
+      "take": "V01-broll-rack.mp4",
+      "in": 0.5,
+      "out": 5.0,
+      "label": "Getting there",
+      "caption": "Week one. Months one to six. At renewal."
+    },
+    {
+      "id": "end",
+      "kind": "end",
+      "seconds": 5.5,
+      "caption": "Ready to get the most out of the datacenter you already paid for?"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+/* =============================================================================
+   The developer pages under the global Avarok chrome.
+
+   The group layout draws the global header and footer. The pages' own Nav
+   component stays, demoted from the site's fixed top bar to a sticky section
+   bar under the global header: its jump links, star button and the "ask the
+   codebase" modal are still worth having, its lockup and theme toggle are
+   duplicates and hide. The old page-level Footer is gone from the routes.
+   ========================================================================== */
+.engine-shell nav:not(.av-nav) { position: sticky; top: 68px; z-index: 90; }
+/* The old nav renders the "Ask the codebase" dialog inside itself, and a sticky
+   element is a stacking context, so at 90 the dialog was trapped under the new
+   header and its close button could not be reached. While the bar hosts an
+   open dialog it is lifted above everything; the rest of the time it stays
+   under the header so the mega menus can drop over it. */
+.engine-shell nav:not(.av-nav):has([role='dialog']) { z-index: 300; }
+.engine-shell nav:not(.av-nav) .nav-inner { height: 48px; justify-content: center; }
+.engine-shell nav:not(.av-nav) .nav-logo,
+.engine-shell nav:not(.av-nav) .theme-toggle,
+.engine-shell .nav-drawer-foot .theme-toggle { display: none; }
+.engine-shell .ann { margin-top: 0; }
+.engine-shell .hero { padding-top: 3.5rem; }
+@media (max-width: 480px) { .engine-shell nav:not(.av-nav) { top: 62px; } }
