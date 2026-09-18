@@ -45,11 +45,19 @@
 }
 .av ::selection { background: var(--accent-soft); color: var(--t1); }
 .av h1, .av h2, .av h3, .av h4 { margin: 0; font-weight: 600; letter-spacing: -0.03em; line-height: 1.08; text-wrap: balance; color: var(--t1); }
-.av p { margin: 0; }
+/* :where() again, for the same reason as the link reset above. Written as `.av p`
+   this outranked every single class that spaces a paragraph, so the eyebrow, the
+   lede, the card tag and six more lost the margins they ask for and sat flush
+   against their headings. */
+:where(.av) p { margin: 0; }
 .av ul, .av ol { margin: 0; padding: 0; list-style: none; }
 .av img, .av video, .av svg { max-width: 100%; display: block; }
 .av strong { font-weight: 600; color: var(--t1); }
 .av-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+/* A heading for assistive technology only. A section whose cards open with h3
+   straight after the page's h1 skips a level, and a screen reader's outline loses
+   the section. This names it without drawing anything. */
+.av-sr { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 .av-skip { position: fixed; top: -100px; left: 16px; z-index: 200; padding: 12px 16px; background: var(--card); border: 1px solid var(--border-strong); border-radius: var(--av-radius-sm); }
 .av-skip:focus { top: 12px; }
 
@@ -195,7 +203,9 @@ a.av-card:hover, .av-card-link:hover { border-color: var(--accent); transform: t
 .av-frame::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; filter: blur(28px); opacity: 0.55; z-index: -1; }
 .av-frame > * { border-radius: var(--av-radius); overflow: hidden; background: var(--sunk); box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.6); }
 @keyframes av-spin { to { --av-angle: 380deg; } }
-.av-video { position: relative; aspect-ratio: 16 / 9; width: 100%; background: var(--sunk); }
+/* The ground is the footage's own dark, in both themes: every clip is dark, and a
+   light ground flashes white in the moment before a poster paints. */
+.av-video { position: relative; aspect-ratio: 16 / 9; width: 100%; background: #0f1216; }
 .av-video video, .av-video img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .av-video-caption { margin-top: 0.8rem; font-family: var(--font-mono); font-size: 0.72rem; color: var(--t3); letter-spacing: 0.04em; }
 .av-hero { padding: 4.5rem 0 4rem; position: relative; overflow: clip; }
@@ -229,6 +239,21 @@ a.av-card:hover, .av-card-link:hover { border-color: var(--accent); transform: t
 .av-tab:hover { color: var(--t1); }
 .av-tab[aria-selected='true'] { color: var(--sx-text, var(--accent)); border-bottom-color: var(--sx, var(--accent)); }
 .av-tabpanel { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 2.5rem; align-items: center; }
+/* The console tour stacks its panels in one cell instead of hiding them with
+   display:none, so every poster is already fetched and decoded when its tab is
+   chosen. The panel coming in sits on top and only its copy and its screen
+   fade. The ring and the glow are identical on every panel, so they swap
+   without a transition. The panel going out keeps its screen for the length of
+   the fade, so the page never shows through. See home/Tour.svelte. */
+.av-tourstack { display: grid; }
+.av-tourstack > .av-tabpanel { grid-area: 1 / 1; position: relative; z-index: 1; }
+.av-tourstack > .av-tabpanel > :first-child, .av-tourstack > .av-tabpanel .av-frame > * { animation: av-tour-in 0.28s var(--av-ease); }
+.av-tourstack > .is-off { z-index: 0; visibility: hidden; pointer-events: none; transition: visibility 0s linear 0.28s; }
+.av-tourstack > .is-off > :first-child { visibility: hidden; }
+.av-tourstack > .is-off > :first-child, .av-tourstack > .is-off .av-frame > * { animation: none; }
+.av-tourstack > .is-off .av-frame { background: none; animation: none; }
+.av-tourstack > .is-off .av-frame::before { content: none; }
+@keyframes av-tour-in { from { opacity: 0; } }
 /* A class that sets display would otherwise beat the hidden attribute, and every tab panel would render at once. */
 .av [hidden] { display: none !important; }
 .av-accordion { border-top: 1px solid var(--border); }
@@ -301,7 +326,7 @@ html:not([data-theme='light']) .av img.is-dark-invert { filter: grayscale(1) inv
 .av-layer.is-cyan { --sx: var(--ch-cyan); --sx-text: var(--ch-cyan-text); }
 .av-layer.is-green { --sx: var(--ch-green); --sx-text: var(--ch-green-text); }
 .av-diagram { margin-top: 2.5rem; background: var(--card); border: 1px solid var(--border); border-radius: var(--av-radius); padding: 1.6rem; box-shadow: var(--av-shadow); overflow-x: auto; }
-.av-diagram svg { width: 100%; height: auto; min-width: 640px; font-family: var(--font-mono); }
+.av-diagram svg { width: 100%; height: auto; min-width: 760px; font-family: var(--font-mono); }
 .av-diagram .lbl { fill: var(--t1); font-size: 13px; font-weight: 600; }
 .av-diagram .sub { fill: var(--t3); font-size: 11px; }
 .av-diagram .box { fill: var(--bg2); stroke: var(--border-strong); rx: 10; }
@@ -310,6 +335,8 @@ html:not([data-theme='light']) .av img.is-dark-invert { filter: grayscale(1) inv
 .av-diagram .box.green { stroke: var(--ch-green); }
 .av-diagram .box.gold { stroke: var(--ch-gold); }
 .av-diagram .wire { stroke: var(--border-strong); stroke-width: 2; fill: none; }
+.av-diagram .wire.oob, .av-diagram .fleet { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 4 5; fill: none; }
+.av-diagram .fleet { rx: 16; }
 .av-diagram .wire.hot { stroke: var(--accent); stroke-dasharray: 6 6; animation: av-dash 1.4s linear infinite; }
 @keyframes av-dash { to { stroke-dashoffset: -24; } }
 .av-kicker { display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); }
@@ -368,6 +395,10 @@ html:not([data-theme='light']) .av img.is-dark-invert { filter: grayscale(1) inv
   .av-section { padding: 4.5rem 0; }
   .av-grid-3, .av-layers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .av-split, .av-split-wide, .av-hero-grid, .av-tabpanel, .av-band-grid { grid-template-columns: minmax(0, 1fr); }
+  /* One column: the screen goes above the copy, so it sits in the same place on
+     every stacked panel and a tab change does not move it. */
+  .av-tourstack > .av-tabpanel { align-items: start; gap: 1.5rem; }
+  .av-tourstack > .av-tabpanel > .av-frame { order: -1; }
   .av-hero-grid { gap: 2.25rem; }
   .av-cols { grid-template-columns: minmax(0, 1fr); }
   .av-cols-mid span { transform: rotate(90deg); }

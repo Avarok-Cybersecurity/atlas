@@ -158,7 +158,7 @@ export const solutions = {
       'Grant budgets that cannot absorb metered token pricing'
     ],
     workloads: ['Evaluation and red teaming', 'Reproducing published results', 'Long running research jobs on owned GPUs'],
-    deployment: 'Community Edition on owned hardware, with the Enterprise control plane when the lab grows into a cluster. We publish how each setup was configured and what it measured.',
+    deployment: 'The open source engine on owned hardware, with the Enterprise control plane when the lab grows into a cluster. We publish how each setup was configured and what it measured.',
     proof: 'Every number on this site is generated from a record in the repository and comes with a reproduce command. The verification walkthrough shows every step.',
     cta: 'Set up a lab deployment'
   },
@@ -185,6 +185,6 @@ export const solutionCta = {
   eyebrow: 'Next step',
   title: 'See it against your own workload.',
   body: 'A side by side ladder on your hardware in week one. Your models, your criteria, your receipt.',
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'See pricing', href: routes.pricing }
 };

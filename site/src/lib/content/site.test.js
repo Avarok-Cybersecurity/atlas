@@ -66,9 +66,25 @@ test('every industry has a registered solution page', () => {
 
 test('every named route points at a page that exists', () => {
   const dead = Object.entries(routes)
+    .map(([name, href]) => [name, href.split('#')[0]])
     .filter(([, path]) => !registry.has(path) && !ENGINE_ROUTES.includes(path))
     .map(([name, path]) => `${name} -> ${path}`);
   expect(dead).toEqual([]);
+});
+
+// A route may name a place on a page, like the booking form at /demo#book. A
+// link to an anchor that does not exist does not fail, it lands at the top of
+// the page, which reads as a button that did nothing.
+test('every named route with an anchor points at an id on that page', () => {
+  const lost = Object.entries(routes)
+    .filter(([, href]) => href.includes('#'))
+    .filter(([, href]) => {
+      const [path, id] = href.split('#');
+      const file = join(ROUTES_DIR, '(marketing)', ...path.split('/').filter(Boolean), '+page.svelte');
+      return !existsSync(file) || !readFileSync(file, 'utf8').includes(`id="${id}"`);
+    })
+    .map(([name, href]) => `${name} -> ${href}`);
+  expect(lost).toEqual([]);
 });
 
 test('titles and descriptions are unique and sized for a results page', () => {
@@ -182,7 +198,30 @@ test('every installed still exists, has alt text, and sits on pages that exist',
 });
 
 test('the logo wall only shows files that ship', () => {
-  // `file` is the basename of an SVG under static/logos.
-  const missing = home.logoWall.items.filter((i) => i.file && !existsSync(join(STATIC_DIR, 'logos', `${i.file}.svg`))).map((i) => i.name);
+  // `file` and `fileDark` are basenames of an SVG under static/logos, `emblem` of a WebP.
+  const logo = (name, ext) => existsSync(join(STATIC_DIR, 'logos', `${name}.${ext}`));
+  const missing = [];
+  for (const i of home.logoWall.items) {
+    if (i.file && !logo(i.file, 'svg')) missing.push(`${i.name}: ${i.file}.svg`);
+    if (i.emblem && !logo(i.emblem, 'webp')) missing.push(`${i.name}: ${i.emblem}.webp`);
+  }
+  for (const p of home.logoWall.programs) {
+    for (const f of [p.file, p.fileDark]) if (f && !logo(f, 'svg')) missing.push(`${p.name}: ${f}.svg`);
+    if (p.src && !existsSync(join(STATIC_DIR, p.src))) missing.push(`${p.name}: ${p.src}`);
+  }
   expect(missing).toEqual([]);
+});
+
+test('every logo that ships has its source and terms written down', () => {
+  const readme = readFileSync(join(STATIC_DIR, 'logos', 'README.md'), 'utf8');
+  const undocumented = readdirSync(join(STATIC_DIR, 'logos')).filter((f) => f !== 'README.md' && !readme.includes(`\`${f}\``));
+  expect(undocumented).toEqual([]);
+});
+
+// An emblem entry must still make sense as plain type, because turning
+// `logoWall.emblems` off is the documented way back.
+test('every emblem on the wall has a plain text form', () => {
+  expect(typeof home.logoWall.emblems).toBe('boolean');
+  expect(home.logoWall.items.filter((i) => i.emblem && !(i.short || i.name))).toEqual([]);
+  expect(home.logoWall.note).toContain('does not imply or constitute DoD endorsement');
 });

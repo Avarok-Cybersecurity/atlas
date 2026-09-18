@@ -20,7 +20,8 @@ export const tiers = [
     name: 'Community Edition',
     price: '$0',
     per: 'AGPL-3.0, forever',
-    blurb: 'The engine, every recipe, one install command. For developers, labs and anyone running open models on hardware they own.',
+    badge: 'Waitlist open',
+    blurb: 'The engine and every recipe, free. For developers, labs and anyone running open models on hardware they own. Not released yet.',
     includes: [
       'Avarok Engine, full source',
       'Every model recipe in atlas-recipes',
@@ -28,7 +29,7 @@ export const tiers = [
       'LAN fleet manager, early access',
       'Community support in Discord'
     ],
-    cta: { text: 'Install in one command', href: routes.openSource },
+    cta: { text: 'Join the waitlist', href: routes.waitlist },
     tone: 'plain'
   },
   {
@@ -61,7 +62,7 @@ export const tiers = [
       'Named engineer and response SLA',
       'Hosted, your cloud, on premises or air gapped'
     ],
-    cta: { text: 'Book a demo', href: routes.demo },
+    cta: { text: 'Book a demo', href: routes.demoForm },
     tone: 'accent',
     proposed: true,
     featured: true
@@ -79,7 +80,7 @@ export const tiers = [
       'Forward deployed engineer for the four weeks',
       'Fee credited against the first year on conversion'
     ],
-    cta: { text: 'Scope a pilot', href: routes.demo },
+    cta: { text: 'Scope a pilot', href: routes.demoForm },
     tone: 'plain'
   }
 ];
@@ -136,6 +137,6 @@ export const pricingCta = {
   eyebrow: 'Next step',
   title: 'Get the sheet, or get the receipt.',
   body: `Email ${contacts.sales} for the full price sheet, or book a working session and we run the ladder on your workload.`,
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'Email sales', href: `mailto:${contacts.sales}?subject=Avarok%20pricing%20sheet` }
 };

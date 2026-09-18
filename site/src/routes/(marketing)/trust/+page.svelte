@@ -12,6 +12,7 @@
   <PageHero eyebrow={t.eyebrow} title={t.title} lede={t.lede} primary={{ text: t.disclosure.cta, href: t.disclosure.href, external: true }} secondary={{ text: 'Security overview', href: routes.security }} color="cyan" />
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">Posture by area</h2>
       <div class="av-grid av-grid-2 av-reveal">
         {#each t.sections as s, i}
           <div class="av-card av-card-accent av-sx-{['violet', 'cyan', 'green', 'gold'][i]}">
@@ -27,5 +28,5 @@
     </div>
   </section>
   <FaqList items={faqFor('security')} />
-  <CtaBand title="Send the security questionnaire." body="We answer it the way this page is written, control by control, with what we run and what we do not." primary={{ text: 'Book a security review', href: routes.demo }} secondary={{ text: 'Contact', href: routes.contact }} />
+  <CtaBand title="Send the security questionnaire." body="We answer it the way this page is written, control by control, with what we run and what we do not." primary={{ text: 'Book a security review', href: routes.demoForm }} secondary={{ text: 'Contact', href: routes.contact }} />
 </PageShell>

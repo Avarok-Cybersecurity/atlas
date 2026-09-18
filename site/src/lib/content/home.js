@@ -27,7 +27,7 @@ export const hero = {
   claim: 'Modeled at 70% or less of your current inference spend when the silicon is yours.',
   claimCta: 'Run the model',
   claimHref: `${routes.pricing}#payback`,
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'See how it works', href: routes.why },
   videoCaption: `${company.console}. Demo data, recorded from the product mockup.`,
   film: { text: 'Watch the one minute film', href: `${routes.demo}#film` },
@@ -36,27 +36,38 @@ export const hero = {
 
 export const logoWall = {
   label: 'Built by people who have stood up operations for',
-  // `file` names an SVG under static/logos. `kind: text` renders a set
-  // wordmark instead, which is how the two government entities appear:
-  // their official seals are restricted insignia and stay off the page.
+  // Official emblems of the two commands. Their artwork is a work of the United
+  // States government and in the public domain, but Department of Defense
+  // emblems are protected insignia: use that could suggest endorsement needs
+  // permission from the owning service, and the note under the wall carries the
+  // standard disclaimer for that reason. Set this to false and both entries
+  // render as set type again, with nothing else to change.
+  emblems: true,
+  // `file` names an SVG under static/logos, `emblem` a round WebP there.
+  // static/logos/README.md records the source and the terms of every one.
   items: [
-    { name: 'U.S. Cyber Command', kind: 'text' },
-    { name: 'Naval Special Warfare', kind: 'text' },
+    { name: 'United States Cyber Command', short: 'U.S. Cyber Command', emblem: 'uscybercom', lines: ['United States', 'Cyber Command'] },
+    { name: 'Naval Special Warfare Command', short: 'Naval Special Warfare', emblem: 'nswc', lines: ['Naval Special', 'Warfare Command'] },
     { name: 'Kraken', file: 'kraken' },
     { name: 'Beyond Gravity', file: 'beyondgravity' },
     { name: 'Synopsys', file: 'synopsys' },
     { name: 'Anaconda', file: 'anaconda' },
     { name: 'Google', file: 'google' }
   ],
-  note: 'Prior roles of the founding team and core contributors. Listed for background, not as customers or endorsements.',
+  note:
+    'Prior roles of the founding team and core contributors. Listed for background, not as customers or endorsements. The appearance of U.S. Department of Defense visual information does not imply or constitute DoD endorsement.',
   programsLabel: 'Programs and partners',
+  // `file` is the logo on the light theme and `fileDark` the one for the dark
+  // theme, when the logo is drawn in dark ink. `label` sets a name beside a mark
+  // that has no wordmark of its own. `height` in pixels, for a logo whose
+  // lettering is small inside its own box. The default is 26.
   programs: [
     { name: 'NVIDIA Inception', src: '/nvidia-inception.webp', href: links.inception, blurb: 'Program member. DGX Spark hardware provided.' },
-    { name: 'AMD', kind: 'text', blurb: 'Strix Halo hardware provided. MLPerf submitted on it.' },
-    { name: 'MLCommons', kind: 'text', href: links.mlcommons, blurb: 'Named contributor to the MLPerf edge agentic benchmark.' },
-    { name: 'Hugging Face', kind: 'text', href: links.transformersPr, blurb: 'Fused Qwen GDN kernel merged into Transformers.' },
-    { name: 'Qwen', kind: 'text', href: links.qwenAmbassador, blurb: 'Dev Ambassadors. A recipe for every release.' },
-    { name: 'SCALE by Spectral Compute', kind: 'text', href: links.scale, blurb: 'One CUDA source, NVIDIA and AMD.' }
+    { name: 'AMD', file: 'amd', fileDark: 'amd-dark', blurb: 'Strix Halo hardware provided. MLPerf submitted on it.' },
+    { name: 'MLCommons', file: 'mlcommons', fileDark: 'mlcommons-dark', height: 32, href: links.mlcommons, blurb: 'Named contributor to the MLPerf edge agentic benchmark.' },
+    { name: 'Hugging Face', file: 'huggingface', fileDark: 'huggingface-dark', height: 34, href: links.transformersPr, blurb: 'Fused Qwen GDN kernel merged into Transformers.' },
+    { name: 'Qwen', file: 'qwen', height: 30, href: links.qwenAmbassador, blurb: 'Dev Ambassadors. A recipe for every release.' },
+    { name: 'SCALE by Spectral Compute', file: 'scale', fileDark: 'scale-dark', label: 'SCALE by Spectral Compute', href: links.scale, blurb: 'One CUDA source, NVIDIA and AMD.' }
   ]
 };
 
@@ -195,18 +206,21 @@ export const tour = {
         'Data residency, model allowlists and redaction as policy. Every response traces to a signed recipe, a kernel build and a gate record.'
     }
   ],
-  cta: { text: 'See it on your workload', href: routes.demo }
+  cta: { text: 'See it on your workload', href: routes.demoForm }
 };
 
 export const recognition = {
   eyebrow: 'Recognition',
   title: 'Receipts, not adjectives.',
   lede: 'Every card links to the primary source.',
+  // `mark` is the issuer's own logo (see BrandMark.svelte and static/logos). `hue`
+  // is one of the four brand colours, by what the receipt is for: green for a
+  // verified result, gold for community, cyan for silicon, violet for the engine.
   cards: [
-    { org: 'MLCommons', date: 'July 2026', title: 'Named contributor to the MLPerf Inference v6.1 edge agentic benchmark', cta: 'Read the announcement', href: links.mlcommons },
-    { org: 'Hugging Face', date: 'July 2026', title: 'Fused Qwen Gated DeltaNet kernel merged into Transformers', cta: 'See the pull request', href: links.transformersPr },
-    { org: 'AMD', date: 'July 2026', title: 'Strix Halo hardware provided. MLPerf v6.1 submitted from the same CUDA source', cta: 'See the post', href: links.x },
-    { org: 'NVIDIA Inception', date: 'Member', title: 'Program member. DGX Spark hardware provided for the GB10 bring up', cta: 'About the program', href: links.inception }
+    { org: 'MLCommons', mark: { name: 'MLCommons', file: 'mlcommons', fileDark: 'mlcommons-dark', height: 32 }, hue: 'green', date: 'July 2026', title: 'Named contributor to the MLPerf Inference v6.1 edge agentic benchmark', cta: 'Read the announcement', href: links.mlcommons },
+    { org: 'Hugging Face', mark: { name: 'Hugging Face', file: 'huggingface', fileDark: 'huggingface-dark', height: 34 }, hue: 'gold', date: 'July 2026', title: 'Fused Qwen Gated DeltaNet kernel merged into Transformers', cta: 'See the pull request', href: links.transformersPr },
+    { org: 'AMD', mark: { name: 'AMD', file: 'amd', fileDark: 'amd-dark', height: 22 }, hue: 'cyan', date: 'July 2026', title: 'Strix Halo hardware provided. MLPerf v6.1 submitted from the same CUDA source', cta: 'See the post', href: links.x },
+    { org: 'NVIDIA Inception', mark: { name: 'NVIDIA Inception', src: '/nvidia-inception.webp', height: 34 }, hue: 'violet', date: 'Member', title: 'Program member. DGX Spark hardware provided for the GB10 bring up', cta: 'About the program', href: links.inception }
   ]
 };
 
@@ -291,7 +305,7 @@ export const cta = {
   eyebrow: 'Next step',
   title: 'Ready to get the most out of the datacenter you already paid for?',
   body: 'Book a working session. We run the ladder on your workload, on your hardware, and hand you the receipt.',
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'Run the payback model', href: `${routes.pricing}#payback` }
 };
 

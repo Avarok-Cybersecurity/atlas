@@ -10,6 +10,7 @@
   <PageHero eyebrow={r.eyebrow} title={r.title} lede={r.lede} color="gold" />
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">All resources</h2>
       <div class="av-grid av-grid-3 av-reveal">
         {#each r.cards as c, i}
           <a class="av-card av-card-accent av-sx-{['violet', 'cyan', 'green', 'gold'][i % 4]}" href={c.href} target={c.external ? '_blank' : undefined} rel={c.external ? 'noopener' : undefined}>

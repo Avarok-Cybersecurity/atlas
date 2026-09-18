@@ -26,6 +26,7 @@
   {#if page.features}
     <section class="av-section av-section-alt">
       <div class="av-container">
+        <h2 class="av-sr">What it does</h2>
         <div class="av-grid av-grid-3 av-reveal">
           {#each page.features as f, i}
             <div class="av-card av-sx-{['violet', 'cyan', 'green', 'gold'][i % 4]}">
@@ -79,5 +80,5 @@
 
   {#if page.faqTag}<FaqList items={faqFor(page.faqTag)} />{/if}
 
-  <CtaBand title={page.ctaTitle ?? 'See it against your own workload.'} body={page.ctaBody ?? 'A side by side ladder on your hardware inside 48 hours. Your models, your criteria, your receipt.'} primary={page.cta ?? { text: 'Book a demo', href: routes.demo }} secondary={page.cta2 ?? null} />
+  <CtaBand title={page.ctaTitle ?? 'See it against your own workload.'} body={page.ctaBody ?? 'A side by side ladder on your hardware in week one. Your models, your criteria, your receipt.'} primary={page.cta ?? { text: 'Book a demo', href: routes.demoForm }} secondary={page.cta2 ?? null} />
 </PageShell>

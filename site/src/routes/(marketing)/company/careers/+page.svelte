@@ -10,6 +10,7 @@
   <PageHero eyebrow={c.eyebrow} title={c.title} lede={c.lede} primary={c.cta} secondary={{ text: 'The repository', href: links.github, external: true }} color="gold" />
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">How we work</h2>
       <div class="av-grid av-grid-4 av-reveal">
         {#each c.benefits as b, i}<div class="av-card av-card-accent av-sx-{['violet', 'cyan', 'green', 'gold'][i]}"><h3>{b.title}</h3><p>{b.body}</p></div>{/each}
       </div>

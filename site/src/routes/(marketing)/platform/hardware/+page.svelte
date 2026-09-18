@@ -14,6 +14,7 @@
   {#snippet before()}
     <section class="av-section av-section-alt">
       <div class="av-container">
+        <h2 class="av-sr">Verified hardware</h2>
         <div class="av-grid av-grid-2 av-reveal">
           {#each p.verified as h}
             <div class="av-card av-card-accent av-sx-green">

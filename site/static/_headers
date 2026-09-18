@@ -67,6 +67,10 @@
   Cache-Control: public, max-age=300
 /demo.html
   Cache-Control: public, max-age=300
+/waitlist
+  Cache-Control: public, max-age=300
+/waitlist.html
+  Cache-Control: public, max-age=300
 /labs
   Cache-Control: public, max-age=300
 /labs.html

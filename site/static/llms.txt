@@ -37,6 +37,7 @@ domain are the same ones. The legal entity is Atlas Cybernetics Corp.
 - [SMB and edge · Avarok](https://atlascybernetics.ai/solutions/smb-edge): Avarok for SMB and edge. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
 - [Pricing · Avarok](https://atlascybernetics.ai/pricing): Priced against productive GPU capacity, not seats. Community, workstation, enterprise and proof of value, with a payback model you can edit.
 - [Book a demo · Avarok](https://atlascybernetics.ai/demo): A working session on your workload. The console on demo data, the published ladder, the payback model with your inputs, and a scoped proof of value.
+- [Community Edition waitlist · Avarok](https://atlascybernetics.ai/waitlist): The Community Edition of Avarok is not released yet. Leave an address and the hardware you run, and hear first when it is. The open source engine runs today.
 - [Resources · Avarok](https://atlascybernetics.ai/resources): Blog, documentation, product updates, benchmarks, open source, contributors, events and Avarok Labs.
 - [Product updates · Avarok](https://atlascybernetics.ai/resources/updates): What shipped, rendered from the repository changelog on every build.
 - [Events · Avarok](https://atlascybernetics.ai/resources/events): Where to meet the Avarok team, in person and online.

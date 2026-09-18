@@ -113,7 +113,7 @@
   </section>
 
   <FaqList items={faqFor('benchmarks')} />
-  <CtaBand title="Run the ladder on your workload." body="A side by side against your current engine on your hardware inside 48 hours, with the campaign log to match." primary={{ text: 'Book a demo', href: routes.demo }} secondary={{ text: 'Verification walkthrough', href: routes.diligence }} />
+  <CtaBand title="Run the ladder on your workload." body="A side by side against your current engine on your hardware inside 48 hours, with the campaign log to match." primary={{ text: 'Book a demo', href: routes.demoForm }} secondary={{ text: 'Verification walkthrough', href: routes.diligence }} />
 </PageShell>
 
 {#if selected}

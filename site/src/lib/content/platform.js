@@ -10,7 +10,7 @@ export const platformOverview = {
   title: 'One platform for the whole inference lifecycle, from the kernel to the invoice.',
   lede:
     'Avarok is three layers that share one request path. The engine makes the GPUs faster, the control plane keeps the fleet honest, and the economics layer turns what they report into numbers finance can sign.',
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'Watch the console tour', href: `${routes.home}#tour` },
   tiles: [
     { name: company.engine, tag: 'Inference layer', color: 'violet', body: 'Compiled per hardware, model and quantization. More tokens per GPU, verified on the box before it ships.', href: routes.engine },
@@ -57,7 +57,7 @@ export const enginePage = {
     href: links.discord
   },
   faqTag: 'hardware',
-  cta: { text: 'Install the Community Edition', href: routes.openSource },
+  cta: { text: 'Join the Community Edition waitlist', href: routes.waitlist },
   cta2: { text: 'Read the ladder', href: routes.benchmarks }
 };
 
@@ -84,7 +84,7 @@ export const controlPage = {
   status: 'The single operator fleet manager is live at /control and in active development. Multi tenant control plane, RBAC and SLA enforcement are the next milestones and this page will say so until they ship.',
   faqTag: 'deploy',
   cta: { text: 'Open the live control plane', href: routes.controlPlane },
-  cta2: { text: 'Book a demo', href: routes.demo }
+  cta2: { text: 'Book a demo', href: routes.demoForm }
 };
 
 export const economicsPage = {
@@ -114,7 +114,7 @@ export const economicsPage = {
   ],
   faqTag: 'pricing',
   cta: { text: 'Run the payback model', href: `${routes.pricing}#payback` },
-  cta2: { text: 'Book a demo', href: routes.demo }
+  cta2: { text: 'Book a demo', href: routes.demoForm }
 };
 
 export const securityPage = {
@@ -140,7 +140,7 @@ export const securityPage = {
   disclosure: { text: 'Read the security policy and disclosure process', href: links.securityPolicy },
   faqTag: 'security',
   cta: { text: 'Visit the trust center', href: routes.trust },
-  cta2: { text: 'Book a security review', href: routes.demo }
+  cta2: { text: 'Book a security review', href: routes.demoForm }
 };
 
 export const deploymentPage = {
@@ -180,7 +180,7 @@ export const deploymentPage = {
     ]
   },
   faqTag: 'deploy',
-  cta: { text: 'Talk through your deployment', href: routes.demo },
+  cta: { text: 'Talk through your deployment', href: routes.demoForm },
   cta2: { text: 'Read the deployment guide', href: links.guide, external: true }
 };
 

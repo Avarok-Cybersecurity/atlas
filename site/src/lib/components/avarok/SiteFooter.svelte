@@ -12,7 +12,7 @@
       <p class="av-footer-lic">{footer.license}</p>
       <div class="av-footer-social">
         <a href={links.github} aria-label="Avarok on GitHub" target="_blank" rel="noopener">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.2c-3.3.7-4-1.4-4-1.4-.6-1.4-1.4-1.8-1.4-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1.1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.3 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>
         </a>
         <a href={links.discord} aria-label="Avarok on Discord" target="_blank" rel="noopener">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.4a13.3 13.3 0 0 1 4.5 2.3 15.9 15.9 0 0 0-15.4 0A13.3 13.3 0 0 1 8.8 3.4L8.6 3a19.8 19.8 0 0 0-4.9 1.4C.6 9 0 13.4.3 17.8a20 20 0 0 0 6 3l1.3-2a12.5 12.5 0 0 1-2-1l.5-.4a14.2 14.2 0 0 0 11.8 0l.5.4a12.5 12.5 0 0 1-2 1l1.3 2a20 20 0 0 0 6-3c.4-5-.7-9.4-3.4-13.4ZM8.5 15.2c-1.2 0-2.1-1.1-2.1-2.4s1-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4Zm7 0c-1.2 0-2.1-1.1-2.1-2.4s1-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4Z"/></svg>
@@ -46,7 +46,10 @@
 <style>
   .av-footer { border-top: 1px solid var(--border); background: var(--bg2); font-family: var(--font-sans); color: var(--t2); }
   .av-footer-in { max-width: 1180px; margin: 0 auto; padding: 3.5rem 24px 2.5rem; display: grid; grid-template-columns: 1.6fr repeat(4, 1fr); gap: 2rem; }
-  .av-footer-brand a:first-child { display: inline-block; text-decoration: none; color: inherit; }
+  /* The child combinator matters. Without it this also matched the first social
+     link, turned its centring grid into an inline block, and left the GitHub mark
+     ten pixels above its neighbours. */
+  .av-footer-brand > a:first-child { display: inline-block; text-decoration: none; color: inherit; }
   .av-footer-brand :global(.logo) { margin: 0; }
   .av-footer-slogan { margin: 1rem 0 0.4rem; font-size: 0.95rem; color: var(--t1); font-weight: 500; max-width: 26ch; }
   .av-footer-lic { margin: 0; font-size: 0.78rem; color: var(--t3); max-width: 32ch; line-height: 1.5; }

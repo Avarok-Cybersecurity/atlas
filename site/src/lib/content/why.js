@@ -11,7 +11,7 @@ export const whyHero = {
   title: 'You invested in the datacenter. Now get the most out of it.',
   lede:
     'Avarok models your inference economics first, then runs, governs and measures every workload against that model directly. A fundamentally different approach to getting more inference, and more accountability, from silicon you already own.',
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'Watch the console', href: `${routes.home}#tour` },
   pillars: [
     { name: 'Speed', color: 'violet', body: 'Compiled per hardware, model and quantization. More tokens per GPU, and the curve keeps climbing where agent fleets run.' },
@@ -117,6 +117,6 @@ export const pov = {
     'Your hardware, your models, your criteria',
     'We supply five criteria if you do not have your own'
   ],
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'Read the deployment guide', href: links.guide, external: true }
 };

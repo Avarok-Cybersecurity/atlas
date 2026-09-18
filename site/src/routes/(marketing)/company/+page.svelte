@@ -13,6 +13,7 @@
 
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">How it started</h2>
       <div class="av-split av-split-wide" style="align-items:start">
         <div class="av-reveal av-yourpoint">
           <p class="av-eyebrow">The exchange</p>

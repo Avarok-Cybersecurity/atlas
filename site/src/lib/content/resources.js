@@ -14,7 +14,7 @@ export const resourcesHub = {
     { title: 'Documentation', body: 'The Avarok book. Install, recipes, deployment, the control plane and the gates, with an llms.txt for answer engines.', href: links.docs, external: true, cta: 'Open the book' },
     { title: 'Product updates', body: 'What shipped, what changed and what it does not change, rendered from the repository changelog on every build.', href: routes.updates, cta: 'See what shipped' },
     { title: 'Benchmarks', body: 'The concurrency ladder and every gate record, generated from the repository. Reproduce any of them with the command on the page.', href: routes.benchmarks, cta: 'See the numbers' },
-    { title: 'Open source', body: 'The Community Edition. One install command, every recipe, the deployment guide and the Discord where the work happens.', href: routes.openSource, cta: 'Install the engine' },
+    { title: 'Open source', body: 'The engine, under AGPL-3.0. One install command, every recipe, the deployment guide and the Discord where the work happens.', href: routes.openSource, cta: 'Install the engine' },
     { title: 'Contributors', body: 'Everyone who has landed code in the repository, called out by name, with the core team’s roles.', href: routes.contributors, cta: 'Meet the contributors' },
     { title: 'Events', body: 'Where to meet the team, in person and online.', href: routes.events, cta: 'Find us' },
     { title: 'Avarok Labs', body: 'The research arm. Kernels, compression, speculative decoding, protocols and the day zero model bring ups.', href: routes.labs, cta: 'See the research' },
@@ -42,7 +42,7 @@ export const events = {
       title: 'Working session, Avarok Console walkthrough',
       place: 'Online, by request',
       body: 'A thirty minute walkthrough of the console on demo data, the published ladder, and the payback model with your inputs.',
-      href: routes.demo,
+      href: routes.demoForm,
       cta: 'Book a session'
     },
     {
@@ -114,7 +114,7 @@ export const labs = {
 export const openSourceCallout = {
   eyebrow: 'Open source',
   title: 'The engine is free. The platform pays for the people who keep it that way.',
-  body: 'Install the Community Edition in one command, run any recipe, and bring your machine to the test fleet. The Enterprise Edition adds the control plane, the economics layer and a named engineer.',
+  body: 'Install the engine in one command, run any recipe, and bring your machine to the test fleet. The Enterprise Edition adds the control plane, the economics layer and a named engineer.',
   primary: { text: 'Install the engine', href: routes.openSource },
   secondary: { text: 'Star on GitHub', href: links.github, external: true }
 };

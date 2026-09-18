@@ -8,6 +8,7 @@
   {#snippet before()}
     <section class="av-section av-section-tight">
       <div class="av-container">
+        <h2 class="av-sr">What the ledger joins</h2>
         <div class="av-cols av-reveal">
           <div class="av-col">
             <h3>{p.columns.left.title}</h3>

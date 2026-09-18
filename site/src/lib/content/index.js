@@ -29,6 +29,7 @@ export const pages = [
   ...industries.map((i) => ({ path: solutionHref(i.slug), title: T(i.name), description: `Avarok for ${lower(i.name)}. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.`, priority: 0.7 })),
   { path: routes.pricing, title: T('Pricing'), description: 'Priced against productive GPU capacity, not seats. Community, workstation, enterprise and proof of value, with a payback model you can edit.', faq: 'pricing', priority: 0.9 },
   { path: routes.demo, title: T('Book a demo'), description: 'A working session on your workload. The console on demo data, the published ladder, the payback model with your inputs, and a scoped proof of value.', priority: 0.9 },
+  { path: routes.waitlist, title: T('Community Edition waitlist'), description: 'The Community Edition of Avarok is not released yet. Leave an address and the hardware you run, and hear first when it is. The open source engine runs today.', priority: 0.6 },
   { path: routes.broll, title: T('B-roll'), description: 'Procedural ambient loops drawn from the brand palette for the product videos. The media pipeline records this page. Nothing links here.', priority: 0.1, noindex: true, sitemap: false },
   { path: routes.resources, title: T('Resources'), description: 'Blog, documentation, product updates, benchmarks, open source, contributors, events and Avarok Labs.', priority: 0.7 },
   { path: routes.updates, title: T('Product updates'), description: 'What shipped, rendered from the repository changelog on every build.', priority: 0.7 },

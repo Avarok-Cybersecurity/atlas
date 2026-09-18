@@ -8,6 +8,7 @@
   {#snippet before()}
     <section class="av-section av-section-alt">
       <div class="av-container">
+        <h2 class="av-sr">Deployment models</h2>
         <div class="av-grid av-grid-3 av-reveal">
           {#each p.models as m, i}
             <div class="av-card av-card-accent av-sx-{['violet', 'cyan', 'green', 'gold'][i % 4]}">

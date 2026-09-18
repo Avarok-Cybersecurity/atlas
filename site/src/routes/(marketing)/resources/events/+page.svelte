@@ -13,6 +13,7 @@
   <PageHero eyebrow={e.eyebrow} title={e.title} lede={e.lede} primary={{ text: 'Join the Discord', href: links.discord, external: true }} color="gold" />
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">Where to find us</h2>
       <div class="av-grid av-grid-3 av-reveal">
         {#each e.items as it, i}
           <div class="av-card av-card-accent av-sx-{['gold', 'violet', 'cyan'][i % 3]}">

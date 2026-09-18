@@ -12,6 +12,7 @@
 
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">The products</h2>
       <div class="av-grid av-grid-3 av-reveal">
         {#each p.tiles as t}
           <a class="av-card av-card-accent av-sx-{t.color}" href={t.href}>
@@ -46,5 +47,5 @@
     </div>
   </section>
 
-  <CtaBand title="See the platform on your workload." body="A working session with the console, the ladder and the payback model, on demo data or yours." primary={{ text: 'Book a demo', href: routes.demo }} secondary={{ text: 'Run the payback model', href: `${routes.pricing}#payback` }} />
+  <CtaBand title="See the platform on your workload." body="A working session with the console, the ladder and the payback model, on demo data or yours." primary={{ text: 'Book a demo', href: routes.demoForm }} secondary={{ text: 'Run the payback model', href: `${routes.pricing}#payback` }} />
 </PageShell>

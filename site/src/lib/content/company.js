@@ -141,12 +141,54 @@ export const demoPage = {
     ],
     submit: 'Request a working session',
     fallbackNote: 'Submitting opens a prefilled email to the founding team. Nothing is stored on this site.',
-    thanks: 'Thank you. A founder will reply within one business day.'
+    thanks: 'Thank you. A founder will reply.'
   },
   aside: {
     title: 'Prefer email',
     body: `Write to ${contacts.sales} with the hardware and the workload. Same people, same answer.`,
     discord: 'Or find us in Discord, we are in there every day.'
+  }
+};
+
+// /waitlist. The Community Edition is announced, not released, so every button
+// that used to say "install" comes here. The engine underneath it IS released
+// and open source, and the page says so, because a developer who wants it today
+// should not be told to wait. When the edition ships: point `routes.waitlist`
+// users back at the install page and delete this block and its route.
+export const waitlistPage = {
+  eyebrow: 'Community Edition',
+  title: 'The Community Edition is not out yet. Be first when it is.',
+  lede:
+    'The Community Edition is the free edition of Avarok, under AGPL-3.0. Leave an address and the hardware you run, and we will write to you when it is released.',
+  bullets: [
+    'One note when the Community Edition is released',
+    'Tell us the hardware you run, so we know what people are waiting on',
+    'Need it for a business today? A working session is the faster road'
+  ],
+  today: {
+    title: 'Want to run something today',
+    body: 'The engine underneath is open source and running now. The developer page has the install command, the recipes and the numbers.',
+    cta: { text: 'Go to the developer page', href: routes.openSource },
+    discord: 'The people building it are in Discord every day.'
+  },
+  form: {
+    title: 'Join the waitlist',
+    fields: [
+      { name: 'email', label: 'Email', type: 'email', required: true, autocomplete: 'email' },
+      { name: 'name', label: 'Your name', type: 'text', autocomplete: 'name' },
+      { name: 'hardware', label: 'Hardware you would run it on', type: 'text', placeholder: 'e.g. DGX Spark, Strix Halo, 2 RTX 5090, 8 H100' },
+      { name: 'use', label: 'You are', type: 'select', options: ['A developer', 'A research lab', 'A small business', 'An enterprise team', 'Something else'] },
+      { name: 'notes', label: 'What you would run', type: 'textarea', placeholder: 'The models, the workload, anything we should know' }
+    ],
+    submit: 'Join the waitlist',
+    fallbackNote: 'Submitting opens a prefilled email to the team. Nothing is stored on this site.',
+    thanks: 'You are on the list. We will write when the Community Edition is released.'
+  },
+  cta: {
+    title: 'Running inference for a business?',
+    body: 'The Enterprise Edition is available now, with the control plane, the economics layer and a named engineer.',
+    primary: { text: 'Book a demo', href: routes.demoForm },
+    secondary: { text: 'See pricing', href: routes.pricing }
   }
 };
 
@@ -204,7 +246,7 @@ export const companyCta = {
   eyebrow: 'Next step',
   title: 'Come build with us, or come buy from us.',
   body: 'Both conversations start the same way. Tell us what you run.',
-  primary: { text: 'Book a demo', href: routes.demo },
+  primary: { text: 'Book a demo', href: routes.demoForm },
   secondary: { text: 'The first hires', href: routes.careers }
 };
 

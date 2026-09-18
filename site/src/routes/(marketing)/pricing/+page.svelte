@@ -19,7 +19,7 @@
       <div class="av-grid av-grid-4 av-reveal av-tiers">
         {#each tiers as t}
           <div class="av-card av-tier" class:is-featured={t.featured}>
-            <p class="av-card-tag">{#if t.featured}<span class="av-chip av-chip-violet av-tier-flag">Most fleets start here</span><br />{/if}{t.name}{#if t.proposed}<span class="av-evidence is-proposed">PROPOSED</span>{/if}</p>
+            <p class="av-card-tag">{#if t.featured}<span class="av-chip av-chip-violet av-tier-flag">Most fleets start here</span><br />{/if}{#if t.badge}<span class="av-chip av-chip-gold av-tier-flag">{t.badge}</span><br />{/if}{t.name}{#if t.proposed}<span class="av-evidence is-proposed">PROPOSED</span>{/if}</p>
             <div class="av-tier-price"><span class="av-num av-num-plain">{t.price}</span><span class="av-small">{t.per}</span></div>
             <p>{t.blurb}</p>
             <ul class="av-list-check av-sx-{t.featured ? 'violet' : 'green'}" style="margin-top:1rem">{#each t.includes as i}<li>{i}</li>{/each}</ul>

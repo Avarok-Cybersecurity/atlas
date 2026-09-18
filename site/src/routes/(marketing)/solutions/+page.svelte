@@ -10,6 +10,7 @@
   <PageHero eyebrow={s.eyebrow} title={s.title} lede={s.lede} color="cyan" />
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">Industries</h2>
       <p class="av-eyebrow av-reveal">By industry</p>
       <div class="av-grid av-grid-3 av-reveal">
         {#each industries as i, k}

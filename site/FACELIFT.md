@@ -80,8 +80,12 @@ a group's CSS to that group's pages.
 | A price, a tier, a feature list | `src/lib/content/pricing.js` |
 | The payback model's defaults | `FLEET_DEFAULTS` and `API_DEFAULTS` in `src/lib/economics.js` |
 | A contact address | `contacts` in `src/lib/content/brand.js` |
-| Where the demo form posts | `formEndpoint` in `src/lib/content/brand.js`. Empty means it composes an email |
-| The team's prior employers | `logoWall` in `src/lib/content/home.js`, SVGs in `static/logos/` |
+| Where the forms post | `formEndpoint` in `src/lib/content/brand.js`. Empty means they compose an email. The demo form and the waitlist form are one component, `DemoForm.svelte`, and each post carries a `source` |
+| A form's fields or wording | `demoPage.form` or `waitlistPage.form` in `src/lib/content/company.js` |
+| The team's prior employers | `logoWall` in `src/lib/content/home.js`, files in `static/logos/` |
+| Emblems or plain type for the two commands | `logoWall.emblems` in `src/lib/content/home.js`. One boolean |
+| A partner's logo | `logoWall.programs` and `recognition.cards` in `home.js`. `static/logos/README.md` says how to add a file |
+| Releasing the Community Edition | Point the buttons that use `routes.waitlist` back at the install page, then delete `waitlistPage` and `src/routes/(marketing)/waitlist/` |
 | A product name | `company` in `src/lib/content/brand.js`. Copy uses `{engine}` and friends |
 | An industry | `industries` in `brand.js`, and its entry in `solutions.js` |
 | A video | `node scripts/media/install.mjs --from <file> --as <slot>` |
@@ -112,8 +116,24 @@ been approved as a public list.
 
 **No customer logos.** The logo wall shows where the team worked before, under
 a line that says so, with a note that these are not customers or endorsements.
-U.S. Cyber Command and Naval Special Warfare appear as text because their
-insignia are restricted. `static/logos/README.md` records each mark's source.
+`static/logos/README.md` records each mark's source and terms, and a test fails
+if a file there is not written down. United States Cyber Command and Naval
+Special Warfare Command appear with their official emblems. Those are public
+domain as artwork and protected as insignia, which is a different thing: see
+open question 14 before launch. `logoWall.emblems = false` sets both back in
+plain type.
+
+**A button goes where it says.** Calls to action that promise a demo land on
+the booking form, `/demo#book`, with the caret in the first field. Only the
+header button and the footer link open the top of that page. A route may
+carry an anchor, and `site.test.js` checks the id exists, because a link to a
+missing anchor does not fail, it lands at the top and reads as a dead button.
+
+**Nothing is offered that is not released.** The Community Edition is not out,
+so its buttons say waitlist and go to `/waitlist`. The engine under it is
+released and open source, and the waitlist page says so and points at the
+developer page, because a developer who wants it today should not be told to
+wait. A browser test fails if any page offers to install the edition.
 
 **If the site says it about the company, a source says it.** Where the
 company is based, how it works, what it pays, when something happens, how fast
@@ -212,12 +232,33 @@ hosted, because the brand kit's slide and letterhead templates use them.
   open. Both were measured against main's build before and after.
 - **A mouse click never closes a hover opened menu.** People hover, then click.
   A plain toggle shut the menu under their cursor. Keyboard and touch toggle.
+- **The tour's panels are stacked, not hidden.** With `display: none` a tab's
+  poster was fetched on the click, and the screen sat empty for a second. The
+  panels now share one grid cell and the ones not chosen are
+  `visibility: hidden`, so every poster is decoded before the first click. They
+  are released only after the page is idle and the tour is near, so the first
+  paint pays nothing. Only the chosen tab's video plays. A tab's video starts
+  loading when the pointer reaches its tab. `home/Tour.svelte` has the detail.
+- **Clips are started by script, not by `autoplay`.** `VideoClip.svelte` mounts
+  a video once it is near the screen and the page is idle, then calls `play()`.
+  The first version waited for `canplay` with `preload="none"`, which never
+  fires, so nothing played. A browser test now watches a clip's clock advance.
+- **Element resets use `:where()`.** `.av p { margin: 0 }` outranks any single
+  class, so for a while the eyebrow, the lede and seven other classes lost the
+  margins they ask for. The link reset had the same fault earlier. A reset in
+  `avarok.css` must never carry the weight of a class.
+- **The architecture diagram is sized from its text.** Plex Mono is 0.6 em a
+  character, so a box's width is arithmetic. The comment in `ArchDiagram.svelte`
+  has the rule, and a browser test measures every label against its box.
 
 ## Open questions for the team
 
 1. **Prices.** Are the proposed list prices approved to be public?
-2. **Sales contact.** The site uses Kyle's direct address. A `sales@`
-   alias would keep a personal inbox off a public page. One line in `brand.js`.
+2. **Sales contact.** The site uses Kyle's direct address at
+   `atlascybernetics.ai`. A `sales@` alias would keep a personal inbox off a
+   public page. One line in `brand.js`. The security address is still the one
+   `SECURITY.md` publishes, on purpose: change both together, and only to a
+   mailbox that exists.
 3. **Form endpoint.** Do we want demo requests in a CRM? Then set `formEndpoint`.
 4. **The legal name.** The corporate lockup sets the wordmark over "Cybernetics
    Corp", so it now reads "Avarok Cybernetics Corp", which is not the entity's
@@ -249,6 +290,18 @@ hosted, because the brand kit's slide and letterhead templates use them.
    file. Worth one look on the preview deployment.
 13. **Domain.** `atlascybernetics.ai` is unchanged. `SITE` in `brand.js` is the
     one constant to move when DNS does.
+14. **The two command emblems.** They are on the wall because they were asked
+    for. Department of Defense emblems may not be used in a way that suggests
+    endorsement, and a company normally needs the owning service's permission
+    to show one. The wall carries the Department's standard disclaimer, which
+    is not permission. Before launch, get it in writing or set
+    `logoWall.emblems` to `false`. `static/logos/README.md` has the detail.
+15. **Where waitlist entries go.** They go to the sales address, like demo
+    requests. It is the `to` prop on the form in
+    `src/routes/(marketing)/waitlist/+page.svelte`.
+16. **What the Community Edition will contain.** The waitlist page says only
+    that it is the free edition under AGPL-3.0 and is not released. The pricing
+    tier still lists what is in it. The team should confirm that list.
 
 ## How to throw it away
 

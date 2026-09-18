@@ -55,6 +55,9 @@
   .av-page-hero-in { max-width: 820px; }
   .has-art .av-page-hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: 3rem; align-items: center; }
   .av-page-hero-art img { display: block; width: 100%; height: auto; }
+  /* The hero ground is tinted, and the quiet caption grey measured 4.46:1 on the
+     violet tint, under the 4.5 it needs. One step darker clears it on every tint. */
+  .av-page-hero-art :global(.av-video-caption) { color: var(--t2); }
   @media (max-width: 1000px) {
     .has-art .av-page-hero-grid { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
   }

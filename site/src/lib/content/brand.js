@@ -35,11 +35,19 @@ export const company = {
   x: '@AtlasInferenceX'
 };
 
+// For a local demo of both apps. The live blog deploys from main, so until this
+// branch merges it shows main's header. Run the blog beside the site and point
+// the site's Blog links at it:
+//   (in blog/)  bun run dev -- --port 5174
+//   (in site/)  VITE_BLOG_ORIGIN=http://127.0.0.1:5174 bun x --bun vite dev
+// Unset, which is every real build, the links go to the live blog.
+const localBlog = (import.meta.env ?? {}).VITE_BLOG_ORIGIN;
+
 export const links = {
   github: 'https://github.com/Avarok-Cybersecurity/atlas',
   recipes: 'https://github.com/Avarok-Cybersecurity/atlas-recipes',
   discord: 'https://discord.gg/RQcGakU2jW',
-  blog: 'https://blog.atlascybernetics.ai',
+  blog: localBlog || 'https://blog.atlascybernetics.ai',
   docs: 'https://docs.atlascybernetics.ai',
   x: 'https://x.com/AtlasInferenceX',
   guide: 'https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md',
@@ -63,11 +71,14 @@ export const links = {
 // or HubSpot endpoint that accepts JSON POST and the same forms submit there.
 export const formEndpoint = '';
 
+// Company mail is @atlascybernetics.ai. The security address is the exception
+// on purpose: it is the one SECURITY.md publishes, and a vulnerability report
+// must never go to a mailbox nobody set up. Change both together.
 export const contacts = {
-  sales: 'kyle@atlasinference.io',
+  sales: 'kyle@atlascybernetics.ai',
   technical: 'thomas@atlascybernetics.ai',
   security: 'security@atlas.net',
-  press: 'kyle@atlasinference.io'
+  press: 'kyle@atlascybernetics.ai'
 };
 
 // Routes. Every internal href on the site comes from here so a rename is one
@@ -86,6 +97,10 @@ export const routes = {
   solutions: '/solutions',
   pricing: '/pricing',
   demo: '/demo',
+  // The booking form itself. In-page calls to action land here, on the form,
+  // with the first field focused. The header button keeps the top of the page.
+  demoForm: '/demo#book',
+  waitlist: '/waitlist',
   broll: '/broll',
   resources: '/resources',
   updates: '/resources/updates',
@@ -178,7 +193,8 @@ export const nav = {
         {
           heading: 'Build',
           items: [
-            { text: 'Open source', blurb: 'The Community Edition, install in one command', href: routes.openSource },
+            { text: 'Open source', blurb: 'The engine, AGPL-3.0, running today', href: routes.openSource },
+            { text: 'Community Edition', blurb: 'Not released yet. Join the waitlist', href: routes.waitlist },
             { text: 'Contributors', blurb: 'Everyone who has landed code, called out by name', href: routes.contributors },
             { text: 'Avarok Labs', blurb: 'The research arm and what it is working on', href: routes.labs },
             { text: 'Verification walkthrough', blurb: 'Reproduce the ladder yourself, step by step', href: routes.diligence }
@@ -228,6 +244,7 @@ export const footer = {
         { text: 'Blog', href: links.blog, external: true },
         { text: 'Documentation', href: links.docs, external: true },
         { text: 'Open source', href: routes.openSource },
+        { text: 'Community Edition waitlist', href: routes.waitlist },
         { text: 'Contributors', href: routes.contributors },
         { text: 'Product updates', href: routes.updates },
         { text: 'Avarok Labs', href: routes.labs },

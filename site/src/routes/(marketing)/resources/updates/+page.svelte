@@ -11,6 +11,7 @@
   <PageHero eyebrow={u.eyebrow} title={u.title} lede={u.lede} primary={{ text: u.more.text, href: u.more.href, external: true }} color="green" />
   <section class="av-section av-section-alt">
     <div class="av-container av-narrow">
+      <h2 class="av-sr">Releases</h2>
       <p class="av-kicker av-reveal" style="margin-bottom:1.5rem"><span class="av-dot"></span> Generated from CHANGELOG.md at {changelog.generated_sha} · {changelog.generated_date}</p>
       <div class="av-updates">
         {#each changelog.releases as rel}
@@ -32,5 +33,5 @@
       </div>
     </div>
   </section>
-  <CtaBand title="Want the next one on your fleet?" body="Every release passes the serve matrix before it ships. Enterprise customers pin a channel and get the receipt with the upgrade." primary={{ text: 'Book a demo', href: routes.demo }} secondary={{ text: 'Subscribe on GitHub', href: `${links.github}/releases`, external: true }} />
+  <CtaBand title="Want the next one on your fleet?" body="Every release passes the serve matrix before it ships. Enterprise customers pin a channel and get the receipt with the upgrade." primary={{ text: 'Book a demo', href: routes.demoForm }} secondary={{ text: 'Subscribe on GitHub', href: `${links.github}/releases`, external: true }} />
 </PageShell>

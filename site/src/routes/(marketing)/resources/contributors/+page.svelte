@@ -17,6 +17,7 @@
   </PageHero>
   <section class="av-section av-section-alt">
     <div class="av-container">
+      <h2 class="av-sr">Core team and contributors</h2>
       <p class="av-eyebrow av-reveal">Core team</p>
       <div class="av-people av-reveal">
         {#each core as p}
