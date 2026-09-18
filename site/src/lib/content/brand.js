@@ -29,7 +29,9 @@ export const company = {
   category: 'The inference economics platform',
   tagline: 'Same silicon. Smarter inference. Stronger scalability.',
   short: 'Avarok is the inference economics platform for GPUs you already own.',
-  founded: 'Founded 2026. Remote first, with roots in Austin, Texas.',
+  // Only what is sourced. The engine started in January 2026. Where the company
+  // is based and how it works are the company's to state, not the site's to guess.
+  founded: 'Started in 2026.',
   x: '@AtlasInferenceX'
 };
 

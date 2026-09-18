@@ -115,6 +115,17 @@ a line that says so, with a note that these are not customers or endorsements.
 U.S. Cyber Command and Naval Special Warfare appear as text because their
 insignia are restricted. `static/logos/README.md` records each mark's source.
 
+**If the site says it about the company, a source says it.** Where the
+company is based, how it works, what it pays, when something happens, how fast
+it delivers: none of that is the site's to guess. A first draft of this
+branch had a home city, a remote first policy, founding equity, hardware on
+your desk, a results date MLCommons has not set, and a 48 hour delivery
+promise. None had a source and all were removed. The careers page now states
+only how the work is done, which the repository shows, and role locations
+read "by agreement". Contributor roles are the ones people state about
+themselves on the blog. Delivery timing uses the brief's own frame: week one,
+months one to six, at renewal.
+
 **Attributed quotes are verbatim.** Two community quotes use the engine's old
 name. They stay as written, with a note under them. A quote is never edited to
 follow a rebrand.

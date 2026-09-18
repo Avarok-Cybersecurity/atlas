@@ -71,7 +71,7 @@ export const tiers = [
     name: 'Proof of value',
     price: 'Fixed fee',
     per: 'four weeks, credited on conversion',
-    blurb: 'One model, one hardware target, one workload. A side by side ladder inside 48 hours and a receipt in dollars per workload at the end.',
+    blurb: 'One model, one hardware target, one workload. A side by side ladder in week one and a receipt in dollars per workload at the end.',
     includes: [
       'Scoped success criteria, yours or ours',
       'Side by side against your current engine',

@@ -20,7 +20,7 @@ export const faq = [
   {
     tags: ['home', 'why', 'deploy'],
     q: 'How long does a deployment take?',
-    a: 'One binary per node and one signed recipe per model. A single box runs in minutes from one install command. A fleet pilot has a side by side ladder against your current engine inside 48 hours. Production cutover is workload by workload over the following weeks, at your pace.'
+    a: 'One binary per node and one signed recipe per model. A single box runs in minutes from one install command. A fleet pilot has a side by side ladder against your current engine in week one. Production cutover is workload by workload over the following weeks, at your pace.'
   },
   {
     tags: ['home', 'why', 'security'],

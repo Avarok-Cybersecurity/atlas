@@ -33,11 +33,12 @@ export const events = {
   eyebrow: 'Events',
   title: 'Where to meet the team.',
   lede: 'In person when the calendar fills, in Discord every day. Add an event here and it appears on the site.',
-  // Add entries with a date, a title, a place and a link. Past events sort
-  // below upcoming ones automatically.
+  // Add entries with a date, a title, a place and a link. They render in the
+  // order listed. A date is an ISO day, or one of daily, request, pending.
   items: [
     {
-      date: '2026-09-22',
+      // Not a calendar event, so it carries no date. 'request' renders as such.
+      date: 'request',
       title: 'Working session, Avarok Console walkthrough',
       place: 'Online, by request',
       body: 'A thirty minute walkthrough of the console on demo data, the published ladder, and the payback model with your inputs.',
@@ -45,7 +46,9 @@ export const events = {
       cta: 'Book a session'
     },
     {
-      date: '2026-10-01',
+      // MLCommons sets this date and has not published it: src/lib/mlperf.json
+      // leaves expected_publish_date empty. Do not type one in.
+      date: 'pending',
       title: 'MLPerf Inference v6.1 results',
       place: 'Published by MLCommons',
       body: 'Our submission is in the closed edge division on both GB10 and gfx1151 from the same CUDA source. The numbers render on the benchmarks page the moment MLCommons publishes them.',
@@ -69,12 +72,15 @@ export const contributors = {
   lede: 'Generated from the GitHub contributors API on every build. The core team is annotated with their role. Everyone else is the reason the test fleet keeps growing.',
   // GitHub logins with a role. Anyone not listed here renders as a contributor.
   core: {
-    tbraun96: 'Founder, CTO, engine architecture',
-    TheTom: 'Core contributor, kernels and quantization, advisor',
-    rsafier: 'Core contributor, EXL3 and multi node',
-    rrstesiak: 'Founding engineer, speculative decoding and single Spark records',
-    SeedSource: 'Core contributor, grammar and prefix cache',
-    DrRainbows: 'Systems engineering, site and information path'
+    // Roles as the people state them publicly on the blog (blog/src/lib/content.js).
+    // Anyone without a public bio is a core contributor and nothing more: a role
+    // nobody published is not this page's to assign.
+    tbraun96: 'Founder',
+    rrstesiak: 'Founding engineer, speculative decoding and the single Spark records',
+    DrRainbows: 'Systems engineer',
+    TheTom: 'Core contributor',
+    rsafier: 'Core contributor',
+    SeedSource: 'Core contributor'
   },
   cla: 'Contributions ship in the Community Edition under AGPL-3.0. The CLA permits Enterprise relicensing.',
   cta: { text: 'Good first issues', href: `${links.github}/labels/good%20first%20issue` },

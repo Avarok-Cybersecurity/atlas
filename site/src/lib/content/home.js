@@ -270,7 +270,7 @@ export const deliveries = {
       when: 'Week one',
       title: 'Side by side on your workload',
       body:
-        'One binary per node, one signed recipe per model, next to what you run today. A side by side ladder against your current engine, on your hardware, inside 48 hours. The economics baseline starts recording the same day.'
+        'One binary per node, one signed recipe per model, next to what you run today. A side by side ladder against your current engine, on your hardware, in week one. The economics baseline starts recording the same day.'
     },
     {
       when: 'Months one to six',

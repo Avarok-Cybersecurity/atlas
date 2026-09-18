@@ -5,7 +5,8 @@
   import { events as e } from '$lib/content/resources.js';
   import { routes, links } from '$lib/content/brand.js';
 
-  const fmt = (d) => (d === 'daily' ? 'Every day' : new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }));
+  const WHEN = { daily: 'Every day', request: 'By request', pending: 'Date set by MLCommons' };
+  const fmt = (d) => (WHEN[d] ? WHEN[d] : new Date(d + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }));
 </script>
 
 <PageShell path={routes.events}>

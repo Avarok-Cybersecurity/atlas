@@ -79,20 +79,24 @@ export const careers = {
   eyebrow: 'Careers',
   title: 'Build the layer between the GPU and the invoice.',
   lede:
-    'We are a small founding team with an AI first repository, hardware from NVIDIA and AMD on the bench, and customers who want receipts. The first hires shape the company. Remote first, with roots in Austin, Texas.',
+    'We are a small founding team with an AI first repository, hardware from NVIDIA and AMD on the bench, and buyers who want receipts. The first hires shape the company.',
   how: `Send a note and a link to something you built to ${contacts.technical}. Code beats resumes. A pull request against the engine beats both.`,
+  // How the work is done, all of it visible in the repository. Deliberately not
+  // here: equity, equipment, location or remote policy. Those are terms of
+  // employment, only the company can state them, and a candidate would be
+  // entitled to rely on anything this page promised.
   benefits: [
-    { title: 'Founding equity', body: 'Early equity in a company that is selling money, which is the easiest kind to sell.' },
-    { title: 'Hardware on your desk', body: 'A DGX Spark or Strix Halo class box to develop on, and access to the datacenter targets as the campaigns open.' },
-    { title: 'An AI first repository', body: 'Agents write the first draft, certified benchmarks gate the merge, you decide what ships. You will move faster here than anywhere you have worked.' },
-    { title: 'Remote first', body: 'Work from where you do your best work. Austin when the team gathers.' }
+    { title: 'An AI first repository', body: 'Agents write the first draft, certified benchmarks gate the merge, you decide what ships.' },
+    { title: 'Real hardware on the bench', body: 'DGX Spark and Strix Halo today, from NVIDIA and AMD. Hopper and Blackwell are the next campaigns.' },
+    { title: 'Receipts, not adjectives', body: 'Every claim ships with the measurement behind it, including the rungs we lost on the way.' },
+    { title: 'A founding team', body: 'Small enough that the first hires decide how the company works.' }
   ],
   rolesTitle: 'Open roles',
   roles: [
-    { title: 'Kernel Engineer', location: 'Remote', team: 'Engine', body: 'CUDA and Rust. Attention, MoE, GDN and quantized GEMM kernels per hardware target, with a certified benchmark on every merge. Hopper and Blackwell are the next campaigns.' },
-    { title: 'Founding Platform and Distributed Systems Engineer', location: 'Remote', team: 'Control', body: 'The control plane. Routing, rollout, autoscaling, repair and policy across mixed NVIDIA and AMD fleets, in Rust, on Kubernetes, in the customer’s account and ours.' },
-    { title: 'Founding Infrastructure and Forward Deployed Engineer', location: 'Austin or remote, travel', team: 'Customers', body: 'You stand up the pilot, run the ladder on the customer’s hardware, and hand them the receipt. The person the customer calls, and the person who tells engineering what broke.' },
-    { title: 'Strategic Product and Marketing Advisor', location: 'Remote, part time', team: 'Go to market', body: 'Former product, sales or GTM leadership at an inference or GPU infrastructure company. Monthly working sessions, pricing and positioning review, select enterprise calls.' }
+    { title: 'Kernel Engineer', location: 'Location by agreement', team: 'Engine', body: 'CUDA and Rust. Attention, MoE, GDN and quantized GEMM kernels per hardware target, with a certified benchmark on every merge. Hopper and Blackwell are the next campaigns.' },
+    { title: 'Founding Platform and Distributed Systems Engineer', location: 'Location by agreement', team: 'Control', body: 'The control plane. Routing, rollout, autoscaling, repair and policy across mixed NVIDIA and AMD fleets, in Rust, on Kubernetes, in the customer’s account and ours.' },
+    { title: 'Founding Infrastructure and Forward Deployed Engineer', location: 'Location by agreement, travel', team: 'Customers', body: 'You stand up the pilot, run the ladder on the customer’s hardware, and hand them the receipt. The person the customer calls, and the person who tells engineering what broke.' },
+    { title: 'Strategic Product and Marketing Advisor', location: 'Part time', team: 'Go to market', body: 'Former product, sales or GTM leadership at an inference or GPU infrastructure company. Monthly working sessions, pricing and positioning review, select enterprise calls.' }
   ],
   cta: { text: 'Email the team', href: `mailto:${contacts.technical}?subject=Avarok%20careers` }
 };

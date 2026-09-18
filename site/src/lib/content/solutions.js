@@ -36,7 +36,7 @@ export const solutions = {
       'Tokens per watt is literally your value proposition to your own customers',
       'Mixed NVIDIA and AMD pools with one engine and no second kernel tree',
       'Multi tenant routing with per tenant quotas and isolation tiers',
-      'A ladder against your current engine on your own hardware inside 48 hours'
+      'A ladder against your current engine on your own hardware in week one'
     ],
     workloads: ['Open weight model serving at scale', 'Agentic workloads at high concurrency', 'Serverless endpoints with fast cold start from a single binary'],
     deployment: 'Bring your own cloud or on premises. Enterprise license per GPU, volume tiers as the fleet grows. Co marketing of the results is on the table.',
@@ -184,7 +184,7 @@ export const solutions = {
 export const solutionCta = {
   eyebrow: 'Next step',
   title: 'See it against your own workload.',
-  body: 'A side by side ladder on your hardware inside 48 hours. Your models, your criteria, your receipt.',
+  body: 'A side by side ladder on your hardware in week one. Your models, your criteria, your receipt.',
   primary: { text: 'Book a demo', href: routes.demo },
   secondary: { text: 'See pricing', href: routes.pricing }
 };

@@ -113,7 +113,7 @@ export const pov = {
   body: 'A proof of value runs four weeks against success criteria you set. Not a scripted demo on someone else’s hardware.',
   bullets: [
     'Four weeks, start to finish',
-    'A side by side ladder on your workload inside 48 hours',
+    'A side by side ladder on your workload in week one',
     'Your hardware, your models, your criteria',
     'We supply five criteria if you do not have your own'
   ],
