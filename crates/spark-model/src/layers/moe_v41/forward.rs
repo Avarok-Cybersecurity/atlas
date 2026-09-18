@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// provenance-id: 526f6e616c6420522e205374657369616b
+
+//! `MoeV41::forward`: the routed experts from the cache plus the shared
+//! expert, and the `launch_n` elementwise helper it runs on.
+
+use anyhow::Result;
+use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
+use spark_runtime::kernel_args::KernelLaunch;
+use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
+
+use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing};
+use crate::layers::ops::{
+    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_gemm, kquant_mmvq_experts_w,
+    kquant_mmvq_w, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+};
+use crate::weight_map::DenseWeight;
+
+impl MoeV41 {
+    fn launch_n(
+        &self,
+        gpu: &dyn GpuBackend,
+        k: KernelHandle,
+        n: usize,
+        stream: u64,
+        f: impl FnOnce(KernelLaunch) -> KernelLaunch,
+    ) -> Result<()> {
+        if n == 0 {
+            return Ok(());
+        }
+        f(KernelLaunch::new(gpu, k)
+            .grid([(n as u32).div_ceil(256), 1, 1])
+            .block([256, 1, 1]))
+        .launch(stream)
+    }
+
+    /// One layer's MoE for `m` tokens: routed experts from the cache, plus the
+    /// shared expert. Returns the bf16 `[m, dim]` output and the routing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward<S: ExpertSource + ?Sized>(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        lru: &mut ExpertLru,
+        src: &S,
+        x: DevicePtr,
+        m: usize,
+        reader_threads: usize,
+        stream: u64,
+    ) -> Result<(DevicePtr, Vec<f32>, Vec<usize>)> {
+        let c = &self.cfg;
+        let t0 = std::time::Instant::now();
+        let (weights, indices) = self.route(gpu, w, x, m, stream)?;
+        let t1 = std::time::Instant::now();
+        // this token batch's experts, gathered once
+        lru.begin_token();
+        let before = lru.stats();
+        let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
+        let slots = lru.fetch_many(src, &keys, reader_threads)?;
+        let after = lru.stats();
+        let t2 = std::time::Instant::now();
+        // group the (token, k) assignments by expert: rows and weights, group-major
+        let mut groups: std::collections::BTreeMap<usize, Vec<(i32, f32, usize)>> =
+            std::collections::BTreeMap::new();
+        for t in 0..m {
+            for kk in 0..c.topk {
+                let a = t * c.topk + kk;
+                groups
+                    .entry(indices[a])
+                    .or_default()
+                    .push((t as i32, weights[a], a));
+            }
+        }
+        let mut rows_host: Vec<u8> = Vec::with_capacity(m * c.topk * 4);
+        let mut w_host: Vec<u8> = Vec::with_capacity(m * c.topk * 4);
+        let mut plan: Vec<(usize, usize, usize)> = Vec::with_capacity(groups.len()); // (slot assignment index, offset, rows)
+        for members in groups.values() {
+            let off = rows_host.len() / 4;
+            for &(t, rw, a) in members {
+                rows_host.extend_from_slice(&t.to_le_bytes());
+                w_host.extend_from_slice(&rw.to_le_bytes());
+                let _ = a;
+            }
+            plan.push((members[0].2, off, members.len()));
+        }
+        gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
+        gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
+        gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
+        if m == 1 {
+            // the single-token arm: the token is every expert's activation, so
+            // quantise it once and run each projection as one launch over the
+            // experts (pointer table), the routing weight folded in at the
+            // SwiGLU and the expert rows summed into `acc` in plan order, the
+            // same order and the same per-row math as the loop below
+            let ne = plan.len();
+            let mut ptrs: Vec<u8> = Vec::with_capacity(3 * ne * 8);
+            for which in 0..3 {
+                for &(a0, _, _) in &plan {
+                    let slot = slots[a0];
+                    let p = [slot.gate, slot.up, slot.down][which];
+                    ptrs.extend_from_slice(&p.0.to_le_bytes());
+                }
+            }
+            gpu.copy_h2d_async(&ptrs, self.ptrs_dev, stream)?;
+            let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
+            kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
+            for (which, out) in [(0usize, self.gate_out), (1, self.up_out)] {
+                kquant_mmvq_experts_w(
+                    gpu,
+                    self.k.mmvq_q2k_experts,
+                    table(which),
+                    self.a_q8,
+                    out,
+                    c.inter as u32,
+                    c.dim as u32,
+                    1,
+                    ne as u32,
+                    0,
+                    stream,
+                )?;
+            }
+            self.launch_n(gpu, self.k.swiglu, ne * c.inter, stream, |l| {
+                l.arg_ptr(self.gate_out)
+                    .arg_ptr(self.up_out)
+                    .arg_ptr(self.weight_dev)
+                    .arg_ptr(self.h)
+                    .arg_u32(ne as u32)
+                    .arg_u32(c.inter as u32)
+                    .arg_f32(c.swiglu_limit)
+            })?;
+            kquant_q8_1_rows(
+                gpu,
+                self.k.q8_rows,
+                self.h,
+                self.h_q8,
+                ne as u32,
+                c.inter as u32,
+                stream,
+            )?;
+            kquant_mmvq_experts_w(
+                gpu,
+                self.k.mmvq_q3k_experts,
+                table(2),
+                self.h_q8,
+                self.down_out,
+                c.dim as u32,
+                c.inter as u32,
+                1,
+                ne as u32,
+                kquant_q8_1_rows_bytes(1, c.inter as u32) as u32,
+                stream,
+            )?;
+            KernelLaunch::new(gpu, self.k.scatter_add)
+                .grid([ne as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(self.acc)
+                .arg_ptr(self.down_out)
+                .arg_ptr(self.rows_dev)
+                .arg_u32(c.dim as u32)
+                .launch(stream)?;
+        }
+        for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
+            let slot = slots[a0];
+            let rows_ptr = DevicePtr(self.rows_dev.0 + (off * 4) as u64);
+            let w_ptr = DevicePtr(self.weight_dev.0 + (off * 4) as u64);
+            KernelLaunch::new(gpu, self.k.gather)
+                .grid([r as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(x)
+                .arg_ptr(rows_ptr)
+                .arg_ptr(self.a_rows)
+                .arg_u32(c.dim as u32)
+                .launch(stream)?;
+            if r <= 8 {
+                // the decode GEMV: plain q8_1 rows, one weight read shared by the rows
+                kquant_q8_1_rows(
+                    gpu,
+                    self.k.q8_rows,
+                    self.a_rows,
+                    self.a_q8,
+                    r as u32,
+                    c.dim as u32,
+                    stream,
+                )?;
+                kquant_mmvq_w(
+                    gpu,
+                    self.k.mmvq_q2k,
+                    slot.gate,
+                    self.a_q8,
+                    self.gate_out,
+                    c.inter as u32,
+                    c.dim as u32,
+                    r as u32,
+                    stream,
+                )?;
+                kquant_mmvq_w(
+                    gpu,
+                    self.k.mmvq_q2k,
+                    slot.up,
+                    self.a_q8,
+                    self.up_out,
+                    c.inter as u32,
+                    c.dim as u32,
+                    r as u32,
+                    stream,
+                )?;
+            } else {
+                // the prefill MMQ: tensor cores on the raw blocks, D2S6 activations for Q2_K
+                ops::quantize_act_q8_1(
+                    gpu,
+                    self.k.quant_d2s6,
+                    self.a_rows,
+                    self.a_q8,
+                    r as u32,
+                    c.dim as u32,
+                    stream,
+                )?;
+                kquant_mmq_gemm(
+                    gpu,
+                    self.k.mmq_q2k_nc,
+                    self.k.mmq_q2k_wc,
+                    self.a_q8,
+                    slot.gate,
+                    self.gate_out,
+                    r as u32,
+                    c.inter as u32,
+                    c.dim as u32,
+                    Q2K_MMQ_SMEM,
+                    stream,
+                )?;
+                kquant_mmq_gemm(
+                    gpu,
+                    self.k.mmq_q2k_nc,
+                    self.k.mmq_q2k_wc,
+                    self.a_q8,
+                    slot.up,
+                    self.up_out,
+                    r as u32,
+                    c.inter as u32,
+                    c.dim as u32,
+                    Q2K_MMQ_SMEM,
+                    stream,
+                )?;
+            }
+            self.launch_n(gpu, self.k.swiglu, r * c.inter, stream, |l| {
+                l.arg_ptr(self.gate_out)
+                    .arg_ptr(self.up_out)
+                    .arg_ptr(w_ptr)
+                    .arg_ptr(self.h)
+                    .arg_u32(r as u32)
+                    .arg_u32(c.inter as u32)
+                    .arg_f32(c.swiglu_limit)
+            })?;
+            if r <= 8 {
+                kquant_q8_1_rows(
+                    gpu,
+                    self.k.q8_rows,
+                    self.h,
+                    self.h_q8,
+                    r as u32,
+                    c.inter as u32,
+                    stream,
+                )?;
+                kquant_mmvq_w(
+                    gpu,
+                    self.k.mmvq_q3k,
+                    slot.down,
+                    self.h_q8,
+                    self.down_out,
+                    c.dim as u32,
+                    c.inter as u32,
+                    r as u32,
+                    stream,
+                )?;
+            } else {
+                ops::quantize_act_q8_1(
+                    gpu,
+                    self.k.quant_d4,
+                    self.h,
+                    self.h_q8,
+                    r as u32,
+                    c.inter as u32,
+                    stream,
+                )?;
+                kquant_mmq_gemm(
+                    gpu,
+                    self.k.mmq_q3k_nc,
+                    self.k.mmq_q3k_wc,
+                    self.h_q8,
+                    slot.down,
+                    self.down_out,
+                    r as u32,
+                    c.dim as u32,
+                    c.inter as u32,
+                    Q3K_MMQ_SMEM,
+                    stream,
+                )?;
+            }
+            KernelLaunch::new(gpu, self.k.scatter_add)
+                .grid([r as u32, 1, 1])
+                .block([256, 1, 1])
+                .arg_ptr(self.acc)
+                .arg_ptr(self.down_out)
+                .arg_ptr(rows_ptr)
+                .arg_u32(c.dim as u32)
+                .launch(stream)?;
+        }
+        // shared expert: bf16 (GEMV / tiled GEMM) or the GGUF's K-quant
+        // blocks on the routed experts' kernels (GEMV at m <= 8, MMQ above)
+        let kq = |a: DevicePtr,
+                  a_q8: DevicePtr,
+                  wt: ResidentMat,
+                  out: DevicePtr,
+                  n: usize,
+                  kdim: usize|
+         -> Result<()> {
+            let (mu, nu, ku) = (m as u32, n as u32, kdim as u32);
+            match wt {
+                ResidentMat::Bf16(p) if m == 1 => ops::dense_gemv(
+                    gpu,
+                    self.k.gemv,
+                    a,
+                    &DenseWeight { weight: p },
+                    out,
+                    nu,
+                    ku,
+                    stream,
+                ),
+                ResidentMat::Bf16(p) => ops::dense_gemm(
+                    gpu,
+                    self.k.gemm,
+                    a,
+                    &DenseWeight { weight: p },
+                    out,
+                    mu,
+                    nu,
+                    ku,
+                    stream,
+                ),
+                ResidentMat::Q2K(b) if m <= 8 => {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
+                    kquant_mmvq_w(gpu, self.k.mmvq_q2k, b, a_q8, out, nu, ku, mu, stream)
+                }
+                ResidentMat::Q3K(b) if m <= 8 => {
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
+                    kquant_mmvq_w(gpu, self.k.mmvq_q3k, b, a_q8, out, nu, ku, mu, stream)
+                }
+                ResidentMat::Q2K(b) => {
+                    ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, a_q8, mu, ku, stream)?;
+                    kquant_mmq_gemm(
+                        gpu,
+                        self.k.mmq_q2k_nc,
+                        self.k.mmq_q2k_wc,
+                        a_q8,
+                        b,
+                        out,
+                        mu,
+                        nu,
+                        ku,
+                        Q2K_MMQ_SMEM,
+                        stream,
+                    )
+                }
+                ResidentMat::Q3K(b) => {
+                    ops::quantize_act_q8_1(gpu, self.k.quant_d4, a, a_q8, mu, ku, stream)?;
+                    kquant_mmq_gemm(
+                        gpu,
+                        self.k.mmq_q3k_nc,
+                        self.k.mmq_q3k_wc,
+                        a_q8,
+                        b,
+                        out,
+                        mu,
+                        nu,
+                        ku,
+                        Q3K_MMQ_SMEM,
+                        stream,
+                    )
+                }
+            }
+        };
+        kq(x, self.a_q8, w.shared_w1, self.sg, c.inter, c.dim)?;
+        kq(x, self.a_q8, w.shared_w3, self.su, c.inter, c.dim)?;
+        self.launch_n(gpu, self.k.swiglu, m * c.inter, stream, |l| {
+            l.arg_ptr(self.sg)
+                .arg_ptr(self.su)
+                .arg_ptr(DevicePtr(0))
+                .arg_ptr(self.sh)
+                .arg_u32(m as u32)
+                .arg_u32(c.inter as u32)
+                .arg_f32(c.swiglu_limit)
+        })?;
+        kq(self.sh, self.h_q8, w.shared_w2, self.sd, c.dim, c.inter)?;
+        self.launch_n(gpu, self.k.accumulate, m * c.dim, stream, |l| {
+            l.arg_ptr(self.acc)
+                .arg_ptr(self.sd)
+                .arg_u32((m * c.dim) as u32)
+        })?;
+        self.launch_n(gpu, self.k.finish, m * c.dim, stream, |l| {
+            l.arg_ptr(self.acc)
+                .arg_ptr(self.out)
+                .arg_u32((m * c.dim) as u32)
+        })?;
+        if self.timing_sync {
+            // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
+            gpu.synchronize(stream)?;
+        }
+        self.last.set(MoeV41Timing {
+            route_ms: (t1 - t0).as_secs_f64() * 1e3,
+            fetch_ms: (t2 - t1).as_secs_f64() * 1e3,
+            compute_ms: t2.elapsed().as_secs_f64() * 1e3,
+            hits: after.hits - before.hits,
+            misses: after.misses - before.misses,
+            bytes_read: after.bytes_read - before.bytes_read,
+        });
+        Ok((self.out, weights, indices))
+    }
+}

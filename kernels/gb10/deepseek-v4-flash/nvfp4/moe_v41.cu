@@ -104,13 +104,13 @@ extern "C" __global__ void moe_v41_router_gemv_f32out(
             const unsigned int br[4] = {bv[u].x, bv[u].y, bv[u].z, bv[u].w};
             #pragma unroll
             for (int i = 0; i < 4; ++i) {
-                __nv_bfloat16 alo, ahi, blo, bhi;
-                *(unsigned short*)&alo = (unsigned short)(ar[i] & 0xFFFFu);
-                *(unsigned short*)&ahi = (unsigned short)(ar[i] >> 16);
-                *(unsigned short*)&blo = (unsigned short)(br[i] & 0xFFFFu);
-                *(unsigned short*)&bhi = (unsigned short)(br[i] >> 16);
-                acc += __bfloat162float(alo) * __bfloat162float(blo);
-                acc += __bfloat162float(ahi) * __bfloat162float(bhi);
+                __nv_bfloat16 a_lo, a_hi, b_lo, b_hi;
+                *(unsigned short*)&a_lo = (unsigned short)(ar[i] & 0xFFFFu);
+                *(unsigned short*)&a_hi = (unsigned short)(ar[i] >> 16);
+                *(unsigned short*)&b_lo = (unsigned short)(br[i] & 0xFFFFu);
+                *(unsigned short*)&b_hi = (unsigned short)(br[i] >> 16);
+                acc += __bfloat162float(a_lo) * __bfloat162float(b_lo);
+                acc += __bfloat162float(a_hi) * __bfloat162float(b_hi);
             }
         }
     }
@@ -121,13 +121,13 @@ extern "C" __global__ void moe_v41_router_gemv_f32out(
         const unsigned int br[4] = {bv.x, bv.y, bv.z, bv.w};
         #pragma unroll
         for (int i = 0; i < 4; ++i) {
-            __nv_bfloat16 alo, ahi, blo, bhi;
-            *(unsigned short*)&alo = (unsigned short)(ar[i] & 0xFFFFu);
-            *(unsigned short*)&ahi = (unsigned short)(ar[i] >> 16);
-            *(unsigned short*)&blo = (unsigned short)(br[i] & 0xFFFFu);
-            *(unsigned short*)&bhi = (unsigned short)(br[i] >> 16);
-            acc += __bfloat162float(alo) * __bfloat162float(blo);
-            acc += __bfloat162float(ahi) * __bfloat162float(bhi);
+            __nv_bfloat16 a_lo, a_hi, b_lo, b_hi;
+            *(unsigned short*)&a_lo = (unsigned short)(ar[i] & 0xFFFFu);
+            *(unsigned short*)&a_hi = (unsigned short)(ar[i] >> 16);
+            *(unsigned short*)&b_lo = (unsigned short)(br[i] & 0xFFFFu);
+            *(unsigned short*)&b_hi = (unsigned short)(br[i] >> 16);
+            acc += __bfloat162float(a_lo) * __bfloat162float(b_lo);
+            acc += __bfloat162float(a_hi) * __bfloat162float(b_hi);
         }
     }
     for (unsigned int k = k8n * 8; k < K; ++k) {
