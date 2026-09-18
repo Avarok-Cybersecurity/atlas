@@ -854,14 +854,35 @@ pub(crate) fn load_model(
     // and nothing downstream would attribute that to the vector. Each load
     // logs the file's SHA-256, so comparing the two ranks' boot logs settles
     // it in one grep.
-    let cvec_specs = cli::control_vector_args::resolve(
-        &args.control_vector,
-        &args.control_vector_layers,
-        &args.control_vector_scale,
-        &args.control_vector_mode,
-        config.num_hidden_layers,
-        &config.model_type,
-    )?;
+    // `--disable-control-vectors` short-circuits the whole thing rather than
+    // loading and then refusing to use them. Nothing resident means no device
+    // memory held, no per-layer hook, and `decode_graphs_allowed` naturally
+    // true — the graph-eligibility question answers itself instead of needing
+    // a second switch to reason about.
+    let cvec_specs = if args.disable_control_vectors {
+        if !args.control_vector.is_empty() {
+            tracing::warn!(
+                "--disable-control-vectors: NOT loading the {} declared vector(s) ({}). \
+                 Requests naming one will get a 400 rather than being served unsteered.",
+                args.control_vector.len(),
+                args.control_vector
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        Vec::new()
+    } else {
+        cli::control_vector_args::resolve(
+            &args.control_vector,
+            &args.control_vector_layers,
+            &args.control_vector_scale,
+            &args.control_vector_mode,
+            config.num_hidden_layers,
+            &config.model_type,
+        )?
+    };
     // (name, id) mirrored into AppState so a request handler resolves a
     // selection without reaching for the model, the same way adapter_names is.
     let mut cvec_registered: Vec<(String, u64)> = Vec::with_capacity(cvec_specs.len());
@@ -874,6 +895,36 @@ pub(crate) fn load_model(
             "control vector '{name}' registered as id {id:#018x}; select it \
              per-request with {{\"control_vector\": \"{name}\"}} (omit, or send \
              null, for no steering)"
+        );
+    }
+
+    // Validate the server default HERE, at boot, rather than on the first
+    // request that omits the field. A typo in an operator flag should stop the
+    // serve coming up, not surface later as a 500 on somebody else's traffic.
+    if let Some(d) = args.default_control_vector.as_deref() {
+        anyhow::ensure!(
+            !args.disable_control_vectors,
+            "--default-control-vector {d} with --disable-control-vectors: these \
+             contradict each other. Drop one."
+        );
+        anyhow::ensure!(
+            cvec_registered.iter().any(|(n, _)| n == d),
+            "--default-control-vector '{d}' names a vector that no --control-vector \
+             declares (declared: {})",
+            if cvec_registered.is_empty() {
+                "none".to_string()
+            } else {
+                cvec_registered
+                    .iter()
+                    .map(|(n, _)| n.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        );
+        tracing::info!(
+            "control vector '{d}' is the SERVER DEFAULT: requests that omit \
+             `control_vector` get it. Sending null, false or \"\" still means no \
+             steering."
         );
     }
 
@@ -1385,6 +1436,7 @@ pub(crate) fn load_model(
         tokenizer,
         model_name,
         control_vectors: cvec_registered,
+        default_control_vector: args.default_control_vector.clone(),
         adapter_name: nllb_adapter_name
             .clone()
             .or_else(|| lora_states.first().map(|l| l.name.clone())),

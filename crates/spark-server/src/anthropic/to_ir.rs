@@ -219,8 +219,7 @@ impl From<MessagesRequest> for ir::ChatRequest {
 
         ir::ChatRequest {
             model: req.model,
-            // The Anthropic surface has no control-vector field yet; no steering.
-            control_vector: None,
+            control_vector: req.control_vector,
             messages,
             tools: req
                 .tools

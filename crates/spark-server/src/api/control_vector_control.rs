@@ -20,6 +20,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use crate::api::compact::openai_error_response;
+use crate::api::control_vector_directive::CvecDirective;
 
 /// Resolve `control_vector` against the registered `(name, id)` table.
 /// `Ok(0)` = no steering.
@@ -32,22 +33,47 @@ use crate::api::compact::openai_error_response;
 #[allow(clippy::result_large_err)]
 pub fn resolve_request_cvec_id(
     control_vectors: &[(String, u64)],
-    control_vector: Option<&str>,
+    directive: &CvecDirective,
+    server_default: Option<&str>,
 ) -> Result<u64, Response> {
-    let Some(name) = control_vector else {
-        return Ok(0);
+    // Resolve the three-state directive to "a name, or nothing".
+    //
+    // `ServerDefault` is the only state that consults the deployment. With no
+    // default configured it means no steering, which is exactly today's
+    // behaviour for a request that omits the field — so introducing the
+    // default changes nothing for anyone who has not configured one.
+    let name = match directive {
+        CvecDirective::Off => return Ok(0),
+        CvecDirective::Named(n) => n.as_str(),
+        CvecDirective::ServerDefault => match server_default {
+            Some(d) => d,
+            None => return Ok(0),
+        },
     };
-    let name = name.trim();
-    // An explicit empty string is "none", not a lookup failure: a client
-    // building JSON from a form field should not have to omit the key.
-    if name.is_empty() {
-        return Ok(0);
-    }
+
     if let Some((_, id)) = control_vectors.iter().find(|(n, _)| n == name) {
         return Ok(*id);
     }
+
+    // A server default that does not resolve is an OPERATOR error surfacing on
+    // a caller's request, and saying "unknown control_vector" would send them
+    // hunting through their own payload for a field they never sent.
+    if matches!(directive, CvecDirective::ServerDefault) {
+        return Err(openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "server default control vector '{name}' is not registered — \
+                 --default-control-vector names a vector that no --control-vector \
+                 declares. This is a server misconfiguration, not a problem with \
+                 this request."
+            ),
+        ));
+    }
+
     let known = if control_vectors.is_empty() {
-        "none are loaded (start the server with --control-vector NAME=PATH)".to_string()
+        "none are loaded (start the server with --control-vector NAME=PATH, and \
+         check that --disable-control-vectors is not set)"
+            .to_string()
     } else {
         control_vectors
             .iter()

@@ -48,6 +48,11 @@ pub struct AppState {
     /// a selection without reaching for the model. Empty = no steering is
     /// available and any named `control_vector` is a 400.
     pub control_vectors: Vec<(String, u64)>,
+    /// `--default-control-vector`: what a request that OMITS the field gets.
+    /// `None` means omitting it is no steering, which is the behaviour when
+    /// no default is configured. Validated at boot, so if this is `Some` the
+    /// name is known to be registered.
+    pub default_control_vector: Option<String>,
     /// The currently-active adapter (updated by `POST /v1/lora/active`). Starts
     /// at slot 0. Purely for status/advertise; the scheduler's model owns the
     /// authoritative active slot.

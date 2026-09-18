@@ -40,6 +40,7 @@ pub mod completions_exec;
 pub mod completions_logprobs;
 pub mod control_vector_capture_api;
 pub mod control_vector_control;
+pub mod control_vector_directive;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;

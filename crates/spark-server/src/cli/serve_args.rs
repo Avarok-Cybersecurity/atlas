@@ -1204,7 +1204,11 @@ pub struct ServeArgs {
     pub control_vector: Vec<(String, String)>,
 
     /// Inclusive layer range for a control vector, as NAME=START-END (e.g.
-    /// `refusal=4-44`). Repeatable. Defaults to every layer the file carries.
+    /// `refusal=4-44`). Repeatable.
+    ///
+    /// There is no generic default. When omitted, a curated per-model range is
+    /// used if one is known, and otherwise this is REQUIRED — "every layer the
+    /// file carries" is not a configuration any vector is characterised at.
     #[arg(long, value_name = "NAME=START-END", value_parser = control_vector_args::parse_control_vector_layers)]
     pub control_vector_layers: Vec<(String, String)>,
 
@@ -1219,6 +1223,24 @@ pub struct ServeArgs {
     /// `project` (rank-1 ablation); `add` steers by adding the vector.
     #[arg(long, value_name = "NAME=MODE", value_parser = control_vector_args::parse_control_vector_mode)]
     pub control_vector_mode: Vec<(String, String)>,
+
+    /// Control vector to apply when a request does not mention one.
+    ///
+    /// Requests that OMIT `control_vector` take this; requests sending `null`,
+    /// `false` or `""` still get no steering, and a request naming a vector
+    /// still gets that one. Unset means omitting the field is no steering,
+    /// which is the behaviour when no default is configured.
+    #[arg(long, value_name = "NAME")]
+    pub default_control_vector: Option<String>,
+
+    /// Load no control vectors, whatever --control-vector says.
+    ///
+    /// For turning steering off in a deployment without editing the vector
+    /// list out of the config. Nothing is loaded, so there is no device memory
+    /// held and no per-layer hook, and a request naming a vector gets a 400
+    /// rather than being quietly served unsteered.
+    #[arg(long)]
+    pub disable_control_vectors: bool,
 
     /// Arm per-layer activation capture for DERIVING a control vector.
     ///

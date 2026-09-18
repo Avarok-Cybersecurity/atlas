@@ -175,9 +175,35 @@ name by the operator; callers send only the name.
 {"model": "...", "messages": [...], "control_vector": "terse"}
 ```
 
-Omit, `null` or `""` for no steering. An unknown name is a 400 listing what is
-registered. The same file may be registered under many names with different
-settings — that is how a dose ladder is built.
+The field is a **three-state directive**, not an optional string:
+
+| request | meaning |
+|---|---|
+| field omitted | take the server default (`--default-control-vector`); no steering if none is set |
+| `null`, `false`, `""` | explicitly **no** steering, overriding any default |
+| `"name"` | that vector |
+| `true` | **rejected** — it does not say *which* |
+
+Omitted and `null` have to differ, or a server default could not exist without
+silently changing what every request that omits the field means. An unknown
+name is a 400 listing what is registered. The same file may be registered under
+many names with different settings — that is how a dose ladder is built.
+
+Available on Chat Completions, Completions, Responses and Anthropic Messages.
+
+**Server policy:**
+
+```sh
+--default-control-vector refusal   # what an omitted field gets
+--disable-control-vectors          # load none, whatever --control-vector says
+```
+
+The default is validated at boot, so a typo stops the serve rather than
+surfacing later as a 500 on a caller's traffic. `--disable-control-vectors`
+loads nothing at all rather than loading and refusing to use it, so no device
+memory is held, no per-layer hook runs, and decode-graph eligibility answers
+itself; a request naming a vector then gets a 400 rather than being quietly
+served unsteered.
 
 `--control-vector-layers` is **required**; there is no default. It used to
 default to every layer that can carry a direction (`1..n_layer-1`), which is
