@@ -1220,6 +1220,15 @@ pub struct ServeArgs {
     #[arg(long, value_name = "NAME=MODE", value_parser = control_vector_args::parse_control_vector_mode)]
     pub control_vector_mode: Vec<(String, String)>,
 
+    /// Arm per-layer activation capture for DERIVING a control vector.
+    ///
+    /// A derivation mode, not a serving one: it adds a reduction per layer per
+    /// forward. Drive it with POST /v1/control_vector/capture — prefill the
+    /// positive corpus, dump, reset, prefill the negative corpus, dump — then
+    /// run scripts/derive_control_vector.py over the two dumps.
+    #[arg(long)]
+    pub control_vector_capture: bool,
+
     /// NLLB/M2M-100 ONLY: source-language token for translation (e.g.
     /// `eng_Latn`). Prepended to the encoder input. Required when serving an
     /// `m2m_100`/`nllb` checkpoint; ignored otherwise.

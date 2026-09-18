@@ -73,6 +73,10 @@ pub(crate) async fn build_and_serve(
         )
         .route("/v1/messages", post(anthropic::messages))
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
+        .route(
+            "/v1/control_vector/capture",
+            post(api::control_vector_capture_api::control_vector_capture),
+        )
         .route("/v1/lora/active", post(api::set_active_lora))
         .route("/v1/lora/load", post(api::load_lora_into_slot))
         .route("/v1/models", get(api::list_models))

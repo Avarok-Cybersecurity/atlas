@@ -356,6 +356,25 @@ pub trait Model: Send + Sync {
     /// accepting `--control-vector` and then not steering would serve a model
     /// the operator believes was steered, and unlike a perf regression there
     /// is no counter that would ever show it.
+    /// Arm per-layer activation capture for deriving a control vector.
+    /// Default: unsupported, and it BAILS — accepting the flag and capturing
+    /// nothing would hand back an all-zero direction.
+    fn arm_control_vector_capture(&mut self) -> Result<()> {
+        bail!("this model does not support control-vector capture")
+    }
+
+    /// Zero the control-vector capture accumulator. Runs at scheduler
+    /// quiescence, so it cannot land mid-forward and leave a partial pass in
+    /// the sum.
+    fn reset_control_vector_capture(&self) -> Result<()> {
+        bail!("this model does not support control-vector capture")
+    }
+
+    /// Write the capture accumulator; returns the token count it represents.
+    fn dump_control_vector_capture(&self, _path: &std::path::Path) -> Result<u64> {
+        bail!("this model does not support control-vector capture")
+    }
+
     fn install_control_vector(
         &mut self,
         _name: &str,

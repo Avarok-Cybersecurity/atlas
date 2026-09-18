@@ -82,6 +82,10 @@ pub struct TransformerModel {
     /// after construction, like `weight_store`. See
     /// `crate::control_vector_registry`.
     pub(super) control_vectors: crate::control_vector_registry::ControlVectorRegistry,
+    /// Per-layer activation capture for DERIVING a control vector. `None`
+    /// unless the operator armed it at boot; it adds a reduction per layer per
+    /// forward, so it is a derivation mode rather than a serving one.
+    pub(super) cvec_capture: Option<crate::control_vector_capture::ControlVectorCapture>,
     pub(super) embed_tokens: DenseWeight,
     /// Fused n-gram input embedding (LongCat family), when the architecture
     /// has one. `Mutex` because the forward path is `&self` while the row

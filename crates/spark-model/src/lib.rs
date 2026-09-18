@@ -18,6 +18,7 @@
 #![allow(clippy::type_complexity)]
 
 pub mod control_vector;
+pub mod control_vector_capture;
 pub mod control_vector_registry;
 pub mod engine;
 pub mod factory;

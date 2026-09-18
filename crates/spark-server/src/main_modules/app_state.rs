@@ -350,9 +350,13 @@ impl AppState {
                 }
             }
             Ok(Ok(Ok(LoraAck::Promoted { slot, evicted }))) => Ok((slot as i32, evicted)),
-            Ok(Ok(Ok(LoraAck::Done))) => Err(PromoteReject::Peer(
-                "scheduler returned a non-promote ack for a promote".to_string(),
-            )),
+            // A capture ack cannot arrive here: promotion never sends a
+            // capture command. Treated like the `Done` mismatch below.
+            Ok(Ok(Ok(LoraAck::Captured(_)))) | Ok(Ok(Ok(LoraAck::Done))) => {
+                Err(PromoteReject::Peer(
+                    "scheduler returned a non-promote ack for a promote".to_string(),
+                ))
+            }
         }
     }
 
@@ -394,9 +398,13 @@ impl AppState {
                 }
             }
             Ok(Ok(Ok(LoraAck::Promoted { slot, evicted }))) => Ok((slot as i32, evicted)),
-            Ok(Ok(Ok(LoraAck::Done))) => Err(PromoteReject::Peer(
-                "scheduler returned a non-promote ack for a disk promote".to_string(),
-            )),
+            // A capture ack cannot arrive here: promotion never sends a
+            // capture command. Treated like the `Done` mismatch below.
+            Ok(Ok(Ok(LoraAck::Captured(_)))) | Ok(Ok(Ok(LoraAck::Done))) => {
+                Err(PromoteReject::Peer(
+                    "scheduler returned a non-promote ack for a disk promote".to_string(),
+                ))
+            }
         }
     }
 }

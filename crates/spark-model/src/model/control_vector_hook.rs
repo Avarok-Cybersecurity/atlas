@@ -79,6 +79,50 @@ impl TransformerModel {
         self.control_vectors.insert(name.to_string(), cv)
     }
 
+    /// Arm per-layer activation capture for DERIVING a vector.
+    ///
+    /// Same mHC requirement as installing one: the thing being measured is the
+    /// highway, so a model without one has nothing to capture.
+    pub fn arm_control_vector_capture(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            self.config.hc_mult > 0,
+            "control-vector capture needs an mHC highway to measure, and \
+             model_type {:?} has hc_mult = 0",
+            self.config.model_type
+        );
+        self.cvec_capture = Some(crate::control_vector_capture::ControlVectorCapture::new(
+            self.gpu.as_ref(),
+            self.config.num_hidden_layers,
+            self.config.hidden_size,
+        )?);
+        Ok(())
+    }
+
+    /// Zero the capture accumulator — run between the positive and negative
+    /// corpus passes.
+    pub fn reset_control_vector_capture(&self) -> Result<()> {
+        let cap = self
+            .cvec_capture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("control-vector capture is not armed"))?;
+        cap.reset(self.gpu.as_ref())
+    }
+
+    /// Write the capture accumulator to `path`; returns the token count it
+    /// represents (the divisor for the mean).
+    pub fn dump_control_vector_capture(&self, path: &std::path::Path) -> Result<u64> {
+        let cap = self
+            .cvec_capture
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("control-vector capture is not armed"))?;
+        cap.dump(self.gpu.as_ref(), path)
+    }
+
+    /// Tokens folded into the capture so far, or `None` when not armed.
+    pub fn control_vector_capture_tokens(&self) -> Option<u64> {
+        self.cvec_capture.as_ref().map(|c| c.tokens())
+    }
+
     /// Whether any control vector is registered.
     #[inline]
     pub fn has_control_vectors(&self) -> bool {
@@ -118,7 +162,27 @@ impl TransformerModel {
         num_tokens: usize,
         stream: u64,
     ) -> Result<()> {
-        if cvec_id == 0 || num_tokens == 0 {
+        if num_tokens == 0 {
+            return Ok(());
+        }
+        // Capture runs FIRST and unconditionally, because derivation must see
+        // UNSTEERED activations — measuring the model after steering it would
+        // fold the vector back into the direction derived from it. It also runs
+        // before the `cvec_id == 0` return, since a derivation pass by
+        // definition selects no vector.
+        if let Some(cap) = self.cvec_capture.as_ref() {
+            let stride = ctx.config.hc_mult * ctx.config.hidden_size * 4;
+            let base = DevicePtr(ctx.buffers.hc_streams().0 + (ctx.hc_row_offset * stride) as u64);
+            cap.accumulate(
+                ctx.gpu,
+                base,
+                layer_idx,
+                num_tokens,
+                ctx.config.hc_mult,
+                stream,
+            )?;
+        }
+        if cvec_id == 0 {
             return Ok(());
         }
         let Some(cv) = self.control_vectors.resolve(cvec_id) else {

@@ -876,6 +876,12 @@ pub(crate) fn load_model(
         );
     }
 
+    if args.control_vector_capture {
+        model
+            .arm_control_vector_capture()
+            .context("--control-vector-capture")?;
+    }
+
     // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
     // by here the audit holds this model's COMPLETE lookup set — see
     // `serve_phases::kernel_gate`, which owns the report, the gate and

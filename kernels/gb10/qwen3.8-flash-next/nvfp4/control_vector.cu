@@ -191,3 +191,49 @@ extern "C" __global__ void cvec_cos_highway(
             s > 0.0f ? fabsf(d) * rsqrtf(s) : 0.0f;
     }
 }
+
+// ── cvec_capture_accum ──
+// Accumulate this layer's STREAM MEAN into a per-layer running sum.
+//
+// This is the derivation half: a control vector is a contrastive
+// mean-difference, so deriving one needs the mean activation per layer over a
+// corpus. `acc[layer]` gathers Σ over tokens of (mean over hc streams), and the
+// host divides by the token count at dump time.
+//
+// The mean over hc streams is what makes the result comparable to a vector
+// derived under llama.cpp, whose generator reads a stream-mean export
+// (`LLAMA_QSA_L_OUT`). Capturing a single stream instead would produce a
+// direction in a different basis than the one the apply path consumes.
+//
+// One block per hidden element range, grid-strided over H; each thread walks
+// all T tokens for its element. T is the loop, not the grid, so the launch
+// geometry does not vary with batch size.
+//
+// FP64 accumulation is deliberate. A corpus is thousands of tokens and the
+// summands are same-signed per element often enough that FP32 drifts; the
+// whole point of this pass is a stable mean, and the cost is irrelevant next
+// to a forward pass.
+extern "C" __global__ void cvec_capture_accum(
+    const float* __restrict__ highway,  // [T, hc*H] FP32
+    double* __restrict__ acc,           // [H] FP64, this layer's running sum
+    const unsigned int hidden_size,
+    const unsigned int hc,
+    const unsigned int num_tokens
+) {
+    const unsigned int hc_dim = hc * hidden_size;
+    const float inv_hc = 1.0f / (float)hc;
+    for (unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+         d < hidden_size;
+         d += gridDim.x * blockDim.x) {
+        double sum = 0.0;
+        for (unsigned int t = 0; t < num_tokens; ++t) {
+            const float* h = highway + (size_t)t * hc_dim;
+            float m = 0.0f;
+            for (unsigned int r = 0; r < hc; ++r) {
+                m += h[(size_t)r * hidden_size + d];
+            }
+            sum += (double)(m * inv_hc);
+        }
+        acc[d] += sum;
+    }
+}

@@ -38,6 +38,7 @@ pub mod compact;
 pub mod completions;
 pub mod completions_exec;
 pub mod completions_logprobs;
+pub mod control_vector_capture_api;
 pub mod control_vector_control;
 pub mod conversations;
 pub mod inference_impl;

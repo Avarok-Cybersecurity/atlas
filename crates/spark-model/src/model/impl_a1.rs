@@ -890,6 +890,7 @@ impl TransformerModel {
             // the same reason as `weight_store`: the specs come from serve
             // flags, not from the weights this constructor is reading.
             control_vectors: Default::default(),
+            cvec_capture: None,
             #[cfg(feature = "cuda")]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;
