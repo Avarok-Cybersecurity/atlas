@@ -17,7 +17,7 @@ anyhow = { workspace = true }
 # Windows has no /dev/urandom and no libc::getrandom; `getrandom` wraps
 # BCryptGenRandom. Already in the graph transitively, so this pins no new crate.
 [target.'cfg(windows)'.dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
