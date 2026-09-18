@@ -593,10 +593,21 @@ impl DeepSeekV41Layer {
             rt.norm_eps,
             stream,
         )?;
+        if trace_on() {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 trace pos={} L{} moein={:016x} hwyin={:016x}",
+                start_pos,
+                self.idx,
+                trace_hash(gpu, normed, m * h * 2),
+                trace_hash(gpu, streams, m * hc * h * 4)
+            );
+        }
         let moe_out = {
             let moe = rt.moe.lock().unwrap();
             let mut lru = rt.lru.lock().unwrap();
-            let (out, _w, _i) = moe.forward(
+            let before = lru.stats();
+            let (out, w_, i_) = moe.forward(
                 gpu,
                 &self.moe_w,
                 &mut lru,
@@ -607,6 +618,25 @@ impl DeepSeekV41Layer {
                 stream,
             )?;
             rt.step_moe.lock().unwrap().add(&moe.last.get());
+            if trace_on() {
+                let after = lru.stats();
+                let wb: Vec<u8> = w_.iter().flat_map(|x| x.to_le_bytes()).collect();
+                let mut hw: u64 = 0xcbf2_9ce4_8422_2325;
+                for x in wb {
+                    hw ^= x as u64;
+                    hw = hw.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+                tracing::info!(
+                    "DS41 trace pos={} L{} route={:?} w={:016x} hits={} misses={} evict={}",
+                    start_pos,
+                    self.idx,
+                    &i_[..i_.len().min(12)],
+                    hw,
+                    after.hits - before.hits,
+                    after.misses - before.misses,
+                    after.evictions - before.evictions
+                );
+            }
             out
         };
         if diag {
