@@ -212,6 +212,29 @@ fn diag_on() -> bool {
     std::env::var("ATLAS_DS41_DIAG").is_ok_and(|v| v == "1")
 }
 
+/// `ATLAS_DS41_TRACE=1`, read once: after every layer's attention and MoE
+/// halves, synchronise and log a checksum of the half's output and of the
+/// highway, so two runs of the same request can be diffed to the first
+/// (position, layer, half) where they part. Diagnostics only.
+fn trace_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_DS41_TRACE").is_ok_and(|v| v == "1"))
+}
+
+/// FNV-1a over `bytes` device bytes at `p` (synchronises).
+fn trace_hash(gpu: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> u64 {
+    let mut b = vec![0u8; bytes];
+    if gpu.copy_d2h(p, &mut b).is_err() {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// RMS of the first `n` f32 values at `p` (diagnostics only, synchronises).
 fn diag_rms_f32(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32 {
     let mut b = vec![0u8; n * 4];
@@ -525,6 +548,16 @@ impl DeepSeekV41Layer {
             run.out
         };
         *rt.step_attn_ms.lock().unwrap() += ta.elapsed().as_secs_f64() * 1e3;
+        if trace_on() {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 trace pos={} L{} attn={:016x} normed={:016x}",
+                start_pos,
+                self.idx,
+                trace_hash(gpu, attn_out, m * h * 2),
+                trace_hash(gpu, normed, m * h * 2)
+            );
+        }
         if diag {
             gpu.synchronize(stream)?;
             tracing::info!(
@@ -588,6 +621,16 @@ impl DeepSeekV41Layer {
         }
         self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, m, stream)?;
         gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, m * hc * 4, stream)?;
+        if trace_on() {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 trace pos={} L{} moe={:016x} hwy={:016x}",
+                start_pos,
+                self.idx,
+                trace_hash(gpu, moe_out, m * h * 2),
+                trace_hash(gpu, streams, m * hc * h * 4)
+            );
+        }
 
         if self.idx + 1 == rt.n_layers {
             self.step_line(m, start_pos, "eager");
