@@ -8,27 +8,40 @@ Read `FACELIFT.md` for what is where and why. This file is the commands.
 
 ## Run it
 
-You need [bun](https://bun.sh) and a clone of
-[atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes) beside
-this repository. The build generates its data from both.
+You need [git](https://git-scm.com), [bun](https://bun.sh), and a clone of
+[atlas-recipes](https://github.com/Avarok-Cybersecurity/atlas-recipes), which
+the build reads the model list from. From an empty folder, to a running site:
 
 ```sh
-cd site
-bun install
+git clone https://github.com/Avarok-Cybersecurity/atlas-recipes.git
+git clone https://github.com/Avarok-Cybersecurity/atlas.git
+cd atlas && git checkout site/avarok-facelift     # or main, once it is merged
+cd site && bun install
 
-export AVAROK_RECIPES_ROOT=/path/to/atlas-recipes/recipes
-export AVAROK_BASELINES_ROOT=/path/to/atlas/tests/baselines
-export GH_TOKEN=$(gh auth token)     # optional: star history and contributors
+export AVAROK_RECIPES_ROOT="$(cd ../../atlas-recipes/recipes && pwd)"
+bun x --bun vite dev                              # http://localhost:5173
+```
 
-bun x --bun vite dev                 # http://localhost:5173
-bun x --bun vite build               # writes build/
+That one variable is the only setting. Everything the pages show is in the
+repository: the fonts, the logos, the product clips, the film and the generated
+stills are ordinary files under `static/`, not Git LFS pointers, so a plain
+clone has them. This was checked from a clean clone with no GitHub login.
+
+`GIT_LFS_SKIP_SMUDGE=1 git clone ...` makes the clone faster. The repository
+keeps some large engine assets in LFS and the site needs none of them.
+
+To build and preview the static output the way it deploys:
+
+```sh
+bun x --bun vite build               # writes build/, about two minutes
 bun x --bun vite preview             # serves build/ on http://localhost:4173
 ```
 
-Without `GH_TOKEN` the build still succeeds. The star curve and the contributor
-list fall back to the committed files.
+A GitHub login is optional. With `GH_TOKEN=$(gh auth token)` the build refreshes
+the star history and the contributor list. Without it those two fall back to
+the committed files and the build says so without failing.
 
-On Windows use Git Bash, with forward slash paths in the two variables
+On Windows use Git Bash, and give the variable a forward slash path
 (`/c/Users/you/atlas-recipes/recipes`).
 
 ## Test it
