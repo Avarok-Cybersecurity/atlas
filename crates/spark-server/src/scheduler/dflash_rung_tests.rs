@@ -53,6 +53,17 @@ fn no_woa_pins_the_multi_rung_at_the_cap() {
 }
 
 #[test]
+fn defaults_below_cap_two_pin_instead_of_panicking() {
+    // `clamp(2, cap)` asserts min <= max; a `--dflash-gamma 1` head reaches
+    // `defaults` from `configure` before the arming check, so every rung
+    // must pin at 2, the same guard `from_env` already applies.
+    for cap in [0, 1] {
+        let r = Rungs::defaults(cap);
+        assert_eq!((r.multi, r.narrow, r.wide), (2, 2, 2), "cap {cap}");
+    }
+}
+
+#[test]
 fn hysteresis_separates_prose_from_code() {
     let r = r10();
     // Measured p1 on the narrow rung: prose ~0.76 (49/64), code ~0.97 (62/64);
