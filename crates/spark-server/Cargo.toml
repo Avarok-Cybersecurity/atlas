@@ -94,7 +94,16 @@ toml = "0.8"
 # published chat template may use them and be perfectly valid upstream. GLM-5.3-Flash
 # does (`chat` line 140) and Atlas refused it at startup with "unknown statement
 # break" — a template Atlas cannot parse blocks the whole server, not just chat.
-minijinja = { version = "2", features = ["builtins", "adjacent_loop_items", "json", "loop_controls", "preserve_order"] }
+# ★ PINNED TO 2.21, WITH A MEASURED CAUSE. 2.24 changes how Python-shaped
+# values render inside a chat template: a bool comes out `true` where the
+# official Qwen template produces `True`, and a null comes out `null` where it
+# produces `none`. That is the tool-call argument text the model reads, so it
+# is a prompt-content change wearing a patch bump's clothes.
+# `tokenizer::tests::qwen_dense_parity` caught it on the exact two cases
+# (`fleet_parity_scalar_and_structured_tool_args`,
+# `divergence_null_arg_value_official_renders_null_not_none`). Raising this
+# needs those pins re-cut against the official template, not a version edit.
+minijinja = { version = "=2.21.0", features = ["builtins", "adjacent_loop_items", "json", "loop_controls", "preserve_order"] }
 # Pure-Rust grammar-constrained decoding (W7: was the C++-backed
 # `xgrammar-rs = "0.1"` patched to `vendor/xgrammar-rs`; now the
 # from-scratch Rust port at `crates/xgrammar`). The crate's lib is
