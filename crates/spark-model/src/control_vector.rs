@@ -79,9 +79,13 @@ pub struct ControlVector {
     project_k: KernelHandle,
     add_k: KernelHandle,
     cos_k: KernelHandle,
-    /// SHA-256 of the vector file. Logged at boot so an EP/TP rank that loaded
-    /// a different file is detectable rather than silently divergent.
+    /// SHA-256 of the vector file.
     pub sha256: String,
+    /// The resolved configuration, retained because the request-visible
+    /// identity has to depend on it — see [`Self::config_identity`].
+    scale: f32,
+    layer_start: usize,
+    layer_end: usize,
     /// `AVAROK_CVEC_PROBE=1`: log `mean|cos(h, v)|` either side of every
     /// application. Resolved ONCE here and carried, per the levers rule — the
     /// consumer runs per layer per forward pass, which is exactly where an
@@ -267,8 +271,46 @@ impl ControlVector {
             add_k: gpu.kernel("control_vector", "cvec_add_highway")?,
             cos_k: gpu.kernel("control_vector", "cvec_cos_highway")?,
             sha256,
+            scale: spec.scale,
+            layer_start: spec.layer_start,
+            layer_end: spec.layer_end,
             probe: std::env::var("AVAROK_CVEC_PROBE").as_deref() == Ok("1"),
         })
+    }
+
+    /// Everything that changes the arithmetic, as one canonical string.
+    ///
+    /// The per-request id is derived from this and not from the name alone,
+    /// and that distinction is the whole point. Two ranks can each register
+    /// `"refusal"` while loading different FILES, MODES, SCALES or LAYER
+    /// RANGES. A name-derived id matches in every one of those cases, the
+    /// worker's "do I have this id?" check passes, and the ranks then steer
+    /// differently — silently, because nothing in the protocol disagrees. The
+    /// halves of the model simply compute different things.
+    ///
+    /// Folding the configuration in makes the ids *diverge* whenever the
+    /// configuration diverges, so the existing worker-side check stops being
+    /// decorative and starts failing closed.
+    ///
+    /// It also retires a second hazard: a different file loaded under an
+    /// existing name now yields a different id, so prefix-cache entries
+    /// computed under the old vector can no longer be served as hits.
+    ///
+    /// `scale` is hashed via `to_bits` because it is a config value being
+    /// compared for exact identity, not a number being compared for
+    /// closeness: 1.0 and 1.0000001 are different configurations and must get
+    /// different ids. (`to_bits` also makes this total — there is no NaN
+    /// scale, since the parser rejects non-finite values, but relying on that
+    /// from a distance would be fragile.)
+    pub fn config_identity(&self) -> String {
+        format!(
+            "sha256={} mode={:?} scale=0x{:08x} layers={}..={}",
+            self.sha256,
+            self.mode,
+            self.scale.to_bits(),
+            self.layer_start,
+            self.layer_end,
+        )
     }
 
     /// Whether the cosine probe is armed. Read per layer, so this must stay a

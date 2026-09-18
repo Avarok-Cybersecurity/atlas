@@ -179,6 +179,26 @@ Omit, `null` or `""` for no steering. An unknown name is a 400 listing what is
 registered. The same file may be registered under many names with different
 settings — that is how a dose ladder is built.
 
+`--control-vector-layers` is **required**; there is no default. It used to
+default to every layer that can carry a direction (`1..n_layer-1`), which is
+not the configuration any published vector is characterised at — the refusal
+projection is tuned over 4..44, so the default silently served 1..47 while the
+documentation described 4..44. "Every tensor present in the file" is not the
+same claim as "every layer should be steered": a vector carries a direction for
+each layer it was *derived* over, and which of those to *apply* is a separate,
+tuned decision. Scale and mode do still default (1.0, `project`).
+
+**Every rank must register identically, and this is now enforced rather than
+merely logged.** The id a request carries is hashed from the name *and* the
+loaded configuration — file SHA-256, mode, scale bits, layer range — so two
+ranks configured differently compute *different* ids and the worker's lookup
+fails closed. Previously the id came from the name alone: both ranks could
+register `"refusal"` from different files or at different scales, the ids
+matched, the check passed, and the halves of the model steered differently with
+nothing to report it. Each rank logs its full identity line at boot
+(`control vector 'x' identity: id=0x… sha256=… mode=… scale=… layers=…`), so a
+divergence can be diffed directly.
+
 **Under EP/TP, every rank must register identically.** The selection is not
 token-derivable: it travels as an id in the prefill preamble and resolves
 against each rank's own registry. A name missing on one rank steers nothing

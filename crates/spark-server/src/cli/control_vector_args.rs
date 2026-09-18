@@ -88,12 +88,40 @@ fn lookup<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
 /// (`1..=n_layer-1`; layer 0 never has a direction). It has to come from the
 /// loaded model, which is why this resolves at install time and not at parse
 /// time.
+/// The layer range to use when the operator gave none, by `model_type`.
+///
+/// Curated, not inferred: each entry is a range that vectors for that model
+/// were actually characterised over, not something derived from how many
+/// direction tensors a file happens to contain.
+///
+/// `qwen4_exp` (Qwen3.8-Flash-Next) is 4..44 because all three known vectors
+/// for it use that range — the published refusal projection and the two derived
+/// in `examples/control-vectors/` — which makes it a property of the model
+/// rather than of any single vector.
+///
+/// A model absent from this table gets no default and the flag is required.
+/// That is the right answer for an unknown model: the useful range is an
+/// empirical fact about where a direction is worth acting on, and there is
+/// nothing to read it off from.
+fn default_layers(model_type: &str, n_layer: usize) -> Option<(usize, usize)> {
+    let (lo, hi) = match model_type {
+        "qwen4_exp" => (4usize, 44usize),
+        _ => return None,
+    };
+    // Guard the table against a checkpoint smaller than the curated range — a
+    // config that would otherwise fail deeper in with a worse message. Written
+    // `hi < n_layer` rather than `hi <= n_layer - 1` so it cannot underflow on
+    // a degenerate layer count.
+    (hi < n_layer).then_some((lo, hi))
+}
+
 pub fn resolve(
     vectors: &[(String, String)],
     layers: &[(String, String)],
     scales: &[(String, String)],
     modes: &[(String, String)],
     n_layer: usize,
+    model_type: &str,
 ) -> Result<Vec<(String, ControlVectorSpec)>> {
     if vectors.is_empty() {
         return Ok(Vec::new());
@@ -129,9 +157,46 @@ pub fn resolve(
         if out.iter().any(|(n, _): &(String, _)| n == name) {
             bail!("--control-vector name '{name}' given twice (names must be unique)");
         }
+        // The range comes from the flag, else from a CURATED per-model value,
+        // else it is an error. What it must never do again is fall back to
+        // `1..n_layer-1` — every layer that can carry a direction — because
+        // that is not the configuration anything was validated at. The shipped
+        // refusal projection is characterised over 4..44, so the old default
+        // silently served 1..47 while the design doc described 4..44.
+        //
+        // "Every tensor in the file" is not the same claim as "every layer
+        // should be steered". A llama.cpp control vector carries a direction
+        // for each layer it was derived over; which of those to APPLY is a
+        // separate tuned decision, and the early layers in particular tend to
+        // carry a direction that is real but not one you want to act on.
+        //
+        // A curated default is a different thing from an inferred one. 4..44 is
+        // what all three known qwen3_exp vectors use — the published refusal
+        // projection and both derived here — which makes it a property of the
+        // MODEL rather than of any one vector. Recording that is useful;
+        // guessing from tensor count is not.
         let (layer_start, layer_end) = match lookup(layers, name) {
             Some(r) => parse_range(r).map_err(|e| anyhow::anyhow!("{name}: {e}"))?,
-            None => (1, n_layer - 1),
+            None => match default_layers(model_type, n_layer) {
+                Some(r) => {
+                    tracing::info!(
+                        "--control-vector '{name}': no --control-vector-layers given, using the \
+                         curated default {}-{} for model_type '{model_type}'. Pass the flag to \
+                         override.",
+                        r.0,
+                        r.1
+                    );
+                    r
+                }
+                None => bail!(
+                    "--control-vector '{name}' needs --control-vector-layers {name}=START-END. \
+                     There is no curated default for model_type '{model_type}', and there is no \
+                     generic one: applying a vector to every layer is not the configuration these \
+                     are tuned at, so guessing would serve something other than what the flags \
+                     say. Check the artifact's model card; the valid range here is 1-{}.",
+                    n_layer - 1
+                ),
+            },
         };
         let scale = match lookup(scales, name) {
             Some(s) => s.parse::<f32>()?,

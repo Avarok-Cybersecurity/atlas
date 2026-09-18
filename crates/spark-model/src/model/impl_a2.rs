@@ -767,13 +767,38 @@ impl TransformerModel {
                 // with different --control-vector files. Fail loudly: the
                 // alternative is one-sided steering, which produces plausible
                 // text and no counter that would ever show it.
-                anyhow::ensure!(
-                    cvec_id == 0 || self.control_vectors.by_id(cvec_id).is_some(),
-                    "EP worker: head selected control vector {cvec_id:#018x}, which \
-                     this rank has not registered (has: {:?}). The ranks were \
-                     started with different --control-vector flags.",
-                    self.control_vectors.names().collect::<Vec<_>>()
-                );
+                if cvec_id != 0 && self.control_vectors.by_id(cvec_id).is_none() {
+                    // The id is a fingerprint of name AND configuration, so the
+                    // likely cause is no longer a missing name — it is the SAME
+                    // name at a different file, mode, scale or layer range.
+                    // Listing only the names would print the requested vector
+                    // among the "registered" ones and read as nonsense, so spell
+                    // out every local identity and let the operator diff it
+                    // against the head's boot log.
+                    let local = self
+                        .control_vectors
+                        .entries()
+                        .map(|e| {
+                            format!(
+                                "  '{}' id={:#018x} {}",
+                                e.name,
+                                e.id,
+                                e.vector.config_identity()
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    anyhow::bail!(
+                        "EP worker: the head selected control vector {cvec_id:#018x}, which this \
+                         rank cannot resolve.\nThe id covers the name AND the configuration \
+                         (file sha256, mode, scale, layer range), so a name present here with a \
+                         DIFFERENT configuration will not match — that is the usual cause, and \
+                         it is exactly the divergence this check exists to stop.\nThis rank has \
+                         registered:\n{local}\nCompare against the head's \
+                         `control vector '<name>' identity:` lines; the ranks were started with \
+                         different --control-vector flags."
+                    );
+                }
                 seq.cvec_id = cvec_id;
                 let full_tokens = self.ep_broadcast_tokens(&vec![0u32; full_len])?;
                 // Receive rank 0's ViT output before embedding: the splice and

@@ -860,6 +860,7 @@ pub(crate) fn load_model(
         &args.control_vector_scale,
         &args.control_vector_mode,
         config.num_hidden_layers,
+        &config.model_type,
     )?;
     // (name, id) mirrored into AppState so a request handler resolves a
     // selection without reaching for the model, the same way adapter_names is.
