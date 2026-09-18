@@ -98,6 +98,8 @@ fn matching_is_case_insensitive_and_honours_want_none() {
         "want_none must veto a reply that hedges across every option"
     );
     assert!(!reply_matches("The label reads 12800.", &["1280"], &[]));
+    assert!(!reply_matches("The label reads 11280.", &["1280"], &[]));
+    assert!(reply_matches("07_hd_1280x720", &["1280"], &[]));
     assert!(!reply_matches("The shape is squared.", &["square"], &[]));
     assert!(reply_matches("It is square.", &["square"], &[]));
 }
@@ -107,6 +109,7 @@ fn an_empty_want_all_is_satisfied_but_want_none_still_bites() {
     // The control's shape: nothing required, one thing forbidden.
     assert!(reply_matches("I cannot see an image.", &[], &["1280"]));
     assert!(!reply_matches("The label reads 1280x720.", &[], &["1280"]));
+    assert!(!reply_matches("07_hd_1280x720", &[], &["1280"]));
 }
 
 #[test]
