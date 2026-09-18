@@ -131,6 +131,80 @@ Report medians over several seeds and look at the per-seed spread before
 believing any gap between objectives. The arms sit close together and seed
 noise swamps small differences — NanoJev say the same of their own comparison.
 
+## Option-order sensitivity: the failure accuracy cannot see
+
+A decision read should be a function of the state and the candidate **set**.
+The order the options happen to be written in is not part of the question, so
+any dependence on it is pure error — and it is invisible to accuracy on a
+fixed dataset, because the dataset always presents the options the same way.
+You only find it if you test for it.
+
+`test_order_sensitivity.py` permutes the candidate list, maps the prediction
+back to canonical order, and measures what moved. On the **untuned read** with
+Qwen3-0.6B (300 examples, 4 permutations each):
+
+| kind | K | flip rate | chance | slot-0 mass | uniform |
+|---|---|---|---|---|---|
+| `noul` | 2 | 93.3% | 50.0% | 0.707 | 0.500 |
+| `choice` | 4 | 63.3% | 75.0% | 0.412 | 0.250 |
+
+Mean total-variation distance 0.308 — roughly a third of the probability mass
+moves when the options are merely reordered.
+
+Read carefully, because the two rows say different things. `choice` beats
+chance, so there **is** content signal in it. `noul` is *worse* than chance,
+which a content-blind random answerer would not manage: the model is
+systematically picking whatever is listed first. The slot-mass column is the
+direct measurement — under random permutations a content-driven read would sit
+at the uniform value in every slot, and slot 0 draws 1.4x (noul) to 1.65x
+(choice) its share instead.
+
+Two consequences worth stating plainly:
+
+- Part of what training buys is **learning to ignore position**, not just
+  learning the task. Any "training helped by X%" number on this testbed is
+  partly that.
+- Flips here occur at *higher* confidence than holds (0.565 vs 0.452), the
+  opposite of what Verdict reports. So a confidence threshold does not rescue
+  it. A read whose distribution tracks presentation is calibrated to the wrong
+  thing, and post-hoc calibration cannot fix that.
+
+Ordered `score` questions are excluded: permuting them changes the question
+rather than its presentation, and including them would manufacture a large
+flip rate that means nothing.
+
+## Related work, and where this sits
+
+Several independent reimplementations of Jev appeared in September 2026, and
+they are worth reading before extending this:
+
+- **[NanoJev](https://github.com/TianyuCodings/NanoJev)** — Qwen3-0.6B with
+  decision heads and a published RLCD derivation. The design this testbed
+  follows most closely. Reports 95%/90% on 4x4/6x6 maze navigation against an
+  untuned Qwen3-0.6B's 35%/15%.
+- **[SemIf](https://github.com/TheoLeeCJ/SemIf)** (openjev.com) — direct logit
+  readout on open models in the browser. Measures direct typed logits at
+  **5.21x** the speed of generating JSON (1.023s vs 5.332s on the same work),
+  and gets 0.845 modal agreement against Jev's 0.883 on TypeSafe's published
+  102-row subset. Its "parallel suffix reuse" (reusing the state prefix across
+  criteria) takes 2.33 -> 20.03 decisions/s.
+- **[Verdict](https://github.com/Heman10x-NGU/Verdict-open-jev)** — ModernBERT
+  151M, RLCD as a *composite* of cross-entropy and Brier, post-hoc L-BFGS
+  temperature scaling, and an explicit `__insufficient_evidence__` abstention
+  candidate. The most rigorous of the three on robustness: it reports the
+  3-4.5% order-flip figure this testbed compares against, and that abstention
+  recall collapses from 75.5% to 18% against confusable siblings.
+
+Sobering context for any small-model result here, including this one: on
+TypeSafe's own published evaluation, OpenJev scores **48.07%** against
+DiffusionGemma-26B's 88.43% and Jev's 90.80%. A clean number on a synthetic
+testbed is not evidence that a 0.6B model does this job.
+
+Three things from that work are missing here and would be the next additions:
+post-hoc temperature scaling, an abstention candidate, and a composite
+CE+Brier objective (a reasonable response to the finding below that the
+individual rules are statistically indistinguishable).
+
 ## Files
 
 | file | what it is |
@@ -142,6 +216,8 @@ noise swamps small differences — NanoJev say the same of their own comparison.
 | `test_objectives.py` | positive control for the estimators |
 | `cache_features.py` | run the backbone once, keep hidden states |
 | `train.py` | train every arm, score against truth, print the comparison |
+| `finetune.py` | full fine-tune (backbone + head) with validation-based epoch selection |
+| `test_order_sensitivity.py` | permute the options; measure flips, TV distance, slot bias |
 
 ## Limits of this testbed
 
