@@ -55,6 +55,10 @@ pub struct ChatRequest {
     /// this request (independent of `model`). `None` = installed active
     /// adapter; resolved to a pool slot at the handler edge.
     pub adapter: Option<String>,
+    /// Per-request control vector (activation steering) by NAME. `None` = no
+    /// steering. Resolved to a registry id at the handler edge, then composed
+    /// with the adapter id into the sequence's prefix-cache variant key.
+    pub control_vector: Option<String>,
     /// NLLB (encoder-decoder): per-request source language token NAME
     /// (e.g. `eng_Latn`); resolved to a token id via the server
     /// tokenizer at dispatch. `None` = deployment default.

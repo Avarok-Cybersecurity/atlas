@@ -361,6 +361,7 @@ impl TransformerModel {
         Ok(SequenceState {
             mrope_delta: 0,
             adapter_id: 0,
+            cvec_id: 0,
             adapter_slot: -1,          // default: defer to installed active adapter
             acquired_adapter_slot: -1, // Task #25: no ref held until prefill acquires
             src_lang_id: 0,            // NLLB-only per-request lang (0 = deployment default)

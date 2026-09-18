@@ -85,6 +85,11 @@ pub enum InferenceRequest {
         /// (`-1` = defer to installed active; byte-identical to today). Set from
         /// the resolved `adapter` field; carried onto `SequenceState.adapter_slot`.
         adapter_slot: i32,
+        /// Per-request control-vector identity (`0` = no steering), resolved
+        /// from the request's `control_vector` NAME against the model's
+        /// registry. Carried onto `SequenceState.cvec_id`, and composed with
+        /// the adapter id into the prefix-cache variant key.
+        cvec_id: u64,
         /// Per-request source-language token id (0 = deployment default);
         /// carried onto `SequenceState.src_lang_id`.
         src_lang_id: u32,
@@ -196,6 +201,9 @@ pub enum InferenceRequest {
         /// M2 per-request LoRA routing: adapter pool SLOT (`-1` = defer to
         /// installed active). See the Blocking variant.
         adapter_slot: i32,
+        /// Per-request control-vector identity (`0` = no steering). See the
+        /// Blocking variant.
+        cvec_id: u64,
         /// Per-request source-language token id (0 = deployment default).
         /// See the Blocking variant.
         src_lang_id: u32,

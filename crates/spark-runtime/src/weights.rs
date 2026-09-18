@@ -516,6 +516,7 @@ pub mod exl3;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
+pub use gguf::container::{GgmlType, GgufFile, TensorInfo};
 pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
 pub(crate) use loader::estimate_load_bytes;
 pub use loader::load_safetensors_file;

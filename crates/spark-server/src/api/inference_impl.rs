@@ -211,6 +211,13 @@ impl InferenceRequest {
         }
     }
 
+    /// Control-vector identity (`0` = none); composed into the variant key.
+    pub fn cvec_id(&self) -> u64 {
+        match self {
+            Self::Blocking { cvec_id, .. } | Self::Streaming { cvec_id, .. } => *cvec_id,
+        }
+    }
+
     /// Per-request source-language token id (0 = deployment default). Copied
     /// onto `SequenceState.src_lang_id` by the scheduler at prefill.
     pub fn src_lang_id(&self) -> u32 {

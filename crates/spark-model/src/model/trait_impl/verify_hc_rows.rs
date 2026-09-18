@@ -443,6 +443,10 @@ impl TransformerModel {
                     )?;
                 }
                 self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+                // INVARIANT: all THREE exits below steer once, over all K rows
+                // at offset 0 — the per-row bodies run at `row_ctx` and the
+                // highway is only complete once they all have.
+                self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
                 continue;
             }
             if batched_gdn && layer.is_ssm_layer() {
@@ -459,6 +463,7 @@ impl TransformerModel {
                     &ctx,
                     stream,
                 )?;
+                self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
                 continue;
             }
             layer.prefill(
@@ -476,6 +481,7 @@ impl TransformerModel {
                 stream,
             )?;
             self.hidden_probe_layer("verify_hc", i, 0, hidden, stream);
+            self.cvec_after_layer(&ctx, "verify_rows", seq.cvec_id, i, k, stream)?;
         }
         drop(kv_cache);
 

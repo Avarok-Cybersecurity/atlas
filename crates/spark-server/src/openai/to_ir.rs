@@ -107,6 +107,8 @@ impl From<ChatCompletionRequest> for ir::ChatRequest {
         };
         ir::ChatRequest {
             model: req.model,
+            // Carried through: this is the per-request steering selection.
+            control_vector: req.control_vector.clone(),
             messages: req.messages.iter().map(Into::into).collect(),
             tools: req.tools.unwrap_or_default(),
             tool_choice: req.tool_choice,

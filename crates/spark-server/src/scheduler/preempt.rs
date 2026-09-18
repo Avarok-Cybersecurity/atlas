@@ -316,16 +316,23 @@ pub(super) fn resume_preempted_seq(model: &dyn Model, p: PreemptedSeq) -> Result
     // by the preempt-time free. (Preempted seqs also hold the LoRA
     // quiescence gate in `run`, so the adapter cannot rotate in between.)
     seq.adapter_id = a.seq.adapter_id;
+    // Same reasoning as adapter_id: the selection was made at the original
+    // admission and must survive the preempt, or the resumed half of the
+    // sequence is steered differently from the half already in its KV.
+    seq.cvec_id = a.seq.cvec_id;
     seq.acquired_adapter_slot = model.acquire_adapter_slot(a.seq.adapter_slot);
 
     // EP: mirror the non-chunked prefill preamble so the worker mirrors the
     // re-prefill (no-ops on non-EP models).
     let prefill_result = (|| -> Result<()> {
-        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
-        model.ep_broadcast_cmd(tokens.len() as u32)?;
-        model.ep_broadcast_cmd(0)?;
-        model.ep_broadcast_cmd(tokens.len() as u32)?;
-        model.ep_broadcast_tokens(&tokens)?;
+        // One call: the preamble sequence lives in `Model::ep_broadcast_prefill_preamble`
+        model.ep_broadcast_prefill_preamble(
+            seq.slot_idx as u32,
+            tokens.len(),
+            0,
+            &tokens,
+            seq.cvec_id,
+        )?;
         // Vision payload travels with the tokens (see Model::ep_exchange_vision):
         model.ep_exchange_vision(&tokens)?;
         model.prefill(&tokens, &mut seq, 0)?;

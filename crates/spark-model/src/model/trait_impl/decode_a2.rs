@@ -233,6 +233,9 @@ impl TransformerModel {
         _stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
+        // Batch-uniform by the admission cohort filter; asserted in debug.
+        // Read BEFORE `seqs` is split into per-layer state refs below.
+        let cvec_id = crate::control_vector_registry::batch_cvec_id(seqs);
         // SOLID Incr-4 pre-lookup guard (the bail `forward_batched.rs` and
         // `build_moe_row_adapter_decode` document): a batch with a row routed
         // to a NON-active adapter cannot be served by the single-active fold —
@@ -560,6 +563,19 @@ impl TransformerModel {
                     &seq_lens,
                     &block_tables,
                     &ctx,
+                    stream,
+                )?;
+                // Activation steering over ALL `padded_n` rows, not the live
+                // `n`: the launch geometry has to stay fixed for a captured
+                // graph to replay at a different batch size, and the padded
+                // rows are never committed, so steering them costs nothing
+                // and changes nothing.
+                self.cvec_after_layer(
+                    &ctx,
+                    "decode_batched",
+                    cvec_id,
+                    layer_idx,
+                    padded_n,
                     stream,
                 )?;
                 if let Some(t0) = t0 {

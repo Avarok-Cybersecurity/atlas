@@ -828,7 +828,7 @@ pub(crate) fn load_model(
     } else {
         None
     };
-    let model = serve_phases::build_model(
+    let mut model = serve_phases::build_model(
         &args,
         &config,
         // Moved, not borrowed: the model keeps the ledger so it can free the
@@ -847,6 +847,34 @@ pub(crate) fn load_model(
         nllb_lang,
         nllb_lora_dir,
     )?;
+
+    // Control vectors. BEFORE `maybe_run_ep_worker`, so rank > 0 installs the
+    // same vectors before it enters its command loop — a rank serving an
+    // un-steered highway while its peer steers would diverge mid-sequence,
+    // and nothing downstream would attribute that to the vector. Each load
+    // logs the file's SHA-256, so comparing the two ranks' boot logs settles
+    // it in one grep.
+    let cvec_specs = cli::control_vector_args::resolve(
+        &args.control_vector,
+        &args.control_vector_layers,
+        &args.control_vector_scale,
+        &args.control_vector_mode,
+        config.num_hidden_layers,
+    )?;
+    // (name, id) mirrored into AppState so a request handler resolves a
+    // selection without reaching for the model, the same way adapter_names is.
+    let mut cvec_registered: Vec<(String, u64)> = Vec::with_capacity(cvec_specs.len());
+    for (name, spec) in &cvec_specs {
+        let id = model
+            .install_control_vector(name, spec)
+            .with_context(|| format!("--control-vector {name}"))?;
+        cvec_registered.push((name.clone(), id));
+        tracing::info!(
+            "control vector '{name}' registered as id {id:#018x}; select it \
+             per-request with {{\"control_vector\": \"{name}\"}} (omit, or send \
+             null, for no steering)"
+        );
+    }
 
     // Kernel load audit + the fail-closed boot gate. Every lookup is eager, so
     // by here the audit holds this model's COMPLETE lookup set — see
@@ -1349,6 +1377,7 @@ pub(crate) fn load_model(
         vision_capacity,
         tokenizer,
         model_name,
+        control_vectors: cvec_registered,
         adapter_name: nllb_adapter_name
             .clone()
             .or_else(|| lora_states.first().map(|l| l.name.clone())),

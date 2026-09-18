@@ -3,6 +3,7 @@
 //! `serve` subcommand arguments.
 //! Split out of `cli.rs` to keep each file under the 500-LoC cap; the
 //! struct is re-exported as `cli::ServeArgs` so call sites are unchanged.
+use crate::cli::control_vector_args;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -1193,6 +1194,31 @@ pub struct ServeArgs {
     /// never merged into the base weights.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
     pub lora_adapter: Vec<(String, String)>,
+
+    /// Control vector (activation steering) to load, as NAME=PATH to a
+    /// llama.cpp control-vector GGUF. Repeatable. Applies `h -= s*(h.v)*v` to
+    /// the residual highway at the end of every layer in range — no weight is
+    /// touched, so this is independent of the weight quantization. Requires an
+    /// mHC model (`hc_mult > 0`).
+    #[arg(long, value_name = "NAME=PATH", value_parser = control_vector_args::parse_control_vector)]
+    pub control_vector: Vec<(String, String)>,
+
+    /// Inclusive layer range for a control vector, as NAME=START-END (e.g.
+    /// `refusal=4-44`). Repeatable. Defaults to every layer the file carries.
+    #[arg(long, value_name = "NAME=START-END", value_parser = control_vector_args::parse_control_vector_layers)]
+    pub control_vector_layers: Vec<(String, String)>,
+
+    /// Scale for a control vector, as NAME=FLOAT. Repeatable. Default 1.0,
+    /// which fully ablates the direction in `project` mode. The additive mode
+    /// wants a much smaller value (~0.1) and a different vector — the two are
+    /// not interchangeable.
+    #[arg(long, value_name = "NAME=FLOAT", value_parser = control_vector_args::parse_control_vector_scale)]
+    pub control_vector_scale: Vec<(String, String)>,
+
+    /// Mode for a control vector, as NAME=project|add. Repeatable. Default
+    /// `project` (rank-1 ablation); `add` steers by adding the vector.
+    #[arg(long, value_name = "NAME=MODE", value_parser = control_vector_args::parse_control_vector_mode)]
+    pub control_vector_mode: Vec<(String, String)>,
 
     /// NLLB/M2M-100 ONLY: source-language token for translation (e.g.
     /// `eng_Latn`). Prepended to the encoder input. Required when serving an

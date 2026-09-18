@@ -63,6 +63,7 @@ pub fn start_chunked_prefill(
     let req_min_tokens = req.min_tokens();
     let req_session_hash = req.session_hash();
     let req_adapter_slot = req.adapter_slot(); // M2 per-request LoRA routing
+    let req_cvec_id = req.cvec_id(); // per-request activation steering
     let req_src_lang = req.src_lang_id();
     let req_tgt_lang = req.tgt_lang_id();
     let req_num_beams = req.num_beams();
@@ -159,7 +160,15 @@ pub fn start_chunked_prefill(
     // Task #24: resolve the STABLE adapter_id NOW (model owns the authoritative
     // active slot for the `-1 = defer to active` case). Keys the KV/prefix cache
     // so this request reuses only same-adapter blocks.
-    seq.adapter_id = model.adapter_id_for(req_adapter_slot);
+    seq.cvec_id = req_cvec_id;
+    // The COMPOSED variant identity. Both consumers — the prefix-cache key
+    // and the admission cohort — read this one value, and computing them
+    // apart is how they drift; the failure of that drift is a cache hit
+    // returning another variant's KV, which is silent and reads plausibly.
+    seq.adapter_id = spark_model::control_vector_registry::compose_variant_id(
+        model.adapter_id_for(req_adapter_slot),
+        req_cvec_id,
+    );
     // Task #25: acquire a ref on the resolved LoRA slot so a swap into it is
     // refused while this seq is in-flight. Before the `defer` branch so both the
     // InProgress co-dispatch and the inline path (and all error frees below,
@@ -290,11 +299,14 @@ pub fn start_chunked_prefill(
         if let Err(e) = (|| -> Result<()> {
             // EP: broadcast chunk 0 to worker (no-op on single-GPU; the batched
             // step does NOT re-broadcast, so this stays the only broadcast site).
-            model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
-            model.ep_broadcast_cmd(chunk_len as u32)?;
-            model.ep_broadcast_cmd(0)?; // chunk_start
-            model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
-            model.ep_broadcast_tokens(&prompt_tokens)?;
+            // // One call: the preamble sequence lives in `Model::ep_broadcast_prefill_preamble`
+            model.ep_broadcast_prefill_preamble(
+                seq.slot_idx as u32,
+                chunk_len,
+                0,
+                &prompt_tokens,
+                seq.cvec_id,
+            )?;
             // Vision payload travels with the tokens (see Model::ep_exchange_vision):
             model.ep_exchange_vision(&prompt_tokens)?;
             Ok(())
@@ -374,11 +386,14 @@ pub fn start_chunked_prefill(
         // identical Marconi prefix-cache lookups (bug #33 fix).
         // Uses bulk broadcast (single NCCL op) instead of per-token broadcast
         // which caused NCCL timeouts on long prompts (6K+ tokens = 6K+ broadcasts).
-        model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF0)?;
-        model.ep_broadcast_cmd(chunk_len as u32)?;
-        model.ep_broadcast_cmd(0)?; // chunk_start
-        model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
-        model.ep_broadcast_tokens(&prompt_tokens)?;
+        // One call: the preamble sequence lives in `Model::ep_broadcast_prefill_preamble`
+        model.ep_broadcast_prefill_preamble(
+            seq.slot_idx as u32,
+            chunk_len,
+            0,
+            &prompt_tokens,
+            seq.cvec_id,
+        )?;
 
         // Co-dispatch: point this request's chunk-0 splice/MRoPE at its slice of
         // the shared packed buf_out. Single-chunk-fit is guaranteed upstream, so

@@ -167,29 +167,42 @@ fn filter_adapter_cohort(
     active: &[ActiveSeq],
     prefilling: &[PrefillInProgress],
 ) -> Vec<InferenceRequest> {
+    // The cohort is the COMPOSED variant (adapter ⊕ control vector), not the
+    // adapter alone. A control vector changes the forward arithmetic for the
+    // whole batch exactly as a LoRA does — the hook applies one vector to the
+    // whole highway — so a batch mixing selections would steer some rows and
+    // not others.
     let cohort = active
         .first()
-        .map(|a| a.seq.adapter_slot)
-        .or_else(|| prefilling.first().map(|p| p.seq.adapter_slot));
+        .map(|a| (a.seq.adapter_slot, a.seq.cvec_id))
+        .or_else(|| {
+            prefilling
+                .first()
+                .map(|p| (p.seq.adapter_slot, p.seq.cvec_id))
+        });
     // Nothing in flight: the FIRST request of this wave defines the cohort.
     // Without this, two requests naming different adapters that arrive in the
     // same wave are both admitted into an empty batch and poison each other —
     // which is exactly what a concurrent streaming pair does.
-    let cohort_slot = match cohort {
+    let (cohort_slot, cohort_cvec) = match cohort {
         Some(s) => s,
         None => match new_reqs.first() {
-            Some(r) => r.adapter_slot(),
+            Some(r) => (r.adapter_slot(), r.cvec_id()),
             None => return new_reqs,
         },
     };
-    let cohort_id = model.adapter_id_for(cohort_slot);
+    let variant = |slot, cvec| {
+        spark_model::control_vector_registry::compose_variant_id(model.adapter_id_for(slot), cvec)
+    };
+    let cohort_id = variant(cohort_slot, cohort_cvec);
     let (admitted, deferred): (Vec<_>, Vec<_>) = new_reqs
         .into_iter()
-        .partition(|r| model.adapter_id_for(r.adapter_slot()) == cohort_id);
+        .partition(|r| variant(r.adapter_slot(), r.cvec_id()) == cohort_id);
     if !deferred.is_empty() {
         tracing::debug!(
-            "adapter cohort: holding {} request(s) for a different adapter until \
-             the current batch drains (v0 is single-active)",
+            "variant cohort: holding {} request(s) for a different adapter or \
+             control vector until the current batch drains (v0 is \
+             single-active)",
             deferred.len()
         );
         let mut g = pending.0.lock();

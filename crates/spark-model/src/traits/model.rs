@@ -349,6 +349,24 @@ pub trait Model: Send + Sync {
         bail!("this model does not support LoRA adapter rotation")
     }
 
+    /// Install a boot-time control vector (activation steering on the residual
+    /// highway). See `crate::control_vector`.
+    ///
+    /// Default: unsupported. It BAILS rather than ignoring the request —
+    /// accepting `--control-vector` and then not steering would serve a model
+    /// the operator believes was steered, and unlike a perf regression there
+    /// is no counter that would ever show it.
+    fn install_control_vector(
+        &mut self,
+        _name: &str,
+        _spec: &crate::control_vector::ControlVectorSpec,
+    ) -> Result<u64> {
+        bail!(
+            "this model does not support control vectors (they need an mHC \
+             residual highway to act on)"
+        )
+    }
+
     /// Task #24: stable adapter_id (KV/prefix-cache identity) for a per-request
     /// pool-slot selector. `slot` follows `SequenceState.adapter_slot`: `>= 0`
     /// picks that resident slot, `-1` defers to the installed active adapter.
@@ -1185,6 +1203,45 @@ pub trait Model: Send + Sync {
     /// Uses a single NCCL broadcast instead of per-token broadcasts.
     fn ep_broadcast_tokens(&self, _tokens: &[u32]) -> Result<Vec<u32>> {
         Ok(Vec::new()) // no-op for non-EP models
+    }
+
+    /// EP: emit the COMPLETE `0xFFFFFFF0` prefill preamble for one sequence.
+    ///
+    /// # Why this is one function
+    ///
+    /// The worker reads every field of this preamble unconditionally
+    /// (`impl_a2.rs`, the `0xFFFFFFF0` arm). There are five emitters of it in
+    /// the scheduler, and an emitter that omits a field does not fail — it
+    /// leaves the stream misaligned, and the worker parses the NEXT field's
+    /// bytes as the one it expected. That has already happened once: the
+    /// control-vector words were added to three emitters and missed on two,
+    /// and rank 1 read a token id as a vector selection.
+    ///
+    /// So the sequence lives HERE, once, and every emitter calls this. Adding
+    /// a field means changing this function and the worker's arm — two places
+    /// that sit next to each other in review — instead of five that do not.
+    ///
+    /// Sends, in order: `(slot_idx, 0xFFFFFFF0)`, `chunk_len`, `chunk_start`,
+    /// `full_len`, `cvec_id` lo/hi, then the full token array. The caller
+    /// still owns [`Self::ep_exchange_vision`], which must follow immediately.
+    fn ep_broadcast_prefill_preamble(
+        &self,
+        slot_idx: u32,
+        chunk_len: usize,
+        chunk_start: usize,
+        tokens: &[u32],
+        cvec_id: u64,
+    ) -> Result<()> {
+        self.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF0)?;
+        self.ep_broadcast_cmd(chunk_len as u32)?;
+        self.ep_broadcast_cmd(chunk_start as u32)?;
+        self.ep_broadcast_cmd(tokens.len() as u32)?; // full prompt length
+        // Not derivable from the token stream, unlike everything else the
+        // worker reconstructs — so it must be transported.
+        self.ep_broadcast_cmd(cvec_id as u32)?; // cvec lo
+        self.ep_broadcast_cmd((cvec_id >> 32) as u32)?; // cvec hi
+        self.ep_broadcast_tokens(tokens)?;
+        Ok(())
     }
 
     /// EP: hand rank 0's vision embeddings and grids to every other rank.

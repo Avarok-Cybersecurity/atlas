@@ -45,6 +45,7 @@ fn request(grammar_spec: Option<GrammarSpec>) -> InferenceRequest {
         prompt_tokens: Arc::new(vec![0]),
         session_hash: 0,
         adapter_slot: -1,
+        cvec_id: 0,
         src_lang_id: 0,
         tgt_lang_id: 0,
         num_beams: 1,

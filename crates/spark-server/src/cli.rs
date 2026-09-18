@@ -16,6 +16,7 @@ mod bench_resolve;
 pub mod bench_run;
 mod bench_selfstart;
 mod bench_serve_plan;
+pub(crate) mod control_vector_args;
 pub(crate) mod doctor;
 pub(crate) mod flag_values;
 pub(crate) mod hermetic;

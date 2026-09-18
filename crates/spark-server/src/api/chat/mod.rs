@@ -249,6 +249,16 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return ChatOutcome::Http(resp),
     };
 
+    // Per-request activation steering: resolve the optional `control_vector`
+    // NAME to a registry id. Absent = 0 = no steering; unknown = 400.
+    let cvec_id = match super::control_vector_control::resolve_request_cvec_id(
+        &state.control_vectors,
+        req.control_vector.as_deref(),
+    ) {
+        Ok(id) => id,
+        Err(resp) => return ChatOutcome::Http(resp),
+    };
+
     // Resolve optional per-request source/target language token NAMES to token
     // ids via the server tokenizer. Absent = deployment default (0); an unknown
     // token is a hard 400 (mirrors the adapter-name resolution convention).
@@ -419,6 +429,7 @@ pub(crate) async fn chat_completions_inner(
             prompt_tokens,
             session_hash,
             adapter_slot,
+            cvec_id,
             src_lang_id,
             tgt_lang_id,
             num_beams,
@@ -461,6 +472,7 @@ pub(crate) async fn chat_completions_inner(
         prompt_tokens,
         session_hash,
         adapter_slot,
+        cvec_id,
         src_lang_id,
         tgt_lang_id,
         num_beams,
