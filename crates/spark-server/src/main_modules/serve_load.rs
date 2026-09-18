@@ -1397,7 +1397,12 @@ pub(crate) fn load_model(
         )),
         max_seq_len: args.max_seq_len,
         request_tx,
-        rotation_tx: if lora_states.is_empty() {
+        // Armed for LoRA rotation OR control-vector capture: the channel is
+        // generic scheduler-command plumbing and its LoRA-only gate was
+        // incidental. Capture's reset/dump ride it precisely because it is
+        // drained at QUIESCENCE, which is the property that keeps a dump from
+        // landing mid-forward.
+        rotation_tx: if lora_states.is_empty() && !args.control_vector_capture {
             None
         } else {
             Some(rotation_tx)
