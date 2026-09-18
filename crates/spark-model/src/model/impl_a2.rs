@@ -755,6 +755,26 @@ impl TransformerModel {
                 let chunk_len = self.ep_broadcast_u32(0)? as usize;
                 let chunk_start = self.ep_broadcast_u32(0)? as usize;
                 let full_len = self.ep_broadcast_u32(0)? as usize;
+                // Per-request control-vector selection, sent because it cannot
+                // be re-derived from the tokens the way seq_len, the block
+                // table and the SSM state are. A worker that stayed at 0 here
+                // would steer nothing while the head steers, and the two ranks
+                // would diverge on a highway that is supposed to be replicated.
+                let cvec_lo = self.ep_broadcast_u32(0)? as u64;
+                let cvec_hi = self.ep_broadcast_u32(0)? as u64;
+                let cvec_id = (cvec_hi << 32) | cvec_lo;
+                // A selection this rank cannot resolve means the ranks booted
+                // with different --control-vector files. Fail loudly: the
+                // alternative is one-sided steering, which produces plausible
+                // text and no counter that would ever show it.
+                anyhow::ensure!(
+                    cvec_id == 0 || self.control_vectors.by_id(cvec_id).is_some(),
+                    "EP worker: head selected control vector {cvec_id:#018x}, which \
+                     this rank has not registered (has: {:?}). The ranks were \
+                     started with different --control-vector flags.",
+                    self.control_vectors.names().collect::<Vec<_>>()
+                );
+                seq.cvec_id = cvec_id;
                 let full_tokens = self.ep_broadcast_tokens(&vec![0u32; full_len])?;
                 // Receive rank 0's ViT output before embedding: the splice and
                 // the MRoPE walk both read this state, and without it this rank

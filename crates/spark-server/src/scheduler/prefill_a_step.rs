@@ -303,6 +303,13 @@ pub fn start_chunked_prefill(
             model.ep_broadcast_cmd(chunk_len as u32)?;
             model.ep_broadcast_cmd(0)?; // chunk_start
             model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
+            // The per-request control-vector selection. NOT derivable from the
+            // token stream, unlike everything else the worker reconstructs, so
+            // it has to be transported: without it rank 1 runs at cvec_id = 0
+            // and steers nothing while rank 0 steers, and the ranks diverge on
+            // a rank-replicated highway.
+            model.ep_broadcast_cmd(seq.cvec_id as u32)?; // cvec lo
+            model.ep_broadcast_cmd((seq.cvec_id >> 32) as u32)?; // cvec hi
             model.ep_broadcast_tokens(&prompt_tokens)?;
             // Vision payload travels with the tokens (see Model::ep_exchange_vision):
             model.ep_exchange_vision(&prompt_tokens)?;
@@ -387,6 +394,12 @@ pub fn start_chunked_prefill(
         model.ep_broadcast_cmd(chunk_len as u32)?;
         model.ep_broadcast_cmd(0)?; // chunk_start
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
+        // Control-vector selection — MUST be sent by EVERY 0xFFFFFFF0 emitter.
+        // The worker reads two words here unconditionally, so an emitter that
+        // skips them leaves the stream misaligned and the worker parses token
+        // data as the id.
+        model.ep_broadcast_cmd(seq.cvec_id as u32)?; // cvec lo
+        model.ep_broadcast_cmd((seq.cvec_id >> 32) as u32)?; // cvec hi
         model.ep_broadcast_tokens(&prompt_tokens)?;
 
         // Co-dispatch: point this request's chunk-0 splice/MRoPE at its slice of

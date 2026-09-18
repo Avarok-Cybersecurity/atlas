@@ -271,6 +271,10 @@ pub fn prefill_request(
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?;
         model.ep_broadcast_cmd(0)?; // chunk_start = 0 (non-chunked)
         model.ep_broadcast_cmd(prompt_tokens.len() as u32)?; // full prompt length
+        // The per-request control-vector selection — not derivable from the
+        // token stream, so it must be transported or rank 1 steers nothing.
+        model.ep_broadcast_cmd(seq.cvec_id as u32)?; // cvec lo
+        model.ep_broadcast_cmd((seq.cvec_id >> 32) as u32)?; // cvec hi
         model.ep_broadcast_tokens(&prompt_tokens)?;
         // Vision payload travels with the tokens (see Model::ep_exchange_vision):
         model.ep_exchange_vision(&prompt_tokens)?;
