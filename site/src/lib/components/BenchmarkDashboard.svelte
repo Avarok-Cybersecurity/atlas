@@ -5,14 +5,13 @@
   // every chart point. Data: gates.generated.json — the union of gate records
   // across ALL branches at build time, so the newest run shows even before its
   // PR merges (provenance shown per point and in the footer).
-  import ConcurrencyLadder from './ConcurrencyLadder.svelte';
+  import ConcurrencyTab from './ConcurrencyTab.svelte';
   import GateBenchSection from './GateBenchSection.svelte';
   import GatePointCard from './GatePointCard.svelte';
   import TabStrip from './TabStrip.svelte';
   import { browser } from '$app/environment';
   import { replaceState } from '$app/navigation';
   import { gateData, tabs, unpublished, models, recordsFor, benchName, shortModel, colorFor } from '$lib/gates.js';
-  import { groupFor, groupRecords, groupedBenches } from '$lib/gate-variants.js';
   import { SUBJECTS, rungsDeclared } from '$lib/concurrency-subjects.js';
   import { formatDashboardHash, isDeepLink, parseDashboardHash } from '$lib/dashboard-link.js';
 
@@ -32,8 +31,9 @@
 
   // A deep link picks the tab; a plain open lands on the first tab as before.
   let activeTab = $state(initial.tab ?? tabs[0]?.id);
-  // Held and written back so a concurrency deep link survives until the
-  // subject tabs mount (a later step); nothing renders from them yet.
+  // `subject` drives the concurrency tab's inner strip (bound both ways, so a
+  // click and a pasted link agree). `rung` is held and written back so a
+  // `c=64` link survives until the rung navigator mounts (a later step).
   let subject = $state(initial.subject);
   let rung = $state(initial.c);
   let modelFilter = $state('all');
@@ -43,40 +43,23 @@
   let dialogEl = $state(null);
 
   const tab = $derived(tabs.find((t) => t.id === activeTab) ?? tabs[0]);
+  const onConcurrency = $derived(activeTab === 'concurrency');
   const keep = (r) => modelFilter === 'all' || r.target_model === modelFilter;
-  // Grouped benches (see gate-variants.js) collapse into ONE section drawn
-  // under the group's primary id, so the concurrency ladder renders as two
-  // lines on one axis instead of two panels that cannot be read against each
-  // other. Everything else keeps the one-bench-one-section shape.
-  const sections = $derived.by(() => {
-    const out = [];
-    const done = new Set();
-    for (const b of tab?.benches ?? []) {
-      if (done.has(b)) continue;
-      const group = groupFor(b);
-      if (group) {
-        group.members.forEach((m) => done.add(m.bench));
-        const records = groupRecords(group, recordsFor).filter(keep);
-        if (records.length > 0)
-          out.push({ benchId: group.primary, name: benchName(group.primary), records });
-      } else {
-        done.add(b);
-        const records = recordsFor(b).filter(keep);
-        if (records.length > 0) out.push({ benchId: b, name: benchName(b), records });
-      }
-    }
-    return out;
-  });
-  // A grouped member is never "hidden": its records are drawn inside the
-  // group's section under the primary's id, so matching on benchId alone
-  // would accuse the DFlash2 gate of being filtered out on every render.
+  // One bench, one section — except on the concurrency tab, where the subject
+  // tabs own every record (ConcurrencyTab) and the model select is hidden:
+  // the subject strip is the model filter there, and a second filter on top
+  // of it could empty a tab that still has records.
+  const sections = $derived(
+    onConcurrency
+      ? []
+      : (tab?.benches ?? [])
+          .map((b) => ({ benchId: b, name: benchName(b), records: recordsFor(b).filter(keep) }))
+          .filter((s) => s.records.length > 0)
+  );
   const hiddenByFilter = $derived(
-    (tab?.benches ?? []).filter(
-      (b) =>
-        recordsFor(b).length > 0 &&
-        !groupedBenches.has(b) &&
-        !sections.some((s) => s.benchId === b)
-    )
+    onConcurrency
+      ? []
+      : (tab?.benches ?? []).filter((b) => recordsFor(b).length > 0 && !sections.some((s) => s.benchId === b))
   );
   const src = gateData.sources;
 
@@ -96,7 +79,6 @@
   // tab flips do not pile up entries. Subject and rung travel only with the
   // concurrency tab — a TTFT link has no subject.
   $effect(() => {
-    const onConcurrency = activeTab === 'concurrency';
     const hash = formatDashboardHash({
       tab: activeTab,
       subject: onConcurrency ? subject : null,
@@ -148,15 +130,17 @@
 
     <div class="bd-controls">
       <TabStrip prefix="bd" label="Benchmarks" {tabs} bind:active={activeTab} />
-      <label class="bd-model">
-        <span class="bd-model-label">model</span>
-        <select bind:value={modelFilter} aria-label="Filter by model">
-          <option value="all">all models</option>
-          {#each models as m}
-            <option value={m}>{shortModel(m)}</option>
-          {/each}
-        </select>
-      </label>
+      {#if !onConcurrency}
+        <label class="bd-model">
+          <span class="bd-model-label">model</span>
+          <select bind:value={modelFilter} aria-label="Filter by model">
+            <option value="all">all models</option>
+            {#each models as m}
+              <option value={m}>{shortModel(m)}</option>
+            {/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
     <!-- The outer tabpanel. Nested tablists (subjects, rungs) live INSIDE this
@@ -168,13 +152,19 @@
       aria-labelledby="bd-tab-{activeTab}"
       tabindex="-1"
     >
-      {#if activeTab === 'concurrency'}
-        <ConcurrencyLadder />
+      {#if onConcurrency}
+        <ConcurrencyTab
+          bind:subject
+          rungs={known.rungs}
+          benches={tab.benches}
+          {recordsFor}
+          onselect={(recs) => (selected = recs)}
+        />
       {/if}
       {#each sections as s (s.benchId)}
         <GateBenchSection {...s} onselect={(recs) => (selected = recs)} />
       {/each}
-      {#if sections.length === 0 && activeTab !== 'concurrency'}
+      {#if sections.length === 0 && !onConcurrency}
         <p class="bd-empty">No records for this model in this benchmark family.</p>
       {/if}
       {#each hiddenByFilter as b}
