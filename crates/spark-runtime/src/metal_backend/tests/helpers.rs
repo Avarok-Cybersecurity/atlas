@@ -328,6 +328,18 @@ pub(super) fn norm_ratio_bf16(a: &[half::bf16], b: &[half::bf16]) -> f64 {
     norm_ratio_f32(&fa, &fb)
 }
 
+/// One BF16 ulp at magnitude `x`: 8 significand bits, so ulp = 2^(exp-7).
+/// The same rule as `bf16_ulp` in `crates/spark-model/examples/
+/// glm5next_ffn_microtest.rs`, which an integration test of this crate cannot
+/// import from an example binary.
+pub(super) fn bf16_ulp(x: f32) -> f32 {
+    if x == 0.0 {
+        return f32::MIN_POSITIVE;
+    }
+    let e = x.abs().log2().floor() as i32;
+    2.0f32.powi(e - 7)
+}
+
 /// `cos_f32` of the microtests; same zero-norm rule as [`cosine_bf16`].
 pub(super) fn cosine_f32(a: &[f32], b: &[f32]) -> f64 {
     let (mut d, mut na, mut nb) = (0f64, 0f64, 0f64);
