@@ -66,9 +66,11 @@ export const links = {
   sequoiaPatel: 'https://sequoiacap.com/podcast/dylan-patel-of-semianalysis-why-hardware-software-co-design-is-ais-real-100x'
 };
 
-// Where a form goes. Empty means the demo and contact forms compose an email
-// in the visitor's mail client. Point this at a Cloudflare Worker, Formspree,
-// or HubSpot endpoint that accepts JSON POST and the same forms submit there.
+// Where the forms post. Empty means each form drafts an email in the visitor's own
+// mail app, which loses every visitor who does not press send. The endpoint is
+// the Worker in deploy/cloudflare/forms-worker: deploy it (its README has the
+// ten minutes of setup), paste its /lead address here, then `bun run guide`.
+// Any endpoint that accepts a JSON POST works, a hosted form service included.
 export const formEndpoint = '';
 
 // Who answers what. One address per job, and the job is the key, so a change of

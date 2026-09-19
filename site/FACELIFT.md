@@ -89,7 +89,7 @@ a group's CSS to that group's pages.
 | Offer the deck as a download | `team.deck.file` in `company.js`. Read open question 17 first |
 | The culture lines, a role's detail, the interest form | `careers` in `company.js` |
 | The map of the site | Never by hand. `bun x --bun vite build`, then `bun run guide -- --note "what changed"` |
-| Where the forms post | `formEndpoint` in `src/lib/content/brand.js`. Empty means they compose an email. The demo form and the waitlist form are one component, `DemoForm.svelte`, and each post carries a `source` |
+| Where the forms post | `formEndpoint` in `src/lib/content/brand.js`, the address of the Worker in `deploy/cloudflare/forms-worker/`. Empty means they compose an email. The demo form and the waitlist form are one component, `DemoForm.svelte`, and each post carries a `source` |
 | A form's fields or wording | `demoPage.form` or `waitlistPage.form` in `src/lib/content/company.js` |
 | The team's prior employers | `logoWall` in `src/lib/content/home.js`, files in `static/logos/` |
 | Emblems or plain type for the two commands | `logoWall.emblems` in `src/lib/content/home.js`. One boolean |
@@ -289,6 +289,13 @@ hosted, because the brand kit's slide and letterhead templates use them.
   `vite.config.js` now, and `e2e/page-weight.spec.js` holds a request budget for seven
   pages. The same test would have caught the 22 byte facade chunk that one `import` of
   `$app/navigation` in the root layout left on every page.
+- **The forms post to a Worker of their own.** `deploy/cloudflare/forms-worker/` keeps each
+  request in KV, then tells Discord, Slack or an inbox, whichever has a secret set. It is a
+  standalone Worker and not a Pages Function, because the site is uploaded by CI as plain
+  files and a mistake in a function would stand in front of every page. If the post fails
+  the form says so and hands the visitor the drafted email. It was run end to end on one
+  machine, a browser through the site to the Worker in Cloudflare's own runtime, before it
+  was committed. It is not deployed: that needs the account.
 - **Media stays out of the service worker.** `static/` went from a few icons to 31 MB of
   video, and the worker precached all of `static/` on install, for every first visit and
   again on every deploy. Media is now neither precached nor handled (video arrives in byte
@@ -369,10 +376,12 @@ hosted, because the brand kit's slide and letterhead templates use them.
 18. **Each person confirms their own entry.** Photo, title, line and profile link for the
     five people in `team.people` came from the company's team slide and the links Alexi
     supplied. Each of them should read their own before this merges.
-19. **A form endpoint is now the real fix.** With none, a form can only draft an email in
-    the visitor's own mail app, and a visitor without one has to copy and paste. The page
-    handles that honestly now, but a Cloudflare Worker or a CRM endpoint in `formEndpoint`
-    is what stops requests being lost.
+19. **Deploy the forms Worker.** With no endpoint a form can only draft an email in the
+    visitor's own mail app, and every visitor who does not press send is lost. The fix is
+    written and tested: `deploy/cloudflare/forms-worker/`. It needs ten minutes from someone
+    with the Cloudflare account (a KV namespace, one webhook or email key, `wrangler
+    deploy`), then its address in `formEndpoint`. Its README has the steps and the options
+    that were weighed against it.
 
 ## How to throw it away
 

@@ -445,6 +445,19 @@ test.describe('logos', () => {
   });
 });
 
+test.describe('the hidden field that catches bots', () => {
+  for (const [path, id] of [['/demo', 'demo'], ['/waitlist', 'waitlist'], ['/company/careers', 'careers']]) {
+    test(`${path}: it is there, and no person can reach it`, async ({ page }) => {
+      await page.goto(path);
+      const trap = page.locator(`#${id}-website`);
+      await expect(trap).toHaveCount(1);
+      await expect(trap).toHaveAttribute('tabindex', '-1');
+      await expect(trap.locator('xpath=ancestor::*[@aria-hidden="true"]')).toHaveCount(1);
+      expect(await trap.evaluate((el) => el.getBoundingClientRect().right < 0)).toBe(true); // off the screen
+    });
+  }
+});
+
 test.describe('installed art', () => {
   const samples = [
     ['/why-avarok', '/media/art/art-prisms.webp'],

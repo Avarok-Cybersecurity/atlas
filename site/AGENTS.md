@@ -86,7 +86,7 @@ screen (`src/lib/reveal.js` sets `is-live`). An element reset in `avarok.css` is
 | The header menu or the footer | `nav` and `footer` in `brand.js` |
 | A price or a tier | `src/lib/content/pricing.js` |
 | A form's fields | `demoPage.form`, `waitlistPage.form`, `careers.form` in `company.js` |
-| Where forms post | `formEndpoint` in `brand.js`. Empty means they draft an email |
+| Where forms post | `formEndpoint` in `brand.js`. Empty means they draft an email. The endpoint is the Worker in `deploy/cloudflare/forms-worker/` |
 | A team member's line | `team.people` in `company.js`, and only on that person's word |
 | A logo | `static/logos/`, and its row in `static/logos/README.md` |
 | A clip or a still | `node scripts/media/install.mjs --from <file> --as <slot>` |
