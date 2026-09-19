@@ -289,3 +289,115 @@ of it the GPU finishing queued work), 49 D2H, 260 H2D; experts 17.5 ms (`q2_k_ex
 10.53 + `q3_k_experts_w8` 6.96), attention projections 10.82 + 2.34 + 1.95, head 2.88, router
 2.73, sparse attention 2.06, HC chain 2.54. Unchanged from phase 1 within the run, as S2 and
 S3 landed no kernel.
+
+## Phase 3 (PR #TBD, branch `ds41-decode-retune-3`): the hit step
+
+### What the microbench and the trace said before any lever
+
+The brief's P1/P2 (the K-quant GEMVs latency-bound on dependent super-block loads; issue the
+loads first) was tested first, in a scratchpad microbench that includes `kquant_moe.cu`,
+rotates the weights through a ring larger than L2 and compares every variant byte for byte
+against the shipped kernel at the exact V4.1 decode shapes. Register-prefetch variants of
+`kq_mmvq_warp` (4 / 8 / 16 super-blocks a lane in flight, 1 / 2 / 4 / 8 warps a block) were
+bit-identical and slower at every shape (+4 to +55%); the shipped kernels run at 150-215 GB/s
+isolated (wq_b 179, wo_b 203, groups 186, experts 213 / 206 GB/s; the small grids wkv 100 and
+wq_a 154) against the 249 GB/s ceiling. The thesis is dead; nothing of it landed.
+
+The per-launch trace of the phase 2 hit step (30 warm tokens of the final nsys, one token =
+2,213 GPU ops) placed the time instead:
+
+| per warm token, phase 2 final | ms |
+|---|---|
+| wall / GPU busy / idle (the host span, ~67 us a layer) | 50.6 / 47.9 / 2.7 |
+| routed experts (`q2_k_experts_w8` 267 us + `q3_k_experts_w8` 176 us a layer) | 17.7 |
+| attention projections (`q2_k_w` wq_b 89.5, wo_b 76.9, wq_a 16, wkv 7.5 us; `groups_w` 57) | 9.9 + 2.3 |
+| LM head `q6_k_w` | 2.9 |
+| engram `wkv` as bf16 (`dense_gemv_bf16`, 25600 x 6144, 315 MB a layer x 2, 245 GB/s) | 2.6 |
+| router `_staged` (64.7 us for a 4 MB weight: a 5,120-step sequential chain on 2 lanes a block) | 2.6 |
+| sparse attention | 2.4 |
+| shared expert (w1 + w3 1.85, w2 1.2) | 3.1 |
+| HC `finish_collapse` (19.3 us: the Sinkhorn finish on one thread) + `mixes_dot` (12.4 us) | 1.5 + 1.0 |
+| `index_score` (one block, 122 us x 8) + compressor `gemm_f32` (32 blocks, 144 us x 6) | 1.0 + 0.9 |
+
+The routed experts read the page-locked arena: the same kernel reads a device-memory ring at
+213 GB/s, a default pinned ring at 178-180 and a write-combined pinned ring at 184-196 (the
+in-step 267 us a layer is the pinned number exactly). Managed memory reads at 166; pageable
+memory faults (no HMM on this GB10); a device arena would cost 213 us of H2D per 12 MiB miss
+(59 GB/s copy engine).
+
+### The levers, kept or reverted, each on a full standard with 6/6 texts byte-identical
+
+| step | commit | MinHeap tok/s (r1/r2/r3) | MinHeap TTFT | Volvo tok/s (r1/r2/r3) | Volvo TTFT | oracle |
+|---|---|---|---|---|---|---|
+| p3base = #1148 rebased on main | 9b0748d04 | 16.19 (10.29/16.19/16.74) | 1212 ms | 18.21 (11.43/18.21/18.37) | 423 ms | 6/6 |
+| L1 arena write-combined, REVERTED (neutral: A/B on the L3 binary 17.75/20.14 vs 17.58/19.75) | 689787c4f, 4a30b6b2c | 16.37 (10.30/16.37/16.47) | 1209 ms | 17.82 (11.46/18.18/17.82) | 462 ms | 6/6 |
+| L2 shared expert on a side stream under the router and the host span | 758df0dde | 17.11 (10.63/17.11/17.62) | 1213 ms | 19.34 (11.92/19.34/19.40) | 406 ms | 6/6 |
+| L3 compressor product staged at m = 1; index score in registers | c87a65510 | 17.75 (10.86/17.75/18.39) | 1361 ms | 20.14 (12.24/20.14/20.24) | 422 ms | 6/6 |
+| L4 engram `wkv` on raw Q2_K (q8_1 rows), DROPPED | (not committed) | 19.62 (11.29/19.62/20.66) | 1098 ms | 21.55 (12.70/21.55/21.72) | **0/6** |
+| L5 HC finish on 16 lanes + L6 router and compressor chains from precomputed products | c1fcb64a4 | **18.43** (11.06/18.43/18.94) | 1214 ms | **20.81** (12.46/20.81/20.92) | 399 ms | 6/6 |
+
+Phase 3 against its baseline: MinHeap +13.8%, Volvo +14.3%; against phase 2 as published
+(15.79 / 17.67): +16.7% / +17.8%; against the 09-19 morning baseline (10.42 / 10.77): +77% /
++93%. The phase target of 22 / 25 was not reached; what stands between 18.4 / 20.8 and it is
+below.
+
+L1: `cuMemHostAlloc(DEVICEMAP | WRITECOMBINED)` for the arena. Faster isolated, inside the
+band on the standard in both directions; reverted so the branch carries only levers that moved
+the number (the allocator entry point stays in the history).
+
+L2: at decode the shared expert depends only on the MoE input; it now runs on a side stream
+(its own q8_1 scratch) from an event recorded before the router launch, and the main stream
+waits on its event before the same `accumulate` + `finish`. The order of additions into `acc`
+is unchanged (routed rows in plan order, then the shared expert): phase 2's bits.
+`ATLAS_DS41_SHARED_SIDE=0` restores the serial order.
+
+L3: `attn_v41_gemm_f32` (the 16x16 tile at m = 1: 32 blocks, 144 us) becomes one output a
+block with the strict k chain in the tiled kernel's order; `attn_v41_index_score` (one block,
+122 us) keeps the key row in registers and reads the query 16 bytes at a time when `ihd` is
+128. Same products, same order, same bf16 roundings.
+
+L4: the engram projection ships as Q2_K (52 MB a layer) and is expanded to bf16 (315 MB a
+layer, 2.6 ms a token to read). The K-quant GEMV on the raw blocks needs the 25,600-wide
+engram row quantised to q8_1 first, and that rounding is a different model: 0/6 texts
+identical (MinHeap diverges at character 100, Volvo at 51). Out of the branch. What would pass
+the oracle is a bf16-activation Q2_K GEMV (the weight block dequantised in registers, f32
+products in the tiled kernel's order), ~2 ms a token, not built here.
+
+L5: the Sinkhorn finish of each HC site ran on one thread (17 us a call, 80 sites a token);
+`hcv_finish_lanes<HC>` puts one element on each of the 16 lanes, gathers row and column sums by
+shuffles in the serial order, keeps the max, `expf` and every division per element: the serial
+form's bits, 19.3 -> 4.5 us a launch.
+
+L6: the router's strict 5,120-step chain ran on two lanes a block (64.7 us for a 4 MB weight).
+The block's 256 threads now write the products into shared memory (bf16 x bf16 is exact in
+f32) and one lane adds them in k order eight float4 at a time from registers: no load on the
+FADD chain, 64.7 -> 41.2 us in the step, bit-identical. The compressor product of L3 rewritten
+the same way: 95 -> 64 us.
+
+### The final profile (nsys, one warm 60-token request, same method; receipts `ds41_nsys_decode_final3*`)
+
+| per token | phase 2 final | phase 3 final |
+|---|---|---|
+| profiled request | 19.86 tok/s | 22.79 tok/s |
+| wall / GPU busy / idle gaps (30 mid-request tokens) | 50.6 / 47.9 / 2.7 ms | 44.2 / 45.0 / 1.6 ms |
+| kernel launches | 1,865 | 1,865 |
+| `cuStreamSynchronize` | 186 (28.6 ms blocked) | 186 (25.3 ms blocked) |
+| `cuMemcpyDtoHAsync` / `HtoDAsync` | 49 / 260 | 49 / 260 |
+| routed experts (`q2_k_experts_w8` + `q3_k_experts_w8`) | 10.68 + 7.05 | 10.28 + 7.18 |
+| attention projections (`q2_k_w` wq_b + wo_b + wq_a + wkv, `groups_w`) | 3.58 + 3.08 + 0.64 + 0.30, 2.29 | 3.11 + 2.82 + 0.60 + 0.36, 2.75 |
+| shared expert (`q2_k_w` x2 + `q3_k_w`) | 1.85 + 1.20 | 1.82 + 1.68 (now overlapped with the host span) |
+| LM head `q6_k_w` | 2.88 | 2.78 |
+| engram `wkv` (`dense_gemv_bf16` 6400x1) | 2.57 | 2.63 |
+| sparse attention | 2.37 | 2.41 |
+| router (`_staged` -> `_products`) | 2.59 | 1.65 |
+| HC `mixes_dot` + `finish_collapse` | 0.99 + 1.54 | 1.00 + 0.36 |
+| compressor (`gemm_f32` -> `gemv_f32_staged`) + `index_score` | 0.86 + 0.97 | 0.38 + 0.16 |
+
+GPU busy exceeds wall because the side stream overlaps the main one. The step is now 44 ms of
+GPU time, 41 of it in seven bandwidth-bound GEMV families reading 6.09 GB a token at 150-215
+GB/s of the 249 measured, plus 1.6 ms of host span. The honest gap to 22 / 25 on the standard
+is (a) those families at their present efficiency (the routed experts alone are 17.5 ms for
+2.93 GB, 167 GB/s from the pinned arena; the same kernel reads device memory at 213), (b) the
+1-2 residual misses a step on MinHeap at 100 GiB (~2 ms each), and (c) the 186 host waits a
+step, whose cure (device routing, a whole-step graph) phase 2 showed does not pay while 65% of
+steps miss. None of the three is a kernel rewrite of the kind tried here.
