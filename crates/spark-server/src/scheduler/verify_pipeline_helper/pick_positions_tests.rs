@@ -90,6 +90,13 @@ fn with_ctx<R>(f: impl FnOnce(&LogitsContext) -> R) -> R {
         think_start_token: Some(THINK_START),
         tool_call_start_token: Some(TOOL_CALL_OPEN),
         tool_call_end_token: Some(TOOL_CALL_CLOSE),
+        // Inert here: this file's `pick_positions_from_host` never reads
+        // `verify_pos`. The real verify path rebuilds the context per
+        // position (`LogitsContext { verify_pos, ..ctx.clone() }` in
+        // verify_pipeline_helper.rs), so the value carried by a shared
+        // context cannot reach a position's mask. 0 matches every other
+        // non-verify construction site.
+        verify_pos: 0,
     };
     f(&ctx)
 }
