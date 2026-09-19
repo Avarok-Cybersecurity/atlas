@@ -178,6 +178,27 @@ pub struct MoeV41 {
     sd: DevicePtr,
     acc: DevicePtr,
     out: DevicePtr,
+    /// The shared expert's own q8_1 scratch (`[1, dim]`, `[1, inter]`) for
+    /// the side stream, so it never shares `a_q8` / `h_q8` with the routed
+    /// experts running at the same time.
+    sa_q8: DevicePtr,
+    sh_q8: DevicePtr,
+    /// The side stream the single-token shared expert runs on, and the two
+    /// events that fence it: `ev_in` (the input is ready, recorded on the
+    /// main stream) and `ev_out` (`sd` is ready, recorded on the side).
+    side: u64,
+    ev_in: u64,
+    ev_out: u64,
+}
+
+/// `ATLAS_DS41_SHARED_SIDE` (default on; `0` = off), read once: at decode the
+/// shared expert runs on a side stream while the main stream does the router
+/// and the host picks the experts (the GPU is otherwise idle for that span);
+/// its output is added into `acc` after the routed experts, as before, so the
+/// accumulation order and the bits are unchanged.
+pub fn shared_side() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| !std::env::var("ATLAS_DS41_SHARED_SIDE").is_ok_and(|v| v == "0"))
 }
 
 fn softplus(x: f32) -> f32 {

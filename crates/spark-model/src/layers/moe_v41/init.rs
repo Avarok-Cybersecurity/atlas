@@ -93,6 +93,11 @@ impl MoeV41 {
             sd: alloc(m * cfg.dim * 2)?,
             acc: alloc(m * cfg.dim * 4)?,
             out: alloc(m * cfg.dim * 2)?,
+            sa_q8: alloc(kquant_q8_1_rows_bytes(1, cfg.dim as u32))?,
+            sh_q8: alloc(kquant_q8_1_rows_bytes(1, cfg.inter as u32))?,
+            side: gpu.create_stream()?,
+            ev_in: gpu.create_event()?,
+            ev_out: gpu.create_event()?,
             cfg,
         })
     }
@@ -120,9 +125,13 @@ impl MoeV41 {
             self.sd,
             self.acc,
             self.out,
+            self.sa_q8,
+            self.sh_q8,
         ] {
             gpu.free(p)?;
         }
+        gpu.destroy_event(self.ev_in)?;
+        gpu.destroy_event(self.ev_out)?;
         Ok(())
     }
 }

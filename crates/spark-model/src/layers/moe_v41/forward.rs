@@ -9,7 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
-use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing, RouterWeights, prefetch_k};
+use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing, RouterWeights, prefetch_k, shared_side};
 use crate::layers::ops::{
     self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm,
     kquant_mmvq_w, kquant_q8_1_rows,
@@ -63,9 +63,25 @@ impl MoeV41 {
     ) -> Result<(DevicePtr, Vec<f32>, Vec<usize>)> {
         let c = &self.cfg;
         let t0 = std::time::Instant::now();
+        // ATLAS_DS41_M1_LOOP=1 (diagnostic): run the single token through the
+        // per-expert loop below (one-row groups on the decode GEMV) instead of
+        // the pointer-table arm, to tell the two apart.
+        let m1_arm = m == 1 && !m1_loop();
+        // At decode the shared expert needs only `x`: it runs on the side
+        // stream from here, under the router launch, the read-back and the
+        // host's selection, and joins the main stream before the tail.
+        let side = m1_arm && shared_side();
+        if side {
+            gpu.record_event(self.ev_in, stream)?;
+        }
         // the router, and at decode the next layer's router on the same
         // input (its read-back rides the same drain), then the selection
         self.route_launch(gpu, w, x, m, stream)?;
+        if side {
+            gpu.stream_wait_event(self.side, self.ev_in)?;
+            self.shared_expert_body(gpu, w, x, 1, self.sa_q8, self.sh_q8, self.side)?;
+            gpu.record_event(self.ev_out, self.side)?;
+        }
         let predict = next.filter(|_| m == 1 && prefetch_k() > 0 && lru.has_pool());
         if let Some(nw) = predict {
             self.predict_launch(gpu, nw, x, stream)?;
@@ -92,10 +108,6 @@ impl MoeV41 {
         gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
         gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
         gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
-        // ATLAS_DS41_M1_LOOP=1 (diagnostic): run the single token through the
-        // per-expert loop below (one-row groups on the decode GEMV) instead of
-        // the pointer-table arm, to tell the two apart.
-        let m1_arm = m == 1 && !m1_loop();
         if m1_arm {
             // the single-token arm: the token is every expert's activation, so
             // quantise it once and run each projection as one launch over the
@@ -314,7 +326,13 @@ impl MoeV41 {
                 .arg_u32(c.dim as u32)
                 .launch(stream)?;
         }
-        self.shared_expert(gpu, w, x, m, stream)?;
+        if side {
+            // `sd` from the side stream, then the same accumulate + finish
+            gpu.stream_wait_event(stream, self.ev_out)?;
+            self.shared_expert_tail(gpu, m, stream)?;
+        } else {
+            self.shared_expert(gpu, w, x, m, stream)?;
+        }
         if self.timing_sync {
             // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
             gpu.synchronize(stream)?;
@@ -338,6 +356,43 @@ impl MoeV41 {
         w: &MoeV41LayerWeights,
         x: DevicePtr,
         m: usize,
+        stream: u64,
+    ) -> Result<()> {
+        self.shared_expert_body(gpu, w, x, m, self.a_q8, self.h_q8, stream)?;
+        self.shared_expert_tail(gpu, m, stream)
+    }
+
+    /// `acc += sd`, then `out = bf16(acc)`: the shared expert's join.
+    pub(super) fn shared_expert_tail(
+        &self,
+        gpu: &dyn GpuBackend,
+        m: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        self.launch_n(gpu, self.k.accumulate, m * c.dim, stream, |l| {
+            l.arg_ptr(self.acc)
+                .arg_ptr(self.sd)
+                .arg_u32((m * c.dim) as u32)
+        })?;
+        self.launch_n(gpu, self.k.finish, m * c.dim, stream, |l| {
+            l.arg_ptr(self.acc)
+                .arg_ptr(self.out)
+                .arg_u32((m * c.dim) as u32)
+        })
+    }
+
+    /// The shared expert up to its output `sd` (`[m, dim]` bf16), with the
+    /// q8_1 scratch buffers given (the side stream has its own), no `acc`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn shared_expert_body(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        x: DevicePtr,
+        m: usize,
+        a_q8: DevicePtr,
+        h_q8: DevicePtr,
         stream: u64,
     ) -> Result<()> {
         let c = &self.cfg;
@@ -415,8 +470,8 @@ impl MoeV41 {
                 }
             }
         };
-        kq(x, self.a_q8, w.shared_w1, self.sg, c.inter, c.dim)?;
-        kq(x, self.a_q8, w.shared_w3, self.su, c.inter, c.dim)?;
+        kq(x, a_q8, w.shared_w1, self.sg, c.inter, c.dim)?;
+        kq(x, a_q8, w.shared_w3, self.su, c.inter, c.dim)?;
         self.launch_n(gpu, self.k.swiglu, m * c.inter, stream, |l| {
             l.arg_ptr(self.sg)
                 .arg_ptr(self.su)
@@ -426,17 +481,6 @@ impl MoeV41 {
                 .arg_u32(c.inter as u32)
                 .arg_f32(c.swiglu_limit)
         })?;
-        kq(self.sh, self.h_q8, w.shared_w2, self.sd, c.dim, c.inter)?;
-        self.launch_n(gpu, self.k.accumulate, m * c.dim, stream, |l| {
-            l.arg_ptr(self.acc)
-                .arg_ptr(self.sd)
-                .arg_u32((m * c.dim) as u32)
-        })?;
-        self.launch_n(gpu, self.k.finish, m * c.dim, stream, |l| {
-            l.arg_ptr(self.acc)
-                .arg_ptr(self.out)
-                .arg_u32((m * c.dim) as u32)
-        })?;
-        Ok(())
+        kq(self.sh, h_q8, w.shared_w2, self.sd, c.dim, c.inter)
     }
 }
