@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 
-def validate(response, expected_prefix=None):
+def validate(response, expected_prefix=None, request=None):
     def finite(value):
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError('non-finite numeric response')
@@ -41,6 +41,17 @@ def validate(response, expected_prefix=None):
     count = usage.get('completion_tokens')
     if type(count) is not int or count <= 0:
         raise ValueError('completion token count must be positive')
+    prompt_count = usage.get('prompt_tokens')
+    total = usage.get('total_tokens')
+    if type(prompt_count) is not int or prompt_count < 0:
+        raise ValueError('prompt token count must be a nonnegative integer')
+    if type(total) is not int or total != prompt_count + count:
+        raise ValueError('total token count must equal prompt plus completion tokens')
+    if request is not None:
+        if response.get('model') != request['model']:
+            raise ValueError('response model differs from requested model')
+        if count > request['max_tokens']:
+            raise ValueError('completion token count exceeds requested maximum')
     return text
 
 
@@ -83,7 +94,7 @@ def main():
             if child.returncode:
                 raise ValueError(child.stderr.strip() or 'request failed')
             response = json.loads(child.stdout)
-            validate(response, args.expected_prefix)
+            validate(response, args.expected_prefix, payload)
             record['response'] = response
             record['status'] = 'passed'
         except (ValueError, OSError, subprocess.TimeoutExpired) as exc:

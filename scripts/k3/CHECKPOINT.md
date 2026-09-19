@@ -26,7 +26,8 @@ On the Linux rental, choose a dedicated snapshot directory and explicit budgets:
 python3 scripts/k3/checkpoint.py download \
   --manifest /path/k3-manifest.json --root /models/k3-<revision> \
   --reserve-bytes 500000000000 --attempts 2 \
-  --file-timeout 1800 --total-timeout 14400
+  --file-timeout 1800 --total-timeout 14400 \
+  --progress-log /path/evidence/k3-download-attempt-1.jsonl
 python3 scripts/k3/checkpoint.py verify \
   --manifest /path/k3-manifest.json --root /models/k3-<revision>
 ```
@@ -49,6 +50,25 @@ is checked between files/attempts, and limits each child; disk hashing is not
 interruptible by that deadline. Allow additional time for full verification of
 terabytes. A failed transfer, insufficient space, absent file, wrong size, or
 wrong hash returns nonzero. Keep that exit status when piping output to logs.
+
+Optional `--progress-log` creates a new JSONL receipt **outside** the snapshot.
+Existing log paths are refused; use a new path when resuming. Each event is
+flushed with a UTC timestamp, elapsed time, checkpoint pin, total bytes,
+previously verified bytes, newly verified bytes, and remaining unverified bytes.
+Events distinguish existing-file verification, transfer attempts, successful
+file verification, failed attempts, completion, and terminal failure. Failure
+receipts include the exception type; inspect ordinary stderr for the reason.
+
+`verified_bytes_per_second` measures newly verified whole-file bytes divided by
+time since the first transfer attempt, including retries and verification.
+It is **completion-based goodput**, not network bandwidth: no partial transfer
+bytes are observed, and reused files are excluded. `estimated_remaining_seconds`
+is an estimate from that rate; it is null until a file completes and zero when
+all bytes verify. Events occur at file/attempt boundaries, so a large shard can
+leave the log unchanged during transfer or hashing. HF's own progress display
+can provide additional transfer information. A killed process or unavailable
+filesystem may leave the final event incomplete; absence of `complete` is not
+success. Preserve the command's exit status as well as the log.
 
 `verify` hashes every listed file and emits a JSON result with model pin, total
 bytes, and missing/corrupt paths. It does not infer rank residency, loader

@@ -6,7 +6,8 @@ The huggingface_hub dependency is loaded only for those operations. Credentials
 use its normal environment/login mechanisms and are never written to receipts.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -129,13 +130,55 @@ def snapshot_lock(root):
         yield
 
 
-def download(doc, root, reserve, attempts, timeout, total_timeout):
+class Progress:
+    """Completion-based goodput, never partial/network-transfer byte counters."""
+    def __init__(self, doc, handle):
+        self.handle = handle
+        self.identity = {'repo': doc['repo'], 'revision': doc['revision']}
+        self.total = sum(item['size'] for item in doc['files'])
+        self.existing = 0
+        self.completed = 0
+        self.started = time.monotonic()
+        self.transfer_started = None
+
+    def emit(self, event, **fields):
+        if self.handle is None:
+            return
+        now = time.monotonic()
+        remaining = self.total - self.existing - self.completed
+        elapsed = now - self.transfer_started if self.transfer_started is not None else 0
+        rate = self.completed / elapsed if self.completed and elapsed > 0 else None
+        row = dict(schema=1, **self.identity, event=event,
+                   timestamp_utc=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                   elapsed_seconds=now-self.started, total_bytes=self.total,
+                   existing_verified_bytes=self.existing, newly_verified_bytes=self.completed,
+                   remaining_unverified_bytes=remaining, verified_bytes_per_second=rate,
+                   estimated_remaining_seconds=0 if not remaining else remaining/rate if rate else None,
+                   **fields)
+        self.handle.write(json.dumps(row, allow_nan=False)+'\n')
+        self.handle.flush()
+
+
+def download(doc, root, reserve, attempts, timeout, total_timeout, progress_log=None):
     validate(doc)
-    with snapshot_lock(root):
-        _download(doc, root, reserve, attempts, timeout, total_timeout)
+    if progress_log is not None:
+        progress_log = Path(progress_log)
+        if progress_log.resolve().is_relative_to(root.resolve()):
+            raise ValueError('progress log must be outside the checkpoint snapshot')
+    with progress_log.open('x') if progress_log is not None else nullcontext(None) as handle:
+        progress = Progress(doc, handle)
+        progress.emit('started')
+        try:
+            with snapshot_lock(root):
+                _download(doc, root, reserve, attempts, timeout, total_timeout, progress)
+            progress.emit('complete')
+        except BaseException as error:
+            # No credential-bearing exception text is written into receipts.
+            progress.emit('failed', error_type=type(error).__name__)
+            raise
 
 
-def _download(doc, root, reserve, attempts, timeout, total_timeout):
+def _download(doc, root, reserve, attempts, timeout, total_timeout, progress):
     if (min(reserve, attempts, timeout, total_timeout) <= 0 or
             not math.isfinite(timeout) or not math.isfinite(total_timeout)):
         raise ValueError("reserve, attempts, and deadlines must be positive")
@@ -153,7 +196,14 @@ def _download(doc, root, reserve, attempts, timeout, total_timeout):
         with pin.open("x") as destination:
             json.dump(identity, destination)
     started = time.monotonic()
-    pending = [item for item in doc["files"] if not check_file(root, item)]
+    pending = []
+    for item in doc['files']:
+        if check_file(root, item):
+            progress.existing += item['size']
+            progress.emit('verified_existing', path=item['path'], file_bytes=item['size'])
+        else:
+            pending.append(item)
+    progress.emit('inventory_verified')
     needed = sum(item["size"] for item in pending)
     if shutil.disk_usage(root).free < needed + reserve:
         raise ValueError(f"insufficient free disk: need {needed} download bytes plus {reserve} reserve")
@@ -175,13 +225,22 @@ def _download(doc, root, reserve, attempts, timeout, total_timeout):
             if path.exists():
                 # HF's own completion metadata must not bless corrupted bytes.
                 argv.append("--force")
+            if progress.transfer_started is None:
+                progress.transfer_started = time.monotonic()
+            progress.emit('attempt_started', path=item['path'], attempt=attempt+1,
+                          file_bytes=item['size'])
             try:
                 result = bounded_run(argv, min(timeout, remaining))
             except subprocess.TimeoutExpired:
                 result = 124
             if result == 0 and check_file(root, item):
+                progress.completed += item['size']
+                progress.emit('verified_download', path=item['path'], attempt=attempt+1,
+                              file_bytes=item['size'])
                 print(f"verified {item['path']}", flush=True)
                 break
+            progress.emit('attempt_failed', path=item['path'], attempt=attempt+1,
+                          exit_code=result)
             print(f"attempt {attempt + 1}/{attempts} failed: {item['path']}", file=sys.stderr)
         else:
             raise ValueError(f"download or verification failed: {item['path']}")
@@ -202,6 +261,7 @@ def main():
             sub.add_argument("--attempts", type=int, required=True)
             sub.add_argument("--file-timeout", type=float, required=True)
             sub.add_argument("--total-timeout", type=float, required=True)
+            sub.add_argument("--progress-log", type=Path, help="new JSONL file outside the snapshot")
     fetch = commands.add_parser("_fetch", help=argparse.SUPPRESS)
     for field in ("repo", "revision", "root", "file"):
         fetch.add_argument(f"--{field}", required=True)
@@ -217,7 +277,7 @@ def main():
         doc = validate(json.loads(args.manifest.read_text()))
         if args.command == "download":
             download(doc, args.root, args.reserve_bytes, args.attempts,
-                     args.file_timeout, args.total_timeout)
+                     args.file_timeout, args.total_timeout, args.progress_log)
         else:
             bad = [item["path"] for item in doc["files"] if not check_file(args.root, item)]
             print(json.dumps({"repo": doc["repo"], "revision": doc["revision"],

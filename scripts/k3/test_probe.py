@@ -14,11 +14,25 @@ from probe import validate
 
 class ProbeTests(unittest.TestCase):
     def setUp(self):
-        self.good = {'choices': [{'text': 'hello world', 'finish_reason': 'length'}],
-                     'usage': {'completion_tokens': 2}}
+        self.good = {'model': 'fixture', 'choices': [{'text': 'hello world', 'finish_reason': 'length'}],
+                     'usage': {'prompt_tokens': 1, 'completion_tokens': 2, 'total_tokens': 3}}
 
     def test_accepts_expected_generation(self):
         self.assertEqual(validate(self.good, 'hello'), 'hello world')
+
+    def test_rejects_identity_and_usage_contract_violations(self):
+        validate(self.good, request={'model': 'fixture', 'max_tokens': 2})
+        for field, value in [('prompt_tokens', None), ('prompt_tokens', True),
+                             ('prompt_tokens', -1), ('total_tokens', 9),
+                             ('completion_tokens', 3)]:
+            result = copy.deepcopy(self.good)
+            result['usage'][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                validate(result, request={'model': 'fixture', 'max_tokens': 2})
+        with self.assertRaisesRegex(ValueError, 'maximum'):
+            validate(self.good, request={'model': 'fixture', 'max_tokens': 1})
+        with self.assertRaisesRegex(ValueError, 'model'):
+            validate(self.good, request={'model': 'wrong', 'max_tokens': 2})
 
     def test_rejects_broken_generation(self):
         for change in ('empty', 'finish', 'count', 'nan', 'choices', 'prefix'):
@@ -50,8 +64,8 @@ class EndpointTests(unittest.TestCase):
                 self.rfile.read(int(self.headers['Content-Length']))
                 if self.slow:
                     time.sleep(1)
-                body = json.dumps({'choices': [{'text': 'hello', 'finish_reason': 'stop'}],
-                                   'usage': {'completion_tokens': 1}}).encode()
+                body = json.dumps({'model': 'fixture', 'choices': [{'text': 'hello', 'finish_reason': 'stop'}],
+                                   'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}).encode()
                 try:
                     self.send_response(200)
                     self.end_headers()
