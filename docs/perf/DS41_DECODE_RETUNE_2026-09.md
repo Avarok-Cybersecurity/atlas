@@ -401,3 +401,27 @@ is (a) those families at their present efficiency (the routed experts alone are 
 1-2 residual misses a step on MinHeap at 100 GiB (~2 ms each), and (c) the 186 host waits a
 step, whose cure (device routing, a whole-step graph) phase 2 showed does not pay while 65% of
 steps miss. None of the three is a kernel rewrite of the kind tried here.
+
+## Phase 4 (PR #1155, branch `ds41-decode-retune-4`): the bytes and the waits
+
+Baseline `p4base` (f1aacfc01, the phase 3 head rebuilt and re-measured): MinHeap 18.27 (11.05 / 18.27 / 18.94), Volvo 20.76 (12.46 / 20.76 / 20.89), 6/6 byte-identical.
+
+### What was measured before the first lever (Nsight Compute, standalone microbench)
+
+The real expert kernels at the real per-layer shapes, one layer's six experts (76.9 MB), a ring of eight layers larger than L2, from three kinds of memory: the page-locked arena as allocated today 176 / 169 GB/s (gate-up / down), `cudaMalloc` 215 / 209, `cuMemHostAlloc` DEVICEMAP 174 / 168. Under `ncu` the pinned and device runs show the same L2 hit rate (62.6 vs 63.0%), the same L1 hit (89.7 vs 89.6%), the same achieved occupancy (87.9 vs 92.6% of a theoretical 100), the same stall reason (long scoreboard, 82 vs 78% of stall cycles) and differ only in duration (265.8 vs 232.2 us): the path, not the kernel. One 12.22 MiB expert copies pinned-to-device in 217 us (59 GB/s) on its own stream; back-to-back copies slow a concurrent layer GEMV by 23-27%. A 100 GiB `cudaMalloc` arena plus 3 GiB and a 16-slot pinned ring leaves 14.3 GiB `MemAvailable` with swap flat: the same footprint as the pinned arena.
+
+### P3, the expert cache in device memory (96641e79c): KEPT
+
+`ATLAS_DS41_ARENA_DEVICE` (default on, `=0` restores the page-locked arena exactly), `ATLAS_DS41_STAGING_SLOTS` (16). Device slots off the allocation ledger (the KV budget reads the ledger as Atlas-own memory); misses read by the scoped reader threads into a half of the pinned ring, then one `cuMemcpyHtoDAsync` per miss into the device slot on the compute stream ahead of the token's launches (stream order is the synchronisation; a ring half is rewritten only after the event behind its last copies). The GEMV reads the same bytes at another address.
+
+| | MinHeap | TTFT | Volvo | TTFT | oracle | hot probe |
+|---|---|---|---|---|---|---|
+| p4base | 18.27 (11.05 / 18.27 / 18.94) | 1209 | 20.76 (12.46 / 20.76 / 20.89) | 421 | 6/6 | 22.79 |
+| P3 | 18.57 (10.83 / 18.57 / 19.15) | 1285 | 21.14 (12.28 / 21.14 / 21.26) | 400 | 6/6 | 23.72 |
+
+nsys (one warm token): expert GEMVs 17.15 -> 15.23 ms (233 / 154 us a layer from device against 256 / 180 from pinned; the isolated bench's 216 / 146 is the 100 GiB random reach), GPU kernel time 46.4 -> 44.2 ms, wall 44.15 -> 42.42 ms, launches / syncs / D2H unchanged at 1,865 / 186 / 49. In the serve `MemAvailable` is 11.0 GiB after the arena and 9.3 GiB live.
+
+### Where the step is bound after P3 (the trace, token 35, one layer of 895 us)
+
+GPU busy 42.8 ms of a 42.4 ms wall (the shared expert overlaps on its side stream), idle gaps 1.6 ms a token. One layer, nearly gap-free: router 41 us (under the shared expert), the routing read-back and the host's selection hidden under the shared expert's 45 us down projection, the routed experts 228 + 153 = 380 us (43% of the layer), HC 22, attention projections 243 (`wq_b` 79 on 8,192 blocks, `wo_a` groups 67, `wo_b` 72, `wq_a` 16, `wkv` 9), sparse attention 69 on 64 blocks. The host waits (186 a token) are no longer on the critical path at 1.6 ms of idle; the step is the bytes the kernels read: experts at 205 GB/s now, attention projections at 130-170. What passes this on one Spark is fewer bytes (a smaller expert quant, which changes the numbers) or a second Spark (every expert resident); the B200 plan (#1140-#1142) carries the same kernels with 8 TB/s under them.
+
