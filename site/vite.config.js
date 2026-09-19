@@ -111,6 +111,11 @@ export default defineConfig({
   server: {
     // app.css and the field import from web-shared/, outside this app's root.
     // The build resolves it regardless; the dev server has to be told.
-    fs: { allow: [resolve(import.meta.dirname, '..', 'web-shared')] }
+    fs: { allow: [resolve(import.meta.dirname, '..', 'web-shared')] },
+    // `build/` is the static adapter's output, which the dev server never serves.
+    // Left watched, every `vite build` beside a running dev server deletes and
+    // rewrites a few hundred watched files, and every open tab is told to reload
+    // once per page written. Vite adds this to its own ignore list.
+    watch: { ignored: ['**/build/**'] }
   }
 });

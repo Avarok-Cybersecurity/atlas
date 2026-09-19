@@ -48,6 +48,13 @@ bun x --bun playwright test                       # builds again, then the brows
 A build and the dev server rewrite `src/lib/*.generated.json`. Restore those with
 `git checkout -- src/lib/*.generated.json` before committing, unless the data is your change.
 
+Stop the dev server when you are done with it. A fresh `vite dev` rests at 0% of a core, with
+a tab attached, through a build and through hot reloads (measured 2026-09-19). One that had
+been up for ninety minutes beside five builds and two test runs was found holding four to
+eight cores with nothing in its log, and that could not be reproduced. If a machine gets loud,
+look for `bun` in the process list first, and restart the dev server. On Windows, stopping
+the shell that started it leaves `bun.exe` holding the port, so end that process too.
+
 ## Budgets that must hold
 
 | what | budget | what checks it |
