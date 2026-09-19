@@ -78,6 +78,7 @@ struct Kernels {
     finish: KernelHandle,
     gather: KernelHandle,
     scatter_add: KernelHandle,
+    sum_rows: KernelHandle,
     quant_d2s6: KernelHandle,
     quant_d4: KernelHandle,
     mmq_q2k_nc: KernelHandle,

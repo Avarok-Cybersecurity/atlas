@@ -336,6 +336,9 @@ impl Model for TransformerModel {
     fn has_ssm_layers(&self) -> bool {
         self.ssm_pool.num_ssm_layers > 0
     }
+    fn decode_rollback_unsupported(&self) -> bool {
+        self.layers.iter().any(|l| l.decode_rollback_unsupported())
+    }
     fn mtp_slot_draft_capacity(&self, slot_idx: usize) -> usize {
         self.ssm_pool.verify_draft_capacity(slot_idx)
     }

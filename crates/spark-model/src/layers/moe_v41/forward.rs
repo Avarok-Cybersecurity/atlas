@@ -150,14 +150,15 @@ impl MoeV41 {
                 kquant_q8_1_rows_bytes(1, c.inter as u32) as u32,
                 stream,
             )?;
-            KernelLaunch::new(gpu, self.k.scatter_add)
-                .grid([ne as u32, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(self.acc)
-                .arg_ptr(self.down_out)
-                .arg_ptr(self.rows_dev)
-                .arg_u32(c.dim as u32)
-                .launch(stream)?;
+            // All `ne` rows land in the one token row: summed in plan order by a
+            // single kernel. `scatter_add` here (one block per expert row, every
+            // block on the same `acc` row) was an inter-block data race.
+            self.launch_n(gpu, self.k.sum_rows, c.dim, stream, |l| {
+                l.arg_ptr(self.acc)
+                    .arg_ptr(self.down_out)
+                    .arg_u32(ne as u32)
+                    .arg_u32(c.dim as u32)
+            })?;
         }
         for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
             let slot = slots[a0];

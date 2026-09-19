@@ -154,6 +154,22 @@ pub trait TransformerLayer: Send + Sync {
         false
     }
 
+    /// True when this layer keeps per-sequence state that lowering the
+    /// sequence's KV cursor does NOT rewind, so a content-loop rollback
+    /// (`rollback_to_boundary`: drop the degenerate tail, lower `seq_len`,
+    /// re-steer) would regenerate on state still conditioned on the
+    /// dropped tokens. Pure paged-KV attention rewinds by cursor and keeps
+    /// the default; SSM layers rewind through the decode snapshot ring;
+    /// a layer that owns a monotonic cache count, a running compressor
+    /// group or an n-gram history answers `true` here and the scheduler
+    /// declines the rollback (hard stop) instead of corrupting the tail.
+    ///
+    /// Same shape as [`Self::decode_graph_unsupported`]: layer-level
+    /// statement, default `false`, ORed across layers by the model.
+    fn decode_rollback_unsupported(&self) -> bool {
+        false
+    }
+
     /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
     /// sweep (`decode_verify_multi`). Consumed by
     /// `can_batch_verify_dispatch`; a `true` layer falls back to the

@@ -507,6 +507,16 @@ pub trait Model: Send + Sync {
         false
     }
 
+    /// True when some layer of this model keeps per-sequence state that a
+    /// lowered KV cursor does not rewind and no snapshot ring restores
+    /// (`TransformerLayer::decode_rollback_unsupported`). The Phase-C
+    /// boundary rollback must decline for such a model: re-steering on
+    /// un-rewound state regenerates from a corrupted context. Default
+    /// `false`: paged-KV attention rewinds by cursor.
+    fn decode_rollback_unsupported(&self) -> bool {
+        false
+    }
+
     /// Verify DRAFT capacity of the MTP state pools for a sequence
     /// occupying SSM pool slot `slot_idx` — the deepest `num_drafts` a
     /// speculative step may dispatch to it without overflowing its slot's
