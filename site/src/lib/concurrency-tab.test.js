@@ -1,0 +1,410 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+// The Concurrency tab, rendered — not grepped. Svelte's server compiler turns a
+// component into a function that returns HTML, and bun can run that without a
+// DOM, so these tests assert on what a reader would actually see: which tab is
+// selected, whether a chart has marks, what a caption says and in what order.
+//
+// Two rules this tab exists to keep, and every test here traces to one:
+//   - the published ladder (ISL 128 / OSL 1024, ~478 tok/s) and the live gate
+//     (ISL 512 / OSL 320, ~116) are DIFFERENT INSTRUMENTS on one checkpoint;
+//     each chart is labelled with its own and neither's number appears on the
+//     other's axes;
+//   - an empty subject keeps its chrome and says what is missing, why, and
+//     what fills it — never a zero, never a mark.
+//
+// The plugin below is scoped to THIS file's imports so the two pre-existing
+// `$lib/agent/*.svelte.js` resolution failures elsewhere stay exactly as they
+// were: a harness that quietly fixed them here would change the baseline.
+import { describe, expect, test } from 'bun:test';
+import { plugin } from 'bun';
+import { compile } from 'svelte/compiler';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const LIB = fileURLToPath(new URL('./', import.meta.url));
+const SELF = fileURLToPath(import.meta.url);
+
+plugin({
+  name: 'concurrency-tab-ssr',
+  setup(build) {
+    build.onResolve({ filter: /^\$lib(\/|$)/ }, (a) =>
+      a.importer.endsWith('.test.js') && a.importer !== SELF ? undefined : { path: join(LIB, a.path.slice(4)) }
+    );
+    // BenchmarkDashboard reads the hash through `browser` and writes it back
+    // through replaceState; SSR runs neither effect, so the stubs only need to
+    // exist. `browser: true` lets the initial parse read the fake location.
+    build.module('$app/environment', () => ({ contents: 'export const browser = true; export const dev = false;', loader: 'js' }));
+    build.module('$app/navigation', () => ({ contents: 'export const replaceState = () => {};', loader: 'js' }));
+    build.onLoad({ filter: /\.svelte$/ }, (a) => ({
+      contents: compile(readFileSync(a.path, 'utf8'), { filename: a.path, generate: 'server' }).js.code,
+      loader: 'js'
+    }));
+  }
+});
+
+const { render } = await import('svelte/server');
+const { recordsFor, tabs, ladderPoints, fmtDate } = await import('./gates.js');
+const { SUBJECTS, rungsDeclared } = await import('./concurrency-subjects.js');
+const publishedLadder = (await import('./ladder.generated.json')).default;
+const Tab = (await import('./components/ConcurrencyTab.svelte')).default;
+const Ladder = (await import('./components/ConcurrencyLadder.svelte')).default;
+const Comparison = await import('./components/ConcurrencyComparison.svelte');
+const Dashboard = (await import('./components/BenchmarkDashboard.svelte')).default;
+
+// Comments stripped and whitespace collapsed: the assertions are about what
+// is said, not how the template was indented.
+const html = (C, props) => render(C, { props }).body.replace(/<!--[^]*?-->/g, '').replace(/\s+/g, ' ');
+const rungs = [...new Set(SUBJECTS.flatMap((s) => rungsDeclared(s, recordsFor)))].sort((a, b) => a - b);
+const benches = tabs.find((t) => t.id === 'concurrency').benches;
+const byId = (id) => SUBJECTS.find((s) => s.id === id);
+const renderTab = (subject, rf = recordsFor) =>
+  html(Tab, { subject, rungs, benches, recordsFor: rf, onselect: () => {} });
+
+/** The comparison chart's own <svg> (the first one after its title). */
+const comparisonSvg = (page) => {
+  const from = page.indexOf('class="gate-panel-title">Atlas vs vLLM');
+  const open = page.indexOf('<svg viewBox', from);
+  return page.slice(open, page.indexOf('</svg>', open));
+};
+const gateSvg = (page) => {
+  const from = page.indexOf('class="gate-panel-title">latest gate sweep');
+  const open = page.indexOf('<svg viewBox', from);
+  return page.slice(open, page.indexOf('</svg>', open));
+};
+const tile = (page, label) =>
+  new RegExp(`<span class="gbs-tile-val[^"]*"[^>]*>([^<]*)</span>\\s*<span class="gbs-tile-label">${label}`).exec(page)?.[1];
+/** Each phrase must appear, and appear AFTER the one before it. */
+const inOrder = (page, ...needles) => {
+  let at = 0;
+  for (const n of needles) {
+    const i = page.indexOf(n, at);
+    expect(i, `"${n}" must appear after "${needles[needles.indexOf(n) - 1] ?? '(start)'}"`).not.toBe(-1);
+    at = i + n.length;
+  }
+};
+/** The published ladder's figure, and its plot svg (the legend swatches come first). */
+const ladderFigure = (page) => {
+  const open = page.indexOf('<figure class="cl-panel">');
+  return page.slice(open, page.indexOf('</figure>', open));
+};
+const ladderSvg = (page) => {
+  const fig = ladderFigure(page);
+  const open = fig.indexOf('<svg viewBox');
+  return fig.slice(open, fig.indexOf('</svg>', open));
+};
+
+const DENSE = byId('qwen38-27b');
+const MOE = byId('qwen36-35b-a3b');
+const DFLASH = byId('qwen38-27b-dflash');
+const denseLatest = recordsFor('concurrency-sweep').at(-1);
+
+// A passing main-branch record for any subject, shaped like the real ones.
+const fakeRecord = (subject, cs, over = {}) => ({
+  benchmark_id: subject.gate,
+  target_model: subject.checkpoint,
+  git_sha: 'feedfacedead'.slice(0, 10),
+  recorded_at: 1_800_000_000,
+  verdict: 'PASS',
+  branch: '',
+  params: { concurrencies: cs.join(', '), isls: '512', osl: '320', prompt_mode: 'natural' },
+  serve_overrides: { max_batch_size: '128', kv_cache_dtype: 'fp8' },
+  metrics: Object.fromEntries(cs.map((c) => [`c${c}_aggregate_tok_s`, 10 * c])),
+  ...over
+});
+const withExtra = (extra) => (bench) => [...recordsFor(bench), ...extra.filter((r) => r.benchmark_id === bench)];
+
+describe('the subject strip', () => {
+  test('one tab per subject in SSOT order; the prop picks the selected one and its panel', () => {
+    const page = renderTab('qwen36-35b-a3b');
+    const ids = [...page.matchAll(/id="cs-tab-([^"]+)"/g)].map((m) => m[1]);
+    expect(ids).toEqual(SUBJECTS.map((s) => s.id));
+    for (const s of SUBJECTS) expect(page).toContain(`aria-controls="cs-panel-${s.id}"`);
+    expect(page.match(/aria-selected="true"/g)).toHaveLength(1);
+    expect(page).toMatch(/id="cs-tab-qwen36-35b-a3b"[^>]*aria-selected="true"/);
+    expect(page).toContain('id="cs-panel-qwen36-35b-a3b" role="tabpanel" aria-labelledby="cs-tab-qwen36-35b-a3b"');
+    expect(page.match(/role="tabpanel"/g)).toHaveLength(1);
+  });
+
+  test('an unknown subject is a wiring bug and throws, not a silent first tab', () => {
+    expect(() => renderTab('nvidia-35b')).toThrow(/unknown subject "nvidia-35b"/);
+  });
+
+  test('"not yet measured" sits INSIDE the tab button of every subject with no records', () => {
+    const page = renderTab('qwen38-27b');
+    const chips = [...page.matchAll(/<button[^>]*id="cs-tab-([^"]+)"[^>]*>[^<]*<span class="cs-chip">not yet measured<\/span>/g)].map((m) => m[1]);
+    expect(chips).toEqual(['qwen36-35b-a3b']);
+  });
+
+  test('NEGATIVE CONTROL: the chip follows the records, not the subject id', () => {
+    const moeMeasured = withExtra([fakeRecord(MOE, [1, 4])]);
+    expect(renderTab('qwen38-27b', moeMeasured)).not.toContain('not yet measured');
+    const dflashGone = (bench) => (bench === DFLASH.gate ? [] : recordsFor(bench));
+    const page = renderTab('qwen38-27b', dflashGone);
+    expect(page).toMatch(/id="cs-tab-qwen38-27b-dflash"[^>]*>[^<]*<span class="cs-chip">not yet measured/);
+  });
+
+  test('records no subject claims are listed, never dropped', () => {
+    expect(renderTab('qwen38-27b')).not.toContain('unassigned:');
+    const stray = fakeRecord({ gate: 'concurrency-sweep', checkpoint: 'nvidia/Qwen3.6-35B-A3B-NVFP4' }, [1]);
+    expect(renderTab('qwen38-27b', withExtra([stray]))).toContain(
+      'unassigned: concurrency-sweep · nvidia/Qwen3.6-35B-A3B-NVFP4 (1)'
+    );
+  });
+});
+
+describe('the MoE tab today: no run, no baseline', () => {
+  const page = renderTab('qwen36-35b-a3b');
+
+  test('header: checkpoint id verbatim, state tiles, and no verdict tile', () => {
+    expect(page).toContain('>Qwen/Qwen3.6-35B-A3B-FP8</span>');
+    expect(tile(page, 'records')).toBe('0');
+    expect(tile(page, 'gate concurrency-sweep')).toBe('declared, unmeasured');
+    expect(tile(page, 'vLLM baseline')).toBe('none');
+    expect(page).not.toContain('gbs-verdict');
+  });
+
+  test('chart chrome is kept — title, unit, every declared rung on X — with zero marks', () => {
+    expect(page).toContain('class="gate-panel-title">Atlas vs vLLM · not yet measured</span>');
+    expect(page).toContain('class="gate-panel-unit">tok/s</span>');
+    const svg = comparisonSvg(page);
+    for (const c of rungs) expect(svg).toContain(`>C=${c}</text>`);
+    expect(svg).not.toContain('<circle');
+    expect(svg).not.toContain('<path');
+    expect(svg).not.toContain('cc-absent');
+    // No invented Y ticks: a "0" on an empty axis reads as a measured zero.
+    expect(svg).not.toMatch(/text-anchor="end">/);
+  });
+
+  test('the copy says what is missing, why, and what fills it — in that order', () => {
+    inOrder(
+      page,
+      'No concurrency run on main yet for <code>Qwen/Qwen3.6-35B-A3B-FP8</code>',
+      'status = "unmeasured"',
+      'What fills this chart',
+      'one passing <code>concurrency-sweep</code> run for this checkpoint merged to main → the Atlas series',
+      'filed under <code>bench/baselines/qwen36-35b-a3b/</code> → the comparison'
+    );
+    expect(page).toContain('an FP8 checkpoint here');
+    expect(page).not.toContain('undefined');
+    expect(page).not.toContain('latest gate sweep');
+    expect(page).not.toContain('cc-bridge');
+  });
+
+  test('NEGATIVE CONTROL: one passing run on main replaces the empty state with a live chart', () => {
+    const live = renderTab('qwen36-35b-a3b', withExtra([fakeRecord(MOE, [1, 2, 4])]));
+    expect(live).not.toContain('No concurrency run on main yet');
+    expect(live).not.toContain('not yet measured');
+    expect(comparisonSvg(live).match(/class="gc-mark"/g)).toHaveLength(3);
+    expect(live).toContain('latest gate sweep · ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');
+    expect(tile(live, 'vLLM baseline')).toBe('none');
+  });
+});
+
+describe('the DFlash tab today: Atlas only, absent rungs answered in place', () => {
+  const page = renderTab('qwen38-27b-dflash');
+  const latest = recordsFor(DFLASH.gate).at(-1);
+  const pts = ladderPoints(latest);
+
+  test('header tiles come from the newest record', () => {
+    const peak = pts.reduce((a, b) => (b.v > a.v ? b : a));
+    expect(tile(page, `peak \\(C=${peak.c}\\) · ${fmtDate(latest.recorded_at)}`)).toBe(`${peak.v.toFixed(1)} tok/s`);
+    expect(tile(page, 'rungs declared')).toBe(`${pts.length} of ${rungs.length}`);
+    expect(tile(page, 'vLLM baseline')).toBe('none');
+    expect(page).toContain('data-verdict="PASS"');
+  });
+
+  test('the Atlas curve is drawn dashed (same engine, another configuration) at its measured rungs only', () => {
+    const svg = comparisonSvg(page);
+    expect(svg).toMatch(/<path d="M[^"]+" fill="none" stroke="var\(--series-teal[^"]*" stroke-width="2" stroke-dasharray="5 4"/);
+    expect(svg.match(/class="gc-mark"/g)).toHaveLength(pts.length);
+    for (const c of rungs) expect(svg).toContain(`>C=${c}</text>`);
+  });
+
+  test('each rung the gate does not run says so where the point would be, with the recorded reason', () => {
+    const svg = comparisonSvg(page);
+    const absent = rungs.filter((c) => !pts.some((p) => p.c === c));
+    expect(absent).toEqual([32, 64, 128]);
+    for (const c of absent)
+      expect(svg).toContain(
+        `<title>C=${c} · not run at this rung — the concurrency-sweep-dflash2 gate stops at C=16 by design: max_batch_size = "16"</title>`
+      );
+    expect(svg.match(/>not run<\/text>/g)).toHaveLength(absent.length);
+  });
+
+  test('NEGATIVE CONTROL: without a recorded batch cap the reason is the declared rung list, never "undefined"', () => {
+    const stripped = { ...latest, serve_overrides: { kv_cache_dtype: 'fp8' } };
+    const rf = (bench) => (bench === DFLASH.gate ? [stripped] : recordsFor(bench));
+    const svg = comparisonSvg(renderTab('qwen38-27b-dflash', rf));
+    expect(svg).toContain('the concurrency-sweep-dflash2 gate declares concurrencies = "1, 2, 4, 8, 16"');
+    expect(svg).not.toContain('undefined');
+  });
+
+  test('the legend and caption say vLLM was not run on THIS instrument, and what would fill it', () => {
+    expect(page).toContain(`Atlas · live · latest gate ${fmtDate(latest.recorded_at)} · ${latest.git_sha}`);
+    expect(page).toMatch(/<rect [^>]*fill="none"[^>]*><\/rect>\s*<\/svg>vLLM · not measured on this instrument/);
+    expect(page).toContain('class="gate-panel-title">Atlas vs vLLM · gate instrument · ISL 512 / OSL 200 · natural fixture · batch cap 16 · fp8 KV<');
+    inOrder(
+      page,
+      '<strong>vLLM has not been run on this instrument</strong> (ISL 512 / OSL 200 · natural fixture · batch cap 16 · fp8 KV)',
+      'ISL 128 / OSL 1024 at batch cap 128',
+      'not comparable in either direction',
+      'filed under <code>bench/baselines/qwen38-27b-dflash/</code>, fills the comparison'
+    );
+  });
+
+  test('the gate sweep below carries the same instrument and the bridge names the record', () => {
+    expect(page).toContain('class="gate-panel-title">latest gate sweep · ISL 512 / OSL 200 · natural fixture · batch cap 16 · fp8 KV<');
+    expect(page).toContain(`newest passing run on main (${fmtDate(latest.recorded_at)} · ${latest.git_sha})`);
+  });
+});
+
+describe('the dense tab today: the published pair over the live gate', () => {
+  const page = renderTab('qwen38-27b');
+  const series = publishedLadder.series;
+  const days = (s) => s.rungs.map((r) => r.measured_utc.slice(0, 10)).sort();
+  const range = (s) => (days(s)[0] === days(s).at(-1) ? days(s)[0] : `${days(s)[0]} → ${days(s).at(-1)}`);
+
+  test('each chart is titled with its own instrument', () => {
+    expect(page).toContain(
+      `class="gate-panel-title">Atlas vs vLLM · published campaign · ISL ${publishedLadder.workload.isl_tokens} / OSL ${publishedLadder.workload.osl_tokens}</span>`
+    );
+    expect(page).toContain('class="gate-panel-title">latest gate sweep · ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV<');
+    expect(tile(page, 'vLLM baseline')).toBe('published pair');
+    expect(tile(page, 'rungs declared')).toBe(`${rungs.length} of ${rungs.length}`);
+  });
+
+  test('the ~4x gap is explained in words between the two charts', () => {
+    inOrder(
+      page,
+      "Not the chart above's instrument: this is the gate's <code>ISL 512 / OSL 320",
+      'ISL 128 / OSL 1024 with speculation pinned',
+      'never one against the other'
+    );
+  });
+
+  test('neither instrument\'s number is drawn on the other\'s axes', () => {
+    const ladder = ladderFigure(page);
+    const gateC128 = (+denseLatest.metrics.c128_aggregate_tok_s).toFixed(1);
+    expect(ladder).toContain('478.11');
+    expect(ladder).not.toContain(gateC128);
+    const gate = gateSvg(page);
+    expect(gate).toContain(gateC128);
+    expect(gate).not.toContain('478.11');
+  });
+
+  test('legend chips: Atlas is the campaign, every vLLM leg is a dated one-shot, dates from the series', () => {
+    const atlas = series.find((s) => s.role === 'subject');
+    expect(page).toContain(`>Atlas · published campaign · ${range(atlas)}</span>`);
+    for (const b of series.filter((s) => s.role === 'baseline'))
+      expect(page).toContain(`<span class="cc-chip">${b.label} · one-shot · measured ${range(b)} · not re-run</span>`);
+    expect(range(series.find((s) => s.id === 'vllm-nospec'))).toBe('2026-08-16'); // one-day series prints one date
+  });
+
+  test('the caption says "once" in bold, names engine, build, box and the Atlas build', () => {
+    const b = series.find((s) => s.id === 'vllm-mtp');
+    inOrder(
+      page,
+      'vLLM was measured <strong>once</strong>, on 2026-08-16 → 2026-08-18',
+      `<code>${b.engine} (${b.build})</code> on ${publishedLadder.box.name}`,
+      'not re-measured when Atlas moves',
+      `<code>${series.find((s) => s.role === 'subject').build}</code>`,
+      '"Latest gate sweep" below'
+    );
+  });
+
+  test('the dated stamp is INSIDE the ladder svg, at the last rung of each vLLM line, and never overprints', () => {
+    const svg = ladderSvg(page);
+    const stamp = (date) => +new RegExp(`<text class="gc-ref-label cl-stamp" x="740" y="([\\d.]+)" text-anchor="end">vLLM 0.27.1 · ${date}</text>`).exec(svg)?.[1];
+    const point = (label) => +new RegExp(`<circle cx="740" cy="([\\d.]+)"[^>]*>\\s*<title>${label} · C=128`).exec(svg)?.[1];
+    expect(stamp('2026-08-17')).toBeGreaterThan(point('vLLM \\+ MTP')); // lowest line: stamped below its point
+    expect(stamp('2026-08-16')).toBeLessThan(point('vLLM, no speculation')); // the other: above
+    expect(svg.match(/cl-stamp/g)).toHaveLength(2);
+  });
+});
+
+describe('ConcurrencyLadder takes the ladder it draws', () => {
+  test('defaults to the published JSON, and a different ladder changes the copy', () => {
+    expect(html(Ladder, {})).toContain('Faster than vLLM at every concurrency, C=1 to 128');
+    const lost = structuredClone(publishedLadder);
+    lost.summary = { ...lost.summary, all_won: false, won: 7 };
+    expect(html(Ladder, { ladder: lost })).toContain('Atlas vs vLLM, C=1 to 128 — 7 of 8 rungs');
+  });
+});
+
+describe('the comparison state, decided once', () => {
+  const { comparisonStateOf, publishedFor, liveRecordOf, instrumentLabel, measuredRange, batchCapOf } = Comparison;
+
+  test('published only when the generated ladder is for THIS checkpoint', () => {
+    expect(publishedFor(DENSE)).toBe(publishedLadder);
+    expect(publishedFor({ ...DENSE, checkpoint: 'Qwen/Qwen3.6-35B-A3B-FP8' })).toBeNull();
+    expect(publishedFor(MOE)).toBeNull();
+    expect(comparisonStateOf(DENSE, [])).toBe('published');
+    expect(comparisonStateOf(DFLASH, recordsFor(DFLASH.gate))).toBe('live');
+    expect(comparisonStateOf(MOE, recordsFor(MOE.gate).filter((r) => r.target_model === MOE.checkpoint))).toBe('none');
+  });
+
+  test('a declared manifest without a generated ladder is said out loud', () => {
+    const page = html(
+      Comparison.default,
+      { subject: { ...MOE, published_manifest: 'bench/moe/published.json' }, records: [], rungs, onselect: () => {} }
+    );
+    expect(page).toContain('<code>bench/moe/published.json</code> is declared for this subject but the');
+  });
+
+  test('the live record is the newest PASS on main — branch runs and FAILs never qualify', () => {
+    const old = fakeRecord(MOE, [1], { recorded_at: 1, git_sha: 'aaaaaaaaaa' });
+    const branch = fakeRecord(MOE, [1], { recorded_at: 2, branch: 'pr/x', git_sha: 'bbbbbbbbbb' });
+    const fail = fakeRecord(MOE, [1], { recorded_at: 3, verdict: 'FAIL', git_sha: 'cccccccccc' });
+    expect(liveRecordOf([old, branch, fail])).toBe(old);
+    expect(liveRecordOf([branch, fail])).toBeNull();
+  });
+
+  test('instrument, range and batch-cap readers print only what is recorded', () => {
+    expect(instrumentLabel(denseLatest)).toBe('ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');
+    expect(instrumentLabel({ params: { isls: '512', osl: '320' } })).toBe('ISL 512 / OSL 320');
+    expect(instrumentLabel({})).toBe('');
+    expect(measuredRange([{ measured_utc: '2026-08-18T15:20:55Z' }, { measured_utc: '2026-08-17T01:36:35Z' }])).toBe('2026-08-17 → 2026-08-18');
+    expect(measuredRange([{ measured_utc: '2026-08-16T14:38:29Z' }])).toBe('2026-08-16');
+    expect(batchCapOf('vllm serve --max-num-seqs 128 --x')).toBe('128');
+    expect(batchCapOf('spark serve --max-batch-size 16')).toBe('16');
+    expect(batchCapOf('spark serve')).toBeNull();
+    expect(batchCapOf(undefined)).toBeNull();
+  });
+});
+
+describe('the dashboard wires the hash to the subject', () => {
+  const open = (hash) => {
+    globalThis.location = { hash, pathname: '/engine', search: '' };
+    try {
+      return html(Dashboard, { onclose: () => {} });
+    } finally {
+      delete globalThis.location;
+    }
+  };
+
+  test('a concurrency deep link selects the subject tab it names and hides the model select', () => {
+    const page = open('#bench=concurrency&subject=qwen36-35b-a3b&c=64');
+    expect(page).toMatch(/id="bd-tab-concurrency"[^>]*aria-selected="true"/);
+    expect(page).toMatch(/id="cs-tab-qwen36-35b-a3b"[^>]*aria-selected="true"/);
+    expect(page).toContain('id="cs-panel-qwen36-35b-a3b"');
+    expect(page).not.toContain('aria-label="Filter by model"');
+    // The subject tabs replace the per-bench section: one gate sweep, not two.
+    expect(page.match(/latest gate sweep/g) ?? []).toHaveLength(0);
+    expect(page).not.toContain('<article class="gbs"');
+  });
+
+  test('an unknown subject in the link lands on the first subject, never a blank panel', () => {
+    const page = open('#bench=concurrency&subject=nvidia-35b');
+    expect(page).toMatch(/id="cs-tab-qwen38-27b"[^>]*aria-selected="true"/);
+    expect(page).toContain('Atlas vs vLLM · published campaign');
+  });
+
+  test('other tabs keep the model select and the per-bench sections', () => {
+    const page = open('#bench=ttft');
+    expect(page).toContain('aria-label="Filter by model"');
+    expect(page).toContain('<article class="gbs"');
+    expect(page).not.toContain('role="tablist" aria-label="Concurrency subjects"');
+  });
+});

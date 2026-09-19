@@ -10,7 +10,7 @@
   // Same hand-rolled SVG dialect as GateLadderChart.svelte (log2 X, no chart
   // library) because the rungs double: linear spacing would crush C=1..8,
   // which is where single-stream latency lives.
-  import ladder from '$lib/ladder.generated.json';
+  import publishedLadder from '$lib/ladder.generated.json';
 
   // `embedded`: render as a block inside a section that already has a heading
   // and a container (the Verified entry). Default is the standalone section the
@@ -20,19 +20,28 @@
   // claim its own headline and spends the rest of the slide on the evidence, so
   // it needs the instrument without the surrounding prose or the provenance
   // disclosure — which it reaches on its own slides instead.
-  let { embedded = false, compact = false } = $props();
+  //
+  // `ladder`: the generated ladder to draw. Defaults to the published one so
+  // the Verified section and the deck keep rendering the marketing claim
+  // untouched; the benchmark dashboard passes the ladder of the subject tab
+  // it is drawing, so one component serves every subject that earns a
+  // published pair.
+  let { embedded = false, compact = false, ladder = publishedLadder } = $props();
 
   const W = 760, H = 300, PL = 62, PR = 20, PT = 18, PB = 34;
 
-  const subject = ladder.series.find((s) => s.role === 'subject');
-  const baselines = ladder.series.filter((s) => s.role === 'baseline');
+  // `$derived`, not `const`: `ladder` is a prop now, and a plain const would
+  // freeze the first ladder it saw while the heading below re-rendered from
+  // the new one.
+  const subject = $derived(ladder.series.find((s) => s.role === 'subject'));
+  const baselines = $derived(ladder.series.filter((s) => s.role === 'baseline'));
   // `variant`: another configuration of the SUBJECT engine, drawn but never
   // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
   // the published claim is Atlas against the matched vLLM baseline, and
   // letting a second Atlas configuration into that comparison would change
   // what the headline means rather than adding evidence for it.
-  const variants = ladder.series.filter((s) => s.role === 'variant');
-  const plotted = [subject, ...variants, ...baselines];
+  const variants = $derived(ladder.series.filter((s) => s.role === 'variant'));
+  const plotted = $derived([subject, ...variants, ...baselines]);
 
   // Series are styled by role, not by id: the ids come from the published
   // bench manifest (bench/ladder38/published.json), which is a recorded
@@ -49,19 +58,30 @@
   // subject". Same reasoning as gate-variants.js on the dashboard.
   const dashOf = (s) => (s.role === 'variant' || s.id === 'vllm-nospec' ? '5 4' : null);
 
-  const cs = ladder.concurrencies;
-  const allV = plotted.flatMap((s) => s.rungs.map((r) => r.tok_s));
-  const vMax = Math.max(...allV) * 1.08;
+  const cs = $derived(ladder.concurrencies);
+  const vMax = $derived(Math.max(...plotted.flatMap((s) => s.rungs.map((r) => r.tok_s))) * 1.08);
 
   const x = (c) => PL + (Math.log2(c) / Math.log2(Math.max(...cs))) * (W - PL - PR);
   const y = (v) => PT + (1 - v / vMax) * (H - PT - PB);
   const path = (rungs) =>
     rungs.map((r, i) => `${i ? 'L' : 'M'}${x(r.c).toFixed(1)} ${y(r.tok_s).toFixed(1)}`).join(' ');
 
-  const yTicks = [0, vMax / 4, vMax / 2, (vMax * 3) / 4, vMax];
+  const yTicks = $derived([0, vMax / 4, vMax / 2, (vMax * 3) / 4, vMax]);
   // Two decimals everywhere, which is exactly how RESULTS.md publishes these
   // numbers — the site and the repo record should be diffable by eye.
   const fmtV = (v) => v.toFixed(2);
+  // The stamp at the right end of each baseline line. It is INSIDE the SVG so
+  // a screenshot cropped to the plot still says the vLLM number is a dated
+  // snapshot, not a live series. Engine and date are read from the series and
+  // its last rung, never typed. The lowest baseline is stamped below its
+  // point, the others above, so two baselines ending near each other (358 vs
+  // 390 at C=128) never overprint.
+  const stampDate = (s) => s.rungs[s.rungs.length - 1].measured_utc.slice(0, 10);
+  const stampY = (s) => {
+    const last = s.rungs[s.rungs.length - 1];
+    const lowest = Math.min(...baselines.map((b) => b.rungs[b.rungs.length - 1].tok_s));
+    return y(last.tok_s) + (last.tok_s === lowest ? 14 : -7);
+  };
   // Always three decimals: the rungs span 1.012x to 1.333x, and switching
   // precision by magnitude would print "1.20x" next to "1.004x".
   const ratio = (r) => `${r.toFixed(3)}×`;
@@ -130,6 +150,10 @@
               <title>{s.label} · C={r.c} · {fmtV(r.tok_s)} tok/s · mean of {r.reps} reps</title>
             </circle>
           {/each}
+        {/each}
+        {#each baselines as s}
+          <text class="gc-ref-label cl-stamp" x={x(s.rungs[s.rungs.length - 1].c)} y={stampY(s)}
+            text-anchor="end">{s.engine} · {stampDate(s)}</text>
         {/each}
       </svg>
     </figure>
