@@ -435,6 +435,29 @@ impl GgufFile {
             .collect()
     }
 
+    /// Any integer array (i8..i64, u8..u64) widened to i64. Used for the
+    /// signed tables such as DeepSeek-V4.1's `engram.token_map` (int32, -1 =
+    /// unmapped).
+    pub fn get_i64_array(&self, key: &str) -> Option<Vec<i64>> {
+        match self.get(key)? {
+            MetaValue::Array(items) => items
+                .iter()
+                .map(|v| match v {
+                    MetaValue::U8(x) => Some(*x as i64),
+                    MetaValue::I8(x) => Some(*x as i64),
+                    MetaValue::U16(x) => Some(*x as i64),
+                    MetaValue::I16(x) => Some(*x as i64),
+                    MetaValue::U32(x) => Some(*x as i64),
+                    MetaValue::I32(x) => Some(*x as i64),
+                    MetaValue::U64(x) => i64::try_from(*x).ok(),
+                    MetaValue::I64(x) => Some(*x),
+                    _ => None,
+                })
+                .collect(),
+            _ => None,
+        }
+    }
+
     /// Length of an array-typed metadata value (e.g. `tokenizer.ggml.tokens`).
     pub fn arr_len(&self, key: &str) -> Option<usize> {
         self.get(key)?.as_array().map(|a| a.len())

@@ -141,6 +141,10 @@ mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
 // The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+mod kquant_mmq;
+#[cfg(test)]
+#[path = "ops/kquant_mmq_tests.rs"]
+mod kquant_mmq_tests;
 #[cfg(test)]
 #[path = "ops/norm_gated_rms_strided_tests.rs"]
 mod norm_gated_rms_strided_tests;
@@ -236,6 +240,7 @@ pub use glm5next_mhc::*;
 pub use hyper_connection::*;
 pub use hyper_connection_dispatch::*;
 pub use hyper_connection_lowrank::*;
+pub use kquant_mmq::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
