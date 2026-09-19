@@ -219,14 +219,16 @@ mod ownership_tests {
         let ptr = gpu.alloc(16).unwrap();
         gpu.copy_h2d(&[0u8; 16], ptr).unwrap();
         let mut store = WeightStore::from_map(HashMap::from([(
-            "embed".into(),
+            "language_model.model.embed_tokens.weight".into(),
             WeightTensor {
                 ptr,
                 shape: vec![2, 2],
                 dtype: WeightDtype::FP32,
             },
         )]));
-        let weight = dense_for_bf16_engine(&store, "embed", &gpu).unwrap();
+        let weight =
+            dense_for_bf16_engine(&store, "language_model.model.embed_tokens.weight", &gpu)
+                .unwrap();
         assert_ne!(weight.weight, ptr);
         assert_eq!(store.derived().bytes(), 8);
         store.release(&gpu).unwrap();
