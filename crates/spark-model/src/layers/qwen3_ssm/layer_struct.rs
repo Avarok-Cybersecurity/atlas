@@ -309,19 +309,21 @@ pub struct Qwen3SsmLayer {
     /// kill switch AVAROK_NO_GDN_WY3_RESIDENT (PRESENCE — `=0` is NOT off).
     pub(super) gdn_wy3_resident_k: KernelHandle,
     pub(super) gdn_wy4_k: KernelHandle,
-    /// Write-on-accept K=4 twin + its post-verdict fold (2026-09-03).
-    /// `KernelHandle(0)` when the module is absent; `AVAROK_GDN_WOA` (opt-in; see gdn_flags.rs)
-    /// disables. `woa_armed` is set by the batched verify that launched the
-    /// twin and consumed by `gdn_fold_accepted`.
+    /// Write-on-accept K=4 twin + its post-verdict fold (2026-09-03, see
+    /// `woa.rs`). `KernelHandle(0)` when the module is absent; OPT-IN via
+    /// `AVAROK_GDN_WOA=1` (see gdn_flags.rs). Engaged only on a per-call
+    /// request.
     pub(super) gdn_wy4_woa_k: KernelHandle,
     pub(super) gdn_wy4_fold_k: KernelHandle,
     pub(super) gdn_wy4_clear_k: KernelHandle,
-    /// Device u32: 1 after the woa twin ran (written inside the graph).
-    pub(super) woa_flag: DevicePtr,
-    pub(super) woa_stash: DevicePtr,
-    pub(super) woa_stash_seq_floats: usize,
+    /// Device addresses bound by the model on the first request (NULL until
+    /// then): the engaged u32 (1 = the twin ran for the last requesting
+    /// verify, written inside the graph) and this layer's stash slab of
+    /// `woa_seqs` sequences.
+    pub(super) woa_flag: std::sync::atomic::AtomicU64,
+    pub(super) woa_stash: std::sync::atomic::AtomicU64,
+    pub(super) woa_seqs: std::sync::atomic::AtomicUsize,
     pub(super) woa_dims: [usize; 4],
-    pub(super) woa_armed: std::sync::atomic::AtomicBool,
     /// FP16 h-state twins of the five WY verify kernels above
     /// (`AVAROK_SSM_H_FP16` stage 2). Same launch contracts, same float
     /// expressions and accumulation orders as their FP32 parents — the h-state

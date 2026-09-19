@@ -79,7 +79,7 @@ extern "C" __global__ void k3_mla_sdpa_gate_f32(
     }
     const float scale = 1.0f / sqrtf((float)dq);
     const float* qrow = q + h * dq;
-    // -CUDART_INF_F, not -INFINITY: MSVC's nvcc rejects the negated macro with
+    // -CUDART_INF_F, not -CUDART_INF_F: MSVC's nvcc rejects the negated macro with
     // "floating-point value does not fit in required floating-point type"
     // (#221-D), which is what broke the windows-x86_64-nvidia-cuda leg of the
     // release matrix. Same idiom as the other kernels in this tree.

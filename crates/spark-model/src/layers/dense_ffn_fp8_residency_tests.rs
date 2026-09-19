@@ -103,6 +103,7 @@ fn with_ctx(gpu: &MockGpuBackend, f: impl FnOnce(&ForwardContext, &BufferArena))
         graph_capture: false,
         decode_step: false,
         gdn_exact_replay: false,
+        gdn_write_on_accept: false,
         token_ids: None,
         host_token_ids: None,
         routed_lora_layers: None,
