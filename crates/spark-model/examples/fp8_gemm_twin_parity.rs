@@ -29,7 +29,7 @@
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -132,7 +132,7 @@ fn rs_gemm(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
 
     let Ok(base_k) = g.kernel("w4a16", "fp8_gemm_t_row_scaled") else {

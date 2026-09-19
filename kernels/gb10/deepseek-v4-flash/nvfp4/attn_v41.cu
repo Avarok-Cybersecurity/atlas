@@ -24,6 +24,7 @@
 //   attn_v41_slice_cols / _scatter_cols   column slices for the grouped wo_a
 
 #include <cuda_bf16.h>
+#include <math_constants.h>
 #include <cuda_fp8.h>
 
 #define AV_BLOCK 256
@@ -229,7 +230,7 @@ extern "C" __global__ void attn_v41_pool(
     const unsigned int ratio, const unsigned int hd) {
     const unsigned int g = blockIdx.x;
     for (unsigned int d = threadIdx.x; d < hd; d += blockDim.x) {
-        float m = -INFINITY;
+        float m = -CUDART_INF_F;
         for (unsigned int r = 0; r < ratio; ++r) m = fmaxf(m, score[((size_t)g * ratio + r) * hd + d]);
         float sum = 0.0f;
         for (unsigned int r = 0; r < ratio; ++r) sum += expf(score[((size_t)g * ratio + r) * hd + d] - m);
@@ -290,7 +291,7 @@ extern "C" __global__ void attn_v41_sparse_attn(
     // one warp per candidate row: the dot product over hd
     for (unsigned int j = warp; j < topk; j += nwarps) {
         const int i = ids[j];
-        float s = -INFINITY;
+        float s = -CUDART_INF_F;
         if (i >= 0) {
             const __nv_bfloat16* kr = (unsigned int)i < split ? rows_a + (size_t)i * hd : rows_b + (size_t)((unsigned int)i - split) * hd;
             float acc = 0.0f;
@@ -308,7 +309,7 @@ extern "C" __global__ void attn_v41_sparse_attn(
     m = av_block_max(m, red);
     float den = 0.0f;
     for (unsigned int j = tid; j < topk; j += blockDim.x) {
-        const float e = sc[j] == -INFINITY ? 0.0f : expf(sc[j] - m);
+        const float e = sc[j] == -CUDART_INF_F ? 0.0f : expf(sc[j] - m);
         sc[j] = e;
         den += e;
     }
