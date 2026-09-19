@@ -207,7 +207,8 @@ three requests, while `pswpout` climbs by ~100k pages a run: the kernel reclaimi
 into the 16 GB swap file as the arena's pages get touched, not the miss path. Without them
 MinHeap r3 of the policy run is 300 x 59 ms = ~17 tok/s. Fix: `posix_fadvise(DONTNEED)` on the
 expert range after every pread, so the arena's reads never leave page cache for reclaim to
-fight over (measured below).
+fight over. Measured: the longest MinHeap r2 / r3 step fell from 1.9 / 5.3 s to 107 / 115 ms
+(the 26 steps over 150 ms left are all in r1, the cold cache); MinHeap 12.76 -> 15.79 tok/s.
 
 **Long outputs** (one MinHeap request, 1,500 requested, EOS at 993 tokens, 100 GiB, cold
 cache): cumulative distinct experts 3,151 after the prefill, 8,423 after 300 tokens, 9,700
@@ -253,10 +254,38 @@ not tested. A device-memory arena (249 vs 223 GB/s on the 2.93 GB of expert read
   prototyped and verified in `docs/perf/ds41_prototypes/` (glibc's `expf` / `log1pf` on the
   device, 0 mismatches over all 2^32 inputs; the top-6, weights and plan identical to the host
   on 20,000 tokens). The host span stays as it is: the syncs remain one per layer.
-* **S3.** The single-token K-quant GEMV (`kq_mmvq_warp_s`, the attention projections' 316
-  launches a token at 133-152 GB/s) gets an `m == 1` arm with the super-block loop unrolled
-  eight deep on one accumulator, so a lane's loads are in flight before its dots; the
-  accumulation order is the loop's, so the bytes are the loop's (oracle tests pass). The
-  router chain double-buffered across trips faulted (`CUDA_ERROR_ILLEGAL_ADDRESS` in the
-  MoE oracle test) and was reverted inside the time box; the staged router stays at 68 us a
-  layer.
+* **S3.** Two kernel attempts inside the time box, both out: the single-token K-quant GEMV
+  (`kq_mmvq_warp_s`, the attention projections' 316 launches a token at 133-152 GB/s) with
+  its super-block loop unrolled eight deep on one accumulator passed the oracle tests but
+  measured nothing (`kquant_mmvq_q2_k_w` 10.82 ms a token against 10.03, kernel time 49.6
+  against 48.6 ms: the launches are not waiting on dependent loads), reverted; the router
+  chain double-buffered across trips faulted (`CUDA_ERROR_ILLEGAL_ADDRESS` in the MoE oracle
+  test), reverted. The attention projections' bandwidth (1.66 GB in ~13 ms) remains the
+  largest kernel inefficiency, and it needs a shape change (rows per block, block reads
+  vectorised across the 84-byte Q2_K super-blocks), not an unroll.
+
+### Phase 2 results
+
+Chat, 300 tokens, temperature 0, one serve, medians of three, every text byte-identical to
+the oracle (6/6 on every row). Recipe from S1 on: `ATLAS_DS41_EXPERT_CACHE_GIB=100
+ATLAS_DS41_READER_THREADS=16` on a Spark running nothing else.
+
+| step | commit | MinHeap tok/s (r1/r2/r3) | MinHeap TTFT | Volvo tok/s (r1/r2/r3) | Volvo TTFT | decode misses |
+|---|---|---|---|---|---|---|
+| baseline (09-17 binary, 88 GiB, 8 readers) | f13752b23 | 10.42 | 2048 ms | 10.77 | 1291 ms | |
+| phase 1, five levers (#1147) | c5ca8e2d5 | 12.39 | 2009 ms | 12.90 | 1262 ms | 22,191 |
+| phase 2, reproduced with the route trace | ece8acb34 | 12.38 (10.77/12.42/12.38) | 2013 ms | 12.85 (11.43/12.85/12.89) | 1245 ms | 22,191 |
+| S1: 100 GiB arena, 16 readers | 7866373ea | 14.20 (10.76/14.21/14.20) | 4560 ms | 17.73 (12.03/17.73/18.45) | 432 ms | 12,255 |
+| S1: + random victim among the oldest 5% | | 12.76 (10.79/16.07/12.76), swap stalls | 4086 ms | 17.87 (12.02/17.87/18.32) | 433 ms | 9,914 |
+| **S1: + page cache dropped after every expert read** | 998bf8986 | **15.79** (9.99/15.79/16.40) | 1569 ms | **17.67** (11.22/17.67/17.97) | 399 ms | 9,914 |
+
+Baseline to phase 2: MinHeap +51.5%, Volvo +64.1%; phase 1 to phase 2: +27.4% / +36.9%.
+Hit steps 56-57 ms (17.6-17.9 tok/s) on both suites; MinHeap's median still carries 1.2-1.9
+misses a step at 100 GiB (the working-set edge).
+
+Profile of the final binary (nsys, one warm 60-token request, 19.86 tok/s hot): GPU kernel
+time 49.6 ms a token over 1,865 launches; 186 `cuStreamSynchronize` (28.6 ms blocked, most
+of it the GPU finishing queued work), 49 D2H, 260 H2D; experts 17.5 ms (`q2_k_experts_w8`
+10.53 + `q3_k_experts_w8` 6.96), attention projections 10.82 + 2.34 + 1.95, head 2.88, router
+2.73, sparse attention 2.06, HC chain 2.54. Unchanged from phase 1 within the run, as S2 and
+S3 landed no kernel.
