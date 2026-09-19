@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! K3 Megatron TP plan + `slice_for_rank` apply.
+//! K3 rank-local binding and legacy BF16 post-upload sharding.
 //!
 //! Head counts on `config` are already per-rank (`serve_phases::topology`
 //! divides them). Full sizes reconstruct as `local * tp_size`.
@@ -23,6 +23,25 @@ use super::bf16::f32_le_to_bf16_bytes;
 
 use crate::kimi_k3::tp::tensor_plan;
 
+/// A partition stamp is trustworthy only for the same rank topology.
+/// The runtime sets it after validating/slicing tensors before GPU allocation.
+pub(super) fn is_prepartitioned(store: &WeightStore, config: &ModelConfig) -> Result<bool> {
+    let Some((rank, world)) = store.prepartitioned_tp() else {
+        return Ok(false);
+    };
+    ensure!(
+        world > 0 && rank < world && rank == config.tp_rank && world == config.tp_world_size,
+        "K3 prepartitioned store rank {rank}/{world} does not match {}/{}",
+        config.tp_rank,
+        config.tp_world_size
+    );
+    ensure!(
+        config.ep_world_size <= 1,
+        "K3 prepartitioned TP does not implement EP"
+    );
+    Ok(true)
+}
+
 pub fn load_sharded(
     store: &WeightStore,
     name: &str,
@@ -33,6 +52,47 @@ pub fn load_sharded(
 ) -> Result<(DenseWeight, WeightMeta)> {
     let t = store.get(name)?;
     let (kind, full_out, full_in) = tensor_plan(name, mixer, mlp, config);
+    if is_prepartitioned(store, config)? {
+        if kind != TpShardKind::Replicated {
+            let world = config.tp_world_size;
+            let (local_out, local_in) = match kind {
+                TpShardKind::ColumnParallel => {
+                    ensure!(
+                        full_out.is_multiple_of(world),
+                        "{name}: invalid TP row split"
+                    );
+                    (full_out / world, full_in)
+                }
+                TpShardKind::RowParallel => {
+                    ensure!(
+                        full_in.is_multiple_of(world),
+                        "{name}: invalid TP column split"
+                    );
+                    (full_out, full_in / world)
+                }
+                TpShardKind::Replicated => unreachable!(),
+            };
+            ensure!(
+                t.shape.first() == Some(&local_out) && t.num_elements() == local_out * local_in,
+                "{name}: prepartitioned shape {:?} does not match [{local_out}, {local_in}]",
+                t.shape
+            );
+            ensure!(
+                matches!(t.dtype, WeightDtype::BF16 | WeightDtype::FP32),
+                "{name}: unsupported dense prepartitioned dtype {:?}",
+                t.dtype
+            );
+        }
+        return Ok((
+            DenseWeight { weight: t.ptr },
+            WeightMeta {
+                name: name.to_string(),
+                dtype: t.dtype,
+                numel: t.num_elements(),
+            },
+        ));
+    }
+
     if config.tp_world_size.max(1) <= 1 || kind == TpShardKind::Replicated {
         return Ok((
             DenseWeight { weight: t.ptr },

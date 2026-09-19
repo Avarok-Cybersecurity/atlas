@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! CPU-side B300 bring-up contract. This proves build inputs, not CUDA execution.
-//! In particular, the Kimi extra_cu path is relative to the local quant
-//! directory: a link to KERNEL.toml alone leaves that dependency dangling.
+//! In particular, the Kimi expert source must be discoverable in every quant
+//! directory: a manifest alias alone does not compile the dependency.
 
 #[path = "../build_arch.rs"]
 mod build_arch;
@@ -77,18 +77,18 @@ fn every_kimi_quant_resolves_the_real_e8m0_kernel_dependency() {
     for quant in ["bf16", "mxfp4", "nvfp4"] {
         let dir = root().join("b300/kimi-k3").join(quant);
         let manifest = toml_at(&dir.join("KERNEL.toml"));
-        for path in manifest["build"]["extra_cu"].as_array().unwrap() {
-            let resolved = std::fs::canonicalize(dir.join(path.as_str().unwrap())).unwrap();
-            assert_eq!(
-                resolved,
-                std::fs::canonicalize(
-                    root().join("b300/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu")
-                )
-                .unwrap()
-            );
-            let source = std::fs::read_to_string(resolved).unwrap();
-            assert!(source.contains("moe_w4a16_grouped_gemm_ptrtable_e8m0"));
-        }
+        // The compiler discovers .cu files in the quant directory. An
+        // unconsumed extra_cu TOML key is not proof of a compiled dependency.
+        let resolved = std::fs::canonicalize(dir.join("moe_w4a16_grouped_gemm.cu")).unwrap();
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(
+                root().join("b300/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu")
+            )
+            .unwrap()
+        );
+        let source = std::fs::read_to_string(resolved).unwrap();
+        assert!(source.contains("moe_w4a16_grouped_gemm_ptrtable_e8m0"));
         assert_eq!(
             manifest["modules"]["moe_w4a16_grouped_gemm"].as_str(),
             Some("moe_w4a16")

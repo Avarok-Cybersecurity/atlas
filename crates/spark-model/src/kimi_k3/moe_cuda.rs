@@ -2,7 +2,7 @@
 
 //! Host launch for K3 packed LatentMoE experts (`moe_w4a16` E8M0 ptrtable).
 //!
-//! Required handle: [`PTRTABLE_E8M0`] from DSV4 extra_cu. Lookup-fail bails;
+//! Required handle: [`PTRTABLE_E8M0`] from the same-hardware DSV4 source alias. Lookup-fail bails;
 //! packed tensors must not silently dequant on the host F32 twin path.
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use crate::layers::ops::moe_w4a16_grouped_gemm_ptrtable;
 use crate::weight_map::QuantizedWeight;
 
-/// PTX module from kimi-k3 extra_cu of DSV4 `moe_w4a16_grouped_gemm.cu`.
+/// PTX module from the kimi-k3 alias of DSV4 `moe_w4a16_grouped_gemm.cu`.
 pub const MODULE: &str = "moe_w4a16";
 pub const PTRTABLE_E8M0: &str = "moe_w4a16_grouped_gemm_ptrtable_e8m0";
 pub const E8M0_ENTRY: &str = PTRTABLE_E8M0;

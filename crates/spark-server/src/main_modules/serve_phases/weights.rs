@@ -47,6 +47,27 @@ pub(crate) fn load_weight_store(
     oom_reserve_bytes: usize,
 ) -> Result<spark_runtime::weights::WeightStore> {
     use spark_runtime::weights::WeightLoader;
+    if matches!(
+        config.model_type.as_str(),
+        "kimi_k3" | "kimi_linear" | "Kimi-K3"
+    ) {
+        anyhow::ensure!(
+            ep_size == 1,
+            "K3 rank-aware loading supports TP only; expert parallelism is not implemented"
+        );
+        anyhow::ensure!(
+            spark_runtime::weights::find_gguf(model_dir).is_none(),
+            "K3 rank-aware loading requires safetensors"
+        );
+        tracing::info!(
+            rank = config.tp_rank,
+            world = config.tp_world_size,
+            "K3 uses rank-aware safetensors loading before GPU allocation"
+        );
+        return spark_runtime::weights::K3SafetensorsLoader::new(config.clone())?
+            .load(model_dir, gpu, oom_reserve_bytes)
+            .context("Failed to load rank-local K3 weights");
+    }
     let mult = quant_multiplier(config);
 
     // GGUF checkpoints are dequantized to BF16 by a dedicated loader; take that

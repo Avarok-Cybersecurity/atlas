@@ -1,7 +1,6 @@
-# K3 mxfp4: kda/mla stems via symlink. extra_cu DSV4 E8M0 GEMM.
+# K3 mxfp4: kda/mla stems via symlink. same-hardware source alias for DSV4 E8M0 GEMM.
 
 [build]
-extra_cu = ["../../deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"]
 
 [modules]
 moe_w4a16_grouped_gemm = "moe_w4a16"

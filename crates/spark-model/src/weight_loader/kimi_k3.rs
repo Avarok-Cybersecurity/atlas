@@ -190,7 +190,7 @@ mod tests {
             },
         )]));
         let err = match bf16::load_layers(&store, &config, &gpu) {
-            Ok(_) => panic!("packed TP must fail until its loader is implemented"),
+            Ok(_) => panic!("packed TP must refuse an unmarked store"),
             Err(err) => err.to_string(),
         };
         assert!(err.contains("does not slice packed MXFP4"), "{err}");
@@ -203,7 +203,8 @@ mod tests {
         if std::env::var_os(MARKER).is_some() {
             const TWIN: &str =
                 include_str!("../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json");
-            let config = parse_config(TWIN).expect("0.40B twin");
+            let mut config = parse_config(TWIN).expect("0.40B twin");
+            config.tp_world_size = 1;
             let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
             let graph = avarok_core::kimi_k3::K3Graph::from_config(&config);
             let mut map = HashMap::new();
@@ -258,12 +259,12 @@ mod tests {
             let prefix = packed_w1.trim_end_matches(".weight");
             put(
                 format!("{prefix}.weight_packed"),
-                vec![1, 16],
+                vec![config.moe_intermediate_size, config.moe_latent_size / 2],
                 WeightDtype::UInt8,
             );
             put(
                 format!("{prefix}.weight_scale"),
-                vec![1],
+                vec![config.moe_intermediate_size, config.moe_latent_size / 32],
                 WeightDtype::UInt8,
             );
             let store = WeightStore::from_map(map);
