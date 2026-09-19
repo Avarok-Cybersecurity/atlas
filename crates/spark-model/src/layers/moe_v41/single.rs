@@ -12,7 +12,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Stage, MoeV41Timing};
-use crate::layers::ops::{kquant_mmvq_experts_w, kquant_q8_1_rows, kquant_q8_1_rows_bytes};
+use crate::layers::ops::{kquant_mmvq_experts_wn, kquant_q8_1_rows, kquant_q8_1_rows_bytes};
 
 impl MoeV41 {
     /// Group the `(token, k)` assignments by expert (ascending expert id):
@@ -87,24 +87,29 @@ impl MoeV41 {
         let c = &self.cfg;
         let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
         kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
-        for (which, out) in [(0usize, self.gate_out), (1, self.up_out)] {
-            kquant_mmvq_experts_w(
-                gpu,
-                self.k.mmvq_q2k_experts,
-                table(which),
-                self.a_q8,
-                out,
-                c.inter as u32,
-                c.dim as u32,
-                1,
-                ne as u32,
-                0,
-                stream,
-            )?;
-        }
+        // gate and up in ONE 2 * ne expert batch: the pointer table holds the
+        // ne gate pointers then the ne up pointers contiguously, every entry
+        // reads the same q8_1 token row, and expert e writes row e of
+        // gate_out, so up's rows start at gate_out + ne * inter. Same bytes
+        // per row as the two launches.
+        let up_view = DevicePtr(self.gate_out.0 + (ne * c.inter * 2) as u64);
+        kquant_mmvq_experts_wn(
+            gpu,
+            self.k.mmvq_q2k_experts,
+            table(0),
+            self.a_q8,
+            self.gate_out,
+            c.inter as u32,
+            c.dim as u32,
+            1,
+            2 * ne as u32,
+            0,
+            self.k.experts_warps,
+            stream,
+        )?;
         self.launch_n(gpu, self.k.swiglu, ne * c.inter, stream, |l| {
             l.arg_ptr(self.gate_out)
-                .arg_ptr(self.up_out)
+                .arg_ptr(up_view)
                 .arg_ptr(self.weight_dev)
                 .arg_ptr(self.h)
                 .arg_u32(ne as u32)
@@ -120,7 +125,7 @@ impl MoeV41 {
             c.inter as u32,
             stream,
         )?;
-        kquant_mmvq_experts_w(
+        kquant_mmvq_experts_wn(
             gpu,
             self.k.mmvq_q3k_experts,
             table(2),
@@ -131,6 +136,7 @@ impl MoeV41 {
             1,
             ne as u32,
             kquant_q8_1_rows_bytes(1, c.inter as u32) as u32,
+            self.k.experts_warps,
             stream,
         )?;
         // All `ne` rows land in the one token row: summed in plan order by a

@@ -222,7 +222,8 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_experts(
 // activation is exactly this projection's input; larger when the input is a
 // column slice of a wider row), `dst_row_stride` = bf16 columns between output
 // rows (nrows_x, or the full width when this is one group of a wider output).
-template <ggml_type type>
+// NW = warps (rows) per block; the per-row work is the same for any NW.
+template <ggml_type type, int NW = KQ_NWARPS>
 static __device__ __forceinline__ void kq_mmvq_warp_s(
         const char* __restrict__ x_rows, const size_t row_bytes, const block_q8_1* __restrict__ y,
         const int y_row_blocks, __nv_bfloat16* __restrict__ dst, const int dst_row_stride,
@@ -232,7 +233,7 @@ static __device__ __forceinline__ void kq_mmvq_warp_s(
     constexpr int vdr = 1;
     constexpr int blocks_per_iter = vdr * 32 / qi;          // 2 super-blocks per warp iteration
     const int lane = threadIdx.x;
-    const int row = blockIdx.x * KQ_NWARPS + threadIdx.y;
+    const int row = blockIdx.x * NW + threadIdx.y;
     if (row >= nrows_x) return;
     const char* x_row = x_rows + (size_t)row * row_bytes;
     const int blocks_per_row_x = ncols_x / qk;
@@ -320,3 +321,24 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_experts_w(
     kq_mmvq_warp<GGML_TYPE_Q3_K>((const char*)vxs[e], (size_t)(ncols_x / QK_K) * sizeof(block_q3_K),
                                  y, dst + (size_t)e * m * nrows_x, (int)ncols_x, (int)nrows_x, (int)m);
 }
+
+// The expert batch at 2 and 8 warps a block (the rows are short: 20 Q2_K or 9
+// Q3_K super-blocks, so the warp's latency chain, not bandwidth, sets the
+// pace; the block shape decides how many of them the SM keeps in flight).
+// Per-row math and order unchanged. Grid: (ceil(nrows_x / NW), n_experts, 1)
+// Block: (32, NW, 1). ATLAS_DS41_EXPERT_WARPS picks 2 / 4 / 8.
+#define KQ_EXPERTS_W_ENTRY(TYPE, BLOCK, SUFFIX, NW)                                                     \
+    extern "C" __global__ void __launch_bounds__(32 * NW) kquant_mmvq_##SUFFIX(                         \
+            const void* const* __restrict__ vxs, const void* __restrict__ vy,                             \
+            __nv_bfloat16* __restrict__ dst, unsigned int ncols_x, unsigned int nrows_x, unsigned int m,  \
+            unsigned int y_stride_bytes) {                                                                \
+        const unsigned int e = blockIdx.y;                                                                \
+        const block_q8_1* y = (const block_q8_1*)((const char*)vy + (size_t)e * y_stride_bytes);          \
+        kq_mmvq_warp_s<TYPE, NW>((const char*)vxs[e], (size_t)(ncols_x / QK_K) * sizeof(BLOCK), y,        \
+                                 (int)(ncols_x / QK8_1), dst + (size_t)e * m * nrows_x, (int)nrows_x,    \
+                                 (int)ncols_x, (int)nrows_x, (int)m);                                     \
+    }
+KQ_EXPERTS_W_ENTRY(GGML_TYPE_Q2_K, block_q2_K, q2_k_experts_w2, 2)
+KQ_EXPERTS_W_ENTRY(GGML_TYPE_Q2_K, block_q2_K, q2_k_experts_w8, 8)
+KQ_EXPERTS_W_ENTRY(GGML_TYPE_Q3_K, block_q3_K, q3_k_experts_w2, 2)
+KQ_EXPERTS_W_ENTRY(GGML_TYPE_Q3_K, block_q3_K, q3_k_experts_w8, 8)

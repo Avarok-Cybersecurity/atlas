@@ -24,6 +24,19 @@ impl MoeV41 {
         // however small `max_tokens` is; the token-indexed buffers keep `m`.
         let me = m.max(cfg.topk);
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
+        // Warps a block of the six-expert GEMV batch: 8 (the `_w8` entries)
+        // by default, the fastest of 2 / 4 / 8 on the 09-19 probe (18.9 vs
+        // 18.2 vs 18.0 tok/s hot); 2 / 4 select `_w2` / `_w`, same bytes out.
+        let experts_warps: u32 = std::env::var("ATLAS_DS41_EXPERT_WARPS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|w| matches!(w, 2 | 4 | 8))
+            .unwrap_or(8);
+        let sfx = match experts_warps {
+            2 => "2",
+            8 => "8",
+            _ => "",
+        };
         Ok(MoeV41 {
             last: std::cell::Cell::new(MoeV41Timing::default()),
             timing_sync: std::env::var("ATLAS_DS41_DIAG").is_ok_and(|v| v == "1"),
@@ -36,8 +49,11 @@ impl MoeV41 {
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
                 mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
                 mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_w")?,
-                mmvq_q2k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_experts_w")?,
-                mmvq_q3k_experts: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_experts_w")?,
+                mmvq_q2k_experts: gpu
+                    .kernel(KQUANT_MODULE, &format!("kquant_mmvq_q2_k_experts_w{sfx}"))?,
+                mmvq_q3k_experts: gpu
+                    .kernel(KQUANT_MODULE, &format!("kquant_mmvq_q3_k_experts_w{sfx}"))?,
+                experts_warps,
                 swiglu: gpu.kernel(MODULE, "moe_v41_swiglu")?,
                 accumulate: gpu.kernel(MODULE, "moe_v41_accumulate")?,
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
@@ -57,7 +73,9 @@ impl MoeV41 {
                 kquant_mmq_act_bytes(m as u32, cfg.dim as u32)
                     .max(kquant_q8_1_rows_bytes(m as u32, cfg.dim as u32)),
             )?,
-            gate_out: alloc(me * cfg.inter * 2)?,
+            // [2 * me, inter]: the single-token path runs gate and up as one
+            // 2 * ne expert batch and reads up at gate_out + ne * inter.
+            gate_out: alloc(2 * me * cfg.inter * 2)?,
             up_out: alloc(me * cfg.inter * 2)?,
             h: alloc(me * cfg.inter * 2)?,
             h_q8: alloc(

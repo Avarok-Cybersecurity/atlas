@@ -76,6 +76,8 @@ struct Kernels {
     /// the single-token arm: every routed expert in one launch a projection
     mmvq_q2k_experts: KernelHandle,
     mmvq_q3k_experts: KernelHandle,
+    /// rows (warps) a block of the expert batch, 2 / 4 / 8 (ATLAS_DS41_EXPERT_WARPS)
+    experts_warps: u32,
     swiglu: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,

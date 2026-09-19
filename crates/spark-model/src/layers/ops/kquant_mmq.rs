@@ -241,6 +241,48 @@ pub fn kquant_mmvq_groups_w(
         .launch(stream)
 }
 
+/// [`kquant_mmvq_experts_w`] with `nwarps` rows a block (the `_w2` / `_w8`
+/// entries for 2 / 8; the plain `_w` entry is 4). Same bytes for any `nwarps`.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_mmvq_experts_wn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    w_tables: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    nwarps: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&m),
+        "kquant_mmvq_experts_wn: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k.is_multiple_of(QK_K),
+        "kquant_mmvq_experts_wn: k={k} is not a multiple of {QK_K}"
+    );
+    anyhow::ensure!(
+        matches!(nwarps, 2 | 4 | 8),
+        "kquant_mmvq_experts_wn: nwarps={nwarps} not in 2/4/8"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, nwarps), n_experts, 1])
+        .block([32, nwarps, 1])
+        .arg_ptr(w_tables)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
+        .launch(stream)
+}
+
 /// `kquant_mmvq_*_experts_w`: the warp-per-row expert batch, same arguments
 /// as [`kquant_mmvq_experts`].
 pub fn kquant_mmvq_experts_w(
