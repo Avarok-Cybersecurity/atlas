@@ -32,6 +32,7 @@ impl MoeV41 {
                 gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
                 gemm_f32out: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16_f32out")?,
                 router_gemv: gpu.kernel(MODULE, "moe_v41_router_gemv_f32out")?,
+                router_gemv_staged: gpu.kernel(MODULE, "moe_v41_router_gemv_f32out_staged")?,
                 q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
                 mmvq_q2k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
                 mmvq_q3k: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q3_k_w")?,

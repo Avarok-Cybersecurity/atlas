@@ -80,27 +80,13 @@ extern "C" __global__ void moe_v41_sum_rows(
     acc[d] = a;
 }
 
-// Router logits at decode: one thread per (token, expert) output, strict
-// k = 0..K-1 accumulation in fp32 with the same expression as
-// dense_gemm_bf16_f32out, so the logits are bit-identical to the tiled kernel
-// (the router-numerics pin) while every gate row is read once instead of the
-// 16x16 tile idling 15 of its rows at m = 1. K is a multiple of 8 (dim = 5120):
-// 8 bf16 per 16-byte load, consumed in order.
-//
-// Grid: (ceil(N/64), M, 1)  Block: (64, 1, 1)
-extern "C" __global__ void moe_v41_router_gemv_f32out(
-    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
-    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
-    float* __restrict__ C,                // [M, N] row-major, FP32
-    unsigned int M,
-    unsigned int N,
-    unsigned int K
-) {
-    const unsigned int n = blockIdx.x * blockDim.x + threadIdx.x;
-    const unsigned int t = blockIdx.y;
-    if (n >= N || t >= M) return;
-    const __nv_bfloat16* a = A + (unsigned long long)t * K;
-    const __nv_bfloat16* b = B + (unsigned long long)n * K;
+// The router's strict k = 0..K-1 fp32 chain over one activation row `a` and
+// one gate row `b` (K a multiple of 8, 16-byte loads consumed in order), the
+// same expression as dense_gemm_bf16_f32out so the logits are bit-identical to
+// the tiled kernel (the router-numerics pin). Shared by the direct and the
+// staged entries below, so the two can never drift apart.
+static __device__ __forceinline__ float moe_v41_router_chain(
+        const __nv_bfloat16* __restrict__ a, const __nv_bfloat16* __restrict__ b, unsigned int K) {
     const uint4* a4 = (const uint4*)a;
     const uint4* b4 = (const uint4*)b;
     float acc = 0.0f;
@@ -148,5 +134,68 @@ extern "C" __global__ void moe_v41_router_gemv_f32out(
     for (unsigned int k = k8n * 8; k < K; ++k) {
         acc += __bfloat162float(a[k]) * __bfloat162float(b[k]);
     }
-    C[(unsigned long long)t * N + n] = acc;
+    return acc;
+}
+
+// Router logits at decode: one thread per (token, expert) output, the chain
+// above straight from global memory; every gate row is read once instead of
+// the 16x16 tile idling 15 of its rows at m = 1.
+//
+// Grid: (ceil(N/64), M, 1)  Block: (64, 1, 1)
+extern "C" __global__ void moe_v41_router_gemv_f32out(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
+    float* __restrict__ C,                // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int n = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int t = blockIdx.y;
+    if (n >= N || t >= M) return;
+    C[(unsigned long long)t * N + n] = moe_v41_router_chain(
+        A + (unsigned long long)t * K, B + (unsigned long long)n * K, K);
+}
+
+// The same logits, staged: a 256-thread block takes one token (blockIdx.y)
+// and MOE_V41_ROUTER_RPB gate rows (blockIdx.x), copies the activation row and
+// those gate rows into shared memory with every thread loading (coalesced
+// 16-byte loads, all in flight), then lane 0 of warps 0..RPB-1 runs the chain
+// over the staged rows. Same arithmetic, same order, same bits; the 4 MB of
+// gate rows now stream through ceil(N/RPB) blocks instead of ceil(N/64) blocks
+// of 64 threads each pulling a 10 KB row alone (134 us for 4 MB, nsys 09-19).
+// Dynamic shared memory: (1 + RPB) * K * 2 bytes.
+//
+// Grid: (ceil(N/RPB), M, 1)  Block: (256, 1, 1)
+#define MOE_V41_ROUTER_RPB 2u
+extern "C" __global__ void __launch_bounds__(256) moe_v41_router_gemv_f32out_staged(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
+    float* __restrict__ C,                // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    extern __shared__ uint4 moe_v41_router_smem[];
+    const unsigned int t = blockIdx.y;
+    const unsigned int n0 = blockIdx.x * MOE_V41_ROUTER_RPB;
+    if (t >= M || n0 >= N) return;
+    const unsigned int k8n = K / 8;
+    uint4* sa = moe_v41_router_smem;
+    uint4* sb = moe_v41_router_smem + k8n;
+    const uint4* a4 = (const uint4*)(A + (unsigned long long)t * K);
+    for (unsigned int i = threadIdx.x; i < k8n; i += blockDim.x) sa[i] = a4[i];
+    for (unsigned int r = 0; r < MOE_V41_ROUTER_RPB; ++r) {
+        const unsigned int n = n0 + r;
+        if (n >= N) break;
+        const uint4* b4 = (const uint4*)(B + (unsigned long long)n * K);
+        for (unsigned int i = threadIdx.x; i < k8n; i += blockDim.x) sb[r * k8n + i] = b4[i];
+    }
+    __syncthreads();
+    const unsigned int r = threadIdx.x / 32;
+    if ((threadIdx.x % 32) != 0 || r >= MOE_V41_ROUTER_RPB) return;
+    const unsigned int n = n0 + r;
+    if (n >= N) return;
+    C[(unsigned long long)t * N + n] = moe_v41_router_chain(
+        (const __nv_bfloat16*)sa, (const __nv_bfloat16*)(sb + r * k8n), K);
 }
