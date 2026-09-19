@@ -1,2 +1,0 @@
-{"engine":"atlas","command":"spark serve unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8888 --model-name unsloth/Qwen3.8-27B-NVFP4 --max-seq-len 2048 --max-batch-size 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching true --speculative --num-drafts 3 --scheduling-policy fifo"}
-{"engine":"vllm","command":"vllm serve unsloth/Qwen3.8-27B-NVFP4 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --kv-cache-dtype fp8 --enable-prefix-caching --num-speculative-tokens 3 --scheduling-policy fifo"}

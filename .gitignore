@@ -82,13 +82,6 @@ core.[0-9]*
 /bench_concurrency_results*.json
 # JSON results inside bench/ (scripts stay, snapshots don't)
 bench/*.json
-# ...except the concurrency subject registry, which is CONFIGURATION, not a
-# snapshot: it is the single source for which (benchmark, checkpoint) pairs the
-# dashboard's concurrency tabs stand for, and both the generator and the site
-# import it. Ignored, it silently never reaches git and CI's site build fails
-# on the missing import -- and `git status` shows nothing, so the cause is
-# invisible.
-!bench/concurrency-subjects.json
 
 # Test run history snapshots — none are committed; results are
 # regenerated per-host and contain machine-specific paths/timestamps.

@@ -30,7 +30,7 @@ const byId = (id) => SUBJECTS.find((s) => s.id === id);
 
 describe('the subject list', () => {
   test('is read from the repo-root JSON, unchanged, in the owner\'s order', () => {
-    const onDisk = JSON.parse(readFileSync(new URL('../../../bench/concurrency-subjects.json', import.meta.url), 'utf8'));
+    const onDisk = JSON.parse(readFileSync(new URL('./concurrency-subjects.json', import.meta.url), 'utf8'));
     expect(SUBJECTS).toEqual(onDisk);
     expect(SUBJECTS.map((s) => s.id)).toEqual(['qwen38-27b', 'qwen36-35b-a3b', 'qwen38-27b-dflash']);
   });

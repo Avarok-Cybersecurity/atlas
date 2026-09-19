@@ -2,12 +2,16 @@
 //
 // concurrency-subjects.js — the three subjects of the Concurrency tab.
 //
-// The list itself lives in bench/concurrency-subjects.json at the repo root,
-// shared with scripts/gen-ladder.mjs; this module only reads it. Two subjects
+// The list itself is concurrency-subjects.json BESIDE this file; this module
+// only reads it. It sits under site/ deliberately: both of its readers -- this
+// module and site/scripts/gen-ladder.mjs -- live here, and a repo-root path
+// would make an otherwise web-only change draw the whole binary CI matrix,
+// including a self-hosted Metal job that has nothing to do with a chart.
+// Two subjects
 // share a gate id (dense and MoE both run `concurrency-sweep`) and two share a
 // checkpoint (dense and DFlash), so a record is assigned on BOTH fields — either
 // alone would file a MoE run under the dense tab or a DFlash run under it.
-import subjects from '../../../bench/concurrency-subjects.json';
+import subjects from './concurrency-subjects.json';
 
 const REQUIRED_STRINGS = ['id', 'label', 'checkpoint', 'gate', 'baselines_dir'];
 
