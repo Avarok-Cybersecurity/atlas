@@ -196,6 +196,75 @@ test.describe('pricing', () => {
     await expect(page.locator('#payback .av-calc-hero')).toContainText('%');
   });
 
+  // The third scenario counts in a physical unit. The ladder publishes throughput
+  // and no power, so the draw must read USER, and nothing may call it measured.
+  test('the third scenario counts in tokens per joule, and says the draw is the visitor\'s', async ({ page }) => {
+    await page.goto(`${routes.pricing}#payback`);
+    const tabs = page.locator('#payback [role="tab"]');
+    await expect(tabs).toHaveCount(3);
+    await tabs.nth(2).click();
+    const panel = page.locator('#payback [role="tabpanel"]:visible');
+    await expect(panel).toHaveCount(1);
+    await expect(panel).toHaveAttribute('aria-labelledby', await tabs.nth(2).getAttribute('id'));
+
+    const hero = panel.locator('.av-calc-hero .av-num');
+    await expect(hero).toContainText('tok/J');
+    const perJoule = async () => parseFloat(await hero.innerText());
+    const before = await perJoule();
+    expect(before).toBeGreaterThan(0);
+
+    // Same tokens from half the draw is twice the tokens per joule.
+    const watts = panel.getByLabel(/^Avarok, watts under load/);
+    await expect(watts.locator('xpath=..').locator('.av-evidence')).toHaveText('USER');
+    await watts.fill(String(Number(await watts.inputValue()) / 2));
+    await expect.poll(perJoule).toBeCloseTo(before * 2, 1);
+
+    // A baseline that draws as little gives the advantage back, and the tab says so.
+    await panel.getByLabel(/watts under load/).nth(1).fill('1');
+    await expect(panel.locator('.av-calc-hero')).toContainText('the baseline is the more efficient');
+  });
+
+  test('the tokens per joule graph has every rung, inside its frame, at phone width too', async ({ page }) => {
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`${routes.pricing}#payback`);
+      await page.locator('#payback [role="tab"]').nth(2).click();
+      const chart = page.locator('#payback .av-effchart');
+      await expect(chart).toBeVisible();
+      await expect(chart).toHaveAttribute('viewBox', width < 460 ? '0 0 340 230' : '0 0 560 230');
+      const facts = await chart.evaluate((svg) => {
+        const vb = svg.viewBox.baseVal;
+        const texts = [...svg.querySelectorAll('text')].map((t) => ({ t: t.textContent, b: t.getBBox() }));
+        const outside = texts.filter(({ b }) => b.x < 0 || b.y < 0 || b.x + b.width > vb.width || b.y + b.height > vb.height).map(({ t }) => t);
+        const onALine = new Set();
+        for (const path of svg.querySelectorAll('path')) {
+          for (let d = 0, len = path.getTotalLength(); d <= len; d += 2) {
+            const p = path.getPointAtLength(d);
+            for (const { t, b } of texts) if (p.x > b.x && p.x < b.x + b.width && p.y > b.y && p.y < b.y + b.height) onALine.add(t);
+          }
+        }
+        return { rungs: svg.querySelectorAll('text.axis').length, outside, onALine: [...onALine], textPx: (parseFloat(getComputedStyle(svg.querySelector('text.axis')).fontSize) * svg.getBoundingClientRect().width) / vb.width };
+      });
+      expect(facts.outside, `text outside the drawing at ${width}`).toEqual([]);
+      expect(facts.onALine, `labels crossed by a line at ${width}`).toEqual([]);
+      expect(facts.textPx, `axis text size at ${width}`).toBeGreaterThan(8);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `no sideways scroll at ${width}`).toBe(true);
+    }
+  });
+
+  test('the payback tabs move with the arrow keys', async ({ page }) => {
+    await page.goto(`${routes.pricing}#payback`);
+    const tabs = page.locator('#payback [role="tab"]');
+    await tabs.first().focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await expect(tabs.nth(1)).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(tabs.nth(2)).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('ArrowRight');
+    await expect(tabs.first()).toHaveAttribute('aria-selected', 'true');
+  });
+
   test('every proposed price is labelled as proposed', async ({ page }) => {
     await page.goto(routes.pricing);
     expect(await page.locator('.av-evidence.is-proposed, .av-badge-proposed, :text("PROPOSED")').count()).toBeGreaterThan(0);
@@ -402,8 +471,18 @@ test.describe('about', () => {
     await expect(members).toHaveCount(5);
     for (const m of await members.all()) {
       expect(await m.locator('img').evaluate((i) => i.complete && i.naturalWidth)).toBeGreaterThan(100);
-      await expect(m.locator('a')).toHaveAttribute('href', /^https:\/\/www\.linkedin\.com\/in\//);
+      await expect(m.getByRole('link', { name: /on LinkedIn$/ })).toHaveAttribute('href', /^https:\/\/www\.linkedin\.com\/in\//);
     }
+  });
+
+  // A claim a public record can back carries the record. "Patented" is one.
+  test('a line that names a patent links to the patent', async ({ page }) => {
+    await page.goto('/company#team');
+    const card = page.locator('.av-member', { hasText: 'Thomas Braun' });
+    await expect(card.locator('.av-member-bio')).toContainText('Patented the Recursive Cryptography Protocol');
+    await expect(card.locator('.av-member-bio')).not.toContainText(/patent allowed/i);
+    await expect(card.locator('.av-member-cite')).toHaveAttribute('href', 'https://patents.google.com/patent/US12224993B2/en');
+    await expect(page.locator('.av-member-cite')).toHaveCount(1);
   });
 
   // The repository is public. A deck committed here is published the moment it is

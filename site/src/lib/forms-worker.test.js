@@ -140,9 +140,7 @@ test('the inboxes in wrangler.toml are the addresses the site publishes', () => 
   expect(toml).not.toMatch(/^\s*(DISCORD_WEBHOOK_URL|SLACK_WEBHOOK_URL|RESEND_API_KEY)\s*=/m); // secrets are never committed
 });
 
-test('when the site names an endpoint, it is this Worker\'s /lead over https', () => {
-  if (!formEndpoint) return; // not switched on yet
-  const url = new URL(formEndpoint);
-  expect(url.protocol).toBe('https:');
-  expect(url.pathname).toBe('/lead');
+// Empty means not switched on yet, and the forms draft an email instead.
+test('the site names no endpoint, or this Worker\'s /lead over https', () => {
+  expect(formEndpoint).toMatch(/^(|https:\/\/[^/\s]+\/lead)$/);
 });

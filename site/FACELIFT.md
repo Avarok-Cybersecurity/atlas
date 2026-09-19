@@ -82,7 +82,8 @@ a group's CSS to that group's pages.
 | A page title or description | `src/lib/content/index.js` |
 | The nav or the footer | `nav` and `footer` in `src/lib/content/brand.js` |
 | A price, a tier, a feature list | `src/lib/content/pricing.js` |
-| The payback model's defaults | `FLEET_DEFAULTS` and `API_DEFAULTS` in `src/lib/economics.js` |
+| The payback model's defaults | `FLEET_DEFAULTS`, `API_DEFAULTS` and `ENERGY_DEFAULTS` in `src/lib/economics.js` |
+| The tokens per watt tab from USER to MEASURED | Nothing on the site. Publish the draw in the ladder, see open question 20 |
 | A contact address | `contacts` in `src/lib/content/brand.js`. Keyed by job (sales, business, technical, operations, collaboration, security), so a change of person is one line. Then `bun run guide` |
 | Who is on a contact card | `contact.paths[].doors` in `src/lib/content/company.js`. Each door is a label and an address |
 | A team member's line, photo or profile | `team.people` in `company.js`, portraits in `static/team/`. Only on that person's word |
@@ -118,7 +119,10 @@ tests in `src/lib/content/site.test.js` fail until all four agree.
 **Every input to the payback model says what it is.** `MEASURED` comes from the
 published ladder. `PROPOSED` is a price we have proposed and can change. `USER`
 is the visitor's to edit. The 70% claim on the front page is the second
-scenario with its defaults, and the page says "modeled".
+scenario with its defaults, and the page says "modeled". The third scenario
+counts in tokens per joule. Its throughput is `MEASURED` and its draw is `USER`,
+because the ladder publishes no power, and it prices energy only, so it makes
+no payback claim.
 
 **Prices are proposed.** The pricing page says so on every tier. They have not
 been approved as a public list.
@@ -375,13 +379,28 @@ hosted, because the brand kit's slide and letterhead templates use them.
     the PDF under `static/` and set `team.deck.file`.
 18. **Each person confirms their own entry.** Photo, title, line and profile link for the
     five people in `team.people` came from the company's team slide and the links Alexi
-    supplied. Each of them should read their own before this merges.
+    supplied. Each of them should read their own before this merges. Two have: Tom
+    Turney's line is his own wording, and Thomas Braun's was corrected on his word on
+    2026-09-19 (patented, with the patent linked from his card).
 19. **Deploy the forms Worker.** With no endpoint a form can only draft an email in the
     visitor's own mail app, and every visitor who does not press send is lost. The fix is
     written and tested: `deploy/cloudflare/forms-worker/`. It needs ten minutes from someone
     with the Cloudflare account (a KV namespace, one webhook or email key, `wrangler
     deploy`), then its address in `formEndpoint`. Its README has the steps and the options
     that were weighed against it.
+20. **Publish power with the ladder.** The third payback tab counts in tokens per joule:
+    tokens per second over watts, where the seconds cancel. `src/lib/economics.js` spells
+    out the units above `efficiency()`. The ladder publishes throughput and no power, so
+    the tab labels the draw `USER` and defaults it to 240 W, the rating of the DGX Spark's
+    power supply, which is a ceiling. What the benchmark has to record for each rung and
+    each engine is the mean draw in watts over the same timed window the tokens are counted
+    in (or the energy in joules over it, which is the same thing), and which boundary it was
+    read at, the GPU rail or the wall. The harness today reads `power.draw` once, as a rep
+    starts, which is a sample and not a mean. When `scripts/gen-ladder.mjs` writes that
+    draw into `ladder.generated.json` as `atlas_watts` on a row and `watts` on each
+    baseline, `efficiencyLadder()` and `energyInputsFrom()` use it, and the labels, the
+    starting draw and the graph's caption turn to `MEASURED` with no edit to the site. If
+    the field names come out different, those two functions are the only place to change.
 
 ## How to throw it away
 

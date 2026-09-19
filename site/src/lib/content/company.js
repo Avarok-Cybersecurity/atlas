@@ -68,7 +68,14 @@ export const mission = {
 // one of the four brand colours, `linkedin` the profile each person gave.
 // Every entry is a real person's public face: each of them should confirm their
 // own line before this merges, and a line changes only on their word.
+// `cite` is optional: a public record that backs a claim in the line, shown as a
+// second link on the card.
 // `showTeam = false` takes the whole section off the page.
+//
+// Changed on their word, 2026-09-19: Tom Turney's line is his own wording.
+// Thomas Braun's says patented, not patent allowed: US 12,224,993 B2, "Recursive
+// cryptography protocol", sole inventor, granted 2025-02-11 (checked on Google
+// Patents the same day). The fields after it are the ones he listed.
 export const showTeam = true;
 export const team = {
   eyebrow: 'Team',
@@ -87,10 +94,11 @@ export const team = {
       name: 'Thomas Braun',
       role: 'CTO, Founder',
       focus: 'Engineering',
-      bio: 'Started the engine and owns its architecture. Veteran Rust and systems engineer. Created the patent allowed Citadel encryption protocol.',
+      bio: 'Started the engine and owns its architecture. Patented the Recursive Cryptography Protocol. Post-quantum cryptography, networking, decentralization, parallel compute, Rust.',
       photo: 'thomas-braun',
       hue: 'cyan',
-      linkedin: 'https://www.linkedin.com/in/tpbraun/'
+      linkedin: 'https://www.linkedin.com/in/tpbraun/',
+      cite: { text: 'US 12,224,993', label: 'The patent, US 12,224,993, on Google Patents', href: 'https://patents.google.com/patent/US12224993B2/en' }
     },
     {
       name: 'Eric Gonzalez',
@@ -114,7 +122,7 @@ export const team = {
       name: 'Tom Turney',
       role: 'Technical Advisor and Investor',
       focus: 'Kernels and compression',
-      bio: 'Nine and a half years at Google as a Staff TLM. Created TurboQuant+, open source KV cache compression. CEO and founder of PsyGuard.AI. Core contributor to the engine.',
+      bio: 'Staff TLM, Google (9.5 years). Founder & CEO, PsyGuard.ai. Created TurboQuant+, open-source KV cache compression. Core contributor to the engine.',
       photo: 'tom-turney',
       hue: 'violet',
       linkedin: 'https://www.linkedin.com/in/tturney/'

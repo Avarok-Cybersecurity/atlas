@@ -76,10 +76,15 @@
                 <p class="av-member-role">{p.role} <span aria-hidden="true">·</span> {p.focus}</p>
               </div>
               <p class="av-member-bio">{p.bio}</p>
-              <a class="av-member-in" href={p.linkedin} target="_blank" rel="noopener" aria-label={`${p.name} on LinkedIn`}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/></svg>
-                LinkedIn <span aria-hidden="true">↗</span>
-              </a>
+              <p class="av-member-links">
+                <a class="av-member-in" href={p.linkedin} target="_blank" rel="noopener" aria-label={`${p.name} on LinkedIn`}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28ZM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13ZM7.12 20.45H3.56V9h3.56v11.45ZM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0Z"/></svg>
+                  LinkedIn <span aria-hidden="true">↗</span>
+                </a>
+                {#if p.cite}
+                  <a class="av-member-in av-member-cite" href={p.cite.href} target="_blank" rel="noopener" aria-label={p.cite.label}>{p.cite.text} <span aria-hidden="true">↗</span></a>
+                {/if}
+              </p>
             </article>
           {/each}
         </div>
@@ -125,8 +130,10 @@
   .av-member-photo { width: 76px; height: 76px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px var(--card), 0 0 0 4px var(--sx); }
   .av-member-role { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--sx-text); margin-top: 0.3rem; line-height: 1.5; }
   .av-member-bio { font-size: 0.9rem; line-height: 1.55; color: var(--t2); }
-  .av-member-in { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.84rem; font-weight: 600; color: var(--t2); text-decoration: none; justify-self: start; padding: 0.15rem 0; }
+  .av-member-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 1rem; }
+  .av-member-in { display: inline-flex; align-items: center; gap: 0.4rem; min-height: 24px; font-size: 0.84rem; font-weight: 600; color: var(--t2); text-decoration: none; justify-self: start; padding: 0.15rem 0; }
   .av-member-in:hover { color: var(--accent); }
+  .av-member-cite { font-family: var(--font-mono); font-size: 0.74rem; font-weight: 500; }
   .av-deck { display: flex; align-items: center; justify-content: space-between; gap: 1rem 1.5rem; flex-wrap: wrap; margin-top: 1.6rem; padding: 1rem 1.2rem; border: 1px dashed var(--border-strong); border-radius: var(--av-radius-sm); color: var(--t2); font-size: 0.92rem; }
   .av-yourpoint { position: sticky; top: 100px; }
   @media (max-width: 900px) { .av-yourpoint { position: static; margin-bottom: 2rem; } }

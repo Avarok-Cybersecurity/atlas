@@ -1,6 +1,6 @@
 {
- "revision": 4,
- "date": "2026-09-18",
+ "revision": 5,
+ "date": "2026-09-19",
  "changes": [
   {
    "rev": 1,
@@ -55,6 +55,14 @@
    "pr": 1136,
    "base": "220a7e959",
    "note": "The Press and investors card says Email the CEO. Business and design partners stays under Partnerships.",
+   "touched": []
+  },
+  {
+   "rev": 5,
+   "date": "2026-09-19",
+   "pr": 1136,
+   "base": "b283059ad",
+   "note": "Two team lines changed on their owners' word: Tom Turney's is his own wording, Thomas Braun's says patented and links the patent. A third payback scenario counts in tokens per joule, with a graph of every ladder rung.",
    "touched": []
   }
  ],
@@ -3038,6 +3046,12 @@
      "button": false
     },
     {
+     "text": "US 12,224,993",
+     "href": "https://patents.google.com/patent/US12224993B2/en",
+     "kind": "out",
+     "button": false
+    },
+    {
      "text": "LinkedIn",
      "href": "https://www.linkedin.com/in/ericgonzalez/",
      "kind": "out",
@@ -4471,7 +4485,8 @@
    ],
    "controls": [
     "Get more out of the fleet you own",
-    "Stop renting tokens"
+    "Stop renting tokens",
+    "Get more tokens per watt"
    ],
    "forms": []
   },
@@ -6175,6 +6190,9 @@
    "/company",
    "/",
    "/resources/events"
+  ],
+  "https://patents.google.com/patent/US12224993B2/en": [
+   "/company"
   ],
   "https://qwen.ai/ambassador": [
    "/company",

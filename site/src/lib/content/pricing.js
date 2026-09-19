@@ -112,7 +112,7 @@ export const paybackCopy = {
   eyebrow: 'Payback',
   title: 'Find your payback period.',
   lede:
-    'If a thing costs three thousand dollars and makes you a thousand a month, it pays for itself in three months, and everything after is upside. That is the number to walk to the CFO with. Two scenarios, every input editable, evidence class on every field.',
+    'If a thing costs three thousand dollars and makes you a thousand a month, it pays for itself in three months, and everything after is upside. That is the number to walk to the CFO with. Three scenarios, every input editable, evidence class on every field.',
   fleet: {
     title: 'Get more out of the fleet you own',
     body: 'The uplift frees GPUs. Freed GPUs are deferred purchases or rentals plus the power they burned. The license is what the uplift costs.',
@@ -122,6 +122,22 @@ export const paybackCopy = {
     title: 'Stop renting tokens',
     body: 'Take the API bill, count the tokens, and run them on boxes you own at measured throughput. This is where the 70% claim on the front page comes from.',
     note: 'Throughput defaults to the top rung of the published ladder. Blended API price defaults to a hosted rate for a 27B class open model, which you should replace with your own invoice.'
+  },
+  // The third scenario counts in a physical unit. Tokens per second over watts is
+  // tokens per joule (src/lib/economics.js spells the units out). The ladder
+  // publishes throughput and no power, so the draw is the visitor's to set, and
+  // `chartMeasured` replaces `chart` by itself on the day the ladder records it.
+  // The 240 W default: NVIDIA's DGX Spark User Guide, Hardware Overview, lists a
+  // 240 W power supply and a 140 W TDP for the GB10 (read 2026-09-19).
+  // https://docs.nvidia.com/dgx/dgx-spark/hardware.html
+  energy: {
+    title: 'Get more tokens per watt',
+    body: 'Throughput over power is tokens per joule, a unit that owes nothing to a price list. Both engines ran the same ladder on the same box. More tokens from the same draw is less energy for the same work.',
+    note: 'Throughput is the top rung of the published ladder, for both engines. The ladder does not record power yet, so the draw is yours to set. It defaults to 240 W for both, the rating of the power supply a DGX Spark ships with, which is a ceiling, so the efficiency shown is a floor. If one engine draws more for its extra tokens, type that in, and the advantage shrinks by exactly that much. This tab prices the energy of the tokens served and nothing else: not the hardware, not the license, and not the idle draw of a box left on for the hours it saves.',
+    unit: 'Tokens per second, per watt. The seconds cancel, which leaves tokens per joule.',
+    chartTitle: 'Tokens per joule, rung by rung',
+    chart: 'Measured throughput on each rung of the published ladder, over the draw typed here, held flat across the rungs. A box draws less when it does less, so the low rungs are understated until the ladder records power.',
+    chartMeasured: 'Measured throughput over the draw recorded on each rung of the published ladder.'
   },
   classes: {
     MEASURED: 'From ladder.generated.json, the published concurrency ladder',
