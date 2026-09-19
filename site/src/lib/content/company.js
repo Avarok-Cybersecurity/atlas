@@ -265,7 +265,7 @@ export const contact = {
       ],
       href: links.securityPolicy
     },
-    { title: 'Press and investors', body: 'Deck, receipts and the verification walkthrough on request.', doors: [{ label: 'Business and design partners', email: contacts.business }] }
+    { title: 'Press and investors', body: 'Deck, receipts and the verification walkthrough on request.', doors: [{ label: 'Email the CEO', email: contacts.business }] }
   ]
 };
 

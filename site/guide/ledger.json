@@ -47,6 +47,14 @@
         "art-smb-library.webp",
         "art-smb-office.webp"
       ]
+    },
+    {
+      "rev": 4,
+      "date": "2026-09-18",
+      "pr": 1136,
+      "base": "220a7e959",
+      "note": "The Press and investors card says Email the CEO. Business and design partners stays under Partnerships.",
+      "touched": []
     }
   ],
   "facts": {

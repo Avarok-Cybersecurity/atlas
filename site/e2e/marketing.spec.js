@@ -381,7 +381,7 @@ test.describe('an email button always does something', () => {
       'Public collaboration -> tom@atlascybernetics.ai',
       'Report privately -> security@atlas.net',
       'Email operations -> peter@atlascybernetics.ai',
-      'Business and design partners -> kyle@atlascybernetics.ai'
+      'Email the CEO -> kyle@atlascybernetics.ai'
     ]);
   });
 });

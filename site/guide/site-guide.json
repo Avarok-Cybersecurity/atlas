@@ -1,5 +1,5 @@
 {
- "revision": 3,
+ "revision": 4,
  "date": "2026-09-18",
  "changes": [
   {
@@ -48,6 +48,14 @@
     "art-smb-library.webp",
     "art-smb-office.webp"
    ]
+  },
+  {
+   "rev": 4,
+   "date": "2026-09-18",
+   "pr": 1136,
+   "base": "220a7e959",
+   "note": "The Press and investors card says Email the CEO. Business and design partners stays under Partnerships.",
+   "touched": []
   }
  ],
  "facts": [
@@ -3300,6 +3308,12 @@
      "text": "Disclosure policy",
      "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
      "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Email the CEO · kyle@atlascybernetics.ai",
+     "href": "mailto:kyle@atlascybernetics.ai",
+     "kind": "mail",
      "button": false
     }
    ],
