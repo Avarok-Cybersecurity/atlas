@@ -218,10 +218,15 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_experts(
 // sharing every weight read, reduced with one warp shuffle and no
 // __syncthreads. The per-lane products are the existing kernel's; only the
 // order of the final sum differs, so results agree to bf16 rounding.
+// `y_row_blocks` = q8_1 blocks between activation rows (ncols_x / 32 when the
+// activation is exactly this projection's input; larger when the input is a
+// column slice of a wider row), `dst_row_stride` = bf16 columns between output
+// rows (nrows_x, or the full width when this is one group of a wider output).
 template <ggml_type type>
-static __device__ __forceinline__ void kq_mmvq_warp(
+static __device__ __forceinline__ void kq_mmvq_warp_s(
         const char* __restrict__ x_rows, const size_t row_bytes, const block_q8_1* __restrict__ y,
-        __nv_bfloat16* __restrict__ dst, const int ncols_x, const int nrows_x, const int m) {
+        const int y_row_blocks, __nv_bfloat16* __restrict__ dst, const int dst_row_stride,
+        const int ncols_x, const int nrows_x, const int m) {
     constexpr int qk  = ggml_cuda_type_traits<type>::qk;   // 256
     constexpr int qi  = ggml_cuda_type_traits<type>::qi;   // 16
     constexpr int vdr = 1;
@@ -231,7 +236,6 @@ static __device__ __forceinline__ void kq_mmvq_warp(
     if (row >= nrows_x) return;
     const char* x_row = x_rows + (size_t)row * row_bytes;
     const int blocks_per_row_x = ncols_x / qk;
-    const int blocks_per_col_y = ncols_x / QK8_1;
     float tmp[KQ_MAX_M];
 #pragma unroll
     for (int j = 0; j < KQ_MAX_M; ++j) tmp[j] = 0.0f;
@@ -239,14 +243,20 @@ static __device__ __forceinline__ void kq_mmvq_warp(
         const int kby = kbx * (qk / QK8_1);
         const int kqs = vdr * (lane % (qi / vdr));
         for (int j = 0; j < m; ++j) {
-            tmp[j] += kq_vec_dot<type>(x_row, &y[(size_t)j * blocks_per_col_y + kby], kbx, kqs);
+            tmp[j] += kq_vec_dot<type>(x_row, &y[(size_t)j * y_row_blocks + kby], kbx, kqs);
         }
     }
 #pragma unroll
     for (int j = 0; j < KQ_MAX_M; ++j) {
         const float v = warp_reduce_sum(tmp[j]);
-        if (lane == 0 && j < m) dst[(size_t)j * nrows_x + row] = __float2bfloat16(v);
+        if (lane == 0 && j < m) dst[(size_t)j * dst_row_stride + row] = __float2bfloat16(v);
     }
+}
+template <ggml_type type>
+static __device__ __forceinline__ void kq_mmvq_warp(
+        const char* __restrict__ x_rows, const size_t row_bytes, const block_q8_1* __restrict__ y,
+        __nv_bfloat16* __restrict__ dst, const int ncols_x, const int nrows_x, const int m) {
+    kq_mmvq_warp_s<type>(x_rows, row_bytes, y, ncols_x / QK8_1, dst, nrows_x, ncols_x, nrows_x, m);
 }
 
 // Grid: (ceil(nrows_x / KQ_NWARPS), 1, 1)  Block: (32, KQ_NWARPS, 1)
@@ -262,6 +272,27 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_w(
     kq_mmvq_warp<GGML_TYPE_Q3_K>((const char*)vx, (size_t)(ncols_x / QK_K) * sizeof(block_q3_K),
                                  (const block_q8_1*)vy, dst, (int)ncols_x, (int)nrows_x, (int)m);
 }
+// The output-group projection of one attention layer in one launch: group g
+// (blockIdx.y) is rows [g*nrows_x, (g+1)*nrows_x) of the weight against
+// columns [g*ncols_x, (g+1)*ncols_x) of ONE activation row (quantised whole:
+// block_q8_1 blocks are 32-aligned and independent, so a slice's blocks are
+// the same bytes the slice alone would give), written to columns
+// [g*nrows_x, (g+1)*nrows_x) of the output row of width n_groups*nrows_x.
+// Per-row math is kq_mmvq_warp's, so each group matches its own launch bit
+// for bit; the eight slice + quantise + GEMV + scatter launches become two.
+// Grid: (ceil(nrows_x / KQ_NWARPS), n_groups, 1)  Block: (32, KQ_NWARPS, 1)
+extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q2_k_groups_w(
+        const void* __restrict__ vx, const void* __restrict__ vy, __nv_bfloat16* __restrict__ dst,
+        unsigned int ncols_x, unsigned int nrows_x, unsigned int m, unsigned int n_groups) {
+    const unsigned int g = blockIdx.y;
+    const size_t row_bytes = (size_t)(ncols_x / QK_K) * sizeof(block_q2_K);
+    const char* x_rows = (const char*)vx + (size_t)g * nrows_x * row_bytes;
+    const block_q8_1* y = (const block_q8_1*)vy + (size_t)g * (ncols_x / QK8_1);
+    kq_mmvq_warp_s<GGML_TYPE_Q2_K>(x_rows, row_bytes, y, (int)(n_groups * ncols_x / QK8_1),
+                                   dst + (size_t)g * nrows_x, (int)(n_groups * nrows_x),
+                                   (int)ncols_x, (int)nrows_x, (int)m);
+}
+
 // The Q6_K output head on raw 210-byte super-blocks (qi = 32: one super-block
 // per warp iteration, a lane per 8-value group), the same ggml mmvq dot as
 // llama.cpp's Q6_K x q8_1 path. Grid: (ceil(nrows_x / KQ_NWARPS), 1, 1).

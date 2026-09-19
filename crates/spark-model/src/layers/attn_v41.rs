@@ -248,6 +248,8 @@ struct Kernels {
     /// D2S6 tile quant + MMQ above
     q8_rows: KernelHandle,
     mmvq_q2k_w: KernelHandle,
+    /// The eight output groups of `wo_a` in one launch (decode, m <= 8).
+    mmvq_q2k_groups_w: KernelHandle,
     quant_d2s6: KernelHandle,
     mmq_q2k_nc: KernelHandle,
     mmq_q2k_wc: KernelHandle,

@@ -11,7 +11,9 @@ use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
-use super::{AttnV41, AttnV41LayerState, AttnV41LayerWeights, SharedV41, upload_i32_async};
+use super::{
+    AttnMat, AttnV41, AttnV41LayerState, AttnV41LayerWeights, SharedV41, upload_i32_async,
+};
 use crate::layers::deepseek_v41_ref::attn::window_topk_idxs;
 
 impl AttnV41 {
@@ -90,6 +92,36 @@ impl AttnV41 {
         self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
 
         // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
+        if let (AttnMat::Q2K(blocks), true) = (w.wo_a, m <= 8) {
+            self.wo_a_grouped(gpu, blocks, o_copy, m, stream)?;
+        } else {
+            self.wo_a_per_group(gpu, w, o_copy, m, stream)?;
+        }
+        self.gemm(
+            gpu,
+            self.og,
+            w.wo_b,
+            self.out,
+            m,
+            dim,
+            c.groups * c.o_rank,
+            stream,
+        )?;
+        Ok(())
+    }
+
+    /// The per-group `wo_a` path: slice the group's columns out of the rotated
+    /// attention output, project, scatter into `og`. bf16 weights, or m > 8.
+    pub(super) fn wo_a_per_group(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &AttnV41LayerWeights,
+        o_copy: DevicePtr,
+        m: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        let (nh, hd) = (c.n_heads, c.head_dim);
         let gw = c.gw();
         for g in 0..c.groups {
             KernelLaunch::new(gpu, self.k.slice_cols)
@@ -121,16 +153,6 @@ impl AttnV41 {
                 .arg_u32(c.o_rank as u32)
                 .launch(stream)?;
         }
-        self.gemm(
-            gpu,
-            self.og,
-            w.wo_b,
-            self.out,
-            m,
-            dim,
-            c.groups * c.o_rank,
-            stream,
-        )?;
         Ok(())
     }
 
