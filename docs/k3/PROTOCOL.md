@@ -85,3 +85,14 @@ XTML: preserve that evidence instead of treating it as a valid tool call.
 The current guard and its CPU tests prevent false chat compatibility. This is
 sufficient for a bounded raw-inference/kernel bring-up session, not a declaration
 that an official K3 chat or agent deployment is ready.
+
+## Staging for the rental
+
+Use [`stage_serving.py`](../../scripts/k3/stage_serving.py) after the complete
+official manifest-verified download; see the
+[tokenizer runbook](../../scripts/k3/TOKENIZER.md). It verifies the original
+snapshot, hardlinks weights on the same filesystem, and copies metadata and
+the derived tokenizer into a new serving root. Symlink overlays are invalid:
+Atlas rejects canonical weight/index paths outside the serving root. Preserve
+that containment guard. Derived hashes remain separate from the official
+manifest, and both hardlinked weight views must remain read-only.

@@ -1,0 +1,39 @@
+{
+  "status": "pass",
+  "scope": "Staging-only development fixture; not official model compatibility or inference",
+  "weight_files": 1,
+  "indexed_tensors": 566,
+  "hardlink_inode_match": true,
+  "index_and_shards_canonical_inside_root": true,
+  "original_assets_unchanged": true,
+  "fixture_identity": {
+    "repo": "atlas-development/K3-staging-fixture",
+    "revision": "860a8e3d36816b2dc084b24da66a395ba7b0faaf"
+  },
+  "staging_receipt": {
+    "schema": 1,
+    "repo": "atlas-development/K3-staging-fixture",
+    "revision": "860a8e3d36816b2dc084b24da66a395ba7b0faaf",
+    "manifest_sha256": "4000ce2c3c642f6e8ec13e1ebf43bd6934cb85aa984c39700fa76d45ad4f25fa",
+    "verified_source_files": 6,
+    "hardlinked_weight_files": 1,
+    "copied_metadata_files": 5,
+    "derived_tokenizer": {
+      "schema": 1,
+      "sources": {
+        "tiktoken.model": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+        "tokenization_kimi.py": "f28ea66e2d862a2a5814970b2ce40c2f7d8296ff09aed90a7e7def689b906944",
+        "tokenizer_config.json": "5d0803c94db9cd78763499e0956c95fd5a225c14a727e5a6cf5db3f96f010a6e"
+      },
+      "derived_tokenizer_sha256": "9db7ee1af81dba7c8fe85bd357f2a844443eea2bc6d7ded770597fee6efcfa17",
+      "versions": {
+        "tokenizers": "0.23.2",
+        "tiktoken": "0.9.0"
+      },
+      "encode_cases": 2265,
+      "individual_byte_token_decodes": 163584,
+      "scope": "Raw completion text with special markers enabled; not segmented XTML chat"
+    },
+    "contract": "Read-only serving weights share source inodes; never modify either copy in place"
+  }
+}

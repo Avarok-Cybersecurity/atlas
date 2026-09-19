@@ -14,9 +14,9 @@ Then run:
 ```bash
 python scripts/k3/tokenizer.py --source /data/k3-official --output /data/k3-derived
 mkdir /data/k3-tokenizer-check
-ln -s /data/k3-derived/tokenizer.json /data/k3-tokenizer-check/tokenizer.json
-ln -s /data/k3-official/tokenizer_config.json /data/k3-tokenizer-check/tokenizer_config.json
-ln -s /data/k3-official/config.json /data/k3-tokenizer-check/config.json
+cp /data/k3-derived/tokenizer.json /data/k3-tokenizer-check/tokenizer.json
+cp /data/k3-official/tokenizer_config.json /data/k3-tokenizer-check/tokenizer_config.json
+cp /data/k3-official/config.json /data/k3-tokenizer-check/config.json
 AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo run -p spark-server \
   --example k3_tokenizer_check -- /data/k3-derived /data/k3-tokenizer-check
 ```
@@ -34,9 +34,33 @@ the model's EOS rather than substituting the tokenizer's named EOS.
 Keep `derived-tokenizer.json` (input hashes, output hash, versions, and coverage)
 as a **separate derived-asset receipt**. Do not add its hash to, or rewrite, the
 official download manifest. Keep `tokenizer-oracle.json` outside Git as a test
-artifact. After verifying the official snapshot, expose the generated
-`tokenizer.json` in a separate serving directory alongside links to the unchanged
-official files. Preserve the original `tokenizer_config.json` and model config;
+artifact. The small directory above is a CPU tokenizer check only, without weights.
+
+After the complete official download, create the actual serving directory:
+
+```bash
+python scripts/k3/stage_serving.py --source /data/k3-official \
+  --manifest /data/k3-manifest.json --derived /data/k3-derived \
+  --output /data/k3-serving
+```
+
+The tool independently verifies every original manifest hash before staging,
+checks every indexed shard is in that manifest, and checks the converter's
+source/output hashes. It hardlinks safetensors weights and copies metadata plus
+the derived tokenizer. The output must be new, outside the source/derived roots,
+and on the **same filesystem as all weights**. It refuses symlinks (including
+symlink ancestry: use canonical absolute paths), cross-filesystem links, and
+existing outputs; it never silently copies terabytes of weights. Failure removes
+only the new staging directory. `serving-stage.json` records official manifest
+identity and derived provenance separately. No original files are modified.
+
+**Do not use symlinked weights or index files:** Atlas canonicalizes these paths
+and correctly rejects references escaping the serving root. Hardlinks remain
+inside that root but share source inodes, so treat both weight copies as read-only;
+never modify them in place. The tool does not change permissions on shared
+inodes. Keep the source snapshot quiescent during verification/staging.
+
+The original `tokenizer_config.json` and model config are copied unchanged;
 their identity selects Atlas's explicit unsupported-chat guard.
 
 The model config's `eos_token_id` is **163586 (`<|end_of_msg|>`)**, while the
