@@ -1,0 +1,76 @@
+{
+  "status": "passed",
+  "image_id": "sha256:93df9baf7f155fd4a32eab8acedc454e05471b01d0e89acb043fafc5a56eab97",
+  "runs": [
+    {
+      "completion": {
+        "status": "completed",
+        "text": " there is no way a bee should be able to fly. Its wings are too",
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 8,
+          "completion_tokens": 16,
+          "total_tokens": 24
+        }
+      },
+      "stream": {
+        "status": "completed",
+        "text": " there is no way a bee should be able to fly. Its wings are too",
+        "finish_reason": "length"
+      },
+      "guard": false,
+      "chat": [],
+      "cancel": {
+        "status": "client_cancelled",
+        "text": " there"
+      },
+      "exit_code": 0
+    },
+    {
+      "completion": {
+        "status": "completed",
+        "text": " there is no way a bee should be able to fly. Its wings are too",
+        "finish_reason": "length",
+        "usage": {
+          "prompt_tokens": 8,
+          "completion_tokens": 16,
+          "total_tokens": 24
+        }
+      },
+      "stream": {
+        "status": "completed",
+        "text": " there is no way a bee should be able to fly. Its wings are too",
+        "finish_reason": "length"
+      },
+      "guard": true,
+      "chat": [
+        {
+          "stream": false,
+          "tools": false,
+          "status": 400,
+          "body": "{\"error\":{\"message\":\"Tokenization error: Kimi K3 XTML chat/reasoning/tool parsing is not implemented; use /v1/completions with independently prepared token IDs for bring-up. Generic ChatML and K2 tool parsers are not compatible.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null,\"hint\":null}}"
+        },
+        {
+          "stream": false,
+          "tools": true,
+          "status": 400,
+          "body": "{\"error\":{\"message\":\"Tokenization error: Kimi K3 XTML chat/reasoning/tool parsing is not implemented; use /v1/completions with independently prepared token IDs for bring-up. Generic ChatML and K2 tool parsers are not compatible.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null,\"hint\":null}}"
+        },
+        {
+          "stream": true,
+          "tools": false,
+          "status": 400,
+          "body": "{\"error\":{\"message\":\"Tokenization error: Kimi K3 XTML chat/reasoning/tool parsing is not implemented; use /v1/completions with independently prepared token IDs for bring-up. Generic ChatML and K2 tool parsers are not compatible.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null,\"hint\":null}}"
+        },
+        {
+          "stream": true,
+          "tools": true,
+          "status": 400,
+          "body": "{\"error\":{\"message\":\"Tokenization error: Kimi K3 XTML chat/reasoning/tool parsing is not implemented; use /v1/completions with independently prepared token IDs for bring-up. Generic ChatML and K2 tool parsers are not compatible.\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null,\"hint\":null}}"
+        }
+      ],
+      "exit_code": 0
+    }
+  ],
+  "remaining_gpu_pids": []
+}

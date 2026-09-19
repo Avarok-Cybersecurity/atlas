@@ -7,18 +7,20 @@
 //! comm/buffers/sizes/streams come from valid prior allocations on this
 //! rank's device, and the `extern "C"` ABI matches NCCL 2.28+.
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{ALL_REDUCE_DTYPE_BYTES, COLLECTIVE_TIMEOUT_SECS, NcclBackend};
 use crate::CommBackend;
+use crate::collective_diagnostics::Dtype;
 use crate::nccl::{self, NcclDataType, NcclRedOp};
 
 impl CommBackend for NcclBackend {
     fn all_reduce(&self, ptr: u64, bytes: usize) -> Result<()> {
+        self.begin_submission("all_reduce", Dtype::Bf16, bytes, self.legacy_stream, None)?;
         if self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
             return self.all_reduce_2rank(ptr, bytes, self.legacy_stream);
         }
@@ -43,6 +45,13 @@ impl CommBackend for NcclBackend {
     }
 
     fn all_reduce_async(&self, ptr: u64, bytes: usize, compute_stream: u64) -> Result<()> {
+        self.begin_submission(
+            "all_reduce_async",
+            Dtype::Bf16,
+            bytes,
+            self.comm_stream,
+            None,
+        )?;
         if self.world_size == 2 && self.add_kernel.load(Ordering::Relaxed) != 0 {
             // Use event-based async with 2-rank send/recv path.
             nccl::record_event(self.compute_done_event, compute_stream)?;
@@ -128,6 +137,7 @@ impl CommBackend for NcclBackend {
     }
 
     fn all_gather(&self, send_ptr: u64, recv_ptr: u64, bytes: usize) -> Result<()> {
+        self.begin_submission("all_gather", Dtype::U8, bytes, self.legacy_stream, None)?;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclAllGather(
@@ -145,6 +155,7 @@ impl CommBackend for NcclBackend {
     }
 
     fn reduce_scatter(&self, send_ptr: u64, recv_ptr: u64, bytes: usize) -> Result<()> {
+        self.begin_submission("reduce_scatter", Dtype::U8, bytes, self.legacy_stream, None)?;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclReduceScatter(
@@ -163,44 +174,19 @@ impl CommBackend for NcclBackend {
     }
 
     fn broadcast(&self, ptr: u64, bytes: usize, root: usize) -> Result<()> {
-        let start = Instant::now();
-        let comm = *self.comm.lock();
+        self.broadcast_with_wait(ptr, bytes, root, false)
+    }
 
-        // Broadcast raw bytes as Uint8
-        let result = unsafe {
-            nccl::ncclBroadcast(
-                ptr as *const _,
-                ptr as *mut _,
-                bytes,
-                NcclDataType::Uint8,
-                root as i32,
-                comm,
-                self.legacy_stream,
-            )
-        };
-        nccl::check_nccl(result, "ncclBroadcast")?;
-
-        // Synchronize to measure wall-clock time for timeout detection.
-        nccl::sync_stream(self.legacy_stream)?;
-
-        let elapsed = start.elapsed();
-        if elapsed.as_secs() >= COLLECTIVE_TIMEOUT_SECS {
-            tracing::error!(
-                "NCCL broadcast took {:.1}s (threshold: {}s) \
-                 — marking communicator unhealthy",
-                elapsed.as_secs_f64(),
-                COLLECTIVE_TIMEOUT_SECS,
-            );
-            self.unhealthy.store(true, Ordering::Release);
-        }
-
-        // Also check for async errors.
-        self.check_async_error(comm);
-
-        Ok(())
+    fn recv_command_u32(&self, ptr: u64, root: usize) -> Result<()> {
+        ensure!(
+            self.rank != root,
+            "idle command receive requires non-root rank"
+        );
+        self.broadcast_with_wait(ptr, 4, root, true)
     }
 
     fn barrier(&self) -> Result<()> {
+        self.begin_submission("barrier", Dtype::F32, 0, self.legacy_stream, None)?;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclAllReduce(
@@ -219,6 +205,7 @@ impl CommBackend for NcclBackend {
     }
 
     fn send_to(&self, ptr: u64, bytes: usize, dest_rank: usize, stream: u64) -> Result<()> {
+        self.begin_submission("send", Dtype::U8, bytes, stream, Some(dest_rank))?;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclSend(
@@ -234,6 +221,7 @@ impl CommBackend for NcclBackend {
     }
 
     fn recv_from(&self, ptr: u64, bytes: usize, src_rank: usize, stream: u64) -> Result<()> {
+        self.begin_submission("recv", Dtype::U8, bytes, stream, Some(src_rank))?;
         let comm = *self.comm.lock();
         let result = unsafe {
             nccl::ncclRecv(
@@ -277,6 +265,80 @@ impl CommBackend for NcclBackend {
 
     fn world_size(&self) -> usize {
         self.world_size
+    }
+}
+
+impl NcclBackend {
+    fn broadcast_with_wait(
+        &self,
+        ptr: u64,
+        bytes: usize,
+        root: usize,
+        idle_command: bool,
+    ) -> Result<()> {
+        self.begin_submission(
+            "broadcast",
+            Dtype::U8,
+            bytes,
+            self.legacy_stream,
+            Some(root),
+        )?;
+        let start = Instant::now();
+        let comm = *self.comm.lock();
+
+        // Broadcast raw bytes as Uint8
+        let result = unsafe {
+            nccl::ncclBroadcast(
+                ptr as *const _,
+                ptr as *mut _,
+                bytes,
+                NcclDataType::Uint8,
+                root as i32,
+                comm,
+                self.legacy_stream,
+            )
+        };
+        nccl::check_nccl(result, "ncclBroadcast")?;
+
+        // Poll instead of measuring time only AFTER an unbounded synchronize.
+        let ready = || {
+            ensure!(self.check_async_error(comm), "NCCL asynchronous failure");
+            nccl::stream_ready(self.legacy_stream)
+        };
+        let pause = || std::thread::sleep(Duration::from_millis(1));
+        let completion = if idle_command {
+            crate::collective_wait::poll_idle_command(ready, pause)
+        } else {
+            crate::collective_wait::poll_completion(
+                Duration::from_secs(COLLECTIVE_TIMEOUT_SECS),
+                || start.elapsed(),
+                ready,
+                pause,
+            )
+        };
+        crate::collective_wait::poison_on_error(completion, &self.unhealthy).with_context(
+            || {
+                format!(
+                    "NCCL broadcast rank={} world_size={} root={root} bytes={bytes}; \
+                     communicator poisoned; stop all ranks before retrying",
+                    self.rank, self.world_size,
+                )
+            },
+        )?;
+
+        Ok(())
+    }
+
+    fn begin_submission(
+        &self,
+        op: &str,
+        dtype: Dtype,
+        bytes: usize,
+        stream: u64,
+        peer: Option<usize>,
+    ) -> Result<()> {
+        crate::collective_wait::ensure_healthy(&self.unhealthy, self.rank, self.world_size, op)?;
+        self.diagnostics.submit(op, dtype, bytes, stream, peer)
     }
 }
 

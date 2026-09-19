@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "date": "2026-09-19",
+  "rust_workspace": {
+    "passed": 7035,
+    "failed": 0,
+    "ignored": 120,
+    "groups": 98
+  },
+  "python_tools": {
+    "passed": 45,
+    "failed": 0
+  },
+  "clippy_workspace_tests": "passed",
+  "rustdoc_workspace": "passed",
+  "format": "passed",
+  "typos": "passed",
+  "file_size_cap": "passed using repository check-file-size-cap.sh",
+  "kernel_shadows": "passed",
+  "cross_hardware_reach": "OK; no new cross-hardware coupling",
+  "license_headers": "14 unchanged Hopper vendor header failures at base; no new source-header violations",
+  "certification": false
+}

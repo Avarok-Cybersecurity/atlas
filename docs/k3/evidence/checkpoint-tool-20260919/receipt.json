@@ -1,0 +1,46 @@
+{
+  "repo": "hf-internal-testing/tiny-random-gpt2",
+  "revision": "71034c5d8bde858ff824298bdedc65515b97d2b9",
+  "total_bytes": 12512611,
+  "file_count": 10,
+  "sdk_version": "1.32.0",
+  "script_sha256": "a5b4fec42c2784b12ec55df30704a3fbc844df322a8474cda6a40ee83b22c78c",
+  "phases": [
+    {
+      "phase": "download-initial",
+      "exit_code": 0,
+      "elapsed_seconds": 8.033651759033091
+    },
+    {
+      "phase": "verify-initial",
+      "exit_code": 0,
+      "elapsed_seconds": 8.098383845062926
+    },
+    {
+      "phase": "download-resume-offline",
+      "exit_code": 0,
+      "elapsed_seconds": 8.130090494058095
+    },
+    {
+      "phase": "verify-corrupt",
+      "exit_code": 1,
+      "elapsed_seconds": 8.161789687001146
+    },
+    {
+      "phase": "download-repair",
+      "exit_code": 0,
+      "elapsed_seconds": 8.67932918004226
+    },
+    {
+      "phase": "verify-repaired",
+      "exit_code": 0,
+      "elapsed_seconds": 8.711222812067717
+    }
+  ],
+  "status": "passed",
+  "resume_file_mtimes_unchanged": true,
+  "resume_stdout_empty": true,
+  "corrupt_file": "config.json",
+  "repair_bytes_equal_original": true,
+  "elapsed_seconds": 8.711304559954442
+}

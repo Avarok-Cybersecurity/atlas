@@ -217,7 +217,7 @@ pub(crate) fn maybe_run_ep_worker(
         return Ok(false);
     }
     let rank = args.rank;
-    let model_owned = model.take().expect("EP worker requires owned model");
+    let mut model_owned = model.take().expect("EP worker requires owned model");
     let model_has_proposer = model_owned.has_proposer();
     // `--dflash` counts as a speculative method here: a DFlash worker
     // participates in the head's speculative dispatch, so it must not trip
@@ -333,9 +333,17 @@ pub(crate) fn maybe_run_ep_worker(
             }
         }
         for slot in slots.iter_mut() {
-            if let Some(seq) = slot.as_mut() {
-                let _ = model_owned.free_sequence(seq);
+            if let Some(mut seq) = slot.take() {
+                let _ = model_owned.free_sequence(&mut seq);
             }
+        }
+        // Worker commands use the default stream. Match the head's ordered
+        // shutdown: quiesce outstanding work before releasing owned pools.
+        if let Err(error) = model_owned.synchronize(model_owned.default_stream()) {
+            tracing::error!("EP worker stream quiescence failed (rank {rank}): {error:#}");
+        }
+        if let Err(error) = model_owned.teardown() {
+            tracing::error!("EP worker teardown failed (rank {rank}): {error:#}");
         }
         tracing::info!("EP worker stopped (rank {rank})");
     });

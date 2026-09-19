@@ -45,7 +45,7 @@ const BLOCKSCALE_TOKENS: &[&str] = &["e2m1x2", "mxf4nvf4"];
 
 /// The hardware sets that declare `-D<GUARD>` and therefore must have every
 /// such site behind it.
-const GUARDED_HW: &[&str] = &["hopper", "b200"];
+const GUARDED_HW: &[&str] = &["hopper", "b200", "b300"];
 
 fn kernels_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -228,7 +228,7 @@ asm(\"cvt.rn.satfinite.e2m1x2.f32 b0, %2, %1;\");
 /// block-scaled sites behind the guard. Reported with file and line, because
 /// the fix is always "move that region inside the `#ifndef`".
 #[test]
-fn no_source_compiled_for_hopper_or_b200_leaves_a_blockscale_site_unguarded() {
+fn no_source_compiled_for_guarded_hardware_leaves_a_blockscale_site_unguarded() {
     let mut faults: Vec<String> = Vec::new();
     for hw in GUARDED_HW {
         for model in models(hw) {

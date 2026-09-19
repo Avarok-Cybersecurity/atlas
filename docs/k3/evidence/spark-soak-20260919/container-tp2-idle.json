@@ -1,0 +1,27 @@
+{
+  "image_id": "sha256:93df9baf7f155fd4a32eab8acedc454e05471b01d0e89acb043fafc5a56eab97",
+  "transport": "NCCL Socket; IB disabled",
+  "status": "passed",
+  "boot_seconds": 42.22370920795947,
+  "request_free_idle_seconds": 45,
+  "elapsed_seconds": 93.9584286250174,
+  "spark1_remaining_gpu_pids": [],
+  "spark2_remaining_gpu_pids": [],
+  "exit_codes": [
+    0,
+    0
+  ],
+  "collective_check": {
+    "status": "MATCH_SUBMISSIONS",
+    "world_size": 2,
+    "submissions_per_rank": {
+      "0": 409,
+      "1": 409
+    },
+    "collectives_per_rank": 409,
+    "peer_transfers": 0,
+    "expected_submissions_per_rank": null,
+    "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+  },
+  "probe_status": "passed"
+}
