@@ -408,7 +408,12 @@ fn single_token_expert_sum_is_bit_identical_across_runs() {
             .forward(g, &lw, &mut lru, &ex, x_dev, 1, 2, stream)
             .unwrap();
         let uniq: std::collections::HashSet<usize> = indices.iter().copied().collect();
-        assert_eq!(uniq.len(), TOPK_MODEL, "one token picks {} distinct experts", TOPK_MODEL);
+        assert_eq!(
+            uniq.len(),
+            TOPK_MODEL,
+            "one token picks {} distinct experts",
+            TOPK_MODEL
+        );
         let mut ob = vec![0u8; DIM * 2];
         g.copy_d2h(out_dev, &mut ob).unwrap();
         assert!(
