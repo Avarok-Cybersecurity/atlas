@@ -10,6 +10,22 @@ use anyhow::{Result, bail};
 use super::expert_lru::{ExpertLru, NONE};
 
 impl ExpertLru {
+    /// Move `i` to the LRU end without unmapping it (a prediction that was
+    /// not used: the next victim, but still a hit if it is asked for).
+    pub(super) fn demote(&mut self, i: u32) {
+        self.unlink(i);
+        let m = &mut self.meta[i as usize];
+        m.next = NONE;
+        m.prev = self.tail;
+        if self.tail != NONE {
+            self.meta[self.tail as usize].next = i;
+        }
+        self.tail = i;
+        if self.head == NONE {
+            self.head = i;
+        }
+    }
+
     /// Strict LRU or a random victim among the oldest `pct`% (see `take_victim`).
     pub fn set_evict_random_pct(&mut self, pct: usize) {
         self.evict_pct = pct.min(100);

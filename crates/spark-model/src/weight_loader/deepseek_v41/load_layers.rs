@@ -8,7 +8,7 @@ use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 use spark_runtime::weights::expert_stream::{
-    EngramRowReader, ExpertLru, ExpertSliceMap, ExpertSource, PinnedArena, ShardFiles,
+    EngramRowReader, ExpertArena, ExpertSliceMap, ExpertSource, ShardFiles,
 };
 
 use crate::layer::TransformerLayer;
@@ -174,15 +174,36 @@ pub(super) fn load_layers(
 
     // ── the runtime shared by all layers ──
     let layout = slices.slot_layout();
-    let arena = PinnedArena::alloc(gpu, cache_gib << 30)?;
-    let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout)?;
+    // The slots in DEVICE memory behind a page-locked staging ring (the
+    // expert GEMV reads device memory at 215 GB/s and the pinned arena at
+    // 176, same kernel, same counters: 3.2 ms of a 44 ms step, 09-19);
+    // `ATLAS_DS41_ARENA_DEVICE=0` restores the page-locked arena the GPU
+    // reads in place. The bytes are the same bytes at another address; no
+    // number changes. Both arenas sit off the allocation ledger, so the KV
+    // budget sees the same footprint either way.
+    let arena_device = !std::env::var("ATLAS_DS41_ARENA_DEVICE").is_ok_and(|v| v == "0");
+    let staging_slots = env_usize("ATLAS_DS41_STAGING_SLOTS", 16);
+    let (arena, mut lru) =
+        ExpertArena::alloc(gpu, cache_gib << 30, layout, arena_device, staging_slots)?;
+    tracing::info!(
+        "DeepSeek-V4.1: expert arena {}; MemAvailable now {}",
+        arena.describe(),
+        mem_available()
+    );
     // `ATLAS_DS41_READER_POOL=1`: the persistent reader pool (misses and
     // predicted experts in flight together; what `ATLAS_DS41_PREFETCH_K`
     // needs). Default: the scoped threads a fetch, 3% faster on MinHeap in
-    // the 09-19 A/B (13.79 vs 14.20 tok/s) with nothing to prefetch.
+    // the 09-19 A/B (13.79 vs 14.20 tok/s) with nothing to prefetch. The
+    // pool writes slots directly, so it needs the page-locked arena.
     if std::env::var("ATLAS_DS41_READER_POOL").is_ok_and(|v| v == "1") {
-        lru.set_pool(slices.clone(), reader_threads);
-        tracing::info!("DeepSeek-V4.1: expert reader pool of {reader_threads} threads");
+        if arena_device {
+            tracing::warn!(
+                "DeepSeek-V4.1: ATLAS_DS41_READER_POOL=1 ignored with the device arena (set ATLAS_DS41_ARENA_DEVICE=0 for the pool)"
+            );
+        } else {
+            lru.set_pool(slices.clone(), reader_threads);
+            tracing::info!("DeepSeek-V4.1: expert reader pool of {reader_threads} threads");
+        }
     }
     if let Ok(path) = std::env::var("ATLAS_DS41_ROUTE_TRACE") {
         // diagnostics: the exact expert access sequence, one line a fetch
@@ -190,7 +211,7 @@ pub(super) fn load_layers(
         tracing::info!("DeepSeek-V4.1: expert route trace -> {path}");
     }
     tracing::info!(
-        "DeepSeek-V4.1: expert cache {} slots of {:.2} MiB (page-locked, device-visible)",
+        "DeepSeek-V4.1: expert cache {} slots of {:.2} MiB",
         lru.n_slots(),
         layout.bytes as f64 / 1048576.0
     );
@@ -428,4 +449,19 @@ pub(super) fn load_layers(
         }));
     }
     Ok(layers)
+}
+
+/// `MemAvailable` from `/proc/meminfo` as a printable figure (the arena is
+/// the box's memory on GB10; the load log should say what it left).
+fn mem_available() -> String {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("MemAvailable:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<f64>().ok())
+        })
+        .map(|kb| format!("{:.1} GiB", kb / 1048576.0))
+        .unwrap_or_else(|| "unknown".to_string())
 }

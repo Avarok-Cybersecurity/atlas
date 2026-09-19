@@ -97,11 +97,7 @@ impl MoeV41 {
         lru.begin_token();
         let before = lru.stats();
         let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
-        let slots = if lru.has_pool() {
-            lru.fetch_many_prefetching(&keys, &predicted)?
-        } else {
-            lru.fetch_many(src, &keys, reader_threads)?
-        };
+        let slots = lru.fetch_many_on(gpu, stream, src, &keys, &predicted, reader_threads)?;
         let after = lru.stats();
         let t2 = std::time::Instant::now();
         let (rows_host, w_host, plan) = self.plan(&indices, &weights, m);

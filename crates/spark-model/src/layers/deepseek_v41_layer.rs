@@ -45,7 +45,7 @@ use anyhow::Result;
 
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::weights::expert_stream::{
-    EngramRowReader, ExpertLru, ExpertSliceMap, PinnedArena,
+    EngramRowReader, ExpertArena, ExpertLru, ExpertSliceMap,
 };
 
 use crate::layer::LayerState;
@@ -71,7 +71,7 @@ pub struct V41Runtime {
     pub engram: Mutex<EngramV41>,
     pub lru: Mutex<ExpertLru>,
     /// Kept alive for the cache's lifetime; freed with the runtime.
-    pub arena: PinnedArena,
+    pub arena: ExpertArena,
     pub slices: Arc<ExpertSliceMap>,
     pub rows: EngramRowReader,
     pub tables: Arc<EngramHashTables>,

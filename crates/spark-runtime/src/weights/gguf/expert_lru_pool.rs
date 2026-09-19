@@ -72,6 +72,10 @@ impl ExpertLru {
         predicted: &[(u32, u32)],
     ) -> Result<Vec<ExpertSlot>> {
         ensure!(self.pool.is_some(), "fetch_many_prefetching without a pool");
+        ensure!(
+            self.staging.is_none(),
+            "device expert cache: no reader pool"
+        );
         let threads = self.pool.as_ref().map(|p| p.1.threads()).unwrap_or(1);
         let evictions0 = self.stats.evictions;
         let mut out: Vec<u32> = Vec::with_capacity(keys.len());

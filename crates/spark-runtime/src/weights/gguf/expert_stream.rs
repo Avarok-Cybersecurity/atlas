@@ -36,6 +36,7 @@ use super::sidecar;
 use crate::weights::{find_gguf, find_gguf_shards};
 
 pub use super::engram_rows::{EngramRowReader, EngramTable};
+pub use super::expert_arena::{DeviceArena, ExpertArena};
 pub use super::expert_lru::{ExpertLru, ExpertSlot, LruStats, PinnedArena};
 
 /// Positional read of exactly `dst.len()` bytes at `offset`. No file position

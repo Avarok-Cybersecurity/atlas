@@ -101,7 +101,7 @@ pub(super) const NONE: u32 = u32::MAX;
 pub(super) struct SlotMeta {
     pub(super) key: Option<(u32, u32)>,
     pub(super) prev: u32,
-    next: u32,
+    pub(super) next: u32,
     /// Epoch of the last fetch; equal to the current epoch = pinned.
     pub(super) epoch: u64,
     /// The read filling this slot, while it is in flight (pool only).
@@ -158,6 +158,9 @@ pub struct ExpertLru {
     /// `ATLAS_DS41_ROUTE_TRACE`: one line per `fetch_many` (see `set_trace`).
     pub(super) trace: Option<std::io::BufWriter<std::fs::File>>,
     pub(super) t0: std::time::Instant,
+    /// Set when the slots are device memory fed through a page-locked ring
+    /// (`expert_arena.rs`); `fetch_many_on` is then the only fetch.
+    pub(super) staging: Option<super::expert_arena::Staging>,
 }
 
 // SAFETY: the raw arena pointers are addresses into memory the caller owns
@@ -212,6 +215,7 @@ impl ExpertLru {
             rng: 0x9E37_79B9_7F4A_7C15,
             trace: None,
             t0: std::time::Instant::now(),
+            staging: None,
         })
     }
 
@@ -256,8 +260,13 @@ impl ExpertLru {
             gate: DevicePtr(self.dev + (base + l.gate_off) as u64),
             up: DevicePtr(self.dev + (base + l.up_off) as u64),
             down: DevicePtr(self.dev + (base + l.down_off) as u64),
-            // SAFETY: `base + bytes <= n_slots * bytes <= arena bytes`.
-            host: unsafe { self.host.add(base) as *const u8 },
+            // SAFETY: `base + bytes <= n_slots * bytes <= arena bytes`; a
+            // device arena has no host alias (null stays null).
+            host: if self.host.is_null() {
+                std::ptr::null()
+            } else {
+                unsafe { self.host.add(base) as *const u8 }
+            },
         }
     }
 
@@ -299,22 +308,6 @@ impl ExpertLru {
         self.meta[i as usize].epoch = self.epoch;
     }
 
-    /// Move `i` to the LRU end without unmapping it (a prediction that was
-    /// not used: the next victim, but still a hit if it is asked for).
-    pub(super) fn demote(&mut self, i: u32) {
-        self.unlink(i);
-        let m = &mut self.meta[i as usize];
-        m.next = NONE;
-        m.prev = self.tail;
-        if self.tail != NONE {
-            self.meta[self.tail as usize].next = i;
-        }
-        self.tail = i;
-        if self.head == NONE {
-            self.head = i;
-        }
-    }
-
     /// Assign a slot for `key` and map it (the bytes are not read yet).
     pub(super) fn assign(&mut self, key: (u32, u32)) -> Result<u32> {
         let i = self.take_victim()?;
@@ -352,6 +345,10 @@ impl ExpertLru {
         layer: u32,
         expert: u32,
     ) -> Result<(ExpertSlot, bool)> {
+        ensure!(
+            self.staging.is_none(),
+            "device expert cache: use fetch_many_on"
+        );
         let key = (layer, expert);
         if let Some(&i) = self.map.get(&key) {
             self.touch(i);
@@ -380,6 +377,10 @@ impl ExpertLru {
         keys: &[(u32, u32)],
         threads: usize,
     ) -> Result<Vec<ExpertSlot>> {
+        ensure!(
+            self.staging.is_none(),
+            "device expert cache: use fetch_many_on"
+        );
         if self.pool.is_some() {
             return self.fetch_many_prefetching(keys, &[]);
         }

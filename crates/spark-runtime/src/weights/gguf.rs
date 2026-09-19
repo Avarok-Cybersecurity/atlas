@@ -28,6 +28,7 @@ mod container;
 pub mod dequant_cpu;
 mod dequant_gpu;
 mod engram_rows;
+mod expert_arena;
 mod expert_lru;
 mod expert_lru_evict;
 mod expert_lru_pool;
@@ -440,6 +441,8 @@ mod deepseek_v41_real_file_test;
 mod deepseek_v41_stream_bench_test;
 #[cfg(test)]
 mod deepseek_v41_stream_oracle_test;
+#[cfg(test)]
+mod expert_arena_tests;
 #[cfg(test)]
 mod expert_stream_tests;
 #[cfg(test)]
