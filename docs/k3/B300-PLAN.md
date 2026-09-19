@@ -23,6 +23,8 @@ Historical research context (not required to follow this plan): `Self Study/Kimi
 
 The live Hugging Face API returned checkpoint revision `f831ab66814297da540d832a5235f8e904f29d06`, 96 safetensors files, total **1,560,936,091,448 bytes** (1.561 TB decimal / 1,453.7 GiB); largest file 16,990,916,912 bytes. [Model metadata](https://huggingface.co/api/models/moonshotai/Kimi-K3?blobs=true). Pin this revision or deliberately replace it and regenerate the manifest before execution.
 
+The [implemented TP8 header audit](evidence/official-header-audit-20260919/README.md) finds **214.6 GiB resident weights per rank**, including 37.7 GiB replicated; current admission adds 2.19 GiB staging headroom and a separate explicit runtime reserve. The old 30% blanket binding allowance has been replaced with the allocations the marked binder actually makes. These are header-derived weights, not measured B300 high-water marks.
+
 An ideal eight-way weight split is **181.7 GiB per rank**. That is a lower bound, not the actual allocation budget: embeddings, shared experts, norms, routers, intermediate tensors, conversion copies, KV, recurrent state, and NCCL consume additional memory. The historical routed/non-routed estimate was 1,347.1/106.6 GiB, but its EP-only assumption predates the K3 TP implementation. Do not use that old table as a loader contract.
 
 [NVIDIA's B300 user guide](https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html) describes eight 288-GB GPUs and NVSwitch; other NVIDIA marketing pages use 2.1-TB aggregate figures. Require the provider's actual per-device usable memory and `nvidia-smi` output. Admission is based on the largest planned rank plus measured workspace and startup high-water mark, not product-name arithmetic.
@@ -33,7 +35,7 @@ Rental requirements:
 - Root/container access sufficient to build and profile custom CUDA kernels, launch eight ranks, and run NCCL tests. An inference endpoint or restricted notebook is insufficient.
 - A driver compatible with the pinned CUDA 13 toolchain and control-engine image; record actual versions. Require the compiler to support the selected B300 architecture.
 - Prefer at least 4 TB **free** fast persistent storage: one shared 1.56-TB snapshot plus images, builds, fixtures, logs, and temporary transfer headroom. Do not allocate one snapshot per rank. If a second converted copy is planned, recalculate disk before downloading.
-- Prefer 1–2 TB host RAM with bounded streaming load; do not depend on eight full checkpoint copies in RAM. Compute and enforce actual host high-water estimates.
+- Prefer **1.5–2 TB host RAM** for the current host-reference path. The [official header audit](evidence/official-header-audit-20260919/README.md) estimates 669.5 GiB of logical FP32 layer-cache payload across eight ranks, plus staging, state, metadata and allocator/page-cache overhead. One TB has not been demonstrated safe. Do not load eight checkpoint copies.
 - Verified download bandwidth, resumable transfers, retention after compute stops, and an export destination tested with a sentinel before the session.
 
 NVIDIA account: check DGX Cloud/Lepton or applicable account credits first, then compare the same node specification against Vast. Account ownership alone does not establish a discount. [NVIDIA Lepton](https://www.nvidia.com/en-us/data-center/dgx-cloud-lepton/). Vast's public B300 page returned “No current offers” during this audit; that is not an authenticated inventory search or a price quote. [Vast B300](https://vast.ai/pricing/gpu/B300).

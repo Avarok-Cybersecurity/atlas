@@ -1,0 +1,16 @@
+{
+  "runtime_source_commit": "345db2a7c3baaa39baf599e5f5f5509e7d0df2a0",
+  "gb10_binary_sha256": "5c1c09d10afa5e236e6ca87949c2d81bf7581af48bb03124edd0d234e0fa608b",
+  "packed_fixture_sha256": "fcc20b6598329d890ff7ae08516faec98254a6d0f8643d19c2acf79b3537c641",
+  "fixture_kind": "local group32 E2M1/E8M0 quantization of small FP32 K3 twin; not official quantized model",
+  "verification": "runtime source bytes compared with local commit; core memory example differed during build and was synced afterward, not part of server binary",
+  "final_builds": {
+    "source_commit": "8621f096e",
+    "source_files_compared": 3714,
+    "source_mismatches": 0,
+    "gb10_binary_sha256": "860c837baa2c4ae2186da8b30691197008bfb4121f294dbfa593d7f36759d109",
+    "b300_binary_sha256": "2792c766965f94824ce9d8496c3e6f41ce2ebf67d51f5bc0a1e0bcdce1928da0",
+    "host_architecture": "aarch64",
+    "note": "Rebuilt after hardware registry/test updates and B300-only generic clamp fix. GPU inference receipts use the earlier binary above; K3 numerical path unchanged. Build checkout metadata names an older commit plus dirty source; source bytes were independently compared."
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "repo": "hf-internal-testing/tiny-random-gpt2",
+  "revision": "71034c5d8bde858ff824298bdedc65515b97d2b9",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "size": 791,
+      "algorithm": "git-sha1",
+      "digest": "8d1395b12188a31e8a22acea211f312d818744e9"
+    },
+    {
+      "path": "config.json",
+      "size": 807,
+      "algorithm": "git-sha1",
+      "digest": "4ff64fe5192d88c0b5dbfc578c775c0ce05dd7d0"
+    },
+    {
+      "path": "merges.txt",
+      "size": 4883,
+      "algorithm": "git-sha1",
+      "digest": "13121be363780fa6e2b08af6a066099c954d9d8c"
+    },
+    {
+      "path": "model.safetensors",
+      "size": 453864,
+      "algorithm": "sha256",
+      "digest": "8111d5afb0715dbf5a31396d31432cb56370ba23f6650a035ea0fc8a20b4e500"
+    },
+    {
+      "path": "pytorch_model.bin",
+      "size": 3561811,
+      "algorithm": "sha256",
+      "digest": "4fab47c129967e0db58e8faf8494e4bd04f2ea79bbe287ac2f90c4183c0194be"
+    },
+    {
+      "path": "special_tokens_map.json",
+      "size": 90,
+      "algorithm": "git-sha1",
+      "digest": "817762d631ad6f9c799f6b9dc713c46420e65546"
+    },
+    {
+      "path": "tf_model.h5",
+      "size": 8462256,
+      "algorithm": "sha256",
+      "digest": "9ccb1b43b02b0ce538d412ed16bd7dcee4e91651741334a3cb3caecb33cc604c"
+    },
+    {
+      "path": "tokenizer.json",
+      "size": 17454,
+      "algorithm": "git-sha1",
+      "digest": "980677bff66333505f8bea2719064a6e43f95314"
+    },
+    {
+      "path": "tokenizer_config.json",
+      "size": 236,
+      "algorithm": "git-sha1",
+      "digest": "c92208ce39324aadabc239d73dd9bb3ec1cd45ca"
+    },
+    {
+      "path": "vocab.json",
+      "size": 10419,
+      "algorithm": "git-sha1",
+      "digest": "64bcba2cd1b7220fc0494c83f4effe8a6448b36c"
+    }
+  ]
+}

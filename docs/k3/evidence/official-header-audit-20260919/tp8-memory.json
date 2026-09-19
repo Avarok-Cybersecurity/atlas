@@ -1,0 +1,41 @@
+{
+  "basis": "official f831ab66814297da540d832a5235f8e904f29d06 safetensors headers, text only",
+  "tp_world": 8,
+  "rank": 7,
+  "source_bytes": 1559965606912,
+  "local_bytes": 230438412016,
+  "replicated_bytes": 40505956864,
+  "largest_local_tensor_bytes": 2348810240,
+  "largest_local_tensor": "language_model.model.embed_tokens.weight",
+  "old_30pct_binding_allowance_bytes": 69131523605,
+  "old_admission_before_reserve_bytes": 301918745861,
+  "known_binding_extra_gpu_bytes": 0,
+  "admission_before_reserve_bytes": 232787222256,
+  "counted_text_tensors": 497052,
+  "verified_a_log_zero_tails": 69,
+  "host_f32_layer_payload_bytes": 89861658352,
+  "host_f32_layer_payload_all_ranks_bytes": 718893266816,
+  "largest_host_bind_raw_copy_bytes": 88080384,
+  "groups_source_local_replicated": {
+    "embedding_lm_head": [
+      4697620480,
+      4697620480,
+      4697620480
+    ],
+    "other_text": [
+      84501734400,
+      20623597296,
+      11498150400
+    ],
+    "routed_experts": [
+      1446456066048,
+      180807008256,
+      0
+    ],
+    "shared_experts": [
+      24310185984,
+      24310185984,
+      24310185984
+    ]
+  }
+}
