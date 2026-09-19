@@ -42,17 +42,9 @@ unsafe impl Sync for PinnedArena {}
 
 impl PinnedArena {
     /// `alloc_host_pinned` zero-fills, so a large arena costs one memset at
-    /// load. The device alias is what the kernels are handed. The arena is
-    /// write-combined by default (the host only ever writes it, by pread;
-    /// the GPU reads it ~10% faster that way on GB10); `ATLAS_DS41_ARENA_WC=0`
-    /// keeps the plain cacheable mapping.
+    /// load. The device alias is what the kernels are handed.
     pub fn alloc(gpu: &dyn GpuBackend, bytes: usize) -> Result<Self> {
-        let wc = !std::env::var("ATLAS_DS41_ARENA_WC").is_ok_and(|v| v == "0");
-        let host = if wc {
-            gpu.alloc_host_pinned_wc(bytes)?
-        } else {
-            gpu.alloc_host_pinned(bytes)?
-        };
+        let host = gpu.alloc_host_pinned(bytes)?;
         let dev = match gpu.host_ptr_to_device(host) {
             Ok(d) => d,
             Err(e) => {

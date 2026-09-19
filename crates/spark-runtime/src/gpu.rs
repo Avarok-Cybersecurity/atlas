@@ -528,15 +528,6 @@ pub trait GpuBackend: Send + Sync {
         Ok(ptr)
     }
 
-    /// [`Self::alloc_host_pinned`] for a region the host only WRITES and the
-    /// GPU streams (an expert arena): a backend may map it write-combined,
-    /// which the GB10 reads faster. Same contract (zeroed, freed with
-    /// [`Self::free_host_pinned`]); CPU reads of it are slow, so never read
-    /// it back on the host. Default: the plain pinned allocation.
-    fn alloc_host_pinned_wc(&self, bytes: usize) -> Result<*mut u8> {
-        self.alloc_host_pinned(bytes)
-    }
-
     /// Free page-locked host memory previously allocated by `alloc_host_pinned`.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn free_host_pinned(&self, ptr: *mut u8, bytes: usize) -> Result<()> {
