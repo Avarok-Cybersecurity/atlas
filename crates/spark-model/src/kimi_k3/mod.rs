@@ -32,3 +32,11 @@ pub use mla_cuda::{
 };
 pub use moe_cuda::{K3MoeGemmKernels, launch_k3_latent_moe_experts};
 pub use tp::{supports_tp, tensor_plan};
+
+pub mod bound;
+mod host_decode;
+pub mod state;
+pub use avarok_core::kimi_k3::{Ablation, K3CpuModel, K3LayerSpec, greedy_decode};
+pub use state::K3CpuFallbackState;
+#[cfg(test)]
+mod host_decode_kda;
