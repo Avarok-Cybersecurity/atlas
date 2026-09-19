@@ -20,6 +20,10 @@ use anyhow::Result;
 // backend without an NCCL library. On metal builds (single Apple
 // Silicon device) only `SingleGpuBackend` below is needed.
 #[cfg(feature = "nccl")]
+mod collective_diagnostics;
+#[cfg(feature = "nccl")]
+mod collective_wait;
+#[cfg(feature = "nccl")]
 pub mod nccl;
 #[cfg(feature = "nccl")]
 pub mod nccl_backend;

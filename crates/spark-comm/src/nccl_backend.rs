@@ -12,7 +12,8 @@
 //!
 //! Health monitoring and recovery:
 //! - Checks `ncclCommGetAsyncError` after each collective
-//! - Detects broadcast timeouts (>30s) via stream sync + wall-clock check
+//! - Bounds broadcast completion polling at 30s, poisoning on timeout/error
+//! - Opt-in host submission diagnostics: AVAROK_COMM_DIAGNOSTICS=1
 //! - Aborts dead communicators via `ncclCommAbort` and reconnects
 //!
 //! ## Safety contract for the `unsafe { ... }` calls below
@@ -67,16 +68,18 @@ unsafe extern "C" {
 
 mod recv_buffer;
 use recv_buffer::ensure_payload_fits;
-pub use recv_buffer::{ALL_REDUCE_DTYPE_BYTES, required_recv_bytes};
+pub use recv_buffer::{ALL_REDUCE_DTYPE_BYTES, required_model_recv_bytes, required_recv_bytes};
 
 /// Timeout threshold for a single synchronous collective operation.
-/// If a broadcast + stream sync takes longer than this, mark the communicator unhealthy.
+/// Broadcast completion polling stops at this deadline; NCCL submission and
+/// driver calls themselves still require an external process supervisor.
 pub(super) const COLLECTIVE_TIMEOUT_SECS: u64 = 30;
 
 /// NCCL communication backend for multi-GPU / multi-node EP.
 pub struct NcclBackend {
     /// Protected for abort-and-reconnect. All NCCL calls acquire this lock.
     comm: Mutex<NcclComm>,
+    diagnostics: crate::collective_diagnostics::Diagnostics,
     rank: usize,
     world_size: usize,
     /// Dedicated stream for NCCL collectives (separate from compute).
@@ -136,6 +139,12 @@ impl NcclBackend {
         stream: u64,
         recv_capacity: usize,
     ) -> Result<Self> {
+        let diagnostic_env = std::env::var(crate::collective_diagnostics::ENV).ok();
+        let diagnostics = crate::collective_diagnostics::Diagnostics::new(
+            diagnostic_env.as_deref(),
+            rank,
+            world_size,
+        )?;
         Self::log_nccl_env_vars();
 
         let unique_id = if rank == 0 {
@@ -189,6 +198,7 @@ impl NcclBackend {
 
         Ok(Self {
             comm: Mutex::new(comm),
+            diagnostics,
             rank,
             world_size,
             comm_stream,
