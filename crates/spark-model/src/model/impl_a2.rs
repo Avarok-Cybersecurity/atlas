@@ -356,9 +356,22 @@ impl TransformerModel {
     /// the worker to dispatch the command into; with `v2` disabled the
     /// returned `seq_id` is always 0 (the legacy singleton slot).
     pub(super) fn ep_recv_seq_and_cmd(&self, v2: bool) -> Result<(u32, u32)> {
-        let seq_id = if v2 { self.ep_broadcast_u32(0)? } else { 0 };
-        let cmd = self.ep_broadcast_u32(0)?;
-        Ok((seq_id, cmd))
+        // Only the first word waits through server idle time. Once it arrives,
+        // the command is in flight and all remaining words keep their deadline.
+        let comm = self
+            .comm
+            .as_ref()
+            .expect("worker command receive without comm");
+        comm.recv_command_u32(self.ep_cmd_buf.0, 0)?;
+        self.gpu.synchronize(self.gpu.default_stream())?;
+        let mut buf = [0u8; 4];
+        self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
+        let first = u32::from_le_bytes(buf);
+        if v2 {
+            Ok((first, self.ep_broadcast_u32(0)?))
+        } else {
+            Ok((0, first))
+        }
     }
 
     /// Broadcast a u32 command from rank 0 to all ranks.

@@ -12,7 +12,8 @@
 //!
 //! Health monitoring and recovery:
 //! - Checks `ncclCommGetAsyncError` after each collective
-//! - Bounds broadcast completion polling at 30s, poisoning on timeout/error
+//! - Bounds in-flight broadcast polling at 30s, poisoning on timeout/error
+//! - Allows idle command receives to wait, while still polling async errors
 //! - Opt-in host submission diagnostics: AVAROK_COMM_DIAGNOSTICS=1
 //! - Aborts dead communicators via `ncclCommAbort` and reconnects
 //!

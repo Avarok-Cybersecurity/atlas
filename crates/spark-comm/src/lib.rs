@@ -48,6 +48,20 @@ pub trait CommBackend: Send + Sync {
     /// Broadcast from root rank to all ranks.
     fn broadcast(&self, ptr: u64, bytes: usize, root: usize) -> Result<()>;
 
+    /// Receive only the first u32 of the next worker command from `root`.
+    ///
+    /// Unlike an in-flight payload, this may wait through arbitrary server idle
+    /// time. Backends must keep checking transport errors. Only non-root ranks
+    /// may call this; the root uses ordinary bounded `broadcast`. Subsequent
+    /// command words and payloads must also use ordinary `broadcast`.
+    fn recv_command_u32(&self, ptr: u64, root: usize) -> Result<()> {
+        anyhow::ensure!(
+            self.rank() != root,
+            "idle command receive requires non-root rank"
+        );
+        self.broadcast(ptr, 4, root)
+    }
+
     /// Barrier: block until all ranks reach this point.
     fn barrier(&self) -> Result<()>;
 

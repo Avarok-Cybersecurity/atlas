@@ -174,51 +174,15 @@ impl CommBackend for NcclBackend {
     }
 
     fn broadcast(&self, ptr: u64, bytes: usize, root: usize) -> Result<()> {
-        self.begin_submission(
-            "broadcast",
-            Dtype::U8,
-            bytes,
-            self.legacy_stream,
-            Some(root),
-        )?;
-        let start = Instant::now();
-        let comm = *self.comm.lock();
+        self.broadcast_with_wait(ptr, bytes, root, false)
+    }
 
-        // Broadcast raw bytes as Uint8
-        let result = unsafe {
-            nccl::ncclBroadcast(
-                ptr as *const _,
-                ptr as *mut _,
-                bytes,
-                NcclDataType::Uint8,
-                root as i32,
-                comm,
-                self.legacy_stream,
-            )
-        };
-        nccl::check_nccl(result, "ncclBroadcast")?;
-
-        // Poll instead of measuring time only AFTER an unbounded synchronize.
-        let completion = crate::collective_wait::poll_completion(
-            Duration::from_secs(COLLECTIVE_TIMEOUT_SECS),
-            || start.elapsed(),
-            || {
-                ensure!(self.check_async_error(comm), "NCCL asynchronous failure");
-                nccl::stream_ready(self.legacy_stream)
-            },
-            || std::thread::sleep(Duration::from_millis(1)),
+    fn recv_command_u32(&self, ptr: u64, root: usize) -> Result<()> {
+        ensure!(
+            self.rank != root,
+            "idle command receive requires non-root rank"
         );
-        crate::collective_wait::poison_on_error(completion, &self.unhealthy).with_context(
-            || {
-                format!(
-                    "NCCL broadcast rank={} world_size={} root={root} bytes={bytes}; \
-                     communicator poisoned; stop all ranks before retrying",
-                    self.rank, self.world_size,
-                )
-            },
-        )?;
-
-        Ok(())
+        self.broadcast_with_wait(ptr, 4, root, true)
     }
 
     fn barrier(&self) -> Result<()> {
@@ -305,6 +269,66 @@ impl CommBackend for NcclBackend {
 }
 
 impl NcclBackend {
+    fn broadcast_with_wait(
+        &self,
+        ptr: u64,
+        bytes: usize,
+        root: usize,
+        idle_command: bool,
+    ) -> Result<()> {
+        self.begin_submission(
+            "broadcast",
+            Dtype::U8,
+            bytes,
+            self.legacy_stream,
+            Some(root),
+        )?;
+        let start = Instant::now();
+        let comm = *self.comm.lock();
+
+        // Broadcast raw bytes as Uint8
+        let result = unsafe {
+            nccl::ncclBroadcast(
+                ptr as *const _,
+                ptr as *mut _,
+                bytes,
+                NcclDataType::Uint8,
+                root as i32,
+                comm,
+                self.legacy_stream,
+            )
+        };
+        nccl::check_nccl(result, "ncclBroadcast")?;
+
+        // Poll instead of measuring time only AFTER an unbounded synchronize.
+        let ready = || {
+            ensure!(self.check_async_error(comm), "NCCL asynchronous failure");
+            nccl::stream_ready(self.legacy_stream)
+        };
+        let pause = || std::thread::sleep(Duration::from_millis(1));
+        let completion = if idle_command {
+            crate::collective_wait::poll_idle_command(ready, pause)
+        } else {
+            crate::collective_wait::poll_completion(
+                Duration::from_secs(COLLECTIVE_TIMEOUT_SECS),
+                || start.elapsed(),
+                ready,
+                pause,
+            )
+        };
+        crate::collective_wait::poison_on_error(completion, &self.unhealthy).with_context(
+            || {
+                format!(
+                    "NCCL broadcast rank={} world_size={} root={root} bytes={bytes}; \
+                     communicator poisoned; stop all ranks before retrying",
+                    self.rank, self.world_size,
+                )
+            },
+        )?;
+
+        Ok(())
+    }
+
     fn begin_submission(
         &self,
         op: &str,

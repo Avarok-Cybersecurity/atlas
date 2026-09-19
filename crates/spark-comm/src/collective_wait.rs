@@ -26,6 +26,21 @@ pub fn poll_completion(
     }
 }
 
+/// Wait for the first word of a worker command while no request is active.
+/// Idle time is unbounded, but the callback must still check transport errors.
+/// The supervisor owns shutdown if an idle peer disappears without an error.
+pub fn poll_idle_command(
+    mut ready: impl FnMut() -> Result<bool>,
+    mut pause: impl FnMut(),
+) -> Result<()> {
+    loop {
+        if ready()? {
+            return Ok(());
+        }
+        pause();
+    }
+}
+
 /// A completion failure prevents subsequent submissions on this communicator.
 pub fn poison_on_error(result: Result<()>, unhealthy: &AtomicBool) -> Result<()> {
     if result.is_err() {
@@ -59,6 +74,42 @@ mod tests {
         .unwrap_err();
         assert_eq!(ticks.get(), 3);
         assert!(err.to_string().contains("deadline exceeded"));
+    }
+
+    #[test]
+    fn idle_command_can_arrive_after_long_idle_but_payload_still_times_out() {
+        let ticks = Cell::new(0);
+        poll_idle_command(|| Ok(ticks.get() == 90), || ticks.set(ticks.get() + 1)).unwrap();
+        assert_eq!(ticks.get(), 90);
+        ticks.set(0);
+        assert!(
+            poll_completion(
+                Duration::from_secs(30),
+                || Duration::from_secs(ticks.get()),
+                || Ok(ticks.get() == 90),
+                || ticks.set(ticks.get() + 1),
+            )
+            .is_err()
+        );
+        assert_eq!(ticks.get(), 30);
+    }
+
+    #[test]
+    fn idle_command_still_checks_errors_and_poisons_the_communicator() {
+        let ticks = Cell::new(0);
+        let unhealthy = AtomicBool::new(false);
+        let result = poll_idle_command(
+            || {
+                if ticks.get() == 90 {
+                    anyhow::bail!("peer lost during idle");
+                }
+                Ok(false)
+            },
+            || ticks.set(ticks.get() + 1),
+        );
+        assert!(poison_on_error(result, &unhealthy).is_err());
+        assert!(ensure_healthy(&unhealthy, 1, 2, "broadcast").is_err());
+        assert_eq!(ticks.get(), 90);
     }
 
     #[test]
