@@ -15,7 +15,7 @@ const CTX = { generated: { sha: '4b18f7cec', date: '2026-09-16' }, meta: { expec
 
 const sweep = () => ({
   benchmark_id: 'concurrency-sweep',
-  git_sha: 'a87ede905f',
+  git_sha: 'a87b41905f',
   recorded_at: 1789803720,
   target_model: 'unsloth/Qwen3.8-27B-NVFP4',
   served_by: 'qwen3.8/qwen3.8-27b-nvfp4-unsloth',
@@ -37,7 +37,7 @@ const sweep = () => ({
   verdict_reason: 'every populated floor met (C64 116.2/107.6)',
   branch: '',
   generated_ancestry: 'yes',
-  path: '.benchmarks/concurrency-sweep/2026-09-19-a87ede905f.json',
+  path: '.benchmarks/concurrency-sweep/2026-09-19-a87b41905f.json',
   signer: '02156264cbf75bd7',
   dirty_paths: [],
   dataset_fingerprint: null,
@@ -62,7 +62,7 @@ const shardRec = (index, count, extra = {}) => ({
   },
   verdict: 'info',
   verdict_reason: `shard ${index}/${count}`,
-  path: `.benchmarks/bfcl-subset/2026-09-19-a87ede905f-s${index}of${count}.json`,
+  path: `.benchmarks/bfcl-subset/2026-09-19-a87b41905f-s${index}of${count}.json`,
   ...extra
 });
 
@@ -140,15 +140,15 @@ describe('a partition aggregate reproduces as N shard commands', () => {
     const cmds = measureOf(plan).commands;
     const runs = cmds.filter((c) => c.lines[0].startsWith('spark benchmark run'));
     expect(runs.map((c) => c.label)).toEqual([
-      'shard 1 of 2 · .benchmarks/bfcl-subset/2026-09-19-a87ede905f-s0of2.json',
-      'shard 2 of 2 · .benchmarks/bfcl-subset/2026-09-19-a87ede905f-s1of2.json'
+      'shard 1 of 2 · .benchmarks/bfcl-subset/2026-09-19-a87b41905f-s0of2.json',
+      'shard 2 of 2 · .benchmarks/bfcl-subset/2026-09-19-a87b41905f-s1of2.json'
     ]);
     expect(runs[0].lines).toContain('  --param shard=0/2 \\');
     expect(runs[1].lines).toContain('  --param shard=1/2 \\');
     // Member commands are the record's own, so none is marked derived except
     // the two flags every gate command gains.
     for (const r of runs) expect(r.derivedLines.length).toBe(2);
-    expect(cmds[cmds.length - 1].lines).toEqual(['spark benchmark aggregate bfcl-subset --sha a87ede905f']);
+    expect(cmds[cmds.length - 1].lines).toEqual(['spark benchmark aggregate bfcl-subset --sha a87b41905f']);
     expect(measureOf(plan).summary).toBe('2 of 2 shard commands · 20 samples');
     // Every path is listed under record & sign, not just the inherited one.
     const rec = plan.steps.find((s) => s.id === 'record');
@@ -195,7 +195,7 @@ describe('a lone shard record', () => {
       [0, 1, 2, 3, 4].map((j) => `  --param shard=${j}/6 \\`)
     );
     for (const s of siblings) expect(s.derivedLines).toEqual(s.lines.map((_, k) => k));
-    expect(cmds[cmds.length - 1].lines[0]).toBe('spark benchmark aggregate bfcl-subset --sha a87ede905f');
+    expect(cmds[cmds.length - 1].lines[0]).toBe('spark benchmark aggregate bfcl-subset --sha a87b41905f');
     // Negative control: no shard → no siblings, no aggregate.
     const plain = reproSteps(sweep(), CTX);
     expect(measureOf(plain).commands.some((c) => c.label.startsWith('sibling') || c.lines[0].includes('aggregate'))).toBe(false);
@@ -316,9 +316,9 @@ describe('the plan shape', () => {
   it('has the eight pipeline steps in execution order and real env exports', () => {
     const plan = reproSteps(sweep(), CTX);
     expect(plan.steps.map((s) => s.id)).toEqual(['checkout', 'build', 'serve', 'warmup', 'measure', 'judge', 'record', 'publish']);
-    expect(plan.headline).toBe('PASS · concurrency-sweep · a87ede905f · 2026-09-19');
+    expect(plan.headline).toBe('PASS · concurrency-sweep · a87b41905f · 2026-09-19');
     expect(linesOf(plan)).toContain('export AVAROK_PREFILL_CODISPATCH=0');
-    expect(linesOf(plan)).toContain('git fetch origin a87ede905f && git checkout a87ede905f');
+    expect(linesOf(plan)).toContain('git fetch origin a87b41905f && git checkout a87b41905f');
     expect(plan.steps.find((s) => s.id === 'judge').facts).toContainEqual(['params.min_c64', '107.6']);
     expect(plan.steps.find((s) => s.id === 'publish').summary).toBe('site/scripts/gen-gates.mjs · site as of 2026-09-16 (4b18f7cec)');
     expect(plan.steps.find((s) => s.id === 'serve').facts[0][1]).toBe('https://github.com/Avarok-Cybersecurity/atlas-recipes/blob/main/recipes/qwen3.8/qwen3.8-27b-nvfp4-unsloth.yaml');
