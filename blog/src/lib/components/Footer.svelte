@@ -7,8 +7,11 @@
 <footer class="ftr">
   <div class="shell ftr-grid">
     <div class="ftr-col ftr-brand">
-      <a class="ftr-logo" href={MAIN_SITE} aria-label="Atlas Inference Engine">
-        <AtlasLockup kind="corp" />
+      <a class="ftr-logo" href={MAIN_SITE} aria-label="Avarok Inference Engine">
+        <!-- The full lockup, not the corporate one. The corporate lockup sets the
+             wordmark over "Cybernetics Corp", and with the wordmark now Avarok that
+             reads as a legal name the company has not adopted. -->
+        <AtlasLockup kind="full" />
       </a>
       <p>Zero-trust inference on hardware you own. Pure Rust and CUDA, built in North Carolina.</p>
     </div>
@@ -26,7 +29,7 @@
     {/each}
   </div>
   <div class="ftr-legal">
-    <div>© {year} Atlas Inference · Community Edition AGPLv3</div>
+    <div>© {year} Avarok · Community Edition AGPLv3</div>
     <div>{blog.kicker}</div>
   </div>
 </footer>

@@ -3,7 +3,7 @@
   // CTA and the testimonials were separate full-height sections that diluted
   // each other and pushed the verified numbers below three screens of social
   // proof. They are one argument, so they are one entry.
-  import { stars as copy, community, githubUrl, discordUrl, testimonials } from '$lib/data.js';
+  import { stars as copy, community, githubUrl, discordUrl, testimonials, testimonialsNote } from '$lib/data.js';
   import starData from '$lib/stars.generated.json';
   import StarChart from './StarChart.svelte';
   import GithubIcon from './GithubIcon.svelte';
@@ -56,5 +56,6 @@
         </div>
       {/each}
     </div>
+    <p class="tnote">{testimonialsNote}</p>
   </div>
 </section>

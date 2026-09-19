@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Atlas Inference Engine",
-  "short_name": "Atlas",
-  "description": "Pure Rust inference, from the device in your hand to the datacenter rack.",
+  "name": "Avarok",
+  "short_name": "Avarok",
+  "description": "The inference economics platform for GPUs you already own.",
   "lang": "en",
   "dir": "ltr",
   "scope": "/",

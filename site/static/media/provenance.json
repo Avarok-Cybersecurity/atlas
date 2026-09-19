@@ -1,0 +1,72 @@
+{
+  "broll-desk-box": {
+    "kind": "installed",
+    "from": "V05-broll-desk-box.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-enclave": {
+    "kind": "installed",
+    "from": "V04-broll-enclave.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-field": {
+    "kind": "installed",
+    "from": "V03-broll-field.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-hall": {
+    "kind": "installed",
+    "from": "V06-broll-hall.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-power": {
+    "kind": "installed",
+    "from": "V07-broll-power.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-rack": {
+    "kind": "installed",
+    "from": "V01-broll-rack.mp4",
+    "at": "2026-09-18"
+  },
+  "broll-tokens": {
+    "kind": "installed",
+    "from": "V02-broll-tokens.mp4",
+    "at": "2026-09-18"
+  },
+  "console-ask": {
+    "kind": "recorded",
+    "from": "/console?scene=ask",
+    "at": "2026-09-18"
+  },
+  "console-deploy": {
+    "kind": "recorded",
+    "from": "/console?scene=deploy",
+    "at": "2026-09-18"
+  },
+  "console-economics": {
+    "kind": "recorded",
+    "from": "/console?scene=economics",
+    "at": "2026-09-18"
+  },
+  "console-fleet": {
+    "kind": "recorded",
+    "from": "/console?scene=fleet",
+    "at": "2026-09-18"
+  },
+  "console-governance": {
+    "kind": "recorded",
+    "from": "/console?scene=governance",
+    "at": "2026-09-18"
+  },
+  "console-queue": {
+    "kind": "recorded",
+    "from": "/console?scene=queue",
+    "at": "2026-09-18"
+  },
+  "reel": {
+    "kind": "assembled",
+    "from": "media-brief/reel.json",
+    "at": "2026-09-18"
+  }
+}

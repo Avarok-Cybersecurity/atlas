@@ -13,7 +13,7 @@
 <header class="hdr">
   <div class="hdr-in">
     <div class="brand">
-      <a class="brand-mark" href={landing} aria-label="Atlas home">
+      <a class="brand-mark" href={landing} aria-label="Avarok home">
         <AtlasLockup kind="horizontal" />
       </a>
       <span class="brand-div" aria-hidden="true"></span>
@@ -38,7 +38,7 @@
           <path d="M7 17L17 7M17 7H8M17 7v9" />
         </svg>
       </a>
-      <a class="btn-ghost" href={githubUrl} target="_blank" rel="noopener" aria-label="Atlas on GitHub">
+      <a class="btn-ghost" href={githubUrl} target="_blank" rel="noopener" aria-label="Avarok on GitHub">
         <GithubIcon size={14} />
       </a>
     </div>

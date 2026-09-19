@@ -1,29 +1,86 @@
-# Atlas Inference Engine
+# Avarok
 
-> Pure Rust inference, from the device in your hand to the datacenter rack.
+> Faster inference. Stronger governance. A fraction of what you pay today.
 
-Atlas is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
+Avarok is the inference economics platform for the GPUs you already own. It runs your models faster on the same silicon, keeps every prompt inside your perimeter, and shows your CFO what each workload costs.
+
+Avarok was named Atlas until September 2026. The engine, the repository and the
+domain are the same ones. The legal entity is Atlas Cybernetics Corp.
+
+## The platform
+
+- Avarok Engine: the open source inference engine, pure Rust and CUDA, AGPL-3.0-only.
+- Avarok Control: the governance and control plane. Signed recipes, canary rollouts, routing, fleet policy.
+- Avarok Economics: cost per workload, chargeback, stranded capacity and payback, from runtime telemetry.
+
+## Pages
+
+- [Avarok, the inference economics platform](https://atlascybernetics.ai): Faster inference, stronger governance, a fraction of what you pay today. Avarok runs your models faster on GPUs you own, keeps every prompt inside your perimeter, and shows what each workload costs.
+- [Why Avarok · Avarok](https://atlascybernetics.ai/why-avarok): You invested in the datacenter. Now get the most out of it. Speed, security and governance, each explained, tested and delivered at your pace.
+- [Platform · Avarok](https://atlascybernetics.ai/platform): One platform for the whole inference lifecycle. Avarok Engine, Avarok Control and Avarok Economics share one request path.
+- [Avarok Engine · Avarok](https://atlascybernetics.ai/platform/engine): A compiled inference stack in Rust and CUDA. Hand tuned kernels per hardware, model and quantization. More tokens on the same silicon.
+- [Avarok Control · Avarok](https://atlascybernetics.ai/platform/control): The governance and control plane. Signed recipes, canary rollouts, GPU aware routing, autoscaling, node repair and fleet policy, never on the inference path.
+- [Avarok Economics · Avarok](https://atlascybernetics.ai/platform/economics): Every GPU, every workload, every dollar. Turn runtime telemetry into cost per workload, chargeback, stranded capacity and payback.
+- [Security · Avarok](https://atlascybernetics.ai/platform/security): One signed binary, no interpreter in the request path, links designed for a hostile network, nothing leaves your perimeter.
+- [Deployment · Avarok](https://atlascybernetics.ai/platform/deployment): Hosted with private connectivity, your cloud account, on premises or air gapped. Same binary, same recipes, same control plane.
+- [Hardware and models · Avarok](https://atlascybernetics.ai/platform/hardware): Verified silicon, targets in bring up, and every model recipe we ship, generated from the repository.
+- [Benchmarks · Avarok](https://atlascybernetics.ai/benchmarks): The concurrency ladder against vLLM and every gate record, generated from the repository. Reproduce any of them.
+- [Solutions · Avarok](https://atlascybernetics.ai/solutions): Built for the people who own the GPUs. Neoclouds, enterprises, banks, hospitals, government, law firms, hyperscalers, labs and SMB.
+- [Neoclouds and GPU providers · Avarok](https://atlascybernetics.ai/solutions/neoclouds): Avarok for neoclouds and GPU providers. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Enterprise datacenters · Avarok](https://atlascybernetics.ai/solutions/enterprise-datacenter): Avarok for enterprise datacenters. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Financial services · Avarok](https://atlascybernetics.ai/solutions/financial-services): Avarok for financial services. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Healthcare · Avarok](https://atlascybernetics.ai/solutions/healthcare): Avarok for healthcare. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Government and defense · Avarok](https://atlascybernetics.ai/solutions/government-defense): Avarok for government and defense. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Legal and professional services · Avarok](https://atlascybernetics.ai/solutions/legal): Avarok for legal and professional services. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Hyperscalers and cloud platforms · Avarok](https://atlascybernetics.ai/solutions/hyperscalers): Avarok for hyperscalers and cloud platforms. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Research labs and AI safety · Avarok](https://atlascybernetics.ai/solutions/research): Avarok for research labs and AI safety. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [SMB and edge · Avarok](https://atlascybernetics.ai/solutions/smb-edge): Avarok for SMB and edge. Faster inference, stronger governance and a payback the CFO can read, on hardware you own.
+- [Pricing · Avarok](https://atlascybernetics.ai/pricing): Priced against productive GPU capacity, not seats. Community, workstation, enterprise and proof of value, with a payback model you can edit.
+- [Book a demo · Avarok](https://atlascybernetics.ai/demo): A working session on your workload. The console on demo data, the published ladder, the payback model with your inputs, and a scoped proof of value.
+- [Community Edition waitlist · Avarok](https://atlascybernetics.ai/waitlist): The Community Edition of Avarok is not released yet. Leave an address and the hardware you run, and hear first when it is. The open source engine runs today.
+- [Resources · Avarok](https://atlascybernetics.ai/resources): Blog, documentation, product updates, benchmarks, open source, contributors, events and Avarok Labs.
+- [Product updates · Avarok](https://atlascybernetics.ai/resources/updates): What shipped, rendered from the repository changelog on every build.
+- [Events · Avarok](https://atlascybernetics.ai/resources/events): Where to meet the Avarok team, in person and online.
+- [Contributors · Avarok](https://atlascybernetics.ai/resources/contributors): Everyone who has landed code in the Avarok repository, called out by name.
+- [Avarok Labs · Avarok](https://atlascybernetics.ai/labs): The research arm. Kernels, compression, speculative decoding, memory, compilers, protocols, agentic benchmarks and day zero model bring ups.
+- [About · Avarok](https://atlascybernetics.ai/company): It started with two words. The story, the mission and the principles behind Avarok.
+- [Careers · Avarok](https://atlascybernetics.ai/company/careers): Build the layer between the GPU and the invoice. The first hires on the founding team.
+- [Contact · Avarok](https://atlascybernetics.ai/contact): Sales, technical, partnerships, security and press. Every path lands with a founder.
+- [Trust center · Avarok](https://atlascybernetics.ai/trust): Architecture, data handling, assurance and licensing. What we run, what we claim, and what we do not.
+
+## Pricing
+
+Proposed list prices, subject to contract. The pricing page carries the payback model.
+
+- Community Edition: $0 AGPL-3.0, forever
+- Workstation and edge: $50 per box per month, billed annually
+- Enterprise: $3,000 per GPU per year, list
+- Proof of value: Fixed fee four weeks, credited on conversion
+
+## Avarok Engine
+
+Avarok Engine is an open source LLM engine written in Rust and CUDA. One ~75 MB binary, no Python, no PyTorch. It runs on edge class accelerators today, scales across nodes with expert parallelism, and holds throughput at the concurrency a datacenter serves. What ships is what we verify, and we bench every release.
 
 Written in pure Rust and CUDA and licensed AGPL-3.0-only. One codebase covers
 the range, from edge-class accelerators through workstations to expert-parallel
 deployments across nodes.
 
-## What it runs on
+### What it runs on
 
 - NVIDIA DGX Spark (GB10 · SM121) — Verified today. One multi model binary serves a full matrix of hand tuned targets on a single GB10. NVFP4 and FP8, MTP speculative decoding, EP=2 across two Sparks. Every target passes the serve matrix before we cut an image.
 - AMD Strix Halo (gfx1151 · RDNA 3.5) — MLPerf submitted. One codebase, both vendors. Our CUDA kernels compile straight for AMD gfx1151 with SCALE by Spectral Compute. No HIP port, no second kernel tree. AMD provided the Strix Halo desktop we ran and submitted our MLPerf Inference v6.1 numbers on.
 
-## Measured performance
+### Measured performance
 
 Qwen3.8-27B NVFP4 concurrency ladder. Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched.
 Aggregate: mean tok/s over 3 timed reps (1 warmup discarded). Box: dgx2 (spark-43fa), NVIDIA GB10 Grace Blackwell, 121.7 GB unified.
 Workload: ISL 128 / OSL 1024 tokens, temperature 0,
 seed 42, 3 timed reps after 1 warmup. presence_penalty and frequency_penalty pinned to 0.0 on both engines.
 
-Result: Atlas wins 8 of 8 rungs, margin 1.012x to 1.333x
+Result: Avarok Engine wins 8 of 8 rungs, margin 1.012x to 1.333x
 against the matched vLLM + MTP configuration at each concurrency.
 
-| concurrency | Atlas tok/s | matched vLLM tok/s | ratio |
+| concurrency | Avarok Engine tok/s | matched vLLM tok/s | ratio |
 | --- | --- | --- | --- |
 | 1 | 23.59 | 19.72 (vLLM + MTP) | 1.196x |
 | 2 | 41.02 | 37.11 (vLLM + MTP) | 1.105x |
@@ -39,7 +96,7 @@ MLPerf Inference v6.1: submitted, closed edge division, on both GB10 and gfx1151
 Release gate: An Atlas image ships only after the serve matrix passes: every model boots, stays coherent (greedy determinism, no token leakage, tool reliability), and holds throughput within 10% of its committed baseline.
 Reproduce: python3 tests/run_all_models.py && python3 tests/gate_results.py --update-baselines
 
-## Install
+### Install
 
 ```sh
 curl -fsSL https://atlascybernetics.ai/install.sh | sh
@@ -52,12 +109,12 @@ cargo install atlasctl
 atlasctl run qwen3.6-35b-a3b-fp8-mtp
 ```
 
-## Models (32 recipes)
+### Models (32 recipes)
 
 Every model below maps to one recipe in atlas-recipes; the site cannot list a
 model that has no recipe. Run any of them with `atlasctl run <id>`.
 
-### Qwen
+#### Qwen
 
 - `qwen3-coder-next-fp8` — Qwen3 Coder Next FP8, 80B fp8, single, `Qwen/Qwen3-Coder-Next-FP8`
 - `qwen3-next-80b-a3b-nvfp4` — Qwen3 Next 80B A3B NVFP4, 80B nvfp4, single, `nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4`
@@ -83,27 +140,27 @@ model that has no recipe. Run any of them with `atlasctl run <id>`.
 - `qwen3.8-27b-nvfp4-unsloth-bfcl` — Qwen3.8 27B NVFP4 Unsloth Bfcl, 27B dense hybrid (48 GDN linear-attn + 16 softmax-attn layers) NVFP4 (mixed precision above layer 55), single, `unsloth/Qwen3.8-27B-NVFP4`
 - `qwen3.8-flash-next-nvfp4` — Qwen3.8 Flash Next NVFP4, 48 layers (36 GDN linear-attn + 12 full attention), MoE 512 experts top-10 NVFP4 (BF16 n-gram embedding table), single, `Inferact/Qwen3.8-Flash-Next-NVFP4`
 
-### Gemma
+#### Gemma
 
 - `diffusion-gemma-bf16` — Diffusion Gemma BF16,  , single, `google/diffusiongemma-26B-A4B-it`
 - `diffusion-gemma-fp8-dynamic` — Diffusion Gemma FP8 Dynamic,  , single, `RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic`
 - `gemma-4-26b-a4b-nvfp4` — Gemma 4 26B A4B NVFP4, 26B nvfp4, single, `bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16`
 - `gemma-4-31b-nvfp4` — Gemma 4 31B NVFP4, 31B nvfp4, single, `nvidia/Gemma-4-31B-IT-NVFP4`
 
-### Nemotron
+#### Nemotron
 
 - `nemotron-3-nano-30b-a3b-nvfp4` — Nemotron 3 Nano 30B A3B NVFP4, 30B nvfp4, single, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4`
 - `nemotron-3-super-120b-a12b-nvfp4` — Nemotron 3 Super 120B A12B NVFP4, 120B nvfp4, single, `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4`
 
-### Mistral
+#### Mistral
 
 - `mistral-small-4-119b-nvfp4` — Mistral Small 4 119B NVFP4, 119B nvfp4, single, `mistralai/Mistral-Small-4-119B-2603-NVFP4`
 
-### MiniMax
+#### MiniMax
 
 - `minimax-m2.7-nvfp4-ep2` — Minimax M2.7 NVFP4 EP=2, 230B nvfp4, EP=2, `lukealonso/MiniMax-M2.7-NVFP4`
 
-### DeepSeek
+#### DeepSeek
 
 - `deepseek-v4-flash-nvfp4-ep2` — Deepseek V4 Flash NVFP4 EP=2, 280B nvfp4, EP=2, `nvidia/DeepSeek-V4-Flash-NVFP4`
 

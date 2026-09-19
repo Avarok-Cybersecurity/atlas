@@ -1,0 +1,6251 @@
+{
+ "revision": 5,
+ "date": "2026-09-19",
+ "changes": [
+  {
+   "rev": 1,
+   "date": "2026-09-18",
+   "pr": 1136,
+   "base": "d499f1457",
+   "note": "The ledger begins. Every tracked value and file as the branch stood at this commit."
+  },
+  {
+   "rev": 2,
+   "date": "2026-09-18",
+   "pr": 1136,
+   "base": "d499f1457",
+   "note": "Contacts keyed by job: sales to Eric, business and design partners to Kyle, operations to Peter, public collaboration to Tom. Team portraits and the real pull request exchange added.",
+   "touched": [
+    "contacts.sales",
+    "contacts.business",
+    "contacts.operations",
+    "contacts.collaboration",
+    "contacts.press",
+    "exchange-before-dark.webp",
+    "exchange-before-light.webp",
+    "exchange-dark.webp",
+    "exchange-light.webp",
+    "eric-gonzalez.webp",
+    "kyle-croll.webp",
+    "peter-drybrough.webp",
+    "thomas-braun.webp",
+    "tom-turney.webp"
+   ]
+  },
+  {
+   "rev": 3,
+   "date": "2026-09-18",
+   "pr": 1136,
+   "base": "d499f1457",
+   "note": "Daylight stills for five industry pages, and three for the SMB and edge page to turn through. The desk box still now serves pricing only.",
+   "touched": [
+    "art-finance.webp",
+    "art-gov.webp",
+    "art-health.webp",
+    "art-legal.webp",
+    "art-research.webp",
+    "art-smb-autoshop.webp",
+    "art-smb-library.webp",
+    "art-smb-office.webp"
+   ]
+  },
+  {
+   "rev": 4,
+   "date": "2026-09-18",
+   "pr": 1136,
+   "base": "220a7e959",
+   "note": "The Press and investors card says Email the CEO. Business and design partners stays under Partnerships.",
+   "touched": []
+  },
+  {
+   "rev": 5,
+   "date": "2026-09-19",
+   "pr": 1136,
+   "base": "b283059ad",
+   "note": "Two team lines changed on their owners' word: Tom Turney's is his own wording, Thomas Braun's says patented and links the patent. A third payback scenario counts in tokens per joule, with a graph of every ladder rung.",
+   "touched": []
+  }
+ ],
+ "facts": [
+  {
+   "key": "company.category",
+   "value": "The inference economics platform",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "key": "company.console",
+   "value": "Avarok Console",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/security",
+    "/resources/events"
+   ]
+  },
+  {
+   "key": "company.control",
+   "value": "Avarok Control",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.economics",
+   "value": "Avarok Economics",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.engine",
+   "value": "Avarok Engine",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.founded",
+   "value": "Started in 2026.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "key": "company.legal",
+   "value": "Atlas Cybernetics Corp.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.name",
+   "value": "Avarok",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.short",
+   "value": "Avarok is the inference economics platform for GPUs you already own.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.tagline",
+   "value": "Same silicon. Smarter inference. Stronger scalability.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "company.x",
+   "value": "@AtlasInferenceX",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "contacts.business",
+   "value": "kyle@atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/contact"
+   ]
+  },
+  {
+   "key": "contacts.collaboration",
+   "value": "tom@atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/contact"
+   ]
+  },
+  {
+   "key": "contacts.operations",
+   "value": "peter@atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/contact"
+   ]
+  },
+  {
+   "key": "contacts.sales",
+   "value": "eric@atlascybernetics.ai",
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "value": "kyle@atlascybernetics.ai",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/contact",
+    "/demo",
+    "/pricing"
+   ]
+  },
+  {
+   "key": "contacts.security",
+   "value": "security@atlas.net",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/contact",
+    "/trust"
+   ]
+  },
+  {
+   "key": "contacts.technical",
+   "value": "thomas@atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company/careers",
+    "/contact",
+    "/engine"
+   ]
+  },
+  {
+   "key": "footer.legal",
+   "value": "© 2026 Atlas Cybernetics Corp. Avarok and Avarok Engine are products of Atlas Cybernetics Corp.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "footer.license",
+   "value": "Community Edition under AGPL-3.0. Enterprise Edition under a commercial license.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "footer.mlperf",
+   "value": "The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association in the United States and other countries. All rights reserved. Unauthorized use strictly prohibited. See mlcommons.org for more information.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "footer.slogan",
+   "value": "Same silicon. Smarter inference. Stronger scalability.",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "form.endpoint",
+   "value": "(none: forms draft an email)",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "key": "links.blog",
+   "value": "https://blog.atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.changelog",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CHANGELOG.md",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/resources/updates"
+   ]
+  },
+  {
+   "key": "links.contributing",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CONTRIBUTING.md",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company/careers",
+    "/resources/contributors"
+   ]
+  },
+  {
+   "key": "links.discord",
+   "value": "https://discord.gg/RQcGakU2jW",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.docs",
+   "value": "https://docs.atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.github",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.guide",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/diligence",
+    "/engine",
+    "/",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/trust",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.inception",
+   "value": "https://www.nvidia.com/en-us/startups/",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.issues",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/issues",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/engine"
+   ]
+  },
+  {
+   "key": "links.ladderLog",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/diligence",
+    "/engine",
+    "/"
+   ]
+  },
+  {
+   "key": "links.license",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.llamaCppPr",
+   "value": "https://github.com/ggml-org/llama.cpp/pull/18680",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "key": "links.mlcommons",
+   "value": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/engine",
+    "/",
+    "/resources/events"
+   ]
+  },
+  {
+   "key": "links.qwenAmbassador",
+   "value": "https://qwen.ai/ambassador",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/engine",
+    "/"
+   ]
+  },
+  {
+   "key": "links.recipes",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas-recipes",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.scale",
+   "value": "https://docs.scale-lang.com/stable/",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/engine",
+    "/",
+    "/platform/hardware"
+   ]
+  },
+  {
+   "key": "links.securityPolicy",
+   "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "links.sequoiaPatel",
+   "value": "https://sequoiacap.com/podcast/dylan-patel-of-semianalysis-why-hardware-software-co-design-is-ais-real-100x",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "key": "links.transformersPr",
+   "value": "https://github.com/huggingface/transformers/pull/46423",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/engine",
+    "/"
+   ]
+  },
+  {
+   "key": "links.x",
+   "value": "https://x.com/AtlasInferenceX",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "key": "site.origin",
+   "value": "https://atlascybernetics.ai",
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  }
+ ],
+ "assets": [
+  {
+   "path": "assets/brand/atlas-hero.png",
+   "sha": "3e8171b5d126",
+   "bytes": 1888228,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/github-social-preview-corp-light.png",
+   "sha": "545353b64347",
+   "bytes": 48893,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/github-social-preview-corp.png",
+   "sha": "f41560b0e0ab",
+   "bytes": 49314,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/kit/logo-full-corp-ondark.svg",
+   "sha": "8821116b1c29",
+   "bytes": 14355,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/kit/logo-full-corp.svg",
+   "sha": "6b7feac7baa1",
+   "bytes": 14355,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/kit/wordmark-corp-ondark.svg",
+   "sha": "b07847794c98",
+   "bytes": 13942,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/kit/wordmark-corp.svg",
+   "sha": "fd3a82217c96",
+   "bytes": 13942,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-full-corp-2048.png",
+   "sha": "4d8ddcf342a8",
+   "bytes": 93600,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-full-corp-ondark.svg",
+   "sha": "8821116b1c29",
+   "bytes": 14355,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-full-corp.svg",
+   "sha": "6b7feac7baa1",
+   "bytes": 14355,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-full-ondark.svg",
+   "sha": "cfe37ba61d89",
+   "bytes": 14959,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-full.svg",
+   "sha": "979bbe043695",
+   "bytes": 14959,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-horizontal-ondark.svg",
+   "sha": "8e57db276c22",
+   "bytes": 6173,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/logo-horizontal.svg",
+   "sha": "f18e0116c2da",
+   "bytes": 6173,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/mark-compact.svg",
+   "sha": "48c458d5c681",
+   "bytes": 622,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "assets/brand/mark.svg",
+   "sha": "923112776c10",
+   "bytes": 587,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "blog/static/og-image.png",
+   "sha": "8f02fc93990d",
+   "bytes": 110902,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/apple-touch-icon.png",
+   "sha": "bd6fe104d278",
+   "bytes": 8994,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/brand/logo-full.svg",
+   "sha": "979bbe043695",
+   "bytes": 14959,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/brand/logo-horizontal.svg",
+   "sha": "f18e0116c2da",
+   "bytes": 6173,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/brand/mark-compact.svg",
+   "sha": "48c458d5c681",
+   "bytes": 622,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/favicon.ico",
+   "sha": "de403885c52b",
+   "bytes": 13948,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/favicon.svg",
+   "sha": "4d7bf0d994b6",
+   "bytes": 625,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/fonts/IBM-PLEX-MONO-LICENSE.txt",
+   "sha": "23b0a9d0c6d3",
+   "bytes": 5299,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/IBM-PLEX-SANS-LICENSE.txt",
+   "sha": "d0283623ef57",
+   "bytes": 4429,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-mono-latin-400-normal.woff2",
+   "sha": "08949f728dc5",
+   "bytes": 14708,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-mono-latin-600-normal.woff2",
+   "sha": "0d1f0b8d0722",
+   "bytes": 15620,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-sans-latin-400-normal.woff2",
+   "sha": "3b646991d300",
+   "bytes": 22588,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-sans-latin-500-normal.woff2",
+   "sha": "0717336fb31f",
+   "bytes": 24184,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-sans-latin-600-normal.woff2",
+   "sha": "8960851d691c",
+   "bytes": 24252,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/ibm-plex-sans-latin-700-normal.woff2",
+   "sha": "42e7b0c143c1",
+   "bytes": 22832,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/fonts/plex.css",
+   "sha": "6dc7537abc8d",
+   "bytes": 1974,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/logos/amd-dark.svg",
+   "sha": "831d1d6f2454",
+   "bytes": 671,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/amd.svg",
+   "sha": "3c053303708c",
+   "bytes": 659,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/anaconda.svg",
+   "sha": "459123da56a5",
+   "bytes": 8024,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/beyondgravity.svg",
+   "sha": "1ad28b68750e",
+   "bytes": 4640,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/google.svg",
+   "sha": "a33a47a20c0e",
+   "bytes": 1906,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/huggingface-dark.svg",
+   "sha": "fb35e3e6cdfb",
+   "bytes": 23961,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/huggingface.svg",
+   "sha": "f17722a56d88",
+   "bytes": 23990,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/kraken.svg",
+   "sha": "cd3c8afe2c6e",
+   "bytes": 3007,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/mlcommons-dark.svg",
+   "sha": "963df8ef860d",
+   "bytes": 1683,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/mlcommons.svg",
+   "sha": "4b54e1d2d8d9",
+   "bytes": 3926,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/nswc.webp",
+   "sha": "61cd2d1338ca",
+   "bytes": 11090,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/qwen.svg",
+   "sha": "cae4a6dc3fe9",
+   "bytes": 4734,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/scale-dark.svg",
+   "sha": "66ef9b3138e7",
+   "bytes": 2712,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/scale.svg",
+   "sha": "d12d21dd9319",
+   "bytes": 2712,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/synopsys.svg",
+   "sha": "4546742a7feb",
+   "bytes": 4058,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/logos/uscybercom.webp",
+   "sha": "56c4f5cebc1d",
+   "bytes": 11822,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company",
+    "/"
+   ]
+  },
+  {
+   "path": "site/static/media/about/exchange-before-dark.webp",
+   "sha": "1c109119c134",
+   "bytes": 176064,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/media/about/exchange-before-light.webp",
+   "sha": "a584fcf2e580",
+   "bytes": 172468,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/media/about/exchange-dark.webp",
+   "sha": "ac162684e414",
+   "bytes": 36434,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/media/about/exchange-light.webp",
+   "sha": "6467ffb9c6ac",
+   "bytes": 36916,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/media/art/.gitkeep",
+   "sha": "e3b0c44298fc",
+   "bytes": 0,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/art/art-aisle.webp",
+   "sha": "6242a3613d7f",
+   "bytes": 49498,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/deployment",
+    "/solutions/enterprise-datacenter"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-desk-box.webp",
+   "sha": "d9dabf05f679",
+   "bytes": 23212,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/pricing"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-enclave.webp",
+   "sha": "8f29ab16b607",
+   "bytes": 34962,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/security"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-finance.webp",
+   "sha": "1d9acadd099e",
+   "bytes": 82850,
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "sha": "18cf9a3cdd5b",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/solutions/financial-services"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-gov.webp",
+   "sha": "3a7db8430b8b",
+   "bytes": 74690,
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "sha": "33858bdffa60",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/solutions/government-defense"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-grid.webp",
+   "sha": "8c0c955dbc83",
+   "bytes": 18740,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/art/art-health.webp",
+   "sha": "6d3c422df667",
+   "bytes": 59834,
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "sha": "f27b9a216b24",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/solutions/healthcare"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-hyperscale.webp",
+   "sha": "d426b1647073",
+   "bytes": 59242,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/solutions/hyperscalers",
+    "/solutions/neoclouds"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-legal.webp",
+   "sha": "5b8dc32754c5",
+   "bytes": 54536,
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "sha": "e1099358dd7f",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/solutions/legal"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-power.webp",
+   "sha": "90effc2dcbcc",
+   "bytes": 53910,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/economics"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-prisms.webp",
+   "sha": "d080ffd4348b",
+   "bytes": 47956,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-research.webp",
+   "sha": "67489380f2a5",
+   "bytes": 54932,
+   "rev": 2,
+   "date": "2026-09-18",
+   "was": [
+    {
+     "sha": "cd68fa572790",
+     "until": "2026-09-18"
+    }
+   ],
+   "used": [
+    "/labs",
+    "/solutions/research"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-smb-autoshop.webp",
+   "sha": "f03691bb1a31",
+   "bytes": 103750,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/solutions/smb-edge"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-smb-library.webp",
+   "sha": "ee032ff7c403",
+   "bytes": 88452,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/solutions/smb-edge"
+   ]
+  },
+  {
+   "path": "site/static/media/art/art-smb-office.webp",
+   "sha": "a6aaacce3d2e",
+   "bytes": 60880,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/solutions/smb-edge"
+   ]
+  },
+  {
+   "path": "site/static/media/broll-desk-box.mp4",
+   "sha": "f2de0145c76d",
+   "bytes": 268522,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-desk-box.webm",
+   "sha": "bac084bdf3cd",
+   "bytes": 150839,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-desk-box.webp",
+   "sha": "f341d8f95092",
+   "bytes": 22412,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-enclave.mp4",
+   "sha": "350aa8002cc7",
+   "bytes": 912778,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-enclave.webm",
+   "sha": "48a678c29fde",
+   "bytes": 921285,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-enclave.webp",
+   "sha": "8efb4b0c2548",
+   "bytes": 43384,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-field.mp4",
+   "sha": "ab1340e7d0e8",
+   "bytes": 1272239,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-field.webm",
+   "sha": "b965d46a321a",
+   "bytes": 1444879,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-field.webp",
+   "sha": "348eed6eb8e2",
+   "bytes": 44726,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-hall.mp4",
+   "sha": "172ad2d3049b",
+   "bytes": 2089557,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-hall.webm",
+   "sha": "fbc77fbecc28",
+   "bytes": 2967888,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-hall.webp",
+   "sha": "2afcee1ae691",
+   "bytes": 76396,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/solutions"
+   ]
+  },
+  {
+   "path": "site/static/media/broll-power.mp4",
+   "sha": "f849026b8c81",
+   "bytes": 570290,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-power.webm",
+   "sha": "82627f2fb389",
+   "bytes": 597633,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-power.webp",
+   "sha": "26938ff4445d",
+   "bytes": 48736,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-rack.mp4",
+   "sha": "e11feee3b5fd",
+   "bytes": 1445771,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-rack.webm",
+   "sha": "33ff55edaf15",
+   "bytes": 1880056,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-rack.webp",
+   "sha": "621f8ced7795",
+   "bytes": 60952,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-tokens.mp4",
+   "sha": "534b5ec59826",
+   "bytes": 331844,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-tokens.webm",
+   "sha": "715675a91503",
+   "bytes": 193495,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/broll-tokens.webp",
+   "sha": "696c4bb456cb",
+   "bytes": 19352,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/engine"
+   ]
+  },
+  {
+   "path": "site/static/media/console-ask.mp4",
+   "sha": "8dd2e9bf94c4",
+   "bytes": 423977,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-ask.webm",
+   "sha": "5a99623c4f5b",
+   "bytes": 632213,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-ask.webp",
+   "sha": "dce1de79fb0d",
+   "bytes": 76168,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/media/console-deploy.mp4",
+   "sha": "54ef55eae1e3",
+   "bytes": 413485,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-deploy.webm",
+   "sha": "6c910cbcf099",
+   "bytes": 630862,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-deploy.webp",
+   "sha": "c405e5b04869",
+   "bytes": 66912,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/deployment"
+   ]
+  },
+  {
+   "path": "site/static/media/console-economics.mp4",
+   "sha": "f5eda7c3fe32",
+   "bytes": 284942,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-economics.webm",
+   "sha": "c6dbdf52fd08",
+   "bytes": 480325,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-economics.webp",
+   "sha": "400d92ed015e",
+   "bytes": 52234,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/economics"
+   ]
+  },
+  {
+   "path": "site/static/media/console-fleet.mp4",
+   "sha": "4cefadefed0e",
+   "bytes": 390988,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-fleet.webm",
+   "sha": "16a0cb8ee625",
+   "bytes": 617863,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-fleet.webp",
+   "sha": "000cf70f7898",
+   "bytes": 77170,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/control"
+   ]
+  },
+  {
+   "path": "site/static/media/console-governance.mp4",
+   "sha": "a7704e3fc443",
+   "bytes": 388520,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-governance.webm",
+   "sha": "b0f97d2e4eed",
+   "bytes": 561394,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-governance.webp",
+   "sha": "25d239005780",
+   "bytes": 67900,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform/security"
+   ]
+  },
+  {
+   "path": "site/static/media/console-queue.mp4",
+   "sha": "3b6c0b0734d8",
+   "bytes": 371665,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-queue.webm",
+   "sha": "d7dcc055185a",
+   "bytes": 595463,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/console-queue.webp",
+   "sha": "da399f842cb9",
+   "bytes": 64822,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/platform"
+   ]
+  },
+  {
+   "path": "site/static/media/reel.mp4",
+   "sha": "8459dfdc2f97",
+   "bytes": 4950566,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/reel.webm",
+   "sha": "0ae13019aa72",
+   "bytes": 4734584,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": []
+  },
+  {
+   "path": "site/static/media/reel.webp",
+   "sha": "17f73ff91c04",
+   "bytes": 22336,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/demo"
+   ]
+  },
+  {
+   "path": "site/static/nvidia-inception.webp",
+   "sha": "2a62f1fc54b1",
+   "bytes": 21352,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/og-image.png",
+   "sha": "31c79ad12550",
+   "bytes": 112608,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/benchmarks",
+    "/company",
+    "/company/careers",
+    "/contact",
+    "/control",
+    "/demo",
+    "/diligence",
+    "/engine",
+    "/",
+    "/labs",
+    "/platform",
+    "/platform/control",
+    "/platform/deployment",
+    "/platform/economics",
+    "/platform/engine",
+    "/platform/hardware",
+    "/platform/security",
+    "/pricing",
+    "/resources",
+    "/resources/contributors",
+    "/resources/events",
+    "/resources/updates",
+    "/solutions",
+    "/solutions/enterprise-datacenter",
+    "/solutions/financial-services",
+    "/solutions/government-defense",
+    "/solutions/healthcare",
+    "/solutions/hyperscalers",
+    "/solutions/legal",
+    "/solutions/neoclouds",
+    "/solutions/research",
+    "/solutions/smb-edge",
+    "/trust",
+    "/waitlist",
+    "/why-avarok"
+   ]
+  },
+  {
+   "path": "site/static/team/eric-gonzalez.webp",
+   "sha": "0b38045abdf1",
+   "bytes": 9008,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/team/kyle-croll.webp",
+   "sha": "04f04b13e7df",
+   "bytes": 7006,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/team/peter-drybrough.webp",
+   "sha": "a6d2b477b370",
+   "bytes": 6602,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/team/thomas-braun.webp",
+   "sha": "351041dbbb5d",
+   "bytes": 12690,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  },
+  {
+   "path": "site/static/team/tom-turney.webp",
+   "sha": "859a25307e0c",
+   "bytes": 11118,
+   "rev": 1,
+   "date": "2026-09-18",
+   "used": [
+    "/company"
+   ]
+  }
+ ],
+ "nav": [
+  {
+   "menu": "Platform",
+   "text": "Overview",
+   "href": "/platform"
+  },
+  {
+   "menu": "Platform",
+   "text": "Avarok Engine",
+   "href": "/platform/engine"
+  },
+  {
+   "menu": "Platform",
+   "text": "Avarok Control",
+   "href": "/platform/control"
+  },
+  {
+   "menu": "Platform",
+   "text": "Avarok Economics",
+   "href": "/platform/economics"
+  },
+  {
+   "menu": "Platform",
+   "text": "Security",
+   "href": "/platform/security"
+  },
+  {
+   "menu": "Platform",
+   "text": "Deployment",
+   "href": "/platform/deployment"
+  },
+  {
+   "menu": "Platform",
+   "text": "Hardware and models",
+   "href": "/platform/hardware"
+  },
+  {
+   "menu": "Platform",
+   "text": "Benchmarks",
+   "href": "/benchmarks"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Neoclouds and GPU providers",
+   "href": "/solutions/neoclouds"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Enterprise datacenters",
+   "href": "/solutions/enterprise-datacenter"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Financial services",
+   "href": "/solutions/financial-services"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Healthcare",
+   "href": "/solutions/healthcare"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Government and defense",
+   "href": "/solutions/government-defense"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Legal and professional services",
+   "href": "/solutions/legal"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Hyperscalers and cloud platforms",
+   "href": "/solutions/hyperscalers"
+  },
+  {
+   "menu": "Solutions",
+   "text": "Research labs and AI safety",
+   "href": "/solutions/research"
+  },
+  {
+   "menu": "Solutions",
+   "text": "SMB and edge",
+   "href": "/solutions/smb-edge"
+  },
+  {
+   "menu": "Solutions",
+   "text": "All solutions",
+   "href": "/solutions"
+  },
+  {
+   "menu": "(top level)",
+   "text": "Why Avarok",
+   "href": "/why-avarok"
+  },
+  {
+   "menu": "(top level)",
+   "text": "Pricing",
+   "href": "/pricing"
+  },
+  {
+   "menu": "(top level)",
+   "text": "Developers",
+   "href": "/engine"
+  },
+  {
+   "menu": "Resources",
+   "text": "Blog",
+   "href": "https://blog.atlascybernetics.ai"
+  },
+  {
+   "menu": "Resources",
+   "text": "Documentation",
+   "href": "https://docs.atlascybernetics.ai"
+  },
+  {
+   "menu": "Resources",
+   "text": "Product updates",
+   "href": "/resources/updates"
+  },
+  {
+   "menu": "Resources",
+   "text": "Events",
+   "href": "/resources/events"
+  },
+  {
+   "menu": "Resources",
+   "text": "Open source",
+   "href": "/engine"
+  },
+  {
+   "menu": "Resources",
+   "text": "Community Edition",
+   "href": "/waitlist"
+  },
+  {
+   "menu": "Resources",
+   "text": "Contributors",
+   "href": "/resources/contributors"
+  },
+  {
+   "menu": "Resources",
+   "text": "Avarok Labs",
+   "href": "/labs"
+  },
+  {
+   "menu": "Resources",
+   "text": "Verification walkthrough",
+   "href": "/diligence"
+  },
+  {
+   "menu": "Company",
+   "text": "About Avarok",
+   "href": "/company"
+  },
+  {
+   "menu": "Company",
+   "text": "Careers",
+   "href": "/company/careers"
+  },
+  {
+   "menu": "Company",
+   "text": "Trust center",
+   "href": "/trust"
+  },
+  {
+   "menu": "Company",
+   "text": "Contact",
+   "href": "/contact"
+  }
+ ],
+ "footer": [
+  {
+   "column": "Platform",
+   "text": "Overview",
+   "href": "/platform"
+  },
+  {
+   "column": "Platform",
+   "text": "Avarok Engine",
+   "href": "/platform/engine"
+  },
+  {
+   "column": "Platform",
+   "text": "Avarok Control",
+   "href": "/platform/control"
+  },
+  {
+   "column": "Platform",
+   "text": "Avarok Economics",
+   "href": "/platform/economics"
+  },
+  {
+   "column": "Platform",
+   "text": "Security",
+   "href": "/platform/security"
+  },
+  {
+   "column": "Platform",
+   "text": "Deployment",
+   "href": "/platform/deployment"
+  },
+  {
+   "column": "Platform",
+   "text": "Benchmarks",
+   "href": "/benchmarks"
+  },
+  {
+   "column": "Solutions",
+   "text": "Neoclouds and GPU providers",
+   "href": "/solutions/neoclouds"
+  },
+  {
+   "column": "Solutions",
+   "text": "Enterprise datacenters",
+   "href": "/solutions/enterprise-datacenter"
+  },
+  {
+   "column": "Solutions",
+   "text": "Financial services",
+   "href": "/solutions/financial-services"
+  },
+  {
+   "column": "Solutions",
+   "text": "Healthcare",
+   "href": "/solutions/healthcare"
+  },
+  {
+   "column": "Solutions",
+   "text": "Government and defense",
+   "href": "/solutions/government-defense"
+  },
+  {
+   "column": "Solutions",
+   "text": "Legal and professional services",
+   "href": "/solutions/legal"
+  },
+  {
+   "column": "Solutions",
+   "text": "Hyperscalers and cloud platforms",
+   "href": "/solutions/hyperscalers"
+  },
+  {
+   "column": "Solutions",
+   "text": "Research labs and AI safety",
+   "href": "/solutions/research"
+  },
+  {
+   "column": "Solutions",
+   "text": "SMB and edge",
+   "href": "/solutions/smb-edge"
+  },
+  {
+   "column": "Resources",
+   "text": "Blog",
+   "href": "https://blog.atlascybernetics.ai"
+  },
+  {
+   "column": "Resources",
+   "text": "Documentation",
+   "href": "https://docs.atlascybernetics.ai"
+  },
+  {
+   "column": "Resources",
+   "text": "Open source",
+   "href": "/engine"
+  },
+  {
+   "column": "Resources",
+   "text": "Community Edition waitlist",
+   "href": "/waitlist"
+  },
+  {
+   "column": "Resources",
+   "text": "Contributors",
+   "href": "/resources/contributors"
+  },
+  {
+   "column": "Resources",
+   "text": "Product updates",
+   "href": "/resources/updates"
+  },
+  {
+   "column": "Resources",
+   "text": "Avarok Labs",
+   "href": "/labs"
+  },
+  {
+   "column": "Resources",
+   "text": "Control plane, live",
+   "href": "/control"
+  },
+  {
+   "column": "Company",
+   "text": "About",
+   "href": "/company"
+  },
+  {
+   "column": "Company",
+   "text": "Careers",
+   "href": "/company/careers"
+  },
+  {
+   "column": "Company",
+   "text": "Pricing",
+   "href": "/pricing"
+  },
+  {
+   "column": "Company",
+   "text": "Trust center",
+   "href": "/trust"
+  },
+  {
+   "column": "Company",
+   "text": "Contact",
+   "href": "/contact"
+  },
+  {
+   "column": "Company",
+   "text": "Book a demo",
+   "href": "/demo"
+  }
+ ],
+ "pages": [
+  {
+   "path": "/benchmarks",
+   "title": "Benchmarks · Avarok",
+   "h1": "Every number is a receipt.",
+   "route": "src/routes/(marketing)/benchmarks/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "ladderData",
+      "live"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "hardwarePage"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/company",
+   "title": "About · Avarok",
+   "h1": "It started with two words.",
+   "route": "src/routes/(marketing)/company/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "companyCta",
+      "exchange",
+      "mission",
+      "showTeam",
+      "story",
+      "team"
+     ]
+    },
+    {
+     "file": "src/lib/content/home.js",
+     "exports": [
+      "logoWall"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "live"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Read the thread",
+     "href": "https://github.com/ggml-org/llama.cpp/pull/18680",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Open roles",
+     "href": "/company/careers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Open the pull request thread on GitHub",
+     "href": "https://github.com/ggml-org/llama.cpp/pull/18680",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "The whole thread",
+     "href": "https://github.com/ggml-org/llama.cpp/pull/18680",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "LinkedIn",
+     "href": "https://www.linkedin.com/in/kylecroll/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "LinkedIn",
+     "href": "https://www.linkedin.com/in/tpbraun/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "US 12,224,993",
+     "href": "https://patents.google.com/patent/US12224993B2/en",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "LinkedIn",
+     "href": "https://www.linkedin.com/in/ericgonzalez/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "LinkedIn",
+     "href": "https://www.linkedin.com/in/c1ph3rp13rr3/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "LinkedIn",
+     "href": "https://www.linkedin.com/in/tturney/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Request the deck",
+     "href": "mailto:kyle@atlascybernetics.ai?subject=Avarok%20deck",
+     "kind": "mail",
+     "button": true
+    },
+    {
+     "text": "Program member. DGX Spark hardware provided.",
+     "href": "https://www.nvidia.com/en-us/startups/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Named contributor to the MLPerf edge agentic benchmark.",
+     "href": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Fused Qwen GDN kernel merged into Transformers.",
+     "href": "https://github.com/huggingface/transformers/pull/46423",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Dev Ambassadors. A recipe for every release.",
+     "href": "https://qwen.ai/ambassador",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "SCALE by Spectral Compute One CUDA source, NVIDIA and AMD.",
+     "href": "https://docs.scale-lang.com/stable/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "The first hires",
+     "href": "/company/careers",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/company/careers",
+   "title": "Careers · Avarok",
+   "h1": "Build the layer between the GPU and the invoice.",
+   "route": "src/routes/(marketing)/company/careers/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "contacts",
+      "footer",
+      "formEndpoint",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "careers",
+      "demoPage"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Register interest",
+     "href": "#apply",
+     "kind": "anchor",
+     "button": true
+    },
+    {
+     "text": "The repository",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Good first issues",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "How to contribute",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CONTRIBUTING.md",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Apply by email",
+     "href": "mailto:thomas@atlascybernetics.ai?subject=Kernel%20Engineer",
+     "kind": "mail",
+     "button": true
+    },
+    {
+     "text": "Or use the form",
+     "href": "#apply",
+     "kind": "anchor",
+     "button": true
+    },
+    {
+     "text": "Apply by email",
+     "href": "mailto:thomas@atlascybernetics.ai?subject=Founding%20Platform%20and%20Distributed%20Systems%20Engineer",
+     "kind": "mail",
+     "button": true
+    },
+    {
+     "text": "Apply by email",
+     "href": "mailto:thomas@atlascybernetics.ai?subject=Founding%20Infrastructure%20and%20Forward%20Deployed%20Engineer",
+     "kind": "mail",
+     "button": true
+    },
+    {
+     "text": "Apply by email",
+     "href": "mailto:thomas@atlascybernetics.ai?subject=Strategic%20Product%20and%20Marketing%20Advisor",
+     "kind": "mail",
+     "button": true
+    }
+   ],
+   "controls": [
+    "Send it"
+   ],
+   "forms": [
+    "careers"
+   ]
+  },
+  {
+   "path": "/contact",
+   "title": "Contact · Avarok",
+   "h1": "Someone should know how to reach us immediately.",
+   "route": "src/routes/(marketing)/contact/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "contact"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Email sales · eric@atlascybernetics.ai",
+     "href": "mailto:eric@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Or book a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Email engineering · thomas@atlascybernetics.ai",
+     "href": "mailto:thomas@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Or find us in Discord",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Business and design partners · kyle@atlascybernetics.ai",
+     "href": "mailto:kyle@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Public collaboration · tom@atlascybernetics.ai",
+     "href": "mailto:tom@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Report privately · security@atlas.net",
+     "href": "mailto:security@atlas.net",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Email operations · peter@atlascybernetics.ai",
+     "href": "mailto:peter@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Disclosure policy",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Email the CEO · kyle@atlascybernetics.ai",
+     "href": "mailto:kyle@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/control",
+   "title": "Control plane — Avarok",
+   "h1": "Your machines, one panel.",
+   "route": "src/routes/(engine)/control/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/data.js",
+     "exports": [
+      "CONTROL",
+      "codeChat",
+      "githubUrl",
+      "nav",
+      "startAgentCommand"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/demo",
+   "title": "Book a demo · Avarok",
+   "h1": "See it against your own workload.",
+   "route": "src/routes/(marketing)/demo/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "contacts",
+      "footer",
+      "formEndpoint",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "demoPage"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor",
+      "media"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "eric@atlascybernetics.ai",
+     "href": "mailto:eric@atlascybernetics.ai",
+     "kind": "mail",
+     "button": false
+    },
+    {
+     "text": "Join",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": false
+    }
+   ],
+   "controls": [
+    "Request a working session"
+   ],
+   "forms": [
+    "demo"
+   ]
+  },
+  {
+   "path": "/diligence",
+   "title": "Verification steps · Avarok",
+   "h1": "Reproduce the ladder before you believe it.",
+   "route": "src/routes/(engine)/diligence/+page.svelte",
+   "copy": [],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/engine",
+   "title": "Avarok Engine, pure Rust inference for DGX Spark",
+   "h1": "One inference engine, from the device in your hand to the datacenter rack.",
+   "route": "src/routes/(engine)/engine/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/data.js",
+     "exports": [
+      "CONTROL",
+      "announcement",
+      "codeChat",
+      "community",
+      "contribute",
+      "discordUrl",
+      "faq",
+      "gateSrcUrl",
+      "getRunning",
+      "githubUrl",
+      "guideUrl",
+      "hardware",
+      "hero",
+      "mission",
+      "mlcommons",
+      "mlperfCopy",
+      "mlperfTrademark",
+      "models",
+      "nav",
+      "news",
+      "proof",
+      "quickInstall",
+      "reachout",
+      "recipesUrl",
+      "roadmap",
+      "runCommandRaw",
+      "stars",
+      "startAgentCommand",
+      "testimonials",
+      "testimonialsNote",
+      "verified",
+      "verifiedAnchor"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/",
+   "title": "Avarok, the inference economics platform",
+   "h1": "Faster inference. Stronger governance. A fraction of what you pay today.",
+   "route": "src/routes/(marketing)/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/home.js",
+     "exports": [
+      "announcement",
+      "chain",
+      "cta",
+      "deliveries",
+      "differences",
+      "hero",
+      "logoWall",
+      "problem",
+      "proof",
+      "recognition",
+      "solution",
+      "tour",
+      "value",
+      "voices"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill",
+      "ladderData"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "media"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "See the ladder",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See how it works",
+     "href": "/why-avarok",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Run the model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Watch the one minute film",
+     "href": "/demo#film",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Program member. DGX Spark hardware provided.",
+     "href": "https://www.nvidia.com/en-us/startups/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Named contributor to the MLPerf edge agentic benchmark.",
+     "href": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Fused Qwen GDN kernel merged into Transformers.",
+     "href": "https://github.com/huggingface/transformers/pull/46423",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Dev Ambassadors. A recipe for every release.",
+     "href": "https://qwen.ai/ambassador",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "SCALE by Spectral Compute One CUDA source, NVIDIA and AMD.",
+     "href": "https://docs.scale-lang.com/stable/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Inference layer Avarok Engine Runs your models faster on the same silicon. A compiled infe",
+     "href": "/platform/engine",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Governance and control plane Avarok Control Deploys, governs and repairs the fleet. Signed",
+     "href": "/platform/control",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Economics layer Avarok Economics Turns telemetry into accountability. Cost per million tok",
+     "href": "/platform/economics",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Read the ladder",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "See the posture",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Open the model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Read the full campaign log",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Every benchmark",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "reproduce it",
+     "href": "/diligence",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "See it on your workload",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "July 2026 Named contributor to the MLPerf Inference v6.1 edge agentic benchmark Read the a",
+     "href": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "July 2026 Fused Qwen Gated DeltaNet kernel merged into Transformers See the pull request g",
+     "href": "https://github.com/huggingface/transformers/pull/46423",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "July 2026 Strix Halo hardware provided. MLPerf v6.1 submitted from the same CUDA source Se",
+     "href": "https://x.com/AtlasInferenceX",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Member Program member. DGX Spark hardware provided for the GB10 bring up About the program",
+     "href": "https://www.nvidia.com/en-us/startups/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Go deeper on speed",
+     "href": "/platform/engine",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Go deeper on security",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Go deeper on governance",
+     "href": "/platform/economics",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Discord, #general",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "r/LocalLLaMA",
+     "href": "https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Run the payback model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [
+    "Ask",
+    "Queue",
+    "Fleet",
+    "Economics",
+    "Governance"
+   ],
+   "forms": []
+  },
+  {
+   "path": "/labs",
+   "title": "Avarok Labs · Avarok",
+   "h1": "The research arm.",
+   "route": "src/routes/(marketing)/labs/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/resources.js",
+     "exports": [
+      "labs"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Open a research collaboration",
+     "href": "/contact",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Open pull requests",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/pulls",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Open roles",
+     "href": "/company/careers",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform",
+   "title": "Platform · Avarok",
+   "h1": "One platform for the whole inference lifecycle, from the kernel to the invoice.",
+   "route": "src/routes/(marketing)/platform/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "platformOverview"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Watch the console tour",
+     "href": "/#tour",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Inference layer Avarok Engine Compiled per hardware, model and quantization. More tokens p",
+     "href": "/platform/engine",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Governance and control plane Avarok Control Signed recipes, canary rollouts, GPU aware rou",
+     "href": "/platform/control",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Economics layer Avarok Economics Cost per workload, chargeback, stranded capacity and payb",
+     "href": "/platform/economics",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Posture Security One signed binary, no interpreter in the request path, links designed for",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Surfaces Deployment Hosted with private connectivity, your cloud account, on premises or a",
+     "href": "/platform/deployment",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Compatibility Hardware and models Verified silicon, targets in bring up, and every model r",
+     "href": "/platform/hardware",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Run the payback model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/control",
+   "title": "Avarok Control · Avarok",
+   "h1": "Deploys, governs and repairs the fleet. Never on the inference path.",
+   "route": "src/routes/(marketing)/platform/control/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "controlPage"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Open it",
+     "href": "/control",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Open the live control plane",
+     "href": "/control",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/deployment",
+   "title": "Deployment · Avarok",
+   "h1": "Hosted, your cloud account, on premises or air gapped. Same binary, same recipes.",
+   "route": "src/routes/(marketing)/platform/deployment/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "deploymentPage"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Talk through your deployment",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Read the deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/economics",
+   "title": "Avarok Economics · Avarok",
+   "h1": "Every GPU. Every workload. Every dollar.",
+   "route": "src/routes/(marketing)/platform/economics/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "economicsPage"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Run the payback model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/engine",
+   "title": "Avarok Engine · Avarok",
+   "h1": "Not a generic runtime. A compiled inference stack.",
+   "route": "src/routes/(marketing)/platform/engine/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "enginePage"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "source",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Join the Community Edition waitlist",
+     "href": "/waitlist",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Read the ladder",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/hardware",
+   "title": "Hardware and models · Avarok",
+   "h1": "Verified silicon, targets in bring up, and every recipe we ship.",
+   "route": "src/routes/(marketing)/platform/hardware/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "hardwarePage"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/platform/security",
+   "title": "Security · Avarok",
+   "h1": "One signed binary. No interpreter in the request path. Nothing leaves.",
+   "route": "src/routes/(marketing)/platform/security/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artFor",
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/platform.js",
+     "exports": [
+      "securityPage"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Read the security policy and disclosure process",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Visit the trust center",
+     "href": "/trust",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Book a security review",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/pricing",
+   "title": "Pricing · Avarok",
+   "h1": "Priced against productive GPU capacity, not seats.",
+   "route": "src/routes/(marketing)/pricing/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "ladderData",
+      "live"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/pricing.js",
+     "exports": [
+      "anchors",
+      "contractEconomics",
+      "paybackCopy",
+      "pricingCta",
+      "pricingHero",
+      "tiers"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Join the waitlist",
+     "href": "/waitlist",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Price a fleet of boxes",
+     "href": "/contact",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Scope a pilot",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Email sales",
+     "href": "mailto:eric@atlascybernetics.ai?subject=Avarok%20pricing%20sheet",
+     "kind": "mail",
+     "button": true
+    }
+   ],
+   "controls": [
+    "Get more out of the fleet you own",
+    "Stop renting tokens",
+    "Get more tokens per watt"
+   ],
+   "forms": []
+  },
+  {
+   "path": "/resources",
+   "title": "Resources · Avarok",
+   "h1": "Everything we publish, and where to find us.",
+   "route": "src/routes/(marketing)/resources/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/resources.js",
+     "exports": [
+      "openSourceCallout",
+      "resourcesHub"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Blog Kernel work, measured benchmarks and what it takes to run frontier models on hardware",
+     "href": "https://blog.atlascybernetics.ai",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Documentation The Avarok book. Install, recipes, deployment, the control plane and the gat",
+     "href": "https://docs.atlascybernetics.ai",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Product updates What shipped, what changed and what it does not change, rendered from the ",
+     "href": "/resources/updates",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Benchmarks The concurrency ladder and every gate record, generated from the repository. Re",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Open source The engine, under AGPL-3.0. One install command, every recipe, the deployment ",
+     "href": "/engine",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Contributors Everyone who has landed code in the repository, called out by name, with the ",
+     "href": "/resources/contributors",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Events Where to meet the team, in person and online. Find us",
+     "href": "/resources/events",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Avarok Labs The research arm. Kernels, compression, speculative decoding, protocols and th",
+     "href": "/labs",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Verification walkthrough Reproduce the ladder yourself. Fingerprint, parity, commands and ",
+     "href": "/diligence",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Install the engine",
+     "href": "/engine",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Star on GitHub",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas",
+     "kind": "out",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/resources/contributors",
+   "title": "Contributors · Avarok",
+   "h1": "Everyone who has landed code, called out by name.",
+   "route": "src/routes/(marketing)/resources/contributors/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/resources.js",
+     "exports": [
+      "contributors"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/resources/events",
+   "title": "Events · Avarok",
+   "h1": "Where to meet the team.",
+   "route": "src/routes/(marketing)/resources/events/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/resources.js",
+     "exports": [
+      "events"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Join the Discord",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Book a session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "The benchmark announcement",
+     "href": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Contact",
+     "href": "/contact",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/resources/updates",
+   "title": "Product updates · Avarok",
+   "h1": "What shipped.",
+   "route": "src/routes/(marketing)/resources/updates/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/resources.js",
+     "exports": [
+      "updates"
+     ]
+    }
+   ],
+   "generated": true,
+   "links": [],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions",
+   "title": "Solutions · Avarok",
+   "h1": "Built for the people who own the GPUs.",
+   "route": "src/routes/(marketing)/solutions/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta",
+      "solutions",
+      "solutionsIndex"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Neoclouds and GPU providers You sell GPU time. Avarok makes every hour of it produce more ",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Enterprise datacenters You invested in the datacenter. Now get the most out of it. Read th",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Financial services Inference that stays inside the perimeter, with a ledger the auditors c",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Healthcare Clinical grade inference on hardware the hospital owns. Read the solution",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Government and defense Air gapped by design. Signed by default. Nothing leaves. Read the s",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Legal and professional services Privileged work product stays privileged. Read the solutio",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Hyperscalers and cloud platforms More effective capacity from the fleet you already bought",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Research labs and AI safety Run the new weights the week they drop, on hardware the lab co",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "SMB and edge One box. One license. Stop renting tokens. Read the solution",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Enterprise datacenter Owned GPU fleet, existing serving stack, a CFO who wants the bill ex",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Neocloud and GPU provider Tokens are cost of goods sold. More tokens per GPU is margin. Op",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Air gapped and sovereign Nothing leaves. Signed artifacts, local install, telemetry that s",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Workstation and SMB One box, one license, the same engine. Stop renting tokens. Open",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/enterprise-datacenter",
+   "title": "Enterprise datacenters · Avarok",
+   "h1": "You invested in the datacenter. Now get the most out of it.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Model your fleet",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/financial-services",
+   "title": "Financial services · Avarok",
+   "h1": "Inference that stays inside the perimeter, with a ledger the auditors can read.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Book a security and compliance review",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/government-defense",
+   "title": "Government and defense · Avarok",
+   "h1": "Air gapped by design. Signed by default. Nothing leaves.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Request the air gapped brief",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/healthcare",
+   "title": "Healthcare · Avarok",
+   "h1": "Clinical grade inference on hardware the hospital owns.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Talk to us about a pilot",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/hyperscalers",
+   "title": "Hyperscalers and cloud platforms · Avarok",
+   "h1": "More effective capacity from the fleet you already bought.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Open a design partnership",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/legal",
+   "title": "Legal and professional services · Avarok",
+   "h1": "Privileged work product stays privileged.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Price a box for the office",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/neoclouds",
+   "title": "Neoclouds and GPU providers · Avarok",
+   "h1": "You sell GPU time. Avarok makes every hour of it produce more tokens.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Run the ladder on your fleet",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/research",
+   "title": "Research labs and AI safety · Avarok",
+   "h1": "Run the new weights the week they drop, on hardware the lab controls.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Set up a lab deployment",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "SMB and edge",
+     "href": "/solutions/smb-edge",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/solutions/smb-edge",
+   "title": "SMB and edge · Avarok",
+   "h1": "One box. One license. Stop renting tokens.",
+   "route": "src/routes/(marketing)/solutions/[slug]/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "industries",
+      "links",
+      "nav",
+      "routes",
+      "solutionHref"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/solutions.js",
+     "exports": [
+      "solutionCta"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Price a box",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Neoclouds and GPU providers",
+     "href": "/solutions/neoclouds",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Enterprise datacenters",
+     "href": "/solutions/enterprise-datacenter",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Financial services",
+     "href": "/solutions/financial-services",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Healthcare",
+     "href": "/solutions/healthcare",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Government and defense",
+     "href": "/solutions/government-defense",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Legal and professional services",
+     "href": "/solutions/legal",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Hyperscalers and cloud platforms",
+     "href": "/solutions/hyperscalers",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Research labs and AI safety",
+     "href": "/solutions/research",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/trust",
+   "title": "Trust center · Avarok",
+   "h1": "What we run, what we claim, and what we do not.",
+   "route": "src/routes/(marketing)/trust/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "trust"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Read the policy",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
+     "kind": "out",
+     "button": true
+    },
+    {
+     "text": "Security overview",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Book a security review",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Contact",
+     "href": "/contact",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  },
+  {
+   "path": "/waitlist",
+   "title": "Community Edition waitlist · Avarok",
+   "h1": "The Community Edition is not out yet. Be first when it is.",
+   "route": "src/routes/(marketing)/waitlist/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "contacts",
+      "footer",
+      "formEndpoint",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/company.js",
+     "exports": [
+      "demoPage",
+      "waitlistPage"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Go to the developer page",
+     "href": "/engine",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Join",
+     "href": "https://discord.gg/RQcGakU2jW",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "See pricing",
+     "href": "/pricing",
+     "kind": "page",
+     "button": true
+    }
+   ],
+   "controls": [
+    "Join the waitlist"
+   ],
+   "forms": [
+    "waitlist"
+   ]
+  },
+  {
+   "path": "/why-avarok",
+   "title": "Why Avarok · Avarok",
+   "h1": "You invested in the datacenter. Now get the most out of it.",
+   "route": "src/routes/(marketing)/why-avarok/+page.svelte",
+   "copy": [
+    {
+     "file": "src/lib/content/brand.js",
+     "exports": [
+      "company",
+      "footer",
+      "links",
+      "nav",
+      "routes"
+     ]
+    },
+    {
+     "file": "src/lib/content/faq.js",
+     "exports": [
+      "faqFor",
+      "faqSection"
+     ]
+    },
+    {
+     "file": "src/lib/content/home.js",
+     "exports": [
+      "chain",
+      "deliveries",
+      "value"
+     ]
+    },
+    {
+     "file": "src/lib/content/index.js",
+     "exports": [
+      "SITE",
+      "pages"
+     ]
+    },
+    {
+     "file": "src/lib/content/live.js",
+     "exports": [
+      "fill"
+     ]
+    },
+    {
+     "file": "src/lib/content/media.js",
+     "exports": [
+      "artsFor",
+      "heroClipFor"
+     ]
+    },
+    {
+     "file": "src/lib/content/why.js",
+     "exports": [
+      "pillars",
+      "pov",
+      "whyHero"
+     ]
+    }
+   ],
+   "generated": false,
+   "links": [
+    {
+     "text": "Book a demo",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Watch the console",
+     "href": "/#tour",
+     "kind": "page",
+     "button": true
+    },
+    {
+     "text": "Read the ladder and every gate record",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Read the security posture",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "See Avarok Economics",
+     "href": "/platform/economics",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Read the ladder",
+     "href": "/benchmarks",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "See the posture",
+     "href": "/platform/security",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Open the model",
+     "href": "/pricing#payback",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "Ask the rest in a working session",
+     "href": "/demo#book",
+     "kind": "page",
+     "button": false
+    },
+    {
+     "text": "deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": false
+    },
+    {
+     "text": "Read the deployment guide",
+     "href": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+     "kind": "out",
+     "button": true
+    }
+   ],
+   "controls": [],
+   "forms": []
+  }
+ ],
+ "outbound": {
+  "https://blog.atlascybernetics.ai": [
+   "/resources",
+   "(every page: header or footer)"
+  ],
+  "https://discord.gg/RQcGakU2jW": [
+   "/contact",
+   "/demo",
+   "/",
+   "/platform/engine",
+   "/resources/events",
+   "/waitlist"
+  ],
+  "https://docs.atlascybernetics.ai": [
+   "/resources",
+   "(every page: header or footer)"
+  ],
+  "https://docs.scale-lang.com/stable/": [
+   "/company",
+   "/"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas": [
+   "/company/careers",
+   "/resources"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CONTRIBUTING.md": [
+   "/company/careers"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md": [
+   "/contact",
+   "/platform/security",
+   "/trust"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md": [
+   "/"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md": [
+   "/",
+   "/platform/control",
+   "/platform/deployment",
+   "/platform/economics",
+   "/platform/engine",
+   "/platform/security",
+   "/pricing",
+   "/trust",
+   "/why-avarok"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/labels/good%20first%20issue": [
+   "/company/careers"
+  ],
+  "https://github.com/Avarok-Cybersecurity/atlas/pulls": [
+   "/labs"
+  ],
+  "https://github.com/ggml-org/llama.cpp/pull/18680": [
+   "/company"
+  ],
+  "https://github.com/huggingface/transformers/pull/46423": [
+   "/company",
+   "/"
+  ],
+  "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/": [
+   "/company",
+   "/",
+   "/resources/events"
+  ],
+  "https://patents.google.com/patent/US12224993B2/en": [
+   "/company"
+  ],
+  "https://qwen.ai/ambassador": [
+   "/company",
+   "/"
+  ],
+  "https://www.linkedin.com/in/c1ph3rp13rr3/": [
+   "/company"
+  ],
+  "https://www.linkedin.com/in/ericgonzalez/": [
+   "/company"
+  ],
+  "https://www.linkedin.com/in/kylecroll/": [
+   "/company"
+  ],
+  "https://www.linkedin.com/in/tpbraun/": [
+   "/company"
+  ],
+  "https://www.linkedin.com/in/tturney/": [
+   "/company"
+  ],
+  "https://www.nvidia.com/en-us/startups/": [
+   "/company",
+   "/"
+  ],
+  "https://www.reddit.com/r/LocalLLaMA/comments/1rmvxo3/": [
+   "/"
+  ],
+  "https://x.com/AtlasInferenceX": [
+   "/"
+  ]
+ },
+ "mail": {
+  "eric@atlascybernetics.ai": [
+   "/contact",
+   "/demo",
+   "/pricing"
+  ],
+  "kyle@atlascybernetics.ai": [
+   "/company",
+   "/contact"
+  ],
+  "peter@atlascybernetics.ai": [
+   "/contact"
+  ],
+  "security@atlas.net": [
+   "/contact"
+  ],
+  "thomas@atlascybernetics.ai": [
+   "/company/careers",
+   "/contact"
+  ],
+  "tom@atlascybernetics.ai": [
+   "/contact"
+  ]
+ }
+}

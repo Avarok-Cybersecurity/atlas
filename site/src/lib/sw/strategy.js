@@ -30,6 +30,23 @@ export const NEVER_CACHED = ['/install.sh', '/install.ps1', '/quickstart.sh'];
  */
 export const HOST_CONFIG_FILES = ['/_headers', '/_redirects'];
 
+/**
+ * Product clips, posters, stills and the people's portraits.
+ *
+ * Two rules, both learned the hard way when the marketing site arrived with
+ * 31 MB of video in `static/media`:
+ *
+ *  - NEVER precached. `files` lists everything in `static/`, so the install
+ *    step was downloading every clip on the site, in both codecs, into the
+ *    cache of every first time visitor, and again on every deploy because the
+ *    cache name changes. Most visitors watch one clip.
+ *  - NEVER handled. Video is fetched in byte ranges. The worker cannot cache a
+ *    206 (the Cache API rejects it), so routing media through the worker only
+ *    adds a hop in front of the browser's own media cache, which already does
+ *    this properly.
+ */
+export const MEDIA_PREFIXES = ['/media/', '/team/'];
+
 /** Assets whose filenames carry a content hash, so their bytes never change. */
 const IMMUTABLE_PREFIX = '/_app/immutable/';
 
@@ -45,6 +62,8 @@ export function strategyFor(pathname) {
   // from it the next time the network hiccuped — which is the one outcome
   // this list exists to prevent.
   if (NEVER_CACHED.includes(pathname)) return 'bypass';
+  // Large, range fetched, and better served by the browser's own cache.
+  if (MEDIA_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return 'bypass';
   // Content-hashed: the URL changes when the bytes do, so cache-first can
   // never serve something stale.
   if (pathname.startsWith(IMMUTABLE_PREFIX)) return 'cache-first';
@@ -66,6 +85,7 @@ export function shouldPrecache(path) {
   // feature is used, not at install for everyone.
   if (path.includes('og-image')) return false;
   if (path.startsWith('/lattice/')) return false;
+  if (MEDIA_PREFIXES.some((prefix) => path.startsWith(prefix))) return false;
   if (HOST_CONFIG_FILES.includes(path)) return false;
   return !NEVER_CACHED.includes(path);
 }

@@ -261,8 +261,10 @@ jobs:
               *) echo "::error::build/$1 has title \"$got\", expected one containing \"$2\""; fail=1 ;;
             esac
           }
-          check index.html     'Atlas, pure Rust inference'
-          check engine.html    'Atlas engine, pure Rust inference'
+          check index.html     'Avarok, the inference economics platform'
+          check engine.html    'Avarok Engine, pure Rust inference'
+          check why-avarok.html 'Why Avarok'
+          check pricing.html   'Pricing'
           check control.html   'Control plane'
           check diligence.html 'Verification steps'
           exit "$fail"
@@ -308,7 +310,7 @@ jobs:
           for f in build/posts/*.html; do
             got=$(grep -o '<title>[^<]*' "$f" | head -1)
             case "$got" in
-              '<title>'*' — Atlas blog') echo "ok   ${f#build/} -> $got" ;;
+              '<title>'*' — Avarok blog') echo "ok   ${f#build/} -> $got" ;;
               *) echo "::error::${f#build/} has title \"$got\""; fail=1 ;;
             esac
           done

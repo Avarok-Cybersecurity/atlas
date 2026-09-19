@@ -84,5 +84,5 @@ test('the corporate lockup is never rendered below its legibility floor', () => 
   const width = Number(style.match(/\.logo-c \{ width: (\d+)px/)[1]);
   expect(width).toBeGreaterThanOrEqual(220);
   expect(style).toMatch(/\.logo-c-narrow \{ display: none;/);
-  expect(lockup).toContain('viewBox="0 0 1230.82 335.8" aria-hidden="true"');
+  expect(lockup).toContain('viewBox="0 0 1365.28 335.8" aria-hidden="true"');
 });
