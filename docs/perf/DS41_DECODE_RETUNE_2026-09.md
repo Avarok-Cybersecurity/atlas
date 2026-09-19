@@ -65,4 +65,53 @@ as they land.
 
 ## Results
 
-(pending)
+All five levers kept, every one byte-identical to the baseline oracle on all six suite
+outputs (the head lever's near-tie allowance was not needed). Chat endpoint, 300 tokens,
+temperature 0, one serve, medians of three, warm pass; receipts
+`~/dflash-logs/ds41_suite_retune_<tag>_{minheap,volvo}_r{1,2,3}.json`.
+
+| step | commit | MinHeap tok/s | MinHeap TTFT | Volvo tok/s | Volvo TTFT | launches / token |
+|---|---|---|---|---|---|---|
+| baseline | f13752b23 | 10.42 | 2048 ms | 10.77 | 1291 ms | 3,184 |
+| L1 head stays Q6_K | a44e9fd6b | 10.71 | 2030 ms | 11.08 | 1273 ms | 3,185 |
+| L2 wo_a groups in one launch | 763756050 | 10.99 | 2023 ms | 11.38 | 1248 ms | 1,985 |
+| L3 router staged, one read-back | b38631920 | 11.37 | 2018 ms | 11.81 | 1283 ms | 1,985 |
+| L4 HC chain in registers, wide | 2d6ea1c46 | 12.05 | 2033 ms | 12.53 | 1266 ms | 1,905 |
+| L5 eight warps, gate+up merged | e1c30d867 | 12.39 | 2009 ms | 12.90 | 1262 ms | 1,866 |
+
+Baseline to final: MinHeap +18.9%, Volvo +19.8%. The published 09-17 numbers were
+10.6 / 10.9.
+
+### The final profile (nsys, one warm 60-token request, same method as above)
+
+Receipts `~/dflash-logs/ds41_nsys_decode_{cuda_gpu_kern_sum,cuda_api_sum,osrt_sum}_final.csv`
+against the `*_2026-09-19_runB.csv` baseline set.
+
+| per token | baseline | final |
+|---|---|---|
+| kernel launches | 3,184 | 1,865 |
+| `cuStreamSynchronize` | 234 (49.8 ms blocked) | 186 (27.0 ms blocked) |
+| `cuMemcpyDtoHAsync` | 49 | 49 |
+| `cuMemcpyHtoDAsync` | 260 | 260 |
+| GPU kernel time | 62.4 ms | 48.6 ms |
+
+| kernel | baseline ms / launches | final ms / launches |
+|---|---|---|
+| attention projections (`kquant_mmvq_q2_k_w`, + `kquant_mmvq_q2_k_groups_w` for wo_a) | 13.04 / 596 | 10.03 / 276 + 2.43 / 40 |
+| `kquant_mmvq_q2_k_experts_w` (gate, up) | 10.14 / 79 | 9.80 / 39 (`_w8`, gate+up in one) |
+| `kquant_mmvq_q3_k_experts_w` (down) | 8.95 / 39 | 7.49 / 39 (`_w8`) |
+| LM head (`dense_gemv_bf16` instance, then `kquant_mmvq_q6_k_w`) | 5.5 / 1 | 2.68 / 1 |
+| other `dense_gemv_bf16` | 2.4 / 21 | 2.82 / 21 |
+| router GEMV (`moe_v41_router_gemv_f32out`, then `_staged`) | 5.37 / 40 | 2.74 / 40 |
+| HC chain (`mixes_finish` + `hc_post` + `mixes_dot` + `collapse`, then `mixes_dot` + `finish_collapse` + `post_wide`) | 7.41 / 320 | 2.75 / 240 |
+| `attn_v41_slice_cols` + `attn_v41_scatter_cols` | 1.45 / 640 | 0 / 0 |
+| `kquant_q8_1_rows_bf16` | 0.84 / 714 | 0.52 / 435 |
+| `attn_v41_sparse_attn` | 2.07 / 40 | 2.08 / 40 |
+
+What remains, in order of size: the expert reads (17.3 ms against the 11 ms floor), the
+attention projections (12.5 ms over 316 launches, the wq_a / wkv pair and the indexer
+projections still one launch per tensor), and the host round-trips (186 waits: the router
+and indexer read-backs, the per-token engram row upload, the final collapse; every blocking
+`copy_d2h` / `copy_h2d` in the CUDA backend is an async copy plus a stream sync). A
+device-side expert plan needs a replay protocol for cache misses, which is why the top-k
+stayed on the host and the whole-step graph was not re-tested.
