@@ -362,11 +362,10 @@ hosted, because the brand kit's slide and letterhead templates use them.
     tier still lists what is in it. The team should confirm that list.
 17. **The deck.** Asked for as a download beside the team. It is not in the repository,
     because this repository is public and a file pushed here is published at that moment,
-    before anyone reviews it. Three things to settle first: one slide is marked
-    confidential, the deck states a fundraising ask (and states it as two different
-    amounts), and publishing an ask to the public is a securities question worth one
-    email to counsel. Until then the button asks for the deck by email. To publish a
-    version made for the public, put the PDF under `static/` and set `team.deck.file`.
+    before anyone reviews it. The deck was written for private meetings, so it needs a read
+    through by its owner for what may be public before any version goes here. Until then
+    the button asks for the deck by email. To publish a version made for the public, put
+    the PDF under `static/` and set `team.deck.file`.
 18. **Each person confirms their own entry.** Photo, title, line and profile link for the
     five people in `team.people` came from the company's team slide and the links Alexi
     supplied. Each of them should read their own before this merges.
