@@ -24,3 +24,14 @@ W4A16 E8M0 path is the initial numerical baseline. Native datacentre FP4
 block-scaled MMA needs a separate tcgen05 implementation and correctness and
 performance receipts before enabling it. This target does not prove packed
 TP8 loading or full Kimi inference; those are separate integration gates.
+
+## Changes after the source snapshot
+
+`SOURCE_SNAPSHOT.json` records the **original upstream source hashes**, not
+hashes of the current B300 files. Subsequent B300 changes are recorded by Git:
+
+- `common/moe_shared_expert_fused.cu`: removed the inherited hardcoded
+  DeepSeek-only activation clamp from generic SiLU decode. Routed and shared
+  experts now use the same plain `silu(gate) * up` math. Kimi's LatentMoE calls
+  the separate E8M0 GEMM and `situ_glu_vec` path; it does not dispatch this
+  generic SiLU kernel. No GB10 source or clamp-scope exception was changed.
