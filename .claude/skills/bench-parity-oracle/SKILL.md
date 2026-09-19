@@ -29,9 +29,12 @@ invocation — the oracle will otherwise tell you those axes are unexamined.
 ## Run
 
 ```sh
-cat legs.jsonl | python3 .claude/skills/bench-parity-oracle/parity.py
-cat legs.jsonl | python3 .claude/skills/bench-parity-oracle/parity.py --json   # machine-readable
+python3 .claude/skills/bench-parity-oracle/parity.py legs.jsonl
+python3 .claude/skills/bench-parity-oracle/parity.py legs.jsonl --json   # machine-readable
+cat legs.jsonl | python3 .claude/skills/bench-parity-oracle/parity.py     # stdin also works
 ```
+
+Exit code: `0` only for **IN PARITY**; `1` for the other two.
 
 ## Output
 
@@ -46,6 +49,25 @@ A per-axis table and one of three verdicts:
 `UNDETERMINED` is not a softer `IN PARITY`. It means the comparison has not been
 shown to be fair, which is the same practical standing as unfair.
 
+A `match (default)` row is a match the oracle derived from a **documented engine
+default** because neither command set the flag, not from two observed values.
+Those axes are named again in the verdict line, because a reader deciding
+whether to trust a chart should know which parity claims rest on a default:
+
+```
+VERDICT: IN PARITY — every known axis matches and none is unexamined;
+2 rest(s) on a documented engine default rather than an observed value:
+tensor_parallel, scheduling
+```
+
+### The verdict on this repo's own published pair
+
+Run against `bench/ladder38/published.json`'s `atlas` and `vllm-mtp` legs — the
+two series behind the site's "Faster than vLLM at every concurrency" chart —
+the oracle returns **IN PARITY**. Its `vllm-nospec` leg returns NOT IN PARITY on
+three axes (`context_len` 2048 vs 4096, `kv_dtype` fp8 vs bfloat16,
+`speculation` mtp:3 vs none), which is what a second baseline is *for*.
+
 ## The axes it adjudicates
 
 Serve-side, normalised across engines:
@@ -59,6 +81,23 @@ Serve-side, normalised across engines:
 | GPU mem fraction | `--gpu-memory-utilization` | `--gpu-memory-utilization` | `--mem-fraction-static` |
 | prefix caching | `--enable-prefix-caching` | `--enable-prefix-caching` / `--no-…` | `--enable-prefix-caching` |
 | speculation | `--speculative --num-drafts N` | `--speculative-config` / `--num-speculative-tokens` | `--speculative-num-draft-tokens` |
+
+**Speculation is normalised to `<method>:<k>`, never compared as a string.** The
+published pair spells one setting two ways — Atlas `--speculative --num-drafts 3
+--mtp-quantization bf16`, vLLM `--speculative-config
+'{"method":"mtp","num_speculative_tokens":3}'` — and a string comparison called
+that pair NOT IN PARITY. That is the worst failure this tool can have: it would
+have us "fix" a fair comparison until it became unfair. Three states, kept
+distinct:
+
+| state | when | verdict effect |
+|---|---|---|
+| `mtp:3`, `draft-model:4`, … | a method **and** a width are both readable | compared |
+| `none` | **no** speculation flag of that engine appears at all — an observed off | compared |
+| unexamined | some speculation flag appears but no method/width pair can be read from it | forces UNDETERMINED |
+
+A draft width with no method (`--num-speculative-tokens 3` alone) is the third
+case, not the first: it does not name a setting the other engine can be held to.
 | tensor parallel | `--tensor-parallel` | `--tensor-parallel-size` | `--tp-size` |
 | thinking | `--disable-thinking` | client `chat_template_kwargs.enable_thinking` | same |
 | scheduling | `--scheduling-policy` | `--scheduling-policy` | `--schedule-policy` |
