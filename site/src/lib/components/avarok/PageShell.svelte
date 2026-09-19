@@ -7,6 +7,7 @@
   import { pages, SITE } from '$lib/content/index.js';
   import SiteNav from './SiteNav.svelte';
   import SiteFooter from './SiteFooter.svelte';
+  import MailToast from './MailToast.svelte';
   import { reveal } from '$lib/reveal.js';
 
   let { path, ogImage = '/og-image.png', children } = $props();
@@ -36,4 +37,5 @@
   <SiteNav />
   <main id="main">{@render children()}</main>
   <SiteFooter />
+  <MailToast />
 </div>

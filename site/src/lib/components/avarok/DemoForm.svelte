@@ -26,9 +26,20 @@
   let values = $state(Object.fromEntries(f.fields.map((x) => [x.name, x.type === 'select' ? x.options[0] : ''])));
   let state = $state('idle'); // idle | sending | sent | error
 
-  function mailto() {
-    const body = f.fields.map((x) => `${x.label}: ${values[x.name] || ''}`).join('\n');
-    return `mailto:${to}?subject=${encodeURIComponent(subject(values))}&body=${encodeURIComponent(body + `\n\nSent from the Avarok website ${source} form.`)}`;
+  // The message the form composes, as plain text. It goes into the email, and it
+  // is also shown to the visitor afterwards: a page cannot tell whether a mail
+  // app opened, and on a machine without one the request would otherwise vanish
+  // while the form said thank you.
+  const message = () => f.fields.map((x) => `${x.label}: ${values[x.name] || ''}`).join('\n') + `\n\nSent from the Avarok website ${source} form.`;
+  const mailto = () => `mailto:${to}?subject=${encodeURIComponent(subject(values))}&body=${encodeURIComponent(message())}`;
+  let copied = $state(false);
+  async function copyMessage() {
+    try {
+      await navigator.clipboard.writeText(`To: ${to}\nSubject: ${subject(values)}\n\n${message()}`);
+      copied = true;
+    } catch {
+      copied = false;
+    }
   }
 
   async function submit(e) {
@@ -63,7 +74,21 @@
     </div>
   {/each}
   <button class="av-btn av-btn-primary av-btn-lg" type="submit" disabled={state === 'sending'}>{state === 'sending' ? 'Sending' : f.submit} <span class="av-arrow">→</span></button>
-  {#if state === 'sent'}<p class="av-body" role="status" style="color:var(--green)">{f.thanks}</p>{/if}
+  {#if state === 'sent'}
+    <p class="av-body" role="status" style="color:var(--green)">{formEndpoint ? f.thanks : (f.composed ?? f.thanks)}</p>
+    {#if !formEndpoint}
+      <div class="av-form-fallback">
+        <p class="av-small"><strong>No email opened?</strong> Copy the request below and send it to <a class="av-link" href={`mailto:${to}`}>{to}</a>.</p>
+        <textarea readonly rows="5" aria-label="Your request, ready to paste into an email">{message()}</textarea>
+        <button type="button" class="av-btn av-btn-secondary av-btn-sm" onclick={copyMessage}>{copied ? 'Copied' : 'Copy the request'}</button>
+      </div>
+    {/if}
+  {/if}
   {#if state === 'error'}<p class="av-body" role="alert" style="color:var(--red)">That did not go through. Email {to} directly and we will take it from there.</p>{/if}
   <p class="av-small">{formEndpoint ? 'Your details go to the founding team and nowhere else.' : f.fallbackNote}</p>
 </form>
+
+<style>
+  .av-form-fallback { display: grid; gap: 0.6rem; padding: 0.9rem; border: 1px dashed var(--border-strong); border-radius: var(--av-radius-sm); justify-items: start; }
+  .av-form-fallback textarea { width: 100%; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.5; color: var(--t2); background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.7rem; resize: vertical; }
+</style>

@@ -78,3 +78,17 @@ The repository tracks `*.mp4` and `*.webm` with LFS, and the CI checkout does
 not fetch LFS objects, so an LFS pointer would ship as a broken video.
 `.gitattributes` exempts `site/static/media/*` for that reason. Keep new site
 clips in that directory.
+
+## The real thread on the company page
+
+`capture-thread.mjs` opens the public pull request the company's story starts with and writes
+"The exchange" as four WebP files under `static/media/about/`, in both themes, with the clock
+set to UTC so the dates in the picture match the timeline beside it. Run it again if GitHub
+changes how a thread looks. It needs `ffmpeg`, like everything else here.
+
+## What a page costs while it sits there
+
+`../perf/cpu.mjs` (`bun run perf:cpu -- <origin> <path>`) measures idle CPU the way Chrome's
+task manager does, renderer and GPU together, and then again with one suspect switched off at
+a time. The budget is 5% of one core. It exists because an animated gradient once cost 38% and
+nothing in CI could see it.

@@ -92,6 +92,27 @@ test.describe('front page', () => {
     expect(others).toBe(true);
   });
 
+  test('leaving a tab holds its frame until it is out of sight, then rewinds', async ({ page }) => {
+    await page.goto('/#tour');
+    const ask = page.locator('#tour-panel-console video');
+    await expect.poll(() => ask.evaluate((v) => v.currentTime).catch(() => 0), { timeout: 45_000 }).toBeGreaterThan(1.5);
+    await page.getByRole('tab', { name: 'Fleet' }).click();
+    // While the old panel can still be seen under the fade, its clip must not jump to 0.
+    const during = await page.evaluate(async () => {
+      const panel = document.querySelector('#tour-panel-console');
+      const v = panel.querySelector('video');
+      const seen = [];
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 40));
+        if (getComputedStyle(panel).visibility === 'visible') seen.push(v.currentTime);
+      }
+      return seen;
+    });
+    expect(during.length).toBeGreaterThan(0);
+    expect(Math.min(...during)).toBeGreaterThan(1);
+    await expect.poll(() => ask.evaluate((v) => v.currentTime), { timeout: 5_000 }).toBeLessThan(0.2);
+  });
+
   test('the architecture diagram keeps every label inside its box, and every box on the canvas', async ({ page }) => {
     await page.goto('/platform');
     const problems = await page.locator('.av-diagram svg').first().evaluate((svg) => {
@@ -194,6 +215,71 @@ test.describe('theme', () => {
   });
 });
 
+test.describe('the marketing pages and the developer pages stay separate documents', () => {
+  // The client router preloads a link on hover and never removes a stylesheet. A
+  // pointer passing over "Developers" used to pull the developer pages' styles into
+  // a marketing page and collapse its header. $lib/route-groups.js is the rule.
+  const headerBox = (page) =>
+    page.evaluate(() => {
+      const cta = [...document.querySelectorAll('.av-header a')].find((a) => /Book a demo/.test(a.textContent));
+      const r = cta.getBoundingClientRect();
+      // Not a count of stylesheets: the brand typeface is attached late on purpose, so
+      // the count moves by itself. What matters is whether the OTHER design system is
+      // in the page, and `.engine-shell` only exists in the developer pages' styles.
+      const developerStyles = [...document.styleSheets].some((sheet) => {
+        try {
+          return [...sheet.cssRules].some((rule) => rule.selectorText?.includes('.engine-shell'));
+        } catch {
+          return false;
+        }
+      });
+      return { top: Math.round(r.top), height: Math.round(r.height), developerStyles };
+    });
+
+  test('resting the pointer on a developer link changes nothing on the page', async ({ page }, testInfo) => {
+    test.skip(isMobile(testInfo), 'hover is a desktop behaviour');
+    await page.goto('/company');
+    const before = await headerBox(page);
+    await page.locator('.av-header a', { hasText: 'Developers' }).first().hover();
+    await page.waitForTimeout(1200);
+    expect(await headerBox(page)).toEqual(before);
+    await expect(page.locator('.av-header a', { hasText: 'Developers' }).first()).toHaveAttribute('data-sveltekit-reload', '');
+  });
+
+  test('arriving from a developer page is a full load, and the header is whole', async ({ page }, testInfo) => {
+    test.skip(isMobile(testInfo), 'the mega menu is the desktop path');
+    await page.goto('/company');
+    const direct = await headerBox(page);
+    await page.goto('/engine');
+    await page.getByRole('button', { name: 'Company', exact: true }).click();
+    await page.locator('.av-mega:visible a', { hasText: 'About Avarok' }).first().click();
+    await page.waitForURL(/\/company$/);
+    await page.waitForLoadState('load');
+    expect(await headerBox(page)).toEqual(direct);
+  });
+});
+
+test.describe('nothing on a marketing page costs CPU while it sits there', () => {
+  // The measured version is `bun run perf:cpu`. This is the rule behind it, checked
+  // on every run: an animation that never ends may only move `transform` or
+  // `opacity`, which the compositor does without the main thread. The one exception
+  // is the diagram's marching dashes, which are stepped and only run on screen.
+  for (const path of ['/', '/platform', '/solutions/healthcare']) {
+    test(`${path}: every endless animation is compositor only`, async ({ page }) => {
+      await page.goto(path);
+      await page.waitForTimeout(1500);
+      const offenders = await page.evaluate(() =>
+        document
+          .getAnimations()
+          .filter((a) => a.effect?.getTiming().iterations === Infinity)
+          .map((a) => ({ name: a.animationName ?? '', props: [...new Set(a.effect.getKeyframes().flatMap((k) => Object.keys(k)))].filter((k) => !['offset', 'easing', 'composite', 'computedOffset'].includes(k)) }))
+          .filter((a) => a.name !== 'av-dash' && a.props.some((prop) => !['transform', 'opacity'].includes(prop)))
+      );
+      expect(offenders).toEqual([]);
+    });
+  }
+});
+
 test.describe('footer', () => {
   test('the social marks sit on one line', async ({ page }) => {
     await page.goto('/');
@@ -270,6 +356,78 @@ test.describe('calls to action land on the form', () => {
       await page.goto(path);
       await expect(page.locator('main')).not.toContainText(/install the community edition/i);
     }
+  });
+});
+
+test.describe('an email button always does something', () => {
+  test('it shows the address and says it was copied', async ({ page, context }, testInfo) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+    await page.goto('/pricing');
+    // keep the test browser on the page: there is no mail app for it to open
+    await page.evaluate(() => document.addEventListener('click', (e) => e.target.closest?.('a[href^="mailto:"]') && e.preventDefault(), true));
+    await expect(page.locator('.av-mailtoast')).toBeHidden();
+    await page.getByRole('link', { name: 'Email sales' }).first().click();
+    await expect(page.locator('.av-mailtoast')).toBeVisible();
+    await expect(page.locator('.av-mailtoast')).toContainText('eric@atlascybernetics.ai');
+  });
+
+  test('each door on the contact page names the job, and the right person answers it', async ({ page }) => {
+    await page.goto('/contact');
+    const doors = await page.locator('main a[href^="mailto:"]').evaluateAll((as) => as.map((a) => `${a.textContent.trim().split(' · ')[0]} -> ${a.getAttribute('href').slice(7)}`));
+    expect(doors).toEqual([
+      'Email sales -> eric@atlascybernetics.ai',
+      'Email engineering -> thomas@atlascybernetics.ai',
+      'Business and design partners -> kyle@atlascybernetics.ai',
+      'Public collaboration -> tom@atlascybernetics.ai',
+      'Report privately -> security@atlas.net',
+      'Email operations -> peter@atlascybernetics.ai',
+      'Business and design partners -> kyle@atlascybernetics.ai'
+    ]);
+  });
+});
+
+test.describe('about', () => {
+  test('the exchange is the real thread, its words are in the alt text, and it links to the source', async ({ page }) => {
+    await page.goto('/company');
+    const shot = page.locator('.av-shot > a img:visible');
+    await expect(shot).toHaveCount(1);
+    await expect(shot).toHaveAttribute('alt', /Your point\?/);
+    expect(await shot.evaluate((i) => i.complete && i.naturalWidth)).toBeGreaterThan(800);
+    await expect(page.locator('.av-shot > a')).toHaveAttribute('href', /llama\.cpp\/pull\/18680/);
+  });
+
+  test('the team has a portrait, a title, a line and a LinkedIn profile each', async ({ page }) => {
+    await page.goto('/company#team');
+    const members = page.locator('.av-member');
+    await expect(members).toHaveCount(5);
+    for (const m of await members.all()) {
+      expect(await m.locator('img').evaluate((i) => i.complete && i.naturalWidth)).toBeGreaterThan(100);
+      await expect(m.locator('a')).toHaveAttribute('href', /^https:\/\/www\.linkedin\.com\/in\//);
+    }
+  });
+
+  // The repository is public. A deck committed here is published the moment it is
+  // pushed. Until someone decides otherwise, the deck is asked for, not served.
+  test('the deck is on request, and no page links to a PDF', async ({ page }) => {
+    await page.goto('/company#team');
+    await expect(page.locator('.av-deck a')).toHaveAttribute('href', /^mailto:kyle@/);
+    for (const path of ['/', '/company', '/pricing', '/contact']) {
+      await page.goto(path);
+      expect(await page.locator('a[href$=".pdf"]').count(), path).toBe(0);
+    }
+  });
+});
+
+test.describe('careers', () => {
+  test('a role says what the work is, and there are two ways to raise a hand', async ({ page }) => {
+    await page.goto('/company/careers');
+    await expect(page.locator('.av-creed span')).toHaveCount(4);
+    const role = page.locator('#roles details').first();
+    await role.locator('summary').click();
+    await expect(role.locator('.av-role-more li')).toHaveCount(3);
+    await expect(role.getByRole('link', { name: 'Apply by email' })).toHaveAttribute('href', /^mailto:thomas@/);
+    await expect(page.locator('#apply form')).toBeVisible();
+    await expect(page.locator('#careers-role option')).toHaveCount(5);
   });
 });
 

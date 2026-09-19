@@ -71,14 +71,23 @@ export const links = {
 // or HubSpot endpoint that accepts JSON POST and the same forms submit there.
 export const formEndpoint = '';
 
-// Company mail is @atlascybernetics.ai. The security address is the exception
-// on purpose: it is the one SECURITY.md publishes, and a vulnerability report
-// must never go to a mailbox nobody set up. Change both together.
+// Who answers what. One address per job, and the job is the key, so a change of
+// person is a change of one line. Company mail is @atlascybernetics.ai.
+//   sales          Eric     sales and pilots. The demo form and the waitlist land here.
+//   business       Kyle     business and design partners, investors, press.
+//   technical      Thomas   engineering, open source, careers.
+//   operations     Peter    operations, and the second door on the security card.
+//   collaboration  Tom      public collaboration: silicon, frameworks, benchmarks.
+// The security address is the exception on purpose: it is the one SECURITY.md
+// publishes, and a vulnerability report must never go to a mailbox nobody set
+// up. Change both together.
 export const contacts = {
-  sales: 'kyle@atlascybernetics.ai',
+  sales: 'eric@atlascybernetics.ai',
+  business: 'kyle@atlascybernetics.ai',
   technical: 'thomas@atlascybernetics.ai',
-  security: 'security@atlas.net',
-  press: 'kyle@atlascybernetics.ai'
+  operations: 'peter@atlascybernetics.ai',
+  collaboration: 'tom@atlascybernetics.ai',
+  security: 'security@atlas.net'
 };
 
 // Routes. Every internal href on the site comes from here so a rename is one
