@@ -59,6 +59,9 @@
   const dashOf = (s) => (s.role === 'variant' || s.id === 'vllm-nospec' ? '5 4' : null);
 
   const cs = $derived(ladder.concurrencies);
+  // Every driver revision the raw files carry, as the manifest lists them —
+  // counted, so the sentence below cannot go stale when a revision is added.
+  const revisions = $derived(Object.entries(ladder.harness_shas).filter(([k]) => k !== 'equivalence'));
   const vMax = $derived(Math.max(...plotted.flatMap((s) => s.rungs.map((r) => r.tok_s))) * 1.08);
 
   const x = (c) => PL + (Math.log2(c) / Math.log2(Math.max(...cs))) * (W - PL - PR);
@@ -253,8 +256,9 @@
             </table>
           </div>
           <p class="cl-note">
-            Harness {ladder.workload.harness}. Two harness revisions appear above:
-            {#each Object.entries(ladder.harness_shas).filter(([k]) => k !== 'equivalence') as [sha, what], i}
+            Harness {ladder.workload.harness}. {revisions.length} harness
+            {revisions.length === 1 ? 'revision appears' : 'revisions appear'} above:
+            {#each revisions as [sha, what], i}
               {i ? '; ' : ''}<code>{sha}</code> — {what}
             {/each}
             {ladder.harness_shas.equivalence}

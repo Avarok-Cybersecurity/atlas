@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "title": "Qwen3.6-35B-A3B-FP8 concurrency ladder: vLLM one-shot baseline",
+  "subtitle": "vLLM 0.27.1 + MTP, C=1..16, on the published ladder instrument; no Atlas leg at this instrument yet",
+  "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
+  "results_doc": "bench/baselines/qwen36-35b-a3b/published.json",
+
+  "subject_note": "No series has role \"subject\": no Atlas run exists at this instrument for this checkpoint. This manifest deliberately mirrors bench/ladder38/published.json so that when one does, it is added as a series with role \"subject\" whose sources name its raw harness files, and gen-ladder.mjs scores the pair with the same code it scores the dense ladder with. Until then the generator emits no rows and no summary for this ladder, and the site says so instead of drawing a zero.",
+
+  "workload": {
+    "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8",
+    "checkpoint_note": "MoE 35B, 256 experts top-8 (~3B active per token), FP8 block-scale weights, 40 layers; architecture qwen3_5_moe",
+    "isl_tokens": 128,
+    "isl_note": "~200 rendered prompt tokens after the chat template (prompt_tokens_per_req is 200 in every rep of the raw file)",
+    "osl_tokens": 1024,
+    "reps": 3,
+    "warmup": 1,
+    "temperature": 0.0,
+    "seed": 42,
+    "thinking": "disabled via chat_template_kwargs.enable_thinking=false",
+    "sampling_parity": "presence_penalty and frequency_penalty pinned to 0.0 by the harness",
+    "harness": "bench/ladder38/harness_w55_conc_ladder.py"
+  },
+
+  "box": {
+    "name": "dgx2 (spark-43fa)",
+    "gpu": "NVIDIA GB10 Grace Blackwell, 121.7 GB unified",
+    "note": "the box the published dense ladder's vLLM legs ran on; the serve was refused unless nothing else held the box"
+  },
+
+  "harness_shas": {
+    "41e242c072": "vLLM MoE leg, the only leg in this manifest. This is the sha256 of the copy committed at bench/ladder38/harness_w55_conc_ladder.py (md5 4aa694d8aabe404edc8f1e3eb2acbf31) and gen-ladder.mjs re-hashes that file at every build as harness_repo_sha256, so the two are checkable against each other. The dense ladder's raw files carry earlier revisions of this same file (6412b12d4d, 1c77e1d8e9, 1f10d4887b); the deck prints the recorded and the repo hash side by side.",
+    "equivalence": "One revision, one leg. The copy on dgx2 (/home/claude/ladder38-pinned/) was a DIFFERENT, older revision and was replaced with the repo copy before measuring; the driver_sha256 in the raw file is the proof of which copy ran, and the generator refuses any raw file whose driver sha is not listed here."
+  },
+
+  "series": [
+    {
+      "id": "vllm-mtp",
+      "label": "vLLM + MTP",
+      "role": "baseline",
+      "parity": "matched",
+      "parity_note": "Matched to the Atlas MoE ladder recipe adjudicated by the bench-parity oracle on 2026-09-19 before the run: ctx 2048, batch cap 128, util 0.85, bf16 KV, MTP K=4, thinking off, presence/frequency penalties 0.0, and Atlas pinned to fifo scheduling (its MoE recipe defaults to slai, which vLLM has no counterpart for). That is the configuration an Atlas leg at this instrument must serve to be scored against this series; no such leg exists yet.",
+      "engine": "vLLM 0.27.1",
+      "build": "vllm/vllm-openai:latest @ sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
+      "build_note": "Read from `docker image inspect vllm/vllm-openai:latest` on dgx2 on 2026-09-19, not remembered: image id sha256:2c211a1273b48e8929f893b267aeb1509e6b84654cdbde1bad56d79e3964224d, label ai.vllm.image.tag=vllm/vllm-openai:v0.27.1, vLLM commit 6e448d0ea9bf3d88d898b65449ca6dc2aec170ac, created 2026-08-11. It is the same digest the dense ladder's vLLM legs ran, and a container from it logs `version 0.27.1` at startup.",
+      "env": "HF_HUB_OFFLINE=1 VLLM_USE_DEEP_GEMM=0 VLLM_TEST_FORCE_FP8_MARLIN=1",
+      "kernel_override": {
+        "env": "VLLM_USE_DEEP_GEMM=0 VLLM_TEST_FORCE_FP8_MARLIN=1",
+        "what": "vLLM is NOT running its own default FP8 MoE kernel on this hardware. Its default FP8 block-scale MoE path selects DeepGEMM; these two variables force the Marlin FP8 path instead.",
+        "why": "DeepGEMM crashes at WEIGHT LOAD on GB10 (SM121), before any inference: the first attempt of the evening died at 79% of the load. The same SM120/SM121 incompatibility already recorded for the TRTLLM, CuteDSL, DeepGEMM and Triton MoE backends; only CUTLASS and Marlin work on this box.",
+        "error": "deepgemm_post_process_weight_scale_block -> transform_sf_into_required_layout: RuntimeError: Assertion error (deepgemm-src/csrc/apis/layout.hpp:60): Unknown SF transformation",
+        "scope": "A kernel selection, not a workload axis: it moves nothing the parity oracle adjudicates, but a reader comparing engines deserves to know."
+      },
+      "cli": "docker run --network host --gpus all --ipc=host -v /home/claude/.cache/huggingface:/root/.cache/huggingface -e HF_HUB_OFFLINE=1 -e VLLM_USE_DEEP_GEMM=0 -e VLLM_TEST_FORCE_FP8_MARLIN=1 vllm/vllm-openai:latest --model Qwen/Qwen3.6-35B-A3B-FP8 --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 --host 127.0.0.1 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype auto --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
+      "speculation": "vLLM's own MTP drafter, K=4 (--speculative-config method=mtp, num_speculative_tokens=3)",
+      "instrument": {
+        "isl": 128,
+        "osl": 1024,
+        "max_model_len": 2048,
+        "max_batch_size": 128,
+        "kv_cache_dtype": "bf16",
+        "reps": 3,
+        "warmup": 1,
+        "temperature": 0.0,
+        "seed": 42
+      },
+      "instrument_note": "kv_cache_dtype is bf16 although the command says `--kv-cache-dtype auto`: auto takes the model dtype, and `--dtype bfloat16` is set, so the KV cache is bf16 BECAUSE the dtype is bfloat16. Spelled `bf16` because that is how an Atlas gate record writes serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against; vLLM's own spelling is bfloat16. No prompt_mode: the ladder harness has no fixture, it sends a nonce-prefixed padded prompt, so a gate record (natural fixture) can never fingerprint as this instrument.",
+      "sources": {
+        "1": "vllm_moe_c1_16.json",
+        "2": "vllm_moe_c1_16.json",
+        "4": "vllm_moe_c1_16.json",
+        "8": "vllm_moe_c1_16.json",
+        "16": "vllm_moe_c1_16.json"
+      },
+      "unmeasured": {
+        "rungs": [32, 64, 128],
+        "reason": "vLLM + MTP at C >= 32 on GB10 has wedged the box hard enough to need a physical powercycle three times in one day, at the safe util 0.85 and with --max-num-seqs capped; these rungs were deliberately not run. They have no value here: not zero, not interpolated, and the generator refuses a raw file that contains them."
+      },
+      "source_note": "One-shot: measured once, on 2026-09-19 on dgx2, and never re-run. Every rung comes from the single raw file vllm_moe_c1_16.json (sha256 7788d19a16bb32466a53f72fc13c70c8f9352fb888b758f786a54c1a6b7ad648, byte-identical to dgx2:/home/claude/ladder-moe-baseline/). Two earlier attempts the same evening produced no numbers and are not here: one died in DeepGEMM at weight load (kernel_override), one ran the ladder against a serve whose harness preflight had failed (no first token; TypeError on ttft_p50_ms). Zero request errors at every rung."
+    }
+  ]
+}
