@@ -259,6 +259,8 @@ struct Kernels {
     act_quant: KernelHandle,
     fp4_quant: KernelHandle,
     gemm_f32: KernelHandle,
+    /// the compressor's f32 product at m = 1, staged, same bits as `gemm_f32`
+    gemv_f32_staged: KernelHandle,
     pool: KernelHandle,
     index_score: KernelHandle,
     sparse_attn: KernelHandle,

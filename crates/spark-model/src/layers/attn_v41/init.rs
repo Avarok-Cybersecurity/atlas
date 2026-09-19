@@ -43,6 +43,7 @@ impl AttnV41 {
             act_quant: gpu.kernel(MODULE, "attn_v41_act_quant_fp8")?,
             fp4_quant: gpu.kernel(MODULE, "attn_v41_fp4_quant")?,
             gemm_f32: gpu.kernel(MODULE, "attn_v41_gemm_f32")?,
+            gemv_f32_staged: gpu.kernel(MODULE, "attn_v41_gemv_f32_staged")?,
             pool: gpu.kernel(MODULE, "attn_v41_pool")?,
             index_score: gpu.kernel(MODULE, "attn_v41_index_score")?,
             sparse_attn: gpu.kernel(MODULE, "attn_v41_sparse_attn")?,
