@@ -8,7 +8,7 @@ use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
-use super::{MoeV41, MoeV41LayerWeights, route_from_logits};
+use super::{MoeV41, MoeV41LayerWeights, RouterWeights, route_from_logits};
 
 impl MoeV41 {
     /// Router logits on the GPU (f32-accumulated), the selection on the CPU.
@@ -112,6 +112,67 @@ impl MoeV41 {
 }
 
 impl MoeV41 {
+    /// The next layer's router GEMV on this layer's single-token input, into
+    /// `pred_logits`. Device work only; issue it right after `route_launch`
+    /// so one drain serves both read-backs.
+    pub fn predict_launch(
+        &self,
+        gpu: &dyn GpuBackend,
+        next: &RouterWeights,
+        x: DevicePtr,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        let (kernel, grid, block, smem) = if router_staged() {
+            (
+                self.k.router_gemv_staged,
+                [(c.n_routed as u32).div_ceil(2), 1, 1],
+                [256, 1, 1],
+                3 * c.dim as u32 * 2,
+            )
+        } else {
+            (
+                self.k.router_gemv,
+                [(c.n_routed as u32).div_ceil(64), 1, 1],
+                [64, 1, 1],
+                0,
+            )
+        };
+        KernelLaunch::new(gpu, kernel)
+            .grid(grid)
+            .block(block)
+            .shared_mem(smem)
+            .arg_ptr(x)
+            .arg_ptr(next.gate_w)
+            .arg_ptr(self.pred_logits)
+            .arg_u32(1)
+            .arg_u32(c.n_routed as u32)
+            .arg_u32(c.dim as u32)
+            .launch(stream)
+    }
+
+    /// The `k` best experts of the predicted layer by `score + bias`, as
+    /// cache keys, from the logits `predict_launch` wrote (one read-back).
+    pub fn predict_select(
+        &self,
+        gpu: &dyn GpuBackend,
+        next: &RouterWeights,
+        k: usize,
+        stream: u64,
+    ) -> Result<Vec<(u32, u32)>> {
+        let c = &self.cfg;
+        let mut bytes = vec![0u8; c.n_routed * 4];
+        gpu.copy_d2h_on_stream(self.pred_logits, &mut bytes, stream)?;
+        let logits: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let mut wide = c.clone();
+        wide.topk = k.min(c.n_routed);
+        let (_, ids) = route_from_logits(&logits, 1, &next.gate_bias, &wide);
+        Ok(ids.into_iter().map(|e| (next.layer, e as u32)).collect())
+    }
+
     /// Diagnostics: the router of this layer on `x` (one token), the `k`
     /// best experts by `score + bias` in the reference's order. Drains the
     /// stream; clobbers `self.logits`.

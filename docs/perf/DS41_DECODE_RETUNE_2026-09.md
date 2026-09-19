@@ -115,3 +115,60 @@ and indexer read-backs, the per-token engram row upload, the final collapse; eve
 `copy_d2h` / `copy_h2d` in the CUDA backend is an async copy plus a stream sync). A
 device-side expert plan needs a replay protocol for cache misses, which is why the top-k
 stayed on the host and the whole-step graph was not re-tested.
+
+## Phase 2 (PR #1148, branch `ds41-decode-retune-2`)
+
+### S0, the byte floor
+
+One decode token reads 6.09 GB of weights (routed experts 240 x 12.22 MiB = 2.93 GB;
+attention q_b 550 + o_b 550 + o_a 440 + q_a 86 + kv 34 MB; shared experts 512 MB; LM head
+543 MB; router bf16 157 MB; engram wkv 103 MB). Measured on this GB10 (`int4` streaming
+read, best of five): device memory 249 GB/s, the GPU reading the page-locked expert arena
+223 GB/s. Floor = 2.93/223 + 3.16/249 = 25.8 ms = 38.7 tok/s at 100% of the read ceiling
+with no gaps, no waits, no compute. The single-token 40 tok/s target sits below it.
+
+### S1, the misses (measured 09-19, `ATLAS_DS41_ROUTE_TRACE` on the standard)
+
+At 88 GiB (7,376 slots) 1,792 of 1,794 decode steps miss: 22,191 misses = 12.4 a step =
+5.2% of the 240 accesses; hit steps 53.6 ms, miss steps 79.8 ms. One 12.22 MiB expert reads
+in 1.8-2.0 ms however it is split (the NVMe's 11 GB/s needs several experts in flight), so
+12.4 x 2 ms is the whole gap to the hot number. The static top-7,376 set covers 95.2% of
+accesses: the misses are the tail, not an LRU artifact (LFU, 2Q, LRU-2 no better; S3-FIFO
+-26% at 88 GiB but worse at 100 GiB; Belady 2x better only because r1/r2/r3 repeat).
+
+| configuration | MinHeap tok/s | Volvo tok/s | decode misses | hit / miss step |
+|---|---|---|---|---|
+| 88 GiB, 8 readers (phase 1 final, reproduced) | 12.38 | 12.85 | 22,191 | 53.6 / 79.8 ms |
+| **100 GiB, 16 readers** (kept: the recipe) | **14.20** | **17.73** | 12,255 | 55.9 / 74.9 ms |
+| 100 GiB, 16, reader pool, no prefetch | 13.79 | 17.78 | 12,255 | |
+| 100 GiB, 16, pool + prefetch K=4 (d=1) | 12.50 | 16.67 | 8,240 | 60.7 / 80.7 ms |
+| 100 GiB, 16, pool + prefetch K=6 (d=1) | 13.63 | 16.39 | | |
+| 100 GiB, 16, pool + prefetch K=12 (d=1) | killed | | | ~1.8 s a step |
+
+All byte-identical to the oracle (6/6). The 100 GiB arena (8,380 slots; MemAvailable ~10 GB
+during load, ~17 GiB of page cache given up, hit steps +2.3 ms from the engram row reads)
+halves the misses. Prediction (the next layer's router on this layer's MoE input, d=1):
+top-6 covers 67.6% of the picks and 48.5% of the misses, top-12 81.8% / 69.1%; but the COLD
+part of a prediction, the reads a prefetch issues, has 36% precision at top-4 (6 reads a
+token, 2.3 misses caught), 23% at top-6 (15 reads), 8% at top-12 (58 reads). Built (reader
+pool with urgent / background lanes and a reserve, per-slot tickets, speculative slots
+demoted when unused) and measured: the predictor's router launch costs 2.7 ms a token of
+GPU time and the background reads slow the remaining misses on the shared disk, so every
+step got ~5 ms slower while the misses fell 12,255 -> 8,240. Shipped off by default
+(`ATLAS_DS41_READER_POOL=1 ATLAS_DS41_PREFETCH_K=4` to enable); worth revisiting once the
+router GEMV is cheap (S3) and with a cap on background reads in flight.
+
+### S4, the speculative ceiling, measured before any engine work
+
+`~/code/atlas-notes/bin/ds41_lookup_sim.py` replays the oracle texts through an n-gram
+lookup drafter (the longest match of the last 2..6 tokens in prompt + generated proposes
+the K tokens that followed it; the greedy-matching prefix is accepted; a step emits
+accepted + 1). MinHeap: 1.07 / 1.10 / 1.10 / 1.11 tokens a step at K = 1 / 2 / 4 / 8
+(drafts fire on 41-51 of ~270 steps); with 1..4-token matches 1.13-1.20 (drafts on 125
+steps, 5-24% of drafted tokens accepted). Volvo: 1.03-1.09 at every setting. The texts are
+fresh code and prose with almost no repeated n-grams. A K+1-token verify step reads the
+union of the tokens' experts (up to (K+1) x 6 a layer out of 384, little overlap), so the
+MoE half of the step grows with K while only the dense 3.16 GB is amortised: at 1.1-1.2
+accepted tokens a step the verify costs more than it returns. No MTP / next-n tensors ship
+in the GGUF (S0), so there is no free draft head. Lookup-draft speculation cannot carry this
+suite toward 40 tok/s; the number is stated here so nobody builds it for that reason.

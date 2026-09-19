@@ -18,7 +18,7 @@ use crate::layers::attn_v41::{
 };
 use crate::layers::deepseek_v41_layer::{DeepSeekV41Layer, V41Runtime};
 use crate::layers::engram_v41::{EngramHashTables, EngramHasher, EngramLayerWeights, EngramV41};
-use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights};
+use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights, RouterWeights};
 use crate::weight_map::DenseWeight;
 
 use super::{
@@ -47,7 +47,7 @@ pub(super) fn load_layers(
         .context("deepseek-v4.1: the routed expert stacks were not deferred by the GGUF loader")?;
     let model_dir = anchor.path.parent().context("shard path has no parent")?;
     let files = Arc::new(ShardFiles::open_dir(model_dir)?);
-    let slices = ExpertSliceMap::new(files.clone())?;
+    let slices = Arc::new(ExpertSliceMap::new(files.clone())?);
     let rows = EngramRowReader::new(files.clone())?;
     ensure!(
         slices.num_experts() == config.num_experts,
@@ -60,7 +60,10 @@ pub(super) fn load_layers(
     let max_seq = env_usize("ATLAS_DS41_MAX_SEQ", 8192).min(config.max_position_embeddings.max(1));
     let max_tokens = env_usize("ATLAS_DS41_MAX_TOKENS", 2048).min(max_seq);
     let cache_gib = env_usize("ATLAS_DS41_EXPERT_CACHE_GIB", 88);
-    let reader_threads = env_usize("ATLAS_DS41_READER_THREADS", 8);
+    // 16 readers: one 12.22 MiB expert reads in ~2 ms whatever the split, but
+    // a prefill's gather of hundreds runs at the disk's 10-11 GB/s only past
+    // eight threads (09-19 NVMe probe)
+    let reader_threads = env_usize("ATLAS_DS41_READER_THREADS", 16);
     let ratios: Vec<usize> = config
         .compress_ratios
         .iter()
@@ -173,6 +176,14 @@ pub(super) fn load_layers(
     let layout = slices.slot_layout();
     let arena = PinnedArena::alloc(gpu, cache_gib << 30)?;
     let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout)?;
+    // `ATLAS_DS41_READER_POOL=1`: the persistent reader pool (misses and
+    // predicted experts in flight together; what `ATLAS_DS41_PREFETCH_K`
+    // needs). Default: the scoped threads a fetch, 3% faster on MinHeap in
+    // the 09-19 A/B (13.79 vs 14.20 tok/s) with nothing to prefetch.
+    if std::env::var("ATLAS_DS41_READER_POOL").is_ok_and(|v| v == "1") {
+        lru.set_pool(slices.clone(), reader_threads);
+        tracing::info!("DeepSeek-V4.1: expert reader pool of {reader_threads} threads");
+    }
     if let Ok(path) = std::env::var("ATLAS_DS41_ROUTE_TRACE") {
         // diagnostics: the exact expert access sequence, one line a fetch
         lru.set_trace(&path)?;
@@ -374,6 +385,20 @@ pub(super) fn load_layers(
             shared_w2: resident_mat(store, &format!("{lp}.ffn.shared_experts.w2"))?,
             shared_w3: resident_mat(store, &format!("{lp}.ffn.shared_experts.w3"))?,
         };
+        let next_router = if l + 1 < n_layers {
+            let np = format!("model.layers.{}", l + 1);
+            Some(RouterWeights {
+                layer: (l + 1) as u32,
+                gate_w: bf16_ptr(store, &format!("{np}.ffn.gate.weight"))?,
+                gate_bias: download_f32(
+                    gpu,
+                    store,
+                    &format!("{np}.ffn.gate.e_score_correction_bias"),
+                )?,
+            })
+        } else {
+            None
+        };
         let engram_index = rt.tables.hash_index(l);
         layers.push(Box::new(DeepSeekV41Layer {
             idx: l,
@@ -381,6 +406,7 @@ pub(super) fn load_layers(
             rt: rt.clone(),
             attn_w,
             moe_w,
+            next_router,
             engram_index,
             hc_attn: hc_site(gpu, store, &lp, "attn", config)?,
             hc_ffn: hc_site(gpu, store, &lp, "ffn", config)?,

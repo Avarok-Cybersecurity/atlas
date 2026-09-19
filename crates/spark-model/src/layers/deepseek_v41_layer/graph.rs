@@ -300,8 +300,10 @@ impl DeepSeekV41Layer {
                 gpu,
                 &self.moe_w,
                 &mut lru,
-                &rt.slices,
+                &*rt.slices,
                 rt.reader_threads,
+                self.next_router.as_ref(),
+                normed,
                 stream,
             )?
         };

@@ -28,6 +28,8 @@ mod container;
 pub mod dequant_cpu;
 mod dequant_gpu;
 mod expert_lru;
+mod expert_lru_pool;
+mod expert_prefetch;
 pub mod expert_stream;
 mod names;
 mod shards;

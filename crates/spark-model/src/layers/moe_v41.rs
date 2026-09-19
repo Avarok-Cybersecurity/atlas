@@ -61,6 +61,31 @@ pub struct MoeV41LayerWeights {
     pub shared_w3: ResidentMat,
 }
 
+/// The router of one layer alone: what predicting a layer's selection from
+/// an earlier layer's input needs (see `MoeV41::predict_launch`).
+pub struct RouterWeights {
+    pub layer: u32,
+    /// bf16 `[n_routed, dim]`
+    pub gate_w: DevicePtr,
+    pub gate_bias: Vec<f32>,
+}
+
+/// `ATLAS_DS41_PREFETCH_K` (default 0 = off), read once: how many of the
+/// next layer's predicted experts to start reading while this layer computes
+/// (needs `ATLAS_DS41_READER_POOL=1`). Off by default: on the 09-19 standard
+/// the predictor's router launch (2.7 ms a token) and the wasted reads on
+/// the shared disk cost more than the caught misses saved (K=4: 12.50/16.67,
+/// K=6: 13.63/16.39, against 14.20/17.73 without).
+pub fn prefetch_k() -> usize {
+    static K: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("ATLAS_DS41_PREFETCH_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 struct Kernels {
     gemm: KernelHandle,
     /// bf16 shared expert at m = 1 (the tiled GEMM idles 15 of 16 rows)
@@ -131,6 +156,8 @@ pub struct MoeV41 {
     pub cfg: MoeV41Cfg,
     k: Kernels,
     logits: DevicePtr,
+    /// the next layer's router on this layer's input (`[n_routed]` f32)
+    pred_logits: DevicePtr,
     /// gathered rows of one expert group, `[m, dim]` bf16
     a_rows: DevicePtr,
     /// the group's q8_1 activations (plain rows or the MMQ layout)

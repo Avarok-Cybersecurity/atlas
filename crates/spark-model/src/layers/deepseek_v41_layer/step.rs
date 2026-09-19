@@ -396,10 +396,11 @@ impl DeepSeekV41Layer {
                 gpu,
                 &self.moe_w,
                 &mut lru,
-                &rt.slices,
+                &*rt.slices,
                 normed,
                 m,
                 rt.reader_threads,
+                self.next_router.as_ref(),
                 stream,
             )?;
             rt.step_moe.lock().unwrap().add(&moe.last.get());

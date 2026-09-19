@@ -9,7 +9,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
-use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing};
+use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing, RouterWeights, prefetch_k};
 use crate::layers::ops::{
     self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm,
     kquant_mmvq_w, kquant_q8_1_rows,
@@ -58,17 +58,34 @@ impl MoeV41 {
         x: DevicePtr,
         m: usize,
         reader_threads: usize,
+        next: Option<&RouterWeights>,
         stream: u64,
     ) -> Result<(DevicePtr, Vec<f32>, Vec<usize>)> {
         let c = &self.cfg;
         let t0 = std::time::Instant::now();
-        let (weights, indices) = self.route(gpu, w, x, m, stream)?;
+        // the router, and at decode the next layer's router on the same
+        // input (its read-back rides the same drain), then the selection
+        self.route_launch(gpu, w, x, m, stream)?;
+        let predict = next.filter(|_| m == 1 && prefetch_k() > 0 && lru.has_pool());
+        if let Some(nw) = predict {
+            self.predict_launch(gpu, nw, x, stream)?;
+        }
+        let (weights, indices) = self.route_select(gpu, w, m, stream)?;
+        let predicted = match predict {
+            Some(nw) => self.predict_select(gpu, nw, prefetch_k(), stream)?,
+            None => Vec::new(),
+        };
         let t1 = std::time::Instant::now();
-        // this token batch's experts, gathered once
+        // this token batch's experts, gathered once; the predicted ones of
+        // the next layer start reading in the background
         lru.begin_token();
         let before = lru.stats();
         let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
-        let slots = lru.fetch_many(src, &keys, reader_threads)?;
+        let slots = if lru.has_pool() {
+            lru.fetch_many_prefetching(&keys, &predicted)?
+        } else {
+            lru.fetch_many(src, &keys, reader_threads)?
+        };
         let after = lru.stats();
         let t2 = std::time::Instant::now();
         let (rows_host, w_host, plan) = self.plan(&indices, &weights, m);

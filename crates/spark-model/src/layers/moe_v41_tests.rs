@@ -216,7 +216,7 @@ fn run_case(tokens: usize) {
     let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout).unwrap();
 
     let (out_dev, weights, indices) = moe
-        .forward(g, &lw, &mut lru, &ex, x_dev, tokens, 2, stream)
+        .forward(g, &lw, &mut lru, &ex, x_dev, tokens, 2, None, stream)
         .unwrap();
     let mut ob = vec![0u8; tokens * DIM * 2];
     g.copy_d2h(out_dev, &mut ob).unwrap();
@@ -339,7 +339,9 @@ fn run_case(tokens: usize) {
     // the eager forward's output bit for bit.
     if tokens == 1 {
         moe.route_launch(g, &lw, x_dev, 1, stream).unwrap();
-        let stage = moe.stage_m1(g, &lw, &mut lru, &ex, 2, stream).unwrap();
+        let stage = moe
+            .stage_m1(g, &lw, &mut lru, &ex, 2, None, x_dev, stream)
+            .unwrap();
         assert_eq!(
             stage.indices, indices,
             "staged routing differs from the forward's"
@@ -436,7 +438,7 @@ fn single_token_expert_sum_is_bit_identical_across_runs() {
     let mut outputs: Vec<Vec<u8>> = Vec::with_capacity(REPEATS);
     for run in 0..REPEATS {
         let (out_dev, _weights, indices) = moe
-            .forward(g, &lw, &mut lru, &ex, x_dev, 1, 2, stream)
+            .forward(g, &lw, &mut lru, &ex, x_dev, 1, 2, None, stream)
             .unwrap();
         let uniq: std::collections::HashSet<usize> = indices.iter().copied().collect();
         assert_eq!(

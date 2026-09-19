@@ -53,7 +53,7 @@ use crate::layers::attn_v41::{
     AttnV41, AttnV41Cfg, AttnV41LayerState, AttnV41LayerWeights, LayerRole, SharedV41,
 };
 use crate::layers::engram_v41::{EngramHashTables, EngramHasher, EngramV41};
-use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights};
+use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights, RouterWeights};
 use crate::layers::qwen3_attention::HcSiteWeights;
 use crate::weight_map::DenseWeight;
 
@@ -72,7 +72,7 @@ pub struct V41Runtime {
     pub lru: Mutex<ExpertLru>,
     /// Kept alive for the cache's lifetime; freed with the runtime.
     pub arena: PinnedArena,
-    pub slices: ExpertSliceMap,
+    pub slices: Arc<ExpertSliceMap>,
     pub rows: EngramRowReader,
     pub tables: Arc<EngramHashTables>,
     pub hasher: Mutex<EngramHasher>,
@@ -202,6 +202,9 @@ pub struct DeepSeekV41Layer {
     pub rt: Arc<V41Runtime>,
     pub attn_w: AttnV41LayerWeights,
     pub moe_w: MoeV41LayerWeights,
+    /// The next layer's router, run on this layer's MoE input to predict
+    /// (and start reading) the experts the next layer will ask for.
+    pub next_router: Option<RouterWeights>,
     /// `Some(index into engram_layer_ids)` on engram layers.
     pub engram_index: Option<usize>,
     pub hc_attn: HcSiteWeights,

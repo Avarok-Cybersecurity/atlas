@@ -11,7 +11,7 @@ use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
-use super::{MoeV41, MoeV41LayerWeights, MoeV41Stage, MoeV41Timing};
+use super::{MoeV41, MoeV41LayerWeights, MoeV41Stage, MoeV41Timing, RouterWeights, prefetch_k};
 use crate::layers::ops::{kquant_mmvq_experts_wn, kquant_q8_1_rows, kquant_q8_1_rows_bytes};
 
 impl MoeV41 {
@@ -151,9 +151,11 @@ impl MoeV41 {
     }
 
     /// The HOST span of a single-token step between the router GEMV and the
-    /// expert compute: the selection (drains the stream), the cache fetch,
-    /// and the rows / weights / pointer-table uploads into fixed buffers.
-    /// `route_launch` must have been issued on `stream` first.
+    /// expert compute: the next layer's router on `x` (prediction, if
+    /// `next`), the selection (drains the stream), the cache fetch with the
+    /// predicted experts started in the background, and the rows / weights /
+    /// pointer-table uploads into fixed buffers. `route_launch` must have
+    /// been issued on `stream` first.
     pub fn stage_m1<S: ExpertSource + ?Sized>(
         &self,
         gpu: &dyn GpuBackend,
@@ -161,15 +163,29 @@ impl MoeV41 {
         lru: &mut ExpertLru,
         src: &S,
         reader_threads: usize,
+        next: Option<&RouterWeights>,
+        x: DevicePtr,
         stream: u64,
     ) -> Result<MoeV41Stage> {
         let t0 = std::time::Instant::now();
+        let predict = next.filter(|_| prefetch_k() > 0 && lru.has_pool());
+        if let Some(nw) = predict {
+            self.predict_launch(gpu, nw, x, stream)?;
+        }
         let (weights, indices) = self.route_select(gpu, w, 1, stream)?;
+        let predicted = match predict {
+            Some(nw) => self.predict_select(gpu, nw, prefetch_k(), stream)?,
+            None => Vec::new(),
+        };
         let t1 = std::time::Instant::now();
         lru.begin_token();
         let before = lru.stats();
         let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
-        let slots = lru.fetch_many(src, &keys, reader_threads)?;
+        let slots = if lru.has_pool() {
+            lru.fetch_many_prefetching(&keys, &predicted)?
+        } else {
+            lru.fetch_many(src, &keys, reader_threads)?
+        };
         let after = lru.stats();
         let t2 = std::time::Instant::now();
         let (rows_host, w_host, plan) = self.plan(&indices, &weights, 1);

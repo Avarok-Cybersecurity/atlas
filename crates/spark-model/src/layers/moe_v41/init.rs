@@ -68,6 +68,7 @@ impl MoeV41 {
                 mmq_q3k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q3_k_mmq128_wc")?,
             },
             logits: alloc(m * cfg.n_routed * 4)?,
+            pred_logits: alloc(cfg.n_routed * 4)?,
             a_rows: alloc(m * cfg.dim * 2)?,
             a_q8: alloc(
                 kquant_mmq_act_bytes(m as u32, cfg.dim as u32)
@@ -103,6 +104,7 @@ impl MoeV41 {
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
         for p in [
             self.logits,
+            self.pred_logits,
             self.a_rows,
             self.a_q8,
             self.rows_dev,

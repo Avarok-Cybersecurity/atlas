@@ -475,7 +475,7 @@ fn layer0_matches_the_cpu_reference_on_the_real_weights() {
     let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), lay).unwrap();
     let f_in_d = up_bf16(g, &f_in_r);
     let (moe_out, rw_d, ri_d) = moe
-        .forward(g, &mw_d, &mut lru, &slices, f_in_d, m, 4, stream)
+        .forward(g, &mw_d, &mut lru, &slices, f_in_d, m, 4, None, stream)
         .unwrap();
     assert_eq!(ri_d, ri_r, "routing indices");
     report("moe routing weights", &rw_d, &rw_r);
