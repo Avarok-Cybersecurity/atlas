@@ -121,6 +121,10 @@ Rapid Software Testing means short, focused investigations, not merely accumulat
 
 Remaining decisions: actual provider/node offer, NVIDIA credit eligibility, spend/time ceiling, achievable transfer rate/storage persistence, current unpublished Grok work, and whether the packed TP8 fixture passes before booking. No production readiness or rental outcome is claimed by this plan.
 
+## Official tokenizer and protocol admission
+
+The official checkpoint does not supply `tokenizer.json`. Complete the [CPU-only tokenizer preparation](../../scripts/k3/TOKENIZER.md) and [segmented prompt preparation](PROTOCOL.md) before starting paid GPUs. The twin uses a different chat contract. Atlas currently refuses official XTML chat requests; use prepared integer-array `/v1/completions` canaries for the initial kernel/inference session. Native chat, reasoning-channel separation and tool-call parsing need the separate implementation slice in the protocol runbook.
+
 ## Upstream research: llama.cpp, vLLM, and SGLang
 
 ### Setup links to check before paying

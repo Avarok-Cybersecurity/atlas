@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "status": "passed",
+  "model": "k3-twin",
+  "cycles_requested": 20,
+  "cycles_completed": 20,
+  "requests": 436,
+  "concurrency": 2,
+  "cancel_max_tokens": 128,
+  "trusted_baseline_checked": true,
+  "deadline_seconds": 1800.0,
+  "request_deadline_seconds": 20.0,
+  "limitations": [
+    "client cancellation does not prove immediate GPU cancellation",
+    "concurrent client launches do not prove server batching",
+    "no memory measurements or leak claims"
+  ],
+  "elapsed_seconds": 708.9309495449997,
+  "request_free_idle_seconds": 45.00054202298634,
+  "collective_check": {
+    "status": "MATCH_SUBMISSIONS",
+    "world_size": 2,
+    "submissions_per_rank": {
+      "0": 476453,
+      "1": 476453
+    },
+    "collectives_per_rank": 476453,
+    "peer_transfers": 0,
+    "expected_submissions_per_rank": null,
+    "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+  },
+  "rss_samples": {
+    "0": {
+      "valid_samples": 164,
+      "sample_interval_seconds": 5,
+      "window": "last two thirds of valid samples; not a quiescent allocator audit",
+      "min_kib": 1691396,
+      "max_kib": 1692300,
+      "first_kib": 1691396,
+      "last_kib": 1692300,
+      "median_kib": 1691542.0
+    },
+    "1": {
+      "valid_samples": 164,
+      "sample_interval_seconds": 5,
+      "window": "last two thirds of valid samples; not a quiescent allocator audit",
+      "min_kib": 1668416,
+      "max_kib": 1668416,
+      "first_kib": 1668416,
+      "last_kib": 1668416,
+      "median_kib": 1668416.0
+    }
+  },
+  "native_binary_sha256": "14f1f49eff22db38281a2ea1f98883ec510d87e7df016d808251a1eacbc3a91d",
+  "runtime_source": "8551e8d46; remote tokenizer module declarations had formatting-only ordering difference. Later official-XTML output fix does not affect this twin path; final container covers that source."
+}

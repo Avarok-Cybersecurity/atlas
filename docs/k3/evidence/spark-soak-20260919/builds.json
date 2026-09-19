@@ -1,0 +1,22 @@
+{
+  "source_commit": "e192ee4ac",
+  "source_files_compared": 3718,
+  "source_mismatches": 0,
+  "host_architecture": "aarch64",
+  "gb10_binary_sha256": "18762ced9c684c056bf474036dd3eb90b6a0c24687f103d9823ec421c1f63f2f",
+  "b300_binary_sha256": "af4fc931f5237abd0632ade9fc3f4cfb8412caed2c0d3d643b5fef530d90df8b",
+  "container_image": "sha256:93df9baf7f155fd4a32eab8acedc454e05471b01d0e89acb043fafc5a56eab97",
+  "b300_execution_verified": false,
+  "rust_tests": {
+    "passed": 7049,
+    "failed": 0,
+    "ignored": 120
+  },
+  "python_tests": {
+    "passed": 68,
+    "failed": 0
+  },
+  "workspace_clippy": "passed",
+  "workspace_rustdoc": "passed",
+  "source_label_note": "Builds came from a disclosed dirty development checkout. Source bytes independently match the commit; this is not a certification stamp."
+}

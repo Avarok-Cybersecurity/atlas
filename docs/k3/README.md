@@ -8,6 +8,7 @@ This is a development notebook, not a certified merge candidate or a claim that 
 - Missing K3 factory/weight-loader/bound-layer serving connection recovered from the earlier notebook and adapted to current main. Existing main KDA, MLA, AttnRes, MoE and TP components remain the foundation.
 - Small-checkpoint CPU reference, golden token fixtures, and explicit opt-in checkpoint tests. The initial serving binding includes host transfers and is a correctness baseline, not the desired final performance path.
 - B300-owned `sm_103a` kernel target and architecture detection. See [target details](../../kernels/b300/README.md).
+- Official TikToken-to-Rust tokenizer preparation and pinned segmented prompt encoding, with explicit refusal of unsupported XTML chat/reasoning/tool APIs.
 - Pinned checkpoint manifest, resumable staging, full integrity verification, disk admission, and bounded transfer attempts. See [checkpoint commands](../../scripts/k3/CHECKPOINT.md).
 - Rank-aware packed loading, allocation ownership, per-rank weight accounting, and pre-upload shape/dtype/inventory checks. EP greater than one remains refused for K3.
 - A bounded real-generation probe that checks identity, usage, output and optional reference prefix; a sequential comparison suite; an owned-rank launch harness; and collective submission diagnostics. See [launch](../../scripts/k3/LAUNCH.md) and [collective checks](../../scripts/k3/COLLECTIVES.md).
@@ -19,6 +20,7 @@ The official packed checkpoint is approximately 1.56 TB. TP8 is the intended eig
 
 Remaining admission gates:
 
+0. Prepare the [official tokenizer](../../scripts/k3/TOKENIZER.md) and [segmented token-array prompt](PROTOCOL.md) before GPU billing. The official checkpoint ships no `tokenizer.json`; native XTML chat is explicitly unsupported. Initial bring-up uses `/v1/completions`, not generic ChatML.
 1. Keep packed TP2/TP8 byte reconstruction, independent dequantization, malformed-scale and allocation-failure tests green. Run production-shape GPU numerical checks and real TP2 generation before the rental; repeat TP4/TP8 on the node.
 2. Apply the [official header/memory audit](evidence/official-header-audit-20260919/README.md): 214.6 GiB resident weights per TP8 rank, plus explicit runtime reserves. Provision 1.5–2 TB host RAM for the current host-reference projections; measure startup and first-token peaks on the node.
 3. Compile the B300 CUDA target and run numerical/module-load checks on actual B300 hardware. A Spark cannot validate SM103 execution.
@@ -69,3 +71,5 @@ Store small summaries with exact commit, checkpoint revision, GPU/toolchain, com
 See the [2026-09-19 Spark smoke receipts](rst/2026-09-19-spark-smoke.md) for TP1/TP2 generation, compiler checks, identities and limitations.
 
 See the [expanded two-Spark preparation results](evidence/spark-prep-20260919/README.md) for packed TP comparisons, production-shape GPU math, failures found and remaining rental gates.
+
+See the [extended soak and official-protocol preparation](evidence/spark-soak-20260919/README.md) for the 436-check lifecycle run, idle-timeout fix, streaming parity and verified tokenizer/staging path.
