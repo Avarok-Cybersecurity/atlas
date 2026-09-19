@@ -187,6 +187,7 @@ fn run(m: u32, expect: Expect, configure: impl FnOnce(&mut DenseFfnLayer)) {
         // The FFN under test never reads the decode scalars this flag guards.
         decode_step: false,
         gdn_exact_replay: false,
+        gdn_write_on_accept: false,
         token_ids: None,
         host_token_ids: None,
         routed_lora_layers: None,

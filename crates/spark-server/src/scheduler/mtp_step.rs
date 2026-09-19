@@ -31,6 +31,14 @@ pub fn step_mtp(
     // serve-wide value so every propose and re-propose below inherits it;
     // the verify width follows `pending_drafts.len()` on the next step.
     // Identity when pinned (`--dflash-gamma`) or not DFlash.
+    //
+    // `active.len()` counts EVERY active sequence, including ones still in
+    // bootstrap or prefill this step, so the C=1 arm means "one sequence on
+    // the server", not "one sequence generating". A lone generator gets the
+    // C>=2 width on a step where a second request is prefilling, and the
+    // C=1 observer skips that step. That is right for the batched verify
+    // that follows once both draft, and mildly pessimistic for the lone
+    // sequence in the meantime.
     let num_drafts = if dflash_verify_raw_argmax {
         crate::scheduler::dflash_rung::drafts_for(active.len(), num_drafts)
     } else {

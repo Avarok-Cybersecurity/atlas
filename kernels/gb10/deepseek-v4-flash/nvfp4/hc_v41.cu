@@ -22,6 +22,7 @@
 
 #include <cuda_bf16.h>
 
+#include <math_constants.h>
 #define HCV_BLOCK 256
 #define HCV_MAX_HC 4
 #define HCV_MAX_MIX 24
@@ -85,7 +86,7 @@ extern "C" __global__ void hc_v41_mixes(
         for (unsigned int i = 0; i < hc * hc; ++i) c[i] = mixes[2 * hc + i] * hc_scale[2] + hc_base[2 * hc + i];
         // row softmax + eps
         for (unsigned int j = 0; j < hc; ++j) {
-            float m = -INFINITY;
+            float m = -CUDART_INF_F;
             for (unsigned int k = 0; k < hc; ++k) m = fmaxf(m, c[j * hc + k]);
             float sum = 0.0f;
             for (unsigned int k = 0; k < hc; ++k) { c[j * hc + k] = expf(c[j * hc + k] - m); sum += c[j * hc + k]; }
@@ -164,7 +165,7 @@ extern "C" __global__ void hc_v41_mixes_finish(
     }
     for (unsigned int i = 0; i < hc * hc; ++i) c[i] = mixes[2 * hc + i] * hc_scale[2] + hc_base[2 * hc + i];
     for (unsigned int j = 0; j < hc; ++j) {
-        float m = -INFINITY;
+        float m = -CUDART_INF_F;
         for (unsigned int k = 0; k < hc; ++k) m = fmaxf(m, c[j * hc + k]);
         float sum = 0.0f;
         for (unsigned int k = 0; k < hc; ++k) { c[j * hc + k] = expf(c[j * hc + k] - m); sum += c[j * hc + k]; }

@@ -19,6 +19,10 @@ impl MoeV41 {
             cfg.inter
         );
         let m = cfg.max_tokens;
+        // The single-token arm (`routed_m1`) runs every selected expert as a
+        // row of the per-expert buffers, so they hold at least `topk` rows
+        // however small `max_tokens` is; the token-indexed buffers keep `m`.
+        let me = m.max(cfg.topk);
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
         Ok(MoeV41 {
             last: std::cell::Cell::new(MoeV41Timing::default()),
@@ -38,6 +42,7 @@ impl MoeV41 {
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
                 gather: gpu.kernel(MODULE, "moe_v41_gather_rows")?,
                 scatter_add: gpu.kernel(MODULE, "moe_v41_scatter_add")?,
+                sum_rows: gpu.kernel(MODULE, "moe_v41_sum_rows")?,
                 quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
                 quant_d4: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d4_bf16")?,
                 mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
@@ -51,14 +56,14 @@ impl MoeV41 {
                 kquant_mmq_act_bytes(m as u32, cfg.dim as u32)
                     .max(kquant_q8_1_rows_bytes(m as u32, cfg.dim as u32)),
             )?,
-            gate_out: alloc(m * cfg.inter * 2)?,
-            up_out: alloc(m * cfg.inter * 2)?,
-            h: alloc(m * cfg.inter * 2)?,
+            gate_out: alloc(me * cfg.inter * 2)?,
+            up_out: alloc(me * cfg.inter * 2)?,
+            h: alloc(me * cfg.inter * 2)?,
             h_q8: alloc(
-                kquant_mmq_act_bytes(m as u32, cfg.inter as u32)
-                    .max(kquant_q8_1_rows_bytes(m as u32, cfg.inter as u32)),
+                kquant_mmq_act_bytes(me as u32, cfg.inter as u32)
+                    .max(kquant_q8_1_rows_bytes(me as u32, cfg.inter as u32)),
             )?,
-            down_out: alloc(m * cfg.dim * 2)?,
+            down_out: alloc(me * cfg.dim * 2)?,
             rows_dev: alloc(m * cfg.topk * 4)?,
             weight_dev: alloc(m * cfg.topk * 4)?,
             ptrs_dev: alloc(3 * cfg.topk * 8)?,

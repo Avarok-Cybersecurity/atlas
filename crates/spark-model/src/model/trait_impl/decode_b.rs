@@ -469,6 +469,7 @@ impl TransformerModel {
             graph_capture: false,
             decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: None,
             // PLE (qwen4_exp n-gram) computes its hash rows from HOST ids;
             // without this the hc multi-seq decode refuses the whole step.
@@ -496,6 +497,7 @@ impl TransformerModel {
             graph_capture: false,
             decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: None,
             // The chunk's ids, for the PLE prefill hash on the fused path.
             host_token_ids: Some(
