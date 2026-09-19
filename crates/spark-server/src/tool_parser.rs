@@ -370,7 +370,7 @@ impl std::str::FromStr for ToolCallFormat {
             "gemma4" => Ok(Self::Gemma4),
             "mistral" => Ok(Self::Mistral),
             "minimax_xml" => Ok(Self::MinimaxXml),
-            "deepseek_v4" | "dsml" => Ok(Self::DeepseekV4),
+            "deepseek_v4" | "deepseek_v41" | "dsml" => Ok(Self::DeepseekV4),
             "bare_json" => Ok(Self::BareJson),
             "poolside_v1" => Ok(Self::PoolsideV1),
             other => Err(format!(

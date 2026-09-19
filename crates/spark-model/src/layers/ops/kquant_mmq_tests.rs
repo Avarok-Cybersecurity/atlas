@@ -254,3 +254,129 @@ fn kquant_prefill_mmq_matches_cpu_oracle() {
         }
     }
 }
+
+/// The Q6_K output head (`kquant_mmvq_q6_k_w`, warp per row) against the CPU
+/// dequant + q8_1-emulated GEMM, M = 1 (decode) and 5 (a batched head).
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn kquant_q6k_head_mmvq_w_matches_cpu_oracle() {
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    // Q6_K: { u8 ql[128]; u8 qh[64]; i8 scales[16]; f16 d } = 210 B, d at 208.
+    let raw = build_weight(Q6K_BLOCK_BYTES, &[208], 0x5EED_000E);
+    let t = GgmlType::from_id(14, 128).unwrap();
+    let mut w = vec![0f32; (N * K) as usize];
+    dequant_to_f32(t, &raw, w.len(), &mut w).unwrap();
+    let w_dev = upload(g, &raw);
+    let k_rows = g.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16").unwrap();
+    let k_mmvq = g.kernel(KQUANT_MODULE, "kquant_mmvq_q6_k_w").unwrap();
+    for m in [1u32, 5] {
+        let (bits, xf) = build_act(m as usize, 0x6A6A + m);
+        let x_bytes: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let x_dev = upload(g, &x_bytes);
+        let y_dev = g.alloc(kquant_q8_1_rows_bytes(m, K)).unwrap();
+        let out_dev = g.alloc((m * N) as usize * 2).unwrap();
+        kquant_q8_1_rows(g, k_rows, x_dev, y_dev, m, K, stream).unwrap();
+        kquant_mmvq_w(g, k_mmvq, w_dev, y_dev, out_dev, N, K, m, stream).unwrap();
+        g.synchronize(stream).unwrap();
+        let got = download_bf16(g, out_dev, (m * N) as usize);
+        let want = cpu_gemm(&w, &q8_emulate(&xf, 32), m as usize);
+        assert_close(&format!("Q6_K mmvq_w M={m}"), &got, &want);
+        for p in [x_dev, y_dev, out_dev] {
+            g.free(p).unwrap();
+        }
+    }
+    g.free(w_dev).unwrap();
+}
+
+/// The grouped `wo_a` launch (`kquant_mmvq_q2_k_groups_w`) against `G`
+/// per-group `kquant_mmvq_q2_k_w` launches over the column slices: the same
+/// bytes out, M = 1 and 5. Weight `[G * N, K]`, activation `[M, G * K]`.
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn kquant_groups_w_matches_per_group_launches_bitwise() {
+    const G: usize = 8;
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let n_blocks = G * (N as usize) * (K as usize / 256);
+    let mut raw = lcg_bytes(n_blocks * Q2K_BLOCK_BYTES, 0x6E0F_0002);
+    for b in 0..n_blocks {
+        for (i, off) in [80usize, 82].into_iter().enumerate() {
+            let s = SCALES_F16[(b + i) % SCALES_F16.len()];
+            raw[b * Q2K_BLOCK_BYTES + off] = (s & 0xFF) as u8;
+            raw[b * Q2K_BLOCK_BYTES + off + 1] = (s >> 8) as u8;
+        }
+    }
+    let w_dev = upload(g, &raw);
+    let k_rows = g.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16").unwrap();
+    let k_w = g.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w").unwrap();
+    let k_groups = g
+        .kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_groups_w")
+        .unwrap();
+    let width = G as u32 * K;
+    for m in [1u32, 5] {
+        // bf16 [m, G*K] activation, built row by row from the same generator.
+        let mut bits: Vec<u16> = Vec::new();
+        for r in 0..m {
+            bits.extend(build_act(G, 0x7A7A + r).0);
+        }
+        assert_eq!(bits.len(), (m * width) as usize);
+        let x_bytes: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let x_dev = upload(g, &x_bytes);
+        // grouped: one quantise pass over the whole row, one launch
+        let y_all = g.alloc(kquant_q8_1_rows_bytes(m, width)).unwrap();
+        let out_all = g.alloc((m * G as u32 * N) as usize * 2).unwrap();
+        kquant_q8_1_rows(g, k_rows, x_dev, y_all, m, width, stream).unwrap();
+        kquant_mmvq_groups_w(
+            g, k_groups, w_dev, y_all, out_all, N, K, m, G as u32, stream,
+        )
+        .unwrap();
+        g.synchronize(stream).unwrap();
+        let mut got = vec![0u8; (m * G as u32 * N) as usize * 2];
+        g.copy_d2h(out_all, &mut got).unwrap();
+        // per group: slice the columns on the host, quantise, launch, place
+        let mut want = vec![0u8; got.len()];
+        let y_g = g.alloc(kquant_q8_1_rows_bytes(m, K)).unwrap();
+        let out_g = g.alloc((m * N) as usize * 2).unwrap();
+        for grp in 0..G {
+            let mut slice: Vec<u8> = Vec::new();
+            for r in 0..m as usize {
+                let row = &bits[r * width as usize..(r + 1) * width as usize];
+                slice.extend(
+                    row[grp * K as usize..(grp + 1) * K as usize]
+                        .iter()
+                        .flat_map(|b| b.to_le_bytes()),
+                );
+            }
+            let s_dev = upload(g, &slice);
+            let w_g = DevicePtr(
+                w_dev.0 + (grp * N as usize * (K as usize / 256) * Q2K_BLOCK_BYTES) as u64,
+            );
+            kquant_q8_1_rows(g, k_rows, s_dev, y_g, m, K, stream).unwrap();
+            kquant_mmvq_w(g, k_w, w_g, y_g, out_g, N, K, m, stream).unwrap();
+            g.synchronize(stream).unwrap();
+            let mut o = vec![0u8; (m * N) as usize * 2];
+            g.copy_d2h(out_g, &mut o).unwrap();
+            for r in 0..m as usize {
+                let dst = (r * G * N as usize + grp * N as usize) * 2;
+                want[dst..dst + N as usize * 2]
+                    .copy_from_slice(&o[r * N as usize * 2..(r + 1) * N as usize * 2]);
+            }
+            g.free(s_dev).unwrap();
+        }
+        assert!(
+            got == want,
+            "grouped wo_a launch differs from per-group launches at M={m}"
+        );
+        println!(
+            "  Q2_K groups_w M={m}: {} bytes identical to {G} per-group launches",
+            got.len()
+        );
+        for p in [x_dev, y_all, out_all, y_g, out_g] {
+            g.free(p).unwrap();
+        }
+    }
+    g.free(w_dev).unwrap();
+}

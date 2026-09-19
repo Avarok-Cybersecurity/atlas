@@ -29,6 +29,7 @@ use crate::layers::ops::ResidentMat;
 mod forward;
 mod init;
 mod route;
+mod single;
 
 const MODULE: &str = "moe_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -60,6 +61,31 @@ pub struct MoeV41LayerWeights {
     pub shared_w3: ResidentMat,
 }
 
+/// The router of one layer alone: what predicting a layer's selection from
+/// an earlier layer's input needs (see `MoeV41::predict_launch`).
+pub struct RouterWeights {
+    pub layer: u32,
+    /// bf16 `[n_routed, dim]`
+    pub gate_w: DevicePtr,
+    pub gate_bias: Vec<f32>,
+}
+
+/// `ATLAS_DS41_PREFETCH_K` (default 0 = off), read once: how many of the
+/// next layer's predicted experts to start reading while this layer computes
+/// (needs `ATLAS_DS41_READER_POOL=1`). Off by default: on the 09-19 standard
+/// the predictor's router launch (2.7 ms a token) and the wasted reads on
+/// the shared disk cost more than the caught misses saved (K=4: 12.50/16.67,
+/// K=6: 13.63/16.39, against 14.20/17.73 without).
+pub fn prefetch_k() -> usize {
+    static K: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("ATLAS_DS41_PREFETCH_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 struct Kernels {
     gemm: KernelHandle,
     /// bf16 shared expert at m = 1 (the tiled GEMM idles 15 of 16 rows)
@@ -67,12 +93,16 @@ struct Kernels {
     gemm_f32out: KernelHandle,
     /// router logits at m <= 8: strict-order GEMV, bit-identical to gemm_f32out
     router_gemv: KernelHandle,
+    /// the same logits staged through shared memory, ceil(N/2) blocks (decode)
+    router_gemv_staged: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
     mmvq_q3k: KernelHandle,
     /// the single-token arm: every routed expert in one launch a projection
     mmvq_q2k_experts: KernelHandle,
     mmvq_q3k_experts: KernelHandle,
+    /// rows (warps) a block of the expert batch, 2 / 4 / 8 (ATLAS_DS41_EXPERT_WARPS)
+    experts_warps: u32,
     swiglu: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,
@@ -109,6 +139,15 @@ impl MoeV41Timing {
     }
 }
 
+/// What `stage_m1` leaves for `compute_m1`: the distinct expert count and
+/// the routing (for callers and diagnostics), with the host-span timing.
+pub struct MoeV41Stage {
+    pub ne: usize,
+    pub weights: Vec<f32>,
+    pub indices: Vec<usize>,
+    pub timing: MoeV41Timing,
+}
+
 pub struct MoeV41 {
     /// The last forward's timing.
     pub last: std::cell::Cell<MoeV41Timing>,
@@ -117,6 +156,8 @@ pub struct MoeV41 {
     pub cfg: MoeV41Cfg,
     k: Kernels,
     logits: DevicePtr,
+    /// the next layer's router on this layer's input (`[n_routed]` f32)
+    pred_logits: DevicePtr,
     /// gathered rows of one expert group, `[m, dim]` bf16
     a_rows: DevicePtr,
     /// the group's q8_1 activations (plain rows or the MMQ layout)

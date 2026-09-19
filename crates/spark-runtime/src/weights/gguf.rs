@@ -27,7 +27,11 @@ mod container;
 /// Public for kernel oracles: the CPU reference decoders every GPU dequant is held to.
 pub mod dequant_cpu;
 mod dequant_gpu;
+mod engram_rows;
 mod expert_lru;
+mod expert_lru_evict;
+mod expert_lru_pool;
+mod expert_prefetch;
 pub mod expert_stream;
 mod names;
 mod shards;

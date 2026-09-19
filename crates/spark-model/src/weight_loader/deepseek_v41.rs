@@ -193,6 +193,12 @@ impl ModelWeightLoader for DeepSeekV41WeightLoader {
         _config: &ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
+        let t = store.get("lm_head.weight")?;
+        if t.dtype == WeightDtype::Q6K {
+            // The GGUF's Q6_K head stayed raw in the store; the factory hands
+            // these blocks to the K-quant head path (model/lm_head_q6k.rs).
+            return Ok(DenseWeight { weight: t.ptr });
+        }
         dense_auto(store, "lm_head.weight", gpu)
     }
 

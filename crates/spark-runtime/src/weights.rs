@@ -54,6 +54,10 @@ pub enum WeightDtype {
     Q2K,
     /// Raw GGUF `Q3_K` blocks kept on the device (110 bytes per 256 weights).
     Q3K,
+    /// Raw GGUF `Q6_K` blocks kept on the device (210 bytes per 256 weights):
+    /// the DeepSeek-V4.1 output head, run by the K-quant GEMV instead of a
+    /// bf16 expansion (0.82 instead of 2 bytes a weight read every token).
+    Q6K,
 }
 
 impl WeightDtype {
@@ -71,6 +75,7 @@ impl WeightDtype {
             Self::PackedQ2_0 { .. } => 0,
             Self::Q2K => 0,
             Self::Q3K => 0,
+            Self::Q6K => 0,
         }
     }
 
@@ -153,6 +158,7 @@ impl WeightTensor {
             }
             WeightDtype::Q2K => self.num_elements() / 256 * 84,
             WeightDtype::Q3K => self.num_elements() / 256 * 110,
+            WeightDtype::Q6K => self.num_elements() / 256 * 210,
             d => self.num_elements() * d.byte_size(),
         }
     }

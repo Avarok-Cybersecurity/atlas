@@ -401,6 +401,14 @@ pub fn is_v41_kquant_resident(hf: &str) -> bool {
         || hf.ends_with(".ffn.shared_experts.w3")
 }
 
+/// The DeepSeek-V4.1 output head, which the Q2_K GGUF ships as Q6_K: kept as
+/// raw Q6_K blocks (`WeightDtype::Q6K`) for the K-quant GEMV instead of the
+/// bf16 expansion that made the head the single largest kernel of the decode
+/// step (1.3 GB read a token for 0.5 GB of weights on disk).
+pub fn is_v41_q6k_resident(hf: &str) -> bool {
+    hf == "lm_head.weight"
+}
+
 pub fn is_keep_packed_proj(hf: &str) -> bool {
     hf.ends_with(".mlp.gate_proj.weight")
         || hf.ends_with(".mlp.up_proj.weight")
