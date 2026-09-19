@@ -6,6 +6,7 @@
 // =============================================================================
 import gates from '$lib/gates.generated.json';
 import { splitByVariant } from './gate-variants.js';
+import { foldPartitions } from './bfcl-partition.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
@@ -172,7 +173,37 @@ export const ladderPoints = (record) =>
     .filter(Boolean)
     .sort((a, b) => a.c - b.c);
 
-export const recordsFor = (benchId) => gates.benchmarks[benchId]?.records ?? [];
+/**
+ * The records for a benchmark, with every COMPLETE shard partition folded into
+ * the single aggregate the gate judged.
+ *
+ * The fold lives here, at the one place records enter the page, rather than in
+ * each chart: the record count printed beside a panel, the "latest" record in
+ * its header, the modal and the charts must all be talking about the same
+ * measurements. A chart-local fold would have left the header saying "124
+ * records" over a chart drawing 84 points.
+ *
+ * Memoised because it is called once per render per benchmark and the input is
+ * a frozen import.
+ */
+const foldCache = new Map();
+const folded = (benchId) => {
+  let f = foldCache.get(benchId);
+  if (!f) {
+    f = foldPartitions(gates.benchmarks[benchId]?.records ?? []);
+    foldCache.set(benchId, f);
+  }
+  return f;
+};
+
+export const recordsFor = (benchId) => folded(benchId).records;
+
+/**
+ * Shard records that do NOT complete a partition, grouped by the partition
+ * they belong to. Never plotted — half a strided draw is not a measurement —
+ * and never silently dropped either: the page says how many are withheld.
+ */
+export const withheldFor = (benchId) => folded(benchId).partial;
 export const benchName = (benchId) => gates.benchmarks[benchId]?.name ?? benchId;
 export const fmtDate = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
 export const fmtDateTime = (unix) => new Date(unix * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
