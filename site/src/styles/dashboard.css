@@ -281,3 +281,86 @@
 @media (prefers-reduced-motion: reduce) {
   .bd-skeleton-bar, .bd-skeleton-chart { animation: none; }
 }
+
+/* ---- concurrency subject strip (TabStrip prefix "cs") ---------------------
+   One size step below the outer .bd-tab so the two levels read as two levels;
+   the rung strip (prefix "rn", a later step) sits one step below this.
+   Viewport rules (horizontal scroll at <=860px, 42px coarse-pointer height)
+   belong in mobile.css, its stated SSOT, and join the .bd-tab rules there. */
+.cs-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+.cs-tab {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+  padding: 0.4rem 0.8rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--t2);
+}
+.cs-tab:hover { border-color: var(--accent); color: var(--t1); }
+.cs-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* "not yet measured": a state, not a verdict, so it is never red or amber. */
+.cs-chip {
+  font-size: 0.6rem; font-weight: 600; letter-spacing: 0.04em; text-transform: none;
+  padding: 0.1rem 0.4rem; border-radius: 999px;
+  border: 1px solid currentColor; opacity: 0.8;
+}
+
+/* ---- repro steps ---------------------------------------------------------- */
+/* The "reproduction steps" panel inside the point card (GateReproSteps).
+   Appended, never edits the rules above. */
+.gpc.is-wide { width: min(680px, 100%); max-width: none; }
+.gpc-repro-toggle {
+  display: inline-flex; align-items: center; margin-top: 0.9rem;
+  padding: 0.38rem 0.75rem; border: 1.5px solid var(--accent); border-radius: 8px;
+  background: var(--accent-soft); color: var(--accent-deep); cursor: pointer; font: inherit;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em;
+}
+.gpc-repro-toggle:hover, .gpc-repro-toggle:focus-visible { background: var(--accent); color: #fff; }
+.gpc-repro { margin-top: 0.9rem; padding-top: 0.7rem; border-top: 1.5px dashed var(--border-strong); }
+.gpc-repro-h { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--t2); margin: 0 0 0.3rem; }
+.gpc-repro-h:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.gpc-repro-headline { font-size: 0.74rem; color: var(--t1); font-weight: 700; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+.gpc-repro-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.6rem; }
+.gpc-copy {
+  background: none; border: 1px solid var(--border-strong); color: var(--t2); border-radius: 4px;
+  font: inherit; font-family: var(--font-mono); font-size: 0.66rem; padding: 0.12rem 0.5rem; cursor: pointer;
+}
+.gpc-copy:hover, .gpc-copy:focus-visible { border-color: var(--accent); color: var(--accent-deep); }
+.gpc-preface dd { text-align: left; line-height: 1.5; }
+.gpc-expect-line { display: block; }
+/* Absences are the panel's most important output: they must read as such. */
+.gpc-missing, .gpc-caveats { margin: 0.5rem 0; padding-left: 1.1rem; font-size: 0.74rem; line-height: 1.5; }
+.gpc-missing li { color: var(--amber); }
+.gpc-missing li b { color: var(--amber); }
+.gpc-caveats li { color: var(--red); }
+.gpc-steps { list-style: none; margin: 0.4rem 0 0; padding: 0; }
+.gpc-step { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.35rem; background: var(--bg); }
+.gpc-step > summary {
+  display: flex; align-items: baseline; gap: 0.5rem; padding: 0.45rem 0.65rem; cursor: pointer;
+  font-size: 0.74rem; list-style: none;
+}
+.gpc-step > summary::-webkit-details-marker { display: none; }
+.gpc-step > summary::before { content: '▸'; color: var(--t3); font-size: 0.7rem; }
+.gpc-step[open] > summary::before { content: '▾'; }
+.gpc-step > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.gpc-step-n { font-family: var(--font-mono); font-weight: 800; color: var(--t3); }
+.gpc-step-title { font-weight: 700; color: var(--t1); white-space: nowrap; }
+.gpc-step-sum { color: var(--t2); overflow-wrap: anywhere; }
+.gpc-step-facts { padding: 0.2rem 0.65rem 0.4rem; }
+.gpc-step-facts dd { text-align: left; }
+.gpc-cmd { margin: 0.35rem 0.65rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--card); }
+.gpc-cmd figcaption { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--border); }
+.gpc-cmd-label { font-family: var(--font-mono); font-size: 0.64rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--t3); overflow-wrap: anywhere; }
+/* The <pre> scrolls itself so a long argv never scrolls the card or the page. */
+.gpc-cmd pre { margin: 0; padding: 0.55rem 0.7rem; font-family: var(--font-mono); font-size: 0.72rem; line-height: 1.7; color: var(--t1); overflow-x: auto; white-space: pre; }
+.gpc-cmd pre:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.gpc-cmd-line { display: block; }
+/* A line the page added and the record did not carry: muted and marked, so a
+   reader copying the block can see which tokens were not recorded. */
+.gpc-derived { color: var(--t3); font-style: italic; }
+.gpc-derived::after { content: '  # added by this page'; color: var(--amber); font-style: normal; }
+.gpc-note { margin: 0.25rem 0.65rem 0.5rem; font-size: 0.72rem; color: var(--t2); line-height: 1.5; }
+@media print {
+  .gpc.is-wide { width: 100%; max-height: none; }
+  .gpc-step { break-inside: avoid; }
+  .gpc-step:not([open]) > summary ~ * { display: block; }
+}

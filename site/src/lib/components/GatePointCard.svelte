@@ -8,11 +8,25 @@
   // of them. Clicking such a point must still reach EVERY run inside it, so
   // this card takes an array and gives a group one tab per commit. The plotted
   // run is not privileged over the others — they are all real receipts.
+  import { tick } from 'svelte';
   import { shortModel, fmtDate } from '$lib/gates.js';
   import { moveTab } from '$lib/tablist.js';
   import GateRecordBody from './GateRecordBody.svelte';
+  import GateReproSteps from './GateReproSteps.svelte';
 
   let { records, onclose } = $props();
+
+  // "Reproduction steps" reveals in place under the receipt (per tab for a
+  // grouped point) and widens the card; focus moves to the panel heading so a
+  // keyboard reader lands on what just appeared.
+  let repro = $state(false);
+  let reproEl = $state(null);
+  async function toggleRepro() {
+    repro = !repro;
+    if (!repro) return;
+    await tick();
+    reproEl?.querySelector('h3')?.focus();
+  }
 
   // Newest first inside a group: the chart emphasises the latest value, so the
   // tab that opens should be the one a reader is most likely to be after.
@@ -42,6 +56,7 @@
 <div class="gpc-backdrop" onclick={onclose} role="presentation">
   <article
     class="gpc receipt"
+    class:is-wide={repro}
     role="dialog"
     aria-modal="true"
     aria-label={many
@@ -78,6 +93,20 @@
 
       <div id="gpc-panel" role={many ? 'tabpanel' : undefined} aria-labelledby={many ? `gpc-tab-${active}` : undefined}>
         <GateRecordBody record={r} />
+        <button
+          type="button"
+          class="gpc-repro-toggle"
+          aria-expanded={repro}
+          aria-controls="gpc-repro"
+          onclick={toggleRepro}
+        >
+          {repro ? 'hide reproduction steps' : 'reproduction steps'}
+        </button>
+        {#if repro}
+          <div bind:this={reproEl}>
+            <GateReproSteps record={r} />
+          </div>
+        {/if}
       </div>
 
       <div class="receipt-foot">
