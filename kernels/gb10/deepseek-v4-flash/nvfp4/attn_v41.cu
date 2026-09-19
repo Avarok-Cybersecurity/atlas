@@ -224,36 +224,69 @@ extern "C" __global__ void attn_v41_gemm_f32(
     if (row < M && col < N) C[(size_t)row * N + col] = acc;
 }
 
-// The same product at decode, one output per block: the bf16 input row and
-// the f32 weight row are staged into shared memory by all 256 threads
-// (coalesced 16-byte loads, every one in flight), then thread 0 runs the
-// strict k = 0..K-1 chain over them. The tiled kernel above accumulates each
-// output in the same order (tile after tile, k ascending, mul then add under
-// --fmad=false), so the bits are identical; what changes is that the 16x16
-// tile no longer idles 15 of its 16 rows and 16 threads no longer stream a
-// 20 KB row each (144 us a launch for a 10 MB weight on GB10, nsys 09-19).
-// K a multiple of 8, rows 16-byte aligned. Dynamic shared memory: K * 6 bytes.
-// Grid: (N, M, 1)  Block: (256, 1, 1)
+// The same product at decode, one output per block: the 256 threads compute
+// the K per-element PRODUCTS bf16(A[k]) * B[n][k] into shared memory (each
+// the tiled kernel's own FMUL result: --fmad=false keeps mul and add apart),
+// then thread 0 adds them in k order from 0.0f, eight float4 at a time from
+// registers. The tiled kernel accumulates each output in the same order
+// (tile after tile, k ascending), so the bits are identical; what changes is
+// that the 16x16 tile no longer idles 15 of its 16 rows and no load sits on
+// the chain (144 us a launch for a 10 MB weight on GB10, nsys 09-19; 67 us in
+// this form). K a multiple of 8, rows 16-byte aligned. Dynamic shared
+// memory: K * 4 bytes. Grid: (N, M, 1)  Block: (256, 1, 1)
+#define AV_CHAIN_UNROLL 8
 extern "C" __global__ void __launch_bounds__(256) attn_v41_gemv_f32_staged(
     const __nv_bfloat16* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
     const unsigned int M, const unsigned int N, const unsigned int K) {
-    extern __shared__ uint4 av_gemv_smem[];
+    extern __shared__ float av_gemv_products[];
     const unsigned int t = blockIdx.y;
     const unsigned int n = blockIdx.x;
     if (t >= M || n >= N) return;
-    const unsigned int k8 = K / 8;
-    uint4* sa = av_gemv_smem;
-    float4* sb = (float4*)(av_gemv_smem + k8);
     const uint4* a4 = (const uint4*)(A + (size_t)t * K);
     const float4* b4 = (const float4*)(B + (size_t)n * K);
-    for (unsigned int i = threadIdx.x; i < k8; i += blockDim.x) sa[i] = a4[i];
-    for (unsigned int i = threadIdx.x; i < 2 * k8; i += blockDim.x) sb[i] = b4[i];
+    for (unsigned int i = threadIdx.x; i < K / 8; i += blockDim.x) {
+        const uint4 av = a4[i];
+        const float4 b0 = b4[2 * i], b1 = b4[2 * i + 1];
+        const unsigned int ar[4] = {av.x, av.y, av.z, av.w};
+        const float bb[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
+        float pr[8];
+#pragma unroll
+        for (int q = 0; q < 4; ++q) {
+            __nv_bfloat16 a_lo, a_hi;
+            *(unsigned short*)&a_lo = (unsigned short)(ar[q] & 0xFFFFu);
+            *(unsigned short*)&a_hi = (unsigned short)(ar[q] >> 16);
+            pr[2 * q] = __bfloat162float(a_lo) * bb[2 * q];
+            pr[2 * q + 1] = __bfloat162float(a_hi) * bb[2 * q + 1];
+        }
+        float4* p4 = (float4*)(av_gemv_products + 8 * i);
+        p4[0] = make_float4(pr[0], pr[1], pr[2], pr[3]);
+        p4[1] = make_float4(pr[4], pr[5], pr[6], pr[7]);
+    }
     __syncthreads();
     if (threadIdx.x != 0) return;
-    const __nv_bfloat16* a = (const __nv_bfloat16*)sa;
-    const float* b = (const float*)sb;
+    const float4* p4 = (const float4*)av_gemv_products;
+    const unsigned int k4n = K / 4;
     float acc = 0.0f;
-    for (unsigned int k = 0; k < K; ++k) acc += __bfloat162float(a[k]) * b[k];
+    unsigned int k = 0;
+    for (; k + AV_CHAIN_UNROLL <= k4n; k += AV_CHAIN_UNROLL) {
+        float4 v[AV_CHAIN_UNROLL];
+#pragma unroll
+        for (int u = 0; u < AV_CHAIN_UNROLL; ++u) v[u] = p4[k + u];
+#pragma unroll
+        for (int u = 0; u < AV_CHAIN_UNROLL; ++u) {
+            acc += v[u].x;
+            acc += v[u].y;
+            acc += v[u].z;
+            acc += v[u].w;
+        }
+    }
+    for (; k < k4n; ++k) {
+        const float4 v = p4[k];
+        acc += v.x;
+        acc += v.y;
+        acc += v.z;
+        acc += v.w;
+    }
     C[(size_t)t * N + n] = acc;
 }
 

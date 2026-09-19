@@ -69,7 +69,7 @@ impl AttnV41 {
                     self.k.gemv_f32_staged,
                     [hd as u32, m as u32, 1],
                     [256, 1, 1],
-                    (c.dim * 6) as u32,
+                    (c.dim * 4) as u32,
                 )
             } else {
                 (

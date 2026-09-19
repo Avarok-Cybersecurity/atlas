@@ -199,18 +199,62 @@ __device__ __forceinline__ void hcv_finish_t(
 #pragma unroll
     for (unsigned int i = 0; i < hc * hc; ++i) comb[i] = c[i];
 }
-// hc_mult <= 4 (HCV_MAX_HC); dispatch to the constant-HC form.
+// The same finish on the lanes of ONE WARP (all 32 lanes must call): lane i
+// owns comb element i (row i / HC, column i % HC); a row or column sum is
+// gathered by shuffles and added in the serial form's k / j order from 0.0f,
+// the max, expf and every division stay per element, so the bits are
+// hcv_finish_t's. The serial form spent ~17 us a call on one thread through
+// the 20 Sinkhorn passes (1.5 ms a token over the 80 sites, nsys 09-19);
+// the 16 lanes do the same work in ~40 shuffle rounds.
+template <int HC>
+__device__ __forceinline__ void hcv_finish_lanes(
+    const float* __restrict__ mixes, const float* __restrict__ hc_scale,
+    const float* __restrict__ hc_base, float* __restrict__ pre, float* __restrict__ post,
+    float* __restrict__ comb, const unsigned int sinkhorn_iters, const float hc_eps) {
+    constexpr unsigned int hc = HC, n = HC * HC;
+    const unsigned int lane = threadIdx.x & 31u;
+    const unsigned int j = lane / hc, k = lane % hc;
+    if (lane < hc) {
+        pre[lane] = hcv_sigmoid(mixes[lane] * hc_scale[0] + hc_base[lane]) + hc_eps;
+        post[lane] = 2.0f * hcv_sigmoid(mixes[hc + lane] * hc_scale[1] + hc_base[hc + lane]);
+    }
+    float c = lane < n ? mixes[2 * hc + lane] * hc_scale[2] + hc_base[2 * hc + lane] : 0.0f;
+    // row softmax: the row max, exp, the row sum in k order, the divide
+    float m = -CUDART_INF_F;
+#pragma unroll
+    for (unsigned int kk = 0; kk < hc; ++kk) m = fmaxf(m, __shfl_sync(0xFFFFFFFFu, c, j * hc + kk));
+    c = expf(c - m);
+    float s = 0.0f;
+#pragma unroll
+    for (unsigned int kk = 0; kk < hc; ++kk) s += __shfl_sync(0xFFFFFFFFu, c, j * hc + kk);
+    c = c / s + hc_eps;
+    for (unsigned int it = 0; it < sinkhorn_iters; ++it) {
+        if (it > 0) {
+            s = 0.0f;
+#pragma unroll
+            for (unsigned int kk = 0; kk < hc; ++kk) s += __shfl_sync(0xFFFFFFFFu, c, j * hc + kk);
+            c /= s + hc_eps;
+        }
+        s = 0.0f;
+#pragma unroll
+        for (unsigned int jj = 0; jj < hc; ++jj) s += __shfl_sync(0xFFFFFFFFu, c, jj * hc + k);
+        c /= s + hc_eps;
+    }
+    if (lane < n) comb[lane] = c;
+}
+// hc_mult <= 4 (HCV_MAX_HC); dispatch to the constant-HC lanes form. Every
+// lane of the calling warp must reach this call.
 __device__ __forceinline__ void hcv_finish(
     const unsigned int hc, const float* mixes, const float* hc_scale, const float* hc_base,
     float* pre, float* post, float* comb, const unsigned int sinkhorn_iters, const float hc_eps) {
     switch (hc) {
-        case 4: hcv_finish_t<4>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
-        case 3: hcv_finish_t<3>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
-        case 2: hcv_finish_t<2>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
-        default: hcv_finish_t<1>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        case 4: hcv_finish_lanes<4>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        case 3: hcv_finish_lanes<3>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        case 2: hcv_finish_lanes<2>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        default: hcv_finish_lanes<1>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
     }
 }
-// Grid: (T). Block: 32 (thread 0 works).
+// Grid: (T). Block: 32 (the warp works).
 extern "C" __global__ void hc_v41_mixes_finish(
     const float* __restrict__ mixes_in, // [T, mix_hc]
     const float* __restrict__ hc_scale, // [3]
@@ -222,7 +266,7 @@ extern "C" __global__ void hc_v41_mixes_finish(
     const unsigned int sinkhorn_iters,
     const float hc_eps) {
     const unsigned int t = blockIdx.x;
-    if (threadIdx.x != 0) return;
+    if (threadIdx.x >= 32) return;
     const unsigned int hc = hc_mult;
     const unsigned int mix_hc = (2 + hc) * hc;
     hcv_finish(hc, mixes_in + (size_t)t * mix_hc, hc_scale, hc_base, pre + (size_t)t * hc,
@@ -240,7 +284,7 @@ __device__ __forceinline__ void hcv_collapse_col(
 // independent: the collapse reads the PREVIOUS site's pre (pre_in) while the
 // finish writes this site's (pre_out), never the same buffer. Block (0, t)
 // thread 0 runs the finish; every thread owns one column d of the collapse.
-// Grid: (ceil(H/256), T). Block: 256.
+// Grid: (ceil(H/256), T). Block: 256. Warp 0 of block (0, t) runs the finish.
 extern "C" __global__ void hc_v41_finish_collapse(
     const float* __restrict__ mixes_in, // [T, mix_hc]
     const float* __restrict__ hc_scale, // [3]
@@ -257,7 +301,7 @@ extern "C" __global__ void hc_v41_finish_collapse(
     const float hc_eps) {
     const unsigned int t = blockIdx.y;
     const unsigned int hc = hc_mult;
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
+    if (blockIdx.x == 0 && threadIdx.x < 32) {
         const unsigned int mix_hc = (2 + hc) * hc;
         hcv_finish(hc, mixes_in + (size_t)t * mix_hc, hc_scale, hc_base, pre_out + (size_t)t * hc,
                    post + (size_t)t * hc, comb + (size_t)t * hc * hc, sinkhorn_iters, hc_eps);

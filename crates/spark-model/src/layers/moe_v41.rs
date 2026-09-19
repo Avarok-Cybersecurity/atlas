@@ -93,7 +93,7 @@ struct Kernels {
     gemm_f32out: KernelHandle,
     /// router logits at m <= 8: strict-order GEMV, bit-identical to gemm_f32out
     router_gemv: KernelHandle,
-    /// the same logits staged through shared memory, ceil(N/2) blocks (decode)
+    /// the same logits from the products staged in shared memory, N blocks (decode)
     router_gemv_staged: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,

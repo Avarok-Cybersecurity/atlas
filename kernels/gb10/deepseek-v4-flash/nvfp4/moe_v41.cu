@@ -199,3 +199,80 @@ extern "C" __global__ void __launch_bounds__(256) moe_v41_router_gemv_f32out_sta
     C[(unsigned long long)t * N + n] = moe_v41_router_chain(
         (const __nv_bfloat16*)sa, (const __nv_bfloat16*)(sb + r * k8n), K);
 }
+
+// The same logits a third way: the block's 256 threads compute the 5120
+// PRODUCTS of one gate row against the activation row into shared memory
+// (a bf16 x bf16 product is exact in f32, so this is the chain's own FMUL
+// result), then lane 0 adds them in k order from 0.0f, MOE_V41_CHAIN_UNROLL
+// at a time from registers, so no load sits on the FADD chain. The adds are
+// the chain's adds in the chain's order: the same bits as the tiled kernel
+// and the two entries above (bench 09-19: 64 -> ~50 us a launch, one row a
+// block). Dynamic shared memory: K * 4 bytes.
+//
+// Grid: (N, M, 1)  Block: (256, 1, 1)
+#define MOE_V41_CHAIN_UNROLL 8
+extern "C" __global__ void __launch_bounds__(256) moe_v41_router_gemv_f32out_products(
+    const __nv_bfloat16* __restrict__ A,  // [M, K] row-major
+    const __nv_bfloat16* __restrict__ B,  // [N, K] row-major
+    float* __restrict__ C,                // [M, N] row-major, FP32
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    extern __shared__ float moe_v41_products[];
+    const unsigned int t = blockIdx.y;
+    const unsigned int n = blockIdx.x;
+    if (t >= M || n >= N) return;
+    const unsigned int k8n = K / 8;
+    const uint4* a4 = (const uint4*)(A + (unsigned long long)t * K);
+    const uint4* b4 = (const uint4*)(B + (unsigned long long)n * K);
+    for (unsigned int i = threadIdx.x; i < k8n; i += blockDim.x) {
+        const uint4 av = a4[i];
+        const uint4 bv = b4[i];
+        const unsigned int ar[4] = {av.x, av.y, av.z, av.w};
+        const unsigned int br[4] = {bv.x, bv.y, bv.z, bv.w};
+        float pr[8];
+        #pragma unroll
+        for (int q = 0; q < 4; ++q) {
+            __nv_bfloat16 a_lo, a_hi, b_lo, b_hi;
+            *(unsigned short*)&a_lo = (unsigned short)(ar[q] & 0xFFFFu);
+            *(unsigned short*)&a_hi = (unsigned short)(ar[q] >> 16);
+            *(unsigned short*)&b_lo = (unsigned short)(br[q] & 0xFFFFu);
+            *(unsigned short*)&b_hi = (unsigned short)(br[q] >> 16);
+            pr[2 * q] = __bfloat162float(a_lo) * __bfloat162float(b_lo);
+            pr[2 * q + 1] = __bfloat162float(a_hi) * __bfloat162float(b_hi);
+        }
+        float4* p4 = (float4*)(moe_v41_products + 8 * i);
+        p4[0] = make_float4(pr[0], pr[1], pr[2], pr[3]);
+        p4[1] = make_float4(pr[4], pr[5], pr[6], pr[7]);
+    }
+    __syncthreads();
+    if (threadIdx.x != 0) return;
+    float acc = 0.0f;
+    const float4* p4 = (const float4*)moe_v41_products;
+    const unsigned int k4n = K / 4;
+    unsigned int k = 0;
+    for (; k + MOE_V41_CHAIN_UNROLL <= k4n; k += MOE_V41_CHAIN_UNROLL) {
+        float4 v[MOE_V41_CHAIN_UNROLL];
+        #pragma unroll
+        for (int u = 0; u < MOE_V41_CHAIN_UNROLL; ++u) v[u] = p4[k + u];
+        #pragma unroll
+        for (int u = 0; u < MOE_V41_CHAIN_UNROLL; ++u) {
+            acc += v[u].x;
+            acc += v[u].y;
+            acc += v[u].z;
+            acc += v[u].w;
+        }
+    }
+    for (; k < k4n; ++k) {
+        const float4 v = p4[k];
+        acc += v.x;
+        acc += v.y;
+        acc += v.z;
+        acc += v.w;
+    }
+    for (unsigned int kk = k4n * 4; kk < K; ++kk) {
+        acc += __bfloat162float(A[(unsigned long long)t * K + kk]) * __bfloat162float(B[(unsigned long long)n * K + kk]);
+    }
+    C[(unsigned long long)t * N + n] = acc;
+}

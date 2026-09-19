@@ -42,16 +42,17 @@ impl MoeV41 {
         );
         // the gate at decode: one thread per logit in strict k order (the same
         // numbers as the tiled kernel, one pass over the gate rows)
-        // Decode: the staged GEMV (two gate rows a block through shared
-        // memory, the strict-order chain of `router_gemv` over them, same
-        // bits). `ATLAS_DS41_ROUTER_STAGED=0` keeps the direct GEMV.
+        // Decode: the products form (one gate row a block: the 256 threads
+        // write the exact bf16 x bf16 products into shared memory, one lane
+        // adds them in k order from registers: `router_gemv`'s bits).
+        // `ATLAS_DS41_ROUTER_STAGED=0` keeps the direct GEMV.
         let (kernel, grid, block, smem) = if m <= 8 {
             if router_staged() {
                 (
                     self.k.router_gemv_staged,
-                    [(c.n_routed as u32).div_ceil(2), m as u32, 1],
+                    [c.n_routed as u32, m as u32, 1],
                     [256, 1, 1],
-                    3 * c.dim as u32 * 2,
+                    c.dim as u32 * 4,
                 )
             } else {
                 (
@@ -126,9 +127,9 @@ impl MoeV41 {
         let (kernel, grid, block, smem) = if router_staged() {
             (
                 self.k.router_gemv_staged,
-                [(c.n_routed as u32).div_ceil(2), 1, 1],
+                [c.n_routed as u32, 1, 1],
                 [256, 1, 1],
-                3 * c.dim as u32 * 2,
+                c.dim as u32 * 4,
             )
         } else {
             (
