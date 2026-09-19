@@ -172,7 +172,12 @@ pub(super) fn load_layers(
     // ── the runtime shared by all layers ──
     let layout = slices.slot_layout();
     let arena = PinnedArena::alloc(gpu, cache_gib << 30)?;
-    let lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout)?;
+    let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout)?;
+    if let Ok(path) = std::env::var("ATLAS_DS41_ROUTE_TRACE") {
+        // diagnostics: the exact expert access sequence, one line a fetch
+        lru.set_trace(&path)?;
+        tracing::info!("DeepSeek-V4.1: expert route trace -> {path}");
+    }
     tracing::info!(
         "DeepSeek-V4.1: expert cache {} slots of {:.2} MiB (page-locked, device-visible)",
         lru.n_slots(),

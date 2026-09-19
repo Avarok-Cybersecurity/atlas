@@ -21,8 +21,9 @@
 //! through [`ExpertSource::read_expert`](super::expert_stream::ExpertSource).
 
 use std::collections::HashMap;
+use std::io::Write;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
 use super::expert_stream::{ExpertSource, SlotLayout};
 use crate::gpu::{DevicePtr, GpuBackend};
@@ -126,6 +127,9 @@ pub struct ExpertLru {
     tail: u32,
     epoch: u64,
     stats: LruStats,
+    /// `ATLAS_DS41_ROUTE_TRACE`: one line per `fetch_many` (see `set_trace`).
+    trace: Option<std::io::BufWriter<std::fs::File>>,
+    t0: std::time::Instant,
 }
 
 // SAFETY: the raw arena pointers are addresses into memory the caller owns
@@ -168,7 +172,38 @@ impl ExpertLru {
             tail: n_slots as u32 - 1,
             epoch: 1,
             stats: LruStats::default(),
+            trace: None,
+            t0: std::time::Instant::now(),
         })
+    }
+
+    /// Append every `fetch_many` to `path` as one line: microseconds since
+    /// the cache was built, the layer, the key count, the misses and the
+    /// evictions of the call, then the expert ids in request order. The
+    /// exact access sequence, for replaying cache policies offline.
+    pub fn set_trace(&mut self, path: &str) -> Result<()> {
+        let f = std::fs::File::create(path).with_context(|| format!("route trace {path}"))?;
+        self.trace = Some(std::io::BufWriter::with_capacity(1 << 16, f));
+        Ok(())
+    }
+
+    fn trace_line(&mut self, keys: &[(u32, u32)], misses: usize, evictions: u64) {
+        let Some(w) = self.trace.as_mut() else {
+            return;
+        };
+        let us = self.t0.elapsed().as_micros();
+        let layer = keys.first().map(|k| k.0).unwrap_or(u32::MAX);
+        let _ = write!(
+            w,
+            "{us} L{layer} n={} miss={misses} evict={evictions}",
+            keys.len()
+        );
+        for k in keys {
+            let _ = write!(w, " {}", k.1);
+        }
+        let _ = writeln!(w);
+        // a killed serve keeps every line written so far
+        let _ = w.flush();
     }
 
     pub fn n_slots(&self) -> usize {
@@ -338,6 +373,7 @@ impl ExpertLru {
     ) -> Result<Vec<ExpertSlot>> {
         let mut out = Vec::with_capacity(keys.len());
         let mut misses: Vec<(u32, (u32, u32))> = Vec::new();
+        let evictions0 = self.stats.evictions;
         for &key in keys {
             if let Some(&i) = self.map.get(&key) {
                 self.touch(i);
@@ -417,6 +453,10 @@ impl ExpertLru {
         let n_ok = misses.len() - failures.len();
         self.stats.misses += n_ok as u64;
         self.stats.bytes_read += (n_ok * bytes) as u64;
+        if self.trace.is_some() {
+            let ev = self.stats.evictions - evictions0;
+            self.trace_line(keys, misses.len(), ev);
+        }
         if let Some((_, first)) = failures.first() {
             let msg = format!(
                 "{} of {} expert reads failed; first: {first:#}",
