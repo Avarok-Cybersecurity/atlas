@@ -251,6 +251,44 @@ pub(crate) fn ssm_m128_min_m() -> Option<u32> {
     })
 }
 
+/// Write-on-accept K=4 batched verify. **Default OFF — opt in with
+/// `AVAROK_GDN_WOA=1`.** With it off, the parent wy4 kernel runs (writes every
+/// intermediate) and `trait_layer.rs`'s fold reports `Ok(false)`, so
+/// `async_chkpt.rs` performs the pre-WOA `h` restore for every K.
+///
+/// ★ IT SHIPPED ON AND IT CORRUPTS GENERATION AT C=4..8.
+///
+/// Measured on gb10, five concurrency-sweep runs in four hours, 2026-09-18.
+/// The signal is the SimHash semantic-loop watchdog, which cuts a response
+/// once the model starts paraphrasing itself; the cell then reports a
+/// truncated delivery and the gate refuses to score it:
+///
+/// | run                       | C4 | C8 | fires | vacuous | gate |
+/// |---------------------------|----|----|-------|---------|------|
+/// | main                      |  0 |  0 |    10 |       0 | PASS |
+/// | this line, fold ON        |  4 |  1 |    16 |       2 | FAIL |
+/// | ditto, gamma pinned       |  6 |  4 |    20 |       2 | FAIL |
+/// | this line, fold OFF       |  0 |  1 |    10 |       0 | PASS |
+/// | fold ON + a folded-slots  |  4 |  2 |     8 |       2 | FAIL |
+/// | scope fix                 |    |    |       |         |      |
+///
+/// All five agree at C=16..128. So the ARM is identified and the bug inside it
+/// is not: the gamma resolver (pinning the width changed nothing), the EOS
+/// path (every request reports finish=length), the VERIFY_WY_TABLE_SEQS=32
+/// bound (C=4..8 cannot exceed it, and a breach asserts) and a stale
+/// folded-slots record (fix applied, C=4 unchanged at 4 fires) are each
+/// eliminated by measurement rather than argument.
+///
+/// No concurrency guard: `woa_now` does take `n`, but nothing in the code
+/// distinguishes n=4 from n=16 — same predicate, same kernels, same 2..=32
+/// gate — and C=64/128 chunk to <=32 so the fold runs there too. A guard would
+/// encode an unexplained measurement, not a mechanism.
+///
+/// Turn the default back on when #879's author can explain C=4..8.
+pub(super) fn gdn_woa_enabled() -> bool {
+    std::env::var("AVAROK_GDN_WOA").ok().as_deref() == Some("1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GdnFlags, ssm_h_dtype_bits};

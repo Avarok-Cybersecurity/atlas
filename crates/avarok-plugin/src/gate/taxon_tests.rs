@@ -66,6 +66,7 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "b200/qwen3-next-80b-a3b/nvfp4",
             "b200/qwen3.6-35b-a3b/nvfp4",
             "gb10/deepseek-v4-flash/nvfp4",
+            "gb10/deepseek-v4.1-flash/nvfp4",
             "gb10/gemma-4-26b-a4b/nvfp4",
             "gb10/gemma-4-31b/nvfp4",
             "gb10/glm-5.3-flash/nvfp4",

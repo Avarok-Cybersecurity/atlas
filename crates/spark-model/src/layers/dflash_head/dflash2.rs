@@ -82,7 +82,7 @@ impl BlockDiffusionDraftHead {
         n_seq: u32,       // sequences packed seq-major; 1 = the single-seq path
         stream: u64,
     ) -> Result<()> {
-        let block_g = self.gamma as u32;
+        let block_g = self.block_g() as u32;
         let g = block_g * n_seq.max(1);
         let h = self.hidden_size as u32;
         let groups = h / self.conv_group_size as u32;
@@ -128,7 +128,7 @@ impl BlockDiffusionDraftHead {
         let Some((base, proj)) = self.conv_weights(layer, site) else {
             return Ok(hidden_in);
         };
-        let g = self.gamma as u32 * n_seq.max(1);
+        let g = self.block_g() as u32 * n_seq.max(1);
         let h = self.hidden_size as u32;
         let groups = h / self.conv_group_size as u32;
         let dyn_cols = 2 * self.conv_kernel_size as u32 * groups;
@@ -199,7 +199,7 @@ impl BlockDiffusionDraftHead {
     ) -> Result<()> {
         let gpu = ctx.gpu;
         let n = n_seq.max(1);
-        let g = self.gamma as u32;
+        let g = self.block_g() as u32;
         let rows = g * n;
         let vocab = self.vocab_size as u32;
         let rank = self.selector_rank as u32;

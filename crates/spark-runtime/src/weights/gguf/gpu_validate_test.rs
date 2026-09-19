@@ -107,6 +107,10 @@ fn gguf_gpu_validate_matches_cpu_oracle() {
     check_type(&gpu, "Q4_K", 12, 256, 144, &[0, 2], 128, n);
     // Q6_K: QK=256, 210 B, fp16 d@208.
     check_type(&gpu, "Q6_K", 14, 256, 210, &[208], 128, n);
+    // Q2_K: QK=256, 84 B, fp16 d@80 + fp16 dmin@82 (DeepSeek-V4.1 Flash Q2_K).
+    check_type(&gpu, "Q2_K", 10, 256, 84, &[80, 82], 128, n);
+    // Q3_K: QK=256, 110 B, fp16 d@108 (V4.1 routed down projections).
+    check_type(&gpu, "Q3_K", 11, 256, 110, &[108], 128, n);
     // Q2_0 id42 group-128: QK=128, 34 B, fp16 scale@0.
     check_type(&gpu, "Q2_0_g128", 42, 128, 34, &[0], 128, n);
     // Q2_0 id42 group-64 (fork-master variant): QK=64, 18 B, fp16 scale@0.

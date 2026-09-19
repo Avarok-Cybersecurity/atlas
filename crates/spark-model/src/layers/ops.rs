@@ -141,6 +141,10 @@ mod moe_prefill;
 #[path = "ops/norm.rs"]
 mod norm;
 // The gated-RMS-norm launch-count pin (#927): 48 per step, not 768.
+mod kquant_mmq;
+#[cfg(test)]
+#[path = "ops/kquant_mmq_tests.rs"]
+mod kquant_mmq_tests;
 #[cfg(test)]
 #[path = "ops/norm_gated_rms_strided_tests.rs"]
 mod norm_gated_rms_strided_tests;
@@ -190,6 +194,8 @@ mod ssm_gdn_hopper_prefill;
 mod ssm_gdn_snap;
 #[path = "ops/ssm_gdn_tc_route.rs"]
 mod ssm_gdn_tc_route;
+#[path = "ops/ssm_gdn_wyn.rs"]
+mod ssm_gdn_wyn;
 #[path = "ops/ssm_mamba.rs"]
 mod ssm_mamba;
 #[path = "ops/ssm_preproc.rs"]
@@ -234,6 +240,7 @@ pub use glm5next_mhc::*;
 pub use hyper_connection::*;
 pub use hyper_connection_dispatch::*;
 pub use hyper_connection_lowrank::*;
+pub use kquant_mmq::*;
 pub use kv_cache::*;
 pub use kv_cache_fp8k::*;
 pub use kv_cache_turbok::*;
@@ -273,6 +280,7 @@ pub use ssm_gdn_batched::*;
 pub(crate) use ssm_gdn_hopper_prefill::*;
 pub use ssm_gdn_snap::*;
 pub use ssm_gdn_tc_route::*;
+pub use ssm_gdn_wyn::*;
 pub use ssm_mamba::*;
 pub use ssm_preproc::*;
 pub use ssm_ssd::*;

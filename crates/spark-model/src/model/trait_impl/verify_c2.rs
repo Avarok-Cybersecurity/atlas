@@ -192,8 +192,19 @@ impl TransformerModel {
         // A56 instrument (see verify_c.rs). Implies GRAPHS + NOCACHE.
         let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
         let ep_graphs = ep_graphs || graph_trace;
-        let use_graphs =
-            (self.comm.is_none() || ep_graphs) && !hss_engaged && !lora_eager && !k4_diag;
+        let use_graphs = (self.comm.is_none() || ep_graphs)
+            && !hss_engaged
+            && !lora_eager
+            && !k4_diag
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for). Kept as an AND on top of main's EP
+            // gating: this exclusion is about what capture can express, not
+            // about whether capture is wanted.
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -302,6 +313,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
