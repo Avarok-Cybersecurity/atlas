@@ -48,6 +48,7 @@ pub mod forced_think_end;
 pub mod forced_token;
 pub mod grammar_bitmask;
 pub mod mid_word;
+pub mod min_tokens_eos;
 pub mod pin_tool_call;
 pub mod post_close;
 pub mod tool_during_think;
@@ -71,6 +72,8 @@ pub struct LogitsContext<'a> {
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_end_token: Option<u32>,
+    /// Verify-position offset used by position-aware request masks.
+    pub verify_pos: usize,
     /// `mask[id]` iff token `id` decodes to text ending in a generation
     /// boundary. Vocab-sized and INDEXED BY TOKEN ID, so it is meaningless
     /// against a different tokenizer — carried beside the token ids it belongs
@@ -188,7 +191,8 @@ pub fn run_pipeline_with_path(
     ctx: &LogitsContext,
     path: &'static str,
 ) -> Option<u32> {
-    let stages: [&dyn LogitsProcessor; 8] = [
+    let stages: [&dyn LogitsProcessor; 9] = [
+        &min_tokens_eos::MinTokensEosMask,
         &f2_confidence::F2ConfidenceEarlyStop,
         &mid_word::MidWordThinkEndMask,
         &post_close::PostCloseThinkMask,

@@ -40,6 +40,9 @@ mod prefix_reserve;
 mod proc_range;
 mod prompt_logprobs;
 mod save_checkpoint;
+mod snap_agree;
+#[cfg(test)]
+mod snap_agree_tests;
 mod stage_batched;
 mod upload_meta;
 mod upload_paged;
