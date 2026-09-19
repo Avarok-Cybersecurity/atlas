@@ -18,8 +18,8 @@
 //!   * [`ExpertSliceMap`]: where expert `e` of layer `l` lives for each of the
 //!     three stacked tensors (`blk.N.ffn_{gate,up,down}_exps.weight`, GGUF dims
 //!     `[k, n, experts]`), and the read of one expert into one slot.
-//!   * [`EngramRowReader`]: the ~30 GiB engram tables, one Q2_K block (84 B) per
-//!     row, read by row id on demand. 48 rows per token.
+//!   * [`EngramRowReader`] (`engram_rows.rs`): the ~30 GiB engram tables, one
+//!     Q2_K block (84 B) per row, read by row id on demand. 48 rows per token.
 //!
 //! Oracle: bytes identical to the mmap path, held by
 //! `deepseek_v41_stream_oracle_test.rs` on the real shards.
@@ -35,6 +35,7 @@ use super::container::{GgufFile, Q2Group, TensorInfo};
 use super::sidecar;
 use crate::weights::{find_gguf, find_gguf_shards};
 
+pub use super::engram_rows::{EngramRowReader, EngramTable};
 pub use super::expert_lru::{ExpertLru, ExpertSlot, LruStats, PinnedArena};
 
 /// Positional read of exactly `dst.len()` bytes at `offset`. No file position
@@ -147,7 +148,7 @@ impl ShardFiles {
     }
 
     /// Every `(shard, tensor)` whose name ends with `suffix`.
-    fn with_suffix<'a>(
+    pub(super) fn with_suffix<'a>(
         &'a self,
         suffix: &'a str,
     ) -> impl Iterator<Item = (usize, &'a TensorInfo)> + 'a {
@@ -160,13 +161,13 @@ impl ShardFiles {
         })
     }
 
-    fn abs_offset(&self, shard: usize, t: &TensorInfo) -> u64 {
+    pub(super) fn abs_offset(&self, shard: usize, t: &TensorInfo) -> u64 {
         self.shards[shard].gguf.tensor_abs_offset(t) as u64
     }
 }
 
 /// `blk.N.<rest>` -> `N`.
-fn block_layer(name: &str) -> Option<usize> {
+pub(super) fn block_layer(name: &str) -> Option<usize> {
     let rest = name.strip_prefix("blk.")?;
     let end = rest.find('.')?;
     rest[..end].parse().ok()
@@ -432,98 +433,6 @@ impl ExpertSource for ExpertSliceMap {
             .with_context(|| {
                 format!("layer {layer} expert {expert} shard {shard} range {a}..{b}")
             })?;
-        }
-        Ok(())
-    }
-}
-
-/// One engram table: `blk.N.engram_embd.weight`, GGUF dims `[head_dim, rows]`,
-/// one quant block per row.
-#[derive(Clone, Copy, Debug)]
-pub struct EngramTable {
-    pub layer: usize,
-    pub shard: usize,
-    pub base: u64,
-    pub rows: usize,
-    pub row_bytes: usize,
-    pub head_dim: usize,
-    pub ggml_type_id: u32,
-}
-
-/// Row reads from the engram tables. The tables are ~30 GiB each and a token
-/// touches 24 rows per table, so nothing is cached: every call is `ids.len()`
-/// positional reads of one block.
-pub struct EngramRowReader {
-    files: Arc<ShardFiles>,
-    tables: Vec<EngramTable>,
-}
-
-impl EngramRowReader {
-    pub fn new(files: Arc<ShardFiles>) -> Result<Self> {
-        let mut tables = Vec::new();
-        for (shard, t) in files.with_suffix("engram_embd.weight") {
-            let Some(layer) = block_layer(&t.name) else {
-                continue;
-            };
-            ensure!(
-                t.dims.len() == 2,
-                "{}: expected [head_dim, rows], got {:?}",
-                t.name,
-                t.dims
-            );
-            let (head_dim, rows) = (t.dims[0], t.dims[1]);
-            let (qk, bb) = t.ggml_type.block_layout(Q2Group::G128)?;
-            ensure!(
-                qk == head_dim,
-                "{}: head_dim {head_dim} is not one {qk}-element block per row",
-                t.name
-            );
-            tables.push(EngramTable {
-                layer,
-                shard,
-                base: files.abs_offset(shard, t),
-                rows,
-                row_bytes: bb,
-                head_dim,
-                ggml_type_id: t.ggml_type.id(),
-            });
-        }
-        ensure!(!tables.is_empty(), "no engram_embd tensors in this GGUF");
-        tables.sort_by_key(|t| t.layer);
-        Ok(EngramRowReader { files, tables })
-    }
-
-    pub fn tables(&self) -> &[EngramTable] {
-        &self.tables
-    }
-
-    pub fn table(&self, layer: usize) -> Option<&EngramTable> {
-        self.tables.iter().find(|t| t.layer == layer)
-    }
-
-    /// Read rows `ids` of layer `layer`'s table into `dst`
-    /// (`ids.len() * row_bytes` bytes, in `ids` order).
-    pub fn read_rows(&self, layer: usize, ids: &[u64], dst: &mut [u8]) -> Result<()> {
-        let t = self
-            .table(layer)
-            .with_context(|| format!("layer {layer} has no engram table"))?;
-        ensure!(
-            dst.len() == ids.len() * t.row_bytes,
-            "dst is {} bytes for {} rows of {}",
-            dst.len(),
-            ids.len(),
-            t.row_bytes
-        );
-        let file = self.files.file(t.shard);
-        for (i, &id) in ids.iter().enumerate() {
-            ensure!(
-                (id as usize) < t.rows,
-                "engram row {id} >= {} (layer {layer})",
-                t.rows
-            );
-            let off = t.base + id * t.row_bytes as u64;
-            pread(file, off, &mut dst[i * t.row_bytes..(i + 1) * t.row_bytes])
-                .with_context(|| format!("engram layer {layer} row {id}"))?;
         }
         Ok(())
     }
