@@ -27,16 +27,23 @@
 //! attention is shared ACROSS layers (four kv sources write, forty read), which
 //! no per-layer state can express, so one runtime object is shared by all
 //! forty layers through an `Arc` and guarded by mutexes. One sequence at a
-//! time; multi-sequence decode and CUDA-graph capture are declined through the
-//! layer hooks.
+//! time; multi-sequence decode and the MODEL-level CUDA graph are declined
+//! through the layer hooks. The layer captures its own single-token step
+//! instead (`ATLAS_DS41_GRAPH=1`, see [`GraphMode`]): the host work in the
+//! middle of every layer (the routing download and the expert fetch; on the
+//! twelve kv/index source layers also the compressor group and the index
+//! top-k) splits the step into graph segments with the host spans between.
 //!
 //! Routed experts never sit in HBM: the cache is a page-locked, device-visible
 //! arena the GPU reads in place (`ExpertLru` + `ExpertSliceMap`), filled by
 //! pread from the seven shards; the engram tables are read by row (`EngramRowReader`).
 
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock};
 
-use spark_runtime::gpu::{DevicePtr, KernelHandle};
+use anyhow::Result;
+
+use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::weights::expert_stream::{
     EngramRowReader, ExpertLru, ExpertSliceMap, PinnedArena,
 };
@@ -50,6 +57,7 @@ use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights};
 use crate::layers::qwen3_attention::HcSiteWeights;
 use crate::weight_map::DenseWeight;
 
+mod graph;
 mod step;
 mod trait_impl;
 
@@ -94,6 +102,73 @@ pub struct V41Runtime {
     pub step_attn_ms: Mutex<f64>,
     pub step_engram_ms: Mutex<f64>,
     pub step_start: Mutex<Option<std::time::Instant>>,
+    /// Set when a capture failed: every segment from then on runs eagerly
+    /// (graphs already captured keep replaying; they are valid).
+    pub graph_disabled: AtomicBool,
+}
+
+/// How the single-token step runs. `ATLAS_DS41_GRAPH_ORACLE=1` runs every
+/// layer BOTH ways and compares the highway bit for bit; `ATLAS_DS41_GRAPH=1`
+/// replays the captured segments; anything else is the eager step. Read once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphMode {
+    Off,
+    On,
+    Oracle,
+}
+
+pub fn graph_mode() -> GraphMode {
+    static MODE: OnceLock<GraphMode> = OnceLock::new();
+    *MODE.get_or_init(|| {
+        let is_one = |k: &str| std::env::var(k).is_ok_and(|v| v == "1");
+        if is_one("ATLAS_DS41_GRAPH_ORACLE") {
+            GraphMode::Oracle
+        } else if is_one("ATLAS_DS41_GRAPH") {
+            GraphMode::On
+        } else {
+            GraphMode::Off
+        }
+    })
+}
+
+/// The pointers a layer's captured segments bake that are not the runtime's
+/// own (those live as long as the runtime). Checked on every replay: a
+/// different set means the graphs describe other buffers and are recaptured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Baked {
+    hidden: DevicePtr,
+    streams: DevicePtr,
+    normed: DevicePtr,
+    window: DevicePtr,
+    /// the kv source's latent cache the captured `sparse_attn` reads
+    rows_b: Option<DevicePtr>,
+    attn_out: DevicePtr,
+    moe_out: DevicePtr,
+}
+
+/// One layer's captured single-token step, per sequence (it bakes the
+/// sequence's window ring and the kv source's cache).
+///
+/// Segment A = the attention site's mixes, collapse and norm, the attention
+/// (capturable layers only), `hc_post`, the ffn site's mixes, collapse and
+/// norm, the router GEMV. On the twelve kv/index source layers the attention
+/// runs eagerly between `a[0]` (through the norm) and `a[1]` (from `hc_post`).
+/// Host span: the routing download, the expert fetch, the plan uploads.
+/// Segment B = the expert compute, `hc_post`, the delayed-mix copy, and on
+/// the last layer the final collapse.
+struct LayerGraphs {
+    a: [Option<GraphHandle>; 2],
+    b: Option<GraphHandle>,
+    baked: Baked,
+}
+
+impl LayerGraphs {
+    fn destroy(self, gpu: &dyn GpuBackend) -> Result<()> {
+        for g in self.a.into_iter().chain([self.b]).flatten() {
+            gpu.destroy_graph(g)?;
+        }
+        Ok(())
+    }
 }
 
 // SAFETY: every raw device/host pointer here names memory the runtime owns
@@ -104,6 +179,7 @@ unsafe impl Sync for V41Runtime {}
 
 pub struct V41LayerState {
     pub attn: AttnV41LayerState,
+    graphs: Option<LayerGraphs>,
 }
 
 impl LayerState for V41LayerState {
