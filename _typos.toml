@@ -11,6 +11,14 @@
 # Generated build output (`target/`, `book/output/`) is excluded too.
 
 [default]
+# Content hashes. The site guide (site/SITE-GUIDE.md, site/guide/*.json) records the
+# first twelve hex digits of each asset's sha256, and a random run of hex spells
+# things: `dbe`, `afe`, `fle`. Only a twelve digit hex token inside backticks or a
+# "sha" value is ignored, so prose in those files is still checked.
+extend-ignore-re = [
+    "`[0-9a-f]{12}`",
+    '"sha": "[0-9a-f]{12}"',
+]
 extend-ignore-identifiers-re = [
     # `in_proj_ba` is the bias projection in NVIDIA's NV-FP4 Mamba/SSM
     # checkpoints (`in_proj_ba` = b + a parameters); not a typo of `by`/`be`.

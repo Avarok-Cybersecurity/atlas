@@ -388,20 +388,20 @@
       "date": "2026-09-18"
     },
     "site/static/brand/logo-full.svg": {
-      "sha": "365f6d2a616c",
-      "bytes": 35,
+      "sha": "979bbe043695",
+      "bytes": 14959,
       "rev": 1,
       "date": "2026-09-18"
     },
     "site/static/brand/logo-horizontal.svg": {
-      "sha": "395eda237732",
-      "bytes": 41,
+      "sha": "f18e0116c2da",
+      "bytes": 6173,
       "rev": 1,
       "date": "2026-09-18"
     },
     "site/static/brand/mark-compact.svg": {
-      "sha": "dbe376bb7706",
-      "bytes": 38,
+      "sha": "48c458d5c681",
+      "bytes": 622,
       "rev": 1,
       "date": "2026-09-18"
     },

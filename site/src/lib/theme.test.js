@@ -26,7 +26,7 @@ test('without a document, readTheme reports dark rather than throwing', () => {
  */
 function runBootScript({ stored = null, prefersLight = false, pathname = '/', storageThrows = false } = {}) {
   const html = readFileSync(new URL('../app.html', import.meta.url), 'utf8');
-  const source = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  const source = html.match(/<script>([\s\S]*?)<\/script\s*>/i)?.[1];
   expect(source, 'no inline boot script found in app.html').toBeTruthy();
 
   const appended = [];

@@ -57,13 +57,32 @@ export const canonical = (file, buf) => (TEXT.test(file) ? Buffer.from(buf.toStr
 
 const walk = (dir) => (existsSync(dir) ? readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? walk(join(dir, f)) : [join(dir, f)])) : []);
 
+/**
+ * Read an asset the same way on every machine, symlinks included.
+ *
+ * static/brand/*.svg are git symlinks to the masters in assets/brand. On Linux
+ * and macOS reading one gives the SVG. A Windows checkout without symlink
+ * support leaves a small text file holding the target's path instead, so the
+ * same "file" hashed to two different values and the ledger written on one
+ * machine failed on the other. A stand-in is recognised by what it is, one short
+ * line that is a relative path to a file that exists, and followed by hand.
+ */
+export function readAsset(file) {
+  const buf = readFileSync(file);
+  if (buf.length > 260 || buf.includes(0)) return buf;
+  const target = buf.toString('utf8').trim();
+  if (!/^\.{1,2}\/[\w./-]+$/.test(target)) return buf;
+  const resolved = resolve(dirname(file), target);
+  return existsSync(resolved) && statSync(resolved).isFile() ? readFileSync(resolved) : buf;
+}
+
 /** path -> { sha, bytes } for every tracked file. The sha is the first 12 hex of sha256. */
 export function collectAssets() {
   const files = [...ASSET_ROOTS.flatMap((r) => walk(join(REPO_DIR, r))), ...ASSET_FILES.map((f) => join(REPO_DIR, f)).filter(existsSync)];
   const out = {};
   for (const file of files.sort()) {
     if (/\.(md|json|txt)$/i.test(file) && !/LICENSE/i.test(file)) continue; // notes about assets are not assets
-    const buf = canonical(file, readFileSync(file));
+    const buf = canonical(file, readAsset(file));
     out[posix(relative(REPO_DIR, file))] = { sha: createHash('sha256').update(buf).digest('hex').slice(0, 12), bytes: buf.length };
   }
   return out;

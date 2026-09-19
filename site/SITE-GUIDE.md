@@ -46,7 +46,7 @@ Names, addresses, links and licence lines. Each is defined once in `src/lib/cont
 | `contacts.technical` | thomas@atlascybernetics.ai | 1 | 2026-09-18 | 3: /company/careers, /contact, /engine |
 | `footer.legal` | © 2026 Atlas Cybernetics Corp. Avarok and Avarok Engine are products of Atlas Cybernetics Corp. | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `footer.license` | Community Edition under AGPL-3.0. Enterprise Edition under a commercial license. | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
-| `footer.mlperf` | The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association in… | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
+| `footer.mlperf` | The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association … | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `footer.slogan` | Same silicon. Smarter inference. Stronger scalability. | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `form.endpoint` | (none: forms draft an email) | 1 | 2026-09-18 | not rendered as text |
 | `links.blog` | https://blog.atlascybernetics.ai | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
@@ -66,7 +66,7 @@ Names, addresses, links and licence lines. Each is defined once in `src/lib/cont
 | `links.recipes` | https://github.com/Avarok-Cybersecurity/atlas-recipes | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `links.scale` | https://docs.scale-lang.com/stable/ | 1 | 2026-09-18 | 4: /company, /engine, / and 1 more |
 | `links.securityPolicy` | https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
-| `links.sequoiaPatel` | https://sequoiacap.com/podcast/dylan-patel-of-semianalysis-why-hardware-software-co-design-is-a… | 1 | 2026-09-18 | not rendered as text |
+| `links.sequoiaPatel` | https://sequoiacap.com/podcast/dylan-patel-of-semianalysis-why-hardware-software-co-design-is-a … | 1 | 2026-09-18 | not rendered as text |
 | `links.transformersPr` | https://github.com/huggingface/transformers/pull/46423 | 1 | 2026-09-18 | 3: /company, /engine, / |
 | `links.x` | https://x.com/AtlasInferenceX | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `site.origin` | https://atlascybernetics.ai | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
@@ -95,9 +95,9 @@ Every file a visitor is served that came from somewhere, and the brand masters. 
 | `assets/brand/mark.svg` | 587 | `923112776c10` | 1 | 2026-09-18 |  |
 | `blog/static/og-image.png` | 110,902 | `8f02fc93990d` | 1 | 2026-09-18 |  |
 | `site/static/apple-touch-icon.png` | 8,994 | `bd6fe104d278` | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
-| `site/static/brand/logo-full.svg` | 35 | `365f6d2a616c` | 1 | 2026-09-18 |  |
-| `site/static/brand/logo-horizontal.svg` | 41 | `395eda237732` | 1 | 2026-09-18 |  |
-| `site/static/brand/mark-compact.svg` | 38 | `dbe376bb7706` | 1 | 2026-09-18 |  |
+| `site/static/brand/logo-full.svg` | 14,959 | `979bbe043695` | 1 | 2026-09-18 |  |
+| `site/static/brand/logo-horizontal.svg` | 6,173 | `f18e0116c2da` | 1 | 2026-09-18 |  |
+| `site/static/brand/mark-compact.svg` | 622 | `48c458d5c681` | 1 | 2026-09-18 |  |
 | `site/static/favicon.ico` | 13,948 | `de403885c52b` | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `site/static/favicon.svg` | 625 | `4d7bf0d994b6` | 1 | 2026-09-18 | 35: /benchmarks, /company, /company/careers and 32 more |
 | `site/static/fonts/IBM-PLEX-MONO-LICENSE.txt` | 5,299 | `23b0a9d0c6d3` | 1 | 2026-09-18 |  |
@@ -399,9 +399,9 @@ From `footer` in `src/lib/content/brand.js`. The same on every page.
   - "Fused Qwen GDN kernel merged into Transformers." goes to `https://github.com/huggingface/transformers/pull/46423`
   - "Dev Ambassadors. A recipe for every release." goes to `https://qwen.ai/ambassador`
   - "SCALE by Spectral Compute One CUDA source, NVIDIA and AMD." goes to `https://docs.scale-lang.com/stable/`
-  - "Inference layer Avarok Engine Runs your models faster on the same sil…" goes to `/platform/engine`
-  - "Governance and control plane Avarok Control Deploys, governs and repa…" goes to `/platform/control`
-  - "Economics layer Avarok Economics Turns telemetry into accountability.…" goes to `/platform/economics`
+  - "Inference layer Avarok Engine Runs your models faster on the same …" goes to `/platform/engine`
+  - "Governance and control plane Avarok Control Deploys, governs and …" goes to `/platform/control`
+  - "Economics layer Avarok Economics Turns telemetry into …" goes to `/platform/economics`
   - "Read the ladder" goes to `/benchmarks`
   - "See the posture" goes to `/platform/security`
   - "Open the model" goes to `/pricing#payback`
@@ -409,10 +409,10 @@ From `footer` in `src/lib/content/brand.js`. The same on every page.
   - "Every benchmark" goes to `/benchmarks`
   - "reproduce it" goes to `/diligence`
   - "See it on your workload" goes to `/demo#book`
-  - "July 2026 Named contributor to the MLPerf Inference v6.1 edge agentic…" goes to `https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/`
-  - "July 2026 Fused Qwen Gated DeltaNet kernel merged into Transformers S…" goes to `https://github.com/huggingface/transformers/pull/46423`
-  - "July 2026 Strix Halo hardware provided. MLPerf v6.1 submitted from th…" goes to `https://x.com/AtlasInferenceX`
-  - "Member Program member. DGX Spark hardware provided for the GB10 bring…" goes to `https://www.nvidia.com/en-us/startups/`
+  - "July 2026 Named contributor to the MLPerf Inference v6.1 edge …" goes to `https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/`
+  - "July 2026 Fused Qwen Gated DeltaNet kernel merged into Transformers …" goes to `https://github.com/huggingface/transformers/pull/46423`
+  - "July 2026 Strix Halo hardware provided. MLPerf v6.1 submitted from …" goes to `https://x.com/AtlasInferenceX`
+  - "Member Program member. DGX Spark hardware provided for the GB10 …" goes to `https://www.nvidia.com/en-us/startups/`
   - "Go deeper on speed" goes to `/platform/engine`
   - "Go deeper on security" goes to `/platform/security`
   - "Go deeper on governance" goes to `/platform/economics`
@@ -442,11 +442,11 @@ From `footer` in `src/lib/content/brand.js`. The same on every page.
 - buttons and links:
   - [button] "Book a demo" goes to `/demo#book`
   - [button] "Watch the console tour" goes to `/#tour`
-  - "Inference layer Avarok Engine Compiled per hardware, model and quanti…" goes to `/platform/engine`
-  - "Governance and control plane Avarok Control Signed recipes, canary ro…" goes to `/platform/control`
-  - "Economics layer Avarok Economics Cost per workload, chargeback, stran…" goes to `/platform/economics`
-  - "Posture Security One signed binary, no interpreter in the request pat…" goes to `/platform/security`
-  - "Surfaces Deployment Hosted with private connectivity, your cloud acco…" goes to `/platform/deployment`
+  - "Inference layer Avarok Engine Compiled per hardware, model and …" goes to `/platform/engine`
+  - "Governance and control plane Avarok Control Signed recipes, canary …" goes to `/platform/control`
+  - "Economics layer Avarok Economics Cost per workload, chargeback …" goes to `/platform/economics`
+  - "Posture Security One signed binary, no interpreter in the request …" goes to `/platform/security`
+  - "Surfaces Deployment Hosted with private connectivity, your cloud …" goes to `/platform/deployment`
   - "Compatibility Hardware and models Verified silicon, targets in bring …" goes to `/platform/hardware`
   - [button] "Run the payback model" goes to `/pricing#payback`
 
@@ -544,15 +544,15 @@ From `footer` in `src/lib/content/brand.js`. The same on every page.
 - drawn by: `src/routes/(marketing)/resources/+page.svelte`
 - copy: `src/lib/content/brand.js` (company, footer, links, nav, routes), `src/lib/content/index.js` (SITE, pages), `src/lib/content/media.js` (artsFor, heroClipFor), `src/lib/content/resources.js` (openSourceCallout, resourcesHub)
 - buttons and links:
-  - "Blog Kernel work, measured benchmarks and what it takes to run fronti…" goes to `https://blog.atlascybernetics.ai`
-  - "Documentation The Avarok book. Install, recipes, deployment, the cont…" goes to `https://docs.atlascybernetics.ai`
-  - "Product updates What shipped, what changed and what it does not chang…" goes to `/resources/updates`
-  - "Benchmarks The concurrency ladder and every gate record, generated fr…" goes to `/benchmarks`
-  - "Open source The engine, under AGPL-3.0. One install command, every re…" goes to `/engine`
-  - "Contributors Everyone who has landed code in the repository, called o…" goes to `/resources/contributors`
+  - "Blog Kernel work, measured benchmarks and what it takes to run …" goes to `https://blog.atlascybernetics.ai`
+  - "Documentation The Avarok book. Install, recipes, deployment, the …" goes to `https://docs.atlascybernetics.ai`
+  - "Product updates What shipped, what changed and what it does not …" goes to `/resources/updates`
+  - "Benchmarks The concurrency ladder and every gate record, generated …" goes to `/benchmarks`
+  - "Open source The engine, under AGPL-3.0. One install command, every …" goes to `/engine`
+  - "Contributors Everyone who has landed code in the repository, called …" goes to `/resources/contributors`
   - "Events Where to meet the team, in person and online. Find us" goes to `/resources/events`
-  - "Avarok Labs The research arm. Kernels, compression, speculative decod…" goes to `/labs`
-  - "Verification walkthrough Reproduce the ladder yourself. Fingerprint, …" goes to `/diligence`
+  - "Avarok Labs The research arm. Kernels, compression, speculative …" goes to `/labs`
+  - "Verification walkthrough Reproduce the ladder yourself. Fingerprint …" goes to `/diligence`
   - [button] "Install the engine" goes to `/engine`
   - [button] "Star on GitHub" goes to `https://github.com/Avarok-Cybersecurity/atlas`
 
@@ -591,19 +591,19 @@ From `footer` in `src/lib/content/brand.js`. The same on every page.
 - drawn by: `src/routes/(marketing)/solutions/+page.svelte`
 - copy: `src/lib/content/brand.js` (company, footer, industries, links, nav, routes, solutionHref), `src/lib/content/index.js` (SITE, pages), `src/lib/content/media.js` (artsFor, heroClipFor), `src/lib/content/solutions.js` (solutionCta, solutions, solutionsIndex)
 - buttons and links:
-  - "Neoclouds and GPU providers You sell GPU time. Avarok makes every hou…" goes to `/solutions/neoclouds`
-  - "Enterprise datacenters You invested in the datacenter. Now get the mo…" goes to `/solutions/enterprise-datacenter`
+  - "Neoclouds and GPU providers You sell GPU time. Avarok makes every …" goes to `/solutions/neoclouds`
+  - "Enterprise datacenters You invested in the datacenter. Now get the …" goes to `/solutions/enterprise-datacenter`
   - "Financial services Inference that stays inside the perimeter, with a …" goes to `/solutions/financial-services`
-  - "Healthcare Clinical grade inference on hardware the hospital owns. Re…" goes to `/solutions/healthcare`
-  - "Government and defense Air gapped by design. Signed by default. Nothi…" goes to `/solutions/government-defense`
-  - "Legal and professional services Privileged work product stays privile…" goes to `/solutions/legal`
-  - "Hyperscalers and cloud platforms More effective capacity from the fle…" goes to `/solutions/hyperscalers`
-  - "Research labs and AI safety Run the new weights the week they drop, o…" goes to `/solutions/research`
-  - "SMB and edge One box. One license. Stop renting tokens. Read the solu…" goes to `/solutions/smb-edge`
+  - "Healthcare Clinical grade inference on hardware the hospital owns …" goes to `/solutions/healthcare`
+  - "Government and defense Air gapped by design. Signed by default …" goes to `/solutions/government-defense`
+  - "Legal and professional services Privileged work product stays …" goes to `/solutions/legal`
+  - "Hyperscalers and cloud platforms More effective capacity from the …" goes to `/solutions/hyperscalers`
+  - "Research labs and AI safety Run the new weights the week they drop …" goes to `/solutions/research`
+  - "SMB and edge One box. One license. Stop renting tokens. Read the …" goes to `/solutions/smb-edge`
   - "Enterprise datacenter Owned GPU fleet, existing serving stack, a CFO …" goes to `/solutions/enterprise-datacenter`
   - "Neocloud and GPU provider Tokens are cost of goods sold. More tokens …" goes to `/solutions/neoclouds`
-  - "Air gapped and sovereign Nothing leaves. Signed artifacts, local inst…" goes to `/solutions/government-defense`
-  - "Workstation and SMB One box, one license, the same engine. Stop renti…" goes to `/solutions/smb-edge`
+  - "Air gapped and sovereign Nothing leaves. Signed artifacts, local …" goes to `/solutions/government-defense`
+  - "Workstation and SMB One box, one license, the same engine. Stop …" goes to `/solutions/smb-edge`
   - [button] "Book a demo" goes to `/demo#book`
   - [button] "See pricing" goes to `/pricing`
 

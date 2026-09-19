@@ -119,14 +119,15 @@ const toRoute = (file) => {
   return r.length > 1 ? r.replace(/\/$/, '') : '/';
 };
 
+// The visible words of a fragment of our own built HTML. Entities are decoded in ONE
+// pass, from a table: decoding `&amp;` first and the rest after it would turn
+// `&amp;quot;` into a quote mark, which is a different string from the one on the page.
+const ENTITY = { amp: '&', quot: '"', apos: "'", '#39': "'", nbsp: ' ', lt: '<', gt: '>' };
 const text = (html) =>
   html
-    .replace(/<(script|style|svg)\b[\s\S]*?<\/\1>/g, ' ')
+    .replace(/<(script|style|svg)\b[\s\S]*?<\/\1\s*>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&nbsp;/g, ' ')
+    .replace(/&(amp|quot|apos|#39|nbsp|lt|gt);/g, (_, name) => ENTITY[name])
     .replace(/[→↗↓↑]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -261,8 +262,18 @@ for (const l of [...navLinks, ...footerLinks]) if (/^https?:/.test(l.href)) (out
 // ---- 4. write ----------------------------------------------------------------------------
 const last = book.changes.at(-1);
 const few = (list, n = 4) => (list.length <= n ? list.join(', ') : `${list.slice(0, n).join(', ')} and ${list.length - n} more`);
-const cell = (s) => String(s).replace(/\|/g, '\\|').replace(/\n/g, ' ');
-const clip = (s, n = 96) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s));
+// A Markdown table cell: the backslash first, or escaping the pipe would leave a
+// stray backslash in the input free to unescape it again.
+const cell = (s) => String(s).replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+// Cut at a whole word. A label cut in the middle of one reads badly, and the
+// repository's spelling check rightly calls the stump a typo.
+const clip = (s, n = 96) => {
+  const str = String(s);
+  if (str.length <= n) return str;
+  const cut = str.slice(0, n - 1);
+  const space = cut.lastIndexOf(' ');
+  return (space > n * 0.5 ? cut.slice(0, space) : cut).replace(/[\s,.;:]+$/, '') + ' …';
+};
 const L = [];
 L.push('# Avarok site guide', '');
 L.push(`Revision ${last?.rev ?? 0}, ${last?.date ?? TODAY}${last?.pr ? `, pull request #${last.pr}` : ''}${last?.base ? `, on top of \`${last.base}\`` : ''}. ${pages.length} pages, ${factRows.length} tracked facts, ${assetRows.length} tracked assets.`, '');
