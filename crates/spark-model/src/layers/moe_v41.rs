@@ -29,6 +29,7 @@ use crate::layers::ops::ResidentMat;
 mod forward;
 mod init;
 mod route;
+mod single;
 
 const MODULE: &str = "moe_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -67,12 +68,16 @@ struct Kernels {
     gemm_f32out: KernelHandle,
     /// router logits at m <= 8: strict-order GEMV, bit-identical to gemm_f32out
     router_gemv: KernelHandle,
+    /// the same logits staged through shared memory, ceil(N/2) blocks (decode)
+    router_gemv_staged: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
     mmvq_q3k: KernelHandle,
     /// the single-token arm: every routed expert in one launch a projection
     mmvq_q2k_experts: KernelHandle,
     mmvq_q3k_experts: KernelHandle,
+    /// rows (warps) a block of the expert batch, 2 / 4 / 8 (ATLAS_DS41_EXPERT_WARPS)
+    experts_warps: u32,
     swiglu: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,
@@ -107,6 +112,15 @@ impl MoeV41Timing {
         self.misses += o.misses;
         self.bytes_read += o.bytes_read;
     }
+}
+
+/// What `stage_m1` leaves for `compute_m1`: the distinct expert count and
+/// the routing (for callers and diagnostics), with the host-span timing.
+pub struct MoeV41Stage {
+    pub ne: usize,
+    pub weights: Vec<f32>,
+    pub indices: Vec<usize>,
+    pub timing: MoeV41Timing,
 }
 
 pub struct MoeV41 {

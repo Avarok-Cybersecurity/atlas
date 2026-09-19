@@ -6,7 +6,7 @@
 //! `attn_v41.rs` (500-LoC cap).
 
 use anyhow::{Result, ensure};
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::{AttnV41, AttnV41Cfg, GEMM_MODULE, Kernels, MODULE, upload_f32};
 use crate::layers::deepseek_v41_ref::attn::freqs_cis;
@@ -33,6 +33,7 @@ impl AttnV41 {
             gemv: gpu.kernel("gemv", "dense_gemv_bf16")?,
             q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
             mmvq_q2k_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
+            mmvq_q2k_groups_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_groups_w")?,
             quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
             mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
             mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,
@@ -48,6 +49,7 @@ impl AttnV41 {
             slice_cols: gpu.kernel(MODULE, "attn_v41_slice_cols")?,
             scatter_cols: gpu.kernel(MODULE, "attn_v41_scatter_cols")?,
             scale_bf16: gpu.kernel(MODULE, "attn_v41_scale_bf16")?,
+            ring_put: gpu.kernel(MODULE, "attn_v41_ring_put")?,
         };
         let plain = freqs_cis(cfg.rope_dim, cfg.max_seq, cfg.rope_theta);
         let yarn = yarn_freqs_cis(
@@ -67,11 +69,14 @@ impl AttnV41 {
         let max_width = cfg.max_seq;
         let max_topk = cfg.window + cfg.index_topk;
         let alloc = |bytes: usize| gpu.alloc(bytes.max(16));
+        // `n_heads * head_dim`: the grouped `wo_a` decode path quantises the
+        // whole rotated attention output row once (primitives::wo_a_grouped).
         let kmax = cfg
             .dim
             .max(cfg.q_rank)
             .max(cfg.gw())
-            .max(cfg.groups * cfg.o_rank);
+            .max(cfg.groups * cfg.o_rank)
+            .max(nh * hd);
         Ok(AttnV41 {
             a_q8: alloc(
                 kquant_q8_1_rows_bytes(8, kmax as u32)
@@ -104,11 +109,19 @@ impl AttnV41 {
             iw_raw: alloc(m * nhi * 2)?,
             iw: alloc(m * nhi * 2)?,
             score: alloc(m * max_width * 4)?,
+            decode_pos: None,
+            decode_idx: None,
             cfg,
             k,
             fc_plain,
             fc_yarn,
         })
+    }
+
+    /// The layer output buffer, bf16 `[max_tokens, dim]`: a pointer a captured
+    /// decode step bakes.
+    pub fn out_ptr(&self) -> DevicePtr {
+        self.out
     }
 
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {

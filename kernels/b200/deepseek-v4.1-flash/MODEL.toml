@@ -1,0 +1,104 @@
+# B200 target: kernel set inherited from gb10 via symlink; expected_absent
+# NOT yet harvested on B200 hardware (`spark serve --check-kernels`).
+# Every other table below is gb10's, copied verbatim — sampling and behaviour
+# are checkpoint properties, not device properties. The [expected_absent]
+# table is NOT: it was harvested on GB10 and is carried here only so the
+# target parses. Re-harvest it on a B200/GB200 before trusting a startup
+# kernel audit on this hardware. `kernel_source` resolves within THIS
+# hardware set: kernels/b200/deepseek-v4-flash/nvfp4, the symlink mirror.
+[model]
+name = "deepseek-v4.1-flash"
+hf_id = "deepseek-ai/DeepSeek-V4.1-Flash"
+architecture = "MLA + MoE (384 routed, top-6) + mHC + engram + shared compressed attention (CSA)"
+
+# Every number below was read out of the seven-shard Q2_K GGUF's own metadata
+# by the S1 ingestion (crates/spark-runtime/src/weights/gguf/deepseek_v41_real_file_test.rs),
+# not from an HF config.json.
+layers_total = 40
+layers_full_attention = 40
+
+hidden_dim = 5120
+head_dim = 512
+q_heads = 64
+kv_heads = 1
+intermediate_size = 0
+
+vocab_size = 129280
+max_position_embeddings = 1048576
+rope_theta = 160000
+partial_rotary_factor = 0.125
+
+# MLA-specific
+kv_lora_rank = 512
+q_lora_rank = 1280
+qk_rope_head_dim = 64
+
+# MoE
+num_experts = 384
+num_shared_experts = 1
+moe_intermediate_size = 2304
+top_k = 6
+
+# Hyper-Connections (mHC)
+hc_mult = 4
+
+# V4.1 additions over V4 Flash. None of these exist in deepseek-v4-flash.
+engram_layer_ids = [1, 14]
+engram_max_ngram_size = 4
+engram_n_heads = 8
+engram_head_dim = 256
+index_n_heads = 32
+index_head_dim = 128
+index_topk = 512
+compress_rope_theta = 160000
+
+# The kernel tree is deepseek-v4-flash's (MLA, mHC, MoE, the K-quant expert
+# kernels for the Q2_K checkpoint live there). V4.1-only kernels (engram, the
+# shared compressed attention runtime) are added to that tree under the
+# kquant/engram/csa prefixes, so one kernel set serves both targets.
+kernel_source = "deepseek-v4-flash"
+
+[[model_types]]
+model_type = "deepseek_v41"
+hidden_size = 5120
+
+# V4 Flash's MODEL.toml notes that CSA "falls back to full attention". V4.1
+# cannot: forty layers read KV that only four produce, so the shared
+# compressed attention runtime is the graph, not an optimisation.
+
+# Sampling: the DeepSeek V4 family defaults, as deepseek-v4-flash.
+[sampling.thinking]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+
+[sampling.coding]
+temperature = 1.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+
+[sampling.general]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+
+[behavior]
+enable_loop_watchdog = true
+thinking_default = false
+# The latent KV row is fp8 e4m3 in the reference (act_quant with the ue8m0
+# power-of-two scale), so fp8 is the reference's own cache dtype here.
+default_kv_dtype = "fp8"
+
+# ── expected_absent ────────────────────────────────────────────────────────
+# From the first --check-kernels run on the real shards (2026-09-16): one
+# lookup, the generic model's w4a16 deep-pipeline probe, same situation as
+# deepseek-v4-flash (the kernel set IS that tree via kernel_source).
+[expected_absent.w4a16]
+w4a16_gemm_t_p3 = """
+3-deep weight-pipeline twin shipped ONLY in qwen3.6-27b's shadow. The generic
+model constructor probes it (model/impl_a1.rs), then falls back to
+w4a16_gemm_t, which resolves here. V4.1 never dispatches a w4a16 GEMM: its
+attention and MoE run on the attn_v41 / kquant_moe / moe_v41 kernels."""

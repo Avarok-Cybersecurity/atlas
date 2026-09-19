@@ -183,10 +183,8 @@ pub fn load_pass(
         // Q3_K (ggml types 10 / 11) on the device; ATLAS_DS41_KQUANT_RESIDENT=0
         // restores the bf16 expansion.
         if arch == "deepseek41"
-            && (id == 10 || id == 11)
             && let names::GgufName::Direct(ref hf_name) = target
-            && names::is_v41_kquant_resident(hf_name)
-            && !std::env::var("ATLAS_DS41_KQUANT_RESIDENT").is_ok_and(|v| v == "0")
+            && let Some(dtype) = v41_kquant_resident_dtype(id, hf_name)
         {
             let ptr = gpu.alloc(raw.len())?;
             gpu.copy_h2d(raw, ptr)?;
@@ -195,11 +193,7 @@ pub fn load_pass(
                 WeightTensor {
                     ptr,
                     shape: hf_shape,
-                    dtype: if id == 10 {
-                        WeightDtype::Q2K
-                    } else {
-                        WeightDtype::Q3K
-                    },
+                    dtype,
                 },
             );
             continue;
@@ -336,4 +330,26 @@ pub fn load_pass(
     }
 
     Ok(())
+}
+
+/// The DeepSeek-V4.1 tensors that stay K-quant on the device, by ggml type id
+/// and HF name: the attention projections and shared expert as Q2_K / Q3_K
+/// (10 / 11; `ATLAS_DS41_KQUANT_RESIDENT=0` restores the bf16 expansion), and
+/// the Q6_K output head (14; `ATLAS_DS41_Q6K_HEAD=0` restores it). `None`
+/// means the tensor takes the ordinary dequant path.
+fn v41_kquant_resident_dtype(id: u32, hf_name: &str) -> Option<WeightDtype> {
+    let off = |var: &str| std::env::var(var).is_ok_and(|v| v == "0");
+    match id {
+        10 | 11 if names::is_v41_kquant_resident(hf_name) && !off("ATLAS_DS41_KQUANT_RESIDENT") => {
+            Some(if id == 10 {
+                WeightDtype::Q2K
+            } else {
+                WeightDtype::Q3K
+            })
+        }
+        14 if names::is_v41_q6k_resident(hf_name) && !off("ATLAS_DS41_Q6K_HEAD") => {
+            Some(WeightDtype::Q6K)
+        }
+        _ => None,
+    }
 }

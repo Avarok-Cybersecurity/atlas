@@ -171,7 +171,7 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
     let g: &dyn GpuBackend = &gpu;
     let stream = g.default_stream();
     let cfg = cfg_of(&c);
-    let attn = AttnV41::new(g, cfg.clone()).unwrap();
+    let mut attn = AttnV41::new(g, cfg.clone()).unwrap();
     let mut weights = Vec::new();
     let mut states = Vec::new();
     for l in 0..c.n_layers {
@@ -209,12 +209,40 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
     }
     let mut shared = SharedV41::default();
     let (nh, hd) = (c.n_heads, c.head_dim);
+    let mut captured_layers = 0usize;
     for (regime, start_pos, trace) in &traces {
         let m = trace.tokens;
         for l in 0..c.n_layers {
             let lt = &trace.layers[l];
             let what = format!("{regime}.L{l}");
             let x = up_bf16(g, &lt.attn_in);
+            // the CUDA-graph decode step (deepseek_v41_layer's segment A holds
+            // this body): the position and the -1-padded selection go to the
+            // device, the body is captured once and replayed, and its output
+            // must be the eager forward's below bit for bit. It runs first
+            // because both write the same kv row into the same ring slot.
+            let graph_out = if m == 1 && attn.decode_capturable(&weights[l]) {
+                let rows_b = attn
+                    .decode_prep(&weights[l], &shared, g, *start_pos, stream)
+                    .unwrap();
+                g.begin_capture(stream).unwrap();
+                let out = attn
+                    .decode_body(g, &weights[l], &states[l], x, rows_b, stream)
+                    .unwrap();
+                let graph = g.end_capture(stream).unwrap();
+                g.launch_graph(graph, stream).unwrap();
+                g.synchronize(stream).unwrap();
+                let bytes = {
+                    let mut b = vec![0u8; c.dim * 2];
+                    g.copy_d2h(out, &mut b).unwrap();
+                    b
+                };
+                g.destroy_graph(graph).unwrap();
+                captured_layers += 1;
+                Some(bytes)
+            } else {
+                None
+            };
             let run = attn
                 .forward(
                     g,
@@ -228,6 +256,16 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
                 )
                 .unwrap();
             g.free(x).unwrap();
+            if let Some(graph_bytes) = graph_out {
+                attn.invalidate_decode_uploads();
+                g.synchronize(stream).unwrap();
+                let mut eager = vec![0u8; c.dim * 2];
+                g.copy_d2h(run.out, &mut eager).unwrap();
+                assert_eq!(
+                    graph_bytes, eager,
+                    "{what}: the captured decode step's output differs from the eager forward"
+                );
+            }
             // index selection: exact
             assert_eq!(run.topk, lt.attn.topk, "{what}: topk");
             assert_eq!(
@@ -271,6 +309,11 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
             );
         }
     }
+    assert!(
+        captured_layers > 0,
+        "no capturable decode layer was exercised (all layers are kv/index sources?)"
+    );
+    println!("  captured decode step == eager forward on {captured_layers} layer-steps");
     for mut s in states {
         s.free(g).unwrap();
     }

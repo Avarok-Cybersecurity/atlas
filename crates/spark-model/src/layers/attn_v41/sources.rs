@@ -265,9 +265,9 @@ impl AttnV41 {
             .arg_u32(nhi as u32)
             .arg_u32(ihd as u32)
             .launch(stream)?;
-        gpu.synchronize(stream)?;
+        // one stream-ordered read-back, not a sync plus a blocking copy
         let mut bytes = vec![0u8; m * width * 4];
-        gpu.copy_d2h(self.score, &mut bytes)?;
+        gpu.copy_d2h_on_stream(self.score, &mut bytes, stream)?;
         let mut score: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
