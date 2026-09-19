@@ -39,10 +39,11 @@ export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1151/lib:$LD_LIBRAR
 export CUDARC_CUDA_VERSION=12080
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — three runtime shims are required on gfx1151 (see §4):
-export AVAROK_FORCE_GLOBAL_GDN=1     # route GDN prefill to the global-mem kernel (RDNA3.5 64KB LDS cap)
+# Serve: one runtime knob is required on gfx1151 (see §4). AVAROK_FORCE_GLOBAL_GDN
+# and AVAROK_NO_FP8_PREDEQUANT used to be exported here; neither has a reader in
+# the tree any more. AVAROK_NO_GDN_FP8_PREFILL exists but is NOT set on strix:
+# the coherent gfx1151 runs never set it (see kernels/strix/HARDWARE.toml).
 export AVAROK_W4A16_VARIANT=v1       # use the BF16-MMA NVFP4 GEMM (SCALE FP8-MMA encode is broken on gfx1151)
-export AVAROK_NO_FP8_PREDEQUANT=1    # skip NVFP4->FP8 predequant (same broken-encode reason)
 # SCALE libs FIRST so /opt/rocm cannot shadow the fixed libhsa-runtime64:
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 export PATH="$SCALE_HOME/targets/gfx1151/bin:$PATH"
@@ -51,8 +52,18 @@ target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
   --kv-cache-dtype bf16 --kv-high-precision-layers max --max-batch-size 4
 ```
 
-A ready-made script lives at `serve-amd.sh` in the repo root. Sections 1–6
-below explain each step, the SCALE mechanics, and why each shim is needed.
+Ready-made scripts live at `build-amd.sh` and `serve-amd.sh` in the repo
+root. Both take the hardware target from `AVAROK_TARGET_HW` (default `strix`)
+and read the SCALE arch from `kernels/$AVAROK_TARGET_HW/HARDWARE.toml`, so the
+same two scripts drive the gfx1201 board:
+
+```bash
+AVAROK_TARGET_HW=r9700 ./build-amd.sh
+AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
+```
+
+Sections 1 to 6 below explain each step, the SCALE mechanics, and why each
+runtime knob is needed.
 
 ---
 
@@ -282,7 +293,11 @@ no-op. (Draft the email; do not auto-send.)
 ## 5. Build, deploy, run
 
 Verified on native Ubuntu (kernel 6.17.0-oem), gfx1151, SCALE 1.7.1. The repo
-ships `build-amd.sh` and `serve-amd.sh` that wrap exactly the commands below.
+ships `build-amd.sh` and `serve-amd.sh` that wrap exactly the commands below,
+with `gfx1151` read from `kernels/strix/HARDWARE.toml` rather than hardcoded:
+`AVAROK_TARGET_HW=r9700 ./build-amd.sh` and `AVAROK_TARGET_HW=r9700
+./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4` run the same steps against
+`targets/gfx1201`.
 
 ```bash
 # Build — SCALE_HOME set, kernels compiled for gfx1151:
@@ -295,8 +310,8 @@ export CUDARC_CUDA_VERSION=12080
 rm -rf target/release/build/avarok-kernels-*      # stale-cache guard on .cu change
 cargo build --release -p spark-server --no-default-features --features cuda
 
-# Serve — gfx1151 shims (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
-export AVAROK_FORCE_GLOBAL_GDN=1 AVAROK_W4A16_VARIANT=v1 AVAROK_NO_FP8_PREDEQUANT=1
+# Serve: the gfx1151 runtime knob (§4) + SCALE libs first so /opt/rocm can't shadow libhsa:
+export AVAROK_W4A16_VARIANT=v1
 export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1151/lib:$SCALE_HOME/lib"
 target/release/spark serve Qwen/Qwen3.6-27B-FP8 \
   --port 8081 --max-seq-len 4096 --gpu-memory-utilization 0.70 \

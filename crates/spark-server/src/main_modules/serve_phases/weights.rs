@@ -84,17 +84,31 @@ pub(crate) fn load_weight_store(
             loader.peak_memory_multiplier = mult;
             loader.skip_activation_scales = skip_activation_scales(config);
             loader.skip_mtp = skip_mtp(config);
-            // A text-only port never binds the vision tower, so don't read it.
-            // The reclaim in `build_model` still catches every other path, but
-            // it runs AFTER the inference-buffer preflight has already sized
-            // (and possibly refused) the serve against the free memory the
-            // tower was occupying.
-            loader.skip_vision = !binds_vision(config);
+            // Don't read the vision tower when nothing will bind it. Two
+            // independent reasons, and the second was missing until 2026-09-17:
+            //
+            //   * the LOADER is a text-only port (`binds_vision`), or
+            //   * this SERVE has no vision config: either the checkpoint ships
+            //     none, or `--text-only` cleared it, or the kernel target has no
+            //     `vision_encoder` module and `serve_load` cleared it. All three
+            //     make `load_vision_encoder` return `None`, so the bytes are
+            //     read, ignored, and only freed by `build_model`'s reclaim.
+            //
+            // The reclaim is not a substitute: it runs AFTER the inference
+            // -buffer preflight has already sized (and possibly refused) the
+            // serve against free memory the tower was occupying.
+            let text_only_serve = config.vision.is_none();
+            loader.skip_vision = !binds_vision(config) || text_only_serve;
             if loader.skip_vision {
                 tracing::info!(
-                    "Vision tower: not loaded — the weight loader for model_type '{}' is a \
-                     text-only port and binds no vision encoder.",
-                    config.model_type,
+                    "Vision tower: not loaded, {}.",
+                    if text_only_serve {
+                        "this serve has no vision config (text-only checkpoint, --text-only, \
+                         or a kernel target without the vision_encoder module)"
+                    } else {
+                        "the weight loader for this model_type is a text-only port and binds \
+                         no vision encoder"
+                    },
                 );
             }
             loader.prefetch_shards = args.fast_load_prefetch_shards

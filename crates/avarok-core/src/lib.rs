@@ -8,6 +8,7 @@ pub mod capabilities;
 pub mod compute;
 pub mod config;
 pub mod dtype;
+pub mod elf_symbols;
 pub mod env_compat;
 pub mod error;
 pub mod fault;

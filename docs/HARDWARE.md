@@ -105,9 +105,9 @@ variant, etc.), you'll also need to:
 
 Atlas's NVIDIA targets are **GB10 (Blackwell, sm_121)**, **Hopper
 (H100/H200, sm_90a)** and **B200 (B200/GB200, sm_100a)**; `strix`/`strix-hip`
-(AMD gfx1151) and `metal` are the non-NVIDIA sets. Adding another — say sm_120
-for a consumer Blackwell board, or sm_103 for Blackwell Ultra (B300/GB300) —
-requires:
+(AMD gfx1151), `r9700` (AMD gfx1201) and `metal` are the non-NVIDIA sets.
+Adding another, say sm_120 for a consumer Blackwell board, or sm_103 for
+Blackwell Ultra (B300/GB300), requires:
 
 1. **`kernels/<new-hw>/HARDWARE.toml`**. The keys are exactly the ones
    `crates/avarok-kernels/build.rs` reads, plus documentation:
@@ -415,6 +415,450 @@ B300 and GB300 are **sm_103a** and are NOT this target. `sm_100a` PTX does not
 run on CC 10.3, `avarok_core::arch::target_hint` returns `None` for it on
 purpose, and `hardware_id_from_gpu_name` maps neither part — a B300 gets "no
 shipped target" rather than a rebuild instruction that would fail the same way.
+
+## The r9700 (gfx1201) target
+
+`kernels/r9700/` is the **AMD Radeon AI PRO R9700**: 64 CU RDNA 4 on a
+discrete PCIe board with 32 GB of dedicated GDDR6 (~640 GB/s). Like `strix`
+it declares `vendor = "amd"`, so `build_target.rs` compiles it with SCALE
+(scale-lang.com) through `targets/gfx1201/bin/nvcc`; unlike `strix` it is not
+an APU, so none of that target's unified-memory sizing notes carry over.
+
+**Status.** Measured on gfx1201 (Radeon AI PRO R9700, SCALE 1.7.1
+`targets/gfx1201`, ROCm 7.2.0), 2026-09-17: the kernel set compiles and
+`unsloth/Qwen3.8-27B-NVFP4` serves coherently at 19.42 GB of resident weights,
+a 3.7 GB KV budget and ~30.9 tok/s decode, with the transposed twins declined,
+`--gpu-memory-utilization 0.90`, `--max-batch-size 1` and `--max-seq-len 4096`.
+Every number below this line comes from that board and that toolchain unless
+it says otherwise. Sampling and behaviour defaults are still gfx1151
+inheritances, not RDNA 4 measurements.
+
+**Kernel set: a SUBTRACTIVE mirror of gb10, not a curated subset.**
+`kernels/r9700/common/` is a whole-directory relative-symlink mirror of
+`kernels/gb10/common/`, exactly as `kernels/hopper/` and `kernels/b200/` are,
+and `kernels/r9700/qwen3.6-27b/nvfp4/` mirrors gb10's model directory the same
+way (the `q4k_vendor` subdirectory included, as one directory symlink, which is
+how hopper holds it). The rule is the DIRECTORY: a kernel added to gb10's
+`common/` needs a link here, or this target silently compiles a smaller
+inventory than GB10 does.
+
+A hand-picked 99-entry set preceded it and demonstrated exactly that failure.
+`kernels/gb10/common/` gained `dense_gemv_bf16_batch2.cu`, `qwen3_ssm/init.rs`
+began dispatching to it (`init.rs:103`, a hard `gpu.kernel(...)?`), the curated
+list was not updated, and the qwen3.8-27b model build died after loading all
+21.8 GB of weights with
+
+```
+Kernel lookup dense_gemv_bf16_batch2::dense_gemv_bf16_batch2:
+  Module load failed: Module 'dense_gemv_bf16_batch2' not loaded
+```
+
+What it subtracts is the census, and only the census. Every `.cu` in both gb10
+directories was compiled one at a time with the SCALE `nvcc` for gfx1201; 180
+of 193 came back clean, and the mirror drops those 13 failing sources plus the
+one header that only they include. The subtraction is machine-checked from two
+sides: `kernels/r9700/HARDWARE.toml` `[kernels] absent` lists the eleven
+`common/` sources and the header, `scripts/check_kernel_shadows.py` RULE 3
+fails if the set of gb10 entries this tree does not carry is anything other
+than that list, and every entry point of the 13 dropped sources is declared
+`[expected_absent]` in each MODEL.toml, so the boot audit reports a stated
+absence instead of refusing to serve.
+
+Counts after the change: `common/` holds 178 entries (169 `.cu`, 8 `.cuh`, and
+`KERNEL.toml`, all relative symlinks into `kernels/gb10/common/`), and
+`qwen3.6-27b/nvfp4/` holds 14 (12 `.cu`, the `q4k_vendor` directory, and
+`KERNEL.toml`). The two entries that used to reach into `kernels/strix/common/`
+(`dequant_fp8_blockscaled_bf16.cu`, `lora_bgmv.cu`) now link straight into
+gb10: the files are byte-identical (`cmp` clean), and a link through a third
+target's tree only hid which tree an edit would land in.
+
+`HARDWARE.toml` and the four `MODEL.toml` files stay real files, because
+sampling, behaviour and the per-hardware `[expected_absent]` harvest must stay
+editable per hardware. Both `KERNEL.toml`s are symlinks into gb10: the model
+one was a strix copy whose `[modules]` map had fallen behind gb10's by roughly
+40 renames, which the mirrored kernels need in order to register under the
+module names the dispatch asks for. Its one SCALE-specific line, the clang
+spelling `-ffp-contract=off` of the `--fmad=false` contraction pin, lives in
+`kernels/r9700/HARDWARE.toml` `[build] extra_nvcc_flags`, which is where
+`build_flags.rs` says an architecture-or-toolchain fact belongs on a target
+whose KERNEL.tomls are all symlinks. `qwen3.8-27b` is gb10's `MODEL.toml` with
+`kernel_source = "qwen3.6-27b"` kept, so it compiles this target's own 3.6
+tree. There is no `BENCH.toml` and no `[benchmarks.limits]`: the thermal,
+memory, timing and equivalence facts a campaign needs have not been measured
+on this class.
+
+**Models served: four, and all four compile one kernel tree.**
+
+| model | `[[model_types]]` | kernel tree | why |
+|---|---|---|---|
+| `qwen3.6-27b` | (`qwen3_5`, 5120), (`qwen3_6_moe`, 5120) | its own `nvfp4/`, the subtractive gb10 mirror | the only target here that owns a kernel directory |
+| `qwen3.8-27b` | (`qwen3_5`, 5120) | `kernel_source = "qwen3.6-27b"` | bit-identical config to 3.6; carries `match_names` because the two collide on that exact pair |
+| `ornith-1.0-9b` | (`qwen3_5`, 4096) | `kernel_source = "qwen3.6-27b"` | smaller sibling of the same architecture; see below |
+| `holo-3.1-4b` | (`qwen3_5`, 2560) | `kernel_source = "qwen3.6-27b"` | smaller sibling of the same architecture; see below |
+
+Qwen3.8-27B does not fit this board's 32 GB with both weight layouts resident,
+so the first coherent generation on gfx1201 had to be provable on a smaller
+model of the same architecture family.
+[Ornith-1.0-9B](https://huggingface.co/deepreinforce-ai/Ornith-1.0-9B) and
+[Holo-3.1-4B](https://huggingface.co/Hcompany/Holo-3.1-4B) are that family at
+9B and 4B: Gated DeltaNet plus full attention plus a dense FFN plus a Qwen3-VL
+ViT, which is `qwen3.6-27b`'s trunk.
+
+Both **redirect** rather than mirror their own gb10 directory, and that choice
+is load-bearing enough to state here. gb10's `ornith-1.0-9b/nvfp4/`,
+`holo-3.1-4b/nvfp4/`, `holo-3.1-0.8b/nvfp4/` and `holo-3.1-35b-a3b/nvfp4/` are
+**one byte-identical directory** (`diff -rq` is silent between all four), an
+older six-file fork of gb10's `qwen3.6-27b/nvfp4/`. Two of those six,
+`w4a16_gemm.cu` and `moe_w4a16_grouped_gemm.cu`, fail the gfx1201 census on
+e4m3 because the fork carries only some of the `#if defined(__SCALE__)` shims
+the `qwen3.6-27b` copies have.
+
+The sources are shape-generic, so compiling the 3.6 tree for a 4096-wide and a
+2560-wide model is sound rather than a shape mismatch: one unchanged source
+set already serves `hidden_dim` 1024, 2048, 2560 and 4096, `q_heads` 8 and 16,
+`kv_heads` 2 and 4, dense FFN and MoE, on gb10 today. The only `-D` naming a
+model dimension anywhere under `kernels/` is `-DHDIM=128`, in eight gb10 model
+`KERNEL.toml`s, none of them these; all four models involved declare
+`head_dim = 256`. `[build] extra_nvcc_flags` is `["--fmad=false"]` on both
+sides, character for character, and the two `KERNEL.toml`s otherwise differ
+only in `[modules]` renames, almost all of them modules `qwen3.6-27b` has and
+the fork does not ship.
+
+The redirect drops one file, `fp4_mma_microtest.cu`, which the fork has and
+`qwen3.6-27b` does not. It is not a serving kernel: its only reader is
+`crates/spark-model/examples/fp4_mma_microproof.rs`, a proof of a hand-written
+sm_120 block-scaled `mma.sync` against the CUTLASS collective, and that PTX has
+no gfx1201 lowering either way.
+
+Neither needs `match_names`. `validate_collision_match_names` demands needles
+only from a `(model_type, hidden_size)` pair that two differently-named targets
+both declare, and 4096 and 2560 collide with nothing on this hardware. Their
+`[expected_absent]` tables are `qwen3.8-27b`'s, verbatim: same silicon, same
+compiled tree through the same `kernel_source`, therefore the same thirteen
+absences. gb10's copies declare a different set, harvested against the fork,
+and those nine tables are dropped rather than merged because eight of them
+name families that resolve in the tree this target actually compiles: the
+`gated_delta_rule` f16 arms, the `w4a16` p3/k64/m128 twins,
+`gated_delta_rule_wy17`, `q4k_mmq`, `q2_0_mmq`, `q4k_quantize`, `nvfp4_mmq`,
+`gated_delta_rule_snap` and `gdn_verify_fused_conv_kn_f32`. The ninth,
+`w4a4`, is genuinely absent here for the unrelated reason that
+`w4a4_gemm.cu` does not compile for gfx1201, and the replacement set carries
+it with that reason.
+
+Neither small model has been served to completion on this board; what is
+registered for them is the kernel target, not loader work.
+
+**Kernels absent on gfx1201.** Thirteen sources, 36 entry points, all declared
+in every `MODEL.toml` on this target:
+
+| source | module | why |
+|---|---|---|
+| `inferspark_prefill_paged_bf16k_turbo{2,3,4}v.cu`, `_fp8k_turbo{2,3,4}v.cu`, `_turbo3k_turbo8v.cu`, `_turbo4k_turbo3v.cu`, `_turbo4k_turbo8v.cu` (9 files, 2 entry points each) | `prefill_paged_*` | `prefill_paged_compute_asym.cuh:99:28: error: local memory (70416 or 70432) exceeds limit (65536)`. RDNA 4 has RDNA 3.5's 64 KB per-workgroup LDS cap, and this header has no `#if defined(__SCALE__) #define BR64 32` pin (it hardcodes `BR64 64` at line 449). FOLLOW-UP: adding that pin and the matching 32-row host grid stride brings all nine back. |
+| `prefill_paged_compute_asym.cuh` | (header) | Not compiled on its own, and nothing left in this tree includes it. Returns with the nine above. |
+| `gated_delta_rule_fla.cu` (14 entry points) | `gated_delta_rule_fla` | `114:19: error: unknown opcode: fence.proxy.async.shared::cta`, an sm_90 async-proxy fence SCALE does not lower, issued unconditionally. No follow-up pending: this needs SCALE codegen or a fence-free rewrite, not a tile-size pin. GDN prefill stays on the `gated_delta_rule` / `_wy*` kernels. |
+| `w4a16_fp8_ldmab.cu` | `w4a16_fp8_ldmab` | `107:9: error: this implementation does not provide a declaration of type 'fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>'`, the e4m3 `mma.sync` path. `gemm_fp8_prefill.rs` looks `fp8_fp8_gemm_ldmab` up with `?`, so a native-FP8 prefill on this target is a hard error; NVFP4 targets requantize their FP8 projections at load and never reach it. |
+| `w4a16_gemm_v2.cu` | `w4a16_v2` | `241:5: error` on the e4m3 MMA path, the same gap that makes `AVAROK_W4A16_VARIANT=v1` required here. |
+| `w4a4_gemm.cu` | `w4a4` | `41:8: error: unknown opcode`. The whole `w4a4` module is therefore absent, so BOTH `try_kernel` lookups (`dense_ffn.rs:445` `w4a4_gemm`, `qwen3_attention/init.rs:749` `w4a4_gemm_mfast`) return `KernelHandle(0)` and every `w4a4_gemm_k.0 != 0 && ... && fp4_prefill` guard is false. Nothing falls back to `w4a4_gemm` here, because there is no `w4a4_gemm`: the FP4-activation prefill path is simply unavailable and prefill runs the ordinary W4A16/BF16 route. |
+
+The census arithmetic closes: 193 files minus 180 clean is 13 failures, and
+the dropped sources are exactly those 13. Every file not named above compiled,
+including `gated_delta_rule_snap.cu`, `gdn_verify_fused_conv_kn_f32.cu`,
+`inferspark_prefill_paged_indirect.cu`, `nvfp4_mmq.cu`, `q2_0_mmq.cu`,
+`q4k_mmq.cu`, `q4k_quantize.cu` and `vision_encoder.cu`.
+
+**Two inherited gfx1151 decisions are gfx1201 facts, not carry-overs.**
+
+* **The `BR64 32` prefill pin is required here.** RDNA 4 exposes the same
+  64 KB per-workgroup LDS cap as RDNA 3.5: a 73728-byte allocation is
+  rejected outright ("local memory (73728) exceeds limit (65536)"). So
+  `kernels/gb10/common/prefill_paged_compute.cuh` halving the block-row tile
+  under `#if defined(__SCALE__)`, and `ops/prefill_attn_main_{a,b}.rs`
+  selecting the matching 32-row host grid stride from `cfg!(avarok_scale)`,
+  stay exactly as they are. The prefill throughput that costs is a hardware
+  limit on this board, not an unexamined assumption.
+* **SCALE has no e4m3 MMA codegen on gfx1201**, which is why
+  `AVAROK_W4A16_VARIANT=v1` is required rather than merely inherited: there is
+  no `fragment<nvcuda::wmma::accumulator, 16, 8, 32, float, void>`
+  declaration, and inline `cvt.rn.satfinite.e4m3x2.f32` is rejected. What
+  does compile is `__nv_cvt_float_to_fp8` from `cuda_fp8.h` and BF16
+  `mma.sync m16n8k16`, which is the path `v1` takes. RDNA 4's native FP8 WMMA
+  is a property of the silicon the toolchain does not reach.
+
+**What is still open.**
+
+* **The runtime knobs** `serve-amd.sh` exports for r9700.
+  `AVAROK_W4A16_VARIANT=v1` is pinned by the missing e4m3 codegen above and is
+  not a candidate to probe OFF until SCALE grows that path.
+  `AVAROK_NO_GDN_FP8_PREFILL=1` is only a conservative first-serve default:
+  strix never set it and serves coherently with the native FP8 SSM prefill on,
+  so on r9700 it is the first knob to bisect OFF. `AVAROK_NO_FP8_PREDEQUANT=1`
+  is a belt over a probe, not a pin; see "The FP8 prefill predequant" below.
+  `AVAROK_LOAD_TRANSPOSED_TWINS=0` is both the residency lever and the faster
+  arm here; see "The transposed second weight layout" below.
+  `AVAROK_FORCE_GLOBAL_GDN` has no reader anywhere in the tree and is not
+  exported.
+* **`qwen3.6-27b/MODEL.toml` `[behavior] thinking_in_tools = false`** and the
+  retuned sampling block, which are gfx1151 observations (a post-`</think>`
+  content collapse on that silicon) carried over with the tree.
+
+**The FP8 prefill predequant.** `Ornith-1.0-9B` loads, builds and passes the
+boot audit, and then every request dies at layer 0 with `ssm prefill: out_proj
+GEMM failed: Kernel lookup w4a16_fp8_ldmab::fp8_fp8_gemm_ldmab: Module load
+failed: Module 'w4a16_fp8_ldmab' not loaded`. `predequant_for_prefill` built an
+NVFP4-to-FP8 copy of the SSM `out_proj` (and, on the loaders that call the
+other two, the attention q/k/v/o and the MoE gate plus shared expert) without
+asking whether the GEMM that reads it exists, and the prefill dispatch PREFERS
+those copies over both NVFP4 arms, so one absent module turned a working
+fallback chain into a hard error. `w4a16_fp8_ldmab.cu` is one of the 13 gfx1201
+census failures and is not in this target's tree at all.
+
+`crates/spark-model/src/layers/fp8_predequant.rs` is now the load-time guard. It
+probes every arm the dispatch can take rather than only the preferred one.
+`ops::fp8_gemm_n128` chooses between the `ldmatrix.x4` kernel and
+`w4a16::fp8_gemm_t` on `K % 32`, which is a property of the projection, and the
+caller chooses between it and `fp8_gemm_n128_m128` on the token count, which is
+a property of the request, so a partial answer is a serve that works on short
+prompts and dies on long ones. With the copies absent the SSM falls to
+`w4a16_gemm_n128` and then `w4a16_gemm`, attention's `use_fp8_act` goes false,
+and the MoE's three copies take their NVFP4 branch. `AVAROK_NO_FP8_PREDEQUANT=1`
+forces the same outcome and is exported for r9700 so the serve log names the
+decision in words; `=0` forces the copies back where an operator's environment
+sets the variable globally, and cannot override a genuinely absent kernel.
+
+**The transposed second weight layout.** Atlas keeps every NVFP4 projection in
+TWO layouts: the packed `[N, K/2]` original decode reads, and a transposed
+`[K, N/2]` twin the fast prefill GEMMs (`w4a16_gemm_t_m128` and its v2/k64
+siblings) consume. On this board that is the difference between loading a 27B
+and not. `docs/porting/r9700-residency.md` has the full accounting; the summary:
+
+| | GiB | fits the ~27.9 GB weight budget? |
+|---|---|---|
+| both layouts, sources retained | 47.07 | no |
+| release-on-consume (`AVAROK_LOAD_RELEASE_SOURCES`) | 38.31 | no |
+| ... and the attention BF16 dequant leak fixed | 35.18 | no |
+| ... and no transposed twins | 21.25 | **yes** |
+
+`AVAROK_LOAD_TRANSPOSED_TWINS` is `1` (build them, which is the default on
+every non-SCALE target), `0` (build none) or `auto` (build them only if free
+VRAM after the checkpoint is resident exceeds their projected bytes plus a
+4 GiB reserve for the KV cache, the buffer arena and the vision encoder's
+working set). **Unset takes `cfg!(avarok_scale)`, which is `0` on SCALE**, not
+`auto`: on gfx1201 the twin arm measured SLOWER than the arm it replaces, so
+there is no residency-versus-speed trade for the probe to weigh. NVIDIA is
+untouched and still builds them. The decision is made ONCE, before any layer
+allocates, for the reason `gemma4/loader_a.rs::ffn_transpose_fits` gives:
+`free_memory()` shrinks as layers load, so a per-layer probe transposes the
+early layers, skips the late ones, and leaves prefill straddling two dispatch
+arms.
+
+The projected twins, from the model's own dimensions (the same arithmetic that
+reproduces the measurement, pinned by `transposed_twins_tests.rs`):
+
+| model | dense FFN | SSM | attention | total |
+|---|---|---|---|---|
+| `qwen3.8-27b` / `qwen3.6-27b` | 8.96 GiB | 2.90 GiB | 0.88 GiB | **12.74 GiB** |
+| `ornith-1.0-9b` | 2.53 GiB | 0.84 GiB | 0.25 GiB | **3.62 GiB** |
+
+**What skipping costs on gfx1201: nothing, and it pays.** The prefill
+measurement (Ornith-1.0-9B with the twins against Qwen3.8-27B without) puts
+`w4a16_gemm_t_m128` at **~1 TFLOP/s and the plain `w4a16_gemm` at
+~4 TFLOP/s**, so the twin arm is the slower one here.
+
+The **~7.0 vs ~51 TFLOP/s** pair quoted for this lever elsewhere is a
+Gemma-4-31B measurement from **GB10**, never measured on SCALE. It is why every
+non-SCALE target still builds the twins by default, and it must not be quoted
+for gfx1201. The SSM and attention sides are unmeasured on both. Decode is
+untouched on every target: it reads the packed original either way. Dropping
+the SSM twin also drops the 1.41 GiB `out_proj` FP8 predequant, which exists to
+feed the same transposed GEMM. The NVFP4-MMQ finalize is skipped with them,
+because it is residency-neutral only while there are `_t` copies for it to
+free.
+
+**Reading the memory budget off the serve log.** Three INFO lines carry the
+whole arithmetic, so a serve that will not fit batch 4 can be diagnosed without
+re-running it under `RUST_LOG=debug`:
+
+```
+Preflight reserve: inference=2098 MB = fixed 886 MB + ring 1212 MB, buffer_arena=1945 MB ...;
+  ring: 8 slots x 1 seqs x 151.5 MB/seq = 1.18 GB
+Preflight reserve breakdown: ssm_pool=... ssm_snapshot=... gdn_two_phase=... cuda_headroom=...
+KV cache: 31.9 GB total x 90% util = 28.7 GB budget; 23.0 GB pre-KV + 2.0 GB reserve -> 3.7 GB for KV ...
+KV budget itemised: pre-KV 23.00 GB = weights 19.42 (store, resident now) + buffer arena 1.90
+  + other 1.68 (CUDA context, driver, co-tenants); already released before this point:
+  vision 1.65, lm_head source 1.18; reserve 2.05 GB ... + DFlash 0.00 GB -> KV 3.70 GB
+```
+
+Two terms matter here. **"pre-KV"** is `total - free`, a subtraction that lumps
+the weights, the buffer arena, the CUDA context and any desktop co-tenant into
+one number; the itemised line names each and prints the remainder as `other`
+rather than hiding it. **The reserve** arrives at the KV sizer as a single
+`usize` from a different crate; the preflight line prints it as `fixed + ring`,
+and the ring is `slots x seqs x bytes`, which at batch 1 on this board is
+8 x 1 x 151.5 MiB = 1.18 GB of a 2.05 GB reserve. That is the term to attack
+for more batching headroom, not the KV arithmetic.
+
+**The checkpoint's `lm_head`, once the heads are built.**
+`unsloth/Qwen3.8-27B-NVFP4` ships `lm_head.weight` as FP8 E4M3 with a
+per-channel BF16 scale. `load_lm_head` dequantises it into a fresh BF16
+allocation and every head (NVFP4, FP8 or the BF16 skip) is built from that
+copy, so the checkpoint's own bytes have no reader. That is **1.18 GiB**, and
+`lm_head_setup::release_lm_head_source` frees it on the same
+`AVAROK_LOAD_RELEASE_SOURCES` knob as the loader's other release sites (ON
+under `cfg!(avarok_scale)`).
+
+Two flags keep it: `--lm-head-dtype fp8` and `--dflash` both reach
+`native_fp8_lm_head_share`, which binds `lm_head.weight` ZERO-COPY on purpose,
+and with either set nothing is released. A third guard is less obvious and is
+the one that matters: the release only fires when the checkpoint's `lm_head` is
+FP8, because that is the proof a copy was made. On a BF16 or NVFP4-prepacked
+head the loader hands the store's pointer straight through. The release runs
+immediately after `setup_lm_heads` and before the KV sizer, so the 1.18 GiB
+reaches the KV budget rather than being freed after it was already spent.
+
+**`--text-only`: the vision tower, for a serve that only ever sends text.**
+`unsloth/Qwen3.8-27B-NVFP4` ships a BF16 vision tower and Atlas binds it,
+because the checkpoint declares a `vision_config`. That is **~1.65 GiB** of the
+store, resident for the life of the process, charged against the same budget as
+the weights, the buffer arena and the KV cache, and on this board a sequence's
+KV at 4096 tokens is only ~0.3 GB, so the tower is worth several batch slots.
+`--text-only` clears `config.vision` before the weight store is built, so the
+tower's bytes are never read from disk, never bound and never resident (the load
+log prints the GB it did not read). Image and video inputs are then refused with
+a **400** naming the reason, rather than silently dropped. Default OFF: a VL
+checkpoint serves with vision unless this says otherwise.
+
+`--text-only` also closes a spelling gap. The load-time skip and
+`build_model`'s unbound-tower reclaim both match `model.visual.*`,
+`model.vision*` and `visual.*`, but `Qwen35WeightLoader::load_vision_encoder`
+also probes **`model.language_model.visual.*`**, which every
+`AutoModelForImageTextToText` re-quant uses, so a checkpoint in that layout had
+a tower that was read from disk, never bound and never freed. All three sites
+now call one predicate, `fast_weights::is_vision_tensor`, which carries the
+fourth spelling.
+
+**A proper fix for the twin lever is a kernel, not a knob**: a prefill GEMM
+that reads the packed `[N, K/2]` layout directly with a transposed tile walk,
+the way `w4a16_gemm` already does at scalar speed but with the 128x128
+`cp.async` tiling the `_t` kernels have. Then there is no second layout to
+build or skip on any target. Until that exists, the lever buys a serve and
+nothing else.
+
+**Free-memory source on AMD boards.** Atlas does NOT trust SCALE's
+`cuMemGetInfo` for free VRAM on this target. The first shard of
+`unsloth/Qwen3.8-27B-NVFP4` logged `GPU memory: 31.56 GB used, 0.05 GB free`
+while `/sys/class/drm/card1/device/mem_info_vram_used` peaked at 22.9 GB of a
+31.86 GB board and the allocation ledger held 22.57 GB of tensors. A two-loop
+repro in one program pins it to the allocation COUNT, not the byte count: 56
+allocations of 512 MiB track sysfs within 1 percent (free 3704 MiB at
+28672 MiB allocated, sysfs used 29379 MiB), while 2000 allocations of 11 MiB
+report free 60 MiB at 16500 MiB allocated against sysfs used 17227 MiB of
+32624 MiB, stay pinned at 64 MiB free through 22000 MiB allocated, and never
+recover after every allocation is freed (22064 MiB free). Native HIP
+`hipMemGetInfo` in the same loop is honest. It is a **SCALE runtime reporting
+defect**, roughly 16 MiB of phantom usage charged per allocation to its own
+accounting (a pool granularity rather than real VRAM), and a clean repro exists
+for Spectral. Real VRAM use is fine; only the reported number is wrong.
+
+So on a SCALE build (`cfg!(avarok_scale)`, vendor-driven) the free leg comes
+from `mem_info_vram_total` minus `mem_info_vram_used` in
+`/sys/class/drm/card*/device`, auto-detected by matching the node's total
+against the driver's within 5 percent. That is the kernel's own TTM
+accounting, so it also counts the desktop compositor's 0.4 to 1.6 GB, which a
+per-context driver query never sees. `total` stays on the driver, which read
+32624 MiB, the board's true capacity. `AVAROK_MEMINFO_SOURCE` overrides:
+`driver` forces the old behaviour for an A/B, `sysfs` forces detection on a
+non-SCALE build, and `sysfs:/sys/class/drm/cardN/device` names the node when
+auto-detection cannot (two boards of the same size, an unusual DRM layout).
+Nothing about this reaches an NVIDIA build, which resolves to the driver
+without even scanning `/sys`. See
+`crates/spark-runtime/src/cuda_backend/meminfo_source.rs`.
+
+**Optional modules on SCALE targets.** Atlas carries kernel modules that only
+some targets compile: `kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu` is entirely
+inside `#if defined(BLACKWELL_MMA_AVAILABLE)`, so on anything that is not
+Blackwell it compiles, successfully, to a code object with no kernels in it. On
+NVIDIA that costs nothing: `cuModuleGetFunction` answers "not found",
+`spark-model`'s `try_kernel` folds the error into `KernelHandle(0)`, and every
+use site is already guarded.
+
+SCALE 1.7.1 on gfx1201 does not answer that way. It returns SUCCESS for a name
+the object does not define, hands back a handle backed by no code, and the
+first launch through it dies with `CUDA_ERROR_INVALID_IMAGE (200)`. On this
+board that took `spark serve` down at its very first kernel,
+`nvfp4_mmq::avarok_nvfp4_repack`, with the weights already resident.
+
+So the registry does not take the driver's word for it: at load time it reads
+each binary module's ELF symbol table (`crates/avarok-core/src/elf_symbols.rs`,
+a dependency-free ELF64 walk that counts `STT_FUNC` symbols and the AMDGPU
+`<kernel>.kd` descriptors) and refuses a lookup the object provably cannot
+satisfy, with `<module>::<kernel>: not defined in this target's code object
+(optional module compiled out?)`. That is an ordinary error, so the optional
+kernel degrades to handle 0 exactly as it does on NVIDIA. A module whose bytes
+do not parse as ELF64 is not guarded at all (the driver still decides), and the
+PTX path is untouched. `avarok-kernels`' build script reads the same objects
+with the same code and prints `cargo:warning=avarok-kernels: <module> compiled
+to a code object with no kernels on <arch> (optional module compiled out)`, so
+the empty modules are named in the build log before anyone serves the target.
+
+**Build and serve.** `build-amd.sh` and `serve-amd.sh` take the hardware
+target from `AVAROK_TARGET_HW` (default `strix`) and read the SCALE arch from
+`kernels/$AVAROK_TARGET_HW/HARDWARE.toml`, so this target needs no separate
+script:
+
+```bash
+export SCALE_HOME=$HOME/scale171/scale-1.7.1-Linux
+AVAROK_TARGET_HW=r9700 ./build-amd.sh
+AVAROK_TARGET_HW=r9700 ./serve-amd.sh unsloth/Qwen3.8-27B-NVFP4
+```
+
+`AVAROK_TARGET_MODEL` defaults to `qwen3.8-27b` for `r9700` (and stays
+`qwen3.6-27b` for `strix`); `AVAROK_TARGET_QUANT` defaults to `nvfp4` for both.
+The two smaller models are selected the same way:
+
+```bash
+AVAROK_TARGET_HW=r9700 AVAROK_TARGET_MODEL=ornith-1.0-9b \
+  AVAROK_TARGET_QUANT=nvfp4 ./build-amd.sh
+# or AVAROK_TARGET_MODEL=holo-3.1-4b
+```
+
+`serve-amd.sh` also picks the measured r9700 defaults: `--gpu-memory-utilization
+0.90`, `--max-batch-size 1` and `--oom-guard-mb 1024` for the 27B, against
+strix's 0.70 and batch 4. `GPU_UTIL`, `MAX_BATCH` and `OOM_GUARD_MB` override
+each. What the scripts do by hand:
+
+```bash
+export CUDA_PATH="$SCALE_HOME/targets/gfx1201"
+export CUDA_HOME="$CUDA_PATH"
+export PATH="$SCALE_HOME/targets/gfx1201/bin:/opt/rocm/bin:$PATH"
+export LD_LIBRARY_PATH="/opt/rocm/lib:$SCALE_HOME/targets/gfx1201/lib:$LD_LIBRARY_PATH"
+export AVAROK_TARGET_HW=r9700
+export AVAROK_TARGET_MODEL=qwen3.8-27b   # or qwen3.6-27b
+export AVAROK_TARGET_QUANT=nvfp4
+export CUDARC_CUDA_VERSION=12080
+cargo build --release -p spark-server --no-default-features --features cuda
+
+# serve: SCALE libs FIRST so /opt/rocm cannot shadow the bundled ROCm, then
+# the required knob and the conservative defaults (see above).
+export LD_LIBRARY_PATH="$SCALE_HOME/targets/gfx1201/lib:$SCALE_HOME/lib"
+export AVAROK_W4A16_VARIANT=v1
+export AVAROK_NO_GDN_FP8_PREFILL=1     # bisect candidate, not a pin
+export AVAROK_NO_FP8_PREDEQUANT=1      # belt; the loader probes for this anyway
+export AVAROK_LOAD_TRANSPOSED_TWINS=0  # fits 32 GB; the plain arm is also faster here
+# --text-only drops the checkpoint's ~1.65 GiB vision tower before load. Add it
+# for a text deployment; leave it off if images are ever sent (400 otherwise).
+target/release/spark serve unsloth/Qwen3.8-27B-NVFP4
+```
+
+**`avarok_scale` is vendor-driven.** `spark-model/build.rs` and
+`spark-runtime/build.rs` set `avarok_scale` (and `avarok_hip`) from
+`kernels/<hw>/HARDWARE.toml` `[hardware].vendor`, not from the target's name.
+They used to test `hw.starts_with("strix")`, which was correct only for as
+long as every SCALE target was called strix-something: the kernel side pins
+`BR64 32` under `__SCALE__` for EVERY SCALE target, so a second one under any
+other name would have compiled 32-row kernels and launched them with a 64-row
+stride, silently, with no build error and no failing test, just dropped query
+rows. Vendor is the same signal `avarok-kernels/build.rs` already picks the
+compiler with.
 
 ## Adding a new quantization scheme
 

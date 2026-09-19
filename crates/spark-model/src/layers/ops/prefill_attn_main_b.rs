@@ -133,11 +133,12 @@ pub fn prefill_attention_paged_64(
     inv_sqrt_d: f32,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -186,11 +187,12 @@ pub fn prefill_attention_paged_fp8_64(
     cache_stride: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -244,11 +246,12 @@ pub fn prefill_attention_paged_turbo_64(
     data_section_bytes: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -341,11 +344,12 @@ pub fn prefill_attention_paged_nvfp4_64(
     data_section_bytes: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -407,11 +411,12 @@ pub fn prefill_attention_paged_bf16k_turbo3v_64(
     v_data_section_bytes: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -463,11 +468,12 @@ pub fn prefill_attention_paged_bf16k_turbo4v_64(
     v_data_section_bytes: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
@@ -518,11 +524,12 @@ pub fn prefill_attention_paged_bf16k_turbo2v_64(
     v_data_section_bytes: u64,
     stream: u64,
 ) -> Result<()> {
-    // Paged prefill kernels clamp BR64 64->32 on AMD (gfx1151 LDS cap;
+    // Paged prefill kernels clamp BR64 64->32 on AMD (64 KB LDS cap;
     // prefill_paged_compute.cuh). The grid stride must match the kernel's BR64
     // or query rows 32..63 of every 64-row band are dropped (same class as the
-    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) = strix+strix-hip;
-    // NVIDIA keeps 64 byte-identical.
+    // non-paged prefill_attention_64 fix). cfg!(avarok_scale) is set for every
+    // `vendor = "amd"`/`"hip"` target, which is what the kernel's `__SCALE__`
+    // gate keys on too; NVIDIA keeps 64 byte-identical.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(q_len, br), 1])
