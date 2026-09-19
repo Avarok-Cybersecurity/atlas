@@ -11,6 +11,9 @@
     "media": "node scripts/media/record.mjs && node scripts/media/encode.mjs",
     "og": "node scripts/media/og.mjs",
     "reel": "node scripts/media/reel.mjs",
+    "guide": "node scripts/gen-site-guide.mjs",
+    "guide:check": "node scripts/gen-site-guide.mjs --check",
+    "perf:cpu": "node scripts/perf/cpu.mjs",
     "test:e2e": "bun x --bun playwright test",
     "test:e2e:live": "LIVE=1 bun x --bun playwright test --grep @live",
     "test:unit": "bun test --preload ./test-runes.js src/lib"

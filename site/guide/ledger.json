@@ -1,0 +1,1015 @@
+{
+  "started": "2026-09-18",
+  "changes": [
+    {
+      "rev": 1,
+      "date": "2026-09-18",
+      "pr": 1136,
+      "base": "d499f1457",
+      "note": "The ledger begins. Every tracked value and file as the branch stood at this commit."
+    },
+    {
+      "rev": 2,
+      "date": "2026-09-18",
+      "pr": 1136,
+      "base": "d499f1457",
+      "note": "Contacts keyed by job: sales to Eric, business and design partners to Kyle, operations to Peter, public collaboration to Tom. Team portraits and the real pull request exchange added.",
+      "touched": [
+        "contacts.sales",
+        "contacts.business",
+        "contacts.operations",
+        "contacts.collaboration",
+        "contacts.press",
+        "exchange-before-dark.webp",
+        "exchange-before-light.webp",
+        "exchange-dark.webp",
+        "exchange-light.webp",
+        "eric-gonzalez.webp",
+        "kyle-croll.webp",
+        "peter-drybrough.webp",
+        "thomas-braun.webp",
+        "tom-turney.webp"
+      ]
+    },
+    {
+      "rev": 3,
+      "date": "2026-09-18",
+      "pr": 1136,
+      "base": "d499f1457",
+      "note": "Daylight stills for five industry pages, and three for the SMB and edge page to turn through. The desk box still now serves pricing only.",
+      "touched": [
+        "art-finance.webp",
+        "art-gov.webp",
+        "art-health.webp",
+        "art-legal.webp",
+        "art-research.webp",
+        "art-smb-autoshop.webp",
+        "art-smb-library.webp",
+        "art-smb-office.webp"
+      ]
+    }
+  ],
+  "facts": {
+    "company.category": {
+      "value": "The inference economics platform",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.console": {
+      "value": "Avarok Console",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.control": {
+      "value": "Avarok Control",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.economics": {
+      "value": "Avarok Economics",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.engine": {
+      "value": "Avarok Engine",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.founded": {
+      "value": "Started in 2026.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.legal": {
+      "value": "Atlas Cybernetics Corp.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.name": {
+      "value": "Avarok",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.short": {
+      "value": "Avarok is the inference economics platform for GPUs you already own.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.tagline": {
+      "value": "Same silicon. Smarter inference. Stronger scalability.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "company.x": {
+      "value": "@AtlasInferenceX",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "contacts.business": {
+      "value": "kyle@atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "contacts.collaboration": {
+      "value": "tom@atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "contacts.operations": {
+      "value": "peter@atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "contacts.press": {
+      "value": "kyle@atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18",
+      "removed": "2026-09-18"
+    },
+    "contacts.sales": {
+      "value": "eric@atlascybernetics.ai",
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "value": "kyle@atlascybernetics.ai",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "contacts.security": {
+      "value": "security@atlas.net",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "contacts.technical": {
+      "value": "thomas@atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "footer.legal": {
+      "value": "© 2026 Atlas Cybernetics Corp. Avarok and Avarok Engine are products of Atlas Cybernetics Corp.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "footer.license": {
+      "value": "Community Edition under AGPL-3.0. Enterprise Edition under a commercial license.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "footer.mlperf": {
+      "value": "The MLPerf name and logo are registered and unregistered trademarks of MLCommons Association in the United States and other countries. All rights reserved. Unauthorized use strictly prohibited. See mlcommons.org for more information.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "footer.slogan": {
+      "value": "Same silicon. Smarter inference. Stronger scalability.",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "form.endpoint": {
+      "value": "(none: forms draft an email)",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.blog": {
+      "value": "https://blog.atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.changelog": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CHANGELOG.md",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.contributing": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/CONTRIBUTING.md",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.discord": {
+      "value": "https://discord.gg/RQcGakU2jW",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.docs": {
+      "value": "https://docs.atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.github": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.guide": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/docs/GB10_DEPLOYMENT_GUIDE.md",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.inception": {
+      "value": "https://www.nvidia.com/en-us/startups/",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.issues": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/issues",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.ladderLog": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/bench/ladder38/RESULTS.md",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.license": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/LICENSE",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.llamaCppPr": {
+      "value": "https://github.com/ggml-org/llama.cpp/pull/18680",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.mlcommons": {
+      "value": "https://mlcommons.org/2026/07/mlperf-inference-v61-edge-agentic/",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.qwenAmbassador": {
+      "value": "https://qwen.ai/ambassador",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.recipes": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas-recipes",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.scale": {
+      "value": "https://docs.scale-lang.com/stable/",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.securityPolicy": {
+      "value": "https://github.com/Avarok-Cybersecurity/atlas/blob/main/SECURITY.md",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.sequoiaPatel": {
+      "value": "https://sequoiacap.com/podcast/dylan-patel-of-semianalysis-why-hardware-software-co-design-is-ais-real-100x",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.transformersPr": {
+      "value": "https://github.com/huggingface/transformers/pull/46423",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "links.x": {
+      "value": "https://x.com/AtlasInferenceX",
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site.origin": {
+      "value": "https://atlascybernetics.ai",
+      "rev": 1,
+      "date": "2026-09-18"
+    }
+  },
+  "assets": {
+    "assets/brand/atlas-hero.png": {
+      "sha": "3e8171b5d126",
+      "bytes": 1888228,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/github-social-preview-corp-light.png": {
+      "sha": "545353b64347",
+      "bytes": 48893,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/github-social-preview-corp.png": {
+      "sha": "f41560b0e0ab",
+      "bytes": 49314,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/kit/logo-full-corp-ondark.svg": {
+      "sha": "8821116b1c29",
+      "bytes": 14355,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/kit/logo-full-corp.svg": {
+      "sha": "6b7feac7baa1",
+      "bytes": 14355,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/kit/wordmark-corp-ondark.svg": {
+      "sha": "b07847794c98",
+      "bytes": 13942,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/kit/wordmark-corp.svg": {
+      "sha": "fd3a82217c96",
+      "bytes": 13942,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-full-corp-2048.png": {
+      "sha": "4d8ddcf342a8",
+      "bytes": 93600,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-full-corp-ondark.svg": {
+      "sha": "8821116b1c29",
+      "bytes": 14355,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-full-corp.svg": {
+      "sha": "6b7feac7baa1",
+      "bytes": 14355,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-full-ondark.svg": {
+      "sha": "cfe37ba61d89",
+      "bytes": 14959,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-full.svg": {
+      "sha": "979bbe043695",
+      "bytes": 14959,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-horizontal-ondark.svg": {
+      "sha": "8e57db276c22",
+      "bytes": 6173,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/logo-horizontal.svg": {
+      "sha": "f18e0116c2da",
+      "bytes": 6173,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/mark-compact.svg": {
+      "sha": "48c458d5c681",
+      "bytes": 622,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "assets/brand/mark.svg": {
+      "sha": "923112776c10",
+      "bytes": 587,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "blog/static/og-image.png": {
+      "sha": "8f02fc93990d",
+      "bytes": 110902,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/apple-touch-icon.png": {
+      "sha": "bd6fe104d278",
+      "bytes": 8994,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/brand/logo-full.svg": {
+      "sha": "365f6d2a616c",
+      "bytes": 35,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/brand/logo-horizontal.svg": {
+      "sha": "395eda237732",
+      "bytes": 41,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/brand/mark-compact.svg": {
+      "sha": "dbe376bb7706",
+      "bytes": 38,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/favicon.ico": {
+      "sha": "de403885c52b",
+      "bytes": 13948,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/favicon.svg": {
+      "sha": "4d7bf0d994b6",
+      "bytes": 625,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/IBM-PLEX-MONO-LICENSE.txt": {
+      "sha": "23b0a9d0c6d3",
+      "bytes": 5299,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/IBM-PLEX-SANS-LICENSE.txt": {
+      "sha": "d0283623ef57",
+      "bytes": 4429,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-mono-latin-400-normal.woff2": {
+      "sha": "08949f728dc5",
+      "bytes": 14708,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-mono-latin-600-normal.woff2": {
+      "sha": "0d1f0b8d0722",
+      "bytes": 15620,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-sans-latin-400-normal.woff2": {
+      "sha": "3b646991d300",
+      "bytes": 22588,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-sans-latin-500-normal.woff2": {
+      "sha": "0717336fb31f",
+      "bytes": 24184,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-sans-latin-600-normal.woff2": {
+      "sha": "8960851d691c",
+      "bytes": 24252,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/ibm-plex-sans-latin-700-normal.woff2": {
+      "sha": "42e7b0c143c1",
+      "bytes": 22832,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/fonts/plex.css": {
+      "sha": "6dc7537abc8d",
+      "bytes": 1974,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/amd-dark.svg": {
+      "sha": "831d1d6f2454",
+      "bytes": 671,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/amd.svg": {
+      "sha": "3c053303708c",
+      "bytes": 659,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/anaconda.svg": {
+      "sha": "459123da56a5",
+      "bytes": 8024,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/beyondgravity.svg": {
+      "sha": "1ad28b68750e",
+      "bytes": 4640,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/google.svg": {
+      "sha": "a33a47a20c0e",
+      "bytes": 1906,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/huggingface-dark.svg": {
+      "sha": "fb35e3e6cdfb",
+      "bytes": 23961,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/huggingface.svg": {
+      "sha": "f17722a56d88",
+      "bytes": 23990,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/kraken.svg": {
+      "sha": "cd3c8afe2c6e",
+      "bytes": 3007,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/mlcommons-dark.svg": {
+      "sha": "963df8ef860d",
+      "bytes": 1683,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/mlcommons.svg": {
+      "sha": "4b54e1d2d8d9",
+      "bytes": 3926,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/nswc.webp": {
+      "sha": "61cd2d1338ca",
+      "bytes": 11090,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/qwen.svg": {
+      "sha": "cae4a6dc3fe9",
+      "bytes": 4734,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/scale-dark.svg": {
+      "sha": "66ef9b3138e7",
+      "bytes": 2712,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/scale.svg": {
+      "sha": "d12d21dd9319",
+      "bytes": 2712,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/synopsys.svg": {
+      "sha": "4546742a7feb",
+      "bytes": 4058,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/logos/uscybercom.webp": {
+      "sha": "56c4f5cebc1d",
+      "bytes": 11822,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/about/exchange-before-dark.webp": {
+      "sha": "1c109119c134",
+      "bytes": 176064,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/about/exchange-before-light.webp": {
+      "sha": "a584fcf2e580",
+      "bytes": 172468,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/about/exchange-dark.webp": {
+      "sha": "ac162684e414",
+      "bytes": 36434,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/about/exchange-light.webp": {
+      "sha": "6467ffb9c6ac",
+      "bytes": 36916,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/.gitkeep": {
+      "sha": "e3b0c44298fc",
+      "bytes": 0,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-aisle.webp": {
+      "sha": "6242a3613d7f",
+      "bytes": 49498,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-desk-box.webp": {
+      "sha": "d9dabf05f679",
+      "bytes": 23212,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-enclave.webp": {
+      "sha": "8f29ab16b607",
+      "bytes": 34962,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-finance.webp": {
+      "sha": "1d9acadd099e",
+      "bytes": 82850,
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "sha": "18cf9a3cdd5b",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "site/static/media/art/art-gov.webp": {
+      "sha": "3a7db8430b8b",
+      "bytes": 74690,
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "sha": "33858bdffa60",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "site/static/media/art/art-grid.webp": {
+      "sha": "8c0c955dbc83",
+      "bytes": 18740,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-health.webp": {
+      "sha": "6d3c422df667",
+      "bytes": 59834,
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "sha": "f27b9a216b24",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "site/static/media/art/art-hyperscale.webp": {
+      "sha": "d426b1647073",
+      "bytes": 59242,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-legal.webp": {
+      "sha": "5b8dc32754c5",
+      "bytes": 54536,
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "sha": "e1099358dd7f",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "site/static/media/art/art-power.webp": {
+      "sha": "90effc2dcbcc",
+      "bytes": 53910,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-prisms.webp": {
+      "sha": "d080ffd4348b",
+      "bytes": 47956,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-research.webp": {
+      "sha": "67489380f2a5",
+      "bytes": 54932,
+      "rev": 2,
+      "date": "2026-09-18",
+      "was": [
+        {
+          "sha": "cd68fa572790",
+          "until": "2026-09-18"
+        }
+      ]
+    },
+    "site/static/media/art/art-smb-autoshop.webp": {
+      "sha": "f03691bb1a31",
+      "bytes": 103750,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-smb-library.webp": {
+      "sha": "ee032ff7c403",
+      "bytes": 88452,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/art/art-smb-office.webp": {
+      "sha": "a6aaacce3d2e",
+      "bytes": 60880,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-desk-box.mp4": {
+      "sha": "f2de0145c76d",
+      "bytes": 268522,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-desk-box.webm": {
+      "sha": "bac084bdf3cd",
+      "bytes": 150839,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-desk-box.webp": {
+      "sha": "f341d8f95092",
+      "bytes": 22412,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-enclave.mp4": {
+      "sha": "350aa8002cc7",
+      "bytes": 912778,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-enclave.webm": {
+      "sha": "48a678c29fde",
+      "bytes": 921285,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-enclave.webp": {
+      "sha": "8efb4b0c2548",
+      "bytes": 43384,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-field.mp4": {
+      "sha": "ab1340e7d0e8",
+      "bytes": 1272239,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-field.webm": {
+      "sha": "b965d46a321a",
+      "bytes": 1444879,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-field.webp": {
+      "sha": "348eed6eb8e2",
+      "bytes": 44726,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-hall.mp4": {
+      "sha": "172ad2d3049b",
+      "bytes": 2089557,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-hall.webm": {
+      "sha": "fbc77fbecc28",
+      "bytes": 2967888,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-hall.webp": {
+      "sha": "2afcee1ae691",
+      "bytes": 76396,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-power.mp4": {
+      "sha": "f849026b8c81",
+      "bytes": 570290,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-power.webm": {
+      "sha": "82627f2fb389",
+      "bytes": 597633,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-power.webp": {
+      "sha": "26938ff4445d",
+      "bytes": 48736,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-rack.mp4": {
+      "sha": "e11feee3b5fd",
+      "bytes": 1445771,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-rack.webm": {
+      "sha": "33ff55edaf15",
+      "bytes": 1880056,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-rack.webp": {
+      "sha": "621f8ced7795",
+      "bytes": 60952,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-tokens.mp4": {
+      "sha": "534b5ec59826",
+      "bytes": 331844,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-tokens.webm": {
+      "sha": "715675a91503",
+      "bytes": 193495,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/broll-tokens.webp": {
+      "sha": "696c4bb456cb",
+      "bytes": 19352,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-ask.mp4": {
+      "sha": "8dd2e9bf94c4",
+      "bytes": 423977,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-ask.webm": {
+      "sha": "5a99623c4f5b",
+      "bytes": 632213,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-ask.webp": {
+      "sha": "dce1de79fb0d",
+      "bytes": 76168,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-deploy.mp4": {
+      "sha": "54ef55eae1e3",
+      "bytes": 413485,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-deploy.webm": {
+      "sha": "6c910cbcf099",
+      "bytes": 630862,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-deploy.webp": {
+      "sha": "c405e5b04869",
+      "bytes": 66912,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-economics.mp4": {
+      "sha": "f5eda7c3fe32",
+      "bytes": 284942,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-economics.webm": {
+      "sha": "c6dbdf52fd08",
+      "bytes": 480325,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-economics.webp": {
+      "sha": "400d92ed015e",
+      "bytes": 52234,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-fleet.mp4": {
+      "sha": "4cefadefed0e",
+      "bytes": 390988,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-fleet.webm": {
+      "sha": "16a0cb8ee625",
+      "bytes": 617863,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-fleet.webp": {
+      "sha": "000cf70f7898",
+      "bytes": 77170,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-governance.mp4": {
+      "sha": "a7704e3fc443",
+      "bytes": 388520,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-governance.webm": {
+      "sha": "b0f97d2e4eed",
+      "bytes": 561394,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-governance.webp": {
+      "sha": "25d239005780",
+      "bytes": 67900,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-queue.mp4": {
+      "sha": "3b6c0b0734d8",
+      "bytes": 371665,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-queue.webm": {
+      "sha": "d7dcc055185a",
+      "bytes": 595463,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/console-queue.webp": {
+      "sha": "da399f842cb9",
+      "bytes": 64822,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/reel.mp4": {
+      "sha": "8459dfdc2f97",
+      "bytes": 4950566,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/reel.webm": {
+      "sha": "0ae13019aa72",
+      "bytes": 4734584,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/media/reel.webp": {
+      "sha": "17f73ff91c04",
+      "bytes": 22336,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/nvidia-inception.webp": {
+      "sha": "2a62f1fc54b1",
+      "bytes": 21352,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/og-image.png": {
+      "sha": "31c79ad12550",
+      "bytes": 112608,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/team/eric-gonzalez.webp": {
+      "sha": "0b38045abdf1",
+      "bytes": 9008,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/team/kyle-croll.webp": {
+      "sha": "04f04b13e7df",
+      "bytes": 7006,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/team/peter-drybrough.webp": {
+      "sha": "a6d2b477b370",
+      "bytes": 6602,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/team/thomas-braun.webp": {
+      "sha": "351041dbbb5d",
+      "bytes": 12690,
+      "rev": 1,
+      "date": "2026-09-18"
+    },
+    "site/static/team/tom-turney.webp": {
+      "sha": "859a25307e0c",
+      "bytes": 11118,
+      "rev": 1,
+      "date": "2026-09-18"
+    }
+  }
+}

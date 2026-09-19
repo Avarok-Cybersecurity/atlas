@@ -8,6 +8,10 @@ says what was built, why each decision went the way it did, where every kind of
 change is made, and what is still open. Start here, then read `README.md` for
 the commands.
 
+> **Start with [SITE-GUIDE.md](SITE-GUIDE.md)**, the generated map of every page, button,
+> link, address and asset, and [AGENTS.md](AGENTS.md), the one page on how to work here.
+> This document is the reasons: what was decided, why, and what is still open.
+
 ## What changed, in one paragraph
 
 The front page used to sell a local inference engine to developers. It now
@@ -79,7 +83,12 @@ a group's CSS to that group's pages.
 | The nav or the footer | `nav` and `footer` in `src/lib/content/brand.js` |
 | A price, a tier, a feature list | `src/lib/content/pricing.js` |
 | The payback model's defaults | `FLEET_DEFAULTS` and `API_DEFAULTS` in `src/lib/economics.js` |
-| A contact address | `contacts` in `src/lib/content/brand.js` |
+| A contact address | `contacts` in `src/lib/content/brand.js`. Keyed by job (sales, business, technical, operations, collaboration, security), so a change of person is one line. Then `bun run guide` |
+| Who is on a contact card | `contact.paths[].doors` in `src/lib/content/company.js`. Each door is a label and an address |
+| A team member's line, photo or profile | `team.people` in `company.js`, portraits in `static/team/`. Only on that person's word |
+| Offer the deck as a download | `team.deck.file` in `company.js`. Read open question 17 first |
+| The culture lines, a role's detail, the interest form | `careers` in `company.js` |
+| The map of the site | Never by hand. `bun x --bun vite build`, then `bun run guide -- --note "what changed"` |
 | Where the forms post | `formEndpoint` in `src/lib/content/brand.js`. Empty means they compose an email. The demo form and the waitlist form are one component, `DemoForm.svelte`, and each post carries a `source` |
 | A form's fields or wording | `demoPage.form` or `waitlistPage.form` in `src/lib/content/company.js` |
 | The team's prior employers | `logoWall` in `src/lib/content/home.js`, files in `static/logos/` |
@@ -155,6 +164,26 @@ sentences. `site.test.js` enforces it on every string in `content/`.
 
 **No third party requests.** Fonts, logos and media are self hosted. The
 Lighthouse gate requires it and `e2e/marketing.spec.js` checks it.
+
+**The map is generated and the ledger remembers.** `SITE-GUIDE.md` is rebuilt from the
+built site on every `bun run guide`. `guide/ledger.json` gives every name, address,
+link, licence line and asset a revision and a date. Change one without recording it and
+the unit suite fails, by name, with the command to run. Pages whose links come from data
+(contributors, recipes, records, the changelog) are mapped but their links are not
+listed, so somebody else's commit cannot make the guide stale.
+
+**An idle page costs nothing.** Lighthouse measures how fast a page arrives, not what it
+costs to leave open. Anything that animates forever moves only `transform` or `opacity`
+and stops when it is off screen. The budget is 5% of one core, `bun run perf:cpu` measures
+it the way Chrome's task manager does, and a browser test enforces the rule behind it.
+
+**The site is two documents.** The marketing pages and the developer pages have different
+design systems, and the client router never removes a stylesheet. So a link between them
+is a full page load and is never preloaded. `src/lib/route-groups.js`.
+
+**An email button always does something.** A `mailto:` link is silent on a machine with no
+mail app. Every one also copies the address and says so, and a form that could only draft
+an email shows the draft so it can be pasted. `MailToast.svelte`, `DemoForm.svelte`.
 
 **The marketing pages stay light.** `gates.generated.json` is a megabyte. Only
 the benchmarks page may import it. `bundle-budget.test.js` holds that line,
@@ -247,6 +276,35 @@ hosted, because the brand kit's slide and letterhead templates use them.
   class, so for a while the eyebrow, the lede and seven other classes lost the
   margins they ask for. The link reset had the same fault earlier. A reset in
   `avarok.css` must never carry the weight of a class.
+- **The ring around a screen is turned, not repainted.** It was a conic gradient whose
+  angle was animated through a registered custom property, with a blurred copy behind it.
+  That repaints and re-blurs every frame: 38% of a core on the idle front page, measured.
+  The gradient is now painted once on a square that is rotated with `transform`, clipped by
+  the frame, and the glow is a static four colour shadow. Same picture, 2 to 3%.
+- **What both halves of the site share is named, not left to the bundler.** A chunk
+  group takes its modules' dependencies with it, so the star count and the ladder data,
+  which both a marketing component and a developer page print, had landed in the
+  marketing chunk. Every developer page then downloaded 130 KB of marketing components
+  and inlined their CSS to read a number. They are listed in `av-chrome` in
+  `vite.config.js` now, and `e2e/page-weight.spec.js` holds a request budget for seven
+  pages. The same test would have caught the 22 byte facade chunk that one `import` of
+  `$app/navigation` in the root layout left on every page.
+- **Media stays out of the service worker.** `static/` went from a few icons to 31 MB of
+  video, and the worker precached all of `static/` on install, for every first visit and
+  again on every deploy. Media is now neither precached nor handled (video arrives in byte
+  ranges the Cache API cannot store). A test holds the precache under 1 MB.
+- **The exchange is the real thread.** Captured from the public pull request in both
+  themes, in UTC so its dates match the timeline, with the words in the alt text.
+  `scripts/media/capture-thread.mjs` takes it again.
+- **The team is on the page, the deck is not.** Names, titles, one line each, portraits
+  and profiles, from the company's own team slide. See open questions 17 and 18.
+- **No bounty is promised.** The careers page says a pull request is the fastest way in.
+  A cash bounty is a term the company would have to set, fund and honour, so the page
+  does not invent one. `careers.fastTrack` is where it would go.
+- **The industry pages get a second look.** Daylight scenes of the buyer's own place of
+  work instead of eleven dark corridors. `media-brief/RATIONALE.md` has the reasoning and
+  the `N` shots in `shots.json` are the prompts. A page with several stills turns through
+  them (`artsFor` in `media.js`).
 - **The architecture diagram is sized from its text.** Plex Mono is 0.6 em a
   character, so a box's width is arithmetic. The comment in `ArchDiagram.svelte`
   has the rule, and a browser test measures every label against its box.
@@ -302,6 +360,20 @@ hosted, because the brand kit's slide and letterhead templates use them.
 16. **What the Community Edition will contain.** The waitlist page says only
     that it is the free edition under AGPL-3.0 and is not released. The pricing
     tier still lists what is in it. The team should confirm that list.
+17. **The deck.** Asked for as a download beside the team. It is not in the repository,
+    because this repository is public and a file pushed here is published at that moment,
+    before anyone reviews it. Three things to settle first: one slide is marked
+    confidential, the deck states a fundraising ask (and states it as two different
+    amounts), and publishing an ask to the public is a securities question worth one
+    email to counsel. Until then the button asks for the deck by email. To publish a
+    version made for the public, put the PDF under `static/` and set `team.deck.file`.
+18. **Each person confirms their own entry.** Photo, title, line and profile link for the
+    five people in `team.people` came from the company's team slide and the links Alexi
+    supplied. Each of them should read their own before this merges.
+19. **A form endpoint is now the real fix.** With none, a form can only draft an email in
+    the visitor's own mail app, and a visitor without one has to copy and paste. The page
+    handles that honestly now, but a Cloudflare Worker or a CRM endpoint in `formEndpoint`
+    is what stops requests being lost.
 
 ## How to throw it away
 
