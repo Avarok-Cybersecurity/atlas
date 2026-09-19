@@ -34,3 +34,10 @@ pub(super) fn require_chat_support(encoding: super::ChatEncoding) -> Result<()> 
     }
     Ok(())
 }
+
+impl super::ChatTokenizer {
+    /// Official XTML output must not be interpreted as Qwen thinking markup.
+    pub(crate) fn uses_kimi_k3_xtml(&self) -> bool {
+        self.chat_encoding == super::ChatEncoding::KimiK3XtmlUnsupported
+    }
+}

@@ -16,6 +16,7 @@ fn official_k3_chat_refuses_unimplemented_xtml_before_template_fallback() {
     .unwrap();
     let tokenizer =
         ChatTokenizer::from_model_dir(dir.path(), 163585, true, "kimi_k3", None, false).unwrap();
+    assert!(tokenizer.uses_kimi_k3_xtml());
     let messages = [json!({"role":"user","content":"Hello"})];
     for thinking in [false, true] {
         for result in [
@@ -39,6 +40,11 @@ fn official_k3_xtml_detection_does_not_confuse_the_twin() {
     )
     .unwrap();
     assert!(!super::super::kimi_k3::uses_xtml(dir.path(), "kimi_k3").unwrap());
+    tokenizers::Tokenizer::new(tokenizers::models::wordlevel::WordLevel::default())
+        .save(dir.path().join("tokenizer.json"), false)
+        .unwrap();
+    let twin = ChatTokenizer::from_model_dir(dir.path(), 0, false, "kimi_k3", None, false).unwrap();
+    assert!(!twin.uses_kimi_k3_xtml());
     std::fs::write(dir.path().join("tiktoken.model"), "fixture").unwrap();
     assert!(super::super::kimi_k3::uses_xtml(dir.path(), "kimi_k3").unwrap());
     assert!(!super::super::kimi_k3::uses_xtml(dir.path(), "qwen3").unwrap());
