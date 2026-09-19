@@ -53,6 +53,37 @@ pub fn pread(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
     }
 }
 
+/// `pread`, then drop the range from the page cache: the bytes now live in
+/// the arena and the cache copy is dead weight. With a 100 GiB page-locked
+/// arena on a 121 GiB Spark, leaving 12 MiB of cache behind every miss made
+/// the kernel reclaim into swap in the middle of a step (single steps of 2 to
+/// 18 s on the 09-19 standard). `ATLAS_DS41_KEEP_PAGE_CACHE=1` keeps the old
+/// behaviour.
+pub fn pread_uncached(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
+    pread(file, offset, dst)?;
+    #[cfg(target_os = "linux")]
+    if !keep_page_cache() {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: an advisory call on an open descriptor; the kernel checks
+        // the range.
+        unsafe {
+            libc::posix_fadvise(
+                file.as_raw_fd(),
+                offset as libc::off_t,
+                dst.len() as libc::off_t,
+                libc::POSIX_FADV_DONTNEED,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn keep_page_cache() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_DS41_KEEP_PAGE_CACHE").is_ok_and(|v| v == "1"))
+}
+
 struct Shard {
     path: PathBuf,
     file: File,
@@ -361,7 +392,7 @@ impl ExpertSource for ExpertSliceMap {
             (&l.down, lay.down_off, lay.down_bytes),
         ] {
             let (shard, at) = self.slice_at(loc, expert as usize);
-            pread(self.files.file(shard), at, &mut dst[off..off + len])
+            pread_uncached(self.files.file(shard), at, &mut dst[off..off + len])
                 .with_context(|| format!("layer {layer} expert {expert} shard {shard}"))?;
         }
         Ok(())
@@ -393,7 +424,7 @@ impl ExpertSource for ExpertSliceMap {
                 continue;
             }
             let (shard, at) = self.slice_at(loc, expert as usize);
-            pread(
+            pread_uncached(
                 self.files.file(shard),
                 at + (a - s_off) as u64,
                 &mut dst[a - lo..b - lo],

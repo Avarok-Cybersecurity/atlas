@@ -96,11 +96,11 @@ pub struct LruStats {
     pub prefetch_unused: u64,
 }
 
-const NONE: u32 = u32::MAX;
+pub(super) const NONE: u32 = u32::MAX;
 
 pub(super) struct SlotMeta {
     pub(super) key: Option<(u32, u32)>,
-    prev: u32,
+    pub(super) prev: u32,
     next: u32,
     /// Epoch of the last fetch; equal to the current epoch = pinned.
     pub(super) epoch: u64,
@@ -137,13 +137,13 @@ pub struct ExpertLru {
     host: *mut u8,
     dev: u64,
     layout: SlotLayout,
-    n_slots: usize,
+    pub(super) n_slots: usize,
     pub(super) meta: Vec<SlotMeta>,
     pub(super) map: HashMap<(u32, u32), u32>,
     /// Most recently used.
-    head: u32,
+    pub(super) head: u32,
     /// Least recently used.
-    tail: u32,
+    pub(super) tail: u32,
     pub(super) epoch: u64,
     pub(super) stats: LruStats,
     /// The persistent reader pool and the source it reads from (see
@@ -152,6 +152,9 @@ pub struct ExpertLru {
     pub(super) pool: Option<(Arc<dyn ExpertSource + Send + Sync>, ReaderPool)>,
     /// Slots with a ticket that may still be in flight.
     pub(super) in_flight: Vec<u32>,
+    /// The victim is drawn from the oldest this-many percent (0 = strict LRU).
+    pub(super) evict_pct: usize,
+    pub(super) rng: u64,
     /// `ATLAS_DS41_ROUTE_TRACE`: one line per `fetch_many` (see `set_trace`).
     pub(super) trace: Option<std::io::BufWriter<std::fs::File>>,
     pub(super) t0: std::time::Instant,
@@ -201,6 +204,12 @@ impl ExpertLru {
             stats: LruStats::default(),
             pool: None,
             in_flight: Vec::new(),
+            evict_pct: std::env::var("ATLAS_DS41_EVICT_RANDOM_PCT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|p| *p <= 100)
+                .unwrap_or(5),
+            rng: 0x9E37_79B9_7F4A_7C15,
             trace: None,
             t0: std::time::Instant::now(),
         })
@@ -257,7 +266,7 @@ impl ExpertLru {
         SlotPtr(unsafe { self.host.add(i as usize * self.layout.bytes) })
     }
 
-    fn unlink(&mut self, i: u32) {
+    pub(super) fn unlink(&mut self, i: u32) {
         let (p, n) = (self.meta[i as usize].prev, self.meta[i as usize].next);
         if p == NONE {
             self.head = n;
@@ -304,28 +313,6 @@ impl ExpertLru {
         if self.head == NONE {
             self.head = i;
         }
-    }
-
-    /// Take the least recently used slot that is not pinned in this epoch,
-    /// dropping whatever it held.
-    fn take_victim(&mut self) -> Result<u32> {
-        let mut i = self.tail;
-        while i != NONE {
-            // never a slot pinned in this epoch, never one a read is filling
-            if self.meta[i as usize].epoch != self.epoch && self.meta[i as usize].ticket.is_none() {
-                if let Some(k) = self.meta[i as usize].key.take() {
-                    self.map.remove(&k);
-                    self.stats.evictions += 1;
-                }
-                return Ok(i);
-            }
-            i = self.meta[i as usize].prev;
-        }
-        bail!(
-            "expert cache of {} slots is smaller than one token's working set ({} pinned)",
-            self.n_slots,
-            self.map.len()
-        )
     }
 
     /// Assign a slot for `key` and map it (the bytes are not read yet).

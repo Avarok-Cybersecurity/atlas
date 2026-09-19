@@ -172,3 +172,91 @@ MoE half of the step grows with K while only the dense 3.16 GB is amortised: at 
 accepted tokens a step the verify costs more than it returns. No MTP / next-n tensors ship
 in the GGUF (S0), so there is no free draft head. Lookup-draft speculation cannot carry this
 suite toward 40 tok/s; the number is stated here so nobody builds it for that reason.
+
+### S1 addendum: the working-set edge, the policy, and long outputs
+
+Per request, decode misses a step at 100 GiB (8,380 slots), strict LRU: MinHeap r1 17.6
+(a cold cache), r2 5.54, r3 5.54; Volvo r1 12.3, r2 0, r3 0. MinHeap's working set is 8,418
+distinct (layer, expert) pairs (prefill 3,151 + decode), 38 over the cache; Volvo's is 8,005
+and fits. Replaying a working set 0.5% larger than the cache in the same order is LRU's
+pathological case: at every miss it evicts exactly the expert needed next. That, not the
+kernels, is why MinHeap trailed Volvo (hit steps are the same 56-57 ms on both). The union of
+the two suites is 11,223 pairs with 5,200 in common, so every switch between suites costs
+about 3,000 misses (r1 of each: 17.6 and 12.3 a step); the standard's medians of three absorb
+that by design.
+
+Two answers, both measured:
+
+* **102 GiB (8,548 slots)**: MinHeap r2/r3 fall to 0 misses and 17.59 / 18.16 tok/s, but the
+  box swaps (16 GB swap file, `pswpout` climbing): Volvo r2 ran at 14.07 tok/s with zero
+  misses and MinHeap's TTFT median was 11.7 s. 100 GiB is the safe maximum here; this is the
+  working-set edge of one prompt, not a general result.
+* **Policy** (simulated on the 100 GiB trace, then built): a random victim among the oldest 5%
+  of the LRU list (`ATLAS_DS41_EVICT_RANDOM_PCT`, default 5; 0 = strict LRU) breaks the
+  lockstep: MinHeap r2/r3 1.17 / 1.06 misses a step, Volvo unchanged at 0 / 0, total decode
+  misses 12,262 -> 9,627. The oldest 10%: 0.75 / 0.74 but Volvo r2 0.20. CLOCK 4.79, SLRU worse,
+  pure RANDOM 0.34 but Volvo 9.0 / 6.0, Belady 0.13 / 0.13. The policy never touches the math.
+  Measured on the standard: decode misses 12,255 -> 9,914, MinHeap r2 / r3 misses a step 1.90 /
+  1.19, step-wall medians 61.8 / 58.7 ms (were 69.3 / 69.6), Volvo unchanged (0 / 0, 17.87 tok/s),
+  6/6 byte-identical. Kept (`ATLAS_DS41_EVICT_RANDOM_PCT`, default 5).
+
+**The stalls.** The suite's tok/s is a mean, and at 100 GiB the runs carry single steps of 1.9
+to 17.6 s with only 3-11 misses in them (one 17.65 s step in MinHeap r2 of the 100 GiB run;
+2.9 + 1.9 + 10.5 s across the three MinHeap requests of the policy run), always in the first
+three requests, while `pswpout` climbs by ~100k pages a run: the kernel reclaiming page cache
+into the 16 GB swap file as the arena's pages get touched, not the miss path. Without them
+MinHeap r3 of the policy run is 300 x 59 ms = ~17 tok/s. Fix: `posix_fadvise(DONTNEED)` on the
+expert range after every pread, so the arena's reads never leave page cache for reclaim to
+fight over (measured below).
+
+**Long outputs** (one MinHeap request, 1,500 requested, EOS at 993 tokens, 100 GiB, cold
+cache): cumulative distinct experts 3,151 after the prefill, 8,423 after 300 tokens, 9,700
+after 600, 10,385 after 900, 10,650 at 992, still growing ~3 a token toward the 15,360;
+misses a step per 300-token window 17.6 (cold) / 5.4 / 4.9 / 8.7 (last 92). One Spark keeps
+missing on long outputs: the all-resident case is two Sparks with 187.7 GB of experts split
+94 GB each into a 100 GiB arena, zero misses.
+
+**The miss path itself**: one 12.22 MiB expert costs 1.8-2.0 ms buffered (8 parts); O_DIRECT
+at 4 parts reads it in 1.76 ms in isolation (-12%), but every expert stack sits at file offset
+160 mod 512 (GGUF alignment 32), so O_DIRECT needs a padded slot layout: deferred. GPUDirect
+Storage: the `nvidia-fs` module is present but not loaded and there is no system `libcufile`:
+not tested. A device-memory arena (249 vs 223 GB/s on the 2.93 GB of expert reads a token,
+1.4 ms) is not reachable by `pread`: `cudaMalloc` memory is not CPU-accessible on this GB10
+(SIGSEGV), so it would need a pinned staging ring and an H2D per miss: deferred.
+
+### What passes 40 (the S0 arithmetic on other hardware)
+
+* **Two GB10s, 2-way expert parallel** (each Spark holds half the routed experts, the dense
+  weights replicated): routed bytes per GPU 2.93 / 2 = 1.465 GB at 223 GB/s = 6.6 ms, dense
+  3.16 GB at 249 GB/s = 12.7 ms, **19.3 ms = 51.9 tok/s** ceiling before the interconnect. The
+  exchange is one 5120-wide bf16 row (10 KB) per layer per direction, 40 layers a token: to
+  stay above 40 tok/s (25.0 ms a step) the 5.7 ms left buys **~140 us per layer round trip**
+  (~70 us a one-way message), against ~10 us for an RDMA message on the ConnectX-7 link: the
+  interconnect is not the limit if the step overlaps the exchange with the dense half and
+  keeps one message per layer per direction. And with 187.7 GB of experts split 94 GB a Spark
+  into a 100 GiB arena, every expert is resident: zero misses on any prompt length.
+* **One B200**: 6.09 GB at ~8 TB/s HBM3e = 0.76 ms a token: the step is launch-bound (1,866
+  launches x ~3 us = 5.6 ms eager, ~180 tok/s; a whole-step graph puts it in the hundreds).
+  That is the #1140 / #1141 campaign (one GPU, then the two-GPU expert split), where the
+  bit-exact device-side selection prototyped here (S2, `route_select_dev.cu`: glibc's `expf` /
+  `log1pf` ported and verified over all 2^32 inputs, 20,000 tokens of picks, weights and plan
+  identical) is what makes a whole-step graph possible.
+
+### S2 and S3, time-boxed
+
+* **S2.** The per-layer CUDA graph path (`ATLAS_DS41_GRAPH=1`, phase 1's segments A / host span /
+  B) loses on the S1 binary: MinHeap 9.77 (7.08 / 12.97 / 9.77), Volvo 15.19 (11.91 / 15.19 /
+  17.63) against eager 14.20 / 17.73, and erratically. A whole-step graph with one miss-flag
+  read-back a step does not pay on one Spark either: 65% of decode steps miss, and a miss at
+  layer L wastes the 40 - L layers replayed after it. The piece that IS needed for a whole-step
+  graph on hardware where everything is resident, a bit-exact device-side selection, is
+  prototyped and verified in `docs/perf/ds41_prototypes/` (glibc's `expf` / `log1pf` on the
+  device, 0 mismatches over all 2^32 inputs; the top-6, weights and plan identical to the host
+  on 20,000 tokens). The host span stays as it is: the syncs remain one per layer.
+* **S3.** The single-token K-quant GEMV (`kq_mmvq_warp_s`, the attention projections' 316
+  launches a token at 133-152 GB/s) gets an `m == 1` arm with the super-block loop unrolled
+  eight deep on one accumulator, so a lane's loads are in flight before its dots; the
+  accumulation order is the loop's, so the bytes are the loop's (oracle tests pass). The
+  router chain double-buffered across trips faulted (`CUDA_ERROR_ILLEGAL_ADDRESS` in the
+  MoE oracle test) and was reverted inside the time box; the staged router stays at 68 us a
+  layer.

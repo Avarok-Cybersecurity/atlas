@@ -240,11 +240,28 @@ static __device__ __forceinline__ void kq_mmvq_warp_s(
     float tmp[KQ_MAX_M];
 #pragma unroll
     for (int j = 0; j < KQ_MAX_M; ++j) tmp[j] = 0.0f;
-    for (int kbx = lane / (qi / vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
-        const int kby = kbx * (qk / QK8_1);
+    if (m == 1) {
+        // The single-token step: the block loop unrolled, so the loads of up to
+        // eight super-blocks are in flight before their dots instead of one
+        // load waiting behind the previous dot (a 1536-wide row is three
+        // iterations a lane; the projections ran at 133-152 GB/s of the
+        // box's 249, 09-19 nsys). The lane's accumulation order is the
+        // loop's, so the bits are the loop's.
         const int kqs = vdr * (lane % (qi / vdr));
-        for (int j = 0; j < m; ++j) {
-            tmp[j] += kq_vec_dot<type>(x_row, &y[(size_t)j * y_row_blocks + kby], kbx, kqs);
+        float acc = 0.0f;
+        int kbx = lane / (qi / vdr);
+#pragma unroll 8
+        for (; kbx < blocks_per_row_x; kbx += blocks_per_iter) {
+            acc += kq_vec_dot<type>(x_row, &y[(size_t)kbx * (qk / QK8_1)], kbx, kqs);
+        }
+        tmp[0] = acc;
+    } else {
+        for (int kbx = lane / (qi / vdr); kbx < blocks_per_row_x; kbx += blocks_per_iter) {
+            const int kby = kbx * (qk / QK8_1);
+            const int kqs = vdr * (lane % (qi / vdr));
+            for (int j = 0; j < m; ++j) {
+                tmp[j] += kq_vec_dot<type>(x_row, &y[(size_t)j * y_row_blocks + kby], kbx, kqs);
+            }
         }
     }
 #pragma unroll
