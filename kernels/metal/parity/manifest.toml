@@ -188,6 +188,16 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q2_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q3_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
 entry  = "dequant_q4_k_to_bf16"
 state  = "unported"
 
@@ -341,12 +351,6 @@ source = "kernels/gb10/common/gated_delta_rule.cu"
 entry  = "gated_delta_rule_chunk3"
 state  = "unported"
 
-# gated_delta_rule_decode stays unported although kernels/metal/common/
-# gated_delta_rule_decode.metal is a line-for-line port. Its only test,
-# metal_gated_delta_rule_decode_matches_reference, drives inputs whose output
-# is about 0.001 against a 0.02 absolute bound, so the hk_dot correction, the
-# q dot and the 1/sqrt(k_dim) scaling are invisible to it; only the in-place
-# state update is checked. Promote once the test can see those terms.
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule.cu"
 entry  = "gated_delta_rule_decode"
@@ -533,6 +537,21 @@ entry  = "gated_delta_rule_wy4_f16"
 state  = "unported"
 
 [[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_flag_clear"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_fold"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_woa"
+state  = "unported"
+
+[[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wy64_prefill.cu"
 entry  = "gated_delta_rule_prefill_wy64"
 state  = "unported"
@@ -559,12 +578,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy11"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy11_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11_table"
 state  = "unported"
 
 [[kernel]]
@@ -579,12 +618,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy13"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy13_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13_table"
 state  = "unported"
 
 [[kernel]]
@@ -599,12 +658,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy15"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy15_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15_table"
 state  = "unported"
 
 [[kernel]]
@@ -619,12 +698,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy5"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy5_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5_table"
 state  = "unported"
 
 [[kernel]]
@@ -639,12 +738,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy7"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy7_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7_table"
 state  = "unported"
 
 [[kernel]]
@@ -659,12 +778,32 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy9"
 state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
 entry  = "gated_delta_rule_wy9_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9_table"
 state  = "unported"
 
 [[kernel]]
@@ -2723,13 +2862,98 @@ entry  = "widen_block_scale_f32"
 state  = "unported"
 
 [[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_act_quant_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_fp4_quant"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_gemm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_index_score"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_pool"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rmsnorm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rmsnorm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rope"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_scale_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_scatter_cols"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_slice_cols"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_sparse_attn"
+state  = "unported"
+
+[[kernel]]
 source = "kernels/gb10/deepseek-v4-flash/nvfp4/csa_compress.cu"
 entry  = "csa_compress"
 state  = "unported"
 
 [[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/engram_v41.cu"
+entry  = "engram_v41_gate"
+state  = "unported"
+
+[[kernel]]
 source = "kernels/gb10/deepseek-v4-flash/nvfp4/grouped_gemm_mla.cu"
 entry  = "grouped_gemm_mla"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_collapse"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes_dot"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes_finish"
 state  = "unported"
 
 [[kernel]]
@@ -2755,6 +2979,121 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/deepseek-v4-flash/nvfp4/inferspark_prefill_512.cu"
 entry  = "inferspark_prefill_512"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "NAME"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q2_k_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q2_k_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q3_k_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q3_k_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q8_1_quantize_d2s6_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q8_1_quantize_d4_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_experts"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_experts_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_experts"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_experts_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_q8_1_rows_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "mul_mat_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "mul_mat_q_stream_k_fixup"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_mxfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_q8_1_worker"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_q8_1"
 state  = "unported"
 
 [[kernel]]
@@ -2830,6 +3169,36 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_silu_mul.cu"
 entry  = "moe_silu_mul"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_accumulate"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_finish"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_gather_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_router_gemv_f32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_scatter_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_swiglu"
 state  = "unported"
 
 [[kernel]]
@@ -4472,7 +4841,17 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
 entry  = "fp8_gemm_t_row_scaled_m16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_p4"
 state  = "unported"
 
 [[kernel]]
@@ -5059,20 +5438,6 @@ state  = "unported"
 source = "kernels/gb10/step3p7-flash/nvfp4/moe_silu_mul.cu"
 entry  = "moe_silu_mul"
 state  = "unported"
-
-# ── The other direction: the Metal set ───────────────────────────────────────
-#
-# A [[metal]] row declares a resolved Metal entry point that is NOT the target of
-# a mapped row above, keyed by (source, entry) like the gb10 rows. Three states:
-#   metal_only  -- nothing on the CUDA side does this job; `why` says what the
-#                  kernel does and why gb10 has no equivalent.
-#   counterpart -- a gb10 kernel (`gb10 = "<source>::<entry>"`, must resolve)
-#                  does this job, but the row cannot be mapped; `why` names the
-#                  contract difference or the missing measurement.
-#   stub        -- an empty body (verified from source) standing in for the gb10
-#                  kernel in `gb10 =`; a mapped row can never target one.
-# `why` is held to the exception standard (>= 80 chars, no placeholder). The
-# checker fails by name on any resolved Metal kernel with no row and no mapping.
 
 [[metal]]
 source = "kernels/metal/common/noop_smoke.metal"
