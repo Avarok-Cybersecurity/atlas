@@ -1,15 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! GPU init + pre-load reserve preflight + post-load OOM check.
+//! GPU init + the pre-load reserve preflight.
+//!
+//! The post-load OOM check that used to live here is `post_load_audit.rs`;
+//! it moved when the #915 second pass brought the decode ring's post-load
+//! yardstick in (`headroom.rs`) and this file reached its 500-line cap.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
+mod decode_ring;
+mod gpu_backend;
+mod headroom;
+mod per_sequence_state;
+mod post_load_audit;
+mod refusal;
 mod ssm_h_fp16;
-use ssm_h_fp16::ssm_h_fp16_preconditions;
+#[cfg(any(feature = "cuda", feature = "metal"))]
+pub(crate) use gpu_backend::init_gpu_backend;
+pub(crate) use headroom::PostLoadInputs;
+pub(crate) use post_load_audit::post_load_memory_audit;
+use {per_sequence_state::per_sequence_reserve, ssm_h_fp16::ssm_h_fp16_preconditions};
 
 pub(crate) struct ReservePreflight {
     pub(crate) inference_reserve: usize,
@@ -23,10 +37,24 @@ pub(crate) fn preflight_reserve(
     args: &cli::ServeArgs,
     config: &ModelConfig,
     free_mem: usize,
+    // #915 second pass: what the decode-ring auto-fit needs to predict the
+    // POST-load KV headroom instead of fitting against pre-load free memory.
+    // Gathered by the caller because none of it is derivable from `args` +
+    // `config`: the device total, the checkpoint directory, the resolved KV
+    // dtype and whether this target ships the W8A8 prefill kernels.
+    post_load: &PostLoadInputs<'_>,
 ) -> Result<ReservePreflight> {
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
-    let spec_on_pool = args.speculative || args.self_speculative || args.ngram_speculative;
+    // `args.dflash` belongs here: `TransformerModel::new` forces the verify
+    // pools ON whenever DFlash capture layers exist (`has_mtp |= dflash`),
+    // so a DFlash serve allocates the full K=γ+1 intermediate/checkpoint
+    // pools. Omitting it reserved only the base per-seq blobs and left the
+    // entire verify-pool family OUTSIDE the util pledge — 13.7 GB tracked vs
+    // a 1.3 GB reserve on the 27B at bs=8/γ=8 (2026-08-22 boot ledger, the
+    // measured bulk of the ~12 GB pledge overshoot).
+    let spec_on_pool =
+        args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
     ssm_h_fp16_preconditions(args, config)?;
     // SSM state pool = per-seq live state (max_batch blobs) + MTP verify
     // state (intermediates + checkpoint) for the slots spec dispatch can
@@ -36,7 +64,7 @@ pub(crate) fn preflight_reserve(
     // `max_batch × blob × (1 + (num_drafts+1) + 1)` byte-for-byte; above
     // 32 it stops reserving verify blobs for slots that can never verify
     // (25.4 GB at bs=64/K=4 on the 27B — the bs=64 preflight refusal).
-    // Kill switch: ATLAS_MTP_POOL_FULL_WIDTH (presence) restores
+    // Kill switch: AVAROK_MTP_POOL_FULL_WIDTH (presence) restores
     // full-width sizing on BOTH sides.
     let mtp_state_slots = spark_model::ssm_reserve::mtp_state_slots(args.max_batch_size);
     // Tiered verify slots (2026-08-16): the H-intermediate term is per-slot
@@ -54,12 +82,26 @@ pub(crate) fn preflight_reserve(
         h_state_bytes,
         spark_model::layers::qwen3_ssm::ssm_h_f16_pool_enabled(),
     );
+    // DFlash pool width: the verify pools are γ-sized (uniform K = γ+1 on
+    // EVERY slot — `SsmStatePool::new`'s `uniform_h`), and γ comes from the
+    // DRAFTER's checkpoint, which loads long after this preflight. Peek the
+    // drafter's config.json for `dflash_config.block_size`; a missing or
+    // remote checkpoint falls back to `resolved_dflash_gamma`'s 16 ceiling —
+    // the same unknown-γ fallback the pool allocation uses (`γ+1 = 17`), so
+    // the miss direction is over-reserve, never under.
+    let pool_num_drafts = if args.dflash {
+        peek_dflash_block_size(args.draft_model.as_deref())
+            .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+    } else {
+        args.resolved_num_drafts()
+    };
     let ssm_pool_bytes = spark_model::ssm_reserve::ssm_pool_reserve_bytes(
         args.max_batch_size,
         config.num_ssm_layers() * h_state_bytes,
         config.num_ssm_layers() * conv_state_bytes,
         spec_on_pool,
-        args.resolved_num_drafts(),
+        pool_num_drafts,
         mtp_state_slots,
         args.dflash,
         // Stage-3 f16-SIZED pool: mirrors `SsmStatePool::new`'s narrowing.
@@ -87,17 +129,13 @@ pub(crate) fn preflight_reserve(
                 config.ssm_qkvz_size(),
                 config.linear_num_value_heads,
             ),
-            args.resolved_num_drafts() + 1,
+            pool_num_drafts + 1,
             mtp_state_slots,
         )
     } else {
         0
     };
-    let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.resolved_num_drafts() + 2
-    } else {
-        1
-    };
+    let spec_tokens_pre = spec_reserve_tokens(args);
     // B4 (chunked-prefill BF16 KV cliff): the prior `.min(8192)` cap forced
     // every prompt > 8 k to chunk, which compounds K-side BF16 rounding noise
     // at chunk boundaries (per the 4-agent audit 2026-05-27). When the user
@@ -137,44 +175,46 @@ pub(crate) fn preflight_reserve(
         args.max_batch_size,
     )
     .total_bytes();
-    // SSM snapshot pool = Marconi prefix-cache region + Phase-C
-    // decode-rollback ring. The decode ring is sized per active
-    // sequence (ring slots × `max_batch_size`) and only allocated for SSM
-    // models. SSOT: `spark_model::ssm_reserve::decode_rollback_ring_slots`
-    // makes the SAME decision (same env vars, same constant) the runtime
-    // allocation in `TransformerModel::new` makes — including the skip under
-    // `--speculative`/`--dflash` (the ring's save/rollback path only runs on
-    // plain decode; the spec path rolls back through the verify snapshot).
-    // Reserving the ring unconditionally while the runtime skipped it
-    // stranded ~38 GB at bs32 on the 27B (75.2 GB SSM reserve vs an 85.2 GB
-    // budget at util 0.70) and capped the native batch at ~20.
-    // `use_speculative` here MUST mirror what `build_model` passes:
-    // `args.speculative || args.dflash`.
-    // Kill switch: `ATLAS_SSM_RESERVE_RING_FULL` present ⇒ restore the old
-    // unconditional reservation (accounting-only, safe over-reserve;
-    // presence-style — `=0` is NOT "off").
-    let decode_ring_slots = if std::env::var("ATLAS_SSM_RESERVE_RING_FULL").is_ok() {
-        if config.num_ssm_layers() > 0 {
-            atlas_kernels::DECODE_ROLLBACK_RING_SLOTS
-        } else {
-            0
-        }
-    } else {
-        spark_model::ssm_reserve::decode_rollback_ring_slots(
+    // Marconi snapshot region. SSOT:
+    // `spark_model::ssm_reserve::marconi_snapshot_slots` makes the SAME
+    // decision (same env var, same predicate) the runtime allocation in
+    // `TransformerModel::new` makes. The region's only reader is a
+    // prefix-cache lookup, so with the cache inactive every reserved slot is
+    // unreachable — 2380 MiB on GLM-5.3 (16 slots x 34 KDA layers x FP32
+    // h+conv) that nothing can ever restore from. Kill switch:
+    // AVAROK_SSM_MARCONI_FULL.
+    let marconi = spark_model::ssm_reserve::marconi_snapshot_slots(
+        args.ssm_cache_slots,
+        spark_model::ssm_reserve::prefix_caching_active(
+            args.prefix_caching_enabled(),
+            config.kv_only_prefix_cache_is_safe(),
+        ),
+    );
+    if let Some(reason) = marconi.skip_reason {
+        tracing::info!(
+            "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
+             = {} MB not reserved (restore with --enable-prefix-caching, or \
+             AVAROK_SSM_MARCONI_FULL to over-reserve)",
+            reason,
+            args.ssm_cache_slots,
             config.num_ssm_layers(),
-            args.speculative || args.dflash,
-        )
-        .slots
+            (args.ssm_cache_slots * config.num_ssm_layers() * (h_state_bytes + conv_state_bytes))
+                / (1024 * 1024),
+        );
+    }
+    // The per-sequence SSM state blob — `num_ssm_layers x (h + conv)`, 151.5
+    // MiB on the 27B. Both snapshot regions are whole multiples of it:
+    // Marconi reserves one per cache slot, the decode ring one per active
+    // sequence per ring slot.
+    let per_seq_blob = config.num_ssm_layers() * (h_state_bytes + conv_state_bytes);
+    let marconi_bytes = marconi.slots * per_seq_blob;
+    // Same predicate as the pool term: DFlash IS a speculative serve and
+    // pays the same graph/JIT/scratch overheads the 4 GB headroom exists for.
+    let cuda_headroom: usize = if spec_on_pool {
+        4 * 1024 * 1024 * 1024
+    } else {
+        512 * 1024 * 1024
     };
-    let ssm_snapshot_bytes = (args.ssm_cache_slots + decode_ring_slots * args.max_batch_size)
-        * config.num_ssm_layers()
-        * (h_state_bytes + conv_state_bytes);
-    let cuda_headroom: usize =
-        if args.speculative || args.self_speculative || args.ngram_speculative {
-            4 * 1024 * 1024 * 1024
-        } else {
-            512 * 1024 * 1024
-        };
     let gdn_two_phase_bytes: usize = {
         let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
         let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
@@ -187,58 +227,69 @@ pub(crate) fn preflight_reserve(
             0
         }
     };
-    let inference_reserve: usize = ssm_pool_bytes
+    // Everything the reserve needs that does NOT scale with ring depth. The
+    // ring is separated out because it is the only term preflight is allowed
+    // to shrink (#915): rollback depth degrades gracefully, the batch and the
+    // pools it sizes do not.
+    let fixed_reserve: usize = ssm_pool_bytes
         + ssm_h_stage_bytes
         + ssm_replay_ring
-        + ssm_snapshot_bytes
+        + marconi_bytes
         + gdn_two_phase_bytes
-        + cuda_headroom;
+        + cuda_headroom
+        + per_sequence_reserve(args, config);
+    // Phase-C decode-rollback ring: the depth the flags/env ask for, then the
+    // largest depth that actually fits alongside everything above. Both steps
+    // are SSOT'd in `decode_ring` (which publishes the fitted depth so
+    // `TransformerModel::new` allocates exactly what was reserved).
+    let ring_requested = decode_ring::requested_slots(args, config);
+    let ring_slot_bytes = decode_ring::slot_bytes(args, per_seq_blob);
+    // The yardstick, and why it is that one: the predicted post-load KV
+    // headroom where the route's residency can be predicted, pre-load free
+    // memory (the first pass's behaviour) everywhere else. See `headroom.rs`
+    // for the H100 receipts that made the first yardstick the wrong one.
+    let yardstick =
+        headroom::post_load_yardstick(args, config, post_load, fixed_reserve, buffer_arena_bytes);
+    let fit = decode_ring::autofit(
+        args,
+        ring_requested,
+        ring_slot_bytes,
+        per_seq_blob,
+        fixed_reserve + buffer_arena_bytes,
+        free_mem,
+        &yardstick,
+    );
+    tracing::info!("{}", fit.decision);
+    if let Some(warning) = &fit.warning {
+        tracing::warn!("SSM decode-rollback ring auto-fit — {}", warning);
+    }
+    let ssm_snapshot_bytes = marconi_bytes + fit.slots * ring_slot_bytes;
+    let inference_reserve: usize = fixed_reserve + fit.slots * ring_slot_bytes;
     let total_reserve = inference_reserve + buffer_arena_bytes;
     if total_reserve > free_mem {
-        let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
-        let free_gb = free_mem as f64 / (1024.0 * 1024.0 * 1024.0);
-        let fixed = ssm_pool_bytes + ssm_h_stage_bytes + ssm_snapshot_bytes + cuda_headroom;
-        let budget_for_seq_term = free_mem.saturating_sub(fixed) / 2;
-        let per_tok_bytes = {
-            let key_dim = config.linear_num_key_heads * config.linear_key_head_dim;
-            let value_dim = config.linear_num_value_heads * config.linear_value_head_dim;
-            let nv = config.linear_num_value_heads;
-            let conv_dim = key_dim * 2 + value_dim;
-            if conv_dim > 0 && config.num_ssm_layers() > 0 {
-                (conv_dim * 2) + (nv * 2 * 4) + (value_dim * 2) + (value_dim * 2)
-            } else {
-                0
-            }
-        };
-        let suggested = budget_for_seq_term
-            .checked_div(per_tok_bytes)
-            .map(|q| q.max(2048))
-            .unwrap_or(0);
-        let hint = if suggested > 0 && suggested < args.max_seq_len {
-            format!(
-                " Try --max-seq-len {} (or lower --max-batch-size / --num-drafts).",
-                suggested
-            )
-        } else if args.max_batch_size > 1 {
-            " Reduce --max-batch-size.".to_string()
-        } else {
-            " Use a smaller model or a GPU with more memory.".to_string()
-        };
-        anyhow::bail!(
-            "Preflight failed: inference buffers alone need {:.2} GB but only {:.2} GB is free on the GPU \
-             (before weights load). SSM pool + GDN chunked prefill scales with --max-seq-len={} × --max-batch-size={}.{}",
-            need_gb,
-            free_gb,
-            args.max_seq_len,
-            args.max_batch_size,
-            hint,
-        );
+        return Err(refusal::reserve_refusal(
+            args,
+            config,
+            refusal::Refusal {
+                total_reserve,
+                free_mem,
+                seq_len_independent: ssm_pool_bytes
+                    + ssm_h_stage_bytes
+                    + ssm_snapshot_bytes
+                    + cuda_headroom,
+                ring_requested,
+                ring_slots: fit.slots,
+                per_seq_blob,
+                ring_pinned: spark_model::ssm_reserve::published_decode_ring_slots().is_some(),
+            },
+        ));
     }
     tracing::info!(
-        "Preflight reserve: inference={} MB, buffer_arena={} MB (pre-load free: {:.1} GB)",
+        "Preflight reserve: inference={} MB, buffer_arena={} MB (pre-load free: {:.1} GB); {}",
         inference_reserve / (1024 * 1024),
         buffer_arena_bytes / (1024 * 1024),
         free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
+        decode_ring::formula(fit.slots, args.max_batch_size, per_seq_blob),
     );
     // Q09: per-component breakdown so future MTP/spec-decode reserve
     // jumps are diagnosable from the log alone. Each line is dropped at
@@ -263,7 +314,7 @@ pub(crate) fn preflight_reserve(
         },
         config.num_ssm_layers(),
         ssm_snapshot_bytes / (1024 * 1024),
-        args.ssm_cache_slots,
+        marconi.slots,
         gdn_two_phase_bytes / (1024 * 1024),
         max_batch_tokens_pre,
         cuda_headroom / (1024 * 1024),
@@ -284,124 +335,46 @@ pub(crate) fn preflight_reserve(
     })
 }
 
-/// Initialize the GPU backend for the active feature.
+/// Peek the DFlash drafter's trained block size (γ) from its config.json
+/// without loading the checkpoint — the preflight reserve needs the verify
+/// pools' K = γ+1 long before the drafter loads. `None` (missing path, remote
+/// HF id, absent field) falls back to the caller's 16 ceiling: the same
+/// unknown-γ width `SsmStatePool` allocates, so a failed peek over-reserves
+/// rather than re-opening the pledge hole.
+fn peek_dflash_block_size(draft_model: Option<&str>) -> Option<usize> {
+    let dir = std::path::Path::new(draft_model?);
+    let raw = std::fs::read_to_string(dir.join("config.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let g = v.get("dflash_config")?.get("block_size")?.as_u64()? as usize;
+    (g > 0).then_some(g)
+}
+
+/// SSOT for "how many rows can one sequence's speculative step occupy" —
+/// the term the batch-token floors (`max_batch_tokens_pre` here,
+/// `resolve_prefill_budget` in `kv_cache.rs`) take a max against.
 ///
-/// Compile-time dispatch:
-/// - `cuda` feature → `AtlasCudaBackend` loading PTX modules from `ptx_set`.
-/// - `metal` feature → `MetalGpuBackend` loading metallib modules from
-///   `ptx_set` as well. Both arms register the RESOLVED target's modules;
-///   `metallib_modules()` is a plain alias of target 0, so registering from
-///   it served another model's kernels in a multi-target build.
-#[cfg(feature = "cuda")]
-pub(crate) fn init_gpu_backend(
-    args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
-) -> Result<(Box<dyn spark_runtime::gpu::GpuBackend>, usize)> {
-    let backend =
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(args.gpu_ordinal, &ptx_set.modules)
-            .context("Failed to initialize CUDA backend")?;
-
-    let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(backend);
-    let total_mem = gpu.total_memory()?;
-    let free_mem = gpu.free_memory()?;
-    // Baseline for self-relative KV budgeting: free memory now (post context +
-    // PTX modules, pre weights) minus free-at-build = this process's own
-    // footprint, co-tenants excluded. See gpu::baseline_free_bytes.
-    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
-    tracing::info!(
-        "GPU {}: {:.1} GB total, {:.1} GB free",
-        args.gpu_ordinal,
-        total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
-        free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
-    );
-    Ok((gpu, free_mem))
-}
-
-#[cfg(all(feature = "metal", not(feature = "cuda")))]
-pub(crate) fn init_gpu_backend(
-    args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
-) -> Result<(Box<dyn spark_runtime::gpu::GpuBackend>, usize)> {
-    // The RESOLVED target's modules, exactly like the CUDA arm above.
-    // `metallib_modules()` is an alias of `ptx_modules()`, which build-codegen
-    // emits as a plain alias of TARGET 0 in a multi-target build — so this
-    // registered another model's kernels and every lookup for the model
-    // actually being served failed.
-    let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(
-        spark_runtime::metal_backend::MetalGpuBackend::new(args.gpu_ordinal, &ptx_set.modules)
-            .context("Failed to initialize Metal backend")?,
-    );
-    let total_mem = gpu.total_memory()?;
-    let free_mem = gpu.free_memory()?;
-    spark_runtime::gpu::set_baseline_free_bytes(free_mem);
-    tracing::info!(
-        "Metal device {}: {:.1} GB total, {:.1} GB free",
-        args.gpu_ordinal,
-        total_mem as f64 / (1024.0 * 1024.0 * 1024.0),
-        free_mem as f64 / (1024.0 * 1024.0 * 1024.0),
-    );
-    Ok((gpu, free_mem))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn post_load_memory_audit(
-    args: &cli::ServeArgs,
-    config: &ModelConfig,
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    weight_bytes: usize,
-    free_mem: usize,
-    inference_reserve: usize,
-    total_reserve: usize,
-    gdn_two_phase_bytes: usize,
-    max_batch_tokens_pre: usize,
-) -> Result<()> {
-    let estimated_free = free_mem.saturating_sub(weight_bytes);
-    let actual_free = gpu.free_memory().unwrap_or(estimated_free);
-    let available_free = if actual_free > 0 {
-        actual_free
+/// It was the same three-flag expression copy-pasted in both files, and
+/// both copies omitted `--dflash` (returning 1 for a serve whose verify
+/// step is γ+1 rows wide). Inert today only because the prefill budget's
+/// 8192 floor dominates the max — this exists so the two sites cannot
+/// drift and so the DFlash width is stated, not defaulted.
+///
+/// MTP ladder: `num_drafts + 2` (the K = drafts+1 verify rows plus the
+/// bonus row — the historical constant, unchanged). DFlash: γ + 1 verify
+/// rows (`[last_token, draft_0..γ-1]`), which is the same arithmetic at
+/// the effective `num_drafts = γ - 1` the scheduler runs with; γ comes
+/// from the drafter's checkpoint via the same peek the pool reserve uses.
+pub(crate) fn spec_reserve_tokens(args: &cli::ServeArgs) -> usize {
+    if args.dflash {
+        let gamma = args.dflash_gamma.unwrap_or_else(|| {
+            peek_dflash_block_size(args.draft_model.as_deref())
+                .map(spark_model::layers::qwen3_ssm::default_dflash_gamma)
+                .unwrap_or_else(|| args.resolved_dflash_gamma(None))
+        });
+        gamma + 1
+    } else if args.speculative || args.self_speculative || args.ngram_speculative {
+        args.resolved_num_drafts() + 2
     } else {
-        estimated_free
-    };
-    if available_free < total_reserve {
-        let avail_gb = available_free as f64 / (1024.0 * 1024.0 * 1024.0);
-        let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
-        let hint = if args.max_batch_size > 1 {
-            format!(
-                " Reduce --max-batch-size (currently {}) or --max-seq-len (currently {}).",
-                args.max_batch_size, args.max_seq_len
-            )
-        } else {
-            format!(
-                " Reduce --max-seq-len (currently {}) or use a smaller model.",
-                args.max_seq_len
-            )
-        };
-        anyhow::bail!(
-            "Insufficient GPU memory for inference buffers. \
-             After loading {:.2} GB of weights, only {:.2} GB remains \
-             but {:.2} GB is needed for SSM state pool ({} slots × {} layers) + scratch buffers.{}",
-            weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            avail_gb,
-            need_gb,
-            args.max_batch_size,
-            config.num_ssm_layers(),
-            hint,
-        );
+        1
     }
-    if gdn_two_phase_bytes > 0 {
-        tracing::info!(
-            "GDN chunked prefill reserve: {} MB (chunk_size={}, max_seq_len={})",
-            gdn_two_phase_bytes / (1024 * 1024),
-            max_batch_tokens_pre,
-            args.max_seq_len,
-        );
-    }
-    tracing::info!(
-        "Weights: {:.2} GB, estimated free: {:.1} GB, actual free: {:.1} GB (reserve: {} MB)",
-        weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-        estimated_free as f64 / (1024.0 * 1024.0 * 1024.0),
-        actual_free as f64 / (1024.0 * 1024.0 * 1024.0),
-        inference_reserve / (1024 * 1024),
-    );
-    Ok(())
 }

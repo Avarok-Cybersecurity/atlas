@@ -555,3 +555,91 @@ extern "C" __global__ void causal_conv1d_update_l2norm_f32_strided(
         output[b * output_stride + ch] = silu;  // FP32 — no truncation!
     }
 }
+
+// ============================================================
+// PREFILL, TOKEN-PARALLEL: causal_conv1d_update_prefill_tp
+// ============================================================
+// Same math as `causal_conv1d_update_prefill`, parallelised over TOKENS as well
+// as channels.
+//
+// WHY. The original walks `for t in 0..seq_len` inside one thread per channel,
+// so a 35B prefill launches only ceil(dim/256) CTAs — tens of blocks on a 48-SM
+// part — and each thread runs a seq_len-long serial loop. It measured 30.6 ms of
+// cold TTFT.
+//
+// ★ THERE IS NO RECURRENCE TO SERIALIZE. `s[0..3]` is a sliding window of the
+// last four INPUTS, and output[t] = b + sum_k w[k]*x[t-3+k], then SiLU. Token t
+// depends on inputs only, never on prior outputs — so every (channel, token) is
+// independent and the loop was a convenience, not a dependency.
+//
+// Grid: (ceil(dim/32), ceil(seq_len/8), batch) with block (32, 8) — one warp
+// spans channels so the [t*stride + ch] loads stay coalesced, and 8 token rows
+// per CTA amortise the weight loads.
+//
+// The conv_state write-back (last d_conv inputs) is done ONLY by the threads
+// owning the final token, since that is all it ever was.
+extern "C" __global__ void __launch_bounds__(256, 4)
+causal_conv1d_update_prefill_tp(
+    float* __restrict__ conv_state,
+    const __nv_bfloat16* __restrict__ input,
+    const __nv_bfloat16* __restrict__ weight,
+    const float* __restrict__ bias,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int seq_len,
+    unsigned int input_stride,
+    unsigned int output_stride
+) {
+    const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    if (ch >= dim) return;
+    const unsigned int t0 = (blockIdx.y * blockDim.y + threadIdx.y) * 8u;
+    if (t0 >= seq_len) return;
+
+    const float* state = conv_state + (unsigned long long)ch * d_conv;
+    const __nv_bfloat16* w = weight + (unsigned long long)ch * d_conv;
+    const float b_val = (bias != nullptr) ? bias[ch] : 0.0f;
+
+    float w_reg[4] = {0.f, 0.f, 0.f, 0.f};
+    #pragma unroll
+    for (unsigned int k = 0; k < 4; k++)
+        if (k < d_conv) w_reg[k] = __bfloat162float(w[k]);
+
+    // x(t) for t < 0 comes from the incoming conv_state, exactly as the serial
+    // kernel's pre-loaded s[] does; t >= 0 reads the token stream.
+    auto xin = [&] (long long t) -> float {
+        if (t >= 0) {
+            return (t < (long long)seq_len)
+                ? __bfloat162float(input[(unsigned long long)t * input_stride + ch])
+                : 0.0f;
+        }
+        const long long idx = (long long)d_conv + t;   // -1 -> d_conv-1
+        return (idx >= 0) ? state[idx] : 0.0f;
+    };
+
+    // Rolling window across this thread's 8 tokens: 3 carried + 1 new each step,
+    // so the 8 outputs cost 11 input reads rather than 32.
+    float s0 = xin((long long)t0 - 3);
+    float s1 = xin((long long)t0 - 2);
+    float s2 = xin((long long)t0 - 1);
+    #pragma unroll
+    for (unsigned int i = 0; i < 8; i++) {
+        const unsigned int t = t0 + i;
+        if (t >= seq_len) break;
+        const float s3 = xin((long long)t);
+        const float acc = b_val + s0 * w_reg[0] + s1 * w_reg[1] + s2 * w_reg[2] + s3 * w_reg[3];
+        const float sig = 1.0f / (1.0f + __expf(-acc));
+        output[(unsigned long long)t * output_stride + ch] = __float2bfloat16(acc * sig);
+        s0 = s1; s1 = s2; s2 = s3;
+    }
+
+    // Only the owner of the last token writes the outgoing state: it is just the
+    // final d_conv inputs, which is all the serial kernel's trailing loop stored.
+    if (t0 + 8u >= seq_len) {
+        float* st = conv_state + (unsigned long long)ch * d_conv;
+        #pragma unroll
+        for (unsigned int k = 0; k < 4; k++)
+            if (k < d_conv)
+                st[k] = xin((long long)seq_len - (long long)d_conv + (long long)k);
+    }
+}

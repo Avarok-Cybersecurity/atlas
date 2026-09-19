@@ -9,11 +9,13 @@
 //!
 //! ⚠ The GEMM at the end of this path — `fp8_gemm_act_weight_t_rowwise` —
 //! returns NOT_SUPPORTED on sm_121 (measured 2026-08-15, reproduced through the
-//! block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and not the
-//! weights). The mixed-precision loader therefore routes through
-//! `cublas_bf16_proj` instead; see `weight_loader/qwen35_dense/rowwise_fp8.rs`.
-//! This module stays because the passthrough is what a working per-row FP8
-//! kernel would plug into.
+//! block-scaled path with `AVAROK_CUBLAS_FP8=1`, so it is the GEMM and not the
+//! weights). The mixed-precision loader therefore routes through a ONE-TIME
+//! ledgered BF16 dequant instead (`qwen3_ssm/rowwise_bf16.rs`, #917); see
+//! `weight_loader/qwen35_dense/rowwise_fp8.rs`. This module stays because the
+//! passthrough is what a working per-row FP8 kernel would plug into — and it
+//! is the route that would retire that BF16 slab, since a per-row checkpoint
+//! reaches `fp8_gemm_act_weight_t_rowwise` with no conversion and no copy.
 
 // Everything here names its paths explicitly (`super::DerivedWeights`,
 // `crate::weight_map::…`), so this file needs no glob import — unlike
@@ -198,9 +200,11 @@ pub fn cublas_fp8_rowwise_proj(
 
 #[cfg(test)]
 mod rowwise_passthrough_tests {
-    use super::rowwise_pair_passthrough;
+    use super::{requant_weight_rowwise_fp8_cached, rowwise_pair_passthrough};
+    use crate::layers::ops::DerivedWeights;
     use crate::weight_map::{Fp8Weight, WeightQuantFormat};
     use spark_runtime::gpu::DevicePtr;
+    use spark_runtime::gpu::mock::MockGpuBackend;
 
     fn weight(scale_format: WeightQuantFormat) -> Fp8Weight {
         Fp8Weight {
@@ -241,5 +245,17 @@ mod rowwise_passthrough_tests {
                 "{f:?} is not a row-wise pair and must not be passed through"
             );
         }
+    }
+
+    #[test]
+    fn cached_requant_returns_rowwise_checkpoint_pointers_without_gpu_work() {
+        let gpu = MockGpuBackend::new();
+        let w = weight(WeightQuantFormat::Fp8PerRow);
+
+        assert_eq!(
+            requant_weight_rowwise_fp8_cached(&gpu, &DerivedWeights::new(), &w, 0).unwrap(),
+            (w.weight.0, w.row_scale.0)
+        );
+        assert_eq!(gpu.alloc_count(), 0, "passthrough must not allocate a copy");
     }
 }

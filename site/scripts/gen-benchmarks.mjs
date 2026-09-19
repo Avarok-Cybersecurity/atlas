@@ -24,6 +24,7 @@
 // =============================================================================
 
 import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { writeStable } from './lib/write-stable.mjs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -31,7 +32,7 @@ import { execFileSync } from 'node:child_process';
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const BASELINES_ROOT =
-  process.env.ATLAS_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
+  process.env.AVAROK_BASELINES_ROOT || resolve(REPO, 'tests', 'baselines');
 const OUT = resolve(here, '..', 'src', 'lib', 'benchmarks.generated.json');
 
 // --- git stamp (sha + committer date) ---------------------------------------
@@ -103,5 +104,5 @@ const obj = {
   entries
 };
 
-writeFileSync(OUT, JSON.stringify(obj, null, 2) + '\n');
+writeStable(OUT, obj, ['generated_sha', 'generated_date'], (o) => JSON.stringify(o, null, 2) + '\n');
 console.log(`gen-benchmarks: status=${status}, ${entries.length} entries -> ${OUT}`);

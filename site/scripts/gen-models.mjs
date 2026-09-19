@@ -5,7 +5,7 @@
 // SSOT: https://github.com/Avarok-Cybersecurity/atlas-recipes
 //   (read-only mirror expected at /workspace/atlas-recipes/recipes on the host
 //    that runs this script — that public repo is the single source of truth for
-//    every supported model + its canonical `sparkrun run` command).
+//    every supported model + its canonical `atlasctl run` command).
 //
 // Regenerate with:   node site/scripts/gen-models.mjs
 //
@@ -26,7 +26,7 @@ import { readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const RECIPES_ROOT = process.env.ATLAS_RECIPES_ROOT || '/workspace/atlas-recipes/recipes';
+const RECIPES_ROOT = process.env.AVAROK_RECIPES_ROOT || '/workspace/atlas-recipes/recipes';
 const SSOT_URL = 'https://github.com/Avarok-Cybersecurity/atlas-recipes';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -189,7 +189,7 @@ function inferTopology(stem, top) {
 // --- per-recipe display label ------------------------------------------------
 function recipeDisplay(stem) {
   // humanize the file stem into a short variant label
-  const parts = stem.replace(/-atlas$/, '').split('-');
+  const parts = stem.replace(/-avarok$/, '').split('-');
   const out = parts.map((p) => {
     const lp = p.toLowerCase();
     if (lp === 'nvfp4a16' || lp === 'nvfp4') return 'NVFP4';
@@ -228,11 +228,14 @@ for (const file of files) {
   const topology = inferTopology(stem, top);
   const vendor = vendorOf(fam);
 
-  // sparkrun requires --hosts (it errors "No hosts specified" otherwise).
-  // Single-node recipes target one Spark -> localhost. EP=2/TP=2 recipes
-  // span two nodes, so show a two-host placeholder the user fills in.
-  const hostsArg =
-    topology === 'single' ? '--hosts localhost' : '--hosts <spark-1>,<spark-2>';
+  // A single-node recipe is one command. A multi-node recipe needs one
+  // invocation per node, so the card shows the head's; the docs carry the rest.
+  // atlasctl refuses to launch a multi-node recipe on one node rather than
+  // quietly serving something smaller than the recipe describes.
+  const command =
+    topology === 'single'
+      ? `atlasctl run ${stem}`
+      : `atlasctl run ${stem} --rank 0 --world-size 2 --master-addr <spark-1>`;
   const recipe = {
     displayName: recipeDisplay(stem),
     hfId: top.model || '',
@@ -240,7 +243,10 @@ for (const file of files) {
     quant: metadata.quantization || '',
     topology,
     recipeStem: stem,
-    command: `sparkrun run @atlas/${stem} ${hostsArg}`
+    // Stable identifier the Run button will use once the local agent lands.
+    recipeId: stem,
+    runnable: topology === 'single',
+    command
   };
 
   if (!vendorMap.has(vendor)) vendorMap.set(vendor, new Map());

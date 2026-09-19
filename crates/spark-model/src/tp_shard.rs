@@ -23,7 +23,7 @@
 //! path untouched.
 
 use anyhow::{Result, ensure};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::weight_map::DenseWeight;

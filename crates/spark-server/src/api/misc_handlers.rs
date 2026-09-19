@@ -187,7 +187,7 @@ pub async fn health(
     let state = host.current();
     let (code, body) = readiness(
         state.as_ref().map(|s| s.model_name.as_str()),
-        atlas_core::fault::global().fault(),
+        avarok_core::fault::global().fault(),
     );
     (code, Json(body)).into_response()
 }
@@ -204,7 +204,7 @@ pub async fn health(
 /// where the drain cannot finish because in-flight work is stuck on the dead
 /// context.
 pub async fn health_live() -> Response {
-    match atlas_core::fault::global().fault() {
+    match avarok_core::fault::global().fault() {
         None => "ok".into_response(),
         Some(reason) => (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -218,10 +218,28 @@ pub async fn health_live() -> Response {
 /// provenance. Probed on request (the sm-clock reading must be live), via
 /// `spawn_blocking` because the vendor tools are synchronous subprocesses.
 pub async fn hardware() -> Response {
-    let hw = tokio::task::spawn_blocking(atlas_plugin::hardware::Hardware::probe)
+    let hw = tokio::task::spawn_blocking(avarok_plugin::hardware::Hardware::probe)
         .await
-        .unwrap_or_else(|_| atlas_plugin::hardware::Hardware::unknown());
+        .unwrap_or_else(|_| avarok_plugin::hardware::Hardware::unknown());
     Json(hw).into_response()
+}
+
+/// GET /serve-config — the digests that say WHICH server this is: the bytes
+/// of its binary and the arguments it was started with. Digests, never the
+/// arguments (an argv can carry `--auth-token`). A benchmark that would
+/// rather reuse a running server than start its own compares these against
+/// what it would have started — see `cli::bench_lease`.
+pub async fn serve_config() -> Response {
+    let id =
+        tokio::task::spawn_blocking(|| avarok_plugin::serve_identity::this_process().clone()).await;
+    match id {
+        Ok(id) => Json(id).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
 }
 
 /// POST /tokenize — tokenize text or chat messages, return token IDs and count.

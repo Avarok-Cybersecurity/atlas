@@ -4,7 +4,7 @@
 //! tier gathers into (spill) and scatters out of (fault-in).
 //!
 //! Why this exists, measured on Holo-3.1-35B-A3B (30 SSM layers, blob =
-//! 66,846,720 B) with `ATLAS_SSM_TIER_TIMING=1`:
+//! 66,846,720 B) with `AVAROK_SSM_TIER_TIMING=1`:
 //!
 //! ```text
 //! SSM spill: 66846720 B  gather+sync=392936us  store.put=19397us  total=412334us
@@ -43,7 +43,7 @@ unsafe impl Send for StagingBlob {}
 
 /// Lazily-allocated, reusable staging buffer for the SSM spill tier.
 ///
-/// Allocated on FIRST use: the tier is default-off (`ATLAS_SSM_TIER` unset), so
+/// Allocated on FIRST use: the tier is default-off (`AVAROK_SSM_TIER` unset), so
 /// a tier-less deployment must not pay 66 MB of pinned host memory for a path
 /// it never takes.
 ///
@@ -164,7 +164,7 @@ impl StagingGuard<'_> {
         unsafe { std::slice::from_raw_parts_mut(b.ptr, b.bytes) }
     }
 
-    /// `"pinned"` / `"heap"` for the `ATLAS_SSM_TIER_TIMING` line.
+    /// `"pinned"` / `"heap"` for the `AVAROK_SSM_TIER_TIMING` line.
     pub(crate) fn kind(&self) -> &'static str {
         match self.slot.as_ref() {
             Some(b) if b.pinned => "pinned",

@@ -15,7 +15,7 @@
 //! serve path was bypassed (a routing bug), not that NLLB is unsupported.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;

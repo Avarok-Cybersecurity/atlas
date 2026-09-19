@@ -79,7 +79,7 @@ pub struct ServeArgs {
     /// logged at `warn!` on every boot. A flag that muted the warning would
     /// recreate the bug it exists to catch.
     ///
-    /// This replaces `ATLAS_ALLOW_SHADOWED_KERNELS`, which covered only the
+    /// This replaces `AVAROK_ALLOW_SHADOWED_KERNELS`, which covered only the
     /// shadow-dropped subset — one switch, and a CLI flag rather than an
     /// environment variable so it is visible in the command that started the
     /// process.
@@ -105,7 +105,7 @@ pub struct ServeArgs {
     /// another flag can silence is worth nothing. Passing both still prints the
     /// full list and still exits with the count.
     ///
-    /// A one-line JSON object (`{"atlas_kernel_check": …}`) is printed on
+    /// A one-line JSON object (`{"avarok_kernel_check": …}`) is printed on
     /// stdout after the human report, so a sweep over every target can
     /// aggregate without parsing prose.
     #[arg(long, default_value_t = false)]
@@ -172,7 +172,7 @@ pub struct ServeArgs {
 
     // ── GDN / SSM decode path ──
     //
-    // These four were `ATLAS_*` environment variables. They are CONFIGURATION,
+    // These four were `AVAROK_*` environment variables. They are CONFIGURATION,
     // not diagnostics: the enterprise-concurrency campaign's best recipe needs
     // three of them, and a recipe that has to carry a ten-line env block is a
     // recipe nobody can read or audit. A CLI flag satisfies PCND exactly as an
@@ -221,7 +221,7 @@ pub struct ServeArgs {
     /// `ssm-state-poisoning-gate`, `decode-floor`, `bfcl-subset` and the
     /// agentic gate.
     ///
-    /// Legacy: `ATLAS_SSM_H_FP16` (presence) selects f16 — never f16-pool,
+    /// Legacy: `AVAROK_SSM_H_FP16` (presence) selects f16 — never f16-pool,
     /// which has no environment spelling — when NONE of the three GDN flags
     /// is given. `GdnFlags` is published as one cell, so any of them takes
     /// the whole decision away from the environment; `warn_shadowed_env`
@@ -246,6 +246,36 @@ pub struct ServeArgs {
     #[arg(long, default_value = "snapshot")]
     pub ssm_rollback_mode: String,
 
+    /// Phase-C SSM decode-rollback ring depth: `auto` (default) or an
+    /// explicit slot count in `0..=8`.
+    ///
+    /// The ring retains boundary SSM-state snapshots so a watchdog re-steer
+    /// can rewind the recurrent state; its cost is `depth x
+    /// --max-batch-size x the per-sequence SSM state blob`, which on the 27B
+    /// (151.5 MiB/seq) at the default depth 8 and `--max-batch-size 32` is
+    /// 37.88 GiB — the whole reason an 80 GB H100 refused the hopper recipe
+    /// (#915, rental H100 2026-09-05: inference reserve 45,823 MiB against a
+    /// 71.3 GiB budget carrying 57.2 GiB of weights).
+    ///
+    /// `auto` keeps the depth at 8 (or the existing skips — the ring is
+    /// unreachable under `--speculative`/`--dflash` and with watchdogs off)
+    /// and lets preflight SHRINK it down `8, 4, 2, 1, 0` until the reserve
+    /// fits, logging the formula at WARN. Depth degrades gracefully: fewer
+    /// retained boundaries means fewer reachable re-steer anchors, and a
+    /// sequence that finds none hard-stops instead of re-steering — never a
+    /// partial SSM rewind.
+    ///
+    /// An explicit `N` pins the depth on BOTH sides (reserve and allocation)
+    /// and disables the fit: a serve that does not fit at `N` is REFUSED with
+    /// the formula, rather than booted at a depth the recipe does not record.
+    /// `0` disables the ring outright; 8 is the wired default and the
+    /// arithmetic ceiling.
+    ///
+    /// Legacy: `AVAROK_SSM_DECODE_RING=1|0` still means depth 8 and 0. It is
+    /// only consulted when this flag is `auto` — absent is not a value.
+    #[arg(long, default_value = "auto", value_name = "AUTO_OR_N")]
+    pub ssm_decode_ring_slots: String,
+
     /// Fused GDN output-norm kernel on the decode path (default: off).
     ///
     /// Required by `--ssm-h-dtype f16`: the FP16 h-state twins live on the
@@ -256,7 +286,7 @@ pub struct ServeArgs {
     /// nondeterminism. Under PCND an unproven numerics change is explicit
     /// configuration, not a default.
     ///
-    /// Legacy: `ATLAS_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
+    /// Legacy: `AVAROK_GDN_FUSED_NORM=1`, on the same terms as `--ssm-h-dtype`.
     ///
     /// `Option` so that ABSENT is distinguishable from `false`: publishing the
     /// clap default sealed the flags cell on every boot, which made the legacy
@@ -271,7 +301,7 @@ pub struct ServeArgs {
     /// One strided launch across the batch instead of one per sequence.
     /// Same bitwise-certification gap as `--gdn-fused-norm`; see that flag.
     ///
-    /// Legacy: `ATLAS_SSM_BATCHED_RECURRENT=1`, on the same terms as
+    /// Legacy: `AVAROK_SSM_BATCHED_RECURRENT=1`, on the same terms as
     /// `--gdn-fused-norm`, and `Option` for the same reason.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub ssm_batched_recurrent: Option<bool>,
@@ -290,17 +320,58 @@ pub struct ServeArgs {
     /// differently, so per-request outputs are not bitwise-identical to the
     /// serial path. Gate recipes stay on the default (off) until certified.
     ///
-    /// Legacy: `ATLAS_PREFILL_VARLEN=1`, on the same terms as
+    /// Legacy: `AVAROK_PREFILL_VARLEN=1`, on the same terms as
     /// `--gdn-fused-norm`, and `Option` for the same reason.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub prefill_varlen_batch: Option<bool>,
 
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
+    /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on
+    /// this doc's earlier revision showed the default chain degenerating
+    /// ("count from 1 to 10" → `1, 2, 100, 100, ...`; video-fidelity 0/2 and
+    /// 0/4 at C=2/C=4) and this flag fixing all of it. That attribution was
+    /// WRONG. The degeneration was a scheduler bug — the K=4 verdict rewound
+    /// a sequence by its pending-draft count instead of the forward's row
+    /// count, erasing committed tokens (fixed in #699) — and this flag only
+    /// changed the gate's dispatch pattern so the bug stopped firing. With
+    /// #699 in place every one of those repros passes with the flag OFF.
+    ///
+    /// What the default chain actually does is what #435/#459 measured: ~5e-5
+    /// of lanes differ by 1 ULP against sequential decode, which can flip an
+    /// occasional argmax at temperature 0. No case of that flip causing gross
+    /// degeneration has survived root-causing; every "the default chain broke
+    /// my output" report so far has traced to a different bug that this flag
+    /// happened to perturb. If this flag ever appears to fix a correctness
+    /// problem, treat that as a dispatch-sensitivity SYMPTOM and go find the
+    /// real bug before pinning the flag.
+    ///
+    /// ★ THE COST IS REAL, and measuring it needs a validated serve profile.
+    /// Measured on the LEAN profile (32K ctx, 8 seqs, NO prefix caching — the
+    /// profile this project's recorded baselines were taken on), code prompt,
+    /// aggregate tok/s at C=1/2/4/8:
+    ///
+    ///     default   56 /  88 / 113 / 123    accept 85 / 86 / 80 / 74 %
+    ///     exact     52 /  72 /  78 /  98    accept 81 / 76 / 58 / 64 %
+    ///
+    /// i.e. -7% to -31%. An earlier measurement of this same flag reported it
+    /// as a THROUGHPUT WIN; that was taken on a serve with prefix caching on
+    /// at 128K, where the default arm was degenerating under the #699 bug,
+    /// and it is withdrawn. Benchmark a numerics flag only on a profile you
+    /// have separately validated for throughput — and for correctness.
+    ///
+    /// It does not buy reproducibility either. On the pinned `decode-floor`
+    /// benchmark this flag returned 943/553/943 tokens across three IDENTICAL
+    /// runs — the row-count residual below, showing up directly.
+    ///
     /// SCOPE, and it is narrower than this flag once claimed: it makes the
     /// GDN/SSM verify chain exact. It does NOT make speculative output
     /// bitwise-equal to non-speculative output end to end, and setting it
-    /// will not give you a reproducible spec-on serve.
+    /// will not give you a reproducible spec-on serve. Measured with the flag
+    /// ON, the residual is still visible: an occasional single wrong token,
+    /// and the same request at temperature 0 answering with 45 tokens once and
+    /// 50 the next time — because the accepted-row COUNT varies with runtime
+    /// scheduling, so the row-count-selected projection kernel varies with it.
     ///
     /// Why not (measured on GB10, issue #459): every FFN and attention
     /// projection is computed by a kernel selected on ROW COUNT. A token
@@ -352,7 +423,7 @@ pub struct ServeArgs {
     /// clamp-based tail-checkpoint path costs on a warm turn. Off is
     /// byte-identical to the pre-2026-07-19 baseline.
     ///
-    /// Legacy: `ATLAS_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
+    /// Legacy: `AVAROK_SSM_TAIL_MIDCHUNK=0` disables when this flag is ABSENT.
     ///
     /// Absent is not the same as `--ssm-tail-midchunk true`, which is why there
     /// is no clap default here: publishing a default sealed the runtime's cell
@@ -372,7 +443,7 @@ pub struct ServeArgs {
     /// if forcing wins, the GATE is miscalibrated and that is the fix, not
     /// this flag. To run without speculation at all, omit `--speculative`.
     ///
-    /// Legacy: `ATLAS_MTP_GATE_FORCE=1` selects `force` when this flag is
+    /// Legacy: `AVAROK_MTP_GATE_FORCE=1` selects `force` when this flag is
     /// ABSENT. As with `--ssm-tail-midchunk`, there is no clap default: a
     /// published default would seal the scheduler's cell to `auto` on every
     /// boot and silently ignore the variable it documents.
@@ -397,7 +468,7 @@ pub struct ServeArgs {
     /// long-generation harness before enabling nvfp4/fp8 — do not trust a short smoke.
     /// (An FP32-accumulate logits path would cut the flips but forces host-side sampling
     /// → ~6 tok/s; making nvfp4/fp8 both fast AND safe needs a GPU-side FP32 sampler.)
-    /// Replaces the former ATLAS_LMHEAD_BF16 env var.
+    /// Replaces the former AVAROK_LMHEAD_BF16 env var.
     #[arg(long, default_value = "default")]
     pub lm_head_dtype: String,
 
@@ -444,7 +515,7 @@ pub struct ServeArgs {
     /// the cap on free-prose tokens between successive tool calls on a
     /// tool-armed request, after which the scheduler ends the response
     /// with finish_reason "length" (#328). 0 disables the guard entirely.
-    /// Precedence (highest wins): this flag → ATLAS_MAX_INTER_TOOL_PROSE
+    /// Precedence (highest wins): this flag → AVAROK_MAX_INTER_TOOL_PROSE
     /// → MODEL.toml → built-in default (3072).
     #[arg(long)]
     pub max_inter_tool_prose: Option<u32>,
@@ -454,7 +525,7 @@ pub struct ServeArgs {
     /// a response whose tail is a short-period token repeat; its built-in
     /// threshold (3 end-anchored repeats of a period-2..64 pattern) can
     /// false-positive on legitimately repetitive output such as code.
-    /// Precedence (highest wins): this flag → ATLAS_CONTENT_LOOP_WATCHDOG
+    /// Precedence (highest wins): this flag → AVAROK_CONTENT_LOOP_WATCHDOG
     /// → MODEL.toml. Runtime-toggleable from the TUI via `/watchdog on|off`.
     #[arg(long)]
     pub content_loop_watchdog: Option<bool>,
@@ -464,7 +535,7 @@ pub struct ServeArgs {
     /// Raise it for models whose legitimate output is short-period
     /// repetitive (code, tables). A per-request `repetition_detection`
     /// object still outranks this. Precedence: this flag →
-    /// ATLAS_CONTENT_LOOP_MIN_REPEATS → built-in default.
+    /// AVAROK_CONTENT_LOOP_MIN_REPEATS → built-in default.
     #[arg(long)]
     pub content_loop_min_repeats: Option<u32>,
 
@@ -538,14 +609,15 @@ pub struct ServeArgs {
     /// only for ablation. Higher γ increases per-step verify cost but
     /// raises peak speedup.
     ///
-    /// NOTE: because of this clap default the drafter-`config.json`
-    /// `block_size` fallback downstream (`DflashBuildArgs.gamma: None`) is
-    /// currently unreachable — the served γ is always this flag. Fine while
-    /// every published drafter uses 16; a drafter with a different
-    /// block_size needs this flag made `Option` first (same resolution
-    /// pattern as `--num-drafts`).
-    #[arg(long, default_value_t = 16)]
-    pub dflash_gamma: usize,
+    /// Unset = the drafter's trained block size (`dflash_config.block_size`,
+    /// via `effective_block_size()`), which is the only correct value for a
+    /// block-diffusion drafter: serving Qwen3.8-27B-DFlash2 (block 8) at the
+    /// old clap default of 16 corrupted every draft row (bidirectional block
+    /// attention shares softmax with the 8 phantom rows) — accept measured
+    /// 1.1% at 16 vs 3.2%+ at 8. An explicit value remains an override for
+    /// ablation only.
+    #[arg(long)]
+    pub dflash_gamma: Option<usize>,
 
     /// DFlash drafter sliding-window size for long context. The drafter
     /// runs full-prefix attention by default; at Atlas's typical 16K
@@ -591,6 +663,25 @@ pub struct ServeArgs {
     /// without Marconi snapshots). Block table reuse still avoids allocation.
     #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
     pub enable_prefix_caching: bool,
+
+    /// Measure this server as a known-answer test: no state produced while
+    /// serving one request may reach another.
+    ///
+    /// ONE name for the whole regime, expanded in code by `cli::hermetic` —
+    /// see that module for which channels this closes and why it is a single
+    /// flag rather than the several `--serve-override`s that found them. It
+    /// is the name that lands in a gate record's `serve_overrides`, so a
+    /// reader comparing two runs can tell in one token whether they were
+    /// measured the same way.
+    ///
+    /// It OVERRIDES rather than merges: `--hermetic` beside a flag it closes
+    /// is a contradiction, and `validate_serve_args` refuses the pair rather
+    /// than picking a winner silently.
+    ///
+    /// Not a production setting. Every channel it closes exists because
+    /// carrying that state is normally worth real throughput.
+    #[arg(long, default_value_t = false, num_args = 0..=1, default_missing_value = "true")]
+    pub hermetic: bool,
 
     /// Dump every /v1/chat/completions, /v1/responses, and
     /// /v1/messages (Anthropic) request — plus the corresponding
@@ -708,6 +799,32 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
 
+    /// Minimum matched tokens before an SSM snapshot is RESTORED rather than
+    /// recomputed. Default 256; raise it very high to disable restore.
+    ///
+    /// Below the threshold a restore costs more in lost drafter acceptance
+    /// than the skipped prefill saves — measured at C=1 on identical-prompt
+    /// reps, the crossover is sharp between ~99 and ~219 matched tokens, and
+    /// 256 sits inside the win region and is block-aligned.
+    ///
+    /// ★ WHY THIS IS A FLAG AND NOT ONLY AN ENV VAR. Restoring from a snapshot
+    /// another request produced is a cross-request channel: which snapshots
+    /// survive in the shared pool depends on what ran before, a later request
+    /// restores from whichever anchor is there, and different anchors give
+    /// numerically different SSM state. Issue #936 measured that as a sharded
+    /// BFCL draw disagreeing with the same draw run whole on 12 of 995
+    /// samples; disabling restore takes it to 2. A known-answer gate needs that
+    /// configuration IN ITS RECORD, and only recipe keys reach a record —
+    /// `AVAROK_MARCONI_MIN_TOKENS` cannot, so a run using it could not say so.
+    ///
+    /// This is a correctness knob for KAT gates, not a throughput knob:
+    /// disabling restore gives up the warm-turn saving. On single-turn
+    /// workloads that saving measured as nothing (shard legs ran 1486-1492 s
+    /// with the pool off versus 1486-1539 s with it on), but a multi-turn
+    /// deployment should leave this alone.
+    #[arg(long, default_value_t = spark_model::DEFAULT_MARCONI_MIN_TOKENS)]
+    pub marconi_min_tokens: usize,
+
     /// Enable automatic context compaction for long conversations.
     /// **DISABLED BY DEFAULT** (2026-04-25): the auto-compactor has
     /// historically been a source of agent loops — synthesised
@@ -751,7 +868,7 @@ pub struct ServeArgs {
 
     /// Swap space in GB for KV cache overflow to disk. When GPU blocks are
     /// exhausted, sequences are swapped to disk and resumed later.
-    /// 0 = disabled. Swap files stored in /tmp/atlas-swap/.
+    /// 0 = disabled. Swap files stored in /tmp/avarok-swap/.
     #[arg(long, default_value_t = 3)]
     pub swap_space_gb: usize,
 
@@ -767,7 +884,7 @@ pub struct ServeArgs {
 
     /// Directory for the per-layer NVMe-backed KV files. Required when
     /// --high-speed-swap is set; must be on a different mount than
-    /// --swap-space-gb's /tmp/atlas-swap to avoid file collisions.
+    /// --swap-space-gb's /tmp/avarok-swap to avoid file collisions.
     #[arg(long)]
     pub high_speed_swap_dir: Option<std::path::PathBuf>,
 
@@ -819,10 +936,15 @@ pub struct ServeArgs {
     pub profile: bool,
 
     /// Number of warmup tokens for online FP8 KV cache scale calibration.
-    /// During the first N tokens, tracks max |K| and max |V| values across
-    /// all attention layers. After N tokens, computes per-tensor scales as
-    /// max/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
-    /// 0 = disabled (use static scales from checkpoint, or uncalibrated 1.0).
+    /// Tracks max |K| and max |V| over the first N observed tokens — ACROSS
+    /// requests, so a readiness probe counts toward the window but can never
+    /// close it on its own (#919) — then computes per-tensor scales as
+    /// amax*headroom/448 (mapping the observed range to FP8 E4M3 [-448, 448]).
+    /// The window's own KV is held in BF16 and requantized at the freeze, so
+    /// the write scale always equals the read scale; N is clamped to 4096 to
+    /// bound that staging. 1 = freeze on the first observe (the pre-#919
+    /// behaviour). 0 = disabled (use static scales from checkpoint, or
+    /// uncalibrated 1.0).
     /// Only applies when --kv-cache-dtype is fp8.
     /// Precedence (highest wins): this flag → MODEL.toml
     /// `[behavior].fp8_kv_calibration_tokens` → 0. An explicit value always
@@ -831,20 +953,24 @@ pub struct ServeArgs {
     #[arg(long)]
     pub fp8_kv_calibration_tokens: Option<usize>,
 
-    /// Headroom multiplier applied to the first-observe absmax when the online
-    /// FP8 KV scale freezes (calibration freezes on the FIRST observe so the
-    /// write scale always equals the read scale). The first observe sees only
-    /// the first prefill chunk, so the frozen scale covers headroom× its
-    /// observed max — later tokens whose magnitude grows don't clip, at a cost
-    /// of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
-    /// rejected at startup). Replaces `ATLAS_FP8_KV_HEADROOM`.
+    /// Headroom multiplier applied to the accumulated absmax when the online
+    /// FP8 KV scale freezes. The calibration window only sees the first
+    /// `--fp8-kv-calibration-tokens` tokens, so the frozen scale covers
+    /// headroom× their max — later tokens whose magnitude grows don't clip, at
+    /// a cost of <1 bit of precision. Must be ≥ 1.0 (below 1.0 guarantees clipping;
+    /// rejected at startup). Replaces `AVAROK_FP8_KV_HEADROOM`.
     #[arg(long, default_value_t = 2.0)]
     pub fp8_kv_headroom: f32,
 
-    /// Path to a warmup prompt file (JSON messages or plain text).
-    /// At startup, the server tokenizes and prefills this prompt, inserting the
-    /// resulting KV cache + SSM snapshot into the prefix cache. This eliminates
-    /// the cold-start TTFT penalty (~196ms) on the first real request.
+    /// NOT IMPLEMENTED — rejected at startup. Nothing reads this: no prompt is
+    /// tokenized and no prefill runs, so the cold-start TTFT it was meant to
+    /// remove is still paid. Send one throwaway request after startup instead.
+    ///
+    /// Kept on the CLI (rather than deleted) so an operator who copied it out
+    /// of an older QUICKSTART gets `validate_serve_args`' explanation instead
+    /// of clap's bare "unexpected argument". Remove the flag once the docs it
+    /// appeared in have aged out — or implement it and delete the rule in
+    /// `cli::validate`.
     #[arg(long)]
     pub warmup_prompt: Option<std::path::PathBuf>,
 
@@ -861,20 +987,20 @@ pub struct ServeArgs {
     /// with a per-shard heuristic that picks between O_DIRECT and buffered
     /// reads) is on by default — this flag is an escape hatch for rare
     /// filesystems that misbehave with O_DIRECT or for A/B debugging.
-    /// Setting `ATLAS_FAST_LOAD=0` has the same effect.
+    /// Setting `AVAROK_FAST_LOAD=0` has the same effect.
     #[arg(long, default_value_t = false)]
     pub no_fast_load: bool,
 
     /// Disable the interactive TUI dashboard even on a TTY, keeping the plain
     /// log stream. The TUI also auto-disables when stdout/stdin is not an
-    /// interactive terminal (pipes, `docker -d`, CI) or `ATLAS_NO_TUI=1`.
+    /// interactive terminal (pipes, `docker -d`, CI) or `AVAROK_NO_TUI=1`.
     #[arg(long, default_value_t = false)]
     pub no_tui: bool,
 
     /// Ask the fast loader to prefetch each buffered shard before per-tensor
     /// reads. Useful on NFS-backed model stores with many small tensors per
     /// shard, where normal kernel readahead may not keep up. Also enabled by
-    /// `ATLAS_FAST_LOAD_PREFETCH_SHARDS=1`.
+    /// `AVAROK_FAST_LOAD_PREFETCH_SHARDS=1`.
     #[arg(long, default_value_t = false)]
     pub fast_load_prefetch_shards: bool,
 
@@ -894,7 +1020,7 @@ pub struct ServeArgs {
     /// vision token count per image quadratically — a 4096² image is ~16k
     /// merged tokens — so it is charged against the context budget.
     ///
-    /// Also settable with `ATLAS_VISION_MAX_PIXELS`.
+    /// Also settable with `AVAROK_VISION_MAX_PIXELS`.
     #[arg(long, default_value_t = 0)]
     pub vision_max_pixels: usize,
 
@@ -1046,8 +1172,19 @@ pub struct ServeArgs {
     /// Maximum LoRA adapter rank. The A/B slot pool and delta scratch buffers
     /// are allocated rank-padded to this value at startup (frozen v1 layout
     /// contract); an adapter whose `r` exceeds it is rejected at load.
-    #[arg(long, default_value_t = 64)]
-    pub max_lora_rank: usize,
+    ///
+    /// UNSET (default) derives it from the adapters actually configured, which
+    /// is almost always what you want: BOTH delta stages contract at the padded
+    /// rank, and the B operand is `[n_out, max_rank]`, so padding an r=8 adapter
+    /// to 64 moves 8x the bytes for the same math. Measured on qwen3.8-27B with
+    /// an r=8 adapter: pool 5392 -> 674 MiB and prefill 608 -> 730 tok/s just
+    /// from not padding.
+    ///
+    /// Set it explicitly only to reserve headroom for a LARGER adapter staged
+    /// in later — the pool layout is frozen at startup, so a stage-in above the
+    /// pool's rank is a named reject.
+    #[arg(long)]
+    pub max_lora_rank: Option<usize>,
 
     /// Maximum number of LoRA adapter slots in the rank-padded pool. Slots
     /// beyond the startup-resident adapters are cache headroom for demand
@@ -1058,11 +1195,11 @@ pub struct ServeArgs {
     /// Task #27: a STAGEABLE (promotable-but-not-resident) LoRA adapter, as
     /// `NAME=PEER_STAGE_ID=CONFIG_DIR` (repeatable). NAME is what a request's
     /// `adapter` field asks for; PEER_STAGE_ID is the adapter's id on the
-    /// `$ATLAS_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
+    /// `$AVAROK_LORA_PEER` weight peer; CONFIG_DIR is a local dir with
     /// `adapter_config.json` (the peer manifest carries no r/alpha, so the peft
     /// scaling is read from here at startup). A request naming a stageable
     /// adapter triggers an on-miss RDMA promotion into a cache pool slot instead
-    /// of a 404. Requires `$ATLAS_LORA_PEER`. Empty = today's resident-only
+    /// of a 404. Requires `$AVAROK_LORA_PEER`. Empty = today's resident-only
     /// behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PEER_ID=DIR", value_parser = parse_lora_stageable_spec)]
     pub lora_stageable: Vec<(String, String, String)>,
@@ -1071,7 +1208,7 @@ pub struct ServeArgs {
     /// `NAME=PATH_OR_HF_ID` (repeatable). A request naming NAME triggers an
     /// on-miss DISK fault-in into a cache pool slot (LRU-evicted) instead of a
     /// 404 — the no-RDMA sibling of `--lora-stageable`. Needs
-    /// `ATLAS_LORA_ROTATE=1` (so decode runs eager and the disk swap can
+    /// `AVAROK_LORA_ROTATE=1` (so decode runs eager and the disk swap can
     /// re-point a cache slot) and `--max-loras > resident count` for cache
     /// headroom. Empty = today's behaviour, byte-identical.
     #[arg(long, value_name = "NAME=PATH_OR_HF_ID", value_parser = parse_lora_adapter_spec)]
@@ -1086,6 +1223,13 @@ impl ServeArgs {
     /// is a startup-ordering bug: fail fast rather than size a pool off a
     /// guessed value. Pre-resolution readers (CLI validation, TUI badges)
     /// must match on the `Option` directly instead.
+    /// The served DFlash γ: explicit flag wins; otherwise the drafter's
+    /// trained block size (caller passes it once parsed); otherwise the
+    /// legacy 16 (every pre-DFlash2 published drafter).
+    pub fn resolved_dflash_gamma(&self, drafter_block_size: Option<usize>) -> usize {
+        self.dflash_gamma.or(drafter_block_size).unwrap_or(16)
+    }
+
     pub fn resolved_num_drafts(&self) -> usize {
         self.num_drafts
             .expect("num_drafts read before apply_model_default_num_drafts resolved it")

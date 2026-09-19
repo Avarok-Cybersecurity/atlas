@@ -22,7 +22,7 @@
 //!
 //! # The fix
 //!
-//! Two halves, both behind `ATLAS_NO_MTP_EAGER_DRAFTER` (PRESENCE):
+//! Two halves, both behind `AVAROK_NO_MTP_EAGER_DRAFTER` (PRESENCE):
 //!
 //! 1. `try_mtp_prefill_capture_from` — the capture body, parameterised by the
 //!    SOURCE pointer, so the mixed path can hand it the prefill rows (which
@@ -55,16 +55,16 @@ use super::super::types::TransformerModel;
 use crate::layer::ForwardContext;
 use crate::traits::SequenceState;
 
-/// `ATLAS_NO_MTP_EAGER_DRAFTER` (PRESENCE): restore the propose-site-only
+/// `AVAROK_NO_MTP_EAGER_DRAFTER` (PRESENCE): restore the propose-site-only
 /// consume, i.e. the pre-fix behaviour where only the last-prefilled sequence
 /// of a concurrent group can prefill its drafter.
 pub fn eager_drafter_disabled() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var("ATLAS_NO_MTP_EAGER_DRAFTER").is_ok())
+    *OFF.get_or_init(|| std::env::var("AVAROK_NO_MTP_EAGER_DRAFTER").is_ok())
 }
 
 impl TransformerModel {
-    /// ATLAS_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
+    /// AVAROK_MTP_DRAFTER_PREFILL: copy this prefill chunk's final-layer
     /// hiddens (`[proc_count, h]` BF16, contiguous at the head of the hidden
     /// buffer) into the whole-prompt capture at row `chunk_start`.
     ///
@@ -129,7 +129,7 @@ impl TransformerModel {
         } else {
             None
         };
-        // ATLAS_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
+        // AVAROK_MTP_CARRY_DRAFTER: a warm turn's chunk starts at the reused-
         // prefix boundary, which the contiguous-from-zero tracker above must
         // reject (its consumer prefills the drafter from row 0). The carry
         // path consumes the SAME buffer position-indexed, so it wants the
@@ -153,8 +153,16 @@ impl TransformerModel {
                 .store(new_len, Ordering::Relaxed);
         }
         if carry_on {
+            // Stamped with THIS sequence's ticket. A write by a different
+            // owner takes the interval over rather than extending it — see
+            // `stamped_merge`, and the ordering it closes.
             let mut r = self.mtp_store_range.lock();
-            *r = crate::model::mtp_carry::merge_interval(*r, chunk_start, proc_count);
+            *r = crate::model::mtp_carry::stamped_merge(
+                *r,
+                seq.mtp_store_gen,
+                chunk_start,
+                proc_count,
+            );
         }
         Ok(())
     }
@@ -185,11 +193,18 @@ impl TransformerModel {
         let Some(proposer) = self.proposer.clone() else {
             return;
         };
+        // A proposer whose prefill writes the shared forward scratch cannot run here — the
+        // target's prefill still owns those buffers. See
+        // `DraftProposer::prefill_uses_shared_buffers` for the measurement.
+        if proposer.prefill_uses_shared_buffers() {
+            return;
+        }
         if seq.proposer_state.is_none() {
             return;
         }
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -204,8 +219,10 @@ impl TransformerModel {
             profile: false,
             comm: None,
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None,
             midchunk_capture: None,
         };

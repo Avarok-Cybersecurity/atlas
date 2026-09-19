@@ -12,7 +12,7 @@
 //! GUARDS — the fast-path fires only when ALL hold:
 //!  * not inside `<think>` (thinking is unconstrained)
 //!  * `top_logprobs` is NOT requested (logprobs need the distribution)
-//!  * kill-switch enabled (`ATLAS_DISABLE_FORCED_TOKEN`)
+//!  * kill-switch enabled (`AVAROK_DISABLE_FORCED_TOKEN`)
 //!  * an active grammar state exists
 //!  * grammar reports exactly one legal next token
 //!

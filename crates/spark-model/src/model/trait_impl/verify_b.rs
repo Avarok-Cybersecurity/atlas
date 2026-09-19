@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -212,16 +212,36 @@ impl TransformerModel {
             tracing::info!("FP8 calibration frozen — re-enabling CUDA graphs (MTP verify)");
         }
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_K2_DIAG=1 arms per-stage synchronize checkpoints inside
+        // AVAROK_K2_DIAG=1 arms per-stage synchronize checkpoints inside
         // forward_k2 to localize any illegal access on the batch2 verify path.
         // Those host syncs are illegal under CUDA-graph capture
         // (STREAM_CAPTURE_UNSUPPORTED, status 900), so the diagnostic must run
         // the verify eagerly. Zero production impact — only when K2_DIAG is set
-        // (mirrors ATLAS_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
-        let k2_diag_eager = std::env::var("ATLAS_K2_DIAG").ok().as_deref() == Some("1");
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        // (mirrors AVAROK_DFLASH_DEBUG_NO_GRAPH for the DFlash verify path).
+        let k2_diag_eager = std::env::var("AVAROK_K2_DIAG").ok().as_deref() == Some("1");
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let use_graphs = self.comm.is_none()
+        // Capture the multi-row verify under EP. ON by default since 2026-08-29; set
+        // `AVAROK_GLM_VERIFY_GRAPHS=0` to fall back to eager. Worth ~5 % at K=2
+        // (open512 22.02 -> 23.11 tok/s, t78 A/B) and the six probes are byte-identical to
+        // eager: de4e9745 / 5f16d368 / 090d209c / 2a7c7286 / bc94ba6f / d2ec1a53.
+        //
+        // 🪤 This deliberately does NOT read `AVAROK_EP_GRAPHS`. That variable is set by the
+        // SEALED spec-off launch config, where it gates `decode_a`'s K=1 decode graph. The
+        // two paths are gated apart so a change to one cannot move the other's output.
+        //
+        // 🔴 ANOMALIES A56 lived here: the replay diverged from eager on the 3rd request and
+        // later, never on the first. The graph was fine; `free_sequence` did not drop
+        // `verify2_graph`/`verify3_graph`, so request N replayed a graph baking request 1's
+        // per-sequence DSA indexer-cache pointers. Fixed in `trait_impl/sequence.rs` — do not
+        // add a slot-keyed graph cache without adding it there too.
+        let ep_graphs = std::env::var("AVAROK_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        // A56 instrument. Captures every step, never replays, and diffs the ops this step
+        // enqueued against the previous step's. A graph bakes grid/block/args, so every
+        // difference is a host value a replay would freeze. Implies GRAPHS + NOCACHE.
+        let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let ep_graphs = ep_graphs || graph_trace;
+        let use_graphs = (self.comm.is_none() || ep_graphs)
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
@@ -229,7 +249,14 @@ impl TransformerModel {
             // illegal under CUDA graph capture.
             && !hss_engaged
             && !k2_diag_eager
-            && !lora_eager;
+            && !lora_eager
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for).
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         // DeepSeek-V4 hash-MoE (first `num_hash_layers`) routes experts by token
         // id via the static tid2eid table, so the verify forward needs the 2
@@ -242,6 +269,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -252,8 +280,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: Some(self.buffers.token_ids()),
+            host_token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
@@ -274,7 +304,28 @@ impl TransformerModel {
         if let Some(graph) = cached_for_slot
             && graph.0 != 0
         {
+            // 🔴 BEFORE the replay, not after. The graph writes GLM-5.3's DSA indexer row
+            // from a device position with no host code in the loop, so past the DSA ceiling
+            // it writes one row off the end of the buffer and the `sync_replayed_step`
+            // reconcile below refuses one write too late — by then a sticky CUDA 700 has
+            // taken the whole serve down, not just this request. ANOMALIES A62.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.check_replay_room(&*seq.layer_states[i], seq.seq_len, k)?;
+            }
             self.gpu.launch_graph(graph, stream)?;
+            // 🔴 A replay runs kernels and NOTHING else. Any layer that keeps per-sequence
+            // bookkeeping on the HOST — GLM-5.3's DSA indexer cache length — must be
+            // reconciled here, because its `decode_k` did not run. Miss this and the next
+            // eager step plans its selection over a stale length and `decode_k`'s own lockstep
+            // check fires. Default impl is a no-op for every other layer.
+            //
+            // 🔴 RECONCILE to `seq_len + k`, not `+= k`: `decode_k` REWINDS to `seq_len` on
+            // entry, because the previous verify wrote K rows and the scheduler kept only the
+            // accepted prefix. A replay that only advances runs (k - accepted) ahead on every
+            // rejected draft and compounds it — ANOMALIES A56.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, k)?;
+            }
         }
         let need_run = cached_for_slot.is_none();
         if need_run {
@@ -284,6 +335,9 @@ impl TransformerModel {
             // Extract layer states. Attention layers use EmptyLayerState (no actual
             // state), so sharing the same alloc is safe. For SSM layers, only one
             // sequence's state exists — pass it to decode_batched directly.
+            if graph_trace {
+                spark_runtime::launch_trace::begin();
+            }
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -341,6 +395,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     // SSM: process K=2 tokens for one sequence via decode_batched.
                     layer.decode_batched(
@@ -367,11 +436,8 @@ impl TransformerModel {
 
             // Final norm [2, H]
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 k as u32,
                 h as u32,
@@ -402,11 +468,21 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=2 verify (slot={})", seq.slot_idx);
-                    if let Some(ref mut cache) = graph_cache {
+                    // BISECT HATCH (AVAROK_GLM_VERIFY_GRAPH_NOCACHE=1): capture-and-run every
+                    // step, never replay. Separates "the capture pass computes something
+                    // different from eager" from "the capture is faithful but replay goes
+                    // stale" — they need different fixes and look identical from the outside.
+                    if let Some(ref mut cache) = graph_cache
+                        && !graph_trace
+                        && !std::env::var("AVAROK_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
+                    {
                         cache.insert(seq.slot_idx, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
+            }
+            if graph_trace && let Some(report) = spark_runtime::launch_trace::end_and_diff(40) {
+                tracing::info!("A56 trace K=2 (this step vs previous): {}", report);
             }
         }
 

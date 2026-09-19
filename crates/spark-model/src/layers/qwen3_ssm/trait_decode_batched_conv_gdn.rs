@@ -4,7 +4,7 @@
 //! GDN per-token (with intermediate checkpoints). Extracted from
 //! `trait_decode_batched.rs` to keep the parent file under 500 LoC.
 //! Dispatches one of the fused K=2/3/4 paths, the pool-layout WY arm
-//! (K∈{5..8} chain verify and K=17 DFlash — see
+//! (K∈{5..16} chain verify and K=17 DFlash — see
 //! `trait_decode_batched_conv_gdn_wyn.rs`), or the sequential per-token
 //! fallback. All buffers + state are owned by the caller; this
 //! function only mutates `ssm_state.h_state`, `ssm_state.conv_state`,
@@ -19,11 +19,11 @@ use spark_runtime::gpu::DevicePtr;
 // encodes.
 
 /// Kill switch for the register-resident wy2 twin. PRESENCE check per the
-/// house convention (`ATLAS_NO_GDN_WY2_RESIDENT=0` is NOT off), read once
+/// house convention (`AVAROK_NO_GDN_WY2_RESIDENT=0` is NOT off), read once
 /// per process.
 fn wy2_resident_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GDN_WY2_RESIDENT").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_GDN_WY2_RESIDENT").is_none())
 }
 
 /// Kill switch for the register-resident wy3 twin. Independent of wy2's so
@@ -31,7 +31,7 @@ fn wy2_resident_enabled() -> bool {
 /// convention (`=0` is NOT off), read once per process.
 fn wy3_resident_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_GDN_WY3_RESIDENT").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_GDN_WY3_RESIDENT").is_none())
 }
 
 /// Minimum verify batch width (sequences in the launch) for the
@@ -96,7 +96,7 @@ impl Qwen3SsmLayer {
     /// STAGE 1: whether the fused K=2 MTP-verify epilogue (single-launch
     /// conv1d+L2norm and gated-RMS-norm for both draft positions) should run.
     ///
-    /// Opt-in via `ATLAS_GDN_FUSED_VERIFY=1` (default OFF — the per-token path
+    /// Opt-in via `AVAROK_GDN_FUSED_VERIFY=1` (default OFF — the per-token path
     /// runs unchanged) AND only when the fused kernels are present in this
     /// target's PTX module set (NULL handle on non-gb10 targets). Bit-identical
     /// to the per-token path (gdn_verify_fused_microtest, cos == 1.0).
@@ -104,7 +104,7 @@ impl Qwen3SsmLayer {
         self.gdn_verify_fused_conv_k2_k.0 != 0
             && self.gdn_verify_fused_norm_k2_k.0 != 0
             && matches!(
-                std::env::var("ATLAS_GDN_FUSED_VERIFY").ok().as_deref(),
+                std::env::var("AVAROK_GDN_FUSED_VERIFY").ok().as_deref(),
                 Some("1")
             )
     }
@@ -141,7 +141,7 @@ impl Qwen3SsmLayer {
             && wy2_resident_enabled();
         static LOGGED_ENGAGED: std::sync::Once = std::sync::Once::new();
         static LOGGED_BASE: std::sync::Once = std::sync::Once::new();
-        // ATLAS_SSM_H_FP16 stage 2: under the flag the h-state in the pool is
+        // AVAROK_SSM_H_FP16 stage 2: under the flag the h-state in the pool is
         // FP16, so the FP16 twin is the ONLY correct kernel — an FP32 twin
         // here would read half-width data as floats and emit fluent garbage.
         // Selection is otherwise identical (same residency/width/shape rules),
@@ -160,7 +160,7 @@ impl Qwen3SsmLayer {
                 tracing::info!(
                     "GDN wy2 REGISTER-RESIDENT ENGAGED (handle {:#x}, n={n}): K=2 verify \
                      Pass 2 served from registers — state traffic 2R+2W -> 1R+2W; \
-                     width-gated n >= {}; kill switch ATLAS_NO_GDN_WY2_RESIDENT (presence)",
+                     width-gated n >= {}; kill switch AVAROK_NO_GDN_WY2_RESIDENT (presence)",
                     self.gdn_wy2_resident_k.0,
                     wy_resident_min_width(),
                 );
@@ -207,7 +207,7 @@ impl Qwen3SsmLayer {
             && wy3_resident_enabled();
         static LOGGED_ENGAGED: std::sync::Once = std::sync::Once::new();
         static LOGGED_BASE: std::sync::Once = std::sync::Once::new();
-        // ATLAS_SSM_H_FP16 stage 2 — see `wy2_kernel` for the rationale.
+        // AVAROK_SSM_H_FP16 stage 2 — see `wy2_kernel` for the rationale.
         if super::ssm_h_fp16_enabled() {
             return if eligible && self.gdn_wy3_resident_f16_k.0 != 0 {
                 self.gdn_wy3_resident_f16_k
@@ -220,7 +220,7 @@ impl Qwen3SsmLayer {
                 tracing::info!(
                     "GDN wy3 REGISTER-RESIDENT ENGAGED (handle {:#x}, n={n}): K=3 verify \
                      Pass 2 served from registers — state traffic 2R+3W -> 1R+3W; \
-                     width-gated n >= {}; kill switch ATLAS_NO_GDN_WY3_RESIDENT (presence)",
+                     width-gated n >= {}; kill switch AVAROK_NO_GDN_WY3_RESIDENT (presence)",
                     self.gdn_wy3_resident_k.0,
                     wy_resident_min_width(),
                 );
@@ -243,7 +243,7 @@ impl Qwen3SsmLayer {
 
     /// Select the K=4 verify WY kernel. There is no register-resident K=4
     /// twin, so this is only ever the base kernel or — under
-    /// `ATLAS_SSM_H_FP16` — its FP16 h-state twin. K=4 is the widths-1..8
+    /// `AVAROK_SSM_H_FP16` — its FP16 h-state twin. K=4 is the widths-1..8
     /// shape of the default ladder (`4:3,8:3,16:2,32:1`, 3 drafts = 4 rows),
     /// i.e. exactly the low rungs the no-regression gate covers.
     pub(super) fn wy4_kernel(&self) -> spark_runtime::gpu::KernelHandle {
@@ -272,10 +272,10 @@ impl Qwen3SsmLayer {
     ) -> Result<()> {
         if super::ssm_h_fp16_enabled() && wy_k.0 == 0 {
             anyhow::bail!(
-                "ATLAS_SSM_H_FP16: no FP16 h-state twin resolved for the K={kk} MTP verify \
+                "AVAROK_SSM_H_FP16: no FP16 h-state twin resolved for the K={kk} MTP verify \
                  WY kernel. Falling back to the FP32 kernel would read the FP16 pool as \
                  floats and emit fluent garbage, so this refuses instead. Run without \
-                 --speculative, or unset ATLAS_SSM_H_FP16."
+                 --speculative, or unset AVAROK_SSM_H_FP16."
             );
         }
         Ok(())
@@ -283,8 +283,8 @@ impl Qwen3SsmLayer {
 
     /// Run conv1d_update_l2norm + GDN over `num_tokens` (multi-token decode
     /// / MTP verify). Picks the K=2/3/4, K∈{5..8} (wyN) or K=17 fused WY
-    /// path if available, otherwise falls back to the sequential per-token
-    /// gdn_decode loop.
+    /// path if available (wyN covers K∈{5..16} since 2026-08-29), otherwise
+    /// falls back to the sequential per-token gdn_decode loop.
     pub(super) fn decode_batched_conv_gdn(
         &self,
         ssm_state: &mut SsmLayerState,
@@ -587,7 +587,15 @@ impl Qwen3SsmLayer {
                 false,           // contiguous state — this site is batch_size=1
                 stream,
             )?;
-        } else if num_tokens == 17 && self.gdn_wy17_k.0 != 0 && ctx.levers.gdn_wy17 {
+        } else if num_tokens == 17
+            && self.gdn_wy17_k.0 != 0
+            && ctx.levers.gdn_wy17
+            && !super::ssm_h_fp16_enabled()
+        {
+            // (f16 guard 2026-08-29: wy17 has no FP16 twin — under the f16
+            // pool this arm must not fire; K=17 then reaches the sequential
+            // fallback below, which REFUSES under f16 rather than reading
+            // the FP16 pool with FP32 kernels.)
             // ── K=17 (DFlash γ+1): fused WY-Chunkwise path ──
             //
             // Shared pool-layout arm (fused conv_kn epilogue + one wy17
@@ -610,11 +618,29 @@ impl Qwen3SsmLayer {
         }) {
             // ── K∈{5..8} chain verify: fused WY-Chunkwise path (wy5..wy8,
             // one K-templated kernel source). Removes the serial per-token
-            // GDN fallback at these widths. Kill-switch: ATLAS_GDN_WYN=0. ──
+            // GDN fallback at these widths. Kill-switch: AVAROK_GDN_WYN=0. ──
             self.decode_batched_conv_gdn_wyn(ssm_state, ctx, args, wyn_k)?;
         } else {
-            // ── No fused arm (K>17, K∈{5..8} with wyN absent/killed, or
-            // non-pool intermediates): sequential per-token path ──
+            // ── No fused arm (K>17, wyN absent/killed, or non-pool
+            // intermediates): sequential per-token path ──
+            //
+            // f16 backstop (2026-08-29): every kernel below is an FP32
+            // h-state reader. Over an FP16 pool that does not fault — it
+            // emits fluent garbage — so refuse loudly instead, mirroring
+            // `require_wy_f16`. Reachable only when a width's f16 twin is
+            // missing/killed or intermediates are non-pool; supported
+            // configs never land here (wy2/3/4 + wyn f16 twins cover
+            // K<=16, and validate.rs bounds --dflash-gamma under f16).
+            if super::ssm_h_fp16_enabled() {
+                anyhow::bail!(
+                    "AVAROK_SSM_H_FP16: no FP16 fused arm for K={num_tokens} \
+                     GDN verify (twin missing/killed or non-pool \
+                     intermediates). The sequential fallback's FP32 kernels \
+                     would read the FP16 pool as floats and emit fluent \
+                     garbage, so this refuses instead. Run without \
+                     --speculative at this width, or unset AVAROK_SSM_H_FP16."
+                );
+            }
             //
             // gated_delta_rule_decode expects FP32 Q/K/V (see kernel signature),
             // but causal_conv1d_update_l2norm outputs BF16 by default. Reading

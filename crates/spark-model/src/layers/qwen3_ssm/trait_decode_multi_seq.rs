@@ -4,13 +4,15 @@
 
 use super::*;
 
+mod hc;
 mod ssm_batched;
+mod ssm_batched_proj;
 mod ssm_batched_recurrent;
 
 /// Batched dense FFN for wide SSM decode batches: **ON by default**, disabled
-/// only by `ATLAS_NO_SSM_FFN_PREFILL=1`.
+/// only by `AVAROK_NO_SSM_FFN_PREFILL=1`.
 ///
-/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// Strict `== "1"` on an `AVAROK_NO_*` name rather than a presence check —
 /// presence-checked flags in this codebase are ENABLED by `=0`, a trap that has
 /// burned it before. Read once; the dispatch site is per-layer per-step.
 /// Smallest batch that takes the batched dense FFN. Default 5, MEASURED.
@@ -18,7 +20,7 @@ mod ssm_batched_recurrent;
 /// Tunable because the +30% measured at C=16 is LARGER than eliminating the
 /// double weight read alone predicts (~18%), which implies the tile GEMM also
 /// beats the batch-8 GEMV per pass. If that holds, the crossover is below 9 and
-/// C=4/C=8 have headroom too — `ATLAS_SSM_FFN_PREFILL_MIN_N` exists to find it
+/// C=4/C=8 have headroom too — `AVAROK_SSM_FFN_PREFILL_MIN_N` exists to find it
 /// by measurement rather than assertion. It was: 2 reps/cell, coherence held —
 ///   MIN_N=9: C=4 37.7 | C=8 53.4
 ///   MIN_N=5: C=4 37.8 | C=8 **57.8**  (+8% at C=8, C=4 untouched)
@@ -30,7 +32,7 @@ mod ssm_batched_recurrent;
 fn ssm_ffn_prefill_min_n() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_SSM_FFN_PREFILL_MIN_N")
+        std::env::var("AVAROK_SSM_FFN_PREFILL_MIN_N")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|&v| v >= 2)
@@ -40,7 +42,7 @@ fn ssm_ffn_prefill_min_n() -> usize {
 
 fn ssm_ffn_prefill_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_SSM_FFN_PREFILL").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_SSM_FFN_PREFILL").as_deref() != Ok("1"))
 }
 
 impl Qwen3SsmLayer {
@@ -85,8 +87,8 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let eps = ctx.config.rms_norm_eps as f32;
         let n = num_seqs;
-        let ssm_ms_profile = std::env::var("ATLAS_SSM_MS_PROFILE").ok().as_deref() == Some("1")
-            && !ctx.graph_capture;
+        let ssm_ms_profile =
+            crate::layers::ops::ModelLevers::get().ssm_ms_profile && !ctx.graph_capture;
         let phase_a_t0 = if ssm_ms_profile {
             ctx.gpu.synchronize(stream).ok();
             Some(std::time::Instant::now())
@@ -112,7 +114,9 @@ impl Qwen3SsmLayer {
         // decode cost, so it is the lever that makes C=N decode scale.
         // The recurrent inner (BA/gates, conv1d, GDN, gated-norm) stays a
         // per-seq loop with byte-identical kernels to `decode()`/`ssm_forward`.
-        if !self.try_decode_multi_seq_ssm_batched(hidden, residual, n, states, ctx, stream)? {
+        if !self
+            .try_decode_multi_seq_ssm_batched(hidden, residual, n, states, false, ctx, stream)?
+        {
             for i in 0..n {
                 let hidden_i = hidden.offset(i * h * residual_elem);
                 let residual_i = residual.offset(i * h * residual_elem);
@@ -208,7 +212,7 @@ impl Qwen3SsmLayer {
             }
             // WIDE BATCH (n>8): one batched dense FFN, weights read ONCE.
             //
-            // MEASURED 2026-07-27 (ATLAS_SSM_MS_PROFILE, 9168 samples/n): the
+            // MEASURED 2026-07-27 (AVAROK_SSM_MS_PROFILE, 9168 samples/n): the
             // chunked arm below costs 751 / 1023 / 2022 us per layer at
             // n=4/8/16 — n=16 is 1.98x n=8, and FFN-per-sequence is FLAT from
             // 8 to 16 (127.9 -> 126.3 us). That is the signature of the m<=8
@@ -318,7 +322,7 @@ impl Qwen3SsmLayer {
                         stream,
                     )?;
                 } else if n == 4
-                    && std::env::var("ATLAS_MOE_ATOMIC_C4_DECODE").ok().as_deref() == Some("1")
+                    && std::env::var("AVAROK_MOE_ATOMIC_C4_DECODE").ok().as_deref() == Some("1")
                 {
                     // Purpose-built C=4 routed MoE decode: batched routing,
                     // token-major gate/up, FP32 atomicAdd routed down
@@ -334,11 +338,7 @@ impl Qwen3SsmLayer {
                         (n * h) as u32,
                         stream,
                     )?;
-                } else if std::env::var("ATLAS_MOE_LEGACY_PERTOKEN_DECODE")
-                    .ok()
-                    .as_deref()
-                    != Some("1")
-                {
+                } else if !crate::layers::ops::ModelLevers::get().moe_legacy_pertoken_decode {
                     // Token-major N-token MoE decode — DEFAULT for n>=4. Packs
                     // (token, expert) into blockIdx.y so all N tokens' experts run
                     // in ~3 batched kernel launches/layer instead of the legacy
@@ -350,7 +350,7 @@ impl Qwen3SsmLayer {
                     // `forward_batched` folds before any GPU work (presence
                     // gate, like forward_k2/k3); the `.is_err()` fallback below
                     // remains for non-NVFP4 weights / genuine errors only.
-                    // Opt out fully with ATLAS_MOE_LEGACY_PERTOKEN_DECODE=1.
+                    // Opt out fully with AVAROK_MOE_LEGACY_PERTOKEN_DECODE=1.
                     if self
                         .ffn
                         .forward_token_major_decode(normed_base, n, ctx, stream)
@@ -367,7 +367,7 @@ impl Qwen3SsmLayer {
                         (n * h) as u32,
                         stream,
                     )?;
-                } else if std::env::var("ATLAS_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
+                } else if std::env::var("AVAROK_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
                     // Batched gate GEMM over all N tokens, but keep the proven
                     // per-token expert kernels. This avoids the grouped path's
                     // sort/GEMM overhead while testing whether reading router
@@ -402,7 +402,7 @@ impl Qwen3SsmLayer {
         if let Some(t0) = phase_b_t0 {
             ctx.gpu.synchronize(stream).ok();
             tracing::info!(
-                "ATLAS_SSM_MS_PROFILE n={n}: mixer={}us moe_residual={}us",
+                "AVAROK_SSM_MS_PROFILE n={n}: mixer={}us moe_residual={}us",
                 phase_a_us,
                 t0.elapsed().as_micros(),
             );

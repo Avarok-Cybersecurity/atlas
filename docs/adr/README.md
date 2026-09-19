@@ -55,3 +55,4 @@ What's better, what's worse, what new problems did we create?
 - [0013 — A gate record covers a commit by content, never by ancestry](0013-gate-coverage-by-content-not-ancestry.md)
 - [0014 — PR intent is a descending tree, and it may only ADD benchmarks](0014-pr-intent-taxonomy-and-the-required-union.md)
 - [0015 — The governance harvest, and a one-time content-pinned amnesty](0015-governance-harvest-and-the-one-time-amnesty.md)
+- [0016 — Exempt only proven test-only Rust modules from benchmark invalidation](0016-test-only-rust-module-coverage.md)

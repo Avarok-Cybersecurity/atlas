@@ -275,22 +275,18 @@ impl BlockDiffusionDraftHead {
                 self.scratch.attn_out.offset(noise_q_offset + 4086 * bf16),
                 10,
             )?;
-            // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: write the FULL 4096-element
-            // attn_out[noise0] row to /tmp/atlas_attn_out.bin so PyTorch
+            // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: write the FULL 4096-element
+            // attn_out[noise0] row to /tmp/avarok_attn_out.bin so PyTorch
             // can run o_proj on the exact same bytes.
-            if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if self.levers.debug_dump_full {
                 let n_bytes = q_dim as usize * bf16;
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;
                 gpu.copy_d2h(self.scratch.attn_out.offset(noise_q_offset), &mut buf)?;
-                std::fs::write("/tmp/atlas_attn_out.bin", &buf)
+                std::fs::write("/tmp/avarok_attn_out.bin", &buf)
                     .map_err(|e| anyhow::anyhow!("write attn_out dump: {e}"))?;
                 tracing::info!(
-                    "DFLASH DUMP wrote {} bytes attn_out[noise0] to /tmp/atlas_attn_out.bin",
+                    "DFLASH DUMP wrote {} bytes attn_out[noise0] to /tmp/avarok_attn_out.bin",
                     n_bytes
                 );
             }
@@ -320,16 +316,12 @@ impl BlockDiffusionDraftHead {
                 self.scratch.stream_buf.offset(noise_offset),
                 10,
             )?;
-            if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-            {
+            if self.levers.debug_dump_full {
                 let n_bytes = self.hidden_size * bf16;
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;
                 gpu.copy_d2h(self.scratch.stream_acc.offset(noise_offset), &mut buf)?;
-                std::fs::write("/tmp/atlas_o_proj_out.bin", &buf)
+                std::fs::write("/tmp/avarok_o_proj_out.bin", &buf)
                     .map_err(|e| anyhow::anyhow!("write o_proj_out: {e}"))?;
             }
         }

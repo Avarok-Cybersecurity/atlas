@@ -11,7 +11,7 @@ impl Qwen3SsmLayer {
         post_attn_norm: DenseWeight,
         ffn: FfnComponent,
         qkvz_nvfp4: Option<QuantizedWeight>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let nv = config.linear_num_value_heads;
@@ -23,11 +23,30 @@ impl Qwen3SsmLayer {
         // conv_dim = Q_flat + K_flat + V_flat = 2*key_dim + value_dim = 8192
         let conv_dim = nk * kd * 2 + nv * vd;
 
+        // Resolved BEFORE the struct literal because two fields need it: the
+        // tensor-core spine's handle IS the bit that decides which spine the
+        // prefill launches, so the scalar spine's route line has to read it,
+        // and a field initializer cannot read a sibling field.
+        let gdn_tc_spine = gdn_prefill_tc_kernel(gpu);
+        // Write-on-accept engaged word, zeroed: the fold treats 0 as "parent ran".
+        let woa_flag = gpu.alloc(4)?;
+        gpu.memset(woa_flag, 0, 4)?;
+
         Ok(Self {
+            // mHC is attached later by the loader, and only for models that
+            // carry a hc_mult-wide residual highway. The handles are gated on
+            // the same condition `ArchProbes` uses, so a plain GDN model
+            // never issues the lookup.
+            hc: None,
+            ple: None,
+            hc_pre_k: hc_kernel(config, gpu, "hc_pre"),
+            hc_post_k: hc_kernel(config, gpu, "hc_post"),
+            hc_expand_k: hc_kernel(config, gpu, "hc_expand"),
             input_norm,
             ssm,
             post_attn_norm,
             ffn,
+            lora_out_proj: None,
             qkvz_nvfp4,
             qkvz_nvfp4_t: None,
             out_proj_nvfp4_t: None,
@@ -36,6 +55,8 @@ impl Qwen3SsmLayer {
             out_proj_fp8w: None,
             qkvz_fp8w_rowwise: None,
             out_proj_fp8w_rowwise: None,
+            qkvz_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
+            out_proj_rowwise_bf16: std::sync::atomic::AtomicU64::new(0),
             qkvz_q2: None,
             q2_0_gemv_k: super::super::try_kernel(gpu, "q2_0_gemv_vec", "q2_0_gemv_vec"),
             dequant_q2_0_gn_k: super::super::try_kernel(
@@ -56,8 +77,31 @@ impl Qwen3SsmLayer {
             // machine?" and that question has no portable answer.
             sm_count: gpu.sm_count()?,
             rms_norm_residual_k: gpu.kernel("norm", "rms_norm_residual")?,
-            gated_rms_norm_k: gpu.kernel("norm", "gated_rms_norm")?,
-            gated_rms_norm_f32_k: super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input"),
+            // `output_gate_type: "sigmoid"` (qwen4_exp) swaps the gated-norm
+            // handles for the sigmoid twins ONCE, here, so no forward call
+            // site branches on it. Every other model keeps the SiLU originals.
+            gated_rms_norm_k: if config.gdn_norm_sigmoid {
+                gpu.kernel("gated_norm_sigmoid", "gated_rms_norm_sigmoid")?
+            } else {
+                gpu.kernel("norm", "gated_rms_norm")?
+            },
+            gated_rms_norm_f32_k: if config.gdn_norm_sigmoid {
+                super::super::try_kernel(
+                    gpu,
+                    "gated_norm_sigmoid",
+                    "gated_rms_norm_f32_input_sigmoid",
+                )
+            } else {
+                super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input")
+            },
+            // Only the SiLU (non-sigmoid) family has a strided twin today; a
+            // `gdn_norm_sigmoid` model gets KernelHandle(0) and keeps the
+            // per-sequence loop, which is correct, just launch-heavy.
+            gated_rms_norm_f32_strided_k: if config.gdn_norm_sigmoid {
+                KernelHandle(0)
+            } else {
+                super::super::try_kernel(gpu, "norm", "gated_rms_norm_f32_input_strided")
+            },
             dense_gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
             dense_gemv_batch2_k: gpu.kernel("dense_gemv_bf16_batch2", "dense_gemv_bf16_batch2")?,
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
@@ -162,7 +206,11 @@ impl Qwen3SsmLayer {
                 "norm",
                 "residual_add_rms_norm_gatef32",
             ),
-            gated_rms_norm_prefill_k: gpu.kernel("norm", "gated_rms_norm_prefill")?,
+            gated_rms_norm_prefill_k: if config.gdn_norm_sigmoid {
+                gpu.kernel("gated_norm_sigmoid", "gated_rms_norm_prefill_sigmoid")?
+            } else {
+                gpu.kernel("norm", "gated_rms_norm_prefill")?
+            },
             w4a16_gemm_k: gpu.kernel("w4a16", "w4a16_gemm")?,
             w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
             w4a16_gemm_t_k64_k: crate::layers::k64_kernel(gpu)?,
@@ -204,6 +252,8 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_fla",
                 "gated_delta_rule_recompute_wu",
             ),
+            gdn_prefill_fla_recompute_wu_hopper_k: init_kernels::prefill_wu_hopper_k(gpu),
+            gdn_prefill_fla_chunk_fwd_o_hopper_k: init_kernels::prefill_fwd_o_hopper_k(gpu),
             gdn_prefill_fla_chunk_delta_h_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_fla",
@@ -213,6 +263,16 @@ impl Qwen3SsmLayer {
                 gpu,
                 "gated_delta_rule_fla",
                 "gated_delta_rule_chunk_delta_h_tc_vblock",
+            ),
+            gdn_prefill_fla_chunk_delta_h_tcfuse_k: gdn_tc_spine,
+            // ONE handle for the scalar fused GDN state spine, and the route
+            // line naming whichever spine the prefill will launch — see
+            // `init_kernels::fused_spine_kernel` for both.
+            gdn_prefill_fla_chunk_delta_h_fused_k: fused_spine_kernel(gpu, gdn_tc_spine),
+            gdn_prefill_fla_chunk_delta_h_tma_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_fla",
+                "gated_delta_rule_chunk_delta_h_tma",
             ),
             gdn_prefill_fla_chunk_fwd_o_k: super::super::try_kernel(
                 gpu,
@@ -247,7 +307,13 @@ impl Qwen3SsmLayer {
             ),
             compute_gdn_gates_k: gpu.kernel("ssm_preprocess", "compute_gdn_gates")?,
             ba_gates_prefill_k: gpu.kernel("ssm_preprocess", "dense_gemm_ba_gates_prefill")?,
+            ba_gates_prefill_hopper_k: init_kernels::ba_gates_hopper_k(gpu),
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
+            conv1d_prefill_tp_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_prefill_tp",
+            ),
             gdn_chunk2_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_chunk2")?,
             conv1d_chunk2_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_chunk2")?,
             gdn_chunk3_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_chunk3")?,
@@ -272,7 +338,30 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy3_resident",
             ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
-            // ── ATLAS_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
+            gdn_wy4_woa_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy4_woa",
+                "gated_delta_rule_wy4_woa",
+            ),
+            gdn_wy4_fold_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy4_woa",
+                "gated_delta_rule_wy4_fold",
+            ),
+            gdn_wy4_clear_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy4_woa",
+                "gated_delta_rule_wy4_flag_clear",
+            ),
+            woa_flag,
+            // vn[4][nv][vd] | g[4][nv] | sk[4][nk][kd], f32, one slab per
+            // batch entry (VERIFY_WY_TABLE_SEQS). ~131 KB/seq at 48x128.
+            woa_stash: gpu
+                .alloc(crate::layer::VERIFY_WY_TABLE_SEQS * 4 * (nv * vd + nv + nk * kd) * 4)?,
+            woa_stash_seq_floats: 4 * (nv * vd + nv + nk * kd),
+            woa_dims: [nk, nv, kd, vd],
+            woa_armed: std::sync::atomic::AtomicBool::new(false),
+            // ── AVAROK_SSM_H_FP16 stage 2: FP16 h-state twins of the MTP
             // verify WY kernels. try_kernel for the same reason as the
             // resident twins above — a miss is a silent handle 0, and the
             // selectors gate on `.0 != 0` before ever picking one. Without
@@ -309,7 +398,7 @@ impl Qwen3SsmLayer {
             // STAGE 1 fused K=2 verify epilogue. Only present in the gb10
             // common PTX module set; NULL on targets lacking the .cu, in which
             // case the num_tokens==2 arm keeps the per-token path even when
-            // ATLAS_GDN_FUSED_VERIFY is set.
+            // AVAROK_GDN_FUSED_VERIFY is set.
             gdn_verify_fused_conv_k2_k: super::super::try_kernel(
                 gpu,
                 "gdn_verify_fused_k2",
@@ -362,15 +451,11 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule_wy17",
                 "gated_delta_rule_wy17",
             ),
-            // Chain-verify K=5..8 WY kernels (one templated gb10-common
-            // module). Index = K-5; NULL on targets lacking the module, in
-            // which case those widths keep the sequential per-token path.
-            gdn_wyn_k: [
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy5"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy6"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy7"),
-                super::super::try_kernel(gpu, "gated_delta_rule_wyn", "gated_delta_rule_wy8"),
-            ],
+            gdn_wyn_k: init_kernels::wyn_kernels(gpu),
+            gdn_wyn_f16_k: init_kernels::wyn_f16_kernels(gpu),
+            // provenance-id: 526f6e616c6420522e205374657369616b
+            gdn_wyn_table_k: init_kernels::wyn_table_kernels(gpu),
+            gdn_wyn_f16_table_k: init_kernels::wyn_f16_table_kernels(gpu),
             h_state_bytes: nv * vd * kd * 4, // FP32 [nv, kd, vd] transposed for coalescing
             conv_state_bytes: conv_dim * d_conv * 4, // FP32 [conv_dim, d_conv]
             qkvz_fp8: None,
@@ -397,47 +482,26 @@ impl Qwen3SsmLayer {
             w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch16"),
             w8a16_gemm_t_k: super::super::try_kernel(gpu, "w8a16_gemm_t", "w8a16_gemm_t"),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
                 "fp8_gemm_t_blockscaled",
                 "fp8_gemm_t_blockscaled",
             ),
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
+            ),
         })
     }
 
-    /// Construct an SSM layer where QKVZ projection output is already sequential.
-    ///
-    /// Used by Qwen3.5 where separate QKV and Z weights are concatenated at load
-    /// time into `[Q|K|V|Z]` row order. The `deinterleave_qkvz` kernel is skipped
-    /// and plain `w4a16_gemv` writes directly to the deinterleaved buffer.
-    pub fn new_sequential(
-        input_norm: DenseWeight,
-        ssm: SsmWeights,
-        post_attn_norm: DenseWeight,
-        ffn: FfnComponent,
-        qkvz_nvfp4: Option<QuantizedWeight>,
-        qkvz_nvfp4_t: Option<QuantizedWeight>,
-        out_proj_nvfp4_t: Option<QuantizedWeight>,
-        config: &atlas_core::config::ModelConfig,
-        gpu: &dyn GpuBackend,
-    ) -> Result<Self> {
-        let mut layer = Self::new(
-            input_norm,
-            ssm,
-            post_attn_norm,
-            ffn,
-            qkvz_nvfp4,
-            config,
-            gpu,
-        )?;
-        layer.sequential_qkvz = true;
-        layer.qkvz_nvfp4_t = qkvz_nvfp4_t;
-        layer.out_proj_nvfp4_t = out_proj_nvfp4_t;
-        Ok(layer)
-    }
+    // `new_sequential` moved to `init_sequential.rs` (≤500 LoC split).
 }
+
+#[path = "init_kernels.rs"]
+mod init_kernels;
+use init_kernels::{fused_spine_kernel, gdn_prefill_tc_kernel, hc_kernel};
+
+#[path = "init_sequential.rs"]
+mod init_sequential;

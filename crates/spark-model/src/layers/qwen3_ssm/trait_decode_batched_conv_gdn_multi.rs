@@ -40,7 +40,7 @@
 //! (`upload_verify_wy_tables`, verify_e2.rs) into a fixed device buffer
 //! refreshed pre-replay, so both launches are CUDA-graph-stable.
 //!
-//! Kill switch `ATLAS_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
+//! Kill switch `AVAROK_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
 //! convention — `=0` is NOT off) forces the per-sequence loop for A/B.
 
 use anyhow::Result;
@@ -70,7 +70,7 @@ fn first_for_k(mask: &std::sync::atomic::AtomicU32, k: usize) -> bool {
 }
 
 /// Periodic engaged-vs-declined RATE at INFO, under the existing
-/// `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
+/// `AVAROK_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
 /// `OnceLock` load and nothing else).
 ///
 /// The per-`k` first-occurrence lines above prove WHICH widths ever took
@@ -102,7 +102,7 @@ fn record_multi_rate(n: usize, kk: usize) {
 /// Kill switch, PRESENCE check (`=0` is NOT off), read once per process.
 fn verify_gdn_batch_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_GDN_BATCH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_VERIFY_GDN_BATCH").is_none())
 }
 
 impl Qwen3SsmLayer {
@@ -148,9 +148,18 @@ impl Qwen3SsmLayer {
             2 => self.wy2_kernel(args.kd, args.vd, n),
             3 => self.wy3_kernel(args.kd, args.vd, n),
             4 => self.wy4_kernel(),
+            // 2026-09-01: gamma-width verifies join the two-launch path via
+            // the wyN pointer-table twins (state_is_table compiled in).
+            // None (out of range / module absent / AVAROK_GDN_WYN=0 / f16
+            // pool without twin) falls back per-sequence, byte-identical —
+            // the pre-twin behavior for these widths.
+            5..=16 => match self.wyn_table_kernel(kk, ctx.levers.gdn_wyn) {
+                Some(h) => h,
+                None => return Ok(false),
+            },
             _ => return Ok(false),
         };
-        // ATLAS_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
+        // AVAROK_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
         // caller runs the per-sequence FP32 loop — which, over an FP16 pool,
         // is silent corruption rather than an error. Refuse first.
         self.require_wy_f16(kk, wy_k)?;
@@ -267,10 +276,26 @@ impl Qwen3SsmLayer {
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
         let hi = |t: usize| wy_tables.offset(t * VERIFY_WY_TABLE_STRIDE_BYTES);
-        match kk {
-            2 => ops::gdn_decode_wy2(
+        // Write-on-accept (2026-09-03): the K=4 twin writes no state; the
+        // model folds the accepted rows after the verdict (`gdn_fold_accepted`).
+        let woa_now = kk == 4
+            && super::gdn_flags::gdn_woa_enabled()
+            && !super::ssm_h_fp16_enabled()
+            && kd == 128
+            && vd == 128
+            && self.gdn_wy4_woa_k.0 != 0
+            && self.gdn_wy4_fold_k.0 != 0
+            && self.gdn_wy4_clear_k.0 != 0
+            && !self.woa_stash.is_null()
+            && !self.woa_flag.is_null();
+        static WOA_DISABLED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let woa_now = woa_now && !WOA_DISABLED.load(std::sync::atomic::Ordering::Relaxed);
+        let mut woa_launched = false;
+        if woa_now {
+            match ops::gdn_decode_wy4_woa(
                 ctx.gpu,
-                wy_k,
+                self.gdn_wy4_woa_k,
                 wy_tables,
                 q_ptr,
                 k_ptr,
@@ -278,30 +303,7 @@ impl Qwen3SsmLayer {
                 gate_ptr,
                 beta_ptr,
                 gdn_out_buf,
-                hi(1),
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32, // qk_stride
-                conv_dim as u32, // v_stride
-                (nv * 2) as u32, // gb_stride
-                true,            // state_is_table — one table entry per sequence
-                stream,
-            )?,
-            3 => ops::gdn_decode_wy3(
-                ctx.gpu,
-                wy_k,
-                wy_tables,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_out_buf,
-                hi(1),
-                hi(2),
+                self.woa_stash,
                 n as u32,
                 nk as u32,
                 nv as u32,
@@ -310,33 +312,132 @@ impl Qwen3SsmLayer {
                 conv_dim as u32,
                 conv_dim as u32,
                 (nv * 2) as u32,
-                true,
+                self.woa_stash_seq_floats as u32,
+                self.woa_flag,
                 stream,
-            )?,
-            _ => ops::gdn_decode_wy4(
-                ctx.gpu,
-                wy_k,
-                wy_tables,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_out_buf,
-                hi(1),
-                hi(2),
-                hi(3),
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                (nv * 2) as u32,
-                true,
-                stream,
-            )?,
+            ) {
+                Ok(()) => {
+                    woa_launched = true;
+                    self.woa_armed
+                        .store(true, std::sync::atomic::Ordering::Release);
+                }
+                Err(e) => {
+                    // Most likely the 64 KB dynamic-smem launch was refused.
+                    // Disarm for the process and run the parent kernel below.
+                    WOA_DISABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                    tracing::warn!(
+                        "GDN write-on-accept launch refused ({e:#}) — parent wy4 for the rest of this process"
+                    );
+                }
+            }
+        }
+        if woa_launched {
+            static WOA_LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WOA_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "batched-verify GDN WRITE-ON-ACCEPT ENGAGED (n={n}, k=4): wy4_woa + post-verdict fold \
+                     (state read once, written once per step)"
+                );
+            }
+        } else {
+            match kk {
+                2 => ops::gdn_decode_wy2(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32, // qk_stride
+                    conv_dim as u32, // v_stride
+                    (nv * 2) as u32, // gb_stride
+                    true,            // state_is_table — one table entry per sequence
+                    stream,
+                )?,
+                3 => ops::gdn_decode_wy3(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    hi(2),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    true,
+                    stream,
+                )?,
+                4 => ops::gdn_decode_wy4(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    hi(2),
+                    hi(3),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    true,
+                    stream,
+                )?,
+                // K=5..16: the wyN table twin reads the Hi slabs itself — slab 0
+                // (h) as the state table, slab 1 (Hi0) as the intermediates
+                // table, and VERIFY_WY_TABLE_SEQS pointer entries between
+                // consecutive Hi slabs (the kernel's reinterpreted stride).
+                _ => ops::gdn_decode_wyn_table(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    crate::layer::VERIFY_WY_TABLE_SEQS as u32,
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    stream,
+                )?,
+            }
         }
 
         let ok = BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;

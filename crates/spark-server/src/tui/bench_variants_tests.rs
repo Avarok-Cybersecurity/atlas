@@ -15,8 +15,8 @@ fn key(code: KeyCode) -> KeyEvent {
 
 fn agentic_state() -> BenchState {
     let mut s = BenchState::default();
-    s.target = atlas_plugin::TargetEndpoint::local(8888, "test-model");
-    let index = atlas_plugin::registry::all()
+    s.target = avarok_plugin::TargetEndpoint::local(8888, "test-model");
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.id == "agentic-webserver")
         .expect("registered");
@@ -140,8 +140,8 @@ fn choosing_a_bfcl_variant_adopts_its_baseline_floors() {
     };
     let state_with = |overall: gate::Bound| {
         let mut s = BenchState::default();
-        s.target = atlas_plugin::TargetEndpoint::local(8888, "test-model");
-        let index = atlas_plugin::registry::all()
+        s.target = avarok_plugin::TargetEndpoint::local(8888, "test-model");
+        let index = avarok_plugin::registry::all()
             .iter()
             .position(|d| d.id == "bfcl-subset")
             .expect("registered");
@@ -228,7 +228,7 @@ fn a_variant_pin_is_released_when_another_benchmark_is_selected() {
     assert_eq!(s.target.model, "unsloth/Qwen3.8-27B-NVFP4");
     assert!(s.target_model_pinned && s.variant_pinned);
 
-    let matrix = atlas_plugin::registry::all()
+    let matrix = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.id == "serve-matrix")
         .expect("registered");
@@ -260,7 +260,7 @@ fn an_operator_typed_pin_survives_benchmark_switches() {
     s.commit_row(model_row);
     assert!(s.target_model_pinned && !s.variant_pinned);
 
-    let matrix = atlas_plugin::registry::all()
+    let matrix = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.id == "serve-matrix")
         .expect("registered");
@@ -277,7 +277,7 @@ fn an_operator_typed_pin_survives_benchmark_switches() {
 fn a_variantless_benchmark_skips_the_step_and_selection_clears_rows() {
     let mut s = agentic_state();
     s.variants = two_rows();
-    let matrix = atlas_plugin::registry::all()
+    let matrix = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.id == "serve-matrix")
         .expect("registered");

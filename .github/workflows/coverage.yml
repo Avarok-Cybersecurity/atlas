@@ -42,11 +42,11 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   # Identical to ci.yml. The workspace does NOT build on a GPU-free runner
-  # without these: ATLAS_SKIP_BUILD makes build.rs emit a stub target_ptx.rs
+  # without these: AVAROK_SKIP_BUILD makes build.rs emit a stub target_ptx.rs
   # instead of invoking nvcc, and CUDARC_CUDA_VERSION short-circuits cudarc's
   # nvcc probe (format {major}0{minor}0; 13000 == CUDA 13.0). Keep in sync with
   # ci.yml — a coverage job that cannot compile is worse than no coverage job.
-  ATLAS_SKIP_BUILD: "1"
+  AVAROK_SKIP_BUILD: "1"
   CUDARC_CUDA_VERSION: "13000"
 
 concurrency:
@@ -54,8 +54,63 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      # The classifier reads the changed-file list from the API now, not from a
+      # clone, so it needs to see the pull request. `contents: read` alone was
+      # enough when the answer came from git.
+      pull-requests: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Depth 1: the classifier asks the API for the file list, so no
+          # commit graph is needed here — only the script itself. This job used
+          # to fetch the WHOLE history, six times per push, to compute three
+          # booleans.
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   coverage:
     name: cargo llvm-cov --workspace
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: ubuntu-latest
     # Job-level so the upload step's `if:` can read it — a step cannot see the
     # `env:` it declares on itself, and the `secrets` context is not available
@@ -202,7 +257,7 @@ jobs:
         id: codecov
         if: env.CODECOV_TOKEN != ''
         continue-on-error: true
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
         with:
           files: lcov.info
           token: ${{ env.CODECOV_TOKEN }}

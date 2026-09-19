@@ -244,23 +244,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_state_matches_module_count() {
-        // Construct a MultiModuleMtpState as the dispatcher would.
-        let state = MultiModuleMtpState {
-            per_module: (0..3)
-                .map(|_| MtpProposerState {
-                    block_table: Vec::new(),
-                    seq_len: 0,
-                    last_num_drafted: 0,
-                    last_pair_key: None,
-                })
-                .collect(),
-            last_num_drafted: 0,
-        };
-        assert_eq!(state.per_module.len(), 3);
-    }
-
-    #[test]
     fn test_empty_modules_rejected() {
         let err = MultiModuleMtpHead::new(vec![]).unwrap_err();
         assert!(

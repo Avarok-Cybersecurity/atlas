@@ -1,0 +1,444 @@
+{
+  "schema": 1,
+  "benchmark_id": "ttft-cold-gate",
+  "benchmark_name": "Cold TTFT Regression Gate",
+  "git_sha": "60812ca7b6",
+  "recorded_at": 1787765515,
+  "target_model": "Qwen/Qwen3.6-35B-A3B-FP8",
+  "params": {
+    "median_limit_pct": "3",
+    "p90_limit_pct": "5",
+    "prompt_lengths": "256, 1024, 4096",
+    "repeats": "12",
+    "request_timeout_s": "300",
+    "update_baseline": "true"
+  },
+  "command": [
+    "spark",
+    "benchmark",
+    "run",
+    "ttft-cold-gate",
+    "--param",
+    "median_limit_pct=3",
+    "--param",
+    "p90_limit_pct=5",
+    "--param",
+    "prompt_lengths=256, 1024, 4096",
+    "--param",
+    "repeats=12",
+    "--param",
+    "request_timeout_s=300",
+    "--param",
+    "update_baseline=true",
+    "--pull-request-gate"
+  ],
+  "served_by": "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head",
+  "atlas_version": "1.0.0-beta-preview",
+  "hardware": {
+    "gpu": "NVIDIA GB10",
+    "driver": "595.71.05",
+    "sm_clock_mhz": 2288.0,
+    "source": "nvidia-smi"
+  },
+  "hardware_state": {
+    "sensitivity": "speed",
+    "before": {
+      "captured_at": 1787765465,
+      "machine": {
+        "hostname": "spark-15df",
+        "machine_id": "eabb48bd1157446c8dcb6fefec055c0e",
+        "gpu": "NVIDIA GB10",
+        "driver": "595.71.05"
+      },
+      "gpu_temp_c": 53.0,
+      "chassis_temps_c": [
+        {
+          "name": "acpitz",
+          "temp_c": 55.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 54.6
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 54.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 54.7
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 54.9
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 55.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 55.8
+        }
+      ],
+      "sm_clock_mhz": 2288.0,
+      "sm_clock_max_mhz": 3003.0,
+      "throttle_counters": {
+        "sw_power_cap_us": 0,
+        "sw_thermal_us": 0,
+        "hw_thermal_us": 0,
+        "hw_power_brake_us": 0,
+        "sync_boost_us": 0
+      },
+      "throttle_active": {
+        "sw_power_cap": false,
+        "sw_thermal": false,
+        "hw_thermal": false,
+        "hw_power_brake": false
+      },
+      "mem_available_kb": 9558268,
+      "mem_total_kb": 127600752,
+      "page_cache_kb": 1173684,
+      "gpu_compute_apps": [
+        {
+          "pid": 77396,
+          "name": "/home/rstesiak/code/atlas-ab-D/target/release/spark",
+          "used_mib": 108793
+        }
+      ],
+      "cpu_governor": "performance",
+      "persistence_mode": true,
+      "sources": [
+        "nvidia-smi",
+        "procfs",
+        "sysfs"
+      ]
+    },
+    "after": {
+      "captured_at": 1787765515,
+      "machine": {
+        "hostname": "spark-15df",
+        "machine_id": "eabb48bd1157446c8dcb6fefec055c0e",
+        "gpu": "NVIDIA GB10",
+        "driver": "595.71.05"
+      },
+      "gpu_temp_c": 67.0,
+      "chassis_temps_c": [
+        {
+          "name": "acpitz",
+          "temp_c": 74.5
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 62.7
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 62.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 62.7
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 61.8
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 74.5
+        },
+        {
+          "name": "acpitz",
+          "temp_c": 66.0
+        }
+      ],
+      "sm_clock_mhz": 2288.0,
+      "sm_clock_max_mhz": 3003.0,
+      "throttle_counters": {
+        "sw_power_cap_us": 0,
+        "sw_thermal_us": 0,
+        "hw_thermal_us": 0,
+        "hw_power_brake_us": 0,
+        "sync_boost_us": 0
+      },
+      "throttle_active": {
+        "sw_power_cap": false,
+        "sw_thermal": false,
+        "hw_thermal": false,
+        "hw_power_brake": false
+      },
+      "mem_available_kb": 9860704,
+      "mem_total_kb": 127600752,
+      "page_cache_kb": 1176184,
+      "gpu_compute_apps": [
+        {
+          "pid": 77396,
+          "name": "/home/rstesiak/code/atlas-ab-D/target/release/spark",
+          "used_mib": 108817
+        }
+      ],
+      "cpu_governor": "performance",
+      "persistence_mode": true,
+      "sources": [
+        "nvidia-smi",
+        "procfs",
+        "sysfs"
+      ]
+    },
+    "delta": {
+      "elapsed_s": 50,
+      "sw_power_cap_us": 0,
+      "sw_thermal_us": 0,
+      "hw_thermal_us": 0,
+      "hw_power_brake_us": 0,
+      "gpu_temp_delta_c": 14.0,
+      "hottest_chassis_delta_c": 18.700000000000003
+    },
+    "precheck": {
+      "decision": "proceed"
+    },
+    "postcheck": {
+      "validity": "valid",
+      "concerns": [
+        "hottest chassis zone moved +19 °C"
+      ]
+    },
+    "perf_class": "gb10@spark-15df"
+  },
+  "metrics": {
+    "median_ms": 1003.811512,
+    "p90_ms": 2178.8134870000004,
+    "samples": 36.0
+  },
+  "frame_status": "Completed",
+  "verdict": "info",
+  "verdict_reason": "no baseline on this box yet — this run is recorded as the baseline",
+  "summary": "Qwen/Qwen3.6-35B-A3B-FP8 · median_ms=1003.81, p90_ms=2178.81, samples=36.00 · Info: no baseline on this box yet — this run is recorded as the baseline",
+  "closure": {
+    "gb10/deepseek-v4-flash/nvfp4": {
+      "hash": "3039a83c3b9a003d293eb7fa1c39b7fe8fb5dc7bf447d29022ad17c9be736392",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/gemma-4-26b-a4b/nvfp4": {
+      "hash": "58cecb2351a33f17bd65e41931db4da65aee2a7082de062bba23e7ff076f69ae",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/gemma-4-31b/nvfp4": {
+      "hash": "3d93f2f44874cb198b46b4ed0bd9e4fec5cd13535df9dc2d00fa3eab25f07a72",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-0.8b/nvfp4": {
+      "hash": "0b0eacde3fbe99323f706fec11717e7aaf31d0e22164651d44de7a6c0c9d4bb2",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-35b-a3b/nvfp4": {
+      "hash": "157adfdcb4d0303575b66f720428ab8863ac6b97e9ee99e0b7c66fb8f07762b6",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/holo-3.1-4b/nvfp4": {
+      "hash": "e91ec9060359d1df56643ee2ff4e718fe3bb846d51c823f564e33b3080a8891d",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/laguna-s-2.1/nvfp4": {
+      "hash": "bbddb3ccf47166f93d89a26bae0eb2d164050c94801f7277f9b9e43241cebd2a",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/minimax-m2-229b/nvfp4": {
+      "hash": "8e25a0628052f3ffdb0758dbc6e34ef68510170b1d600af3aafcaa63853fa2aa",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/mistral-small-4/nvfp4": {
+      "hash": "c307ce39c73e1f6568052e6b3ad34584475148da40dc07222299bd344acea071",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-3-nano-30b-a3b/nvfp4": {
+      "hash": "5f583c7e07d865207412c7ea2c646617c8fb1ad92c27b69aba81f19f2838f775",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4": {
+      "hash": "50849cce2ea079d59bfa7b959032129eddeedd59bf52a5afa2ad3cd80e415dc6",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nemotron-super-120b-a12b/nvfp4": {
+      "hash": "e7f2832fb0cf302f8f946233c28d4cef3b6084965586139f5db81237d77439ab",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/nllb-200-3.3b/nvfp4": {
+      "hash": "f244b86d54d00b3068e298d6a865c36063bd97d055fcc8510a982f04a29a222e",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/ornith-1.0-9b/nvfp4": {
+      "hash": "2aa379b28377e11f59321bb895586e52bd415b4989ac6eaf881e3de6e0296e7d",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3-next-80b-a3b/nvfp4": {
+      "hash": "bde2bab6c4e0e6a6d56e05f4195f559001e7983e08d33aa89ff14a51217028c4",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3-vl-30b-a3b/nvfp4": {
+      "hash": "181c18728055f835170ff840c3171c4006df6f54176737b488c94dea66bf76e6",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    },
+    "gb10/qwen3.5-122b-a10b/nvfp4": {
+      "hash": "cee3bd382d237a81f2e810fbc3471c6c24f9100618bf9747beb7956192db3270",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-27b/nvfp4": {
+      "hash": "d430a0b3802a6e9d7121b733c5ba5692686fd387ed5eebf4624885f7d5d1df74",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-35b-a3b/nvfp4": {
+      "hash": "ec6624b4efeffa2077b17ce1a5cd270e42be8b479dc597f845732cb5244985e6",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.5-397b-a17b/nvfp4": {
+      "hash": "1407d1449546654e0403cbf73cba30f7e39f4e70155c4a1111541ced9dca54f1",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.6-27b/nvfp4": {
+      "hash": "0b0ec0674631578d5fdb7892d95a0881aedc05092c353fc598b54af0e4dae843",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.6-35b-a3b/nvfp4": {
+      "hash": "86cb31deebf2cae52f20c7341380af8a3b467de55826d72f716e66ab1a6bb500",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/qwen3.8-27b/nvfp4": {
+      "hash": "0b0ec0674631578d5fdb7892d95a0881aedc05092c353fc598b54af0e4dae843",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS"
+      ]
+    },
+    "gb10/step3p7-flash/nvfp4": {
+      "hash": "bd6ef6df4320bf4b6726a26772ba1d12176ef2e1f2b3cf0960f6331a574c7e56",
+      "arch": "sm_121f",
+      "compiler": "Build cuda_13.0.r13.0/compiler.36424714_0",
+      "flags": [
+        "--fmad=false",
+        "-DTQ_PLUS_SIGNS",
+        "-DHDIM=128"
+      ]
+    }
+  }
+}

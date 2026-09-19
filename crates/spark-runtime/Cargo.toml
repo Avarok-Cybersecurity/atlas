@@ -8,13 +8,13 @@ autobenches = false
 
 [features]
 default = ["cuda"]
-cuda = ["dep:cudarc", "atlas-core/cuda"]
+cuda = ["dep:cudarc", "avarok-core/cuda"]
 metal = [
     "dep:objc2",
     "dep:objc2-metal",
     "dep:objc2-foundation",
     "dep:dispatch2",
-    "atlas-core/metal",
+    "avarok-core/metal",
 ]
 test-utils = []
 
@@ -25,7 +25,7 @@ required-features = ["test-utils"]
 
 # Standalone smoke binary for the metal backend. Loads layer 3 of
 # `mlx-community/Qwen3.5-4B-MLX-8bit` from `~/models/...` (override
-# via `$ATLAS_MLX_MODEL_DIR`) and runs a single full-attention
+# via `$AVAROK_MLX_MODEL_DIR`) and runs a single full-attention
 # block forward pass. Prints output statistics so users can verify
 # their Apple Silicon build runs real kernels on real weights.
 [[example]]
@@ -71,8 +71,8 @@ path = "tests/fast_weights_parity.rs"
 required-features = ["test-utils"]
 
 [dependencies]
-atlas-core = { workspace = true }
-atlas-kernels = { workspace = true }
+avarok-core = { workspace = true }
+avarok-kernels = { workspace = true }
 cudarc = { workspace = true, optional = true }
 
 # Apple Metal backend deps. Activated only by `--features metal`.
@@ -112,6 +112,11 @@ parking_lot = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# HARDWARE.toml is the SSOT for the SM architecture the optional CUTLASS /
+# FlashInfer reference objects compile for; build.rs reads it.
+[build-dependencies]
+toml = "0.8"
 
 [lints]
 workspace = true

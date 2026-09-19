@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // FP16 h-state storage helpers shared by the GDN speculative-verify twins
-// (`ATLAS_SSM_H_FP16`, stage 2).
+// (`AVAROK_SSM_H_FP16`, stage 2).
 //
 // Stage 1 (wave 32) narrowed the h-state of the NON-speculative decode scan to
 // FP16 and proved the lever: the scan is pure state traffic, so halving the
@@ -30,8 +30,8 @@
 // parents, and the Rust launchers refuse the contiguous form at batch_size > 1
 // under FP16 rather than silently applying FP32 slot arithmetic.
 
-#ifndef ATLAS_GDN_F16_STATE_CUH
-#define ATLAS_GDN_F16_STATE_CUH
+#ifndef AVAROK_GDN_F16_STATE_CUH
+#define AVAROK_GDN_F16_STATE_CUH
 
 #include <cuda_fp16.h>
 
@@ -54,4 +54,4 @@ __device__ __forceinline__ float gdn_f16_load(const __half* __restrict__ p) {
     return __half2float(*p);
 }
 
-#endif  // ATLAS_GDN_F16_STATE_CUH
+#endif  // AVAROK_GDN_F16_STATE_CUH

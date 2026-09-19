@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -47,7 +47,7 @@ impl TransformerModel {
         }
         // Block-count between decode checkpoints. Env-tunable (no rebuild) so
         // the cadence/drift tradeoff can be swept; default 4 blocks = 64 tok.
-        let interval = std::env::var("ATLAS_DECODE_CKPT_BLOCKS")
+        let interval = std::env::var("AVAROK_DECODE_CKPT_BLOCKS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v > 0)
@@ -128,6 +128,19 @@ impl TransformerModel {
             tracing::warn!("decode Marconi checkpoint: record snapshot event: {e}");
         }
         drop(kv);
+        // Aux (PLE + QSA lexical state) is canonical at exactly
+        // seq.tokens.len() here (same post-commit point the SSM save reads),
+        // matching the snap_tokens registration below. A collection failure
+        // leaves the snapshot aux-less: the restore gate then declines it —
+        // slower, never stale.
+        match self.collect_aux_states(seq, stream) {
+            Ok(aux) => {
+                if !aux.is_empty() {
+                    self.ssm_snapshots.set_aux(snap_id, aux);
+                }
+            }
+            Err(e) => tracing::warn!("decode Marconi checkpoint: aux collect failed: {e:#}"),
+        }
         // #155 MTP×cache root cause: the live state just saved (post
         // sync_secondary, post-commit) is canonical at exactly
         // seq.tokens.len() tokens — under MTP K=2 the verify stride (+2 on
@@ -167,7 +180,7 @@ impl TransformerModel {
             seq.block_table.len(),
             snap_tokens - end_token,
         );
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -238,12 +251,23 @@ impl TransformerModel {
             if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                 tracing::warn!("finish-leaf snapshot: record snapshot event: {e}");
             }
+            // Aux (PLE + QSA lexical state) at retire covers prompt +
+            // generated tokens — the deepest anchor a chat continuation can
+            // match. Failure => aux-less snapshot, declined on restore.
+            match self.collect_aux_states(seq, stream) {
+                Ok(aux) => {
+                    if !aux.is_empty() {
+                        self.ssm_snapshots.set_aux(id, aux);
+                    }
+                }
+                Err(e) => tracing::warn!("finish-leaf snapshot: aux collect failed: {e:#}"),
+            }
             tracing::info!(
                 "Saved finish-leaf SSM snapshot {} for {} tokens",
                 id,
                 seq.tokens.len(),
             );
-            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(
                     seq.slot_idx,
                     self.gpu.as_ref(),

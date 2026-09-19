@@ -9,7 +9,7 @@
 
 use std::any::Any;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
@@ -32,6 +32,23 @@ pub trait LayerState: Send + Sync {
 /// Empty state for layers that store all persistent state externally
 /// (e.g., attention layers where KV is in `PagedKvCache`).
 pub struct EmptyLayerState;
+
+/// Attention-layer per-sequence state. KV lives in `PagedKvCache`; the only
+/// resident piece is the QSA indexer carry on the 12 qwen4_exp
+/// full-attention layers (Atlas #753 item B).
+#[derive(Default)]
+pub struct AttnLayerState {
+    pub qsa: Option<crate::layers::qsa::QsaSeqState>,
+}
+
+impl LayerState for AttnLayerState {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 impl LayerState for EmptyLayerState {
     fn as_any(&self) -> &dyn Any {
@@ -89,6 +106,10 @@ pub struct SsmLayerState {
     /// has, and not one byte moves. The same blob is shared by every layer
     /// of the sequence (see `SsmStatePool::h_prefill_stage`).
     pub h_prefill_stage: Option<DevicePtr>,
+    /// PLE per-sequence carry (n-gram history + dilated-conv state), present
+    /// only on the layer that hosts a `PleLayer` (Atlas #753 item B: one per
+    /// in-flight sequence, lazily created on the sequence's first pass).
+    pub ple: Option<crate::layers::ple::PleSeqState>,
 }
 
 impl LayerState for SsmLayerState {
@@ -266,6 +287,11 @@ pub struct GdnPrefillBuffers {
 pub struct ForwardContext<'a> {
     /// Pre-allocated scratch buffers.
     pub buffers: &'a BufferArena,
+    /// mHC highway ROW offset for this pass (#753 item B, mixed steps):
+    /// the fused decode+prefill step gives the prefill chunk highway rows
+    /// at `padded_n` so they live disjoint from the decode rows, mirroring
+    /// the hidden/residual layout. 0 everywhere else.
+    pub hc_row_offset: usize,
     /// GPU backend for kernel launches and memory ops.
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
@@ -297,6 +323,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True ONLY on the single-token decode step, where `attn_metadata`'s `positions`,
+    /// `slot`, `seq_len` and `block_table` are the step's SCALARS at stable addresses.
+    ///
+    /// 🪤 `prefill_default` drives a layer that has no `prefill` of its own by calling its
+    /// `decode` once per token — with the PREFILL context, whose `positions`/`slot` are
+    /// per-token ARRAYS and whose `block_table`/`seq_len` are NULL unless the pass is paged.
+    /// A layer that reads those pointers as decode scalars gets an illegal address on the
+    /// first prompt. Check this flag, not `attn_metadata.is_some()`.
+    pub decode_step: bool,
     /// True when this prefill pass continues from a restored Marconi SSM
     /// snapshot (warm prefix-cache hit). GDN layers must then take the
     /// bit-faithful WY4 recurrence instead of the FLA chunked kernel: FLA's
@@ -312,6 +347,12 @@ pub struct ForwardContext<'a> {
     /// for models without hash routing. Must be a STABLE address across the
     /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
     pub token_ids: Option<DevicePtr>,
+    /// HOST copy of the same token ids, when the caller had them in hand
+    /// (decode always does — it uploads `token_ids` FROM this value; chunked
+    /// prefill likewise). PLE computes its n-gram ids on the host, and
+    /// reading them back off the device costs a synchronous D2H per decode
+    /// step — pure overhead, and capture-unsupported inside a CUDA graph.
+    pub host_token_ids: Option<&'a [u32]>,
     /// #30 (routed-prefill precision): the REQUEST slot's per-layer LoRA pairs,
     /// GLOBAL-layer-indexed (`len == num_hidden_layers`), set ONLY at the prefill
     /// entries and ONLY when the request routes to a NON-active slot. `Some` makes
@@ -323,7 +364,7 @@ pub struct ForwardContext<'a> {
     /// the installed-active-pair path byte-identical. Prefill runs eager
     /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
     pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
-    /// Default-ON mid-chunk SSM tail capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+    /// Default-ON mid-chunk SSM tail capture (opt-out `AVAROK_SSM_TAIL_MIDCHUNK=0`).
     ///
     /// `Some` only on the single prefill pass whose local token range spans
     /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then
@@ -413,3 +454,7 @@ pub enum MoeLoraRoute {
 /// each is attention, SSM, MoE, or dense FFN.
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "layer/release_contract_tests.rs"]
+mod release_contract_tests;

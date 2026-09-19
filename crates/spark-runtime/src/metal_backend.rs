@@ -117,7 +117,7 @@ impl MetalGpuBackend {
     /// Initialize the Metal backend with the embedded metallib modules.
     ///
     /// `kernel_modules` is the `metallib_modules()` slice produced by
-    /// `atlas-kernels`' build script — `(module_name, metallib_bytes)`.
+    /// `avarok-kernels`' build script — `(module_name, metallib_bytes)`.
     /// Each entry is loaded into its own `MTLLibrary` via
     /// `newLibraryWithData_error:`. The default stream (handle 0) is
     /// materialized eagerly so the first launch doesn't pay queue-
@@ -504,6 +504,10 @@ impl GpuBackend for MetalGpuBackend {
     }
 
     #[track_caller]
+    fn has_module(&self, module: &str) -> bool {
+        self.libraries.contains_key(module)
+    }
+
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
         let key: PipelineKey = (module.to_string(), func_name.to_string());
         if let Some(handle) = self.pipeline_cache.lock().get(&key) {

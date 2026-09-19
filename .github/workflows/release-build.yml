@@ -39,7 +39,38 @@ on:
         required: false
         type: boolean
         default: false
+      web_only:
+        description: >-
+          The caller classified the diff as touching only site/ blog/ book/
+          web-shared/. The nine build legs skip; `dry-run summary` still RUNS
+          and reports, because it is a required context and must never depend
+          on skip semantics crossing a workflow_call boundary.
+        required: false
+        type: boolean
+        default: false
 
+      stack_layer:
+        description: >-
+          The caller classified this PR as a LOWER LAYER of a stack: another
+          open PR is stacked on top. Only the aggregation PR's composed tree
+          lands on main, and that PR builds the full matrix; nine build legs
+          per layer would spend N matrices to land one tree. Same shape as
+          web_only, for the same reason: the skip lives INSIDE this workflow
+          so `dry-run summary` still runs and reports.
+        required: false
+        type: boolean
+        default: false
+
+      builds_binaries:
+        description: >-
+          Can this diff change a shipped binary? False only when every changed
+          path is provably inert -- web trees, docs, assets, root markdown, and
+          .github/ EXCEPT the workflows and composite actions that decide how
+          binaries are produced. Defaults to true, so a caller that does not set
+          it still builds.
+        required: false
+        type: boolean
+        default: true
 permissions:
   contents: read
 
@@ -83,7 +114,7 @@ jobs:
                 has("id") and has("os") and has("runner") and has("target")
                 and has("platform") and has("cargo_features")
                 and has("toolchain") and has("experimental")
-                and has("pr_validate") | not
+                and has("pr_validate") and has("test_mode") | not
               ) | .id // "<no id>" ] | join(", ")' .github/release-matrix.json)
           [ -z "$missing" ] || { echo "::error::entries missing keys: $missing"; exit 1; }
           dupes=$(jq -r '[.[].id] | group_by(.) | map(select(length>1) | .[0]) | join(", ")' \
@@ -148,6 +179,16 @@ jobs:
   build:
     name: build ${{ matrix.id }}
     needs: validate
+    # Nothing under site/ blog/ book/ web-shared/ reaches any build leg, so a
+    # web-only diff would compile nine targets to prove it changed nothing.
+    # A lower stack layer skips for a different reason: only the aggregation
+    # PR's composed tree lands on main, and that PR builds the full matrix.
+    # And an inert diff — one that provably cannot change a binary — skips
+    # because nine cross-platform builds are the most expensive thing a PR
+    # can trigger. In every case `dry-run summary` is `if: always()`, so the
+    # REQUIRED context still reports and no merge waits on a check that was
+    # never created.
+    if: ${{ !inputs.web_only && !inputs.stack_layer && inputs.builds_binaries }}
     runs-on: ${{ matrix.runner }}
     continue-on-error: ${{ matrix.experimental }}
     strategy:
@@ -206,7 +247,7 @@ jobs:
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
-          # libibverbs/librdmacm: atlas-rdma compiles src/rdma_shim.c against
+          # libibverbs/librdmacm: avarok-rdma compiles src/rdma_shim.c against
           # <infiniband/verbs.h> on every non-macOS target. Same dependency
           # #339 added to the DeepSeek-V4 builder stage.
           sudo apt-get install -y --no-install-recommends \
@@ -237,6 +278,7 @@ jobs:
 
       - name: Install CUDA toolkit (linux)
         if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'linux'
+        timeout-minutes: 15  # normally ~1 min; a deadline so a stalled download cannot hold the merge queue
         run: |
           set -euo pipefail
           # Installed straight from NVIDIA's apt repo rather than via the
@@ -275,6 +317,7 @@ jobs:
 
       - name: Install CUDA toolkit (windows)
         if: startsWith(matrix.toolchain, 'cuda') && matrix.os == 'windows'
+        timeout-minutes: 30  # normally ~7 min; a deadline so a stalled download cannot hold the merge queue
         shell: pwsh
         run: |
           # NVIDIA's own silent network installer. The cuda-toolkit action has
@@ -362,14 +405,21 @@ jobs:
 
       - name: Install NCCL
         if: contains(matrix.toolchain, 'nccl')
+        timeout-minutes: 10  # normally ~1 min
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libnccl2 libnccl-dev
 
       - name: Install SCALE toolchain (AMD)
         if: matrix.toolchain == 'scale'
+        # The 1.4 GB tarball download hung a merge-queue run for 50+ minutes
+        # on 2026-09-12 (#1024): curl had no deadline and the job's only limit
+        # was the 6-hour default, so the queue sat behind a dead TCP
+        # connection. A stalled required check is a blocked merge queue; fail
+        # fast so the entry can be retried.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
-          # ATLAS_TARGET_MODEL/QUANT are REQUIRED, not optional: atlas-kernels
+          # AVAROK_TARGET_MODEL/QUANT are REQUIRED, not optional: avarok-kernels
           # defaults to qwen3-next-80b-a3b, which has no kernels/strix/
           # directory, and the build script panics resolving targets. They are
           # matrix fields so a second strix model is another JSON row.
@@ -380,8 +430,30 @@ jobs:
           # build-essential -> cuda.h needs <cstddef>; libnuma -> libhsakmt.
           sudo apt-get install -y --no-install-recommends build-essential libnuma1 libnuma-dev
           mkdir -p "$HOME/scale" && cd "$HOME/scale"
-          curl -L --fail --retry 3 -o scale.tar.xz \
-            https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz
+          # pkgs.scale-lang.com sustains < 512 KiB/s from GitHub-hosted runners
+          # (2026-09-12: four consecutive stalls on #1064, ~1 h for 1.4 GB), so
+          # the primary source is a mirror of the same tarball on this repo's
+          # `toolchain-scale-1.7.1` release, served from the runners' own cloud.
+          # Upstream stays as the fallback. Whichever host answers, the bytes
+          # must match the pinned sha256 — the mirror is convenience, not trust.
+          # --speed-limit/--speed-time abort a stalled transfer instead of
+          # waiting for the job timeout; --retry-all-errors retries that abort.
+          expected_sha256=060a3627725f60005a69e209b332d7847fd7c03eb9518be7055ddc003c73a2be
+          fetched=0
+          for url in \
+            https://github.com/${{ github.repository }}/releases/download/toolchain-scale-1.7.1/scale-1.7.1-amd64.tar.xz \
+            https://pkgs.scale-lang.com/tar/scale-1.7.1-amd64.tar.xz; do
+            echo "fetching $url"
+            if curl -L --fail --retry 3 --retry-all-errors --connect-timeout 30 \
+                 --max-time 900 --speed-limit 524288 --speed-time 60 \
+                 -o scale.tar.xz "$url"; then fetched=1; break; fi
+            rm -f scale.tar.xz
+          done
+          [ "$fetched" = 1 ] || { echo "::error::SCALE tarball: every source failed"; exit 1; }
+          echo "$expected_sha256  scale.tar.xz" | sha256sum -c - || {
+            echo "::error::SCALE tarball sha256 mismatch — refusing to build with an unverified toolchain"
+            exit 1
+          }
           tar -xf scale.tar.xz && rm -f scale.tar.xz
           SCALE_HOME="$HOME/scale/scale-1.7.1-Linux"
           arch='${{ matrix.scale_arch }}'
@@ -398,9 +470,9 @@ jobs:
             echo "CUDA_PATH=$SCALE_HOME/targets/$arch"
             echo "CUDA_HOME=$SCALE_HOME/targets/$arch"
             echo "CUDARC_CUDA_VERSION=12080"
-            echo "ATLAS_TARGET_HW=strix"
-            echo "ATLAS_TARGET_MODEL=${{ matrix.target_model }}"
-            echo "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}"
+            echo "AVAROK_TARGET_HW=strix"
+            echo "AVAROK_TARGET_MODEL=${{ matrix.target_model }}"
+            echo "AVAROK_TARGET_QUANT=${{ matrix.target_quant }}"
           } >> "$GITHUB_ENV"
           echo "$SCALE_HOME/targets/$arch/bin" >> "$GITHUB_PATH"
 
@@ -418,7 +490,7 @@ jobs:
           HIP_SDK_URL: https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-25.Q3-Win10-Win11-For-HIP.exe
         run: |
           $ErrorActionPreference = "Stop"
-          # ATLAS_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
+          # AVAROK_TARGET_MODEL/QUANT are REQUIRED (same trap as SCALE): the
           # kernel build defaults to qwen3-next-80b-a3b, which has no
           # kernels/strix-hip/<model> dir, so build.rs panics resolving it.
           Write-Host "Downloading HIP SDK: $env:HIP_SDK_URL"
@@ -454,11 +526,11 @@ jobs:
           Write-Host "hipcc: $($hipcc.FullName)"
           & $hipcc.FullName --version 2>&1 | Select-Object -First 5
           @(
-            "ATLAS_HIPCC=$($hipcc.FullName)",
+            "AVAROK_HIPCC=$($hipcc.FullName)",
             "HIP_PATH=$hipRoot",
-            "ATLAS_TARGET_HW=strix-hip",
-            "ATLAS_TARGET_MODEL=${{ matrix.target_model }}",
-            "ATLAS_TARGET_QUANT=${{ matrix.target_quant }}",
+            "AVAROK_TARGET_HW=strix-hip",
+            "AVAROK_TARGET_MODEL=${{ matrix.target_model }}",
+            "AVAROK_TARGET_QUANT=${{ matrix.target_quant }}",
             "CUDARC_CUDA_VERSION=12080"
           ) | Out-File -FilePath $env:GITHUB_ENV -Append
           $hipBin | Out-File -FilePath $env:GITHUB_PATH -Append
@@ -470,6 +542,55 @@ jobs:
           set -euo pipefail
           cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
 
+      # ── The matrix now TESTS, it does not only build ─────────────────────
+      #
+      # `cargo build` proves the crate compiles and links for a target. It says
+      # nothing about whether the tests even compile, and this matrix was the
+      # repo's only cross-platform coverage — the release legs never ran
+      # `cargo test` at all.
+      #
+      # `--no-run` is the default for every leg, deliberately. All nine targets
+      # are GPU platforms (nvidia/amd/metal) and no hosted runner has the
+      # device, so EXECUTING the suite would gamble nine legs at once on
+      # hardware that is not there. `--no-run` still compiles and links every
+      # test binary for the target — strictly more than `cargo build` checked
+      # before — at the cost of the harnesses only, since the object cache from
+      # the step above is reused.
+      #
+      # `test_mode: run` promotes a leg to full execution. Promote ONE AT A
+      # TIME, each with its own evidence that the suite passes on that runner;
+      # a leg flipped speculatively turns a required context red for everyone.
+      - name: Test spark (unix)
+        if: matrix.os != 'windows'
+        run: |
+          set -euo pipefail
+          case "${{ matrix.test_mode }}" in
+            run)
+              cargo test --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+              ;;
+            no-run)
+              cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+              ;;
+            skip)
+              # ★ WHY A LEG IS SKIPPED, AND WHAT IT COSTS.
+              # `skip` preserves the pre-existing behaviour for a leg whose
+              # TESTS do not compile yet — the build above still runs, so the
+              # leg is no weaker than it was, but it gains nothing either.
+              # Both macOS legs are here because `cargo test --no-run
+              # --no-default-features --features metal` fails with
+              #   error[E0433]: could not find `cuda_backend` in `spark_runtime`
+              # spark-server's test code references cuda-only items with no cfg
+              # gate, so the metal configuration's tests have NEVER compiled.
+              # `cargo build` never touched them, which is precisely the gap
+              # this change exists to close — it found one immediately.
+              echo "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests. See the note in release-matrix.json."
+              ;;
+            *)
+              echo "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
+              exit 1
+              ;;
+          esac
+
       - name: Build spark (windows)
         if: matrix.os == 'windows'
         shell: pwsh
@@ -480,6 +601,24 @@ jobs:
           # -- instead of the MSVC linker. It fails with "extra operand" on the
           # first object file.
           cargo build --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # Same reasoning as the unix leg. pwsh for the same PATH reason: under
+      # `shell: bash` Git Bash's /usr/bin shadows the MSVC linker.
+      - name: Test spark (windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          if ("${{ matrix.test_mode }}" -eq "run") {
+            cargo test --release -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          } elseif ("${{ matrix.test_mode }}" -eq "no-run") {
+            cargo test --release --no-run -p spark-server --target ${{ matrix.target }} ${{ matrix.cargo_features }}
+          } elseif ("${{ matrix.test_mode }}" -eq "skip") {
+            Write-Output "::warning title=${{ matrix.id }}: tests not compiled::test_mode=skip. This leg builds but does not compile its tests."
+          } else {
+            Write-Output "::error::unknown test_mode '${{ matrix.test_mode }}' for ${{ matrix.id }}"
+            exit 1
+          }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package
@@ -500,7 +639,7 @@ jobs:
           cp LICENSE README.md "$staging/" 2>/dev/null || true
           # Native-HIP Windows target: bundle the runtime shim + HIP runtime DLL
           # so spark.exe can drive the AMD GPU (cudarc dlopens nvcuda.dll, which
-          # imports amdhip64.dll). Built/staged into atlas-kernels' OUT_DIR by
+          # imports amdhip64.dll). Built/staged into avarok-kernels' OUT_DIR by
           # build_hip_shim_windows.
           if [ "${{ matrix.toolchain }}" = hip ]; then
             bdir="target/${{ matrix.target }}/release/build"
@@ -565,26 +704,70 @@ jobs:
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
           BUILD_RESULT: ${{ needs.build.result }}
+          WEB_ONLY: ${{ inputs.web_only }}
+          STACK_LAYER: ${{ inputs.stack_layer }}
+          BUILDS_BINARIES: ${{ inputs.builds_binaries }}
         run: |
           set -euo pipefail
           bad=""
           [ "$VALIDATE_RESULT" = success ] || bad="validate ($VALIDATE_RESULT)"
-          [ "$BUILD_RESULT" = success ] || bad="${bad:+$bad, }build ($BUILD_RESULT)"
+          # A skipped build is acceptable for exactly one reason, and the
+          # condition names it. Any other skip is still a failure.
+          if [ "$WEB_ONLY" = "true" ] && [ "$BUILD_RESULT" = skipped ]; then
+            echo "build legs deliberately skipped: web-only diff"
+          elif [ "$STACK_LAYER" = "true" ] && [ "$BUILD_RESULT" = skipped ]; then
+            echo "build legs deliberately skipped: lower layer of a stack"
+          elif [ "$BUILDS_BINARIES" = "false" ] && [ "$BUILD_RESULT" = skipped ]; then
+            echo "build legs deliberately skipped: nothing in the diff can change a binary"
+          elif [ "$BUILD_RESULT" != success ]; then
+            bad="${bad:+$bad, }build ($BUILD_RESULT)"
+          fi
           if [ -n "$bad" ]; then
             echo "::error::release matrix upstream failed: $bad"
             exit 1
           fi
+
+      - name: Report the inert-diff skip
+        if: ${{ !inputs.web_only && !inputs.stack_layer && !inputs.builds_binaries }}
+        run: |
+          {
+            echo "### Release matrix: not built — nothing here can change a binary"
+            echo
+            echo "Every changed path is provably inert: web trees, \`docs/\`, \`assets/\`,"
+            echo "root markdown, or \`.github/\` outside the workflows and composite"
+            echo "actions that decide how binaries are produced. This summary job still"
+            echo "runs and is still the required context, so the merge is never left"
+            echo "waiting on a check that was never created."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report the web-only skip
+        if: ${{ inputs.web_only }}
+        run: |
+          {
+            echo "### Release matrix: not built — web-only diff"
+            echo
+            echo "Every changed file is under \`site/\`, \`blog/\`, \`book/\` or"
+            echo "\`web-shared/\`, none of which reaches a build leg. This summary job"
+            echo "still runs, and is still the required context, precisely so the merge"
+            echo "is never left waiting on a check that was never created."
+          } >> "$GITHUB_STEP_SUMMARY"
+      # From here down the job inspects artifacts. On a web-only diff there are
+      # none by design, so these steps stand down while the job itself still
+      # reports — which is the whole point of keeping it running.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: ${{ !inputs.web_only && !inputs.stack_layer && inputs.builds_binaries }}
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !inputs.web_only && !inputs.stack_layer && inputs.builds_binaries }}
         with:
           path: dist
           merge-multiple: true
 
       - name: Verify every artifact is real (checksums + non-empty)
+        if: ${{ !inputs.web_only && !inputs.stack_layer && inputs.builds_binaries }}
         run: |
           set -euo pipefail
           # The point of the PR dry run is that a later release CANNOT fail in
@@ -607,7 +790,7 @@ jobs:
       # a publishing run, and a summary that contradicts what the run just did
       # is worse than no summary.
       - name: Report what WOULD be published
-        if: ${{ !inputs.publishing }}
+        if: ${{ !inputs.publishing && !inputs.web_only && !inputs.stack_layer && inputs.builds_binaries }}
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_VERSION: ${{ inputs.version }}

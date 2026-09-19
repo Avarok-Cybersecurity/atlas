@@ -69,9 +69,9 @@ fn flagship() -> App {
 /// would otherwise begin pulling tens of gigabytes off the Hub for the length
 /// of the test binary's life.
 fn downloading(done: u64, total: u64) -> App {
-    const REPO: &str = "atlas-render-tests/no-such-model";
+    const REPO: &str = "avarok-render-tests/no-such-model";
     let mut a = lib(Vec::new(), vec![local(REPO, false)]);
-    let root = std::env::temp_dir().join("atlas-library-render-tests");
+    let root = std::env::temp_dir().join("avarok-library-render-tests");
     std::fs::create_dir_all(&root).ok();
     a.download.start(REPO, root);
     let job = a.download.job.as_mut().expect("a job");
@@ -146,7 +146,7 @@ fn a_running_download_owns_the_detail_pane_and_marks_its_row_with_a_dot() {
     assert!(has(&rows, "92 MB/s"), "{rows:#?}");
     assert!(has(&rows, "file 3/85"), "{rows:#?}");
     // The inline dot after the model name on the row itself.
-    let row = model_row(&rows, "atlas-render-tests/no-such-model");
+    let row = model_row(&rows, "avarok-render-tests/no-such-model");
     assert!(
         row.contains("●"),
         "the row glows while its download runs: {row:?}"

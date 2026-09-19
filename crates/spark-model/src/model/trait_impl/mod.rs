@@ -26,6 +26,7 @@ mod decode_b;
 mod decode_b2;
 mod decode_checkpoint;
 mod decode_graph_key;
+mod decode_multi_seq_gate;
 mod drafter_prefill;
 mod ep_misc;
 mod graph_borrow;
@@ -35,10 +36,12 @@ mod prefill_a;
 mod prefill_b;
 mod prefill_c;
 mod prefill_d;
+mod prefix_reuse;
 mod sequence;
 mod speculative;
 pub(in crate::model) mod ssm_fault_in;
 mod verify_a;
+mod verify_a_ssm;
 mod verify_b;
 mod verify_c;
 mod verify_c2;
@@ -82,7 +85,7 @@ impl Model for TransformerModel {
     // consumed while THIS sequence still owns it — one tick later, at the
     // first propose, a concurrent sequence's prefill has already restarted it
     // and every sequence but the last-prefilled drafts blind. See
-    // `drafter_prefill.rs`. Kill switch `ATLAS_NO_MTP_EAGER_DRAFTER`.
+    // `drafter_prefill.rs`. Kill switch `AVAROK_NO_MTP_EAGER_DRAFTER`.
     fn tokens_contain_vision_pad(&self, tokens: &[u32]) -> bool {
         self.tokens_have_vision_pad(tokens)
     }
@@ -246,7 +249,7 @@ impl Model for TransformerModel {
         peer_addr: &str,
         adapter_id: &str,
         name: &str,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         #[cfg(all(feature = "cuda", unix))]
         {
@@ -283,7 +286,11 @@ impl Model for TransformerModel {
         self.bind_gpu_to_thread_dispatch()
     }
     fn alloc_sequence(&self) -> Result<SequenceState> {
-        self.alloc_sequence_dispatch()
+        self.alloc_sequence_dispatch(usize::MAX)
+    }
+
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        self.alloc_sequence_dispatch(budget_tokens)
     }
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
         self.copy_logits_to_host_dispatch(logits_ptr, dst)
@@ -354,6 +361,9 @@ impl Model for TransformerModel {
     }
     fn has_proposer(&self) -> bool {
         self.has_proposer_dispatch()
+    }
+    fn dflash_gamma(&self) -> Option<usize> {
+        self.proposer.as_ref().and_then(|p| p.block_gamma())
     }
     fn has_self_speculative(&self) -> bool {
         self.has_self_speculative_dispatch()
@@ -567,11 +577,16 @@ impl Model for TransformerModel {
         Ok(())
     }
 
+    fn dflash_capture_band(&self) -> usize {
+        self.dflash_kgamma
+    }
+
     fn commit_ctx(
         &self,
         seq: &mut SequenceState,
         num_committed: usize,
         base_pos: usize,
+        scratch_row: usize,
     ) -> Result<()> {
         if num_committed == 0 {
             return Ok(());
@@ -598,6 +613,21 @@ impl Model for TransformerModel {
         }
         let ctx_slot_bytes = n_layers * self.config.hidden_size * 2;
         let stream = self.gpu.default_stream();
+
+        // Scratch-capacity guard: `try_dflash_capture_all` caps its writes at
+        // `dflash_hidden_save_rows` (γ+1), so a batch row beyond that was
+        // never captured — committing it would append a STALE row (poisoned
+        // ctx is worse than a hole). Skip with a warning; only reachable if
+        // --max-num-seqs exceeds γ+1 on a DFlash serve.
+        if scratch_row + num_committed > self.dflash_hidden_save_rows {
+            tracing::warn!(
+                "commit_ctx: scratch rows {}..{} exceed capture capacity {} — skipping (ctx hole)",
+                scratch_row,
+                scratch_row + num_committed,
+                self.dflash_hidden_save_rows,
+            );
+            return Ok(());
+        }
 
         // Watermark slide FIRST, on the ctx_len (row-index) axis. If the
         // incoming rows would exceed capacity, keep the NEWEST rows and drop
@@ -631,7 +661,7 @@ impl Model for TransformerModel {
         // only until the first slide — and the sliding prompts ARE the reds.
         debug_assert_eq!(d.ctx_positions.len(), d.ctx_len);
         for t in 0..num_committed {
-            let row = base.offset(t * ctx_slot_bytes);
+            let row = base.offset((scratch_row + t) * ctx_slot_bytes);
             let dst = d.ctx_hidden_acc.offset(d.ctx_len * ctx_slot_bytes);
             self.gpu.copy_d2d_async(row, dst, ctx_slot_bytes, stream)?;
             d.ctx_positions.push((base_pos + t) as i32);
@@ -642,6 +672,15 @@ impl Model for TransformerModel {
         // internal decode-append so this capture is never double-appended.
         d.skip_next_decode_append = true;
 
+        // Per-commit ledger (debug): the C>=2 GAP diagnosis reads this to
+        // find steps whose commits under-append vs the positions committed.
+        tracing::debug!(
+            "CTX_COMMIT slot={} rows={} base_pos={} ctx_len_after={}",
+            seq.slot_idx,
+            num_committed,
+            base_pos,
+            d.ctx_len,
+        );
         // One-shot activation log so A/B runs can confirm the path is live.
         if self.stats.once("log:dflash_unified_ctx") {
             tracing::info!(
@@ -810,6 +849,77 @@ impl Model for TransformerModel {
     fn sync_secondary(&self) -> Result<()> {
         self.sync_secondary_dispatch()
     }
+    fn gdn_fold_accepted(
+        &self,
+        slots: &[usize],
+        accepted_rows: &[u32],
+        k_rows: usize,
+    ) -> Result<bool> {
+        use crate::layer::{VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS};
+        if self.gdn_woa_na_tab.is_null()
+            || self.verify_wy_tables.is_null()
+            || accepted_rows.is_empty()
+            || accepted_rows.len() > VERIFY_WY_TABLE_SEQS
+        {
+            return Ok(false);
+        }
+        let mut host = [0u32; VERIFY_WY_TABLE_SEQS];
+        host[..accepted_rows.len()].copy_from_slice(accepted_rows);
+        let bytes: Vec<u8> = host.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let stream = self.gpu.default_stream();
+        self.gpu
+            .copy_h2d_async(&bytes, self.gdn_woa_na_tab, stream)?;
+        let mut ssm_idx = 0usize;
+        let mut any = false;
+        for (i, layer) in self.layers.iter().enumerate() {
+            if self.config.layer_type(i) != avarok_core::config::LayerType::LinearAttention {
+                continue;
+            }
+            let h_table = self
+                .verify_wy_tables
+                .offset(ssm_idx * VERIFY_WY_LAYER_STRIDE_BYTES);
+            any |= layer.gdn_fold_accepted(
+                self.gpu.as_ref(),
+                h_table,
+                self.gdn_woa_na_tab,
+                k_rows,
+                accepted_rows.len(),
+                stream,
+            )?;
+            ssm_idx += 1;
+        }
+        // ★ RECORD THE OUTCOME UNCONDITIONALLY.
+        //
+        // This was `if any { clear(); extend() }`, so a fold that folded
+        // NOTHING left the PREVIOUS batch's slot list in place. The reader
+        // (async_chkpt.rs:237) looks its own `slot_idx` up in that list and
+        // destructively consumes the entry to decide whether `h` still needs
+        // restoring from the checkpoint — and slot indices are reused across
+        // requests. So a sequence could find a stale entry belonging to an
+        // earlier batch, conclude its state had been folded, and skip the
+        // restore, carrying a wrong GDN state forward.
+        //
+        // Measured cost of that (concurrency-sweep, gb10, 2026-09-18): the
+        // model begins paraphrasing itself at C=4 and C=8, the SimHash
+        // semantic-loop watchdog cuts the response, and the cell reports a
+        // truncated delivery with finish=length. Fires at C=4/C=8 were 4/1
+        // and 6/4 across two runs against main's 0/0; with the fold disabled
+        // entirely (the fold is now default-OFF) they were 0/1 and the run passed
+        // 8/8 cells with zero vacuous, matching main's profile exactly.
+        //
+        // Clearing on every call makes the list mean "the slots folded by the
+        // MOST RECENT fold", which is the only claim the reader can safely
+        // consume.
+        {
+            let mut f = self.gdn_woa_folded_slots.lock();
+            f.clear();
+            if any {
+                f.extend_from_slice(slots);
+            }
+        }
+        Ok(any)
+    }
+
     fn commit_accepted_prefix(
         &self,
         seq: &mut SequenceState,
@@ -824,6 +934,10 @@ impl Model for TransformerModel {
     fn is_ep(&self) -> bool {
         self.is_ep_dispatch()
     }
+    fn hc_mult(&self) -> usize {
+        self.config.hc_mult
+    }
+
     fn is_mla(&self) -> bool {
         self.is_mla_dispatch()
     }
@@ -842,7 +956,7 @@ impl Model for TransformerModel {
     }
     fn ep_broadcast_cmd_for_seq(&self, seq_id: u32, cmd: u32) -> Result<()> {
         // Routes to the helper added in 21e2130. Behaviour depends on the
-        // ep_protocol_v2 field set at construction from ATLAS_EP_PROTOCOL.
+        // ep_protocol_v2 field set at construction from AVAROK_EP_PROTOCOL.
         self.ep_broadcast_seq_and_cmd(seq_id, cmd, self.ep_protocol_v2)
     }
     fn ep_protocol_v2(&self) -> bool {
@@ -868,5 +982,112 @@ impl Model for TransformerModel {
     }
     fn synchronize(&self, stream: u64) -> Result<()> {
         self.synchronize_dispatch(stream)
+    }
+}
+
+impl TransformerModel {
+    /// Collect chunk-boundary aux layer state (PLE, QSA) for a Marconi
+    /// snapshot. Returns the blobs to attach; empty when no layer carries
+    /// aux state.
+    pub(in crate::model) fn collect_aux_states(
+        &self,
+        seq: &SequenceState,
+        stream: u64,
+    ) -> Result<Vec<(u32, Vec<u8>)>> {
+        let mut out = Vec::new();
+        for (i, l) in self.layers.iter().enumerate() {
+            if let Some(blob) =
+                l.snapshot_aux(seq.layer_states[i].as_ref(), self.gpu.as_ref(), stream)?
+            {
+                out.push((i as u32, blob));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether restoring a snapshot WITHOUT aux blobs would be unsound for
+    /// this model (some layer carries per-sequence aux state).
+    pub(in crate::model) fn requires_aux_state(&self) -> bool {
+        self.layers.iter().any(|l| l.has_aux_state())
+    }
+
+    /// Apply a snapshot's aux blobs to the owning layers.
+    pub(in crate::model) fn apply_aux_states(
+        &self,
+        seq: &mut SequenceState,
+        blobs: &[(u32, Vec<u8>)],
+        stream: u64,
+    ) -> Result<()> {
+        for (i, blob) in blobs {
+            self.layers[*i as usize].restore_aux(
+                seq.layer_states[*i as usize].as_mut(),
+                blob,
+                self.gpu.as_ref(),
+                stream,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gdn_woa_folded_slots_tests {
+    /// The record must mean "the slots folded by the MOST RECENT fold".
+    ///
+    /// Models the two implementations directly, because the real path needs a
+    /// GPU and 36 SSM layers: `record_old` is what shipped
+    /// (`if any { clear(); extend() }`), `record_new` is the fix. The reader is
+    /// `async_chkpt.rs:237` — find your slot, consume it, and if it was there,
+    /// skip restoring `h`.
+    fn record_old(list: &mut Vec<usize>, any: bool, slots: &[usize]) {
+        if any {
+            list.clear();
+            list.extend_from_slice(slots);
+        }
+    }
+    fn record_new(list: &mut Vec<usize>, any: bool, slots: &[usize]) {
+        list.clear();
+        if any {
+            list.extend_from_slice(slots);
+        }
+    }
+    /// The reader: true = "folded, do not restore h".
+    fn consume(list: &mut Vec<usize>, slot: usize) -> bool {
+        match list.iter().position(|&s| s == slot) {
+            Some(p) => {
+                list.swap_remove(p);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A fold that folds NOTHING must not leave a previous batch's slots
+    /// readable. Slot indices are reused across requests, so a stale entry
+    /// makes the next occupant of that slot skip its `h` restore.
+    #[test]
+    fn a_no_op_fold_does_not_leave_a_stale_claim() {
+        let mut new = vec![];
+        record_new(&mut new, true, &[1, 2, 3, 4]); // batch A folded
+        for s in [1, 2, 3, 4] {
+            assert!(consume(&mut new, s), "batch A's own slots are folded");
+        }
+        record_new(&mut new, false, &[7]); // batch B folded nothing
+        assert!(
+            !consume(&mut new, 7),
+            "slot 7 was NOT folded and must restore h"
+        );
+
+        // CONTROL: the shipped version fails this. Slot 3 is refilled by a new
+        // request while batch A's entry is still listed, and the no-op fold
+        // does not clear it.
+        let mut old = vec![];
+        record_old(&mut old, true, &[1, 2, 3, 4]);
+        record_old(&mut old, false, &[7]); // no-op: list survives untouched
+        assert!(
+            consume(&mut old, 3),
+            "the shipped behaviour leaves slot 3 claimed — this assertion \
+             documents the bug, and its inverse is the fix above"
+        );
     }
 }

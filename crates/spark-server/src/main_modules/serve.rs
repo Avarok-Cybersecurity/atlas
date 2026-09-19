@@ -75,7 +75,9 @@ pub(crate) async fn serve(
     // is up, including while no model is loaded.
     host.set_auth(build_auth_config(&args)?);
     // Likewise process-scoped, and in force before the first model exists.
-    host.set_process(super::serve_load::Carried::from_env());
+    // `map_err` rather than `?` on a `String`: the message is already a
+    // formatted what/why/fix block and `anyhow!` keeps it verbatim.
+    host.set_process(super::serve_load::Carried::from_env().map_err(|e| anyhow::anyhow!("{e}"))?);
     let startup_host = host.clone();
     match tokio::task::spawn_blocking(move || startup(args, tui_progress, startup_host)).await?? {
         Startup::Serve(prepared) => {
@@ -145,7 +147,7 @@ fn startup(
     }
 
     // Publish the kernel-path flags the command line owns, BEFORE anything can
-    // read them. Each of these used to be an `ATLAS_*` variable read at its own
+    // read them. Each of these used to be an `AVAROK_*` variable read at its own
     // call site; they are configuration, so they belong on the command line
     // where `--help` lists them, `ps` shows them, and a recipe can be read
     // without a ten-line env preamble. The environment stays honoured as a
@@ -318,11 +320,11 @@ pub(super) fn resolve_vision_max_pixels(
     if args.vision_max_pixels > 0 {
         return Ok(Some(args.vision_max_pixels));
     }
-    if let Ok(raw) = std::env::var("ATLAS_VISION_MAX_PIXELS") {
+    if let Ok(raw) = std::env::var("AVAROK_VISION_MAX_PIXELS") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() && trimmed != "0" {
             let parsed = trimmed.parse::<usize>().with_context(|| {
-                format!("ATLAS_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
+                format!("AVAROK_VISION_MAX_PIXELS must be a positive integer, got {raw:?}")
             })?;
             if parsed > 0 {
                 return Ok(Some(parsed));
@@ -407,7 +409,7 @@ pub(super) fn read_preprocessor_max_pixels(model_dir: &std::path::Path) -> Optio
 /// the heuristics needed across ModelOpt + compressed-tensors checkpoints.
 /// Returns `"bf16"` when no quant config is present (the HF default for
 /// unquantized BF16 weights).
-pub(super) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String {
+pub(super) fn canonicalize_model_quant(config: &avarok_core::config::ModelConfig) -> String {
     let Some(qc) = config.quantization_config.as_ref() else {
         return "bf16".to_string();
     };
@@ -457,7 +459,7 @@ pub(super) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig)
 /// QV1 helper: short debug string of where the quant declaration came
 /// from, used in the bail message so the operator can locate the
 /// mis-declared field quickly.
-pub(super) fn describe_quant_source(config: &atlas_core::config::ModelConfig) -> String {
+pub(super) fn describe_quant_source(config: &avarok_core::config::ModelConfig) -> String {
     match config.quantization_config.as_ref() {
         Some(qc) => format!(
             "quant_method={:?}, quant_algo={:?}, format={:?}",
@@ -472,7 +474,7 @@ pub(super) fn describe_quant_source(config: &atlas_core::config::ModelConfig) ->
 ///
 /// The current Atlas build emits one bundle per (hw, model) regardless
 /// of how many quant variants it dispatches at runtime: the bundle
-/// label is whichever `ATLAS_TARGET_QUANT` value the build script
+/// label is whichever `AVAROK_TARGET_QUANT` value the build script
 /// happened to record first (today: always `"nvfp4"`). Each bundle
 /// nonetheless contains native FP8 / native NVFP4 / BF16-dequant code
 /// paths for the same model. This compat table makes that explicit.

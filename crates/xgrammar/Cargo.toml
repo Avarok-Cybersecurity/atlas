@@ -5,7 +5,7 @@
 # (originally C++), eliminating the cxx FFI bridge and the C++
 # toolchain dependency. See PORT_PLAN.md for the port roadmap.
 # W7: the standalone `[workspace]` table was removed so this crate
-# joins the parent atlas workspace (registered in the root
+# joins the parent avarok workspace (registered in the root
 # `Cargo.toml` `members` list); `spark-server` depends on it directly.
 
 [package]
@@ -31,6 +31,7 @@ thiserror = "2"
 # Micro-benchmark harness for the Tier-1 perf work — measures
 # `GrammarCompiler::compile_*` and `GrammarMatcher::fill_next_token_bitmask`.
 criterion = "0.8"
+stats_alloc = "=0.1.10"
 
 [[bench]]
 name = "grammar_bench"

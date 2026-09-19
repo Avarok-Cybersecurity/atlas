@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -40,17 +40,12 @@ impl TransformerModel {
             Some(p) => p.as_ref(),
             None => return Ok(Vec::new()),
         };
-        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
+        // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: emit the full token sequence
         // ONCE so a Python reference can run the SAME tokens through HF
         // transformers and dump matching hidden-state captures.
         // Per-model latch: a static would let the previous model swallow this
         // one's dump. Env first, so a disabled dump never burns the shot.
-        if std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-            .ok()
-            .as_deref()
-            == Some("1")
-            && self.stats.dumped.keyed("dump:dflash_tokens")
-        {
+        if self.levers.dflash_debug_dump_full && self.stats.dumped.keyed("dump:dflash_tokens") {
             let tokens_json = serde_json::json!({
                 "prompt_len": position - seq.tokens.len() + seq.tokens.len(),
                 "position": position,
@@ -59,13 +54,13 @@ impl TransformerModel {
                 "generated_tokens": seq.tokens.iter().skip(seq.prompt_len).copied().collect::<Vec<u32>>(),
             });
             if let Err(e) = std::fs::write(
-                "/tmp/atlas_tokens.json",
+                "/tmp/avarok_tokens.json",
                 serde_json::to_string_pretty(&tokens_json).unwrap_or_default(),
             ) {
                 tracing::warn!("DFLASH DUMP_FULL: tokens write failed: {e}");
             } else {
                 tracing::info!(
-                    "DFLASH DUMP_FULL: wrote /tmp/atlas_tokens.json (position={}, all_tokens.len()={}, prompt_len={})",
+                    "DFLASH DUMP_FULL: wrote /tmp/avarok_tokens.json (position={}, all_tokens.len()={}, prompt_len={})",
                     position,
                     seq.tokens.len(),
                     seq.prompt_len,
@@ -74,11 +69,18 @@ impl TransformerModel {
         }
         let stream = self.gpu.default_stream();
         let draft_embed_target = None;
-        // MTP loads ALL experts on every rank (no EP filtering), so its MoE
-        // output is already complete — no all_reduce needed. Passing comm: None
-        // prevents MoeLayer::forward() from doubling the output via SUM.
+        // 🔴 `comm: None` is the DEFAULT and it is load-bearing for the Qwen and DeepSeek-V4
+        // drafters: their MTP modules load every expert on every rank, so the MoE output is
+        // already complete and a comm would DOUBLE it via SUM.
+        //
+        // GLM-5.3's MTP block is EP-sharded with a row-parallel DSA `o_proj`, so for it the
+        // same `None` means drafting from half the routed sum and half the attention output.
+        // `needs_comm()` is that distinction, and it is only true once the worker rank is
+        // running this same propose (`AVAROK_MTP_EP_PROPOSE=1`) — a comm without a partner is
+        // the `t58` deadlock.
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -87,10 +89,16 @@ impl TransformerModel {
             stats: &self.stats,
             attn_metadata: None,
             profile: false,
-            comm: None,
+            comm: if proposer.needs_comm() {
+                self.comm_ref()
+            } else {
+                None
+            },
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: MTP/draft decode never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) skips fold, adapter folds (single-seq reject lifted)
@@ -103,7 +111,7 @@ impl TransformerModel {
             .proposer_state
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("No proposer state for sequence"))?;
-        // ATLAS_MTP_CATCHUP: before proposing, feed pairs the drafter missed
+        // AVAROK_MTP_CATCHUP: before proposing, feed pairs the drafter missed
         // during a serial-decode stretch. Coordinates (measured 2026-07-20 on
         // the 27B rig): at propose entry `position == seq.tokens.len()` and
         // the imminent forward_one writes the pair for sequence key
@@ -118,7 +126,7 @@ impl TransformerModel {
             let rows = proposer.drafter_rows(prop_state.as_mut());
             let last_key = proposer.last_pair_key(prop_state.as_mut());
             let (start, count) = *self.mtp_catchup_meta.lock();
-            // ATLAS_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
+            // AVAROK_MTP_REFEED_DEBUG: the ring round-trip check. The pair key
             // this propose is ABOUT to write is `position - 1`, and it reads
             // its hidden from `mtp_hidden_save`; under the label convention
             // that same hidden is ring label `position`. So
@@ -238,14 +246,14 @@ impl TransformerModel {
             grammar_bitmask,
             self.dflash_hidden_save,
         )?;
-        // Confidence clamp (ATLAS_MTP_DRAFT_CONF, staged off by default):
+        // Confidence clamp (AVAROK_MTP_DRAFT_CONF, staged off by default):
         // when the drafter's chain confidence is below tau, discard the
         // drafts — the next step decodes serially instead of paying a
         // verify that would most likely reject (break-even acceptance at
         // K=1 on the 35B MoE is ~0.66). The drafter KV rows written by
         // this propose MUST be trimmed exactly as a full rejection would
         // (after_verify(0)), or the drafter desyncs from the target.
-        let tau = crate::speculative::draft_conf_tau();
+        let tau = self.levers.draft_conf_tau;
         if tau > 0.0
             && !drafts.is_empty()
             && let Some(conf) = proposer.last_confidence()
@@ -437,6 +445,25 @@ impl TransformerModel {
         k: usize,
         stream: u64,
     ) -> Result<()> {
+        self.try_dflash_capture_all_at(layer_idx, 0, k, 0, stream)
+    }
+
+    /// [`Self::try_dflash_capture_all`] with explicit SOURCE and DESTINATION
+    /// row bases — the cross-sequence form.
+    ///
+    /// A batched K=γ verify packs `n` sequences seq-major into
+    /// `hidden_states`, so sequence `i`'s rows start at `src_row0 = off[i]`,
+    /// and its capture band starts at `dst_row0 = i * dflash_kgamma`. The
+    /// scheduler then hands that same `dst_row0` to `commit_ctx` as
+    /// `scratch_row`. Single-sequence callers pass 0/0 and are unchanged.
+    pub(super) fn try_dflash_capture_all_at(
+        &self,
+        layer_idx: usize,
+        src_row0: usize,
+        k: usize,
+        dst_row0: usize,
+        stream: u64,
+    ) -> Result<()> {
         let dst = match self.dflash_hidden_save {
             Some(p) => p,
             None => return Ok(()),
@@ -459,13 +486,17 @@ impl TransformerModel {
         let ctx_slot_bytes = self.dflash_capture_layers.len() * h * bf16;
         let kmax = self.dflash_hidden_save_rows;
         debug_assert!(
-            k <= kmax,
-            "try_dflash_capture_all: k={k} exceeds dflash_hidden_save_rows={kmax}"
+            dst_row0 + k <= kmax,
+            "try_dflash_capture_all: rows {dst_row0}..{} exceed capacity {kmax}",
+            dst_row0 + k
         );
-        let k_capped = k.min(kmax);
+        let k_capped = k.min(kmax.saturating_sub(dst_row0));
         for t in 0..k_capped {
-            let src = self.buffers.hidden_states().offset(t * h * bf16);
-            let dst_slot = dst.offset(t * ctx_slot_bytes + slot * h * bf16);
+            let src = self
+                .buffers
+                .hidden_states()
+                .offset((src_row0 + t) * h * bf16);
+            let dst_slot = dst.offset((dst_row0 + t) * ctx_slot_bytes + slot * h * bf16);
             self.gpu.copy_d2d_async(src, dst_slot, h * bf16, stream)?;
         }
         Ok(())

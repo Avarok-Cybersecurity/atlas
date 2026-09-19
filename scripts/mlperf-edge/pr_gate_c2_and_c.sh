@@ -1,13 +1,13 @@
 #!/bin/bash
 # benchmark-pr Gate C2 (NVFP4 numerical smoke) + Gate C (warm-TTFT regression guard)
-# for the ATLAS_GDN_REGRESIDENT default-flip. Runs on dgx1.
+# for the AVAROK_GDN_REGRESIDENT default-flip. Runs on dgx1.
 #
 # Gate C is a RELATIVE, same-box, back-to-back A/B — never an absolute or stored
 # TTFT number. Because this change is env-gated, both legs use the SAME binary and
 # differ only by the kill switch, which the skill calls the strictest possible A/B
 # and which additionally proves the kill switch actually works:
 #   pr  leg = default            (regresident ON, the new default)
-#   ctl leg = ATLAS_NO_GDN_REGRESIDENT=1  (regresident OFF, prior behaviour)
+#   ctl leg = AVAROK_NO_GDN_REGRESIDENT=1  (regresident OFF, prior behaviour)
 #
 # TRAPS encoded here:
 #  * The quick yaml hardcodes `http://localhost:8085`. Serving on 8888 yields
@@ -23,20 +23,20 @@ set -u
 BIN="${1:?path to the PR spark binary (27b target)}"
 OUT="${2:?output dir}"
 EP=/workspace/endpoints
-YAML=$EP/examples/10_Edge_Agentic_Example/online_agentic_coding_atlas_quick.yaml
+YAML=$EP/examples/10_Edge_Agentic_Example/online_agentic_coding_avarok_quick.yaml
 MODEL=unsloth/Qwen3.6-27B-NVFP4
 SERVED_NAME="Qwen3.6-27B-Q4_K_M"   # must equal the yaml's model_params.name
 PORT=8085
 mkdir -p "$OUT"
 
 serve() { # $1 = leg, $2 = extra -e args
-  sudo docker rm -f atlas-prgate >/dev/null 2>&1; sleep 3
+  sudo docker rm -f avarok-prgate >/dev/null 2>&1; sleep 3
   # shellcheck disable=SC2086
-  sudo docker run -d --name atlas-prgate --network host --ipc host --gpus all \
+  sudo docker run -d --name avarok-prgate --network host --ipc host --gpus all \
     $2 \
     -v /workspace/.cache/huggingface:/root/.cache/huggingface \
     -v "$BIN:/usr/local/bin/spark:ro" \
-    atlas-gb10:followups serve "$MODEL" --host 0.0.0.0 --port $PORT \
+    avarok-gb10:followups serve "$MODEL" --host 0.0.0.0 --port $PORT \
     --model-name "$SERVED_NAME" \
     --max-seq-len 32768 --max-batch-size 1 --gpu-memory-utilization 0.70 \
     --kv-cache-dtype bf16 --enable-prefix-caching --ssm-cache-slots 128 \
@@ -44,7 +44,7 @@ serve() { # $1 = leg, $2 = extra -e args
     --tool-call-parser qwen3_coder --disable-tool-grammar true --disable-thinking >/dev/null 2>&1
   for _ in $(seq 1 200); do
     curl -sf -m4 http://localhost:$PORT/v1/models 2>/dev/null | grep -q Qwen && return 0
-    sudo docker ps --format '{{.Names}}' | grep -q atlas-prgate || { echo "SERVE_DIED leg=$1"; return 1; }
+    sudo docker ps --format '{{.Names}}' | grep -q avarok-prgate || { echo "SERVE_DIED leg=$1"; return 1; }
     sleep 5
   done
   echo "SERVE_TIMEOUT leg=$1"; return 1
@@ -53,7 +53,7 @@ serve() { # $1 = leg, $2 = extra -e args
 for leg in pr ctl; do
   case $leg in
     pr)  EXTRA="" ;;                                  # default => regresident ON
-    ctl) EXTRA="-e ATLAS_NO_GDN_REGRESIDENT=1" ;;     # kill switch => OFF
+    ctl) EXTRA="-e AVAROK_NO_GDN_REGRESIDENT=1" ;;     # kill switch => OFF
   esac
   serve "$leg" "$EXTRA" || exit 1
   echo "=== leg=$leg serve up on :$PORT (${EXTRA:-<default>}) ==="
@@ -72,9 +72,9 @@ for leg in pr ctl; do
     || cp "$EP/$RD/result_summary.json" "$OUT/$leg.summary.json" 2>/dev/null || true
 
   # Banner proves which GDN path actually ran — fires on first replay, not startup.
-  sudo docker logs atlas-prgate 2>&1 | grep -aE 'GDN prefill: (FLA chunked|REGISTER-RESIDENT)' \
+  sudo docker logs avarok-prgate 2>&1 | grep -aE 'GDN prefill: (FLA chunked|REGISTER-RESIDENT)' \
     | sed 's/.*INFO.*: //' | sort -u | tee "$OUT/$leg.banner.txt"
-  sudo docker rm -f atlas-prgate >/dev/null 2>&1
+  sudo docker rm -f avarok-prgate >/dev/null 2>&1
 done
 
 python3 - "$OUT" <<'PY'

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 use anyhow::{Result, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
@@ -70,10 +70,16 @@ fn pack_slot(
         (0..cfg.num_hidden_layers).map(|_| None).collect();
     let mut slot_ptrs: BTreeMap<(usize, LoraModule), (u64, u64)> = BTreeMap::new();
     let mut off = slot * slot_bytes; // slot base offset
-    for layer_idx in full_attention_layers(cfg) {
+    // Walks EVERY layer, taking only the modules that layer can carry — the
+    // same order and the same predicate `pool_slot_bytes` reserved from, so
+    // the offsets this advances through cannot drift out of the slot.
+    for layer_idx in 0..cfg.num_hidden_layers {
         let mut lw = LoraLayerWeights::empty(layer_idx);
         let mut any = false;
         for module in LoraModule::ALL {
+            if !module.applies_to_layer(cfg, layer_idx) {
+                continue;
+            }
             let (out_dim, in_dim) = module.dims(cfg);
             let a_off = off;
             let b_off = off + max_lora_rank * in_dim * BF16_BYTES;
@@ -131,6 +137,7 @@ fn pack_slot(
                     LoraModule::GateProj => lw.gate_proj = Some(pair),
                     LoraModule::UpProj => lw.up_proj = Some(pair),
                     LoraModule::DownProj => lw.down_proj = Some(pair),
+                    LoraModule::OutProj => lw.out_proj = Some(pair),
                 }
                 this = (a_ptr.0, b_ptr.0);
                 any = true;
@@ -170,7 +177,7 @@ pub fn load_lora_adapters_multi(
         bail!(
             "REJECT[too-many-adapters]: {} --lora-adapter given but --max-loras={} \
              (pool has {} slots); raise --max-loras or stage the extras on an \
-             $ATLAS_LORA_PEER for on-demand RDMA swap",
+             $AVAROK_LORA_PEER for on-demand RDMA swap",
             adapters.len(),
             max_loras,
             max_loras
@@ -309,6 +316,7 @@ pub fn load_lora_adapters_multi(
                 r: 1,
                 lora_alpha: 0.0,
                 target_modules: Vec::new(),
+                target_modules_pattern: None,
                 use_rslora: false,
                 layers_to_transform: None,
                 trainable_token_indices: Vec::new(),

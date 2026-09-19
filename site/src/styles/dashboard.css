@@ -1,6 +1,6 @@
 /* =============================================================================
    Benchmark dashboard modal — same warm-workshop dialect as app.css.
-   Copper stays the 35B flagship's series color; steel #1f6a9e is the dense
+   Copper stays the 35B flagship's series color; steel var(--ch-cyan) is the dense
    27B's (pair validated for CVD + contrast on the paper surfaces). Verdict
    colors are STATUS colors (green/red) and never used for a series.
    Viewport rules for these components live in mobile.css (its stated SSOT).
@@ -14,48 +14,48 @@
 /* The button must track the receipt's own width (app.css `.receipt`, and the
    per-breakpoint overrides in mobile.css) — otherwise the corner chip anchors
    to empty grid track beside the receipt instead of to its corner. */
-.receipt-hit {
-  display: block; width: 100%; max-width: 460px;
-  background: none; border: 0; padding: 0;
-  cursor: pointer; text-align: inherit; font: inherit; color: inherit;
-  position: relative;
-}
+.receipt-hit { display: block; width: 100%; max-width: 460px; position: relative; }
 /* Ring is present at REST (1px), not only on hover. */
 .receipt-hit .receipt {
-  box-shadow: var(--shadow-lg), 0 0 0 1.5px rgba(181, 98, 47, 0.38);
+  box-shadow: var(--shadow-lg), 0 0 0 1.5px color-mix(in srgb, var(--accent) 38%, transparent);
   transition: box-shadow 0.16s ease, transform 0.16s ease;
 }
 .receipt-hit:hover .receipt,
-.receipt-hit:focus-visible .receipt {
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt {
   box-shadow: var(--shadow-lg), 0 0 0 2.5px var(--accent); transform: translateY(-2px);
 }
-.receipt-hit:focus-visible { outline: none; }
 
 /* Corner chip — sits on the receipt's top-right corner, outside its clip. */
 .receipt-chip {
   position: absolute; top: -0.55rem; right: -0.4rem; z-index: 2;
   display: inline-flex; align-items: center; gap: 0.3rem;
   padding: 0.24rem 0.55rem; border-radius: 999px;
-  background: var(--accent); color: #fff;
+  background: var(--accent-fill); color: #fff;
   font-family: var(--font-mono); font-size: 0.62rem; font-weight: 800;
   letter-spacing: 0.1em; text-transform: uppercase;
   box-shadow: var(--shadow-sm); transition: background 0.16s ease;
 }
 .receipt-hit:hover .receipt-chip,
-.receipt-hit:focus-visible .receipt-chip { background: var(--accent-deep); }
+.receipt-hit:has(.receipt-open-hint:focus-visible) .receipt-chip { background: var(--accent-fill-hover); }
 
 /* Hint reads as a button, not a caption. */
+/* The control, not the receipt. Its ::before stretches over the whole card so
+   the receipt is still one big click target, while the accessible name stays
+   equal to the visible text (WCAG 2.5.3) and the eight proof rows stay
+   readable content rather than part of a button label. */
 .receipt-open-hint {
   display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 0.85rem;
+  cursor: pointer; font: inherit;
   padding: 0.42rem 0.85rem; border: 1.5px solid var(--accent);
   border-radius: 8px; background: var(--accent-soft);
   font-family: var(--font-mono); font-size: 0.74rem; font-weight: 700;
   letter-spacing: 0.06em; color: var(--accent-deep);
   transition: background 0.16s ease, color 0.16s ease;
 }
+.receipt-open-hint::before { content: ''; position: absolute; inset: 0; }
 .receipt-open-hint .rh-glyph { font-size: 0.85rem; line-height: 1; }
 .receipt-hit:hover .receipt-open-hint,
-.receipt-hit:focus-visible .receipt-open-hint { background: var(--accent); color: #fff; }
+.receipt-open-hint:focus-visible { background: var(--accent); color: #fff; }
 
 /* One-shot attention cue after the receipt finishes "printing". Motion only —
    every cue above is legible with animation disabled. */
@@ -69,7 +69,7 @@
 
 /* ---- modal shell ---------------------------------------------------------- */
 .bd-backdrop {
-  position: fixed; inset: 0; z-index: 110; background: rgba(38, 30, 18, 0.45);
+  position: fixed; inset: 0; z-index: 110; background: rgba(0, 0, 0, 0.45);
   display: flex; align-items: flex-start; justify-content: center;
   padding: 3.5rem 1.25rem 2rem; overflow-y: auto;
 }
@@ -147,43 +147,94 @@
 .gbs-tile-val { font-family: var(--font-mono); font-size: 1.05rem; font-weight: 750; color: var(--t1); }
 .gbs-tile-label { font-size: 0.7rem; color: var(--t3); font-family: var(--font-mono); }
 .gbs-verdict[data-verdict='PASS'] { color: var(--green); }
-.gbs-verdict:not([data-verdict='PASS']) { color: #a03123; }
+.gbs-verdict:not([data-verdict='PASS']) { color: var(--red); }
 
 /* ---- chart panel ---------------------------------------------------------- */
 .gate-panel {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 1rem 1.1rem 0.6rem; box-shadow: var(--shadow-sm); margin: 0;
 }
-.gate-panel svg { width: 100%; height: auto; display: block; }
+/* :not(.gl-swatch) matters — `.gate-panel svg` is specificity 0,1,1 and beats
+   the swatch's own 0,1,0 rule below, so the legend swatches were rendering at
+   the chart's full width: an 18x8 viewBox scaled to ~900px with a stroke-width
+   2 line scaled with it, i.e. a giant filled pill with the label shoved off the
+   edge. The same trap, and the same fix, as ladder.css:19. */
+.gate-panel svg:not(.gl-swatch) { width: 100%; height: auto; display: block; }
 .gate-panel-head {
   display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap;
   margin-bottom: 0.5rem;
 }
 .gate-panel-title { font-size: 0.82rem; font-weight: 750; color: var(--t1); }
 .gate-panel-unit { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); }
-.gate-legend { display: inline-flex; gap: 0.9rem; margin-left: auto; }
+/* Three orthogonal channels — colour says WHICH MODEL, dash says which
+   variant or statistic, glyph says what a point is — so they get three groups
+   separated by a rule. Groups wrap as whole units, so a narrow panel stacks
+   "models / variants / marks" instead of interleaving them into soup. */
+.gate-legend {
+  display: flex; flex-wrap: wrap; align-items: center;
+  column-gap: 0.7rem; row-gap: 0.3rem; margin-left: auto;
+}
+.gl-group { display: inline-flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+.gl-sep { width: 1px; height: 0.85em; background: var(--border-strong); flex: none; }
 .gate-legend-item {
   display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap;
   font-family: var(--font-mono); font-size: 0.7rem; color: var(--t2);
 }
+.gl-swatch { width: 20px; height: 10px; flex: none; display: inline-block; }
 .gc-grid { stroke: var(--border); stroke-width: 1; }
 .gc-axis { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
 .gc-ref { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .gc-ref-label { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
-.gc-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+/* The halo keeps a value readable where it crosses a gridline, a spread
+   whisker or another series — the labels are dodged apart, not moved off the
+   data. */
+.gc-val {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 700;
+  paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round;
+}
+.gc-leader { stroke-width: 1; opacity: 0.4; }
+/* The observed range of the runs a grouped point stands for. Under the lines,
+   because it is context rather than a reading of its own. */
+.gc-spread { stroke-width: 1.25; opacity: 0.35; stroke-linecap: round; }
+/* A dashed frame edge says the axis stops before the data does. */
+.gc-grid-clipped { stroke-dasharray: 3 3; }
+.gl-band { pointer-events: none; }
 .gc-pt { cursor: pointer; outline-offset: 2px; }
 .gc-hit { fill: transparent; }
-.gc-pt:hover .gc-mark, .gc-pt:focus-visible .gc-mark { r: 5.5; }
+/* Circles grow by radius; the triangle and caret are paths, so they scale. */
+.gc-pt:hover .gc-mark:is(circle), .gc-pt:focus-visible .gc-mark:is(circle) { r: 5.5; }
+.gc-pt:hover .gc-mark:is(path, g), .gc-pt:focus-visible .gc-mark:is(path, g) {
+  transform: scale(1.3); transform-box: fill-box; transform-origin: center;
+}
+.gc-pt:hover .gc-agg circle:last-child { opacity: 1; }
+
+/* ---- grouped-point tabs --------------------------------------------------- */
+.gpc-tabs {
+  display: flex; flex-wrap: wrap; gap: 0.25rem; margin-bottom: 0.7rem;
+  padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+}
+.gpc-tabs button {
+  display: inline-flex; align-items: baseline; gap: 0.35rem;
+  padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--t3);
+  font-family: var(--font-mono); font-size: 0.68rem;
+}
+.gpc-tabs button:hover { border-color: var(--border); color: var(--t2); }
+.gpc-tabs button.is-active {
+  background: var(--bg); border-color: var(--border-strong); color: var(--t1);
+}
+.gpc-tab-date { color: var(--t3); font-size: 0.62rem; }
+.gpc-tab-fail { color: var(--danger, #e5484d); font-size: 0.6rem; }
 
 /* ---- point metadata card (a receipt) -------------------------------------- */
 .gpc-backdrop {
-  position: fixed; inset: 0; z-index: 115; background: rgba(38, 30, 18, 0.35);
+  position: fixed; inset: 0; z-index: 115; background: rgba(0, 0, 0, 0.35);
   display: flex; align-items: center; justify-content: center; padding: 1.25rem;
 }
 .gpc { max-height: min(85vh, 46rem); overflow-y: auto; width: min(430px, 100%); }
 .gpc-verdict { font-size: 0.78rem; font-weight: 800; font-family: var(--font-mono); }
 .gpc-verdict[data-verdict='PASS'] { color: var(--green); }
-.gpc-verdict:not([data-verdict='PASS']) { color: #a03123; }
+.gpc-verdict:not([data-verdict='PASS']) { color: var(--red); }
 .gpc-model-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 .gpc-swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 .gpc-model { font-size: 0.8rem; font-weight: 700; color: var(--t1); overflow-wrap: anywhere; }

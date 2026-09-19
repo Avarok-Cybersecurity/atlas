@@ -122,6 +122,34 @@ pub(crate) fn download_chip(app: &App, width: u16) -> Option<Vec<Span<'static>>>
     Some(out)
 }
 
+/// Header indicator for thermal throttling, or `None` when there is nothing to
+/// say.
+///
+/// Deliberately silent in two cases that are NOT the same as each other but do
+/// share a response: `Ok` (we have data and it is fine) and `Unknown` (no
+/// reading, or a box with no throttle counters). Neither warrants pixels in a
+/// header that is mostly status-quo, and an indicator that renders something
+/// permanently is one people stop reading. The Stats section distinguishes them
+/// in full.
+///
+/// THRASHING outranks THROTTLING: unstable clocks are the worse diagnosis even
+/// at a modest throttle fraction, because the damage lands in latency VARIANCE —
+/// p90 drifting away from a median that still looks healthy.
+fn thermal_alert_span(app: &App) -> Option<Span<'static>> {
+    use crate::tui::data::thermal::ThermalAlert;
+    match app.thermal.snapshot().alert() {
+        ThermalAlert::Unknown | ThermalAlert::Ok => None,
+        ThermalAlert::Throttling => Some(Span::styled(
+            " \u{26a0} THROTTLING ",
+            theme::warn().add_modifier(ratatui::style::Modifier::BOLD),
+        )),
+        ThermalAlert::Thrashing => Some(Span::styled(
+            " \u{26a0} THERMAL THRASH ",
+            theme::error().add_modifier(ratatui::style::Modifier::BOLD),
+        )),
+    }
+}
+
 pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
     // Chevron wave only during loading (motion restraint).
     //
@@ -142,6 +170,10 @@ pub(crate) fn draw_header(f: &mut Frame, app: &App, area: Rect, tall: bool) {
     let mut right_spans = Vec::new();
     if !tall && let Some(c) = chip.as_ref() {
         right_spans.extend(c.iter().cloned());
+        right_spans.push(Span::raw(" "));
+    }
+    if let Some(alert) = thermal_alert_span(app) {
+        right_spans.push(alert);
         right_spans.push(Span::raw(" "));
     }
     right_spans.push(status_pill(app));

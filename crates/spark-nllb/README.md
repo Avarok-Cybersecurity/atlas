@@ -70,12 +70,14 @@ match the fp32 safetensors path (verified identical on the test sentences).
 ## Validation
 
 ```bash
-NLLB_MODEL_DIR=/path/to/nllb-200-3.3B-st cargo test -p spark-nllb --release
+NLLB_MODEL_DIR=/path/to/nllb-200-3.3B-st \
+  cargo test -p spark-nllb --release --test reference -- --ignored --nocapture
 ```
 
-Asserts the encoder hidden-state checksum and the exact greedy token sequence
-against the HuggingFace reference. Skips silently when `NLLB_MODEL_DIR` is unset
-(so CPU CI without the weights stays green).
+Asserts the encoder hidden-state checksum, exact greedy and beam token sequences,
+and LoRA behavior against the HuggingFace reference. These tests are explicitly
+ignored by ordinary CI because the checkpoint is not committed. An explicit
+ignored run fails if `NLLB_MODEL_DIR` is unset or invalid.
 
 ## LoRA adapters
 

@@ -21,7 +21,7 @@
 //! the stash.
 //!
 //! Envelope (falls back to the per-sequence loop, never silently degrades):
-//! * >= 2 draftless sequences and multi-seq MTP mode (`ATLAS_MTP_MAX_SEQS>1`)
+//! * >= 2 draftless sequences and multi-seq MTP mode (`AVAROK_MTP_MAX_SEQS>1`)
 //!   — at cap 1 the per-seq path must stay byte-identical;
 //! * not the DFlash bootstrap (its fused pass replaces the standalone decode);
 //! * `can_batch_verify(&[2; n])` — the same non-EP / non-HSS / no-LoRA /
@@ -30,7 +30,7 @@
 //! * the DFlash serial-append / unified-ctx commit modes are OFF (their
 //!   per-sequence ctx appends are ordered against a per-sequence decode).
 //!
-//! Kill switch `ATLAS_NO_MTP_BATCH_BOOTSTRAP` (PRESENCE check per the house
+//! Kill switch `AVAROK_NO_MTP_BATCH_BOOTSTRAP` (PRESENCE check per the house
 //! convention — `=0` is NOT off) forces the per-sequence loop.
 
 use super::*;
@@ -38,7 +38,7 @@ use super::*;
 /// Kill switch, PRESENCE check, read once per process.
 pub(super) fn bootstrap_batch_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BATCH_BOOTSTRAP").is_some())
+    *CACHED.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_BATCH_BOOTSTRAP").is_some())
 }
 
 /// Log a `run_mtp_propose_batched` failure at the right level. Shared by the
@@ -53,7 +53,7 @@ pub(super) fn bootstrap_batch_disabled() -> bool {
 /// contexts of 10-20K re-fired it for every group on every step — permanent
 /// ERROR spam for a permanent, known degradation (PROGRESS_LOG 5.2/6.17).
 /// The stride is now computed from `max_seq_len`, so the overflow only
-/// remains reachable under an `ATLAS_PROPOSE_META_STRIDE` override or a
+/// remains reachable under an `AVAROK_PROPOSE_META_STRIDE` override or a
 /// sequence past `max_seq_len`; it logs at DEBUG per occurrence (silent at
 /// the production INFO level, still diagnosable at RUST_LOG=debug — a
 /// once-per-process gate would hide that the degradation is permanent).
@@ -75,11 +75,11 @@ pub(super) fn log_propose_batched_err(prefix: &str, e: &anyhow::Error) {
 }
 
 /// One batched argmax readback instead of n serialized single-CTA scans:
-/// **ON** by default, disabled by PRESENCE of `ATLAS_NO_MTP_BOOT_ARGMAX`
+/// **ON** by default, disabled by PRESENCE of `AVAROK_NO_MTP_BOOT_ARGMAX`
 /// (house convention — `=0` is NOT off). Read once per process.
 fn boot_argmax_batch_enabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BOOT_ARGMAX").is_none())
+    *CACHED.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_BOOT_ARGMAX").is_none())
 }
 
 /// Whether [`step_mtp_bootstrap_batched`] can run for these sequences.
@@ -183,7 +183,7 @@ pub(super) fn step_mtp_bootstrap_batched(
     // logit read anyway. Any row failing it keeps the per-row call verbatim,
     // so this can only change WHICH kernel produced an identical token.
     // `decode_logits_fp32` models never reach here (`can_batch_bootstrap`).
-    // Kill switch `ATLAS_NO_MTP_BOOT_ARGMAX` (PRESENCE).
+    // Kill switch `AVAROK_NO_MTP_BOOT_ARGMAX` (PRESENCE).
     let pen: Vec<_> = refs
         .iter()
         .map(|a| {
@@ -301,6 +301,21 @@ pub(super) fn step_mtp_bootstrap_batched(
     // per-position and the batched path is grammarless by contract). ──
     if stash_ok {
         let group_cap = model.mtp_propose_batch_max().max(1);
+        // One-shot attribution for "why is propose not batching": each of
+        // these can individually keep every sequence on the per-sequence
+        // propose, which looks like missing amortisation rather than a
+        // declined feature.
+        {
+            static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+            WHY.get_or_init(|| {
+                tracing::debug!(
+                    group_cap,
+                    proposing = proposing.len(),
+                    ladder_nd,
+                    "DFlash batched propose gate (first tick)"
+                );
+            });
+        }
         let batchable: Vec<usize> = (0..proposing.len())
             .filter(|&s| {
                 let a = &refs[proposing[s]];

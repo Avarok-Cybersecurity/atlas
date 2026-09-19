@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Minimal cuBLASLt FFI for the high-efficiency GEMM path (`ATLAS_CUBLAS_GEMM`).
+//! Minimal cuBLASLt FFI for the high-efficiency GEMM path (`AVAROK_CUBLAS_GEMM`).
 //!
 //! The hand-written mma.sync projection/MoE GEMMs reach only ~30% of the cuBLAS
 //! ceiling on GB10 (measured: 32 vs 85 TFLOPS bf16, 152 fp8, on the SSM-qkvz
@@ -14,7 +14,15 @@ use std::sync::OnceLock;
 // Native FP8 (E4M3) GEMM paths live in the `fp8` sibling (≤500 LoC split);
 // re-exported so `spark_runtime::cublaslt::fp8_gemm_*` paths are unchanged.
 mod fp8;
-pub use fp8::{fp8_gemm_act_weight_t_blkscaled, fp8_gemm_act_weight_t_rowwise};
+pub use fp8::{
+    fp8_gemm_act_weight_t_blkscaled, fp8_gemm_act_weight_t_blkscaled_ldc,
+    fp8_gemm_act_weight_t_rowwise,
+};
+
+// What the library documents about block-scaling factor tensors, as index math
+// the callers, the CUDA adapter kernel and the CPU tests all share. SSOT — the
+// FP8 paths below only take pointers, so the layout rules cannot live in them.
+pub mod scale_layout;
 
 #[allow(non_camel_case_types)]
 type cublasLtHandle_t = *mut c_void;
@@ -105,6 +113,8 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
     fn cuMemAlloc_v2(dptr: *mut u64, bytesize: usize) -> i32;
+    fn cuMemFree_v2(dptr: u64) -> i32;
+    fn cuStreamSynchronize(stream: u64) -> i32;
 }
 
 struct Ctx {
@@ -118,7 +128,7 @@ unsafe impl Send for Ctx {}
 unsafe impl Sync for Ctx {}
 
 /// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
-/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// process CUDA context (see `avarok_core::cuda_host`, which establishes one
 /// per process) and sized by a fixed budget, not by any model's shapes: the
 /// bounds below are generous upper limits chosen to fit any realistic serving
 /// configuration, so a swap needs no reallocation and re-allocating per model
@@ -150,6 +160,44 @@ fn ctx() -> Result<&'static Ctx> {
         ws_size,
     });
     Ok(CTX.get().unwrap())
+}
+
+/// Force cuBLASLt's one-time costs at MODEL LOAD instead of on request 1.
+///
+/// The lazy `ctx()` means the first GEMM pays `cublasLtCreate`, the 64 MB
+/// workspace alloc, and — the expensive part — the library's kernel-image
+/// load and heuristic warm-up. Measured on the 35B flagship (2026-08-22,
+/// dgx1): the first in-serve request read ~0.9 s slower than warm requests
+/// once QKVZ routed through cuBLASLt, and cold TTFT is a headline metric.
+/// One 64x64x64 BF16 GEMM here is trivial GPU work and moves that cost to
+/// load time, where it overlaps the operator's mental model of "loading".
+///
+/// Never fails the serve: a pre-warm failure is logged and swallowed — the
+/// lazy path remains and request 1 simply pays the old cost.
+pub fn prewarm(stream: u64) {
+    let r = (|| -> Result<()> {
+        let bytes = 64usize * 64 * 2;
+        let mut a = 0u64;
+        let mut b = 0u64;
+        let mut d = 0u64;
+        unsafe {
+            chk(cuMemAlloc_v2(&mut a, bytes), "prewarm alloc a")?;
+            chk(cuMemAlloc_v2(&mut b, bytes), "prewarm alloc b")?;
+            chk(cuMemAlloc_v2(&mut d, bytes), "prewarm alloc d")?;
+        }
+        let res = bf16_gemm_act_weight_t(a, b, d, 64, 64, 64, stream);
+        unsafe {
+            chk(cuStreamSynchronize(stream), "prewarm sync")?;
+            let _ = cuMemFree_v2(a);
+            let _ = cuMemFree_v2(b);
+            let _ = cuMemFree_v2(d);
+        }
+        res
+    })();
+    match r {
+        Ok(()) => tracing::info!("cuBLASLt pre-warmed (handle + workspace + kernel images)"),
+        Err(e) => tracing::warn!("cuBLASLt pre-warm failed (request 1 pays lazy init): {e}"),
+    }
 }
 
 fn chk(status: i32, what: &str) -> Result<()> {

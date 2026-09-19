@@ -62,7 +62,7 @@ impl TransformerModel {
         let hidden = self.buffers.hidden_states();
         let bs = kv_cache.block_size();
 
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -117,7 +117,7 @@ impl TransformerModel {
                 &format!("tail@{}/lo{}", tokens.len(), tail_lo),
             );
             tracing::warn!(
-                "ATLAS_BTBL[final@{}/skip{}] nblk={} bt={:?}",
+                "AVAROK_BTBL[final@{}/skip{}] nblk={} bt={:?}",
                 tokens.len(),
                 seq.marconi_skip_to,
                 seq.block_table.len(),
@@ -130,20 +130,10 @@ impl TransformerModel {
         let last_hidden = hidden.offset(last_token_offset * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            last_hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // Diagnostic: post-norm hidden state
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
+        if std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let (vals, norm) = self.readback_bf16(normed, h.min(16))?;
             tracing::warn!(
@@ -153,7 +143,7 @@ impl TransformerModel {
         }
 
         // Per-layer divergence dump: final-norm output (input to lm_head).
-        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+        if let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
             && !dir.is_empty()
         {
             self.gpu.synchronize(stream)?;
@@ -161,7 +151,7 @@ impl TransformerModel {
             let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::create_dir_all(&dir).ok();
             std::fs::write(
-                std::path::Path::new(&dir).join("atlas_final_norm.bin"),
+                std::path::Path::new(&dir).join("avarok_final_norm.bin"),
                 &bytes,
             )
             .ok();
@@ -216,7 +206,7 @@ impl TransformerModel {
         };
 
         // Per-layer divergence dump: full logits vector + top-10 token IDs.
-        if let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+        if let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
             && !dir.is_empty()
         {
             self.gpu.synchronize(stream)?;
@@ -232,15 +222,19 @@ impl TransformerModel {
                 .collect();
             let lbytes: Vec<u8> = logit_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::create_dir_all(&dir).ok();
-            std::fs::write(std::path::Path::new(&dir).join("atlas_logits.bin"), &lbytes).ok();
+            std::fs::write(
+                std::path::Path::new(&dir).join("avarok_logits.bin"),
+                &lbytes,
+            )
+            .ok();
             let mut idx: Vec<usize> = (0..logit_vals.len()).collect();
             idx.sort_by(|&a, &b| logit_vals[b].partial_cmp(&logit_vals[a]).unwrap());
             let top: Vec<(usize, f32)> = idx.iter().take(10).map(|&i| (i, logit_vals[i])).collect();
-            tracing::info!("ATLAS_NEMO_DUMP: top-10 logits = {top:?}");
+            tracing::info!("AVAROK_NEMO_DUMP: top-10 logits = {top:?}");
         }
 
         // Diagnostic: logits stats
-        if std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
+        if std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true") {
             self.gpu.synchronize(stream)?;
             let logits_ptr = self.buffers.logits();
             let n_logits = self.config.vocab_size;
@@ -328,8 +322,37 @@ impl TransformerModel {
                 );
                 super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
             }
+        } else if self.ssm_snapshots.is_enabled()
+            && let super::exact_leaf::ExactLeaf::Redundant { tail, replay } =
+                super::exact_leaf::exact_leaf(
+                    seq.tail_checkpoint_tokens,
+                    tokens.len(),
+                    bs,
+                    super::exact_leaf::marconi_exact_enabled(),
+                )
+        {
+            // The tail checkpoint saved during this prefill covers every
+            // restore this leaf could serve; the KV goes into the radix on
+            // its own and the pool slot stays free for an anchor that is
+            // reachable. See `exact_leaf.rs` for the measurement.
+            tracing::debug!(
+                "exact leaf not saved for {} tokens: tail checkpoint at {tail} covers it \
+                 (replay {replay} tokens)",
+                tokens.len()
+            );
+            if !self.tokens_have_vision_pad(tokens) && !self.hss_window_slid(seq) {
+                let acquired = self.prefix_cache.insert(
+                    tokens,
+                    &seq.block_table,
+                    &seq.disk_block_ids,
+                    bs,
+                    seq.cached_prefix_tokens,
+                    seq.adapter_id,
+                );
+                super::super::super::block_mgmt::cache_acquires_refs(&acquired, kv_cache);
+            }
         } else if self.ssm_snapshots.is_enabled() {
-            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(
                     seq.slot_idx,
                     self.gpu.as_ref(),
@@ -390,6 +413,14 @@ impl TransformerModel {
                         tokens.len(),
                         seq.block_table.len(),
                     );
+                    // Chunk-boundary aux layer state (PLE history/conv, QSA
+                    // indexer keys) rides the snapshot — a restore without it
+                    // would serve the previous request's lexical state, so
+                    // aux-carrying models decline aux-less slots on restore.
+                    let aux = self.collect_aux_states(seq, stream)?;
+                    if !aux.is_empty() {
+                        self.ssm_snapshots.set_aux(snap_id, aux);
+                    }
                     // Stash the last-token post-norm hidden so a future exact
                     // full-prompt hit can emit the first token's logits without
                     // re-running the last token through the SSM layers. `normed`

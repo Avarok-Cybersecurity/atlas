@@ -17,7 +17,7 @@
 //! rate for the model now running. Prometheus reads the reset as a counter
 //! restart, which it already handles.
 //!
-//! Called from `AtlasCudaBackend::new`, which is where a model's GPU state
+//! Called from `AvarokCudaBackend::new`, which is where a model's GPU state
 //! begins. That is deliberately upstream of the first kernel lookup, so the
 //! kernel audit records only this model's modules.
 
@@ -59,7 +59,7 @@ pub struct RunMetrics {
     // ── Per-run baselines for the counters above ──
     //
     // `cache_hits`, `cache_misses` and `cache_hit_tokens` are exported on
-    // /metrics as `atlas_prefix_cache_*_total`, declared `TYPE counter`, and a
+    // /metrics as `avarok_prefix_cache_*_total`, declared `TYPE counter`, and a
     // counter must only ever climb. Zeroing them was harmless while a backend
     // was built exactly once per process — the reset happened before anything
     // could scrape. Hot-swap builds one per load, so the same call now resets

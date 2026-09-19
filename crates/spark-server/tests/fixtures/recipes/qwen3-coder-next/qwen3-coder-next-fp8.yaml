@@ -22,7 +22,7 @@ metadata:
     Known limitation: agentic quality degrades after ~5–8 tool-use
     turns (model emits malformed XML, loops). Document but accept —
     this is a model issue, not an Atlas one.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 80B
   model_dtype: fp8

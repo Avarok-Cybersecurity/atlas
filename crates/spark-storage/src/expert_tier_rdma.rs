@@ -2,7 +2,7 @@
 //
 // RdmaTier — the peer weight-fetch tier (Stage 4).
 //
-// Fetches expert records from an `atlas-expert-peer` straight into the pinned
+// Fetches expert records from an `avarok-expert-peer` straight into the pinned
 // arena, then returns residency addresses pointing INTO that arena — exactly
 // like `UmaArenaTier`, only the source is a peer instead of local NVMe. Two
 // transports share the tier and the arena machinery:
@@ -19,7 +19,7 @@
 //
 // The transport is chosen by the `--expert-backend` value: `rdma` = TCP,
 // `rdma-verbs` = one-sided verbs. Device/GID for verbs come from
-// `$ATLAS_EXPERT_RDMA_DEV` (default `roceP2p1s0f1`) / `$ATLAS_EXPERT_RDMA_GID`
+// `$AVAROK_EXPERT_RDMA_DEV` (default `roceP2p1s0f1`) / `$AVAROK_EXPERT_RDMA_GID`
 // (default 3, the RoCEv2 IPv4 GID on GB10/CX7).
 
 use std::io::{Read, Write};
@@ -37,7 +37,7 @@ use crate::expert_tier::{ArenaSlot, ExpertResidency, ExpertTier, TierKind, resid
 /// striped to `rail = expert % n_rails` (single-rail = the unchanged path).
 enum Transport {
     Tcp,
-    #[cfg(atlas_rdma_verbs)]
+    #[cfg(avarok_rdma_verbs)]
     Verbs(Vec<Rail>),
 }
 
@@ -45,9 +45,9 @@ enum Transport {
 /// and the per-layer remote MR `{base, rkey}` table the peer published for it.
 /// The base VA is shared across rails (the peer mmaps each layer once); only the
 /// rkey (and QP/NIC) differ per rail.
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 struct Rail {
-    verbs: atlas_rdma::verbs::Verbs,
+    verbs: avarok_rdma::verbs::Verbs,
     arena_lkey: u32,
     /// `(remote_base_addr, rkey)` per MoE layer, layer-indexed.
     layers: Vec<(u64, u32)>,
@@ -86,19 +86,19 @@ impl RdmaTier {
         let arena = ExpertArena::new(num_slabs, slots_per_slab, layout.record_stride as usize)?;
 
         let transport = if use_verbs {
-            #[cfg(atlas_rdma_verbs)]
+            #[cfg(avarok_rdma_verbs)]
             {
                 connect_verbs(&mut stream, &arena, index.num_moe_layers)?
             }
             // Built without rdma-core (no C shim) — verbs is unavailable; the
             // TCP `rdma` backend still works. Keeps the crate compiling under
-            // ATLAS_SKIP_BUILD / hosts without libibverbs.
-            #[cfg(not(atlas_rdma_verbs))]
+            // AVAROK_SKIP_BUILD / hosts without libibverbs.
+            #[cfg(not(avarok_rdma_verbs))]
             {
                 let _ = &arena;
                 bail!(
                     "--expert-backend rdma-verbs needs a build with rdma-core \
-                     (atlas_rdma_verbs cfg); use --expert-backend rdma (TCP) instead"
+                     (avarok_rdma_verbs cfg); use --expert-backend rdma (TCP) instead"
                 );
             }
         } else {
@@ -110,7 +110,7 @@ impl RdmaTier {
 
         let label = match &transport {
             Transport::Tcp => "TCP".to_string(),
-            #[cfg(atlas_rdma_verbs)]
+            #[cfg(avarok_rdma_verbs)]
             Transport::Verbs(rails) => {
                 format!("verbs (one-sided RDMA READ, {} rail(s))", rails.len())
             }
@@ -164,40 +164,40 @@ impl RdmaTier {
     }
 }
 
-/// Bring up the one-sided verbs transport via [`atlas_rdma::railset::RailSet`]:
+/// Bring up the one-sided verbs transport via [`avarok_rdma::railset::RailSet`]:
 /// create N rails, register the arena on each, exchange per-rail QP params over
 /// the TCP control channel, connect INIT->RTR->RTS, await the ack. Dual-rail is
-/// env-driven (ATLAS_EXPERT_DUAL_RAIL=1): rail 0 = ATLAS_EXPERT_RDMA_DEV/GID
-/// (the existing single-rail defaults), rail 1 = ATLAS_EXPERT_RAIL2_DEV/GID
+/// env-driven (AVAROK_EXPERT_DUAL_RAIL=1): rail 0 = AVAROK_EXPERT_RDMA_DEV/GID
+/// (the existing single-rail defaults), rail 1 = AVAROK_EXPERT_RAIL2_DEV/GID
 /// (default rocep1s0f1 / 3). Single-rail is the default and is byte-for-byte
 /// the previous path.
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 fn connect_verbs(
     stream: &mut TcpStream,
     arena: &ExpertArena,
     num_layers: u32,
 ) -> Result<Transport> {
     use crate::expert_peer::MODE_VERBS;
-    use atlas_rdma::env::{first_set, first_set_u32};
-    use atlas_rdma::railset::{RailSet, RailSpec};
+    use avarok_rdma::env::{first_set, first_set_u32};
+    use avarok_rdma::railset::{RailSet, RailSpec};
 
     stream
         .write_all(&[MODE_VERBS])
         .context("send verbs transport mode")?;
 
     // Rail 0 from the expert env (the cabled CX7 link); rail 1 from the expert
-    // rail-2 env. Dual-rail only when ATLAS_EXPERT_DUAL_RAIL=1. PSN = fresh
+    // rail-2 env. Dual-rail only when AVAROK_EXPERT_DUAL_RAIL=1. PSN = fresh
     // random 24-bit per rail (caller-supplied by RailSet design).
     let spec = |dev: String, gid: u32| RailSpec::new(dev, gid, rand::random::<u32>() & 0xff_ffff);
     let rail0 = spec(
-        first_set(&["ATLAS_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
-        first_set_u32(&["ATLAS_EXPERT_RDMA_GID"], 3),
+        first_set(&["AVAROK_EXPERT_RDMA_DEV"], "roceP2p1s0f1"),
+        first_set_u32(&["AVAROK_EXPERT_RDMA_GID"], 3),
     );
-    let dual = std::env::var("ATLAS_EXPERT_DUAL_RAIL").ok().as_deref() == Some("1");
+    let dual = std::env::var("AVAROK_EXPERT_DUAL_RAIL").ok().as_deref() == Some("1");
     let specs: Vec<RailSpec> = if dual {
         let rail1 = spec(
-            first_set(&["ATLAS_EXPERT_RAIL2_DEV"], "rocep1s0f1"),
-            first_set_u32(&["ATLAS_EXPERT_RAIL2_GID"], 3),
+            first_set(&["AVAROK_EXPERT_RAIL2_DEV"], "rocep1s0f1"),
+            first_set_u32(&["AVAROK_EXPERT_RAIL2_GID"], 3),
         );
         vec![rail0, rail1]
     } else {
@@ -262,7 +262,7 @@ impl ExpertTier for RdmaTier {
             Transport::Tcp => {
                 self.fetch_tcp(key, host, stride)?;
             }
-            #[cfg(atlas_rdma_verbs)]
+            #[cfg(avarok_rdma_verbs)]
             Transport::Verbs(rails) => {
                 // Stripe the fetch onto rail = expert % n_rails. Single-rail
                 // (n == 1) => always rail 0, the unchanged path.

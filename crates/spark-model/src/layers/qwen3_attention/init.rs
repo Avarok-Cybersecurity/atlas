@@ -10,7 +10,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // `gate` must be called through a real path, not through a `let`-bound
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
-use super::init_arch_gates::{ArchProbes, gated as gate};
+use super::init_arch_gates::{ArchProbes, gated as gate, present};
 use super::types::{HeadGateActivation, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
@@ -29,7 +29,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -60,7 +60,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -93,7 +93,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
             super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, config.head_dim);
@@ -140,6 +140,8 @@ impl Qwen3AttentionLayer {
             post_ffn_out_norm: None,
             layer_scalar: None,
             moe_ffn: None,
+            shortcut_carry_out: None,
+            shortcut_carry_in: None,
             pre_moe_norm: None,
             post_moe_out_norm: None,
             post_dense_ffn_norm: None,
@@ -156,6 +158,7 @@ impl Qwen3AttentionLayer {
             // when the hyper_connection module is absent), so non-V4 models
             // still start cleanly.
             hc: None,
+            qsa: None,
             hc_pre_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_pre"),
             hc_post_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_post"),
             hc_expand_k: gate(
@@ -185,15 +188,26 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t_m128",
                 "w8a16_gemm_t_m128",
             ),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            // `Fp8ActQuant` probes the shared quantizer AND the Hopper
+            // twin, which only `kernels/hopper` ships, and carries both
+            // handles so a launcher can never pair one kernel's entry point
+            // with the other's grid. Every target still has the shared one.
+            // The shared name is the one `W8A8_PREFILL_KERNELS[0]` (#915)
+            // spells for preflight, which derives it from the same constants.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
+                super::types_weights::W8A8_PREFILL_KERNELS[1].0,
+                super::types_weights::W8A8_PREFILL_KERNELS[1].1,
+            ),
+            // Same optional adapter the SSM layer loads (`init.rs`): absent on
+            // a shadow that has no `fp8_scale_transpose` module, which makes
+            // the cuBLASLt W8A8 arms decline rather than hand the library the
+            // wrong scale order.
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
             ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
@@ -232,6 +246,59 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_batch4_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4",
+            ),
+            w8a16_gemv_batch16_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16",
+            ),
+            w8a16_gemv_batch4_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4_strided",
+            ),
+            w8a16_gemv_batch16_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16_strided",
+            ),
+            w8a16_gemm_m16_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16",
+            ),
+            w8a16_gemm_m16_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16_strided",
+            ),
+            m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            w8a16_gemv_ncol2_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2",
+            ),
+            w8a16_gemv_ncol4_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4",
+            ),
+            w8a16_gemv_ncol2_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2_strided",
+            ),
+            w8a16_gemv_ncol4_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4_strided",
+            ),
+            attn_ncol: super::attn_ncol_gemv::ncol_gemv_enabled()
+                .then(super::attn_ncol_gemv::ncol_gemv_width),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,
@@ -435,6 +502,35 @@ impl Qwen3AttentionLayer {
                 | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
+            // The Hopper split-K twins (#928). `try_kernel`, not `kernel`: the
+            // sources live only in `kernels/hopper/common`, so on gb10, b200,
+            // strix and metal the lookup returns a zero handle and the dispatch
+            // keeps its existing arm. Resolved unconditionally rather than
+            // behind the `attn_decode_splitk` lever because the FP8 twin is a
+            // drop-in for the gb10 pair whenever split-K runs at all, and
+            // probing on a lever the operator can flip at boot would make the
+            // handle set depend on the environment — which a CUDA graph
+            // capture must not.
+            paged_decode_splitk_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_splitk_fp8_hopper",
+            )),
+            paged_decode_reduce_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_reduce_fp8_hopper",
+            )),
+            paged_decode_splitk_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_splitk_bf16_hopper",
+            )),
+            paged_decode_reduce_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_reduce_bf16_hopper",
+            )),
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // Gemma-4 rms-norm uses the absolute formula `out = x * rms * w`.
             rms_norm_f32_in_k: KernelHandle(0),
@@ -477,12 +573,19 @@ impl Qwen3AttentionLayer {
                 "dense_gemm_bf16_pipelined",
             ),
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
-            prefill_attn_512_k: gate(
-                probes.wide_head_dim,
-                gpu,
-                "inferspark_prefill_512",
-                "inferspark_prefill_512",
-            ),
+            // Name comes from the SSOT helper that also supplies the BR the
+            // launcher builds its grid from — see `ops::wide_prefill_kernel`.
+            // Module and entry share a name for both variants.
+            // Resolved WITH FALLBACK — see `ops::wide_prefill_kernel`. A target
+            // that ships only the scalar HDIM=512 kernel must still get it.
+            prefill_attn_512_k: if probes.wide_head_dim {
+                crate::layers::ops::wide_prefill_kernel(gpu).0
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            },
+            // BR=32 is the tensor-core instantiation; BR=16 the scalar reference.
+            prefill_attn_512_is_tc: probes.wide_head_dim
+                && crate::layers::ops::wide_prefill_kernel(gpu).1 == 32,
             // DeepSeek-V4 sparse-attention compressor + compressed-KV prefill.
             csa_compress_k: gate(probes.compressed_attn, gpu, "csa_compress", "csa_compress"),
             prefill_attn_compressed_k: gate(
@@ -653,6 +756,7 @@ impl Qwen3AttentionLayer {
                 && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
             {
                 Some(Fp8KvCalibration::new(
+                    attn_layer_idx,
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
                     gpu,

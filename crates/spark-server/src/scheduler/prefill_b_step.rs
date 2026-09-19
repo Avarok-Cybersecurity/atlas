@@ -68,6 +68,9 @@ pub fn prefill_request(
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Match the chunked path: include grammar preparation once in service TTFT,
+    // while retaining the existing exclusion of HTTP handling and queue time.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -103,7 +106,6 @@ pub fn prefill_request(
         ),
     };
 
-    let request_start = Instant::now();
     tracing::info!(
         "Prefilling: {} prompt tokens, max_tokens={max_tokens}",
         prompt_tokens.len(),
@@ -160,7 +162,7 @@ pub fn prefill_request(
             req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         let mut a = ActiveSeq {
             seq,
             session_hash: req_session_hash,
@@ -170,6 +172,7 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -191,7 +194,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -268,7 +271,7 @@ pub fn prefill_request(
         // P1-4 (2026-07-09): thread the resolved `min_p` (request +
         // MODEL.toml floor via sampling_setup) — the first-token sample
         // previously ran with a hardcoded 0.0 min_p, bypassing the FP8
-        // argmax-flip safety net. Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // argmax-flip safety net. Kill-switch: AVAROK_NO_MTP_MINP=1.
         sample_first_token(
             model,
             logits,
@@ -278,6 +281,11 @@ pub fn prefill_request(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(
+                req_enable_thinking,
+                think_end_token,
+                tool_call_start_token,
+            ),
             &sched.levers.sampling(),
         )
     })();
@@ -352,7 +360,7 @@ pub fn prefill_request(
     let tool_request = grammar_state.is_some() || use_legacy_tool_call;
 
     let now = Instant::now();
-    let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+    let cached_prompt_tok = seq.reused_prefix_tokens as u32;
 
     if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
         let mut a = ActiveSeq {
@@ -364,6 +372,7 @@ pub fn prefill_request(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -385,7 +394,7 @@ pub fn prefill_request(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -449,6 +458,7 @@ pub fn prefill_request(
         min_tokens: req_min_tokens,
         eos_tokens: eos_tokens.to_vec(),
         finished: false,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink,
@@ -470,7 +480,8 @@ pub fn prefill_request(
         logit_bias,
         pending_drafts: Vec::new(),
         pending_draft_conf: Vec::new(),
-        inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
+        inside_thinking: spontaneous_think
+            || born_inside_thinking(req_enable_thinking, think_end_token),
         enable_thinking: req_enable_thinking,
         thinking_budget: if spontaneous_think {
             Some(spontaneous_think_budget)

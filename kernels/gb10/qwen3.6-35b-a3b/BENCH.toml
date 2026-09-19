@@ -2,7 +2,7 @@
 #
 # Sibling of MODEL.toml so the numbers sit beside the thing they describe;
 # hardware and model are implied by the path and cannot disagree with the
-# contents. Read by `atlas_plugin::gate::bench`.
+# contents. Read by `avarok_plugin::gate::bench`.
 #
 # Thresholds are per CHECKPOINT, not per model: two checkpoints of one model
 # can differ by several BFCL points, so they cannot share a bar.
@@ -45,17 +45,19 @@ best-of-2, or a mean with a floor), or keep the exact bar and accept re-runs. Lo
 counts to today's draw is still the wrong move, which is why they are unchanged. The ENGINE \
 is not in question: the shell harness scored webserver_ok 10/10 and cargo_valid 10/10 on \
 this same binary. || original: Gate A (benchmark-pr skill): N=10 agentic-webserver on the \
-35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s. The two \
+35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s \
+(SUPERSEDED: the ceiling in force is `sum_wall_s` <= 1800, raised 2026-08-18 — read its \
+metric comment below, not this paragraph). The two \
 10/10 counts are ABSOLUTE correctness bounds and take no noise. ★ Σwall is DELIBERATELY NOT \
 RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier Σwall carries \
 +/-200-300 s of run-to-run noise from single 230-320 s outlier iterations, so a ~978 s \
-ceiling would fail constantly on healthy builds. 1300 s is a BLOWUP DETECTOR, not a perf \
+ceiling would fail constantly on healthy builds. 1300 s was a BLOWUP DETECTOR, not a perf \
 gate — it cannot see a 5-10% TTFT regression, which is what the two TTFT gates are for. \
 Historical band Σwall 950-1287 s; high-water (fastest) 978.13 s recorded here for reference \
 only. Walls are box-specific: compare like-for-like or not at all. || ★ `iterations` is \
 PINNED at exactly 10, the N the two 10/10 bounds are written for. A count bound alone does \
 not describe the run that produced it: `webserver_ok >= 10` is satisfied by 12 successes out \
-of 20, and Σwall <= 1300 s is satisfied by 5 iterations. Neither is the gate. This adds a \
+of 20, and `sum_wall_s` <= 1800 is satisfied by 5 iterations. Neither is the gate. This adds a \
 threshold, it does not relax one -- the recorded runs all carry iterations 10."""
 
 [benchmarks.metrics.followed_directions]
@@ -157,17 +159,37 @@ than merely recorded. Self-start pins ssm_cache_slots=256 via [benchmarks.serve_
 own Marconi snapshots; the flagship recipe leaves the pool at its default 16. That is \
 capacity, not a score lever — the floors below stay the ratchet — but check_record demands \
 the pin on the record, so records measured before the pin stop covering and the next gate \
-run re-records under the declared config."""
+run re-records under the declared config. ★ CERTIFIED BY SHARDS SINCE 2026-09-13 \
+(gate::check_group: a complete partition of `--param shard=i/n` runs at one commit, any n; \
+the campaign sizes n to its fleet) — a whole-draw record no longer satisfies this gate. ★ SCORED OPEN by owner decision: cross-request SSM snapshot reuse stays \
+ON; on the golden draw that partition dependence is measured at 12 of 995 (#936; the twelve \
+are named in benchmarks::bfcl::sensitive and in the bfcl-subset note), and this draw shares \
+the mechanism. ★ NO SHARDED MEASUREMENT OF THIS DRAW EXISTS YET: the floors below are the \
+whole-draw ratchet carried forward PROVISIONALLY, and the first campaign run under the shard \
+rule (the stack that introduces it) either confirms them or re-cuts them here with the \
+reason recorded — the ssm_cache_slots=256 pin was sized for one serial 1004-sample generate, \
+and a 251-sample shard sits inside it with more room, so the aggregate is expected at or \
+above the whole-draw number, not below it. ★ RE-CUT 2026-09-14 (owner decision, issue #1083, \
+discussion #1084): overall 86.50 -> 84.56, normalized 86.90 -> 85.77 — the first sharded \
+measurement, 84.96/86.17 at 45cd3b1550, minus the 0.40 band. The reason is RECORDED, as \
+this note demands: until #1043/#1071 Atlas sent this checkpoint its tool prompt TWICE (the \
+template's and its own injected one) and the duplicate was worth +1.5 on the aggregate, \
++2.8 on shard c — proven by a same-node control, 45cd3b1550 with only #1071 reverted, \
+scoring shard c 87.60/87.49 to the hundredth of the pre-#1071 record. Duplicating a prompt \
+is not a solution; one tool prompt is the definition from here, and these floors are that \
+definition's ratchet. DO NOT recover them by re-adding the second prompt. They rise with \
+the next receipt that beats them (a better SINGLE prompt is measurement-definition work \
+and gets its own campaign)."""
 
 [benchmarks.serve_overrides]
 ssm_cache_slots = "256"
 
 [benchmarks.metrics.normalized_single_turn_score]
-min = 86.90
+min = 85.77
 noise = 0.4
 
 [benchmarks.metrics.overall_accuracy]
-min = 86.50
+min = 84.56
 noise = 0.4
 
 [benchmarks.metrics.samples]
@@ -182,15 +204,63 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1677.93 ms × +3% and p90 4580.73 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1576.3 ms × +3% and p90 4268.6 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21. The prior ceilings came from a 2026-08-04 baseline and were never \
+re-derived, so they had drifted to 9.6% (median) and 12.7% (p90) of slack against a \
+gate designed for 3%/5% — a backstop 3x looser than intended cannot catch the \
+regression it exists for. Note `update_baseline = true` means the gate compares each \
+run to the PREVIOUS run, so it tracks drift while these committed values are the only \
+ABSOLUTE bound; they therefore have to be re-cut whenever the path gets materially \
+faster, which it did (shared-kernel wins: fused GDN spine + token-parallel conv1d)."""
 
 [benchmarks.metrics.median_ms]
-max = 1728.27
+max = 1623.59
 
 [benchmarks.metrics.p90_ms]
-max = 4809.76
+max = 4482.03
+
+# ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
+# The FP8 entry above is the DEFAULT subject, and until this entry existed it
+# was the ONLY one: no gate anywhere exercised an NVFP4 MoE checkpoint. That
+# mattered — the fast-MoE default-on work (#654) is gated on
+# `modelopt_mixed_precision || nvfp4_moe`, so it is INERT on FP8, and the whole
+# 10-gate suite passed it while never touching the path it changed.
+#
+# `default` is deliberately absent: this is a variant, so its records are named
+# `YYYY-MM-DD-<sha>-<slug>.json` and cannot collide with the FP8 record cut from
+# the same commit on the same day.
+#
+# CEILINGS = same-box baseline (dgx1, 2026-08-21, this recipe) x the gate limits,
+# derived exactly as the FP8 entries above are. Measured against a SELF-DRIVEN
+# server, because the machinery deliberately refuses to let an unmeasured entry
+# bootstrap itself: `status = "unmeasured"` entries are DROPPED rather than given
+# empty thresholds, so `resolve()` fails loudly instead of an unbounded entry
+# passing every check it is handed. A new variant is therefore always
+# measure-then-declare, never gate-then-fill-in.
+#   cold  median 442.3 ms  p90 1314.3 ms   (256/1024/4096 tok: 244.8 / 442.3 / 1310.7)
+#   warm  median 439.6 ms  p90 1291.1 ms   (256/1024/4096 tok: 230.7 / 439.6 / 1290.9)
+# TTFT is box-local — a different box must re-record these, not reuse them.
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-cold-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Cold-TTFT guard for the NVFP4 MoE checkpoint — the path fast-MoE default-on \
+actually changes, and which no gate exercised before this entry. Ceilings = \
+dgx1 baseline 442.3 ms median x +3%, 1314.3 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 455.57
+
+[benchmarks.metrics.p90_ms]
+max = 1380.02
+
+
 
 [[benchmarks]]
 quant = "nvfp4"
@@ -200,15 +270,37 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-04, canonical serve \
-recipe) × the gate limits: median 1599.98 ms × +3% and p90 4585.18 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it."""
+Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
+recipe) × the gate limits: median 1513.9 ms × +3% and p90 4292.8 ms × +5%. TTFT is \
+box-local by nature — a different box must re-record this baseline, not reuse it.
+
+RE-CUT 2026-08-21, same reasoning as the cold entry above: the 2026-08-04 ceilings had \
+drifted to 8.9%/12.2% of slack on a 3%/5% gate."""
 
 [benchmarks.metrics.median_ms]
-max = 1647.98
+max = 1559.32
 
 [benchmarks.metrics.p90_ms]
-max = 4814.44
+max = 4507.44
+
+# ── NVFP4-MoE VARIANT of the warm-TTFT guard (see the cold note above) ──────
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "nvidia/Qwen3.6-35B-A3B-NVFP4"
+gate = "ttft-warm-gate"
+recipe = "qwen3.6/qwen3.6-35b-a3b-nvfp4"
+status = "measured"
+note = """\
+Warm-TTFT guard for the NVFP4 MoE checkpoint. Ceilings = dgx1 baseline \
+439.6 ms median x +3%, 1291.1 ms p90 x +5%."""
+
+[benchmarks.metrics.median_ms]
+max = 452.79
+
+[benchmarks.metrics.p90_ms]
+max = 1355.65
+
+
 
 [[benchmarks]]
 quant = "nvfp4"
@@ -227,6 +319,51 @@ concurrency.
 
 NO [benchmarks.metrics] TABLE ON PURPOSE — see the dense entry. Unmeasured \
 means unmeasured; thresholds follow the first run on main.\
+"""
+
+[[benchmarks]]
+quant = "nvfp4"
+checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
+gate = "mlperf-agentic-subset"
+recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+default = true
+status = "unmeasured"
+note = """\
+MLPerf Agentic Inference (datacenter) subset leg -- REGISTERED UNRUNNABLE, NEVER MEASURED. \
+The official dataset (613 trajectories, 500 Workato workflow + 113 DeepSWE coding) is \
+unpublished as of 2026-08-13: mlcommons/endpoints@7935df4 ships an empty datasets/ dir and \
+its README says "MLCommons storage (link TBD)". No run has ever happened, so there are NO \
+metrics here and none may be guessed in. The scorer is a Rust port of the upstream inline \
+scorer at that same commit, pinned by executed-upstream parity fixtures \
+(crates/avarok-plugin/assets/mlperf-agentic/parity_fixtures.json). || CHECKPOINT CAVEAT: \
+MLCommons specifies Qwen/Qwen3.6-35B-A3B (BF16). This entry serves the official FP8 \
+sibling -- rules-legal quantization under MLPerf closed-division 8.1, but NOT the named \
+checkpoint, and its accuracy validity is unproven until the official three-part gate is \
+cleared. || CONTEXT, NEVER FLOORS: MLPerf's own thresholds for this model are inline \
+accuracy >= 55.86 pct, OSL per-turn mean 355-434 tokens, SWE-bench Verified >= 67.5 pct \
+(200 instances). They are FULL-DATASET, temp-1.0, official-client numbers; this subset \
+draw on an FP8 checkpoint with a pinned seed is a different distribution, so writing any \
+of them as a floor here would gate against a number nobody measured. The first measured \
+run on frozen main becomes the baseline, exactly like the echolp gate's history. || \
+SAMPLING IS IMMUTABLE AND STOCHASTIC: official params are temp 1.0 / top_k 20 / top_p \
+0.95 / repetition 1.0 / presence 1.5 / max_new_tokens 8192 / preserve_thinking true, and \
+submitters may not add or remove any. Every other accuracy gate in this file runs temp 0; \
+this leg is therefore the repo's first stochastic gate candidate. The leg pins seed 42 \
+(MLPerf specifies no seed, so this adds no violation) but a seeded temp-1.0 run is still \
+not bitwise reproducible across engines -- the calibration protocol must quantify the \
+spread before any floor is written, and if the noise cannot fit the 5 pct schema cap the \
+draw is too small or the gate must average repeats. || BEFORE FIRST MEASUREMENT, in \
+order: (1) dataset ships -> record its full-file SHA256 as expected_sha256 here and in \
+the leg params; (2) calibration run on frozen main (generous draw) measures s/turn, OSL, \
+per-domain spread, and the context-exclusion set for the served max_seq_len; (3) freeze \
+the first-K draw + its draw fingerprint (recorded in the gate record's \
+dataset_fingerprint field); (4) >= 3 repeats size the noise; (5) only then write \
+status = "measured" floors. || NOT COVERED BY THIS LEG regardless of dataset: the \
+SWE-bench Verified leg (live mini-swe-agent + Docker service; a workflow, not a leg -- \
+without it no result is a valid official submission and every report must say "inline + \
+OSL only"); KV salting (enable_salt, blake2b -- needs a dep, wire at calibration); tool \
+delays; the official concurrency/Pareto scenario shape (per-user vs per-system tok/s \
+curve via the upstream client, which is the right tool for any official submission run).\
 """
 
 [[benchmarks]]
@@ -332,15 +469,46 @@ max = 0.0
 # restored from anchors 992-1152). The floor of 1 is a DEFINITION, not a
 # measurement: it distinguishes "the restore path ran" from "prefix caching
 # was off and the gate replayed against a cold engine" — the configuration
-# under which this gate once returned a green PASS proving nothing. Ratchet
-# toward the observed anchor scale (~992 on this checkpoint) after the first
-# recorded run that carries this metric; do not guess a higher floor before
-# then.
+# under which this gate once returned a green PASS proving nothing.
+#
+# ★ RATCHETED 2026-09-11, 1.0 -> 900.0, discharging this comment's own
+# instruction to "ratchet toward the observed anchor scale after the first
+# recorded run that carries this metric". That condition was met 54 runs ago:
+# EVERY passing record carrying the metric reads exactly 1026.0 — 54 of 54,
+# zero variance, across four weeks and three checkpoint-config generations.
+# The floor of 900.0 sits ~12% under that invariant, which is margin for a
+# different anchor scale rather than for noise; there is no noise to cover.
+#
+# The one record that does not read 1026 is 2026-08-15-d4c00509b7, which reads
+# 0 — a FAIL whose reference round never ran (rounds 0). That is the vacuity
+# case this bound exists for, and it confirms the bound catches it. What 1.0
+# could not catch is the case in between: a server caching a handful of tokens
+# rather than a real anchor would have passed a floor of 1 while proving as
+# little as the cold engine did.
 [benchmarks.metrics.min_cached_prompt_tokens]
-min = 1.0
+min = 900.0
 
 [benchmarks.metrics.sum_wall_s]
-max = 1200.0
+# The blowup detector, not a perf gate. The ceiling of 200.0 replaces 1200.0
+# as of 2026-09-11, discharging the entry note's "generous pending the first
+# recorded run; ratchet after measurement, never to the best".
+#
+# Measured on THIS entry's pinned instrument (disable_thinking = "true",
+# ssm_cache_slots = "256"): 54 passing records spanning 75.8 to 114.4 s, in
+# three levels — ~110-114 (2026-08-15 to 08-23), ~82-85 (08-23 onward) and
+# 75.8-76.6 on 09-08, the same f9fd8ca43 step the decode floor records. 200.0
+# is 1.75x the worst of them, so it is not drawn near the best.
+#
+# ★ Three older records read 306.8 / 320.8 / 321.4 and are NOT the basis: they
+# predate the disable_thinking pin, so they measured thinking-on generation —
+# roughly 3x the work — and check_record would refuse them against this
+# baseline in any case. A ceiling drawn to cover them would have to be 400+,
+# which is a ceiling for an instrument this entry no longer serves.
+#
+# What 200.0 is sized to catch: one round hanging to the 300 s request timeout
+# takes the sum past 300 on its own, and a uniform 50% slowdown lands near 170.
+# Both fail. The superseded 1200.0 caught neither, and nothing said so.
+max = 200.0
 
 # --- vision-fidelity -------------------------------------------------------
 # Vision models only. This gate is declared on the three targets that ship a

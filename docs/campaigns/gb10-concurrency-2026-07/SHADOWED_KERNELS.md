@@ -4,9 +4,9 @@
 
 ## Symptom
 
-Phase A measured Atlas losing to vLLM at every concurrency above 1:
+Phase A measured Avarok losing to vLLM at every concurrency above 1:
 
-| C | Atlas tok/s | vLLM tok/s | Atlas TPOT p50 | vLLM TPOT p50 |
+| C | Avarok tok/s | vLLM tok/s | Avarok TPOT p50 | vLLM TPOT p50 |
 |---|---|---|---|---|
 | 1 | **27.3** | 14.2 | 36.6 ms | 70.1 ms |
 | 2 | 20.5 | 27.8 | 96.9 ms | 71.4 ms |
@@ -21,7 +21,7 @@ concurrent at all** on the decode path.
 
 ## Root cause
 
-`crates/atlas-kernels/build.rs`, `collect_cu_files`:
+`crates/avarok-kernels/build.rs`, `collect_cu_files`:
 
 ```rust
 // Override layer: model-specific kernel files shadow common ones
@@ -47,7 +47,7 @@ uses them is complete and wired (`trait_decode_multi_seq/ssm_batched_recurrent.r
 gated on:
 
 ```rust
-ATLAS_SSM_BATCHED_RECURRENT == "1" && self.gdn_f32_strided_k.0 != 0 && n > 1
+AVAROK_SSM_BATCHED_RECURRENT == "1" && self.gdn_f32_strided_k.0 != 0 && n > 1
 ```
 
 `try_kernel` returns `KernelHandle(0)` for a missing kernel and logs only at
@@ -106,7 +106,7 @@ The point is to make it a VISIBLE choice rather than a silent one.
 ## Verdict (A/B complete, 2026-07-26)
 
 Both legs on the same `:msdecode` image, identical serve geometry to Phases
-A/B, differing ONLY by `ATLAS_SSM_BATCHED_RECURRENT=1`.
+A/B, differing ONLY by `AVAROK_SSM_BATCHED_RECURRENT=1`.
 
 * **Control validity:** the per-seq leg matches the Phase B baseline to
   <=0.4% at every C — the four ported kernels are bit-inert when off.
@@ -117,7 +117,7 @@ A/B, differing ONLY by `ATLAS_SSM_BATCHED_RECURRENT=1`.
   scales ~36ms x C (96/193/344/662 at C=2/4/8/16). The dominant per-sequence
   cost lives elsewhere in the decode step (candidates: per-seq attention,
   FFN batched-arm eligibility, LM head, per-seq sample+D2H). Next probe:
-  `ATLAS_SSM_MS_PROFILE=1` phase-split at C=4 to locate the ~160ms.
+  `AVAROK_SSM_MS_PROFILE=1` phase-split at C=4 to locate the ~160ms.
 * balanced_long remains error-polluted (pool-exhaustion kills 1-5/leg) —
   latency numbers from that config are invalid, tracked separately.
 

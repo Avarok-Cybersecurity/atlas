@@ -15,6 +15,14 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // LongCat zero-experts are wired only on the single-token decode
+        // + prefill paths (v1); this variant would silently mis-route the
+        // 384-wide router. Named refusal, not silent wrongness.
+        anyhow::ensure!(
+            self.router_logits_n as usize == ctx.config.num_experts,
+            "zero-expert MoE routing is not wired on this dispatch variant yet (forward_k3)"
+        );
+
         // Feature-1: a resident MoE adapter forces the per-row batched fallback
         // (folds gate/up/down route-agnostically; base rows no-op; same
         // moe_output[3,H]), skipping any no-fold fast path. Install-time gate →

@@ -17,6 +17,11 @@
 //! [`GgufName::Direct`] (a single HF name) or [`GgufName::Drop`] (metadata-only
 //! tensors like `rope_freqs.weight` that carry no learnable weight).
 
+mod deepseek41;
+
+pub use deepseek41::deepseek41_deferred_name;
+use deepseek41::translate_deepseek41;
+
 /// Result of translating one GGUF tensor name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GgufName {
@@ -76,6 +81,11 @@ fn arch_override(gguf_name: &str, arch: &str) -> Option<GgufName> {
         // namespace (`v.*` / `mm.*`) from the text backbone, so this never
         // collides with the qwen35 text arm — the two GGUFs open separately.
         "clip" => translate_clip(gguf_name),
+        // DeepSeek-V4.1 Flash. Names diverge from the decoder-only default
+        // across the whole block (MLA low-rank pairs, a shared compressor, a
+        // separate indexer, mHC triples, engram), so this arch is fully handled
+        // here and never falls through to `translate_default`.
+        "deepseek41" => translate_deepseek41(gguf_name),
         _ => None,
     }
 }
@@ -358,7 +368,7 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 }
 
 /// True if a mapped HF tensor name is a "big" dense projection that the native
-/// keep-packed Q2_0 decode path (`ATLAS_GGUF_NATIVE_Q2=1`) can serve without
+/// keep-packed Q2_0 decode path (`AVAROK_GGUF_NATIVE_Q2=1`) can serve without
 /// dequantizing — i.e. its weight stays a raw `block_q2_0` buffer in VRAM.
 ///
 /// Scoped for Tier-1 (decode) to the dense **FFN** projections only
@@ -375,6 +385,22 @@ fn translate_layer_sub(layer: usize, sub: &str) -> Option<GgufName> {
 ///     `!value_transform::needs(hf)` as a belt-and-suspenders guard.
 ///
 /// Pure + name-only, so it is unit-testable without a GPU or a real GGUF.
+/// DeepSeek-V4.1 projections that stay K-quant on the device
+/// (`WeightDtype::Q2K` / `Q3K`) instead of expanding to bf16 on load: the
+/// attention projections and the shared expert, which the layers run on the
+/// K-quant GEMV (decode) and MMQ (prefill) kernels, 0.33-0.43 instead of 2
+/// bytes a weight resident and read every token.
+pub fn is_v41_kquant_resident(hf: &str) -> bool {
+    hf.ends_with(".attn.wq_a.weight")
+        || hf.ends_with(".attn.wq_b.weight")
+        || hf.ends_with(".attn.wkv.weight")
+        || hf.ends_with(".attn.wo_a.weight")
+        || hf.ends_with(".attn.wo_b.weight")
+        || hf.ends_with(".ffn.shared_experts.w1")
+        || hf.ends_with(".ffn.shared_experts.w2")
+        || hf.ends_with(".ffn.shared_experts.w3")
+}
+
 pub fn is_keep_packed_proj(hf: &str) -> bool {
     hf.ends_with(".mlp.gate_proj.weight")
         || hf.ends_with(".mlp.up_proj.weight")

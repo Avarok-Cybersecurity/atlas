@@ -24,21 +24,21 @@ Arguments:
                nvidia NVFP4 checkpoints are NOT directly BF16-loadable; use a
                Gemma-3/Gemma-2 BF16 checkpoint as reference (same family).
     --prompt   Default: "Write a haiku about the ocean."
-    --output   JSON path. Default: /workspace/atlas/tests/gemma4_hf_reference.json
+    --output   JSON path. Default: /workspace/avarok/tests/gemma4_hf_reference.json
     --device   cpu | cuda. Default: cpu (safe when GPUs are busy; warns slow).
     --dtype    Default: bfloat16.
 
 How to diff against Atlas
 -------------------------
-Atlas has a diagnostic env var `ATLAS_DIAG_GEMMA4_HIDDEN=1` that logs per-layer
+Atlas has a diagnostic env var `AVAROK_DIAG_GEMMA4_HIDDEN=1` that logs per-layer
 hidden-state norms during decode. Run Atlas with that env var on the same
 prompt, then compare layer-by-layer norms / first-8 values / abs-max indices
 against the JSON this script writes.
 
 Relevant Atlas files:
-    /workspace/atlas/crates/spark-model/src/layers/qwen3_attention/trait_impl.rs
+    /workspace/avarok/crates/spark-model/src/layers/qwen3_attention/trait_impl.rs
         - decode forward + `gemma4_diag_enabled()` instrumentation
-    /workspace/atlas/crates/spark-model/src/weight_loader/gemma4.rs
+    /workspace/avarok/crates/spark-model/src/weight_loader/gemma4.rs
         - Gemma-4 weight loading (NVFP4 dequant, scale handling)
 
 CAVEAT
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
                     help="HF model id (default: google/gemma-3-27b-it). "
                          "Alt: google/gemma-2-27b-it.")
     ap.add_argument("--prompt", default="Write a haiku about the ocean.")
-    ap.add_argument("--output", default="/workspace/atlas/tests/gemma4_hf_reference.json")
+    ap.add_argument("--output", default="/workspace/avarok/tests/gemma4_hf_reference.json")
     ap.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
                     help="Default cpu (slow) since GPUs are often busy. Use cuda if free.")
     ap.add_argument("--dtype", default="bfloat16",

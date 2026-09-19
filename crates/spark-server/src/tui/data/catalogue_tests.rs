@@ -12,7 +12,7 @@ fn recipe(id: &str, model: &str, runtime: &str) -> Recipe {
         container: "c".into(),
         min_nodes: 1,
         description: "d".into(),
-        maintainer: "avarok".into(),
+        maintainer: "atlas".into(),
         category: "agent".into(),
         model_params: "27B".into(),
         quantization: "nvfp4".into(),
@@ -140,15 +140,15 @@ fn the_primary_recipe_prefers_one_that_can_actually_run() {
     let rows = join(
         &[
             recipe("a/vllm", "org/m", "vllm"),
-            recipe("b/atlas", "org/m", "atlas"),
+            recipe("b/avarok", "org/m", "atlas"),
         ],
         &[local("org/m", true, true)],
     );
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].primary().expect("a primary").id, "b/atlas");
+    assert_eq!(rows[0].primary().expect("a primary").id, "b/avarok");
     assert!(
         rows[0].runnable_now(),
-        "the atlas sibling makes it runnable"
+        "the avarok sibling makes it runnable"
     );
 }
 

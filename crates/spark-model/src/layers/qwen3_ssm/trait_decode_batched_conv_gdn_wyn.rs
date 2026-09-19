@@ -21,15 +21,56 @@ use crate::layers::ops;
 // encodes.
 
 impl Qwen3SsmLayer {
-    /// The wyN kernel for chain-verify `num_tokens` ∈ {5..8}, or `None`
+    /// The wyN kernel for chain-verify `num_tokens` ∈ {5..16}, or `None`
     /// when out of range, the module is absent (non-gb10 target), or the
-    /// `ATLAS_GDN_WYN=0` kill-switch is set — all of which keep the caller
-    /// on the sequential per-token fallback.
+    /// `AVAROK_GDN_WYN=0` kill-switch is set — all of which keep the caller
+    /// on the sequential per-token fallback. K=9..16 added 2026-08-29:
+    /// the γ>8 window class previously had NO fused arm and ran the
+    /// per-token loop (conv + gdn + 2 state D2Ds per token per GDN layer),
+    /// the measured γ10 tax that inverted a +18% accept gain.
     pub(super) fn wyn_kernel(&self, num_tokens: usize, wyn_enabled: bool) -> Option<KernelHandle> {
-        if !(5..=8).contains(&num_tokens) || !wyn_enabled {
+        if !(5..=16).contains(&num_tokens) || !wyn_enabled {
             return None;
         }
-        let k = self.gdn_wyn_k[num_tokens - 5];
+        // AVAROK_SSM_H_FP16: the FP16 twin is the ONLY correct kernel over an
+        // FP16 h pool — an FP32 wyN would read half-width data as floats and
+        // emit fluent garbage. A zero twin handle returns None on purpose;
+        // the caller's sequential fallback REFUSES under f16 (hard error),
+        // mirroring `require_wy_f16`.
+        let k = if super::ssm_h_fp16_enabled() {
+            self.gdn_wyn_f16_k[num_tokens - 5]
+        } else {
+            self.gdn_wyn_k[num_tokens - 5]
+        };
+        (k.0 != 0).then_some(k)
+    }
+
+    /// The pointer-table wyN twin for the CROSS-SEQUENCE batched verify at
+    /// width `num_tokens` ∈ {5..16} (`state_is_table` compiled in), or
+    /// `None` when out of range / module absent / `AVAROK_GDN_WYN=0` — the
+    /// caller then runs the per-sequence loop, byte-identical math. FP16
+    /// pool routing mirrors [`Self::wyn_kernel`]: over an f16 h pool only
+    /// the f16 twin is correct, and a zero twin handle returns None so the
+    /// caller's f16 refusal path (`require_wy_f16`) fires instead of
+    /// corruption.
+    // Seam marker 2026-09-01: consumed by the batched-verify dispatcher's
+    // 5..=16 arm (the NEXT change, gated on unit tests + nsys aim). Dead
+    // until then by design — the foundation ships behavior-neutral.
+    // provenance-id: 526f6e616c6420522e205374657369616b
+    #[allow(dead_code)]
+    pub(super) fn wyn_table_kernel(
+        &self,
+        num_tokens: usize,
+        wyn_enabled: bool,
+    ) -> Option<KernelHandle> {
+        if !(5..=16).contains(&num_tokens) || !wyn_enabled {
+            return None;
+        }
+        let k = if super::ssm_h_fp16_enabled() {
+            self.gdn_wyn_f16_table_k[num_tokens - 5]
+        } else {
+            self.gdn_wyn_table_k[num_tokens - 5]
+        };
         (k.0 != 0).then_some(k)
     }
 
@@ -42,7 +83,7 @@ impl Qwen3SsmLayer {
     /// final H in place. `wy_kernel`'s compile-time K must equal
     /// `args.num_tokens` (wy17 for 17, wy5..wy8 for 5..8).
     ///
-    /// Kill-switch `ATLAS_GDN_FUSED_CONV17=0` restores the per-token conv
+    /// Kill-switch `AVAROK_GDN_FUSED_CONV17=0` restores the per-token conv
     /// loop for A/B (applies to every width dispatched through this arm).
     pub(super) fn decode_batched_conv_gdn_wyn(
         &self,
@@ -84,7 +125,7 @@ impl Qwen3SsmLayer {
         let fused_conv = self.gdn_verify_fused_conv_kn_k.0 != 0
             && inter_contiguous
             && !matches!(
-                std::env::var("ATLAS_GDN_FUSED_CONV17").ok().as_deref(),
+                std::env::var("AVAROK_GDN_FUSED_CONV17").ok().as_deref(),
                 Some("0")
             );
         if fused_conv {
@@ -146,7 +187,14 @@ impl Qwen3SsmLayer {
         let v_ptr = conv_out_buf.offset(key_dim * 2 * bf16);
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
-        let inter_stride_floats = (h_bytes / 4) as u32;
+        // Pool pitch in the kernel's h ELEMENT size: FP32 floats for the
+        // base wyN family, halves for the `_f16` twins (h_bytes is the
+        // pool's byte pitch and is already dtype-sized upstream).
+        let inter_stride_floats = if super::ssm_h_fp16_enabled() {
+            (h_bytes / 2) as u32
+        } else {
+            (h_bytes / 4) as u32
+        };
         ops::gdn_decode_wyn(
             ctx.gpu,
             wy_kernel,

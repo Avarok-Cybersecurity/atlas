@@ -45,7 +45,7 @@ fn ebnf_literal_escape(c: char) -> String {
 /// opencode webserver_ok gap. NOTE this re-permits `<`-content; BUG#1 graceful
 /// disengage keeps any residual refusal non-fatal, and the live N=10 A/B is the
 /// gate for whether the prior F2 XML-attribute-drift mode returns.
-/// P1-2 (2026-07-09, env `ATLAS_GRAMMAR_FORCE_CLOSE=1`): with `force_close`,
+/// P1-2 (2026-07-09, env `AVAROK_GRAMMAR_FORCE_CLOSE=1`): with `force_close`,
 /// the DEEPEST arm (`"</parameter" [^>]` for qwen3_coder) is omitted, so once
 /// the value contains the full close-prefix the ONLY legal continuation is the
 /// literal final char — xgrammar's mask deflects a dropped `>` at sample time
@@ -87,14 +87,14 @@ fn ebnf_until_close_ladder(close: &str) -> String {
 
 /// P1-1/P1-2 env opt-ins (read per call; set in the serving environment).
 fn grammar_allow_empty_value() -> bool {
-    std::env::var("ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE").as_deref() == Ok("1")
+    std::env::var("AVAROK_GRAMMAR_ALLOW_EMPTY_VALUE").as_deref() == Ok("1")
 }
 fn grammar_force_close() -> bool {
-    std::env::var("ATLAS_GRAMMAR_FORCE_CLOSE").as_deref() == Ok("1")
+    std::env::var("AVAROK_GRAMMAR_FORCE_CLOSE").as_deref() == Ok("1")
 }
 
 /// F2-2a (2026-06-02): structural ceiling on a parameter VALUE's `rest`
-/// repetition, applied ONLY when the `ATLAS_GRAMMAR_VALUE_HARDEN` kill-switch
+/// repetition, applied ONLY when the `AVAROK_GRAMMAR_VALUE_HARDEN` kill-switch
 /// is on. A garbled/merged BPE close token (e.g. `</parameter_002e>`) can leave
 /// the literal-close match unfired, so `rest ::= rest_part*` accepts forever and
 /// the value runs to `max_tokens`. A bounded `rest_part{0,N}` makes an unclosed
@@ -106,18 +106,18 @@ fn grammar_force_close() -> bool {
 const VALUE_REST_MAX_REPEAT: u32 = 6000;
 
 /// Whether the F2 value-hardening kill-switch is on. Read once per call from
-/// `ATLAS_GRAMMAR_VALUE_HARDEN`; OFF unless exactly `"1"`. OFF ⇒ the emitted
+/// `AVAROK_GRAMMAR_VALUE_HARDEN`; OFF unless exactly `"1"`. OFF ⇒ the emitted
 /// grammar is byte-identical to the historical `rest ::= rest_part*`.
 fn value_harden_enabled() -> bool {
-    std::env::var("ATLAS_GRAMMAR_VALUE_HARDEN").as_deref() == Ok("1")
+    std::env::var("AVAROK_GRAMMAR_VALUE_HARDEN").as_deref() == Ok("1")
 }
 
 /// Whether the SHORT shared `<tool_call>` trigger is forced under
-/// `tool_choice="auto"`. Read once per call from `ATLAS_TOOL_SHORT_TRIGGER`;
+/// `tool_choice="auto"`. Read once per call from `AVAROK_TOOL_SHORT_TRIGGER`;
 /// OFF unless exactly `"1"`. OFF ⇒ the auto-mode triggers are byte-identical to
 /// the historical per-tool LATE `<tool_call>\n<function=NAME` set.
 fn short_tool_trigger_enabled() -> bool {
-    std::env::var("ATLAS_TOOL_SHORT_TRIGGER").as_deref() == Ok("1")
+    std::env::var("AVAROK_TOOL_SHORT_TRIGGER").as_deref() == Ok("1")
 }
 
 /// Body EBNF for an XML-style `<parameter=NAME>VALUE{value_close}` parameter
@@ -131,7 +131,7 @@ fn short_tool_trigger_enabled() -> bool {
 /// value-content fix is dynamically dispatched per grammar — any format with a
 /// `<…>VALUE<close>` region gets it, not just qwen3_coder.
 ///
-/// F2-2a: when `ATLAS_GRAMMAR_VALUE_HARDEN=1` the `rest` rule is bounded
+/// F2-2a: when `AVAROK_GRAMMAR_VALUE_HARDEN=1` the `rest` rule is bounded
 /// `rest_part{0,N}` instead of `rest_part*`; OFF (the default) emits the
 /// byte-identical historical Kleene-star form.
 ///
@@ -219,23 +219,28 @@ pub(crate) fn xml_param_value_body_ebnf_opts(
     //    `{value_close}` as body) at EVERY position, so first_content now
     //    reuses the SAME ladder for its `<` arm: `<` is legal at content
     //    start unless it begins the exact close delimiter.
-    // P1-1 (2026-07-09, env `ATLAS_GRAMMAR_ALLOW_EMPTY_VALUE=1`): the
+    // P1-1 (2026-07-09, env `AVAROK_GRAMMAR_ALLOW_EMPTY_VALUE=1`): the
     // non-empty guard makes an EMPTY parameter value unrepresentable, so a
     // model intending `<parameter=content></parameter>` is mask-coerced onto
     // garbage first bytes — at 43k depth this manufactured the byte-identical
     // `</parameter<parameter=` attractor. Opt-in allows the empty value
     // (immediate close). Trade-off: re-opens the Epoch-3 empty-garbage-call
     // shape — hence opt-in + BFCL A/B gate before default-on.
+    // Keep first_content at the start of its own sequence so the grammar
+    // optimizer can inline it into rest's scanner. Otherwise multi-byte value
+    // tokens cross a rule boundary and require contextual trials at value entry.
+    // Factoring this sequence preserves the language, including the empty opt-in.
     let value_rule = if allow_empty_value {
-        "value ::= leading_ws (first_content rest)?"
+        "value ::= leading_ws nonempty_value?"
     } else {
-        "value ::= leading_ws first_content rest"
+        "value ::= leading_ws nonempty_value"
     };
     format!(
         r#"root ::= param ("\n" param)*
 param ::= "<parameter=" paramname ">" value "{value_close}"
 {paramname_rule}
 {value_rule}
+nonempty_value ::= first_content rest
 leading_ws ::= [ \t\r\n]*
 first_content ::= [^ \t\r\n<=>] | {first_lt_arms}
 {rest_rule}
@@ -625,7 +630,7 @@ impl GrammarEngine {
         //   `<tool_call><tool_call>…` lockup is unreachable by
         //   construction. Mirrors compile_minimax_xml_tool_grammar's F67
         //   fix for the same xgrammar behaviour pattern.
-        // ATLAS_TOOL_SHORT_TRIGGER=1 (kill-switch, default OFF): under auto mode,
+        // AVAROK_TOOL_SHORT_TRIGGER=1 (kill-switch, default OFF): under auto mode,
         // engage the grammar the moment `<tool_call>` is sampled (SHORT shared
         // trigger) instead of the LATE per-tool `<tool_call>\n<function=NAME`
         // prefix — same xgrammar behaviour the F67 note above relies on. OFF ⇒
@@ -742,28 +747,115 @@ impl GrammarEngine {
             };
 
             let param_names = schema_param_names(&schema);
-            let paramname_rule = match param_names.as_ref() {
-                Some(names) if !names.is_empty() => {
-                    let alternatives = names
-                        .iter()
-                        .map(|param| serde_json::to_string(param).unwrap_or_else(|_| "\"\"".into()))
-                        .collect::<Vec<_>>()
-                        .join(" | ");
-                    format!("paramname ::= {alternatives}")
-                }
-                _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+            // A85 (2026-09-08): required STRING parameters must not be able to
+            // close with an empty value. `value ::= value_part*` let the model
+            // emit `<arg_value></arg_value>`, which is how tool-eval-bench TC-43
+            // produced `web_search {"query":""}` — the run's only
+            // `--fail-on-safety` trip. The four sibling compilers guard this;
+            // poolside did not.
+            //
+            // NOTE: `enforce_min_length_on_required_strings` is NOT the mechanism
+            // here. That helper stamps `minLength: 1` into the schema, which only
+            // reaches xgrammar on the `json_schema` content paths
+            // (hermes/bare_json/gemma4). Poolside emits raw EBNF and reads only
+            // the property NAMES out of the schema (`schema_param_names`), so a
+            // `minLength` key would be silently discarded. qwen3_coder is the real
+            // precedent: it enforces non-empty in its value EBNF too
+            // (`qwen3_coder_grammar_rejects_empty_parameter_body`).
+            //
+            // Scope is deliberately minLength>=1 — at least one character. It does
+            // NOT reject whitespace-only (qwen3_coder is stricter), does NOT
+            // require the `required` set to be PRESENT, and does not touch
+            // optional strings or non-string parameters. Over-constraining value
+            // bytes has bitten this grammar before (the `<`-ban that made Svelte
+            // and HTML writes unrepresentable).
+            let required_strings: std::collections::BTreeSet<&str> = {
+                let props = schema
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object);
+                schema
+                    .get("required")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|req| {
+                        req.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .filter(|key| {
+                                props
+                                    .and_then(|p| p.get(*key))
+                                    .and_then(|prop| prop.get("type"))
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some("string")
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let quote =
+                |param: &str| serde_json::to_string(param).unwrap_or_else(|_| "\"\"".into());
+            let alternation = |names: &[String]| {
+                names
+                    .iter()
+                    .map(|n| quote(n))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
             };
             let value_ladder = ebnf_until_close_ladder(value_close);
             let content = if has_no_parameters {
                 serde_json::json!({"type": "const_string", "value": ""})
             } else {
-                let body_ebnf = format!(
-                    "root ::= pair pair*\n\
-                     pair ::= \"<arg_key>\" paramname \"</arg_key><arg_value>\" value \"{value_close}\"\n\
-                     {paramname_rule}\n\
-                     value ::= value_part*\n\
-                     value_part ::= {value_ladder}"
-                );
+                let body_ebnf = match param_names.as_ref() {
+                    // Known property set AND at least one required string: split the
+                    // pair rule so only those parameters demand a non-empty value.
+                    Some(names) if !names.is_empty() && !required_strings.is_empty() => {
+                        let (req, opt): (Vec<String>, Vec<String>) = names
+                            .iter()
+                            .cloned()
+                            .partition(|n| required_strings.contains(n.as_str()));
+                        let mut rules = vec![
+                            "root ::= pair pair*".to_string(),
+                            format!(
+                                "reqpair ::= \"<arg_key>\" reqname \"</arg_key><arg_value>\" \
+                                 req_value \"{value_close}\""
+                            ),
+                            format!("reqname ::= {}", alternation(&req)),
+                        ];
+                        if opt.is_empty() {
+                            rules.insert(1, "pair ::= reqpair".to_string());
+                        } else {
+                            rules.insert(1, "pair ::= reqpair | optpair".to_string());
+                            rules.push(format!(
+                                "optpair ::= \"<arg_key>\" optname \"</arg_key><arg_value>\" \
+                                 value \"{value_close}\""
+                            ));
+                            rules.push(format!("optname ::= {}", alternation(&opt)));
+                            rules.push("value ::= value_part*".to_string());
+                        }
+                        // `req_value`, not `nonempty_value`: the qwen3_coder XML
+                        // helper above defines its own `nonempty_value ::= first_content
+                        // rest` in a SEPARATE grammar blob. Distinct names keep the two
+                        // readable side by side in one file.
+                        rules.push("req_value ::= value_part value_part*".to_string());
+                        rules.push(format!("value_part ::= {value_ladder}"));
+                        rules.join("\n")
+                    }
+                    // No required strings, or an open/unknown property set: emit the
+                    // pre-A85 grammar byte for byte. Nothing to guard, nothing changes.
+                    other => {
+                        let paramname_rule = match other {
+                            Some(names) if !names.is_empty() => {
+                                format!("paramname ::= {}", alternation(names))
+                            }
+                            _ => "paramname ::= [a-zA-Z_] [a-zA-Z_0-9]*".to_string(),
+                        };
+                        format!(
+                            "root ::= pair pair*\n\
+                             pair ::= \"<arg_key>\" paramname \"</arg_key><arg_value>\" value \"{value_close}\"\n\
+                             {paramname_rule}\n\
+                             value ::= value_part*\n\
+                             value_part ::= {value_ladder}"
+                        )
+                    }
+                };
                 serde_json::json!({"type": "grammar", "grammar": body_ebnf})
             };
             tag_entries.push(serde_json::json!({

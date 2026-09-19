@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // FP16 h-state twin of `gated_delta_rule_wy3_resident` (K=3 MTP-verify GDN,
-// register-resident Pass 2). Stage 2 of `ATLAS_SSM_H_FP16`.
+// register-resident Pass 2). Stage 2 of `AVAROK_SSM_H_FP16`.
 //
 // This is the kernel the C=16 rung runs: the default ladder `4:3,8:3,16:2,32:1`
 // verifies 2 drafts = K=3 rows at widths 9..16, and `wy_resident_min_width()`
@@ -115,19 +115,19 @@ gated_delta_rule_wy3_resident_f16(
     // ── Compute 3 k_dot products via block reduction (verbatim) ──
     {
         float p = (tid<k_dim) ? sk1[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd10 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk0[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd20 = r;
     }
     __syncthreads();
     {
         float p = (tid<k_dim) ? sk2[tid]*sk1[tid] : 0.0f;
-        float r = atlas_block_reduce_sum(p, smem_warp, tid);
+        float r = avarok_block_reduce_sum(p, smem_warp, tid);
         if (tid==0) kd21 = r;
     }
     __syncthreads();

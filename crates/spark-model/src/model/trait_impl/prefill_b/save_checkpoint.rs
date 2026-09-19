@@ -79,7 +79,7 @@ impl TransformerModel {
             );
             return Ok(());
         }
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -134,6 +134,17 @@ impl TransformerModel {
         let Some(snap_id) = snap_result else {
             return Ok(());
         };
+        // Aux (PLE n-gram history/conv + QSA indexer keys) rides the
+        // checkpoint. This boundary is a completed pass end, so the lexical
+        // state is position-correct at `end_token` by construction. Without
+        // it the restore-side aux gate declines this snapshot — and the
+        // tail-split checkpoint saved here (at tail-bs) is exactly the one
+        // warm multi-turn matches land on, so an aux-carrying model would
+        // recompute every warm prefill from zero.
+        let aux = self.collect_aux_states(seq, stream)?;
+        if !aux.is_empty() {
+            self.ssm_snapshots.set_aux(snap_id, aux);
+        }
 
         let boundary_tokens = &tokens[..end_token];
         // Phase 6.3 sliding-window: when HSS is engaged AND sliding has begun
@@ -187,6 +198,9 @@ impl TransformerModel {
             seq.adapter_id,
         ) {
             self.ssm_snapshots.free(old);
+        }
+        if is_prompt_tail {
+            seq.tail_checkpoint_tokens = Some(end_token);
         }
         tracing::info!(
             "Intermediate SSM checkpoint saved at token {} (snapshot_id {}, block {})",

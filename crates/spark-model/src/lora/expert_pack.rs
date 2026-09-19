@@ -19,7 +19,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 
@@ -37,7 +37,7 @@ pub(crate) fn present(router: &RouterMap, experts: &ExpertMap) -> bool {
     !router.is_empty() || !experts.is_empty()
 }
 
-/// Validate the collected router/expert maps: the `ATLAS_LORA_EXPERTS` master
+/// Validate the collected router/expert maps: the `AVAROK_LORA_EXPERTS` master
 /// gate, the expert-rank cap, pair completeness, and A=[r,in]/B=[out,r] shapes.
 /// Every failure is a NAMED reject (never a silent skip).
 pub(crate) fn validate(
@@ -52,7 +52,7 @@ pub(crate) fn validate(
     if !lora_experts_env() {
         bail!(
             "REJECT[expert-lora-disabled]: adapter targets {} router + {} expert \
-             projection(s), but MoE expert/router LoRA is off. Set ATLAS_LORA_EXPERTS=1 \
+             projection(s), but MoE expert/router LoRA is off. Set AVAROK_LORA_EXPERTS=1 \
              to opt into the correctness-first (single-active, host-synced) expert path.",
             router.len(),
             experts.len()
@@ -61,7 +61,7 @@ pub(crate) fn validate(
     let cap = max_lora_expert_rank();
     if peft.r > cap {
         bail!(
-            "REJECT[expert-rank-exceeds-cap]: r={} > ATLAS_LORA_EXPERT_RANK={} \
+            "REJECT[expert-rank-exceeds-cap]: r={} > AVAROK_LORA_EXPERT_RANK={} \
              (the expert pool grows ~num_experts×num_layers faster than attention; \
              raise the cap only with the VRAM headroom for it)",
             peft.r,

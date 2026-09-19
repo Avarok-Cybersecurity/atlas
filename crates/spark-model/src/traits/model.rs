@@ -57,7 +57,7 @@ pub struct BeamReq {
 /// The multi-sequence batch padding ladder — the SSOT for `padded_n`.
 ///
 /// Batched decode pads the live sequence count up to a small set of captured
-/// sizes so that (a) CUDA graphs (`ATLAS_DECODE_GRAPHS_MULTISEQ`) are keyed by
+/// sizes so that (a) CUDA graphs (`AVAROK_DECODE_GRAPHS_MULTISEQ`) are keyed by
 /// a handful of stable shapes instead of one per exact n, and (b) the batched
 /// kernels see a bounded set of widths. Padding rows point at the dummy SSM
 /// slot / dummy KV block and cost one wasted lane each.
@@ -103,7 +103,7 @@ pub trait Model: Send + Sync {
     /// scheduler has drained and the stream is synchronised — the only point at
     /// which a device free is safe on GB10, where a free interleaved with other
     /// allocation traffic corrupts neighbouring allocations. See
-    /// `atlas_core::scope` for why this is not `Drop`: `Drop` can express
+    /// `avarok_core::scope` for why this is not `Drop`: `Drop` can express
     /// neither the ordering nor the failure.
     ///
     /// Default: a no-op returning `Ok`, which is honest for the mock and
@@ -215,7 +215,7 @@ pub trait Model: Send + Sync {
     /// `is_last_chunk`, or `DevicePtr::NULL` otherwise.
     ///
     /// Tracks issue Q12 in
-    /// `/workspace/atlas-internal/qwen-refactor/notes.md`.
+    /// `/workspace/avarok-internal/qwen-refactor/notes.md`.
     fn prefill_batch_chunk(
         &self,
         streams: &mut [PrefillSlice<'_>],
@@ -395,7 +395,7 @@ pub trait Model: Send + Sync {
         _peer_addr: &str,
         _adapter_id: &str,
         _name: &str,
-        _peft: atlas_core::config::PeftAdapterConfig,
+        _peft: avarok_core::config::PeftAdapterConfig,
     ) -> Result<(usize, Option<String>)> {
         bail!("this model does not support LoRA peer promotion")
     }
@@ -426,6 +426,15 @@ pub trait Model: Send + Sync {
 
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
+
+    /// [`Self::alloc_sequence`] told what this request can actually reach
+    /// (`prompt_len + max_tokens`). Proposer state that scales with context is
+    /// sized to THAT instead of `--max-seq-len`; see
+    /// `DraftProposer::alloc_state_for`. Defaults to the unsized form.
+    fn alloc_sequence_for(&self, budget_tokens: usize) -> Result<SequenceState> {
+        let _ = budget_tokens;
+        self.alloc_sequence()
+    }
 
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
@@ -505,7 +514,9 @@ pub trait Model: Send + Sync {
     /// model keeps no decode-rollback snapshots — appropriate for
     /// pure-attention models and for SSM models when the snapshot pool
     /// has no capacity reserved. SSM models with a populated pool
-    /// override to `ROLLBACK_RESTEER_CAP + 1`.
+    /// override to the depth `ssm_reserve::decode_rollback_ring_slots`
+    /// decided — 8 by default, or whatever `--ssm-decode-ring-slots` /
+    /// preflight's free-memory fit published (#915).
     fn decode_rollback_ring_slots(&self) -> usize {
         0
     }
@@ -545,6 +556,13 @@ pub trait Model: Send + Sync {
 
     /// Check if speculative decoding is available (MTP or self-speculative).
     fn has_proposer(&self) -> bool;
+    /// The installed DFlash drafter's block size γ, when one is installed.
+    /// The serve layer derives `num_drafts = γ - 1` from THIS (the head is
+    /// the SSOT — it resolved the drafter config's trained block size),
+    /// never from a CLI default that may not match the checkpoint.
+    fn dflash_gamma(&self) -> Option<usize> {
+        None
+    }
 
     /// Check if self-speculative decoding is enabled.
     fn has_self_speculative(&self) -> bool;
@@ -767,7 +785,7 @@ pub trait Model: Send + Sync {
     /// overwrites shared buffers including `norm_output`.
     fn save_hidden_for_mtp(&self, token_idx: usize, stream: u64) -> Result<()>;
 
-    /// ATLAS_MTP_CATCHUP: ring-capture a serially decoded token's final
+    /// AVAROK_MTP_CATCHUP: ring-capture a serially decoded token's final
     /// hidden at `pos` for the drafter catch-up feed. Default no-op.
     fn save_hidden_for_catchup(&self, _token_idx: usize, _pos: usize) -> Result<()> {
         Ok(())
@@ -827,21 +845,34 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
-    /// Unified DFlash ctx commit (ATLAS_DFLASH_UNIFIED_CTX=1). Copies
+    /// Unified DFlash ctx commit (AVAROK_DFLASH_UNIFIED_CTX=1). Copies
     /// `num_committed` scratch rows (`dflash_hidden_save` rows
-    /// `0..num_committed`) into `ctx_hidden_acc` at the CURRENT TAIL
-    /// (`ctx_len`), stamping RoPE positions `base_pos..base_pos+num_committed`,
-    /// folding the watermark slide in first. `base_pos` is the RoPE position,
-    /// NOT the acc row index (they diverge after a watermark slide — DDD §4.1
-    /// landmine). The single structural replacement for the ~5 fragmented
-    /// appends. Default no-op for models without a DFlash drafter.
+    /// `scratch_row..scratch_row+num_committed`) into `ctx_hidden_acc` at the
+    /// CURRENT TAIL (`ctx_len`), stamping RoPE positions
+    /// `base_pos..base_pos+num_committed`, folding the watermark slide in
+    /// first. `base_pos` is the RoPE position, NOT the acc row index (they
+    /// diverge after a watermark slide — DDD §4.1 landmine). `scratch_row` is
+    /// 0 on every single-sequence path; batched decode (n>1) captures ALL
+    /// batch rows, so seq i commits from scratch row i. The single structural
+    /// replacement for the ~5 fragmented appends. Default no-op for models
+    /// without a DFlash drafter.
     fn commit_ctx(
         &self,
         _seq: &mut SequenceState,
         _num_committed: usize,
         _base_pos: usize,
+        _scratch_row: usize,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Rows per per-sequence capture BAND in the DFlash hidden scratch (γ+1).
+    /// Sequence `i` of a batched K=γ verify captures into band `i`, so its
+    /// `commit_ctx` `scratch_row` is `i * dflash_capture_band()`. Returning
+    /// the model's own stride keeps the capture and the commit from ever
+    /// disagreeing. `0` when there is no DFlash drafter.
+    fn dflash_capture_band(&self) -> usize {
+        0
     }
 
     /// Run the MTP proposer for one draft token off the saved hidden state.
@@ -911,6 +942,11 @@ pub trait Model: Send + Sync {
     /// EP worker step: receive a (seq_id, cmd) preamble from rank 0 and
     /// execute the command in the addressed slot.
     ///
+    /// 🔴 An `Err` carrying [`EpCommandFailed`] means the command EXECUTED and failed —
+    /// a per-request fault the head raises identically and answers the client with. The
+    /// worker must STAY UP. Any other `Err` came from receiving the command, i.e. the link
+    /// to the head is gone, and the worker must exit. See [`EpCommandFailed`].
+    ///
     /// Returns false when the worker should shut down.
     /// Only valid on rank > 0 with EP enabled.
     ///
@@ -935,7 +971,7 @@ pub trait Model: Send + Sync {
     /// buffer). Callers that consume those logits must read from
     /// [`Self::decode_logits_ptr`] using 4 bytes/element. Defaults false;
     /// only Gemma-4 dense overrides today (gated by
-    /// `ATLAS_GEMMA4_FP32_LMHEAD=1`).
+    /// `AVAROK_GEMMA4_FP32_LMHEAD=1`).
     fn decode_logits_fp32(&self) -> bool {
         false
     }
@@ -964,6 +1000,15 @@ pub trait Model: Send + Sync {
     /// 2026-05-01 sweep: 8K collapses to "The\nThe…").
     fn is_mla(&self) -> bool {
         false
+    }
+
+    /// mHC hyper-connection stream count (0 = no highway). Non-zero means
+    /// the batched GDN decode paths are UNWIRED for this model (they carry
+    /// their own residual, which the highway replaces — see
+    /// `qwen3_ssm::hc::refuse_batched_under_hc`); the scheduler must clamp
+    /// concurrency to 1 until the batched highway lands (Atlas #753 item B).
+    fn hc_mult(&self) -> usize {
+        0
     }
 
     /// Tokens per paged-KV block, or `None` when the model has no paged KV.
@@ -1063,6 +1108,20 @@ pub trait Model: Send + Sync {
         _k: usize,
     ) -> Result<()> {
         Ok(())
+    }
+
+    /// Write-on-accept fold after a batched K=4 verify: `slots[i]` /
+    /// `accepted_rows[i]` (verify-width rows incl. the anchor, 1..=k) in the
+    /// verify's batch order. Returns `Ok(true)` when the GDN h states were
+    /// committed here, in which case `commit_accepted_prefix` for those
+    /// slots restores conv state only. Default: nothing to fold.
+    fn gdn_fold_accepted(
+        &self,
+        _slots: &[usize],
+        _accepted_rows: &[u32],
+        _k_rows: usize,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Save KV blocks + SSM state to writer. Does NOT free resources.
@@ -1198,5 +1257,57 @@ mod padded_batch_n_tests {
         }
         // Above the ladder: fall-through unchanged.
         assert_eq!(padded_batch_n(129), 129);
+    }
+}
+
+/// A worker command that was received and then FAILED TO EXECUTE.
+///
+/// 🔴 Why this distinction is load-bearing. The EP worker loop used to `break` on any
+/// error, so a per-request fault — a prefill chunk the model legitimately refuses — killed
+/// the worker, which then exited with status **0** while the head stayed up. The head's very
+/// next request issued a collective against a peer that no longer existed and spun in NCCL
+/// forever at 100 % CPU, with `/v1/models`, `/health` and `/health/live` all still answering
+/// 200. Measured 2026-08-30: rank 1 logged this exact refusal and stopped 4 s later; rank 0
+/// accepted a 13-token request 10 minutes on and never produced a single further log line.
+/// ANOMALIES A60 (the wedge) and A62 (the refusal that triggered it).
+///
+/// The head raises the SAME error for the SAME command and turns it into an HTTP 500, so the
+/// two ranks disagreeing about whether it is fatal is the defect. A receive failure stays
+/// fatal: the link is gone, and the next iteration's receive would fail again anyway.
+#[derive(Debug)]
+pub struct EpCommandFailed(pub anyhow::Error);
+
+impl std::fmt::Display for EpCommandFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+
+impl std::error::Error for EpCommandFailed {}
+
+#[cfg(test)]
+mod ep_command_failed_tests {
+    use super::EpCommandFailed;
+
+    /// The worker loop classifies by downcast, so the tag must survive being boxed into an
+    /// `anyhow::Error` — and the original message must survive with it, or the operator
+    /// loses the only line that says WHY the command failed.
+    #[test]
+    fn the_tag_and_its_message_survive_anyhow() {
+        let inner = anyhow::anyhow!("Prefill chunk layer 3 failed: DSA indexer cache: 16385");
+        let tagged = anyhow::Error::new(EpCommandFailed(inner));
+        assert!(
+            tagged.downcast_ref::<EpCommandFailed>().is_some(),
+            "the worker loop cannot tell a command failure from a dead link without this"
+        );
+        assert!(format!("{tagged:#}").contains("DSA indexer cache: 16385"));
+    }
+
+    /// A receive failure must NOT be mistaken for a command failure: the link is gone and
+    /// the worker has to exit rather than spin re-reading a dead socket.
+    #[test]
+    fn an_untagged_error_stays_fatal() {
+        let recv = anyhow::anyhow!("ep_recv_seq_and_cmd: peer closed");
+        assert!(recv.downcast_ref::<EpCommandFailed>().is_none());
     }
 }

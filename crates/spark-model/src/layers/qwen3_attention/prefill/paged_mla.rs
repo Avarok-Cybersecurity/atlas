@@ -22,6 +22,9 @@ pub(super) struct MlaPrefillArgs {
     pub nq: u32,
     pub nkv: u32,
     pub hd: u32,
+    /// First absolute position this call processes; >0 means a prefix-cache
+    /// hit put earlier tokens in the paged cache that this path cannot see.
+    pub seq_len_start: usize,
     pub kv_dim: usize,
     pub eps: f32,
     pub bf16: usize,
@@ -39,6 +42,39 @@ impl Qwen3AttentionLayer {
         ctx: &ForwardContext,
         args: &MlaPrefillArgs,
     ) -> Result<DevicePtr> {
+        // THIS PATH ATTENDS ONLY OVER THE TOKENS IT IS PROCESSING.
+        //
+        // The flash call below is fed `k_contiguous`/`v_contiguous` — the K/V
+        // this invocation just assembled — and its own comment says so:
+        // "not from paged cache". With no prefix hit that IS the whole prompt,
+        // so it is correct and that is how every MLA model has been exercised.
+        //
+        // On a prefix-cache HIT it is not. Only the uncached tail is processed
+        // (measured: 12 of 556 tokens), so those tokens attend to each other
+        // and NEVER to the 544 cached ones. The model answers from a truncated
+        // context, which reads as fluent, confident, unrelated text rather
+        // than as anything failing.
+        //
+        // Proven by dumping both paths for the same request: Q, K and V are
+        // bit-identical to the validated `cache_skip_mla` arm (cos 1.000000,
+        // all 32 heads, pad lanes exactly zero) while attn_out diverges on
+        // 27/32 heads — which is only possible if the KEY SET differs.
+        //
+        // A FULL match hides it: that leaves 1 token, and `prefill_dispatch`
+        // routes n<=1 to `decode`, which does read the paged cache. So exact
+        // repeats are bit-exact and only PARTIAL hits corrupt.
+        //
+        // The fix is to attend over the paged cache here (the
+        // `prefill_attention_paged_*` family already exists for this). Until
+        // then, refuse: a request that errors gets investigated, one that
+        // quietly answers from half its prompt does not.
+        anyhow::ensure!(
+            args.seq_len_start == 0,
+            "paged MLA prefill attends only over the tokens it processes, so a \
+             prefix-cache hit would drop the cached prefix from attention \
+             entirely. Serve with prefix caching DISABLED until this path \
+             attends over the paged cache."
+        );
         let MlaPrefillArgs {
             normed,
             num_tokens,
@@ -47,6 +83,7 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd,
+            seq_len_start: _,
             kv_dim,
             eps,
             bf16,

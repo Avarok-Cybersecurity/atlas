@@ -123,7 +123,7 @@ fn filesystem_skips_expired_on_replay() {
 #[test]
 fn sanitize_id_cannot_escape_the_store_dir() {
     use super::sanitize_id;
-    let dir = std::path::Path::new("/var/lib/atlas/responses");
+    let dir = std::path::Path::new("/var/lib/avarok/responses");
     for hostile in [
         "../../etc/passwd",
         "..",

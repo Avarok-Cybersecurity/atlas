@@ -12,7 +12,7 @@ metadata:
     for KV cache. `--max-num-seqs` and `--max-seq-len` therefore stay tight.
     Verified single-call decode 33.4 tok/s at batch=1; 4-way concurrent
     requests serve cleanly per Atlas QUICKSTART.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 122B
   model_dtype: nvfp4

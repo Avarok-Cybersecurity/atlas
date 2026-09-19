@@ -6,7 +6,7 @@
 //! inter-tool prose budget) historically *hard-stopped* a sequence —
 //! `finished = true` — which kills the response, often mid-tool-call.
 //!
-//! Per arXiv:2603.27905 (ATLAS-RTC) and ROM boundary-truncation
+//! Per arXiv:2603.27905 (AVAROK-RTC) and ROM boundary-truncation
 //! (arXiv:2603.22016), the principled recovery is to **roll back to the
 //! last well-formed boundary and let generation re-steer**, rather than
 //! discarding the whole turn. [`rollback_to_boundary`] implements that.
@@ -161,7 +161,7 @@ pub fn find_last_boundary_with_snapshot(
 ///
 /// Steps:
 /// 1. Honor the `[behavior].rollback_resteer` flag and the per-sequence
-///    [`atlas_kernels::ROLLBACK_RESTEER_CAP`].
+///    [`avarok_kernels::ROLLBACK_RESTEER_CAP`].
 /// 2. Find the last boundary token in `output_tokens`
 ///    ([`find_last_boundary`]); decline if none.
 /// 3. Truncate `output_tokens` back to and including that boundary.
@@ -215,7 +215,7 @@ pub fn rollback_to_boundary(
     if a.cancel_flag.is_some() {
         return RollbackOutcome::Fallback(RollbackFallback::StreamUnsafe);
     }
-    if a.rollback_count >= atlas_kernels::ROLLBACK_RESTEER_CAP {
+    if a.rollback_count >= avarok_kernels::ROLLBACK_RESTEER_CAP {
         return RollbackOutcome::Fallback(RollbackFallback::CapReached);
     }
     let mask = match sched.masks.boundary.as_ref() {
@@ -224,9 +224,15 @@ pub fn rollback_to_boundary(
     };
 
     // A hybrid model needs the SSM state rewound too — restrict boundary
-    // selection to one with a live snapshot. `has_ssm_layers()` false
-    // (pure attention) keeps the original any-boundary search.
-    let hybrid = model.has_ssm_layers() && a.ssm_rollback_ring.is_enabled();
+    // selection to one with a live snapshot. A DISABLED ring is a DECLINE,
+    // not the pure-attention any-boundary path: depth 0 (spec on, watchdogs
+    // off, or the #915 auto-fit floor) means no snapshot exists, and rewinding
+    // tokens while the recurrent state stays conditioned on the discarded tail
+    // is silent corruption. This is the fail-open the ring's SSOT documents.
+    let hybrid = model.has_ssm_layers();
+    if hybrid && !a.ssm_rollback_ring.is_enabled() {
+        return RollbackOutcome::Fallback(RollbackFallback::NoSsmSnapshot);
+    }
     let (boundary_idx, ssm_slot) = if hybrid {
         match find_last_boundary_with_snapshot(
             &a.output_tokens,
@@ -403,12 +409,25 @@ fn apply_rollback(a: &mut ActiveSeq, keep_len: usize, dropped: usize) {
     // 5. Rewind the grammar FSM by the same token count so the
     //    constrained-decoding matcher stays in sync with the truncated
     //    token stream. Every dropped token is a post-`</think>` content
-    //    token (the watchdogs that call this fire after thinking has
-    //    closed) and was therefore fed to `grammar_state.accept_token`,
-    //    so `rollback(dropped)` is exact. Reuses the existing
-    //    spec-decode grammar-rewind path (`GrammarState::rollback`).
+    //    token, so it was fed to `grammar_state.accept_token`.
+    //
+    //    That did NOT make `rollback(dropped)` exact, and #842 is what it
+    //    cost: `accept_token` returns true for stop/EOS and in the TERMINATED
+    //    state without advancing the matcher, so a `json_schema` matcher that
+    //    has already closed its object records no steps for the tokens that
+    //    follow. One report dropped 96 tokens against 1 recorded step; the
+    //    assert inside the matcher then panicked the scheduler thread and the
+    //    server accepted requests forever without generating.
     if let Some(ref mut gs) = a.grammar_state {
-        gs.rollback(dropped);
+        match grammar_rewind(dropped, gs.num_history_steps()) {
+            Some(n) => gs.rollback(n),
+            None => tracing::warn!(
+                "grammar rollback skipped: {dropped} tokens dropped but the matcher \
+                 recorded only {} steps. Constrained output may drift for this \
+                 sequence; it is not a reason to kill the scheduler (#842).",
+                gs.num_history_steps()
+            ),
+        }
     }
 
     // 6. Reset the watchdog accumulators so the just-cleared window does
@@ -448,6 +467,32 @@ pub trait RomHead: Send + Sync {
 // A trained ROM head belongs to the MODEL that was trained with it, so the
 // seam is `SchedCtx::rom_head` rather than a process global — correct by
 // construction before the artifact loader lands, rather than after.
+
+/// How far to rewind the grammar matcher for `dropped` sequence tokens.
+///
+/// `None` means "do not rewind at all": the caller's count cannot be reconciled
+/// with the matcher's history, so any rewind would be a guess.
+///
+/// The three speculative-decode callers of `GrammarState::rollback` all pass a
+/// delta of `num_history_steps()` measured across the span they are undoing —
+/// see `spec_step.rs` and `verify_pipeline_helper.rs`. The watchdog path passed
+/// a raw count of sequence tokens instead, and `accept_token` returns true
+/// without advancing the matcher for stop/EOS tokens and in the terminated
+/// state. A `json_schema` matcher terminates as soon as its object closes, so
+/// every token after that is a token the matcher never recorded.
+///
+/// Rewinding `min(dropped, steps)` was rejected: with a terminated matcher the
+/// recorded steps belong to tokens that are being KEPT, so a partial rewind
+/// would corrupt the state that a panic at least left visible. Refusing is the
+/// honest answer, and it is the correct one in the reported case — those 96
+/// tokens genuinely advanced the matcher zero times.
+///
+/// This removes the outage. It does not make the accounting exact; that needs
+/// the anchor the speculative paths have, captured where the droppable window
+/// begins.
+fn grammar_rewind(dropped: usize, history_steps: usize) -> Option<usize> {
+    (dropped <= history_steps).then_some(dropped)
+}
 
 #[cfg(test)]
 #[path = "rollback_tests.rs"]

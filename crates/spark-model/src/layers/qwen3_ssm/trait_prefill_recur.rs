@@ -42,14 +42,14 @@ impl Qwen3SsmLayer {
         let fp32 = 4usize;
         let gb_stride = (nv * 2) as u32;
 
-        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // gfx1151/SCALE (avarok_scale): every H-in-shared-memory GDN prefill
         // kernel exceeds RDNA3.5's 64KB LDS cap — FLA (C=64) ≈96KB, WY4 =69688,
         // persistent =67584. Only split4 keeps the kd*vd H-state in global
         // memory (~2KB smem) and handles arbitrary length, so route there for
         // all sizes. Correctness-equivalent, lower throughput; the smem-H fast
         // paths (and a future C=32 FLA variant) are Blackwell-only. NVIDIA
         // (cfg unset) takes the full FLA/WY ladder below unchanged.
-        if cfg!(atlas_scale) {
+        if cfg!(avarok_scale) {
             // MID-CHUNK tail capture: split the split4 recurrence at cap_local
             // (and, when present, cap_local - bs), D2D each captured h_state
             // into its reserved slot, then finish the trailing tokens with
@@ -130,7 +130,7 @@ impl Qwen3SsmLayer {
             );
         }
 
-        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
+        // FlashInfer GDN (opt-in, AVAROK_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. This is the live
         // single-stream prefill path (trait_prefill.rs -> prefill_gdn_recurrence). q_ptr is
         // the packed-QKV base, gates_buf the gate base — handed straight to the bit-exact
@@ -157,12 +157,12 @@ impl Qwen3SsmLayer {
         }
 
         // 2026-06-06: removed the concluded GDN-prefill experiment env flags
-        // (ATLAS_GDN_CHUNK64 / ATLAS_FORCE_PERSISTENT / ATLAS_DISABLE_WY4) and their
+        // (AVAROK_GDN_CHUNK64 / AVAROK_FORCE_PERSISTENT / AVAROK_DISABLE_WY4) and their
         // dispatch branches. FLA is the baked default for 128-dim linear heads; the
         // WY4-persistent kernel is the unconditional fallback below.
         // FLA multi-kernel chunked prefill (recompute_wu → chunk_delta_h_ksplit →
         // chunk_fwd_o): 1.75x vs wy4 @16k, token-equal (cos=1.0 vs scalar). BAKED
-        // DEFAULT 2026-06-06 (was gated behind ATLAS_GDN_FLA=1 — the env var is gone):
+        // DEFAULT 2026-06-06 (was gated behind AVAROK_GDN_FLA=1 — the env var is gone):
         // always taken for 128-dim linear-head GDN models when the FLA kernels & scratch
         // are present (scratch is allocated for exactly those models, sizes.rs). The wy4
         // branch below remains the fallback for other head dims / a guard miss.
@@ -178,7 +178,18 @@ impl Qwen3SsmLayer {
         // path the clean pre-FLA baseline used. Replay segments are short
         // (suffix after a ≥10k skipped prefix), so the FLA speed loss is nil.
         let fla_scratch = ctx.buffers.gdn_fla_scratch();
-        if !ctx.gdn_exact_replay
+        // AVAROK_NO_GDN_FLA=1: force the WY4 fallback. Diagnostic lever for the
+        // qwen4_exp bisect — layer 0's recurrence output diverges from the
+        // reference at cos 0.83 with everything upstream verified (projection,
+        // conv, gates all match), and the FLA chunked path is the component
+        // that has never been exercised at vpg=3 (48 v-heads / 16 k-heads;
+        // every FLA-validated model is vpg<=2). A/B-ing the recurrence
+        // implementation is the decisive split.
+        static NO_FLA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let no_fla =
+            *NO_FLA.get_or_init(|| std::env::var("AVAROK_NO_GDN_FLA").as_deref() == Ok("1"));
+        if !no_fla
+            && !ctx.gdn_exact_replay
             && kd == 128
             && vd == 128
             && fla_scratch.0 != 0
@@ -188,7 +199,7 @@ impl Qwen3SsmLayer {
         {
             // One-time positive signal that the FLA path is live (vs silently
             // falling through to wy4 on a guard miss) — greppable in the server log.
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
@@ -208,8 +219,13 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_fla(
                 ctx.gpu,
                 self.gdn_prefill_fla_recompute_wu_k,
+                self.gdn_prefill_fla_recompute_wu_hopper_k,
+                self.gdn_prefill_fla_chunk_fwd_o_hopper_k,
                 self.gdn_prefill_fla_chunk_delta_h_k,
                 self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
+                self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,
+                self.gdn_prefill_fla_chunk_delta_h_fused_k,
+                self.gdn_prefill_fla_chunk_delta_h_tma_k,
                 self.gdn_prefill_fla_chunk_fwd_o_k,
                 h_state,
                 q_ptr,
@@ -254,7 +270,7 @@ impl Qwen3SsmLayer {
             // in isolation.
             //
             // DEFAULT-ON since 2026-07-25 — see `gdn_regresident_enabled`.
-            // Log-once latch (see `atlas_core::scope`). It holds no model-derived
+            // Log-once latch (see `avarok_core::scope`). It holds no model-derived
             // value — the message is rebuilt from the arguments every call — so a
             // stale entry cannot produce a wrong answer, only a suppressed duplicate
             // line after a model swap. Scoping it would thread a logging concern
@@ -390,6 +406,7 @@ impl Qwen3SsmLayer {
                     ops::conv1d_update_prefill(
                         ctx.gpu,
                         self.conv1d_prefill_k,
+                        self.conv1d_prefill_tp_k,
                         conv_state,
                         input.offset(start * qkvz_size * bf16),
                         &self.ssm.conv1d,
@@ -427,6 +444,7 @@ impl Qwen3SsmLayer {
         ops::conv1d_update_prefill(
             ctx.gpu,
             self.conv1d_prefill_k,
+            self.conv1d_prefill_tp_k,
             conv_state,
             input,
             &self.ssm.conv1d,

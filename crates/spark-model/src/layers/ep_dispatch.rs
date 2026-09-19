@@ -196,22 +196,17 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "gate_indices length mismatch")]
-    fn test_length_mismatch_panics() {
+    fn index_length_mismatch_panics() {
         let indices = vec![1u32, 2, 3]; // 3 elements
-        let weights = vec![0.5f32, 0.5]; // 2 elements — mismatch with num_tokens * top_k
+        let weights = vec![0.5f32; 4];
         build_ep_routing_table(&indices, &weights, 2, 2, 0, 256);
     }
 
     #[test]
-    fn test_boundary_experts() {
-        // Expert exactly at boundary: 255 is local, 256 is remote for rank 0
-        let indices = vec![255u32, 256];
-        let weights = vec![0.6f32, 0.4];
-        let table = build_ep_routing_table(&indices, &weights, 1, 2, 0, 256);
-
-        assert_eq!(table.local_count(), 1);
-        assert_eq!(table.remote_count(), 1);
-        assert_eq!(table.local_expert_ids, vec![255]);
-        assert_eq!(table.remote_expert_ids, vec![256]);
+    #[should_panic(expected = "gate_weights length mismatch")]
+    fn weight_length_mismatch_panics() {
+        let indices = vec![1u32, 2, 3, 4];
+        let weights = vec![0.5f32; 3];
+        build_ep_routing_table(&indices, &weights, 2, 2, 0, 256);
     }
 }

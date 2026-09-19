@@ -36,6 +36,8 @@ use super::rule_cache::{RuleLevelCache, RuleMaskKey};
 /// `CompiledGrammar::Impl`.
 #[derive(Debug)]
 pub struct CompiledGrammarImpl {
+    /// Maximum synchronous prewarm workers, inherited from the compiler.
+    pub prewarm_max_threads: usize,
     /// The optimized, FSM-accelerated grammar (shared — the lazy
     /// `MaskGenerator` needs an `Arc<GrammarData>`).
     pub grammar: Arc<GrammarData>,
@@ -302,10 +304,10 @@ impl CompiledGrammar {
     /// OVERLAPPED MASK GENERATION (Tier 2, "configurable JIT").
     ///
     /// Eagerly compute the `k` most-expensive adaptive-token masks,
-    /// populating the lazy JIT cache so they are already warm before
-    /// the matcher needs them. Atlas's scheduler calls this during
-    /// prefill — while the GPU is busy with the prompt — so the first
-    /// decode steps never pay a cold mask-computation stall.
+    /// populating the lazy JIT cache before the matcher needs them. Uses
+    /// at most the compiler's `max_threads`, including the caller, and
+    /// joins all workers before returning. Atlas calls this synchronously
+    /// before prompt prefill; no GPU overlap is implied.
     ///
     /// COST RANKING. A state's mask cost is dominated by the breadth of
     /// its first-character scan: every distinct first byte the state can
@@ -360,10 +362,31 @@ impl CompiledGrammar {
         // the list is small (one entry per scanable FSM state).
         ranked.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
         let take = k.min(ranked.len());
-        for &(_, canonical, is_root) in &ranked[..take] {
+        let pending = self.uncached_masks(&ranked[..take]);
+        super::prewarm::for_each_bounded(&pending, self.pimpl.prewarm_max_threads, &|&(
+            _,
+            canonical,
+            is_root,
+        )| {
             self.get_or_compute_mask(canonical, is_root);
-        }
+        });
         take
+    }
+
+    pub(super) fn uncached_masks(
+        &self,
+        selected: &[(usize, ParserState, bool)],
+    ) -> Vec<(usize, ParserState, bool)> {
+        let cache = self
+            .pimpl
+            .mask_cache
+            .lock()
+            .expect("mask_cache mutex poisoned");
+        selected
+            .iter()
+            .copied()
+            .filter(|(_, state, _)| !cache.contains_key(state))
+            .collect()
     }
 
     /// Shared-pointer access to the inner state — used by the matcher.

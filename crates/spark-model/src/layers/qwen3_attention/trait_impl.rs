@@ -90,6 +90,10 @@ pub fn diag_norm_f32(
 // and carried on `ForwardContext`.
 
 impl TransformerLayer for Qwen3AttentionLayer {
+    fn uses_local_mla_prefill(&self) -> bool {
+        self.mla.is_some()
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -98,6 +102,58 @@ impl TransformerLayer for Qwen3AttentionLayer {
         self.fp8_calibration
             .as_ref()
             .map(|cal| !cal.is_calibrating())
+    }
+
+    /// QSA selection does a host top-k per step — never capturable, and a
+    /// graph captured on the dense path would replay wrong attention once
+    /// selection activates.
+    fn decode_graph_unsupported(&self) -> bool {
+        self.qsa.is_some()
+    }
+
+    fn has_aux_state(&self) -> bool {
+        self.qsa.is_some()
+    }
+
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(qsa) = self.qsa.as_ref() else {
+            return Ok(None);
+        };
+        let attn = state
+            .as_any()
+            .downcast_ref::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        match attn.qsa.as_ref() {
+            Some(st) => Ok(Some(qsa.snapshot_aux(st, gpu, stream)?)),
+            // Sequence never reached this layer's ingest: nothing to carry.
+            None => Ok(None),
+        }
+    }
+
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let qsa = self
+            .qsa
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("restore_aux: no QSA on this layer"))?;
+        let attn = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+        if attn.qsa.is_none() {
+            attn.qsa = Some(qsa.new_seq_state(gpu)?);
+        }
+        qsa.restore_aux(attn.qsa.as_mut().expect("just created"), blob, gpu, stream)
     }
 
     fn decode(
@@ -224,13 +280,41 @@ impl TransformerLayer for Qwen3AttentionLayer {
     }
 
     fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
-        Ok(Box::new(EmptyLayerState))
+        Ok(Box::new(crate::layer::AttnLayerState::default()))
+    }
+
+    /// Free the QSA indexer carry this sequence lazily attached.
+    ///
+    /// `alloc_state` hands back an EMPTY `AttnLayerState`; the buffers appear
+    /// later, on first use, via `qsa_seq_state`. So the thing to release is
+    /// not what `alloc_state` returned — it is whatever the sequence grew.
+    /// `take()` makes this idempotent and leaves the state in the same shape
+    /// `alloc_state` produced.
+    ///
+    /// A layer with no QSA indexer (plain attention) never populates the
+    /// field, so the `take()` yields `None` and this costs nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(attn) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::AttnLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = attn.qsa.take() else {
+            return Ok(());
+        };
+        let Some(qsa) = self.qsa.as_ref() else {
+            // Buffers exist but the indexer is gone: nothing can size or
+            // free them correctly, and guessing would be worse than saying so.
+            anyhow::bail!("release_state: QSA seq state present but layer has no QSA indexer");
+        };
+        qsa.release_seq_state(&mut st, gpu)
     }
 
     fn transpose_moe_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill(gpu, config)?;
@@ -244,7 +328,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_gate_up_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_gate_up_for_prefill(gpu, config)?;
@@ -283,7 +367,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_unified(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_unified(gpu, config)?;
@@ -297,7 +381,7 @@ impl TransformerLayer for Qwen3AttentionLayer {
     fn transpose_moe_for_prefill_hybrid(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<()> {
         if let FfnComponent::Moe(moe) = &mut self.ffn {
             moe.transpose_for_prefill_hybrid(gpu, config)?;
@@ -306,22 +390,5 @@ impl TransformerLayer for Qwen3AttentionLayer {
             moe.transpose_for_prefill_hybrid(gpu, config)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use spark_runtime::gpu::mock::MockGpuBackend;
-
-    #[test]
-    fn test_alloc_state_returns_empty() {
-        let gpu = MockGpuBackend::new();
-        assert!(gpu.kernel("norm", "rms_norm").is_ok());
-        assert!(gpu.kernel("rope", "rope_forward").is_ok());
-        assert!(
-            gpu.kernel("paged_decode_fp8", "paged_decode_attn_fp8")
-                .is_ok()
-        );
     }
 }

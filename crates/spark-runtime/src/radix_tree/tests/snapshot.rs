@@ -17,8 +17,18 @@ fn test_insert_without_snapshot() {
 
     tree.insert(&tokens, &[10], &[], 16, 0, 0);
     let m = tree.lookup(&tokens, 16, 0, 0);
+    // The KV walk must actually HIT first. `lookup` skips the snapshot index
+    // entirely when `matched_tokens == 0`, so without this the snapshot
+    // assertions below also hold for a tree that matches nothing at all.
+    assert_eq!(m.matched_tokens, 16);
+    assert_eq!(m.matched_blocks, vec![10]);
     assert_eq!(m.ssm_snapshot, None);
     assert_eq!(m.ssm_snapshot_tokens, 0);
+    // The tier fields are the other half of "no snapshot": a spilled anchor
+    // arrives there, not in `ssm_snapshot`.
+    assert_eq!(m.ssm_snapshot_tier_key, None);
+    assert_eq!(m.ssm_snapshot_tier_tokens, 0);
+    assert!(!m.ssm_snapshot_is_tail);
     tree.release(&tokens, 16, 0);
 }
 
@@ -152,8 +162,9 @@ fn test_partial_suffix_not_matched_for_full_block_request() {
     let tokens: Vec<u32> = (0..20).collect();
     tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
 
-    // Lookup 32 tokens — 2 full blocks in request. Partial suffix is 4 tokens
-    // but remainder is 0 (32 % 16 == 0), so partial check is skipped.
+    // Lookup 32 tokens — 2 full blocks in request. Only the first matches, and
+    // the unmatched remainder is a WHOLE block (16), so the sub-block arms are
+    // out of range for it.
     let tokens_32: Vec<u32> = (0..32).collect();
     let m = tree.lookup(&tokens_32, 16, 0, 0);
 
@@ -161,6 +172,26 @@ fn test_partial_suffix_not_matched_for_full_block_request() {
     assert_eq!(m.matched_tokens, 16);
     assert_eq!(m.matched_blocks, vec![10]);
     tree.release(&tokens_32, 16, 0);
+
+    // The case the name is actually about: a BLOCK-ALIGNED request. Its
+    // remainder is zero, so the sub-block arms must not run at all — an empty
+    // suffix is a prefix of every stored key, so a missing `remainder > 0`
+    // guard appends the 4-token partial block to a 16-token match and hands
+    // the caller a block table longer than `matched_tokens` describes.
+    let tokens_16: Vec<u32> = (0..16).collect();
+    let m16 = tree.lookup(&tokens_16, 16, 0, 0);
+    assert_eq!(m16.matched_tokens, 16);
+    assert_eq!(
+        m16.matched_blocks,
+        vec![10],
+        "the partial slot must not be appended to a block-aligned match"
+    );
+    assert_eq!(
+        m16.matched_blocks.len(),
+        m16.matched_tokens / 16,
+        "block table must stay aligned with matched_tokens"
+    );
+    tree.release(&tokens_16, 16, 0);
 }
 
 #[test]
@@ -178,24 +209,53 @@ fn test_partial_suffix_eviction_frees_both_blocks() {
     assert!(evicted.physical.contains(&20));
 }
 
+/// A real child node SUPERSEDES the partial-suffix slot it overlaps: the slot
+/// is cleared and the KV block it held comes back in `released_blocks` so the
+/// caller can drop the cache's reference on it.
+///
+/// Rewritten (was `#[ignore]`d as "tests removed behavior"): the OLD
+/// assertions expected the 20-token prefix to become unmatchable, which the
+/// sub-block child-key arm made false — the deeper node now serves those 20
+/// tokens. The clearing itself is NOT removed behaviour; what it must produce
+/// is the released-block accounting asserted below, and no serving of the
+/// retired block. The partial→partial overwrite arm is covered by
+/// `tests::basic::test_partial_suffix_block_is_owned_and_released`; this is
+/// the distinct child-supersedes-partial arm.
 #[test]
-#[ignore = "tests removed behavior — partial-suffix clearing was replaced \
-            with partial-block-matching during the radix-tree refactor; \
-            assertions need rewriting against the new lookup semantics"]
 fn test_partial_suffix_cleared_when_extended() {
     let tree = RadixTree::new();
-    // Insert 20 tokens (1 full + 4 partial)
+    // Insert 20 tokens (1 full + a 4-token partial held in block 20).
     let tokens_20: Vec<u32> = (0..20).collect();
-    tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
+    let first = tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
+    assert!(
+        first.blocks.contains(&20),
+        "the partial slot takes a ref on block 20; got {:?}",
+        first.blocks
+    );
 
-    // Insert 32 tokens (2 full blocks, extends past partial)
+    // Insert 32 tokens: a real child now covers [16..32), superseding the slot.
     let tokens_32: Vec<u32> = (0..32).collect();
-    tree.insert(&tokens_32, &[10, 30], &[], 16, 0, 0);
+    let extended = tree.insert(&tokens_32, &[10, 30], &[], 16, 0, 0);
+    assert_eq!(
+        extended.released_blocks,
+        vec![20],
+        "the superseded partial block must be handed back, not leaked"
+    );
+    assert!(
+        extended.blocks.contains(&30),
+        "the superseding child block is acquired; got {:?}",
+        extended.blocks
+    );
 
-    // Lookup 20 tokens — partial suffix was cleared by the 32-token insert
+    // Lookup 20 tokens — served by the DEEPER node (block 30) through the
+    // sub-block child-key arm, never by the retired partial block 20.
     let m = tree.lookup(&tokens_20, 16, 0, 0);
-    assert_eq!(m.matched_tokens, 16);
-    assert_eq!(m.matched_blocks, vec![10]);
+    assert_eq!(m.matched_tokens, 20);
+    assert_eq!(m.matched_blocks, vec![10, 30]);
+    assert!(
+        !m.matched_blocks.contains(&20),
+        "the retired partial block must never be served again"
+    );
     tree.release(&tokens_20, 16, 0);
 
     // Lookup 32 tokens — full match
@@ -217,7 +277,9 @@ fn test_partial_suffix_multi_block_prefix() {
     let m = tree.lookup(&tokens, 16, 0, 0);
 
     assert_eq!(m.matched_tokens, 396);
-    assert_eq!(m.matched_blocks.len(), 25);
+    // Identity AND order, not just the count: a count-only oracle accepts a
+    // walk that returns 25 wrong blocks (e.g. each node's parent block).
+    assert_eq!(m.matched_blocks, block_table);
     tree.release(&tokens, 16, 0);
 }
 
@@ -344,4 +406,21 @@ fn test_ssm_snapshot_adapter_isolation_via_tree() {
     assert_eq!(m_a.matched_tokens, 32);
     assert_eq!(m_a.ssm_snapshot, Some(42));
     tree.release(&tokens, 16, A);
+
+    // Give B its OWN KV for the same tokens (disjoint radix root) so B's walk
+    // HITS. Without this, `lookup` short-circuits on `matched_tokens == 0` and
+    // never reaches the snapshot index — so `m_b.ssm_snapshot == None` above is
+    // proved by the tree's root isolation alone and says nothing about whether
+    // the snapshot KEY carries the adapter.
+    tree.insert(&tokens, &[30, 40], &[], 16, 0, B);
+    tree.release(&tokens, 16, B);
+    let m_b2 = tree.lookup(&tokens, 16, 0, B);
+    assert_eq!(m_b2.matched_tokens, 32, "B now has its own cached KV");
+    assert_eq!(m_b2.matched_blocks, vec![30, 40]);
+    assert_eq!(
+        m_b2.ssm_snapshot, None,
+        "A's SSM snapshot must not restore for B even on a B-side KV hit"
+    );
+    assert_eq!(m_b2.ssm_snapshot_tier_key, None);
+    tree.release(&tokens, 16, B);
 }

@@ -23,7 +23,8 @@ use super::ServeArgs;
 // enforced cannot drift apart. Their sync with the parse sites in `serve.rs`
 // is pinned by `flag_values_tests`.
 use super::flag_values::{
-    LM_HEAD_DTYPES, MTP_GATES, MTP_QUANTS, SCHEDULING_POLICIES, SSM_H_DTYPES, TOOL_CALL_PARSERS,
+    KvHighPrecisionLayers, LM_HEAD_DTYPES, MTP_GATES, MTP_QUANTS, SCHEDULING_POLICIES,
+    SSM_H_DTYPES, TOOL_CALL_PARSERS,
 };
 
 /// One validation failure: what is wrong, why it is wrong, and how to fix it.
@@ -60,11 +61,42 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if let Some(dtype) = &args.ssm_h_dtype {
         check_enum(&mut v, "--ssm-h-dtype", dtype, SSM_H_DTYPES);
     }
-    // Only when it was given: absent means "let ATLAS_MTP_GATE_FORCE decide",
+    // Only when it was given: absent means "let AVAROK_MTP_GATE_FORCE decide",
     // and validating an unwritten value would reject nothing but confuse the
     // reader of this list.
     if let Some(gate) = &args.mtp_gate {
         check_enum(&mut v, "--mtp-gate", gate, MTP_GATES);
+    }
+
+    // ── `--hermetic` contradictions. ──
+    //
+    // `--hermetic` CLOSES these channels. An operator who also names one of
+    // them is asking for two different regimes at once, and the resolvers in
+    // `cli::hermetic` would quietly pick hermetic's answer. Quietly is the
+    // problem: the record would say `hermetic=true` beside an override the
+    // server ignored, and a reader would reasonably believe both applied.
+    // Refuse the pair and make them delete one.
+    if args.hermetic && args.enable_prefix_caching {
+        v.push(Violation::new(
+            "--hermetic with --enable-prefix-caching",
+            "--hermetic closes the radix KV prefix cache: it is keyed on token content \
+             with no session component, so one request's KV blocks are reachable by any \
+             later request sharing a prefix — exactly the cross-request channel a \
+             known-answer test must not have",
+            "drop --enable-prefix-caching (--hermetic already implies it is off), or drop \
+             --hermetic if you meant to measure WITH the cache",
+        ));
+    }
+    if args.hermetic && args.mtp_gate.as_deref() == Some("auto") {
+        v.push(Violation::new(
+            "--hermetic with --mtp-gate auto",
+            "--hermetic pins the MTP gate to `force`, which disarms the arbiter. Under \
+             `auto` the gate PROBES: its token counter is cumulative and is never reset \
+             at a request boundary, so which request gets served by the serial arm — \
+             which is not byte-equal to the batch arm even at temperature 0 — depends on \
+             everything served before it",
+            "drop --mtp-gate auto (--hermetic already forces the gate), or drop --hermetic",
+        ));
     }
     // The FP16 h-state twins live ONLY on the fused-norm decode arm. Without
     // it the dispatch lands on an FP32-only kernel pointed at an FP16 pool,
@@ -95,13 +127,40 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     // FP32-element intermediate stride. Both halves read an FP16 h-state as
     // FP32: fluent garbage, not an error. Applies to plain `f16` as well as
     // `f16-pool`, hence `h_f16`.
-    if h_f16 && args.dflash {
+    // 2026-08-29 (#812): the wyN family now ships FP16 h-state twins for
+    // K=5..16 (gated_delta_rule_wy{5..16}_f16, same module), so DFlash under
+    // the f16 pool is supported for --dflash-gamma <= 16 — the whole reachable
+    // range on block-8-class drafters (Qwen3.8 DFlash2). Above 16 the verify
+    // dispatches gated_delta_rule_wy17, which still has no FP16 twin, and the
+    // runtime backstop would refuse at the first verify step; reject the pair
+    // here in milliseconds instead. Missing-twin builds are also refused at
+    // runtime (hard error, never a silent FP32-over-FP16 fallback).
+    // `dflash_gamma` is an Option here (#650 made the drafter's own
+    // `dflash_config.block_size` the default), so this rejects only an
+    // EXPLICIT over-16 request. An unset gamma resolves from the drafter
+    // checkpoint, which is not readable at validate time — that path is
+    // covered by the runtime backstop, which hard-errors on a missing twin
+    // rather than falling back to FP32-over-FP16.
+    // OFF-BY-ONE, corrected 2026-08-30: #817 wrote `> 16` while its message
+    // claimed "widths 5..16 are covered". The verify width is K = gamma + 1,
+    // so gamma 16 is K=17 — wy17, the one width with no twin — and `> 16`
+    // admitted exactly that case. The runtime backstop would have caught it,
+    // loudly, after a full model load; this catches it in milliseconds. Both
+    // sites now read the same constant instead of a literal.
+    if h_f16
+        && args.dflash
+        && args
+            .dflash_gamma
+            .is_some_and(|g| g > spark_model::layers::qwen3_ssm::MAX_F16_TWIN_DFLASH_GAMMA)
+    {
         v.push(Violation::new(
-            "--dflash together with --ssm-h-dtype f16",
-            "the DFlash verify width (gamma + 1 = 17) dispatches gated_delta_rule_wy17, \
-             which has no FP16 h-state twin and strides the h intermediates in FP32 \
-             elements — an FP32 kernel over an FP16 h-state emits fluent garbage",
-            "drop --dflash, or use --ssm-h-dtype f32",
+            "--dflash with a verify width above the FP16 twin range, together with \
+             --ssm-h-dtype f16",
+            "DFlash verify widths above 16 dispatch gated_delta_rule_wy17, which has \
+             no FP16 h-state twin — an FP32 kernel over an FP16 h-state emits fluent \
+             garbage. Widths 5..16 are covered by the wyN _f16 twins",
+            "use --dflash-gamma <= 15 (verify width 16), drop --dflash, or use \
+             --ssm-h-dtype f32",
         ));
     }
 
@@ -119,6 +178,19 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
             ),
             why,
             "use snapshot (default, wired) or replay (experimental scaffold).",
+        ));
+    }
+    // `--ssm-decode-ring-slots`: same SSOT rule — the parse that validates is
+    // the parse `publish_kernel_flags` publishes through (#915).
+    if let Err(why) = spark_model::ssm_reserve::parse_decode_ring_slots(&args.ssm_decode_ring_slots)
+    {
+        v.push(Violation::new(
+            format!(
+                "--ssm-decode-ring-slots '{}' is not a valid value.",
+                args.ssm_decode_ring_slots
+            ),
+            why,
+            "use auto (default: preflight sizes the ring from free memory) or 0..=8.",
         ));
     }
     // #435: the exact-verify arm's kernels are FP32 readers, so an FP16
@@ -175,7 +247,7 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
     if args.fp8_kv_headroom < 1.0 {
         v.push(Violation::new(
             format!("--fp8-kv-headroom {} is below 1.0.", args.fp8_kv_headroom),
-            "the frozen FP8 KV scale covers headroom× the first-observe absmax; \
+            "the frozen FP8 KV scale covers headroom× the calibration-window absmax; \
              a multiplier under 1.0 clips the very values it was measured from.",
             "use a value ≥ 1.0 (default 2.0).",
         ));
@@ -223,13 +295,28 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         && num_drafts > 1
         && !any_spec
     {
-        v.push(Violation::new(
-            format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
-            "the draft count only applies when speculative decoding proposes drafts; \
-             without it the flag is ignored.",
-            "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
-             drop --num-drafts.",
-        ));
+        // --dflash IS a speculative method, but it does not consume
+        // --num-drafts either: the drafter's trained block size (γ) decides
+        // the draft count (`serve_load` forces num_drafts = γ - 1). The flag
+        // is ignored in both arms — what differs is the correct remedy.
+        if args.dflash {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is ignored under --dflash."),
+                "a DFlash serve drafts at the drafter checkpoint's trained block size \
+                 (γ); the scheduler overrides --num-drafts with γ - 1.",
+                "drop --num-drafts, or use --dflash-gamma to override the drafter's γ \
+                 (block-diffusion drafters are trained at ONE block size — expect \
+                 acceptance collapse away from it).",
+            ));
+        } else {
+            v.push(Violation::new(
+                format!("--num-drafts {num_drafts} is set but no speculative method is enabled.",),
+                "the draft count only applies when speculative decoding proposes drafts; \
+                 without it the flag is ignored.",
+                "add --speculative (MTP), --self-speculative, or --ngram-speculative — or \
+                 drop --num-drafts.",
+            ));
+        }
     }
 
     // ── Thinking budget contradicts disabling thinking. ──
@@ -314,6 +401,55 @@ pub fn validate_serve_args(args: &ServeArgs) -> Result<(), String> {
         ));
     }
 
+    // ── --kv-high-precision-layers is a free-form string, so a typo used to
+    //    reach the resolve site and be swallowed there. ──
+    // The resolve site (`serve_phases::kv_cache`) ran `s.parse().unwrap_or(0)`
+    // behind a `warn!` — AFTER the weight load, and `0` is not the default but
+    // the value that defers to `auto_high_precision_layers`. So `atuo` bought
+    // the operator a third configuration, minutes in, in a log line. The parse
+    // is now shared with that site (one definition of the accepted forms) and
+    // a bad value is refused here, in milliseconds, instead.
+    if let Err(why) = args
+        .kv_high_precision_layers
+        .parse::<KvHighPrecisionLayers>()
+    {
+        v.push(Violation::new(
+            format!(
+                "--kv-high-precision-layers '{}' is not a valid value.",
+                args.kv_high_precision_layers
+            ),
+            why,
+            "use a layer count (0 = let the KV dtype decide), auto (2, recommended), \
+             or max/all (every attention layer).",
+        ));
+    }
+
+    // ── --warmup-prompt promises a startup prefill that does not exist. ──
+    // The flag parses, and NOTHING reads `args.warmup_prompt` — not one site in
+    // the workspace. Its own `--help` text states that the server "tokenizes and
+    // prefills this prompt" and "eliminates the cold-start TTFT penalty
+    // (~196ms)", and QUICKSTART.md, book/src/operations/server.md and
+    // docs/GB10_DEPLOYMENT_GUIDE.md each tell the reader to pass it. So an
+    // operator following the quickstart passes a path, measures the same cold
+    // TTFT, and has no way to tell that the flag is inert rather than
+    // ineffective — the diagnosis lands on Atlas being slow.
+    //
+    // Refused rather than warned, for this module's usual reason: a warning
+    // scrolls off, and command lines get copied and published. Refused rather
+    // than deleted from the CLI, so the operator gets a sentence explaining
+    // what happened instead of clap's bare "unexpected argument".
+    if args.warmup_prompt.is_some() {
+        v.push(Violation::new(
+            "--warmup-prompt is not implemented.",
+            "nothing reads it: no prompt is tokenized, no prefill runs and nothing enters \
+             the prefix cache, so the cold-start TTFT its help text promises to remove is \
+             still paid on the first real request.",
+            "drop --warmup-prompt, and warm the server yourself by sending one throwaway \
+             request after startup — that populates the prefix cache through the same path \
+             a real request does.",
+        ));
+    }
+
     if v.is_empty() {
         return Ok(());
     }
@@ -352,3 +488,9 @@ fn format_violations(v: &[Violation]) -> String {
 #[cfg(test)]
 #[path = "validate_tests.rs"]
 mod tests;
+
+// ...and its second half. This stack took validate_tests.rs from 441 to 506
+// lines against a 500 cap; split rather than allow-listed.
+#[cfg(test)]
+#[path = "validate_tests_b.rs"]
+mod validate_tests_b;

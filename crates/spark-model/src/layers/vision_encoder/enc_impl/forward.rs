@@ -12,6 +12,47 @@ use spark_runtime::gpu::GpuBackend;
 
 use super::super::VisionEncoder;
 
+/// Do the packed merged rows this batch will write fit `buf_out`?
+///
+/// #799: this bound existed as a `debug_assert!`, which is compiled out of the
+/// `--release` binaries we serve. A single video request then wrote 4.7x past
+/// the allocation, raising `CUDA_ERROR_ILLEGAL_ADDRESS` and poisoning the CUDA
+/// context — the process survived and answered 503 to every later request, for
+/// every tenant, until it was restarted.
+///
+/// The caller's own doc comment says the scheduler caps `Σp <= p_max` "so this
+/// is normally unreachable". Video defeats that cap: all temporal groups of one
+/// clip arrive as a SINGLE media item and are encoded as one batch, so the
+/// per-item cap never sees the sum. 19 groups of 30x34 patches merge to 4845
+/// rows against a 1024-row buffer.
+///
+/// A `Result` rather than an assert, and a free function rather than a method,
+/// for the same reason `check_pixel_len` next door is one: the refusal is the
+/// behaviour worth testing, and a bound that can only be exercised with a GPU
+/// attached is a bound nothing will exercise. Prose is not a bound; this is.
+fn check_packed_rows(mp_i: &[usize], mp_off: &[usize], p_max: usize) -> Result<()> {
+    anyhow::ensure!(
+        mp_i.len() == mp_off.len(),
+        "vision: {} merged row counts but {} offsets; the packed layout is inconsistent",
+        mp_i.len(),
+        mp_off.len()
+    );
+    let end = match (mp_off.last(), mp_i.last()) {
+        (Some(off), Some(n)) => off
+            .checked_add(*n)
+            .ok_or_else(|| anyhow::anyhow!("vision: merged row offset {off} + {n} overflows"))?,
+        _ => 0,
+    };
+    anyhow::ensure!(
+        end <= p_max,
+        "vision: this batch packs {end} merged rows into an output buffer of {p_max} rows. \
+         A video arrives as one media item whose temporal groups encode as a single batch, \
+         which defeats the scheduler's per-item cap. Send fewer frames, or allocate a \
+         larger vision scratch."
+    );
+    Ok(())
+}
+
 impl VisionEncoder {
     /// Single-image forward (back-compat shim). For N=1 this issues the SAME
     /// kernels with the SAME args in the SAME order as the old per-image path
@@ -50,6 +91,10 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
+        // Allocate the ViT scratch on the first image. THE single entry point
+        // for image work — `forward` delegates here — so a text-only serve
+        // never reaches this line and never pays the ~2.2 GB.
+        self.scratch_init(gpu)?;
         let sms2 = self.spatial_merge_size * self.spatial_merge_size;
         let sms = self.spatial_merge_size.max(1);
         let n_img = images.len();
@@ -80,12 +125,13 @@ impl VisionEncoder {
 
         let _sec0 = std::time::Instant::now();
         // 1. Per-image host prep, packed into the SHARED buffers at p_off[i].
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
             let p = p_i[i];
             let pos_dst = self
+                .scratch()
                 .buf_pos_resampled
                 .offset(p_off[i] * self.hidden_size * 2);
             if pos_interp_on {
@@ -99,12 +145,18 @@ impl VisionEncoder {
                     stream,
                 )?;
             }
-            let cos_dst = self.buf_rope_cos.offset(p_off[i] * self.head_dim * 2);
-            let sin_dst = self.buf_rope_sin.offset(p_off[i] * self.head_dim * 2);
+            let cos_dst = self
+                .scratch()
+                .buf_rope_cos
+                .offset(p_off[i] * self.head_dim * 2);
+            let sin_dst = self
+                .scratch()
+                .buf_rope_sin
+                .offset(p_off[i] * self.head_dim * 2);
             self.build_rope_cossin_into(*gh, *gw, cos_dst, sin_dst, gpu, stream)?;
         }
 
-        let timing = std::env::var("ATLAS_VISION_TIMING").is_ok();
+        let timing = std::env::var("AVAROK_VISION_TIMING").is_ok();
         if timing {
             gpu.synchronize(stream).ok();
             tracing::info!(
@@ -117,7 +169,7 @@ impl VisionEncoder {
         self.patch_embed_batched(images, &p_off, p_total, gpu, stream)?;
         Self::maybe_dump_buf(
             gpu,
-            self.buf_h1,
+            self.scratch().buf_h1,
             p_total * self.hidden_size,
             "patch_embed",
             stream,
@@ -131,7 +183,7 @@ impl VisionEncoder {
             self.vit_block_batched(blk, p_total, &p_i, &p_off, gpu, stream)?;
             Self::maybe_dump_buf(
                 gpu,
-                self.buf_h1,
+                self.scratch().buf_h1,
                 p_total * self.hidden_size,
                 &format!("block{block_idx:02}"),
                 stream,
@@ -141,12 +193,24 @@ impl VisionEncoder {
             {
                 // snapshot buf_h1 → buf_h2 (out-of-place merger; residual stream
                 // into the next block stays intact), then merge each image's slice.
-                self.gpu_copy_bf16(gpu, self.buf_h1, self.buf_h2, n_h_bytes, stream)?;
+                self.gpu_copy_bf16(
+                    gpu,
+                    self.scratch().buf_h1,
+                    self.scratch().buf_h2,
+                    n_h_bytes,
+                    stream,
+                )?;
                 let ds_region_base = (ds_idx + 1) * mp_total;
                 for (i, (_px, gh, gw)) in images.iter().enumerate() {
-                    let src = self.buf_h2.offset(p_off[i] * self.hidden_size * 2);
+                    let src = self
+                        .scratch()
+                        .buf_h2
+                        .offset(p_off[i] * self.hidden_size * 2);
                     let out_rows = ds_region_base + mp_off[i];
-                    let out_slice = self.buf_out.offset(out_rows * self.out_hidden_size * 2);
+                    let out_slice = self
+                        .scratch()
+                        .buf_out
+                        .offset(out_rows * self.out_hidden_size * 2);
                     self.apply_merger(
                         &self.deepstack[ds_idx],
                         p_i[i],
@@ -172,8 +236,14 @@ impl VisionEncoder {
         let _sec2 = std::time::Instant::now();
         // 4. Final merger per image → packed [0 .. Σmerged_p).
         for (i, (_px, gh, gw)) in images.iter().enumerate() {
-            let src = self.buf_h1.offset(p_off[i] * self.hidden_size * 2);
-            let out_slice = self.buf_out.offset(mp_off[i] * self.out_hidden_size * 2);
+            let src = self
+                .scratch()
+                .buf_h1
+                .offset(p_off[i] * self.hidden_size * 2);
+            let out_slice = self
+                .scratch()
+                .buf_out
+                .offset(mp_off[i] * self.out_hidden_size * 2);
             self.apply_merger(&self.merger, p_i[i], *gh, *gw, src, out_slice, gpu, stream)?;
         }
         if timing {
@@ -189,7 +259,7 @@ impl VisionEncoder {
         let dump_rows = (1 + self.deepstack_indexes.len()) * mp_total;
         Self::maybe_dump_buf(
             gpu,
-            self.buf_out,
+            self.scratch().buf_out,
             dump_rows * self.out_hidden_size,
             "final",
             stream,
@@ -217,11 +287,8 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Vec<(usize, usize, usize)>> {
-        debug_assert!(
-            mp_off.last().map(|o| o + mp_i.last().unwrap()).unwrap_or(0) <= self.p_max,
-            "oversized vision batch: Σmerged_p exceeds buf_out rows"
-        );
-        let pos_interp_on = std::env::var("ATLAS_VISION_POSINTERP")
+        check_packed_rows(mp_i, mp_off, self.p_max)?;
+        let pos_interp_on = std::env::var("AVAROK_VISION_POSINTERP")
             .map(|v| v != "0")
             .unwrap_or(true);
         for (i, (pixels, gh, gw)) in images.iter().enumerate() {
@@ -232,7 +299,7 @@ impl VisionEncoder {
                 self.gpu_copy_bf16(
                     gpu,
                     self.pos_embed,
-                    self.buf_pos_resampled,
+                    self.scratch().buf_pos_resampled,
                     p * self.hidden_size * 2,
                     stream,
                 )?;
@@ -242,13 +309,16 @@ impl VisionEncoder {
             for blk in self.blocks.iter() {
                 self.vit_block(blk, p, gpu, stream)?;
             }
-            let out_slice = self.buf_out.offset(mp_off[i] * self.out_hidden_size * 2);
+            let out_slice = self
+                .scratch()
+                .buf_out
+                .offset(mp_off[i] * self.out_hidden_size * 2);
             self.apply_merger(
                 &self.merger,
                 p,
                 *gh,
                 *gw,
-                self.buf_h1,
+                self.scratch().buf_h1,
                 out_slice,
                 gpu,
                 stream,
@@ -258,5 +328,67 @@ impl VisionEncoder {
             .iter()
             .map(|(_px, gh, gw)| (gh / sms, gw / sms, (gh * gw) / (sms * sms)))
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_packed_rows;
+
+    /// The batch from issue #799, with its real numbers. A Qwen3.8-27B serve at
+    /// `--vision-max-pixels 262144` allocates 1024 patch rows; one video of 19
+    /// temporal groups at 30x34 patches merges 2x2 to 255 rows per group, so
+    /// the packed write ends at 4845 — 4.7x the allocation.
+    ///
+    /// Before this check that write happened, in release, and poisoned the CUDA
+    /// context: the server then answered 503 to every request, for every
+    /// tenant, until restarted. It must now be a refused request instead.
+    #[test]
+    fn refuses_the_video_batch_that_poisoned_the_cuda_context() {
+        let groups = 19;
+        let merged_per_group = (30 / 2) * (34 / 2); // 255
+        let mp_i = vec![merged_per_group; groups];
+        let mp_off: Vec<usize> = (0..groups).map(|g| g * merged_per_group).collect();
+        assert_eq!(mp_off.last().unwrap() + mp_i.last().unwrap(), 4845);
+
+        let err = check_packed_rows(&mp_i, &mp_off, 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("4845"),
+            "must name the rows it would have written: {err}"
+        );
+        assert!(err.contains("1024"), "must name the capacity: {err}");
+    }
+
+    /// The ordinary path the scheduler's cap produces must still pass, or the
+    /// fix trades an outage for a refusal of every image request.
+    #[test]
+    fn admits_a_batch_that_fits() {
+        assert!(check_packed_rows(&[100, 200], &[0, 100], 1024).is_ok());
+        // Exactly full is not over-full.
+        assert!(check_packed_rows(&[24], &[1000], 1024).is_ok());
+        // One row past is.
+        assert!(check_packed_rows(&[25], &[1000], 1024).is_err());
+    }
+
+    /// An empty batch writes nothing. The previous expression reached
+    /// `mp_i.last().unwrap()` whenever `mp_off` was non-empty, so a length
+    /// mismatch was a panic rather than an error.
+    #[test]
+    fn handles_empty_and_mismatched_layouts_without_panicking() {
+        assert!(check_packed_rows(&[], &[], 1024).is_ok());
+        let err = check_packed_rows(&[], &[0], 1024).unwrap_err().to_string();
+        assert!(err.contains("inconsistent"), "{err}");
+    }
+
+    /// `usize` addition on attacker-influenced geometry must not wrap into a
+    /// passing comparison.
+    #[test]
+    fn an_overflowing_offset_is_an_error_not_a_wrap() {
+        let err = check_packed_rows(&[2], &[usize::MAX - 1], 1024)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("overflows"), "{err}");
     }
 }

@@ -80,10 +80,10 @@ ignore:
   - "vendor/**"                              # vendored cudarc (upstream)
   - "target/**"                              # build-script output (generated PTX)
   - "**/build.rs"                            # build scripts, not under test
-  - "crates/atlas-kernels/**"                # entirely build.rs-generated PTX constants
+  - "crates/avarok-kernels/**"                # entirely build.rs-generated PTX constants
   - "crates/cufile-sys/**"                   # raw dlopen FFI to libcufile (GDS)
   - "crates/spark-comm/**"                   # raw FFI to libnccl (stubbed in CI)
-  - "crates/atlas-rdma/src/verbs.rs"         # ibverbs FFI; cfg'd out under ATLAS_SKIP_BUILD
+  - "crates/avarok-rdma/src/verbs.rs"         # ibverbs FFI; cfg'd out under AVAROK_SKIP_BUILD
   - "crates/spark-model/src/layers/ops/**"   # thin KernelLaunch wrappers, one CUDA launch each
   - "**/tests/**"                            # test code, not product code
   - "**/benches/**"                          # criterion harnesses (GPU-only)

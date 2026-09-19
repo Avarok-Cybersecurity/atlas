@@ -117,7 +117,7 @@ using Params = BatchPrefillRaggedParams<__nv_bfloat16, __nv_bfloat16, __nv_bfloa
 // float_ws layout (only used when split_kv): tmp_v + tmp_s, sized
 //   num_qo_heads * padded_batch_size * cta_tile_q * (head_dim_vo + 1) * 4 bytes.
 // ---------------------------------------------------------------------------
-extern "C" int atlas_fi_ragged_prefill_workspace_sizes(
+extern "C" int avarok_fi_ragged_prefill_workspace_sizes(
     uint32_t max_batch, uint32_t max_total_qo_rows, uint32_t num_qo_heads,
     uint32_t num_kv_heads, uint32_t head_dim,
     size_t* float_ws_bytes_out, size_t* int_ws_bytes_out, size_t* pinned_int_ws_bytes_out) {
@@ -357,7 +357,7 @@ static int run_ragged_prefill(
 // Entry points. hd=256 keeps its exact original ABI and semantics
 // (StandardAttention, window_left = -1) so the Holo path is bit-identical.
 // ---------------------------------------------------------------------------
-extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
+extern "C" int avarok_fi_ragged_prefill_bf16_hd256(
     const void* q, const void* k, const void* v, void* o,
     const int32_t* qo_indptr_h, const int32_t* kv_indptr_h,
     const int32_t* qo_indptr_d, const int32_t* kv_indptr_d,
@@ -378,7 +378,7 @@ extern "C" int atlas_fi_ragged_prefill_bf16_hd256(
 
 // hd=128 (Laguna). Adds `window_left` after `causal`: pass -1 for the 12
 // full-attention layers and sliding_window - 1 (= 511) for the 36 SWA layers.
-extern "C" int atlas_fi_ragged_prefill_bf16_hd128(
+extern "C" int avarok_fi_ragged_prefill_bf16_hd128(
     const void* q, const void* k, const void* v, void* o,
     const int32_t* qo_indptr_h, const int32_t* kv_indptr_h,
     const int32_t* qo_indptr_d, const int32_t* kv_indptr_d,

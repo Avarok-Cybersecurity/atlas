@@ -7,15 +7,17 @@
 //! code changes needed.
 
 use anyhow::{Result, bail};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
+use crate::weight_loader::LongcatWeightLoader;
+use crate::weight_loader::Qwen4ExpWeightLoader;
 use crate::weight_loader::{
-    DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, LagunaWeightLoader,
-    MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader, NllbWeightLoader,
-    Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader, Qwen35WeightLoader,
-    Step3p7WeightLoader,
+    DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, Glm5NextWeightLoader,
+    LagunaWeightLoader, MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader,
+    NllbWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader,
+    Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -99,6 +101,13 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "gemma4" | "gemma_4" => Ok(Box::new(Gemma4WeightLoader)),
         // Mistral family (MLA + MoE, GQA fallback for initial bring-up)
         "mistral" => Ok(Box::new(MistralWeightLoader)),
+        // LongCat-Flash(-Lite): MLA dual-sublayer blocks + shortcut MoE with
+        // zero-computation experts (+ n-gram input embeddings).
+        "longcat_flash_ngram" | "longcat_flash" => Ok(Box::new(LongcatWeightLoader)),
+        // Qwen3.8-Flash-Next. `dispatch.rs` normalizes the older
+        // `qwen3_8_flash_next` naming onto `qwen4_exp`, so one arm covers both
+        // published quantizations.
+        "qwen4_exp" => Ok(Box::new(Qwen4ExpWeightLoader)),
         // MiniMax M2 family (M2.1 / M2.7) — full attention + 256-expert
         // sigmoid-routed MoE + 3-module MTP.
         "minimax_m2" => Ok(Box::new(MinimaxM2WeightLoader)),
@@ -108,9 +117,29 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "laguna" => Ok(Box::new(LagunaWeightLoader)),
         // DeepSeek-V4 family (Flash) — MLA + MoE + CSA/HCA hybrid attention + mHC.
         "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
+        // GLM-5.3-Flash — NoPE MLA behind a DSA kpool indexer + KDA linear attention +
+        // 288-expert sigmoid-routed MoE + mHC. `glm5_next_text` is the inner `model_type`;
+        // the parser canonicalises both onto `glm5_next`.
+        "glm5_next" | "glm5_next_text" => Ok(Box::new(Glm5NextWeightLoader)),
+        // DeepSeek-V4.1 Flash. Ingestion (S1) is complete: the GGUF arch maps,
+        // all seven shards resolve, a full ModelConfig builds from the file's
+        // own metadata, and all 1,046 tensor names translate. The GRAPH is not
+        // built yet — V4.1 adds engram (two ~30 GiB hash tables), shared
+        // compressed attention (`SharedAttentionRuntime`, KV produced by four
+        // layers for forty) and a reworked indexer, none of which V4 has.
+        //
+        // This arm exists so the failure says which of those two things is
+        // missing. Falling through to the catch-all below would report
+        // "Unsupported model type", which is false and sends the reader looking
+        // for a config problem.
+        // DeepSeek-V4.1 Flash: the seven-shard Q2_K GGUF, routed experts and the
+        // engram tables streamed from disk (see weight_loader/deepseek_v41.rs).
+        "deepseek_v41" => Ok(Box::new(
+            crate::weight_loader::deepseek_v41::DeepSeekV41WeightLoader,
+        )),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, m2m_100",
+             Supported: qwen3_next, glm5_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, nemotron_h_puzzle, gemma4, mistral, minimax_m2, step3p7, laguna, deepseek_v4, qwen4_exp, m2m_100, deepseek_v41",
             config.model_type,
             normalized,
         ),
@@ -174,19 +203,39 @@ mod tests {
     }
 
     #[test]
-    fn test_loader_selection() {
+    fn all_declared_model_type_spellings_are_accepted() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
-        config.model_type = "qwen3_next".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "nemotron_h".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "holo3_1_moe".to_string();
-        assert!(loader_for_config(&config).is_ok());
-
-        config.model_type = "m2m_100".to_string();
-        assert!(loader_for_config(&config).is_ok());
+        for model_type in [
+            "qwen3_next",
+            "qwen3_vl_moe",
+            "qwen3_5_moe",
+            "qwen3_5",
+            "qwen35_moe",
+            "qwen35",
+            "qwen3_6_moe",
+            "holo3_1_moe",
+            "nemotron_h",
+            "nemotron_h_puzzle",
+            "m2m_100",
+            "nllb",
+            "gemma4",
+            "gemma_4",
+            "mistral",
+            "minimax_m2",
+            "step3p7",
+            "laguna",
+            "deepseek_v4",
+            // Normalization accepts case, hyphens, and dots before dispatch.
+            "QWEN3-NEXT",
+            "nemotron.h.puzzle",
+            "M2M-100",
+        ] {
+            config.model_type = model_type.to_string();
+            assert!(
+                loader_for_config(&config).is_ok(),
+                "declared model type {model_type:?} was rejected"
+            );
+        }
 
         config.model_type = "unsupported_model".to_string();
         assert!(loader_for_config(&config).is_err());
@@ -195,20 +244,37 @@ mod tests {
     // The generic `ModelWeightLoader` for NLLB must fail fast: real NLLB serving
     // goes through the dedicated `NllbGpuModel` encoder-decoder runtime, which
     // `build_model` selects before this loader is ever consulted. Reaching this
-    // loader is a routing bug, so every generic entry point bails.
+    // loader is a routing bug, so every mandatory generic tensor-loading
+    // entry point bails. Optional hooks still report their normal absence.
     #[test]
-    fn test_nllb_generic_loader_fails_fast_dedicated_runtime_serves() {
+    fn nllb_mandatory_generic_loads_fail_fast() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
         config.model_type = "nllb".to_string();
         let loader = loader_for_config(&config).unwrap();
         let store = WeightStore::empty();
         let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
 
-        let err = loader.load_embedding(&store, &config, &gpu).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("dedicated GPU encoder-decoder runtime"),
-            "{err}"
-        );
+        let errors = [
+            loader
+                .load_layers(&store, &config, &gpu, &[])
+                .err()
+                .expect("generic layer load unexpectedly succeeded"),
+            loader
+                .load_embedding(&store, &config, &gpu)
+                .expect_err("generic embedding load unexpectedly succeeded"),
+            loader
+                .load_final_norm(&store, &config, &gpu)
+                .expect_err("generic final-norm load unexpectedly succeeded"),
+            loader
+                .load_lm_head(&store, &config, &gpu)
+                .expect_err("generic LM-head load unexpectedly succeeded"),
+        ];
+        for err in errors {
+            assert!(
+                err.to_string()
+                    .contains("dedicated GPU encoder-decoder runtime"),
+                "unexpected fail-fast diagnostic: {err}"
+            );
+        }
     }
 }

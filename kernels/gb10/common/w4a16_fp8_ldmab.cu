@@ -6,7 +6,7 @@
 //   the block scale is folded into the pre-dequanted e4m3 weight upstream).
 //
 // This is the default-on GDN-fp8-projection prefill kernel (routed from
-// `ops::gemm_fp8_prefill`, `ATLAS_FP8_LDMAB`): ncu-proven 2.1x over the
+// `ops::gemm_fp8_prefill`, `AVAROK_FP8_LDMAB`): ncu-proven 2.1x over the
 // scalar-load `fp8_gemm_t`, cosine 1.000000 vs `fp8_fp8_gemm_t`. `A` is
 // pre-quantized to e4m3 by the caller (`bf16_to_fp8`), `B` is the pre-dequanted
 // e4m3 weight. Grid (N/128, M/128), block 256.
@@ -43,7 +43,7 @@ __device__ __forceinline__ void cp_async_wait_all() {
 // (int32+scale -> direct f32 accumulate; fp8_gemm_t is unscaled, scale folded
 // into weights upstream) change. A is pre-quantized to e4m3 by the caller
 // (bf16_to_fp8), B is the pre-dequanted e4m3 weight. Grid (N/128,M/128) blk 256.
-#define ATLAS_MMA_E4M3F(d, a0,a1,a2,a3, b0,b1) \
+#define AVAROK_MMA_E4M3F(d, a0,a1,a2,a3, b0,b1) \
     asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 " \
         "{%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%10,%11,%12,%13};" \
         : "=f"((d)[0]),"=f"((d)[1]),"=f"((d)[2]),"=f"((d)[3]) \
@@ -94,8 +94,8 @@ void fp8_fp8_gemm_ldmab(
             unsigned q0,q1,q2,q3; \
             asm volatile("ldmatrix.sync.aligned.m8n8.x4.b16 {%0,%1,%2,%3},[%4];" \
                 : "=r"(q0),"=r"(q1),"=r"(q2),"=r"(q3) : "l"(bxs)); \
-            ATLAS_MMA_E4M3F(acc[nt0], a0,a1,a2,a3, q0,q1); \
-            ATLAS_MMA_E4M3F(acc[nt1], a0,a1,a2,a3, q2,q3); \
+            AVAROK_MMA_E4M3F(acc[nt0], a0,a1,a2,a3, q0,q1); \
+            AVAROK_MMA_E4M3F(acc[nt1], a0,a1,a2,a3, q2,q3); \
         } \
     } while(0)
 
@@ -122,4 +122,4 @@ void fp8_fp8_gemm_ldmab(
         if (r1<M&&c1<N) C[r1*N+c1]=__float2bfloat16(acc[nt][3]);
     }
 }
-#undef ATLAS_MMA_E4M3F
+#undef AVAROK_MMA_E4M3F

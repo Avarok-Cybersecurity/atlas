@@ -30,10 +30,13 @@ docker/gb10/spark-fastbin
 /site/.vite/
 
 # Editor / agent scratch. `.claude/skills/` is deliberately TRACKED — repo
-# skills (atlas-release, measurement-discipline) are shared process, not
+# skills (avarok-release, measurement-discipline) are shared process, not
 # scratch; everything else under .claude/ stays ignored.
 .claude/*
 !.claude/skills/
+# `.claude/agents/` likewise: an agent file is a blocking review contract
+# (.claude/agents/oracle*.md), and a gate nobody can read is not a gate.
+!.claude/agents/
 .gemini/
 .agent*/
 .codex/
@@ -141,3 +144,23 @@ adapters35/
 # #531 (since excised from history). Never track them.
 .buncache/
 .buntmp/
+
+# Lighthouse CI writes a full report per run into .lighthouseci/. They are
+# build artifacts of a check, not source: each local run rewrites all of them,
+# which buried a three-file fix under 110k lines of diff. The scores that matter
+# are asserted by lighthouserc.json and reported in the job log.
+.lighthouseci/
+# Golden WEIGHT dumps (regenerable from the checkpoint, ~80 MB each).
+# The expected-output goldens beside them are small and DO stay tracked.
+bench/**/*_weights.npz
+bench/*.npz
+bench/qwen4_exp/qsa_golden.npz
+bench/ngram_ref/ngram_golden.npz
+*.swp
+bench/qwen4_exp/qwen4exp_forward_golden.npz
+.ncclstub
+
+# The certification-state oracle's per-checkout campaign lockfile, and its
+# .stale./.released. rotations. An interlock, never meant to travel.
+/.oracle_should_begin_cert*
+.certify/

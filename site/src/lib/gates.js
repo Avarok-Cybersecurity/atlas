@@ -5,35 +5,23 @@
 // components render what these specs say and add nothing of their own.
 // =============================================================================
 import gates from '$lib/gates.generated.json';
+import { splitByVariant } from './gate-variants.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
 
-// Series color follows the MODEL (the entity), never the tab or verdict.
-// Pair validated for CVD + contrast on the paper surfaces (#f4f0e8/#fbf9f3):
-// copper #b5622f ↔ steel #1f6a9e, protan ΔE 17.6, normal ΔE 24.5, both ≥3:1.
-//
-// Qwen3.8-27B added 2026-08-14 as teal #1c7a6b. The pair above was a PAIR —
-// a third entry has to hold against BOTH, and the load-bearing comparison is
-// 3.8 vs 3.6-27B (steel): same architecture, same draw, so they overlay on one
-// axis and the whole point is reading the generation-over-generation delta.
-// Measured under CIEDE2000 with Viénot CVD simulation (NOT the method behind
-// the 17.6/24.5 figures above, so these numbers are not continuous with them —
-// re-derive all three together if the palette is ever revisited):
-//   vs steel  #1f6a9e — normal 26.1, protan 27.5, deutan 20.3
-//   vs copper #b5622f — normal 43.8, protan 16.3, deutan 27.1
-//   contrast on both paper surfaces — 4.57:1 (≥3:1)
-// Plum #7d3c6e was rejected: only ΔE 12.1 from steel under both protan and
-// deutan, i.e. it blurred exactly the comparison this series exists to show.
-// Maroon #8f2f3f scored marginally better on worst case (19.1) but reads as a
-// failure color on a chart that already marks failed runs by verdict.
-const MODEL_COLORS = {
-  'Qwen/Qwen3.6-35B-A3B-FP8': '#b5622f',
-  'unsloth/Qwen3.6-27B-NVFP4': '#1f6a9e',
-  'unsloth/Qwen3.8-27B-NVFP4': '#1c7a6b'
-};
-export const colorFor = (model) => MODEL_COLORS[model] ?? '#625c51';
-export const shortModel = (model) => (model || '').split('/').pop() || model;
+export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
+export {
+  dashFor,
+  groupFor,
+  groupRecords,
+  groupedBenches,
+  isLatestOfVariant,
+  splitByVariant,
+  variantLabel
+} from './gate-variants.js';
+
+export { shortModel } from './series-colors.js';
 
 // ---- tab taxonomy -----------------------------------------------------------
 // One tab per benchmark family; a family only earns a tab when it has records.
@@ -50,7 +38,15 @@ const TAB_DEFS = [
   // records-filter below keeps the tabs hidden and the ids show in the
   // footer's "gated, not yet published" line — nothing renders empty.
   { id: 'decode', label: 'Decode', benches: ['decode-floor'] },
-  { id: 'concurrency', label: 'Concurrency', benches: ['concurrency-sweep'] }
+  // Both concurrency gates share this tab AND one set of charts — see
+  // gate-variants.js. They run the same fixture at the same rungs on the
+  // same checkpoint and differ only in whether the engine speculates, so
+  // two lines on one axis is the comparison; two panels is not.
+  {
+    id: 'concurrency',
+    label: 'Concurrency',
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+  }
 ];
 export const tabs = TAB_DEFS.filter((t) =>
   t.benches.some((b) => (gates.benchmarks[b]?.records ?? []).length > 0)
@@ -128,7 +124,7 @@ export function panelsFor(benchId, records) {
     const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
     return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
   }
-  if (benchId === 'concurrency-sweep') {
+  if (benchId === 'concurrency-sweep' || benchId === 'concurrency-sweep-dflash2') {
     // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
     // rendered by GateLadderChart via kind: 'ladder') and the peak's trend
     // over time. Keys come from the sweep's metrics map
@@ -138,12 +134,22 @@ export function panelsFor(benchId, records) {
     if (records.some((r) => Object.keys(r.metrics ?? {}).some((k) => LADDER_KEY.test(k)))) {
       panels.push({ kind: 'ladder', title: 'throughput vs concurrency', unit: 'tok/s' });
     }
-    if (records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s))) {
-      panels.push({
-        title: 'peak aggregate throughput',
-        unit: 'tok/s',
-        metrics: [{ key: 'peak_aggregate_tok_s', label: 'peak' }]
-      });
+    // One series per variant present, never one series across both: a line
+    // that joined a DFlash2 peak to a no-drafter peak would read as a
+    // regression and a recovery at every alternation. `variant` filters the
+    // records inside GateChart; the dash is the only other difference,
+    // because colour follows the model and both variants serve one
+    // checkpoint.
+    const peak = splitByVariant(records)
+      .filter((v) => v.records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s)))
+      .map((v) => ({
+        key: 'peak_aggregate_tok_s',
+        label: v.label ? `peak (${v.label})` : 'peak',
+        variant: v.bench,
+        dashed: v.dash !== null
+      }));
+    if (peak.length > 0) {
+      panels.push({ title: 'peak aggregate throughput', unit: 'tok/s', metrics: peak });
     }
     return panels;
   }

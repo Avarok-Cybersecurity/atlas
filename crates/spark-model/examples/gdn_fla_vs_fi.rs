@@ -7,7 +7,7 @@
 use anyhow::Result;
 use half::{bf16, f16};
 use spark_model::layers::ops;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 fn rd(p: &str) -> Vec<u8> {
@@ -25,7 +25,7 @@ fn f32s(b: &[u8]) -> Vec<f32> {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let (t, nk, nv, kd, vd) = (2048usize, 16usize, 32usize, 128usize, 128usize);
     let key_dim = nk * kd;
@@ -106,7 +106,20 @@ fn main() -> Result<()> {
     ops::gdn_prefill_fla(
         g,
         k_wu,
+        // The two Hopper prefill remnant twins (#928): 0 = absent, for the same
+        // reason as the spine handles below — this example diffs ONE spine
+        // against FlashInfer and must keep both legs on the gb10 parents.
+        spark_runtime::gpu::KernelHandle(0),
+        spark_runtime::gpu::KernelHandle(0),
         k_dh,
+        spark_runtime::gpu::KernelHandle(0),
+        // tcfuse handle: 0 = absent, same reason as the two below.
+        spark_runtime::gpu::KernelHandle(0),
+        // vtile handle: 0 = absent, so this cross-impl A/B keeps comparing the
+        // ksplit spine FlashInfer was originally diffed against.
+        spark_runtime::gpu::KernelHandle(0),
+        // TMA spine handle: 0 for the same reason — this example exists to diff
+        // one specific spine against FlashInfer, not to pick the fastest one.
         spark_runtime::gpu::KernelHandle(0),
         k_fo,
         h_state,

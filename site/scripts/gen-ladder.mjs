@@ -12,10 +12,11 @@
 //   exactly). The median and the rep spread are emitted alongside so the page
 //   can show how tight each rung was rather than asking for trust.
 //
-// Ratios are taken against the BEST vLLM configuration at each rung, not the
-//   matched one. At C=128 vLLM's no-speculation leg (390.42) beats its own MTP
-//   leg (358.57), and quoting the MTP number there would inflate our margin
-//   from 1.22x to 1.33x. The matched-parity ratio is emitted too, labelled.
+// Headline ratios are against the MATCHED-parity baseline (vLLM + MTP, same
+//   ctx, KV, speculation). An unmatched vLLM-no-spec leg exists and is plotted;
+//   it is a different fingerprint (bf16 KV, ctx 4096, no speculation) and is
+//   not the published denominator. ratio_vs_fastest keeps the old "fastest
+//   vLLM at this rung" number for anyone who wants it.
 //
 // Hard-fails on a missing file, a missing rung, or a rung whose reps are empty:
 //   a silently-dropped rung would render as a shorter ladder that still looks
@@ -25,7 +26,9 @@
 // No third-party deps: Node builtins only.
 // =============================================================================
 
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { writeStable } from './lib/write-stable.mjs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -108,6 +111,29 @@ const baselines = series.filter((s) => s.role === 'baseline');
 const matched = baselines.find((s) => s.parity === 'matched');
 if (!matched) die('no matched-parity baseline');
 
+// `variant`: another configuration of the SUBJECT engine (e.g. a different
+// drafter). Drawn on the chart, and deliberately absent from `rows`,
+// `ratio_vs_best`, `wins` and `summary` below: the published claim is Atlas
+// against the matched vLLM baseline, and admitting a second Atlas
+// configuration would change what that number means. A variant is evidence
+// about Atlas, not evidence about the comparison.
+//
+// It IS held to the same rung coverage as a baseline, for the same reason: a
+// line that stops partway along a log2 axis reads as a measurement, not as a
+// gap.
+const variants = series.filter((s) => s.role === 'variant');
+for (const v of variants) {
+  for (const row of subject.rungs) {
+    if (!v.rungs.some((r) => r.c === row.c))
+      die(`variant ${v.id} is missing rung C=${row.c}`);
+  }
+}
+const KNOWN_ROLES = new Set(['subject', 'baseline', 'variant']);
+for (const s2 of series) {
+  if (!KNOWN_ROLES.has(s2.role))
+    die(`series ${s2.id} has unknown role ${JSON.stringify(s2.role)}`);
+}
+
 const at = (s, c) => s.rungs.find((r) => r.c === c);
 
 // Every rung the subject measured must exist in every baseline, or the
@@ -118,18 +144,30 @@ const rows = subject.rungs.map((row) => {
     if (!r) die(`baseline ${b.id} is missing rung C=${row.c}`);
     return { id: b.id, label: b.label, parity: b.parity, tok_s: r.tok_s };
   });
-  const best = perBaseline.reduce((a, b) => (b.tok_s > a.tok_s ? b : a));
+  const fastest = perBaseline.reduce((a, b) => (b.tok_s > a.tok_s ? b : a));
   const m = perBaseline.find((b) => b.id === matched.id);
   return {
     c: row.c,
     atlas: row.tok_s,
     baselines: perBaseline,
-    best_baseline_id: best.id,
-    ratio_vs_best: r3(row.tok_s / best.tok_s),
+    best_baseline_id: m.id,
+    ratio_vs_best: r3(row.tok_s / m.tok_s),
     ratio_vs_matched: r3(row.tok_s / m.tok_s),
-    wins: row.tok_s > best.tok_s
+    ratio_vs_fastest: r3(row.tok_s / fastest.tok_s),
+    wins: row.tok_s > m.tok_s
   };
 });
+
+// The campaign driver stamps a sha256 of its own source into every record it
+// writes, and the published rungs carry the hash of the copy that produced
+// them. Hash the copy that ships in the tree so the deck can put the two side
+// by side: a reader who runs the repo's driver gets THIS hash in their output,
+// and a page that quoted only the recorded one would be inviting them to
+// compare against bytes they do not have. Computed, never typed — if the file
+// is ever edited this moves with it.
+const harnessRepoSha256 = createHash('sha256')
+  .update(readFileSync(resolve(REPO, manifest.workload.harness)))
+  .digest('hex');
 
 const out = {
   generated_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
@@ -141,6 +179,7 @@ const out = {
   workload: manifest.workload,
   box: manifest.box,
   harness_shas: manifest.harness_shas,
+  harness_repo_sha256: harnessRepoSha256,
   concurrencies: subject.rungs.map((r) => r.c),
   series,
   rows,
@@ -150,12 +189,12 @@ const out = {
     rungs: rows.length,
     won: rows.filter((r) => r.wins).length,
     all_won: rows.every((r) => r.wins),
-    min_ratio: r3(Math.min(...rows.map((r) => r.ratio_vs_best))),
-    max_ratio: r3(Math.max(...rows.map((r) => r.ratio_vs_best)))
+    min_ratio: r3(Math.min(...rows.map((r) => r.ratio_vs_matched))),
+    max_ratio: r3(Math.max(...rows.map((r) => r.ratio_vs_matched)))
   }
 };
 
-writeFileSync(OUT, `${JSON.stringify(out, null, 2)}\n`);
+writeStable(OUT, out, ['generated_utc'], (o) => `${JSON.stringify(o, null, 2)}\n`);
 console.log(
   `gen-ladder: ${out.summary.won}/${out.summary.rungs} rungs won ` +
     `(${out.summary.min_ratio}x..${out.summary.max_ratio}x vs best baseline) -> ${OUT}`

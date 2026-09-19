@@ -82,12 +82,3 @@ pub fn apply_canonical_rotation_inplace(
 
     Ok(())
 }
-
-/// Should weight pre-rotation be active for this build? Opt-in via
-/// `TQ_PLUS_WEIGHT_ROTATION=1` until correctness is validated.
-#[allow(dead_code)]
-pub fn weight_rotation_enabled() -> bool {
-    std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}

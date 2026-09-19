@@ -12,7 +12,7 @@
 #include "cutlass/layout/matrix.h"
 
 template <int TB_M, int TB_N, int TB_K, int W_M, int W_N, int W_K>
-int atlas_cutlass_bf16_gemm_act_weight_t_impl(
+int avarok_cutlass_bf16_gemm_act_weight_t_impl(
     const void* act,
     const void* weight,
     void* out,
@@ -63,7 +63,7 @@ int atlas_cutlass_bf16_gemm_act_weight_t_impl(
   return static_cast<int>(status);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t(
     const void* act,
     const void* weight,
     void* out,
@@ -73,11 +73,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<128, 128, 32, 64, 64, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<128, 128, 32, 64, 64, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_128x256(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t_128x256(
     const void* act,
     const void* weight,
     void* out,
@@ -87,11 +87,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_128x256(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<128, 256, 32, 64, 64, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<128, 256, 32, 64, 64, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_256x128(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t_256x128(
     const void* act,
     const void* weight,
     void* out,
@@ -101,11 +101,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_256x128(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<256, 128, 32, 64, 64, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<256, 128, 32, 64, 64, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_64x128(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t_64x128(
     const void* act,
     const void* weight,
     void* out,
@@ -115,11 +115,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_64x128(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<64, 128, 32, 32, 64, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<64, 128, 32, 32, 64, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_128x64(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t_128x64(
     const void* act,
     const void* weight,
     void* out,
@@ -129,11 +129,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_128x64(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<128, 64, 32, 64, 32, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<128, 64, 32, 64, 32, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_64x64(
+extern "C" int avarok_cutlass_bf16_gemm_act_weight_t_64x64(
     const void* act,
     const void* weight,
     void* out,
@@ -143,11 +143,11 @@ extern "C" int atlas_cutlass_bf16_gemm_act_weight_t_64x64(
     void* workspace,
     size_t workspace_size,
     cudaStream_t stream) {
-  return atlas_cutlass_bf16_gemm_act_weight_t_impl<64, 64, 32, 32, 32, 32>(
+  return avarok_cutlass_bf16_gemm_act_weight_t_impl<64, 64, 32, 32, 32, 32>(
       act, weight, out, m, n, k, workspace, workspace_size, stream);
 }
 
-extern "C" int atlas_cublaslt_bf16_gemm_act_weight_t_algo(
+extern "C" int avarok_cublaslt_bf16_gemm_act_weight_t_algo(
     const void* act,
     const void* weight,
     void* out,

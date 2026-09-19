@@ -16,24 +16,34 @@ use super::{
 
 impl ResponseStore {
     /// Build from env.
-    /// - `ATLAS_STORE_MAX_ENTRIES` (default 10 000)
-    /// - `ATLAS_STORE_TTL_SECONDS` (default 86 400)
-    /// - `ATLAS_STORE_DIR` — when set, enable filesystem persistence
+    /// - `AVAROK_STORE_MAX_ENTRIES` (default 10 000)
+    /// - `AVAROK_STORE_TTL_SECONDS` (default 86 400)
+    /// - `AVAROK_STORE_DIR` — when set, enable filesystem persistence
     ///   and replay any non-expired entries on startup.
-    pub fn from_env() -> Arc<Self> {
-        let max_entries = std::env::var("ATLAS_STORE_MAX_ENTRIES")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .filter(|&n: &usize| n > 0)
-            .unwrap_or(10_000);
-        let ttl_secs = std::env::var("ATLAS_STORE_TTL_SECONDS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(86_400_u64);
+    /// # Errors
+    /// When `AVAROK_STORE_MAX_ENTRIES` or `AVAROK_STORE_TTL_SECONDS` is set to
+    /// something that is not a whole number in range. Both used to fall
+    /// through to the default in silence, so `AVAROK_STORE_TTL_SECONDS=1h` was
+    /// a 24-hour TTL and nothing said so.
+    pub fn from_env() -> Result<Arc<Self>, String> {
+        let max_entries = crate::env_config::parse_min(
+            "AVAROK_STORE_MAX_ENTRIES",
+            std::env::var("AVAROK_STORE_MAX_ENTRIES").ok().as_deref(),
+            1_usize,
+            "how many stored responses to keep before evicting the coldest",
+        )?
+        .unwrap_or(10_000);
+        let ttl_secs = crate::env_config::parse_min(
+            "AVAROK_STORE_TTL_SECONDS",
+            std::env::var("AVAROK_STORE_TTL_SECONDS").ok().as_deref(),
+            1_u64,
+            "how long a stored response stays retrievable, in seconds",
+        )?
+        .unwrap_or(86_400_u64);
         let ttl = Duration::from_secs(ttl_secs);
 
         let (backend, persistent, persist_dir): (Box<dyn StoreBackend>, bool, Option<PathBuf>) =
-            match std::env::var("ATLAS_STORE_DIR")
+            match std::env::var("AVAROK_STORE_DIR")
                 .ok()
                 .filter(|s| !s.is_empty())
             {
@@ -43,7 +53,7 @@ impl ResponseStore {
                         Ok(fb) => (Box::new(fb), true, Some(p)),
                         Err(e) => {
                             tracing::warn!(
-                                "response_store: falling back to in-memory (ATLAS_STORE_DIR={dir} init failed: {e})"
+                                "response_store: falling back to in-memory (AVAROK_STORE_DIR={dir} init failed: {e})"
                             );
                             (Box::new(NoopBackend), false, None)
                         }
@@ -61,14 +71,14 @@ impl ResponseStore {
             map.insert(e.id.clone(), e);
         }
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             inner: Mutex::new(Inner { map, order }),
             ttl,
             max_entries,
             backend,
             persistent,
             persist_dir,
-        })
+        }))
     }
 
     #[cfg(test)]

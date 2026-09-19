@@ -158,7 +158,7 @@ impl TransformerModel {
             let free = kv_cache.num_free_blocks();
             if free < needed {
                 tracing::debug!(
-                    target: "atlas::q12",
+                    target: "avarok::q12",
                     n = streams.len(),
                     needed,
                     free,
@@ -529,6 +529,7 @@ impl TransformerModel {
         // through the model-level dispatcher arguments.
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -539,8 +540,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             // #30: batched multi-seq prefill legitimately mixes adapters and keeps
             // the bgmv (via multi_seq/qkv.rs); its attn_metadata is None so it never
             // reaches paged_qkv's routed path anyway. Must stay None.

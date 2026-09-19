@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -149,6 +149,10 @@ impl TransformerModel {
                 && self
                     .ssm_snapshots
                     .session_matches(snap_id, seq.session_hash)
+                // Aux-carrying models (PLE/QSA) decline aux-less slots — a
+                // mid-chunk tail capture, or a snapshot from before this
+                // feature — rather than restore a stale lexical state.
+                && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
             {
                 self.ssm_snapshots.restore(
                     snap_id,
@@ -157,6 +161,9 @@ impl TransformerModel {
                     self.gpu.as_ref(),
                     stream,
                 )?;
+                if let Some(aux) = self.ssm_snapshots.aux(snap_id) {
+                    self.apply_aux_states(seq, &aux, stream)?;
+                }
                 if snap_tok < kv_write_start {
                     tracing::info!(
                         "Marconi intermediate hit: restored from checkpoint at token {} \
@@ -226,6 +233,14 @@ impl TransformerModel {
             }
         };
 
+        // #919: `cached_tokens` counts reused KV, not matched-then-discarded KV.
+        // The SSM-without-snapshot arm above has already zeroed `kv_write_start`.
+        seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
+            prefix_match.matched_tokens,
+            kv_write_start,
+            marconi_skip,
+        );
+
         // Determine tokens to actually process
         let (proc_tokens, proc_count, seq_len_start) = if marconi_skip && kv_write_start >= n {
             // Exact match: entire prompt cached with SSM snapshot.
@@ -264,14 +279,17 @@ impl TransformerModel {
             // layers read `tid2eid[token_id]` per token, in this same order.
             self.gpu
                 .copy_h2d_async(token_ids_bytes, self.buffers.token_ids(), stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
+            // `proc_tokens` is always a SUFFIX of `tokens` (all three arms of
+            // the binding above slice from the tail), so the tokens preceding
+            // it are exactly `tokens[..start]` — which is what the n-gram hash
+            // needs to read backwards into. `ngram_lookbehind()` is 0 for
+            // models without one, making `ctx` just the processed tokens.
+            let start = tokens.len() - proc_count;
+            let ctx_start = start.saturating_sub(self.ngram_lookbehind());
+            self.embed_tokens_fused(
+                &tokens[ctx_start..start + proc_count],
+                proc_count,
                 hidden,
-                proc_count as u32,
-                h as u32,
                 stream,
             )?;
             self.scale_embeddings(hidden, proc_count, stream)?;
@@ -363,6 +381,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -373,12 +392,14 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
             // Hash-MoE: token IDs for the `proc_count` tokens processed this
             // pass, in MoE-loop order (uploaded above to the stable buffer).
             token_ids: Some(self.buffers.token_ids()),
+            host_token_ids: None,
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
             midchunk_capture: None,
@@ -420,15 +441,15 @@ impl TransformerModel {
                 .map_err(|e| anyhow::anyhow!("Prefill layer {i} failed: {e}"))?;
             // DFlash prefill capture: writes layer i's hidden output for
             // all `proc_count` tokens into the seq's accumulator at slots
-            // [layer_kv_write_start .. layer_kv_write_start + proc_count].
-            // No-op when DFlash is disabled.
-            self.try_dflash_prefill_capture_layer(
-                seq,
-                i,
-                layer_kv_write_start,
-                proc_count,
-                stream,
-            )?;
+            // [seq_len_start .. seq_len_start + proc_count]. The base is the
+            // chunk's PROCESSING start (absolute position of buffer row 0),
+            // NOT `layer_kv_write_start` — on a prefix-cache hit the KV
+            // write floor sits at the matched boundary while the forward
+            // recomputes from 0, and using the floor here shifted every
+            // captured row by the cached-prefix length (see the twin call in
+            // `prefill_b::forward_layers` for the full failure). No-op when
+            // DFlash is disabled.
+            self.try_dflash_prefill_capture_layer(seq, i, seq_len_start, proc_count, stream)?;
 
             // MLA diagnostic: dump per-layer hidden state norm (once per model).
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
@@ -483,7 +504,7 @@ impl TransformerModel {
             }
         }
 
-        // ATLAS_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
+        // AVAROK_MTP_DRAFTER_PREFILL: capture the processed rows' final-layer
         // hiddens for the whole-prompt drafter prefill. No-op when disabled.
         self.try_mtp_prefill_capture(seq, seq_len_start, proc_count, stream)?;
 
@@ -491,17 +512,7 @@ impl TransformerModel {
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            last_hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // ── 6. LM head on last token → logits ──
         self.lm_head(normed, stream)?;
@@ -518,8 +529,11 @@ impl TransformerModel {
         self.prefill_save_snapshot_with_vision_gate(tokens, seq, &mut kv_cache, bs, stream);
 
         // DFlash: advance the seq's `ctx_len` to span all just-prefilled
-        // positions so the next propose() can read them.
-        self.update_dflash_ctx_len_after_prefill(seq, layer_kv_write_start, proc_count)?;
+        // positions so the next propose() can read them. Same base as the
+        // capture above: the PROCESSING start, not the KV write floor — the
+        // floor would claim `matched + proc_count` rows on a prefix-cache
+        // hit, past the prompt's end.
+        self.update_dflash_ctx_len_after_prefill(seq, seq_len_start, proc_count)?;
 
         Ok(self.decode_logits_ptr())
     }

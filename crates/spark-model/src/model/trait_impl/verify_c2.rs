@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -172,19 +172,43 @@ impl TransformerModel {
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        // ATLAS_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
+        // AVAROK_K4_DIAG=1: run the K=4 verify EAGERLY (no CUDA graph) with a
         // stream-synchronize checkpoint after every layer, so an illegal
         // access is attributed to the exact layer instead of surfacing as an
-        // opaque status-700 on the post-graph D2H. Mirrors ATLAS_K2_DIAG on
+        // opaque status-700 on the post-graph D2H. Mirrors AVAROK_K2_DIAG on
         // the K=2 path (verify_b.rs). Diagnostic only — default behavior is
         // byte-for-byte unchanged when the env is unset.
-        let k4_diag = std::env::var("ATLAS_K4_DIAG").ok().as_deref() == Some("1");
-        let use_graphs = self.comm.is_none() && !hss_engaged && !lora_eager && !k4_diag;
+        let k4_diag = std::env::var("AVAROK_K4_DIAG").ok().as_deref() == Some("1");
+        // Capture the multi-row verify under EP — ported verbatim from verify_c.rs (K=3),
+        // where it is ON by default since 2026-08-29 and the six probes are byte-identical
+        // to eager. Without this gate K=4 was eager-only under EP (`self.comm.is_some()`),
+        // so no K=4 arm was ever comparable to the graphed K=3 number.
+        //
+        // 🪤 Deliberately does NOT read `AVAROK_EP_GRAPHS`; see verify_c.rs for why the two
+        // are gated apart.
+        let ep_graphs = std::env::var("AVAROK_GLM_VERIFY_GRAPHS").ok().as_deref() != Some("0");
+        // A56 instrument (see verify_c.rs). Implies GRAPHS + NOCACHE.
+        let graph_trace = std::env::var("AVAROK_GLM_VERIFY_GRAPH_TRACE").is_ok_and(|v| v == "1");
+        let ep_graphs = ep_graphs || graph_trace;
+        let use_graphs = (self.comm.is_none() || ep_graphs)
+            && !hss_engaged
+            && !lora_eager
+            && !k4_diag
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for). Kept as an AND on top of main's EP
+            // gating: this exclusion is about what capture can express, not
+            // about whether capture is wanted.
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -195,8 +219,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
@@ -217,13 +243,31 @@ impl TransformerModel {
         if let Some(graph) = cached_for_slot
             && graph.0 != 0
         {
+            // 🔴 BEFORE the replay, not after. The graph writes GLM-5.3's DSA indexer row
+            // from a device position with no host code in the loop, so past the DSA ceiling
+            // it writes one row off the end of the buffer and the `sync_replayed_step`
+            // reconcile below refuses one write too late — by then a sticky CUDA 700 has
+            // taken the whole serve down, not just this request. ANOMALIES A62.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.check_replay_room(&*seq.layer_states[i], seq.seq_len, k)?;
+            }
             self.gpu.launch_graph(graph, stream)?;
+            // 🔴 ANOMALIES A56, K=4 half. A replay runs kernels and NOTHING else, so any
+            // layer keeping per-sequence bookkeeping on the HOST — GLM-5.3's DSA indexer
+            // cache length — must be reconciled here. RECONCILE to `seq_len + k`, not
+            // `+= k`: `decode_k` REWINDS to `seq_len` on entry. See verify_c.rs.
+            for (i, layer) in self.layers.iter().enumerate() {
+                layer.sync_replayed_step(seq.layer_states[i].as_mut(), seq.seq_len, k)?;
+            }
         }
         let need_run = cached_for_slot.is_none();
         if need_run {
             let seq_lens_vec: Vec<usize> = (0..k).map(|t| seq.seq_len + t).collect();
             let block_tables_vec: Vec<Vec<u32>> = vec![seq.block_table.clone(); k];
 
+            if graph_trace {
+                spark_runtime::launch_trace::begin();
+            }
             if use_graphs {
                 self.gpu.begin_capture(stream)?;
             }
@@ -269,6 +313,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
@@ -293,7 +352,7 @@ impl TransformerModel {
                 // No-op when DFlash is disabled.
                 self.try_dflash_capture(layer_idx, k - 1, stream)?;
 
-                // ATLAS_K4_DIAG checkpoint: surface an illegal access at the
+                // AVAROK_K4_DIAG checkpoint: surface an illegal access at the
                 // layer that raised it (eager mode only — sync is illegal
                 // under graph capture, and use_graphs is false when k4_diag).
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
@@ -305,11 +364,8 @@ impl TransformerModel {
 
             // Final norm [4, H]
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 k as u32,
                 h as u32,
@@ -352,11 +408,18 @@ impl TransformerModel {
                 let graph = self.gpu.end_capture(stream)?;
                 if graph.0 != 0 {
                     tracing::info!("Captured CUDA graph for K=4 verify (slot={})", seq.slot_idx);
-                    if let Some(ref mut cache) = graph_cache {
+                    // BISECT HATCH (AVAROK_GLM_VERIFY_GRAPH_NOCACHE=1) — see verify_c.rs.
+                    if let Some(ref mut cache) = graph_cache
+                        && !graph_trace
+                        && !std::env::var("AVAROK_GLM_VERIFY_GRAPH_NOCACHE").is_ok_and(|v| v == "1")
+                    {
                         cache.insert(seq.slot_idx, graph);
                     }
                     self.gpu.launch_graph(graph, stream)?;
                 }
+            }
+            if graph_trace && let Some(report) = spark_runtime::launch_trace::end_and_diff(40) {
+                tracing::info!("A56 trace K=4 (this step vs previous): {}", report);
             }
         }
 

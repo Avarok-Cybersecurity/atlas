@@ -79,16 +79,26 @@ pub enum KernelArg<'a> {
     Bytes(&'a [u8]),
 }
 
+pub use crate::gpu_args::pack_kernel_args;
+
 /// GPU backend trait — SBIO IORouter for all CUDA operations.
 ///
-/// Implementations: `AtlasCudaBackend` (production), `MockGpuBackend` (tests).
+/// Implementations: `AvarokCudaBackend` (production), `MockGpuBackend` (tests).
 pub trait GpuBackend: Send + Sync {
     /// Allocate `bytes` of device memory.
+    ///
+    /// `#[track_caller]` so the CUDA backend's ledger records WHICH code
+    /// asked for the memory. It must stay on the trait declaration as well as
+    /// the impl: nearly every caller goes through `&dyn GpuBackend`, and
+    /// without it here the vtable would attribute every allocation in the
+    /// process to the one line inside the backend.
+    #[track_caller]
     fn alloc(&self, bytes: usize) -> Result<DevicePtr>;
 
     /// Allocate managed (unified) memory. On GB10, this allows over-subscribing
     /// physical GPU memory — Linux pages overflow to NVMe swap automatically.
     /// Managed memory is slower than device memory but avoids OOM.
+    #[track_caller]
     fn alloc_managed(&self, bytes: usize) -> Result<DevicePtr>;
 
     /// Free device memory.
@@ -107,6 +117,18 @@ pub trait GpuBackend: Send + Sync {
     /// sweep, which is honest for the mock and for Metal.
     fn sweep_unreleased(&self) -> usize {
         0
+    }
+
+    /// Live device bytes this backend has allocated and not freed, if it
+    /// tracks them. `None` for backends with no ledger (mock/CPU).
+    fn live_bytes(&self) -> Option<usize> {
+        None
+    }
+
+    /// Attribution of live device memory by allocating call site, biggest
+    /// first. `None` for backends with no ledger.
+    fn alloc_report(&self, _top_n: usize, _min_mb: usize) -> Option<String> {
+        None
     }
 
     /// Copy from host to device.
@@ -163,24 +185,38 @@ pub trait GpuBackend: Send + Sync {
         stream: u64,
         args: &[KernelArg<'_>],
     ) -> Result<()> {
+        // ANOMALIES A56: record what this step enqueues so two steps can be
+        // diffed. A graph bakes these bytes; anything that moves between steps
+        // is a host value the replay froze. No-op unless `launch_trace::begin`.
+        if crate::launch_trace::on() {
+            let words = args
+                .iter()
+                .map(|a| match a {
+                    KernelArg::Buffer(p) => p.0,
+                    KernelArg::Bytes(b) => {
+                        let mut w = [0u8; 8];
+                        let n = b.len().min(8);
+                        w[..n].copy_from_slice(&b[..n]);
+                        u64::from_le_bytes(w)
+                    }
+                })
+                .collect();
+            crate::launch_trace::record(crate::launch_trace::Entry {
+                kind: "kernel",
+                func: func.0,
+                grid,
+                block,
+                smem: shared_mem,
+                args: words,
+            });
+        }
         // CUDA-compatible default: each arg becomes one u64 slot. The
         // storage stays alive across the launch call so the *mut c_void
         // pointers we hand to `launch()` remain valid.
-        let mut storage: Vec<u64> = Vec::with_capacity(args.len());
-        for arg in args {
-            match arg {
-                KernelArg::Buffer(p) => storage.push(p.0),
-                KernelArg::Bytes(b) => {
-                    let mut slot = [0u8; 8];
-                    let n = b.len().min(8);
-                    slot[..n].copy_from_slice(&b[..n]);
-                    storage.push(u64::from_le_bytes(slot));
-                }
-            }
-        }
-        let mut params: Vec<*mut std::ffi::c_void> = storage
+        let (storage, starts) = pack_kernel_args(args);
+        let mut params: Vec<*mut std::ffi::c_void> = starts
             .iter()
-            .map(|v| v as *const u64 as *mut std::ffi::c_void)
+            .map(|&i| &storage[i] as *const u64 as *mut std::ffi::c_void)
             .collect();
         self.launch(func, grid, block, shared_mem, stream, &mut params)
     }
@@ -197,6 +233,19 @@ pub trait GpuBackend: Send + Sync {
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
+    /// A55 diagnostic: read every allocation's trailing guard band back and report the ones
+    /// a kernel wrote past. Returns the violation count. `Ok(0)` when `AVAROK_REDZONE` is
+    /// unset or the backend has no red zones — every backend but CUDA.
+    fn scan_redzones(&self) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// A55 bisection: poison guard bands `[lo, hi)` with `0xEE` and the rest with `0x00`.
+    /// Layout-preserving by construction — nothing is allocated, moved or resized.
+    fn poison_redzones(&self, _lo: usize, _hi: usize) -> Result<()> {
+        Ok(())
+    }
+
     /// Get the default stream handle.
     fn default_stream(&self) -> u64;
 
@@ -209,6 +258,13 @@ pub trait GpuBackend: Send + Sync {
     /// report from a name list into a work item.
     #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle>;
+
+    /// Whether `module` is compiled into this backend at all — the question
+    /// to ask BEFORE looking up a kernel that only some targets carry. A
+    /// lookup that fails is recorded by the boot audit as a dispatch site on
+    /// a silent fallback path; a target that never built the source has no
+    /// such site, so it must not issue the lookup.
+    fn has_module(&self, module: &str) -> bool;
 
     /// This backend's memoized kernel handles and scratch allocations.
     ///
@@ -230,7 +286,7 @@ pub trait GpuBackend: Send + Sync {
     /// `__device__` symbol, for instance. `None` on backends that have no such
     /// concept, which is why it is an accessor rather than a downcast.
     #[cfg(feature = "cuda")]
-    fn kernel_registry(&self) -> Option<std::sync::Arc<atlas_core::registry::AtlasRegistry>> {
+    fn kernel_registry(&self) -> Option<std::sync::Arc<avarok_core::registry::AvarokRegistry>> {
         None
     }
 
@@ -365,6 +421,25 @@ pub trait GpuBackend: Send + Sync {
 
     /// Free device memory in bytes.
     fn free_memory(&self) -> Result<usize>;
+
+    /// Free device memory as the DRIVER reports it, with no host leg.
+    ///
+    /// `free_memory` is `max(cuMemGetInfo, MemAvailable)` (ANOMALIES A73), so it
+    /// cannot separate driver-committed device memory from reclaimable host page
+    /// cache — which is exactly the separation a per-request leak measurement
+    /// needs. Default falls back to `free_memory` for backends that have no
+    /// distinct driver leg.
+    fn device_free_memory(&self) -> Result<usize> {
+        self.free_memory()
+    }
+
+    /// Live (allocated, not yet freed) device allocations on this backend.
+    ///
+    /// A COUNT, not bytes: it answers "did this request hand back every buffer it
+    /// took?" without an allocator-size ledger. Default 0 = not tracked.
+    fn live_alloc_count(&self) -> usize {
+        0
+    }
 
     /// Number of streaming multiprocessors (CUDA SMs / HIP CUs) on the device.
     ///

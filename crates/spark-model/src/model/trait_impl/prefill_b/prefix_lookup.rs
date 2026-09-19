@@ -32,6 +32,10 @@ impl TransformerModel {
         // second radix ref that nothing releases. Replay the original decision.
         if chunk_start == 0 && seq.prefix_lookup_applied {
             tracing::debug!(
+                "prefix lookup: replayed (already applied) slot={}",
+                seq.slot_idx
+            );
+            tracing::debug!(
                 "prefix lookup re-entered at chunk 0 (retry): replaying \
                  skip_to={} skip={} without re-acquiring the cached prefix",
                 seq.marconi_skip_to,
@@ -44,15 +48,17 @@ impl TransformerModel {
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
             let reserved = reserved_match.is_some();
-            let mut prefix_match =
-                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
-                    PrefixMatch::empty()
-                } else if let Some(prefix_match) = reserved_match {
-                    prefix_match
-                } else {
-                    self.prefix_cache
-                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
-                };
+            let mut prefix_match = if self.tokens_have_vision_pad(tokens)
+                || seq.collect_prompt_logprobs.is_some()
+                || self.mla_prefill_needs_full_recompute()
+            {
+                PrefixMatch::empty()
+            } else if let Some(prefix_match) = reserved_match {
+                prefix_match
+            } else {
+                self.prefix_cache
+                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+            };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert
@@ -102,8 +108,21 @@ impl TransformerModel {
                 }
             }
             let matched = prefix_match.matched_tokens;
+            // The one line that answers "why did this request not reuse":
+            // what the lookup saw, and whether it came from a scheduler
+            // reservation or a fresh radix walk.
+            tracing::debug!(
+                "prefix lookup: matched={matched} of {total} (reserved={reserved}) \
+                 snapshot_tokens={} tail={} slot={}",
+                prefix_match.ssm_snapshot_tokens,
+                prefix_match.ssm_snapshot_is_tail,
+                seq.slot_idx,
+            );
             seq.cached_prefix_tokens = matched;
             seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
+            // A new prefill: whatever tail checkpoint the previous turn saved
+            // is that turn's, not this one's.
+            seq.tail_checkpoint_tokens = None;
             // Stash the matched prefix so `free_sequence` can release the radix
             // refs the lookup just bumped even if this prefill fails to allocate
             // its suffix before `seq.tokens` is populated (else those nodes leak
@@ -182,10 +201,10 @@ impl TransformerModel {
                 // leaves the KV it wrote for position N-1 CORRUPTED, in a block
                 // SHARED with the prefix cache. `ctx.gdn_exact_replay`'s own doc
                 // in layer.rs describes this same poisoning for the GDN path.
-                // `ATLAS_MARCONI_EXACT=1` re-enables it for A/B.
+                // `AVAROK_MARCONI_EXACT=1` re-enables it for A/B.
                 let bypass_exact = snap_tok == matched
                     && matched == total
-                    && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
+                    && !super::exact_leaf::marconi_exact_enabled();
                 // Session gate applies ONLY to TAIL snapshots (their state
                 // bleeds past the exact prefix). Exact / is_tail_sibling
                 // snapshots are content-addressed by the verified token prefix
@@ -203,6 +222,10 @@ impl TransformerModel {
                         || self
                             .ssm_snapshots
                             .session_matches(snap_id, seq.session_hash))
+                    // Aux-carrying models (PLE/QSA) decline aux-less slots —
+                    // e.g. mid-chunk tail captures — rather than restore a
+                    // stale lexical state. See prefill_a.
+                    && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
                 {
                     // Cross-stream ordering: the snapshot we are about to read
                     // was SAVED on the default stream (decode_marconi_checkpoint
@@ -220,7 +243,19 @@ impl TransformerModel {
                         self.gpu.as_ref(),
                         stream,
                     )?;
-                    if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+                    if let Some(aux) = self.ssm_snapshots.aux(snap_id) {
+                        self.apply_aux_states(seq, &aux, stream)?;
+                    }
+                    // The anchor this prefill resumes from stays in the pool
+                    // and serves the next request for this prompt exactly as
+                    // a tail checkpoint saved now would; `finalize_last` reads
+                    // this to keep from saving a redundant exact leaf on top of
+                    // it (the warm-hit half of the measurement in
+                    // `exact_leaf.rs`: the tail split does not fire on a warm
+                    // prefill, so without this every warm hit re-saved the
+                    // leaf that then shadowed the anchor it had just used).
+                    seq.tail_checkpoint_tokens = Some(snap_tok);
+                    if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                         self.ssm_pool.debug_state_checksum(
                             seq.slot_idx,
                             self.gpu.as_ref(),
@@ -290,12 +325,12 @@ impl TransformerModel {
             if skip
                 && prefix_match.ssm_snapshot_tokens == matched
                 && matched == total
-                && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1")
+                && !super::exact_leaf::marconi_exact_enabled()
             {
                 skip = false;
                 seq.marconi_exact_snap = None;
                 tracing::info!(
-                    "exact-leaf snapshot shortcut bypassed (default; ATLAS_MARCONI_EXACT=1 re-enables) \
+                    "exact-leaf snapshot shortcut bypassed (default; AVAROK_MARCONI_EXACT=1 re-enables) \
                      for {matched}-token full hit — recomputing all KV+SSM"
                 );
             }
@@ -360,6 +395,14 @@ impl TransformerModel {
                 0
             };
             seq.marconi_skip_to = skip_tokens;
+            // #919: report what was REUSED, not what the lookup matched. The
+            // SSM-without-snapshot and exact-leaf-bypass arms above leave
+            // `matched > 0` with `skip_tokens == 0` — a full prefill.
+            seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
+                matched,
+                skip_tokens,
+                skip,
+            );
             seq.prefix_lookup_skip = skip;
             seq.prefix_lookup_applied = true;
             Ok((skip_tokens, skip))
@@ -368,105 +411,6 @@ impl TransformerModel {
             Ok((seq.marconi_skip_to, true))
         } else {
             Ok((0, false))
-        }
-    }
-
-    /// Acquire all cache matches before the batched path mutates any sequence
-    /// or KV state. On rejection, roll back exactly the references acquired by
-    /// this pass; a later cache insertion cannot make that rollback touch a
-    /// deeper node.
-    pub(in crate::model) fn prefill_b_reserve_batched_prefix_matches(
-        &self,
-        streams: &[PrefillSlice<'_>],
-        block_size: usize,
-    ) -> Option<Vec<PrefixMatch>> {
-        if !self.prefix_cache.is_active() || streams.first()?.chunk_start != 0 {
-            return Some(Vec::new());
-        }
-        // A multi-rank prefix match needs the normal EP min-reduction, which
-        // is not safe inside this transactional admission.
-        if self.multi_rank_protocol_active() {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: multi-rank world needs \
-                 the EP min-reduction — falling back to per-stream"
-            );
-            return None;
-        }
-
-        let mut matches = Vec::with_capacity(streams.len());
-        for slice in streams {
-            let seq = &*slice.seq;
-            if self.tokens_have_vision_pad(slice.prompt_tokens)
-                || seq.collect_prompt_logprobs.is_some()
-            {
-                tracing::info!(
-                    target: "atlas::q12",
-                    "batched prefix reservation declined: vision pads or \
-                     prompt-logprob collection — falling back to per-stream"
-                );
-                self.release_batched_prefix_reservations(streams, &matches, block_size);
-                return None;
-            }
-            matches.push(self.prefix_cache.lookup(
-                slice.prompt_tokens,
-                block_size,
-                seq.session_hash,
-                seq.adapter_id,
-            ));
-        }
-
-        // Hybrid-SSM models: a WARM prefix match implies a KV/Marconi skip
-        // whose recurrent-state interplay this transactional admission does
-        // not handle (the v1 rule). But a model-level blanket veto rejected
-        // COLD batches too, which serialized every chunk-0 wave on hybrid
-        // checkpoints — the entire measured C=32/C=128 prefill ramp
-        // (2026-08-16 stackval: every wave logged "cache plan not admitted").
-        // An all-cold reservation (matched_tokens == 0 everywhere) acquires
-        // no blocks, restores no snapshot and skips nothing — provably the
-        // same state as the cache-inactive admission above, which has always
-        // admitted hybrid models. Warm hybrid batches keep falling back to
-        // the per-stream path, whose restore logic is established.
-        if !super::batch_kernel::batched_reserve_hybrid_ssm_ok(
-            &matches,
-            self.config.num_ssm_layers() != 0,
-        ) {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: hybrid-SSM model with a \
-                 warm prefix match — falling back to per-stream"
-            );
-            self.release_batched_prefix_reservations(streams, &matches, block_size);
-            return None;
-        }
-
-        if !super::batch_kernel::cache_batch_matches_compatible(&matches, streams[0].chunk_len) {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: prefix matches not \
-                 batch-compatible — falling back to per-stream"
-            );
-            self.release_batched_prefix_reservations(streams, &matches, block_size);
-            return None;
-        }
-        Some(matches)
-    }
-
-    fn release_batched_prefix_reservations(
-        &self,
-        streams: &[PrefillSlice<'_>],
-        matches: &[PrefixMatch],
-        block_size: usize,
-    ) {
-        for (slice, prefix_match) in streams.iter().zip(matches) {
-            if prefix_match.matched_tokens > 0 {
-                self.prefix_cache.release_matched(
-                    slice.prompt_tokens,
-                    block_size,
-                    prefix_match.matched_tokens,
-                    slice.seq.adapter_id,
-                );
-            }
         }
     }
 }

@@ -5,17 +5,21 @@
 use super::*;
 
 impl MoeLayer {
-    /// True when the ATLAS_FP32_ROUTING path is active: the SSM-side MoE-input
+    /// True when the AVAROK_FP32_ROUTING path is active: the SSM-side MoE-input
     /// norm should emit an FP32 `router_in` (residual_add_rms_norm_gatef32) which
     /// the gate GEMM then consumes at full precision. Requires the f32 kernels to
     /// be present and the softmax-routed dense-gate config (NVFP4 gate / sigmoid+bias
     /// stay BF16). Default off → BF16 routing unchanged.
-    pub fn fp32_routing_active(&self) -> bool {
+    /// The lever is the LAST term on purpose: the four preconditions are
+    /// properties of this layer's weights and kernels, and only the final
+    /// one is configuration. `levers` is passed rather than read because
+    /// this is called once per layer per DECODE TOKEN from six sites.
+    pub fn fp32_routing_active(&self, levers: &crate::layers::ops::ModelLevers) -> bool {
         self.gate_nvfp4.is_none()
             && self.correction_bias_dev.is_none()
             && self.dense_gemm_f32in.0 != 0
             && self.moe_topk_f32.0 != 0
-            && std::env::var("ATLAS_FP32_ROUTING").as_deref() == Ok("1")
+            && levers.fp32_routing
     }
 
     /// Forward pass: gate → top-K routing → batched expert FFN → blend.
@@ -25,6 +29,38 @@ impl MoeLayer {
     ///
     /// When `gelu_activation` is true, falls back to the sorted prefill path
     /// (which uses separate activation kernel) to avoid fused SiLU decode kernels.
+    /// LongCat zero-computation experts: `out[t,:] += zero_accum[t] * x[t,:]`
+    /// where `zero_accum` was written by the softmax+bias router kernels
+    /// (the folded weights of selected identity experts). MUST run after the
+    /// routed blend for the SAME tokens whose routing wrote `zero_accum`.
+    /// No-op (no launch) when the model has no zero-experts.
+    pub fn apply_zero_expert(
+        &self,
+        out: spark_runtime::gpu::DevicePtr,
+        x: spark_runtime::gpu::DevicePtr,
+        n: u32,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        if self.router_logits_n as usize == ctx.config.num_experts {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.moe_zero_expert_add_k.0 != 0,
+            "zero-expert model but moe_zero_expert_add kernel is absent from this build"
+        );
+        ops::moe_zero_expert_add(
+            ctx.gpu,
+            self.moe_zero_expert_add_k,
+            out,
+            x,
+            self.zero_accum_dev,
+            n,
+            ctx.config.hidden_size as u32,
+            stream,
+        )
+    }
+
     pub fn forward(
         &self,
         input: DevicePtr,
@@ -51,7 +87,7 @@ impl MoeLayer {
         // intermediates — no bail. A `Refuse`/mixed batch still bails inside each
         // fold's `moe_route_gate`, preserving per-row adapter-identity protection.
         // ── Phase 2.7 Tier C: Frankenstein decode-via-prefill dispatch ──
-        // For DFlash capture layers only, when `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1`
+        // For DFlash capture layers only, when `AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL=1`
         // is set, route this layer's single-token MoE through `forward_prefill(M=1)`,
         // which uses the tensor-core grouped GEMM kernel (E2M1→E4M3 MMA) instead of
         // the scalar FP32 FMA decode path. Tests whether the numerical recipe of the
@@ -61,12 +97,7 @@ impl MoeLayer {
         // preserving Atlas's TPS on the bulk of the network. The 5 capture layers
         // pay ~250 µs each (microbench), totalling ≈1.25 ms per token (negligible
         // at Atlas's ~58 ms/token decode latency).
-        if self.is_dflash_capture_layer
-            && std::env::var("ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL")
-                .ok()
-                .as_deref()
-                == Some("1")
-        {
+        if self.is_dflash_capture_layer && ctx.levers.frankenstein_decode_via_prefill {
             // One-time per-process log so we can verify the env-gated route is hit.
             if ctx.stats.once("log:moe_route") {
                 tracing::info!(
@@ -124,7 +155,9 @@ impl MoeLayer {
                         router_in,
                         nvfp4,
                         gate_logits,
-                        num_experts,
+                        // = num_experts everywhere except LongCat, whose
+                        // router also scores the zero-expert logits.
+                        self.router_logits_n,
                         h,
                         stream,
                     )
@@ -135,7 +168,7 @@ impl MoeLayer {
                         router_in,
                         &self.weights.gate,
                         gate_logits,
-                        num_experts,
+                        self.router_logits_n,
                         h,
                         stream,
                     )
@@ -189,6 +222,26 @@ impl MoeLayer {
                             bias,
                             indices_dev,
                             weights_dev,
+                            num_experts,
+                            top_k,
+                            ctx.config.norm_topk_prob,
+                            ctx.config.routed_scaling_factor as f32,
+                            stream,
+                        )
+                    } else if ctx.config.scoring_func == "softmax" {
+                        // LongCat-Flash: softmax scores + correction bias for
+                        // SELECTION, unbiased softmax * scaling for weights,
+                        // zero-expert fold into zero_accum (identity experts
+                        // are applied by the caller via apply_zero_expert).
+                        ops::moe_topk_softmax_bias(
+                            ctx.gpu,
+                            self.moe_topk_softmax_bias_k,
+                            gate_logits,
+                            bias,
+                            indices_dev,
+                            weights_dev,
+                            self.zero_accum_dev,
+                            self.router_logits_n,
                             num_experts,
                             top_k,
                             ctx.config.norm_topk_prob,

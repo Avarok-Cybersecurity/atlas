@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Warm-replay TTFT probe — the instrument for ATLAS_GDN_REGRESIDENT.
+"""Warm-replay TTFT probe — the instrument for AVAROK_GDN_REGRESIDENT.
 
 The register-resident GDN kernel only replaces WY4 on the WARM MARCONI REPLAY
 path (`ctx.gdn_exact_replay`), i.e. the suffix re-run after an SSM snapshot is

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -171,11 +171,14 @@ impl TransformerModel {
 
         // Phase 6.2.c — HSS host I/O is illegal under CUDA graph capture.
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
+        // AVAROK_DFLASH_DEBUG_NO_GRAPH=1 forces eager (no graph capture) so
         // CUDA_LAUNCH_BLOCKING=1 reports the exact failing kernel — used
         // to localize K=γ illegal-address crashes downstream of SSM.
-        let force_eager = std::env::var("ATLAS_DFLASH_DEBUG_NO_GRAPH").ok().as_deref() == Some("1");
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        let force_eager = std::env::var("AVAROK_DFLASH_DEBUG_NO_GRAPH")
+            .ok()
+            .as_deref()
+            == Some("1");
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
             && !self
@@ -183,10 +186,18 @@ impl TransformerModel {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
             && !force_eager
-            && !lora_eager;
+            && !lora_eager
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for).
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -197,8 +208,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
@@ -271,6 +284,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        k,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     layer.decode_batched(
                         hidden,
@@ -292,8 +320,8 @@ impl TransformerModel {
                 // this layer's activation — mirrors verify_b.rs for K=2.
                 // Must be inside the graph capture region so the per-layer
                 // intermediate (not the final-layer-only post-loop value) is
-                // recorded. Under ATLAS_DFLASH_EAGLE_FIX=1 OR
-                // ATLAS_DFLASH_UNIFIED_CTX=1, capture ALL k verify rows so
+                // recorded. Under AVAROK_DFLASH_EAGLE_FIX=1 OR
+                // AVAROK_DFLASH_UNIFIED_CTX=1, capture ALL k verify rows so
                 // the scheduler can append rows 0..=num_accepted to ctx
                 // after the accept walk (EAGLE order). UNIFIED_CTX requires
                 // the same full capture: commit_ctx copies scratch rows
@@ -301,9 +329,22 @@ impl TransformerModel {
                 // the WRONG token's hidden and rows 1.. are stale garbage
                 // (2026-07-09 accept-collapse root cause: EAGLE_FIX=0 under
                 // UNIFIED=1 starved this capture and poisoned drafter ctx).
-                let capture_all = std::env::var("ATLAS_DFLASH_EAGLE_FIX").ok().as_deref()
-                    == Some("1")
-                    || std::env::var("ATLAS_DFLASH_UNIFIED_CTX").ok().as_deref() == Some("1");
+                // Capture-all is DEFAULT-ON. Two names reached this same
+                // behaviour from different directions -- the base layer's
+                // AVAROK_DFLASH_EAGLE_FIX and this lane's
+                // AVAROK_DFLASH_UNIFIED_CTX -- so EITHER set to "0" turns it
+                // off and neither name silently loses its kill switch.
+                // Mirrors the scheduler lever (levers.rs
+                // `dflash_unified_ctx: on_unless_zero`): commit_ctx copies
+                // scratch rows 0..=num_accepted and only capture_all fills
+                // them. Read ONCE -- this site runs under CUDA-graph capture,
+                // where a per-call env read is both a cost and a way to bake
+                // a stale value into a captured graph.
+                static CAPTURE_ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+                let capture_all = *CAPTURE_ALL.get_or_init(|| {
+                    std::env::var("AVAROK_DFLASH_EAGLE_FIX").ok().as_deref() != Some("0")
+                        && std::env::var("AVAROK_DFLASH_UNIFIED_CTX").ok().as_deref() != Some("0")
+                });
                 if capture_all {
                     self.try_dflash_capture_all(layer_idx, k, stream)?;
                 } else {
@@ -313,11 +354,8 @@ impl TransformerModel {
 
             // Final norm [K, H]
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 k as u32,
                 h as u32,

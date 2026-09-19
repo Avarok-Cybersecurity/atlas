@@ -215,7 +215,7 @@ mod tests {
     /// Write `bytes` to a scratch file and return it (kept open by the caller).
     fn scratch(tag: &str, bytes: &[u8]) -> (std::path::PathBuf, File) {
         let p = std::env::temp_dir().join(format!(
-            "atlas-dio-{tag}-{}-{:?}",
+            "avarok-dio-{tag}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

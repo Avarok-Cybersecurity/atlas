@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -67,16 +67,22 @@ impl ModelWeightLoader for NemotronHWeightLoader {
             let norm = dense(store, &format!("{lp}.norm.weight"))?;
 
             match lt {
-                atlas_core::config::LayerType::LinearAttention => {
+                avarok_core::config::LayerType::LinearAttention => {
                     let layer = Self::build_ssm_layer(
                         gpu, store, config, i, h, &lp, norm, quantize_k, absmax_k, scratch, stream,
                     )?;
                     layers.push(Box::new(layer));
                 }
-                atlas_core::config::LayerType::SlidingAttention => {
+                avarok_core::config::LayerType::SlidingAttention => {
                     unreachable!("unexpected SlidingAttention in this loader")
                 }
-                atlas_core::config::LayerType::Moe => {
+                // GLM-5.3's `deepseek_sparse_attention`. Nemotron has no indexer and no
+                // sparse-selection path, so this is a hard error rather than a silent
+                // fallthrough into the dense-attention arm.
+                avarok_core::config::LayerType::SparseAttention => anyhow::bail!(
+                    "layer {i}: SparseAttention (deepseek_sparse_attention) has no Nemotron loader"
+                ),
+                avarok_core::config::LayerType::Moe => {
                     // Standalone MoE FFN layer (uniform Super/Nano or Puzzle per-block)
                     let moe_inter = config.moe_intermediate_size_for(i);
                     let top_k = config.num_experts_per_tok_for(i);
@@ -114,7 +120,7 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                     moe_layer.prepare_prefill_weights(gpu, config);
                     layers.push(Box::new(moe_layer));
                 }
-                atlas_core::config::LayerType::FullAttention => {
+                avarok_core::config::LayerType::FullAttention => {
                     // Attention layer — quantize BF16 Q/K/V/O directly from
                     // WeightStore pointers (no intermediate alloc/free needed).
                     let (mut attn, mut q_nvfp4, mut k_nvfp4, mut v_nvfp4, mut o_dense, is_nvfp4) =
@@ -257,10 +263,10 @@ impl ModelWeightLoader for NemotronHWeightLoader {
                         // and are the last place to spend precision — and at
                         // ~1.2 GB BF16 they are cheap to keep. Crushing them
                         // 16-bit -> 4-bit saved ~0.9 GB and degraded exactly what
-                        // they exist for. `ATLAS_NEMOTRON_BF16_ATTN=0` restores
+                        // they exist for. `AVAROK_NEMOTRON_BF16_ATTN=0` restores
                         // the old quantize-everything behaviour for an A/B.
                         let keep_bf16_attn =
-                            std::env::var("ATLAS_NEMOTRON_BF16_ATTN").as_deref() != Ok("0");
+                            std::env::var("AVAROK_NEMOTRON_BF16_ATTN").as_deref() != Ok("0");
                         if keep_bf16_attn {
                             tracing::info!(
                                 "L{i} attention: keeping checkpoint BF16 Q/K/V/O (no NVFP4 requant)"
@@ -427,10 +433,71 @@ impl ModelWeightLoader for NemotronHWeightLoader {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use spark_runtime::gpu::{DevicePtr, mock::MockGpuBackend};
+    use spark_runtime::weights::{WeightDtype, WeightTensor};
+
     use super::*;
 
+    fn tensor(ptr: u64) -> WeightTensor {
+        WeightTensor {
+            ptr: DevicePtr(ptr),
+            shape: vec![4],
+            dtype: WeightDtype::BF16,
+        }
+    }
+
+    fn config() -> ModelConfig {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.weight_prefix = "backbone".to_string();
+        config
+    }
+
     #[test]
-    fn test_nemotron_h_loader_exists() {
-        let _loader = NemotronHWeightLoader;
+    fn nemotron_layout_routes_embedding_norm_and_tied_head() {
+        let store = WeightStore::from_map(HashMap::from([
+            ("backbone.embeddings.weight".to_string(), tensor(11)),
+            ("backbone.norm_f.weight".to_string(), tensor(12)),
+        ]));
+        let gpu = MockGpuBackend::new();
+        let loader = NemotronHWeightLoader;
+        let config = config();
+
+        assert_eq!(
+            loader.load_embedding(&store, &config, &gpu).unwrap().weight,
+            DevicePtr(11)
+        );
+        assert_eq!(
+            loader
+                .load_final_norm(&store, &config, &gpu)
+                .unwrap()
+                .weight,
+            DevicePtr(12)
+        );
+        assert_eq!(
+            loader.load_lm_head(&store, &config, &gpu).unwrap().weight,
+            DevicePtr(11)
+        );
+        assert!(loader.supports_tp());
+        assert!(
+            loader
+                .load_mtp_weights(&store, &config, &gpu)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn explicit_lm_head_takes_precedence_over_tied_embedding() {
+        let store = WeightStore::from_map(HashMap::from([
+            ("backbone.embeddings.weight".to_string(), tensor(11)),
+            ("lm_head.weight".to_string(), tensor(13)),
+        ]));
+
+        let actual = NemotronHWeightLoader
+            .load_lm_head(&store, &config(), &MockGpuBackend::new())
+            .unwrap();
+        assert_eq!(actual.weight, DevicePtr(13));
     }
 }

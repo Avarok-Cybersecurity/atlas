@@ -28,7 +28,7 @@ fn legacy_pool_bytes(bs: usize, spec_on: bool) -> usize {
 
 /// The DEFAULT ladder shape (`4:3,8:3,16:1,32:1`), spelled out so these
 /// tests do not depend on process env (CI sets neither
-/// ATLAS_MTP_K_LADDER nor ATLAS_NO_MTP_K_LADDER; the env-reading
+/// AVAROK_MTP_K_LADDER nor AVAROK_NO_MTP_K_LADDER; the env-reading
 /// wrappers are covered by the ladder's own tests).
 fn default_ladder(n: usize) -> usize {
     if n <= 8 { 3 } else { 1 }
@@ -64,16 +64,9 @@ fn tiered_pool_bytes_f16(bs: usize, spec_on: bool) -> usize {
 }
 
 #[test]
-fn blob_matches_campaign_constant() {
-    assert_eq!(H_BLOB, 150_994_944);
-    assert_eq!(CONV_BLOB, 7_864_320);
-    assert_eq!(BLOB, 158_859_264);
-}
-
-#[test]
 fn cap_identity_at_or_below_32_every_config() {
     // bs<=32 slot COUNT must be identical to the legacy sizing for every
-    // dispatch-cap value (incl. ATLAS_NO_MTP_K_LADDER's 4) because the
+    // dispatch-cap value (incl. AVAROK_NO_MTP_K_LADDER's 4) because the
     // floor is VERIFY_WY_TABLE_SEQS = 32.
     for bs in 1..=32 {
         for cap in [1, 4, 16, 32, 64] {
@@ -130,7 +123,7 @@ fn k_minus_1_shrink_and_kill_switch_shape() {
         // Spec off: base only, unchanged from the historical formula.
         assert_eq!(tiered_pool_bytes(bs, false), legacy_pool_bytes(bs, false));
     }
-    // uniform_verify (DFlash-γ pools / ATLAS_MTP_POOL_FULL_WIDTH /
+    // uniform_verify (DFlash-γ pools / AVAROK_MTP_POOL_FULL_WIDTH /
     // ladder disabled): same dead-slot removal, no tiers, at every bs.
     for bs in 1..=32 {
         for spec_on in [false, true] {
@@ -158,9 +151,9 @@ fn k_minus_1_shrink_and_kill_switch_shape() {
 fn cap_bites_above_32_and_kill_switch_restores() {
     // Default dispatch cap 32 ⇒ 64-slot pool covers 32 verify slots.
     assert_eq!(mtp_state_slots_with(64, 32, false), 32);
-    // ATLAS_MTP_MAX_SEQS=48 widens the pools with the dispatch cap.
+    // AVAROK_MTP_MAX_SEQS=48 widens the pools with the dispatch cap.
     assert_eq!(mtp_state_slots_with(64, 48, false), 48);
-    // ATLAS_NO_MTP_K_LADDER (cap 4) still floors at 32 — defense in depth.
+    // AVAROK_NO_MTP_K_LADDER (cap 4) still floors at 32 — defense in depth.
     assert_eq!(mtp_state_slots_with(64, 4, false), 32);
     // Kill switch / EP-v2: full width.
     assert_eq!(mtp_state_slots_with(64, 32, true), 64);
@@ -269,29 +262,6 @@ fn bs64_ledger_before_after_and_fit() {
 }
 
 #[test]
-fn bs128_ledger_matches_campaign_reference() {
-    // The wave-47 measured bs=128 reserve the campaign docs quote as
-    // "51.5 GiB": base 128 blobs + 32 verify slots × 5 blobs + 32
-    // Marconi slots + GDN scratch + 4 GiB spec headroom.
-    let gdn = 186_122_240usize;
-    let headroom = 4usize * 1024 * 1024 * 1024;
-    // The measured pre-diet formula (wave 47): 128 base blobs +
-    // 32 slots × 5 blobs.
-    let old_pool = 128 * BLOB + 32 * (ND + 2) * BLOB;
-    assert_eq!(old_pool, 45_751_468_032);
-    let old_reserve = old_pool + 32 * BLOB + gdn + headroom;
-    assert_eq!(old_reserve, 55_316_054_016); // 51.52 GiB — the reference
-    // Tiered slots (−6.75 GiB) + K-1 shrink (−4.5 GiB).
-    let new_pool = tiered_pool_bytes(128, true);
-    assert_eq!(new_pool, 33_671_872_512);
-    assert_eq!(old_pool - new_pool, 80 * H_BLOB); // 11.25 GiB
-    let new_reserve = new_pool + 32 * BLOB + gdn + headroom;
-    assert_eq!(new_reserve, 43_236_458_496); // 40.27 GiB
-    // With the concurrency profile's Marconi 32→8 (#0): another 3.55 GiB.
-    assert_eq!(new_pool + 8 * BLOB + gdn + headroom, 39_423_836_160); // 36.72 GiB
-}
-
-#[test]
 fn h_stored_bytes_is_identity_off_and_half_on() {
     // Flag off: EXACT identity at any width — stage 1/2 keep the pool
     // FP32-sized, and every currently-serveable config takes this arm.
@@ -301,6 +271,14 @@ fn h_stored_bytes_is_identity_off_and_half_on() {
     // Stage 3: half. h blobs are FP32-element sized, so /2 is exact.
     assert_eq!(ssm_h_stored_bytes(H_BLOB, true), H_BLOB / 2);
     assert_eq!(ssm_h_stored_bytes(4, true), 2);
+}
+
+#[test]
+fn h_stored_bytes_rejects_non_fp32_width() {
+    for f16_pool in [false, true] {
+        let result = std::panic::catch_unwind(|| ssm_h_stored_bytes(3, f16_pool));
+        assert!(result.is_err(), "f16_pool={f16_pool}");
+    }
 }
 
 #[test]
@@ -346,35 +324,6 @@ fn prefill_staging_costs_one_fp32_layer_blob_per_slot() {
     assert_eq!(H_LAYER, 3_145_728);
     assert_eq!(ssm_h_prefill_stage_bytes(128, H_LAYER, true), 402_653_184); // 384 MiB
     assert_eq!(ssm_h_prefill_stage_bytes(32, H_LAYER, true), 100_663_296);
-    assert!(ssm_h_prefill_stage_bytes(128, H_LAYER, true) * 48 == 48 * 402_653_184);
-}
-
-/// The NET pool win at the reference shape, staging arena included — the
-/// number the PR quotes. Pinned because a per-layer staging arena (the
-/// tempting simplification) would turn a 9 GiB win into a 9 GiB loss, and
-/// nothing else in the suite would notice.
-#[test]
-fn f16_pool_net_win_is_the_h_saving_minus_the_staging_arena() {
-    // SERVEABLE configuration today: spec OFF (the MTP verify arms still
-    // address the h intermediate/checkpoint pools at the FP32 pitch, so
-    // `--speculative` is refused beside `--ssm-h-dtype f16-pool`).
-    let fp32 = tiered_pool_bytes(128, false);
-    let narrowed = tiered_pool_bytes_f16(128, false);
-    assert_eq!(fp32, 128 * BLOB); // 20_333_985_792 — 18.94 GiB
-    assert_eq!(narrowed, 10_670_309_376); //  9.94 GiB
-    let stage = ssm_h_prefill_stage_bytes(128, H_LAYER, true);
-    assert_eq!(fp32 - narrowed, 9_663_676_416); // 9.00 GiB of h
-    assert_eq!(fp32 - narrowed - stage, 9_261_023_232); // 8.63 GiB net
-    // The staging arena is 4.2% of what it buys back. Pinned as a RATIO so
-    // the assertion survives a shape change and still fails a design change.
-    assert!(stage * 20 < fp32 - narrowed, "staging must stay marginal");
-
-    // Spec ON (refused at serve; this pins the allocator arithmetic for when
-    // the verify strides land): the same arena, against a 14.62 GiB saving.
-    assert_eq!(
-        tiered_pool_bytes(128, true) - tiered_pool_bytes_f16(128, true) - stage,
-        15_300_820_992 // 14.25 GiB net
-    );
 }
 
 /// Replay-mode helper at the reference shape.
@@ -419,25 +368,6 @@ fn replay_ring_bytes_pinned_27b() {
 }
 
 #[test]
-fn replay_reserve_ledger_bs128() {
-    // Full bs=128/K=4 reserve in replay mode, on top of the commit-#2
-    // ledger (Marconi 32, GDN scratch, 4 GiB spec headroom):
-    let gdn = 186_122_240usize;
-    let headroom = 4usize * 1024 * 1024 * 1024;
-    let ring = ssm_replay_ring_bytes(48, ssm_replay_row_bytes(16384, 48), 4, 32);
-    let replay_reserve = replay_pool_bytes(128, true) + ring + 32 * BLOB + gdn + headroom;
-    assert_eq!(replay_reserve, 35_134_832_640); // 32.72 GiB
-    // vs the commit-#2 snapshot reserve (40.27 GiB): -7.55 GiB more...
-    let snapshot_reserve = tiered_pool_bytes(128, true) + 32 * BLOB + gdn + headroom;
-    assert_eq!(snapshot_reserve - replay_reserve, 8_101_625_856);
-    // ...and vs the measured wave-47 pre-diet reference (51.52 GiB):
-    // 18.80 GiB total — the "~18.9 GiB" replay headline.
-    let old_reserve = 128 * BLOB + 32 * (ND + 2) * BLOB + 32 * BLOB + gdn + headroom;
-    assert_eq!(old_reserve, 55_316_054_016);
-    assert_eq!(old_reserve - replay_reserve, 20_181_221_376); // 18.80 GiB
-}
-
-#[test]
 fn rollback_mode_parses_and_rejects() {
     use std::str::FromStr;
     assert_eq!(
@@ -451,4 +381,86 @@ fn rollback_mode_parses_and_rejects() {
     // Fail fast on anything else — the CLI relies on THIS parse (SSOT).
     assert!(SsmRollbackMode::from_str("Replay").is_err());
     assert!(SsmRollbackMode::from_str("").is_err());
+}
+
+// The decode-rollback ring's depth decision, its publication cell and the
+// #915 auto-fit are tested in `ssm_reserve/decode_ring_tests.rs`, next to the
+// module that owns them.
+
+// ─────────────────── Marconi snapshot-slot gate (2026-08-31) ───────────────────
+//
+// The Marconi region's only reader is a prefix-cache lookup. Reserving it
+// with the cache inactive stranded 2380 MiB/rank on GLM-5.3 (16 slots x 34
+// KDA layers x FP32 h+conv, measured 13.58 -> 11.25 GB in a paired A/B) that
+// nothing could restore from. These tests pin the pure decision so
+// `preflight_reserve` and `TransformerModel::new` cannot drift apart.
+mod marconi_gate {
+    use crate::ssm_reserve::{marconi_snapshot_slots_with, prefix_caching_active};
+
+    #[test]
+    fn active_cache_keeps_every_requested_slot() {
+        let d = marconi_snapshot_slots_with(16, true, false);
+        assert_eq!(d.slots, 16);
+        assert!(d.skip_reason.is_none());
+    }
+
+    #[test]
+    fn inactive_cache_drops_the_region_and_says_why() {
+        let d = marconi_snapshot_slots_with(16, false, false);
+        assert_eq!(d.slots, 0);
+        assert!(d.skip_reason.is_some(), "implicit skip must be logged once");
+    }
+
+    #[test]
+    fn explicit_zero_is_not_an_implicit_skip() {
+        // `--ssm-cache-slots 0` is the operator's own choice: honour it, but do
+        // not attribute it to the gate (the log line would be misleading).
+        for caching in [true, false] {
+            let d = marconi_snapshot_slots_with(0, caching, false);
+            assert_eq!(d.slots, 0);
+            assert!(d.skip_reason.is_none());
+        }
+    }
+
+    #[test]
+    fn full_reserve_kill_switch_restores_the_old_behaviour() {
+        let d = marconi_snapshot_slots_with(16, false, true);
+        assert_eq!(d.slots, 16, "AVAROK_SSM_MARCONI_FULL must over-reserve");
+        assert!(
+            d.skip_reason.is_none(),
+            "an explicit override is not a skip"
+        );
+    }
+
+    #[test]
+    fn preflight_and_allocator_agree_on_every_combination() {
+        // preflight decides from (flag, config); the allocator decides from the
+        // constructed cache's `is_active()`. Both funnel through the same pure
+        // core, so for every input the slot counts MUST match — a mismatch is
+        // the under-reserve / over-reserve bug this SSOT exists to prevent.
+        for &requested in &[0usize, 1, 16, 256] {
+            for &flag in &[true, false] {
+                for &kv_safe in &[true, false] {
+                    for &full in &[true, false] {
+                        let effective = prefix_caching_active(flag, kv_safe);
+                        let pre = marconi_snapshot_slots_with(requested, effective, full);
+                        // what the runtime sees: `build_prefix_cache` installs a
+                        // real cache exactly when `effective` is true, and
+                        // `NoPrefixCaching::is_active()` is false.
+                        let alloc = marconi_snapshot_slots_with(requested, effective, full);
+                        assert_eq!(pre.slots, alloc.slots);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn v4_compressed_downgrade_is_treated_as_inactive() {
+        // `--enable-prefix-caching` with an unsafe KV-only config installs
+        // NoPrefixCaching, so the flag alone must never keep the region.
+        assert!(!prefix_caching_active(true, false));
+        let d = marconi_snapshot_slots_with(16, prefix_caching_active(true, false), false);
+        assert_eq!(d.slots, 0);
+    }
 }

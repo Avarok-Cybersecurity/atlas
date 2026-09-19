@@ -16,7 +16,7 @@
 //!     --features cuda,gpu-examples
 use anyhow::{Result, bail};
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -116,7 +116,7 @@ struct Case {
 }
 
 fn main() -> Result<()> {
-    let gpu = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let gpu = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &gpu;
 
     let dims = [512usize, 1024, 4096, 7168];

@@ -80,7 +80,7 @@ impl TransformerModel {
             moe_row_adapter: spark_runtime::gpu::DevicePtr::NULL,
         };
 
-        // Consume the one-shot ATLAS_PROFILE_FIRST flag (additive).
+        // Consume the one-shot AVAROK_PROFILE_FIRST flag (additive).
         let profile_now = self.profile
             || self
                 .profile_first_pending
@@ -104,6 +104,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -114,12 +115,14 @@ impl TransformerModel {
             profile: profile_now,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
             // Hash-MoE: this chunk's token IDs (uploaded in prefill_b_embed_chunk
             // to the stable buffer, in chunk order matching the MoE loop).
             token_ids: Some(self.buffers.token_ids()),
+            host_token_ids: None,
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
             midchunk_capture,
@@ -153,13 +156,13 @@ impl TransformerModel {
             None
         };
         let mut layer_times: Vec<u128> = Vec::new();
-        // HOST-TIME instrumentation (ATLAS_PREFILL_HOST_TIMING=1). Distinct
+        // HOST-TIME instrumentation (AVAROK_PREFILL_HOST_TIMING=1). Distinct
         // from `profile_now`: that path synchronizes per layer, which
         // serialises host and device and hides the host-side cost this is
         // meant to expose. Here NOTHING synchronizes — these are pure host
         // wall-clock spans, to be compared against the GPU-busy time an nsys
         // trace reports for the same request.
-        let host_timing = std::env::var("ATLAS_PREFILL_HOST_TIMING").as_deref() == Ok("1");
+        let host_timing = std::env::var("AVAROK_PREFILL_HOST_TIMING").as_deref() == Ok("1");
         let t_loop = host_timing.then(std::time::Instant::now);
         let mut t_in_prefill = std::time::Duration::ZERO;
         let mut t_dflash = std::time::Duration::ZERO;
@@ -208,11 +211,23 @@ impl TransformerModel {
                 t_in_prefill += t.elapsed();
             }
             let t_df = host_timing.then(std::time::Instant::now);
-            // DFlash chunked-prefill capture.
+            // DFlash chunked-prefill capture. The destination base is the
+            // chunk's PROCESSING start — the absolute position of buffer row
+            // 0 — NOT `layer_kv_write_start`. The two coincide on a cold
+            // prompt, which is how the KV write floor ended up here, but on a
+            // prefix-cache hit the forward recomputes from position 0 while
+            // KV writes start at the matched boundary: passing the floor
+            // shifted EVERY captured row up by the cached-prefix length, left
+            // ctx rows [0, matched) holding the pool slot's previous
+            // occupant, and advanced ctx_len past the prompt. At C=1 the
+            // stale rows were the identical previous request's (accidentally
+            // correct); under concurrency they were another sequence's, the
+            // drafts went to garbage, and acceptance pinned at ~0 — the
+            // cache-hit half of the 2026-08-21 derailment matrix.
             self.try_dflash_prefill_capture_layer(
                 seq,
                 i,
-                layer_kv_write_start,
+                effective_seq_len_start,
                 proc_count,
                 stream,
             )?;
@@ -222,6 +237,28 @@ impl TransformerModel {
             if let Some(lt0) = lt0 {
                 self.gpu.synchronize(stream)?;
                 layer_times.push(lt0.elapsed().as_micros());
+            }
+            // Hyper-stream RMS trail (`AVAROK_DUMP_HYPER_RMS=1`): after each
+            // layer, RMS over the FP32 mHC highway [proc_count, hc_mult, H]
+            // — directly comparable to the reference golden's `layer_rms`
+            // (bench/qwen4_exp/forward_ref.py) since both sides keep the
+            // highway in f32. Localizes which layer the engine's logit
+            // dilution (KL 0.3-1.6 nats/token vs reference) first appears
+            // in. Debug-only: syncs + D2H per layer.
+            if std::env::var("AVAROK_DUMP_HYPER_RMS").as_deref() == Ok("1")
+                && self.config.hc_mult > 0
+            {
+                let n = proc_count * self.config.hc_mult * self.config.hidden_size;
+                let mut buf = vec![0u8; n * 4];
+                self.gpu
+                    .copy_d2h_on_stream(ctx.buffers.hc_streams(), &mut buf, stream)?;
+                let vals: &[f32] =
+                    unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, n) };
+                let ssq: f64 = vals.iter().map(|&v| (v as f64) * (v as f64)).sum();
+                tracing::info!(
+                    "HYPER_RMS layer {i} tokens {proc_count} rms {:.6}",
+                    (ssq / n as f64).sqrt()
+                );
             }
             // MLA diagnostic: per-layer hidden norm for Mistral (once per model).
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
@@ -264,13 +301,13 @@ impl TransformerModel {
                 tracing::info!("L{i} hidden[0] norm={norm:.4}");
             }
             // Per-layer numerical-divergence dump (env-gated, zero overhead when
-            // unset). `ATLAS_NEMO_DUMP=<dir>` writes the LAST token's full
+            // unset). `AVAROK_NEMO_DUMP=<dir>` writes the LAST token's full
             // post-layer residual-stream hidden vector for every layer as
-            // headerless little-endian f32: `<dir>/atlas_L{i}.bin`. Overwrites
+            // headerless little-endian f32: `<dir>/avarok_L{i}.bin`. Overwrites
             // on every call so the final chunk's last token wins (methodology
             // §3 gotcha #5). Compared 1:1 against the HF CPU/GPU oracle.
             if is_last_chunk
-                && let Ok(dir) = std::env::var("ATLAS_NEMO_DUMP")
+                && let Ok(dir) = std::env::var("AVAROK_NEMO_DUMP")
                 && !dir.is_empty()
             {
                 self.gpu.synchronize(stream)?;
@@ -278,11 +315,11 @@ impl TransformerModel {
                 let (vals, _) = self.readback_bf16(hidden.offset(last_start * elem_bytes), h)?;
                 let bytes: Vec<u8> = vals.iter().flat_map(|v| v.to_le_bytes()).collect();
                 std::fs::create_dir_all(&dir).ok();
-                let path = std::path::Path::new(&dir).join(format!("atlas_L{i}.bin"));
+                let path = std::path::Path::new(&dir).join(format!("avarok_L{i}.bin"));
                 std::fs::write(&path, &bytes).ok();
                 if i == self.layers.len() - 1 {
                     tracing::info!(
-                        "ATLAS_NEMO_DUMP: wrote {} per-layer hidden \
+                        "AVAROK_NEMO_DUMP: wrote {} per-layer hidden \
                          vectors ({h} f32 each) to {dir}",
                         self.layers.len()
                     );
@@ -326,7 +363,7 @@ impl TransformerModel {
             );
         }
 
-        // ATLAS_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
+        // AVAROK_MTP_DRAFTER_PREFILL: capture this chunk's final-layer hidden
         // rows for the whole-prompt drafter prefill. No-op when disabled.
         self.try_mtp_prefill_capture(seq, effective_seq_len_start, proc_count, stream)?;
         if let Some(t0) = prefill_t0 {

@@ -18,7 +18,7 @@
 
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
-use atlas_plugin::coherence::{self, Report};
+use avarok_plugin::coherence::{self, Report};
 
 /// Where the pre-flight has got to.
 #[derive(Debug, PartialEq, Eq)]
@@ -42,8 +42,8 @@ impl Preflight {
     /// call on the render thread.
     pub fn begin(
         runtime: &tokio::runtime::Handle,
-        target: atlas_plugin::TargetEndpoint,
-        expectation: Option<atlas_plugin::benchmark::ModelExpectation>,
+        target: avarok_plugin::TargetEndpoint,
+        expectation: Option<avarok_plugin::benchmark::ModelExpectation>,
         timeout: std::time::Duration,
     ) -> Self {
         let (tx, rx) = channel();
@@ -59,7 +59,7 @@ impl Preflight {
 
     /// Drain the check. Returns `Some(true)` when the run should start now,
     /// `Some(false)` when the user must be asked first, `None` while waiting.
-    pub fn poll(&mut self, target: &atlas_plugin::TargetEndpoint) -> Option<bool> {
+    pub fn poll(&mut self, target: &avarok_plugin::TargetEndpoint) -> Option<bool> {
         let rx = self.rx.as_ref()?;
         match rx.try_recv() {
             Ok(report) => {

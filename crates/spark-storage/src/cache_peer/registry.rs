@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Process-global SHARED paging arenas (the cross-connection warm cache).
-// This is peer POLICY with no home in `atlas-tier`/`atlas-rdma`: the
+// This is peer POLICY with no home in `avarok-tier`/`avarok-rdma`: the
 // (kind, blob_bytes) arena registry, the shared-vs-per-kind disk-cap carve,
 // and the anonymous `Mmap` RAII the RDMA-registered arenas live in
-// (deliberately NOT lifted to `atlas-tier`, whose charter excludes unsafe
+// (deliberately NOT lifted to `avarok-tier`, whose charter excludes unsafe
 // raw-pointer arena types — see `snapshot_swap/mmap_arena.rs`).
 //
 // All paging connections of one (kind, shape) reg_mr the SAME arena and drive
@@ -15,7 +15,7 @@
 // daemon's lifetime.
 
 use anyhow::{Context, Result, bail};
-use atlas_tier::{DirectSwapFile, Residency};
+use avarok_tier::{DirectSwapFile, Residency};
 
 use super::server_impl::RdmaConfig;
 use crate::snapshot_swap::MmapSlotArena;
@@ -140,13 +140,13 @@ pub(super) fn get_or_init_shared_paging(
         .context("paging client but peer has no --swap-dir configured")?;
     std::fs::create_dir_all(swap_dir).ok();
     // One-time: init the shared disk budget + remove the pre-registry fixed
-    // swap file (verify gap: orphaned atlas-snap-shared.swap on upgrade).
+    // swap file (verify gap: orphaned avarok-snap-shared.swap on upgrade).
     if !reg.cap_init {
         reg.remaining_cap = rdma.swap_cap_bytes;
         reg.cap_init = true;
     }
     if !reg.legacy_cleaned {
-        let _ = std::fs::remove_file(swap_dir.join("atlas-snap-shared.swap"));
+        let _ = std::fs::remove_file(swap_dir.join("avarok-snap-shared.swap"));
         reg.legacy_cleaned = true;
     }
     let reservation = ledger
@@ -162,7 +162,7 @@ pub(super) fn get_or_init_shared_paging(
         blob_bytes as u64,
     );
     reg.remaining_cap = new_remaining;
-    let swap_path = swap_dir.join(format!("atlas-snap-{kind}-{blob_bytes}.swap"));
+    let swap_path = swap_dir.join(format!("avarok-snap-{kind}-{blob_bytes}.swap"));
     let swap = DirectSwapFile::create(&swap_path, blob_bytes)?;
     // SAFETY: the Mmap is owned by SharedPaging (held by the registry Arc), so
     // its base VA outlives every MmapSlotArena view of it.

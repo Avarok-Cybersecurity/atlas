@@ -15,7 +15,7 @@ use anyhow::Result;
 use super::super::super::types::TransformerModel;
 use crate::layer::{LayerState, SsmLayerState};
 use crate::traits::SequenceState;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 
 impl TransformerModel {
     /// Build the decode portion's `(seq_lens, block_tables, all_layer_states)`
@@ -77,6 +77,7 @@ impl TransformerModel {
                         // the dummy slot's geometry matches a real one and a
                         // stray prefill over it stages rather than overruns.
                         h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
+                        ple: None,
                     }));
                     ssm_idx += 1;
                 } else {

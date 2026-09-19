@@ -17,6 +17,7 @@
 // GB10 sm_121: mma.sync.m16n8k16 BF16 (no wgmma/TMA, ldmatrix broken).
 
 #include <cuda_bf16.h>
+#include <cuda.h>
 #include <mma.h>   // nvcuda::wmma fragment types (tc_vblock variant; mma_gram itself
                    // stays raw mma.sync PTX — ldmatrix is broken on sm_121).
 
@@ -57,10 +58,76 @@ struct GdnGeom { unsigned int seqlen, nchunks, choff; unsigned long long tokoff;
         g.nchunks = num_chunks;                                                \
     }
 
-// GB10 sm_121 has cp.async.cg (NO TMA). 16-byte async global→shared copy + group
+// 16-byte async global→shared copy + group
+// ★ The line that used to be here said "GB10 sm_121 has cp.async.cg (NO TMA)".
+// That is FALSE and it cost real time: `cp.async.bulk.tensor` + `mbarrier`
+// COMPILE AND RUN on sm_121a with our own CUDA 13.0 nvcc (probe: a 2D tile load
+// with `__grid_constant__ CUtensorMap`, no external headers), and the FlashQLA
+// GDN spine measured on THIS box at 15.0 ms uses exactly that. Our whole
+// `kernels/` tree still uses zero TMA and zero mbarrier — that gap, not tile
+// shape, is why our spine is 119.8 ms against its 15.0 ms. Do not re-derive
+// "no TMA" from this file.
 // commit/wait — used to double-buffer the per-chunk W/U/K loads in chunk_delta_h
 // so the serial state spine overlaps the next chunk's load with the current
 // chunk's compute (it was global-load-LATENCY bound at 4 warps, not FLOP bound).
+// ── TMA (cp.async.bulk.tensor) + mbarrier primitives ─────────────────────────
+// The copy engine generates addresses, tiles, AND bounds-checks: a tile that
+// hangs off the end of the tensor is ZERO-FILLED in hardware, so the per-row
+// `i < ce` predication `cdh_prefetch` needs disappears, and nothing round-trips
+// through the register file the way a `cp.async` still does.
+//
+// Sequencing per stage: `bar_init` once, then per tile
+//   expect_tx(bytes) -> tma_load_2d(...) -> bar_wait(parity)
+// The barrier counts BYTES, not arrivals: `expect_tx` states the transaction
+// size up front and the copy engine completes it, which is why the consumer can
+// wait without the producer arriving explicitly.
+//
+// `__grid_constant__ const CUtensorMap` is a 128-byte BY-VALUE parameter — see
+// `KernelLaunch::arg_tensormap`, which had to learn to pass an argument wider
+// than one 8-byte slot for this to be expressible at all.
+__device__ __forceinline__ void mbar_init(uint64_t* bar, unsigned int count) {
+    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" ::
+                 "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(count));
+}
+__device__ __forceinline__ void mbar_expect_tx(uint64_t* bar, unsigned int bytes) {
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::
+                 "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(bytes) : "memory");
+}
+// Spin until the barrier flips to `parity`. `try_wait.parity` is the documented
+// pairing for a transaction barrier; a plain `test_wait` races the phase flip.
+__device__ __forceinline__ void mbar_wait(uint64_t* bar, unsigned int parity) {
+    asm volatile(
+        "{\n"
+        ".reg .pred P;\n"
+        "WAIT_%=:\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 P, [%0], %1;\n"
+        "@P bra DONE_%=;\n"
+        "bra WAIT_%=;\n"
+        "DONE_%=:\n"
+        "}\n" ::
+        "r"((unsigned int)__cvta_generic_to_shared(bar)), "r"(parity) : "memory");
+}
+// The descriptor lives in the (read-only) param space while the barrier lives in
+// shared; the async proxy needs a fence between a generic-space write and a TMA
+// that observes it.
+__device__ __forceinline__ void tma_fence() {
+    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+}
+// One 2-D tile. `c0` is the fastest-varying coordinate (columns), `c1` the row —
+// the same fastest-first ordering `TensorMap::tiled_2d_bf16` encodes, and
+// reversing it silently transposes rather than failing.
+__device__ __forceinline__ void tma_load_2d(
+    const CUtensorMap* desc, uint64_t* bar, void* dst_smem, int c0, int c1
+) {
+    asm volatile(
+        "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+        " [%0], [%1, {%3, %4}], [%2];\n" ::
+        "r"((unsigned int)__cvta_generic_to_shared(dst_smem)),
+        "l"((const void*)desc),
+        "r"((unsigned int)__cvta_generic_to_shared(bar)),
+        "r"(c0), "r"(c1) : "memory");
+}
+
 __device__ __forceinline__ void cp_async16(void* dst_smem, const void* src_gmem) {
     unsigned int s = (unsigned int)__cvta_generic_to_shared(dst_smem);
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" ::"r"(s), "l"(src_gmem));
@@ -133,7 +200,66 @@ __device__ __forceinline__ void mma_gram(
 //   W_out: [.. ][CHUNK][K_DIM]   = T·(β·exp(gc)·K)
 // where T=(I+L)⁻¹ applied by forward-substitution (parallel over the V/K cols).
 // smem: sk_bf(16K) + kk(16K f32) + L(16K f32) + gc(256) ≈ 48.25KB.
-extern "C" __global__ void __launch_bounds__(128, 1)
+#define RL_BLK 16   // right-looking block width; see the note below
+
+// ── MEASURED (2026-08-22) ───────────────────────────────────────────────────
+// ★ MEASURE THIS KERNEL AT nt=16 AND nt=64. Nothing measured at nt<=4 is
+// trustworthy: at nt=1 the grid is 32 CTAs over ~48 SMs, so the GPU is
+// UNDERFILLED and occupancy never binds. One candidate below read 1.60x at
+// nt=1 and 0.92x at nt=64 — the sign flipped. Use
+// `AVAROK_WU_SHAPES=1024,4096` with `WU_BENCH_ITERS` in
+// `examples/gdn_recompute_wu_gateb.rs`.
+//
+// WHERE THE TIME GOES. Against a solve-removed probe, the prologue (gc scan,
+// K load, mma_gram, L build) is 14.3/16.4/20.5 us vs 68.9/96.6/140.8 for the
+// whole kernel: the two forward-substitution passes are 79-85% of it.
+//
+// SHARED-MEMORY ACCUMULATOR — REJECTED, and the first attempt to reject it was
+// itself wrong, so both halves are recorded.
+//   ptxas reports `256 bytes stack frame` here: `u[l]` is indexed by a runtime
+//   `l`, so the array cannot live in registers and goes to LOCAL memory. The
+//   obvious fix is shared memory.
+//   * First probe laid it out [tid][l] — stride CHUNK floats = 256 B between
+//     threads. Shared memory has 32 banks of 4 B, so every thread of a pass
+//     hit the SAME bank: a 32-way conflict. It measured 0.59-0.81x and that was
+//     read as "local memory is fine". It measured a bad LAYOUT.
+//   * Second probe laid it out [l][tid] — conflict-free — and measured
+//         nt=1  1.60x   nt=4  1.30x   nt=16 1.09x   nt=64  0.92x
+//     The win is real only where the GPU is underfilled. The extra 64 KB takes
+//     occupancy from 3 CTAs/SM to 1, and once the grid fills, that dominates.
+//     At the PRODUCTION shape it is an 8% REGRESSION.
+//   ⇒ Keep the local-memory accumulator. And note WHY: not because local memory
+//     is cheap, but because 64 KB of smem costs more at nt>=64. Any
+//     reformulation that buys speed with a materially larger smem footprint
+//     has to clear that bar — which is why a blocked triangular solve holding
+//     the solved rows in smem was drafted and rejected.
+//
+// FMA DEPENDENCY CHAIN — not the constraint. `for (l<i) ui -= L*u[l]` is a
+// dependent chain the compiler cannot reassociate, ~2048 deep per thread.
+// Splitting it into four independent partial sums (same FMA count, traffic,
+// smem and occupancy) measured NEUTRAL: 72.2/103.1/151.3 vs 71.8/100.1/151.1.
+//
+// WHAT WAS A WIN, both confirmed at production shapes:
+//   1. The serial gc prefix scan in the prologue (nt=16 9.7%, nt=64 7.0%).
+//   2. RIGHT-LOOKING blocked substitution in the two solve passes — 1.95x at
+//      nt=64 (n=3: 2408.6/2418.0/2427.1 -> 1238.2/1255.3/1233.2 us).
+//      The left-looking form re-read every earlier u[l] for each output,
+//      ~CHUNK^2/2 = 2048 local reads per thread. Right-looking keeps a running
+//      accumulator per row and pushes each solved block into the remaining rows
+//      ONCE: ~320 accesses, 6-8x fewer, with the block's solved values in
+//      REGISTERS. This is what the smem probe above was reaching for — it cut
+//      the same traffic but paid 64 KB and 3 CTAs/SM -> 1, a net loss at nt=64.
+//      This costs ~25 registers (3 -> 2 CTAs/SM) and no shared memory, and wins
+//      at EVERY shape: 2.28x/2.47x/2.03x/2.04x/2.12x at nt=1/2/4/16/64.
+//      ★ `r` in the diagonal-block loop MUST stay compile-time. With a runtime
+//      bound, `xb` is dynamically indexed and lands in LOCAL memory (ptxas: 320
+//      vs 256 byte stack frame), which is the exact traffic this exists to cut.
+//
+// ⚠ The gate harness for this kernel could not run at all until 2026-08-22, so
+// any pre-existing claim that something here "was tested" is suspect.
+// 256 threads: mma_gram is fenced to the first 4 warps, and the two independent
+// forward-subs run concurrently on the two thread halves instead of back-to-back.
+extern "C" __global__ void __launch_bounds__(256, 1)
 gated_delta_rule_recompute_wu(
     const __nv_bfloat16* __restrict__ key,
     const __nv_bfloat16* __restrict__ value,
@@ -179,63 +305,154 @@ gated_delta_rule_recompute_wu(
     extern __shared__ char smem_raw[];
     __nv_bfloat16* sk = (__nv_bfloat16*)smem_raw;       // [CHUNK*K_DIM] bf16
     float* kk = (float*)(sk + CHUNK * K_DIM);           // [CHUNK*CHUNK] f32 Gram
-    float* L = kk + CHUNK * CHUNK;                      // [CHUNK*CHUNK] f32 decay-weighted strict-lower
+    // L ALIASES kk. Safe because the two live in disjoint triangles: the build below
+    // writes L only at (i,l) with l<i (strictly LOWER) and reads kk only at (l,i)
+    // with l<i (strictly UPPER, kk being symmetric), and both forward-subs consume
+    // L only for l<i. Saves 16 KB, which takes this kernel from 2 to 3 CTAs/SM.
+    float* L = kk;                                     // [CHUNK*CHUNK] f32 strict-lower, aliased
     float* gc = L + CHUNK * CHUNK;                      // [CHUNK]
 
-    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += blockDim.x) {
         unsigned int i = idx / k_dim, j = idx % k_dim;
         sk[i * K_DIM + j] = (i < ce)
             ? key[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + j]
             : __float2bfloat16(0.0f);
     }
+    // ORDER-STABLE parallel gc scan (v2 — replaces the Hillis-Steele tree).
+    //
+    // ★ THE TREE SCAN COST 2.6 BFCL POINTS AND WAS REVERTED (2026-08-23).
+    // Bisect on the golden n=995 draw: full branch 83.02/80.72 vs floors
+    // 83.42/83.32, and the pscan-only build scored IDENTICALLY — while the
+    // clean base passed at 84.22/84.12 the same night. A tree scan
+    // re-associates this log-space cumulative sum, and gc feeds
+    // exp(gc_i - gc_l) across the whole L matrix: femto-scale association
+    // differences get amplified multiplicatively. cos 0.999999 with identical
+    // max-abs DID NOT catch it — the second such miss on this file (vfused
+    // SPLIT=4 was the first). Task-level gates are the only trustworthy
+    // verdict for numerics changes here.
+    //
+    // This version keeps the EXPENSIVE parts parallel — the 64 global gate
+    // loads and 64 logf calls, which are element-independent and order-free —
+    // and does the 64 ADDITIONS sequentially on one thread over smem-resident
+    // values, in the SAME order as the original serial scan. The summation is
+    // bit-identical to the pre-pscan kernel by construction; only the logf
+    // computation moved off the critical path.
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        gc[idx] = (idx < ce)
+            ? logf(fmaxf(gate[(unsigned long long)(cs + idx) * gb_stride + vh], GATE_FLOOR))
+            : 0.0f;
+    }
+    __syncthreads();
     if (tid == 0) {
         float acc = 0.0f;
         for (unsigned int i = 0; i < ce; i++) {
-            acc += logf(fmaxf(gate[(unsigned long long)(cs + i) * gb_stride + vh], GATE_FLOOR));
+            acc += gc[i];
             gc[i] = acc;
-            gc_out[base * CHUNK + i] = acc;
+        }
+    }
+    __syncthreads();
+    // Publish, and zero the tail (defined zeros: the L build reads gc[i] up to
+    // CHUNK, and 0 * expf(garbage) can be NaN).
+    for (unsigned int idx = tid; idx < CHUNK; idx += blockDim.x) {
+        if (idx >= ce) {
+            gc[idx] = 0.0f;
+        } else {
+            gc_out[base * CHUNK + idx] = gc[idx];
         }
     }
     __syncthreads();
 
-    mma_gram<8, CHUNK, false>(sk, sk, kk);   // kk[l][i] = <k_l,k_i>
+    if (tid < 128) mma_gram<8, CHUNK, false>(sk, sk, kk);   // kk[l][i] = <k_l,k_i>
     __syncthreads();
 
     // L[i][l] = β_i·exp(gc_i-gc_l)·<k_l,k_i>  for l<i ; 0 otherwise.  (kk symmetric)
-    for (unsigned int p = tid; p < CHUNK * CHUNK; p += 128) {
+    for (unsigned int p = tid; p < CHUNK * CHUNK; p += blockDim.x) {
         unsigned int i = p / CHUNK, l = p % CHUNK;
+        // Only the strict-lower half is written — the old `else` branch zeroed the
+        // rest, which is both unread (every consumer loops l<i) and, under the
+        // alias, would clobber the upper-triangle kk values still being read.
         if (i < ce && l < i) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
             L[i * CHUNK + l] = bi * expf(gc[i] - gc[l]) * kk[l * CHUNK + i];
-        } else {
-            L[i * CHUNK + l] = 0.0f;
         }
     }
     __syncthreads();
 
-    // Pass 1: U[:,v] forward-sub (one thread per v-element).  U_i = β_i·V_i - Σ_{l<i} L[i][l]·U_l
+    // Passes 1 and 2 are INDEPENDENT: both only read L/gc/beta and they write
+    // disjoint outputs (U_out vs W_out). At 128 threads they ran back-to-back;
+    // at 256 they run concurrently on disjoint thread halves, which halves the
+    // serial triangular-solve section that dominates this kernel.
+    // Pass 1 (RIGHT-LOOKING): U[:,v], one thread per v-element.
     if (tid < v_dim) {
-        float u[CHUNK];
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float ui = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
-            for (unsigned int l = 0; l < i; l++) ui -= L[i * CHUNK + l] * u[l];
-            u[i] = ui;
-            U_out[base * CHUNK * V_DIM + i * v_dim + tid] = __float2bfloat16(ui);
+            acc[i] = bi * (float)value[(unsigned long long)(cs + i) * v_stride + vh * v_dim + tid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                U_out[base * CHUNK * V_DIM + (jb + r) * v_dim + tid] = __float2bfloat16(x);
+            }
+            // Push this block's contribution into every remaining row ONCE.
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
-    // Pass 2: W[:,k] forward-sub (one thread per k-element).  W_i = β_i·exp(gc_i)·K_i - Σ_{l<i} L[i][l]·W_l
-    if (tid < k_dim) {
-        float w[CHUNK];
+    // Pass 2 (RIGHT-LOOKING): W[:,k], upper thread half.
+    const unsigned int wtid = tid - 128u;
+    if (tid >= 128u && wtid < k_dim) {
+        float acc[CHUNK];
         for (unsigned int i = 0; i < ce; i++) {
             float bi = beta[(unsigned long long)(cs + i) * gb_stride + vh];
-            float wi = bi * expf(gc[i]) * (float)sk[i * K_DIM + tid];
-            for (unsigned int l = 0; l < i; l++) wi -= L[i * CHUNK + l] * w[l];
-            w[i] = wi;
-            W_out[base * CHUNK * K_DIM + i * k_dim + tid] = __float2bfloat16(wi);
+            acc[i] = bi * expf(gc[i]) * (float)sk[i * K_DIM + wtid];
+        }
+        for (unsigned int jb = 0; jb < ce; jb += RL_BLK) {
+            float xb[RL_BLK];
+            // r MUST be compile-time or `xb` is dynamically indexed and lands in
+            // local memory — which is the very traffic this variant exists to cut.
+            #pragma unroll
+            for (unsigned int r = 0; r < RL_BLK; r++) {
+                if (jb + r >= ce) continue;
+                float x = acc[jb + r];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (q < r) x -= L[(jb + r) * CHUNK + jb + q] * xb[q];
+                }
+                xb[r] = x;
+                acc[jb + r] = x;
+                W_out[base * CHUNK * K_DIM + (jb + r) * k_dim + wtid] = __float2bfloat16(x);
+            }
+            for (unsigned int i = jb + RL_BLK; i < ce; i++) {
+                float a = acc[i];
+                #pragma unroll
+                for (unsigned int q = 0; q < RL_BLK; q++) {
+                    if (jb + q < ce) a -= L[i * CHUNK + jb + q] * xb[q];
+                }
+                acc[i] = a;
+            }
         }
     }
 }
+
+
 
 // chunk_delta_h double-buffer: per-buffer smem holds {W,K,U} bf16 for one chunk.
 #define CDH_BUFSZ (CHUNK * (2 * K_DIM + V_DIM))   // 24576 bf16 = 48KB
@@ -275,13 +492,17 @@ __device__ __forceinline__ void cdh_prefetch(
             cp_async16(&Kp[i * K_DIM + c16],
                        key + (unsigned long long)(cs + i) * qk_stride + kh * k_dim + c16);
     }
-    if (tid == 0) {
-        float dl = gc_in[base * CHUNK + ce - 1];
-        decb[p * (CHUNK + 1)] = expf(dl);
-        for (unsigned int i = 0; i < ce; i++) {
-            float g = gc_in[base * CHUNK + i];
-            gcb[p * CHUNK + i] = g;
-            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - g);
+    // Decay table, ONE THREAD PER ENTRY. This used to be a `tid == 0` loop of up
+    // to CHUNK serial `expf` calls while every other thread idled at the next
+    // barrier — per chunk, on the serial state spine. Each entry depends only on
+    // its own `gc_in`, so there was never a reason to serialize it.
+    {
+        const float dl = gc_in[base * CHUNK + ce - 1];
+        if (tid == 0) decb[p * (CHUNK + 1)] = expf(dl);
+        for (unsigned int i = tid; i < ce; i += nthr) {
+            const float gv = gc_in[base * CHUNK + i];
+            gcb[p * CHUNK + i] = gv;
+            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - gv);
         }
     }
     cp_commit();
@@ -649,6 +870,741 @@ gated_delta_rule_chunk_delta_h_ksplit(
     cdh_ksplit_core<2>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len, num_chunks,
                        num_k_heads, num_v_heads, k_dim, v_dim, qk_stride, gb_stride, h_state_is_table,
                        cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-VTILE: chunk_delta_h_vtile<SPLIT,VT> ────────────────────────────
+// TRAFFIC variant. An ncu memory-pipeline profile of ksplit at the 35B GDN shape
+// says the spine is neither FLOP- nor occupancy-bound:
+//
+//   lts__throughput (L2)        60.6%   <- highest utilisation
+//   l1tex__throughput (L1/smem) 56.2%   <- second
+//   smsp__warps_active          16.4%
+//   inst/cycle/scheduler         0.31   (issue-starved BY memory, not by warps)
+//   avg warp latency/inst        6.35 cycles
+//
+// It is MEMORY-PIPELINE bound, and that one fact explains the two failed attempts:
+// tc_vblock and dvsplit both split the DV axis across CTAs, which DUPLICATES the
+// K-dimensioned W and K loads (they are not v-indexed) — paying L2, the saturated
+// resource, to buy occupancy, which was never the constraint. dvsplit measured 0.97x
+// and tc_vblock 0.89x for exactly that reason.
+//
+// This variant instead REDUCES traffic, and keeps one CTA per head so W/K are loaded
+// exactly once:
+//
+//   1. Register-tile the v axis (VT columns per thread). Every W and K smem read is
+//      reused across VT outputs, so L1 read volume drops by VT.
+//   2. Fuse the two per-chunk passes. ksplit computes duc[i] for all i (a 64-float
+//      per-thread array, 64 of its 165 registers) and only then updates S. Keeping
+//      S_old and S_new separately lets duc collapse to a scalar per v: the update is
+//      applied inside the same i-loop that produced it. That deletes the array, and
+//      with it the register pressure that capped ksplit at 1 CTA/SM.
+//   3. Stage only W and K (32 KB). U is streamed from global — each element is read
+//      once per thread anyway, so smem buys nothing and costs 16 KB.
+//
+// Per-thread smem reads per chunk fall from 8192 (ksplit: 64i x 64kk twice) to 2048
+// (64i x 16kk twice) — a 4x cut in L1 traffic, against a 56%-utilised L1.
+//
+// Correctness is unchanged and exact: for every token i the wsp reduction still uses
+// the chunk-start state, because S_old is never written during the loop; only S_new
+// accumulates. Same f32 accumulation, same shfl butterfly over the SPLIT group.
+// Drop-in ABI == ksplit, so chunk_fwd_o is untouched.
+template <int SPLIT, int VT>
+__device__ __forceinline__ void cdh_vtile_core(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int k_dim, unsigned int v_dim,
+    unsigned int qk_stride, unsigned int gb_stride, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;          // per-thread slice of the state column
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads) return;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;        // 0 .. (V_DIM/VT)*SPLIT - 1
+    const unsigned int v0 = (t / SPLIT) * VT;  // first of this thread's VT v-columns
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    extern __shared__ char smem_raw_vt[];
+    __nv_bfloat16* Wp = (__nv_bfloat16*)smem_raw_vt;   // [CHUNK*K_DIM]
+    __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;            // [CHUNK*K_DIM]
+    __nv_bfloat16* Up = Kp + CHUNK * K_DIM;            // [CHUNK*V_DIM]
+    float* decs = (float*)(Up + CHUNK * V_DIM);        // [CHUNK+1], [0]=exp(gc_last)
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sold[KH][VT];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = H[(k0 + kk) * V_DIM + v0 + vt];
+
+    const __nv_bfloat16* key_b = key + g.tokoff * qk_stride;
+    const unsigned int nthr = blockDim.x;
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int cs = c * CHUNK;
+        const unsigned int ce = (g.seqlen - cs) < CHUNK ? (g.seqlen - cs) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        __syncthreads();
+        const __nv_bfloat16* Wsrc = W_in + base * CHUNK * K_DIM;
+        for (unsigned int e = t; e < CHUNK * K_DIM; e += nthr) Wp[e] = Wsrc[e];
+        for (unsigned int e = t; e < CHUNK * K_DIM; e += nthr) {
+            unsigned int i = e / K_DIM, kx = e % K_DIM;
+            Kp[e] = (i < ce)
+                ? key_b[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + kx]
+                : __float2bfloat16(0.0f);
+        }
+        {
+            const __nv_bfloat16* Usrc0 = U_in + base * CHUNK * V_DIM;
+            for (unsigned int e = t; e < CHUNK * V_DIM; e += nthr) Up[e] = Usrc0[e];
+        }
+        if (t == 0) {
+            float dl = gc_in[base * CHUNK + ce - 1];
+            decs[0] = expf(dl);
+            for (unsigned int i = 0; i < ce; i++) decs[1 + i] = expf(dl - gc_in[base * CHUNK + i]);
+        }
+        __syncthreads();
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v0 + vt] =
+                    __float2bfloat16(Sold[kk][vt]);
+
+        // S_new starts at edl*S_old; the i-loop adds duc_i·K_i on top, so duc never
+        // needs to outlive one iteration (this is the register saving vs ksplit).
+        const float edl = decs[0];
+        float Snew[KH][VT];
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Snew[kk][vt] = edl * Sold[kk][vt];
+
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) wsp[vt] = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float w = (float)Wp[i * K_DIM + k0 + kk];   // read ONCE, used VT times
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) wsp[vt] += w * Sold[kk][vt];
+            }
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                #pragma unroll
+                for (int s = 1; s < SPLIT; s <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], s);
+            const float dc = decs[1 + i];
+            float d[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) {
+                const float uci = (float)Up[i * V_DIM + v0 + vt] - wsp[vt];
+                if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v0 + vt] = __float2bfloat16(uci);
+                d[vt] = dc * uci;
+            }
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float kv = (float)Kp[i * K_DIM + k0 + kk];  // read ONCE, used VT times
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) Snew[kk][vt] += d[vt] * kv;
+            }
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = Snew[kk][vt];
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) H[(k0 + kk) * V_DIM + v0 + vt] = Sold[kk][vt];
+}
+
+// 512 threads = (V_DIM/VT=64) v-groups x SPLIT(8). KH=16, so Sold+Snew is 2*16*2=64
+// state registers — the budget that lets minBlocksPerMultiprocessor=2 hold without
+// spilling. Grid is UNCHANGED at [nv, batch]: one CTA per head, so W/K are fetched
+// once per head per chunk and L2 sees no duplication.
+extern "C" __global__ void __launch_bounds__(512, 1)
+gated_delta_rule_chunk_delta_h_vtile(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_vtile_core<4, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                         num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                         gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// Identical geometry to `..._vtile` above (512 threads, SPLIT=4, grid [nv, batch]) with
+// the k-reduction accumulated in Neumaier-compensated form. `..._vtile` is 2.10x on the
+// spine but costs -0.60 BFCL on both models, because SPLIT=4 reassociates a sum that
+// SPLIT=2 folds in one round; this variant keeps the warp density and pays a handful of
+// pure-ALU ops to make the sum order-independent. Same ABI, same smem — the launcher
+// picks between them, nothing else changes.
+// ── KERNEL 2-VFUSED: chunk_delta_h_vfused = cdh_vtile_core<2,1> ──────────────
+// THE SHIPPING SPINE. Same fused single-pass core as `..._vtile` below, but at
+// ksplit's own thread geometry: SPLIT=2, 256 threads.
+//
+// The fusion is where the speed is. Folding the two per-chunk passes into one
+// collapses `duc` from a CHUNK-long array to a scalar, which drops smem from
+// ksplit's 99,336 B to 49,412 B — and that, not warp count, is what buys 2.01x
+// on the spine (measured, gdn_chunk_shapetest, t in {2048,8192,16384}).
+//
+// `..._vtile` raises this to SPLIT=4 / 512 threads for 2.15x — only 7% more —
+// and that 7% costs -0.60 BFCL on both models. Bisected on the ssm-poisoning
+// tripwire, which is decisive and takes 4 minutes:
+//     ksplit  (unfused, SPLIT=2)  12/12 replays byte-identical
+//     vfused  (fused,   SPLIT=2)  12/12   <- this kernel
+//     vtile   (fused,   SPLIT=4)   1/12
+// So the fusion is innocent and SPLIT=4 is implicated. The mechanism is NOT
+// reassociation of the k-sum: compensating the SPLIT-way butterfly fold in
+// Neumaier form scored 0/12, i.e. no better, so that hypothesis is refuted and
+// the real cause of SPLIT=4's drift is still unknown. Do not promote SPLIT=4
+// on the strength of a cosine check — it reads 1.0000 while failing two
+// accuracy gates.
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_vfused(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_vtile_core<2, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                         num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                         gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-PIPE: chunk_delta_h_pipe<SPLIT,VT> ──────────────────────────────
+// `cdh_vtile_core`'s fused single-pass compute, but with the ASYNC DOUBLE BUFFER
+// that core dropped.
+//
+// The shipping `vfused` spine loads each chunk with plain scalar copies
+// (`Wp[e] = Wsrc[e]`) behind a bare `__syncthreads()`. That routes every byte
+// global→register→shared and, worse, leaves the load of chunk c+1 strictly after
+// the compute of chunk c on a spine that is SERIAL in c. The original
+// `chunk_delta_h` already had the fix — `cdh_prefetch`, a 16-byte `cp.async`
+// double buffer — and it was simply not carried over when the fused core was
+// written. This reuses that same helper rather than growing a second one.
+//
+// Two buffers of {W,K,U} = 2 * CDH_BUFSZ bf16 = 98,304 B, plus the gc/decay
+// tables = 99,336 B, which is exactly the footprint `ksplit` already proved fits
+// at 1 CTA/SM on GB10. Occupancy is therefore unchanged; only the overlap is new.
+//
+// SPLIT is deliberately 2, NOT 4. SPLIT=4 measures faster and fails the
+// ssm-state-poisoning tripwire 1/12 (see the vfused note); that verdict is about
+// the thread geometry, which this kernel does not change, so it carries over.
+//
+// This is a STAGING POST, not the destination. The measured reference
+// (FlashQLA, 15.0 ms vs our 119.8 ms on the same box) gets its speed from TMA
+// (`cp.async.bulk.tensor` + `CUtensorMap`) and an `mbarrier` producer/consumer
+// pipeline, neither of which appears anywhere in this tree yet. `cp.async` +
+// double buffering is the part reachable without that machinery.
+template <int SPLIT, int VT>
+__device__ __forceinline__ void cdh_pipe_core(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int k_dim, unsigned int v_dim,
+    unsigned int qk_stride, unsigned int gb_stride, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads) return;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;
+    const unsigned int v0 = (t / SPLIT) * VT;
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    extern __shared__ char smem_raw_pipe[];
+    __nv_bfloat16* bufs = (__nv_bfloat16*)smem_raw_pipe;      // 2 x CDH_BUFSZ
+    float* gcb  = (float*)(bufs + 2 * CDH_BUFSZ);             // 2 x CHUNK
+    float* decb = gcb + 2 * CHUNK;                            // 2 x (CHUNK+1)
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sold[KH][VT];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = H[(k0 + kk) * V_DIM + v0 + vt];
+
+    if (g.nchunks == 0) return;
+    // Prologue: chunk 0 into slot 0, then each iteration issues c+1 before
+    // consuming c, so the copy engine is busy across the whole compute body.
+    cdh_prefetch(bufs, gcb, decb, 0, W_in, U_in, key, gate, gc_in, 0, b, vh, seq_len,
+                 num_chunks, num_v_heads, k_dim, kh, qk_stride, gb_stride,
+                 cu_seqlens, cu_chunks, is_varlen);
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int p = c & 1u;
+        const unsigned int ce = (g.seqlen - c * CHUNK) < CHUNK ? (g.seqlen - c * CHUNK) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        if (c + 1 < g.nchunks) {
+            cdh_prefetch(bufs, gcb, decb, p ^ 1u, W_in, U_in, key, gate, gc_in, c + 1, b, vh,
+                         seq_len, num_chunks, num_v_heads, k_dim, kh, qk_stride, gb_stride,
+                         cu_seqlens, cu_chunks, is_varlen);
+            cp_wait<1>();   // slot p landed; slot p^1 may still be in flight
+        } else {
+            cp_wait<0>();
+        }
+        __syncthreads();
+
+        const __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        const __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        const __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        const float* decs = decb + p * (CHUNK + 1);
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v0 + vt] =
+                    __float2bfloat16(Sold[kk][vt]);
+
+        const float edl = decs[0];
+        float Snew[KH][VT];
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Snew[kk][vt] = edl * Sold[kk][vt];
+
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) wsp[vt] = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float w = (float)Wp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) wsp[vt] += w * Sold[kk][vt];
+            }
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                #pragma unroll
+                for (int sft = 1; sft < SPLIT; sft <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], sft);
+            const float dc = decs[1 + i];
+            float d[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) {
+                const float uci = (float)Up[i * V_DIM + v0 + vt] - wsp[vt];
+                if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v0 + vt] = __float2bfloat16(uci);
+                d[vt] = dc * uci;
+            }
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float kv = (float)Kp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) Snew[kk][vt] += d[vt] * kv;
+            }
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = Snew[kk][vt];
+        // The next iteration overwrites slot p; nothing may still be reading it.
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) H[(k0 + kk) * V_DIM + v0 + vt] = Sold[kk][vt];
+}
+
+// 256 threads, SPLIT=2 — the geometry the ssm-poisoning tripwire cleared.
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_pipe(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_pipe_core<2, 1>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                        num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                        gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-TMA: chunk_delta_h_tma<SPLIT,VT> ────────────────────────────────
+// `cdh_pipe_core`'s compute and double buffer, with the staging moved from
+// `cp.async` to TMA + `mbarrier`.
+//
+// This is the first TMA in this tree. The measured reference (FlashQLA, 15.0 ms
+// against our 105.7 ms on the same box) gets its speed from TMA plus a fused,
+// warp-specialised spine; this kernel takes only the first half, so it isolates
+// "TMA vs cp.async" as ONE variable against `..._pipe`. Fusing the three FLA
+// kernels is the other half and is not attempted here.
+//
+// What the copy engine takes over:
+//   * address generation and tiling for all three tensors;
+//   * the K gather. `cdh_prefetch` walks K row by row (`i < ce` predicated,
+//     16 `cp_async16` per row) because K lives at a `qk_stride` pitch with a
+//     `kh * k_dim` column offset. That is exactly a strided 2-D tile, so one
+//     `tma_load_2d` at (col = kh*k_dim, row = tokoff + cs) replaces the loop;
+//   * the ragged tail. A tile overhanging the tensor is ZERO-FILLED in
+//     hardware, which is the same value the predicated path wrote by hand.
+//
+// The barrier counts BYTES: one `expect_tx` per stage covering all three tiles,
+// so the consumer waits once rather than per tensor. Stage p is reused every
+// second chunk, so its phase parity is `(c >> 1) & 1`.
+//
+// REQUIRES k_dim == K_DIM and v_dim == V_DIM: the descriptors are encoded from
+// the compile-time tile, and a narrower runtime head would silently load the
+// wrong columns. The launcher checks this and falls back rather than trusting it.
+template <int SPLIT, int VT>
+__device__ __forceinline__ void cdh_tma_core(
+    float* __restrict__ h_state, const CUtensorMap* w_desc, const CUtensorMap* u_desc,
+    const CUtensorMap* k_desc, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int v_dim, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;
+    constexpr unsigned int STAGE_BYTES =
+        (unsigned int)(CHUNK * K_DIM * 2 + CHUNK * K_DIM * 2 + CHUNK * V_DIM * 2);
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads) return;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;
+    const unsigned int v0 = (t / SPLIT) * VT;
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+    const unsigned int nthr = blockDim.x;
+
+    // TMA writes into shared, so the destinations must be 128-byte aligned.
+    extern __shared__ __align__(128) char smem_raw_tma[];
+    __nv_bfloat16* bufs = (__nv_bfloat16*)smem_raw_tma;   // 2 x {W,K,U}
+    float* decb = (float*)(bufs + 2 * CDH_BUFSZ);         // 2 x (CHUNK+1)
+    __shared__ __align__(8) uint64_t bar[2];
+
+    if (t == 0) {
+        mbar_init(&bar[0], 1);
+        mbar_init(&bar[1], 1);
+    }
+    __syncthreads();
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sold[KH][VT];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = H[(k0 + kk) * V_DIM + v0 + vt];
+
+    if (g.nchunks == 0) return;
+
+    // Issue every tile for chunk `c` into slot `p` behind one transaction count.
+    auto issue = [&](unsigned int c, unsigned int p) {
+        const unsigned long long base =
+            ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+        __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        if (t == 0) {
+            mbar_expect_tx(&bar[p], STAGE_BYTES);
+            tma_fence();
+            tma_load_2d(w_desc, &bar[p], Wp, 0, (int)(base * CHUNK));
+            tma_load_2d(u_desc, &bar[p], Up, 0, (int)(base * CHUNK));
+            tma_load_2d(k_desc, &bar[p], Kp, (int)(kh * K_DIM),
+                        (int)(g.tokoff + (unsigned long long)c * CHUNK));
+        }
+        // The decay table is a scalar-load reduction, not a tile; it stays on
+        // the ordinary path, one thread per entry.
+        const unsigned int cs = c * CHUNK;
+        const unsigned int ce = (g.seqlen - cs) < CHUNK ? (g.seqlen - cs) : CHUNK;
+        const float dl = gc_in[base * CHUNK + ce - 1];
+        if (t == 0) decb[p * (CHUNK + 1)] = expf(dl);
+        for (unsigned int i = t; i < ce; i += nthr)
+            decb[p * (CHUNK + 1) + 1 + i] = expf(dl - gc_in[base * CHUNK + i]);
+    };
+
+    issue(0, 0);
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int p = c & 1u;
+        const unsigned int ce = (g.seqlen - c * CHUNK) < CHUNK ? (g.seqlen - c * CHUNK) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        if (c + 1 < g.nchunks) issue(c + 1, p ^ 1u);
+        mbar_wait(&bar[p], (c >> 1) & 1u);
+        __syncthreads();
+
+        const __nv_bfloat16* Wp = bufs + (unsigned long long)p * CDH_BUFSZ;
+        const __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;
+        const __nv_bfloat16* Up = Kp + CHUNK * K_DIM;
+        const float* decs = decb + p * (CHUNK + 1);
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v0 + vt] =
+                    __float2bfloat16(Sold[kk][vt]);
+
+        const float edl = decs[0];
+        float Snew[KH][VT];
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Snew[kk][vt] = edl * Sold[kk][vt];
+
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) wsp[vt] = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float w = (float)Wp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) wsp[vt] += w * Sold[kk][vt];
+            }
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++)
+                #pragma unroll
+                for (int sft = 1; sft < SPLIT; sft <<= 1)
+                    wsp[vt] += __shfl_xor_sync(0xffffffffu, wsp[vt], sft);
+            const float dc = decs[1 + i];
+            float d[VT];
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) {
+                const float uci = (float)Up[i * V_DIM + v0 + vt] - wsp[vt];
+                if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v0 + vt] = __float2bfloat16(uci);
+                d[vt] = dc * uci;
+            }
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++) {
+                const float kv = (float)Kp[i * K_DIM + k0 + kk];
+                #pragma unroll
+                for (int vt = 0; vt < VT; vt++) Snew[kk][vt] += d[vt] * kv;
+            }
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            #pragma unroll
+            for (int vt = 0; vt < VT; vt++) Sold[kk][vt] = Snew[kk][vt];
+        __syncthreads();
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++)
+        #pragma unroll
+        for (int vt = 0; vt < VT; vt++) H[(k0 + kk) * V_DIM + v0 + vt] = Sold[kk][vt];
+}
+
+extern "C" __global__ void __launch_bounds__(256, 1)
+gated_delta_rule_chunk_delta_h_tma(
+    float* __restrict__ h_state,
+    const __grid_constant__ CUtensorMap w_desc,
+    const __grid_constant__ CUtensorMap u_desc,
+    const __grid_constant__ CUtensorMap k_desc,
+    const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int v_dim,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_tma_core<2, 1>(h_state, &w_desc, &u_desc, &k_desc, gc_in, S_out, uc_out, seq_len,
+                       num_chunks, num_k_heads, num_v_heads, v_dim, h_state_is_table,
+                       cu_seqlens, cu_chunks, is_varlen);
+}
+
+// ── KERNEL 2-DVSPLIT: chunk_delta_h_dvsplit<SPLIT,DVB> ───────────────────────
+// SCALAR DV-block split. Same DV factorization tc_vblock uses (column block
+// [dv0,dv0+DVB) of S_{c+1} depends only on the same column block of S_c — the W·S
+// contraction reduces over k, never v), but WITHOUT wmma and WITHOUT the double
+// buffer. Motivation is an ncu profile of ksplit at the 35B GDN shape:
+//
+//   Grid 32 blocks on 48 SMs  →  Waves Per SM 0.67   (a third of the GPU idle)
+//   Registers/thread     165  →  Block Limit Registers   = 1
+//   Dynamic smem      99.34KB →  Block Limit Shared Mem  = 1
+//   Achieved occupancy 16.68% (8 active warps/SM)
+//   Memory 62.1% / Compute 26.5%  → neither bandwidth- nor FLOP-bound
+//
+// ksplit is triply capped: too few CTAs to fill the machine, and 1 CTA/SM from BOTH
+// registers and smem so the few it has cannot hide latency. tc_vblock fixed only the
+// first (64 CTAs) while keeping 1 CTA/SM, converting 0.67 waves into 1.33 — a second
+// nearly-empty wave — which is why it measured 0.89-0.90x (slower), not faster.
+//
+// This variant attacks all three:
+//   * grid.y gains the DV axis  → 64 CTAs (2 per head) instead of 32
+//   * SPLIT=4 over DVB=64 v-cols → Sreg[KH=32] instead of [64]: -32 registers
+//   * single-buffered smem       → 41,476 B instead of 99,336: ≥2 CTAs/SM
+// The double buffer is deliberately dropped: with ≥2 resident CTAs the SM hides load
+// latency by switching blocks, which is cheaper than paying 2x smem to prefetch
+// within one block. That is the whole bet, and it is why this is worth measuring
+// rather than assuming.
+//
+// Cost accepted: W and K are K-dimensioned, so both DV-block CTAs load them — ~2x the
+// W/K global traffic (~5 ms/prefill at this shape) against a kernel that is only 62%
+// bandwidth-utilised. Drop-in ABI == ksplit/tc_vblock (same 21 args, same
+// S_out/uc_out/h_state layout), so chunk_fwd_o is unchanged.
+template <int SPLIT, int DVB>
+__device__ __forceinline__ void cdh_dvsplit_core(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int seq_len, unsigned int num_chunks, unsigned int num_k_heads,
+    unsigned int num_v_heads, unsigned int k_dim, unsigned int v_dim,
+    unsigned int qk_stride, unsigned int gb_stride, unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    constexpr int KH = K_DIM / SPLIT;          // per-thread slice of the state column
+    constexpr int NDVB = V_DIM / DVB;          // DV blocks per head
+    const unsigned int vh = blockIdx.x;
+    if (vh >= num_v_heads) return;
+    const unsigned int dvb = blockIdx.y % (unsigned int)NDVB;
+    const unsigned int b = blockIdx.y / (unsigned int)NDVB;
+    const unsigned int dv0 = dvb * (unsigned int)DVB;
+    GDN_GEOM(g);
+    const unsigned int t = threadIdx.x;        // 0 .. DVB*SPLIT-1
+    const unsigned int vloc = t / SPLIT;       // 0 .. DVB-1
+    const unsigned int v = dv0 + vloc;         // absolute v-column
+    const unsigned int sub = t % SPLIT;
+    const unsigned int k0 = sub * KH;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    extern __shared__ char smem_raw_dvs[];
+    __nv_bfloat16* Wp = (__nv_bfloat16*)smem_raw_dvs;      // [CHUNK*K_DIM]
+    __nv_bfloat16* Kp = Wp + CHUNK * K_DIM;                // [CHUNK*K_DIM]
+    __nv_bfloat16* Up = Kp + CHUNK * K_DIM;                // [CHUNK*DVB]  (this DV block only)
+    float* decs = (float*)(Up + CHUNK * DVB);              // [CHUNK+1], [0]=exp(gc_last)
+
+    float* H = h_state_is_table
+        ? ((float* const*)h_state)[b] + (unsigned long long)vh * K_DIM * V_DIM
+        : h_state + ((unsigned long long)(b * num_v_heads + vh) * K_DIM * V_DIM);
+    float Sreg[KH];
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++) Sreg[kk] = H[(k0 + kk) * V_DIM + v];
+
+    const __nv_bfloat16* key_b = key + g.tokoff * qk_stride;
+    const unsigned int nthr = blockDim.x;
+
+    for (unsigned int c = 0; c < g.nchunks; c++) {
+        const unsigned int cs = c * CHUNK;
+        const unsigned int ce = (g.seqlen - cs) < CHUNK ? (g.seqlen - cs) : CHUNK;
+        const unsigned long long base = ((unsigned long long)(g.choff + c) * num_v_heads + vh);
+
+        __syncthreads();   // previous iteration's readers are done with smem
+        const __nv_bfloat16* Wsrc = W_in + base * CHUNK * K_DIM;
+        for (unsigned int e = t; e < CHUNK * K_DIM; e += nthr) Wp[e] = Wsrc[e];
+        const __nv_bfloat16* Usrc = U_in + base * CHUNK * V_DIM;
+        for (unsigned int e = t; e < CHUNK * DVB; e += nthr)
+            Up[e] = Usrc[(e / DVB) * V_DIM + dv0 + (e % DVB)];
+        for (unsigned int e = t; e < CHUNK * K_DIM; e += nthr) {
+            unsigned int i = e / K_DIM, kx = e % K_DIM;
+            Kp[e] = (i < ce)
+                ? key_b[(unsigned long long)(cs + i) * qk_stride + kh * k_dim + kx]
+                : __float2bfloat16(0.0f);
+        }
+        if (t == 0) {
+            float dl = gc_in[base * CHUNK + ce - 1];
+            decs[0] = expf(dl);
+            for (unsigned int i = 0; i < ce; i++) decs[1 + i] = expf(dl - gc_in[base * CHUNK + i]);
+        }
+        __syncthreads();
+
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++)
+            S_out[base * K_DIM * V_DIM + (k0 + kk) * V_DIM + v] = __float2bfloat16(Sreg[kk]);
+
+        const float edl = decs[0];
+        float duc[CHUNK];
+        for (unsigned int i = 0; i < ce; i++) {
+            float wsp = 0.0f;
+            #pragma unroll
+            for (int kk = 0; kk < KH; kk++)
+                wsp += (float)Wp[i * K_DIM + k0 + kk] * Sreg[kk];
+            #pragma unroll
+            for (int s = 1; s < SPLIT; s <<= 1) wsp += __shfl_xor_sync(0xffffffffu, wsp, s);
+            float uci = (float)Up[i * DVB + vloc] - wsp;   // wsp == full <W_i, S[:,v]>
+            if (sub == 0) uc_out[base * CHUNK * V_DIM + i * v_dim + v] = __float2bfloat16(uci);
+            duc[i] = decs[1 + i] * uci;
+        }
+        #pragma unroll
+        for (int kk = 0; kk < KH; kk++) {
+            float hv = edl * Sreg[kk];
+            for (unsigned int i = 0; i < ce; i++)
+                hv += duc[i] * (float)Kp[i * K_DIM + k0 + kk];
+            Sreg[kk] = hv;
+        }
+    }
+
+    #pragma unroll
+    for (int kk = 0; kk < KH; kk++) H[(k0 + kk) * V_DIM + v] = Sreg[kk];
+}
+
+// 256 threads = DVB(64) v-columns x SPLIT(4) k-slices. minBlocksPerMultiprocessor=2
+// is load-bearing, not a hint: it caps the compiler at 128 regs/thread so two CTAs
+// are actually resident, which is the entire point of the variant.
+extern "C" __global__ void __launch_bounds__(256, 2)
+gated_delta_rule_chunk_delta_h_dvsplit(
+    float* __restrict__ h_state, const __nv_bfloat16* __restrict__ W_in,
+    const __nv_bfloat16* __restrict__ U_in, const __nv_bfloat16* __restrict__ key,
+    const float* __restrict__ gate, const float* __restrict__ gc_in,
+    __nv_bfloat16* __restrict__ S_out, __nv_bfloat16* __restrict__ uc_out,
+    unsigned int batch_size, unsigned int seq_len, unsigned int num_chunks,
+    unsigned int num_k_heads, unsigned int num_v_heads, unsigned int k_dim,
+    unsigned int v_dim, unsigned int qk_stride, unsigned int gb_stride,
+    unsigned int h_state_is_table,
+    const int* __restrict__ cu_seqlens, const int* __restrict__ cu_chunks,
+    unsigned int is_varlen
+) {
+    cdh_dvsplit_core<4, 64>(h_state, W_in, U_in, key, gate, gc_in, S_out, uc_out, seq_len,
+                            num_chunks, num_k_heads, num_v_heads, k_dim, v_dim, qk_stride,
+                            gb_stride, h_state_is_table, cu_seqlens, cu_chunks, is_varlen);
 }
 
 // ── KERNEL 2-TC-VBLOCK: chunk_delta_h_tc_vblock ──────────────────────────────
@@ -1039,7 +1995,12 @@ gated_delta_rule_chunk_delta_h_ksplit_vblock8(
 // S_c read bf16 + o1 bf16 (TERMINAL output → no compounding, like wy4's bf16
 // output rounding → precision-safe). o1 reuses the freed sk region. Layout matches wy4.
 // smem: sq(16K)+sk/o1(16K)+kq(16K f32)+ucb(16K)+Sbᵀ(32K bf16)+gc+egc.
-extern "C" __global__ void __launch_bounds__(128, 1)
+// 512 threads: mma_gram is fenced to the first 4 warps (it hardwires M=64), while
+// the ~36K element staging/compute loops below use all 16 — an nsys steady-state
+// profile put this kernel at 9.8% of GPU time, the largest single GDN kernel once
+// the vtile spine landed, and it stages 96.5 KB of smem through what used to be
+// only 4 warps. Same grid, same traffic: only the warp count changes.
+extern "C" __global__ void __launch_bounds__(512, 1)
 gated_delta_rule_chunk_fwd_o(
     const __nv_bfloat16* __restrict__ query,
     const __nv_bfloat16* __restrict__ key,
@@ -1088,7 +2049,7 @@ gated_delta_rule_chunk_fwd_o(
     float* gc = (float*)(Sb + K_DIM * V_DIM);              // [CHUNK]
     float* egc = gc + CHUNK;                               // [CHUNK] exp(gc)
 
-    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * k_dim; idx += blockDim.x) {
         unsigned int i = idx / k_dim, j = idx % k_dim;
         if (i < ce) {
             unsigned long long off = (unsigned long long)(cs + i) * qk_stride + kh * k_dim + j;
@@ -1099,28 +2060,28 @@ gated_delta_rule_chunk_fwd_o(
             sk[i * K_DIM + j] = __float2bfloat16(0.0f);
         }
     }
-    for (unsigned int idx = tid; idx < CHUNK * v_dim; idx += 128) {
+    for (unsigned int idx = tid; idx < CHUNK * v_dim; idx += blockDim.x) {
         unsigned int i = idx / v_dim, v = idx % v_dim;
         ucb[i * V_DIM + v] = (i < ce) ? uc_in[base * CHUNK * V_DIM + i * v_dim + v] : __float2bfloat16(0.0f);
     }
     // S_c read TRANSPOSED → Sbᵀ[v][k] = S_c[k][v], so mma_gram(q, Sbᵀ) = <q_i,S_c[:,v]>.
-    for (unsigned int idx = tid; idx < K_DIM * V_DIM; idx += 128) {
+    for (unsigned int idx = tid; idx < K_DIM * V_DIM; idx += blockDim.x) {
         unsigned int v = idx / K_DIM, k = idx % K_DIM;
         Sb[idx] = S_in[base * K_DIM * V_DIM + k * V_DIM + v];
     }
-    for (unsigned int i = tid; i < ce; i += 128) {
+    for (unsigned int i = tid; i < ce; i += blockDim.x) {
         float g = gc_in[base * CHUNK + i];
         gc[i] = g;
         egc[i] = expf(g);
     }
     __syncthreads();
 
-    mma_gram<8, CHUNK, false>(sq, sk, kq);   // kq[i][l] = <q_i, k_l>
+    if (tid < 128) mma_gram<8, CHUNK, false>(sq, sk, kq);   // kq[i][l] = <q_i, k_l>
     __syncthreads();
 
     // Fold the intra-chunk decay into the Gram ONCE: kq[i][l] ← exp(gc_i-gc_l)·<q_i,k_l>
     // (was: expf(gc_i-gc_l) recomputed per v-column = v_dim× redundant transcendentals).
-    for (unsigned int p = tid; p < CHUNK * CHUNK; p += 128) {
+    for (unsigned int p = tid; p < CHUNK * CHUNK; p += blockDim.x) {
         unsigned int i = p / CHUNK, l = p % CHUNK;
         if (i < ce && l <= i) kq[p] = expf(gc[i] - gc[l]) * kq[p];
     }
@@ -1128,7 +2089,7 @@ gated_delta_rule_chunk_fwd_o(
 
     // o1[i][v] = <q_i, S_c[:,v]>  on tensor cores (bf16 out → terminal, precision-safe).
     __nv_bfloat16* o1 = sk;                   // [CHUNK*V_DIM] bf16, reuses sk's 16KB
-    mma_gram<16, V_DIM, true>(sq, Sb, o1);
+    if (tid < 128) mma_gram<16, V_DIM, true>(sq, Sb, o1);
     __syncthreads();
 
     if (tid < v_dim) {

@@ -112,11 +112,43 @@ impl SchedulingPolicy for SlaiPolicy {
         true
     }
 
+    /// Shortest-job-first over ALL pending, with ONE seat reserved for the
+    /// head of the queue.
+    ///
+    /// ★ Why the reservation exists. Pure SJF has no wait-time term, and
+    /// `requests` is rebuilt from the pending queue every tick, so a long
+    /// prompt is re-sorted to the tail on every tick it loses. Under a
+    /// steady arrival of shorter requests — the ordinary shape of a busy
+    /// serve — it is never selected at all. That is an UNBOUNDED wait, not
+    /// a slow one: no amount of elapsed time makes it eligible, because
+    /// nothing in the ranking key ever changes.
+    ///
+    /// The queue is in ARRIVAL order (the scheduler enumerates
+    /// `PendingQueue::requests` directly, and admission re-inserts its
+    /// overflow at the FRONT preserving relative order — `admission.rs`),
+    /// so index 0 is the OLDEST pending request. Always taking it gives a
+    /// hard bound: every request advances at least one position per
+    /// selecting tick, so a request at position `p` waits at most `p`
+    /// ticks. Aging by wall-clock would need a timestamp plumbed through
+    /// [`PendingRequestInfo`] and would make this decision clock-dependent
+    /// (it is currently pure, and tested as such); the positional bound
+    /// needs neither and cannot be tuned wrong.
+    ///
+    /// The remaining `capacity - 1` seats are still filled shortest-first,
+    /// which is where SLAI's median-TTFT win comes from — the reservation
+    /// costs one seat per tick, and only when a request is actually queued
+    /// behind others.
     fn select_prefills(&self, requests: &[PendingRequestInfo], capacity: usize) -> Vec<usize> {
-        // Sort ALL pending by prompt_len, pick shortest N.
-        let mut indices: Vec<usize> = (0..requests.len()).collect();
-        indices.sort_by_key(|&i| requests[i].prompt_len);
-        indices.truncate(capacity);
+        if capacity == 0 || requests.is_empty() {
+            return Vec::new();
+        }
+        // Seat 0: the oldest pending request, unconditionally.
+        let mut indices: Vec<usize> = vec![0];
+        // Remaining seats: shortest-first over everything else.
+        let mut rest: Vec<usize> = (1..requests.len()).collect();
+        rest.sort_by_key(|&i| requests[i].prompt_len);
+        rest.truncate(capacity - 1);
+        indices.extend(rest);
         indices
     }
 
@@ -157,216 +189,5 @@ impl SchedulingPolicy for SlaiPolicy {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fifo_always_prefills() {
-        let policy = FifoPolicy;
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now(),
-        }];
-        assert!(policy.should_prefill(&timings));
-        assert!(policy.should_prefill(&[]));
-    }
-
-    #[test]
-    fn fifo_selects_first_n() {
-        let policy = FifoPolicy;
-        let requests = vec![
-            PendingRequestInfo {
-                prompt_len: 100,
-                index: 0,
-            },
-            PendingRequestInfo {
-                prompt_len: 10,
-                index: 1,
-            },
-            PendingRequestInfo {
-                prompt_len: 50,
-                index: 2,
-            },
-            PendingRequestInfo {
-                prompt_len: 200,
-                index: 3,
-            },
-        ];
-        assert_eq!(policy.select_prefills(&requests, 2), vec![0, 1]);
-        assert_eq!(policy.select_prefills(&requests, 10), vec![0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn slai_prefills_when_no_active() {
-        let policy = SlaiPolicy::new(100);
-        assert!(policy.should_prefill(&[]));
-    }
-
-    #[test]
-    fn slai_prefills_when_fresh() {
-        let policy = SlaiPolicy::new(100);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now(),
-        }];
-        assert!(policy.should_prefill(&timings));
-    }
-
-    #[test]
-    fn slai_skips_prefill_near_deadline() {
-        let policy = SlaiPolicy::new(100); // 80ms margin
-        let old_time = Instant::now() - Duration::from_millis(85);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: old_time,
-        }];
-        assert!(!policy.should_prefill(&timings));
-    }
-
-    #[test]
-    fn slai_prefills_within_margin() {
-        let policy = SlaiPolicy::new(100); // 80ms margin
-        let recent = Instant::now() - Duration::from_millis(50);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: recent,
-        }];
-        assert!(policy.should_prefill(&timings));
-    }
-
-    #[test]
-    fn slai_one_urgent_blocks_prefill() {
-        let policy = SlaiPolicy::new(100);
-        let now = Instant::now();
-        let timings = vec![
-            ActiveSeqTiming {
-                last_token_time: now,
-            },
-            ActiveSeqTiming {
-                last_token_time: now - Duration::from_millis(90),
-            },
-        ];
-        assert!(!policy.should_prefill(&timings));
-    }
-
-    #[test]
-    fn slai_selects_shortest_from_all() {
-        let policy = SlaiPolicy::new(100);
-        let requests = vec![
-            PendingRequestInfo {
-                prompt_len: 500,
-                index: 0,
-            },
-            PendingRequestInfo {
-                prompt_len: 10,
-                index: 1,
-            },
-            PendingRequestInfo {
-                prompt_len: 200,
-                index: 2,
-            },
-            PendingRequestInfo {
-                prompt_len: 50,
-                index: 3,
-            },
-            PendingRequestInfo {
-                prompt_len: 300,
-                index: 4,
-            },
-        ];
-        // Capacity 3: picks shortest 3 → indices 1(10), 3(50), 2(200)
-        assert_eq!(policy.select_prefills(&requests, 3), vec![1, 3, 2]);
-    }
-
-    #[test]
-    fn slai_selects_all_when_capacity_exceeds() {
-        let policy = SlaiPolicy::new(100);
-        let requests = vec![
-            PendingRequestInfo {
-                prompt_len: 100,
-                index: 0,
-            },
-            PendingRequestInfo {
-                prompt_len: 10,
-                index: 1,
-            },
-        ];
-        // Capacity 10 > 2 requests: returns all sorted
-        assert_eq!(policy.select_prefills(&requests, 10), vec![1, 0]);
-    }
-
-    #[test]
-    fn slai_stable_order_for_equal_lengths() {
-        let policy = SlaiPolicy::new(100);
-        let requests = vec![
-            PendingRequestInfo {
-                prompt_len: 50,
-                index: 0,
-            },
-            PendingRequestInfo {
-                prompt_len: 50,
-                index: 1,
-            },
-            PendingRequestInfo {
-                prompt_len: 50,
-                index: 2,
-            },
-        ];
-        assert_eq!(policy.select_prefills(&requests, 3), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn select_prefills_empty() {
-        assert!(FifoPolicy.select_prefills(&[], 5).is_empty());
-        assert!(SlaiPolicy::new(100).select_prefills(&[], 5).is_empty());
-    }
-
-    #[test]
-    fn fifo_slice_budget_is_full_chunk() {
-        // Default trait impl: FIFO always injects the full chunk.
-        let policy = FifoPolicy;
-        assert_eq!(policy.prefill_slice_budget(&[], 4080), 4080);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now(),
-        }];
-        assert_eq!(policy.prefill_slice_budget(&timings, 4080), 4080);
-    }
-
-    #[test]
-    fn slai_slice_budget_full_when_no_active() {
-        let policy = SlaiPolicy::new(100);
-        assert_eq!(policy.prefill_slice_budget(&[], 4080), 4080);
-    }
-
-    #[test]
-    fn slai_slice_budget_zero_past_deadline() {
-        // worst >= tbt_deadline → hard suppress (0), decode-only this tick.
-        let policy = SlaiPolicy::new(100);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now() - Duration::from_millis(120),
-        }];
-        assert_eq!(policy.prefill_slice_budget(&timings, 4080), 0);
-    }
-
-    #[test]
-    fn slai_slice_budget_bounded_and_wy4_aligned() {
-        // Fresh decode, under deadline → a positive, WY4-aligned slice in
-        // [min, full_chunk], never 0.
-        let policy = SlaiPolicy::new(100);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now(),
-        }];
-        let b = policy.prefill_slice_budget(&timings, 4080);
-        assert!(b > 0, "non-deadline budget must be > 0");
-        assert!(b <= 4080, "must never exceed full_chunk");
-        assert_eq!(b % 4, 0, "must be WY4-aligned");
-    }
-
-    #[test]
-    fn slai_slice_budget_never_exceeds_small_full_chunk() {
-        // Small chunk cap must clamp the slice (and stay WY4-aligned).
-        let policy = SlaiPolicy::new(100);
-        let timings = vec![ActiveSeqTiming {
-            last_token_time: Instant::now(),
-        }];
-        let b = policy.prefill_slice_budget(&timings, 64);
-        assert!(b <= 64);
-        assert_eq!(b % 4, 0);
-    }
-}
+#[path = "scheduling_policy_tests.rs"]
+mod tests;

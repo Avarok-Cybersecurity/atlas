@@ -10,7 +10,7 @@ metadata:
     (52 layers in `MEMEMEM*EMEMEMEM*...` pattern, 128 experts top-6,
     sigmoid routing). ~88-100 tok/s decode per the Atlas performance
     table (FP8 KV). No MTP support.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 30B
   model_dtype: nvfp4

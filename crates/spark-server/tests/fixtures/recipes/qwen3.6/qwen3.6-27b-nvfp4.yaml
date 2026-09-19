@@ -50,7 +50,7 @@ metadata:
     conversations froze the warm-restore anchor and replayed up to 18.6k
     tokens/turn through the GDN layers (TTFT tail to 40 s). :latest lags —
     check the tag date before substituting.
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 27B
   model_dtype: nvfp4

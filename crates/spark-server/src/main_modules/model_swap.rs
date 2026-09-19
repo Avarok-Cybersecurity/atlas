@@ -95,7 +95,7 @@ fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
     .into_iter()
     .flatten()
     .collect();
-    let resolved = atlas_kernels::ptx_for_config(
+    let resolved = avarok_kernels::ptx_for_config(
         &config.model_type,
         config.hidden_size,
         &model_refs,
@@ -108,7 +108,7 @@ fn preflight_kernel_target(args: &cli::ServeArgs) -> Result<()> {
              (available: {:?}) — the running model is untouched",
             config.model_type,
             config.hidden_size,
-            atlas_kernels::available_targets()
+            avarok_kernels::available_targets()
                 .iter()
                 .map(|t| &t.target.model)
                 .collect::<Vec<_>>()
@@ -174,7 +174,14 @@ fn release_state(host: &Arc<ModelHost>, grace: std::time::Duration) -> Result<Ca
     // Nothing loaded — the modelless boot. Nothing to drain, nothing to lose,
     // which is why that path is the safest one to exercise first.
     let Some(state) = host.take() else {
-        return Ok(host.process().unwrap_or_else(Carried::from_env));
+        // The host has carried these since before the listener bound, so the
+        // `None` arm is unreachable in a live process. Re-reading the
+        // environment can now fail, and surfacing that beats papering over a
+        // state that should not exist in the first place.
+        return match host.process() {
+            Some(carried) => Ok(carried),
+            None => Carried::from_env().map_err(|e| anyhow::anyhow!("{e}")),
+        };
     };
     let carried = Carried::from_previous(&state);
     let holders = wait_for_sole_owner(&state, grace);

@@ -121,6 +121,12 @@ impl LoraSet {
             if r != r_b {
                 bail!("module '{module}': lora_A rank {r} != lora_B rank {r_b}");
             }
+            if r != cfg.r {
+                bail!(
+                    "module '{module}': config rank {} != tensor rank {r}",
+                    cfg.r
+                );
+            }
             pairs.insert(
                 module,
                 LoraPair {

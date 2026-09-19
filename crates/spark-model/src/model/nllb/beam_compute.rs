@@ -17,7 +17,7 @@ use super::util::u32_bytes;
 
 thread_local! {
     /// Accumulated lm_head (tied-embedding projection) device time, ns — split
-    /// out of `beam_forward_step` when `ATLAS_NLLB_BEAM_PROFILE=1`.
+    /// out of `beam_forward_step` when `AVAROK_NLLB_BEAM_PROFILE=1`.
     pub(super) static LMHEAD_NS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
@@ -229,7 +229,7 @@ impl NllbGpuModel {
             self.add(buf.dh, buf.proj, b * d)?; // dh += proj (residual add, in place)
         }
         self.layer_norm("model.decoder.layer_norm", buf.dh, b)?;
-        let t_lm = std::env::var("ATLAS_NLLB_BEAM_PROFILE")
+        let t_lm = std::env::var("AVAROK_NLLB_BEAM_PROFILE")
             .map(|v| v == "1")
             .unwrap_or(false)
             .then(std::time::Instant::now);

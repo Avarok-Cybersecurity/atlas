@@ -184,7 +184,17 @@ fn test_read_write_block_roundtrip() {
     let b0 = cache.alloc_block().unwrap();
 
     // Write known pattern to K and V for layer 0.
+    // Independent byte-layout anchor: 16 tokens * 2 heads * 256 dim * 1 byte
+    // (FP8) = 8192, hand-derived the same way as `test_block_bytes_fp8`'s
+    // comment — NOT read back from `block_stride_bytes()` alone. Without this
+    // pin, a wrong production stride still sizes both the write buffer and the
+    // read buffer identically (both sides call the same function), so the
+    // roundtrip below would stay green even with a corrupted stride.
     let stride = cache.block_stride_bytes();
+    assert_eq!(
+        stride, 8192,
+        "FP8 block stride: 16 tokens * 2 heads * 256 dim * 1 byte"
+    );
     let k_data: Vec<u8> = (0..stride).map(|i| (i % 256) as u8).collect();
     let v_data: Vec<u8> = (0..stride).map(|i| ((i + 128) % 256) as u8).collect();
     cache.write_block(0, b0, &k_data, &v_data, &gpu).unwrap();
@@ -202,7 +212,13 @@ fn test_read_write_block_multiple_layers() {
     let mut cache = PagedKvCache::new(cfg, 4, &gpu).unwrap();
     let b0 = cache.alloc_block().unwrap();
 
+    // Independent byte-layout anchor — see test_read_write_block_roundtrip for
+    // why this must not be trusted purely from `block_stride_bytes()` itself.
     let stride = cache.block_stride_bytes();
+    assert_eq!(
+        stride, 8192,
+        "FP8 block stride: 16 tokens * 2 heads * 256 dim * 1 byte"
+    );
     for layer in 0..12 {
         let k: Vec<u8> = vec![layer as u8; stride];
         let v: Vec<u8> = vec![(layer + 100) as u8; stride];
@@ -324,9 +340,23 @@ fn test_compute_num_blocks_mixed_dtype() {
         ..test_config()
     };
 
-    let bytes_per_block = cfg.block_bytes_kv_all_layers();
+    // Independent oracle: hand-derived the same way as
+    // test_block_bytes_kv_all_layers_mixed (2 BF16 layers + 10 NVFP4 layers,
+    // K+V each) — NOT read back from `cfg.block_bytes_kv_all_layers()`.
+    // Deriving `bytes_per_block` from the same function `compute_num_blocks`
+    // calls internally made this test tautological: a bug living inside
+    // `block_bytes_kv_all_layers` itself moves both sides of the comparison
+    // together and is invisible here (it's covered by
+    // test_block_bytes_kv_all_layers_mixed instead). This only re-verifies
+    // that `compute_num_blocks` is wired to divide by the right thing.
+    let expected_bytes_per_block = 2 * 16384 * 2 + 10 * 4608 * 2;
+    assert_eq!(
+        cfg.block_bytes_kv_all_layers(),
+        expected_bytes_per_block,
+        "sanity: cfg matches the independently-derived per-block size"
+    );
     let n = PagedKvCache::compute_num_blocks(&cfg, 1_000_000).unwrap();
-    assert_eq!(n, 1_000_000 / bytes_per_block);
+    assert_eq!(n, 1_000_000 / expected_bytes_per_block); // = 6
 }
 
 #[test]
@@ -379,15 +409,32 @@ fn sliding_window_recycles_blocks() {
     // Simulate 2 sequences each writing 100 blocks.
     for seq_id in 0..2 {
         let mut block_table: Vec<u32> = Vec::new();
+        // The physical block an iteration's eviction frees sits alone on top
+        // of this sequence's slice of the (LIFO) free list, so the very next
+        // alloc must hand it straight back out. Tracking it turns "the pool
+        // never runs dry" (a count-only claim, insensitive to a FIFO-vs-LIFO
+        // or wrong-block-evicted defect) into the docstring's actual claim
+        // that physical block IDs are correctly recycled, not merely that
+        // some free block or other is found.
+        let mut last_evicted: Option<u32> = None;
         for step in 0..100 {
             let blk = cache.alloc_block().unwrap_or_else(|_| {
                 panic!("alloc failed at seq {seq_id} step {step}: no free blocks")
             });
+            if let Some(evicted) = last_evicted {
+                assert_eq!(
+                    blk, evicted,
+                    "seq {seq_id} step {step}: expected the slide to recycle the \
+                     just-evicted physical block {evicted}, got {blk} instead"
+                );
+            }
             block_table.push(blk);
             // Slide window: when block_table > cap, evict the oldest.
+            last_evicted = None;
             while block_table.len() > 4 {
                 let evicted = block_table.remove(0);
                 cache.free_block(evicted);
+                last_evicted = Some(evicted);
             }
         }
         // Free remaining blocks as if the sequence completed.

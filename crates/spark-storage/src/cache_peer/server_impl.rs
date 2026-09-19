@@ -104,24 +104,24 @@ pub fn serve<A: ToSocketAddrs>(addr: A, rdma: RdmaConfig) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(atlas_rdma_verbs))]
+#[cfg(not(avarok_rdma_verbs))]
 fn handle_conn(
     _stream: TcpStream,
     _rdma: &RdmaConfig,
     _ledger: &std::sync::Arc<crate::blade_cap::CommitLedger>,
 ) -> Result<()> {
-    bail!("cache-peer needs a build with rdma-core (atlas_rdma_verbs)");
+    bail!("cache-peer needs a build with rdma-core (avarok_rdma_verbs)");
 }
 
-#[cfg(atlas_rdma_verbs)]
+#[cfg(avarok_rdma_verbs)]
 fn handle_conn(
     mut stream: TcpStream,
     rdma: &RdmaConfig,
     ledger: &std::sync::Arc<crate::blade_cap::CommitLedger>,
 ) -> Result<()> {
     use super::registry::{self, Mmap, SharedPaging};
-    use atlas_rdma::verbs::Verbs;
-    use atlas_rdma::wire::{CacheServerParams, STATUS_OK, VerbsClientParams};
+    use avarok_rdma::verbs::Verbs;
+    use avarok_rdma::wire::{CacheServerParams, STATUS_OK, VerbsClientParams};
     use std::io::{Read, Write};
     stream.set_nodelay(true).ok();
 

@@ -8,6 +8,10 @@
 // network-first — so a deploy is picked up on the very next load and the cache
 // only answers when the network can't. A stale-forever worker is worse than none.
 import { build, files, version } from '$service-worker';
+// The routing decisions live in $lib so they can be tested: this file imports
+// `$service-worker`, a virtual module that exists only during a build, so
+// nothing declared here was reachable from a test.
+import { shouldPrecache, strategyFor } from '$lib/sw/strategy.js';
 
 const CACHE = `atlas-site-${version}`;
 
@@ -15,11 +19,11 @@ const CACHE = `atlas-site-${version}`;
 // visitors' disk/bandwidth pre-caching it. /lattice/ (the 763 KB LatticeDB
 // wasm + loader for the chat modal) is excluded too: it must load only when
 // the feature is used, not at SW install for every visitor.
-const PRECACHE = [
-  '/',
-  ...build,
-  ...files.filter((f) => !f.includes('og-image') && !f.startsWith('/lattice/'))
-];
+//
+// The install scripts are excluded and stay excluded: someone piping
+// install.sh into a shell must get exactly what the server has at that moment,
+// never a copy this worker happened to keep.
+const PRECACHE = ['/', ...build, ...files.filter(shouldPrecache)];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -44,9 +48,12 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== location.origin) return;
+  const strategy = strategyFor(url.pathname);
+  // Not handled at all: the request goes to the network as if no worker were
+  // installed, which is what an install script must get.
+  if (strategy === 'bypass') return;
 
-  // Content-hashed build assets are immutable: cache-first is always correct.
-  if (url.pathname.includes('/_app/immutable/')) {
+  if (strategy === 'cache-first') {
     event.respondWith(
       caches.match(request).then(
         (hit) =>

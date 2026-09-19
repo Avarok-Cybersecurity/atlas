@@ -20,17 +20,22 @@
 //!
 //! The PrismML `Q2_0` (id 42) group size is not encoded in the type id. It
 //! defaults to group-128 (the shipped Ternary-Bonsai layout); set
-//! `ATLAS_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
+//! `AVAROK_GGUF_Q2_GROUP=64` for the fork-master group-64 layout.
 
 mod config;
 mod container;
-mod dequant_cpu;
+/// Public for kernel oracles: the CPU reference decoders every GPU dequant is held to.
+pub mod dequant_cpu;
 mod dequant_gpu;
+mod expert_lru;
+pub mod expert_stream;
 mod names;
+mod shards;
 mod sidecar;
 mod value_transform;
 
 pub use config::config_from_gguf_dir;
+pub use shards::{GgufShardSet, find_gguf_shards};
 
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -61,18 +66,18 @@ pub fn find_gguf(dir: &Path) -> Option<PathBuf> {
 }
 
 /// True when the native keep-packed Q2_0 decode path is enabled
-/// (`ATLAS_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
+/// (`AVAROK_GGUF_NATIVE_Q2=1`). Off by default: the loader dequants every id-42
 /// tensor to BF16 exactly as before, so the default path is byte-identical.
 /// When on, the "big" transform-free FFN projections (see
 /// [`names::is_keep_packed_proj`]) are uploaded as raw `block_q2_0` blocks and
 /// tagged [`WeightDtype::PackedQ2_0`] for in-kernel dequant at decode.
 fn native_q2_enabled() -> bool {
-    std::env::var("ATLAS_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_GGUF_NATIVE_Q2").ok().as_deref() == Some("1")
 }
 
-/// The id-42 PrismML group size, from `ATLAS_GGUF_Q2_GROUP` (default 128).
+/// The id-42 PrismML group size, from `AVAROK_GGUF_Q2_GROUP` (default 128).
 fn q2_group_usize() -> usize {
-    match std::env::var("ATLAS_GGUF_Q2_GROUP").ok().as_deref() {
+    match std::env::var("AVAROK_GGUF_Q2_GROUP").ok().as_deref() {
         Some("64") => 64,
         _ => 128,
     }
@@ -259,13 +264,13 @@ impl super::WeightLoader for GgufLoader {
             .with_context(|| format!("No .gguf file found in {}", model_dir.display()))?;
         tracing::info!("Loading GGUF weights from {}", path.display());
 
-        let force_cpu = std::env::var("ATLAS_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
+        let force_cpu = std::env::var("AVAROK_GGUF_FORCE_CPU").ok().as_deref() == Some("1");
         let native_q2 = native_q2_enabled();
         let q2_group = q2_group_usize();
         let q2_variant = q2_group_variant(q2_group);
         if native_q2 {
             tracing::info!(
-                "ATLAS_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
+                "AVAROK_GGUF_NATIVE_Q2=1: keeping id-42 FFN projections packed (group {q2_group})"
             );
         }
 
@@ -311,17 +316,31 @@ impl super::WeightLoader for GgufLoader {
                 .to_lowercase()
         });
 
-        // Pre-flight: combined BF16 footprint of both files.
+        // Every shard of a split file: shard 0 is already open; the rest are
+        // parsed for the estimate now and re-opened one at a time below.
+        let shard_paths: Vec<std::path::PathBuf> = match find_gguf_shards(&path) {
+            Ok(set) => set.paths,
+            Err(e) => {
+                tracing::warn!("GGUF shard set: {e:#}; loading the single file");
+                vec![path.clone()]
+            }
+        };
+        // Pre-flight: combined BF16 footprint of every shard plus the sidecar.
         let mut est = sidecar::est_bf16(&bb_gguf, &arch);
+        for p in shard_paths.iter().skip(1) {
+            let (_f, _m, g) = sidecar::open_gguf(p)?;
+            est += sidecar::est_bf16(&g, &arch);
+        }
         if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
             est += sidecar::est_bf16(mm_gguf, mm_arch);
         }
         preflight_oom(gpu, est, oom_reserve_bytes, self.peak_memory_multiplier)?;
 
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
+        let mut deferred: HashMap<String, crate::weights::DeferredTensor> = HashMap::new();
         let mut skipped = 0usize;
 
-        // Pass 1: backbone → weights.
+        // Pass 1: backbone → weights, shard 0 first, then every other shard.
         sidecar::load_pass(
             self,
             gpu,
@@ -335,10 +354,35 @@ impl super::WeightLoader for GgufLoader {
             q2_variant,
             &mut weights,
             &mut skipped,
+            &path,
+            &mut deferred,
         )?;
         drop(bb_gguf);
         drop(bb_mmap);
         evict_page_cache(&bb_file);
+        for p in shard_paths.iter().skip(1) {
+            tracing::info!("Loading GGUF shard {}", p.display());
+            let (f, m, g) = sidecar::open_gguf(p)?;
+            sidecar::load_pass(
+                self,
+                gpu,
+                &g,
+                &m,
+                &arch,
+                gdn,
+                force_cpu,
+                native_q2,
+                q2_group,
+                q2_variant,
+                &mut weights,
+                &mut skipped,
+                p,
+                &mut deferred,
+            )?;
+            drop(g);
+            drop(m);
+            evict_page_cache(&f);
+        }
 
         // Pass 2: mmproj sidecar → SAME weights map (clip names land under
         // `model.visual.*`, disjoint from the backbone's `model.layers.*`).
@@ -360,6 +404,8 @@ impl super::WeightLoader for GgufLoader {
                 q2_variant,
                 &mut weights,
                 &mut skipped,
+                &path,
+                &mut deferred,
             )?;
             tracing::info!(
                 "Merged {} mmproj tensors (arch '{}') into the weight store",
@@ -376,10 +422,22 @@ impl super::WeightLoader for GgufLoader {
         }
         check_oom_guard(gpu, oom_reserve_bytes, "weight loading (GGUF)")?;
         tracing::info!("Loaded {} weight tensors (GGUF → BF16)", weights.len());
-        Ok(WeightStore::from_map(weights))
+        let mut store = WeightStore::from_map(weights);
+        for (name, t) in deferred {
+            store.defer(name, t);
+        }
+        Ok(store)
     }
 }
 
+#[cfg(test)]
+mod deepseek_v41_real_file_test;
+#[cfg(test)]
+mod deepseek_v41_stream_bench_test;
+#[cfg(test)]
+mod deepseek_v41_stream_oracle_test;
+#[cfg(test)]
+mod expert_stream_tests;
 #[cfg(test)]
 mod real_file_test;
 

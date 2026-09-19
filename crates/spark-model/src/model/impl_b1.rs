@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -447,6 +447,7 @@ impl TransformerModel {
             // Suppress per-op profiling by creating a non-profile context
             &ForwardContext {
                 buffers: ctx.buffers,
+                hc_row_offset: ctx.hc_row_offset,
                 gpu: ctx.gpu,
                 config: ctx.config,
                 dispatch: ctx.dispatch,
@@ -457,8 +458,10 @@ impl TransformerModel {
                 profile: false,
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
+                decode_step: false,
                 gdn_exact_replay: false,
                 token_ids: None,
+                host_token_ids: None,
                 // #30: forward the parent's routing (None on this decode-profiling
                 // path, but never silently drop it if a prefill ever re-wraps).
                 routed_lora_layers: ctx.routed_lora_layers,
@@ -496,7 +499,7 @@ impl TransformerModel {
             )?;
             self.gpu.synchronize(stream)?;
             let elapsed = t0.elapsed().as_micros() as u64;
-            if self.config.layer_type(i) == atlas_core::config::LayerType::FullAttention {
+            if self.config.layer_type(i) == avarok_core::config::LayerType::FullAttention {
                 attn_us += elapsed;
             } else {
                 ssm_us += elapsed;
@@ -522,17 +525,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
         self.gpu.synchronize(stream)?;
         let head_us = t0.elapsed().as_micros() as u64;
@@ -587,8 +580,9 @@ impl TransformerModel {
 
         let mut kv_cache = self.kv_cache.lock();
 
-        // 1. Embedding lookup
-        self.embed(token, hidden, stream)?;
+        // 1. Embedding lookup. `seq.tokens` is the history WITHOUT `token`
+        // (pushed after the forward) — exactly the n-gram contract.
+        self.embed_ctx(&seq.tokens, token, hidden, stream)?;
 
         // 2. Pre-allocate KV cache blocks + upload attention metadata
         let bs = kv_cache.block_size();
@@ -656,6 +650,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -666,8 +661,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
+            decode_step: false,
             gdn_exact_replay: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: offline single-seq decode; no prefill route.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) skips fold, adapter folds (single-seq reject lifted)
@@ -696,17 +693,7 @@ impl TransformerModel {
         let normed = self.buffers.norm_output();
         let h = self.config.hidden_size as u32;
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(hidden, normed, 1, h, eps, stream)?;
         self.lm_head(normed, stream)?;
 
         seq.tokens.push(token);

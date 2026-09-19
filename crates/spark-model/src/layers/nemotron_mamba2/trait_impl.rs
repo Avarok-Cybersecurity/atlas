@@ -230,6 +230,7 @@ impl TransformerLayer for NemotronMamba2Layer {
             // Stage-3 narrowing is GDN-only (`ssm_h_fp16_preconditions`
             // refuses a non-GDN SSM stack), so this state is always FP32-wide.
             h_prefill_stage: None,
+            ple: None,
         }))
     }
 }

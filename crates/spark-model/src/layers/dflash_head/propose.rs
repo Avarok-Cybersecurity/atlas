@@ -18,28 +18,40 @@ impl BlockDiffusionDraftHead {
         last_token: u32,
         _target_hidden: DevicePtr,
         position: usize,
-        _num_drafts: usize,
+        num_drafts: usize,
         state: &mut dyn ProposerState,
         ctx: &ForwardContext,
         _stream: u64,
         _draft_embed_target: Option<DevicePtr>,
         _grammar_bitmask: Option<&[i32]>,
         target_hidden_stack: Option<DevicePtr>,
+        // `Some` => run only the per-sequence PREP (ctx append, Option-B block
+        // growth, the incremental ctx precompute), push this sequence's
+        // `(block_table, ctx_count)` and return without a forward. The batched
+        // entry collects n of these and runs ONE forward over all the bands.
+        // Sharing the prep this way is deliberate: the batched and
+        // single-sequence paths cannot drift apart if only one of them exists.
+        collect_prep: Option<&mut Vec<(DevicePtr, u32)>>,
     ) -> Result<Vec<u32>> {
+        // Gamma resolver: the block this propose runs is the scheduler's draft
+        // count + 1 (anchor row), never wider than the head was sized for.
+        // The batched entry armed the same value before its prep loop; the
+        // store is idempotent.
+        self.set_block_g(num_drafts);
         let dstate = state
             .as_any_mut()
             .downcast_mut::<DflashProposerState>()
             .ok_or_else(|| anyhow::anyhow!("Invalid DFlash proposer state"))?;
 
         // ── I/O-PARITY DUMP: full ctx_hidden_acc accumulator at propose entry ──
-        // Gated ATLAS_DFLASH_CTX_PARITY_DUMP=1. One-shot. Writes the ENTIRE
+        // Gated AVAROK_DFLASH_CTX_PARITY_DUMP=1. One-shot. Writes the ENTIRE
         // accumulated 5×target_hidden context the drafter conditions on, so a
         // PyTorch/vLLM reference can diff slot-count + values against
         // `target_hidden_states[:num_context]` (vLLM feeds num_context = ALL
         // accepted-prefix tokens; this proves whether Atlas's accumulator has
         // the same BREADTH and the same per-slot 5-layer values).
         //
-        // Layout of /tmp/atlas_ctx_parity.bin: contiguous BF16,
+        // Layout of /tmp/avarok_ctx_parity.bin: contiguous BF16,
         // ctx_len slots × target_layer_ids.len() layers × target_hidden_size,
         // i.e. ctx_len × ctx_slot_bytes bytes. Companion JSON carries
         // ctx_len, n_layers, target_hidden_size, position, last_token so the
@@ -48,10 +60,7 @@ impl BlockDiffusionDraftHead {
             // Per-model latch (see `ModelStats::dumped`) rather than a static: an
             // operator who sets the flag and then swaps models must still get the
             // dump, instead of it being swallowed by the previous model's shot.
-            if std::env::var("ATLAS_DFLASH_CTX_PARITY_DUMP")
-                .ok()
-                .as_deref()
-                == Some("1")
+            if self.levers.ctx_parity_dump
                 && dstate.ctx_len > 0
                 && ctx.stats.dumped.keyed("dflash_ctx_parity")
             {
@@ -59,7 +68,7 @@ impl BlockDiffusionDraftHead {
                 let mut buf = vec![0u8; n_bytes];
                 ctx.gpu.synchronize(_stream)?;
                 ctx.gpu.copy_d2h(dstate.ctx_hidden_acc, &mut buf)?;
-                match std::fs::write("/tmp/atlas_ctx_parity.bin", &buf) {
+                match std::fs::write("/tmp/avarok_ctx_parity.bin", &buf) {
                     Ok(()) => {
                         let elems_per_slot = dstate.ctx_slot_bytes / 2;
                         let meta = format!(
@@ -71,9 +80,9 @@ impl BlockDiffusionDraftHead {
                             last_token,
                             n_bytes,
                         );
-                        let _ = std::fs::write("/tmp/atlas_ctx_parity.json", meta);
+                        let _ = std::fs::write("/tmp/avarok_ctx_parity.json", meta);
                         tracing::info!(
-                            "DFLASH CTX_PARITY: wrote {} bytes — ctx_len={} slots × {} BF16 elems/slot (position={}, last_token={}) to /tmp/atlas_ctx_parity.bin",
+                            "DFLASH CTX_PARITY: wrote {} bytes — ctx_len={} slots × {} BF16 elems/slot (position={}, last_token={}) to /tmp/avarok_ctx_parity.bin",
                             n_bytes,
                             dstate.ctx_len,
                             dstate.ctx_slot_bytes / 2,
@@ -232,7 +241,7 @@ impl BlockDiffusionDraftHead {
         // allocated bounds — drafter quality plateaus past a few hundred
         // ctx positions anyway.
         //
-        // ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND=1 disables the post-decode
+        // AVAROK_DFLASH_DEBUG_NO_DECODE_APPEND=1 disables the post-decode
         // append. The captured target_hidden_stack is the K-1 token of
         // the last K=2 verify (the draft, NOT the bonus). On REJECT
         // (the typical case during cold-start training-distribution
@@ -246,10 +255,7 @@ impl BlockDiffusionDraftHead {
         // here. K=gamma/K=4 never set it -> their decode-append is unaffected.
         let eagle_skip = dstate.skip_next_decode_append;
         dstate.skip_next_decode_append = false;
-        let skip_decode_append = std::env::var("ATLAS_DFLASH_DEBUG_NO_DECODE_APPEND")
-            .ok()
-            .as_deref()
-            == Some("1");
+        let skip_decode_append = self.levers.no_decode_append;
         if !skip_decode_append
             && !eagle_skip
             && let Some(latest_ctx) = target_hidden_stack
@@ -274,11 +280,22 @@ impl BlockDiffusionDraftHead {
         }
 
         // ── Phase 2 Option B: lazy block_table allocation ─────────────
-        // When ATLAS_DFLASH_OPTION_B=1 and the proposer hasn't yet
+        // When AVAROK_DFLASH_OPTION_B=1 and the proposer hasn't yet
         // allocated paged blocks, do it now. We allocate enough blocks
         // to cover the full ctx_hidden_acc plus a safety margin for γ.
         // Block_size matches from_weights.rs:68 (=16).
-        let option_b_enabled = std::env::var("ATLAS_DFLASH_OPTION_B").ok().as_deref() == Some("1");
+        // Default ON since the 54.5 record config (#649, 2026-08-19): the
+        // paged drafter cache is the proven path and a bare `--dflash` launch
+        // IS the record path. `=0` is the kill switch.
+        //
+        // ★ This line was reverted to opt-in by a merge on 2026-08-30 — #817's
+        // allocator region was taken whole and #817 branched from a tree that
+        // predates the flip. Cost, measured the same night: propose 19.8 ->
+        // 618.7 ms and 49.9 -> 5.5 tok/s, because the legacy path launches one
+        // dense_gemv per accumulated ctx row over a 262 MB fc weight. Nothing
+        // announced it; the run just got nine times slower. `option_b_defaults_on`
+        // exists so the next merge cannot do it silently.
+        let option_b_enabled = self.levers.option_b;
         let option_b_arg: Option<(DevicePtr, u32)> = if option_b_enabled {
             // Lazy block table init. ctx slots come from precompute over the
             // accumulated target hiddens; γ slots come from the layer body.
@@ -292,15 +309,38 @@ impl BlockDiffusionDraftHead {
                     match cache.try_alloc_block() {
                         Some(b) => dstate.block_table.push(b),
                         None => {
+                            // LEAK FIX (2026-08-29, C=16 probe): return the
+                            // partial grab to the pool before bailing. The
+                            // retry re-enters through `block_table.clear()`
+                            // above, which DISCARDS any block ids still in
+                            // the table without freeing them — so under
+                            // contention every failed partial grab leaked,
+                            // grinding the pool to a permanent zero
+                            // (server-wide speculation loss until restart).
+                            // provenance-id: 526f6e616c6420522e205374657369616b
+                            let got = dstate.block_table.len();
+                            cache.free_blocks(&dstate.block_table);
+                            dstate.block_table.clear();
                             anyhow::bail!(
                                 "DFlash Option B: paged KV cache exhausted at block {}/{}",
-                                dstate.block_table.len(),
+                                got,
                                 blocks_needed
                             );
                         }
                     }
                 }
                 drop(cache);
+                // PARITY NORMALIZATION (2026-08-29): the pool is LIFO
+                // (free pushes in table order, alloc pops reversed), so
+                // consecutive sequences received the SAME physical blocks
+                // in OPPOSITE orders — a measured strict 2-cycle costing
+                // ~7 tok/s on the slow ordering (17/17 alternating runs,
+                // 520-class 68.1 vs 60.6; accept 450 vs 432 on
+                // byte-identical output). Sorting pins every sequence to
+                // one ordering. Root-cause (the order-sensitive consumer
+                // in the paged path) tracked separately.
+                // provenance-id: 526f6e616c6420522e205374657369616b
+                dstate.block_table.sort_unstable();
                 // Copy block_table to device.
                 let bt_bytes: Vec<u8> = dstate
                     .block_table
@@ -325,12 +365,9 @@ impl BlockDiffusionDraftHead {
             // go stale when later accepts move the live `position`. The old
             // path rebuilt the whole prefix every step (O(ctx_len²)).
             //
-            // Escape hatch: ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
+            // Escape hatch: AVAROK_DFLASH_DEBUG_FULL_PRECOMPUTE=1 forces a
             // full recompute (committed=0) for A/B accept-rate parity.
-            let force_full = std::env::var("ATLAS_DFLASH_DEBUG_FULL_PRECOMPUTE")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let force_full = self.levers.full_precompute;
             // Clamp watermark defensively: a rewind should have reset it,
             // but never start past ctx_len.
             let committed = if force_full {
@@ -339,7 +376,12 @@ impl BlockDiffusionDraftHead {
                 dstate.ctx_committed.min(dstate.ctx_len)
             };
             let new_count = dstate.ctx_len - committed;
-            if dstate.ctx_len > 0 && new_count > 0 {
+            // Batched propose: the tail is precomputed ONCE for the whole
+            // batch by `precompute_ctx_kv_batched` after every sequence's
+            // prep (weights streamed once, not n times). Leave
+            // `ctx_committed` where it is so that pass sees the same tail.
+            let defer_to_batch = collect_prep.is_some() && super::batched_precompute_enabled();
+            if !defer_to_batch && dstate.ctx_len > 0 && new_count > 0 {
                 // Ctx-holes follow-up (2026-07-08): the precompute scratch
                 // (fc_proj / fused_kv_out / slot_mapping_dev) is sized for
                 // ctx_window rows. A serial-append stretch (think-gated /
@@ -396,13 +438,13 @@ impl BlockDiffusionDraftHead {
             }
             dstate.ctx_count_drafter = dstate.ctx_len;
             // ── SERIAL-APPEND BOUNDARY PROOF (2026-07-08) ──
-            // With ATLAS_DFLASH_CTXLEN_PROBE=1, validate the ctx position
+            // With AVAROK_DFLASH_CTXLEN_PROBE=1, validate the ctx position
             // stamps are STRICTLY INCREASING across all populated slots —
             // contiguous appends, no double-append, no dropped stretch.
             // The think→spec seam (re-probe after a serial stretch) is
             // where a violation would surface. Host-side Vec scan,
             // probe-gated, zero cost when off.
-            if std::env::var("ATLAS_DFLASH_CTXLEN_PROBE").ok().as_deref() == Some("1")
+            if self.levers.ctxlen_probe
                 && let Some(i) = dstate.ctx_positions.windows(2).position(|w| w[1] <= w[0])
             {
                 tracing::warn!(
@@ -421,11 +463,9 @@ impl BlockDiffusionDraftHead {
             // ctx_len vs position EVERY propose so we can confirm whether
             // ctx_len GROWS with position (healthy) or STALLS at prompt length
             // (the bug — likely thinking-mode tokens not appending to ctx).
-            // Gated ATLAS_DFLASH_CTXLEN_PROBE=1, rate-limited to ~1/16 steps
+            // Gated AVAROK_DFLASH_CTXLEN_PROBE=1, rate-limited to ~1/16 steps
             // to avoid log flood.
-            if std::env::var("ATLAS_DFLASH_CTXLEN_PROBE").ok().as_deref() == Some("1")
-                && position.is_multiple_of(16)
-            {
+            if self.levers.ctxlen_probe && position.is_multiple_of(16) {
                 tracing::info!(
                     "DFLASH CTXLEN_PROBE: position={} ctx_len={} q_offset(=ctx_len)={} GAP={} (position - ctx_len; healthy≈prompt_len, BUG if grows unbounded)",
                     position,
@@ -434,14 +474,11 @@ impl BlockDiffusionDraftHead {
                     position.saturating_sub(dstate.ctx_len),
                 );
             }
-            // Ablation: ATLAS_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
+            // Ablation: AVAROK_DFLASH_OPTION_B_NO_CTX=1 forces ctx_count=0
             // in the layer body so paged attention only sees the γ K/V
             // we write in-layer. If accept rate is bad even here, the
             // bug is in the cache write/read path, not in precompute.
-            let ablate_no_ctx = std::env::var("ATLAS_DFLASH_OPTION_B_NO_CTX")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let ablate_no_ctx = self.levers.option_b_no_ctx;
             let effective_ctx_count = if ablate_no_ctx {
                 0
             } else {
@@ -451,6 +488,17 @@ impl BlockDiffusionDraftHead {
         } else {
             None
         };
+
+        if let Some(sink) = collect_prep {
+            let arg = option_b_arg.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "batched DFlash propose requires Option B (paged drafter KV); \
+                     set AVAROK_DFLASH_OPTION_B=1 or let the batched path decline"
+                )
+            })?;
+            sink.push(arg);
+            return Ok(Vec::new());
+        }
 
         let drafts = self
             .forward_block(
@@ -466,6 +514,9 @@ impl BlockDiffusionDraftHead {
                     None
                 },
                 option_b_arg,
+                // Single-sequence propose. `propose_drafts_batched` is the
+                // cross-sequence entry.
+                None,
             )
             .map_err(|e| {
                 tracing::warn!("DFlash forward_block failed, falling back to no-spec: {e:#}");
@@ -479,16 +530,17 @@ impl BlockDiffusionDraftHead {
         // SSM pool is pre-allocated for num_intermediates=17 (impl_a1.rs:129)
         // and the WY17 strided layout (inter_stride_floats = h_bytes/4) maps
         // 1:1 to ssm_pool.h_intermediate(layer, slot, i). Override with
-        // ATLAS_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
-        let cap: usize = std::env::var("ATLAS_DFLASH_DRAFT_CAP")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(self.gamma);
+        // AVAROK_DFLASH_DRAFT_CAP=N (N=1 to force K=2 path for ablation).
+        // Defaults to the block width IN FLIGHT, not the fixed gamma: the
+        // resolver arms block_g() per propose (#845), and defaulting to gamma
+        // would cap every narrow block at the widest one the head was sized
+        // for. Read through levers so the variable has exactly one reader.
+        let cap = self.levers.draft_cap.unwrap_or(self.block_g());
 
-        // ATLAS_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
+        // AVAROK_DFLASH_VERIFY_TRACE=1: log all γ drafts BEFORE the cap so we
         // can see whether the drafter echoes only at position 0 or across
         // every noise row. Pairs with K2 TRACE in the scheduler.
-        if std::env::var("ATLAS_DFLASH_VERIFY_TRACE").ok().as_deref() == Some("1") {
+        if self.levers.verify_trace {
             tracing::info!(
                 "DFLASH TRACE drafts: token_in={} position={} γ={} drafts_pre_cap={:?}",
                 last_token,

@@ -1,4 +1,5 @@
 <script>
+  import { modal } from '$lib/modal.js';
   // The hero's benchmark dashboard modal. One tab per benchmark family, a
   // model switcher that filters but never relabels, and a metadata card on
   // every chart point. Data: gates.generated.json — the union of gate records
@@ -8,28 +9,62 @@
   import GateBenchSection from './GateBenchSection.svelte';
   import GatePointCard from './GatePointCard.svelte';
   import { gateData, tabs, unpublished, models, recordsFor, benchName, shortModel, colorFor } from '$lib/gates.js';
+  import { groupFor, groupRecords, groupedBenches } from '$lib/gate-variants.js';
 
   let { onclose } = $props();
 
   let activeTab = $state(tabs[0]?.id);
   let modelFilter = $state('all');
+  // The record(s) behind the clicked chart point. An array because one plotted
+  // point can stand for several grouped runs — see GatePointCard.
   let selected = $state(null);
   let dialogEl = $state(null);
 
   const tab = $derived(tabs.find((t) => t.id === activeTab) ?? tabs[0]);
-  const sections = $derived(
-    (tab?.benches ?? [])
-      .map((b) => ({ benchId: b, name: benchName(b), records: recordsFor(b).filter((r) => modelFilter === 'all' || r.target_model === modelFilter) }))
-      .filter((s) => s.records.length > 0)
-  );
+  const keep = (r) => modelFilter === 'all' || r.target_model === modelFilter;
+  // Grouped benches (see gate-variants.js) collapse into ONE section drawn
+  // under the group's primary id, so the concurrency ladder renders as two
+  // lines on one axis instead of two panels that cannot be read against each
+  // other. Everything else keeps the one-bench-one-section shape.
+  const sections = $derived.by(() => {
+    const out = [];
+    const done = new Set();
+    for (const b of tab?.benches ?? []) {
+      if (done.has(b)) continue;
+      const group = groupFor(b);
+      if (group) {
+        group.members.forEach((m) => done.add(m.bench));
+        const records = groupRecords(group, recordsFor).filter(keep);
+        if (records.length > 0)
+          out.push({ benchId: group.primary, name: benchName(group.primary), records });
+      } else {
+        done.add(b);
+        const records = recordsFor(b).filter(keep);
+        if (records.length > 0) out.push({ benchId: b, name: benchName(b), records });
+      }
+    }
+    return out;
+  });
+  // A grouped member is never "hidden": its records are drawn inside the
+  // group's section under the primary's id, so matching on benchId alone
+  // would accuse the DFlash2 gate of being filtered out on every render.
   const hiddenByFilter = $derived(
-    (tab?.benches ?? []).filter((b) => recordsFor(b).length > 0 && !sections.some((s) => s.benchId === b))
+    (tab?.benches ?? []).filter(
+      (b) =>
+        recordsFor(b).length > 0 &&
+        !groupedBenches.has(b) &&
+        !sections.some((s) => s.benchId === b)
+    )
   );
   const src = gateData.sources;
 
+  // Focus-in, the Tab trap and focus-return all live in `use:modal` below.
+  // This effect used to call `dialogEl?.focus()` and stop there — a dialog
+  // that claims `aria-modal="true"` while Tab still walks the page behind it,
+  // which is the half of the contract that actually keeps a keyboard operator
+  // inside. Body-scroll lock stays here: it is this dialog's own concern.
   $effect(() => {
     document.body.style.overflow = 'hidden';
-    dialogEl?.focus();
     return () => (document.body.style.overflow = '');
   });
 
@@ -48,6 +83,7 @@
     aria-label="Atlas benchmark dashboard"
     tabindex="-1"
     bind:this={dialogEl}
+    use:modal
     onclick={(e) => e.stopPropagation()}
   >
     <header class="bd-head">
@@ -87,7 +123,7 @@
         <ConcurrencyLadder />
       {/if}
       {#each sections as s (s.benchId)}
-        <GateBenchSection {...s} onselect={(rec) => (selected = rec)} />
+        <GateBenchSection {...s} onselect={(recs) => (selected = recs)} />
       {/each}
       {#if sections.length === 0 && activeTab !== 'concurrency'}
         <p class="bd-empty">No records for this model in this benchmark family.</p>
@@ -110,7 +146,7 @@
     <footer class="bd-foot">
       <span>
         {src.committed + src.from_branches} records · {src.branches_scanned} branches scanned
-        {#if src.from_branches > 0}· {src.from_branches} from unmerged branches{/if}
+        {#if src.from_branches > 0}· {src.from_branches} from remote branch heads{/if}
         · as of {gateData.generated_date} ({gateData.generated_sha})
       </span>
       {#if unpublished.length > 0}
@@ -121,5 +157,5 @@
 </div>
 
 {#if selected}
-  <GatePointCard record={selected} onclose={() => (selected = null)} />
+  <GatePointCard records={selected} onclose={() => (selected = null)} />
 {/if}

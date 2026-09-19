@@ -195,7 +195,7 @@ fn the_ops_wheel_moves_ops_output_and_never_the_main_log() {
 fn the_wheel_moves_the_benchmark_selection_and_stops_at_the_ends() {
     // Lists move their SELECTION, not a viewport — that is what the arrow keys
     // do here, and a wheel that scrolled past it would leave the two out of step.
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     let mut a = app();
     a.section = Section::Benchmarks;
     a.bench_sub = BenchSub::Suite;

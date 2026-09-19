@@ -89,7 +89,7 @@ merge, and the gate would have gone red again immediately.
 
 **Bootstrapping is unavoidable and should be stated, not hidden.** There is no
 way to fix the gate without touching the gate. Any future change to
-`atlas-plugin`'s coverage logic will read red on its own PR for the same
+`avarok-plugin`'s coverage logic will read red on its own PR for the same
 reason. That is the rule working, not a defect in it.
 
 **What this does not fix.** Coverage is still coarse for host code: a
@@ -99,6 +99,12 @@ kind of proof for `kernels/`; there is no equivalent for Rust yet, and
 inventing one on the basis of "this diff looks test-only" would be a static
 analysis nobody could trust. The honest cost of a host-side change remains one
 gate run.
+
+ADR-0016 later narrows this statement for explicitly registered external test
+modules. It does not classify diffs or infer safety from a filename. Each
+exempt file has a pinned parent module edge guarded by `#[cfg(test)]`, with CI
+proofs that keep production neighbours fail-closed. Tests embedded in a
+production source file remain covered by the coarse host-code rule.
 
 ## Tests
 

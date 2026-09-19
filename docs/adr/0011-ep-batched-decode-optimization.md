@@ -6,7 +6,7 @@
 ## Context
 
 Issue #99 lifts the `max_batch_size = 1` clamp under `--ep-size 2` by
-multiplexing the head↔worker protocol (the `ATLAS_EP_PROTOCOL=v2` work).
+multiplexing the head↔worker protocol (the `AVAROK_EP_PROTOCOL=v2` work).
 Once the gate is lifted, concurrent requests actually batch instead of
 serializing behind a one-slot queue. The motivating workload was a
 4-concurrent agent burst whose tail latency spiked to ~605 s under the

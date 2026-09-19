@@ -21,11 +21,21 @@ pub fn step_mtp(
     verify_ctx: &crate::scheduler::logit_processors::LogitsContext,
     dflash_verify_raw_argmax: bool,
 ) {
-    // ATLAS_MTP_TIMING outer bracket: `step_mtp` minus the per-chunk verify
+    // AVAROK_MTP_TIMING outer bracket: `step_mtp` minus the per-chunk verify
     // guard's TOTAL is the driver's own host prep/tail (classification,
     // bootstrap, D-Cut plan, chunk sort) — one component of the out-of-step
     // GAP. One Instant::now() when disarmed, same cost note as StepTimer.
     let t_step_outer = std::time::Instant::now();
+    // DFlash GAMMA RESOLVER: this step's draft count from the current
+    // concurrency (and, single-stream, the accept signal). Shadows the
+    // serve-wide value so every propose and re-propose below inherits it;
+    // the verify width follows `pending_drafts.len()` on the next step.
+    // Identity when pinned (`--dflash-gamma`) or not DFlash.
+    let num_drafts = if dflash_verify_raw_argmax {
+        crate::scheduler::dflash_rung::drafts_for(active.len(), num_drafts)
+    } else {
+        num_drafts
+    };
     let mut bootstrap_idxs: Vec<usize> = Vec::new();
     let mut verify_idxs: Vec<usize> = Vec::new();
     for (i, a) in active.iter().enumerate() {
@@ -43,7 +53,7 @@ pub fn step_mtp(
     // (8x4) and n=16 (16x2) sit at 32 rows. The depth step-down that used
     // to sit at n>4 was an artifact of the chunk cap below, not of GDN
     // depth cost (see that comment); the one at n>8 is real (16:2 -> 94.1).
-    // SSOT + overrides (`ATLAS_MTP_K_LADDER`, `ATLAS_NO_MTP_K_LADDER`):
+    // SSOT + overrides (`AVAROK_MTP_K_LADDER`, `AVAROK_NO_MTP_K_LADDER`):
     // `spark_model::speculative::ladder`. DFlash keeps its own γ economics.
     // Wave 28: at the n=16 rung the draft count is ACCEPT-RATE-AWARE — the
     // static rung cannot win both regimes (prose wants k=1, tool-shaped
@@ -82,7 +92,7 @@ pub fn step_mtp(
     // batched cross-sequence propose, replacing n M=1 weight sweeps of the
     // target and n of the drafter. Falls back to the per-sequence loop below
     // whenever the envelope does not hold (`mtp_bootstrap_step`); kill switch
-    // ATLAS_NO_MTP_BATCH_BOOTSTRAP.
+    // AVAROK_NO_MTP_BATCH_BOOTSTRAP.
     if can_batch_bootstrap(model, sched, bootstrap_idxs.len(), dflash_verify_raw_argmax) {
         step_mtp_bootstrap_batched(model, active, sched, &bootstrap_idxs, ladder_nd, verify_ctx);
         bootstrap_idxs.clear();
@@ -209,7 +219,7 @@ pub fn step_mtp(
         // FP8/NVFP4 argmax-flip tail tokens. The sampler now reads
         // `penalties.min_p`, which `penalty_params_for` copies from
         // `a.min_p` (request value + floor, resolved in `sampling_setup`) —
-        // SSOT, no new channel. Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // SSOT, no new channel. Kill-switch: AVAROK_NO_MTP_MINP=1.
         let tok = match sample_token_with_grammar(
             model,
             logits,
@@ -245,7 +255,7 @@ pub fn step_mtp(
         // Adaptive speculation: count serial tokens toward the re-probe window.
         crate::scheduler::adaptive_spec::tick_serial(a, sched);
 
-        // Ctx-holes fix (ATLAS_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
+        // Ctx-holes fix (AVAROK_DFLASH_SERIAL_APPEND=1), COMPLEMENT-GATED:
         // the serial ctx-append fires iff propose() will NOT run this
         // iteration, so append and propose decode-append can never both
         // cover one token — double-append impossible by construction
@@ -267,7 +277,7 @@ pub fn step_mtp(
             // so commit and propose decode-append never both cover a token.
             if !will_propose || reprobe_resume {
                 let base_pos = a.seq.seq_len.saturating_sub(1);
-                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos) {
+                if let Err(e) = model.commit_ctx(&mut a.seq, 1, base_pos, 0) {
                     tracing::error!("commit_ctx (mtp serial): {e:#}");
                 }
             }
@@ -330,8 +340,8 @@ pub fn step_mtp(
     // ── Phase B: Verify with pipelined checkpoint ──
     //
     // Batched multi-seq K-row verify (batched-MTP E11 + the ladder). Only
-    // reachable when `ATLAS_MTP_MAX_SEQS > 1` (default 32 with the ladder)
-    // puts >= 2 verify-ready sequences in one step (`ATLAS_MTP_MAX_SEQS=1`
+    // reachable when `AVAROK_MTP_MAX_SEQS > 1` (default 32 with the ladder)
+    // puts >= 2 verify-ready sequences in one step (`AVAROK_MTP_MAX_SEQS=1`
     // ⇒ this partition is a no-op and every seq takes the per-seq loop
     // below, byte-identical to the pre-batched HEAD). Batchable =
     // grammarless, non-DFlash, >= ladder_nd pending drafts (surplus from a
@@ -339,10 +349,153 @@ pub fn step_mtp(
     // grammar-boundary path already does; `after_verify`'s
     // `last_num_drafted` trim contract stays consistent). The model
     // additionally self-gates (non-EP, non-HSS, no LoRA) via
-    // `can_batch_verify(&ks)`. Kill switch `ATLAS_NO_MTP_BATCH_VERIFY`
+    // `can_batch_verify(&ks)`. Kill switch `AVAROK_NO_MTP_BATCH_VERIFY`
     // (PRESENCE check) forces the serialized loop for A/B.
     let mut serial_idxs: Vec<usize> = Vec::new();
     let mut batchable_idxs: Vec<usize> = Vec::new();
+    // ── DFlash: cross-sequence batched K=γ verify ──
+    // The block drafter has no ragged ladder, so the batch is the set of
+    // grammarless sequences carrying the SAME γ drafts; anything else falls
+    // to the per-sequence step. One R=n*(γ+1)-row forward replaces n full
+    // weight sweeps (the per-step verify wall was flat ~115ms per SEQUENCE
+    // from C=1..4 before this). Kill switch: AVAROK_DFLASH_BATCH_VERIFY=0.
+    // One-shot attribution for "why is the batched path not running": each
+    // of these four is individually capable of silently keeping every
+    // sequence on the per-sequence verify, which reads as "no concurrency
+    // amortisation" rather than as a disabled feature.
+    {
+        static WHY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        WHY.get_or_init(|| {
+            tracing::debug!(
+                raw_argmax = dflash_verify_raw_argmax,
+                n_verify = verify_idxs.len(),
+                lever = sched.levers.dflash_batch_verify,
+                killed = batch_verify_disabled(),
+                "DFlash batched verify gate (first tick with drafts)"
+            );
+        });
+    }
+    if dflash_verify_raw_argmax
+        && verify_idxs.len() >= 2
+        && sched.levers.dflash_batch_verify
+        && !batch_verify_disabled()
+    {
+        let mut gamma = 0usize;
+        for &idx in &verify_idxs {
+            let a = &active[idx];
+            let g = a.pending_drafts.len();
+            if a.grammar_state.is_some() || g < 1 {
+                serial_idxs.push(idx);
+            } else if gamma == 0 || g == gamma {
+                gamma = g;
+                batchable_idxs.push(idx);
+            } else {
+                serial_idxs.push(idx);
+            }
+        }
+        // Widest group the model accepts. `can_batch_verify` bounds R = n*k
+        // by the verify row budget (96 rows), so at γ=7 the cap is 12
+        // sequences — and this gate used to be ALL-OR-NOTHING: a C=16 tick
+        // asked for 16×8 = 128 rows, was refused, and every sequence fell to
+        // the per-sequence serial loop, which is exactly the flat
+        // no-amortization wall the batched path exists to remove (measured
+        // 2026-08-21: the C=16 sweep cell ROLLED OVER below C=8, 63.5 vs
+        // 65.9 aggregate). Chunking to the widest accepted group batches
+        // 12 + 4 instead of serializing 16 — the same shape the batched
+        // PROPOSE already uses (`pending.chunks(group_cap)`).
+        let k_rows = gamma + 1;
+        let mut m_max = batchable_idxs.len();
+        while m_max >= 2 && !model.can_batch_verify(&vec![k_rows; m_max]) {
+            m_max -= 1;
+        }
+        if batchable_idxs.len() >= 2 && m_max >= 2 {
+            // SLOT ORDER, not arrival order. The batched conv+WY GDN path
+            // requires the batch to sit on CONSECUTIVE ssm-pool slots in
+            // batch order (checked on the pointers in
+            // trait_decode_batched_conv_gdn_multi.rs). The pool freelist is
+            // LIFO, so the first fill hands out slots 0..n in arrival order
+            // and engages, but every later fill re-issues released slots in
+            // reverse finish order and the same batch DECLINED to the
+            // per-sequence loop (~47% of steps engaged in a two-round C=16
+            // prose bench, 2026-09-02). Drafts travel inside each
+            // `ActiveSeq`, so batch order is free to the caller. Sequences
+            // without a slot sort last; the model re-checks the layout and
+            // declines safely if a gap remains.
+            let mut by_slot = batchable_idxs.clone();
+            sort_batch_by_slot(&mut by_slot, |i| active[i].seq.ssm_slot_idx());
+            for chunk in by_slot.chunks(m_max) {
+                if chunk.len() >= 2 {
+                    // Borrow in ascending active-index order (one forward
+                    // walk), then restore the chunk's slot order.
+                    let mut asc: Vec<usize> = chunk.to_vec();
+                    asc.sort_unstable();
+                    let mut tagged: Vec<(usize, &mut ActiveSeq)> = Vec::with_capacity(asc.len());
+                    let mut it = active.iter_mut();
+                    let mut consumed = 0usize;
+                    for &i in &asc {
+                        let a = it.nth(i - consumed).expect("verify index within active");
+                        consumed = i + 1;
+                        let pos = chunk.iter().position(|&c| c == i).expect("chunk member");
+                        tagged.push((pos, a));
+                    }
+                    tagged.sort_by_key(|t| t.0);
+                    let mut refs: Vec<&mut ActiveSeq> = tagged.into_iter().map(|t| t.1).collect();
+                    step_verify_dflash_batched(
+                        model, &mut refs, sched, gamma, num_drafts, verify_ctx,
+                    );
+                } else {
+                    // A trailing single cannot batch — it takes the serial
+                    // loop below, same as before this gate existed.
+                    serial_idxs.extend_from_slice(chunk);
+                }
+            }
+        } else {
+            // Loud on the FIRST decline only: a silently-refused gate looks
+            // exactly like "the batched path is off", which cost a whole
+            // validation cycle when k=γ-1+1 failed an over-strict width check.
+            if !batchable_idxs.is_empty() && sched.stats.once("log:dflash_batch_decline") {
+                tracing::info!(
+                    "DFlash batched verify DECLINED: n={} k={} (model.can_batch_verify said no) \
+                     — running the per-sequence loop",
+                    batchable_idxs.len(),
+                    gamma + 1,
+                );
+            }
+            serial_idxs.extend_from_slice(&batchable_idxs);
+        }
+        batchable_idxs.clear();
+        for &idx in &serial_idxs {
+            let a = &mut active[idx];
+            let mut drafts: Vec<u32> = std::mem::take(&mut a.pending_drafts);
+            a.pending_draft_conf.clear();
+            if drafts.is_empty() {
+                continue;
+            }
+            if let Some(ref mut gs) = a.grammar_state {
+                let kept = truncate_drafts_at_grammar_boundary(gs, &drafts);
+                drafts.truncate(kept);
+                if drafts.is_empty() {
+                    continue;
+                }
+            }
+            step_verify_dflash(
+                model,
+                a,
+                sched,
+                &drafts,
+                num_drafts,
+                verify_ctx,
+                dflash_verify_raw_argmax,
+            );
+        }
+        // Same StepOuter record the shared tail makes — this arm returns
+        // early, and dropping it would blind the phase telemetry exactly
+        // where the batched path is meant to show its win.
+        sched
+            .timing
+            .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
+        return;
+    }
     if verify_idxs.len() >= 2
         && spark_model::speculative::mtp_multi_seq_mode()
         && !dflash_verify_raw_argmax
@@ -366,9 +519,9 @@ pub fn step_mtp(
     let rows = ladder_nd + 1;
 
     // ── D-Cut: per-sequence verify depth from drafter confidence ──
-    // Default ON at ratio 0.75 (+2.6% at C=8; kill switch `ATLAS_NO_MTP_DCUT`,
+    // Default ON at ratio 0.75 (+2.6% at C=8; kill switch `AVAROK_NO_MTP_DCUT`,
     // PRESENCE). Ranks every prunable draft position ACROSS the batch by its
-    // prefix-product survival score and keeps the top `ATLAS_MTP_DCUT_RATIO`
+    // prefix-product survival score and keeps the top `AVAROK_MTP_DCUT_RATIO`
     // fraction (`mtp_dcut`). The retained set is a per-sequence PREFIX by
     // construction, so the only downstream effect is a RAGGED row count. OFF
     // (or `ladder_nd < 2`, or the batch wider than `dcut_width_cap()` = 8 —
@@ -425,8 +578,10 @@ pub fn step_mtp(
             // `CANONICAL_KEY_MIN_WIDTH` = 8): ssm slots ascending = also
             // deepest-first under the canonical assignment, so the key is a
             // function of the depth MULTISET not its arrangement (266 keys → 3
-            // at n=8) and each depth run owns a consecutive slot block for the
-            // batched-GDN precondition; below it, deepest-first then slot — the
+            // at n=8). When the selected pool slots have no gaps, each depth
+            // run owns a consecutive slot block for the batched-GDN fast path;
+            // fragmented runs are checked and declined by the model. Below the
+            // gate, deepest-first then slot — the
             // pre-canonical order byte for byte. Idempotent on `plan`'s ordered
             // batch under both arms; it still runs because `plan` returns the
             // batch UNORDERED whenever D-Cut declines, and that uniform-`k`
@@ -543,3 +698,17 @@ pub fn step_mtp(
         .timing
         .record(crate::scheduler::mtp_timing::Phase::StepOuter, t_step_outer);
 }
+
+/// Pure core of the batched-verify dispatch order: SLOT ORDER, not arrival
+/// order. The batched conv+WY GDN path requires the batch to sit on
+/// CONSECUTIVE ssm-pool slots in batch order, and the pool freelist is LIFO
+/// (see the call-site comment in `step_mtp`), so arrival order is reverse
+/// finish order after the first fill. Slotless sequences sort last; the
+/// active index breaks ties so the order is total.
+fn sort_batch_by_slot(by_slot: &mut [usize], slot_of: impl Fn(usize) -> Option<usize>) {
+    by_slot.sort_by_key(|&i| (slot_of(i).unwrap_or(usize::MAX), i));
+}
+
+#[cfg(test)]
+#[path = "mtp_step_tests.rs"]
+mod tests;

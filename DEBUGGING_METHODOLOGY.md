@@ -251,7 +251,7 @@ By rough leverage-per-hour-invested:
 1. **Quality gate harness** (`bench/longcode/harness.py` + `analyze.mjs`) — pays
    for itself in the first day. Without this, you can't tell which builds
    improved anything.
-2. **Per-layer dump pattern** (env-gated `ATLAS_DUMP_LAYERS` reading headerless
+2. **Per-layer dump pattern** (env-gated `AVAROK_DUMP_LAYERS` reading headerless
    bf16 `.bin` per `(layer, position, kind)`). Pattern in
    `crates/spark-model/src/layers/vision_encoder/enc_impl/utils.rs:38-64` —
    clone this, don't reinvent it. Zero-overhead when env unset (PCND/SSOT compliant).
@@ -311,7 +311,7 @@ channels, but the depthwise conv weights for the *k* sub-segment were 18× small
 than for the *v* sub-segment, so SNR for k channels collapsed to <1. Conv-k
 cosine dropped to 0.55 against the HF oracle. Fix: route through native
 `fp8_gemm_n128` (BF16 act × FP8 weight, FP32 accumulator). Originally
-env-gated `ATLAS_FP8_SSM_PREFILL=1`; promoted to unconditional 2026-05-20
+env-gated `AVAROK_FP8_SSM_PREFILL=1`; promoted to unconditional 2026-05-20
 after a live-verified soak (and cross-ported to the MoE A3B sister loader
 once an audit found the same triple-quant chain there).
 

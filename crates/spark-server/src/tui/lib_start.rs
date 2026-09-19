@@ -73,7 +73,7 @@ fn template_from(donor: &Recipe, model: &str) -> Recipe {
 /// The no-donor card: serve with every flag at the server's own default.
 fn blank(model: &str) -> Recipe {
     Recipe {
-        id: "starting-point/atlas-defaults".into(),
+        id: "starting-point/avarok-defaults".into(),
         version: "0".into(),
         model: model.to_string(),
         runtime: Some("atlas".into()),
@@ -111,7 +111,7 @@ pub(super) fn ranked_donors<'a>(
 ) -> Vec<&'a Recipe> {
     let mut donors: Vec<&Recipe> = recipes
         .iter()
-        .filter(|r| r.is_atlas() && r.min_nodes <= 1)
+        .filter(|r| r.is_avarok() && r.min_nodes <= 1)
         .collect();
     donors.sort_by_key(|r| (!same_family(r, model, model_type), r.id.clone()));
     donors

@@ -122,7 +122,7 @@ export function _setRetryBaseMs(ms) {
   retryBaseMs = ms;
 }
 if (typeof window !== 'undefined') {
-  window.__atlasChatSetRetryBaseMs = _setRetryBaseMs;
+  window.__avarokChatSetRetryBaseMs = _setRetryBaseMs;
 }
 
 async function withRetry(operation) {
@@ -158,6 +158,13 @@ export async function getEmbeddings(texts, apiKey, model = EMBEDDING_MODEL) {
     });
     return parseResponse(response, 'Embedding request');
   });
+
+  // parseResponse guarantees a 2xx and an `error`-free body, not a shaped one.
+  // A 200 whose body is not the documented envelope used to die here as an
+  // opaque TypeError -- the exact failure parseResponse exists to prevent.
+  if (!Array.isArray(data?.data)) {
+    throw new OpenRouterError('Embedding request returned no embeddings.', false);
+  }
 
   return data.data
     .slice()
@@ -338,6 +345,12 @@ export async function rerank(query, documents, apiKey, topN, model = RERANK_MODE
     });
     return parseResponse(response, 'Rerank request');
   });
+
+  // See getEmbeddings: a 200 with an undocumented body is a shape failure, not
+  // a transient one, so retrying it would only repeat the same answer.
+  if (!Array.isArray(data?.results)) {
+    throw new OpenRouterError('Rerank request returned no results.', false);
+  }
 
   return data.results
     .slice()

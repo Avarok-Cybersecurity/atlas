@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -57,6 +57,12 @@ pub(crate) struct SsmSnapshotPool {
     /// Maps snapshot_slot_id → session_hash for session-scoped isolation.
     /// When restoring, skip snapshots that belong to a different session.
     pub(super) session_tags: Mutex<std::collections::HashMap<usize, u64>>,
+    /// Per-slot AUX layer state (PLE n-gram history/conv, QSA indexer keys)
+    /// captured at CHUNK-BOUNDARY saves as host blobs `(layer_idx, bytes)`.
+    /// Mid-chunk tail captures never carry aux — a model whose layers hold
+    /// aux state DECLINES restoring a slot without it (graceful miss beats
+    /// silently serving another request's lexical state).
+    pub(super) aux_blobs: Mutex<std::collections::HashMap<usize, Vec<(u32, Vec<u8>)>>>,
     /// Decode-rollback region: `h_snapshots` for the Phase-C ring.
     /// Layout per layer: `[max_batch_size * decode_ring_slots * h_bytes]`.
     /// Empty when `decode_ring_slots == 0`.
@@ -88,7 +94,7 @@ pub(crate) struct SsmSnapshotPool {
     /// Marconi slots that currently hold a valid `hidden_snapshot` entry
     /// (only leaf saves populate it; intermediate checkpoints do not).
     pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
-    /// FP16 -> FP32 h-state converter (`ATLAS_SSM_H_FP16`). A snapshot taken
+    /// FP16 -> FP32 h-state converter (`AVAROK_SSM_H_FP16`). A snapshot taken
     /// from a DECODING slot reads an FP16 state, but every restore lands in a
     /// PREFILL, which is FP32. Widening at save time keeps the snapshot pool
     /// uniformly FP32, so restore, spill, fault-in, the tier fingerprint and
@@ -137,6 +143,7 @@ impl SsmSnapshotPool {
                 conv_bytes,
                 num_ssm_layers,
                 session_tags: Mutex::new(std::collections::HashMap::new()),
+                aux_blobs: Mutex::new(std::collections::HashMap::new()),
                 decode_h_snapshots: Vec::new(),
                 decode_conv_snapshots: Vec::new(),
                 decode_ring_slots: 0,
@@ -197,6 +204,7 @@ impl SsmSnapshotPool {
             conv_bytes,
             num_ssm_layers,
             session_tags: Mutex::new(std::collections::HashMap::new()),
+            aux_blobs: Mutex::new(std::collections::HashMap::new()),
             decode_h_snapshots,
             decode_conv_snapshots,
             decode_ring_slots: if decode_enabled { decode_ring_slots } else { 0 },
@@ -308,7 +316,7 @@ impl SsmSnapshotPool {
     /// Returns `None` if no free snapshot slots are available.
     /// Tags the snapshot with `session_hash` for session-scoped isolation.
     /// `h_is_f16` is the storage dtype of the SOURCE slot. Under
-    /// `ATLAS_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
+    /// `AVAROK_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
     /// widens it back: snapshots are always written FP32, so `restore` — which
     /// only ever lands in a prefill — needs no dtype knowledge, and neither do
     /// the spill, fault-in, tier-fingerprint or swap paths.
@@ -333,7 +341,7 @@ impl SsmSnapshotPool {
         }
         if h_is_f16 && self.h_f16_to_f32_k.0 == 0 {
             bail!(
-                "ATLAS_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
+                "AVAROK_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
             );
         }
         let snap_slot = match self.free_slots.lock().pop() {
@@ -447,7 +455,18 @@ impl SsmSnapshotPool {
     pub(super) fn free(&self, snap_slot: usize) {
         self.slot_has_hidden.lock().remove(&snap_slot);
         self.session_tags.lock().remove(&snap_slot);
+        self.aux_blobs.lock().remove(&snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Attach chunk-boundary aux layer state to a saved snapshot.
+    pub(super) fn set_aux(&self, snap_slot: usize, blobs: Vec<(u32, Vec<u8>)>) {
+        self.aux_blobs.lock().insert(snap_slot, blobs);
+    }
+
+    /// The aux blobs for a slot, if that save carried them.
+    pub(super) fn aux(&self, snap_slot: usize) -> Option<Vec<(u32, Vec<u8>)>> {
+        self.aux_blobs.lock().get(&snap_slot).cloned()
     }
 
     /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.

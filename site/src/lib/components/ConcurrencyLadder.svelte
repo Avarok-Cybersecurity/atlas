@@ -12,18 +12,42 @@
   // which is where single-stream latency lives.
   import ladder from '$lib/ladder.generated.json';
 
+  // `embedded`: render as a block inside a section that already has a heading
+  // and a container (the Verified entry). Default is the standalone section the
+  // benchmark dashboard mounts.
+  //
+  // `compact`: chart and table only. The slide deck at /diligence gives the
+  // claim its own headline and spends the rest of the slide on the evidence, so
+  // it needs the instrument without the surrounding prose or the provenance
+  // disclosure — which it reaches on its own slides instead.
+  let { embedded = false, compact = false } = $props();
+
   const W = 760, H = 300, PL = 62, PR = 20, PT = 18, PB = 34;
 
   const subject = ladder.series.find((s) => s.role === 'subject');
   const baselines = ladder.series.filter((s) => s.role === 'baseline');
-  const plotted = [subject, ...baselines];
+  // `variant`: another configuration of the SUBJECT engine, drawn but never
+  // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
+  // the published claim is Atlas against the matched vLLM baseline, and
+  // letting a second Atlas configuration into that comparison would change
+  // what the headline means rather than adding evidence for it.
+  const variants = ladder.series.filter((s) => s.role === 'variant');
+  const plotted = [subject, ...variants, ...baselines];
 
-  const COLOR = {
-    atlas: 'var(--accent)',
+  // Series are styled by role, not by id: the ids come from the published
+  // bench manifest (bench/ladder38/published.json), which is a recorded
+  // measurement and keeps whatever engine name it was recorded under, so a
+  // lookup keyed on the brand name silently loses the subject line when the
+  // two drift. Only the baselines are told apart by id.
+  const BASELINE_COLOR = {
     'vllm-mtp': 'var(--t2)',
     'vllm-nospec': 'var(--t3, var(--t2))'
   };
-  const DASH = { atlas: null, 'vllm-mtp': null, 'vllm-nospec': '5 4' };
+  const colorOf = (s) => (s.role === 'baseline' ? BASELINE_COLOR[s.id] ?? 'var(--t2)' : 'var(--accent)');
+  // A variant shares the subject hue and is told apart by its dash: it is the
+  // same engine on the same weights, so a second colour would say "different
+  // subject". Same reasoning as gate-variants.js on the dashboard.
+  const dashOf = (s) => (s.role === 'variant' || s.id === 'vllm-nospec' ? '5 4' : null);
 
   const cs = ladder.concurrencies;
   const allV = plotted.flatMap((s) => s.rungs.map((r) => r.tok_s));
@@ -38,36 +62,41 @@
   // Two decimals everywhere, which is exactly how RESULTS.md publishes these
   // numbers — the site and the repo record should be diffable by eye.
   const fmtV = (v) => v.toFixed(2);
-  // Always three decimals: the rungs span 1.004x to 1.225x, and switching
+  // Always three decimals: the rungs span 1.012x to 1.333x, and switching
   // precision by magnitude would print "1.20x" next to "1.004x".
   const ratio = (r) => `${r.toFixed(3)}×`;
 </script>
 
-<section id="concurrency" class="section-alt">
-  <div class="container">
-    <div class="slabel">Concurrency</div>
-    <h2 class="stitle">
+<svelte:element this={embedded ? 'div' : 'section'} id="concurrency"
+  class={embedded ? 'cl-embed' : 'section-alt'}>
+  <div class={embedded ? 'cl-embed-inner' : 'container'}>
+    {#if !embedded}
+      <div class="slabel">Concurrency</div>
+    {/if}
+    {#if !compact}
+    <svelte:element this={embedded ? 'h3' : 'h2'} class={embedded ? 'cl-h' : 'stitle'}>
       {#if ladder.summary.all_won}
         Faster than vLLM at every concurrency, C=1 to 128
       {:else}
         Atlas vs vLLM, C=1 to 128 — {ladder.summary.won} of {ladder.summary.rungs} rungs
       {/if}
-    </h2>
+    </svelte:element>
     <p class="cl-sub">
       {ladder.workload.checkpoint} on one GB10. {ladder.aggregate}. The matched baseline
       runs vLLM's own MTP speculative decoding at K=4, same as Atlas, on the same box,
       checkpoint, client and prompts. Margin ranges
-      {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against whichever
-      vLLM configuration is faster at that rung.
+      {ratio(ladder.summary.min_ratio)}–{ratio(ladder.summary.max_ratio)} against that
+      matched configuration at each rung.
     </p>
+    {/if}
 
     <figure class="cl-panel">
       <figcaption class="cl-legend">
         {#each plotted as s}
           <span class="cl-key">
             <svg class="cl-swatch" viewBox="0 0 22 8" aria-hidden="true">
-              <line x1="1" y1="4" x2="21" y2="4" stroke={COLOR[s.id]} stroke-width="2.5"
-                stroke-dasharray={DASH[s.id]} stroke-linecap="round" />
+              <line x1="1" y1="4" x2="21" y2="4" stroke={colorOf(s)} stroke-width="2.5"
+                stroke-dasharray={dashOf(s)} stroke-linecap="round" />
             </svg>
             <span>{s.label}</span>
             {#if s.parity === 'unmatched'}<span class="cl-tag">config differs</span>{/if}
@@ -81,7 +110,8 @@
           <line class="gc-grid" x1={PL} y1={y(t)} x2={W - PR} y2={y(t)} />
           <text class="gc-axis" x={PL - 8} y={y(t) + 3.5} text-anchor="end">{Math.round(t)}</text>
         {/each}
-        <text class="gc-axis cl-ylab" x={14} y={PT + 6} text-anchor="start">tok/s</text>
+        <text class="gc-axis cl-ylab" text-anchor="middle" x={13} y={(PT + H - PB) / 2 + 4}
+          transform="rotate(-90 13 {(PT + H - PB) / 2 + 4})">tok/s</text>
         {#each cs as c}
           <text class="gc-axis" x={x(c)} y={H - 9} text-anchor="middle">{c}</text>
         {/each}
@@ -90,13 +120,13 @@
         </text>
 
         {#each plotted as s}
-          <path d={path(s.rungs)} fill="none" stroke={COLOR[s.id]}
+          <path d={path(s.rungs)} fill="none" stroke={colorOf(s)}
             stroke-width={s.role === 'subject' ? 2.6 : 1.8}
-            stroke-dasharray={DASH[s.id]} stroke-linejoin="round" stroke-linecap="round"
+            stroke-dasharray={dashOf(s)} stroke-linejoin="round" stroke-linecap="round"
             opacity={s.role === 'subject' ? 1 : 0.75} />
           {#each s.rungs as r}
             <circle cx={x(r.c)} cy={y(r.tok_s)} r={s.role === 'subject' ? 3.6 : 2.6}
-              fill={COLOR[s.id]} opacity={s.role === 'subject' ? 1 : 0.75}>
+              fill={colorOf(s)} opacity={s.role === 'subject' ? 1 : 0.75}>
               <title>{s.label} · C={r.c} · {fmtV(r.tok_s)} tok/s · mean of {r.reps} reps</title>
             </circle>
           {/each}
@@ -107,8 +137,8 @@
     <div class="cl-tablewrap">
       <table class="cl-table">
         <caption class="cl-caption">
-          Throughput in tok/s. Ratio is Atlas over the faster vLLM configuration at that
-          rung; where the two disagree the losing one is not silently dropped.
+          Throughput in tok/s. Ratio is Atlas over the matched vLLM + MTP configuration
+          at that rung. The unmatched no-speculation vLLM leg is shown, not scored.
         </caption>
         <thead>
           <tr>
@@ -133,6 +163,7 @@
       </table>
     </div>
 
+    {#if !compact}
     <details class="cl-details">
       <summary class="cl-toggle">Exact configuration and provenance</summary>
       <div class="cl-meta">
@@ -154,8 +185,8 @@
             <h3>{s.label} <span class="cl-eng">{s.engine}</span></h3>
             {#if s.parity === 'unmatched'}
               <p class="cl-warn">
-                Not matched to Atlas: {s.parity_deltas.join('; ')}. Shown because
-                it is the faster vLLM configuration at C=128.
+                Not matched to Atlas: {s.parity_deltas.join('; ')}. Shown for
+                completeness. It is not the published denominator.
               </p>
             {/if}
             <p class="cl-note">{s.source_note}</p>
@@ -212,5 +243,6 @@
         </article>
       </div>
     </details>
+    {/if}
   </div>
-</section>
+</svelte:element>

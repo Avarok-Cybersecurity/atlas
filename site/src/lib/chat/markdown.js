@@ -24,8 +24,20 @@ function renderSegment(escaped) {
   // Links first so citation rewriting cannot eat a [text](url) opener.
   // href is escaped text and restricted to http(s), so it cannot break out of
   // the attribute or smuggle a javascript: scheme.
+  // The URL charset excludes `[`, `]` and `*` — exactly the characters the two
+  // passes BELOW rewrite. Those passes run over a string that already contains
+  // the anchor emitted here, so a URL carrying them had its own href rewritten:
+  //
+  //   [x](https://e.com/[1]z)   ->  href="https://e.com/<sup class="cc-cite">[1]…
+  //
+  // which closes the attribute early and drops rel and target. Not an XSS —
+  // only fixed strings ever reach tag context, and the attacker's text stays
+  // escaped — but the header's claim about which attributes are emitted was
+  // untrue in the DOM. A URL containing them is now left as plain text, which
+  // is the safe direction: a link that does not render is visibly wrong, an
+  // anchor with its rel silently stripped is not.
   out = out.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+    /\[([^\]]+)\]\((https?:\/\/[^)\s*[\]]+)\)/g,
     '<a href="$2" rel="noopener nofollow" target="_blank">$1</a>'
   );
   out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');

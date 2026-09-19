@@ -36,6 +36,84 @@ pub fn silu_mul(
         .launch(stream)
 }
 
+/// [`silu_mul`] over ROW-STRIDED operands — the consumer of the fused
+/// dense-FFN gate+up projection (#927).
+///
+/// `gate` and `up` are two column halves of ONE `[rows, in_stride]` BF16
+/// matrix (`up = gate.offset(cols * 2)`, `in_stride = 2 * cols`), which is
+/// what a single cuBLASLt call at `N = 2 * intermediate` produces; `output` is
+/// the contiguous `[rows, cols]` the down projection reads. Passing
+/// `in_stride == out_stride == cols` reproduces [`silu_mul`] exactly.
+///
+/// Kernel: `silu_mul_strided(gate, up, output, rows, cols, in_stride,
+/// out_stride)`, grid `(ceil(cols/256), rows, 1)` block `(256,1,1)` — a 2-D
+/// grid so no thread divides to recover its row. Rule:
+/// `layers/dense_ffn_gateup_fused.rs`.
+#[allow(clippy::too_many_arguments)]
+pub fn silu_mul_strided(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    output: DevicePtr,
+    rows: u32,
+    cols: u32,
+    in_stride: u32,
+    out_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(cols, 256), rows, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(output)
+        .arg_u32(rows)
+        .arg_u32(cols)
+        .arg_u32(in_stride)
+        .arg_u32(out_stride)
+        .launch(stream)
+}
+
+/// Fused SiLU·mul + per-token-group(128) FP8-E4M3 quantization — replaces the
+/// `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8 prefill down-path
+/// without materializing the BF16 intermediate. Bit-identical to the pair
+/// (product rounds through BF16 before the group max; same reduction order,
+/// scale floor, and SATFINITE encode).
+///
+/// `out_bf16` is nullable (`DevicePtr::NULL`): pass the post-SiLU BF16 buffer
+/// only when a downstream consumer needs it (expert down_proj LoRA fold).
+///
+/// Kernel: `silu_mul_quant_fp8(gate, up, out_fp8, a_scale, out_bf16, M, K)`
+/// Grid: (M, 1, 1)  Block: (128, 1, 1). Caller must ensure `k % 128 == 0`
+/// and `k / 128 <= 16` (SILU_QUANT_MAX_GROUPS) — fall back to the unfused
+/// pair otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn silu_mul_quant_fp8(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    out_fp8: DevicePtr,
+    a_scale: DevicePtr,
+    out_bf16: DevicePtr,
+    m: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([m, 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(out_fp8)
+        .arg_ptr(a_scale)
+        .arg_ptr(out_bf16)
+        .arg_u32(m)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// L2 normalization (in-place): `data[i] = data[i] / sqrt(sum(data^2) + eps)`.
 ///
 /// Applied per head: data is [num_heads, head_dim], each head normalized independently.

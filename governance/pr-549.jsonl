@@ -1,2 +1,5 @@
 {"pr":549,"head_sha":"08af39c2d86a4a3d76da2f1063d1addc3b7d86b5","run_id":"31990212030","attempt":1,"at":1786936169,"kind":"category","value":"unknown","status":"abstain"}
 {"pr":549,"head_sha":"08af39c2d86a4a3d76da2f1063d1addc3b7d86b5","run_id":"backfill-2026-08-18","attempt":0,"at":1787053242,"kind":"category","value":"performance/speculation","status":"ok"}
+{"pr":549,"head_sha":"df263dfb9190a1559e48a60b40860e01d646d45d","run_id":"32230054719","attempt":1,"at":1787126201,"kind":"category","value":"correctness/sampling","status":"ok"}
+{"pr":549,"head_sha":"602b091cfae0dc7f8b669de2225b974f0efb87ef","run_id":"32242520627","attempt":1,"at":1787135192,"kind":"category","value":"correctness/numerics","status":"ok"}
+{"pr":549,"head_sha":"c5ab92420fc7f2ca475896820b6e268312b236bd","run_id":"32245788216","attempt":1,"at":1787137583,"kind":"category","value":"unknown","status":"abstain"}

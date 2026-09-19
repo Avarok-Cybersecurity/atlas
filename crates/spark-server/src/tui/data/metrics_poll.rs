@@ -77,7 +77,7 @@ pub struct StatsModel {
     /// True once a real device reading has been taken.
     ///
     /// ★ The three figures below are plain `f64` and default to 0.0, so on a
-    /// box with no GPU or no NVML they render as `atlas 0.0 GB · free 0.0`
+    /// box with no GPU or no NVML they render as `avarok 0.0 GB · free 0.0`
     /// with a 0 % gauge — a MEASUREMENT OF ZERO rather than "unavailable".
     /// This file already gets that right for TTFT (an `Option` that renders as
     /// `—`); the GPU tile did not. Nothing else on this dashboard fabricates a
@@ -85,7 +85,7 @@ pub struct StatsModel {
     pub gpu_known: bool,
     pub gpu_free_gb: f64,
     pub gpu_total_gb: f64,
-    pub atlas_used_gb: f64,
+    pub avarok_used_gb: f64,
     pub host_avail_gb: f64,
     pub host_total_gb: f64,
     // Scheduler.
@@ -98,6 +98,7 @@ pub struct StatsModel {
 struct Prev {
     requests: u64,
     gen_tok: u64,
+    decoded: u64,
     prompt: u64,
     bytes_in: u64,
     bytes_out: u64,
@@ -132,7 +133,7 @@ impl Default for StatsModel {
             gpu_known: false,
             gpu_free_gb: 0.0,
             gpu_total_gb: 0.0,
-            atlas_used_gb: 0.0,
+            avarok_used_gb: 0.0,
             host_avail_gb: 0.0,
             host_total_gb: 0.0,
             sched: None,
@@ -163,6 +164,7 @@ impl StatsModel {
         self.requests_total = metrics::REQUESTS_TOTAL.get();
         self.requests_active = metrics::REQUESTS_ACTIVE.get();
         self.gen_tokens_total = metrics::GENERATION_TOKENS_TOTAL.get();
+        let decoded_total = metrics::DECODED_TOKENS_TOTAL.get();
         self.prompt_tokens_total = metrics::PROMPT_TOKENS_TOTAL.get();
         self.tool_calls_total = metrics::TOOL_CALLS_TOTAL.get();
         self.bytes_in_total = metrics::HTTP_BYTES_IN.get();
@@ -170,7 +172,14 @@ impl StatsModel {
 
         if let Some((t0, prev)) = self.last_sample {
             let dt = now.duration_since(t0).as_secs_f64().max(0.05);
-            self.gen_tps = (self.gen_tokens_total.saturating_sub(prev.gen_tok)) as f64 / dt;
+            // Prefer the per-token counter: it advances DURING generation, so
+            // this is a live rate. `GENERATION_TOKENS_TOTAL` only moves when a
+            // request finishes, which reads as 0 tok/s then one spike — fall
+            // back to it only for paths that never stream (blocking requests),
+            // where a lump at completion is all there is.
+            let decoded_delta = decoded_total.saturating_sub(prev.decoded);
+            let gen_delta = self.gen_tokens_total.saturating_sub(prev.gen_tok);
+            self.gen_tps = decoded_delta.max(gen_delta) as f64 / dt;
             self.prompt_tps = (self.prompt_tokens_total.saturating_sub(prev.prompt)) as f64 / dt;
             self.req_rate = (self.requests_total.saturating_sub(prev.requests)) as f64 / dt;
             self.bytes_in_rate = (self.bytes_in_total.saturating_sub(prev.bytes_in)) as f64 / dt;
@@ -183,6 +192,7 @@ impl StatsModel {
             Prev {
                 requests: self.requests_total,
                 gen_tok: self.gen_tokens_total,
+                decoded: decoded_total,
                 prompt: self.prompt_tokens_total,
                 bytes_in: self.bytes_in_total,
                 bytes_out: self.bytes_out_total,
@@ -192,7 +202,7 @@ impl StatsModel {
         // TTFT histogram via the prometheus proto (bucket bounds + counts).
         self.ttft_buckets.clear();
         for mf in prometheus::gather() {
-            if mf.name() != "atlas_time_to_first_token_seconds" {
+            if mf.name() != "avarok_time_to_first_token_seconds" {
                 continue;
             }
             if let Some(m) = mf.get_metric().first() {
@@ -219,7 +229,7 @@ impl StatsModel {
         self.entropy_history.push(self.entropy);
 
         // Memory.
-        // Both reads must land: `atlas_used` is a DIFFERENCE of the two, so
+        // Both reads must land: `avarok_used` is a DIFFERENCE of the two, so
         // one without the other is not a smaller truth, it is a wrong number.
         match (
             super::gpu_free_bytes(),
@@ -228,7 +238,7 @@ impl StatsModel {
             (Some(free), Some(baseline)) => {
                 self.gpu_free_gb = free as f64 / GIB;
                 self.gpu_total_gb = baseline as f64 / GIB;
-                self.atlas_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
+                self.avarok_used_gb = (self.gpu_total_gb - self.gpu_free_gb).max(0.0);
                 self.gpu_known = true;
             }
             _ => self.gpu_known = false,
@@ -250,7 +260,7 @@ fn spec_accept_from_gather() -> Vec<(String, u64, u64)> {
     use std::collections::BTreeMap;
     let mut per_k: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for mf in prometheus::gather() {
-        if mf.name() != "atlas_spec_decode_verify_total" {
+        if mf.name() != "avarok_spec_decode_verify_total" {
             continue;
         }
         for m in mf.get_metric() {

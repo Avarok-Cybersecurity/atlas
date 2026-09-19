@@ -185,6 +185,14 @@ pub fn grouped_down_wc(row_offset: u32, row_end: u32) -> u32 {
     div_ceil(row_end.saturating_sub(row_offset), MLG_M_TILE).max(1)
 }
 
+/// Contiguous `[start, end)` launch windows covering `0..total_rows`.
+pub fn grouped_down_windows(total_rows: u32, cap: u32) -> impl Iterator<Item = (u32, u32)> {
+    assert!(cap > 0, "grouped LoRA scratch capacity must be nonzero");
+    (0..total_rows)
+        .step_by(cap as usize)
+        .map(move |start| (start, start.saturating_add(cap).min(total_rows)))
+}
+
 /// M_TILE the static worst-case grid pairs with — must match the `MLG_M_TILE`
 /// `#define` in `moe_lora_grouped_down.cu` AND the base grouped GEMM's
 /// `worst_case_m_tiles = ceil(total_expanded/64)` sizing.

@@ -5,29 +5,141 @@
   // section (it reuses dashboard's chart primitives, so it loads after those),
   // mobile.css is the SSOT for every viewport rule and must land last.
   import '../app.css';
+  import ChevronField from '$shared/components/ChevronField.svelte';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import '../styles/news.css';
   import '../styles/dashboard.css';
   import '../styles/chat.css';
   import '../styles/ladder.css';
+  import '../styles/control.css';
+  import '../styles/bridge.css';
+  import '../styles/stage.css';
+  import '../styles/overlays.css';
   import '../styles/mobile.css';
-  import { tagline, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
+  import { page } from '$app/state';
+  import { tagline, hero, faq, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
+  import { onMount } from 'svelte';
+  import { detectHost } from '$lib/install/host.svelte.js';
   let { children } = $props();
+
+  // Once, here, rather than in each surface that prints an install line: three
+  // components sniffing separately is how the hero and the control page end up
+  // disagreeing about which machine the visitor is on. In `onMount` because
+  // the prerendered HTML has no navigator, and rendering a guess into it would
+  // make the page rewrite itself for every visitor it guessed wrong about.
+  onMount(detectHost);
+
+  // Route-aware: a hardcoded canonical meant /control emitted two of them,
+  // which is the same as emitting none.
+  //
+  // Canonicals are extensionless. Cloudflare Pages pretty-URLs /engine (200)
+  // and 308s /engine.html → /engine, so a canonical ending in .html names a
+  // redirect. adapter-static still writes engine.html as the file.
+  const marketingPage = $derived(['/', '/index.html'].includes(page.url.pathname));
+  const enginePage = $derived(['/engine', '/engine.html'].includes(page.url.pathname));
+  const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}`);
+
+  const SITE = 'https://atlascybernetics.ai/';
+
+  // One @graph rather than three separate blocks, so the entities can reference
+  // each other by @id — that is what lets a search or answer engine tie the
+  // software, the publisher and the answers together instead of treating them
+  // as unrelated fragments.
+  //
+  // Every field restates something rendered on the page. The FAQ entities come
+  // from the same `faq` export the FAQ section renders, because marking up an
+  // answer a visitor cannot see is a policy violation, not an optimisation.
+  const graph = {
+    '@context': 'https://schema.org',
+    '@graph': [
+      {
+        '@type': 'Organization',
+        '@id': `${SITE}#org`,
+        name: 'Atlas Inference',
+        url: SITE,
+        logo: `${SITE}icon-512.png`,
+        description: tagline,
+        sameAs: [githubUrl, recipesUrl, discordUrl, xUrl]
+      },
+      {
+        '@type': 'WebSite',
+        '@id': `${SITE}#site`,
+        url: SITE,
+        name: 'Atlas Inference',
+        description: tagline,
+        inLanguage: 'en',
+        publisher: { '@id': `${SITE}#org` }
+      },
+      {
+        '@type': 'SoftwareApplication',
+        '@id': `${SITE}#app`,
+        name: 'Atlas Inference Engine',
+        alternateName: 'Atlas',
+        applicationCategory: 'DeveloperApplication',
+        applicationSubCategory: 'LLM inference engine',
+        operatingSystem: 'Linux',
+        processorRequirements: 'NVIDIA GB10 (DGX Spark) or AMD gfx1151 (Strix Halo)',
+        description: hero.sub,
+        url: SITE,
+        downloadUrl: githubUrl,
+        softwareHelp: recipesUrl,
+        programmingLanguage: ['Rust', 'CUDA'],
+        license: 'https://spdx.org/licenses/AGPL-3.0-only.html',
+        isAccessibleForFree: true,
+        // Schema.org wants a price even for free software; omitting the offer
+        // entirely reads as "price unknown" rather than "free".
+        offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+        publisher: { '@id': `${SITE}#org` }
+      },
+      {
+        '@type': 'FAQPage',
+        '@id': `${SITE}engine#faq`,
+        isPartOf: { '@id': `${SITE}#site` },
+        mainEntity: faq.items.map((item) => ({
+          '@type': 'Question',
+          name: item.q,
+          acceptedAnswer: { '@type': 'Answer', text: item.a }
+        }))
+      }
+    ]
+  };
+
+  // JSON.stringify does not escape the less-than character, so a closing
+  // script tag appearing anywhere in the FAQ copy would end the emitted block
+  // early and spill the rest of the page's markup into the document. Escaping
+  // it as \u003c keeps the JSON parseable and identical in value to consumers.
+  // (Writing that tag literally in this comment would end THIS block, too.)
+  const ldjson = $derived(JSON.stringify({
+    ...graph,
+    '@graph': graph['@graph'].filter(entity => entity['@type'] !== 'FAQPage' || enginePage)
+  }).replace(/</g, '\\u003c'));
 </script>
 
 <svelte:head>
-  <title>Atlas, pure Rust inference for DGX Spark</title>
-  <link rel="canonical" href="https://atlasinference.io/" />
-  {@html `<script type="application/ld+json">${JSON.stringify({
-    '@context': 'https://schema.org',
-    '@type': 'SoftwareApplication',
-    name: 'Atlas Inference Engine',
-    applicationCategory: 'DeveloperApplication',
-    operatingSystem: 'Linux',
-    description: tagline,
-    url: 'https://atlasinference.io/',
-    license: 'https://spdx.org/licenses/AGPL-3.0-only.html',
-    sameAs: [githubUrl, recipesUrl, discordUrl, xUrl]
-  })}<\/script>`}
+  <!-- No <title> here. A layout title and a page title compete for the single
+       head slot and the LAYOUT's wins, so /control shipped with the homepage's
+       title while its own two <meta>s came through -- the page head renders,
+       only its title is discarded. Every route owns its own title instead. -->
+  <link rel="canonical" href={canonical} />
+  <meta property="og:url" content={canonical} />
+  {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 
-{@render children()}
+<!-- The ambient chevron field: one fullscreen triangle, one fragment shader,
+     the same code blog.atlascybernetics.ai renders. It paints the page ground
+     itself, so `body`'s background sits behind it rather than beside it.
+
+     It must stay a DIRECT child of the layout root. A `transform`, `filter`,
+     `perspective`, `will-change` or `contain: paint` on any ancestor would
+     make that ancestor the containing block for fixed-position descendants,
+     and the background would start scrolling with the content. -->
+{#if !marketingPage}<ChevronField />{/if}
+
+<!-- The brand vector, defined once and <use>d by the nav and the footer. -->
+<AtlasLockup kind="defs" />
+
+<!-- Everything else goes above the canvas. Without this wrapper, only the
+     POSITIONED elements would: a fixed canvas at z-index 0 paints above the
+     block-level layer, so `footer` — which sets no position — would render
+     underneath it and vanish. -->
+<div class="page">{@render children()}</div>

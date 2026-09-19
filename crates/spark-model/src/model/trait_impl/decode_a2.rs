@@ -11,7 +11,7 @@
 //! and run final norm + per-seq LM-head GEMVs.
 
 use anyhow::Result;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::super::block_mgmt::{ensure_blocks_through_decode, extract_layer_refs};
@@ -20,22 +20,14 @@ use crate::layer::{ForwardContext, LayerState, SsmLayerState};
 use crate::layers::ops;
 use crate::traits::{Model, SequenceState};
 
-/// Route the BF16 lm_head decode through the batched GEMV (dense_gemv_bf16_batchm)
-/// instead of the scalar dense_gemm_bf16. Default ON. Mirrors PR #332's
-/// ATLAS_LMHEAD_BATCH_GEMV for the NVFP4 head; this is the BF16 sibling.
-fn lmhead_batch_gemv_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_LMHEAD_BATCH_GEMV").ok().as_deref() != Some("0"))
-}
-
 /// Multi-seq decode CUDA graphs: **ON by default**, disabled by
-/// `ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1`.
+/// `AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1`.
 ///
-/// Strict `== "1"` on an `ATLAS_NO_*` name rather than a presence check —
+/// Strict `== "1"` on an `AVAROK_NO_*` name rather than a presence check —
 /// presence-checked flags here are ENABLED by `=0`. Read once per process.
 fn multiseq_graphs_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_DECODE_GRAPHS_MULTISEQ").as_deref() != Ok("1"))
 }
 
 impl TransformerModel {
@@ -47,7 +39,7 @@ impl TransformerModel {
     ) -> Result<DevicePtr> {
         let n = tokens.len();
         assert_eq!(n, seqs.len(), "tokens.len() must equal seqs.len()");
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         for s in seqs.iter_mut() {
             self.ssm_h_to_f16_dispatch(s)?;
@@ -86,7 +78,36 @@ impl TransformerModel {
         // forward_batched.rs:269) remain at shape `h * elem` per call —
         // batching the comm shape would need new MoE kernel work and is
         // deliberately out of scope here.
-        if self.comm.is_some() {
+        let mla_perseq_fallback = self.is_mla_dispatch() && self.levers.mla_perseq_fallback;
+        let qsa_active = self.config.index_topk > 0 && {
+            // Mirrors QsaIndexer::inert_bound: index_topk IS the selection
+            // budget in tokens (2048 on this card); at or below
+            // budget + ratio - 1 visible tokens every block is selected and
+            // selection is inert.
+            let bound = self.config.index_topk + self.config.index_compress_ratio - 1;
+            seqs.iter().any(|s| s.seq_len >= bound)
+        };
+        // A layer may DECLINE the batched multi-seq step outright (Stage 0).
+        // 🪤 Hoisted OUT of the `hc_mult > 0` conjunction on purpose: a layer
+        // that cannot be indexed by row must be routed per-sequence whether or
+        // not it is an mHC-highway model, and whether or not QSA selection has
+        // activated. Keying this on `hc_mult`, `index_topk` or `model_type`
+        // instead would reintroduce exactly the length-dependent cliff below —
+        // `qsa_active` is false for every sequence shorter than
+        // `index_topk + index_compress_ratio - 1`, so a declining model would
+        // be correct on long contexts and silently wrong on short ones.
+        let ms_layer_veto = self.layers.iter().any(|l| l.decode_multi_seq_unsupported());
+        let hc_perseq = ms_layer_veto
+            || (self.config.hc_mult > 0 && (qsa_active || self.levers.hc_perseq_decode));
+        // ★ The per-seq routing decision is resolved ABOVE the EP branch on
+        // purpose. It used to sit below, so under EP a QSA-active batch
+        // returned at `decode_batch_compute_main` before ever reaching the
+        // gate, landed on the batched multi-seq path, and died on its guard
+        // ("QSA selection active for seq 0 on the batched ms path" — measured
+        // on the 2-node EP=2 bring-up, 2026-08-27). EP does not change WHICH
+        // path is correct for a sequence; it only changes how the worker is
+        // told about it.
+        if self.comm.is_some() && !(mla_perseq_fallback || hc_perseq) {
             let seq_ids: Vec<u32> = seqs.iter().map(|s| s.slot_idx as u32).collect();
             self.ep_broadcast_decode_batch_dispatch(&seq_ids, tokens)?;
             return self.decode_batch_compute_main(tokens, seqs, stream);
@@ -104,14 +125,25 @@ impl TransformerModel {
         //
         // The legacy per-sequence `decode()` fallback (host-staged logits +
         // CUDA-graph suppression) is retained ONLY behind the
-        // `ATLAS_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
+        // `AVAROK_MLA_PERSEQ_FALLBACK` escape hatch, as a guarded safety net
         // should a regression surface in the batched MLA path. It does NOT
         // fully isolate concurrent sequences (each `decode()`'s
         // `Buffers::zero_all` wipes the shared `logits` buffer), so it is
         // not the default.
-        let mla_perseq_fallback = self.is_mla_dispatch()
-            && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
-        if mla_perseq_fallback {
+        // mHC highway models (#753 item B): the batched GDN paths are UNWIRED
+        // (they carry their own residual, which the highway replaces), so the
+        // per-seq loop is the DEFAULT here, not a fallback — each sequence
+        // runs the proven single-row highway decode against its own per-seq
+        // PLE/QSA state, and the host staging below isolates the logits rows.
+        // Batched-highway kernels are the perf follow-up.
+        // Highway models: the BATCHED multi-seq path (per-layer hc-bracketed
+        // decode, weight reads amortized at the GEMM level next increment)
+        // is the default. Fall back to the per-seq staging loop when
+        //   * AVAROK_HC_PERSEQ_DECODE=1 (A/B escape hatch), or
+        //   * QSA would be ACTIVE for any sequence (the ms attention path has
+        //     no per-seq indexer hook yet — dense past the budget is NOT the
+        //     reference model, so keep those batches on the proven loop).
+        if mla_perseq_fallback || hc_perseq {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();
             let v = self.config.vocab_size;
@@ -121,24 +153,37 @@ impl TransformerModel {
             // slot-keyed; capturing a graph for one slot inside the same
             // stream-capture window as another slot's replay corrupts both.
             let prev_suppress = self.suppress_graphs.swap(true, Ordering::Relaxed);
+            // The scheduler passes stream 0 (legacy) here, but `decode()`
+            // runs its kernels on the BACKEND default stream — staging the
+            // rows on the caller's stream orders the copies against nothing:
+            // all n copies can execute after the LAST decode and read the
+            // same final row 0 (measured: a clean two-way row swap at every
+            // joint C=2 step, '#753 item B' bring-up). Stage on the stream
+            // the kernels actually use.
+            let copy_stream = self.gpu.default_stream();
             let result = (|| -> Result<()> {
                 let mut staged = vec![0u8; n * row_bytes];
                 for i in 0..n {
+                    // Same announcement the `n == 1` path makes: under EP the
+                    // worker must run THIS sequence's single-seq forward, so
+                    // the comm-stream op order stays B(seq)B(cmd) per row on
+                    // both ranks. No-ops without a communicator.
+                    self.ep_broadcast_cmd_for_seq(seqs[i].slot_idx as u32, tokens[i])?;
                     self.decode(tokens[i], seqs[i], stream)?;
                     // `decode()` wrote this sequence's logits to row 0.
                     // Pull them to the host before the next `decode()`'s
                     // `zero_all` wipes the buffer. `copy_d2h_on_stream`
-                    // syncs `stream` first, so the eager lm_head GEMV has
-                    // fully landed before the copy reads it.
+                    // syncs `copy_stream` first, so the eager lm_head GEMV
+                    // has fully landed before the copy reads it.
                     self.gpu.copy_d2h_on_stream(
                         logits,
                         &mut staged[i * row_bytes..(i + 1) * row_bytes],
-                        stream,
+                        copy_stream,
                     )?;
                 }
                 // Upload the assembled [n, vocab] batch back to the device.
-                self.gpu.copy_h2d_async(&staged, logits, stream)?;
-                self.gpu.synchronize(stream)?;
+                self.gpu.copy_h2d_async(&staged, logits, copy_stream)?;
+                self.gpu.synchronize(copy_stream)?;
                 Ok(())
             })();
             self.suppress_graphs.store(prev_suppress, Ordering::Relaxed);
@@ -178,12 +223,12 @@ impl TransformerModel {
             self.decode_moe_route(),
             "decode_batch_compute_main",
         )?;
-        // ATLAS_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
+        // AVAROK_SSM_H_FP16: narrow this sequence's SSM h-state to FP16 exactly
         // once, HERE — outside the CUDA-graph region. No-op without the flag.
         for s in seqs.iter_mut() {
             self.ssm_h_to_f16_dispatch(s)?;
         }
-        if std::env::var("ATLAS_DECODE_BATCH_LOG").ok().as_deref() == Some("1") {
+        if self.levers.decode_batch_log {
             let slots: Vec<i64> = seqs
                 .iter()
                 .map(|s| {
@@ -196,7 +241,7 @@ impl TransformerModel {
                 .collect();
             let contiguous = slots.iter().enumerate().all(|(i, &s)| s == i as i64);
             tracing::info!(
-                "ATLAS_DECODE_BATCH: n={n} slots={slots:?} contiguous_0..n={contiguous}"
+                "AVAROK_DECODE_BATCH: n={n} slots={slots:?} contiguous_0..n={contiguous}"
             );
         }
         let stream = self.gpu.default_stream();
@@ -210,7 +255,7 @@ impl TransformerModel {
         // `traits::padded_batch_n` (now includes 12 and 16 for the C-sweep).
         let padded_n = crate::traits::padded_batch_n(n);
 
-        // CUDA graphs for multi-sequence decode (ATLAS_DECODE_GRAPHS_MULTISEQ=1).
+        // CUDA graphs for multi-sequence decode (AVAROK_DECODE_GRAPHS_MULTISEQ=1).
         //
         // SSM h_state/conv_state pointers ARE baked into per-seq kernel args at
         // capture, so the cache is keyed by the per-row SSM slot VECTOR — see
@@ -220,13 +265,19 @@ impl TransformerModel {
         // dominant lever for n>=2 decode (eliminates ~1500 launches/step).
         //
         // DEFAULT-ON since 2026-07-27; disable with
-        // ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
+        // AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1. Measurements + the rewrite this
         // retired: `decode_graph_key.rs`.
-        let ms_profile = std::env::var("ATLAS_MS_PROFILE").ok().as_deref() == Some("1");
-        // ATLAS_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
-        // ATLAS_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
+        let ms_profile = self.levers.ms_profile;
+        // AVAROK_MS_PROFILE forces eager (graphs off) so per-phase syncs are legal.
+        // AVAROK_LORA_EAGER: same LoRA graph-vs-eager debugging hatch as decode_a.
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
-        let graph_key = if !ms_profile && !lora_eager && multiseq_graphs_enabled() {
+        // Per-layer graph veto (QSA's mid-decode top-k D2H, PLE's per-seq
+        // host hash on the hc multi-seq path) — the single-decode path
+        // consults it (decode_a `layer_veto`); the batched path must too, or
+        // capture hits 'PLE: un-prestaged forward inside CUDA graph capture'
+        // on the first joint hc step.
+        let layer_veto = self.decode_graph_veto;
+        let graph_key = if !ms_profile && !lora_eager && !layer_veto && multiseq_graphs_enabled() {
             self.batch_decode_graph_key(&*seqs, padded_n)
         } else {
             None
@@ -291,7 +342,9 @@ impl TransformerModel {
 
         // 1a. Embed active tokens into hidden[0..n)
         for (i, &tok) in tokens.iter().enumerate() {
-            self.embed(tok, hidden.offset(i * h * fp32), stream)?;
+            // Each batch slot is a DIFFERENT sequence: the n-gram context must
+            // come from that sequence's own history, never the batch's.
+            self.embed_ctx(&seqs[i].tokens, tok, hidden.offset(i * h * fp32), stream)?;
         }
 
         // 1b. Zero padding hidden[n..dispatch_n)
@@ -319,6 +372,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -337,8 +391,12 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: true,
             gdn_exact_replay: false,
             token_ids: None,
+            // The batch's token ids: the hc multi-seq PLE rows read their
+            // per-seq id from this slice.
+            host_token_ids: Some(tokens),
             routed_lora_layers: None, // #30: batched decode never routes prefill.
             midchunk_capture: None,
         };
@@ -405,6 +463,7 @@ impl TransformerModel {
                             // real one and a stray prefill over it stages
                             // rather than overruns.
                             h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
+                            ple: None,
                         }));
                         ssm_idx += 1;
                     } else {
@@ -421,9 +480,7 @@ impl TransformerModel {
             // CONC_HSD: per-seq hidden-state dump diagnostic. Logs first 4 FP32
             // hidden values for each seq after each layer to localize where
             // pos>=1 diverges from pos 0 in concurrent batched decode.
-            let conc_hsd = std::env::var("ATLAS_CONC_HSD").is_ok_and(|v| v == "1" || v == "true")
-                && padded_n >= 2
-                && self.comm.is_none();
+            let conc_hsd = self.levers.conc_hsd && padded_n >= 2 && self.comm.is_none();
             let dump_hidden = |label: &str, stream: u64| -> Result<()> {
                 if !conc_hsd {
                     return Ok(());
@@ -481,6 +538,16 @@ impl TransformerModel {
                         attn_us += dt;
                     }
                 }
+                // DFlash multi-row hidden capture: batched decode advances
+                // EVERY sequence one position per step, so every batch row's
+                // per-layer hidden must reach the capture scratch (row i =
+                // seq i) for the scheduler's per-seq `commit_ctx(.., i)`.
+                // Captured inside the graph region — src (shared hidden
+                // buffer) and dst (scratch) are fixed addresses, so replays
+                // stay correct; a borrowed wider graph writes garbage into
+                // rows n..padded_n, which the scheduler never commits.
+                // No-op unless DFlash is on and this is a capture layer.
+                self.try_dflash_capture_all(layer_idx, padded_n, stream)?;
                 if conc_hsd {
                     let _ = dump_hidden(&format!("after_L{:02}", layer_idx), stream);
                 }
@@ -496,11 +563,8 @@ impl TransformerModel {
 
             // Final norm [padded_n, H]
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 padded_n as u32,
                 h as u32,
@@ -527,7 +591,7 @@ impl TransformerModel {
                 let head_us = t0.elapsed().as_micros();
                 let total = ssm_us + attn_us + head_us;
                 tracing::info!(
-                    "ATLAS_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
+                    "AVAROK_MS_PROFILE n={n} padded_n={padded_n}: total={}us  ssm={}us({}L)  attn={}us({}L)  head={}us  [per-tok {:.2}ms]",
                     total,
                     ssm_us,
                     self.config.num_ssm_layers(),

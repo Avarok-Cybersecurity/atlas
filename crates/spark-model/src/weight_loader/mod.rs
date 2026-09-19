@@ -15,9 +15,13 @@
 //!   - `gemma4`: Gemma-4 (pure attention, GeGLU, sliding + full attention)
 
 pub(crate) mod deepseek_v4;
+pub(crate) mod deepseek_v41;
 pub mod dflash_loader;
 mod gemma4;
+/// GLM-5.3-Flash tensor accounting (Slice 1: classification only).
+pub mod glm5_next;
 mod laguna;
+mod longcat;
 mod minimax;
 mod nemotron;
 mod nllb;
@@ -25,6 +29,8 @@ mod qwen3;
 mod qwen35;
 mod qwen35_dense;
 mod qwen3_vl;
+#[cfg_attr(test, allow(unreachable_pub))]
+pub(crate) mod qwen4_exp;
 mod step3p7;
 
 pub use deepseek_v4::DeepSeekV4WeightLoader;
@@ -32,19 +38,31 @@ pub use dflash_loader::{
     DflashConfig, DflashLayerWeights, DflashSubConfig, DflashWeights, load_dflash_weights,
     store_has_dflash_weights,
 };
+pub mod glm5_next_load;
+mod glm5_next_mtp;
 pub use gemma4::Gemma4WeightLoader;
+pub use glm5_next_load::Glm5NextWeightLoader;
+pub(crate) use glm5_next_mtp::{Glm5NextMtpModule, load_glm5next_mtp_module};
 pub use laguna::LagunaWeightLoader;
+pub use longcat::LongcatWeightLoader;
 pub use minimax::MinimaxM2WeightLoader;
 pub use nemotron::NemotronHWeightLoader;
 pub use nllb::NllbWeightLoader;
 pub use qwen3::Qwen3WeightLoader;
 pub use qwen3_vl::Qwen3VLWeightLoader;
+pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
+/// The native-FP8 dense loader's derived-copy decision table and the shape
+/// arithmetic that prices it (#915).
+pub use qwen35_dense::fp8_residency;
+/// That table evaluated BEFORE the checkpoint loads, so preflight can size
+/// the SSM decode ring against the predicted post-load KV headroom (#915).
+pub use qwen35_dense::predicted_residency;
 pub use step3p7::Step3p7WeightLoader;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -52,6 +70,53 @@ use spark_runtime::weights::WeightStore;
 use crate::layer::TransformerLayer;
 use crate::layers::VisionEncoder;
 use crate::weight_map::{DenseWeight, MtpWeights, Nvfp4Variant, detect_nvfp4_variant};
+
+/// Can this box hold the transposed `[K/2, N]` MoE prefill copies for EVERY
+/// layer, and does the operator want them?
+///
+/// The MoE prefill GEMMs read weights K-major; the checkpoint stores them
+/// N-major. Without the transposed copies prefill falls back to the plain
+/// `moe_w4a16_grouped_gemm` path, which on Qwen3-VL-30B measured **695 ms in
+/// `grouped_gate_up` + 351 ms in `grouped_silu_down`** — 59 % of a 1798 ms cold
+/// TTFT — versus 98.9 / 69.5 ms for the same phases on a model that does build
+/// them. So this is not a micro-optimization; skipping it is the slow path.
+///
+/// SSOT: the budget arithmetic used to live inline in `qwen3.rs` only, so every
+/// other MoE loader either hard-coded its own copy or (qwen3_vl, gemma4,
+/// step3p7) silently never transposed at all. One reader, one lever.
+///
+/// `AVAROK_MOE_PREFILL_COPIES=0` forces the fallback — an A/B lever and an
+/// escape hatch for a box under external memory pressure that the free-memory
+/// probe cannot see. Any other value (or unset) means "build them if they fit":
+/// PCND-wise the decision is *derived* from measured free memory, never a
+/// silent constant.
+pub(crate) fn moe_prefill_copies_fit(config: &ModelConfig, gpu: &dyn GpuBackend) -> bool {
+    if std::env::var("AVAROK_MOE_PREFILL_COPIES").ok().as_deref() == Some("0") {
+        tracing::info!("AVAROK_MOE_PREFILL_COPIES=0: MoE prefill uses the fallback grouped GEMM");
+        return false;
+    }
+    let inter = config.moe_intermediate_size;
+    let h = config.hidden_size;
+    // NVFP4 group_size — one ue4m3 scale per 16 elements, alongside the packed
+    // e2m1 pairs. Matches `shard_quantized_nvfp4`'s group_size for this family.
+    let group_size = 16usize;
+    let gu_bytes = inter * h / 2 + inter * h / group_size;
+    let d_bytes = h * inter / 2 + h * inter / group_size;
+    let per_layer = config.num_experts * (2 * gu_bytes + d_bytes);
+    let total = per_layer * config.num_hidden_layers;
+    let available = gpu.free_memory().unwrap_or(0);
+    let headroom = 2 * 1024 * 1024 * 1024;
+    let fits = total <= available.saturating_sub(headroom);
+    if !fits {
+        tracing::warn!(
+            "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \
+             Prefill will use fallback grouped GEMM.",
+            total as f64 / (1024.0 * 1024.0 * 1024.0),
+            available as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
+    fits
+}
 
 /// Runtime quantization format for weight dispatch.
 ///
@@ -162,6 +227,26 @@ pub trait ModelWeightLoader {
         layer_kv_dtypes: &[KvCacheDtype],
     ) -> Result<Vec<Box<dyn TransformerLayer>>>;
 
+    /// Drop store tensors this loader has finished with, after every
+    /// `load_*` reader has run and before the buffer arena / KV cache are sized.
+    ///
+    /// Default: keep everything. That is correct for the loaders that bind
+    /// **zero-copy** from the store's device pointers — the store IS the model's
+    /// weights, and `TransformerModel` releases it at teardown.
+    ///
+    /// Override only when the loader uploads its own copies (a TP shard, a host
+    /// round-trip, a dtype conversion), because then the store's originals are
+    /// dead the moment the binder returns. On unified-memory GB10 that duplicate
+    /// comes straight out of the KV budget.
+    fn prune_after_load(
+        &self,
+        _store: &mut WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Per-(layer, role) weight precision schedule (C.3, 2026-04-25).
     /// Default impl returns the empty schedule (every lookup yields
     /// `Dtype::Inherit`), preserving the existing per-checkpoint
@@ -180,6 +265,23 @@ pub trait ModelWeightLoader {
         config: &ModelConfig,
         gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight>;
+
+    /// Build the n-gram embedding, when this architecture fuses hashed
+    /// n-gram lookups into the input embedding (LongCat / Qwen3.8-Flash-Next).
+    ///
+    /// Separate from `load_embedding` because the result is NOT a weight: it
+    /// is a small engine that needs the sequence's CONTEXT token ids at
+    /// forward time, not just the id being embedded. Returning `None` — the
+    /// default — leaves the plain `embed_tokens` gather in place.
+    fn load_ngram_embedding(
+        &self,
+        _store: &WeightStore,
+        _config: &ModelConfig,
+        _gpu: &dyn GpuBackend,
+        _max_tokens: usize,
+    ) -> Result<Option<crate::layers::ngram_embed::NgramEmbedding>> {
+        Ok(None)
+    }
     /// Load the final RMSNorm weight used before the LM head.
     ///
     /// `gpu` is passed so model-specific loaders can do on-device weight
@@ -277,6 +379,19 @@ pub trait ModelWeightLoader {
     ) -> Result<Option<crate::lora::LoraWeights>> {
         crate::lora::load_lora_adapters_multi(adapters, config, gpu, max_loras, max_lora_rank)
             .map(Some)
+    }
+
+    /// Will this loader ever bind a vision encoder for a multimodal checkpoint?
+    ///
+    /// Default `true` — "load everything" is the safe answer, so a loader that
+    /// forgets to override this can never lose weights it needs. A loader whose
+    /// port is deliberately text-only overrides it to `false`, and the weight
+    /// loader then skips the tower's tensors instead of reading a gigabyte of
+    /// unified memory that nothing will bind. `build_model` still frees an
+    /// unbound tower afterwards (keyed off the bind result, not off this), so
+    /// this is a peak-memory optimisation, not the correctness gate.
+    fn binds_vision_encoder(&self) -> bool {
+        true
     }
 
     /// Load vision encoder weights (returns None for text-only models).

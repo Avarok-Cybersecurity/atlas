@@ -903,7 +903,7 @@ extern "C" __global__ void gated_delta_rule_chunk3(
 // common is invisible to this model. These four were added to common
 // after this shadow was forked, so the 27B silently lost:
 //   * _f32_strided / _f32_strided_norm — the N-sequence batched
-//     recurrent decode behind ATLAS_SSM_BATCHED_RECURRENT, and
+//     recurrent decode behind AVAROK_SSM_BATCHED_RECURRENT, and
 //   * _f32_norm / _f32_conv_norm — the fused decode variants.
 // Without them try_kernel returned 0 and every concurrent decode fell
 // back to the per-sequence loop.
@@ -2074,7 +2074,7 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm_smem(
     }
 }
 
-// ── FP16 h-state twins (ATLAS_SSM_H_FP16) ─────────────────────────────────
+// ── FP16 h-state twins (AVAROK_SSM_H_FP16) ─────────────────────────────────
 //
 // The GDN decode scan is pure state traffic: at n=128 it moves 2.0 DRAM passes
 // over h and runs at 90% of GB10's row-strided ceiling, so its time is set by
@@ -2090,7 +2090,7 @@ extern "C" __global__ void gated_delta_rule_decode_f32_strided_norm_smem(
 // SSM_STATE_MAX_NORM 1000) against FP16's 65504 — 65x headroom.
 //
 // These are ADDITIVE twins. They never alias the FP32 kernels above, which
-// remain the only path when ATLAS_SSM_H_FP16 is absent.
+// remain the only path when AVAROK_SSM_H_FP16 is absent.
 //
 // Arithmetic is FP32 throughout, exactly as in the parents: h is widened on
 // load and narrowed on store (round-to-nearest-even via __float2half), and

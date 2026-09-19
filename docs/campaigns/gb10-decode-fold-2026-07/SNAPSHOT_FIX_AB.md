@@ -33,7 +33,7 @@ The control leg has **no warm-TTFT climb to fix**. Across turns 2–15 its warm 
 *decreasing*, not climbing. The Strix branch lacked the mitigations the GB10 golden config
 already ships:
 
-- `ATLAS_SSM_TAIL_PROTECT=1` + `ATLAS_SSM_TAIL_LEASE_TTL=128`
+- `AVAROK_SSM_TAIL_PROTECT=1` + `AVAROK_SSM_TAIL_LEASE_TTL=128`
 - `--ssm-cache-slots 128`, `--ssm-checkpoint-interval 32`
 - the main-line recency-only snapshot eviction (#287) and the tail lease (#345)
 

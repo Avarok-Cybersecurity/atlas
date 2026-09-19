@@ -45,7 +45,7 @@ fn draw_guide(f: &mut Frame, _app: &App, area: Rect) {
     };
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("  Atlas {} — github.com/{repo}", crate::cli::ATLAS_VERSION),
+            format!("  Atlas {} — github.com/{repo}", crate::cli::AVAROK_VERSION),
             theme::text(),
         )),
         Line::from(""),

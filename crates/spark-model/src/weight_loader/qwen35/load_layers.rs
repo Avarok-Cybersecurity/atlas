@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-mod attention_arms;
-mod linear_attn_arms;
+pub(crate) mod attention_arms;
+pub(crate) mod linear_attn_arms;
 mod tq_plus_weight_rotation;
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{WeightDtype, WeightStore};
@@ -113,22 +113,47 @@ pub(super) fn load_layers(
     // mixed-precision-specific handling (fp8 experts, native-modelopt SSM/attn)
     // stays gated on `modelopt_mixed_precision` and simply doesn't fire otherwise.
     let nvfp4_moe = config.num_experts > 0 && quant_format == QuantFormat::Nvfp4;
-    let low_memory_modelopt_moe = (modelopt_mixed_precision || nvfp4_moe)
-        && std::env::var("ATLAS_HOLO_LOW_MEMORY_MOE").ok().as_deref() == Some("1");
-    let holo_fast_moe_mode = if low_memory_modelopt_moe {
-        holo_fast_moe_mode()
+    // FAST-MoE IS DEFAULT-ON for qualifying checkpoints. Measured on
+    // nvidia/Qwen3.6-35B-A3B-NVFP4, 2048-word cold prompts, n=8 per arm:
+    //     no flags at all                     688.12 ms
+    //     fast-MoE + exact-tiles              570.22 ms   <- this default
+    // A leave-one-out sweep over 13 candidate flags found only these carry the
+    // win; the other ten were worth <=4.1 ms each, inside the ~1.2% spread.
+    //
+    // ★ THE THREE MOVE AS ONE, and that is not a style choice. `LOW_MEMORY_MOE`
+    // GATES the other two, so the low-memory expert layout with NO fast-MoE mode
+    // selects a slow path that measured 1148.83 ms — nearly 2x WORSE than setting
+    // no flags at all. That state is reachable today by anyone who sets one env
+    // var and not the others. It is made unreachable below: the layout is only
+    // enabled when a mode actually resolved.
+    let moe_qualifies = modelopt_mixed_precision || nvfp4_moe;
+    let low_memory_requested =
+        moe_qualifies && std::env::var("AVAROK_HOLO_LOW_MEMORY_MOE").ok().as_deref() != Some("0");
+    // Unset => Full. An explicitly-set value still goes through the parser, so a
+    // typo warns rather than being silently upgraded to the default.
+    let holo_fast_moe_mode = if low_memory_requested {
+        if std::env::var_os("AVAROK_HOLO_FAST_MOE_MODE").is_some() {
+            holo_fast_moe_mode()
+        } else {
+            Some(HoloFastMoeMode::Full)
+        }
     } else {
         None
     };
+    // Never the 1148 ms combination: no mode => no low-memory layout either.
+    let low_memory_modelopt_moe = low_memory_requested && holo_fast_moe_mode.is_some();
     let holo_fast_moe_spec = if low_memory_modelopt_moe {
-        std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS").ok()
+        // Unset => every layer. `parse_layer_ranges` takes inclusive ranges, and
+        // the predicate is a plain bounds test, so a wide upper bound means "all"
+        // without the loader needing the layer count here.
+        Some(std::env::var("AVAROK_HOLO_FAST_MOE_LAYERS").unwrap_or_else(|_| "0-99999".to_string()))
     } else {
         None
     };
     let native_modelopt_ssm = modelopt_mixed_precision
-        && std::env::var("ATLAS_HOLO_NATIVE_FP8_SSM").ok().as_deref() == Some("1");
+        && std::env::var("AVAROK_HOLO_NATIVE_FP8_SSM").ok().as_deref() == Some("1");
     let native_modelopt_attn = modelopt_mixed_precision
-        && std::env::var("ATLAS_HOLO_NATIVE_FP8_ATTN").ok().as_deref() == Some("1");
+        && std::env::var("AVAROK_HOLO_NATIVE_FP8_ATTN").ok().as_deref() == Some("1");
     tracing::info!(
         "Weight format: {:?}, NVFP4 variant: {:?}, quant_format: {:?}",
         weight_format,
@@ -163,23 +188,23 @@ pub(super) fn load_layers(
     if low_memory_modelopt_moe {
         if let (Some(mode), Some(spec)) = (holo_fast_moe_mode, holo_fast_moe_spec.as_deref()) {
             tracing::info!(
-                "ATLAS_HOLO_LOW_MEMORY_MOE=1: enabling Holo ModelOpt MoE {:?} prefill copies for layers {spec}",
+                "AVAROK_HOLO_LOW_MEMORY_MOE=1: enabling Holo ModelOpt MoE {:?} prefill copies for layers {spec}",
                 mode,
             );
         } else {
             tracing::info!(
-                "ATLAS_HOLO_LOW_MEMORY_MOE=1: skipping Holo ModelOpt MoE transpose/predequant prefill copies"
+                "AVAROK_HOLO_LOW_MEMORY_MOE=1: skipping Holo ModelOpt MoE transpose/predequant prefill copies"
             );
         }
     }
     if native_modelopt_ssm {
         tracing::info!(
-            "ATLAS_HOLO_NATIVE_FP8_SSM=1: routing Holo ModelOpt SSM projections through native FP8"
+            "AVAROK_HOLO_NATIVE_FP8_SSM=1: routing Holo ModelOpt SSM projections through native FP8"
         );
     }
     if native_modelopt_attn {
         tracing::info!(
-            "ATLAS_HOLO_NATIVE_FP8_ATTN=1: routing Holo ModelOpt attention projections through native FP8"
+            "AVAROK_HOLO_NATIVE_FP8_ATTN=1: routing Holo ModelOpt attention projections through native FP8"
         );
     }
 
@@ -193,19 +218,19 @@ pub(super) fn load_layers(
         // kernels handle all MoE dispatch including MTP verify.
         // Saves ~33 GB on 122B EP=2, enabling FP8+MTP within memory budget.
         //
-        // Diagnostic env: ATLAS_FORCE_NVFP4_MOE=1 forces the NVFP4 path even
+        // Diagnostic env: AVAROK_FORCE_NVFP4_MOE=1 forces the NVFP4 path even
         // for FP8 models — used to localize FP8 grouped-GEMM amplification
         // bug (L0 moe_out 3.3x too large vs HF). Keeps NVFP4 experts loaded
         // AND skips set_fp8_experts so forward dispatch falls through to the
         // NVFP4 path.
-        // ATLAS_FORCE_NVFP4_ALL (lever-b, gfx1151 coherence): route an FP8
+        // AVAROK_FORCE_NVFP4_ALL (lever-b, gfx1151 coherence): route an FP8
         // checkpoint fully through the NVFP4 path — attention + MoE (+ SSM where
         // wired) requant FP8→BF16→NVFP4 at load and run on real RDNA3.5 4-bit
         // WMMA (the path the dense 27B is coherent on), sidestepping the HIP
         // FP8 bf16-emulation divergence. Implies force_nvfp4_moe. Default off →
         // FP8 paths byte-unchanged. `variant` is already Fp8Dequanted for an FP8
         // checkpoint, so the NVFP4 attention branch requants from FP8 directly.
-        let force_nvfp4_all = std::env::var("ATLAS_FORCE_NVFP4_ALL").ok().as_deref() == Some("1");
+        let force_nvfp4_all = std::env::var("AVAROK_FORCE_NVFP4_ALL").ok().as_deref() == Some("1");
         // FP4 dense PROJECTIONS only: route the SSM (in_proj_qkvz + out_proj) and
         // full-attention (q/k/v/o) projection DECODE through w4a16_gemv (NVFP4,
         // 0.5 byte/weight) instead of w8a16_gemv (FP8, 1 byte/weight), while the
@@ -215,15 +240,15 @@ pub(super) fn load_layers(
         // (L685) and native-FP8 attn arm so both fall through to the NVFP4
         // builders. (decode ~1.8x cheaper on these GEMVs — DRAM-bound, GB10 13.2.)
         let fp4_proj_decode =
-            std::env::var("ATLAS_HOLO_FP4_PROJ_DECODE").ok().as_deref() == Some("1");
+            std::env::var("AVAROK_HOLO_FP4_PROJ_DECODE").ok().as_deref() == Some("1");
         let force_nvfp4_moe =
-            force_nvfp4_all || std::env::var("ATLAS_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
+            force_nvfp4_all || std::env::var("AVAROK_FORCE_NVFP4_MOE").ok().as_deref() == Some("1");
         // Hybrid FP8 checkpoints (lovedheart AgentWorld-35B-FP8) ship routed
         // experts in a FUSED layout (`experts.gate_up_proj`/`down_proj`), which
         // the native-FP8 per-expert loader can't address — it Errs and the MoE
         // is left with NULL routed experts (gibberish output). `load_moe_qwen35`
         // handles the fused layout (BF16 and FP8) by dequant→NVFP4, so route
-        // fused checkpoints through the NVFP4 expert path (as ATLAS_FORCE_NVFP4_MOE
+        // fused checkpoints through the NVFP4 expert path (as AVAROK_FORCE_NVFP4_MOE
         // does) rather than the native-FP8 per-expert path.
         let fused_experts = store.contains(&format!("{lp}.mlp.experts.gate_up_proj"));
         let skip_nvfp4_experts = native_fp8 && !force_nvfp4_moe && !fused_experts;
@@ -237,7 +262,7 @@ pub(super) fn load_layers(
             );
         } else if native_fp8 && force_nvfp4_moe {
             tracing::warn!(
-                "ATLAS_FORCE_NVFP4_MOE=1: routing MoE through NVFP4 path (diagnostic — slower)"
+                "AVAROK_FORCE_NVFP4_MOE=1: routing MoE through NVFP4 path (diagnostic — slower)"
             );
         }
         let moe_weights = load_moe_qwen35(
@@ -291,28 +316,30 @@ pub(super) fn load_layers(
         // capture-layer indices are already offset-adjusted in factory.rs
         // before being placed on `config.dflash_capture_layers`.
         moe_layer.is_dflash_capture_layer = config.dflash_capture_layers.contains(&i);
-        // FP4 prefill MoE (ATLAS_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4) consumes the
+        // FP4 prefill MoE (AVAROK_HOLO_MOE_GATEUP_FP4 / _DOWN_FP4) consumes the
         // SHARED FAST_MOE=full [K/2,N] tables (gate_ptrs_t/up_ptrs_t/down_ptrs_t)
         // built by transpose_for_prefill below — NO separate [N,K/2] re-pack, NO
         // extra MoE memory. The rewritten FP4 kernels load those tables coalesced
         // K-major and re-gather N-major on-chip (FP4_TRANSPOSE). It therefore only
-        // engages under ATLAS_HOLO_FAST_MOE_MODE=full; with the shared tables
+        // engages under AVAROK_HOLO_FAST_MOE_MODE=full; with the shared tables
         // absent the dispatch falls back to FP8. Warn once if the flags are set
         // without the tables so the opt-in isn't silently ignored.
         if i == 0 && (holo_moe_gateup_fp4() || holo_moe_down_fp4()) && holo_fast_moe_mode.is_none()
         {
             tracing::warn!(
-                "ATLAS_HOLO_MOE_GATEUP_FP4/_DOWN_FP4 set but ATLAS_HOLO_FAST_MOE_MODE \
+                "AVAROK_HOLO_MOE_GATEUP_FP4/_DOWN_FP4 set but AVAROK_HOLO_FAST_MOE_MODE \
                  is not full: the FP4 MoE prefill path needs the shared [K/2,N] tables \
                  and will be IGNORED (FP8 fused path used instead)."
             );
         }
         // With native FP8, the FP8 fused MoE kernel handles both prefill and decode.
         // Skip transposition and predequant (saves ~30 GB + CPU time for 122B EP=2).
-        // ATLAS_FORCE_NVFP4_MOE=1 inverts: do the prep so NVFP4 path is usable.
+        // AVAROK_FORCE_NVFP4_MOE=1 inverts: do the prep so NVFP4 path is usable.
         let fast_holo_moe_layer = low_memory_modelopt_moe
             && holo_fast_moe_mode.is_some()
-            && holo_fast_moe_layer_selected(i);
+            && holo_fast_moe_spec
+                .as_deref()
+                .is_some_and(|spec| holo_fast_moe_layer_selected(spec, i));
         let skip_moe_prefill_copies = low_memory_modelopt_moe && !fast_holo_moe_layer;
         if fast_holo_moe_layer {
             tracing::info!(
@@ -339,12 +366,12 @@ pub(super) fn load_layers(
         if (!native_fp8 || force_nvfp4_moe) && !skip_moe_prefill_copies {
             moe_layer.predequant_for_prefill(gpu, config, stream)?;
         }
-        // CUTLASS grouped NVFP4 gate_up (ATLAS_HOLO_MOE_GROUPED_CUTLASS): swizzle
+        // CUTLASS grouped NVFP4 gate_up (AVAROK_HOLO_MOE_GROUPED_CUTLASS): swizzle
         // the per-expert [K/16,N] weight scales into the CUTLASS SFB atom once at
         // load (the grouped kernel pairs them with gate_ptrs [N,K/2] + real scale2).
         // Needs the shared gate_ptrs_t/up_ptrs_t scales (FAST_MOE=full).
         if fast_holo_moe_layer
-            && std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
+            && std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS")
                 .ok()
                 .as_deref()
                 == Some("1")
@@ -352,11 +379,11 @@ pub(super) fn load_layers(
             moe_layer.build_cutlass_grouped_sfb(gpu, config, stream)?;
         }
 
-        // ATLAS_FP8_DEQUANT_MOE_TO_BF16: dequant FP8 experts to BF16 at load,
+        // AVAROK_FP8_DEQUANT_MOE_TO_BF16: dequant FP8 experts to BF16 at load,
         // route MoE through the BF16 grouped GEMM + fused-decode kernels.
         // Eliminates the per-layer 0.989 FP8 cosine ceiling. Memory cost:
         // ~2× expert weights vs native FP8.
-        // ATLAS_FP8_DEQUANT_LAYERS (PCND opt-in): restrict BF16 dequant to a
+        // AVAROK_FP8_DEQUANT_LAYERS (PCND opt-in): restrict BF16 dequant to a
         // subset of absolute layer indices (e.g. "31-39" or "31,35,39"). Unset
         // → all layers (legacy behaviour). Selective late-layer BF16 targets
         // the worst-drift deep layers while keeping early layers FP8-fast,
@@ -364,7 +391,7 @@ pub(super) fn load_layers(
         // timeouts (the bit-perfect speed wall, task #231).
         let layer_sel = layer_dequant_selected(i);
         let dequant_moe_to_bf16 = native_fp8
-            && std::env::var("ATLAS_FP8_DEQUANT_MOE_TO_BF16")
+            && std::env::var("AVAROK_FP8_DEQUANT_MOE_TO_BF16")
                 .ok()
                 .as_deref()
                 == Some("1")
@@ -373,7 +400,7 @@ pub(super) fn load_layers(
         // through dense BF16 GEMM (isolates the FP8-attention contribution to
         // the Atlas↔vLLM cosine floor). TP=1 only.
         let dequant_attn_to_bf16 = native_fp8
-            && std::env::var("ATLAS_FP8_DEQUANT_ATTN_TO_BF16")
+            && std::env::var("AVAROK_FP8_DEQUANT_ATTN_TO_BF16")
                 .ok()
                 .as_deref()
                 == Some("1")
@@ -844,6 +871,12 @@ pub(super) fn load_layers(
                 unreachable!("unexpected SlidingAttention in this loader")
             }
             LayerType::Moe => unreachable!("Qwen3.5 has no standalone MoE layers"),
+            // GLM-5.3's `deepseek_sparse_attention`: a full-rank mixer whose visible key set
+            // is chosen at runtime by an indexer. Hard error, not a silent fallthrough into
+            // the dense-attention arm -- that would attend over the WHOLE cache and look right.
+            LayerType::SparseAttention => anyhow::bail!(
+                "layer {i}: SparseAttention needs a DSA indexer and per-query top-k; Qwen3.5 has neither"
+            ),
         }
 
         if (i + 1) % 10 == 0 || i < 5 {
@@ -864,7 +897,7 @@ pub(super) fn load_layers(
 }
 
 /// Whether absolute layer index `layer` is selected for BF16 dequant per
-/// `ATLAS_FP8_DEQUANT_LAYERS` (PCND opt-in). The spec is a comma-separated
+/// `AVAROK_FP8_DEQUANT_LAYERS` (PCND opt-in). The spec is a comma-separated
 /// list of singletons and inclusive ranges, e.g. `"31-39"` or `"31,35,39"`.
 /// Unset → every layer selected (legacy all-layers behaviour). Parsed once.
 fn layer_dequant_selected(layer: usize) -> bool {
@@ -874,7 +907,7 @@ fn layer_dequant_selected(layer: usize) -> bool {
     // different selection.
     // None = env unset → all layers; Some(ranges) = explicit selection.
     let spec: Option<Vec<(usize, usize)>> = (|| -> Option<Vec<(usize, usize)>> {
-        let s = std::env::var("ATLAS_FP8_DEQUANT_LAYERS").ok()?;
+        let s = std::env::var("AVAROK_FP8_DEQUANT_LAYERS").ok()?;
         let mut ranges: Vec<(usize, usize)> = Vec::new();
         for part in s.split(',') {
             let part = part.trim();
@@ -904,24 +937,24 @@ enum HoloFastMoeMode {
     Unified,
 }
 
-/// `ATLAS_HOLO_MOE_GATEUP_FP4=1` opts in to the FP4 (NVFP4 block-scaled)
+/// `AVAROK_HOLO_MOE_GATEUP_FP4=1` opts in to the FP4 (NVFP4 block-scaled)
 /// grouped gate_up prefill path. OnceLock-cached, default OFF => the existing
 /// FP8 fused gate_up kernel runs unchanged (bit-identical).
 fn holo_moe_gateup_fp4() -> bool {
     // Load-time: the weight loader runs before any `TransformerModel` exists to
     // carry the levers, so this resolves at the point of use rather than in a
     // static. The interpretation stays SSOT in `ModelLevers`.
-    crate::layers::ops::ModelLevers::from_env().holo_moe_gateup_fp4
+    crate::layers::ops::ModelLevers::get().holo_moe_gateup_fp4
 }
 
-/// `ATLAS_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
+/// `AVAROK_HOLO_MOE_DOWN_FP4=1` opts in to the FP4 (NVFP4 block-scaled) down
 /// prefill path. OnceLock-cached, default OFF => the existing FP8/w4a16 down
 /// path runs unchanged (bit-identical). Independent of the gate_up flag.
 fn holo_moe_down_fp4() -> bool {
     // Load-time: the weight loader runs before any `TransformerModel` exists to
     // carry the levers, so this resolves at the point of use rather than in a
     // static. The interpretation stays SSOT in `ModelLevers`.
-    crate::layers::ops::ModelLevers::from_env().holo_moe_down_fp4
+    crate::layers::ops::ModelLevers::get().holo_moe_down_fp4
 }
 
 fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
@@ -929,28 +962,28 @@ fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
     // load-time work, and a memoized answer pins the first model's MoE mode
     // onto every model loaded after it.
     (|| -> Option<HoloFastMoeMode> {
-        let Ok(mode) = std::env::var("ATLAS_HOLO_FAST_MOE_MODE") else {
+        let Ok(mode) = std::env::var("AVAROK_HOLO_FAST_MOE_MODE") else {
             return None;
         };
         match mode.trim() {
             "gate_up" | "gate-up" => Some(HoloFastMoeMode::GateUp),
             "full" => Some(HoloFastMoeMode::Full),
             "unified" => {
-                let unified_layout = std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
+                let unified_layout = std::env::var("AVAROK_UNIFIED_MOE_LAYOUT")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
                 if unified_layout {
                     Some(HoloFastMoeMode::Unified)
                 } else {
                     tracing::warn!(
-                        "Ignoring ATLAS_HOLO_FAST_MOE_MODE=unified; set ATLAS_UNIFIED_MOE_LAYOUT=1 so decode uses transposed experts"
+                        "Ignoring AVAROK_HOLO_FAST_MOE_MODE=unified; set AVAROK_UNIFIED_MOE_LAYOUT=1 so decode uses transposed experts"
                     );
                     None
                 }
             }
             other => {
                 tracing::warn!(
-                    "Ignoring ATLAS_HOLO_FAST_MOE_MODE={other:?}; expected gate_up, full, or unified"
+                    "Ignoring AVAROK_HOLO_FAST_MOE_MODE={other:?}; expected gate_up, full, or unified"
                 );
                 None
             }
@@ -958,15 +991,18 @@ fn holo_fast_moe_mode() -> Option<HoloFastMoeMode> {
     })()
 }
 
-fn holo_fast_moe_layer_selected(layer: usize) -> bool {
-    // Per call — see `layer_dequant_selected`.
-    let ranges = {
-        let Ok(spec) = std::env::var("ATLAS_HOLO_FAST_MOE_LAYERS") else {
-            return false;
-        };
-        parse_layer_ranges(&spec)
-    };
-    ranges.iter().any(|&(a, b)| layer >= a && layer <= b)
+/// Is `layer` inside the resolved fast-MoE layer spec?
+///
+/// SSOT: takes the spec the CALLER resolved (`holo_fast_moe_spec`) rather than
+/// re-reading `AVAROK_HOLO_FAST_MOE_LAYERS` here. It used to read the env itself and
+/// `return false` when unset, so once the spec gained a default the two disagreed:
+/// the caller enabled the low-memory expert layout while this predicate selected NO
+/// layers, which is the slow path — measured 1144 ms vs 574 with them agreeing, and
+/// 688 with the layout off entirely. One config, one reader.
+fn holo_fast_moe_layer_selected(spec: &str, layer: usize) -> bool {
+    parse_layer_ranges(spec)
+        .iter()
+        .any(|&(a, b)| layer >= a && layer <= b)
 }
 
 fn parse_layer_ranges(spec: &str) -> Vec<(usize, usize)> {

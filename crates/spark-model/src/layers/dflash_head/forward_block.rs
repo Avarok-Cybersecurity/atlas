@@ -12,6 +12,23 @@ use spark_runtime::gpu::DevicePtr;
 use super::BlockDiffusionDraftHead;
 use crate::layer::ForwardContext;
 
+/// Whether the MAX_M=16 rt2 vocab kernel covers a whole cross-sequence batch.
+///
+/// `g` is the TOTAL row count (`gamma * n_seq`), not the per-sequence one.
+/// Getting that wrong does not fault: `fp8_gemv_rowscale_batch16_rt2` writes
+/// the rows it was told about and leaves the rest of `scratch.logits` holding
+/// the PREVIOUS propose's values — already destructively masked to -1e30 by
+/// `dflash2_topk16`. Bands 1..n then select from garbage, which reads as a
+/// drafter that has stopped guessing well rather than as a kernel used out of
+/// contract. The sibling branch below this one records the same failure
+/// measured on the projections: accept 73% -> 24% at C=8.
+///
+/// Single-sequence is unaffected either way (`g == gamma` at n_seq = 1), which
+/// is why this survived: every single-stream measurement of it was correct.
+pub(super) fn rt2_16_covers_the_batch(g: u32) -> bool {
+    (1..=16).contains(&g)
+}
+
 impl BlockDiffusionDraftHead {
     /// `option_b`: when `Some((block_table_dev, ctx_count))`, run the
     /// Phase 2 γ-only paged-attention path. ctx K/V is precomputed into
@@ -27,10 +44,20 @@ impl BlockDiffusionDraftHead {
         stream: u64,
         ctx_buffer: Option<(DevicePtr, usize)>,
         option_b: Option<(DevicePtr, u32)>,
+        // `Some` => cross-sequence batch. `last_token` / `position` /
+        // `option_b` then describe sequence 0 only and the batch supplies the
+        // rest; `None` is the single-sequence path, unchanged.
+        batch: Option<&super::DflashBatch<'_>>,
     ) -> Result<Vec<u32>> {
         use crate::layers::ops;
 
-        let g = self.gamma as u32;
+        let n_seq = batch.map_or(1usize, |b| b.last_tokens.len().max(1));
+        // Rows per SEQUENCE vs TOTAL rows in this forward. Weight-bearing ops
+        // take the total; per-sequence things (attention, KV slot writes, the
+        // selector's chain seed) index by band.
+        let block_g = self.block_g() as u32;
+        let g = block_g * n_seq as u32;
+        let rows_total = self.block_g() * n_seq;
         let h = self.hidden_size as u32;
         let q_dim = (self.num_q_heads * self.head_dim) as u32;
         let kv_dim = (self.num_kv_heads * self.head_dim) as u32;
@@ -43,12 +70,18 @@ impl BlockDiffusionDraftHead {
         // and the accumulator's actual fill. Use the LAST `eff_ctx` ctx
         // positions (most recent) — drafter trained on locally recent
         // context, distant history adds noise to attention.
-        // ATLAS_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
+        // AVAROK_DFLASH_DEBUG_CTX_OFF=1 disables ctx entirely (eff_ctx=0)
         // for A/B testing whether the drafter actually responds to ctx.
-        let force_no_ctx = std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").ok().as_deref() == Some("1");
-        let force_ctx_used: Option<usize> = std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok());
+        // ★ The head resolved every AVAROK_* variable below ONCE, when it was
+        // built. This function runs per decode step and its layer helpers run
+        // `num_layers` times inside it, so a `std::env::var` here is an
+        // allocation plus the process-wide environment lock on the drafter's
+        // hottest path — and that lock cost grows with concurrency, which is
+        // why no single-stream benchmark ever showed the 31 reads this
+        // replaced. See `levers::DFlashLevers`.
+        let levers = self.levers;
+        let force_no_ctx = levers.force_no_ctx;
+        let force_ctx_used = levers.force_ctx_used;
         let (ctx_base_ptr, ctx_total, eff_ctx) = match ctx_buffer {
             Some(_) if force_no_ctx => (None, 0, 0),
             Some((p, n)) => {
@@ -74,14 +107,19 @@ impl BlockDiffusionDraftHead {
         let option_b_on = option_b_block_table.is_some();
         let eff_ctx = if option_b_on { 0 } else { eff_ctx };
         let _ = ctx_base_ptr; // Option B doesn't read ctx from this path
-        let n_attn = (eff_ctx + self.gamma) as u32;
+        // Rows this forward actually touches: the ctx window (legacy path)
+        // plus gamma rows PER SEQUENCE. This is the row count the embed and
+        // every row-bounded op take, so leaving it at one band's worth means
+        // only band 0 gets embedded and every other sequence drafts from
+        // whatever the previous propose left in stream_buf.
+        let n_attn = (eff_ctx + self.block_g() * n_seq) as u32;
         let target_hidden_dim = self.target_layer_ids.len() * self.target_hidden_size;
         let ctx_slot_bytes = target_hidden_dim * bf16;
 
         // Debug dump gated by env var: prints first 10 BF16 floats of key
         // intermediates so a Python reference run on the same checkpoint
-        // can be compared element-wise. Use ATLAS_DFLASH_DEBUG_DUMP=1.
-        let debug_dump = std::env::var("ATLAS_DFLASH_DEBUG_DUMP").ok().as_deref() == Some("1");
+        // can be compared element-wise. Use AVAROK_DFLASH_DEBUG_DUMP=1.
+        let debug_dump = levers.debug_dump;
         let dump_bf16 = |label: &str, ptr: spark_runtime::gpu::DevicePtr, n: usize| -> Result<()> {
             if !debug_dump {
                 return Ok(());
@@ -101,17 +139,17 @@ impl BlockDiffusionDraftHead {
         };
 
         // ── Phase 2 Option B precompute (stage 3 — dump-only) ──────
-        // When ATLAS_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
+        // When AVAROK_DFLASH_PRECOMPUTE=1, run the new precompute_ctx_kv
         // path in parallel to (not replacing) the existing fc gemv loop
         // below. The precompute writes BF16 dump files to /tmp for the
         // pyref diff harness; it does NOT yet feed the layer body's
         // attention. Stage 4 will swap the layer body to read from the
         // paged cache and remove the per-row gemv path entirely.
         //
-        // Requires ATLAS_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
+        // Requires AVAROK_DFLASH_PRECOMPUTE_DUMP=1 to actually emit
         // dump files; otherwise the kernel chain runs and discards
         // intermediates (useful for perf-only A/B).
-        if std::env::var("ATLAS_DFLASH_PRECOMPUTE").ok().as_deref() == Some("1")
+        if levers.precompute
             && let Some(base) = ctx_base_ptr
             && eff_ctx > 0
         {
@@ -126,10 +164,7 @@ impl BlockDiffusionDraftHead {
             // write to the paged cache (block_table may not be
             // allocated here — only the Option B propose.rs path
             // guarantees a valid block_table before calling).
-            let dump_commit = std::env::var("ATLAS_DFLASH_PRECOMPUTE_COMMIT")
-                .ok()
-                .as_deref()
-                == Some("1");
+            let dump_commit = levers.precompute_commit;
             self.precompute_ctx_kv(
                 base,
                 start_slot,
@@ -150,17 +185,13 @@ impl BlockDiffusionDraftHead {
         if let Some(base) = ctx_base_ptr {
             // Walk the LAST `eff_ctx` slots of the accumulator.
             let start_slot = ctx_total.saturating_sub(eff_ctx);
-            // ATLAS_DFLASH_DEBUG_FORCE_PATTERN=1 overwrites the captured
+            // AVAROK_DFLASH_DEBUG_FORCE_PATTERN=1 overwrites the captured
             // target_hidden_stack with a deterministic test pattern so a
             // PyTorch reference run on the same input produces directly
             // comparable intermediates. Pattern: row i, col j contains
             // `0.01 * (i+1) * (j+1) / target_hidden` BF16. Mirrors
             // `dflash_pytorch_reference.py:make_input_target_hidden_stack`.
-            let force_pattern = std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN")
-                .ok()
-                .as_deref()
-                == Some("1");
-            if force_pattern && eff_ctx > 0 {
+            if levers.force_pattern && eff_ctx > 0 {
                 let n_rows = self.target_layer_ids.len();
                 let n_cols = self.target_hidden_size;
                 let mut bytes = Vec::with_capacity(n_rows * n_cols * 2);
@@ -183,18 +214,15 @@ impl BlockDiffusionDraftHead {
                     10,
                 )?;
             }
-            // ATLAS_DFLASH_DEBUG_DUMP_FULL=1: write the full 10240-element
-            // target_hidden_stack (one ctx slot) to /tmp/atlas_target_hidden.bin
+            // AVAROK_DFLASH_DEBUG_DUMP_FULL=1: write the full 10240-element
+            // target_hidden_stack (one ctx slot) to /tmp/avarok_target_hidden.bin
             // so a Python reference can run dflash.py forward on the same
             // input and compare predicted draft tokens vs Atlas drafts.
             // Also dumps last_token + drafter outputs separately for the
             // bisect script. ONE-SHOT: writes only the first propose() call.
             if eff_ctx > 0
                 && ctx.stats.dumped.keyed("dflash_target_hidden")
-                && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                    .ok()
-                    .as_deref()
-                    == Some("1")
+                && levers.debug_dump_full
             {
                 // Dump ALL eff_ctx slots — needed to reproduce the
                 // multi-token ctx in PyTorch reference. Layout:
@@ -203,11 +231,11 @@ impl BlockDiffusionDraftHead {
                 let mut buf = vec![0u8; n_bytes];
                 gpu.synchronize(stream)?;
                 gpu.copy_d2h(base.offset(start_slot * ctx_slot_bytes), &mut buf)?;
-                if let Err(e) = std::fs::write("/tmp/atlas_target_hidden.bin", &buf) {
+                if let Err(e) = std::fs::write("/tmp/avarok_target_hidden.bin", &buf) {
                     tracing::warn!("DFLASH DUMP_FULL: target_hidden write failed: {e}");
                 } else {
                     tracing::info!(
-                        "DFLASH DUMP_FULL: wrote {} bytes ({} ctx slots × {} BF16 elements) to /tmp/atlas_target_hidden.bin (last_token={}, position={}, eff_ctx={})",
+                        "DFLASH DUMP_FULL: wrote {} bytes ({} ctx slots × {} BF16 elements) to /tmp/avarok_target_hidden.bin (last_token={}, position={}, eff_ctx={})",
                         n_bytes,
                         eff_ctx,
                         ctx_slot_bytes / 2,
@@ -229,18 +257,18 @@ impl BlockDiffusionDraftHead {
                     eff_ctx,
                     self.target_layer_ids.len(),
                     self.target_hidden_size,
-                    self.gamma,
+                    self.block_g(),
                     self.hidden_size,
                     self.num_kv_heads,
                     self.head_dim,
                     self.num_layers,
                     self.rope_theta,
                 );
-                if let Err(e) = std::fs::write("/tmp/atlas_dflash_meta.json", &meta) {
+                if let Err(e) = std::fs::write("/tmp/avarok_dflash_meta.json", &meta) {
                     tracing::warn!("DFLASH DUMP_FULL: meta JSON write failed: {e}");
                 } else {
                     tracing::info!(
-                        "DFLASH DUMP_FULL: wrote /tmp/atlas_dflash_meta.json companion to target_hidden"
+                        "DFLASH DUMP_FULL: wrote /tmp/avarok_dflash_meta.json companion to target_hidden"
                     );
                 }
             }
@@ -286,7 +314,11 @@ impl BlockDiffusionDraftHead {
         let ctx_start = position.saturating_sub(eff_ctx);
         let pos_host: Vec<i32> = (0..eff_ctx)
             .map(|i| (ctx_start + i) as i32)
-            .chain((0..self.gamma).map(|i| (position + i) as i32))
+            .chain((0..n_seq).flat_map(|b| {
+                // Each sequence ropes from ITS OWN absolute position.
+                let base = batch.map_or(position, |x| x.positions[b]);
+                (0..self.block_g()).map(move |i| (base + i) as i32)
+            }))
             .collect();
         let pos_bytes: Vec<u8> = pos_host.iter().flat_map(|p| p.to_le_bytes()).collect();
         gpu.copy_h2d(&pos_bytes, self.scratch.position_ids)?;
@@ -317,11 +349,14 @@ impl BlockDiffusionDraftHead {
             )?;
         }
         let token_ids_host: Vec<i32> = std::iter::repeat_n(0i32, eff_ctx)
-            .chain(std::iter::once(last_token as i32))
-            .chain(std::iter::repeat_n(
-                self.mask_token_id as i32,
-                self.gamma - 1,
-            ))
+            .chain((0..n_seq).flat_map(|b| {
+                // Band b: that sequence's own anchor, then gamma-1 masks.
+                let anchor = batch.map_or(last_token, |x| x.last_tokens[b]);
+                std::iter::once(anchor as i32).chain(std::iter::repeat_n(
+                    self.mask_token_id as i32,
+                    self.block_g() - 1,
+                ))
+            }))
             .collect();
         if debug_dump {
             tracing::info!(
@@ -355,17 +390,13 @@ impl BlockDiffusionDraftHead {
                 eff_ctx * self.hidden_size * bf16,
             )?;
         }
-        // ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
+        // AVAROK_DFLASH_DEBUG_FORCE_NOISE_PATTERN=1: overwrite noise rows
         // [eff_ctx..n_attn) with a deterministic pattern matching the
         // PyTorch reference. Lets us compare layer-0 q/k/v post-projection
         // when both Atlas and PyTorch see identical input.
-        let force_noise_pattern = std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN")
-            .ok()
-            .as_deref()
-            == Some("1");
-        if force_noise_pattern {
-            let mut bytes = Vec::with_capacity(self.gamma * self.hidden_size * 2);
-            for t in 0..self.gamma {
+        if levers.force_noise_pattern {
+            let mut bytes = Vec::with_capacity(self.block_g() * self.hidden_size * 2);
+            for t in 0..self.block_g() {
                 for j in 0..self.hidden_size {
                     let v =
                         0.001_f32 * ((t + 1) as f32) * ((j + 1) as f32) / (self.hidden_size as f32);
@@ -395,33 +426,45 @@ impl BlockDiffusionDraftHead {
         // once and reused across all drafter layers.
         let slot_mapping_gamma_opt = if option_b_on {
             let bt = option_b_block_table.unwrap();
-            // Build γ slot indices starting at logical position ctx_count.
-            ops::fill_slots_from_block_table(
-                gpu,
-                self.kernels.fill_slots,
-                self.scratch.slot_mapping_dev,
-                bt,
-                option_b_ctx_count,
-                self.gamma as u32,
-                16,
-                stream,
-            )?;
+            // Build γ slot indices per sequence, each starting at ITS OWN
+            // ctx_count and addressed through ITS OWN block table, packed
+            // seq-major so the layer body's single reshape_and_cache over
+            // `n*γ` rows writes every sequence's K/V to the right pages.
+            for b in 0..n_seq {
+                let (bt_b, cc_b) = match batch {
+                    Some(x) => (x.block_tables[b], x.ctx_counts[b]),
+                    None => (bt, option_b_ctx_count),
+                };
+                ops::fill_slots_from_block_table(
+                    gpu,
+                    self.kernels.fill_slots,
+                    self.scratch.slot_mapping_dev.offset(b * self.block_g() * 8),
+                    bt_b,
+                    cc_b,
+                    self.block_g() as u32,
+                    16,
+                    stream,
+                )?;
+            }
             // Phase 5 (CUDA graph) pre-graph write: stash the per-propose
             // dynamic `[kv_len, q_offset, q_rope_pos]` triple into the
             // indirect-args buffer (12 bytes). The graph-captured paged-
             // attention launch reads from this pointer at kernel entry.
             // q_offset = ctx_count (cache-block addressing).
             // q_rope_pos = position (true decode position for query RoPE).
-            let kv_len = option_b_ctx_count + self.gamma as u32;
-            let q_offset = option_b_ctx_count;
-            let q_rope_pos = position as u32;
-            let indirect_bytes: [u8; 12] = {
-                let mut b = [0u8; 12];
-                b[0..4].copy_from_slice(&kv_len.to_ne_bytes());
-                b[4..8].copy_from_slice(&q_offset.to_ne_bytes());
-                b[8..12].copy_from_slice(&q_rope_pos.to_ne_bytes());
-                b
-            };
+            // One triple per sequence — attention launches per band and reads
+            // the triple at its own slot (`+ b*12`).
+            let mut indirect_bytes: Vec<u8> = Vec::with_capacity(n_seq * 12);
+            for b in 0..n_seq {
+                let cc_b = match batch {
+                    Some(x) => x.ctx_counts[b],
+                    None => option_b_ctx_count,
+                };
+                let pos_b = batch.map_or(position, |x| x.positions[b]) as u32;
+                indirect_bytes.extend_from_slice(&(cc_b + block_g).to_ne_bytes());
+                indirect_bytes.extend_from_slice(&cc_b.to_ne_bytes());
+                indirect_bytes.extend_from_slice(&pos_b.to_ne_bytes());
+            }
             gpu.copy_h2d(&indirect_bytes, self.scratch.option_b_indirect_args_dev)?;
             Some(self.scratch.slot_mapping_dev)
         } else {
@@ -439,30 +482,27 @@ impl BlockDiffusionDraftHead {
         // graph-ready), suppress_graphs not set, none of the debug dumps
         // enabled (those inject D2H/sync into the region and would taint
         // the graph). Default warm-up N=2 (override
-        // `ATLAS_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
+        // `AVAROK_DFLASH_PROPOSE_WARMUP_N`) so PTX→SASS JIT, GB10 clock
         // ramp, and L2 warming all happen eagerly before capture freezes
         // a steady-state SASS pick.
         let graph_eligible = option_b_on
+            // A captured graph bakes in the row count, the per-band pointers
+            // and the attention launch count. Replaying an n=1 capture for a
+            // batch runs one sequence's shapes over n sequences' rows, which
+            // shows up as a silent accept collapse rather than an error. The
+            // batched path is a different shape per width, so it stays eager.
+            && n_seq == 1
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !debug_dump
-            && std::env::var("ATLAS_DFLASH_PROPOSE_NO_GRAPH").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL").is_err()
-            && std::env::var("ATLAS_DFLASH_OPTION_B_DIAG").is_err()
-            && std::env::var("ATLAS_DFLASH_PRECOMPUTE_DUMP").is_err()
-            && std::env::var("ATLAS_DFLASH_VERIFY_TRACE").is_err()
-            && std::env::var("ATLAS_DFLASH_LOG_DRAFTS").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_PATTERN").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_FORCE_NOISE_PATTERN").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_OFF").is_err()
-            && std::env::var("ATLAS_DFLASH_DEBUG_CTX_USED").is_err()
-            && std::env::var("ATLAS_DFLASH_BLOCK_DUMP").is_err();
+            // Eleven separate presence tests asked this one question. Note
+            // PRESENCE, not truth: `AVAROK_DFLASH_BLOCK_DUMP=0` suppresses
+            // capture while enabling no dump. That is the shipped behaviour
+            // and it is pinned by a test, not inherited by accident.
+            && !levers.any_diagnostic_armed;
 
-        let warmup_target: usize = std::env::var("ATLAS_DFLASH_PROPOSE_WARMUP_N")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2);
+        let warmup_target = levers.propose_warmup_n;
 
         // Helper closures: run each piecewise subgraph eagerly. Phase F.2
         // splits the old monolithic captured region into per-layer halves
@@ -483,19 +523,14 @@ impl BlockDiffusionDraftHead {
         // Build PagedLayerArgs once per layer — same args for pre_attn,
         // attention, and post_attn (the kernel only reads what it needs).
         // Friday id259: per-layer block dump arms on the same position gate as
-        // the logits/input dumps (ATLAS_DFLASH_BLOCK_DUMP_AT_POS, default 0).
+        // the logits/input dumps (AVAROK_DFLASH_BLOCK_DUMP_AT_POS, default 0).
         // ONE-SHOT: a static guard ensures the per-layer .bin files come from
         // the SAME propose as the one-shot logits/noise_embed dumps below.
         // Without this the per-layer files were overwritten every propose and
         // ended up from a LATER position than the locked logits reference —
         // the diff then compared mismatched proposes (cos≈0 at a plain RMSNorm).
-        let block_dump_arm_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
         let block_dump_armed = {
-            let want = std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                && position >= block_dump_arm_pos;
+            let want = levers.block_dump_armed_at(position);
             // The latch is consumed only when `want` (short-circuit) → env-off
             // never burns the shot; the first qualifying propose takes it.
             // Keyed on the model's `ModelStats`, not a static: an operator who
@@ -521,6 +556,10 @@ impl BlockDiffusionDraftHead {
                     block_table_dev: bt,
                     stream,
                     block_dump: block_dump_armed,
+                    // Single-sequence propose. The batched entry builds its
+                    // own args with n_seq > 1 and per-sequence tables.
+                    n_seq: n_seq as u32,
+                    seq_block_tables: batch.map(|x| x.block_tables.clone()).unwrap_or_default(),
                 })
             };
 
@@ -554,7 +593,7 @@ impl BlockDiffusionDraftHead {
                 stream_noise_local,
                 &self.norm,
                 norm_noise_local,
-                self.gamma as u32,
+                g,
                 h_local,
                 self.rms_norm_eps,
                 stream,
@@ -569,17 +608,87 @@ impl BlockDiffusionDraftHead {
             let lm_head_fp8 = matches!(self.quant, super::DflashQuantization::Fp8Weights);
             if lm_head_fp8 {
                 if let Some(fp8) = self.lm_head_shared_fp8.as_ref() {
-                    ops::fp8_gemm_n128_row_scaled_m16(
-                        gpu,
-                        self.kernels.fp8_gemm_n128_row_scaled_m16,
-                        norm_noise_local,
-                        fp8,
-                        self.scratch.logits,
-                        self.gamma as u32,
-                        self.vocab_size as u32,
-                        h_local,
-                        stream,
-                    )?;
+                    // Register-tiled M<=8 FP8 GEMV (rt2 twin) over the
+                    // vocab: the m16 tile pads 50% of its rows at γ=8 and
+                    // measured 12.2 ms/step (~104 GB/s) in the 2026-08-19
+                    // node trace; rt2-class GEMVs stream 180+ on this
+                    // exact shape (batchm_bench lm_head row). Drafter-side
+                    // numerics are correctness-free under strict-argmax
+                    // accept. AVAROK_NO_DFLASH_FP8_RT=1 restores the tile.
+                    if self.kernels.fp8_gemv_rt2.0 != 0
+                        && g <= 8
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        ops::fp8_gemv_rowscale_batch8_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            g,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    } else if self.kernels.fp8_gemv_rt2_16.0 != 0
+                        && rt2_16_covers_the_batch(g)
+                        && h_local.is_multiple_of(16)
+                        && super::fp8_rt_enabled()
+                    {
+                        // γ>8 propose window: MAX_M=16 rt2 sibling over the
+                        // vocab. 2026-08-29 STEP_TIMING measured the whole
+                        // γ>8 step tax in this propose tail (18.2 -> 38.0ms
+                        // at flag 9); the m16 tile below pads 50%+ of its
+                        // rows and traced 12.2ms/step at ~104 GB/s.
+                        ops::fp8_gemv_rowscale_batch16_rt2(
+                            gpu,
+                            self.kernels.fp8_gemv_rt2_16,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            g,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    } else {
+                        // `fp8_gemm_t_row_scaled_m16` is a single-warp
+                        // M_TILE=16 kernel: valid only to M=16. One sequence
+                        // (gamma rows) always fits, which is why the
+                        // single-sequence path can call it unconditionally —
+                        // but a cross-sequence batch does NOT: at n=4 this is
+                        // 32 rows and at n=8 it is 64, and past the tile the
+                        // kernel silently returns garbage for the rows it
+                        // never covered. That reads as a drafter that has
+                        // stopped guessing well (accept 73% -> 24% at C=8),
+                        // not as a kernel used out of contract. Above the
+                        // tile, take the general row-scaled GEMM.
+                        let (k_lm, h_lm) = if g <= 16 {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled_m16,
+                                ops::fp8_gemm_n128_row_scaled_m16
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        } else {
+                            (
+                                self.kernels.fp8_gemm_n128_row_scaled,
+                                ops::fp8_gemm_n128_row_scaled
+                                    as fn(_, _, _, _, _, _, _, _, _) -> Result<()>,
+                            )
+                        };
+                        h_lm(
+                            gpu,
+                            k_lm,
+                            norm_noise_local,
+                            fp8,
+                            self.scratch.logits,
+                            g,
+                            self.vocab_size as u32,
+                            h_local,
+                            stream,
+                        )?;
+                    }
                 } else {
                     ops::dense_gemm_bf16_pipelined(
                         gpu,
@@ -589,7 +698,7 @@ impl BlockDiffusionDraftHead {
                             weight: self.lm_head_shared,
                         },
                         self.scratch.logits,
-                        self.gamma as u32,
+                        g,
                         self.vocab_size as u32,
                         h_local,
                         stream,
@@ -604,23 +713,39 @@ impl BlockDiffusionDraftHead {
                         weight: self.lm_head_shared,
                     },
                     self.scratch.logits,
-                    self.gamma as u32,
+                    g,
                     self.vocab_size as u32,
                     h_local,
                     stream,
                 )?;
             }
-            for i in 0..self.gamma {
-                let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
-                let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
-                ops::argmax_bf16(
-                    gpu,
-                    self.kernels.argmax,
-                    logits_row,
-                    token_slot,
-                    self.vocab_size as u32,
-                    stream,
-                )?;
+            // DFlash2: selector path — per-row top-16 + single-launch chain
+            // walk (dflash2.rs). Device-side only; captures into the tail
+            // subgraph. Row 0 keeps holding last_token (the walk's anchor
+            // predecessor), which the propose echo-drop discards anyway.
+            if self.dflash2_active() {
+                self.dflash2_select_block(ctx, norm_noise_local, n_seq as u32, stream)?;
+            } else
+            // DSpark: when the drafter ships a Markov head, sample the block
+            // left-to-right with the low-rank bigram bias (markov.rs). The
+            // sequential chain reads only device memory, so it captures into
+            // the tail subgraph like the plain loop did. Headless drafters
+            // take the original batched argmax bit-for-bit.
+            if self.markov_active() {
+                self.markov_argmax_block(ctx, norm_noise_local, stream)?;
+            } else {
+                for i in 0..self.block_g() {
+                    let logits_row = self.scratch.logits.offset(i * self.vocab_size * bf16_local);
+                    let token_slot = self.scratch.draft_tokens_dev.offset(i * 4);
+                    ops::argmax_bf16(
+                        gpu,
+                        self.kernels.argmax,
+                        logits_row,
+                        token_slot,
+                        self.vocab_size as u32,
+                        stream,
+                    )?;
+                }
             }
 
             // ── BLOCK-FORWARD PARITY DUMP (Friday 2026-06-11) ──────────────
@@ -633,23 +758,18 @@ impl BlockDiffusionDraftHead {
             // logits-and-margins, not just argmax.
             //
             // Fires on the golden Option-B path (does NOT depend on eff_ctx>0,
-            // unlike the legacy DUMP_FULL). Gated ATLAS_DFLASH_BLOCK_DUMP=1,
+            // unlike the legacy DUMP_FULL). Gated AVAROK_DFLASH_BLOCK_DUMP=1,
             // one-shot. Writes:
-            //   /tmp/atlas_block_logits.bin   BF16 [γ, vocab]  (pre-argmax)
-            //   /tmp/atlas_block_drafts.json  {drafts:[..], meta..}
+            //   /tmp/avarok_block_logits.bin   BF16 [γ, vocab]  (pre-argmax)
+            //   /tmp/avarok_block_drafts.json  {drafts:[..], meta..}
             {
-                // ATLAS_DFLASH_BLOCK_DUMP_AT_POS=N defers the one-shot dump
+                // AVAROK_DFLASH_BLOCK_DUMP_AT_POS=N defers the one-shot dump
                 // until position >= N, so the dump fires DEEP in the sequence
                 // where absolute decode positions have diverged from ctx slot
                 // indices — the regime that exercises the id249 ctx-K RoPE
                 // position mismatch. Unset/0 = dump at the first propose
                 // (positions ≈ slot indices, position bug NOT exercised).
-                let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                    && position >= block_dump_min_pos
+                if levers.block_dump_armed_at(position)
                     // Per-model latch (see `ModelStats::dumped`) rather than a
                     // static, so a swap re-arms the dump the operator asked for.
                     // Consumed at the check: if the dump errors partway the shot
@@ -658,17 +778,17 @@ impl BlockDiffusionDraftHead {
                 {
                     gpu.synchronize(stream)?;
                     // Full γ × vocab logits (BF16).
-                    let n_logits_bytes = self.gamma * self.vocab_size * bf16_local;
+                    let n_logits_bytes = self.block_g() * self.vocab_size * bf16_local;
                     let mut lbuf = vec![0u8; n_logits_bytes];
                     if let Err(e) = gpu.copy_d2h(self.scratch.logits, &mut lbuf) {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits copy failed: {e}");
-                    } else if let Err(e) = std::fs::write("/tmp/atlas_block_logits.bin", &lbuf) {
+                    } else if let Err(e) = std::fs::write("/tmp/avarok_block_logits.bin", &lbuf) {
                         tracing::warn!("DFLASH BLOCK_DUMP: logits write failed: {e}");
                     } else {
                         // Live argmax drafts (γ × u32).
-                        let mut dbuf = vec![0u8; self.gamma * 4];
+                        let mut dbuf = vec![0u8; self.block_g() * 4];
                         gpu.copy_d2h(self.scratch.draft_tokens_dev, &mut dbuf)?;
-                        let drafts: Vec<u32> = (0..self.gamma)
+                        let drafts: Vec<u32> = (0..self.block_g())
                             .map(|i| {
                                 u32::from_le_bytes([
                                     dbuf[i * 4],
@@ -683,7 +803,7 @@ impl BlockDiffusionDraftHead {
                             drafts,
                             last_token,
                             position,
-                            self.gamma,
+                            self.block_g(),
                             self.vocab_size,
                             self.hidden_size,
                             self.mask_token_id,
@@ -692,9 +812,9 @@ impl BlockDiffusionDraftHead {
                             self.target_layer_ids.len(),
                             self.rope_theta,
                         );
-                        let _ = std::fs::write("/tmp/atlas_block_drafts.json", meta);
+                        let _ = std::fs::write("/tmp/avarok_block_drafts.json", meta);
                         tracing::info!(
-                            "DFLASH BLOCK_DUMP: wrote {} γ×vocab logit bytes + drafts={:?} (last_token={}, position={}) to /tmp/atlas_block_*.{{bin,json}}",
+                            "DFLASH BLOCK_DUMP: wrote {} γ×vocab logit bytes + drafts={:?} (last_token={}, position={}) to /tmp/avarok_block_*.{{bin,json}}",
                             n_logits_bytes,
                             drafts,
                             last_token,
@@ -716,36 +836,31 @@ impl BlockDiffusionDraftHead {
             //   - the Option-B ctx args (kv_len / q_offset) the paged attention saw
             // PyTorch still diverges on Atlas's REAL inputs -> COMPUTE bug (a kernel
             // erodes it). PyTorch MATCHES on real inputs -> Atlas built the INPUTS
-            // wrong (position grid / mask embed / fc). Gated ATLAS_DFLASH_BLOCK_DUMP=1
+            // wrong (position grid / mask embed / fc). Gated AVAROK_DFLASH_BLOCK_DUMP=1
             // (same one-shot gate as the logits dump above, fires same call).
             {
-                let block_dump_min_pos: usize = std::env::var("ATLAS_DFLASH_BLOCK_DUMP_AT_POS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                if std::env::var("ATLAS_DFLASH_BLOCK_DUMP").ok().as_deref() == Some("1")
-                    && position >= block_dump_min_pos
+                if levers.block_dump_armed_at(position)
                     && ctx.stats.dumped.keyed("dflash_block_inputs")
                 {
                     gpu.synchronize(stream)?;
                     // Noise/mask embedding rows: on the Option-B path eff_ctx=0 so the
                     // γ noise rows sit at the START of stream_buf. Dump γ × hidden BF16.
                     let noise_off = eff_ctx * self.hidden_size * bf16_local;
-                    let n_noise_bytes = self.gamma * self.hidden_size * bf16_local;
+                    let n_noise_bytes = self.block_g() * self.hidden_size * bf16_local;
                     let mut nbuf = vec![0u8; n_noise_bytes];
                     if let Err(e) =
                         gpu.copy_d2h(self.scratch.stream_buf.offset(noise_off), &mut nbuf)
                     {
                         tracing::warn!("DFLASH BLOCK_INPUT: noise embed copy failed: {e}");
                     } else {
-                        let _ = std::fs::write("/tmp/atlas_block_noise_embed.bin", &nbuf);
+                        let _ = std::fs::write("/tmp/avarok_block_noise_embed.bin", &nbuf);
                     }
                     // Position grid: on Option-B the ctx K sits at slots [0..ctx_count)
                     // and the γ queries at [q_offset..q_offset+γ). Record what the
                     // paged attention actually used so the harness stops guessing.
                     let (kv_len_dump, q_offset_dump) = match option_b {
-                        Some((_, cc)) => (cc + self.gamma as u32, cc),
-                        None => (eff_ctx as u32 + self.gamma as u32, eff_ctx as u32),
+                        Some((_, cc)) => (cc + self.block_g() as u32, cc),
+                        None => (eff_ctx as u32 + self.block_g() as u32, eff_ctx as u32),
                     };
                     // q_rope_pos: the RoPE rotation base for γ queries. After
                     // the id249 fix this equals `position` (true decode pos),
@@ -755,19 +870,19 @@ impl BlockDiffusionDraftHead {
                     let input_meta = format!(
                         "{{\"eff_ctx\":{},\"gamma\":{},\"hidden_size\":{},\"option_b_kv_len\":{},\"option_b_q_offset\":{},\"q_rope_pos\":{},\"q_block_positions\":{:?}}}",
                         eff_ctx,
-                        self.gamma,
+                        self.block_g(),
                         self.hidden_size,
                         kv_len_dump,
                         q_offset_dump,
                         q_rope_pos_dump,
-                        (0..self.gamma)
+                        (0..self.block_g())
                             .map(|r| q_rope_pos_dump as usize + r)
                             .collect::<Vec<_>>(),
                     );
-                    let _ = std::fs::write("/tmp/atlas_block_input_meta.json", input_meta);
+                    let _ = std::fs::write("/tmp/avarok_block_input_meta.json", input_meta);
                     tracing::info!(
                         "DFLASH BLOCK_INPUT: wrote noise_embed ({}×{} BF16) + input_meta (q_offset={}, kv_len={}, position={})",
-                        self.gamma,
+                        self.block_g(),
                         self.hidden_size,
                         q_offset_dump,
                         kv_len_dump,
@@ -804,13 +919,17 @@ impl BlockDiffusionDraftHead {
             let total_slots = num_layers * 2 + 1;
             let tail_slot = num_layers * 2;
 
+            // Graphs are keyed by the ACTIVE block width: the resolver's widths
+            // each capture once and replay forever after, so a width switch
+            // costs a capture only the first time that width is seen.
+            let width = self.block_g();
             let mut g = self.propose_graphs.lock();
-            let cached_ready = matches!(*g, Some(ref v) if v.len() == total_slots);
+            let cached_ready = matches!(g.by_width.get(&width), Some(v) if v.len() == total_slots);
 
             if cached_ready {
                 // Hot replay path: launch each cached subgraph in order,
                 // running attention eagerly between pre and post.
-                let graphs = g.as_ref().unwrap();
+                let graphs = g.by_width.get(&width).unwrap();
                 for (layer_idx, layer) in self.layers.iter().enumerate() {
                     let args = make_paged_args(layer_idx).expect("option_b args available");
 
@@ -848,13 +967,10 @@ impl BlockDiffusionDraftHead {
                     run_tail()?;
                 }
             } else {
-                let warmed = self
-                    .propose_warmup_count
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let warmed = g.warmup.get(&width).copied().unwrap_or(0);
                 if warmed < warmup_target {
-                    // Warm-up: eager only, no capture.
-                    self.propose_warmup_count
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // Warm-up: eager only, no capture (per width).
+                    g.warmup.insert(width, warmed + 1);
                     run_all_eager()?;
                 } else {
                     // Capture pass: build all subgraphs in one propose
@@ -863,7 +979,7 @@ impl BlockDiffusionDraftHead {
                     // empty-capture sentinel; we store the zero so the
                     // replay path falls back to eager for that slot.
                     tracing::info!(
-                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={})",
+                        "DFlash piecewise capture: starting (warmup_count={}, target={}, slots={}, block width {width})",
                         warmed,
                         warmup_target,
                         total_slots
@@ -926,11 +1042,12 @@ impl BlockDiffusionDraftHead {
 
                     let success_count = new_graphs.iter().filter(|g| g.0 != 0).count();
                     tracing::info!(
-                        "DFlash piecewise capture: complete ({}/{} subgraphs captured)",
+                        "DFlash piecewise capture: complete ({}/{} subgraphs captured, block width {})",
                         success_count,
-                        total_slots
+                        total_slots,
+                        width
                     );
-                    *g = Some(new_graphs);
+                    g.by_width.insert(width, new_graphs);
                 }
             }
         } else {
@@ -961,20 +1078,20 @@ impl BlockDiffusionDraftHead {
             .load(std::sync::atomic::Ordering::Relaxed);
         // `draft_tokens_host_pinned` is written exactly once, in
         // `from_weights.rs` (`alloc_host_pinned(gamma_val * 4)`), and the same
-        // `gamma_val` is stored as `self.gamma` — but the two live in different
+        // `gamma_val` is stored as `self.block_g()` — but the two live in different
         // files, so pin the equality here rather than trust it silently. A failed
         // `alloc_host_pinned` propagates as an Err at construction, so a null here
         // would mean the field was never initialised.
         anyhow::ensure!(
             !pinned_ptr.is_null(),
-            "DFlash draft-token pinned staging buffer is null (γ={})",
-            self.gamma
+            "DFlash draft-token pinned staging buffer is null (γ={}, rows={rows_total})",
+            self.block_g()
         );
         // SAFETY: `pinned_ptr` is the page-locked allocation made by
         // `alloc_host_pinned(gamma_val * 4)` in `DFlashHead::from_weights`, and
-        // `self.gamma == gamma_val` (both set from the same local in that
+        // `self.block_g() == gamma_val` (both set from the same local in that
         // constructor; `gamma` is a plain `usize` field never reassigned), so
-        // `self.gamma * 4` is exactly the allocation size — not one byte past it.
+        // `self.block_g() * 4` is exactly the allocation size — not one byte past it.
         // Non-null is checked immediately above; `cuMemAllocHost` returns
         // 64-byte-aligned memory, which trivially satisfies `u8`'s alignment of 1.
         //
@@ -987,28 +1104,83 @@ impl BlockDiffusionDraftHead {
         // code path, and `host_buf` is the sole live reference to it (dropped
         // before the next propose). `copy_d2h_on_stream` drains `stream` before
         // returning, so no DMA is in flight against it when we read below.
+        // `rows_total * 4` bytes: one u32 per drafted row across every band.
+        // The allocation is `nb * gamma * 4` (from_weights) and n_seq <= nb,
+        // so this span is within it; at n_seq == 1 it is exactly `gamma * 4`
+        // as before.
         let host_buf: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, self.gamma * 4) };
+            unsafe { std::slice::from_raw_parts_mut(pinned_ptr, rows_total * 4) };
         gpu.copy_d2h_on_stream(self.scratch.draft_tokens_dev, host_buf, stream)?;
         gpu.record_event(self.scratch.draft_tokens_event, stream)?;
         gpu.event_synchronize(self.scratch.draft_tokens_event)?;
-        let drafts: Vec<u32> = host_buf
+        let mut drafts: Vec<u32> = host_buf
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
-        // ATLAS_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
+        // AVAROK_DSPARK_SHIFT=1: SpecForge drafter convention. The checkpoint's
+        // own dflash.py spec_generate maps row j's output to position
+        // start+j+1 (the anchor row's output IS draft #1 — nothing is an
+        // echo), where Atlas's z-lab convention reads row j at position j
+        // with row 0 discarded. Rotating right by one places rows 0..γ-2
+        // where the verify path reads drafts 1..γ-1. Row γ-1's output (a
+        // prediction past the block) lands in the discarded slot 0.
+        // SpecForge shifted-row convention: auto-detected from the drafter
+        // config (projector_type == "dspark"); env overrides both ways for
+        // A/B (`AVAROK_DSPARK_SHIFT=1` forces on, `=0` forces off).
+        let shift = levers.dspark_shift.unwrap_or(self.shifted_rows);
+        if shift {
+            drafts.rotate_right(1);
+        }
+        // ── DSpark confidence truncation (dynamic block length) ──
+        // Reference policy (DeepSpec draft_ops.py::_confident_prefix_length):
+        // keep drafts up to the FIRST row whose sigmoid(confidence logit)
+        // falls below τ; no row below τ ⇒ full block. Row j's confidence
+        // gates final draft j (post-shift, post-echo-drop indexing is 1:1
+        // with rows 0..γ-2). The γ BF16 logits were written by the captured
+        // tail; the event sync above covers them, so this small D2H is
+        // already-ordered and cheap. Requires anchor bias ON (rows without
+        // the Markov chain never write their confidence slot).
+        if self.markov_active() && self.confidence_active() && levers.dspark_anchor_bias {
+            let tau = levers.conf_tau;
+            let mut cbuf = vec![0u8; self.block_g() * 2];
+            gpu.copy_d2h(self.scratch.conf_out, &mut cbuf)?;
+            if levers.dspark_conf_trace {
+                let logits: Vec<f32> = (0..self.block_g())
+                    .map(|j| {
+                        let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
+                        f32::from_bits((bits as u32) << 16)
+                    })
+                    .collect();
+                tracing::info!(
+                    "DSPARK CONF logits (pos={position}, tau={tau}): {:?} sigmoids: {:?}",
+                    logits,
+                    logits
+                        .iter()
+                        .map(|x| 1.0 / (1.0 + (-x).exp()))
+                        .collect::<Vec<f32>>(),
+                );
+            }
+            // sigmoid(x) < τ  ⇔  x < logit(τ) — compare in logit space.
+            let tau_logit = (tau / (1.0 - tau)).ln();
+            let mut keep = self.block_g(); // rows kept (slot 0 discard + drafts)
+            for j in 0..self.block_g().saturating_sub(1) {
+                let bits = u16::from_le_bytes([cbuf[j * 2], cbuf[j * 2 + 1]]);
+                let logit = f32::from_bits((bits as u32) << 16);
+                if logit < tau_logit {
+                    keep = j + 1; // slot 0 + drafts 0..j-1 ⇒ j kept drafts
+                    break;
+                }
+            }
+            drafts.truncate(keep.max(1));
+        }
+        // AVAROK_DFLASH_DEBUG_DUMP_FULL=1 (one-shot): log all γ drafts so
         // we can compare against the PyTorch reference run on the same
         // captured target_hidden. Static guard mirrors the input dump.
-        if ctx.stats.dumped.keyed("dflash_drafts")
-            && (std::env::var("ATLAS_DFLASH_DEBUG_DUMP_FULL")
-                .ok()
-                .as_deref()
-                == Some("1")
-                || std::env::var("ATLAS_DFLASH_LOG_DRAFTS").ok().as_deref() == Some("1"))
+        if ctx.stats.dumped.keyed("dflash_drafts") && (levers.debug_dump_full || levers.log_drafts)
         {
             tracing::info!(
                 "DFLASH DUMP_FULL drafts (γ={}, last_token={}, position={}, eff_ctx={}): {:?}",
-                self.gamma,
+                self.block_g(),
                 last_token,
                 position,
                 eff_ctx,
@@ -1017,5 +1189,39 @@ impl BlockDiffusionDraftHead {
         }
         let _ = g; // suppress unused
         Ok(drafts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rt2_16_covers_the_batch;
+
+    /// The regression: the guard tested `self.block_g()` while the kernel was
+    /// handed `self.block_g()`, so the two agreed with each other and disagreed
+    /// with reality. At n_seq >= 2 the batch is `gamma * n_seq` rows and the
+    /// rt2 kernel covered only the first band; the rest kept the previous
+    /// propose's logits, already masked to -1e30 by `dflash2_topk16`.
+    ///
+    /// `fp8_gemv_rowscale_batch16_rt2` does `ensure!((1..=16).contains(&m))`,
+    /// which could never fire: it was being passed the same wrong value the
+    /// guard checked. The decision has to be made on the TOTAL.
+    #[test]
+    fn the_rt2_vocab_kernel_is_only_eligible_for_batches_it_covers() {
+        // Single sequence: unchanged at every gamma the validator allows.
+        for gamma in 1..=16u32 {
+            assert!(rt2_16_covers_the_batch(gamma), "n_seq=1, gamma={gamma}");
+        }
+        // Two sequences at the measured optimum gamma 10 is 20 rows — four
+        // past the tile. This is the case that silently produced garbage.
+        assert!(!rt2_16_covers_the_batch(10 * 2));
+        // The boundary itself, from both sides.
+        assert!(rt2_16_covers_the_batch(16));
+        assert!(!rt2_16_covers_the_batch(17));
+        // Zero rows is not a batch the kernel covers either — the `1..=`
+        // lower bound mirrors the callee's own `ensure!`.
+        assert!(!rt2_16_covers_the_batch(0));
+        // C=8 at gamma 8, the configuration whose accept collapse (73% -> 24%)
+        // the sibling branch records.
+        assert!(!rt2_16_covers_the_batch(8 * 8));
     }
 }

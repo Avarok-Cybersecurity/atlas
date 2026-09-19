@@ -146,7 +146,10 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
     });
     if a.dflash {
         out.push(Badge {
-            text: format!("DFlash γ={}", a.dflash_gamma),
+            text: match a.dflash_gamma {
+                Some(g) => format!("DFlash γ={g}"),
+                None => "DFlash γ=auto".to_string(),
+            },
             tint: BadgeTint::Quant,
         });
     } else if a.speculative || a.self_speculative || a.ngram_speculative {
@@ -185,7 +188,18 @@ pub fn badges(a: &crate::cli::ServeArgs, awaiting_model: bool) -> Vec<Badge> {
         text: format!("sched {}", a.scheduling_policy),
         tint: BadgeTint::Neutral,
     });
-    if a.enable_prefix_caching {
+    // NAMED, not merely reflected. Under `--hermetic` the prefix-cache chip
+    // below simply disappears, and an absent chip does not say WHY — an
+    // operator reads "no prefix cache" and cannot tell a deliberate KAT
+    // regime from a flag nobody set. This is the banner someone looks at when
+    // a score moves, so the regime that moved it has to be on it.
+    if a.hermetic {
+        out.push(Badge {
+            text: "HERMETIC · KAT".to_string(),
+            tint: BadgeTint::Quant,
+        });
+    }
+    if a.prefix_caching_enabled() {
         out.push(Badge {
             text: format!(
                 "prefix-cache · ssm {}@{}",

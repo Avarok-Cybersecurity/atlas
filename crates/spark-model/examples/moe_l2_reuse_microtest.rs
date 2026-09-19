@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Does the routed-MoE decode kernel get L2 reuse on DUPLICATED experts?
 //!
-//! THE QUESTION. Production telemetry (ATLAS_MOE_UNION_STATS=1) shows expert
+//! THE QUESTION. Production telemetry (AVAROK_MOE_UNION_STATS=1) shows expert
 //! routing is strongly correlated: at m=2, top_k=10 the two tokens use only
 //! ~14 DISTINCT experts out of 20 routed slots (~30% overlap). The batch2
 //! kernel launches one CTA per (token, expert_slot) and has no explicit
@@ -30,15 +30,15 @@
 //! the whole comparison would collapse to "everything hits L2".
 //!
 //! Run:
-//!   docker run --rm --gpus all -v REPO:/workspace/atlas \
-//!     -v /home/ms/atlas-target:/workspace/atlas/target -w /workspace/atlas \
-//!     -e 'ATLAS_TARGET_MODEL=*' -e 'ATLAS_TARGET_QUANT=*' -e ATLAS_TARGET_HW=gb10 \
-//!     atlas-gb10:gdnf32-build cargo run -p spark-model --release \
+//!   docker run --rm --gpus all -v REPO:/workspace/avarok \
+//!     -v /home/ms/avarok-target:/workspace/avarok/target -w /workspace/avarok \
+//!     -e 'AVAROK_TARGET_MODEL=*' -e 'AVAROK_TARGET_QUANT=*' -e AVAROK_TARGET_HW=gb10 \
+//!     avarok-gb10:gdnf32-build cargo run -p spark-model --release \
 //!     --features cuda,gpu-examples --example moe_l2_reuse_microtest
 
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -134,7 +134,7 @@ fn launch(
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let k_m1 = g.kernel("moe_shared_expert_fused", "moe_expert_gate_up_shared")?;
     let k_m2 = g.kernel("moe_fused_batch2", "moe_expert_gate_up_shared_batch2")?;

@@ -186,7 +186,24 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        if remainder > 0 && remainder < block_size && matched_tokens == num_full_blocks * block_size
+        // AVAROK_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
+        //
+        // The sub-block arms below return a `matched_tokens` that is NOT
+        // block-aligned, and they do it by reusing a block whose KV was
+        // computed for a LONGER key — i.e. for a different continuation past
+        // our suffix. If any consumer treats `matched_tokens` as a block
+        // boundary, the tail of that block is foreign context the model then
+        // attends to. This lever exists to A/B exactly that.
+        // Resolved once: `walk` runs on every prefix lookup. This is one of
+        // the #936 arm-ladder levers, so it must stay operable — caching does
+        // not change that, since nothing mutates the environment after start.
+        static SUBBLOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let subblock_ok =
+            *SUBBLOCK.get_or_init(|| std::env::var("AVAROK_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
+        if subblock_ok
+            && remainder > 0
+            && remainder < block_size
+            && matched_tokens == num_full_blocks * block_size
         {
             let suffix = &tokens[matched_tokens..];
             let mut found = false;
