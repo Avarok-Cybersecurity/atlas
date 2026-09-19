@@ -124,6 +124,9 @@ template <> __device__ __forceinline__ float kq_vec_dot<GGML_TYPE_Q2_K>(const vo
 template <> __device__ __forceinline__ float kq_vec_dot<GGML_TYPE_Q3_K>(const void* vbq, const block_q8_1* bq8_1, const int kbx, const int iqs) {
     return vec_dot_q3_K_q8_1(vbq, bq8_1, kbx, iqs);
 }
+template <> __device__ __forceinline__ float kq_vec_dot<GGML_TYPE_Q6_K>(const void* vbq, const block_q8_1* bq8_1, const int kbx, const int iqs) {
+    return vec_dot_q6_K_q8_1(vbq, bq8_1, kbx, iqs);
+}
 
 // One block (32 x KQ_NWARPS threads) per output row `blockIdx.x`; `m` activation
 // rows (<= KQ_MAX_M) share every weight read. dst[j * nrows_x + row], bf16.
@@ -257,6 +260,15 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q3_k_w(
         const void* __restrict__ vx, const void* __restrict__ vy, __nv_bfloat16* __restrict__ dst,
         unsigned int ncols_x, unsigned int nrows_x, unsigned int m) {
     kq_mmvq_warp<GGML_TYPE_Q3_K>((const char*)vx, (size_t)(ncols_x / QK_K) * sizeof(block_q3_K),
+                                 (const block_q8_1*)vy, dst, (int)ncols_x, (int)nrows_x, (int)m);
+}
+// The Q6_K output head on raw 210-byte super-blocks (qi = 32: one super-block
+// per warp iteration, a lane per 8-value group), the same ggml mmvq dot as
+// llama.cpp's Q6_K x q8_1 path. Grid: (ceil(nrows_x / KQ_NWARPS), 1, 1).
+extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q6_k_w(
+        const void* __restrict__ vx, const void* __restrict__ vy, __nv_bfloat16* __restrict__ dst,
+        unsigned int ncols_x, unsigned int nrows_x, unsigned int m) {
+    kq_mmvq_warp<GGML_TYPE_Q6_K>((const char*)vx, (size_t)(ncols_x / QK_K) * sizeof(block_q6_K),
                                  (const block_q8_1*)vy, dst, (int)ncols_x, (int)nrows_x, (int)m);
 }
 

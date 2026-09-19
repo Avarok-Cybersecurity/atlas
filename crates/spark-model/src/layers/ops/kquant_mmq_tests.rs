@@ -254,3 +254,38 @@ fn kquant_prefill_mmq_matches_cpu_oracle() {
         }
     }
 }
+
+/// The Q6_K output head (`kquant_mmvq_q6_k_w`, warp per row) against the CPU
+/// dequant + q8_1-emulated GEMM, M = 1 (decode) and 5 (a batched head).
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn kquant_q6k_head_mmvq_w_matches_cpu_oracle() {
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    // Q6_K: { u8 ql[128]; u8 qh[64]; i8 scales[16]; f16 d } = 210 B, d at 208.
+    let raw = build_weight(Q6K_BLOCK_BYTES, &[208], 0x5EED_000E);
+    let t = GgmlType::from_id(14, 128).unwrap();
+    let mut w = vec![0f32; (N * K) as usize];
+    dequant_to_f32(t, &raw, w.len(), &mut w).unwrap();
+    let w_dev = upload(g, &raw);
+    let k_rows = g.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16").unwrap();
+    let k_mmvq = g.kernel(KQUANT_MODULE, "kquant_mmvq_q6_k_w").unwrap();
+    for m in [1u32, 5] {
+        let (bits, xf) = build_act(m as usize, 0x6A6A + m);
+        let x_bytes: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let x_dev = upload(g, &x_bytes);
+        let y_dev = g.alloc(kquant_q8_1_rows_bytes(m, K)).unwrap();
+        let out_dev = g.alloc((m * N) as usize * 2).unwrap();
+        kquant_q8_1_rows(g, k_rows, x_dev, y_dev, m, K, stream).unwrap();
+        kquant_mmvq_w(g, k_mmvq, w_dev, y_dev, out_dev, N, K, m, stream).unwrap();
+        g.synchronize(stream).unwrap();
+        let got = download_bf16(g, out_dev, (m * N) as usize);
+        let want = cpu_gemm(&w, &q8_emulate(&xf, 32), m as usize);
+        assert_close(&format!("Q6_K mmvq_w M={m}"), &got, &want);
+        for p in [x_dev, y_dev, out_dev] {
+            g.free(p).unwrap();
+        }
+    }
+    g.free(w_dev).unwrap();
+}

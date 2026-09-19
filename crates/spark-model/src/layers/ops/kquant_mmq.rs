@@ -17,6 +17,7 @@ pub const KQUANT_MODULE: &str = "kquant_moe";
 /// Bytes per 256-value super-block on disk.
 pub const Q2K_BLOCK_BYTES: usize = 84;
 pub const Q3K_BLOCK_BYTES: usize = 110;
+pub const Q6K_BLOCK_BYTES: usize = 210;
 
 /// A resident `[N, K]` row-major projection as the GGUF path left it on the
 /// device: expanded bf16, or the raw `Q2_K` / `Q3_K` blocks
