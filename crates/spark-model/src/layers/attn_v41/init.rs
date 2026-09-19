@@ -6,7 +6,7 @@
 //! `attn_v41.rs` (500-LoC cap).
 
 use anyhow::{Result, ensure};
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use super::{AttnV41, AttnV41Cfg, GEMM_MODULE, Kernels, MODULE, upload_f32};
 use crate::layers::deepseek_v41_ref::attn::freqs_cis;
@@ -48,6 +48,7 @@ impl AttnV41 {
             slice_cols: gpu.kernel(MODULE, "attn_v41_slice_cols")?,
             scatter_cols: gpu.kernel(MODULE, "attn_v41_scatter_cols")?,
             scale_bf16: gpu.kernel(MODULE, "attn_v41_scale_bf16")?,
+            ring_put: gpu.kernel(MODULE, "attn_v41_ring_put")?,
         };
         let plain = freqs_cis(cfg.rope_dim, cfg.max_seq, cfg.rope_theta);
         let yarn = yarn_freqs_cis(
@@ -104,11 +105,19 @@ impl AttnV41 {
             iw_raw: alloc(m * nhi * 2)?,
             iw: alloc(m * nhi * 2)?,
             score: alloc(m * max_width * 4)?,
+            decode_pos: None,
+            decode_idx: None,
             cfg,
             k,
             fc_plain,
             fc_yarn,
         })
+    }
+
+    /// The layer output buffer, bf16 `[max_tokens, dim]`: a pointer a captured
+    /// decode step bakes.
+    pub fn out_ptr(&self) -> DevicePtr {
+        self.out
     }
 
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {

@@ -240,6 +240,7 @@ pub(super) fn load_layers(
         step_attn_ms: Mutex::new(0.0),
         step_engram_ms: Mutex::new(0.0),
         step_start: Mutex::new(None),
+        graph_disabled: std::sync::atomic::AtomicBool::new(false),
     });
 
     // ── kernels shared by every layer ──

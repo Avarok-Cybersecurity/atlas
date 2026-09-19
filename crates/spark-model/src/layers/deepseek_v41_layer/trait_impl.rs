@@ -51,6 +51,7 @@ impl crate::layer::TransformerLayer for DeepSeekV41Layer {
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         Ok(Box::new(V41LayerState {
             attn: AttnV41LayerState::new(gpu, &self.rt.attn_cfg, self.role)?,
+            graphs: None,
         }))
     }
 
@@ -69,8 +70,12 @@ impl crate::layer::TransformerLayer for DeepSeekV41Layer {
     /// latent cache alone is `max_seq / ratio` rows of 512 bf16 (4 MiB at
     /// 4096 tokens, ratio 1), so every request left on the order of 15 to
     /// 25 MiB across the forty layers, and it never came back.
+    /// The captured segments bake this sequence's buffers, so they go first.
     fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
         if let Some(st) = state.as_any_mut().downcast_mut::<V41LayerState>() {
+            if let Some(g) = st.graphs.take() {
+                g.destroy(gpu)?;
+            }
             st.attn.free(gpu)?;
         }
         Ok(())
