@@ -249,6 +249,9 @@ pub(super) fn load_layers(
     let k_mixes_dot = gpu.kernel("hc_v41", "hc_v41_mixes_dot")?;
     let k_mixes_finish = gpu.kernel("hc_v41", "hc_v41_mixes_finish")?;
     let k_collapse = gpu.kernel("hc_v41", "hc_v41_collapse")?;
+    let k_finish_collapse = gpu.kernel("hc_v41", "hc_v41_finish_collapse")?;
+    let k_collapse_wide = gpu.kernel("hc_v41", "hc_v41_collapse_wide")?;
+    let k_post_wide = gpu.kernel("hc_v41", "hc_v41_post_wide")?;
     // V4.1 norm weights are plain (`w * x_normed`); the shared `rms_norm`
     // kernel applies the zero-centered `(1 + w)` convention, so every
     // DeepSeek-V4.1 norm goes through the vanilla twin (the model-level
@@ -379,6 +382,9 @@ pub(super) fn load_layers(
             k_mixes_dot,
             k_mixes_finish,
             k_collapse,
+            k_finish_collapse,
+            k_collapse_wide,
+            k_post_wide,
             k_rms_norm,
         }));
     }

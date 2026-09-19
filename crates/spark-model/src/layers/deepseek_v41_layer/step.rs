@@ -6,14 +6,12 @@
 
 use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
-use spark_runtime::kernel_args::KernelLaunch;
 
 use super::{DeepSeekV41Layer, GraphMode, V41LayerState, graph_mode};
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::attn_v41::SharedV41;
 use crate::layers::engram_v41::ENGRAM_ROW_BYTES;
 use crate::layers::ops;
-use crate::layers::qwen3_attention::HcSiteWeights;
 
 pub(super) fn diag_on() -> bool {
     std::env::var("ATLAS_DS41_DIAG").is_ok_and(|v| v == "1")
@@ -68,92 +66,6 @@ pub(super) fn diag_rms_bf16(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32
 }
 
 impl DeepSeekV41Layer {
-    pub(super) fn mixes(
-        &self,
-        gpu: &dyn GpuBackend,
-        site: &HcSiteWeights,
-        streams: DevicePtr,
-        pre: DevicePtr,
-        post: DevicePtr,
-        comb: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        let rt = &self.rt;
-        let mix_hc = (2 + rt.hc_mult) * rt.hc_mult;
-        // one block per (token, mix) for the 24 dot products over hc * H, then
-        // the tiny epilogue; bit-identical to the one-block hc_v41_mixes
-        KernelLaunch::new(gpu, self.k_mixes_dot)
-            .grid([m as u32, mix_hc as u32, 1])
-            .block([256, 1, 1])
-            .arg_ptr(streams)
-            .arg_ptr(site.hc_fn)
-            .arg_ptr(rt.mixes_s)
-            .arg_u32(rt.hidden as u32)
-            .arg_u32(rt.hc_mult as u32)
-            .arg_f32(rt.norm_eps)
-            .launch(stream)?;
-        KernelLaunch::new(gpu, self.k_mixes_finish)
-            .grid([m as u32, 1, 1])
-            .block([32, 1, 1])
-            .arg_ptr(rt.mixes_s)
-            .arg_ptr(site.hc_scale)
-            .arg_ptr(site.hc_base)
-            .arg_ptr(pre)
-            .arg_ptr(post)
-            .arg_ptr(comb)
-            .arg_u32(rt.hc_mult as u32)
-            .arg_u32(rt.sinkhorn_iters as u32)
-            .arg_f32(rt.hc_eps)
-            .launch(stream)
-    }
-
-    pub(super) fn collapse(
-        &self,
-        gpu: &dyn GpuBackend,
-        streams: DevicePtr,
-        pre: DevicePtr,
-        y: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        KernelLaunch::new(gpu, self.k_collapse)
-            .grid([m as u32, 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(streams)
-            .arg_ptr(pre)
-            .arg_ptr(y)
-            .arg_u32(self.rt.hidden as u32)
-            .arg_u32(self.rt.hc_mult as u32)
-            .launch(stream)
-    }
-
-    pub(super) fn hc_post(
-        &self,
-        gpu: &dyn GpuBackend,
-        block_out: DevicePtr,
-        streams: DevicePtr,
-        post: DevicePtr,
-        comb: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        ops::hc_post(
-            gpu,
-            self.k_hc_post,
-            block_out,
-            streams,
-            post,
-            comb,
-            streams,
-            m as u32,
-            self.rt.hidden as u32,
-            self.rt.hc_mult as u32,
-            stream,
-        )
-    }
-
-    /// The token ids of this step, for the engram hash.
     pub(super) fn step_token_ids(&self, ctx: &ForwardContext, m: usize) -> Result<Vec<u32>> {
         if let Some(ids) = ctx.host_token_ids {
             ensure!(
@@ -315,17 +227,16 @@ impl DeepSeekV41Layer {
         let diag = diag_on();
 
         // attention
-        self.mixes(
+        self.mixes_collapse(
             gpu,
             &self.hc_attn,
             streams,
             rt.pre_a,
-            rt.post_s,
-            rt.comb_s,
+            rt.pre_prev,
+            hidden,
             m,
             stream,
         )?;
-        self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;
         let normed = ctx.buffers.norm_output();
         ops::rms_norm(
             gpu,
@@ -378,17 +289,16 @@ impl DeepSeekV41Layer {
         self.hc_post(gpu, attn_out, streams, rt.post_s, rt.comb_s, m, stream)?;
 
         // ffn
-        self.mixes(
+        self.mixes_collapse(
             gpu,
             &self.hc_ffn,
             streams,
             rt.pre_f,
-            rt.post_s,
-            rt.comb_s,
+            rt.pre_a,
+            hidden,
             m,
             stream,
         )?;
-        self.collapse(gpu, streams, rt.pre_a, hidden, m, stream)?;
         ops::rms_norm(
             gpu,
             self.k_rms_norm,

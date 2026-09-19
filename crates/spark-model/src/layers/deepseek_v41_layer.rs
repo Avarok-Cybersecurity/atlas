@@ -58,6 +58,7 @@ use crate::layers::qwen3_attention::HcSiteWeights;
 use crate::weight_map::DenseWeight;
 
 mod graph;
+mod hc_launch;
 mod step;
 mod trait_impl;
 
@@ -208,5 +209,10 @@ pub struct DeepSeekV41Layer {
     pub k_mixes_dot: KernelHandle,
     pub k_mixes_finish: KernelHandle,
     pub k_collapse: KernelHandle,
+    /// the site's finish and the block's collapse in one wide launch
+    pub k_finish_collapse: KernelHandle,
+    /// hc_v41_collapse / hc_post over ceil(H/256) blocks a token
+    pub k_collapse_wide: KernelHandle,
+    pub k_post_wide: KernelHandle,
     pub k_rms_norm: KernelHandle,
 }

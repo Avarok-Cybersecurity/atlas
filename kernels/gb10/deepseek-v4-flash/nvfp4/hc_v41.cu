@@ -142,7 +142,75 @@ extern "C" __global__ void hc_v41_mixes_dot(
 }
 
 // The epilogue of hc_v41_mixes on the precomputed mixes: sigmoids, the row
-// softmax, the sinkhorn passes. Grid: (T). Block: 32 (thread 0 works).
+// softmax, the sinkhorn passes. One thread's serial work; with HC a compile
+// time constant the loops unroll and c[HC*HC] lives in registers instead of
+// local memory (the runtime-hc form spent 52 us a call on a 16-element
+// array). Same expressions in the same order, so the same bits.
+template <int HC>
+__device__ __forceinline__ void hcv_finish_t(
+    const float* __restrict__ mixes,    // [mix_hc] of this token
+    const float* __restrict__ hc_scale, // [3]
+    const float* __restrict__ hc_base,  // [mix_hc]
+    float* __restrict__ pre,            // [HC] of this token
+    float* __restrict__ post,           // [HC]
+    float* __restrict__ comb,           // [HC, HC]
+    const unsigned int sinkhorn_iters,
+    const float hc_eps) {
+    constexpr unsigned int hc = HC;
+    float c[HC * HC];
+#pragma unroll
+    for (unsigned int j = 0; j < hc; ++j) {
+        pre[j] = hcv_sigmoid(mixes[j] * hc_scale[0] + hc_base[j]) + hc_eps;
+        post[j] = 2.0f * hcv_sigmoid(mixes[hc + j] * hc_scale[1] + hc_base[hc + j]);
+    }
+#pragma unroll
+    for (unsigned int i = 0; i < hc * hc; ++i) c[i] = mixes[2 * hc + i] * hc_scale[2] + hc_base[2 * hc + i];
+#pragma unroll
+    for (unsigned int j = 0; j < hc; ++j) {
+        float m = -CUDART_INF_F;
+#pragma unroll
+        for (unsigned int k = 0; k < hc; ++k) m = fmaxf(m, c[j * hc + k]);
+        float sum = 0.0f;
+#pragma unroll
+        for (unsigned int k = 0; k < hc; ++k) { c[j * hc + k] = expf(c[j * hc + k] - m); sum += c[j * hc + k]; }
+#pragma unroll
+        for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] = c[j * hc + k] / sum + hc_eps;
+    }
+    for (unsigned int it = 0; it < sinkhorn_iters; ++it) {
+        if (it > 0) {
+#pragma unroll
+            for (unsigned int j = 0; j < hc; ++j) {
+                float s = 0.0f;
+#pragma unroll
+                for (unsigned int k = 0; k < hc; ++k) s += c[j * hc + k];
+#pragma unroll
+                for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] /= s + hc_eps;
+            }
+        }
+#pragma unroll
+        for (unsigned int k = 0; k < hc; ++k) {
+            float s = 0.0f;
+#pragma unroll
+            for (unsigned int j = 0; j < hc; ++j) s += c[j * hc + k];
+#pragma unroll
+            for (unsigned int j = 0; j < hc; ++j) c[j * hc + k] /= s + hc_eps;
+        }
+    }
+#pragma unroll
+    for (unsigned int i = 0; i < hc * hc; ++i) comb[i] = c[i];
+}
+// hc_mult <= 4 (HCV_MAX_HC); dispatch to the constant-HC form.
+__device__ __forceinline__ void hcv_finish(
+    const unsigned int hc, const float* mixes, const float* hc_scale, const float* hc_base,
+    float* pre, float* post, float* comb, const unsigned int sinkhorn_iters, const float hc_eps) {
+    switch (hc) {
+        case 4: hcv_finish_t<4>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        case 3: hcv_finish_t<3>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        case 2: hcv_finish_t<2>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+        default: hcv_finish_t<1>(mixes, hc_scale, hc_base, pre, post, comb, sinkhorn_iters, hc_eps); break;
+    }
+}
+// Grid: (T). Block: 32 (thread 0 works).
 extern "C" __global__ void hc_v41_mixes_finish(
     const float* __restrict__ mixes_in, // [T, mix_hc]
     const float* __restrict__ hc_scale, // [3]
@@ -157,37 +225,94 @@ extern "C" __global__ void hc_v41_mixes_finish(
     if (threadIdx.x != 0) return;
     const unsigned int hc = hc_mult;
     const unsigned int mix_hc = (2 + hc) * hc;
-    const float* mixes = mixes_in + (size_t)t * mix_hc;
-    float c[HCV_MAX_HC * HCV_MAX_HC];
-    for (unsigned int j = 0; j < hc; ++j) {
-        pre[(size_t)t * hc + j] = hcv_sigmoid(mixes[j] * hc_scale[0] + hc_base[j]) + hc_eps;
-        post[(size_t)t * hc + j] = 2.0f * hcv_sigmoid(mixes[hc + j] * hc_scale[1] + hc_base[hc + j]);
-    }
-    for (unsigned int i = 0; i < hc * hc; ++i) c[i] = mixes[2 * hc + i] * hc_scale[2] + hc_base[2 * hc + i];
-    for (unsigned int j = 0; j < hc; ++j) {
-        float m = -CUDART_INF_F;
-        for (unsigned int k = 0; k < hc; ++k) m = fmaxf(m, c[j * hc + k]);
-        float sum = 0.0f;
-        for (unsigned int k = 0; k < hc; ++k) { c[j * hc + k] = expf(c[j * hc + k] - m); sum += c[j * hc + k]; }
-        for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] = c[j * hc + k] / sum + hc_eps;
-    }
-    for (unsigned int it = 0; it < sinkhorn_iters; ++it) {
-        if (it > 0) {
-            for (unsigned int j = 0; j < hc; ++j) {
-                float s = 0.0f;
-                for (unsigned int k = 0; k < hc; ++k) s += c[j * hc + k];
-                for (unsigned int k = 0; k < hc; ++k) c[j * hc + k] /= s + hc_eps;
-            }
-        }
-        for (unsigned int k = 0; k < hc; ++k) {
-            float s = 0.0f;
-            for (unsigned int j = 0; j < hc; ++j) s += c[j * hc + k];
-            for (unsigned int j = 0; j < hc; ++j) c[j * hc + k] /= s + hc_eps;
-        }
-    }
-    for (unsigned int i = 0; i < hc * hc; ++i) comb[(size_t)t * hc * hc + i] = c[i];
+    hcv_finish(hc, mixes_in + (size_t)t * mix_hc, hc_scale, hc_base, pre + (size_t)t * hc,
+               post + (size_t)t * hc, comb + (size_t)t * hc * hc, sinkhorn_iters, hc_eps);
 }
-
+// The collapse of one column: y[t][d] = sum_c pre[c] * streams[t][c][d].
+__device__ __forceinline__ void hcv_collapse_col(
+    const float* __restrict__ x, const float* __restrict__ p, __nv_bfloat16* __restrict__ y,
+    const unsigned int hidden_size, const unsigned int hc_mult, const unsigned int d) {
+    float acc = 0.0f;
+    for (unsigned int c = 0; c < hc_mult; ++c) acc += p[c] * x[(size_t)c * hidden_size + d];
+    y[d] = __float2bfloat16(acc);
+}
+// The site's finish and the block's collapse in one launch. They are
+// independent: the collapse reads the PREVIOUS site's pre (pre_in) while the
+// finish writes this site's (pre_out), never the same buffer. Block (0, t)
+// thread 0 runs the finish; every thread owns one column d of the collapse.
+// Grid: (ceil(H/256), T). Block: 256.
+extern "C" __global__ void hc_v41_finish_collapse(
+    const float* __restrict__ mixes_in, // [T, mix_hc]
+    const float* __restrict__ hc_scale, // [3]
+    const float* __restrict__ hc_base,  // [mix_hc]
+    float* __restrict__ pre_out,        // [T, hc]
+    float* __restrict__ post,           // [T, hc]
+    float* __restrict__ comb,           // [T, hc, hc]
+    const float* __restrict__ streams,  // [T, hc, H]
+    const float* __restrict__ pre_in,   // [T, hc]
+    __nv_bfloat16* __restrict__ y,      // [T, H]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult,
+    const unsigned int sinkhorn_iters,
+    const float hc_eps) {
+    const unsigned int t = blockIdx.y;
+    const unsigned int hc = hc_mult;
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        const unsigned int mix_hc = (2 + hc) * hc;
+        hcv_finish(hc, mixes_in + (size_t)t * mix_hc, hc_scale, hc_base, pre_out + (size_t)t * hc,
+                   post + (size_t)t * hc, comb + (size_t)t * hc * hc, sinkhorn_iters, hc_eps);
+    }
+    const unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= hidden_size) return;
+    hcv_collapse_col(streams + (size_t)t * hc * hidden_size, pre_in + (size_t)t * hc,
+                     y + (size_t)t * hidden_size, hidden_size, hc, d);
+}
+// hc_v41_collapse spread over ceil(H/256) blocks a token, one column a thread.
+// Grid: (ceil(H/256), T). Block: 256.
+extern "C" __global__ void hc_v41_collapse_wide(
+    const float* __restrict__ streams, // [T, hc, H]
+    const float* __restrict__ pre,     // [T, hc]
+    __nv_bfloat16* __restrict__ y,     // [T, H]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult) {
+    const unsigned int t = blockIdx.y;
+    const unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= hidden_size) return;
+    hcv_collapse_col(streams + (size_t)t * hc_mult * hidden_size, pre + (size_t)t * hc_mult,
+                     y + (size_t)t * hidden_size, hidden_size, hc_mult, d);
+}
+// hc_post (hyper_connection.cu) spread the same way: one column a thread, the
+// per-column body unchanged (all hc residual values of the column are read
+// before the column is written, so `out` may still alias `residual`).
+// out[t,j,d] = post[t,j]*block_out[t,d] + sum_i comb[t,i,j]*residual[t,i,d].
+// Grid: (ceil(H/256), T). Block: 256.
+extern "C" __global__ void hc_v41_post_wide(
+    const __nv_bfloat16* __restrict__ block_out, // [T, H]
+    const float* __restrict__ residual,          // [T, hc, H]
+    const float* __restrict__ post,              // [T, hc]
+    const float* __restrict__ comb,              // [T, hc, hc]
+    float* __restrict__ out,                     // [T, hc, H]
+    const unsigned int hidden_size,
+    const unsigned int hc_mult) {
+    const unsigned int t = blockIdx.y;
+    const unsigned int H = hidden_size;
+    const unsigned int hc = hc_mult;
+    const unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= H) return;
+    const __nv_bfloat16* x = block_out + (size_t)t * H;
+    const float* res = residual + (size_t)t * hc * H;
+    const float* p = post + (size_t)t * hc;
+    const float* c = comb + (size_t)t * hc * hc;
+    float* o = out + (size_t)t * hc * H;
+    float xd = (float)x[d];
+    float rv[HCV_MAX_HC];
+    for (unsigned int i = 0; i < hc; ++i) rv[i] = res[i * H + d];
+    for (unsigned int j = 0; j < hc; ++j) {
+        float acc = p[j] * xd;
+        for (unsigned int i = 0; i < hc; ++i) acc += c[i * hc + j] * rv[i];
+        o[j * H + d] = acc;
+    }
+}
 // Grid: (T). Block: 256.
 extern "C" __global__ void hc_v41_collapse(
     const float* __restrict__ streams, // [T, hc, H]

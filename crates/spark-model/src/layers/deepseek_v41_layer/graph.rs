@@ -31,17 +31,16 @@ impl DeepSeekV41Layer {
         stream: u64,
     ) -> Result<()> {
         let rt = &self.rt;
-        self.mixes(
+        self.mixes_collapse(
             gpu,
             &self.hc_attn,
             streams,
             rt.pre_a,
-            rt.post_s,
-            rt.comb_s,
+            rt.pre_prev,
+            hidden,
             1,
             stream,
         )?;
-        self.collapse(gpu, streams, rt.pre_prev, hidden, 1, stream)?;
         ops::rms_norm(
             gpu,
             self.k_rms_norm,
@@ -70,17 +69,16 @@ impl DeepSeekV41Layer {
     ) -> Result<()> {
         let rt = &self.rt;
         self.hc_post(gpu, attn_out, streams, rt.post_s, rt.comb_s, 1, stream)?;
-        self.mixes(
+        self.mixes_collapse(
             gpu,
             &self.hc_ffn,
             streams,
             rt.pre_f,
-            rt.post_s,
-            rt.comb_s,
+            rt.pre_a,
+            hidden,
             1,
             stream,
         )?;
-        self.collapse(gpu, streams, rt.pre_a, hidden, 1, stream)?;
         ops::rms_norm(
             gpu,
             self.k_rms_norm,
