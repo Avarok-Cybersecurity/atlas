@@ -3198,6 +3198,11 @@ state  = "unported"
 
 [[kernel]]
 source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_sum_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
 entry  = "moe_v41_swiglu"
 state  = "unported"
 
