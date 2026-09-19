@@ -111,6 +111,32 @@ impl MoeV41 {
     }
 }
 
+impl MoeV41 {
+    /// Diagnostics: the router of this layer on `x` (one token), the `k`
+    /// best experts by `score + bias` in the reference's order. Drains the
+    /// stream; clobbers `self.logits`.
+    pub fn route_predict(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        x: DevicePtr,
+        k: usize,
+        stream: u64,
+    ) -> Result<Vec<usize>> {
+        let c = &self.cfg;
+        self.route_launch(gpu, w, x, 1, stream)?;
+        let mut bytes = vec![0u8; c.n_routed * 4];
+        gpu.copy_d2h_on_stream(self.logits, &mut bytes, stream)?;
+        let logits: Vec<f32> = bytes
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        let mut wide = c.clone();
+        wide.topk = k.min(c.n_routed);
+        Ok(route_from_logits(&logits, 1, &w.gate_bias, &wide).1)
+    }
+}
+
 fn router_staged() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| !std::env::var("ATLAS_DS41_ROUTER_STAGED").is_ok_and(|v| v == "0"))

@@ -106,6 +106,10 @@ pub struct V41Runtime {
     /// Set when a capture failed: every segment from then on runs eagerly
     /// (graphs already captured keep replaying; they are valid).
     pub graph_disabled: AtomicBool,
+    /// `ATLAS_DS41_PREDICT_TRACE`: the last three layers' MoE inputs
+    /// (`[3, hidden]` bf16, slot `layer % 3`) and the trace file.
+    pub pred_x: DevicePtr,
+    pub pred_trace: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
 }
 
 /// How the single-token step runs. `ATLAS_DS41_GRAPH_ORACLE=1` runs every

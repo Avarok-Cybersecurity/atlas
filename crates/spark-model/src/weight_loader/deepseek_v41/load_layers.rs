@@ -246,6 +246,14 @@ pub(super) fn load_layers(
         step_engram_ms: Mutex::new(0.0),
         step_start: Mutex::new(None),
         graph_disabled: std::sync::atomic::AtomicBool::new(false),
+        pred_x: gpu.alloc(3 * dim * 2)?,
+        pred_trace: Mutex::new(match std::env::var("ATLAS_DS41_PREDICT_TRACE") {
+            Ok(path) => {
+                tracing::info!("DeepSeek-V4.1: routing prediction trace -> {path}");
+                Some(std::io::BufWriter::new(std::fs::File::create(&path)?))
+            }
+            Err(_) => None,
+        }),
     });
 
     // ── kernels shared by every layer ──

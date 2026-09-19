@@ -208,6 +208,73 @@ impl DeepSeekV41Layer {
         }
     }
 
+    /// `ATLAS_DS41_PREDICT_TRACE`: before this layer's routing, run its
+    /// router on the MoE inputs of layers L-1 and L-2 (kept in `rt.pred_x`),
+    /// keep the 12 best of each, note which of the layer's experts are
+    /// resident now, then save this layer's input for the layers after it.
+    /// Diagnostics: synchronises twice a layer.
+    #[allow(clippy::type_complexity)]
+    fn predict_before_moe(
+        &self,
+        gpu: &dyn GpuBackend,
+        normed: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<Option<(Vec<bool>, Vec<Vec<usize>>)>> {
+        let rt = &self.rt;
+        if m != 1 || start_pos == 0 || rt.pred_trace.lock().unwrap().is_none() {
+            return Ok(None);
+        }
+        let h = rt.hidden;
+        let slot = |l: usize| DevicePtr(rt.pred_x.0 + ((l % 3) * h * 2) as u64);
+        let moe = rt.moe.lock().unwrap();
+        let mut preds = Vec::new();
+        for d in 1..=2 {
+            if self.idx >= d {
+                preds.push(moe.route_predict(gpu, &self.moe_w, slot(self.idx - d), 12, stream)?);
+            }
+        }
+        gpu.copy_d2d_async(normed, slot(self.idx), h * 2, stream)?;
+        let lru = rt.lru.lock().unwrap();
+        let resident: Vec<bool> = (0..rt.moe_cfg.n_routed)
+            .map(|e| lru.contains(self.idx as u32, e as u32))
+            .collect();
+        Ok(Some((resident, preds)))
+    }
+
+    fn predict_log(
+        &self,
+        start_pos: usize,
+        resident: &[bool],
+        preds: &[Vec<usize>],
+        actual: &[usize],
+    ) {
+        use std::io::Write;
+        let mut g = self.rt.pred_trace.lock().unwrap();
+        let Some(w) = g.as_mut() else { return };
+        let ids = |v: &[usize]| {
+            v.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let misses: Vec<usize> = actual.iter().copied().filter(|&e| !resident[e]).collect();
+        let _ = write!(
+            w,
+            "pos={start_pos} L{} act={} miss={}",
+            self.idx,
+            ids(actual),
+            ids(&misses)
+        );
+        for (i, p) in preds.iter().enumerate() {
+            // the prediction, and the part of it a prefetch would have to read
+            let cold: Vec<usize> = p.iter().copied().filter(|&e| !resident[e]).collect();
+            let _ = write!(w, " d{}={} c{}={}", i + 1, ids(p), i + 1, ids(&cold));
+        }
+        let _ = writeln!(w);
+    }
+
     /// The eager step after the engram: every launch issued from the host,
     /// the attention and the MoE with their host work inline. This is the
     /// path `ATLAS_DS41_GRAPH` unset (or `0`) takes, and prefill always.
@@ -320,6 +387,7 @@ impl DeepSeekV41Layer {
                 trace_hash(gpu, streams, m * hc * h * 4)
             );
         }
+        let pred = self.predict_before_moe(gpu, normed, m, start_pos, stream)?;
         let moe_out = {
             let moe = rt.moe.lock().unwrap();
             let mut lru = rt.lru.lock().unwrap();
@@ -335,6 +403,9 @@ impl DeepSeekV41Layer {
                 stream,
             )?;
             rt.step_moe.lock().unwrap().add(&moe.last.get());
+            if let Some((resident, preds)) = pred {
+                self.predict_log(start_pos, &resident, &preds, &i_);
+            }
             if trace_on() {
                 let after = lru.stats();
                 let wb: Vec<u8> = w_.iter().flat_map(|x| x.to_le_bytes()).collect();
