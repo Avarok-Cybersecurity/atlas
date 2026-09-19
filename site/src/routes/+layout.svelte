@@ -9,6 +9,7 @@
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   import { page } from '$app/state';
   import { onMount } from 'svelte';
+  import { crossesGroup } from '$lib/route-groups.js';
   import { detectHost } from '$lib/install/host.svelte.js';
   import { faq as engineFaq, githubUrl, recipesUrl, discordUrl, xUrl, hero } from '$lib/data.js';
   import { pages, SITE, company, links } from '$lib/content/index.js';
@@ -17,6 +18,31 @@
 
   // Once, here, rather than in each surface that prints an install line.
   onMount(detectHost);
+
+  // A link from the marketing pages to the developer pages, or back, is a full
+  // page load and is never preloaded. $lib/route-groups.js says why: the client
+  // router keeps both design systems in the page otherwise, and one of them
+  // restyles the other's header. The mark goes on in the capture phase, so it is
+  // there before the router's own listeners read the link.
+  onMount(() => {
+    const mark = (e) => {
+      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!a || a.hasAttribute('data-sveltekit-reload')) return;
+      if (crossesGroup(location.pathname, a.getAttribute('href'), location.origin)) a.setAttribute('data-sveltekit-reload', '');
+    };
+    const events = ['pointerover', 'focusin', 'touchstart', 'mousedown', 'click'];
+    for (const name of events) document.addEventListener(name, mark, { capture: true, passive: true });
+    return () => {
+      for (const name of events) document.removeEventListener(name, mark, { capture: true });
+    };
+  });
+  // There is deliberately no `beforeNavigate` net under this. The back button never
+  // needs one: a crossing is always a full load, so the two documents never share
+  // a history entry the client router could replay. And importing $app/navigation
+  // here cost every page one more request (a 22 byte facade chunk), which is a
+  // queued round trip ahead of first paint under the Lighthouse gate. Nothing on
+  // the site calls goto() across the two groups. If something ever must, it
+  // should set `location.href` instead, which is a full load by definition.
 
   // Canonicals are extensionless. Cloudflare Pages pretty-URLs /engine (200)
   // and 308s /engine.html → /engine, so a canonical ending in .html names a

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 import { describe, expect, it } from 'bun:test';
-import { HOST_CONFIG_FILES, NEVER_CACHED, shouldPrecache, strategyFor } from './strategy.js';
+import { HOST_CONFIG_FILES, MEDIA_PREFIXES, NEVER_CACHED, shouldPrecache, strategyFor } from './strategy.js';
+import { readdirSync, statSync } from 'node:fs';
+import { join, sep } from 'node:path';
 
 describe('strategyFor', () => {
   // The rule with a consequence outside the browser: a cached installer is a
@@ -38,6 +40,29 @@ describe('strategyFor', () => {
     for (const p of ['/', '/control', '/index.html', '/logo.svg', '/site.webmanifest']) {
       expect(strategyFor(p)).toBe('network-first');
     }
+  });
+});
+
+describe('media', () => {
+  it('is left to the browser: video arrives in byte ranges the worker cannot cache', () => {
+    for (const p of ['/media/console-ask.mp4', '/media/console-ask.webm', '/media/reel.mp4', '/media/art/art-gov.webp', '/team/kyle-croll.webp']) {
+      expect(strategyFor(p)).toBe('bypass');
+      expect(shouldPrecache(p)).toBe(false);
+    }
+  });
+
+  // The guard that would have caught it. Everything in static/ that passes
+  // shouldPrecache is downloaded by every first time visitor, so the total is a
+  // budget. It was 31 MB for a day.
+  it('keeps the install time precache under one megabyte of static files', () => {
+    const root = join(import.meta.dir, '..', '..', '..', 'static');
+    const walk = (dir) => readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? walk(join(dir, f)) : [join(dir, f)]));
+    const bytes = walk(root)
+      .map((file) => ({ path: '/' + file.slice(root.length + 1).split(sep).join('/'), size: statSync(file).size }))
+      .filter((f) => shouldPrecache(f.path))
+      .reduce((sum, f) => sum + f.size, 0);
+    expect(bytes).toBeLessThan(1_000_000);
+    expect(MEDIA_PREFIXES).toContain('/media/');
   });
 });
 

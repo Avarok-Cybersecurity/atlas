@@ -153,6 +153,14 @@
 }
 a.av-card:hover, .av-card-link:hover { border-color: var(--accent); transform: translateY(-2px); }
 .av-card-accent { border-top: 3px solid var(--sx, var(--accent)); }
+/* A card with a little life. Its colour is light from one corner, it lifts on
+   hover, and the light comes up. Transform and opacity only, so it costs nothing
+   while nobody is touching it. Used where a plain grid of cards felt inert. */
+.av-lively { position: relative; isolation: isolate; overflow: hidden; transition: transform 0.22s var(--av-ease), border-color 0.22s, box-shadow 0.22s; }
+.av-lively::before { content: ''; position: absolute; z-index: -1; right: -30%; top: -50%; width: 85%; aspect-ratio: 1; background: radial-gradient(closest-side, color-mix(in srgb, var(--sx, var(--accent)) 32%, transparent), transparent); opacity: 0.5; transition: opacity 0.3s, transform 0.5s var(--av-ease); }
+.av-lively:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--sx, var(--accent)) 65%, var(--border)); box-shadow: var(--av-shadow); }
+.av-lively:hover::before { opacity: 1; transform: scale(1.12); }
+.av-lively-n { display: inline-block; font-size: 0.7rem; letter-spacing: 0.12em; color: var(--sx-text, var(--accent)); margin-bottom: 0.7rem; }
 .av-card h3 { font-size: 1.12rem; margin-bottom: 0.55rem; }
 .av-card p { color: var(--t2); font-size: 0.94rem; line-height: 1.6; }
 .av-card .av-link { margin-top: 1rem; font-size: 0.9rem; }
@@ -187,22 +195,45 @@ a.av-card:hover, .av-card-link:hover { border-color: var(--accent); transform: t
    this does it with one animated conic gradient behind a rounded frame:
    zero bytes, GPU cheap, and it retints with the theme through color-mix.
    ---------------------------------------------------------------------------- */
-@property --av-angle { syntax: '<angle>'; inherits: false; initial-value: 20deg; }
+/* The ring around a product screen.
+
+   It turns, and it has to cost nothing while it does. The first version animated
+   the gradient's own angle through a registered custom property, with a blurred
+   copy behind it for the glow. That repaints the gradient and re-blurs it on
+   every frame: measured on the idle front page, 38% of a core, all day, and the
+   reason a laptop's fans came on. (scripts/perf/cpu.mjs is the probe.)
+
+   Now the gradient is painted once, on a square behind the screen, and the
+   square is turned with `transform`, which the compositor does without the main
+   thread or a repaint. The frame clips it to the ring. The glow is a static
+   shadow in the four brand colours, because a shadow is not clipped by its own
+   box's overflow and costs nothing once drawn. Same picture, about 4% of a core.
+
+   `is-live` is set by reveal.js while the frame is on screen, so a ring nobody
+   can see does not turn. */
 .av-frame {
-  --av-angle: 20deg;
-  position: relative; border-radius: calc(var(--av-radius) + 10px); padding: 12px; isolation: isolate;
+  position: relative; border-radius: calc(var(--av-radius) + 10px); padding: 12px; isolation: isolate; overflow: hidden;
+  box-shadow:
+    -22px -16px 54px -22px color-mix(in srgb, var(--ch-violet) 60%, transparent),
+    22px -16px 54px -22px color-mix(in srgb, var(--ch-cyan) 55%, transparent),
+    22px 20px 54px -22px color-mix(in srgb, var(--ch-green) 45%, transparent),
+    -22px 20px 54px -22px color-mix(in srgb, var(--ch-gold) 50%, transparent),
+    0 30px 80px -34px rgba(0, 0, 0, 0.55);
+}
+.av-frame::before {
+  content: ''; position: absolute; z-index: -1; left: 50%; top: 50%; width: 170%; aspect-ratio: 1;
   background:
-    conic-gradient(from var(--av-angle) at 50% 50%,
+    conic-gradient(from 20deg at 50% 50%,
       color-mix(in srgb, var(--ch-violet) 85%, var(--bg)) 0deg,
       color-mix(in srgb, var(--ch-cyan) 85%, var(--bg)) 90deg,
       color-mix(in srgb, var(--ch-green) 70%, var(--bg)) 180deg,
       color-mix(in srgb, var(--ch-gold) 80%, var(--bg)) 260deg,
       color-mix(in srgb, var(--ch-violet) 85%, var(--bg)) 360deg);
-  animation: av-spin 14s linear infinite;
+  transform: translate(-50%, -50%);
 }
-.av-frame::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background: inherit; filter: blur(28px); opacity: 0.55; z-index: -1; }
-.av-frame > * { border-radius: var(--av-radius); overflow: hidden; background: var(--sunk); box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.6); }
-@keyframes av-spin { to { --av-angle: 380deg; } }
+.av-frame.is-live::before { animation: av-ring 14s linear infinite; will-change: transform; }
+.av-frame > * { border-radius: var(--av-radius); overflow: hidden; background: var(--sunk); }
+@keyframes av-ring { from { transform: translate(-50%, -50%) rotate(0deg); } to { transform: translate(-50%, -50%) rotate(360deg); } }
 /* The ground is the footage's own dark, in both themes: every clip is dark, and a
    light ground flashes white in the moment before a poster paints. */
 .av-video { position: relative; aspect-ratio: 16 / 9; width: 100%; background: #0f1216; }
@@ -251,7 +282,7 @@ a.av-card:hover, .av-card-link:hover { border-color: var(--accent); transform: t
 .av-tourstack > .is-off { z-index: 0; visibility: hidden; pointer-events: none; transition: visibility 0s linear 0.28s; }
 .av-tourstack > .is-off > :first-child { visibility: hidden; }
 .av-tourstack > .is-off > :first-child, .av-tourstack > .is-off .av-frame > * { animation: none; }
-.av-tourstack > .is-off .av-frame { background: none; animation: none; }
+.av-tourstack > .is-off .av-frame { box-shadow: none; }
 .av-tourstack > .is-off .av-frame::before { content: none; }
 @keyframes av-tour-in { from { opacity: 0; } }
 /* A class that sets display would otherwise beat the hidden attribute, and every tab panel would render at once. */
@@ -337,7 +368,12 @@ html:not([data-theme='light']) .av img.is-dark-invert { filter: grayscale(1) inv
 .av-diagram .wire { stroke: var(--border-strong); stroke-width: 2; fill: none; }
 .av-diagram .wire.oob, .av-diagram .fleet { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 4 5; fill: none; }
 .av-diagram .fleet { rx: 16; }
-.av-diagram .wire.hot { stroke: var(--accent); stroke-dasharray: 6 6; animation: av-dash 1.4s linear infinite; }
+/* A dash offset cannot be animated by the compositor, so every step is a repaint
+   of the drawing. steps(24) makes that 17 repaints a second instead of 60, which
+   reads the same for marching dashes, and reveal.js only sets `is-live` while
+   the diagram is on screen. */
+.av-diagram .wire.hot { stroke: var(--accent); stroke-dasharray: 6 6; }
+.av-diagram.is-live .wire.hot { animation: av-dash 1.4s steps(24) infinite; }
 @keyframes av-dash { to { stroke-dashoffset: -24; } }
 .av-kicker { display: inline-flex; align-items: center; gap: 0.5rem; font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--t3); }
 .av-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); display: inline-block; }
@@ -384,7 +420,7 @@ html:not([data-theme='light']) .av img.is-dark-invert { filter: grayscale(1) inv
 .av-reveal.is-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   .av-reveal { opacity: 1; transform: none; transition: none; }
-  .av-frame, .av-diagram .wire.hot { animation: none; }
+  .av-frame::before, .av-diagram .wire.hot { animation: none !important; }
   .av *, .av *::before, .av *::after { transition-duration: 0.001ms !important; animation-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
 @media (max-width: 1080px) {

@@ -18,7 +18,8 @@
   Three props exist for clips that share one place on the page, like the tabs
   of the console tour (home/Tour.svelte):
     active   false keeps the clip from playing. When it turns false the clip
-             rewinds and the poster comes back, so the next visit starts clean.
+             pauses at once, then rewinds under its poster a moment later, once
+             it is out of sight, so the next visit starts clean.
     warm     fetch the video now, paused, because it is likely to be asked for.
     hold     render no poster yet. Tour holds the posters of the tabs nobody
              has opened until the page is idle, then releases them all so a
@@ -42,6 +43,8 @@
   let visible = $state(false); // the clip is on or near the screen
   let ready = $state(false); // the <video> element is in the DOM, and stays
   let playing = $state(false); // frames are on screen, the poster can go
+  // Longer than the tour's 0.28 s cross fade (av-tour-in in avarok.css).
+  const REWIND_AFTER_MS = 450;
 
   onMount(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -77,19 +80,30 @@
   // muted is set as a property as well as an attribute: browsers only allow
   // play() without a gesture on an element whose muted PROPERTY is true, and an
   // element created from script does not always pick that up from the attribute.
+  //
+  // Leaving a tab only PAUSES the clip. The rewind and the poster come back a
+  // moment later, once the panel has faded out of sight. Doing them at once was
+  // visible: the clip jumped to its first frame underneath the panel fading in
+  // over it, so a tab change flashed the opening screen of the tab being left.
+  let settle;
   $effect(() => {
     if (!video || controls) return;
     video.muted = true;
     video.defaultMuted = true;
+    clearTimeout(settle);
     if (visible && active) {
       video.play().catch(() => {});
       return;
     }
     video.pause();
     if (!active) {
-      playing = false;
-      if (video.currentTime > 0) video.currentTime = 0;
+      const v = video;
+      settle = setTimeout(() => {
+        playing = false;
+        if (v.currentTime > 0) v.currentTime = 0;
+      }, REWIND_AFTER_MS);
     }
+    return () => clearTimeout(settle);
   });
 </script>
 

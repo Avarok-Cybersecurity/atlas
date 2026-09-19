@@ -73,19 +73,30 @@ export default defineConfig({
         // page at 99 against a gate that demands 100.
         //
         //   av-chrome   what every route loads: the header, the footer, the
-        //               names and the nav tree, the page registry
+        //               names and the nav tree, the page registry, and the
+        //               rule that keeps the two design systems apart
         //   av-ui       the marketing components
         //
         // Page copy (src/lib/content/home.js and friends) is deliberately NOT
         // grouped: each stays its own file, loaded only by the pages that
-        // print it. The developer pages load av-chrome and nothing else from
-        // here, so their code is chunked exactly as before.
+        // print it.
+        //
+        // A group also takes its modules' DEPENDENCIES. So anything that both a
+        // marketing component and a developer page import lands in av-ui, and
+        // the developer page then has to download all of av-ui, and inline all
+        // of its CSS, to read it. For a while /engine loaded 130 KB of marketing
+        // components for the sake of a star count. The shared things are named
+        // in av-chrome instead, which every route loads anyway: data.js, the
+        // install helpers, the route group rule, and the two small generated
+        // files both sides print (stars, the ladder). Never the big ones.
+        // e2e/page-weight.spec.js fails if a developer page loads av-ui again,
+        // or if any page grows a request.
         codeSplitting: {
           groups: [
             {
               name: 'av-chrome',
               priority: 30,
-              test: /[\\/](src[\\/]lib[\\/]components[\\/]avarok[\\/](SiteNav|SiteFooter)\.svelte|src[\\/]lib[\\/]content[\\/](brand|index|faq)\.js|web-shared[\\/]components[\\/](AtlasLockup|ThemeToggle)\.svelte|web-shared[\\/]theme\.js)/
+              test: /[\\/](src[\\/]lib[\\/]components[\\/]avarok[\\/](SiteNav|SiteFooter)\.svelte|src[\\/]lib[\\/]content[\\/](brand|index|faq)\.js|src[\\/]lib[\\/]route-groups\.js|src[\\/]lib[\\/]data\.js|src[\\/]lib[\\/]install[\\/]|src[\\/]lib[\\/](stars|ladder)\.generated\.json|web-shared[\\/]components[\\/](AtlasLockup|ThemeToggle)\.svelte|web-shared[\\/]theme\.js)/
             },
             {
               name: 'av-ui',
