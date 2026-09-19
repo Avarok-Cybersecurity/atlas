@@ -333,6 +333,37 @@ fn run_case(tokens: usize) {
         "  vs the reference's bf16 expert math (no q8 activations): worst {worst_ref:.5} (loose bound {loose:.4})"
     );
 
+    // oracle 4 (one token): the CUDA-graph split of the same step. The router
+    // GEMV (segment A's tail), the host span (`stage_m1`: selection, fetch,
+    // plan uploads), then `compute_m1` captured once and replayed, must be
+    // the eager forward's output bit for bit.
+    if tokens == 1 {
+        moe.route_launch(g, &lw, x_dev, 1, stream).unwrap();
+        let stage = moe.stage_m1(g, &lw, &mut lru, &ex, 2, stream).unwrap();
+        assert_eq!(
+            stage.indices, indices,
+            "staged routing differs from the forward's"
+        );
+        assert_eq!(
+            stage.ne, TOPK,
+            "one token's picks are {} distinct experts",
+            stage.ne
+        );
+        g.begin_capture(stream).unwrap();
+        let out2 = moe.compute_m1(g, &lw, x_dev, stage.ne, stream).unwrap();
+        let graph = g.end_capture(stream).unwrap();
+        g.launch_graph(graph, stream).unwrap();
+        g.synchronize(stream).unwrap();
+        let mut ob2 = vec![0u8; DIM * 2];
+        g.copy_d2h(out2, &mut ob2).unwrap();
+        g.destroy_graph(graph).unwrap();
+        assert_eq!(
+            ob2, ob,
+            "the captured single-token expert compute differs from the eager forward"
+        );
+        println!("  captured compute_m1 == eager forward (bit for bit)");
+    }
+
     moe.free(g).unwrap();
     arena.free(g).unwrap();
 }

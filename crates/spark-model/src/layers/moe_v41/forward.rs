@@ -11,13 +11,13 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing};
 use crate::layers::ops::{
-    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_gemm, kquant_mmvq_experts_w,
-    kquant_mmvq_w, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
+    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_gemm, kquant_mmvq_w,
+    kquant_q8_1_rows,
 };
 use crate::weight_map::DenseWeight;
 
 impl MoeV41 {
-    fn launch_n(
+    pub(super) fn launch_n(
         &self,
         gpu: &dyn GpuBackend,
         k: KernelHandle,
@@ -59,30 +59,7 @@ impl MoeV41 {
         let slots = lru.fetch_many(src, &keys, reader_threads)?;
         let after = lru.stats();
         let t2 = std::time::Instant::now();
-        // group the (token, k) assignments by expert: rows and weights, group-major
-        let mut groups: std::collections::BTreeMap<usize, Vec<(i32, f32, usize)>> =
-            std::collections::BTreeMap::new();
-        for t in 0..m {
-            for kk in 0..c.topk {
-                let a = t * c.topk + kk;
-                groups
-                    .entry(indices[a])
-                    .or_default()
-                    .push((t as i32, weights[a], a));
-            }
-        }
-        let mut rows_host: Vec<u8> = Vec::with_capacity(m * c.topk * 4);
-        let mut w_host: Vec<u8> = Vec::with_capacity(m * c.topk * 4);
-        let mut plan: Vec<(usize, usize, usize)> = Vec::with_capacity(groups.len()); // (slot assignment index, offset, rows)
-        for members in groups.values() {
-            let off = rows_host.len() / 4;
-            for &(t, rw, a) in members {
-                rows_host.extend_from_slice(&t.to_le_bytes());
-                w_host.extend_from_slice(&rw.to_le_bytes());
-                let _ = a;
-            }
-            plan.push((members[0].2, off, members.len()));
-        }
+        let (rows_host, w_host, plan) = self.plan(&indices, &weights, m);
         gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
         gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
         gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
@@ -92,73 +69,8 @@ impl MoeV41 {
             // experts (pointer table), the routing weight folded in at the
             // SwiGLU and the expert rows summed into `acc` in plan order, the
             // same order and the same per-row math as the loop below
-            let ne = plan.len();
-            let mut ptrs: Vec<u8> = Vec::with_capacity(3 * ne * 8);
-            for which in 0..3 {
-                for &(a0, _, _) in &plan {
-                    let slot = slots[a0];
-                    let p = [slot.gate, slot.up, slot.down][which];
-                    ptrs.extend_from_slice(&p.0.to_le_bytes());
-                }
-            }
-            gpu.copy_h2d_async(&ptrs, self.ptrs_dev, stream)?;
-            let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
-            kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
-            for (which, out) in [(0usize, self.gate_out), (1, self.up_out)] {
-                kquant_mmvq_experts_w(
-                    gpu,
-                    self.k.mmvq_q2k_experts,
-                    table(which),
-                    self.a_q8,
-                    out,
-                    c.inter as u32,
-                    c.dim as u32,
-                    1,
-                    ne as u32,
-                    0,
-                    stream,
-                )?;
-            }
-            self.launch_n(gpu, self.k.swiglu, ne * c.inter, stream, |l| {
-                l.arg_ptr(self.gate_out)
-                    .arg_ptr(self.up_out)
-                    .arg_ptr(self.weight_dev)
-                    .arg_ptr(self.h)
-                    .arg_u32(ne as u32)
-                    .arg_u32(c.inter as u32)
-                    .arg_f32(c.swiglu_limit)
-            })?;
-            kquant_q8_1_rows(
-                gpu,
-                self.k.q8_rows,
-                self.h,
-                self.h_q8,
-                ne as u32,
-                c.inter as u32,
-                stream,
-            )?;
-            kquant_mmvq_experts_w(
-                gpu,
-                self.k.mmvq_q3k_experts,
-                table(2),
-                self.h_q8,
-                self.down_out,
-                c.dim as u32,
-                c.inter as u32,
-                1,
-                ne as u32,
-                kquant_q8_1_rows_bytes(1, c.inter as u32) as u32,
-                stream,
-            )?;
-            // All `ne` rows land in the one token row: summed in plan order by a
-            // single kernel. `scatter_add` here (one block per expert row, every
-            // block on the same `acc` row) was an inter-block data race.
-            self.launch_n(gpu, self.k.sum_rows, c.dim, stream, |l| {
-                l.arg_ptr(self.acc)
-                    .arg_ptr(self.down_out)
-                    .arg_u32(ne as u32)
-                    .arg_u32(c.dim as u32)
-            })?;
+            let ne = self.upload_expert_table(gpu, &plan, &slots, stream)?;
+            self.routed_m1(gpu, x, ne, stream)?;
         }
         for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
             let slot = slots[a0];
@@ -306,6 +218,33 @@ impl MoeV41 {
                 .arg_u32(c.dim as u32)
                 .launch(stream)?;
         }
+        self.shared_expert(gpu, w, x, m, stream)?;
+        if self.timing_sync {
+            // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
+            gpu.synchronize(stream)?;
+        }
+        self.last.set(MoeV41Timing {
+            route_ms: (t1 - t0).as_secs_f64() * 1e3,
+            fetch_ms: (t2 - t1).as_secs_f64() * 1e3,
+            compute_ms: t2.elapsed().as_secs_f64() * 1e3,
+            hits: after.hits - before.hits,
+            misses: after.misses - before.misses,
+            bytes_read: after.bytes_read - before.bytes_read,
+        });
+        Ok((self.out, weights, indices))
+    }
+
+    /// The shared expert added into `acc`, then `acc` finished into `out`.
+    /// Device work only.
+    pub(super) fn shared_expert(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        x: DevicePtr,
+        m: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
         // shared expert: bf16 (GEMV / tiled GEMM) or the GGUF's K-quant
         // blocks on the routed experts' kernels (GEMV at m <= 8, MMQ above)
         let kq = |a: DevicePtr,
@@ -402,18 +341,7 @@ impl MoeV41 {
                 .arg_ptr(self.out)
                 .arg_u32((m * c.dim) as u32)
         })?;
-        if self.timing_sync {
-            // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
-            gpu.synchronize(stream)?;
-        }
-        self.last.set(MoeV41Timing {
-            route_ms: (t1 - t0).as_secs_f64() * 1e3,
-            fetch_ms: (t2 - t1).as_secs_f64() * 1e3,
-            compute_ms: t2.elapsed().as_secs_f64() * 1e3,
-            hits: after.hits - before.hits,
-            misses: after.misses - before.misses,
-            bytes_read: after.bytes_read - before.bytes_read,
-        });
-        Ok((self.out, weights, indices))
+        Ok(())
     }
+
 }

@@ -20,6 +20,20 @@ impl MoeV41 {
         m: usize,
         stream: u64,
     ) -> Result<(Vec<f32>, Vec<usize>)> {
+        self.route_launch(gpu, w, x, m, stream)?;
+        self.route_select(gpu, w, m, stream)
+    }
+
+    /// The router GEMM/GEMV into `self.logits`: device work only (the half a
+    /// CUDA graph can hold).
+    pub fn route_launch(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        x: DevicePtr,
+        m: usize,
+        stream: u64,
+    ) -> Result<()> {
         let c = &self.cfg;
         ensure!(
             m >= 1 && m <= c.max_tokens,
@@ -50,7 +64,19 @@ impl MoeV41 {
             .arg_u32(m as u32)
             .arg_u32(c.n_routed as u32)
             .arg_u32(c.dim as u32)
-            .launch(stream)?;
+            .launch(stream)
+    }
+
+    /// The selection: drain the stream, download the logits `route_launch`
+    /// wrote, pick the top-k on the CPU as the reference does.
+    pub fn route_select(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        m: usize,
+        stream: u64,
+    ) -> Result<(Vec<f32>, Vec<usize>)> {
+        let c = &self.cfg;
         gpu.synchronize(stream)?;
         let mut bytes = vec![0u8; m * c.n_routed * 4];
         gpu.copy_d2h(self.logits, &mut bytes)?;

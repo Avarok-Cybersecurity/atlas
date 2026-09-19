@@ -29,6 +29,7 @@ use crate::layers::ops::ResidentMat;
 mod forward;
 mod init;
 mod route;
+mod single;
 
 const MODULE: &str = "moe_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -107,6 +108,15 @@ impl MoeV41Timing {
         self.misses += o.misses;
         self.bytes_read += o.bytes_read;
     }
+}
+
+/// What `stage_m1` leaves for `compute_m1`: the distinct expert count and
+/// the routing (for callers and diagnostics), with the host-span timing.
+pub struct MoeV41Stage {
+    pub ne: usize,
+    pub weights: Vec<f32>,
+    pub indices: Vec<usize>,
+    pub timing: MoeV41Timing,
 }
 
 pub struct MoeV41 {
