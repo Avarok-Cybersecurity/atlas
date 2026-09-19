@@ -7,7 +7,7 @@
 use anyhow::{Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
-use super::{GEMM_MODULE, Kernels, MODULE, MoeV41, MoeV41Cfg, MoeV41Timing};
+use super::{GEMM_MODULE, Kernels, MODULE, MoeV41, MoeV41Cfg, MoeV41Timing, SLOT_TABLE_LAYERS};
 use crate::layers::ops::{KQUANT_MODULE, kquant_mmq_act_bytes, kquant_q8_1_rows_bytes};
 
 impl MoeV41 {
@@ -66,6 +66,8 @@ impl MoeV41 {
                 mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,
                 mmq_q3k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q3_k_mmq128_nc")?,
                 mmq_q3k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q3_k_mmq128_wc")?,
+                route_select: gpu.kernel(MODULE, "moe_v41_route_select")?,
+                slot_table_set: gpu.kernel(MODULE, "moe_v41_slot_table_set")?,
             },
             logits: alloc(m * cfg.n_routed * 4)?,
             pred_logits: alloc(cfg.n_routed * 4)?,
@@ -86,6 +88,12 @@ impl MoeV41 {
             down_out: alloc(me * cfg.dim * 2)?,
             rows_dev: alloc(m * cfg.topk * 4)?,
             weight_dev: alloc(m * cfg.topk * 4)?,
+            route_hdr: alloc((1 + 3 * cfg.topk) * 4)?,
+            slot_table: {
+                let t = alloc(SLOT_TABLE_LAYERS * cfg.n_routed * 4)?;
+                gpu.memset(t, 0xFF, SLOT_TABLE_LAYERS * cfg.n_routed * 4)?;
+                t
+            },
             ptrs_dev: alloc(3 * cfg.topk * 8)?,
             sg: alloc(m * cfg.inter * 2)?,
             su: alloc(m * cfg.inter * 2)?,
@@ -113,6 +121,8 @@ impl MoeV41 {
             self.a_rows,
             self.a_q8,
             self.rows_dev,
+            self.route_hdr,
+            self.slot_table,
             self.gate_out,
             self.up_out,
             self.h,

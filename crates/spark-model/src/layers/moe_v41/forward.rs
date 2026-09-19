@@ -82,27 +82,41 @@ impl MoeV41 {
             self.shared_expert_body(gpu, w, x, 1, self.sa_q8, self.sh_q8, self.side)?;
             gpu.record_event(self.ev_out, self.side)?;
         }
-        let predict = next.filter(|_| m == 1 && prefetch_k() > 0 && lru.has_pool());
+        // ATLAS_DS41_DEVICE_ROUTE=1: the whole selection, the plan and the
+        // pointer table on the device, one read-back of the header, the host
+        // fetching misses on its flag (`device_route.rs`)
+        let dev_route = m1_arm && self.device_route_ok(w);
+        let predict = next.filter(|_| m == 1 && !dev_route && prefetch_k() > 0 && lru.has_pool());
         if let Some(nw) = predict {
             self.predict_launch(gpu, nw, x, stream)?;
         }
-        let (weights, indices) = self.route_select(gpu, w, m, stream)?;
-        let predicted = match predict {
-            Some(nw) => self.predict_select(gpu, nw, prefetch_k(), stream)?,
-            None => Vec::new(),
+        let (weights, indices, plan, slots, before, after, t1) = if dev_route {
+            let before = lru.stats();
+            let (weights, indices) =
+                self.route_device_m1(gpu, w, lru, src, reader_threads, stream)?;
+            let after = lru.stats();
+            let t1 = std::time::Instant::now();
+            (weights, indices, Vec::new(), Vec::new(), before, after, t1)
+        } else {
+            let (weights, indices) = self.route_select(gpu, w, m, stream)?;
+            let predicted = match predict {
+                Some(nw) => self.predict_select(gpu, nw, prefetch_k(), stream)?,
+                None => Vec::new(),
+            };
+            let t1 = std::time::Instant::now();
+            // this token batch's experts, gathered once; the predicted ones of
+            // the next layer start reading in the background
+            lru.begin_token();
+            let before = lru.stats();
+            let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
+            let slots = lru.fetch_many_on(gpu, stream, src, &keys, &predicted, reader_threads)?;
+            let after = lru.stats();
+            let (rows_host, w_host, plan) = self.plan(&indices, &weights, m);
+            gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
+            gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
+            (weights, indices, plan, slots, before, after, t1)
         };
-        let t1 = std::time::Instant::now();
-        // this token batch's experts, gathered once; the predicted ones of
-        // the next layer start reading in the background
-        lru.begin_token();
-        let before = lru.stats();
-        let keys: Vec<(u32, u32)> = indices.iter().map(|&e| (w.layer, e as u32)).collect();
-        let slots = lru.fetch_many_on(gpu, stream, src, &keys, &predicted, reader_threads)?;
-        let after = lru.stats();
         let t2 = std::time::Instant::now();
-        let (rows_host, w_host, plan) = self.plan(&indices, &weights, m);
-        gpu.copy_h2d_async(&rows_host, self.rows_dev, stream)?;
-        gpu.copy_h2d_async(&w_host, self.weight_dev, stream)?;
         gpu.memset_async(self.acc, 0, m * c.dim * 4, stream)?;
         if m1_arm {
             // the single-token arm: the token is every expert's activation, so
@@ -110,7 +124,11 @@ impl MoeV41 {
             // experts (pointer table), the routing weight folded in at the
             // SwiGLU and the expert rows summed into `acc` in plan order, the
             // same order and the same per-row math as the loop below
-            let ne = self.upload_expert_table(gpu, &plan, &slots, stream)?;
+            let ne = if dev_route {
+                c.topk
+            } else {
+                self.upload_expert_table(gpu, &plan, &slots, stream)?
+            };
             self.routed_m1(gpu, x, ne, stream)?;
         }
         // ATLAS_DS41_PREFILL_GEMV=1: every group through the decode GEMV arm in

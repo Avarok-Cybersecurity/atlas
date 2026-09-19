@@ -179,6 +179,17 @@ impl ExpertArena {
 type StagedRange = (u32, (u32, u32), usize, usize, usize);
 
 impl ExpertLru {
+    /// The arena's device address (slot `i` starts at `i * layout.bytes`).
+    pub fn arena_dev(&self) -> DevicePtr {
+        DevicePtr(self.dev)
+    }
+
+    /// The `(layer, expert, slot | -1)` changes since the last call: what a
+    /// device-side slot table has to learn (assignments and evictions).
+    pub fn drain_slot_changes(&mut self) -> Vec<(u32, u32, i32)> {
+        std::mem::take(&mut self.slot_changes)
+    }
+
     /// The slots are device memory behind a staging ring.
     pub fn is_device(&self) -> bool {
         self.staging.is_some()

@@ -84,6 +84,7 @@ impl ExpertLru {
             };
             if let Some(k) = self.meta[pick as usize].key.take() {
                 self.map.remove(&k);
+                self.slot_changes.push((k.0, k.1, -1));
                 self.stats.evictions += 1;
             }
             return Ok(pick);

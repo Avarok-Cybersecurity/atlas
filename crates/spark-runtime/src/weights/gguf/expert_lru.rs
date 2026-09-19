@@ -135,7 +135,7 @@ type MissRange = (u32, (u32, u32), SlotPtr, usize, usize);
 
 pub struct ExpertLru {
     host: *mut u8,
-    dev: u64,
+    pub(super) dev: u64,
     layout: SlotLayout,
     pub(super) n_slots: usize,
     pub(super) meta: Vec<SlotMeta>,
@@ -161,6 +161,9 @@ pub struct ExpertLru {
     /// Set when the slots are device memory fed through a page-locked ring
     /// (`expert_arena.rs`); `fetch_many_on` is then the only fetch.
     pub(super) staging: Option<super::expert_arena::Staging>,
+    /// `(layer, expert, slot | -1)` since the last `drain_slot_changes`: what
+    /// a device-side slot table has to learn (assignments and evictions).
+    pub(super) slot_changes: Vec<(u32, u32, i32)>,
 }
 
 // SAFETY: the raw arena pointers are addresses into memory the caller owns
@@ -216,6 +219,7 @@ impl ExpertLru {
             trace: None,
             t0: std::time::Instant::now(),
             staging: None,
+            slot_changes: Vec::new(),
         })
     }
 
@@ -313,6 +317,7 @@ impl ExpertLru {
         let i = self.take_victim()?;
         self.meta[i as usize].key = Some(key);
         self.map.insert(key, i);
+        self.slot_changes.push((key.0, key.1, i as i32));
         self.touch(i);
         Ok(i)
     }
@@ -320,6 +325,7 @@ impl ExpertLru {
     pub(super) fn unmap(&mut self, i: u32) {
         if let Some(k) = self.meta[i as usize].key.take() {
             self.map.remove(&k);
+            self.slot_changes.push((k.0, k.1, -1));
         }
         self.meta[i as usize].epoch = 0;
         self.meta[i as usize].ticket = None;

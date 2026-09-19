@@ -398,10 +398,12 @@ pub(super) fn load_layers(
             "layer {l}: correction bias has {} entries",
             gate_bias.len()
         );
+        let gate_bias_dev = MoeV41::upload_bias(gpu, &gate_bias)?;
         let moe_w = MoeV41LayerWeights {
             layer: l as u32,
             gate_w: bf16_ptr(store, &format!("{lp}.ffn.gate.weight"))?,
             gate_bias,
+            gate_bias_dev,
             shared_w1: resident_mat(store, &format!("{lp}.ffn.shared_experts.w1"))?,
             shared_w2: resident_mat(store, &format!("{lp}.ffn.shared_experts.w2"))?,
             shared_w3: resident_mat(store, &format!("{lp}.ffn.shared_experts.w3"))?,

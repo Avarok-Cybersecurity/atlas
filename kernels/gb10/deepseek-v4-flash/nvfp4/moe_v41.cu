@@ -276,3 +276,121 @@ extern "C" __global__ void __launch_bounds__(256) moe_v41_router_gemv_f32out_pro
     }
     C[(unsigned long long)t * N + n] = acc;
 }
+
+// ── The single-token selection on the device (ATLAS_DS41_DEVICE_ROUTE=1) ──
+//
+// `route_from_logits` bit for bit: score = sqrt(softplus(logit / temp)) with
+// glibc 2.39's expf (table + three double FMAs, round-half-away) and log1pf
+// (the Sun algorithm in the installed aarch64 libm's exact FMA pattern),
+// both verified identical to the host over all 2^32 f32 inputs
+// (docs/perf/ds41_prototypes/glibc_softplus_exact.cu); rank by score + bias
+// descending with index ascending on ties (= Rust's stable sort_by), top-k,
+// weights in pick order with the sum in pick order (+1e-20, / , * scale as
+// separate roundings), then the plan in ascending expert id: the weights and
+// the gate / up / down pointers from the device slot table (a slot of -1 sets
+// the miss flag; the host then fetches and re-uploads the table as today).
+// One block of n_routed threads per token; the host checks the two constants.
+#define MOE_V41_ROUTE_NR 384
+#define MOE_V41_ROUTE_TOPK 6
+
+__device__ __constant__ unsigned long long MOE_V41_EXP2F_TAB[32] = {
+0x3ff0000000000000ull, 0x3fefd9b0d3158574ull, 0x3fefb5586cf9890full, 0x3fef9301d0125b51ull, 0x3fef72b83c7d517bull, 0x3fef54873168b9aaull, 0x3fef387a6e756238ull, 0x3fef1e9df51fdee1ull,
+0x3fef06fe0a31b715ull, 0x3feef1a7373aa9cbull, 0x3feedea64c123422ull, 0x3feece086061892dull, 0x3feebfdad5362a27ull, 0x3feeb42b569d4f82ull, 0x3feeab07dd485429ull, 0x3feea47eb03a5585ull,
+0x3feea09e667f3bcdull, 0x3fee9f75e8ec5f74ull, 0x3feea11473eb0187ull, 0x3feea589994cce13ull, 0x3feeace5422aa0dbull, 0x3feeb737b0cdc5e5ull, 0x3feec49182a3f090ull, 0x3feed503b23e255dull,
+0x3feee89f995ad3adull, 0x3feeff76f2fb5e47ull, 0x3fef199bdd85529cull, 0x3fef3720dcef9069ull, 0x3fef5818dcfba487ull, 0x3fef7c97337b9b5full, 0x3fefa4afa2a490daull, 0x3fefd0765b6e4540ull };
+
+static __device__ __forceinline__ float moe_v41_glibc_expf(float x) {
+  const double N = 32.0, InvLn2N = 0x1.71547652b82fep+0 * N, C0 = 0x1.c6af84b912394p-5 / N / N / N, C1 = 0x1.ebfce50fac4f3p-3 / N / N, C2 = 0x1.62e42ff0c52d6p-1 / N;
+  unsigned int abstop = (__float_as_uint(x) >> 20) & 0x7ff;
+  if (abstop >= ((__float_as_uint(88.0f) >> 20) & 0x7ff)) {
+    if (__float_as_uint(x) == __float_as_uint(-INFINITY)) return 0.0f;
+    if (abstop >= ((__float_as_uint(INFINITY) >> 20) & 0x7ff)) return x + x;
+    if (x > 0x1.62e42ep6f) return INFINITY;
+    if (x < -0x1.9fe368p6f) return 0.0f;
+  }
+  double z = __dmul_rn(InvLn2N, (double)x); double kd = round(z); long long ki = (long long)kd; double r = __dsub_rn(z, kd);
+  unsigned long long t = MOE_V41_EXP2F_TAB[ki & 31]; t += (unsigned long long)ki << 47; double s = __longlong_as_double((long long)t);
+  double zz = fma(C0, r, C1); double r2 = __dmul_rn(r, r); double y = fma(C2, r, 1.0); y = fma(zz, r2, y); y = __dmul_rn(y, s);
+  return (float)y;
+}
+static __device__ __forceinline__ float moe_v41_glibc_log1pf(float x) {
+  const float ln2_hi = 6.9313812256e-01f, ln2_lo = 9.0580006145e-06f, two25 = 3.355443200e+07f;
+  const float Lp1 = 6.6666668653e-01f, Lp2 = 4.0000000596e-01f, Lp3 = 2.8571429849e-01f, Lp4 = 2.2222198546e-01f, Lp5 = 1.8183572590e-01f, Lp6 = 1.5313838422e-01f, Lp7 = 1.4798198640e-01f;
+  float hfsq, f, c = 0.0f, s, z, R, u; int k, hx, hu, ax;
+  hx = (int)__float_as_uint(x); ax = hx & 0x7fffffff; k = 1;
+  if (hx < 0x3ed413d7) {
+    if (ax >= 0x3f800000) { if (x == -1.0f) return -two25 / 0.0f; else return (x - x) / (x - x); }
+    if (ax < 0x31000000) { if (ax < 0x24800000) return x; else return __fmaf_rn(-__fmul_rn(x, x), 0.5f, x); }
+    if (hx > 0 || hx <= (int)0xbe95f61f) { k = 0; f = x; hu = 1; }
+  }
+  if (hx >= 0x7f800000) return x + x;
+  if (k != 0) {
+    if (hx < 0x5a000000) { u = __fadd_rn(1.0f, x); hu = (int)__float_as_uint(u); k = (hu >> 23) - 127; c = (k > 0) ? __fsub_rn(1.0f, __fsub_rn(u, x)) : __fsub_rn(x, __fsub_rn(u, 1.0f)); c = __fdiv_rn(c, u); }
+    else { u = x; hu = (int)__float_as_uint(u); k = (hu >> 23) - 127; c = 0; }
+    hu &= 0x007fffff;
+    if (hu < 0x3504f7) { u = __uint_as_float((unsigned int)(hu | 0x3f800000)); } else { k += 1; u = __uint_as_float((unsigned int)(hu | 0x3f000000)); hu = (0x00800000 - hu) >> 2; }
+    f = __fsub_rn(u, 1.0f);
+  }
+  hfsq = __fmul_rn(__fmul_rn(0.5f, f), f); float kf = (float)k;
+  if (hu == 0) {
+    if (f == 0.0f) { if (k == 0) return 0.0f; else { c = __fmaf_rn(kf, ln2_lo, c); return __fmaf_rn(kf, ln2_hi, c); } }
+    R = __fmul_rn(__fmaf_rn(-0.66666666666666666f, f, 1.0f), hfsq);
+    if (k == 0) return __fsub_rn(f, R); else return __fmaf_rn(kf, ln2_hi, -__fsub_rn(__fsub_rn(R, __fmaf_rn(kf, ln2_lo, c)), f));
+  }
+  s = __fdiv_rn(f, __fadd_rn(2.0f, f)); z = __fmul_rn(s, s);
+  float p = __fmaf_rn(z, Lp7, Lp6); p = __fmaf_rn(p, z, Lp5); p = __fmaf_rn(p, z, Lp4); p = __fmaf_rn(p, z, Lp3); p = __fmaf_rn(p, z, Lp2); p = __fmaf_rn(p, z, Lp1);
+  float hr = __fmaf_rn(p, z, hfsq);
+  if (k == 0) return __fsub_rn(f, __fsub_rn(hfsq, __fmul_rn(s, hr)));
+  else return __fmaf_rn(kf, ln2_hi, -__fsub_rn(__fsub_rn(hfsq, __fadd_rn(__fmul_rn(s, hr), __fmaf_rn(kf, ln2_lo, c))), f));
+}
+
+// hdr: [0] miss flag, [1..1+K) picks in top-k order, [1+K..1+2K) weight bits
+// in top-k order, [1+2K..1+3K) plan slots (ascending expert id, -1 = miss).
+// plan_w / plan_rows: `weight_dev` / `rows_dev` in plan order (m = 1: row 0).
+// ptrs: [3][K] gate / up / down addresses in plan order from
+// arena_base + slot * slot_bytes + off.
+// Grid: (1, 1, 1)  Block: (MOE_V41_ROUTE_NR, 1, 1)
+extern "C" __global__ void __launch_bounds__(MOE_V41_ROUTE_NR) moe_v41_route_select(
+        const float* __restrict__ logits, const float* __restrict__ bias, float gate_temp, float route_scale,
+        unsigned int norm_topk, const int* __restrict__ slot_of, unsigned long long arena_base,
+        unsigned long long slot_bytes, unsigned long long gate_off, unsigned long long up_off,
+        unsigned long long down_off, int* __restrict__ hdr, float* __restrict__ plan_w,
+        int* __restrict__ plan_rows, unsigned long long* __restrict__ ptrs) {
+  constexpr int NR = MOE_V41_ROUTE_NR, K = MOE_V41_ROUTE_TOPK;
+  __shared__ float sc[NR]; __shared__ float key[NR]; __shared__ int pick[K]; __shared__ float wsum;
+  const int e = threadIdx.x;
+  const float x = __fdiv_rn(logits[e], gate_temp);
+  const float s = sqrtf(x > 20.0f ? x : moe_v41_glibc_log1pf(moe_v41_glibc_expf(x)));
+  sc[e] = s; key[e] = __fadd_rn(s, bias[e]);
+  if (e == 0) hdr[0] = 0;
+  __syncthreads();
+  const float mk = key[e]; int rank = 0;
+  for (int j = 0; j < NR; j++) { const float kj = key[j]; if (kj > mk || (kj == mk && j < e)) rank++; }
+  if (rank < K) pick[rank] = e;
+  __syncthreads();
+  if (e == 0) { float sum = 0.0f; for (int i = 0; i < K; i++) sum = __fadd_rn(sum, sc[pick[i]]); wsum = __fadd_rn(sum, 1e-20f); }
+  __syncthreads();
+  if (e < K) {
+    float w = sc[pick[e]];
+    if (norm_topk) w = __fdiv_rn(w, wsum);
+    w = __fmul_rn(w, route_scale);
+    hdr[1 + e] = pick[e]; hdr[1 + K + e] = (int)__float_as_uint(w);
+    int pos = 0; for (int i = 0; i < K; i++) if (pick[i] < pick[e]) pos++;
+    plan_w[pos] = w; plan_rows[pos] = 0;
+    const int sl = slot_of[pick[e]];
+    hdr[1 + 2 * K + pos] = sl;
+    if (sl < 0) { atomicOr(hdr, 1); } else {
+      const unsigned long long base = arena_base + (unsigned long long)sl * slot_bytes;
+      ptrs[pos] = base + gate_off; ptrs[K + pos] = base + up_off; ptrs[2 * K + pos] = base + down_off;
+    }
+  }
+}
+
+// The device slot table `[layers][n_routed]` (int, -1 = not resident) brought
+// up to date with the cache: `n` (layer, expert, slot) triples.
+extern "C" __global__ void moe_v41_slot_table_set(int* __restrict__ table, unsigned int n_routed,
+                                                  const int* __restrict__ triples, unsigned int n) {
+  const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n) return;
+  table[(unsigned int)triples[3 * i] * n_routed + (unsigned int)triples[3 * i + 1]] = triples[3 * i + 2];
+}
