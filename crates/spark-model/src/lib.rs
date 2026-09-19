@@ -78,7 +78,7 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
     // the `(1 + w)` offset and corrupts every token's logits. Nothing about the shapes says so.
     matches!(
         model_type,
-        "deepseek_v4" | "laguna" | "glm5_next" | "kimi_k3"
+        "deepseek_v4" | "deepseek_v41" | "laguna" | "glm5_next" | "kimi_k3"
     )
 }
 
