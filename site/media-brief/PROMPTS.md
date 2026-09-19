@@ -142,6 +142,114 @@ Keep it if: A motif, not the logo. If any frame reads as an attempt at the Avaro
 
 Alt text: Chevron shaped glass prisms refracting lavender, cyan, green and gold light.
 
+### N01 · `art-gov`
+
+Aspect 16:9 · resolution 2k · for /solutions/government-defense
+
+```text
+A military airfield seen from directly overhead, the way a satellite sees it. A long pale concrete apron with neat rows of parked fixed wing aircraft, helicopters with their rotors folded, and small uncrewed aircraft tied down in lines. Taxiway markings, long hard shadows, dry ground around the concrete. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: Straight down, no horizon, no people. Generic airframes that match no real type. No national markings, no tail numbers, no insignia, no flags. Nothing armed, nothing in flight, nothing on fire. It should read as a quiet, well run ramp.
+
+Alt text: A military airfield from directly overhead, with rows of parked aircraft, helicopters and drones on a pale concrete apron.
+
+### N02 · `art-legal`
+
+Aspect 16:9 · resolution 2k · for /solutions/legal
+
+```text
+A round conference table in a law office on a high floor. A few low, neat stacks of paper and closed folders on polished wood, chairs pulled in, nobody in the room. Floor to ceiling windows behind it look out over a city skyline at midday under a clear sky. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: Daylight, clear weather, a calm room. No people. The papers are blank or illegible. No nameplates, no firm name, no recognisable building in the skyline.
+
+Alt text: A round conference table with neat stacks of paper in a high floor office, looking out over a city skyline on a clear day.
+
+### N03 · `art-health`
+
+Aspect 16:9 · resolution 2k · for /solutions/healthcare
+
+```text
+The reception of a modern hospital. A clean pale floor, a long reception desk with staff behind it and a few visitors waiting, two clinicians in scrubs talking in the middle distance, shelves of patient record folders behind the desk, bright even daylight from a glass front. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: A plain, real scene, not an advertisement. Everyone small in the frame and turned away or in profile. No hospital name, no signage, no readable badges, no patients in distress, no medical procedures.
+
+Alt text: A bright hospital reception with staff at the desk, visitors waiting and two clinicians talking in the distance.
+
+### N04 · `art-finance`
+
+Aspect 16:9 · resolution 2k · for /solutions/financial-services
+
+```text
+A trading floor. Long rows of desks, each with three monitors showing price charts and terminal windows as soft abstract shapes, a few people at work seen from behind, glass walls, even overhead light. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: The screens must not be readable: no tickers, no numbers, no bank or vendor names. Seen from behind the desks, so no faces. Busy but orderly.
+
+Alt text: A trading floor with rows of desks, each with three monitors showing charts, and people at work seen from behind.
+
+### N05 · `art-research`
+
+Aspect 16:9 · resolution 2k · for /solutions/research, /labs
+
+```text
+A modern open plan office for a research lab. Long shared desks with laptops and a few large monitors, whiteboards covered in abstract diagrams, plants, an exposed ceiling, tall windows with daylight, a few people working at the far end. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: The whiteboards hold shapes and arrows, never readable words or equations. No company name on anything. People at the far end only.
+
+Alt text: A bright open plan research office with shared desks, whiteboards of diagrams and people working at the far end.
+
+### N06 · `art-smb-police`
+
+Aspect 16:9 · resolution 2k · for /solutions/smb-edge
+
+```text
+The front office of a small town police station. A public counter, a dispatcher's desk with two monitors, filing cabinets, a large wall map with no labels, daylight through blinds. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: One of four stills the SMB and edge page turns through. Ordinary and calm. No badges, no insignia, no patches, no weapons, no vehicles, no readable text. If anyone is in frame they are seated, at a distance, from behind.
+
+Alt text: The front office of a small police station, with a public counter, a dispatcher's desk and a wall map.
+
+### N07 · `art-smb-library`
+
+Aspect 16:9 · resolution 2k · for /solutions/smb-edge
+
+```text
+The reading room of a public library. Rows of bookshelves, long wooden tables with reading lamps, a librarian's desk with a computer, a few readers at a distance, tall windows. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: One of four stills the SMB and edge page turns through. No readable spines, no signage, no library name.
+
+Alt text: A public library reading room with bookshelves, long tables and a librarian's desk.
+
+### N08 · `art-smb-autoshop`
+
+Aspect 16:9 · resolution 2k · for /solutions/smb-edge
+
+```text
+An independent auto repair shop. A car raised on a lift, tool chests along the wall, a small service desk with a computer beside the bay door, daylight coming through the open door. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: One of four stills the SMB and edge page turns through. A generic car that matches no real model, no badges, no plates, no brand names on tools or walls. Tidy, not grimy.
+
+Alt text: An independent auto repair shop with a car on a lift, tool chests and a service desk by the bay door.
+
+### N09 · `art-smb-office`
+
+Aspect 16:9 · resolution 2k · for /solutions/smb-edge
+
+```text
+A small company office. Ten desks with laptops and monitors, a glass walled meeting room, a small server cabinet in the corner with a few status lights, afternoon daylight. Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes.
+```
+
+Keep it if: One of four stills the SMB and edge page turns through. The server cabinet is the point: small, in the room with the people who use it. No company name, no readable screens.
+
+Alt text: A small company office with a dozen desks, a glass meeting room and a server cabinet in the corner.
+
 ## Stills, from one of our own frames
 
 Upload the source image with the prompt. The procedural frames fix the composition, so the result drops into the slot the loop already holds. Up to 5 source images per edit.
@@ -328,7 +436,7 @@ Alt text: Indicator lamps blinking in sequence along datacenter switchgear.
 - Product UI. Every screen on the site is a recording of the product mockup. A generated dashboard is a fabricated product claim.
 - Readable text of any kind, numbers included. Text is set in the editor in IBM Plex.
 - Vendor logos, product designs that identify a vendor, military insignia, flags, government seals, real buildings.
-- People with visible faces. Hands and silhouettes are acceptable when a shot needs scale.
+- A recognisable person. The dark infrastructure stills have no people at all. The industry scenes do, because a hospital or a trading floor without people is not one, but only at a distance, in profile or from behind: never a portrait, never a face that could be somebody, never anyone real.
 - Anything that implies a named customer: a bank's signage, a hospital's name, an agency's badge.
 
 ## Sources

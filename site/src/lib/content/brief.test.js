@@ -76,10 +76,21 @@ test('no prompt asks for resolution in words, a logo, or the product interface',
   expect(offenders).toEqual([]);
 });
 
-test('every still prompt carries the house style, so the set reads as one', () => {
+test('every still prompt carries its house style, so each set reads as one', () => {
   for (const s of brief.shots.filter((x) => x.mode === 'text-to-image' || x.mode === 'image-to-image')) {
-    expect(fullPrompt(brief, s).endsWith(brief.style.still), s.id).toBe(true);
+    const look = brief.style[s.style ?? 'still'];
+    expect(look, `${s.id} names a style that exists`).toBeTruthy();
+    expect(fullPrompt(brief, s).endsWith(look), s.id).toBe(true);
   }
+});
+
+// The industry scenes have people in them, which the dark set never does. The
+// rule that keeps that safe has to travel with every one of those prompts.
+test('a scene with people keeps them at a distance, and says so in the prompt', () => {
+  const scenes = brief.shots.filter((x) => x.style === 'scene');
+  expect(scenes.length).toBeGreaterThan(0);
+  for (const s of scenes) expect(fullPrompt(brief, s), s.id).toMatch(/never close enough to be a portrait/);
+  expect(brief.never.join(' ')).toMatch(/never a portrait/);
 });
 
 test('a video shot fills a slot the site has, or names a new b-roll slot to add', () => {

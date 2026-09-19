@@ -43,14 +43,15 @@
       "emerald": "#12B981",
       "amber": "#EFB338"
     },
-    "video_from_text": "Near-black blue-grey ground, matte surfaces, a shallow haze. Accent light only in lavender, cyan, emerald and amber gold, as thin lines, status lights and rim light. 35mm lens, fine film grain, restrained contrast. All hardware is generic and unbranded. No people, no text, no logos, no readable screens. One continuous motion, one camera path, no cuts. Quiet room tone, no music."
+    "video_from_text": "Near-black blue-grey ground, matte surfaces, a shallow haze. Accent light only in lavender, cyan, emerald and amber gold, as thin lines, status lights and rim light. 35mm lens, fine film grain, restrained contrast. All hardware is generic and unbranded. No people, no text, no logos, no readable screens. One continuous motion, one camera path, no cuts. Quiet room tone, no music.",
+    "scene": "Documentary photograph of a real place of work in clear daylight. Natural colour, soft even light, a clean and orderly scene, nothing staged, nothing dramatic. 35mm lens, deep focus, level horizon, fine grain, restrained contrast. Where there are people they belong to the place: small in the frame, at a distance, in profile or from behind, never looking at the camera and never close enough to be a portrait. No readable text, no logos, no signage, no brand names, no flags, no insignia, and screens show only soft abstract shapes."
   },
   "never": [
     "The Avarok logo or wordmark. The lockup is vector artwork and is composited in an editor, never generated.",
     "Product UI. Every screen on the site is a recording of the product mockup. A generated dashboard is a fabricated product claim.",
     "Readable text of any kind, numbers included. Text is set in the editor in IBM Plex.",
     "Vendor logos, product designs that identify a vendor, military insignia, flags, government seals, real buildings.",
-    "People with visible faces. Hands and silhouettes are acceptable when a shot needs scale.",
+    "A recognisable person. The dark infrastructure stills have no people at all. The industry scenes do, because a hospital or a trading floor without people is not one, but only at a distance, in profile or from behind: never a portrait, never a face that could be somebody, never anyone real.",
     "Anything that implies a named customer: a bank's signage, a hospital's name, an agency's badge."
   ],
   "shots": [
@@ -202,6 +203,133 @@
       "prompt": "Abstract studio still life. Several thick chevron shaped prisms of clear optical glass standing on a matte near-black surface, all pointing right, each catching one colour of light: lavender, cyan, emerald, amber gold. Refractions and caustics on the surface, soft haze, a single soft key light from the left.",
       "keep": "A motif, not the logo. If any frame reads as an attempt at the Avarok mark, discard it. The vector lockup is composited separately when a logo is needed.",
       "alt": "Chevron shaped glass prisms refracting lavender, cyan, green and gold light."
+    },
+    {
+      "id": "N01",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-gov",
+      "pages": [
+        "/solutions/government-defense"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "A military airfield seen from directly overhead, the way a satellite sees it. A long pale concrete apron with neat rows of parked fixed wing aircraft, helicopters with their rotors folded, and small uncrewed aircraft tied down in lines. Taxiway markings, long hard shadows, dry ground around the concrete.",
+      "keep": "Straight down, no horizon, no people. Generic airframes that match no real type. No national markings, no tail numbers, no insignia, no flags. Nothing armed, nothing in flight, nothing on fire. It should read as a quiet, well run ramp.",
+      "alt": "A military airfield from directly overhead, with rows of parked aircraft, helicopters and drones on a pale concrete apron."
+    },
+    {
+      "id": "N02",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-legal",
+      "pages": [
+        "/solutions/legal"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "A round conference table in a law office on a high floor. A few low, neat stacks of paper and closed folders on polished wood, chairs pulled in, nobody in the room. Floor to ceiling windows behind it look out over a city skyline at midday under a clear sky.",
+      "keep": "Daylight, clear weather, a calm room. No people. The papers are blank or illegible. No nameplates, no firm name, no recognisable building in the skyline.",
+      "alt": "A round conference table with neat stacks of paper in a high floor office, looking out over a city skyline on a clear day."
+    },
+    {
+      "id": "N03",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-health",
+      "pages": [
+        "/solutions/healthcare"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "The reception of a modern hospital. A clean pale floor, a long reception desk with staff behind it and a few visitors waiting, two clinicians in scrubs talking in the middle distance, shelves of patient record folders behind the desk, bright even daylight from a glass front.",
+      "keep": "A plain, real scene, not an advertisement. Everyone small in the frame and turned away or in profile. No hospital name, no signage, no readable badges, no patients in distress, no medical procedures.",
+      "alt": "A bright hospital reception with staff at the desk, visitors waiting and two clinicians talking in the distance."
+    },
+    {
+      "id": "N04",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-finance",
+      "pages": [
+        "/solutions/financial-services"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "A trading floor. Long rows of desks, each with three monitors showing price charts and terminal windows as soft abstract shapes, a few people at work seen from behind, glass walls, even overhead light.",
+      "keep": "The screens must not be readable: no tickers, no numbers, no bank or vendor names. Seen from behind the desks, so no faces. Busy but orderly.",
+      "alt": "A trading floor with rows of desks, each with three monitors showing charts, and people at work seen from behind."
+    },
+    {
+      "id": "N05",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-research",
+      "pages": [
+        "/solutions/research",
+        "/labs"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "A modern open plan office for a research lab. Long shared desks with laptops and a few large monitors, whiteboards covered in abstract diagrams, plants, an exposed ceiling, tall windows with daylight, a few people working at the far end.",
+      "keep": "The whiteboards hold shapes and arrows, never readable words or equations. No company name on anything. People at the far end only.",
+      "alt": "A bright open plan research office with shared desks, whiteboards of diagrams and people working at the far end."
+    },
+    {
+      "id": "N06",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-smb-police",
+      "pages": [
+        "/solutions/smb-edge"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "The front office of a small town police station. A public counter, a dispatcher's desk with two monitors, filing cabinets, a large wall map with no labels, daylight through blinds.",
+      "keep": "One of four stills the SMB and edge page turns through. Ordinary and calm. No badges, no insignia, no patches, no weapons, no vehicles, no readable text. If anyone is in frame they are seated, at a distance, from behind.",
+      "alt": "The front office of a small police station, with a public counter, a dispatcher's desk and a wall map."
+    },
+    {
+      "id": "N07",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-smb-library",
+      "pages": [
+        "/solutions/smb-edge"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "The reading room of a public library. Rows of bookshelves, long wooden tables with reading lamps, a librarian's desk with a computer, a few readers at a distance, tall windows.",
+      "keep": "One of four stills the SMB and edge page turns through. No readable spines, no signage, no library name.",
+      "alt": "A public library reading room with bookshelves, long tables and a librarian's desk."
+    },
+    {
+      "id": "N08",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-smb-autoshop",
+      "pages": [
+        "/solutions/smb-edge"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "An independent auto repair shop. A car raised on a lift, tool chests along the wall, a small service desk with a computer beside the bay door, daylight coming through the open door.",
+      "keep": "One of four stills the SMB and edge page turns through. A generic car that matches no real model, no badges, no plates, no brand names on tools or walls. Tidy, not grimy.",
+      "alt": "An independent auto repair shop with a car on a lift, tool chests and a service desk by the bay door."
+    },
+    {
+      "id": "N09",
+      "mode": "text-to-image",
+      "style": "scene",
+      "slot": "art-smb-office",
+      "pages": [
+        "/solutions/smb-edge"
+      ],
+      "aspect": "16:9",
+      "resolution": "2k",
+      "prompt": "A small company office. Ten desks with laptops and monitors, a glass walled meeting room, a small server cabinet in the corner with a few status lights, afternoon daylight.",
+      "keep": "One of four stills the SMB and edge page turns through. The server cabinet is the point: small, in the room with the people who use it. No company name, no readable screens.",
+      "alt": "A small company office with a dozen desks, a glass meeting room and a server cabinet in the corner."
     },
     {
       "id": "E01",

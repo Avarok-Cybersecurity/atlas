@@ -29,6 +29,27 @@ Models: stills `grok-imagine-image-quality`, video `grok-imagine-video-1.5`.
 | V06 | `broll-hall` | `V06-broll-hall.mp4` | Keep. Opening shot of the reel. Rows stay parallel. Source was 20:9; encoder crops to 16:9. |
 | V07 | `broll-power` | `V07-broll-power.mp4` | Keep. Lamps read as load arriving. |
 
+## Pass 2: the daylight industry scenes (`N` shots)
+
+The industry pages moved from dark corridors to the buyer's own place of work. Sources are in
+`takes/pass2/`, with the generating run's notes in `pass2/HANDOFF.md`. `RATIONALE.md` has the
+reasoning for the second look.
+
+| Shot | Slot | File | Verdict |
+| --- | --- | --- | --- |
+| N01 | `art-gov` | `pass2/art-gov.webp` | Installed. Airfield from directly overhead. No markings legible, nothing armed, nothing in flight. |
+| N02 | `art-legal` | `pass2/art-legal.webp` | Installed. Round table, blank folders, clear day skyline, nobody in the room. |
+| N03 | `art-health` | `pass2/art-health.webp` | Installed, with a note. Faces are toward the camera at mid distance. At hero size they are about twelve pixels and nobody is a portrait, which is inside the rule. If it is ever shown larger, regenerate with the staff turned away. One generic word is readable on a sign. |
+| N04 | `art-finance` | `pass2/art-finance.webp` | Installed. Everyone from behind, no screen legible. |
+| N05 | `art-research` | `pass2/art-research.webp` | Installed. Also the Labs page. |
+| N07 | `art-smb-library` | `pass2/art-smb-library.webp` | Installed. One of the stills the SMB and edge page turns through. |
+| N08 | `art-smb-autoshop` | `pass2/art-smb-autoshop.webp` | Installed. Generic cars, no plates or badges legible. |
+| N09 | `art-smb-office` | `pass2/art-smb-corporate.webp` | Installed. A tote bag carries an invented wordmark, too small to read at hero size. |
+| N06 | `art-smb-police` | `pass2/art-smb-police.webp` | **Held back.** A paper bag on the bench carries a mark that reads as a real fast food brand, the officers' sidearms are in view, and the notice board shows faces. Regenerate: no bag, holsters out of frame or officers seated behind the counter, a board of plain notices. The page turns through three stills until then, and takes the fourth the moment it is installed. |
+
+`art-desk-box` now serves `/pricing` only, so the daylight set on the SMB and edge page is not
+interleaved with a dark still.
+
 ## Rejected
 
 | Shot | File | Why |

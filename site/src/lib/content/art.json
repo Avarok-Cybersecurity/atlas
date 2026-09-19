@@ -13,7 +13,6 @@
     "width": 1280,
     "height": 720,
     "pages": [
-      "/solutions/smb-edge",
       "/pricing"
     ]
   },
@@ -26,7 +25,7 @@
     ]
   },
   "art-finance": {
-    "alt": "A steel corridor leading to server racks behind a mesh cage, lit in amber gold.",
+    "alt": "A trading floor with rows of desks, each with three monitors showing charts, and people at work seen from behind.",
     "width": 1280,
     "height": 720,
     "pages": [
@@ -34,7 +33,7 @@
     ]
   },
   "art-gov": {
-    "alt": "A concrete secure facility corridor with a closed steel door and cyan light from a rack room beyond.",
+    "alt": "A military airfield from directly overhead, with rows of parked aircraft, helicopters and drones on a pale concrete apron.",
     "width": 1280,
     "height": 720,
     "pages": [
@@ -48,7 +47,7 @@
     "pages": []
   },
   "art-health": {
-    "alt": "A hospital service corridor at night leading to a compute room glowing green behind frosted glass.",
+    "alt": "A bright hospital reception with staff at the desk, visitors waiting and clinicians talking.",
     "width": 1280,
     "height": 720,
     "pages": [
@@ -65,7 +64,7 @@
     ]
   },
   "art-legal": {
-    "alt": "A law library aisle whose shelves turn into server racks, lit in lavender.",
+    "alt": "A round conference table with a neat stack of folders in a high floor office, looking out over a city skyline on a clear day.",
     "width": 1280,
     "height": 720,
     "pages": [
@@ -89,12 +88,36 @@
     ]
   },
   "art-research": {
-    "alt": "An accelerator board on an open test stand on a research bench, lit in green.",
+    "alt": "A bright open plan research office with shared desks, whiteboards of diagrams and people working at the far end.",
     "width": 1280,
     "height": 720,
     "pages": [
       "/solutions/research",
       "/labs"
+    ]
+  },
+  "art-smb-autoshop": {
+    "alt": "An independent auto repair shop with two cars on lifts, tool chests, and a mechanic talking with a customer.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
+    ]
+  },
+  "art-smb-library": {
+    "alt": "A public library reading room with bookshelves, long tables and a librarian's desk.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
+    ]
+  },
+  "art-smb-office": {
+    "alt": "A small company office of cubicles, with a glass meeting room and a printer in the corner.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
     ]
   }
 }

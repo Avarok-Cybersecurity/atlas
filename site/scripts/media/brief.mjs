@@ -20,7 +20,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dir = resolve(here, '..', '..', 'media-brief');
 
 export function fullPrompt(brief, shot) {
-  if (shot.mode === 'text-to-image') return `${shot.prompt} ${brief.style.still}`;
+  // A still names its look. `still` is the dark infrastructure set, `scene` the
+  // daylight industry set. One look per page family, never mixed on a page.
+  if (shot.mode === 'text-to-image') return `${shot.prompt} ${brief.style[shot.style ?? 'still']}`;
   if (shot.mode === 'image-to-image') return `${shot.prompt} ${brief.style.edit} ${brief.style.still}`;
   if (shot.mode === 'text-to-video') return `${shot.prompt} ${brief.style.video_from_text}`;
   return `${shot.prompt} ${brief.style.video}`;

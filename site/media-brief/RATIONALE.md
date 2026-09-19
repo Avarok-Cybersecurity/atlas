@@ -79,6 +79,41 @@ The downsides:
   development boxes on a desk, or the team at an event, is worth more than any
   of these. The slots take a photograph exactly as they take a generated image.
 
+### Two looks, one per page family
+
+The first set is dark infrastructure: racks, corridors, switchgear, no people. It
+suits the platform pages, where the subject is the machine. On the industry
+pages it read as eleven pictures of the same corridor. A hospital page showed a
+server room, and so did the bank and the law firm.
+
+So the industry pages get a second look, `style.scene` in `shots.json`: the place
+the buyer works, in daylight, as a plain documentary photograph. A hospital
+reception. A trading floor. A conference table over a skyline. An airfield from
+directly overhead. A reader should recognise their own building, not ours.
+Enterprise datacenters keeps the dark aisle, because there the rack room is the
+buyer's place of work. The `N` shots are this set.
+
+What changes with it, and the reasoning:
+
+- *People appear.* A hospital or a trading floor without people is a render, not
+  a place. They are kept small, at a distance, in profile or from behind. The
+  rule is in the style block, so it travels inside every prompt, and in `never`.
+  A generated face that could be somebody is the one failure that matters here:
+  discard any frame with one.
+- *Screens appear, and must say nothing.* Charts as soft shapes. A readable ticker
+  or a vendor's terminal is a fabricated detail about a real market.
+- *The airfield is overhead on purpose.* Straight down there is no horizon, no
+  people and no readable marking, and the picture still says "defense" at once.
+  Generic airframes, no national markings, nothing armed, nothing in flight.
+- *The two looks never share a page.* A page is dark or it is daylight. The hero
+  decides, and the clip band under it follows.
+- *SMB and edge turns through four.* A police front office, a library, an auto
+  shop, a small office: the page is about the range, and one picture cannot show
+  a range. Register all four for `/solutions/smb-edge` and `PageHero` cross fades
+  between them, by opacity, only while on screen. When they go in, take
+  `art-desk-box` off that page (`--pages pricing` on its next install) so the
+  daylight set is not interleaved with a dark still.
+
 ### The brand in motion: drawn by code
 
 The three procedural loops exist because they can do things footage cannot:

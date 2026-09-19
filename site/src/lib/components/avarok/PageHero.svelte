@@ -15,12 +15,44 @@
 -->
 <script>
   import { page } from '$app/state';
-  import { artFor, heroClipFor } from '$lib/content/media.js';
+  import { onMount } from 'svelte';
+  import { artsFor, heroClipFor } from '$lib/content/media.js';
   import VideoClip from './VideoClip.svelte';
   let { eyebrow, title, lede = '', primary = null, secondary = null, who = '', color = 'violet', children } = $props();
   const here = $derived(page.url.pathname.replace(/\.html$/, '').replace(/\/$/, '') || '/');
-  const art = $derived(artFor(here));
+  const arts = $derived(artsFor(here));
+  const art = $derived(arts[0] ?? null);
   const clip = $derived(art ? null : heroClipFor(here));
+
+  // A still that fails to arrive is asked for again, twice, a little later each
+  // time. One dropped request on a busy connection otherwise leaves a hole where
+  // the page's picture should be until someone thinks to refresh.
+  // A page with several stills turns through them, slowly, by opacity alone, and
+  // only while the frame is on screen and the visitor has not asked for less motion.
+  let shown = $state(0);
+  let frame = $state(null);
+  onMount(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const timer = setInterval(() => {
+      if (arts.length < 2 || document.hidden || !frame?.classList.contains('is-live')) return;
+      shown = (shown + 1) % arts.length;
+    }, 6000);
+    return () => clearInterval(timer);
+  });
+  $effect(() => {
+    here;
+    shown = 0;
+  });
+
+  let tries = 0;
+  function retry(e) {
+    const img = e.currentTarget;
+    if (tries >= 2 || !art) return;
+    tries += 1;
+    setTimeout(() => {
+      img.src = `${art.src}?retry=${tries}`;
+    }, 600 * tries);
+  }
 </script>
 
 <section class="av-hero av-page-hero" class:has-art={!!clip || !!art}>
@@ -45,7 +77,13 @@
         {#if clip.name.startsWith('console-')}<p class="av-video-caption">Avarok Console. Demo data, recorded from the product mockup.</p>{/if}
       </div>
     {:else if art}
-      <div class="av-frame av-page-hero-art"><div><img src={art.src} alt={art.alt} width={art.width} height={art.height} decoding="async" fetchpriority="high" /></div></div>
+      <div class="av-frame av-page-hero-art" class:is-turning={arts.length > 1} bind:this={frame}>
+        <div>
+          {#each arts as a, i (a.slot)}
+            <img class:is-on={i === shown} src={a.src} alt={i === shown ? a.alt : ''} aria-hidden={i === shown ? undefined : 'true'} width={a.width} height={a.height} decoding="async" fetchpriority={i === 0 ? 'high' : undefined} loading={i === 0 ? undefined : 'lazy'} onerror={i === 0 ? retry : undefined} />
+          {/each}
+        </div>
+      </div>
     {/if}
   </div>
 </section>
@@ -55,6 +93,13 @@
   .av-page-hero-in { max-width: 820px; }
   .has-art .av-page-hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: 3rem; align-items: center; }
   .av-page-hero-art img { display: block; width: 100%; height: auto; }
+  /* Every still is dark. A dark ground means a late one is a shadow, not a white hole. */
+  .av-page-hero-art > div { background: #0f1216; position: relative; }
+  /* Several stills: the first gives the box its height, the rest lie over it, and
+     only opacity changes. */
+  .is-turning img { opacity: 0; transition: opacity 1.4s var(--av-ease); }
+  .is-turning img.is-on { opacity: 1; }
+  .is-turning img:not(:first-child) { position: absolute; inset: 0; height: 100%; object-fit: cover; }
   /* The hero ground is tinted, and the quiet caption grey measured 4.46:1 on the
      violet tint, under the 4.5 it needs. One step darker clears it on every tint. */
   .av-page-hero-art :global(.av-video-caption) { color: var(--t2); }

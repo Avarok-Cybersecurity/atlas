@@ -101,4 +101,9 @@ const clipByKey = { ...media.tour, ...media.product, ...media.broll };
 export const heroClipFor = (path) => clipByKey[heroClips[path]] ?? null;
 
 /** The installed still for a page, or null. */
-export const artFor = (path) => Object.values(media.art).find((a) => a.pages.includes(path)) ?? null;
+// Every still registered for a page, in art.json's order. Most pages have one. A
+// page with several (SMB and edge is meant to turn through a police front office,
+// a library, an auto shop and a small office) shows them in turn: PageHero cross
+// fades between them. Registering a second still for a page is all it takes.
+export const artsFor = (path) => Object.values(media.art).filter((a) => a.pages.includes(path));
+export const artFor = (path) => artsFor(path)[0] ?? null;
