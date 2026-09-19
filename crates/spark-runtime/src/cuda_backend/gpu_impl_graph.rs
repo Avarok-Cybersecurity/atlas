@@ -301,10 +301,29 @@ impl AvarokCudaBackend {
     }
 
     pub(super) fn alloc_host_pinned_cu(&self, bytes: usize) -> Result<*mut u8> {
+        self.alloc_host_pinned_flags_cu(bytes, None)
+    }
+
+    /// Page-locked host memory the GPU reads as WRITE-COMBINED
+    /// (`CU_MEMHOSTALLOC_DEVICEMAP | CU_MEMHOSTALLOC_WRITECOMBINED`): the
+    /// host writes it (pread into an expert slot), the GPU streams it, and
+    /// nobody reads it from the CPU. On GB10 the K-quant expert GEMV reads a
+    /// WC arena at 184-196 GB/s against 159-180 GB/s for the default
+    /// cacheable mapping (bench 2026-09-19); the pread into it costs the same.
+    pub(super) fn alloc_host_pinned_wc_cu(&self, bytes: usize) -> Result<*mut u8> {
+        self.alloc_host_pinned_flags_cu(bytes, Some(0x2 | 0x4))
+    }
+
+    fn alloc_host_pinned_flags_cu(&self, bytes: usize, flags: Option<u32>) -> Result<*mut u8> {
         let mut ptr: *mut c_void = std::ptr::null_mut();
-        let status = unsafe { cuMemAllocHost_v2(&mut ptr, bytes) };
+        let status = match flags {
+            None => unsafe { cuMemAllocHost_v2(&mut ptr, bytes) },
+            Some(f) => unsafe { super::cuMemHostAlloc(&mut ptr, bytes, f) },
+        };
         if status != 0 {
-            bail!("cuMemAllocHost_v2 failed: status {status}, requested {bytes} bytes");
+            bail!(
+                "cuMemAllocHost failed: status {status}, requested {bytes} bytes, flags {flags:?}"
+            );
         }
         // `cuMemAllocHost_v2` does NOT zero, unlike the trait's `alloc_zeroed`
         // default and the mock. Callers pack these buffers with alignment

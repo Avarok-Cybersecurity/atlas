@@ -89,6 +89,9 @@ unsafe extern "C" {
     pub(super) fn cuStreamCreate(phStream: *mut u64, flags: u32) -> i32;
     // Page-locked host memory for efficient async transfers
     pub(super) fn cuMemAllocHost_v2(pp: *mut *mut c_void, bytesize: usize) -> i32;
+    // The same page-locked memory with allocation flags (CU_MEMHOSTALLOC_*):
+    // DEVICEMAP 0x2, WRITECOMBINED 0x4.
+    pub(super) fn cuMemHostAlloc(pp: *mut *mut c_void, bytesize: usize, flags: u32) -> i32;
     pub(super) fn cuMemFreeHost(p: *mut c_void) -> i32;
     // Managed (unified) memory — allows over-subscription with Linux swap paging
     pub(super) fn cuMemAllocManaged(dptr: *mut u64, bytesize: usize, flags: u32) -> i32;

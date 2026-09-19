@@ -575,6 +575,9 @@ impl GpuBackend for AvarokCudaBackend {
         }
         self.alloc_host_pinned_cu(bytes)
     }
+    fn alloc_host_pinned_wc(&self, bytes: usize) -> Result<*mut u8> {
+        self.alloc_host_pinned_wc_cu(bytes)
+    }
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
         self.free_host_pinned_cu(ptr, _bytes)
     }
