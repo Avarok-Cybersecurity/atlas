@@ -11,10 +11,17 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing};
 use crate::layers::ops::{
-    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, ResidentMat, kquant_mmq_gemm, kquant_mmvq_w,
+    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm, kquant_mmvq_w,
     kquant_q8_1_rows,
 };
 use crate::weight_map::DenseWeight;
+
+/// `ATLAS_DS41_PREFILL_GEMV=1`, read once: prefill groups of more than eight
+/// rows run through the decode GEMV arm in chunks of eight (see `forward`).
+fn prefill_gemv() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_DS41_PREFILL_GEMV").is_ok_and(|v| v == "1"))
+}
 
 impl MoeV41 {
     pub(super) fn launch_n(
@@ -72,6 +79,12 @@ impl MoeV41 {
             let ne = self.upload_expert_table(gpu, &plan, &slots, stream)?;
             self.routed_m1(gpu, x, ne, stream)?;
         }
+        // ATLAS_DS41_PREFILL_GEMV=1: every group through the decode GEMV arm in
+        // chunks of eight rows, so prefill quantises activations exactly as the
+        // single-token step does (q8 block 32) instead of the MMQ tile's D2S6
+        // block 64 for Q2_K. A diagnostic: it makes prefill and decode
+        // numerically the same path at the cost of the tensor-core arm.
+        let prefill_gemv = prefill_gemv();
         for &(a0, off, r) in plan.iter().filter(|_| m > 1) {
             let slot = slots[a0];
             let rows_ptr = DevicePtr(self.rows_dev.0 + (off * 4) as u64);
@@ -84,7 +97,42 @@ impl MoeV41 {
                 .arg_ptr(self.a_rows)
                 .arg_u32(c.dim as u32)
                 .launch(stream)?;
-            if r <= 8 {
+            if prefill_gemv && r > 8 {
+                // chunks of <= 8 rows, each an offset view into the group's buffers
+                let q8_row = (c.dim / 32) * Q8_1_BLOCK_BYTES;
+                let mut r0 = 0usize;
+                while r0 < r {
+                    let rr = (r - r0).min(8);
+                    let a = DevicePtr(self.a_rows.0 + (r0 * c.dim * 2) as u64);
+                    let q = DevicePtr(self.a_q8.0 + (r0 * q8_row) as u64);
+                    let go = DevicePtr(self.gate_out.0 + (r0 * c.inter * 2) as u64);
+                    let uo = DevicePtr(self.up_out.0 + (r0 * c.inter * 2) as u64);
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, q, rr as u32, c.dim as u32, stream)?;
+                    kquant_mmvq_w(
+                        gpu,
+                        self.k.mmvq_q2k,
+                        slot.gate,
+                        q,
+                        go,
+                        c.inter as u32,
+                        c.dim as u32,
+                        rr as u32,
+                        stream,
+                    )?;
+                    kquant_mmvq_w(
+                        gpu,
+                        self.k.mmvq_q2k,
+                        slot.up,
+                        q,
+                        uo,
+                        c.inter as u32,
+                        c.dim as u32,
+                        rr as u32,
+                        stream,
+                    )?;
+                    r0 += rr;
+                }
+            } else if r <= 8 {
                 // the decode GEMV: plain q8_1 rows, one weight read shared by the rows
                 kquant_q8_1_rows(
                     gpu,
@@ -164,7 +212,29 @@ impl MoeV41 {
                     .arg_u32(c.inter as u32)
                     .arg_f32(c.swiglu_limit)
             })?;
-            if r <= 8 {
+            if prefill_gemv && r > 8 {
+                let q8_row = (c.inter / 32) * Q8_1_BLOCK_BYTES;
+                let mut r0 = 0usize;
+                while r0 < r {
+                    let rr = (r - r0).min(8);
+                    let h = DevicePtr(self.h.0 + (r0 * c.inter * 2) as u64);
+                    let q = DevicePtr(self.h_q8.0 + (r0 * q8_row) as u64);
+                    let d = DevicePtr(self.down_out.0 + (r0 * c.dim * 2) as u64);
+                    kquant_q8_1_rows(gpu, self.k.q8_rows, h, q, rr as u32, c.inter as u32, stream)?;
+                    kquant_mmvq_w(
+                        gpu,
+                        self.k.mmvq_q3k,
+                        slot.down,
+                        q,
+                        d,
+                        c.dim as u32,
+                        c.inter as u32,
+                        rr as u32,
+                        stream,
+                    )?;
+                    r0 += rr;
+                }
+            } else if r <= 8 {
                 kquant_q8_1_rows(
                     gpu,
                     self.k.q8_rows,
