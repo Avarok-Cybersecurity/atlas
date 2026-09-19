@@ -18,8 +18,13 @@
 // name gated-but-not-yet-published benchmarks without hardcoding them.
 //
 // Records are slimmed for the page: `closure` (per-kernel hashes, ~10x the
-// payload) and `command` (reconstructible from params) are dropped; every
-// field the dashboard's metadata card shows is kept verbatim.
+// payload), `hardware_state.before/after` and `summary` are dropped; every
+// field the dashboard's metadata card shows is kept verbatim. `command` is
+// kept VERBATIM too — the point card's "reproduction steps" panel shows what
+// was run, and a command reconstructed on the page from `params` would be a
+// command nobody ran. `perf_env`, `dirty_paths`, `dataset_fingerprint`, the
+// record `path`, its `.sig` signer and a `box_state` subset ride along for
+// the same panel (see src/lib/repro-steps.js).
 //
 // Regenerate with:   node site/scripts/gen-gates.mjs
 // No third-party deps: Node builtins + `git` via child_process.
@@ -111,26 +116,59 @@ function gitCommitKnown(sha) {
 }
 
 // --- registered suite from the descriptor SSOT -------------------------------
+// Each `BenchmarkDescriptor { id: "…", … expected_secs: N, … sensitivity:
+// Sensitivity::X }` literal also yields the planning cost and class the
+// reproduction panel quotes, read from the text between one `id:` and the
+// next so they cannot be attributed to a neighbouring descriptor.
 function registeredBenchmarks() {
   const ids = new Set();
+  const meta = {};
   const walk = (dir) => {
     for (const name of readdirSync(dir)) {
       const p = join(dir, name);
       if (statSync(p).isDirectory()) walk(p);
       else if (name.endsWith('.rs') && !name.includes('test')) {
-        for (const m of readFileSync(p, 'utf8').matchAll(/^\s*id: "([a-z0-9-]+)"/gm)) ids.add(m[1]);
+        const src = readFileSync(p, 'utf8');
+        const hits = [...src.matchAll(/^\s*id: "([a-z0-9-]+)"/gm)];
+        hits.forEach((m, k) => {
+          ids.add(m[1]);
+          const body = src.slice(m.index, hits[k + 1]?.index ?? src.length);
+          const secs = /^\s*expected_secs: (\d+)/m.exec(body);
+          const sens = /^\s*sensitivity: Sensitivity::(\w+)/m.exec(body);
+          if (secs && sens) meta[m[1]] = { expected_secs: Number(secs[1]), sensitivity: sens[1] };
+        });
       }
     }
   };
   if (existsSync(DESCRIPTOR_ROOT)) walk(DESCRIPTOR_ROOT);
-  return [...ids].sort();
+  return { ids: [...ids].sort(), meta };
+}
+
+// The serve allowance every self-served gate may spend before its first
+// sample, from the hardware limits SSOT. One key, so a TOML parser is not
+// worth a dependency; absent file or key → null, and the panel says so.
+function serveAllowanceSecs() {
+  const p = resolve(REPO, 'kernels', 'gb10', 'HARDWARE.toml');
+  if (!existsSync(p)) return null;
+  const m = /^serve_allowance_s\s*=\s*(\d+)/m.exec(readFileSync(p, 'utf8'));
+  return m ? Number(m[1]) : null;
 }
 
 // --- record slimming ---------------------------------------------------------
 // Keep exactly the fields the dashboard shows; `branch` is provenance added
-// here (empty string = committed on the current checkout).
-function slim(raw, branch) {
+// here (empty string = committed on the current checkout), `path` is the
+// record's repo path and `signer` the key fingerprint from its `.sig`
+// sidecar (null = unsigned).
+//
+// `dirty_paths`, `perf_env` and `dataset_fingerprint` are decoded the way
+// record.rs serialises them: `skip_serializing_if` empty/none, so an ABSENT
+// key is an empty list / map / no fingerprint — a faithful read of the
+// record, not a default invented here.
+function slim(raw, branch, path, signer) {
+  const hs = raw.hardware_state;
   return {
+    path,
+    signer,
     benchmark_id: raw.benchmark_id,
     benchmark_name: raw.benchmark_name,
     git_sha: raw.git_sha,
@@ -150,8 +188,35 @@ function slim(raw, branch) {
     frame_status: raw.frame_status,
     verdict: raw.verdict,
     verdict_reason: raw.verdict_reason,
+    command: raw.command,
+    perf_env: raw.perf_env ?? {},
+    dirty_paths: raw.dirty_paths ?? [],
+    dataset_fingerprint: raw.dataset_fingerprint ?? null,
+    // The box-state subset the panel reads; null = no hardware check recorded.
+    // `sensitivity` is NOT repeated here: it is a property of the benchmark
+    // and rides in `registered_meta` from the descriptor SSOT.
+    box_state: hs
+      ? {
+          validity: hs.postcheck?.validity ?? null,
+          concerns: hs.postcheck?.concerns ?? [],
+          gpu_temp_delta_c: hs.delta?.gpu_temp_delta_c ?? null,
+          hottest_chassis_delta_c: hs.delta?.hottest_chassis_delta_c ?? null,
+          elapsed_s: hs.delta?.elapsed_s ?? null
+        }
+      : null,
     branch
   };
+}
+
+/** The signer fingerprint inside a `.sig` sidecar's JSON, or null. */
+function signerOf(sigText) {
+  if (!sigText) return null;
+  try {
+    const key = JSON.parse(sigText).key;
+    return typeof key === 'string' && key !== '' ? key : null;
+  } catch {
+    return null;
+  }
 }
 
 // --- leg 1: working tree (committed data — structural) -----------------------
@@ -162,7 +227,9 @@ if (existsSync(RECORDS_ROOT)) {
     if (!statSync(dir).isDirectory()) continue;
     for (const f of readdirSync(dir).filter((f) => f.endsWith('.json'))) {
       const raw = JSON.parse(readFileSync(join(dir, f), 'utf8'));
-      records.set(`.benchmarks/${bench}/${f}`, slim(raw, ''));
+      const p = `.benchmarks/${bench}/${f}`;
+      const sig = join(dir, `${f}.sig`);
+      records.set(p, slim(raw, '', p, signerOf(existsSync(sig) ? readFileSync(sig, 'utf8') : '')));
     }
   }
 }
@@ -194,7 +261,7 @@ try {
         if (records.has(p)) continue;
         try {
           const raw = JSON.parse(git(['show', `${ref}:${p}`]));
-          records.set(p, slim(raw, ref.replace(`${remote}/`, '')));
+          records.set(p, slim(raw, ref.replace(`${remote}/`, ''), p, signerOf(gitSoft(['show', `${ref}:${p}.sig`]))));
           fromBranches += 1;
         } catch {
           /* unreadable blob on a foreign branch — skip, never fail the build */
@@ -225,10 +292,13 @@ for (const b of Object.values(benchmarks)) {
   }
 }
 
+const registered = registeredBenchmarks();
 const obj = {
   generated_sha: gitSoft(['rev-parse', '--short', 'HEAD']),
   generated_date: gitSoft(['log', '-1', '--format=%cs']),
-  registered: registeredBenchmarks(),
+  registered: registered.ids,
+  registered_meta: registered.meta,
+  limits: { serve_allowance_s: serveAllowanceSecs() },
   sources: { committed: committedCount, branches_scanned: branchesScanned, from_branches: fromBranches },
   benchmarks
 };

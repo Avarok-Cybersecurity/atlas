@@ -81,17 +81,79 @@
 // the common-vision worst case, which would trade ~8% of male readers for
 // ~0.003%. Identity is double-encoded anyway: every series carries a coloured
 // end label and a legend entry, and every marker is shape-coded.
-export const MODEL_COLORS = {
-  'Qwen/Qwen3.6-35B-A3B-FP8': '#ee6f2f',
-  'unsloth/Qwen3.6-27B-NVFP4': '#2f88ee',
-  'unsloth/Qwen3.8-27B-NVFP4': '#51cdb0',
-  'bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16': '#cd517a',
-  'ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4': '#d5e88a',
-  'nvidia/Qwen3.6-35B-A3B-NVFP4': '#a1e0f7'
-};
+//
+// Split by theme 2026-09-19. The six hexes above were one set shared by both
+// themes, and on the light theme's white ground three of them are under the
+// 3:1 floor: teal 1.96, citron 1.33, sky 1.45 (copper 3.02 passes white but
+// reads 2.65 on --card-2). One hex cannot serve both grounds — >=3:1 on white
+// needs a luminance <=0.30, >=3:1 on the dark --card needs >=0.136, and the
+// pale teal/citron/sky are nowhere near that band — so each theme now declares
+// its own `--series-<slug>` tokens in web-shared/avarok-tokens.css and
+// colorFor() resolves through the token, with the dark hex as the var()
+// fallback (the idiom ConcurrencyLadder.svelte already uses for its baselines).
+// The DARK set is unchanged, by value and by assignment.
+//
+// The LIGHT set was searched with a re-implementation of this file's method
+// (CIEDE2000 under Vienot 1999 dichromat simulation), because the original
+// search script was never committed. Calibration: it reproduces the trio's
+// documented normal-vision figures exactly (49.6 / 55.3 / 39.9) and the
+// protan/deutan ones within 0.3 (60.1 / 68.2, 25.0 / 26.5, 42.5 / 32.3 against
+// 60.2 / 68.3, 25.0 / 26.4, 42.4 / 32.6), so its figures are continuous with
+// the ones above to about half a unit — but they are that implementation's,
+// not the original's. By the same implementation the dark set's worst pair
+// over normal/protan/deutan is 16.2 and its worst tritan pair 8.7.
+//
+// Constraints: >=4.5:1 on white and >=4.0:1 on --card-2 (the 2026-08-30 bar);
+// each slug within 15 degrees of its dark hue, copper only toward ochre and
+// teal only away from the light --green (a series must not read as a PASS);
+// L* >= 30 and C* >= 20 so no series reads as ink or as the fallback grey; and
+// against the light --accent, --green, --t2, --t3 and the fallback, at least
+// the separation the dark set holds against its own (9.5 / 9.2 / 8.4 / 11.7 /
+// 6.3). Then maximise the worst pair. The result:
+//   copper #a2672c   4.65 / 4.27 / 4.08   (white / --bg2 / --card-2)
+//   steel  #466dc1   4.98 / 4.56 / 4.36
+//   teal   #2d5b4c   7.74 / 7.10 / 6.78
+//   rose   #832837   9.04 / 8.28 / 7.92
+//   citron #565200   8.07 / 7.40 / 7.07
+//   sky    #005977   7.79 / 7.14 / 6.82
+// Worst pair over all 15, normal/protan/deutan: 10.0 (teal-rose protan).
+// The pair the concurrency tabs rest on, copper-teal: 35.9 / 17.4 / 25.7
+// (dark: 55.3 / 25.0 / 26.4). teal vs the light --t2/--t3 ink the vLLM
+// baselines are drawn in: 10.9 / 11.9 (dark: 8.4 / 15.9); copper: 32.7 / 25.9.
+// Worst tritan pair 5.2 (rose-citron), against the dark set's 8.7 — the same
+// documented trade as above. A light ground cannot use the lightness spread
+// the dark set relies on (every series must sit at L* <= 49 to clear white),
+// so 10.0 is the regime, not a slip: the plan's first candidate, lightness
+// lowered under normal vision only, scored 15.4 normal but 4.9 deutan
+// (copper-citron) and 0.5 tritan (copper-rose) by this implementation.
+const SERIES = [
+  // model, slug, dark hex, light hex
+  ['Qwen/Qwen3.6-35B-A3B-FP8', 'copper', '#ee6f2f', '#a2672c'],
+  ['unsloth/Qwen3.6-27B-NVFP4', 'steel', '#2f88ee', '#466dc1'],
+  ['unsloth/Qwen3.8-27B-NVFP4', 'teal', '#51cdb0', '#2d5b4c'],
+  ['bg-digitalservices/Gemma-4-26B-A4B-it-NVFP4A16', 'rose', '#cd517a', '#832837'],
+  ['ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4', 'citron', '#d5e88a', '#565200'],
+  ['nvidia/Qwen3.6-35B-A3B-NVFP4', 'sky', '#a1e0f7', '#005977']
+];
+/** model -> the `--series-<slug>` token suffix. */
+export const MODEL_SLUGS = Object.fromEntries(SERIES.map(([model, slug]) => [model, slug]));
+/** model -> dark-theme hex; also the var() fallback colorFor() emits. */
+export const MODEL_COLORS = Object.fromEntries(SERIES.map(([model, , dark]) => [model, dark]));
+/** model -> light-theme hex, mirrored by the `[data-theme="light"]` block. */
+export const MODEL_COLORS_LIGHT = Object.fromEntries(SERIES.map(([model, , , light]) => [model, light]));
 // The fallback is a series colour too: an unrecognised model still gets drawn.
+// One hex serves both themes: 3.69:1 / 3.28:1 on the dark grounds, 5.09:1 /
+// 4.67:1 / 4.46:1 on the light ones.
 export const UNKNOWN_MODEL_COLOR = '#6f6a8d';
-export const colorFor = (model) => MODEL_COLORS[model] ?? UNKNOWN_MODEL_COLOR;
+/**
+ * The colour a series is drawn in, as a CSS value: the theme's token with the
+ * dark hex as fallback, so an SVG rendered without the token file (a snapshot,
+ * an embed) still gets the palette the chart was designed on.
+ */
+export const colorFor = (model) => {
+  const slug = MODEL_SLUGS[model];
+  return slug ? `var(--series-${slug}, ${MODEL_COLORS[model]})` : UNKNOWN_MODEL_COLOR;
+};
 
 /**
  * The human-facing part of a checkpoint id: everything after the last `/`.
