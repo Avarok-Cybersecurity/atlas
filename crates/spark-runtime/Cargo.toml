@@ -8,14 +8,14 @@ autobenches = false
 
 [features]
 default = ["cuda"]
-cuda = ["dep:cudarc", "avarok-core/cuda"]
-metal = [
-    "dep:objc2",
-    "dep:objc2-metal",
-    "dep:objc2-foundation",
-    "dep:dispatch2",
-    "avarok-core/metal",
-]
+# ★ NO-OP ALIASES. The backend is selected by TARGET (see the two
+# [target.'cfg(...)'] tables at the end of this file), not by a feature. These
+# stay because ~40 live call sites pass `--features metal` -- six CI steps,
+# docs/METAL_BACKEND.md, three [[example]] required-features blocks -- and
+# deleting them breaks all of those for no correctness gain. They must select
+# nothing: a `dep:` here would put cudarc back in a macOS graph.
+cuda = ["avarok-core/cuda"]
+metal = ["avarok-core/metal"]
 test-utils = []
 
 [[bin]]
@@ -73,32 +73,15 @@ required-features = ["test-utils"]
 [dependencies]
 avarok-core = { workspace = true }
 avarok-kernels = { workspace = true }
-cudarc = { workspace = true, optional = true }
+
 
 # Apple Metal backend deps. Activated only by `--features metal`.
-objc2 = { version = "0.6", optional = true }
-objc2-metal = { version = "0.3", optional = true, features = [
-    "MTLDevice",
-    "MTLBuffer",
-    "MTLResource",
-    "MTLCommandQueue",
-    "MTLCommandBuffer",
-    "MTLCommandEncoder",
-    "MTLComputeCommandEncoder",
-    "MTLComputePipeline",
-    "MTLLibrary",
-    "MTLBlitCommandEncoder",
-    "MTLEvent",
-    "block2",
-] }
-objc2-foundation = { version = "0.3", optional = true, features = [
-    "NSData",
-    "NSString",
-    "NSError",
-] }
+
+
+
 # `MTLDevice::newLibraryWithData_error` takes a `DispatchData` (libdispatch
 # byte container), not an `NSData`. dispatch2 ships the wrapper.
-dispatch2 = { version = "0.3", optional = true }
+
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -120,3 +103,45 @@ toml = "0.8"
 
 [lints]
 workspace = true
+
+# ── Target-conditional backends ───────────────────────────────────────────
+# Cargo cannot make a FEATURE target-conditional, but it can make a
+# DEPENDENCY target-conditional -- and that is the half that matters. The
+# `metal` and `cuda` features remain as no-op aliases so the ~40 call sites
+# that pass `--features metal` keep working; what selects a backend is the
+# target, via build_backend::resolve and these two tables.
+#
+# Precedent in tree: spark-storage/Cargo.toml already carries a
+# [target.'cfg(target_os = "linux")'.dependencies] table.
+#
+# `optional` is deliberately dropped: a target table is already conditional,
+# and leaving these optional would keep them behind a feature nothing passes.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6" }
+objc2-metal = { version = "0.3", features = [
+    "MTLDevice",
+    "MTLBuffer",
+    "MTLResource",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLComputeCommandEncoder",
+    "MTLComputePipeline",
+    "MTLLibrary",
+    "MTLBlitCommandEncoder",
+    "MTLEvent",
+    "block2",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSData",
+    "NSString",
+    "NSError",
+] }
+dispatch2 = { version = "0.3" }
+
+# cudarc's build script shells out to `nvcc --version` and PANICS when it is
+# absent, so on macOS it cannot merely be unused -- it must not be in the
+# graph at all. Measured on the M4 Pro, 2026-09-18: a plain `cargo build`
+# failed here with `No such file or directory`.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+cudarc = { workspace = true }

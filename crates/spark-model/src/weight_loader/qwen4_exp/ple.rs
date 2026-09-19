@@ -21,25 +21,25 @@
 //! shard past the first and, since the rows are all valid embeddings, would
 //! do it silently.
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use anyhow::Context;
 use anyhow::Result;
 use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::weights::WeightStore;
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use crate::layers::ngram_embed::NgramTable;
 use crate::layers::ple::PleLayer;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use crate::layers::ple::{PleIdDims, PleWeights};
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 use crate::weight_map::dense;
 
 /// Resident rows in the pinned arena. A prefill pins `tokens * ngram_heads`
 /// rows at once (2048 x 16 = 32,768), so the default leaves headroom over the
 /// largest batch this model currently fits; at 320 B/row it costs ~21 MB.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 fn slots_from_env() -> usize {
     std::env::var("AVAROK_PLE_CACHE_SLOTS")
         .ok()
@@ -53,7 +53,7 @@ fn slots_from_env() -> usize {
 /// they are uploaded like any other weight, and the id hash needs them on the
 /// host. Reading them back beats adding a host-side path to `WeightStore` for
 /// 280 bytes.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 fn i64_host(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<Vec<u64>> {
     let t = store.get(name).with_context(|| format!("PLE: {name}"))?;
     let n = t.num_elements();
@@ -71,7 +71,7 @@ fn i64_host(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<Vec
 /// The same trick as `i64_host` and for the same reason: it is four bytes, and
 /// the weight is already on the device. It accepts BF16 or FP32 because the
 /// checkpoints differ on which they use for a scalar.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 fn f32_scalar(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<f32> {
     let t = store.get(name).with_context(|| format!("PLE: {name}"))?;
     anyhow::ensure!(
@@ -96,7 +96,7 @@ fn f32_scalar(store: &WeightStore, name: &str, gpu: &dyn GpuBackend) -> Result<f
 }
 
 /// Build the PLE layer for `layer_idx`, or `None` if this model has none.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub(super) fn load(
     store: &WeightStore,
     config: &ModelConfig,
@@ -318,7 +318,7 @@ pub(super) fn load(
 /// rather than return `None` (same rationale as `longcat/ngram.rs`): `None`
 /// means "this model has no PLE", and quietly answering that for a model
 /// that does have one silently drops the n-gram injection.
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 pub(super) fn load(
     _store: &WeightStore,
     config: &ModelConfig,

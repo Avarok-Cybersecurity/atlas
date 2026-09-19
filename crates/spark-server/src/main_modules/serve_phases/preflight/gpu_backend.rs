@@ -19,7 +19,7 @@ use crate::cli;
 ///   `ptx_set` as well. Both arms register the RESOLVED target's modules;
 ///   `metallib_modules()` is a plain alias of target 0, so registering from
 ///   it served another model's kernels in a multi-target build.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
     ptx_set: &avarok_kernels::TargetPtxSet,
@@ -46,7 +46,7 @@ pub(crate) fn init_gpu_backend(
     Ok((gpu, free_mem))
 }
 
-#[cfg(all(feature = "metal", not(feature = "cuda")))]
+#[cfg(all(avarok_metal, not(avarok_cuda)))]
 pub(crate) fn init_gpu_backend(
     args: &cli::ServeArgs,
     ptx_set: &avarok_kernels::TargetPtxSet,

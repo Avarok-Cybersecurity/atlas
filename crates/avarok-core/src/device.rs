@@ -35,7 +35,7 @@ pub mod sm121 {
     pub const COMPUTE_MINOR: u32 = 1;
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 mod cuda_impl {
     use cudarc::driver::CudaContext;
     use std::sync::Arc;
@@ -58,5 +58,5 @@ mod cuda_impl {
     }
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use cuda_impl::AvarokDevice;

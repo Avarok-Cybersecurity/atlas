@@ -164,11 +164,23 @@ fn metal_gated_delta_rule_decode_matches_reference() {
         }
         assert!(a.is_finite(), "non-finite at idx {i}: {a}");
     }
-    // Output magnitude ≈ 0.05; BF16 ULP at that scale ≈ 0.0004.
-    // Allow accumulation drift across 128-tap reduction.
+    // ★ COSINE, NOT AN ABSOLUTE BOUND. The comment this replaced claimed an
+    // output magnitude of ~0.05 and allowed 0.02 of drift; the inputs built
+    // above (h_state = 0.001*sin(..)) actually produce outputs near 1e-3, so
+    // the bound sat twenty times above the signal and a kernel that wrote
+    // nothing passed. `COSINE_GATE` is the same 0.9999 the GDN microtest gates
+    // on, and it is scale-free, so it cannot drift out of the units again.
+    let cos_out = cosine_bf16(&expected, &actual);
+    let mag_out = norm_ratio_bf16(&expected, &actual);
     assert!(
-        max_abs_diff < 0.02,
-        "gated_delta_rule_decode: max |expected - actual| = {max_abs_diff}"
+        mag_out >= COSINE_GATE,
+        "gated_delta_rule_decode output: L2-norm ratio = {mag_out:.7} < {COSINE_GATE} \
+         (cosine {cos_out:.7} cannot see a uniform gain, which is why this is here)"
+    );
+    assert!(
+        cos_out >= COSINE_GATE,
+        "gated_delta_rule_decode output: cosine = {cos_out:.7} < {COSINE_GATE} \
+         (max |expected - actual| = {max_abs_diff})"
     );
 
     // Also verify the in-place state was updated correctly (read it
@@ -186,9 +198,18 @@ fn metal_gated_delta_rule_decode_matches_reference() {
             h_max_diff = d;
         }
     }
+    // Same reasoning for the in-place state: h_state's own values are ~1e-3,
+    // so a 1e-3 absolute bound was the whole signal, not a tolerance.
+    let cos_h = cosine_f32(&h_cpu, &h_after);
+    let mag_h = norm_ratio_f32(&h_cpu, &h_after);
     assert!(
-        h_max_diff < 1e-3,
-        "h_state in-place update mismatch: max |h_cpu - h_actual| = {h_max_diff}"
+        mag_h >= COSINE_GATE,
+        "h_state in-place update: L2-norm ratio = {mag_h:.7} < {COSINE_GATE}"
+    );
+    assert!(
+        cos_h >= COSINE_GATE,
+        "h_state in-place update: cosine = {cos_h:.7} < {COSINE_GATE} \
+         (max |h_cpu - h_actual| = {h_max_diff})"
     );
 
     // Suppress unused warning for h_state (used as starting bytes only).

@@ -285,7 +285,7 @@ pub trait GpuBackend: Send + Sync {
     /// need the registry itself rather than a kernel handle — resolving a
     /// `__device__` symbol, for instance. `None` on backends that have no such
     /// concept, which is why it is an accessor rather than a downcast.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     fn kernel_registry(&self) -> Option<std::sync::Arc<avarok_core::registry::AvarokRegistry>> {
         None
     }

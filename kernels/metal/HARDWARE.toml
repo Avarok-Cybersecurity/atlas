@@ -7,7 +7,18 @@ arch = "metal3.1"
 device_family = "apple7"
 # Tuning hint, not authoritative — actual bandwidth probed at runtime.
 # M2 Pro reference; M3/M4 are higher.
-memory_bandwidth_gbps = 200
+# M4 Pro, measured chip; the 200 was an M2 Pro figure. Still a hint.
+memory_bandwidth_gbps = 273
 memory_type = "LPDDR5"
 # Apple Silicon UMA — the OOM watchdog reads true free memory at runtime.
-memory_gb = 16
+# Measured on apple-48gb-metal (the box this target serves), 2026-09-18, via
+# mlx.core.metal.device_info(): memory_size 51539607552 = 48 GiB. The previous
+# value described an M2 Pro. The OOM watchdog reads this file, so a 16 that
+# should be 48 makes it refuse work the box can do.
+memory_gb = 48
+# max_recommended_working_set_size 40200896512 = 37.44 GiB, and
+# max_buffer_length 30150672384 = 28.08 GiB. The per-buffer ceiling is the
+# harder bound for one monolithic weight tensor and is what decides whether a
+# model is servable here at all.
+working_set_gb = 37
+max_buffer_gb = 28

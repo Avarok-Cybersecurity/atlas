@@ -508,28 +508,56 @@ impl GpuBackend for MetalGpuBackend {
         self.libraries.contains_key(module)
     }
 
+    // ★ THE METAL BACKEND RECORDED NOTHING.
+    //
+    // `cuda_backend/gpu_impl.rs` calls `kernel_audit::record` on both arms of
+    // every lookup, which is what feeds the startup kernel table, `seal()`, and
+    // the `atlas_kernel_lookups_unresolved` gauge. This path never did. The
+    // consequence is not cosmetic: with no audit entry a MISSING Metal kernel
+    // is not a boot refusal, it is an `anyhow!("Metal: unknown module")` raised
+    // mid-decode, on the first token that needs it -- and `try_kernel` callers
+    // swallow it entirely and fall back silently, so a kernel that failed to
+    // build reads as a kernel nobody asked for.
+    //
+    // A 1:1 port lands hundreds of kernels incrementally, so the difference
+    // between "absent" and "not requested" is the difference between a build
+    // defect that announces itself and one that shows up as a slow path.
+    #[track_caller]
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        // The DISPATCH SITE, not this line: `#[track_caller]` carries the
+        // `.kernel(…)` / `try_kernel(…)` caller's `file:line` through, which is
+        // the only part of an unresolved-lookup report an operator can act on.
+        let site = std::panic::Location::caller();
         let key: PipelineKey = (module.to_string(), func_name.to_string());
         if let Some(handle) = self.pipeline_cache.lock().get(&key) {
+            // Recorded on the cache-hit path too: the audit counts LOOKUPS, and
+            // a kernel resolved once then served from cache is still a kernel
+            // this build resolved.
+            crate::kernel_audit::record(module, func_name, true, site);
             return Ok(*handle);
         }
-        let lib = self
-            .libraries
-            .get(module)
-            .ok_or_else(|| anyhow!("Metal: unknown module '{module}'"))?;
+        let Some(lib) = self.libraries.get(module) else {
+            crate::kernel_audit::record(module, func_name, false, site);
+            return Err(anyhow!("Metal: unknown module '{module}'"));
+        };
         let ns_name = NSString::from_str(func_name);
-        let function = lib.newFunctionWithName(&ns_name).ok_or_else(|| {
-            anyhow!("Metal: function '{func_name}' not found in module '{module}'")
-        })?;
+        let Some(function) = lib.newFunctionWithName(&ns_name) else {
+            crate::kernel_audit::record(module, func_name, false, site);
+            return Err(anyhow!(
+                "Metal: function '{func_name}' not found in module '{module}'"
+            ));
+        };
         let pipeline = self
             .device
             .newComputePipelineStateWithFunction_error(&function)
             .map_err(|e| {
+                crate::kernel_audit::record(module, func_name, false, site);
                 anyhow!(
                     "newComputePipelineStateWithFunction failed for '{func_name}': {}",
                     e.localizedDescription()
                 )
             })?;
+        crate::kernel_audit::record(module, func_name, true, site);
         let mut slab = self.pipeline_slab.lock();
         let handle = KernelHandle(slab.len() as u64);
         slab.push(pipeline);
