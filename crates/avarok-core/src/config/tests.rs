@@ -4,6 +4,10 @@
 
 #![allow(unused_imports)]
 
+
+// Split out of this file for the <=500 LoC cap, and never declared: the
+// four tests inside have never compiled.
+mod tests_b;
 use super::*;
 
 #[test]
