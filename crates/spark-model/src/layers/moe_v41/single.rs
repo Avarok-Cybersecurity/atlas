@@ -12,9 +12,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Stage, MoeV41Timing};
-use crate::layers::ops::{
-    kquant_mmvq_experts_w, kquant_q8_1_rows, kquant_q8_1_rows_bytes,
-};
+use crate::layers::ops::{kquant_mmvq_experts_w, kquant_q8_1_rows, kquant_q8_1_rows_bytes};
 
 impl MoeV41 {
     /// Group the `(token, k)` assignments by expert (ascending expert id):
@@ -79,7 +77,13 @@ impl MoeV41 {
     /// quantised once, each projection one launch over the `ne` experts, the
     /// routing weight folded in at the SwiGLU, the rows summed into `acc` in
     /// plan order. Device work only.
-    pub(super) fn routed_m1(&self, gpu: &dyn GpuBackend, x: DevicePtr, ne: usize, stream: u64) -> Result<()> {
+    pub(super) fn routed_m1(
+        &self,
+        gpu: &dyn GpuBackend,
+        x: DevicePtr,
+        ne: usize,
+        stream: u64,
+    ) -> Result<()> {
         let c = &self.cfg;
         let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
         kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;

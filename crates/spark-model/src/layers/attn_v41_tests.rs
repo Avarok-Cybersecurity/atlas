@@ -271,11 +271,6 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
             assert_eq!(
                 run.idx, lt.attn.idx,
                 "{what}: sa_topk_idxs differ from the reference"
-    assert!(
-        captured_layers > 0,
-        "no capturable decode layer was exercised (all layers are kv/index sources?)"
-    );
-    println!("  captured decode step == eager forward on {captured_layers} layer-steps");
             );
             let q = down_bf16(g, run.q, m * nh * hd);
             assert_within_bf16(&format!("{what}.sa_q"), &q, &lt.attn.q);
@@ -314,6 +309,11 @@ fn gpu_attention_matches_the_reference_on_every_layer_and_regime() {
             );
         }
     }
+    assert!(
+        captured_layers > 0,
+        "no capturable decode layer was exercised (all layers are kv/index sources?)"
+    );
+    println!("  captured decode step == eager forward on {captured_layers} layer-steps");
     for mut s in states {
         s.free(g).unwrap();
     }

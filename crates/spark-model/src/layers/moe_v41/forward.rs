@@ -11,8 +11,8 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing};
 use crate::layers::ops::{
-    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm, kquant_mmvq_w,
-    kquant_q8_1_rows,
+    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm,
+    kquant_mmvq_w, kquant_q8_1_rows,
 };
 use crate::weight_map::DenseWeight;
 
@@ -422,5 +422,4 @@ impl MoeV41 {
         })?;
         Ok(())
     }
-
 }

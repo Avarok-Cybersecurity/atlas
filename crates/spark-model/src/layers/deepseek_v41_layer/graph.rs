@@ -14,9 +14,9 @@ use std::sync::atomic::Ordering;
 
 use super::step::{diag_on, diag_rms_bf16};
 use super::{Baked, DeepSeekV41Layer, LayerGraphs, V41LayerState};
+use crate::layer::ForwardContext;
 use crate::layers::attn_v41::{AttnV41, AttnV41LayerState};
 use crate::layers::moe_v41::MoeV41;
-use crate::layer::ForwardContext;
 use crate::layers::ops;
 
 impl DeepSeekV41Layer {
