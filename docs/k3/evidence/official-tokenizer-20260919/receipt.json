@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "sources": {
+    "tiktoken.model": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+    "tokenization_kimi.py": "f28ea66e2d862a2a5814970b2ce40c2f7d8296ff09aed90a7e7def689b906944",
+    "tokenizer_config.json": "5d0803c94db9cd78763499e0956c95fd5a225c14a727e5a6cf5db3f96f010a6e"
+  },
+  "derived_tokenizer_sha256": "9db7ee1af81dba7c8fe85bd357f2a844443eea2bc6d7ded770597fee6efcfa17",
+  "versions": {
+    "tokenizers": "0.23.2",
+    "tiktoken": "0.9.0"
+  },
+  "encode_cases": 2265,
+  "individual_byte_token_decodes": 163584,
+  "scope": "Raw completion text with special markers enabled; not segmented XTML chat"
+}
