@@ -22,6 +22,8 @@
 //   attn_v41_index_score           the indexer's rectified, weighted head scores
 //   attn_v41_sparse_attn           softmax over gathered rows plus the sink
 //   attn_v41_slice_cols / _scatter_cols   column slices for the grouped wo_a
+//   attn_v41_ring_put              one row into the window ring at pos % win,
+//                                  the position read from the device (CUDA graph)
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -355,4 +357,17 @@ extern "C" __global__ void attn_v41_scale_bf16(
     const unsigned int n, const float s) {
     const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __float2bfloat16(__bfloat162float(in[i]) * s);
+}
+
+// ── the window ring write for the graph-captured decode step ─────────────────
+// ring[(pos[0] % win) * row + c] = src[c]. The eager step does this as a
+// device copy at a host-computed slot; a captured graph bakes its pointers,
+// so the slot has to come from device memory. Bit-identical to the copy.
+// Grid: (1). Block: 256.
+extern "C" __global__ void attn_v41_ring_put(
+    const __nv_bfloat16* __restrict__ src, __nv_bfloat16* __restrict__ ring,
+    const int* __restrict__ pos, const unsigned int win, const unsigned int row) {
+    const unsigned int slot = ((unsigned int)pos[0]) % win;
+    __nv_bfloat16* dst = ring + (size_t)slot * row;
+    for (unsigned int c = threadIdx.x; c < row; c += blockDim.x) dst[c] = src[c];
 }
