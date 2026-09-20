@@ -112,6 +112,22 @@ pub fn spec_for(benchmark_id: &str) -> CardSpec {
                 slot("TTFT p50, C=1", "c1_ttft_p50_ms", Fmt::Ms),
             ],
         },
+        // The MoE ladder stops at C=16: it is pinned to the published
+        // instrument, where the only vLLM one-shot for this checkpoint stops
+        // (C >= 32 took the box down on vLLM and was deliberately not run).
+        // C=128 as an empty box would read as a regression, not an absence.
+        "concurrency-sweep-moe" => CardSpec {
+            hero_label: "Tokens / sec",
+            hero_key: "peak_aggregate_tok_s",
+            hero_note: "aggregate, best rung of C=1..16, ISL 128 / OSL 1024",
+            hero_fmt: Fmt::One,
+            slots: [
+                slot("C=1", "c1_aggregate_tok_s", Fmt::One),
+                slot("C=4", "c4_aggregate_tok_s", Fmt::One),
+                slot("C=16", "c16_aggregate_tok_s", Fmt::One),
+                slot("TTFT p50, C=1", "c1_ttft_p50_ms", Fmt::Ms),
+            ],
+        },
         "bfcl-subset" | "bfcl-subset-echolp" => CardSpec {
             hero_label: "Overall accuracy",
             hero_key: "overall_accuracy",

@@ -39,16 +39,24 @@ const TAB_DEFS = [
   // records-filter below keeps the tabs hidden and the ids show in the
   // footer's "gated, not yet published" line — nothing renders empty.
   { id: 'decode', label: 'Decode', benches: ['decode-floor'] },
-  // Both concurrency gates share this tab AND one set of charts — see
-  // gate-variants.js. They run the same fixture at the same rungs on the
+  // The two dense concurrency gates share this tab AND one set of charts —
+  // see gate-variants.js. They run the same fixture at the same rungs on the
   // same checkpoint and differ only in whether the engine speculates, so
-  // two lines on one axis is the comparison; two panels is not.
+  // two lines on one axis is the comparison; two panels is not. The MoE
+  // ladder (`concurrency-sweep-moe`) is a third bench on this tab but NOT a
+  // member of that group: a different checkpoint on a different instrument
+  // (the published ISL 128 / OSL 1024 essay request), owned by its own
+  // subject in concurrency-subjects.json.
   {
     id: 'concurrency',
     label: 'Concurrency',
-    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2', 'concurrency-sweep-moe']
   }
 ];
+// Every bench whose metrics map is a concurrency ladder (c{C}_aggregate_tok_s
+// + peak_aggregate_tok_s), read from the tab definition so a bench added there
+// gets the ladder panels without a second edit.
+const CONCURRENCY_BENCHES = new Set(TAB_DEFS.find((t) => t.id === 'concurrency').benches);
 export const tabs = TAB_DEFS.filter((t) =>
   t.benches.some((b) => (gates.benchmarks[b]?.records ?? []).length > 0)
 );
@@ -125,7 +133,7 @@ export function panelsFor(benchId, records) {
     const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
     return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
   }
-  if (benchId === 'concurrency-sweep' || benchId === 'concurrency-sweep-dflash2') {
+  if (CONCURRENCY_BENCHES.has(benchId)) {
     // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
     // rendered by GateLadderChart via kind: 'ladder') and the peak's trend
     // over time. Keys come from the sweep's metrics map
