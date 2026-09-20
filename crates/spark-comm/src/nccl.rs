@@ -255,6 +255,7 @@ unsafe extern "C" {
     fn cuEventDestroy_v2(hEvent: u64) -> i32;
     fn cuStreamDestroy_v2(hStream: u64) -> i32;
     fn cuStreamSynchronize(hStream: u64) -> i32;
+    fn cuStreamQuery(hStream: u64) -> i32;
 }
 
 pub fn create_stream() -> anyhow::Result<u64> {
@@ -353,5 +354,15 @@ pub fn check_nccl(result: NcclResult, context: &str) -> anyhow::Result<()> {
             }
         };
         anyhow::bail!("NCCL error in {context}: {msg} ({result:?})")
+    }
+}
+
+/// Query completion without waiting. CUDA_ERROR_NOT_READY is 600.
+/// The caller owns the stream and its device context, as for sync_stream.
+pub fn stream_ready(stream: u64) -> anyhow::Result<bool> {
+    match unsafe { cuStreamQuery(stream) } {
+        0 => Ok(true),
+        600 => Ok(false),
+        status => anyhow::bail!("cuStreamQuery failed: status {status}"),
     }
 }
