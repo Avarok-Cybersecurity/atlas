@@ -65,6 +65,7 @@ mod chat_impl;
 pub(crate) mod chat_render;
 mod deepseek_v4;
 pub(crate) mod jinja_helpers;
+mod kimi_k3;
 mod message_preprocess;
 
 pub(crate) use message_preprocess::{
@@ -75,6 +76,7 @@ pub(crate) use message_preprocess::{
 enum ChatEncoding {
     Jinja,
     DeepseekV4,
+    KimiK3XtmlUnsupported,
 }
 
 pub struct ChatTokenizer {
