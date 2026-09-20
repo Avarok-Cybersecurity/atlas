@@ -315,6 +315,16 @@ pub(crate) fn load_model(
                 .collect::<Vec<_>>(),
         )
     })?;
+    // K3 packed experts require the E8M0 module in the exact MXFP4 target.
+    // Multi-quant resolution otherwise picks the first variant (often BF16).
+    // Do not broaden the global quant compatibility table to hide that mismatch.
+    let ptx_set = if config.model_type == "kimi_k3" && canonicalize_model_quant(&config) == "mxfp4"
+    {
+        avarok_kernels::ptx_for_exact_target(ptx_set.target.model, "mxfp4")
+            .context("K3 MXFP4 requires its compiled mxfp4 target; rebuild with AVAROK_TARGET_QUANT=mxfp4 or *")?
+    } else {
+        ptx_set
+    };
     let sampling_presets = ptx_set.sampling;
     // Record the RESOLVED target identity for the dashboard's kernel table.
     // It used to re-run resolution from (model_type, hidden_size), but that
