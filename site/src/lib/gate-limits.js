@@ -13,12 +13,19 @@
 //     three times draws as three steps, not as today's value painted over
 //     history it never judged.
 //
-//   * BENCH.toml. `[benchmarks.metrics.<name>] min / max` is the declaration
-//     in force now, carried into gates.generated.json by scripts/gen-gates.mjs
-//     as `gate_limits[gate][checkpoint][metric]`. It is the only source for a
-//     metric whose record carries no absolute (the TTFT gates record a
+//   * BENCH.toml. `[benchmarks.metrics.<name>] min / max`, carried into
+//     gates.generated.json by scripts/gen-gates.mjs as a DATED series —
+//     `gate_limits[gate][checkpoint][metric][bound] = [{since, value}, …]`,
+//     one entry per re-cut, ascending — so a record is judged against the
+//     declaration in force WHEN IT WAS RECORDED, never against today's. A
+//     ceiling ratcheted 7x last week does not turn a month of healthy runs
+//     red; it draws as a step down on the day it moved. It is the only source
+//     for a metric whose record carries no absolute (the TTFT gates record a
 //     percentage against a baseline), and the fallback for older records
-//     written before the harness recorded thresholds.
+//     written before the harness recorded thresholds. A record older than the
+//     first declaration has no declared limit: when the date a bound took
+//     effect cannot be established, nothing is ringed — an unringed true
+//     violation is the smaller error.
 //
 // Per record wins over declared, bound by bound. A per-rung floor (`min_c*`)
 // is a per-record value by construction, which is the "prefer per-rung" rule.
@@ -96,34 +103,68 @@ export function recordLimit(record, metricKey) {
 }
 
 /**
- * The limit BENCH.toml declares for (gate, checkpoint, metric) right now.
+ * @typedef {Array<{since: number, value: number|null}>} BoundHistory
+ *   ascending by `since` (unix seconds); `value: null` is a withdrawn bound
+ */
+
+/** The value of a dated series in force at `at`; null before its first entry. */
+const inForce = (series, at) => {
+  if (!Array.isArray(series) || !Number.isFinite(at)) return null;
+  let v = null;
+  for (const e of series) {
+    if (e.since > at) break;
+    v = Number.isFinite(e.value) ? e.value : null;
+  }
+  return v;
+};
+
+/**
+ * The limit BENCH.toml declared for (gate, checkpoint, metric) at time `at`.
  *
- * @param {Record<string, Record<string, Record<string, {min?: number, max?: number}>>>} table
+ * @param {Record<string, Record<string, Record<string, {min?: BoundHistory, max?: BoundHistory}>>>} table
  *   gates.generated.json#gate_limits
  * @param {string} benchmarkId
  * @param {string} checkpoint the record's target_model
  * @param {string} metricKey
+ * @param {number} at unix seconds — the record's `recorded_at`; a limit that
+ *   took effect later does not apply, and an unknown time matches nothing
  * @returns {Limit}
  */
-export function declaredLimit(table, benchmarkId, checkpoint, metricKey) {
+export function declaredLimit(table, benchmarkId, checkpoint, metricKey, at) {
   const row = table?.[benchmarkId]?.[checkpoint]?.[metricKey];
   if (!row) return NONE;
-  return { min: Number.isFinite(row.min) ? row.min : null, max: Number.isFinite(row.max) ? row.max : null };
+  return { min: inForce(row.min, at), max: inForce(row.max, at) };
 }
 
 /**
- * The limit to draw under a record's point: recorded first, declared second,
- * bound by bound.
+ * The limit to draw under a record's point: recorded first, declared (as of
+ * the record's own date) second, bound by bound.
  *
  * @param {object} record
  * @param {string} metricKey
  * @param {object} table gate_limits
+ * @param {number} [at] read the declaration as of another time — the chart
+ *   uses it to show a re-cut that post-dates the newest record
  * @returns {Limit}
  */
-export function limitFor(record, metricKey, table) {
+export function limitFor(record, metricKey, table, at = record?.recorded_at) {
   const rec = recordLimit(record, metricKey);
-  const dec = declaredLimit(table, record?.benchmark_id, record?.target_model, metricKey);
+  const dec = declaredLimit(table, record?.benchmark_id, record?.target_model, metricKey, at);
   return { min: rec.min ?? dec.min, max: rec.max ?? dec.max };
+}
+
+/**
+ * When the declaration for (gate, checkpoint, metric) last changed, on either
+ * bound; null when nothing is declared. A re-cut newer than every record is
+ * still an event on the time axis, and the chart extends to it so the step is
+ * seen on the day it happened rather than not at all.
+ *
+ * @returns {number|null} unix seconds
+ */
+export function latestDeclaredSince(table, benchmarkId, checkpoint, metricKey) {
+  const row = table?.[benchmarkId]?.[checkpoint]?.[metricKey];
+  const sinces = ['min', 'max'].flatMap((b) => (Array.isArray(row?.[b]) ? row[b].map((e) => e.since) : []));
+  return sinces.length ? Math.max(...sinces) : null;
 }
 
 export const sameLimit = (a, b) => a.min === b.min && a.max === b.max;

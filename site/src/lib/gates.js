@@ -7,7 +7,7 @@
 import gates from '$lib/gates.generated.json';
 import { splitByVariant } from './gate-variants.js';
 import { foldPartitions } from './bfcl-partition.js';
-import { limitFor as limitForRecord, rungFloors as rungFloorsOf } from './gate-limits.js';
+import { latestDeclaredSince, limitFor as limitForRecord, rungFloors as rungFloorsOf } from './gate-limits.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
@@ -20,6 +20,11 @@ if (!gates.gate_limits) throw new Error('gates.generated.json has no gate_limits
 export const gateLimits = gates.gate_limits;
 /** The floor/ceiling governing one record's metric — see gate-limits.js. */
 export const limitFor = (record, metricKey) => limitForRecord(record, metricKey, gateLimits);
+/** The same record's limit with the declaration read as of another time. */
+export const limitAsOf = (record, metricKey, at) => limitForRecord(record, metricKey, gateLimits, at);
+/** When the declaration governing this record's metric last changed. */
+export const latestLimitChange = (record, metricKey) =>
+  latestDeclaredSince(gateLimits, record?.benchmark_id, record?.target_model, metricKey);
 export const rungFloors = (record) => rungFloorsOf(record, gateLimits);
 
 export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';

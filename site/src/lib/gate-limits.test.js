@@ -5,6 +5,7 @@ import {
   declaredLimit,
   fmtLimit,
   governingParam,
+  latestDeclaredSince,
   limitFor,
   limitLabel,
   recordLimit,
@@ -16,16 +17,34 @@ import {
 } from './gate-limits.js';
 
 const MODEL = 'unsloth/Qwen3.8-27B-NVFP4';
-// The shape gates.generated.json#gate_limits carries (gen-gates.mjs).
+const T0 = 1_780_000_000; // every declaration below took effect here …
+const T1 = 1_790_000_000; // … and the ratcheted ones moved here
+const at = (since, value) => ({ since, value });
+// The shape gates.generated.json#gate_limits carries (gen-gates.mjs): a dated
+// series per bound, ascending, one entry per re-cut.
 const TABLE = {
   'concurrency-sweep': {
-    [MODEL]: { c1_aggregate_tok_s: { min: 20.4 }, c2_aggregate_tok_s: { min: 25 }, peak_aggregate_tok_s: { min: 109.5 } }
+    [MODEL]: {
+      c1_aggregate_tok_s: { min: [at(T0, 20.4)] },
+      c2_aggregate_tok_s: { min: [at(T0, 25)] },
+      peak_aggregate_tok_s: { min: [at(T0, 109.5)] }
+    }
   },
-  'decode-floor': { [MODEL]: { server_decode_tok_s: { min: 25 } } },
-  'agentic-webserver': { [MODEL]: { sum_wall_s: { max: 5000 }, iterations: { min: 10, max: 10 } } }
+  'decode-floor': { [MODEL]: { server_decode_tok_s: { min: [at(T0, 25)] } } },
+  'agentic-webserver': { [MODEL]: { sum_wall_s: { max: [at(T0, 5000)] }, iterations: { min: [at(T0, 10)], max: [at(T0, 10)] } } },
+  // A ceiling re-cut 7x, and a floor later withdrawn.
+  'ttft-warm-gate': { [MODEL]: { median_ms: { max: [at(T0, 1559.32), at(T1, 210)] }, samples: { min: [at(T0, 36), at(T1, null)] } } }
 };
-// Every params value is a STRING: that is how the harness records them.
-const rec = (over = {}) => ({ benchmark_id: 'concurrency-sweep', target_model: MODEL, params: {}, metrics: {}, ...over });
+// Every params value is a STRING: that is how the harness records them. A
+// record is dated after every declaration unless a test says otherwise.
+const rec = (over = {}) => ({
+  benchmark_id: 'concurrency-sweep',
+  target_model: MODEL,
+  recorded_at: T1 + 1,
+  params: {},
+  metrics: {},
+  ...over
+});
 
 describe('which recorded param governs a metric', () => {
   test('a ladder rung maps to its min_c<C>, the rest to the descriptor names', () => {
@@ -64,15 +83,57 @@ describe('the limit a record says judged it', () => {
 });
 
 describe('the declared limit and the merge', () => {
+  const NOW = T1 + 1;
   test('declared is keyed by gate, checkpoint and metric', () => {
-    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 'iterations')).toEqual({ min: 10, max: 10 });
-    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 'sum_wall_s')).toEqual({ min: null, max: 5000 });
+    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 'iterations', NOW)).toEqual({ min: 10, max: 10 });
+    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 'sum_wall_s', NOW)).toEqual({ min: null, max: 5000 });
   });
   test('NEGATIVE CONTROL: another checkpoint, another gate, or an undeclared metric is no limit', () => {
     const none = { min: null, max: null };
-    expect(declaredLimit(TABLE, 'agentic-webserver', 'Qwen/Qwen3.6-35B-A3B-FP8', 'sum_wall_s')).toEqual(none);
-    expect(declaredLimit(TABLE, 'ttft-warm-gate', MODEL, 'sum_wall_s')).toEqual(none);
-    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 's_per_turn')).toEqual(none);
+    expect(declaredLimit(TABLE, 'agentic-webserver', 'Qwen/Qwen3.6-35B-A3B-FP8', 'sum_wall_s', NOW)).toEqual(none);
+    expect(declaredLimit(TABLE, 'ttft-warm-gate', MODEL, 'sum_wall_s', NOW)).toEqual(none);
+    expect(declaredLimit(TABLE, 'agentic-webserver', MODEL, 's_per_turn', NOW)).toEqual(none);
+  });
+
+  describe('a declaration applies from the date it took effect', () => {
+    const ceiling = (when) => declaredLimit(TABLE, 'ttft-warm-gate', MODEL, 'median_ms', when).max;
+    test('a record after the re-cut is judged by the new ceiling, one before it by the old', () => {
+      expect(ceiling(T1)).toBe(210); // on the day counts
+      expect(ceiling(T1 + 86400)).toBe(210);
+      expect(ceiling(T1 - 1)).toBe(1559.32);
+      expect(ceiling(T0)).toBe(1559.32);
+    });
+    test('NEGATIVE CONTROL: before the first declaration there is no limit at all', () => {
+      expect(ceiling(T0 - 1)).toBeNull();
+      expect(ceiling(0)).toBeNull();
+    });
+    test('NEGATIVE CONTROL: an undated record is judged by nothing', () => {
+      expect(ceiling(undefined)).toBeNull();
+      expect(ceiling(NaN)).toBeNull();
+      expect(limitFor(rec({ benchmark_id: 'ttft-warm-gate', recorded_at: undefined }), 'median_ms', TABLE)).toEqual({ min: null, max: null });
+    });
+    test('a withdrawn bound (value null) stops applying from its date', () => {
+      const floor = (when) => declaredLimit(TABLE, 'ttft-warm-gate', MODEL, 'samples', when).min;
+      expect(floor(T1 - 1)).toBe(36);
+      expect(floor(T1)).toBeNull();
+    });
+    test('limitFor reads the record\'s own date: the same value passes under the old rule and breaks the new', () => {
+      const r = (when) => rec({ benchmark_id: 'ttft-warm-gate', recorded_at: when, metrics: { median_ms: 400 } });
+      expect(violationOf(400, limitFor(r(T1 - 1), 'median_ms', TABLE))).toBeNull();
+      expect(violationOf(400, limitFor(r(T1), 'median_ms', TABLE))).toBe('ceiling');
+      // An explicit `at` reads the declaration as of another time (the chart
+      // draws a re-cut newer than the record with it); the record's own
+      // threshold still wins when it has one.
+      expect(limitFor(r(T1 - 1), 'median_ms', TABLE, T1).max).toBe(210);
+      expect(limitFor(rec({ params: { min_c1: '19' }, recorded_at: T0 }), 'c1_aggregate_tok_s', TABLE, T1).min).toBe(19);
+    });
+    test('latestDeclaredSince is the newest change on either bound, null when nothing is declared', () => {
+      expect(latestDeclaredSince(TABLE, 'ttft-warm-gate', MODEL, 'median_ms')).toBe(T1);
+      expect(latestDeclaredSince(TABLE, 'ttft-warm-gate', MODEL, 'samples')).toBe(T1); // the withdrawal counts
+      expect(latestDeclaredSince(TABLE, 'agentic-webserver', MODEL, 'iterations')).toBe(T0);
+      expect(latestDeclaredSince(TABLE, 'agentic-webserver', MODEL, 's_per_turn')).toBeNull();
+      expect(latestDeclaredSince(TABLE, 'nope', MODEL, 'median_ms')).toBeNull();
+    });
   });
   test('the record wins over the declaration, bound by bound', () => {
     // The record was judged at 24.5; BENCH.toml has since ratcheted to 25.

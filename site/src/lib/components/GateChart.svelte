@@ -11,7 +11,7 @@
   //   gate-domain.js   where the axis starts and stops, and label dodging
   //   gate-aggregate.js how many runs one drawn point stands for
   //   chart-marks.js   the marker glyphs, shared with the legend
-  import { colorFor, fmtDate, limitFor, shortModel } from '$lib/gates.js';
+  import { colorFor, fmtDate, latestLimitChange, limitAsOf, limitFor, shortModel } from '$lib/gates.js';
   import { buildSeries, drawnValues, modelsOf } from '$lib/gate-series.js';
   import { fmtLimit, limitLabel, stepPath, timeSpans, violationOf } from '$lib/gate-limits.js';
   import { clampValue, dodgeLabels, robustDomain, tickLabel } from '$lib/gate-domain.js';
@@ -26,26 +26,39 @@
   // The limit that judged a node is its representative record's — read per
   // node, so a floor ratcheted mid-history steps exactly where it stepped.
   const limitOf = (s, n) => limitFor(n.rec, s.metricKey);
-  // Every bound in play widens the axis: a rule is part of the gate's claim.
+  // Every bound in play widens the axis: a rule is part of the gate's claim —
+  // including one re-cut after the newest record (drawn at its own date).
   const refLines = $derived(
-    series.flatMap((s) =>
-      s.nodes.flatMap((n) => {
-        const l = limitOf(s, n);
-        return [l.min, l.max].filter((v) => v !== null).map((value) => ({ value }));
-      })
-    )
+    series.flatMap((s) => {
+      const limits = s.nodes.map((n) => limitOf(s, n));
+      const recut = recutAfter(s);
+      if (recut !== null) limits.push(limitAsOf(s.nodes[s.nodes.length - 1].rec, s.metricKey, recut));
+      return limits.flatMap((l) => [l.min, l.max].filter((v) => v !== null).map((value) => ({ value })));
+    })
   );
 
+  // A re-cut that post-dates the newest record: the time axis reaches out to
+  // it so the step is drawn on its day, in an otherwise empty stretch, rather
+  // than not at all. Per series, because each has its own declaration.
+  const recutAfter = (s) => {
+    const last = s.nodes[s.nodes.length - 1];
+    const since = last ? latestLimitChange(last.rec, s.metricKey) : null;
+    return since !== null && since > last.t ? since : null;
+  };
   const ext = $derived.by(() => {
     const ts = series.flatMap((s) => s.nodes.map((n) => n.t));
-    const [t0, t1] = [Math.min(...ts), Math.max(...ts)];
+    const recuts = series.map(recutAfter).filter((t) => t !== null);
+    const t0 = Math.min(...ts);
+    const recut = recuts.length ? Math.max(...recuts) : null;
+    // A little room past the re-cut, so the new bar has a stretch to be seen on.
+    const t1 = recut === null ? Math.max(...ts) : recut + (recut - t0) * 0.04;
     // An explicit panel domain still wins: `webserver_ok` is bounded by the
     // iteration count, and nothing can exceed it, so there is nothing to clip.
     if (panel.domain) {
-      return { t0, t1, v0: panel.domain[0], v1: panel.domain[1], clipHigh: false, clipLow: false };
+      return { t0, t1, recut, v0: panel.domain[0], v1: panel.domain[1], clipHigh: false, clipLow: false };
     }
     const d = robustDomain(drawnValues(series), refLines) ?? { v0: 0, v1: 1, clipHigh: false, clipLow: false };
-    return { t0, t1, ...d };
+    return { t0, t1, recut, ...d };
   });
 
   const x = (t) => PL + (ext.t1 === ext.t0 ? 0.5 : (t - ext.t0) / (ext.t1 - ext.t0)) * (W - PL - PR);
@@ -79,11 +92,13 @@
     const seen = new Set();
     const out = [];
     for (const s of series) {
-      const spans = timeSpans(
-        s.nodes.map((n) => ({ x: x(n.t), limit: limitOf(s, n) })),
-        PL,
-        W - PR
-      );
+      const points = s.nodes.map((n) => ({ x: x(n.t), limit: limitOf(s, n) }));
+      const recut = recutAfter(s);
+      if (recut !== null) {
+        const last = s.nodes[s.nodes.length - 1];
+        points.push({ x: x(recut), limit: limitAsOf(last.rec, s.metricKey, recut) });
+      }
+      const spans = timeSpans(points, PL, W - PR);
       for (const bound of ['min', 'max']) {
         const d = stepPath(spans, bound, (v) => y(clampValue(v, ext).y));
         if (!d || seen.has(d)) continue;
@@ -128,6 +143,8 @@
   ]);
   const xTicks = $derived.by(() => {
     const ts = [...new Set(series.flatMap((s) => s.nodes.map((n) => n.t)))].sort((a, b) => a - b);
+    // The axis may end on a re-cut rather than a record; the edge tick says so.
+    if (ext.recut !== null) ts.push(ext.recut);
     const picked = ts.length <= 2 ? ts : [ts[0], ts[Math.floor(ts.length / 2)], ts[ts.length - 1]];
     return picked.map((t, i) => ({
       t,
@@ -284,9 +301,6 @@
     {#each limitLines as l}
       <path class="gc-limit" d={l.d} fill="none" stroke={l.color} />
     {/each}
-    {#each [...stepLabels, ...edgeLabels.limit] as t}
-      <text class="gc-limit-label" x={t.x} y={t.y} text-anchor={t.anchor} fill={t.color}>{t.text}</text>
-    {/each}
 
     <!-- Spread of each aggregated group, beneath the lines so it reads as
          context rather than as data of its own. -->
@@ -342,6 +356,11 @@
       {/each}
     {/each}
 
+    <!-- Rule labels ride above the marks, like the end values: a label under
+         a cluster of points is a label nobody can read. -->
+    {#each [...stepLabels, ...edgeLabels.limit] as t}
+      <text class="gc-limit-label" x={t.x} y={t.y} text-anchor={t.anchor} fill={t.color}>{t.text}</text>
+    {/each}
     {#each edgeLabels.end as l}
       {#if l.leader}
         <line class="gc-leader" x1={l.x} y1={l.y} x2={l.leader.px} y2={l.leader.py} stroke={l.color} />

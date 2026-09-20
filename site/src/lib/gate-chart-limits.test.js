@@ -37,7 +37,9 @@ plugin({
 });
 
 const { render } = await import('svelte/server');
-const { gateLimits } = await import('./gates.js');
+const { gateLimits, fmtDate } = await import('./gates.js');
+// GateChart's own value formatting (fmtV): thousands grouped, else 2 decimals.
+const fmtMs = (v) => (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString('en-US') : String(+v.toFixed(2)));
 const { SUBJECTS } = await import('./concurrency-subjects.js');
 const GateChart = (await import('./components/GateChart.svelte')).default;
 const GateLadderChart = (await import('./components/GateLadderChart.svelte')).default;
@@ -51,6 +53,13 @@ const plot = (page) => page.slice(page.indexOf('<svg viewBox'));
 
 const MODEL = 'unsloth/Qwen3.8-27B-NVFP4';
 const DAY = 86400;
+// The declarations these fixtures lean on, read from the real table so the
+// assertions move with BENCH.toml rather than pinning a stale number. Each is
+// the newest entry of a dated series: {since, value}.
+const DECLARED_FLOOR = gateLimits['decode-floor'][MODEL].server_decode_tok_s.min.at(-1);
+// Fixture records are dated after every declaration in play unless a test
+// says otherwise.
+const T0 = DECLARED_FLOOR.since + DAY;
 let seq = 0;
 // Every params value is a STRING, as the harness records them.
 const rec = (over = {}) => {
@@ -59,7 +68,7 @@ const rec = (over = {}) => {
     benchmark_id: 'decode-floor',
     benchmark_name: 'decode floor',
     git_sha: `sha${seq}`,
-    recorded_at: 1789500000 + seq * DAY,
+    recorded_at: T0 + seq * DAY,
     target_model: MODEL,
     served_by: 'recipe',
     verdict: 'PASS',
@@ -83,9 +92,7 @@ const violations = (page) =>
 const r1 = (n) => Math.round(n * 10) / 10;
 
 describe('GateChart: the floor BENCH.toml declares, with no threshold in the record', () => {
-  // The real declaration this fixture leans on; if BENCH.toml moves, the
-  // assertion moves with it rather than pinning a stale number.
-  const declared = gateLimits['decode-floor'][MODEL].server_decode_tok_s.min;
+  const declared = DECLARED_FLOOR.value;
   const page = html(GateChart, {
     panel: DECODE_PANEL,
     records: [decode(declared + 3), decode(declared), decode(declared + 1)],
@@ -174,6 +181,79 @@ describe('GateChart: a ceiling', () => {
     const ruleY = +/^M56\.0 ([\d.]+) H/.exec(limitPaths(page)[0])[1];
     const labelY = +/<text class="gc-limit-label" x="[\d.]+" y="([\d.]+)"/.exec(page)[1];
     expect(labelY).toBeLessThan(ruleY);
+  });
+});
+
+describe('GateChart: a declared ceiling applies only from the date it took effect', () => {
+  // The real warm-TTFT ceiling for the 35B FP8 checkpoint, and the day it
+  // took effect. The records carry no absolute of their own, so this is the
+  // case that once turned pre-ratchet history red.
+  const CK = 'Qwen/Qwen3.6-35B-A3B-FP8';
+  const { since, value: ceiling } = gateLimits['ttft-warm-gate'][CK].median_ms.max.at(-1);
+  const ttft = (when, v) =>
+    rec({ benchmark_id: 'ttft-warm-gate', target_model: CK, recorded_at: when, metrics: { median_ms: v } });
+  const panel = { title: 'warm TTFT', unit: 'ms', metrics: [{ key: 'median_ms', label: 'median' }] };
+  // Two points over today's ceiling: one recorded before it took effect, one after.
+  const before = ttft(since - 30 * DAY, ceiling * 2);
+  const after = ttft(since + 30 * DAY, ceiling * 2);
+  const page = html(GateChart, { panel, records: [before, after, ttft(since + 31 * DAY, ceiling / 2)], onselect: () => {} });
+
+  test('the point recorded BEFORE the ceiling took effect is not ringed; the one after it is', () => {
+    expect(since).toBeGreaterThan(0);
+    const v = violations(page);
+    expect(v).toHaveLength(1);
+    expect(v[0][3]).toBe('ceiling');
+    expect(+v[0][2]).toBe(markYs(page)[1]); // the second point, not the first
+    expect(page).not.toContain(`${fmtMs(ceiling * 2)} ms · over ceiling ${fmtMs(ceiling)} · ${fmtDate(before.recorded_at)}`);
+    expect(page).toContain(`${fmtMs(ceiling * 2)} ms · over ceiling ${fmtMs(ceiling)} · ${fmtDate(after.recorded_at)}`);
+  });
+
+  test('the rule is drawn from the first point it governs, not from the left edge of history', () => {
+    const paths = limitPaths(page);
+    expect(paths).toHaveLength(1);
+    const cxs = [...plot(page).matchAll(/<circle class="gc-mark" cx="([\d.]+)"/g)].map((m) => +m[1]);
+    const x1 = cxs[1]; // the first point the ceiling governs is the second one drawn
+    const start = +/^M([\d.]+) /.exec(paths[0])[1];
+    expect(start).toBeCloseTo(x1, 0);
+    expect(start).toBeGreaterThan(56); // PL: the left edge is history the rule never judged
+  });
+
+  test('NEGATIVE CONTROL: every point dated after the ceiling took effect is judged by it', () => {
+    const all = html(GateChart, { panel, records: [ttft(since + DAY, ceiling * 2), ttft(since + 2 * DAY, ceiling * 2)], onselect: () => {} });
+    expect(violations(all)).toHaveLength(2);
+    expect(limitPaths(all)[0]).toMatch(/^M56\.0 /);
+  });
+});
+
+describe('GateChart: a re-cut newer than every record is still drawn, on its own day', () => {
+  // The real FP8 warm-TTFT ceiling has at least two entries; take the last
+  // two and date every record between them, so the newest re-cut post-dates
+  // the newest record — the state a chart is in right after a ratchet lands
+  // and before the next gate run.
+  const CK = 'Qwen/Qwen3.6-35B-A3B-FP8';
+  const series = gateLimits['ttft-warm-gate'][CK].median_ms.max;
+  const [old, recut] = series.slice(-2);
+  const panel = { title: 'warm TTFT', unit: 'ms', metrics: [{ key: 'median_ms', label: 'median' }] };
+  const ttft = (when, v) =>
+    rec({ benchmark_id: 'ttft-warm-gate', target_model: CK, recorded_at: when, metrics: { median_ms: v } });
+  // Both values sit between the two ceilings: over the new one, under the old.
+  const v = (old.value + recut.value) / 2;
+  const page = html(GateChart, { panel, records: [ttft(old.since + DAY, v), ttft(old.since + 5 * DAY, v)], onselect: () => {} });
+
+  test('the axis reaches the re-cut, the rule steps down there, and both bounds are named', () => {
+    expect(series.length).toBeGreaterThanOrEqual(2);
+    expect(recut.since).toBeGreaterThan(old.since + 5 * DAY);
+    const paths = limitPaths(page);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toMatch(/^M56\.0 [\d.]+ H[\d.]+ V[\d.]+ H704\.0$/);
+    const [yOld, yNew] = /^M56\.0 ([\d.]+) H[\d.]+ V([\d.]+) H/.exec(paths[0]).slice(1).map(Number);
+    expect(yNew).toBeGreaterThan(yOld); // a lower ceiling draws lower
+    expect(limitLabels(page)).toEqual([`ceiling ${fmtMs(old.value)} ms`, `ceiling ${fmtMs(recut.value)} ms`]);
+    expect(plot(page)).toContain(`text-anchor="end">${fmtDate(recut.since)}</text>`);
+  });
+
+  test('NEGATIVE CONTROL: the records themselves are judged by the ceiling of their day, not the new one', () => {
+    expect(violations(page)).toHaveLength(0);
   });
 });
 
