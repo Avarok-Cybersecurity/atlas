@@ -19,6 +19,47 @@ Validate with local fake executables: successful completion, dead worker,
 occupied endpoint, missing binary/config, wrong SHA/architecture/rank map,
 timeout, and child cleanup. No GPU or model download is needed for these checks.
 
+## Retain the CUDA JIT cache between launches
+
+Do this before the first rental canary. Create a directory owned by the account
+running Atlas, on storage retained between server/container restarts:
+
+```bash
+mkdir -p /work/cache/atlas-cuda
+test -w /work/cache/atlas-cuda
+```
+
+Replace `/work/cache/atlas-cuda` with the actual absolute path on the rental.
+For containers, mount retained storage at that path; a directory in a deleted
+container's writable layer will not survive recreation. Add the path to the
+existing manifest `env` object, preserving its other settings:
+
+```json
+"CUDA_CACHE_PATH": "/work/cache/atlas-cuda"
+```
+
+Setting it only in the launching shell is insufficient: this controller
+sanitizes inherited environment variables, including `HOME`. It explicitly
+forwards the manifest's `CUDA_CACHE_PATH` to every rank and refuses a relative,
+missing or unwritable directory. Keep the directory across subsequent launches;
+do not clear it as routine cleanup. The first launch against an empty directory
+still pays the cold-start cost. Driver, architecture or kernel changes may
+require new cache entries, so do not assume a previous device's warm timing.
+
+On the B200 rehearsal, the same executable, GPU and small model took **56.18s
+cold versus 8.64s warm** from controller start to an owned healthy endpoint
+(about 6.5× faster startup). Both inference canaries passed. The populated cache
+contained 183 files / 59,538,744 bytes; compiler-process samples were zero
+throughout both runs. This is a startup measurement, not a decode-throughput
+improvement or a B300/full-model timing claim. See the
+[recorded comparison](../../docs/k3/evidence/b200-rehearsal-20260919/final-lifecycle-tools.json).
+
+For a controlled reproduction, reserve the GPU, stop build jobs, select a new
+empty cache directory, and launch once. Launch again with the same binary,
+model, GPU, manifest and cache directory, using a new evidence output directory.
+Compare start-to-owned-healthy times and require the same successful inference
+probe in both runs. Preserve whether each result was cold or warm in its receipt.
+
 ## Running it
 
 Save a manifest like this with **real absolute paths, SHA256 from the build
@@ -107,7 +148,8 @@ cannot fit on one GPU. Verify checkpoint bytes separately with `checkpoint.py`;
 this launcher checks only `config.json`, not terabytes of weights on each run.
 
 Environment inheritance is restricted. The manifest may explicitly set
-`AVAROK_*`, `NCCL_*`, `RUST_LOG`, and `LD_LIBRARY_PATH`; secret-like key names are
+`AVAROK_*`, `NCCL_*`, `RUST_LOG`, `LD_LIBRARY_PATH`, and the validated
+`CUDA_CACHE_PATH`; secret-like key names are
 refused. These values are recorded, so supply configuration only. HF networking
 is disabled. `CUDA_VISIBLE_DEVICES` is not inherited or set; device ordinals
 must match the full node's inventory. Runtime flags not represented here retain

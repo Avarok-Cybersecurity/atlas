@@ -54,7 +54,9 @@ manifests following [LAUNCH.md](../../scripts/k3/LAUNCH.md), using actual GPU
 UUIDs, the executable SHA256 and `sm_103a`. Reserve each selected GPU. Set EP1,
 BF16 KV, prefix caching off and an explicit prefill budget. Opt into an
 existing writable absolute `CUDA_CACHE_PATH` in `env`; retain that directory
-between runs. B200 measured 56.18s cold versus 8.64s warm startup with the same
+between runs. Follow the [copy/paste cache setup and cold/warm procedure](../../scripts/k3/LAUNCH.md#retain-the-cuda-jit-cache-between-launches)
+before the first canary; exporting it only in the parent shell does not reach
+the sanitized rank environment. B200 measured 56.18s cold versus 8.64s warm startup with the same
 binary and no concurrent compiler processes. This is not a B300 timing claim.
 
 ```bash
