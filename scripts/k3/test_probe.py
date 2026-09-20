@@ -10,12 +10,29 @@ import tempfile
 import threading
 import time
 from probe import validate
+from probe_payload import validate_prompt, validate_payload
 
 
 class ProbeTests(unittest.TestCase):
     def setUp(self):
         self.good = {'model': 'fixture', 'choices': [{'text': 'hello world', 'finish_reason': 'length'}],
                      'usage': {'prompt_tokens': 1, 'completion_tokens': 2, 'total_tokens': 3}}
+
+    def test_prepared_token_payload_is_preserved_and_bad_ids_fail(self):
+        payload = {'model': 'fixture', 'prompt': [163587, 0, 163589],
+                   'max_tokens': 64, 'temperature': 0, 'stream': False,
+                   'stop': ['<|end_of_msg|>', '[EOS]']}
+        self.assertIs(validate_payload(payload), payload)
+        self.assertEqual(validate_prompt('[1,2]'), '[1,2]')
+        with self.assertRaisesRegex(ValueError, 'submitted token array'):
+            validate(self.good, request=dict(payload, model='fixture'))
+        for prompt in ([], [True], [-1], [1.5], ['2'], [2**32], [[1]], None):
+            with self.subTest(prompt=prompt), self.assertRaises(ValueError):
+                validate_prompt(prompt)
+        for key, value in [('stream', True), ('temperature', 1), ('max_tokens', True),
+                           ('stop', ['']), ('model', ''), ('prompt', [False])]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                validate_payload(dict(payload, **{key: value}))
 
     def test_accepts_expected_generation(self):
         self.assertEqual(validate(self.good, 'hello'), 'hello world')
@@ -56,16 +73,18 @@ class EndpointTests(unittest.TestCase):
     def test_request_receipt_and_total_deadline(self):
         class Handler(http.server.BaseHTTPRequestHandler):
             slow = False
+            received = []
 
             def log_message(self, *args):
                 pass
 
             def do_POST(self):
-                self.rfile.read(int(self.headers['Content-Length']))
+                self.received.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
                 if self.slow:
                     time.sleep(1)
+                prompt_count = len(self.received[-1]['prompt']) if isinstance(self.received[-1]['prompt'], list) else 1
                 body = json.dumps({'model': 'fixture', 'choices': [{'text': 'hello', 'finish_reason': 'stop'}],
-                                   'usage': {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}}).encode()
+                                   'usage': {'prompt_tokens': prompt_count, 'completion_tokens': 1, 'total_tokens': prompt_count+1}}).encode()
                 try:
                     self.send_response(200)
                     self.end_headers()
@@ -84,6 +103,19 @@ class EndpointTests(unittest.TestCase):
                 result = subprocess.run(command + ['--output', str(success)], capture_output=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(success.read_text())['status'], 'passed')
+                prepared = Path(directory)/'prepared.json'
+                payload = {'model': 'fixture', 'prompt': [163587, 0, 163589],
+                           'max_tokens': 64, 'temperature': 0, 'stream': False,
+                           'stop': ['<|end_of_msg|>', '[EOS]']}
+                prepared.write_text(json.dumps(payload))
+                token_command = command.copy()
+                i = token_command.index('--prompt')
+                token_command[i:i+2] = ['--request-file', str(prepared)]
+                token_receipt = Path(directory)/'tokens.json'
+                result = subprocess.run(token_command + ['--output', str(token_receipt)], capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(Handler.received[-1], payload)
+                self.assertEqual(json.loads(token_receipt.read_text())['request'], payload)
                 Handler.slow = True
                 failure = Path(directory) / 'timeout.json'
                 result = subprocess.run(command + ['--deadline', '0.2', '--output', str(failure)],

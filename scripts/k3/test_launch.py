@@ -56,6 +56,23 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 launch.validate(bad)
 
+    def test_token_arrays_and_prepared_request_contract(self):
+        launch.validate(dict(self.config, prompt=[0, 163587, 163589]))
+        for prompt in ([], [True], [-1], [1.2], ['1'], [2**32]):
+            with self.subTest(prompt=prompt), self.assertRaises(ValueError):
+                launch.validate(dict(self.config, prompt=prompt))
+        request = self.root/'request.json'
+        payload = {'model': 'twin', 'prompt': [0, 163587], 'max_tokens': 4,
+                   'temperature': 0, 'stream': False, 'stop': ['[EOS]']}
+        request.write_text(json.dumps(payload))
+        c = dict(self.config, request_file=str(request));del c['prompt']
+        self.assertEqual(launch.probe_payload(launch.validate(c)), payload)
+        for replacement in ({'model': 'other'}, {'max_tokens': 5}, {'stream': True}):
+            request.write_text(json.dumps(dict(payload, **replacement)))
+            with self.assertRaises(ValueError):launch.validate(c)
+        request.write_text(json.dumps(payload))
+        with self.assertRaises(ValueError):launch.validate(dict(c, prompt='ambiguous'))
+
     def test_cuda_cache_path_is_explicit_and_validated(self):
         config = dict(self.config, env={'CUDA_CACHE_PATH': str(self.root)})
         self.assertEqual(launch.environment(config)['CUDA_CACHE_PATH'], str(self.root))
@@ -167,6 +184,40 @@ http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()
         self.assertEqual(json.loads((output/'probe.json').read_text())['status'], 'passed')
         with socket.socket() as sock:
             self.assertNotEqual(sock.connect_ex(('127.0.0.1', self.config['port_base'])), 0)
+
+    def test_prepared_payload_snapshot_survives_source_edit(self):
+        capture = self.root/'received.json'
+        self.configure_process('''
+import http.server, json, sys
+from pathlib import Path
+port=int(sys.argv[sys.argv.index('--port')+1])
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers()
+    def do_POST(self):
+        payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        Path(CAPTURE_PATH).write_text(json.dumps(payload))
+        n=len(payload['prompt'])
+        data=json.dumps({'model':'twin','choices':[{'text':'4','finish_reason':'stop'}],
+                         'usage':{'prompt_tokens':n,'completion_tokens':1,'total_tokens':n+1}}).encode()
+        self.send_response(200);self.send_header('Content-Length',str(len(data)))
+        self.end_headers();self.wfile.write(data)
+    def log_message(self,*args):pass
+http.server.HTTPServer(('127.0.0.1',port),Handler).serve_forever()
+'''.replace('CAPTURE_PATH', repr(str(capture))))
+        prepared = self.root/'prepared.json'
+        payload = {'model':'twin','prompt':[163587,0,163589],'max_tokens':4,
+                   'temperature':0,'stream':False,'stop':['<|end_of_msg|>','[EOS]']}
+        prepared.write_text(json.dumps(payload))
+        config = dict(self.config, request_file=str(prepared));del config['prompt']
+        class ChangingIO(LocalIO):
+            def inventory(inner):
+                prepared.write_text('{}')
+                return super().inventory()
+        output = self.root/'prepared-run'
+        self.assertEqual(launch.run(config, output, ChangingIO()), 0)
+        self.assertEqual(json.loads(capture.read_text()), payload)
+        self.assertEqual(json.loads((output/'probe-request.json').read_text()), payload)
+        self.assertEqual(json.loads((output/'probe.json').read_text())['request'], payload)
 
     def test_dead_worker_stops_head_and_retains_failure(self):
         self.configure_process('''

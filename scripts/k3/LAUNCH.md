@@ -126,3 +126,31 @@ master addresses. For two separate Sparks, use a reviewed multi-host launcher
 and the same pinned binary/model/probe contract on both hosts; do not run two
 copies of this controller and mistake their independent local rank worlds for
 a cross-host NCCL deployment.
+
+## Prepared token-array requests
+
+Schema 2 also accepts `prompt` as a nonempty array of unsigned 32-bit token IDs;
+booleans, floats, nested arrays and negative IDs are refused. Text prompts retain
+their original meaning, including text that happens to look like JSON.
+
+For the official encoder flow, replace the manifest's `prompt` field with
+`"request_file": "/absolute/path/request.json"`. Use the JSON emitted by
+`prepare_prompt.py`; the manifest's `model_name` and `max_tokens` must match it.
+The request must explicitly declare greedy `temperature: 0` and `stream: false`.
+Its optional `stop` array is preserved. Unknown request fields are refused.
+`prompt` and `request_file` cannot both be present.
+
+The launcher snapshots the validated payload into the new run's
+`probe-request.json` before starting any ranks. Later edits to the input file do
+not change the submitted canary. The same bounded probe accepts it directly:
+
+```bash
+python3 scripts/k3/probe.py --endpoint http://127.0.0.1:18888 \
+  --model kimi-k3 --request-file /absolute/path/request.json \
+  --expected-prefix 'REPLACE_WITH_REVIEWED_REFERENCE_PREFIX' \
+  --deadline 120 --output /absolute/path/new-probe.json
+```
+
+Token IDs and stop strings are sent unchanged to `/v1/completions`. The response
+must report the same prompt-token count as the submitted array. This adds raw
+completion plumbing; it does not implement native XTML chat or tool parsing.

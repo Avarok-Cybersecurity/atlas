@@ -1,0 +1,83 @@
+{
+  "lifecycle": {
+    "status": "passed",
+    "requests": 121,
+    "cycles_completed": 5,
+    "concurrency": 2,
+    "elapsed_seconds": 141.64101376291364,
+    "trusted_baseline_checked": true,
+    "limitations": [
+      "client cancellation does not prove immediate GPU cancellation",
+      "concurrent client launches do not prove server batching",
+      "no memory measurements or leak claims"
+    ],
+    "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+    "idle": {
+      "request_free_seconds": 45.00013218307868
+    },
+    "startup": {
+      "start_to_owned_healthy_seconds": 10.52360380301252,
+      "cuda_cache_path": "/root/.nv/ComputeCache"
+    },
+    "matching_submissions_per_rank": {
+      "0": 118639,
+      "1": 118639
+    },
+    "all_owned_processes_exit_zero": true,
+    "receipt_sha256": "50cd5caef07b43e7f1713d8d64ed0a829c0a60bfb35cd6f0c06d9d802e943f16"
+  },
+  "startup_comparison": {
+    "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+    "gpu_count": 1,
+    "rows": [
+      {
+        "state": "cold",
+        "launch_exit": 0,
+        "max_compiler_count": 0,
+        "start_to_owned_healthy_seconds": 56.1752142640762,
+        "cache_files": 183,
+        "cache_bytes": 59538744,
+        "compiler_sample_count": 115
+      },
+      {
+        "state": "warm",
+        "launch_exit": 0,
+        "max_compiler_count": 0,
+        "start_to_owned_healthy_seconds": 8.6378164277412,
+        "cache_files": 183,
+        "cache_bytes": 59538744,
+        "compiler_sample_count": 20
+      }
+    ],
+    "receipt_sha256": "5f3bae6f10c5894c2f34b1c319e407d534464975815ab3009feab67b92eff3c4"
+  },
+  "prepared_token_canary": {
+    "status": "passed",
+    "scope": "Tiny fixture token-array transport; not official K3 semantic validation",
+    "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+    "request": {
+      "model": "k3-twin",
+      "prompt": [
+        18805,
+        308,
+        799,
+        5624,
+        12524,
+        318,
+        57195,
+        11
+      ],
+      "max_tokens": 16,
+      "temperature": 0,
+      "stream": false,
+      "stop": [
+        "<|end_of_msg|>",
+        "[EOS]"
+      ]
+    },
+    "prompt_tokens": 8,
+    "completion_tokens": 16,
+    "exact_text_and_finish_match": true,
+    "receipt_sha256": "b90344280f561d308eb2c07fdc1cb94e2b140b4368f56c59fbb4c3f09592f55d"
+  }
+}

@@ -9,6 +9,8 @@ import sys
 import time
 import urllib.request
 
+from probe_payload import read_payload, validate_payload
+
 
 def validate(response, expected_prefix=None, request=None):
     def finite(value):
@@ -50,6 +52,8 @@ def validate(response, expected_prefix=None, request=None):
     if request is not None:
         if response.get('model') != request['model']:
             raise ValueError('response model differs from requested model')
+        if isinstance(request.get('prompt'), list) and prompt_count != len(request['prompt']):
+            raise ValueError('prompt token count differs from submitted token array')
         if count > request['max_tokens']:
             raise ValueError('completion token count exceeds requested maximum')
     return text
@@ -71,16 +75,27 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--endpoint', required=True)
     p.add_argument('--model', required=True)
-    p.add_argument('--prompt', required=True)
+    prompt = p.add_mutually_exclusive_group(required=True)
+    prompt.add_argument('--prompt')
+    prompt.add_argument('--request-file', type=Path)
     p.add_argument('--expected-prefix')
-    p.add_argument('--max-tokens', type=int, default=32)
+    p.add_argument('--max-tokens', type=int)
     p.add_argument('--deadline', type=float, default=120)
     p.add_argument('--output', type=Path, required=True)
     args = p.parse_args()
-    if args.max_tokens <= 0 or not math.isfinite(args.deadline) or args.deadline <= 0:
+    if (args.max_tokens is not None and args.max_tokens <= 0) or not math.isfinite(args.deadline) or args.deadline <= 0:
         p.error('max-tokens and deadline must be positive and finite')
-    payload = dict(model=args.model, prompt=args.prompt, max_tokens=args.max_tokens,
-                   temperature=0, stream=False)
+    try:
+        if args.request_file:
+            payload = read_payload(args.request_file)
+            if payload['model'] != args.model or (args.max_tokens is not None and payload['max_tokens'] != args.max_tokens):
+                raise ValueError('prepared request model/max_tokens differs from CLI declaration')
+        else:
+            payload = validate_payload(dict(model=args.model, prompt=args.prompt,
+                                             max_tokens=args.max_tokens or 32,
+                                             temperature=0, stream=False))
+    except (ValueError, OSError) as exc:
+        p.error(str(exc))
     # Exclusive creation prevents replacing an earlier receipt, including on failure.
     with args.output.open('x') as receipt:
         record = dict(schema=1, request=payload, status='failed',

@@ -38,8 +38,8 @@ After execution, E8M0 was isolated as a byte-identical B200-owned source to
 remove an indirect cross-hardware symlink; MODEL.toml comments were clarified.
 No CUDA kernel body or runtime behavior changed during that cleanup. The final
 rebuild and 17 target tests passed, but its binary hash changed; both hashes are
-recorded. The GPU receipts above name the earlier binary. A short final-artifact
-canary remains necessary alongside the shutdown-harness fix.
+recorded. The GPU receipts above name the earlier binary; subsequent final-artifact
+canary and lifecycle reruns are recorded below.
 Bulk rank logs remain outside the repository; compact receipts include their
 probe hashes. This is development evidence, not a `.benchmarks` record.
 
@@ -77,3 +77,17 @@ exited zero. Full quiesced logs matched at 118,639 submissions per rank,
 including the tail. This supersedes the earlier TP2 shutdown failure for this
 run only; it does not retroactively make the original log audit pass.
 See `lifecycle.json`. No GPU memory-leak or fused-batching claim is made.
+
+## Optimized final artifact and prepared requests
+
+The optimized `e04b4756...` binary passed another 121-check TP2 lifecycle run
+in 141.64 seconds after 45 seconds idle; all 118,639 submissions per rank match,
+and every owned process exited zero. Cold/warm startup on that same binary and
+one GPU measured 56.18s/8.64s using a fresh then retained explicit CUDA cache.
+Compiler occupancy was sampled at zero throughout both runs.
+
+The bounded launcher/probe now accepts prepared integer-token completion
+requests while preserving stop strings. A real tiny-model eight-token-array
+canary produced the exact same 16-token text as the text-prompt reference.
+This proves transport plumbing, not official K3 semantic correctness. See
+`final-lifecycle-tools.json` and [portable next steps](../../NEXT-RENTAL.md).

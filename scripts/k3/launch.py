@@ -14,6 +14,7 @@ import sys
 import time
 
 from launch_process import SystemIO, terminate, wait_alive
+from probe_payload import read_payload, validate_prompt, validate_payload
 
 FIELDS = set("schema binary binary_sha256 compiled_arch model_dir model_name world_size "
              "tp_size ep_size ranks master_addr master_port port_base env max_seq_len "
@@ -31,7 +32,7 @@ def digest(path):
 
 
 def validate(c):
-    if set(c) != FIELDS or type(c['schema']) is not int or c['schema'] != 2:
+    if set(c) not in (FIELDS, (FIELDS-{'prompt'}) | {'request_file'}) or type(c['schema']) is not int or c['schema'] != 2:
         raise ValueError(f'manifest fields must be exactly {sorted(FIELDS)}; schema=2')
     for field in ('world_size', 'tp_size', 'ep_size', 'master_port', 'port_base',
                   'max_seq_len', 'max_batch_size', 'max_num_seqs', 'max_tokens'):
@@ -69,7 +70,7 @@ def validate(c):
             raise ValueError(f'{field} must be positive and finite')
     if not isinstance(c['gpu_memory_utilization'], (float, int)) or not 0 < c['gpu_memory_utilization'] < 1:
         raise ValueError('gpu_memory_utilization must be between zero and one')
-    for field in ('model_name', 'prompt', 'expected_prefix'):
+    for field in ('model_name', 'expected_prefix'):
         if not isinstance(c[field], str) or not c[field].strip():
             raise ValueError(f'{field} must be nonempty text')
     if not re.fullmatch(r'sm_[0-9]{2,3}[af]?', c['compiled_arch']):
@@ -85,7 +86,21 @@ def validate(c):
     if not isinstance(json.loads((model/'config.json').read_text()), dict):
         raise ValueError('model config must be an object')
     environment(c)
+    probe_payload(c)
     return c
+
+
+def probe_payload(c):
+    if 'request_file' in c:
+        path = c['request_file']
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError('request_file must be an absolute path')
+        payload = read_payload(path)
+        if payload['model'] != c['model_name'] or payload['max_tokens'] != c['max_tokens']:
+            raise ValueError('prepared request model/max_tokens differs from manifest')
+        return payload
+    return validate_payload(dict(model=c['model_name'], prompt=validate_prompt(c['prompt']),
+                                 max_tokens=c['max_tokens'], temperature=0, stream=False))
 
 
 def environment(c):
@@ -158,7 +173,10 @@ def check_devices(c, rows, occupied):
 def run(c, output, io=None):
     io = io or SystemIO()
     validate(c)
+    payload = probe_payload(c)
     output.mkdir(parents=True, exist_ok=False)
+    request_file = output/'probe-request.json'
+    request_file.write_text(json.dumps(payload, allow_nan=False)+'\n')
     processes, logs = [], []
     leader = None
     summary = {'schema': 1, 'status': 'failed', 'manifest': c, 'ranks': []}
@@ -195,7 +213,7 @@ def run(c, output, io=None):
             time.sleep(min(0.1, remaining))
         probe_cmd = [sys.executable, str(Path(__file__).with_name('probe.py')),
                      '--endpoint', endpoint, '--model', c['model_name'],
-                     '--prompt', c['prompt'], '--expected-prefix', c['expected_prefix'],
+                     '--request-file', str(request_file), '--expected-prefix', c['expected_prefix'],
                      '--max-tokens', str(c['max_tokens']), '--deadline', str(c['probe_timeout']),
                      '--output', str(output/'probe.json')]
         log = (output/'probe.log').open('xb')

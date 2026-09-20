@@ -49,6 +49,9 @@ separately. Clocks were not locked and these are three-repeat development runs.
   No tolerance or threshold was relaxed; this remains a separate portability
   issue. A standalone compilation of the unchanged SiTU test passes, so codegen
   context matters and the Cargo reproduction should be retained.
-- GPU production-shape numerical tests and the 121-check TP2 lifecycle test
-  preceded this CPU-only change; final candidate validation here comprises the
-  bit-exact tests and all 24 candidate long-generation requests across TP1/2/4.
+- The final candidate also passed all 121 TP2 lifecycle checks across five
+  cycles in 141.64 seconds, after 45 seconds idle. Full untrimmed rank logs match
+  at 118,639 submissions per rank, and all owned processes exit zero. This adds
+  streaming/cancellation/concurrency recovery to the 24 long-generation checks.
+  See `final-lifecycle-tools.json`. Production-shape GPU numerical oracles
+  preceded the CPU-only change; no CUDA kernel body changed.
