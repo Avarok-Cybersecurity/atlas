@@ -235,7 +235,7 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
     inOrder(
       live,
       '<strong>vLLM has not been run on this instrument</strong> (ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV)',
-      'The vLLM + MTP one-shot of 2026-09-19 is on another instrument and is not comparable: isl 512 → 128, osl 320 → 1024, prompt_mode natural → undeclared, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16.',
+      'The vLLM + MTP one-shot of 2026-09-19 is on another instrument and is not comparable: isl 512 → 128, osl 320 → 1024, prompt_mode natural → essay, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16.',
       'filed under <code>bench/baselines/qwen36-35b-a3b/</code>, fills the comparison'
     );
     expect(live).toContain('latest gate sweep · ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');

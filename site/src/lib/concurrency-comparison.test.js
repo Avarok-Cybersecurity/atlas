@@ -87,12 +87,12 @@ describe('pairing a one-shot with a gate record', () => {
     expect(refused[0].differs).toEqual([
       { axis: 'isl', a: '512', b: '128' },
       { axis: 'osl', a: '320', b: '1024' },
-      { axis: 'prompt_mode', a: 'natural', b: null },
+      { axis: 'prompt_mode', a: 'natural', b: 'essay' },
       { axis: 'max_model_len', a: '4096', b: '2048' },
       { axis: 'kv_cache_dtype', a: 'fp8', b: 'bf16' }
     ]);
     expect(refused[0].why).toBe(
-      'isl 512 → 128, osl 320 → 1024, prompt_mode natural → undeclared, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16'
+      'isl 512 → 128, osl 320 → 1024, prompt_mode natural → essay, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16'
     );
   });
 
