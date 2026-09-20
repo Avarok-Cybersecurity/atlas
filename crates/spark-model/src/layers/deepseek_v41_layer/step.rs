@@ -22,13 +22,13 @@ pub(super) fn diag_on() -> bool {
 /// halves, synchronise and log a checksum of the half's output and of the
 /// highway, so two runs of the same request can be diffed to the first
 /// (position, layer, half) where they part. Diagnostics only.
-fn trace_on() -> bool {
+pub(super) fn trace_on() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| std::env::var("ATLAS_DS41_TRACE").is_ok_and(|v| v == "1"))
 }
 
 /// FNV-1a over `bytes` device bytes at `p` (synchronises).
-fn trace_hash(gpu: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> u64 {
+pub(super) fn trace_hash(gpu: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> u64 {
     let mut b = vec![0u8; bytes];
     if gpu.copy_d2h(p, &mut b).is_err() {
         return 0;
@@ -147,6 +147,9 @@ impl DeepSeekV41Layer {
             .context("deepseek-v4.1 layer given a foreign state")?;
         let streams = ctx.buffers.hc_streams();
         let (h, hc) = (rt.hidden, rt.hc_mult);
+        if step_graph_on() {
+            self.note_window(st.attn.window());
+        }
 
         if self.idx == 0 {
             if start_pos == 0 {
@@ -184,7 +187,11 @@ impl DeepSeekV41Layer {
         // the whole-step segment graphs: the single-token step at a position
         // > 0, with the engram rows for every engram layer uploaded up front
         // by layer 0 (`step_seg.rs`)
-        let seg_mode = step_graph_on() && m == 1 && start_pos > 0 && !gpu.debug_sync_kernels();
+        let seg_mode = step_graph_on()
+            && m == 1
+            && start_pos > 0
+            && !gpu.debug_sync_kernels()
+            && !rt.seg.lock().unwrap().disabled;
         if seg_mode {
             return self.step_seg(hidden, start_pos, st, ctx, stream);
         }
@@ -222,7 +229,7 @@ impl DeepSeekV41Layer {
     /// resident now, then save this layer's input for the layers after it.
     /// Diagnostics: synchronises twice a layer.
     #[allow(clippy::type_complexity)]
-    fn predict_before_moe(
+    pub(super) fn predict_before_moe(
         &self,
         gpu: &dyn GpuBackend,
         normed: DevicePtr,
@@ -251,7 +258,7 @@ impl DeepSeekV41Layer {
         Ok(Some((resident, preds)))
     }
 
-    fn predict_log(
+    pub(super) fn predict_log(
         &self,
         start_pos: usize,
         resident: &[bool],
@@ -298,7 +305,7 @@ impl DeepSeekV41Layer {
         let rt = &self.rt;
         let gpu = ctx.gpu;
         let streams = ctx.buffers.hc_streams();
-        let (h, hc) = (rt.hidden, rt.hc_mult);
+        let h = rt.hidden;
         let diag = diag_on();
 
         // attention
@@ -361,110 +368,7 @@ impl DeepSeekV41Layer {
                 diag_rms_bf16(gpu, attn_out, h)
             );
         }
-        self.hc_post(gpu, attn_out, streams, rt.post_s, rt.comb_s, m, stream)?;
-
-        // ffn
-        self.mixes_collapse(
-            gpu,
-            &self.hc_ffn,
-            streams,
-            rt.pre_f,
-            rt.pre_a,
-            hidden,
-            m,
-            stream,
-        )?;
-        ops::rms_norm(
-            gpu,
-            self.k_rms_norm,
-            hidden,
-            &self.ffn_norm,
-            normed,
-            m as u32,
-            h as u32,
-            rt.norm_eps,
-            stream,
-        )?;
-        if trace_on() {
-            gpu.synchronize(stream)?;
-            tracing::info!(
-                "DS41 trace pos={} L{} moein={:016x} hwyin={:016x}",
-                start_pos,
-                self.idx,
-                trace_hash(gpu, normed, m * h * 2),
-                trace_hash(gpu, streams, m * hc * h * 4)
-            );
-        }
-        let pred = self.predict_before_moe(gpu, normed, m, start_pos, stream)?;
-        let moe_out = {
-            let moe = rt.moe.lock().unwrap();
-            let mut lru = rt.lru.lock().unwrap();
-            let before = lru.stats();
-            let (out, w_, i_) = moe.forward(
-                gpu,
-                &self.moe_w,
-                &mut lru,
-                &*rt.slices,
-                normed,
-                m,
-                rt.reader_threads,
-                self.next_router.as_ref(),
-                stream,
-            )?;
-            rt.step_moe.lock().unwrap().add(&moe.last.get());
-            if let Some((resident, preds)) = pred {
-                self.predict_log(start_pos, &resident, &preds, &i_);
-            }
-            if trace_on() {
-                let after = lru.stats();
-                let wb: Vec<u8> = w_.iter().flat_map(|x| x.to_le_bytes()).collect();
-                let mut hw: u64 = 0xcbf2_9ce4_8422_2325;
-                for x in wb {
-                    hw ^= x as u64;
-                    hw = hw.wrapping_mul(0x0000_0100_0000_01b3);
-                }
-                tracing::info!(
-                    "DS41 trace pos={} L{} route={:?} w={:016x} hits={} misses={} evict={}",
-                    start_pos,
-                    self.idx,
-                    &i_[..i_.len().min(12)],
-                    hw,
-                    after.hits - before.hits,
-                    after.misses - before.misses,
-                    after.evictions - before.evictions
-                );
-            }
-            out
-        };
-        if diag {
-            gpu.synchronize(stream)?;
-            tracing::info!(
-                "DS41 L{} ffn: in rms {:.4} normed rms {:.4} out rms {:.4}",
-                self.idx,
-                diag_rms_bf16(gpu, hidden, h),
-                diag_rms_bf16(gpu, normed, h),
-                diag_rms_bf16(gpu, moe_out, h)
-            );
-        }
-        self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, m, stream)?;
-        gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, m * hc * 4, stream)?;
-        if trace_on() {
-            gpu.synchronize(stream)?;
-            tracing::info!(
-                "DS41 trace pos={} L{} moe={:016x} hwy={:016x}",
-                start_pos,
-                self.idx,
-                trace_hash(gpu, moe_out, m * h * 2),
-                trace_hash(gpu, streams, m * hc * h * 4)
-            );
-        }
-
-        if self.idx + 1 == rt.n_layers {
-            self.step_line(m, start_pos, "eager");
-            // no learned head on V4.1: the final collapse uses the last ffn pre
-            self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;
-            gpu.synchronize(stream)?;
-        }
-        Ok(())
+        // the attention's `hc_post` opens the ffn half (`step_ffn.rs`)
+        self.ffn_eager(hidden, m, start_pos, ctx, stream)
     }
 }

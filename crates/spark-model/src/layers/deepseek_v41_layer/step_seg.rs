@@ -15,41 +15,36 @@
 //! launches, and one read-back per segment (the routing headers of its
 //! layers) instead of one per layer.
 //!
-//! STATUS (2026-09-19): EXPERIMENTAL, default off, NOT KEPT. The capture,
-//! the segment geometry (nine segments a token), the device selection with
-//! deferred headers and the one read-back per segment all work on GB10 (the
-//! first MinHeap request under the first protocol produced the oracle's text).
-//! What does not yet work is the miss fallback. Inside a replayed segment
-//! nothing fetches: the selection kernel points an absent expert at slot 0
-//! and flags the layer, and every layer after it in the segment then routes
-//! on a wrong input, so a second run of the graph reveals new misses (up to
-//! one run per layer) and fills the cache with noise; and running the
-//! flagged layer and the ones after it eagerly needs the layer driver to
-//! revisit layers it has already passed, which the per-layer `step` cannot
-//! do (a segment closed and launched by layer c has layers s..c-1 behind it).
-//! The sound design, not yet built: (1) the graph snapshots hidden, streams,
-//! pre_prev and pre_a after EVERY layer (~90 KB a layer, D2D), so a miss at
-//! layer f restores the state after f-1 and marks f..end eager while s..f-1
-//! stand (their picks were real); (2) the capture token runs every layer
-//! eagerly on the compute stream while the bodies are recorded on a second
-//! capture stream, so a segment is only ever launched at its owner's step,
-//! never at its closing layer; (3) `eager_until` then covers f..end and the
-//! driver reaches those layers in order. Until then a miss inside a segment
-//! fails the request ("layer N reached outside any segment"), which is why
-//! the flag stays off.
+//! The protocol. A segment's graph carries a SNAPSHOT before every layer's
+//! ffn (streams, the attention output, pre_a, the attention site's post and
+//! comb mixes: ~75 KB a layer, device copies inside the graph), and a segment is launched only
+//! at its OWNER's step, never at its close. The owner reads its layers'
+//! routing headers once after the launch. Inside a replay nothing fetches:
+//! the selection kernel points an absent expert at slot 0 and flags the
+//! layer, and every layer after it routed on a wrong input. The first
+//! flagged layer k has real picks (its input was right): its misses are
+//! fetched, its snapshot restored, layer k runs from its ffn on with the
+//! eager step's own code (`ffn_eager`), the layers after it to the
+//! segment's end run the whole eager step, and layers s..k-1 stand. The
+//! CAPTURE token records the bodies on a second stream (the capture is
+//! relaxed) while every layer runs eagerly on the compute stream, so the
+//! token that captures is right by the eager path and the first replay is
+//! the next token. An owner does its own attention input eagerly whenever
+//! the segment before it did not replay through to it. A failed capture
+//! turns the mode off for the process; the token in flight finishes
+//! eagerly.
 //!
 //! Every layer's `step` lands here; the OWNER of a segment (layer 0, or an
 //! index layer at its ffn) prepares, launches and runs the protocol, and
 //! the layers a replayed segment covered return at once (`skip_until`).
-//! Capture happens on the first token: the owner opens the capture, the
-//! following layers append their bodies, the next index layer (or the last
-//! layer) closes it.
 
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle};
 
+use super::step::{trace_hash, trace_on};
+use super::step_seg_run::SAVE_N;
 use super::{DeepSeekV41Layer, V41LayerState};
 use crate::layer::ForwardContext;
 use crate::layers::attn_v41::LayerRole;
@@ -63,40 +58,58 @@ pub fn step_graph_on() -> bool {
 
 /// One captured segment.
 pub struct SegGraph {
-    g: GraphHandle,
+    pub(super) g: GraphHandle,
     /// The layer whose attention input closes the segment (`n_layers` for
     /// the last one); layers below it are covered.
-    end: usize,
+    pub(super) end: usize,
     /// Layers whose MoE ran inside (their headers to read after a launch).
-    moe_layers: Vec<u32>,
+    pub(super) moe_layers: Vec<u32>,
     /// Selection classes the covered attention bodies read (ratio > 0,
     /// ratio 0) and the compressed rows they bake.
-    classes: (bool, bool),
-    rows_b: Option<DevicePtr>,
+    pub(super) classes: (bool, bool),
+    pub(super) rows_b: Option<DevicePtr>,
 }
 
 /// An open capture: the owner and the MoE layers appended so far.
 pub struct SegCapture {
-    owner: usize,
-    moe_layers: Vec<u32>,
-    classes: (bool, bool),
-    rows_b: Option<DevicePtr>,
+    pub(super) owner: usize,
+    pub(super) moe_layers: Vec<u32>,
+    pub(super) classes: (bool, bool),
+    pub(super) rows_b: Option<DevicePtr>,
 }
 
 #[derive(Default)]
 pub struct SegState {
-    /// A capture or a replay failed: the mode is off for the process.
+    /// A capture failed: the mode is off for the process.
     pub disabled: bool,
     /// Layers below this were covered by the segment just launched.
     pub skip_until: usize,
-    /// Layers below this run eagerly this token (a segment missed).
+    /// Layers below this run the whole eager step this token.
     pub eager_until: usize,
+    /// The layer whose snapshot the owner restored: it runs from its ffn on.
+    pub ffn_only_at: Option<usize>,
     pub capturing: Option<SegCapture>,
     /// By owner layer.
     pub graphs: Vec<Option<SegGraph>>,
     /// The buffers every graph bakes: hidden, streams, normed.
     pub baked: Option<[DevicePtr; 3]>,
-    /// Graph launches and eager fallbacks this process, for the log.
+    /// The stream a capture token records on, the side stream the recorded
+    /// shared expert forks onto, and the fork / join events (all captured
+    /// into the graph; the eager path's own side stream is never touched).
+    pub cap_stream: Option<u64>,
+    pub cap_side: u64,
+    pub ev_fork: u64,
+    pub ev_join: u64,
+    /// Per layer, the snapshot before its ffn (`step_seg_run::SAVE_N`
+    /// buffers: hidden, streams, pre_prev, pre_a, the attention output,
+    /// post_s, comb_s).
+    pub save: Vec<[DevicePtr; SAVE_N]>,
+    /// Every layer's window ring as last seen (`note_window`): a sequence's
+    /// own buffer the captured attention bodies bake.
+    pub windows: Vec<DevicePtr>,
+    /// A window ring changed since the graphs were captured: recapture.
+    pub stale: bool,
+    /// Graph launches and miss falls this process, for the log.
     pub launches: u64,
     pub reruns: u64,
 }
@@ -133,6 +146,21 @@ impl DeepSeekV41Layer {
         Ok((end, classes))
     }
 
+    /// Every step (any mode, prefill too) notes this layer's window ring: the
+    /// captured attention bodies bake it, and a new sequence brings new
+    /// rings, so a change marks the graphs stale.
+    pub(super) fn note_window(&self, window: DevicePtr) {
+        let mut seg = self.rt.seg.lock().unwrap();
+        let n = self.rt.n_layers;
+        if seg.windows.len() != n {
+            seg.windows = vec![DevicePtr(0); n];
+        }
+        if seg.windows[self.idx] != window {
+            seg.windows[self.idx] = window;
+            seg.stale = true;
+        }
+    }
+
     /// The step of one layer in segment-graph mode.
     pub(super) fn step_seg(
         &self,
@@ -148,10 +176,6 @@ impl DeepSeekV41Layer {
         let normed = ctx.buffers.norm_output();
         let n = rt.n_layers;
         let mut seg = rt.seg.lock().unwrap();
-        if seg.disabled {
-            drop(seg);
-            return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
-        }
         if seg.graphs.len() != n {
             seg.graphs = (0..n).map(|_| None).collect();
         }
@@ -159,98 +183,93 @@ impl DeepSeekV41Layer {
             // a new step: the baked buffers, the skip and fallback marks
             seg.skip_until = 0;
             seg.eager_until = 0;
+            seg.ffn_only_at = None;
             let baked = [hidden, streams, normed];
-            if seg.baked != Some(baked) {
-                if seg.baked.is_some() {
-                    tracing::warn!("DS41 step graph: buffers changed; recapturing every segment");
+            if seg.baked != Some(baked) || seg.stale {
+                if seg.baked.is_some() && seg.graphs.iter().any(Option::is_some) {
+                    tracing::info!(
+                        "DS41 step graph: {}; recapturing every segment",
+                        if seg.stale {
+                            "a sequence's window rings changed"
+                        } else {
+                            "buffers changed"
+                        }
+                    );
                 }
                 for g in seg.graphs.iter_mut().flat_map(Option::take) {
                     gpu.destroy_graph(g.g)?;
                 }
                 seg.baked = Some(baked);
+                seg.stale = false;
+            }
+            if seg.cap_stream.is_none() {
+                seg.cap_stream = Some(
+                    gpu.create_stream()
+                        .context("step graph: the recording stream")?,
+                );
+                seg.cap_side = gpu.create_stream().context("step graph: the side stream")?;
+                seg.ev_fork = gpu.create_event()?;
+                seg.ev_join = gpu.create_event()?;
+            }
+            if seg.save.len() != n {
+                self.alloc_save(gpu, &mut seg)?;
             }
         }
         if self.idx < seg.skip_until {
             return Ok(());
         }
+        if seg.ffn_only_at == Some(self.idx) {
+            // the owner restored this layer's snapshot: from the ffn on
+            seg.ffn_only_at = None;
+            drop(seg);
+            return self.ffn_eager(hidden, 1, start_pos, ctx, stream);
+        }
         if self.idx < seg.eager_until {
             drop(seg);
-            return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
+            return self.eager_layer(hidden, start_pos, st, ctx, stream);
         }
         let role = self.role_of(self.idx)?;
         let owner = self.idx == 0 || !Self::capturable(&role);
+        let cs = seg.cap_stream.context("step graph: no recording stream")?;
 
-        // a layer inside an open capture: append the body (an index layer
-        // appends its attention input and closes the capture first)
-        if let Some(cap) = seg.capturing.take() {
+        // a layer inside an open capture: its body is recorded on the
+        // recording stream while the layer runs eagerly on the compute stream
+        if let Some(mut cap) = seg.capturing.take() {
             ensure!(
                 cap.owner < self.idx,
                 "step graph: capture owned by a later layer"
             );
-            let arena = MoeV41::arena_of(&rt.lru.lock().unwrap());
             if owner {
-                if self.engram_index.is_some()
-                    && !std::env::var("ATLAS_DS41_NO_ENGRAM").is_ok_and(|v| v == "1")
-                {
-                    rt.engram
-                        .lock()
-                        .unwrap()
-                        .apply(gpu, self.idx, streams, 1, stream)?;
-                }
-                self.seg_attn_in(gpu, streams, hidden, normed, stream)?;
-                let g = self.close_capture(gpu, &mut seg, cap, self.idx, stream)?;
-                let owner_l = seg.graphs[g]
-                    .as_ref()
-                    .map(|s| s.moe_layers.clone())
-                    .unwrap_or_default();
-                let gh = seg.graphs[g]
-                    .as_ref()
-                    .map(|s| s.g)
-                    .context("closed segment")?;
-                let miss = self.launch_once(gpu, gh, &owner_l, stream)?;
-                seg.launches += 1;
-                if miss {
-                    seg.reruns += 1;
-                    seg.eager_until = self.idx;
-                    drop(seg);
-                    self.restore(gpu, hidden, streams, stream)?;
-                    return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
-                }
-                seg.skip_until = self.idx;
-                // fall through to the owner path for the ffn segment
+                // the closer: its attention input ends the segment; it runs
+                // that input eagerly below, as any owner a replay did not reach
+                let r = (|| -> Result<()> {
+                    self.engram_apply(gpu, streams, cs)?;
+                    self.seg_attn_in(gpu, streams, hidden, normed, cs)
+                })();
+                self.close_or_disable(gpu, &mut seg, cap, self.idx, cs, r);
             } else {
-                let moe = rt.moe.lock().unwrap();
-                let mut cap = cap;
-                self.body_attn(gpu, st, hidden, streams, normed, cap.rows_b, stream)?;
-                self.body_ffn(gpu, &moe, arena, hidden, streams, normed, stream)?;
+                let arena = MoeV41::arena_of(&rt.lru.lock().unwrap());
+                let save = seg.save[self.idx];
+                let fork = (seg.cap_side, seg.ev_fork, seg.ev_join);
+                let r = (|| -> Result<()> {
+                    let moe = rt.moe.lock().unwrap();
+                    self.body_attn(gpu, st, hidden, streams, normed, cap.rows_b, cs)?;
+                    self.save_nodes(gpu, &save, hidden, streams, cs)?;
+                    self.body_ffn(gpu, &moe, arena, fork, hidden, streams, normed, cs)
+                })();
                 cap.moe_layers.push(self.idx as u32);
-                drop(moe);
-                if self.idx + 1 == n {
-                    let g = self.close_capture(gpu, &mut seg, cap, n, stream)?;
-                    let layers = seg.graphs[g]
-                        .as_ref()
-                        .map(|s| s.moe_layers.clone())
-                        .unwrap_or_default();
-                    let gh = seg.graphs[g]
-                        .as_ref()
-                        .map(|s| s.g)
-                        .context("closed segment")?;
-                    let miss = self.launch_once(gpu, gh, &layers, stream)?;
-                    seg.launches += 1;
-                    if miss {
-                        seg.reruns += 1;
-                        seg.eager_until = n;
-                        drop(seg);
-                        self.restore(gpu, hidden, streams, stream)?;
-                        return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
-                    }
-                    seg.skip_until = n;
-                    self.log_step(&seg, start_pos);
+                if r.is_err() || self.idx + 1 == n {
+                    self.close_or_disable(gpu, &mut seg, cap, n, cs, r);
                 } else {
                     seg.capturing = Some(cap);
                 }
-                return Ok(());
+                drop(seg);
+                return self.eager_layer(hidden, start_pos, st, ctx, stream);
             }
+        }
+        if seg.disabled {
+            drop(seg);
+            return self.eager_layer(hidden, start_pos, st, ctx, stream);
         }
         ensure!(
             owner,
@@ -258,7 +277,12 @@ impl DeepSeekV41Layer {
             self.idx
         );
 
-        // the owner: prepare, then replay or capture the segment from here
+        // the owner: its attention input if no replay delivered it, then
+        // prepare, then replay or capture the segment from here
+        if self.idx > 0 && seg.skip_until != self.idx {
+            self.engram_apply(gpu, streams, stream)?;
+            self.seg_attn_in(gpu, streams, hidden, normed, stream)?;
+        }
         let (end, classes) = self.geometry(self.idx)?;
         let rows_b = self.prepare(gpu, st, ctx, start_pos, classes, normed, stream)?;
         if let Some(sg) = seg.graphs[self.idx].as_ref()
@@ -274,111 +298,122 @@ impl DeepSeekV41Layer {
         }
         if let Some(sg) = seg.graphs[self.idx].as_ref() {
             let (gh, layers) = (sg.g, sg.moe_layers.clone());
-            let miss = self.launch_once(gpu, gh, &layers, stream)?;
+            let first_miss = self.launch_once(gpu, gh, &layers, stream)?;
             seg.launches += 1;
-            if miss {
-                seg.reruns += 1;
-                seg.eager_until = end;
+            let Some(k) = first_miss else {
+                seg.skip_until = end;
+                if trace_on() {
+                    // `ATLAS_DS41_TRACE=1`: the highway after the segment, to
+                    // diff against the eager trace's line for layer end-1
+                    gpu.synchronize(stream)?;
+                    tracing::info!(
+                        "DS41 trace pos={start_pos} seg={}..{end} hwy={:016x} hidden={:016x}",
+                        self.idx,
+                        trace_hash(gpu, streams, rt.hc_mult * rt.hidden * 4),
+                        trace_hash(gpu, hidden, rt.hidden * 2)
+                    );
+                }
+                if end == n {
+                    self.log_step(&seg, start_pos);
+                }
+                return Ok(());
+            };
+            // layer k's picks were real and are resident now: its snapshot
+            // back, k from its ffn on and k+1..end whole, eagerly
+            seg.reruns += 1;
+            let save = seg.save[k];
+            self.restore(gpu, &save, hidden, streams, stream)?;
+            seg.eager_until = end;
+            if k == self.idx {
                 drop(seg);
-                self.restore(gpu, hidden, streams, stream)?;
-                return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
+                return self.ffn_eager(hidden, 1, start_pos, ctx, stream);
             }
-            seg.skip_until = end;
-            if end == n {
-                self.log_step(&seg, start_pos);
-            }
+            seg.skip_until = k;
+            seg.ffn_only_at = Some(k);
             return Ok(());
         }
-        // capture from here
-        gpu.begin_capture(stream)
-            .context("step graph: begin_capture")?;
+        // no graph yet: record from here on the recording stream while this
+        // token runs eagerly on the compute stream
         let arena = MoeV41::arena_of(&rt.lru.lock().unwrap());
-        let body = || -> Result<()> {
-            self.save_nodes(gpu, hidden, streams, stream)?;
-            let moe = rt.moe.lock().unwrap();
-            if self.idx == 0 {
-                self.body_attn(gpu, st, hidden, streams, normed, rows_b, stream)?;
-            }
-            self.body_ffn(gpu, &moe, arena, hidden, streams, normed, stream)
-        };
-        if let Err(e) = body() {
-            gpu.abort_capture_if_active(stream);
-            seg.disabled = true;
-            return Err(e.context(format!(
-                "DS41 L{}: step graph capture failed; the mode is off",
-                self.idx
-            )));
-        }
+        let save = seg.save[self.idx];
+        let fork = (seg.cap_side, seg.ev_fork, seg.ev_join);
+        let r = gpu
+            .begin_capture(cs)
+            .context("step graph: begin_capture")
+            .and_then(|_| {
+                let moe = rt.moe.lock().unwrap();
+                if self.idx == 0 {
+                    self.body_attn(gpu, st, hidden, streams, normed, rows_b, cs)?;
+                }
+                self.save_nodes(gpu, &save, hidden, streams, cs)?;
+                self.body_ffn(gpu, &moe, arena, fork, hidden, streams, normed, cs)
+            });
         let cap = SegCapture {
             owner: self.idx,
             moe_layers: vec![self.idx as u32],
             classes,
             rows_b,
         };
-        if self.idx + 1 == n {
-            let g = self.close_capture(gpu, &mut seg, cap, n, stream)?;
-            let layers = seg.graphs[g]
-                .as_ref()
-                .map(|s| s.moe_layers.clone())
-                .unwrap_or_default();
-            let gh = seg.graphs[g]
-                .as_ref()
-                .map(|s| s.g)
-                .context("closed segment")?;
-            let miss = self.launch_once(gpu, gh, &layers, stream)?;
-            seg.launches += 1;
-            if miss {
-                seg.reruns += 1;
-                seg.eager_until = n;
-                drop(seg);
-                self.restore(gpu, hidden, streams, stream)?;
-                return self.step_eager(hidden, 1, start_pos, st, ctx, stream);
-            }
-            seg.skip_until = n;
-            self.log_step(&seg, start_pos);
+        if r.is_err() || self.idx + 1 == n {
+            self.close_or_disable(gpu, &mut seg, cap, n, cs, r);
         } else {
             seg.capturing = Some(cap);
         }
-        Ok(())
+        drop(seg);
+        if self.idx == 0 {
+            self.eager_layer(hidden, start_pos, st, ctx, stream)
+        } else {
+            // an index owner: its attention ran eagerly in `prepare`
+            self.ffn_eager(hidden, 1, start_pos, ctx, stream)
+        }
     }
 
-    /// End the open capture as the segment of `cap.owner` ending at `end`.
-    fn close_capture(
+    /// End the open capture as the segment of `cap.owner` ending at `end`,
+    /// or, when the recording failed (`r`) or the capture cannot end, turn
+    /// the mode off: the token in flight finishes eagerly.
+    fn close_or_disable(
         &self,
         gpu: &dyn GpuBackend,
         seg: &mut SegState,
         cap: SegCapture,
         end: usize,
-        stream: u64,
-    ) -> Result<usize> {
-        let g = match gpu.end_capture(stream) {
-            Ok(g) => g,
-            Err(e) => {
-                seg.disabled = true;
-                return Err(e.context("step graph: end_capture failed; the mode is off"));
+        cs: u64,
+        r: Result<()>,
+    ) {
+        match r.and_then(|_| gpu.end_capture(cs).context("step graph: end_capture")) {
+            Ok(g) => {
+                tracing::info!(
+                    "DS41 step graph: segment {} = layers {}..{} captured ({} MoE layers)",
+                    cap.owner,
+                    cap.owner,
+                    end,
+                    cap.moe_layers.len()
+                );
+                seg.graphs[cap.owner] = Some(SegGraph {
+                    g,
+                    end,
+                    moe_layers: cap.moe_layers,
+                    classes: cap.classes,
+                    rows_b: cap.rows_b,
+                });
             }
-        };
-        tracing::info!(
-            "DS41 step graph: segment {} = layers {}..{} captured ({} MoE layers)",
-            cap.owner,
-            cap.owner,
-            end,
-            cap.moe_layers.len()
-        );
-        seg.graphs[cap.owner] = Some(SegGraph {
-            g,
-            end,
-            moe_layers: cap.moe_layers,
-            classes: cap.classes,
-            rows_b: cap.rows_b,
-        });
-        Ok(cap.owner)
+            Err(e) => {
+                gpu.abort_capture_if_active(cs);
+                seg.disabled = true;
+                seg.capturing = None;
+                seg.eager_until = self.rt.n_layers;
+                tracing::warn!(
+                    "DS41 L{}: step graph capture failed ({e:#}); the mode is off, the step runs eagerly",
+                    self.idx
+                );
+            }
+        }
     }
 
     fn log_step(&self, seg: &SegState, start_pos: usize) {
         if step_log_on() {
             tracing::info!(
-                "DS41 step graph pos {start_pos}: {} launches, {} re-runs so far",
+                "DS41 step graph pos {start_pos}: {} launches, {} miss falls so far",
                 seg.launches,
                 seg.reruns
             );

@@ -189,6 +189,16 @@ impl MoeV41 {
             return Ok(());
         }
         let c = &self.cfg;
+        // one triple a key, the LAST one: the kernel writes a chunk's triples
+        // in parallel, so a key assigned, evicted and assigned again inside
+        // one batch (a prefill's worth, or a segment's) would race to a
+        // wrong final slot (-1 for a resident expert = a false miss flag)
+        let mut last: std::collections::HashMap<(u32, u32), i32> =
+            std::collections::HashMap::with_capacity(changes.len());
+        for &(l, e, s) in changes {
+            last.insert((l, e), s);
+        }
+        let changes: Vec<(u32, u32, i32)> = last.into_iter().map(|((l, e), s)| (l, e, s)).collect();
         // the triples are staged through `a_rows` (free until the experts
         // run), in chunks that fit it
         let per = (c.max_tokens * c.dim * 2 / 12).max(1);

@@ -275,13 +275,6 @@ pub(super) fn load_layers(
         seg: Mutex::new(SegState::default()),
         roles: Mutex::new(vec![None; n_layers]),
         engram_layers: Mutex::new(Vec::new()),
-        seg_save: [
-            gpu.alloc(dim * 2)?,
-            alloc_f32(hc * dim)?,
-            alloc_f32(hc)?,
-            alloc_f32(hc)?,
-            gpu.alloc(dim * 2)?,
-        ],
         pre_a: alloc_f32(max_tokens * hc)?,
         pre_f: alloc_f32(max_tokens * hc)?,
         post_s: alloc_f32(max_tokens * hc)?,

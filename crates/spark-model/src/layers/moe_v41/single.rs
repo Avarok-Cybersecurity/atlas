@@ -228,4 +228,42 @@ impl MoeV41 {
         self.shared_expert(gpu, w, x, 1, stream)?;
         Ok(self.out)
     }
+
+    /// The single-token shared expert up to `sd` on `side` (its own q8_1
+    /// scratch, as the eager step's side stream uses): the fork half of
+    /// [`Self::compute_m1_joined`]. Device work only.
+    pub fn shared_expert_on(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        x: DevicePtr,
+        side: u64,
+    ) -> Result<()> {
+        self.shared_expert_body(gpu, w, x, 1, self.sa_q8, self.sh_q8, side)
+    }
+
+    /// [`Self::compute_m1`] with the shared expert forked onto a side stream
+    /// by [`Self::shared_expert_on`]: the routed experts, then the wait on
+    /// `join` (recorded on the side after `sd`), then the same accumulate
+    /// and finish. The eager step's order and bits.
+    pub fn compute_m1_joined(
+        &self,
+        gpu: &dyn GpuBackend,
+        x: DevicePtr,
+        ne: usize,
+        join: u64,
+        stream: u64,
+    ) -> Result<DevicePtr> {
+        let c = &self.cfg;
+        ensure!(
+            ne == c.topk,
+            "moe_v41: {ne} distinct experts for one token, expected the top-{}",
+            c.topk
+        );
+        gpu.memset_async(self.acc, 0, c.dim * 4, stream)?;
+        self.routed_m1(gpu, x, ne, stream)?;
+        gpu.stream_wait_event(stream, join)?;
+        self.shared_expert_tail(gpu, 1, stream)?;
+        Ok(self.out)
+    }
 }

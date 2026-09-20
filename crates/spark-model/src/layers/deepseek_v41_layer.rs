@@ -60,6 +60,7 @@ use crate::weight_map::DenseWeight;
 mod graph;
 mod hc_launch;
 mod step;
+mod step_ffn;
 mod step_seg;
 mod step_seg_run;
 mod trait_impl;
@@ -117,9 +118,6 @@ pub struct V41Runtime {
     pub roles: Mutex<Vec<Option<LayerRole>>>,
     /// `(layer, hash index)` of the engram layers.
     pub engram_layers: Mutex<Vec<(usize, usize)>>,
-    /// The segment's save set for the miss re-run: hidden, streams,
-    /// pre_prev, pre_a, the attention output.
-    pub seg_save: [DevicePtr; 5],
     /// `ATLAS_DS41_PREDICT_TRACE`: the last three layers' MoE inputs
     /// (`[3, hidden]` bf16, slot `layer % 3`) and the trace file.
     pub pred_x: DevicePtr,
