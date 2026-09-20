@@ -405,12 +405,17 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
+        let serve_resolved = served
+            .as_ref()
+            .map(|s| s.resolved.clone())
+            .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
         let written = super::bench_record::write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
+            serve_resolved,
             sha_at_start,
             dirty_at_start,
             match &args.output_image {

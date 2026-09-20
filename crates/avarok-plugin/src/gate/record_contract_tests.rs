@@ -382,3 +382,65 @@ fn every_committed_record_still_loads_without_a_gpu_count() {
         "read only {read} records — the walk is broken, not the format"
     );
 }
+
+/// The box is recorded the way #569 records it — inside `hardware_state`,
+/// captured by the executor and carried through `from_run` untouched. None of
+/// the six failing records in #1159 could say which box produced them; every
+/// record built from a frame that captured its state can.
+#[test]
+fn the_record_carries_the_box_identity_the_frame_captured() {
+    use crate::hardware::policy::Sensitivity;
+    use crate::hardware::state::MachineIdentity;
+    use crate::hardware::{HardwareState, HardwareStateReport};
+    let mut with_state = run_record(BTreeMap::new(), Verdict::pass("ok"));
+    let before = HardwareState {
+        captured_at: 1_000,
+        machine: MachineIdentity {
+            hostname: Some("spark-28c2".into()),
+            machine_id: Some("7af66f30966a49b6886e00e2fce4b42f".into()),
+            gpu: Some("NVIDIA GB10".into()),
+            driver: Some("580.159.03".into()),
+        },
+        ..HardwareState::default()
+    };
+    with_state.frame.hardware_state = Some(HardwareStateReport::opened(
+        Sensitivity::Correctness,
+        before,
+        None,
+    ));
+    let record = GateRecord::from_run(&with_state, hw(), SHA.into(), Vec::new(), None).unwrap();
+    let machine = &record
+        .hardware_state
+        .as_ref()
+        .expect("the captured state travels with the record")
+        .before
+        .machine;
+    assert_eq!(
+        machine.machine_id.as_deref(),
+        Some("7af66f30966a49b6886e00e2fce4b42f")
+    );
+    assert_eq!(machine.hostname.as_deref(), Some("spark-28c2"));
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(
+        json["hardware_state"]["before"]["machine"]["machine_id"],
+        "7af66f30966a49b6886e00e2fce4b42f"
+    );
+
+    // Absent means UNMEASURED, and the record says so by carrying nothing —
+    // never a machine invented at write time.
+    let without = GateRecord::from_run(
+        &run_record(BTreeMap::new(), Verdict::pass("ok")),
+        hw(),
+        SHA.into(),
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+    assert!(without.hardware_state.is_none());
+    assert!(
+        serde_json::to_value(&without)
+            .unwrap()
+            .get("hardware_state")
+            .is_none()
+    );
+}

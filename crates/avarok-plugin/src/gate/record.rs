@@ -3,18 +3,18 @@
 //! The committed shape of one gate run, and how it is written and read.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use super::gate_dir;
 use crate::hardware::Hardware;
 use crate::history::RunRecord;
 use crate::result::{RunStatus, VerdictKind};
 
 pub use super::record_path::{date_of, record_path, record_path_for, variant_slug};
+pub use super::record_write::write_record;
 
 /// One run record, as committed.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,6 +121,16 @@ pub struct GateRecord {
     /// value none of them could have carried.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub perf_env: BTreeMap<String, String>,
+    /// The serve knobs the gate RESOLVED from its recipe — see
+    /// [`super::record_serve`] for the keys and the rule. `served_by` names
+    /// the recipe and `serve_overrides` what the operator changed, but the
+    /// recipe lives in another repository at a moving version, so neither
+    /// says what `mtp_gate` the server actually ran with. A failure whose
+    /// record shows `force` is a pinned failure and not MTP nondeterminism
+    /// (#1159). Empty (and absent) for a run against an operator's own
+    /// endpoint, where nothing was resolved. Disclosure only — never gated.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub serve_resolved: BTreeMap<String, String>,
     /// What each kernel target compiled to when this was measured.
     ///
     /// Lets a later `kernels/`-only diff keep this record for the targets whose
@@ -289,24 +299,6 @@ impl GateBaseline {
     }
 }
 
-/// Write one gate record. Returns the path; the parent directory is created,
-/// but never committed on the writer's behalf — that stays the caller's
-/// explicit act.
-pub fn write_record(root: &Path, record: &GateRecord) -> Result<PathBuf> {
-    let path = record_path_for(root, record);
-    std::fs::create_dir_all(path.parent().expect("record path has a parent")).with_context(
-        || {
-            format!(
-                "creating {}",
-                gate_dir(root, &record.benchmark_id).display()
-            )
-        },
-    )?;
-    let json = serde_json::to_string_pretty(record).context("serializing the gate record")?;
-    std::fs::write(&path, json + "\n").with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
-}
-
 /// Read one committed record.
 pub fn read_record(path: &Path) -> Result<GateRecord> {
     let text =
@@ -458,6 +450,10 @@ impl GateRecord {
             // environment this call sees, and there is no second process whose
             // state could have diverged in between.
             perf_env: resolve_perf_env(|k| std::env::var(k).ok()),
+            // Attached afterwards by `with_serve_resolved`, for the same
+            // reason as `closure`: a record without it forfeits a disclosure,
+            // it does not overstate anything.
+            serve_resolved: BTreeMap::new(),
         })
     }
 

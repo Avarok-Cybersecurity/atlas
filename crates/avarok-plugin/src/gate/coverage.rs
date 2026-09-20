@@ -206,6 +206,18 @@ const GATE_MACHINERY_FILES: &[&str] = &[
     // still judged by `scoring.rs`.
     "crates/avarok-plugin/src/gate/record.rs",
     "crates/avarok-plugin/src/gate/record_path.rs",
+    // `record_write.rs` decides where a record is WRITTEN — and, since
+    // #1159, that a failing one is never written over. It adds files and
+    // removes none; every record it leaves on disk is still ordered by
+    // `records_newest_first` and judged by `scoring.rs`, so the newest
+    // record's verdict is what it was. Widening it (say, to preserve a PASS
+    // too) changes what history survives, never what a run scores.
+    "crates/avarok-plugin/src/gate/record_write.rs",
+    // `record_serve.rs` names what a record DISCLOSES about its serve
+    // (`mtp_gate`, `speculative`). `check_record` never reads the field —
+    // `serve_resolved_never_reaches_check_record` pins that — so no edit here
+    // can move a verdict.
+    "crates/avarok-plugin/src/gate/record_serve.rs",
     // Rendering and reporting only.
     "crates/avarok-plugin/src/gate/card.rs",
     "crates/avarok-plugin/src/gate/check_fmt.rs",

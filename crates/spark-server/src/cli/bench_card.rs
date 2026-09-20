@@ -117,9 +117,11 @@ fn resolve_record(arg: &str) -> Result<std::path::PathBuf> {
         );
     }
     // Newest by filename: records are `<date>-<sha>[-<variant>].json`, so a
-    // lexical sort is chronological. Ties inside a day are broken by sha, which
-    // is arbitrary but stable — and a card names its commit, so a reader can
-    // always tell which one they got.
+    // lexical sort is chronological — and a same-day re-run kept beside a
+    // failure is `<date>T<HHMMSS>Z-<sha>…`, which sorts after it (`-` < `T`).
+    // Ties inside a day are broken by sha, which is arbitrary but stable —
+    // and a card names its commit, so a reader can always tell which one they
+    // got.
     let mut records: Vec<_> = std::fs::read_dir(&dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .flatten()
