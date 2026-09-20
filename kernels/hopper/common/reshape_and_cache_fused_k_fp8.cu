@@ -1,0 +1,1 @@
+../../gb10/common/reshape_and_cache_fused_k_fp8.cu

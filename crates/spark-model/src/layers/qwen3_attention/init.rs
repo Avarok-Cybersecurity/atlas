@@ -349,6 +349,20 @@ impl Qwen3AttentionLayer {
                 "reshape_and_cache",
                 "reshape_and_cache_flash_v_only",
             ),
+            // `try_target_kernel`, not `try_kernel`:
+            // `reshape_and_cache_fused_k_fp8.cu` is a gb10-tree file, mirrored
+            // into the targets that inherit gb10's common/ (hopper, b200) and
+            // absent from the ones with their own (b300, strix, metal). A
+            // plain lookup on a target that never built the module is recorded
+            // by the boot audit as a dispatch site on a silent fallback and
+            // REFUSES TO SERVE — this probes for the module first and issues
+            // no lookup when it is absent, so those targets keep the un-fused
+            // chain.
+            fused_k_norm_rope_cache_write_fp8_kv_k: super::super::try_target_kernel(
+                gpu,
+                "reshape_and_cache_fused_k_fp8",
+                "fused_k_norm_rope_cache_write_fp8_kv",
+            ),
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
             wht_bf16_k_inv: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace_inv"),
             innerq_apply_q_k: super::super::try_kernel(
