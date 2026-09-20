@@ -41,3 +41,5 @@ pub use avarok_core::kimi_k3::{Ablation, K3CpuModel, K3LayerSpec, greedy_decode}
 pub use state::K3CpuFallbackState;
 #[cfg(test)]
 mod host_decode_kda;
+#[cfg(test)]
+mod host_decode_mla;

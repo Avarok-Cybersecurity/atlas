@@ -1,11 +1,13 @@
 # Optional K3 resident GPU serving
 
 This slice builds on the serving foundation. It preserves per-sequence KDA
-conv/recurrent buffers between tokens, downloads authoritative state when
-snapshotting or switching to the explicit CPU path, invalidates device state
-on restore, and frees both allocations on sequence release. Partial allocation
-and upload failures clean up allocated buffers; a later-layer failure also
-removes the in-progress AttnRes token stream.
+conv/recurrent buffers and MLA KV between tokens, downloads authoritative
+state when snapshotting or switching to the explicit CPU path, invalidates
+device state on restore, and frees owned allocations on sequence release.
+CUDA MLA requires `serve_max_seq_len` (`--max-seq-len`) to bound the device
+KV; it appends one row per token instead of re-uploading `[0..T]`. Partial
+allocation and upload failures clean up allocated buffers; a later-layer
+failure also removes the in-progress AttnRes token stream.
 
 `K3_CUDA_DENSE=1` selects the resident FP32/BF16 weight path for dense and shared
 MLPs. Gate/up plus SiTU runs on device before the down projection. Matrix
