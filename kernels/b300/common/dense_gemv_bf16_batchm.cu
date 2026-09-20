@@ -1,0 +1,207 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// Atlas Dense BF16 batched GEMV (M rows) for SM121 (GB10).
+//
+// The M-row generalisation of dense_gemv_bf16_batch2: computes M output rows
+// from ONE pass over the BF16 weight matrix, so weight bandwidth is paid once
+// instead of M times. Bit-identical to running dense_gemv_bf16 M times — each
+// row's accumulator follows the exact same K-iteration order and reduction
+// tree; the extra rows only add independent accumulators over the same loop.
+// (KERNEL.toml builds this dir with --fmad=false, which is what makes that
+// identity hold rather than merely "close".)
+//
+//   C[t, n] = dot(A[t, :], B[n, :])   for t in [0, M)
+//
+//   A: [M, K] BF16 (activation rows, contiguous — this is exactly the layout
+//      the multi-seq decode path already has: `normed.offset(i * h * bf16)`)
+//   B: [N, K] BF16 (weights, row-major)
+//   C: M rows at C + t * out_stride (BF16 elements)
+//
+// `out_stride` decouples the output row stride from N so callers can write
+// straight into per-token strided layouts (e.g. the multi-seq qkv buffer,
+// whose rows are `per_seq_qkv` apart, not `N` apart).
+//
+// WHY THIS EXISTS: at decode, Laguna's q/k/v/o and shared-expert projections
+// are BF16 (the checkpoint ships them unquantized and they stay that way), and
+// the BF16 path had no batched tier — only the quantized paths did
+// (w4a16_gemv_batch2/3/4, w8a16_gemv_batch2/4). So every sequence in a decode
+// batch re-read the whole weight matrix, making 54% of the decode step scale
+// linearly with concurrency.
+//
+// A tile-based GEMM is the wrong tool here: at M<=4 an M64-tile GEMM is ~94%
+// padding, and was measured 3.6x SLOWER than the batched GEMV on this exact
+// workload (see the note in multi_seq/qkv.rs::wide_verify_gemm).
+//
+// THE A TILE LIVES IN SHARED MEMORY. The four output groups in a block walk the
+// SAME `kv` sequence, so each of them was re-reading identical `A[t][kv]` — 4x
+// redundant, and at M=8 that is EIGHT activation loads issued per ONE weight load.
+// While `m * K * 2` fits L1 those hit cache and cost only issue slots; once it
+// overflows L1 they all fall to L2 and the kernel becomes L2-bound rather than
+// DRAM-bound, which is where the measured bandwidth collapses (145 GB/s at
+// N=4096 K=16384 against 213 GB/s at K=3072 on the same part). Staging the tile
+// once per block per 64-`kv` chunk removes both effects.
+//
+// 🪤 This does NOT touch the arithmetic. Same `kv` order per row, same lo-then-hi
+// add order, same 64-thread stride, same warp-shuffle tree, same 2-warp fold —
+// the values reaching the FMUL/FADD chain are the same bits, just fetched
+// differently. Measured bit-identical to the previous revision on 64 (N, K)
+// shapes and on M = 1..8 (`scripts/glm53-dense-bf16/bench_dense_bf16.cu`,
+// spark-bench). Measured 1.02-1.50x depending on shape; 1.12x weighted by the
+// 9000-token GLM prefill's own launch histogram.
+//
+// 🪤 The old `if (n >= N) return;` is now a mask, not a return: threads in a
+// partial last block have to reach the staging barriers with everyone else.
+//
+// Grid: (ceil(N / 4), 1, 1)   Block: (256, 1, 1)
+
+#include <cuda_bf16.h>
+
+#define BLOCK_SIZE 256
+#define N_PER_BLOCK 4
+#define WARP_SIZE 32
+#define VEC_SIZE 8   // BF16 values per vectorized load (uint4 = 16 bytes)
+// Compile-time cap on batched rows; callers must pass M <= MAX_M.
+//
+// 🔴 16, NOT 8. The cap was never arithmetic: `acc[t]` is one independent FP32 chain per
+// row over the same `kv` order, `m` appears in no row's operand sequence, and the reduce
+// is per-`t`. So a wider tier is bit-identical to the narrow one AND to M serial
+// `dense_gemv_bf16` calls — widening it only changes how much weight traffic each token
+// pays for. MEASURED on the 12 real GLM-5.3 prefill shapes with cold weights
+// (`scripts/glm53-dense-bf16/bench_m16.cu`, spark-bench): every row byte-identical to the
+// M=1 kernel at M=16, every m <= 8 byte-identical to the MAX_M=8 kernel this replaces
+// (the gate that matters — decode, the MTP verify and the lm_head arm all run m <= 8 on
+// this same kernel), and per-token cost 1.36-1.98x lower on 11 of the 12 shapes.
+//
+// 🪤 The one shape that LOSES is shallow-K: N4096 K128 goes 0.77x, because at K_VEC = 16
+// the staging barriers dominate a kernel that barely reads anything. It costs ~0.27 s of a
+// ~17.6 s win, so it is not worth a special case — but do not generalise "wider is faster"
+// past K >= 1024.
+//
+// 🪤 smem is `MAX_M * 64 * 16 B` = 16 KB at 16 (was 8 KB), plus 512 B for the fold. Still
+// 6 blocks/SM against the 100 KB/SM on GB10, so occupancy is not the limiter.
+#define MAX_M 16
+
+extern "C" __global__ void dense_gemv_bf16_batchm(
+    const __nv_bfloat16* __restrict__ A,  // [M, K]
+    const __nv_bfloat16* __restrict__ B,  // [N, K]
+    __nv_bfloat16* __restrict__ C,        // rows at C + t*out_stride
+    unsigned int M,
+    unsigned int N,
+    unsigned int K,
+    unsigned int out_stride                // BF16 elements between output rows
+) {
+    const unsigned int threads_per_out = BLOCK_SIZE / N_PER_BLOCK;  // 64
+    const unsigned int local_out = threadIdx.x / threads_per_out;
+    const unsigned int lane = threadIdx.x % threads_per_out;
+
+    const unsigned int n = blockIdx.x * N_PER_BLOCK + local_out;
+    // 🪤 NOT a return: the staging loop below has __syncthreads(), so every thread
+    // in a partial last block must stay to reach them.
+    const bool active = (n < N);
+
+    const unsigned int m = (M > MAX_M) ? MAX_M : M;
+
+    float acc[MAX_M];
+    #pragma unroll
+    for (int t = 0; t < MAX_M; t++) acc[t] = 0.0f;
+
+    const unsigned int K_VEC = K / VEC_SIZE;
+    const uint4* B_vec = (const uint4*)(B + (unsigned long long)(active ? n : 0) * K);
+
+    // One 64-kv slab of every A row, shared by all four output groups. 16 KB at
+    // MAX_M = 16, so it never limits occupancy (100 KB/SM on GB10).
+    __shared__ uint4 As[MAX_M][BLOCK_SIZE / N_PER_BLOCK];
+
+    for (unsigned int base = 0; base < K_VEC; base += threads_per_out) {
+        // Cooperative stage: 256 threads fetch m x 64 uint4 once for the block.
+        for (unsigned int idx = threadIdx.x; idx < m * threads_per_out; idx += BLOCK_SIZE) {
+            const unsigned int t = idx / threads_per_out;
+            const unsigned int l = idx % threads_per_out;
+            const unsigned int kv = base + l;
+            if (kv < K_VEC) {
+                As[t][l] = ((const uint4*)(A + (unsigned long long)t * K))[kv];
+            }
+        }
+        __syncthreads();
+
+        const unsigned int kv = base + lane;
+        if (kv < K_VEC && active) {
+            // ONE weight load feeds every row — this is the whole point.
+            uint4 b_data = B_vec[kv];
+            const unsigned int b_raw[4] = {b_data.x, b_data.y, b_data.z, b_data.w};
+
+            float bf[8];
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                __nv_bfloat16 b_lo, b_hi;
+                *(unsigned short*)&b_lo = (unsigned short)(b_raw[i] & 0xFFFF);
+                *(unsigned short*)&b_hi = (unsigned short)(b_raw[i] >> 16);
+                bf[2 * i] = __bfloat162float(b_lo);
+                bf[2 * i + 1] = __bfloat162float(b_hi);
+            }
+
+            for (unsigned int t = 0; t < m; t++) {
+                uint4 a_data = As[t][lane];
+                const unsigned int a_raw[4] = {a_data.x, a_data.y, a_data.z, a_data.w};
+                float a = acc[t];
+                #pragma unroll
+                for (int i = 0; i < 4; i++) {
+                    __nv_bfloat16 a_lo, a_hi;
+                    *(unsigned short*)&a_lo = (unsigned short)(a_raw[i] & 0xFFFF);
+                    *(unsigned short*)&a_hi = (unsigned short)(a_raw[i] >> 16);
+                    // Same add order as dense_gemv_bf16: lo then hi, per vector slot.
+                    a += __bfloat162float(a_lo) * bf[2 * i];
+                    a += __bfloat162float(a_hi) * bf[2 * i + 1];
+                }
+                acc[t] = a;
+            }
+        }
+        // Before the next slab overwrites what the compute above is still reading.
+        __syncthreads();
+    }
+
+    // Scalar tail for K not divisible by VEC_SIZE (never hits for model dims).
+    // 🪤 Unreachable in practice for a different reason than the comment implies:
+    // the `(const uint4*)` casts above already fault on a K that is not a multiple
+    // of VEC_SIZE. Reproduced on the UNMODIFIED kernel at N=4096 K=3073
+    // ("misaligned address"), so this is pre-existing, not a property of staging.
+    if (active) {
+        const unsigned int tail_start = K_VEC * VEC_SIZE;
+        const __nv_bfloat16* B_row = B + (unsigned long long)n * K;
+        for (unsigned int k = tail_start + lane; k < K; k += threads_per_out) {
+            const float bfv = __bfloat162float(B_row[k]);
+            for (unsigned int t = 0; t < m; t++) {
+                acc[t] += __bfloat162float(A[(unsigned long long)t * K + k]) * bfv;
+            }
+        }
+    }
+
+    if (!active) return;
+
+    const unsigned int warp_lane = threadIdx.x % WARP_SIZE;
+
+    for (unsigned int t = 0; t < m; t++) {
+        float a = acc[t];
+        #pragma unroll
+        for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
+            a += __shfl_down_sync(0xFFFFFFFF, a, offset);
+        }
+        acc[t] = a;
+    }
+
+    // 2 warps per output: cross-warp reduce via shared memory, per row.
+    __shared__ float smem[MAX_M][N_PER_BLOCK * 2];
+
+    if (warp_lane == 0) {
+        const unsigned int smem_idx = local_out * 2 + (lane / WARP_SIZE);
+        for (unsigned int t = 0; t < m; t++) smem[t][smem_idx] = acc[t];
+    }
+    __syncthreads();
+
+    if (lane == 0) {
+        for (unsigned int t = 0; t < m; t++) {
+            const float r = smem[t][local_out * 2] + smem[t][local_out * 2 + 1];
+            C[(unsigned long long)t * out_stride + n] = __float2bfloat16(r);
+        }
+    }
+}

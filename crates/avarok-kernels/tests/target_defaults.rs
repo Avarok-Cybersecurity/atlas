@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 /// Every NVIDIA target that carries a `[defaults]` table. Named once so a new
 /// hardware tree makes someone decide rather than inherit silently.
-const DECLARING: &[&str] = &["gb10", "hopper", "b200"];
+const DECLARING: &[&str] = &["gb10", "hopper", "b200", "b300"];
 
 fn kernels_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -433,4 +433,10 @@ fn the_baked_constant_matches_its_own_hardware_tree() {
         read_sm_count(&kernels_root(), baked.hw),
         "the baked SM count and the baked defaults must come from ONE tree"
     );
+}
+
+#[test]
+fn b300_declares_conservative_defaults_until_measured_on_b300() {
+    assert_eq!(declared("b300"), baseline("b300"));
+    assert_eq!(read_sm_count(&kernels_root(), "b300"), 148);
 }

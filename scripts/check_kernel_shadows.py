@@ -68,6 +68,7 @@ from pathlib import Path
 # build_target.rs `source_extension()` per vendor).
 HW_SOURCE_EXT = {
     "b200": "cu",
+    "b300": "cu",
     "gb10": "cu",
     "hopper": "cu",
     "metal": "metal",
