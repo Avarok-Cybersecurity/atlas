@@ -21,6 +21,7 @@
 //! settings are not in the GGUF metadata; the published `text_config` values
 //! are the defaults (candidate source layer 20, 2048 blocks of 8).
 
+mod engram_q2k;
 mod load_layers;
 
 use anyhow::{Context, Result, ensure};

@@ -246,6 +246,7 @@ pub(super) fn load_layers(
                 qk: EngramV41::upload_qk(gpu, &q, &k)?,
                 raw: DevicePtr(0),
                 rows: DevicePtr(0),
+                wkv_q2k: super::engram_q2k::engram_wkv_q2k(gpu, &files, l)?,
             },
         )?;
     }

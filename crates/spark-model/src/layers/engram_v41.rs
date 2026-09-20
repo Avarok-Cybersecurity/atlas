@@ -34,11 +34,10 @@ use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
-use crate::layers::ops;
-use crate::weight_map::DenseWeight;
-
 /// Bytes of one Q2_K super-block = one engram row.
 pub const ENGRAM_ROW_BYTES: usize = 84;
+mod apply;
+
 const DEQUANT_MODULE: &str = "dequant_gguf_bf16";
 const GATE_MODULE: &str = "engram_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -235,6 +234,10 @@ pub struct EngramLayerWeights {
     /// be resident at once (the whole-step graph uploads them all up front).
     pub raw: DevicePtr,
     pub rows: DevicePtr,
+    /// `wkv` as the GGUF ships it, `[out, in / 256]` raw Q2_K blocks (84 B),
+    /// read by the single-token projection in place of the bf16 expansion
+    /// (6x fewer bytes a token, byte-identical results); null = bf16 only.
+    pub wkv_q2k: DevicePtr,
 }
 
 /// The GPU side: kernels, per-layer weights, and workspaces for up to
@@ -249,6 +252,8 @@ pub struct EngramV41 {
     gemm_k: KernelHandle,
     /// the projection at one token: bandwidth-bound GEMV, not the 16x16 tile
     gemv_k: KernelHandle,
+    /// the same projection off the raw Q2_K blocks (`wkv_q2k`)
+    gemv_q2k_k: KernelHandle,
     gate_k: KernelHandle,
     dequant_k: KernelHandle,
     layers: Vec<EngramLayerWeights>,
@@ -284,6 +289,7 @@ impl EngramV41 {
             max_tokens,
             gemm_k: gpu.kernel(GEMM_MODULE, "dense_gemm_bf16")?,
             gemv_k: gpu.kernel("gemv", "dense_gemv_bf16")?,
+            gemv_q2k_k: gpu.kernel(GATE_MODULE, "engram_v41_wkv_q2k_gemv")?,
             gate_k: gpu.kernel(GATE_MODULE, "engram_v41_gate")?,
             dequant_k: gpu.kernel(DEQUANT_MODULE, "dequant_q2_k_to_bf16")?,
             layers: Vec::new(),
@@ -412,61 +418,6 @@ impl EngramV41 {
         if w.rows.is_null() { self.rows } else { w.rows }
     }
 
-    /// Project the rows already in the workspace and gate `tokens` positions
-    /// of `streams` (`[T, hc, dim]` f32) in place, for model layer `layer`.
-    pub fn apply(
-        &self,
-        gpu: &dyn GpuBackend,
-        layer: usize,
-        streams: DevicePtr,
-        tokens: usize,
-        stream: u64,
-    ) -> Result<()> {
-        ensure!(
-            tokens <= self.max_tokens,
-            "engram: {tokens} tokens exceeds the {} workspace",
-            self.max_tokens
-        );
-        let w = self
-            .layer(layer)
-            .with_context(|| format!("engram: layer {layer} has no weights"))?;
-        let wkv = DenseWeight { weight: w.wkv };
-        if tokens == 1 {
-            ops::dense_gemv(
-                gpu,
-                self.gemv_k,
-                self.rows_of(w),
-                &wkv,
-                self.kv,
-                self.out_features() as u32,
-                self.in_features() as u32,
-                stream,
-            )?;
-        } else {
-            ops::dense_gemm(
-                gpu,
-                self.gemm_k,
-                self.rows_of(w),
-                &wkv,
-                self.kv,
-                tokens as u32,
-                self.out_features() as u32,
-                self.in_features() as u32,
-                stream,
-            )?;
-        }
-        KernelLaunch::new(gpu, self.gate_k)
-            .grid([tokens as u32, self.hc as u32, 1])
-            .block([256, 1, 1])
-            .arg_ptr(streams)
-            .arg_ptr(self.kv)
-            .arg_ptr(w.qk)
-            .arg_u32(self.dim as u32)
-            .arg_u32(self.hc as u32)
-            .arg_f32(self.eps)
-            .launch(stream)
-    }
-
     /// The projected `[tokens, dim * (hc + 1)]` bf16 buffer after `apply`.
     pub fn kv_ptr(&self) -> DevicePtr {
         self.kv
@@ -478,6 +429,9 @@ impl EngramV41 {
             gpu.free(l.qk)?;
             gpu.free(l.raw)?;
             gpu.free(l.rows)?;
+            if !l.wkv_q2k.is_null() {
+                gpu.free(l.wkv_q2k)?;
+            }
         }
         gpu.free(self.rows)?;
         gpu.free(self.raw)?;

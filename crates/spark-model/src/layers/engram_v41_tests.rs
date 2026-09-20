@@ -177,6 +177,7 @@ fn gpu_engram_matches_the_golden_within_bf16() {
                 qk,
                 raw: DevicePtr(0),
                 rows: DevicePtr(0),
+                wkv_q2k: DevicePtr(0),
             },
         )
         .unwrap();
@@ -280,4 +281,112 @@ fn gpu_engram_rows_from_the_real_tables_match_the_cpu_decoder() {
         );
     }
     eng.free(g).unwrap();
+}
+
+/// The single-token `wkv` projection off the raw Q2_K blocks against the
+/// bf16 GEMV over the loader's expansion of the same blocks, bit for bit:
+/// random super-blocks (finite `d` / `dmin`), a random bf16 activation, N
+/// not a multiple of the 4 rows a block handles.
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn gpu_engram_wkv_q2k_gemv_is_bitwise_the_bf16_gemv_over_the_expansion() {
+    use crate::layers::ops;
+    use crate::weight_map::DenseWeight;
+    use spark_runtime::gpu::GpuBackend;
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let (n, k) = (4 * 97 + 2, 6144usize);
+    let blocks = n * k / 256;
+    let mut x = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut raw = vec![0u8; blocks * 84];
+    for b in raw.chunks_exact_mut(84) {
+        for v in b[..80].iter_mut() {
+            *v = rnd() as u8;
+        }
+        // d, dmin: f16 with a small exponent, either sign
+        for i in [80usize, 82] {
+            let r = rnd() as u16;
+            let bits = (r & 0x8000) | 0x3000 | (r & 0x03FF);
+            b[i..i + 2].copy_from_slice(&bits.to_le_bytes());
+        }
+    }
+    let act: Vec<u8> = (0..k)
+        .flat_map(|_| {
+            let r = rnd() as u16;
+            ((r & 0x8000) | 0x3E00 | (r & 0x01FF)).to_le_bytes()
+        })
+        .collect();
+    let raw_dev = g.alloc(raw.len()).unwrap();
+    g.copy_h2d(&raw, raw_dev).unwrap();
+    let bf = g.alloc(n * k * 2).unwrap();
+    KernelLaunch::new(g, g.kernel(DEQUANT_MODULE, "dequant_q2_k_to_bf16").unwrap())
+        .grid([blocks as u32, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(raw_dev)
+        .arg_ptr(bf)
+        .arg_u32(blocks as u32)
+        .arg_u32(84)
+        .launch(stream)
+        .unwrap();
+    let a = g.alloc(act.len()).unwrap();
+    g.copy_h2d(&act, a).unwrap();
+    let c_bf16 = g.alloc(n * 2).unwrap();
+    let c_q2k = g.alloc(n * 2).unwrap();
+    ops::dense_gemv(
+        g,
+        g.kernel("gemv", "dense_gemv_bf16").unwrap(),
+        a,
+        &DenseWeight { weight: bf },
+        c_bf16,
+        n as u32,
+        k as u32,
+        stream,
+    )
+    .unwrap();
+    KernelLaunch::new(g, g.kernel(GATE_MODULE, "engram_v41_wkv_q2k_gemv").unwrap())
+        .grid([(n as u32).div_ceil(4), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(a)
+        .arg_ptr(raw_dev)
+        .arg_ptr(c_q2k)
+        .arg_u32(n as u32)
+        .arg_u32(k as u32)
+        .launch(stream)
+        .unwrap();
+    g.synchronize(stream).unwrap();
+    let mut got = vec![0u8; n * 2];
+    let mut want = vec![0u8; n * 2];
+    g.copy_d2h(c_q2k, &mut got).unwrap();
+    g.copy_d2h(c_bf16, &mut want).unwrap();
+    let nz = want
+        .chunks_exact(2)
+        .filter(|c| c[0] | (c[1] & 0x7F) != 0)
+        .count();
+    assert!(
+        nz > n / 2,
+        "the bf16 reference is mostly zero ({nz} of {n} non-zero)"
+    );
+    let bad: Vec<usize> = (0..n)
+        .filter(|&i| got[2 * i..2 * i + 2] != want[2 * i..2 * i + 2])
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} of {n} outputs differ, first at {:?}",
+        bad.len(),
+        &bad[..bad.len().min(8)]
+    );
+    println!(
+        "  {n} x {k}: the Q2_K GEMV matches the bf16 GEMV over the expansion bit for bit ({nz} non-zero outputs)"
+    );
+    for p in [raw_dev, bf, a, c_bf16, c_q2k] {
+        g.free(p).unwrap();
+    }
 }

@@ -109,6 +109,19 @@ impl ShardFiles {
         self.shards[shard].direct.as_ref()
     }
 
+    /// `(shard, absolute offset, bytes)` of tensor `name` if it is stored as
+    /// Q2_K (84 B super-blocks of 256): the raw blocks a kernel can read in
+    /// place of the loader's bf16 expansion.
+    pub fn locate_q2k(&self, name: &str) -> Option<(usize, u64, usize)> {
+        let (shard, t, off) = self.locate(name)?;
+        let n = t.num_elements();
+        (format!("{:?}", t.ggml_type) == "Q2_K" && n.is_multiple_of(256)).then_some((
+            shard,
+            off,
+            n / 256 * 84,
+        ))
+    }
+
     /// The parsed header of `shard` (shard 0 carries the model metadata).
     pub fn header(&self, shard: usize) -> &GgufFile {
         &self.shards[shard].gguf
