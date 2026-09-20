@@ -67,7 +67,7 @@ unsafe extern "C" {
 
 mod recv_buffer;
 use recv_buffer::ensure_payload_fits;
-pub use recv_buffer::{ALL_REDUCE_DTYPE_BYTES, required_recv_bytes};
+pub use recv_buffer::{ALL_REDUCE_DTYPE_BYTES, required_model_recv_bytes, required_recv_bytes};
 
 /// Timeout threshold for a single synchronous collective operation.
 /// If a broadcast + stream sync takes longer than this, mark the communicator unhealthy.

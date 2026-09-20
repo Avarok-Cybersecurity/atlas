@@ -621,6 +621,7 @@ pub(crate) fn load_model(
         world_size,
         max_batch_tokens,
         config.hidden_size,
+        config.vocab_size,
     )?;
     // Carried on the config rather than written into the environment: the old
     // `unsafe set_var` claimed "called before any threads are spawned", which

@@ -31,13 +31,13 @@ pub const ALL_REDUCE_DTYPE_BYTES: usize = 2;
 
 /// Bytes required for the 2-rank all-reduce receive buffer.
 ///
-/// The largest payload any caller can hand a collective is one full arena
+/// The hidden-activation payload bound is one full arena
 /// buffer — `max_batch_tokens × hidden_size × dtype` — which is exactly how
 /// `moe_output` is sized (`spark-runtime/src/buffers/sizes.rs`). The
 /// tensor-parallel attention and SSM reduces produce the same
 /// `[num_tokens, hidden_size]` BF16 shape, and `num_tokens` is capped by
-/// `max_batch_tokens`, so this bound covers **every** caller of
-/// `all_reduce` / `all_reduce_async`.
+/// `max_batch_tokens`, so this bounds activation collectives. Vocabulary-parallel logits need
+/// the additional bound in [`required_model_recv_bytes`].
 ///
 /// Arithmetic is **checked**: a configuration whose buffer does not fit in a
 /// `usize` is rejected at startup rather than wrapping into a small allocation,
@@ -57,6 +57,12 @@ pub fn required_recv_bytes(
                  × dtype_bytes={dtype_bytes}"
             )
         })
+}
+
+/// Bound both hidden activations and vocabulary-parallel logits. Logits can
+/// exceed the hidden-state arena even for one token (e.g. small K3 twins).
+pub fn required_model_recv_bytes(tokens: usize, hidden: usize, vocab: usize) -> Result<usize> {
+    required_recv_bytes(tokens, hidden.max(vocab), ALL_REDUCE_DTYPE_BYTES)
 }
 
 /// Enforce the capacity invariant before any NCCL call or kernel launch.
@@ -96,6 +102,15 @@ mod tests {
 
     const BF16: usize = 2;
     const FP32: usize = 4;
+
+    #[test]
+    fn short_prefill_still_covers_vocab_parallel_logits() {
+        let capacity = required_model_recv_bytes(33, 1024, 163840).unwrap();
+        assert!(ensure_payload_fits(163584 * 2, capacity, 0, 2).is_ok());
+        assert!(ensure_payload_fits(33 * 163840 * 2, capacity, 0, 2).is_ok());
+        assert!(required_model_recv_bytes(usize::MAX, 1024, 163840).is_err());
+        assert_eq!(required_model_recv_bytes(2, 4096, 1024).unwrap(), 16384);
+    }
 
     /// The old fixed buffer, for reference in the boundary tests below.
     const OLD_FIXED_BUFFER: usize = 64 * 1024 * 1024;
