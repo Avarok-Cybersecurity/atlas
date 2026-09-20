@@ -12,7 +12,25 @@ pub fn matvec(w: &[f32], x: &[f32], out: usize, inn: usize) -> Vec<f32> {
     );
     assert_eq!(x.len(), inn);
     let mut y = vec![0.0f32; out];
-    for o in 0..out {
+    // Interleave independent output rows so the CPU can overlap accumulations.
+    // Each row retains the scalar reduction order: no reassociation or FMA.
+    let grouped = out / 4 * 4;
+    for o in (0..grouped).step_by(4) {
+        let a = &w[o * inn..(o + 1) * inn];
+        let b = &w[(o + 1) * inn..(o + 2) * inn];
+        let c = &w[(o + 2) * inn..(o + 3) * inn];
+        let d = &w[(o + 3) * inn..(o + 4) * inn];
+        let mut acc = [0.0f32; 4];
+        for i in 0..inn {
+            let value = x[i];
+            acc[0] += a[i] * value;
+            acc[1] += b[i] * value;
+            acc[2] += c[i] * value;
+            acc[3] += d[i] * value;
+        }
+        y[o..o + 4].copy_from_slice(&acc);
+    }
+    for o in grouped..out {
         let row = &w[o * inn..(o + 1) * inn];
         let mut acc = 0.0f32;
         for i in 0..inn {
@@ -139,3 +157,7 @@ pub fn ident(out: usize, inn: usize) -> Vec<f32> {
     }
     w
 }
+
+#[cfg(test)]
+#[path = "ops_matvec_tests.rs"]
+mod matvec_tests;

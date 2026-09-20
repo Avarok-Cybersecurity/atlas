@@ -1,0 +1,395 @@
+{
+  "scope": "Bounded development measurements; not benchmark certification or full K3 throughput",
+  "hardware": "4 B200 on one x86 host, NV18 pairwise",
+  "request_protocol": "raw text completions, greedy temperature0, max_tokens128, prefixcacheoff, chunkprefill32, maxsequence512, one warmup plus three measured repeats per prompt",
+  "all_48_requests_exact_output_count_finish_agreement": true,
+  "diagnostics": "AVAROK_COMM_DIAGNOSTICS=0,NCCL_DEBUG=WARN equally for all timing runs",
+  "rows": [
+    {
+      "label": "baseline",
+      "tp": 1,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            29.46435717778059,
+            29.168532179952308,
+            29.398451197182574
+          ],
+          "median_decode_tokens_per_second": 29.398451197182574,
+          "ttft_ms": [
+            187.392889,
+            185.94914300000002,
+            188.373337
+          ],
+          "median_ttft_ms": 187.392889,
+          "wall_seconds": [
+            4.499961283989251,
+            4.542141790036112,
+            4.510546842124313
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            22.108347720799028,
+            22.092611039085234,
+            23.489740715174126
+          ],
+          "median_decode_tokens_per_second": 22.108347720799028,
+          "ttft_ms": [
+            1750.6818269999999,
+            1750.398154,
+            1742.085106
+          ],
+          "median_ttft_ms": 1750.398154,
+          "wall_seconds": [
+            7.49707052577287,
+            7.501144542358816,
+            7.150946622248739
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 2872.0
+      },
+      "median_sampled_gpu_utilization_percent": 38.0,
+      "total_session_seconds": 106.64417772507295,
+      "measurement_request_seconds": 47.80437137000263,
+      "cache_path": null,
+      "performance_receipt_sha256": "a63c185a794a7d478e0caa819dee8abe038482a74b9f26cd03e4f79616813b7b"
+    },
+    {
+      "label": "baseline",
+      "tp": 2,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            31.832398322219053,
+            32.30731946596237,
+            32.35902802879717
+          ],
+          "median_decode_tokens_per_second": 32.30731946596237,
+          "ttft_ms": [
+            164.08725199999998,
+            163.851488,
+            163.50356
+          ],
+          "median_ttft_ms": 163.851488,
+          "wall_seconds": [
+            4.156105029862374,
+            4.097733418922871,
+            4.09039616631344
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            25.16504775964639,
+            24.106334833272005,
+            24.295835901981885
+          ],
+          "median_decode_tokens_per_second": 24.295835901981885,
+          "ttft_ms": [
+            1499.790146,
+            1510.4105319999999,
+            1508.095019
+          ],
+          "median_ttft_ms": 1508.095019,
+          "wall_seconds": [
+            6.548962242901325,
+            6.7810536893084645,
+            6.737512075807899
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 4198.0,
+        "1": 4196.0
+      },
+      "median_sampled_gpu_utilization_percent": 46.0,
+      "total_session_seconds": 55.600350241176784,
+      "measurement_request_seconds": 42.93556843837723,
+      "cache_path": "/root/.nv/ComputeCache",
+      "performance_receipt_sha256": "b544a69f60d94627645985a077d2ca6e798160b954a4a822522de76e624960f3"
+    },
+    {
+      "label": "baseline",
+      "tp": 4,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            34.574596314922026,
+            34.55928959040471,
+            34.754520865269164
+          ],
+          "median_decode_tokens_per_second": 34.574596314922026,
+          "ttft_ms": [
+            147.925432,
+            153.494264,
+            148.417673
+          ],
+          "median_ttft_ms": 148.417673,
+          "wall_seconds": [
+            3.8232726771384478,
+            3.8302931408397853,
+            3.804482293315232
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            27.6402885681036,
+            27.537532651450324,
+            27.006550998001437
+          ],
+          "median_decode_tokens_per_second": 27.537532651450324,
+          "ttft_ms": [
+            1351.097104,
+            1347.6948380000001,
+            1353.544461
+          ],
+          "median_ttft_ms": 1351.097104,
+          "wall_seconds": [
+            5.947632632218301,
+            5.961835171096027,
+            6.0581061681732535
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 3800.0,
+        "1": 3798.0,
+        "2": 3798.0,
+        "3": 3798.0
+      },
+      "median_sampled_gpu_utilization_percent": 48.5,
+      "total_session_seconds": 53.02101935073733,
+      "measurement_request_seconds": 39.24546485720202,
+      "cache_path": "/root/.nv/ComputeCache",
+      "performance_receipt_sha256": "b48bec1ef6cda8ff6762133d4b6d74e6ef01800ce765705710ab4472479d4454"
+    },
+    {
+      "label": "gemv-candidate",
+      "tp": 1,
+      "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            38.73670118111215,
+            39.70483098501633,
+            36.77972734096315
+          ],
+          "median_decode_tokens_per_second": 38.73670118111215,
+          "ttft_ms": [
+            112.035121,
+            115.314099,
+            117.503822
+          ],
+          "median_ttft_ms": 115.314099,
+          "wall_seconds": [
+            3.392750609666109,
+            3.315922513138503,
+            3.572369541041553
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            28.269904328553483,
+            29.753434892202364,
+            30.15460599380881
+          ],
+          "median_decode_tokens_per_second": 29.753434892202364,
+          "ttft_ms": [
+            1126.255779,
+            1129.667489,
+            1131.740163
+          ],
+          "median_ttft_ms": 1129.667489,
+          "wall_seconds": [
+            5.6210509687662125,
+            5.4001880921423435,
+            5.345385327935219
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 2872.0
+      },
+      "median_sampled_gpu_utilization_percent": 52.5,
+      "total_session_seconds": 44.444794663228095,
+      "measurement_request_seconds": 35.201757909264416,
+      "cache_path": "/root/.nv/ComputeCache",
+      "performance_receipt_sha256": "edc0997a5bfb1ffeea0aed9867ad5a6022540cd27abe5622ff5994774a2a7e67"
+    },
+    {
+      "label": "gemv-candidate",
+      "tp": 2,
+      "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            41.55369176283351,
+            41.121685754793575,
+            41.502193609554055
+          ],
+          "median_decode_tokens_per_second": 41.502193609554055,
+          "ttft_ms": [
+            110.16686100000001,
+            109.844761,
+            109.774826
+          ],
+          "median_ttft_ms": 109.844761,
+          "wall_seconds": [
+            3.169223042204976,
+            3.2003467031754553,
+            3.1719987099058926
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            31.35494729231385,
+            31.348461320757774,
+            31.245562322870615
+          ],
+          "median_decode_tokens_per_second": 31.348461320757774,
+          "ttft_ms": [
+            1055.7370329999999,
+            1057.76912,
+            1054.482557
+          ],
+          "median_ttft_ms": 1055.7370329999999,
+          "wall_seconds": [
+            5.108436353970319,
+            5.110799606889486,
+            5.120940251741558
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 4198.0,
+        "1": 4196.0
+      },
+      "median_sampled_gpu_utilization_percent": 57.5,
+      "total_session_seconds": 44.322420567739755,
+      "measurement_request_seconds": 33.22497913101688,
+      "cache_path": "/root/.nv/ComputeCache",
+      "performance_receipt_sha256": "845120d795ad2a3dc591513fd4ec4fc82b1b6878ca5a91a81d2669f4ab404e16"
+    },
+    {
+      "label": "gemv-candidate",
+      "tp": 4,
+      "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            42.02572834017109,
+            41.8326716914381,
+            42.07866849076392
+          ],
+          "median_decode_tokens_per_second": 42.02572834017109,
+          "ttft_ms": [
+            105.537322,
+            105.466908,
+            117.11045200000001
+          ],
+          "median_ttft_ms": 105.537322,
+          "wall_seconds": [
+            3.129289112985134,
+            3.143322096206248,
+            3.1371341082267463
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "finish_reason": "length",
+          "decode_tokens_per_second": [
+            31.805258209121778,
+            31.972043765770433,
+            32.103919004590985
+          ],
+          "median_decode_tokens_per_second": 31.972043765770433,
+          "ttft_ms": [
+            1004.908758,
+            990.18667,
+            988.6478629999999
+          ],
+          "median_ttft_ms": 990.18667,
+          "wall_seconds": [
+            5.000480214133859,
+            4.964675255119801,
+            4.946796033065766
+          ]
+        }
+      ],
+      "peak_gpu_memory_mib": {
+        "0": 3800.0,
+        "1": 3798.0,
+        "2": 3798.0,
+        "3": 3798.0
+      },
+      "median_sampled_gpu_utilization_percent": 58.0,
+      "total_session_seconds": 46.45198807073757,
+      "measurement_request_seconds": 32.43170779943466,
+      "cache_path": "/root/.nv/ComputeCache",
+      "performance_receipt_sha256": "4a1f6bdb39069bb2106d0d3e10a6cb46ae5ba6bcc9cce668f6ec8befc88ae4aa"
+    }
+  ]
+}
