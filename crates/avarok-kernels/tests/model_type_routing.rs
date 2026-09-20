@@ -135,9 +135,29 @@ fn both_laguna_hidden_sizes_route_to_their_own_target() {
     );
 }
 
-/// A target's `[[model_types]]` hidden_size claim must agree with the
+/// A target's `[[model_types]]` hidden_size claims must INCLUDE the
 /// `[model].hidden_dim` it documents. The two are written independently, and a
-/// mismatch routes a checkpoint onto a target tuned for another shape.
+/// target whose claims match nothing it documents routes a checkpoint onto a
+/// target tuned for another shape.
+///
+/// ★ WHY "INCLUDE" AND NOT "EQUAL". The first form of this test required EVERY
+/// `[[model_types]]` row to equal `[model].hidden_dim`. That premise is false
+/// for any target that deliberately matches more than one shape, and
+/// `kernels/{b200,b300,gb10}/kimi-k3/MODEL.toml` is exactly that — it says so
+/// in its own header:
+///
+///     🔴 THE MATCHER is [[model_types]]. Dimension keys below are documentation.
+///     Two rows so production (7168) never swallows the 0.40B twin (1024).
+///
+/// so it carries `hidden_size = 7168` (production moonshotai/Kimi-K3) beside
+/// `hidden_size = 1024` (the inference-optimization/Kimi-K3-0.40B twin) under a
+/// single `[model] hidden_dim = 7168`. The strict form failed all three K3
+/// targets. The manifest is right and the premise was wrong: `[model]`
+/// documents the production shape, while `[[model_types]]` is the match set.
+///
+/// The Laguna risk this test was written for survives intact — a target whose
+/// claims are ALL foreign to its documented dim still fails, and that is the
+/// mis-routing case. What is now permitted is an ADDITIONAL row for a twin.
 #[test]
 fn claimed_hidden_size_matches_documented_hidden_dim() {
     let mut checked = 0usize;
@@ -155,17 +175,24 @@ fn claimed_hidden_size_matches_documented_hidden_dim() {
         let Some(entries) = parsed.get("model_types").and_then(|v| v.as_array()) else {
             continue;
         };
-        for entry in entries {
-            let Some(claimed) = entry.get("hidden_size").and_then(|v| v.as_integer()) else {
-                continue;
-            };
-            checked += 1;
-            if claimed != hidden_dim {
-                violations.push(format!(
-                    "{}: [[model_types]] hidden_size {claimed} != [model] hidden_dim {hidden_dim}",
-                    manifest.display()
-                ));
-            }
+        let claims: Vec<i64> = entries
+            .iter()
+            .filter_map(|e| e.get("hidden_size").and_then(|v| v.as_integer()))
+            .collect();
+        if claims.is_empty() {
+            continue;
+        }
+        checked += claims.len();
+        if !claims.contains(&hidden_dim) {
+            violations.push(format!(
+                "{}: no [[model_types]] hidden_size claim ({}) matches [model] hidden_dim {hidden_dim}",
+                manifest.display(),
+                claims
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
