@@ -7,6 +7,7 @@
 //! CUDA: `kda_decode.cu` (default; `K3_CUDA_KDA=0` CPU escape).
 
 pub mod attnres;
+pub mod binding_memory;
 pub mod cache;
 pub mod expert_backend;
 pub mod kda;
@@ -14,6 +15,9 @@ pub mod latent_moe;
 pub mod layer;
 pub mod mla;
 pub mod situ;
+pub mod tp;
+pub mod weights;
+pub mod weights_geometry;
 
 pub use attnres::{AttnResHub, attnres_blend, attnres_mix, attnres_softmax_mix};
 pub use cache::{HybridCache, LayerCache, MlaKv};
