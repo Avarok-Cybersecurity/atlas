@@ -1,0 +1,62 @@
+{
+  "scope": "Bounded B200 correctness rehearsal, not certification or full-model inference",
+  "hardware": "4x NVIDIA B200, NV18 pairwise topology",
+  "compiled_arch": "sm_100a",
+  "cuda_compiler": "13.0.48",
+  "selected_kernel_count": 182,
+  "binary_sha256": "41666f630aa198f1f9dd8c86b70e5d44afacc7cbeccf60c4ff1dae9128ce7d76",
+  "source_checkpoint_revision": "d853649387ffe8f48ce0198a29ac1a44205031f7",
+  "source_weights_sha256": "a39b7ed2769ee2f9891a19cef6f1ca7986a3f295c09759b5b3135285e5d7a678",
+  "packed_weights_sha256": "fcc20b6598329d890ff7ae08516faec98254a6d0f8643d19c2acf79b3537c641",
+  "canaries": [
+    {
+      "tp": 1,
+      "status": "passed",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "all_owned_processes_exit_zero": true,
+      "launch_probe_cleanup_seconds": 57.33778322581202,
+      "probe_receipt_sha256": "30616c6c3c179868243754a17f39b6138288196df5a4993a4659807a9b50dada"
+    },
+    {
+      "tp": 2,
+      "status": "passed",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "all_owned_processes_exit_zero": true,
+      "launch_probe_cleanup_seconds": 59.97125045815483,
+      "probe_receipt_sha256": "0503f37fba236f0b5006f1ddda281a43906c3c1a2a7e095e3fdb0de36f3b9f3e"
+    },
+    {
+      "tp": 4,
+      "status": "passed",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "all_owned_processes_exit_zero": true,
+      "launch_probe_cleanup_seconds": 60.915478504728526,
+      "probe_receipt_sha256": "3791c0328c05e52cfa674b823d5cfa9d1c844b5636187b36060afa43c75c98e0"
+    }
+  ],
+  "collective_full_log_check": {
+    "status": "FAIL",
+    "tp2_counts": [
+      427,
+      426
+    ],
+    "tp4_counts": [
+      429,
+      428,
+      428,
+      428
+    ],
+    "difference": "Rank zero has one unmatched final U8[4] broadcast during simultaneous teardown; investigate shutdown sequencing."
+  },
+  "final_rebuild_binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+  "final_rebuild_note": "Build and17 CPU target tests passed after source isolation; preceding GPU receipts use binary_sha256, not this final rebuilt binary."
+}

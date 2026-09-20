@@ -7,7 +7,7 @@ use spark_runtime::weights::{K3SafetensorsLoader, WeightLoader};
 
 #[test]
 fn packed_loader_marker_binds_local_weights_without_second_allocation() {
-    for world in [2, 8] {
+    for world in [2, 4, 8] {
         let mut config = parse_config(include_str!(
             "../../../../../docs/k3/fixtures/Kimi-K3-0.40B-config.json"
         ))
