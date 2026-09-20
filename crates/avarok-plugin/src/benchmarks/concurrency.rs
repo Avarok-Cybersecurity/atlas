@@ -19,6 +19,9 @@
 //! non-comparable instead of silently reported.
 
 use crate::hardware::Sensitivity;
+use crate::hardware::energy::EnergyWindow;
+use crate::hardware::energy_sampler::EnergyMeter;
+use crate::http::{GapSample, GapStats};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -385,13 +388,23 @@ struct CellRow {
     isl: usize,
     conc: usize,
     ttft: Percentiles,
+    /// Client-clock ITL across the cell's requests.
     tpot: Percentiles,
+    /// Server-clock ITL across the cell's requests; empty on an older server.
+    server_tpot: Percentiles,
     e2e_p50: Option<f64>,
     throughput: f64,
+    /// Output tokens the batch delivered — `throughput`'s numerator, and the
+    /// denominator of any J/token derived from `energy`.
+    tokens: usize,
     errors: usize,
     requests: Vec<RequestEvidence>,
     vacuous: bool,
     cache_uncontrolled: bool,
+    /// The pooled arrival-gap distribution of the cell's requests.
+    gaps: Option<GapStats>,
+    /// GPU-rail joules over the measured batch window, when sampled.
+    energy: Option<EnergyWindow>,
 }
 
 impl CellRow {
@@ -495,6 +508,9 @@ pub struct ConcurrencySweep {
     /// Verdict floors (tok/s); all 0.0 = info verdict. Gate-filled per
     /// variant via `GATE_THRESHOLD_PARAMS`.
     floors: verdict::Floors,
+    /// The GPU-rail power sampler: started after the probe, idle baseline
+    /// taken before the first cell, one window per measured batch.
+    energy: EnergyMeter,
 }
 
 impl ConcurrencySweep {
@@ -632,10 +648,13 @@ impl ConcurrencySweep {
             .map(|tag| self.one(isl, tag))
             .collect();
         let outcomes = futures::future::join_all(futures).await;
-        let wall = batch_start.elapsed().as_secs_f64().max(1e-6);
+        let batch_end = Instant::now();
+        let wall = batch_end.duration_since(batch_start).as_secs_f64().max(1e-6);
 
         let mut ttft = Vec::new();
         let mut tpot = Vec::new();
+        let mut server_tpot = Vec::new();
+        let mut gaps = GapSample::default();
         let mut e2e = Vec::new();
         let mut requests = Vec::new();
         let mut tokens = 0usize;
@@ -649,6 +668,10 @@ impl ConcurrencySweep {
                     if let Some(v) = o.tpot_ms {
                         tpot.push(v);
                     }
+                    if let Some(v) = o.server_tpot_ms() {
+                        server_tpot.push(v);
+                    }
+                    gaps.merge(&o.arrival_gaps);
                     e2e.push(o.e2e_ms);
                     tokens += o.completion_tokens;
                     requests.push(RequestEvidence {
@@ -686,6 +709,14 @@ impl ConcurrencySweep {
         let warm_capable = warm_cache_capable(conc, slots, &earlier);
         let cache_uncontrolled = warm_capable && cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
+        // The batch window, exactly: first request sent → last one complete.
+        let energy = self.energy.window(batch_start, batch_end);
+        if let Some(e) = &energy {
+            handle.info(format!(
+                "isl {isl} conc {conc}: {} · {tokens} tok in the window",
+                e.one_line(self.energy.idle())
+            ));
+        }
         if !warm_capable {
             handle.info(format!(
                 "isl {isl} conc {conc}: cache cold by construction — the server's {} \
@@ -715,12 +746,16 @@ impl ConcurrencySweep {
             conc,
             ttft: Percentiles::of(&ttft),
             tpot: Percentiles::of(&tpot),
+            server_tpot: Percentiles::of(&server_tpot),
             e2e_p50: stats::percentile(&e2e, 50),
             throughput: tokens as f64 / wall,
+            tokens,
             errors,
             requests,
             vacuous,
             cache_uncontrolled,
+            gaps: gaps.stats(),
+            energy,
         })
     }
 
@@ -853,7 +888,11 @@ impl ConcurrencySweep {
             if let Some(a) = r.accept_len() {
                 m.insert(format!("c{c}_accept_len"), a);
             }
+            // Both ITL clocks, the jitter distribution and the batch's
+            // joules (`concurrency_instruments.rs`).
+            r.instrument_metrics(&format!("c{c}_"), self.energy.idle(), &mut m);
         }
+        self.energy.metrics(&mut m);
         if let Some(peak) = per_c.values().map(|r| r.throughput).max_by(f64::total_cmp) {
             m.insert("peak_aggregate_tok_s".to_string(), peak);
         }
@@ -1057,6 +1096,9 @@ impl Benchmark for ConcurrencySweep {
         };
         self.cursor = 0;
         self.rows.clear();
+        // A fresh meter per configuration; dropping a live sampler kills its
+        // child (`kill_on_drop`), so a re-run never inherits one.
+        self.energy = EnergyMeter::default();
         Ok(())
     }
 
@@ -1075,6 +1117,11 @@ impl Benchmark for ConcurrencySweep {
             if total == 0 {
                 bail!("no cells to run — check the concurrency and input-length lists");
             }
+            // Power sampling starts here — model loaded, nothing in flight —
+            // so the idle baseline precedes the first measured window.
+            for line in self.energy.start(handle.target()).await {
+                handle.log(line.level, line.text);
+            }
             return Ok(BenchmarkResult::running("probe", self.elapsed())
                 .with_progress(0, total)
                 .log_line(LogLine::info(format!(
@@ -1089,6 +1136,8 @@ impl Benchmark for ConcurrencySweep {
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
             let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
             let non_mtp_arm = self.rows.iter().filter(|r| r.arm_is_not_mtp()).count();
+            // Stop the sampler FIRST: its measured cost is one of the keys.
+            let sampler_cost_line = self.energy.stop().await;
             // The verdict is computed over the SAME metrics map the gate
             // record carries (see `verdict::sweep_verdict`), so the two can
             // never disagree about a rung's value. Floors all-zero keeps the
@@ -1115,6 +1164,9 @@ impl Benchmark for ConcurrencySweep {
             .with_table(self.table())
             .with_metrics(metrics)
             .with_verdict(verdict);
+            if let Some(line) = sampler_cost_line {
+                frame = frame.log_line(line);
+            }
             // A "—" in the TPOT column is a measurement limit, not a broken
             // number, and it is worth saying which: the endpoint delivered the
             // whole reply in ONE SSE delta, so there is no inter-token interval
@@ -1134,9 +1186,11 @@ impl Benchmark for ConcurrencySweep {
         let (isl, conc) = self.cells[self.cursor];
         let row = self.run_cell(isl, conc).await?;
         let line = LogLine::info(format!(
-            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms · {:.1} tok/s{}",
+            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms (server clock {} ms) · \
+             {:.1} tok/s{}",
             stats::fmt_ms(row.ttft.p50),
             stats::fmt_ms(row.tpot.p50),
+            stats::fmt_ms(row.server_tpot.p50),
             row.throughput,
             if row.vacuous { " (vacuous)" } else { "" }
         ));
@@ -1152,6 +1206,9 @@ impl Benchmark for ConcurrencySweep {
         )
     }
 }
+
+#[path = "concurrency_instruments.rs"]
+mod instruments;
 
 #[path = "concurrency_verdict.rs"]
 mod verdict;

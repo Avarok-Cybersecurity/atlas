@@ -5,8 +5,11 @@
 //! copy out of the driver (file-size cap) — no endpoint, no I/O, so every
 //! verdict path is provable in unit tests.
 
+use std::collections::BTreeMap;
+
 use crate::benchmarks::stats;
-use crate::http;
+use crate::hardware::energy::EnergyWindow;
+use crate::http::{self, GapSample};
 use crate::result::Verdict;
 
 /// Timed runs. PINNED — the median-of-3 is the metric's definition, and a
@@ -53,6 +56,18 @@ pub(crate) struct RunObs {
     /// differently only in the message — both are INCONCLUSIVE.
     pub accepted_prediction_tokens: Option<usize>,
     pub e2e_ms: f64,
+    /// Client-clock ITL per AIPerf (`http::ChatOutcome::tpot_ms`). Recorded
+    /// beside the server rate so the transport overhead is on the record.
+    pub client_tpot_ms: Option<f64>,
+    /// Server-clock ITL from the raw window (`usage.decode_time_ms`). The
+    /// same quantity as `1000 / server_tps` and NOT minted as its own key —
+    /// kept on the observation for the run log only.
+    pub server_tpot_ms: Option<f64>,
+    /// The run's arrival gaps (jitter), pooled across the three runs.
+    pub arrival_gaps: GapSample,
+    /// GPU-rail joules over exactly this run's request window; set by the
+    /// driver from its sampler, `None` when the rail was not sampled.
+    pub energy: Option<EnergyWindow>,
 }
 
 impl RunObs {
@@ -62,6 +77,10 @@ impl RunObs {
             server_tps: o.server_tps,
             accepted_prediction_tokens: o.accepted_prediction_tokens,
             e2e_ms: o.e2e_ms,
+            client_tpot_ms: o.tpot_ms,
+            server_tpot_ms: o.server_tpot_ms(),
+            arrival_gaps: o.arrival_gaps.clone(),
+            energy: None,
         }
     }
 
@@ -224,5 +243,42 @@ pub(crate) fn evaluate(samples: &[RunObs]) -> Evaluation {
             .min()
             .unwrap_or(0),
         accept_len_mean,
+    }
+}
+
+/// The instrument keys beside the floor's verdict metrics: the client-clock
+/// ITL, the pooled arrival-gap (jitter) distribution, and the joules over
+/// the measured windows with the tokens decoded inside them. Pure — the
+/// driver supplies only the idle baseline.
+///
+/// The SERVER-clock ITL is already on the record as `server_decode_tok_s`
+/// (`1000 / tpot`), so no second key is minted for the same number; the
+/// client clock is new and takes quick-speed's `client_` prefix.
+pub(crate) fn instrument_metrics(
+    samples: &[RunObs],
+    idle: Option<&EnergyWindow>,
+    m: &mut BTreeMap<String, f64>,
+) {
+    let client: Vec<f64> = samples.iter().filter_map(|s| s.client_tpot_ms).collect();
+    if let Some(v) = stats::median(&client) {
+        m.insert("client_tpot_ms".to_string(), v);
+    }
+    let mut gaps = GapSample::default();
+    for s in samples {
+        gaps.merge(&s.arrival_gaps);
+    }
+    if let Some(g) = gaps.stats() {
+        g.metrics("", m);
+    }
+    let windows: Vec<EnergyWindow> = samples.iter().filter_map(|s| s.energy).collect();
+    if let Some(total) = EnergyWindow::sum(&windows) {
+        // Tokens decoded INSIDE the sampled windows — the J/token denominator
+        // must cover the same interval as the joules.
+        let tokens = samples
+            .iter()
+            .filter(|s| s.energy.is_some())
+            .map(|s| s.completion_tokens)
+            .sum();
+        total.metrics("", tokens, idle, m);
     }
 }

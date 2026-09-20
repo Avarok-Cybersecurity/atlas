@@ -69,6 +69,7 @@ pub(super) async fn run_blocking(
     let mut sum_reasoning = 0usize;
     let mut sum_accepted = 0usize;
     let mut last_ttft = 0.0f64;
+    let mut last_decode_time_ms = 0.0f64;
     let mut last_tps = 0.0f64;
 
     for (prompt_i, prompt_tokens) in prompts.iter().enumerate() {
@@ -186,12 +187,11 @@ pub(super) async fn run_blocking(
             sum_reasoning += response.reasoning_tokens as usize;
             sum_accepted += response.accepted_prediction_tokens;
             last_ttft = response.time_to_first_token_ms;
-            last_tps = if response.decode_time_ms > 0.0 {
-                (response.output_tokens.len().saturating_sub(1)) as f64
-                    / (response.decode_time_ms / 1000.0)
-            } else {
-                0.0
-            };
+            last_decode_time_ms = response.decode_time_ms;
+            last_tps = crate::ir::Usage::decode_rate_tok_s(
+                response.output_tokens.len(),
+                response.decode_time_ms,
+            );
 
             choices.push(CompletionChoice {
                 index: prompt_i * n + n_i,
@@ -218,6 +218,8 @@ pub(super) async fn run_blocking(
         }),
         time_to_first_token_ms: last_ttft,
         response_tokens_per_second: last_tps,
+        decode_time_ms: last_decode_time_ms,
+        total_time_ms: last_ttft + last_decode_time_ms,
     };
 
     Json(CompletionResponse::from_choices(

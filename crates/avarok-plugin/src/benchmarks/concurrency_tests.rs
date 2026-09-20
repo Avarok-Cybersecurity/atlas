@@ -67,12 +67,16 @@ pub(super) fn row(
             p99: ttft_p50,
         },
         tpot: Percentiles::default(),
+        server_tpot: Percentiles::default(),
         e2e_p50: None,
         throughput,
+        tokens: requests.iter().map(|r| r.completion_tokens).sum(),
         errors: 0,
         requests,
         vacuous,
         cache_uncontrolled: false,
+        gaps: None,
+        energy: None,
     }
 }
 
@@ -492,4 +496,78 @@ fn a_corrupt_accept_count_does_not_divide_by_zero() {
     );
     assert_eq!(corrupt.accept_len(), None);
     assert!(!corrupt.arm_is_not_mtp());
+}
+
+// ---- instrument keys: both ITL clocks, jitter, energy --------------------
+
+/// Every rung carries its client-clock and server-clock ITL under the
+/// repo's existing `tpot` name (no parallel `itl_*` key), the pooled
+/// arrival-gap distribution, and the batch's joules WITH the tokens they
+/// were spent on. A clock the server did not report is absent, not zero.
+#[test]
+fn metrics_map_carries_both_itl_clocks_jitter_and_energy_per_rung() {
+    let osl = 128;
+    let mut b = configured(vec![4], vec![512]);
+    b.osl = osl;
+    let mut r = row(4, 100.0, Some(150.0), vec![evidence(128); 4], osl);
+    r.tpot = Percentiles {
+        p50: Some(31.0),
+        p90: Some(35.0),
+        p99: Some(40.0),
+    };
+    r.server_tpot = Percentiles {
+        p50: Some(29.5),
+        p90: Some(33.0),
+        p99: Some(38.0),
+    };
+    let mut gaps = GapSample::default();
+    for g in [30.0, 30.0, 30.0, 31.0, 30.0, 30.0, 30.0, 30.0, 30.0, 180.0] {
+        gaps.push(g);
+    }
+    r.gaps = gaps.stats();
+    r.energy = Some(EnergyWindow {
+        window_s: 12.0,
+        samples: 48,
+        energy_j: 720.0,
+        mean_power_w: 60.0,
+        max_power_w: 66.0,
+        sw_power_cap_frac: Some(1.0),
+        hw_power_brake_frac: Some(0.0),
+    });
+    b.rows.push(r);
+    let m = b.metrics();
+    assert_eq!(m.get("c4_tpot_p50_ms"), Some(&31.0));
+    assert_eq!(m.get("c4_tpot_p90_ms"), Some(&35.0));
+    assert_eq!(m.get("c4_server_tpot_p50_ms"), Some(&29.5));
+    assert_eq!(m.get("c4_server_tpot_p90_ms"), Some(&33.0));
+    assert!(!m.keys().any(|k| k.contains("itl")), "no parallel itl_* key: {m:?}");
+    assert_eq!(m.get("c4_arrival_gap_count"), Some(&10.0));
+    assert_eq!(m.get("c4_arrival_gap_max_ms"), Some(&180.0));
+    assert_eq!(m.get("c4_arrival_gap_p50_ms"), Some(&30.0));
+    assert_eq!(m.get("c4_arrival_gap_p99_ms"), Some(&180.0));
+    assert_eq!(m.get("c4_jitter_index"), Some(&5.0));
+    assert!(m.contains_key("c4_arrival_gap_cv"));
+    assert_eq!(m.get("c4_gpu_rail_energy_j"), Some(&720.0));
+    assert_eq!(m.get("c4_gpu_rail_power_samples"), Some(&48.0));
+    assert_eq!(m.get("c4_gpu_rail_energy_window_tokens"), Some(&512.0));
+    assert_eq!(m.get("c4_gpu_rail_sw_power_cap_frac"), Some(&1.0));
+    // No idle baseline was taken → no above-idle key, never a zero.
+    assert!(!m.contains_key("c4_gpu_rail_energy_above_idle_j"));
+    assert!(!m.contains_key("gpu_rail_idle_power_w"));
+
+    // A rung measured against an older server: the client clock is there,
+    // the server clock and the instruments are simply absent.
+    let mut old = configured(vec![2], vec![512]);
+    old.osl = osl;
+    let mut r = row(2, 30.0, Some(120.0), vec![evidence(128); 2], osl);
+    r.tpot = Percentiles {
+        p50: Some(31.0),
+        p90: Some(35.0),
+        p99: Some(40.0),
+    };
+    old.rows.push(r);
+    let m = old.metrics();
+    assert_eq!(m.get("c2_tpot_p50_ms"), Some(&31.0));
+    assert!(!m.contains_key("c2_server_tpot_p50_ms"));
+    assert!(!m.keys().any(|k| k.contains("arrival_gap") || k.contains("gpu_rail")));
 }

@@ -7,3 +7,4 @@ mod chat_wire;
 mod completions;
 mod responses;
 mod thinking;
+mod usage_timing;
