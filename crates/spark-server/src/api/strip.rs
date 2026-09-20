@@ -39,7 +39,47 @@ use super::sanitizer::*;
 
 pub(crate) fn strip_thinking_tags(text: &str) -> String {
     let default_parser = crate::reasoning_parser::ReasoningFormat::Qwen.into_parser();
+    // Plain completions must preserve decoded whitespace, just like streaming.
+    // The reasoning parser trims content even when there is no thinking block.
+    if !text.contains(default_parser.start_tag()) && !text.contains(default_parser.end_tag()) {
+        return text.to_string();
+    }
     extract_thinking(text, false, Some(&*default_parser)).1
+}
+
+#[cfg(test)]
+mod strip_thinking_tests {
+    use super::strip_thinking_tags;
+
+    #[test]
+    fn no_thinking_tags_preserves_completion_bytes() {
+        for text in [
+            " there is no way a bee should be able to fly. Its wings are too",
+            " ",
+            "\n\n",
+            "\t  ",
+            "    return value;\n",
+            "\n```python\n    print('hello')\n```\n",
+            "  café 世界  ",
+            " partial </thin ",
+            "",
+        ] {
+            assert_eq!(strip_thinking_tags(text).as_bytes(), text.as_bytes());
+        }
+    }
+
+    #[test]
+    fn marked_thinking_keeps_existing_extraction() {
+        for (text, expected) in [
+            ("<think>reasoning</think> answer ", "answer"),
+            ("reasoning</think> answer ", "answer"),
+            ("  <think>unfinished reasoning", ""),
+            ("<think>first</think>A<think>second</think>B", "AB"),
+            ("</think>\n\n  answer", "answer"),
+        ] {
+            assert_eq!(strip_thinking_tags(text), expected);
+        }
+    }
 }
 
 /// Residual thinking-marker scrub for the assistant `content` channel.
