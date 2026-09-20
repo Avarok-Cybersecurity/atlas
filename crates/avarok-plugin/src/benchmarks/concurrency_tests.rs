@@ -7,8 +7,14 @@
 //! the 500-LoC cap when the ladder widened to C=128, which roughly doubled
 //! the rung tables both halves assert on.
 
+use super::vacuity::Delivery;
 use super::*;
 use crate::TargetEndpoint;
+
+/// The rule as one predicate, for fixtures that only need the verdict.
+pub(super) fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
+    Delivery::of(requests, osl).is_vacuous()
+}
 
 fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
     let mut b = ConcurrencySweep::default();
@@ -19,7 +25,7 @@ fn configured(concs: Vec<i64>, isls: Vec<i64>) -> ConcurrencySweep {
     b
 }
 
-fn evidence(completion_tokens: usize) -> RequestEvidence {
+pub(super) fn evidence(completion_tokens: usize) -> RequestEvidence {
     // Default to the MTP arm: `accepted` such that accept_len is ~2.3, this
     // model's measured accept depth. Existing tests assert on comparable
     // cells, and a cell that drew the SERIAL arm is deliberately not
@@ -44,7 +50,7 @@ fn evidence_with_arm(
     }
 }
 
-fn row(
+pub(super) fn row(
     conc: usize,
     throughput: f64,
     ttft_p50: Option<f64>,
@@ -110,9 +116,9 @@ fn reconfiguring_clears_prior_rows() {
 #[test]
 fn warmup_and_measurement_share_the_complete_prompt_set() {
     let b = configured(vec![4], vec![512]);
-    let plan = prompt_plan(4, 2);
+    let plan = prompt_plan(4, 2, Fixture::Natural);
 
-    assert!(prompt_plan(4, 0).warmup_rounds.is_empty());
+    assert!(prompt_plan(4, 0, Fixture::Natural).warmup_rounds.is_empty());
     assert_eq!(plan.measured, ["c0", "c1", "c2", "c3"]);
     assert_eq!(
         plan.warmup_rounds,
@@ -140,7 +146,7 @@ fn warmup_and_measurement_share_the_complete_prompt_set() {
 #[test]
 fn a_warmup_round_never_repeats_a_prompt() {
     for conc in [1usize, 2, 4, 16, 128] {
-        let plan = prompt_plan(conc, 1);
+        let plan = prompt_plan(conc, 1, Fixture::Natural);
         for round in &plan.warmup_rounds {
             let mut seen = std::collections::BTreeSet::new();
             for tag in round {
@@ -165,7 +171,7 @@ fn a_warmup_round_never_repeats_a_prompt() {
 #[test]
 fn default_prompt_mode_is_the_code_generation_fixture() {
     let b = configured(vec![1], vec![512]);
-    assert_eq!(b.mode, PromptMode::Natural);
+    assert_eq!(b.fixture, Fixture::Natural);
     let p = b.cell_prompt(512, "c0");
     assert!(
         p.contains("MinHeap"),
@@ -215,19 +221,19 @@ fn prompt_mode_help_does_not_claim_to_force_the_budget() {
     );
 }
 
+/// The rule itself is exercised in `concurrency_vacuity_tests.rs` against
+/// the documented failure and the published receipts; this pins only the
+/// shape the rest of this file's fixtures rely on: full cells pass, a cell
+/// that delivered a third of nothing does not, and an empty cell is not
+/// vacuous (the error count already invalidates it).
 #[test]
-fn vacuity_flags_any_request_below_80_pct_of_osl() {
+fn vacuity_is_a_cell_level_delivery_rule() {
     let osl = 100;
     assert!(!cell_is_vacuous(&[evidence(80), evidence(100)], osl));
-    assert!(cell_is_vacuous(&[evidence(79), evidence(100)], osl));
-    // ONE short request poisons the whole cell — its wall time is in the
-    // denominator of the aggregate.
     assert!(cell_is_vacuous(
         &[evidence(100), evidence(100), evidence(0)],
         osl
     ));
-    // No successful requests: nothing to call vacuous (the error count
-    // already invalidates the cell).
     assert!(!cell_is_vacuous(&[], osl));
 }
 
