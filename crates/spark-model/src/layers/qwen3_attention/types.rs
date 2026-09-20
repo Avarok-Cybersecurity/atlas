@@ -266,6 +266,12 @@ pub struct Qwen3AttentionLayer {
     /// V-only paged cache write. Used alongside the fused K-path so the
     /// K side of the cache stays single-rounded.
     pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
+    /// Decode-path fusion of k_norm + RoPE + FP8 K/V cache write. Bit-identical
+    /// to the `rms_norm` -> `rope_forward` -> `reshape_and_cache_flash_fp8`
+    /// chain it replaces; see `reshape_and_cache_fused_k_fp8.cu`. Zero handle
+    /// when the module is absent (non-GB10 kernel targets) — callers must
+    /// guard on `.0 != 0` and fall back to the un-fused chain.
+    pub(super) fused_k_norm_rope_cache_write_fp8_kv_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
     /// Inverse WHT. With TQ_PLUS_SIGNS off this aliases the forward kernel
