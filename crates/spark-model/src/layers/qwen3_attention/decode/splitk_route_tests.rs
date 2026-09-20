@@ -139,7 +139,7 @@ fn the_packed_route_needs_the_lever_the_shape_and_the_handle() {
 
     // Leg 1 — the lever. Declared off, so a default build takes the unpacked
     // kernel and nothing about the shipped path changes.
-    assert!(!avarok_kernels::attn_splitk::DECODE_GQA_PACK_DECLARED);
+    const { assert!(!avarok_kernels::attn_splitk::DECODE_GQA_PACK_DECLARED) };
     assert!(gqa_pack_route(false, handle, 24, 4, 256).is_none());
     assert_eq!(
         gqa_pack_kernel(handle, 24, 4, 256).is_some(),
@@ -217,8 +217,7 @@ fn cuda_param_count(src: &str, kernel: &str) -> usize {
 /// `.arg_*` calls in a launcher function in `ops/prefill_attn_a.rs`.
 fn launcher_arg_count(name: &str) -> usize {
     let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("src/layers/ops/prefill_attn_a.rs"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/layers/ops/prefill_attn_a.rs"),
     )
     .expect("read prefill_attn_a.rs");
     let at = src

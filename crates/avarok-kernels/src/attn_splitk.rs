@@ -250,6 +250,36 @@ pub fn workspace_slots(
 // gate record re-opened. Extending packing to the split arm is a separate,
 // numerics-visible change and is deliberately not made here.
 
+// # The fused last-CTA reduce, CONSIDERED AND DECLINED (2026-09-20)
+//
+// The obvious companion change is to fold `paged_decode_attn_reduce_fp8` into
+// the split kernel — an arrival counter per `(seq, head)`, last CTA merges —
+// removing one launch per layer per token. It is not done, and the reason is
+// this module's own arithmetic rather than a difficulty:
+//
+// * On every target that declares [`SplitkPolicy::Legacy`] — which is all of
+//   them but Hopper — `legacy_splits(48, 24, ref_seqs)` is `1` for every
+//   `ref_seqs >= 2`, and `ref_seqs` is `max(max_batch_size, num_seqs)`. So on
+//   GB10 the reduce kernel is LAUNCHED ONLY AT `--max-batch 1`. Every
+//   co-batched shape a campaign measures takes the non-split arm, where there
+//   is no second launch to remove.
+// * The saving it targets is a LAUNCH, and the launch it removes is inside a
+//   captured CUDA graph, where launch cost is already the cheap case. What it
+//   adds is a `__threadfence` and an atomic on every split CTA, plus a merge
+//   serialised into the last arriver while the rest of the device drains.
+// * The counter has nowhere to live inside this change's blast radius. The
+//   split-K workspace is sized by [`workspace_slots`] and allocated in
+//   `spark-runtime`'s buffer arena, so a counter region means changing the
+//   arena's layout; a module-scope `__device__` array instead would need a
+//   compile-time capacity bound with no configuration to derive it from, and
+//   would be shared — unsynchronised — by any two launches of the same kernel
+//   in flight on different streams.
+//
+// Worth recording that it would be BIT-IDENTICAL if done: the separate reduce
+// merges splits in INDEX order `0..num_splits`, and a last-CTA reduction that
+// keeps that order does the same additions in the same sequence. The reason
+// not to do it is that it is small, and small on an arm GB10 does not take.
+
 /// Query heads one packed CTA carries.
 ///
 /// A COMPILE-TIME shape on both sides: the kernels size `q_reg`/`o_reg`

@@ -279,7 +279,7 @@ fn the_pack_gate_admits_only_the_shape_the_kernel_is_compiled_for() {
 /// rule `parse` holds for the split policy.
 #[test]
 fn the_pack_lever_is_declared_off_and_a_typo_keeps_the_declaration() {
-    assert!(!DECODE_GQA_PACK_DECLARED);
+    const { assert!(!DECODE_GQA_PACK_DECLARED) };
     assert!(!resolve_gqa_pack(DECODE_GQA_PACK_DECLARED, None));
     for on in ["1", "on", "true", "YES", " on "] {
         assert!(resolve_gqa_pack(false, Some(on)), "{on:?} must arm");
@@ -388,6 +388,6 @@ fn packing_divides_the_cta_count_and_moves_the_fill_threshold() {
     assert!(gqa_pack_ctas(NKV, 12) >= GB10_SMS);
     // The unpacked grid is already full at two sequences, which is exactly
     // why `legacy_splits` stops splitting there.
-    assert!(NQ * 2 >= GB10_SMS);
+    const { assert!(NQ * 2 >= GB10_SMS) };
     assert_eq!(legacy_splits(GB10_SMS, NQ, 2), 1);
 }
