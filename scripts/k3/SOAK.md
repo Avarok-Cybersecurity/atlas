@@ -15,8 +15,13 @@ python3 scripts/k3/soak.py \
   --output /tmp/k3-soak-new-run
 ```
 
-The optional baseline receipt must come from a trusted run of the same model
-and exact test cases. Do not reuse expected text from a different checkpoint. Without a trusted receipt, the tool checks consistency against a
+The optional baseline receipt must be a schema 1 JSON object containing the
+exact `model` string and `cases` array supplied to this run, plus one
+`baseline_cases` row per case ID. Each baseline row needs nonempty `text` and a
+`finish_reason` of `stop` or `length`; token counts are checked when present.
+The tool rejects a receipt whose model, prompt, token budget, case order, or IDs
+differ. Do not reuse expected text from a different checkpoint. Without a
+trusted receipt, the tool checks consistency against a
 fresh isolated baseline; consistent but incorrect generation can therefore pass.
 Use independent known outputs for the model under test when available.
 

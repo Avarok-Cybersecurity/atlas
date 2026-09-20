@@ -103,6 +103,37 @@ def match(actual, expected):
                 raise ValueError('token count differs from baseline: ' + key)
 
 
+def validate_trusted_receipt(receipt, model, cases):
+    """Bind trusted expectations to the exact model and requested cases."""
+    if not isinstance(receipt, dict) or receipt.get('schema') != 1:
+        raise ValueError('baseline receipt must be a schema 1 object')
+    if receipt.get('model') != model:
+        raise ValueError('baseline receipt model differs from requested model')
+    if receipt.get('cases') != cases:
+        raise ValueError('baseline receipt cases differ from requested cases')
+    rows = receipt.get('baseline_cases')
+    if not isinstance(rows, list) or len(rows) != len(cases):
+        raise ValueError('baseline receipt must contain exactly one row per case')
+    trusted = {}
+    for row in rows:
+        if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                or not isinstance(row.get('text'), str) or not row['text'].strip()
+                or row.get('finish_reason') not in ('stop', 'length')):
+            raise ValueError('baseline rows need id, nonempty text, and finish_reason')
+        if row['id'] in trusted:
+            raise ValueError('baseline receipt case ids must be unique')
+        usage = row.get('usage', row)
+        if not isinstance(usage, dict):
+            raise ValueError('baseline usage must be an object')
+        for key in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+            if key in usage and (type(usage[key]) is not int or usage[key] < 0):
+                raise ValueError('baseline token counts must be nonnegative integers')
+        trusted[row['id']] = row
+    if set(trusted) != {case['id'] for case in cases}:
+        raise ValueError('baseline receipt case ids differ from requested cases')
+    return trusted
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--endpoint', required=True)
@@ -135,9 +166,11 @@ def main():
         parser.error('case ids must be unique')
     trusted = None
     if args.baseline_receipt:
-        trusted = {row['id']: row for row in json.loads(args.baseline_receipt.read_text())['baseline_cases']}
-        if any(case['id'] not in trusted for case in cases):
-            parser.error('baseline receipt must cover every case id')
+        try:
+            trusted = validate_trusted_receipt(
+                json.loads(args.baseline_receipt.read_text()), args.model, cases)
+        except (KeyError, TypeError, ValueError) as exc:
+            parser.error(str(exc))
     args.output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     end = started + args.deadline

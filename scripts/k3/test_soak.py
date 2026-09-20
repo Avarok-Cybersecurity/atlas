@@ -66,6 +66,21 @@ class SoakTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             soak.match(actual, trusted)
 
+    def test_trusted_baseline_is_bound_to_model_and_exact_cases(self):
+        cases = [{'id': 'one', 'prompt': 'hi', 'max_tokens': 1}]
+        receipt = {'schema': 1, 'model': 'tiny', 'cases': cases,
+                   'baseline_cases': [{'id': 'one', 'text': 'hello',
+                                       'finish_reason': 'stop'}]}
+        self.assertEqual(soak.validate_trusted_receipt(receipt, 'tiny', cases)['one']['text'],
+                         'hello')
+        mutations = [dict(receipt, model='different-checkpoint'),
+                     dict(receipt, cases=[dict(cases[0], prompt='different')]),
+                     dict(receipt, cases=[dict(cases[0], max_tokens=2)])]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(ValueError):
+                    soak.validate_trusted_receipt(mutation, 'tiny', cases)
+
     def test_trickle_deadline_and_cancel_close(self):
         disconnected = {'cancel': threading.Event(), 'timeout': threading.Event()}
         class Handler(BaseHTTPRequestHandler):
@@ -139,7 +154,12 @@ class SoakTests(unittest.TestCase):
                 self.assertEqual(subprocess.run(command, capture_output=True).returncode, 1)
                 self.assertEqual((output / 'receipts.jsonl').read_text(), saved)
                 trusted = root / 'trusted.json'
-                trusted.write_text(json.dumps({'baseline_cases': [{'id': 'one', 'text': 'wrong', 'finish_reason': 'length'}]}))
+                trusted.write_text(json.dumps({
+                    'schema': 1, 'model': 'tiny',
+                    'cases': [{'id': 'one', 'prompt': 'hi', 'max_tokens': 1}],
+                    'baseline_cases': [{'id': 'one', 'text': 'wrong',
+                                        'finish_reason': 'length'}],
+                }))
                 command[-1] = str(root / 'bad')
                 completed = subprocess.run(command + ['--baseline-receipt', str(trusted)], capture_output=True, timeout=12)
                 self.assertEqual(completed.returncode, 1)
