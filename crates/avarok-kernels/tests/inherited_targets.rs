@@ -250,13 +250,24 @@ fn model_dirs(hw: &str) -> Vec<String> {
     names
 }
 
+// B200 K3 owns its model kernels; the inherited P0 mirrors remain unchanged.
+// Its source/quant contract is checked in b200_kimi_target.rs.
+fn declared_models(t: &inherited::Inherited) -> Vec<&str> {
+    let mut models = t.models.to_vec();
+    if t.hw == "b200" {
+        models.push("kimi-k3");
+        models.sort_unstable();
+    }
+    models
+}
+
 /// ORACLE: the model lists in [`INHERITED`], the campaign's declared set. A wildcard build
 /// (`AVAROK_TARGET_MODEL=*`) compiles exactly the directories that carry a
 /// MODEL.toml, so this set IS what an image for that hardware would serve.
 #[test]
 fn the_p0_model_targets_are_the_ones_declared() {
     for t in INHERITED {
-        assert_eq!(model_dirs(t.hw), t.models, "kernels/{}", t.hw);
+        assert_eq!(model_dirs(t.hw), declared_models(t), "kernels/{}", t.hw);
     }
 }
 
@@ -400,7 +411,7 @@ fn a_wildcard_build_resolves_declared_targets_at_the_declared_arch() {
     for t in INHERITED {
         let targets = resolved_targets(t.hw, "nvfp4");
         let names: Vec<&str> = targets.iter().map(|(m, ..)| m.as_str()).collect();
-        assert_eq!(names, t.models, "kernels/{}", t.hw);
+        assert_eq!(names, declared_models(t), "kernels/{}", t.hw);
         for (model, quant, arch, kernel_dir) in &targets {
             assert_eq!(arch, t.arch, "{}/{model}", t.hw);
             assert_eq!(quant, "nvfp4", "{}/{model}", t.hw);
