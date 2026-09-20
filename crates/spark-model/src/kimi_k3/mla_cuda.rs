@@ -486,10 +486,9 @@ mod tests {
     #[test]
     fn failed_second_buffer_allocation_frees_k() {
         let gpu = MockGpuBackend::new();
-        let cfg = MlaConfig::twin_0_40b();
-        let k_row = cfg.heads * cfg.qk_head_dim();
-        gpu.set_max_allocation_bytes(k_row * 4);
-        assert!(MlaDeviceKv::alloc(&gpu, 1, k_row, cfg.heads * cfg.v_head_dim).is_err());
+        // K fits the cap; V is larger so the second alloc fails.
+        gpu.set_max_allocation_bytes(8 * 4);
+        assert!(MlaDeviceKv::alloc(&gpu, 1, 8, 16).is_err());
         assert_eq!(gpu.alloc_count(), 0);
     }
 }
