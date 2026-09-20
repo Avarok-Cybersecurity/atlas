@@ -481,3 +481,7 @@ The phase 3 draft landed: `kquant_mmvq_q2_k_pair_w` runs both Q2_K projections o
 ### Phase 6 closing line
 
 ae9a1dea7 -> df5ffcb4f: MinHeap 20.49 -> 21.54 (best 22.02; 22.26 in the split-2 run), Volvo 22.93 -> 24.15 (best 24.17), every text byte-identical (fourteen standards tonight, 6/6 each once M1 was right); nsys of a warm 60-token token (`ds41_nsys_decode_M4b`): GPU kernel time 42.3 -> 41.9 ms, launches 1,905 -> 1,825, syncs 186, D2H 49; sparse attention 2.10 -> 1.50 ms, the pair kernel 0.81 ms for 40 launches where `q2_k_w` lost 80 (276 -> 196). Against the 09-17 standard of 10.6 / 10.9: +103% / +122%. The segment graphs are correct and off by default; the remaining one-Spark step is the bytes the kernels read (experts 15.0 ms at 205 GB/s, attention projections 12.1, head 2.8) and the B200 carries the same kernels with 8 TB/s under them.
+
+## Phase 7 (PR #1185): the arena edge and the quantisation launches
+
+In `DS41_DECODE_RETUNE_2026-09_part2.md` (this file is at its cap): the arena edge measured at 100 / 100.5 / 101 GiB (recipe stays at 100), the quantisation launches folded (1,825 -> 1,666 a token, byte-identical, level on GB10).
