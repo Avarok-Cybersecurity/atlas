@@ -279,11 +279,11 @@ fn latent_moe_unpacked_does_not_lookup_gemm() {
 }
 
 #[test]
-fn latent_moe_packed_batches_gate_up_before_down_gemm() {
+fn latent_moe_packed_launches_three_e8m0_gemms() {
     let model = K3CpuModel::synthetic_tiny();
     assert_eq!(model.layers[1].spec.mlp, MlpKind::LatentMoe);
     let (n, lookups) = run_layers_inner(&[(0, false, false), (1, false, false)], Some(1));
-    assert_eq!(n, 2, "batched w1/w3 followed by w2 grouped GEMM");
+    assert_eq!(n, 3, "w1, w3, and w2 each launch grouped GEMM");
     assert_eq!(
         lookups,
         vec![(MOE_MODULE.to_string(), E8M0_ENTRY.to_string())]

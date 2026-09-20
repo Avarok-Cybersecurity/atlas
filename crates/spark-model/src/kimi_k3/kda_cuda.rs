@@ -6,7 +6,7 @@
 //! CPU oracle: [`avarok_core::kimi_k3::kda_decode_token`]. BoundLayer serve
 //! LinearAttention default is this launch (`K3_CUDA_KDA=0` keeps CPU).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use avarok_core::kimi_k3::{KDA_L2_EPS, KdaConfig, KdaState};
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
@@ -58,6 +58,8 @@ fn up(gpu: &dyn GpuBackend, v: &[f32], hold: &mut Vec<DevicePtr>) -> Result<Devi
 pub struct KdaDeviceState {
     pub conv: DevicePtr,
     pub recurrent: DevicePtr,
+    conv_elems: usize,
+    recurrent_elems: usize,
 }
 
 impl KdaDeviceState {
@@ -80,16 +82,30 @@ impl KdaDeviceState {
             let _ = gpu.free(recurrent);
             return Err(error);
         }
-        Ok(Self { conv, recurrent })
+        Ok(Self {
+            conv,
+            recurrent,
+            conv_elems: host.conv.len(),
+            recurrent_elems: host.recurrent.len(),
+        })
     }
 
     pub fn download(&self, gpu: &dyn GpuBackend, host: &mut KdaState) -> Result<()> {
+        self.validate_geometry(host.conv.len(), host.recurrent.len())?;
         let mut conv_b = vec![0u8; host.conv.len() * 4];
         let mut rec_b = vec![0u8; host.recurrent.len() * 4];
         gpu.copy_d2h(self.conv, &mut conv_b)?;
         gpu.copy_d2h(self.recurrent, &mut rec_b)?;
         host.conv = bytes_f32(&conv_b);
         host.recurrent = bytes_f32(&rec_b);
+        Ok(())
+    }
+
+    fn validate_geometry(&self, conv_elems: usize, recurrent_elems: usize) -> Result<()> {
+        ensure!(
+            self.conv_elems == conv_elems && self.recurrent_elems == recurrent_elems,
+            "k3 kda: resident state rank"
+        );
         Ok(())
     }
 
@@ -183,6 +199,9 @@ fn launch_k3_kda_decode_inner(
     }
     if k == 0 || d == 0 {
         bail!("k3 kda: D and conv_kernel must be > 0");
+    }
+    if let Some(state) = device {
+        state.validate_geometry(cfg.conv_elems(), cfg.recurrent_elems())?;
     }
 
     let mut hold = Vec::new();

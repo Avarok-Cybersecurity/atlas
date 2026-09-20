@@ -6,7 +6,7 @@
 
 use std::any::Any;
 
-use anyhow::Result;
+use anyhow::{Result, bail, ensure};
 use avarok_core::kimi_k3::LayerCache;
 use spark_runtime::gpu::GpuBackend;
 
@@ -49,6 +49,15 @@ impl K3CpuFallbackState {
 
     pub fn restore(&mut self, gpu: &dyn GpuBackend, bytes: &[u8], stream: u64) -> Result<()> {
         let cache = LayerCache::from_bytes(bytes)?;
+        match (&self.cache, &cache) {
+            (LayerCache::Kda(current), LayerCache::Kda(restored)) => ensure!(
+                current.conv.len() == restored.conv.len()
+                    && current.recurrent.len() == restored.recurrent.len(),
+                "K3 restore: KDA state geometry mismatch"
+            ),
+            (LayerCache::Mla(_), LayerCache::Mla(_)) => {}
+            _ => bail!("K3 restore: mixer variant mismatch"),
+        }
         gpu.synchronize(stream)?;
         self.release(gpu)?;
         self.cache = cache;
