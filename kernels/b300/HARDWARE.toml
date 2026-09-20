@@ -1,0 +1,36 @@
+# B300 bring-up target. No B300 serving/performance receipt yet.
+# CC: https://developer.nvidia.com/cuda/gpus
+# SM count: NVIDIA "Boost GPU Memory Performance with No Code Changes Using
+# NVIDIA CUDA MPS" (full B200/B300 devices have 148 SMs).
+# Memory: https://docs.nvidia.com/dgx/dgxb300-user-guide/introduction-to-dgxb300.html
+[hardware]
+name = "b300"
+vendor = "nvidia"
+arch = "sm_103a"
+compute_capability = "10.3"
+sm_count = 148
+memory_bandwidth_gbps = 8000
+memory_type = "HBM3e"
+memory_gb = 288
+
+# Datacentre Blackwell cannot use GB10 warp-level block-scaled MMA.
+# Keep the W4A16 E8M0 baseline; native blockscale needs a tcgen05 port.
+[build]
+extra_nvcc_flags = ["-DAVAROK_NO_WARP_BLOCKSCALE_MMA"]
+
+# Explicit conservative defaults; no Hopper tuning is inherited.
+[defaults]
+lm_head_batchm_max = 8
+ssm_batched_recurrent = false
+gdn_prefill_tc = false
+ssm_ba_gates_hopper = false
+fp8_act_quant_hopper = false
+decode_split_silu = true
+attn_decode_splitk = "legacy"
+ffn_m16_tc = false
+attn_m16_tc = false
+lm_head_m16_tc = false
+attn_ncol_gemv = false
+ffn_gateup_fused = false
+w8a8_prefill_max_m_widening = 4294967295
+w8a8_prefill_max_m_narrowing = 4294967295

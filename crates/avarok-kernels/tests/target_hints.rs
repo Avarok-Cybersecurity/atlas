@@ -127,7 +127,7 @@ fn every_target_hint_names_a_hardware_set_that_exists() {
     // The CCs the match arms answer for. Listed rather than enumerated
     // because the function is a `match` over a sparse space, not a table —
     // and a CC listed here that stops being hinted fails the test above.
-    for cc in [(9, 0), (10, 0), (12, 1)] {
+    for cc in [(9, 0), (10, 0), (10, 3), (12, 1)] {
         let hw = avarok_core::arch::target_hint(cc)
             .unwrap_or_else(|| panic!("target_hint({cc:?}) answered None"));
         assert!(
