@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-19T23:09:39Z",
+  "generated_utc": "2026-09-20T02:27:42Z",
   "subjects": {
     "qwen38-27b": {
       "manifest": "bench/ladder38/published.json",
@@ -676,7 +676,7 @@
               64,
               128
             ],
-            "reason": "vLLM + MTP at C >= 32 on GB10 has wedged the box hard enough to need a physical powercycle three times in one day, at the safe util 0.85 and with --max-num-seqs capped; these rungs were deliberately not run. They have no value here: not zero, not interpolated, and the generator refuses a raw file that contains them."
+            "reason": "The ladder stops at C=16 because of memory, not because of time. GB10 carries 121.7 GB of UNIFIED memory shared between CPU and GPU -- there is no separate VRAM to fall back on. At C >= 32 the vLLM + MTP working set (per-sequence KV cache plus MTP's speculative draft state) outgrows what that shared pool can carry alongside the host, and because the pool is shared, exhausting it takes the whole machine down rather than failing a single allocation: three physical powercycles in one day, at the safe util 0.85 and with --max-num-seqs already capped. We did not isolate it further because every attempt costs the box. These rungs were deliberately not run. They have no value here: not zero, not interpolated, and the generator refuses a raw file that contains them."
           },
           "source_note": "One-shot: measured once, on 2026-09-19 on dgx2, and never re-run. Every rung comes from the single raw file vllm_moe_c1_16.json (sha256 7788d19a16bb32466a53f72fc13c70c8f9352fb888b758f786a54c1a6b7ad648, byte-identical to dgx2:/home/claude/ladder-moe-baseline/). Two earlier attempts the same evening produced no numbers and are not here: one died in DeepGEMM at weight load (kernel_override), one ran the ladder against a serve whose harness preflight had failed (no first token; TypeError on ttft_p50_ms). Zero request errors at every rung.",
           "rungs": [
