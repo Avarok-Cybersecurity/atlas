@@ -55,6 +55,7 @@ impl MoeV41 {
                     .kernel(KQUANT_MODULE, &format!("kquant_mmvq_q3_k_experts_w{sfx}"))?,
                 experts_warps,
                 swiglu: gpu.kernel(MODULE, "moe_v41_swiglu")?,
+                swiglu_q8: gpu.kernel(KQUANT_MODULE, "kquant_swiglu_q8_1_rows_bf16")?,
                 accumulate: gpu.kernel(MODULE, "moe_v41_accumulate")?,
                 finish: gpu.kernel(MODULE, "moe_v41_finish")?,
                 gather: gpu.kernel(MODULE, "moe_v41_gather_rows")?,
@@ -101,7 +102,6 @@ impl MoeV41 {
             sd: alloc(m * cfg.dim * 2)?,
             acc: alloc(m * cfg.dim * 4)?,
             out: alloc(m * cfg.dim * 2)?,
-            sa_q8: alloc(kquant_q8_1_rows_bytes(1, cfg.dim as u32))?,
             sh_q8: alloc(kquant_q8_1_rows_bytes(1, cfg.inter as u32))?,
             side: gpu.create_stream()?,
             ev_in: gpu.create_event()?,
@@ -135,7 +135,6 @@ impl MoeV41 {
             self.sd,
             self.acc,
             self.out,
-            self.sa_q8,
             self.sh_q8,
         ] {
             gpu.free(p)?;

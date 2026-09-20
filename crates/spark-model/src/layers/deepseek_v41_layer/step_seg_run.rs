@@ -97,6 +97,8 @@ impl DeepSeekV41Layer {
         let rt = &self.rt;
         let attn_out = rt.attn.lock().unwrap().out_ptr();
         self.seg_ffn_in(gpu, moe, attn_out, streams, hidden, normed, stream)?;
+        // the token's q8_1 rows once, read by the side and the main stream
+        moe.ffn_input_q8_m1(gpu, normed, stream)?;
         gpu.record_event(ev_fork, stream)?;
         gpu.stream_wait_event(side, ev_fork)?;
         moe.shared_expert_on(gpu, &self.moe_w, normed, side)?;

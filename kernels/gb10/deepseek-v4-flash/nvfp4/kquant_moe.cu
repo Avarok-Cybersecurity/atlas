@@ -113,6 +113,42 @@ extern "C" __global__ void kquant_q8_1_rows_bf16(
     if (lane == 0) y[gw].ds = make_half2(d, sum);
 }
 
+// moe_v41_swiglu and kquant_q8_1_rows_bf16 in one launch: h[i] = bf16(swiglu(gate, up) * w)
+// (the swiglu kernel's expression, its bf16 rounding), then the q8_1 block of the
+// 32 bf16 values just written, with the same amax / sum reductions and the same
+// rounding as the rows kernel. One warp per 32-value block; inter % 32 == 0.
+// Byte-identical to the two launches by construction (phase 7 A2).
+extern "C" __global__ void kquant_swiglu_q8_1_rows_bf16(
+        const __nv_bfloat16* __restrict__ gate, const __nv_bfloat16* __restrict__ up,
+        const float* __restrict__ w, __nv_bfloat16* __restrict__ h, void* __restrict__ vy,
+        unsigned int rows, unsigned int inter, float limit) {
+    const unsigned int nblk = inter / QK8_1;
+    const unsigned int gw   = (blockIdx.x * blockDim.x + threadIdx.x) / 32u;
+    const unsigned int lane = threadIdx.x % 32u;
+    if (gw >= rows * nblk) return;
+    const unsigned int i = gw * QK8_1 + lane;
+    float g = __bfloat162float(gate[i]);
+    float u = __bfloat162float(up[i]);
+    if (limit > 0.0f) {
+        u = fminf(fmaxf(u, -limit), limit);
+        g = fminf(g, limit);
+    }
+    float v = (g / (1.0f + expf(-g))) * u;
+    if (w != nullptr) v *= w[i / inter];
+    const __nv_bfloat16 hb = __float2bfloat16(v);
+    h[i] = hb;
+    const float xi = __bfloat162float(hb);
+    float amax = fabsf(xi);
+    float sum  = xi;
+    amax = warp_reduce_max<QK8_1>(amax);
+    sum  = warp_reduce_sum<QK8_1>(sum);
+    const float d = amax / 127.0f;
+    const int8_t q = amax == 0.0f ? 0 : (int8_t)roundf(xi / d);
+    block_q8_1* y = (block_q8_1*)vy;
+    y[gw].qs[lane] = q;
+    if (lane == 0) y[gw].ds = make_half2(d, sum);
+}
+
 #define KQ_NWARPS 4
 #define KQ_MAX_M  8
 

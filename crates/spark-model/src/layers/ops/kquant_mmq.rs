@@ -97,6 +97,43 @@ pub fn kquant_q8_1_rows(
         .launch(stream)
 }
 
+/// `moe_v41_swiglu` and [`kquant_q8_1_rows`] in one launch
+/// (`kquant_swiglu_q8_1_rows_bf16`): `h[rows, inter] = bf16(swiglu(gate, up) *
+/// w[row])`, then the q8_1 blocks of those bf16 rows; byte-identical to the two
+/// launches. `w` may be null. `inter % 32 == 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_swiglu_q8_1_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    w: DevicePtr,
+    h_bf16: DevicePtr,
+    out_q8: DevicePtr,
+    rows: u32,
+    inter: u32,
+    limit: f32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        inter.is_multiple_of(32),
+        "kquant_swiglu_q8_1_rows: inter={inter} is not a multiple of 32"
+    );
+    let warps = rows * (inter / 32);
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(warps * 32, 128), 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(w)
+        .arg_ptr(h_bf16)
+        .arg_ptr(out_q8)
+        .arg_u32(rows)
+        .arg_u32(inter)
+        .arg_f32(limit)
+        .launch(stream)
+}
+
 /// Decode GEMV on raw blocks: `out[m][n] = sum_k xq8[m][k] * W[n][k]`, `m <= 8`
 /// (`kquant_mmvq_q2_k` / `kquant_mmvq_q3_k`). `w_blocks` is `[n][k/256]` raw
 /// super-blocks; `y_q8` is the `block_q8_1 [m][k/32]` buffer; `out_bf16` is `[m][n]`.

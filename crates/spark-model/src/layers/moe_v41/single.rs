@@ -12,7 +12,9 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Stage, MoeV41Timing, RouterWeights, prefetch_k};
-use crate::layers::ops::{kquant_mmvq_experts_wn, kquant_q8_1_rows, kquant_q8_1_rows_bytes};
+use crate::layers::ops::{
+    kquant_mmvq_experts_wn, kquant_q8_1_rows, kquant_q8_1_rows_bytes, kquant_swiglu_q8_1_rows,
+};
 
 impl MoeV41 {
     /// Group the `(token, k)` assignments by expert (ascending expert id):
@@ -73,20 +75,38 @@ impl MoeV41 {
         Ok(ne)
     }
 
+    /// The token's q8_1 rows into `a_q8`, once for the routed experts and the
+    /// shared expert's two input projections (`x_pre` at the readers).
+    pub fn ffn_input_q8_m1(&self, gpu: &dyn GpuBackend, x: DevicePtr, stream: u64) -> Result<()> {
+        kquant_q8_1_rows(
+            gpu,
+            self.k.q8_rows,
+            x,
+            self.a_q8,
+            1,
+            self.cfg.dim as u32,
+            stream,
+        )
+    }
+
     /// The single-token routed experts from the pointer table: the token
-    /// quantised once, each projection one launch over the `ne` experts, the
-    /// routing weight folded in at the SwiGLU, the rows summed into `acc` in
-    /// plan order. Device work only.
+    /// quantised once (already in `a_q8` when `x_pre`), each projection one
+    /// launch over the `ne` experts, the routing weight folded in at the
+    /// SwiGLU (which writes `h` and its q8_1 rows in one launch), the rows
+    /// summed into `acc` in plan order. Device work only.
     pub(super) fn routed_m1(
         &self,
         gpu: &dyn GpuBackend,
         x: DevicePtr,
         ne: usize,
+        x_pre: bool,
         stream: u64,
     ) -> Result<()> {
         let c = &self.cfg;
         let table = |which: usize| DevicePtr(self.ptrs_dev.0 + (which * ne * 8) as u64);
-        kquant_q8_1_rows(gpu, self.k.q8_rows, x, self.a_q8, 1, c.dim as u32, stream)?;
+        if !x_pre {
+            self.ffn_input_q8_m1(gpu, x, stream)?;
+        }
         // gate and up in ONE 2 * ne expert batch: the pointer table holds the
         // ne gate pointers then the ne up pointers contiguously, every entry
         // reads the same q8_1 token row, and expert e writes row e of
@@ -107,22 +127,17 @@ impl MoeV41 {
             self.k.experts_warps,
             stream,
         )?;
-        self.launch_n(gpu, self.k.swiglu, ne * c.inter, stream, |l| {
-            l.arg_ptr(self.gate_out)
-                .arg_ptr(up_view)
-                .arg_ptr(self.weight_dev)
-                .arg_ptr(self.h)
-                .arg_u32(ne as u32)
-                .arg_u32(c.inter as u32)
-                .arg_f32(c.swiglu_limit)
-        })?;
-        kquant_q8_1_rows(
+        kquant_swiglu_q8_1_rows(
             gpu,
-            self.k.q8_rows,
+            self.k.swiglu_q8,
+            self.gate_out,
+            up_view,
+            self.weight_dev,
             self.h,
             self.h_q8,
             ne as u32,
             c.inter as u32,
+            c.swiglu_limit,
             stream,
         )?;
         kquant_mmvq_experts_wn(
@@ -224,14 +239,15 @@ impl MoeV41 {
             c.topk
         );
         gpu.memset_async(self.acc, 0, c.dim * 4, stream)?;
-        self.routed_m1(gpu, x, ne, stream)?;
-        self.shared_expert(gpu, w, x, 1, stream)?;
+        self.routed_m1(gpu, x, ne, false, stream)?;
+        self.shared_expert(gpu, w, x, 1, true, stream)?;
         Ok(self.out)
     }
 
-    /// The single-token shared expert up to `sd` on `side` (its own q8_1
-    /// scratch, as the eager step's side stream uses): the fork half of
-    /// [`Self::compute_m1_joined`]. Device work only.
+    /// The single-token shared expert up to `sd` on `side`, reading the
+    /// token's q8_1 rows that [`Self::ffn_input_q8_m1`] wrote on the forking
+    /// stream (its own `h` scratch, as the eager step's side stream uses):
+    /// the fork half of [`Self::compute_m1_joined`]. Device work only.
     pub fn shared_expert_on(
         &self,
         gpu: &dyn GpuBackend,
@@ -239,7 +255,7 @@ impl MoeV41 {
         x: DevicePtr,
         side: u64,
     ) -> Result<()> {
-        self.shared_expert_body(gpu, w, x, 1, self.sa_q8, self.sh_q8, side)
+        self.shared_expert_body(gpu, w, x, 1, self.a_q8, self.sh_q8, true, side)
     }
 
     /// [`Self::compute_m1`] with the shared expert forked onto a side stream
@@ -261,7 +277,7 @@ impl MoeV41 {
             c.topk
         );
         gpu.memset_async(self.acc, 0, c.dim * 4, stream)?;
-        self.routed_m1(gpu, x, ne, stream)?;
+        self.routed_m1(gpu, x, ne, true, stream)?;
         gpu.stream_wait_event(stream, join)?;
         self.shared_expert_tail(gpu, 1, stream)?;
         Ok(self.out)

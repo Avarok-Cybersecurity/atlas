@@ -11,10 +11,9 @@ use spark_runtime::weights::expert_stream::{ExpertLru, ExpertSource};
 
 use super::{MoeV41, MoeV41LayerWeights, MoeV41Timing, RouterWeights, prefetch_k, shared_side};
 use crate::layers::ops::{
-    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, ResidentMat, kquant_mmq_gemm,
-    kquant_mmvq_w, kquant_q8_1_rows,
+    self, Q2K_MMQ_SMEM, Q3K_MMQ_SMEM, Q8_1_BLOCK_BYTES, kquant_mmq_gemm, kquant_mmvq_w,
+    kquant_q8_1_rows,
 };
-use crate::weight_map::DenseWeight;
 
 /// `ATLAS_DS41_PREFILL_GEMV=1`, read once: prefill groups of more than eight
 /// rows run through the decode GEMV arm in chunks of eight (see `forward`).
@@ -71,6 +70,11 @@ impl MoeV41 {
         // stream from here, under the router launch, the read-back and the
         // host's selection, and joins the main stream before the tail.
         let side = m1_arm && shared_side();
+        // the token's q8_1 rows once, for the routed experts and both shared
+        // projections (phase 7 A2; the side stream reads them after `ev_in`)
+        if m1_arm {
+            self.ffn_input_q8_m1(gpu, x, stream)?;
+        }
         if side {
             gpu.record_event(self.ev_in, stream)?;
         }
@@ -79,7 +83,7 @@ impl MoeV41 {
         self.route_launch(gpu, w, x, m, stream)?;
         if side {
             gpu.stream_wait_event(self.side, self.ev_in)?;
-            self.shared_expert_body(gpu, w, x, 1, self.sa_q8, self.sh_q8, self.side)?;
+            self.shared_expert_body(gpu, w, x, 1, self.a_q8, self.sh_q8, true, self.side)?;
             gpu.record_event(self.ev_out, self.side)?;
         }
         // ATLAS_DS41_DEVICE_ROUTE=1: the whole selection, the plan and the
@@ -129,7 +133,7 @@ impl MoeV41 {
             } else {
                 self.upload_expert_table(gpu, &plan, &slots, stream)?
             };
-            self.routed_m1(gpu, x, ne, stream)?;
+            self.routed_m1(gpu, x, ne, true, stream)?;
         }
         // ATLAS_DS41_PREFILL_GEMV=1: every group through the decode GEMV arm in
         // chunks of eight rows, so prefill quantises activations exactly as the
@@ -345,7 +349,7 @@ impl MoeV41 {
             gpu.stream_wait_event(stream, self.ev_out)?;
             self.shared_expert_tail(gpu, m, stream)?;
         } else {
-            self.shared_expert(gpu, w, x, m, stream)?;
+            self.shared_expert(gpu, w, x, m, m1_arm, stream)?;
         }
         if self.timing_sync {
             // ATLAS_DS41_DIAG=1: make compute_ms the GPU time, not the launch time
@@ -370,9 +374,10 @@ impl MoeV41 {
         w: &MoeV41LayerWeights,
         x: DevicePtr,
         m: usize,
+        x_pre: bool,
         stream: u64,
     ) -> Result<()> {
-        self.shared_expert_body(gpu, w, x, m, self.a_q8, self.h_q8, stream)?;
+        self.shared_expert_body(gpu, w, x, m, self.a_q8, self.h_q8, x_pre, stream)?;
         self.shared_expert_tail(gpu, m, stream)
     }
 
@@ -394,107 +399,5 @@ impl MoeV41 {
                 .arg_ptr(self.out)
                 .arg_u32((m * c.dim) as u32)
         })
-    }
-
-    /// The shared expert up to its output `sd` (`[m, dim]` bf16), with the
-    /// q8_1 scratch buffers given (the side stream has its own), no `acc`.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn shared_expert_body(
-        &self,
-        gpu: &dyn GpuBackend,
-        w: &MoeV41LayerWeights,
-        x: DevicePtr,
-        m: usize,
-        a_q8: DevicePtr,
-        h_q8: DevicePtr,
-        stream: u64,
-    ) -> Result<()> {
-        let c = &self.cfg;
-        // shared expert: bf16 (GEMV / tiled GEMM) or the GGUF's K-quant
-        // blocks on the routed experts' kernels (GEMV at m <= 8, MMQ above)
-        let kq = |a: DevicePtr,
-                  a_q8: DevicePtr,
-                  wt: ResidentMat,
-                  out: DevicePtr,
-                  n: usize,
-                  kdim: usize|
-         -> Result<()> {
-            let (mu, nu, ku) = (m as u32, n as u32, kdim as u32);
-            match wt {
-                ResidentMat::Bf16(p) if m == 1 => ops::dense_gemv(
-                    gpu,
-                    self.k.gemv,
-                    a,
-                    &DenseWeight { weight: p },
-                    out,
-                    nu,
-                    ku,
-                    stream,
-                ),
-                ResidentMat::Bf16(p) => ops::dense_gemm(
-                    gpu,
-                    self.k.gemm,
-                    a,
-                    &DenseWeight { weight: p },
-                    out,
-                    mu,
-                    nu,
-                    ku,
-                    stream,
-                ),
-                ResidentMat::Q2K(b) if m <= 8 => {
-                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
-                    kquant_mmvq_w(gpu, self.k.mmvq_q2k, b, a_q8, out, nu, ku, mu, stream)
-                }
-                ResidentMat::Q3K(b) if m <= 8 => {
-                    kquant_q8_1_rows(gpu, self.k.q8_rows, a, a_q8, mu, ku, stream)?;
-                    kquant_mmvq_w(gpu, self.k.mmvq_q3k, b, a_q8, out, nu, ku, mu, stream)
-                }
-                ResidentMat::Q2K(b) => {
-                    ops::quantize_act_q8_1(gpu, self.k.quant_d2s6, a, a_q8, mu, ku, stream)?;
-                    kquant_mmq_gemm(
-                        gpu,
-                        self.k.mmq_q2k_nc,
-                        self.k.mmq_q2k_wc,
-                        a_q8,
-                        b,
-                        out,
-                        mu,
-                        nu,
-                        ku,
-                        Q2K_MMQ_SMEM,
-                        stream,
-                    )
-                }
-                ResidentMat::Q3K(b) => {
-                    ops::quantize_act_q8_1(gpu, self.k.quant_d4, a, a_q8, mu, ku, stream)?;
-                    kquant_mmq_gemm(
-                        gpu,
-                        self.k.mmq_q3k_nc,
-                        self.k.mmq_q3k_wc,
-                        a_q8,
-                        b,
-                        out,
-                        mu,
-                        nu,
-                        ku,
-                        Q3K_MMQ_SMEM,
-                        stream,
-                    )
-                }
-            }
-        };
-        kq(x, a_q8, w.shared_w1, self.sg, c.inter, c.dim)?;
-        kq(x, a_q8, w.shared_w3, self.su, c.inter, c.dim)?;
-        self.launch_n(gpu, self.k.swiglu, m * c.inter, stream, |l| {
-            l.arg_ptr(self.sg)
-                .arg_ptr(self.su)
-                .arg_ptr(DevicePtr(0))
-                .arg_ptr(self.sh)
-                .arg_u32(m as u32)
-                .arg_u32(c.inter as u32)
-                .arg_f32(c.swiglu_limit)
-        })?;
-        kq(self.sh, h_q8, w.shared_w2, self.sd, c.dim, c.inter)
     }
 }

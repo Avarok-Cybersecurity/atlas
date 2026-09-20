@@ -33,6 +33,7 @@ mod forward;
 pub(crate) const SLOT_TABLE_LAYERS: usize = 64;
 mod init;
 mod route;
+mod shared;
 mod single;
 
 const MODULE: &str = "moe_v41";
@@ -110,6 +111,8 @@ struct Kernels {
     /// rows (warps) a block of the expert batch, 2 / 4 / 8 (ATLAS_DS41_EXPERT_WARPS)
     experts_warps: u32,
     swiglu: KernelHandle,
+    /// the swiglu and the q8_1 rows of its output in one launch (decode)
+    swiglu_q8: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,
     gather: KernelHandle,
@@ -190,10 +193,10 @@ pub struct MoeV41 {
     sd: DevicePtr,
     acc: DevicePtr,
     out: DevicePtr,
-    /// The shared expert's own q8_1 scratch (`[1, dim]`, `[1, inter]`) for
-    /// the side stream, so it never shares `a_q8` / `h_q8` with the routed
-    /// experts running at the same time.
-    sa_q8: DevicePtr,
+    /// The shared expert's own q8_1 scratch for its SwiGLU output (`[1,
+    /// inter]`) on the side stream, so it never shares `h_q8` with the routed
+    /// experts running at the same time; the token's input rows (`a_q8`) are
+    /// written once on the forking stream and read by both.
     sh_q8: DevicePtr,
     /// The side stream the single-token shared expert runs on, and the two
     /// events that fence it: `ev_in` (the input is ready, recorded on the
