@@ -17,7 +17,10 @@
 export const cleanSlug = (s) => s.replace(/\.html$/, '');
 
 export const SITE = 'https://blog.atlascybernetics.ai';
-export const MAIN_SITE = 'https://atlascybernetics.ai';
+// `VITE_MAIN_SITE=http://127.0.0.1:5173 bun run dev` points the links back at a
+// local copy of the main site, for demoing both apps from one machine. Unset,
+// which is every real build, they go to the live site.
+export const MAIN_SITE = (import.meta.env ?? {}).VITE_MAIN_SITE || 'https://atlascybernetics.ai';
 export const DOCS_SITE = 'https://docs.atlascybernetics.ai';
 export const githubUrl = 'https://github.com/Avarok-Cybersecurity/atlas';
 // Must match site/src/lib/data.js. An invite code is not derivable from
@@ -26,14 +29,17 @@ export const discordUrl = 'https://discord.gg/RQcGakU2jW';
 export const xUrl = 'https://x.com/AtlasInferenceX';
 
 export const blog = {
-  name: 'Atlas blog',
+  name: 'Avarok blog',
   kicker: 'blog.atlascybernetics.ai',
   title: 'Notes from the inference layer',
+  // The second line of the share card, static/og-image.png. Regenerate the card
+  // with `node scripts/media/og.mjs --blog` from site/ after changing either.
+  card: 'Kernel work, benchmarks, product notes.',
   lede:
     'Kernel work, measured benchmarks, and what it takes to run frontier models on hardware you own. ' +
     'Everything we publish is reproducible from a commit.',
   description:
-    'Engineering notes from the Atlas inference engine: CUDA kernels, quantisation, ' +
+    'Engineering notes from the Avarok inference engine: CUDA kernels, quantisation, ' +
     'speculative decoding, and benchmarks you can reproduce.'
 };
 
@@ -58,19 +64,19 @@ export const authors = {
   'thomas-braun': {
     name: 'Thomas Braun',
     initials: 'TB',
-    role: 'Founder, Atlas Cybersecurity',
-    bio: 'Works on the Atlas inference engine — kernels, scheduling, and the benchmarks that decide whether any of it was worth it.'
+    role: 'Founder, Avarok',
+    bio: 'Works on the Avarok inference engine — kernels, scheduling, and the benchmarks that decide whether any of it was worth it.'
   },
   'ronald-stesiak': {
     name: 'Ronald R. Stesiak',
     initials: 'RS',
-    role: 'Founding Engineer, Atlas',
-    bio: 'Tunes Atlas for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
+    role: 'Founding Engineer, Avarok',
+    bio: 'Tunes Avarok for speed on real hardware, from CUDA kernels to the speculative-decode layer. Holds the single-Spark records this blog reports.'
   },
   'alexi-derkatsch': {
     name: 'Alexi Derkatsch',
     initials: 'AD',
-    role: 'Systems Engineer, Atlas',
+    role: 'Systems Engineer, Avarok',
     bio: 'Works the information path between the engine and the firms that will run it.'
   }
 };
@@ -93,7 +99,7 @@ export const footerCols = [
     ]
   },
   {
-    heading: 'Atlas',
+    heading: 'Avarok',
     links: [
       { text: 'atlascybernetics.ai', href: MAIN_SITE },
       { text: 'Documentation', href: DOCS_SITE },

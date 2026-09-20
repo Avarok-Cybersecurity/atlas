@@ -20,14 +20,14 @@ export const brandStyle = Object.entries({
 
 export const legacySections = [
   { id: "proof", label: "Project milestones" },
-  { id: "news", label: "Atlas news" },
+  { id: "news", label: "Avarok news" },
   { id: "hardware", label: "Verified hardware" },
   { id: "community", label: "Community" },
   { id: "contribute", label: "Contribute" },
   { id: "roadmap", label: "Roadmap" },
   { id: "mission", label: "Mission" },
   { id: "faq", label: "Frequently asked questions" },
-  { id: "reach", label: "Contact Atlas" },
+  { id: "reach", label: "Contact Avarok" },
 ];
 
 export function legacyEngineDestination(hash, search) {

@@ -1,0 +1,123 @@
+{
+  "art-aisle": {
+    "alt": "A dark datacenter aisle with rows of racks receding to a vanishing point, status lights in green and cyan.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/deployment",
+      "/solutions/enterprise-datacenter"
+    ]
+  },
+  "art-desk-box": {
+    "alt": "A small desktop compute box on a dark desk with a lavender status light.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/pricing"
+    ]
+  },
+  "art-enclave": {
+    "alt": "A sealed server room behind a glass wall, lit in cyan, seen from a dark corridor.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/security"
+    ]
+  },
+  "art-finance": {
+    "alt": "A trading floor with rows of desks, each with three monitors showing charts, and people at work seen from behind.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/financial-services"
+    ]
+  },
+  "art-gov": {
+    "alt": "A military airfield from directly overhead, with rows of parked aircraft, helicopters and drones on a pale concrete apron.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/government-defense"
+    ]
+  },
+  "art-grid": {
+    "alt": "A grid of compute modules with points of light moving along the channels between them.",
+    "width": 1280,
+    "height": 720,
+    "pages": []
+  },
+  "art-health": {
+    "alt": "A bright hospital reception with staff at the desk, visitors waiting and clinicians talking.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/healthcare"
+    ]
+  },
+  "art-hyperscale": {
+    "alt": "A vast data hall with rack rows running to the horizon under cyan lit cable trays.",
+    "width": 1280,
+    "height": 576,
+    "pages": [
+      "/solutions/hyperscalers",
+      "/solutions/neoclouds"
+    ]
+  },
+  "art-legal": {
+    "alt": "A round conference table with a neat stack of folders in a high floor office, looking out over a city skyline on a clear day.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/legal"
+    ]
+  },
+  "art-power": {
+    "alt": "A datacenter switchgear room with copper busbars and a row of amber indicator lamps.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/platform/economics"
+    ]
+  },
+  "art-prisms": {
+    "alt": "Chevron shaped glass prisms refracting lavender, cyan, green and gold light.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/why-avarok"
+    ]
+  },
+  "art-research": {
+    "alt": "A bright open plan research office with shared desks, whiteboards of diagrams and people working at the far end.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/research",
+      "/labs"
+    ]
+  },
+  "art-smb-autoshop": {
+    "alt": "An independent auto repair shop with two cars on lifts, tool chests, and a mechanic talking with a customer.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
+    ]
+  },
+  "art-smb-library": {
+    "alt": "A public library reading room with bookshelves, long tables and a librarian's desk.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
+    ]
+  },
+  "art-smb-office": {
+    "alt": "A small company office of cubicles, with a glass meeting room and a printer in the corner.",
+    "width": 1280,
+    "height": 720,
+    "pages": [
+      "/solutions/smb-edge"
+    ]
+  }
+}

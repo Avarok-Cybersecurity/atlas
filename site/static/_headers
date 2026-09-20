@@ -37,6 +37,80 @@
   Cache-Control: public, max-age=300
 /diligence.html
   Cache-Control: public, max-age=300
+
+# The marketing pages, and /engine, which had no rule. Top level routes are
+# named in both spellings, like the three above. A section with child pages
+# also gets a splat: only documents live under those paths, so the splat
+# cannot meet an asset rule further down and concatenate with it, which is the
+# hazard the note at the top of this file describes. Pages allows 100 rules
+# here. Naming every page twice would spend most of them and the next industry
+# page would not fit. src/lib/content/headers.test.js fails when a page in the
+# registry has no rule, when any path is matched by two Cache-Control rules,
+# or when the file outgrows the limit.
+/engine
+  Cache-Control: public, max-age=300
+/engine.html
+  Cache-Control: public, max-age=300
+/why-avarok
+  Cache-Control: public, max-age=300
+/why-avarok.html
+  Cache-Control: public, max-age=300
+/benchmarks
+  Cache-Control: public, max-age=300
+/benchmarks.html
+  Cache-Control: public, max-age=300
+/pricing
+  Cache-Control: public, max-age=300
+/pricing.html
+  Cache-Control: public, max-age=300
+/demo
+  Cache-Control: public, max-age=300
+/demo.html
+  Cache-Control: public, max-age=300
+/waitlist
+  Cache-Control: public, max-age=300
+/waitlist.html
+  Cache-Control: public, max-age=300
+/labs
+  Cache-Control: public, max-age=300
+/labs.html
+  Cache-Control: public, max-age=300
+/contact
+  Cache-Control: public, max-age=300
+/contact.html
+  Cache-Control: public, max-age=300
+/trust
+  Cache-Control: public, max-age=300
+/trust.html
+  Cache-Control: public, max-age=300
+/broll
+  Cache-Control: public, max-age=300
+/broll.html
+  Cache-Control: public, max-age=300
+/platform
+  Cache-Control: public, max-age=300
+/platform.html
+  Cache-Control: public, max-age=300
+/platform/*
+  Cache-Control: public, max-age=300
+/solutions
+  Cache-Control: public, max-age=300
+/solutions.html
+  Cache-Control: public, max-age=300
+/solutions/*
+  Cache-Control: public, max-age=300
+/resources
+  Cache-Control: public, max-age=300
+/resources.html
+  Cache-Control: public, max-age=300
+/resources/*
+  Cache-Control: public, max-age=300
+/company
+  Cache-Control: public, max-age=300
+/company.html
+  Cache-Control: public, max-age=300
+/company/*
+  Cache-Control: public, max-age=300
 /robots.txt
   Cache-Control: public, max-age=300
 /site.webmanifest
@@ -63,6 +137,19 @@
 /*.svg
   Cache-Control: public, max-age=2592000
 /*.ico
+  Cache-Control: public, max-age=2592000
+
+# Product clips, the film and the self hosted fonts. Matched by extension, not
+# as /media/* or /fonts/*: a poster is /media/<name>.webp, which /*.webp above
+# already matches, and a second matching rule would concatenate the header.
+# None of these files is content hashed, so a month and not a year.
+/*.mp4
+  Cache-Control: public, max-age=2592000
+/*.webm
+  Cache-Control: public, max-age=2592000
+/*.woff2
+  Cache-Control: public, max-age=2592000
+/fonts/plex.css
   Cache-Control: public, max-age=2592000
 
 # Keyed to the build version, and the mechanism by which a deploy is noticed.

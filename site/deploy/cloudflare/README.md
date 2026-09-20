@@ -21,6 +21,14 @@ the blog/site cross-link check. CI builds, CI uploads the gated output.
 gets a preview URL and does not move the custom domain. That fails as "the
 deploy went green and the site is stale".
 
+## The forms
+
+The site's three forms post to a small Worker, `avarok-forms`, kept in
+[`forms-worker/`](forms-worker/README.md). It is deployed by hand with `wrangler deploy`,
+apart from the site, so nothing about it can take a page down. Until it is deployed and
+its address is set as `formEndpoint` in `src/lib/content/brand.js`, each form drafts an
+email in the visitor's own mail app instead.
+
 ## What replaced the nginx config
 
 `../nginx/atlascybernetics.ai.conf` is kept because the origin is still mirrored

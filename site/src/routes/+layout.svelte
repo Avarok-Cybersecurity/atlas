@@ -1,145 +1,134 @@
 <script>
-  // Load order matters. app.css is the desktop-first design system, news.css adds
-  // the news band, dashboard.css then chat.css add the two modals (chat reuses
-  // dashboard pieces so it loads after), ladder.css styles the concurrency
-  // section (it reuses dashboard's chart primitives, so it loads after those),
-  // mobile.css is the SSOT for every viewport rule and must land last.
-  import '../app.css';
-  import ChevronField from '$shared/components/ChevronField.svelte';
+  // The root layout: what every route shares. Design tokens and the brand
+  // typeface, the two lockup definition blocks, the canonical URL, and the
+  // structured data. Stylesheets that belong to one route group live in that
+  // group's layout: app.css in (engine), avarok.css in (marketing), so the
+  // developer pages and the marketing pages never load each other's rules.
+  import '../../../web-shared/avarok-tokens.css';
+  import '../styles/fonts.css';
   import AtlasLockup from '$shared/components/AtlasLockup.svelte';
-  import '../styles/news.css';
-  import '../styles/dashboard.css';
-  import '../styles/chat.css';
-  import '../styles/ladder.css';
-  import '../styles/control.css';
-  import '../styles/bridge.css';
-  import '../styles/stage.css';
-  import '../styles/overlays.css';
-  import '../styles/mobile.css';
   import { page } from '$app/state';
-  import { tagline, hero, faq, githubUrl, recipesUrl, discordUrl, xUrl } from '$lib/data.js';
   import { onMount } from 'svelte';
+  import { crossesGroup } from '$lib/route-groups.js';
   import { detectHost } from '$lib/install/host.svelte.js';
+  import { faq as engineFaq, githubUrl, recipesUrl, discordUrl, xUrl, hero } from '$lib/data.js';
+  import { pages, SITE, company, links } from '$lib/content/index.js';
+  import { faqFor } from '$lib/content/faq.js';
   let { children } = $props();
 
-  // Once, here, rather than in each surface that prints an install line: three
-  // components sniffing separately is how the hero and the control page end up
-  // disagreeing about which machine the visitor is on. In `onMount` because
-  // the prerendered HTML has no navigator, and rendering a guess into it would
-  // make the page rewrite itself for every visitor it guessed wrong about.
+  // Once, here, rather than in each surface that prints an install line.
   onMount(detectHost);
 
-  // Route-aware: a hardcoded canonical meant /control emitted two of them,
-  // which is the same as emitting none.
-  //
+  // A link from the marketing pages to the developer pages, or back, is a full
+  // page load and is never preloaded. $lib/route-groups.js says why: the client
+  // router keeps both design systems in the page otherwise, and one of them
+  // restyles the other's header. The mark goes on in the capture phase, so it is
+  // there before the router's own listeners read the link.
+  onMount(() => {
+    const mark = (e) => {
+      const a = e.target instanceof Element ? e.target.closest('a[href]') : null;
+      if (!a || a.hasAttribute('data-sveltekit-reload')) return;
+      if (crossesGroup(location.pathname, a.getAttribute('href'), location.origin)) a.setAttribute('data-sveltekit-reload', '');
+    };
+    const events = ['pointerover', 'focusin', 'touchstart', 'mousedown', 'click'];
+    for (const name of events) document.addEventListener(name, mark, { capture: true, passive: true });
+    return () => {
+      for (const name of events) document.removeEventListener(name, mark, { capture: true });
+    };
+  });
+  // There is deliberately no `beforeNavigate` net under this. The back button never
+  // needs one: a crossing is always a full load, so the two documents never share
+  // a history entry the client router could replay. And importing $app/navigation
+  // here cost every page one more request (a 22 byte facade chunk), which is a
+  // queued round trip ahead of first paint under the Lighthouse gate. Nothing on
+  // the site calls goto() across the two groups. If something ever must, it
+  // should set `location.href` instead, which is a full load by definition.
+
   // Canonicals are extensionless. Cloudflare Pages pretty-URLs /engine (200)
   // and 308s /engine.html → /engine, so a canonical ending in .html names a
   // redirect. adapter-static still writes engine.html as the file.
-  const marketingPage = $derived(['/', '/index.html'].includes(page.url.pathname));
-  const enginePage = $derived(['/engine', '/engine.html'].includes(page.url.pathname));
-  const canonical = $derived(marketingPage ? SITE : `${SITE.replace(/\/$/, '')}${page.url.pathname.replace(/\.html$/, '')}`);
+  const path = $derived(page.url.pathname.replace(/\.html$/, '').replace(/\/index$/, '/'));
+  const canonical = $derived(path === '/' ? SITE + '/' : `${SITE}${path.replace(/\/$/, '')}`);
+  const enginePage = $derived(path === '/engine');
+  const registry = $derived(pages.find((p) => p.path === (path === '/' ? '/' : path.replace(/\/$/, ''))));
 
-  const SITE = 'https://atlascybernetics.ai/';
-
-  // One @graph rather than three separate blocks, so the entities can reference
-  // each other by @id — that is what lets a search or answer engine tie the
-  // software, the publisher and the answers together instead of treating them
-  // as unrelated fragments.
-  //
-  // Every field restates something rendered on the page. The FAQ entities come
-  // from the same `faq` export the FAQ section renders, because marking up an
-  // answer a visitor cannot see is a policy violation, not an optimisation.
-  const graph = {
+  // One @graph rather than separate blocks, so the entities can reference
+  // each other by @id. Every field restates something rendered on a page. The
+  // FAQ entities come from the same lists the FAQ sections render, because
+  // marking up an answer a visitor cannot see is a policy violation.
+  const faqItems = $derived(enginePage ? engineFaq.items : registry?.faq ? faqFor(registry.faq) : []);
+  const graph = $derived({
     '@context': 'https://schema.org',
     '@graph': [
       {
         '@type': 'Organization',
-        '@id': `${SITE}#org`,
-        name: 'Atlas Inference',
-        url: SITE,
-        logo: `${SITE}icon-512.png`,
-        description: tagline,
-        sameAs: [githubUrl, recipesUrl, discordUrl, xUrl]
+        '@id': `${SITE}/#org`,
+        name: company.name,
+        legalName: company.legal,
+        url: `${SITE}/`,
+        logo: `${SITE}/icon-512.png`,
+        description: company.short,
+        sameAs: [githubUrl, recipesUrl, discordUrl, xUrl, links.blog]
       },
       {
         '@type': 'WebSite',
-        '@id': `${SITE}#site`,
-        url: SITE,
-        name: 'Atlas Inference',
-        description: tagline,
+        '@id': `${SITE}/#site`,
+        url: `${SITE}/`,
+        name: company.name,
+        description: company.short,
         inLanguage: 'en',
-        publisher: { '@id': `${SITE}#org` }
+        publisher: { '@id': `${SITE}/#org` }
       },
       {
         '@type': 'SoftwareApplication',
-        '@id': `${SITE}#app`,
-        name: 'Atlas Inference Engine',
-        alternateName: 'Atlas',
+        '@id': `${SITE}/#app`,
+        name: company.engine,
+        alternateName: 'Atlas Inference Engine',
         applicationCategory: 'DeveloperApplication',
         applicationSubCategory: 'LLM inference engine',
         operatingSystem: 'Linux',
         processorRequirements: 'NVIDIA GB10 (DGX Spark) or AMD gfx1151 (Strix Halo)',
         description: hero.sub,
-        url: SITE,
+        url: `${SITE}/engine`,
         downloadUrl: githubUrl,
-        softwareHelp: recipesUrl,
+        softwareHelp: links.docs,
         programmingLanguage: ['Rust', 'CUDA'],
         license: 'https://spdx.org/licenses/AGPL-3.0-only.html',
         isAccessibleForFree: true,
-        // Schema.org wants a price even for free software; omitting the offer
-        // entirely reads as "price unknown" rather than "free".
         offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
-        publisher: { '@id': `${SITE}#org` }
+        publisher: { '@id': `${SITE}/#org` }
       },
-      {
-        '@type': 'FAQPage',
-        '@id': `${SITE}engine#faq`,
-        isPartOf: { '@id': `${SITE}#site` },
-        mainEntity: faq.items.map((item) => ({
-          '@type': 'Question',
-          name: item.q,
-          acceptedAnswer: { '@type': 'Answer', text: item.a }
-        }))
-      }
+      ...(faqItems.length
+        ? [
+            {
+              '@type': 'FAQPage',
+              '@id': `${canonical}#faq`,
+              isPartOf: { '@id': `${SITE}/#site` },
+              mainEntity: faqItems.map((item) => ({
+                '@type': 'Question',
+                name: item.q,
+                acceptedAnswer: { '@type': 'Answer', text: item.a }
+              }))
+            }
+          ]
+        : [])
     ]
-  };
+  });
 
   // JSON.stringify does not escape the less-than character, so a closing
-  // script tag appearing anywhere in the FAQ copy would end the emitted block
-  // early and spill the rest of the page's markup into the document. Escaping
-  // it as \u003c keeps the JSON parseable and identical in value to consumers.
-  // (Writing that tag literally in this comment would end THIS block, too.)
-  const ldjson = $derived(JSON.stringify({
-    ...graph,
-    '@graph': graph['@graph'].filter(entity => entity['@type'] !== 'FAQPage' || enginePage)
-  }).replace(/</g, '\\u003c'));
+  // script tag anywhere in the copy would end the emitted block early.
+  const ldjson = $derived(JSON.stringify(graph).replace(/</g, '\\u003c'));
 </script>
 
 <svelte:head>
   <!-- No <title> here. A layout title and a page title compete for the single
-       head slot and the LAYOUT's wins, so /control shipped with the homepage's
-       title while its own two <meta>s came through -- the page head renders,
-       only its title is discarded. Every route owns its own title instead. -->
+       head slot and the layout's wins. Every route owns its own title. -->
   <link rel="canonical" href={canonical} />
   <meta property="og:url" content={canonical} />
   {@html `<script type="application/ld+json">${ldjson}<\/script>`}
 </svelte:head>
 
-<!-- The ambient chevron field: one fullscreen triangle, one fragment shader,
-     the same code blog.atlascybernetics.ai renders. It paints the page ground
-     itself, so `body`'s background sits behind it rather than beside it.
-
-     It must stay a DIRECT child of the layout root. A `transform`, `filter`,
-     `perspective`, `will-change` or `contain: paint` on any ancestor would
-     make that ancestor the containing block for fixed-position descendants,
-     and the background would start scrolling with the content. -->
-{#if !marketingPage}<ChevronField />{/if}
-
-<!-- The brand vector, defined once and <use>d by the nav and the footer. -->
+<!-- The brand vector, defined once and <use>d by every lockup on the page. -->
 <AtlasLockup kind="defs" />
 
-<!-- Everything else goes above the canvas. Without this wrapper, only the
-     POSITIONED elements would: a fixed canvas at z-index 0 paints above the
-     block-level layer, so `footer` — which sets no position — would render
-     underneath it and vanish. -->
-<div class="page">{@render children()}</div>
+{@render children()}

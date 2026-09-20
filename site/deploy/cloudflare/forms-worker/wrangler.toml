@@ -1,0 +1,32 @@
+# avarok-forms: the Worker the site's three forms post to. README.md has the setup.
+name = "avarok-forms"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+# Who may post. Exact origins, then host suffixes for Pages preview deployments.
+ALLOWED_ORIGINS = "https://atlascybernetics.ai,https://www.atlascybernetics.ai,http://localhost:5173,http://127.0.0.1:5173"
+ALLOWED_ORIGIN_SUFFIXES = ".atlas-site.pages.dev,.avarok-site-80h.pages.dev"
+# Which inbox each form belongs to. Only used by the email channel. A test keeps
+# these equal to `contacts` in site/src/lib/content/brand.js.
+TO_DEMO = "eric@atlascybernetics.ai"
+TO_WAITLIST = "eric@atlascybernetics.ai"
+TO_CAREERS = "thomas@atlascybernetics.ai"
+# The sender for the email channel. Its domain must be verified with the provider.
+MAIL_FROM = "Avarok forms <forms@atlascybernetics.ai>"
+# How long a stored request is kept, in days. 0 keeps it until someone deletes it.
+LEAD_TTL_DAYS = "180"
+
+# Recommended. `npx wrangler@4 kv namespace create LEADS`, then paste the id and
+# remove the comment marks. Without it requests are delivered but not kept, and
+# the per address rate limit is off.
+# [[kv_namespaces]]
+# binding = "LEADS"
+# id = "PASTE_THE_ID_HERE"
+
+# Secrets are never written here. Set the ones you want with
+# `npx wrangler@4 secret put <NAME>`:
+#   DISCORD_WEBHOOK_URL   a webhook of a private channel
+#   SLACK_WEBHOOK_URL     an incoming webhook
+#   RESEND_API_KEY        email, sent to the TO_ address above, reply-to the visitor

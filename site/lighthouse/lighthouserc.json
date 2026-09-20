@@ -4,6 +4,8 @@
       "staticDistDir": "./site/build",
       "url": [
         "http://localhost/index.html",
+        "http://localhost/why-avarok.html",
+        "http://localhost/pricing.html",
         "http://localhost/engine.html",
         "http://localhost/control.html",
         "http://localhost/diligence.html"
