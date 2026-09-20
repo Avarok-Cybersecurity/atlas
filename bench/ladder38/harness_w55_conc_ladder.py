@@ -24,6 +24,8 @@ import asyncio
 import hashlib
 import json
 import os
+
+from power_window import PowerWindow, measure_idle_baseline
 import random
 import statistics
 import sys
@@ -237,16 +239,17 @@ async def one_request(session, url, model, prompt, osl):
     }
 
 
-async def run_rep(session, url, model, conc, isl, osl):
+async def run_rep(session, url, model, conc, isl, osl, power=None):
     prompts = [make_prompt(isl) for _ in range(conc)]
     t0 = time.perf_counter()
     outs = await asyncio.gather(*[one_request(session, url, model, p, osl) for p in prompts])
-    wall = time.perf_counter() - t0
+    t1 = time.perf_counter()
+    wall = t1 - t0
     good = [o for o in outs if "error" not in o]
     errs = [o for o in outs if "error" in o]
     ctok = sum(o["completion_tokens"] for o in good)
     ptok = sum(o["prompt_tokens"] for o in good)
-    return {
+    out = {
         "wall_s": wall,
         "completion_tokens": ctok,
         "prompt_tokens": ptok,
@@ -262,6 +265,14 @@ async def run_rep(session, url, model, conc, isl, osl):
         "finish_reasons": sorted({str(o["finish_reason"]) for o in good}),
         "completion_tokens_per_req": sorted(o["completion_tokens"] for o in good),
     }
+    # ★ The energy integral is taken over EXACTLY the window just measured,
+    # [t0, t1] -- the same interval `wall_s` and `tok_s` are computed from.
+    # The previous field sampled before the rep even started; see
+    # power_window.py for why that made the Atlas-vs-vLLM energy comparison
+    # an artifact. Absent keys mean "not measured", never zero.
+    if power is not None:
+        out.update(power.integrate(t0, t1))
+    return out
 
 
 def load_tokenizer(path):
@@ -430,50 +441,71 @@ async def main():
           f"({'pinned' if a.nonce_base is not None else 'random'})", flush=True)
 
     conn = aiohttp.TCPConnector(limit=0, force_close=True)
-    async with aiohttp.ClientSession(connector=conn) as session:
-        for conc in concs:
-            for w in range(a.warmup):
-                await run_rep(session, chat, a.model, conc, a.isl, a.osl)
-            reps = []
-            for r in range(a.reps):
-                # SM clock sampled INSIDE the rep window, not before it.
-                clk = os.popen("nvidia-smi --query-gpu=clocks.sm,power.draw "
-                               "--format=csv,noheader,nounits").read().strip()
-                rep = await run_rep(session, chat, a.model, conc, a.isl, a.osl)
-                rep["rep"] = r
-                rep["clock_sample_at_rep_start"] = clk
-                reps.append(rep)
-                print(f"[{a.label}] C={conc:>3} rep{r}  "
-                      f"tok/s={rep['tok_s']:8.2f}  wall={rep['wall_s']:7.2f}s  "
-                      f"ctok={rep['completion_tokens']:>7}  ptok/req={rep['prompt_tokens_per_req']}  "
-                      f"ttft_p50={rep['ttft_p50_ms']:.0f}ms  err={rep['n_err']}  clk={clk}",
+    # ★ ONE long-lived sampler for the whole ladder, not one per rep. Spawning
+    # `nvidia-smi` costs ~10-20 ms of CPU each time; at 4 Hz beside a benchmark
+    # whose TTFT ceilings are being tightened to +5%, a shot-per-sample would
+    # perturb the very thing it measures. The idle baseline is taken ONCE, up
+    # front, and is VERIFIED idle (util 0, low clock) rather than assumed --
+    # a baseline captured right after model load catches a clocked-up GPU and
+    # would subtract far too much.
+    with PowerWindow() as power_window:
+        idle = measure_idle_baseline(power_window)
+        print(f"# gpu-rail idle baseline: {idle}", flush=True)
+        if power_window.unavailable:
+            print(f"# WARNING: no GPU-rail energy this run ({power_window.unavailable}); "
+                  f"rows will carry gpu_rail_status instead of joules", flush=True)
+        async with aiohttp.ClientSession(connector=conn) as session:
+            for conc in concs:
+                for w in range(a.warmup):
+                    await run_rep(session, chat, a.model, conc, a.isl, a.osl)
+                reps = []
+                for r in range(a.reps):
+                    # ★ This field is NOT an in-window measurement and never was.
+                    # `os.popen(...).read()` blocks to completion BEFORE the rep
+                    # below issues a single request, so the value is the driver's
+                    # 1 s trailing average over the PREVIOUS batch's tail. It is
+                    # kept only so older records stay comparable with newer ones.
+                    # The real measurement is `gpu_rail_energy_j` et al, integrated
+                    # over the rep's own window inside run_rep().
+                    clk = os.popen("nvidia-smi --query-gpu=clocks.sm,power.draw "
+                                   "--format=csv,noheader,nounits").read().strip()
+                    rep = await run_rep(session, chat, a.model, conc, a.isl, a.osl,
+                                        power=power_window)
+                    rep["rep"] = r
+                    rep["clock_sample_before_rep"] = clk
+                    rep["clock_sample_at_rep_start"] = clk  # legacy name, same value
+                    reps.append(rep)
+                    print(f"[{a.label}] C={conc:>3} rep{r}  "
+                          f"tok/s={rep['tok_s']:8.2f}  wall={rep['wall_s']:7.2f}s  "
+                          f"ctok={rep['completion_tokens']:>7}  ptok/req={rep['prompt_tokens_per_req']}  "
+                          f"ttft_p50={rep['ttft_p50_ms']:.0f}ms  err={rep['n_err']}  clk={clk}",
+                          flush=True)
+                series = [r["tok_s"] for r in reps]
+                rung = {
+                    "concurrency": conc,
+                    "reps": reps,
+                    "tok_s_series": series,
+                    "tok_s_mean": statistics.fmean(series),
+                    "tok_s_median": statistics.median(series),
+                    "tok_s_spread_pct": (max(series) - min(series)) / statistics.fmean(series) * 100.0
+                                        if statistics.fmean(series) > 0 else 0.0,
+                    "wall_s_series": [r["wall_s"] for r in reps],
+                    "wall_s_mean": statistics.fmean([r["wall_s"] for r in reps]),
+                    "completion_tokens_series": [r["completion_tokens"] for r in reps],
+                    "completion_tokens_mean": statistics.fmean([r["completion_tokens"] for r in reps]),
+                    "errors_total": sum(r["n_err"] for r in reps),
+                }
+                record["rungs"].append(rung)
+                print(f"[{a.label}] C={conc:>3} SERIES {['%.2f' % s for s in series]} "
+                      f"mean={rung['tok_s_mean']:.2f} spread={rung['tok_s_spread_pct']:.2f}%",
                       flush=True)
-            series = [r["tok_s"] for r in reps]
-            rung = {
-                "concurrency": conc,
-                "reps": reps,
-                "tok_s_series": series,
-                "tok_s_mean": statistics.fmean(series),
-                "tok_s_median": statistics.median(series),
-                "tok_s_spread_pct": (max(series) - min(series)) / statistics.fmean(series) * 100.0
-                                    if statistics.fmean(series) > 0 else 0.0,
-                "wall_s_series": [r["wall_s"] for r in reps],
-                "wall_s_mean": statistics.fmean([r["wall_s"] for r in reps]),
-                "completion_tokens_series": [r["completion_tokens"] for r in reps],
-                "completion_tokens_mean": statistics.fmean([r["completion_tokens"] for r in reps]),
-                "errors_total": sum(r["n_err"] for r in reps),
-            }
-            record["rungs"].append(rung)
-            print(f"[{a.label}] C={conc:>3} SERIES {['%.2f' % s for s in series]} "
-                  f"mean={rung['tok_s_mean']:.2f} spread={rung['tok_s_spread_pct']:.2f}%",
-                  flush=True)
-            # written after every rung so a crash never loses completed work
-            with open(a.out, "w") as f:
-                json.dump(record, f, indent=2)
-    record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    with open(a.out, "w") as f:
-        json.dump(record, f, indent=2)
-    print(f"# wrote {a.out}", flush=True)
+                # written after every rung so a crash never loses completed work
+                with open(a.out, "w") as f:
+                    json.dump(record, f, indent=2)
+        record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(a.out, "w") as f:
+            json.dump(record, f, indent=2)
+        print(f"# wrote {a.out}", flush=True)
 
 
 if __name__ == "__main__":
