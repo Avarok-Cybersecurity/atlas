@@ -90,12 +90,21 @@ pub struct FastSafetensorsLoader {
 
 /// Is this tensor part of a multimodal checkpoint's vision tower?
 ///
-/// Same three spellings `build_model`'s unbound-tower reclaim matches, kept
-/// here so the load-time skip and the post-bind free can never disagree.
+/// The SSOT for that question: `build_model`'s unbound-tower reclaim calls
+/// this rather than keeping its own copy, so the load-time skip and the
+/// post-bind free can never disagree.
+///
+/// `model.language_model.visual.` is the fourth spelling and was missing until
+/// 2026-09-17. `Qwen35WeightLoader::load_vision_encoder` probes it explicitly
+/// (AEON-7's v2 NVFP4 re-quant and every other checkpoint quantized through
+/// `AutoModelForImageTextToText` keeps the canonical nested layout), so a
+/// checkpoint in that form had a tower that neither the load-time skip nor the
+/// reclaim could see: read from disk, never bound, never freed.
 pub fn is_vision_tensor(name: &str) -> bool {
     name.starts_with("model.visual.")
         || name.starts_with("model.vision")
         || name.starts_with("visual.")
+        || name.starts_with("model.language_model.visual.")
 }
 
 /// Default tensor-count cap for per-shard `O_DIRECT`. Above this, the fast
@@ -184,6 +193,21 @@ impl WeightLoader for FastSafetensorsLoader {
                 has_fp8,
             );
             crate::progress::preflight(gib(estimated), gib(free));
+            // Say what the skip bought, in bytes, because "not loaded" is the
+            // one outcome an operator cannot read off the residency audit
+            // afterwards: the tensors are not there to be counted. The extra
+            // pass reads shard HEADERS only, which the two calls above have
+            // already paid for.
+            if self.skip_vision {
+                let tower = estimate_load_bytes(&shard_files, &|n: &str| !is_vision_tensor(n))?;
+                if tower > 0 {
+                    tracing::info!(
+                        "Vision tower: {:.2} GB of `model.visual.*` NOT read from disk \
+                         (this serve binds no vision encoder)",
+                        gib(tower),
+                    );
+                }
+            }
             if peak + oom_reserve_bytes > free {
                 bail!(
                     "OOM pre-flight: peak {:.2} GB + {:.2} GB reserve exceeds {:.2} GB free. \
@@ -526,6 +550,20 @@ mod skip_vision_tests {
         assert!(!is_vision_tensor(
             "model.language_model.layers.3.mlp.revision.weight"
         ));
+    }
+
+    /// The nested spelling `Qwen35WeightLoader::load_vision_encoder` probes.
+    /// It was absent from this predicate until 2026-09-17, so a checkpoint in
+    /// that layout carried a tower the skip could not skip and the reclaim
+    /// could not free.
+    #[test]
+    fn the_nested_language_model_spelling_is_a_vision_tensor_too() {
+        let l = loader(true, 1);
+        assert!(l.should_skip_tensor("model.language_model.visual.patch_embed.proj.weight"));
+        assert!(l.should_skip_tensor("model.language_model.visual.blocks.0.attn.proj.weight"));
+        // The text side of the SAME nested layout must survive it.
+        assert!(!l.should_skip_tensor("model.language_model.layers.0.self_attn.q_proj.weight"));
+        assert!(!l.should_skip_tensor("model.language_model.norm.weight"));
     }
 
     #[test]

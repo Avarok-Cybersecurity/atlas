@@ -452,6 +452,14 @@ impl Qwen3AttentionLayer {
             );
             return Ok(());
         }
+        // Same guard, same reason as the SSM's (`layers/fp8_predequant.rs`), and
+        // it matters more here: `prefill/cache_skip.rs:126` turns the ENTIRE
+        // QKV chain onto FP8 activations on `self.q_fp8.is_some()`, so one
+        // unbuildable GEMM takes four projections down. With the fields `None`
+        // that predicate is false and the chain reaches its NVFP4 arms.
+        if crate::layers::fp8_predequant::skip_reason_logged(gpu, "attention q/k/v/o").is_some() {
+            return Ok(());
+        }
         let predequant_k = gpu.kernel("w4a16", "predequant_nvfp4_to_fp8")?;
         let h = config.hidden_size;
         let nq = config.num_attention_heads;

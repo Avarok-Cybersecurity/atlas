@@ -342,17 +342,24 @@ pub fn build_model(
     // was built, `vision_encoder` is `Some` and nothing is touched — including
     // the loaders that bind zero-copy from these very pointers. The day a GLM
     // vision encoder lands, this stops firing on its own.
+    let mut vision_released_bytes = 0usize;
     if vision_encoder.is_none() {
+        // The predicate is `fast_weights::is_vision_tensor`, not a copy of it.
+        // It used to be a copy, and the copy had drifted: neither spelling list
+        // carried `model.language_model.visual.`, which
+        // `Qwen35WeightLoader::load_vision_encoder` probes and which every
+        // AutoModelForImageTextToText re-quant uses. A tower in that layout was
+        // read from disk, not bound, and not freed.
         let (n, bytes) = store.free_matching(gpu.as_ref(), |name| {
-            name.starts_with("model.visual.")
-                || name.starts_with("model.vision")
-                || name.starts_with("visual.")
+            spark_runtime::fast_weights::is_vision_tensor(name)
         })?;
+        vision_released_bytes = bytes;
         if n > 0 {
             tracing::info!(
-                "Vision tower: {n} tensors ({:.2} GiB) released — this build binds no vision \
-                 encoder for model_type '{}', so the tower was resident and unreachable. \
-                 Text capability is unchanged; image input was already unsupported here.",
+                "Vision tower: {n} tensors ({:.2} GiB) released: this serve binds no vision \
+                 encoder for model_type '{}' (a text-only port, a kernel target without the \
+                 vision_encoder module, or --text-only), so the tower was resident and \
+                 unreachable. Text capability is unchanged; image input is refused at the API.",
                 bytes as f64 / (1024.0 * 1024.0 * 1024.0),
                 config.model_type,
             );
@@ -396,6 +403,26 @@ pub fn build_model(
         use_speculative,
         !mtp_weights.is_empty(),
     )?;
+
+    // The checkpoint's OWN `lm_head` bytes, once every head above has been
+    // built from the fresh BF16 dequant `load_lm_head` made. 1.18 GiB on
+    // unsloth/Qwen3.8-27B-NVFP4 and item 1 of the ranked list in
+    // docs/porting/r9700-residency.md.
+    //
+    // HERE, and not later, for one reason: the KV sizer below reads
+    // `gpu.free_memory()` to decide how many blocks it can claim. A release
+    // that happens after it is a release the KV cache never sees. The guards
+    // are in `lm_head_source_is_dead`; the DFlash one matters at exactly this
+    // point, because the drafter's own `native_fp8_lm_head_share` call is
+    // several hundred lines further down and has not run yet.
+    let lm_head_released_bytes = super::lm_head_setup::release_lm_head_source(
+        &store,
+        &config,
+        gpu.as_ref(),
+        dflash_args.is_some(),
+        use_speculative,
+    )?;
+    mem.mark("lm_head source release");
 
     // Capture the shared embed + resolved draft NVFP4 head for the DeepSeek-V4
     // MTP proposer BEFORE `embed` / `lm_head_nvfp4` / `mtp_lm_head_nvfp4` are
@@ -858,6 +885,43 @@ pub fn build_model(
             n
         }
     };
+    // ── The budget, itemised, so the next person does not need a calculator ──
+    //
+    // The line above says "N GB pre-KV + M GB reserve". Neither term is
+    // inspectable from it: "pre-KV" is `total - free`, a subtraction that lumps
+    // the weights, the buffer arena, the CUDA context and any co-tenant into
+    // one number, and the reserve arrives from `serve_phases::preflight` as a
+    // single usize. When batch 4 does not fit on a 32 GB board, the first
+    // question is WHICH of those grew, and answering it used to mean reading
+    // two crates and multiplying by hand.
+    //
+    // So: name every term this side of the boundary knows, and print the
+    // remainder rather than hiding it. `other` is the CUDA context, the driver,
+    // the allocator's granule padding and anything else on the device,
+    // typically a few hundred MB, and worth looking at when it is not. The
+    // reserve's own components are itemised by `preflight.rs`'s "Preflight
+    // reserve" / "reserve breakdown" pair, which is where the ring slots live.
+    {
+        let weights = store.total_bytes();
+        let arena = buffers.total_bytes();
+        let named = weights.saturating_add(arena);
+        tracing::info!(
+            "KV budget itemised: pre-KV {:.2} GB = weights {:.2} (store, resident now) \
+             + buffer arena {:.2} + other {:.2} (CUDA context, driver, co-tenants); \
+             already released before this point: vision {:.2}, lm_head source {:.2}; \
+             reserve {:.2} GB (itemised by the `Preflight reserve` lines above) \
+             + DFlash {:.2} GB -> KV {:.2} GB",
+            gib(used_so_far),
+            gib(weights),
+            gib(arena),
+            gib(used_so_far.saturating_sub(named)),
+            gib(vision_released_bytes),
+            gib(lm_head_released_bytes),
+            gib(inference_reserve),
+            gib(dflash_reserve),
+            gib(kv_budget),
+        );
+    }
     let _max_kv_tokens = num_kv_blocks * kv_block_size;
     // Phase 6.1.f / 6.2.c — when --high-speed-swap is on with HBM-shrink, the
     // production KV cache only has to fit the per-seq HBM window, not the full

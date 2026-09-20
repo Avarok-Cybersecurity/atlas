@@ -1,0 +1,1 @@
+../../gb10/common/moe_transpose_batched.cu

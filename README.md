@@ -212,6 +212,7 @@ One engine, one kernel tree per target, no generic fallbacks. Each directory und
 |---|---|---|
 | **NVIDIA DGX Spark** (`kernels/gb10`) | GB10 Grace-Blackwell, SM121, ~120 GB unified LPDDR5X | **Verified.** The reference platform — every release passes the serve gate here |
 | **AMD Strix Halo** (`kernels/strix`, `kernels/strix-hip`) | Ryzen AI Max+ 395, RDNA 3.5 iGPU, gfx1151 | The **same unmodified CUDA sources**, recompiled for AMD via [SCALE](https://docs.scale-lang.com/stable/) — no hand-ported kernels (`strix-hip` is the HIP-toolchain build variant of the same sources). AMD provided the Strix Halo desktop we brought Atlas up on and included in our MLPerf Inference v6.1 submission |
+| **AMD Radeon AI PRO R9700** (`kernels/r9700`) | RDNA 4, 64 CU discrete PCIe, gfx1201, 32 GB GDDR6 | **Serves.** The same unmodified CUDA sources through SCALE at `targets/gfx1201`, mirroring the GB10 kernel tree minus the 13 sources SCALE cannot compile for this arch. Sampling and behaviour defaults are still inherited from Strix, unverified here. See [docs/HARDWARE.md](docs/HARDWARE.md) |
 | **Apple Silicon** (`kernels/metal`) | Metal 3.1, M2+ | Early bring-up — small-model targets only |
 | **Multi-node** | 2× GB10 over RoCEv2 | EP=2 expert parallelism shipped as recipes; a 4-node EP=4 topology exists for the 397B target |
 

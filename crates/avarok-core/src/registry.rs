@@ -24,6 +24,17 @@ use cudarc::nvrtc::Ptx;
 pub use crate::cuda_host::{CudaHost, host, release};
 use crate::error::{AvarokError, Result};
 
+mod driver_errors;
+mod launch_errors;
+mod symbol_guard;
+
+pub use driver_errors::{CUDA_ERROR_DEINITIALIZED, cuda_error_text, is_teardown_noop};
+pub use launch_errors::{func_attribute_failure_message, kernel_label, launch_failure_message};
+pub use symbol_guard::{is_undefined, undefined_symbol_message};
+
+use launch_errors::KernelNames;
+use symbol_guard::BinaryKernels;
+
 // Raw CUDA driver API. (`cuModuleLoadData`/`cuModuleUnload` left this list
 // when the raw handles became views into the cudarc-loaded modules — the
 // registry no longer loads or unloads anything through the raw API.)
@@ -43,8 +54,6 @@ unsafe extern "C" {
         extra: *mut *mut c_void,
     ) -> i32;
     fn cuFuncSetAttribute(hfunc: *mut c_void, attrib: i32, value: i32) -> i32;
-    fn cuGetErrorName(error: i32, pStr: *mut *const i8) -> i32;
-    fn cuGetErrorString(error: i32, pStr: *mut *const i8) -> i32;
     // Resolve a `__device__` symbol in a loaded CUmodule into a device pointer
     // + size in bytes. Used by drivers that need to read/write device globals
     // (e.g. InnerQ calibration state) without round-tripping through a kernel.
@@ -57,52 +66,6 @@ unsafe extern "C" {
     fn cuMemcpyHtoDAsync_v2(dst: u64, src: *const c_void, bytes: usize, stream: u64) -> i32;
     fn cuMemcpyDtoHAsync_v2(dst: *mut c_void, src: u64, bytes: usize, stream: u64) -> i32;
     fn cuStreamSynchronize(stream: u64) -> i32;
-}
-
-/// Resolve a CUresult status code into `"<NAME>: <description>"` via
-/// cuGetErrorName + cuGetErrorString. Returns "CUDA_UNKNOWN" / "(no message)"
-/// if the driver doesn't recognize the code.
-pub fn cuda_error_text(status: i32) -> String {
-    use std::ffi::CStr;
-    let mut name_ptr: *const i8 = std::ptr::null();
-    let mut msg_ptr: *const i8 = std::ptr::null();
-    let name = unsafe {
-        if cuGetErrorName(status, &mut name_ptr) == 0 && !name_ptr.is_null() {
-            CStr::from_ptr(name_ptr as *const std::os::raw::c_char)
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "CUDA_UNKNOWN".to_string()
-        }
-    };
-    let msg = unsafe {
-        if cuGetErrorString(status, &mut msg_ptr) == 0 && !msg_ptr.is_null() {
-            CStr::from_ptr(msg_ptr as *const std::os::raw::c_char)
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            "(no message)".to_string()
-        }
-    };
-    format!("{name} ({status}): {msg}")
-}
-
-/// `CUDA_ERROR_DEINITIALIZED`. The driver tears the primary context down in its
-/// own `atexit` handler, which can run before our `Drop` impls do. Every
-/// module unload and every host free then reports this code.
-///
-/// It is **not a failure**: a module cannot leak out of a context that no
-/// longer exists, and the memory it occupied went with it. Reporting 158 of
-/// them at exit is pure noise that buries anything real.
-pub const CUDA_ERROR_DEINITIALIZED: i32 = 4;
-
-/// Whether a CUresult means "the context is already gone, nothing to do".
-///
-/// Also covers `CUDA_ERROR_INVALID_CONTEXT` (201) and
-/// `CUDA_ERROR_CONTEXT_IS_DESTROYED` (709), which arrive by the same route
-/// depending on how far the driver got before we ran.
-pub fn is_teardown_noop(status: i32) -> bool {
-    matches!(status, CUDA_ERROR_DEINITIALIZED | 201 | 709)
 }
 
 /// Wrapper for raw CUfunction handle (Send+Sync safe — handles are context-wide).
@@ -133,6 +96,11 @@ pub struct AvarokRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+    /// Which kernels each binary module actually defines, and the refusal
+    /// of a lookup that cannot succeed.
+    binary_kernels: BinaryKernels,
+    /// What each raw CUfunction handle IS, for the diagnostics.
+    func_names: KernelNames,
 }
 
 impl Drop for AvarokRegistry {
@@ -157,9 +125,11 @@ impl Drop for AvarokRegistry {
 // SAFETY: Same rationale as `RawCudaFunc`: the `raw_modules` map holds
 // CUmodule handles obtained at startup from a single CUcontext. The map is
 // populated once during registry init and is read-only from that point on,
-// so concurrent reads are race-free at the Rust level. CUDA itself
-// serializes kernel launches via the stream the caller supplies — this impl
-// only asserts that the *handle metadata* is shareable across threads.
+// so concurrent reads are race-free at the Rust level. `func_names` IS
+// written after init (once per kernel lookup) and is a `Mutex` for exactly
+// that reason. CUDA itself serializes kernel launches via the stream the
+// caller supplies, so this impl only asserts that the *handle metadata* is
+// shareable across threads.
 unsafe impl Send for AvarokRegistry {}
 unsafe impl Sync for AvarokRegistry {}
 
@@ -201,6 +171,7 @@ impl AvarokRegistry {
 
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
+        let mut binary_kernels = BinaryKernels::new();
         for &(name, blob) in kernel_blobs {
             // NVIDIA emits PTX (ASCII text); SCALE/AMD (gfx1151) and HIP
             // emit a binary code object (ELF / clang offload bundle).
@@ -210,6 +181,12 @@ impl AvarokRegistry {
             let is_binary = blob.starts_with(b"\x7fELF")
                 || blob.starts_with(b"__CLANG_OFFLOAD_BUNDLE__")
                 || std::str::from_utf8(&blob[..blob.len().min(64)]).is_err();
+
+            // Which kernels does this code object actually define? Read once,
+            // here, while the blob is in hand.
+            if is_binary {
+                binary_kernels.scan(name, blob);
+            }
 
             // Load via cudarc (safe API) — backs `function()` lookups.
             let ptx = if is_binary {
@@ -237,10 +214,14 @@ impl AvarokRegistry {
             modules.insert(name, module);
         }
 
+        binary_kernels.report();
+
         Ok(AvarokRegistry {
             host,
             modules,
             raw_modules,
+            binary_kernels,
+            func_names: KernelNames::new(),
         })
     }
 
@@ -250,6 +231,7 @@ impl AvarokRegistry {
             .modules
             .get(module_name)
             .ok_or_else(|| AvarokError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        self.binary_kernels.reject(module_name, func_name)?;
         module
             .load_function(func_name)
             .map_err(|e| AvarokError::ModuleLoad(format!("{module_name}::{func_name}: {e}")))
@@ -290,6 +272,7 @@ impl AvarokRegistry {
             .raw_modules
             .get(module_name)
             .ok_or_else(|| AvarokError::ModuleLoad(format!("Module '{module_name}' not loaded")))?;
+        self.binary_kernels.reject(module_name, func_name)?;
         let c_name = CString::new(func_name).map_err(|e| {
             AvarokError::ModuleLoad(format!("{module_name}::{func_name}: CString: {e}"))
         })?;
@@ -308,6 +291,11 @@ impl AvarokRegistry {
             )));
         }
         let raw = RawCudaFunc(func);
+        // Remember what this handle IS, while the names are still in scope.
+        // This is the only place the registry mints one, so the map covers
+        // every handle any launch can later fail on.
+        self.func_names
+            .record(func as u64, format!("{module_name}::{func_name}"));
         let _ = cache.set(raw);
         Ok(raw)
     }
@@ -321,7 +309,9 @@ impl AvarokRegistry {
     /// that no raw handle survives its module: the maps are torn down
     /// together, raw side first.
     pub(crate) fn unload_raw(&mut self) -> Vec<String> {
+        self.func_names.clear();
         self.raw_modules.drain().for_each(drop);
+        self.binary_kernels.clear();
         self.modules.drain().for_each(drop);
         Vec::new()
     }
@@ -447,10 +437,10 @@ impl AvarokRegistry {
                 )
             };
             if attr_status != 0 {
-                return Err(AvarokError::KernelLaunch(format!(
-                    "cuFuncSetAttribute(MAX_DYNAMIC_SHARED={}) failed: {}",
+                return Err(AvarokError::KernelLaunch(func_attribute_failure_message(
+                    &self.func_label(raw_func),
                     cfg.shared_mem_bytes,
-                    cuda_error_text(attr_status)
+                    &cuda_error_text(attr_status),
                 )));
             }
         }
@@ -470,18 +460,28 @@ impl AvarokRegistry {
             )
         };
         if status != 0 {
-            return Err(AvarokError::KernelLaunch(format!(
-                "cuLaunchKernel failed: {} (grid=[{},{},{}], block=[{},{},{}], shared_mem={})",
-                cuda_error_text(status),
-                cfg.grid_dim.0,
-                cfg.grid_dim.1,
-                cfg.grid_dim.2,
-                cfg.block_dim.0,
-                cfg.block_dim.1,
-                cfg.block_dim.2,
-                cfg.shared_mem_bytes
+            return Err(AvarokError::KernelLaunch(launch_failure_message(
+                &self.func_label(raw_func),
+                &cuda_error_text(status),
+                [cfg.grid_dim.0, cfg.grid_dim.1, cfg.grid_dim.2],
+                [cfg.block_dim.0, cfg.block_dim.1, cfg.block_dim.2],
+                cfg.shared_mem_bytes,
             )));
         }
         Ok(())
     }
+
+    /// How a raw handle should be named in a diagnostic: the
+    /// `module::kernel` it was resolved as, plus the pointer itself.
+    ///
+    /// Error paths only. It takes the `func_names` lock and allocates, which
+    /// is free where it is used (a launch has already failed) and would not
+    /// be on the launch itself.
+    pub fn func_label(&self, raw_func: RawCudaFunc) -> String {
+        self.func_names.label(raw_func.0 as u64)
+    }
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod registry_tests;

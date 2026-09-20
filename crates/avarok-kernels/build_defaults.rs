@@ -49,10 +49,11 @@ pub(crate) struct Defaults {
 ///
 /// ★ These are the values every resolver in spark-model hardcoded before this
 /// table existed, which is what makes the table additive: `kernels/metal`,
-/// `kernels/strix` and `kernels/strix-hip` declare nothing and are byte-for-
-/// byte unaffected. `kernels/gb10` declares exactly these values EXPLICITLY —
-/// not to change anything, but so the file that describes GB10 says what GB10
-/// serves with, and so `tests/target_defaults.rs` can assert the two agree.
+/// `kernels/strix`, `kernels/strix-hip` and `kernels/r9700` declare nothing
+/// and are byte-for-byte unaffected. `kernels/gb10` declares exactly these
+/// values EXPLICITLY, not to change anything, but so the file that describes
+/// GB10 says what GB10 serves with, and so `tests/target_defaults.rs` can
+/// assert the two agree.
 pub(crate) fn baseline(hw: &str) -> Defaults {
     Defaults {
         hw: hw.to_string(),
@@ -93,6 +94,8 @@ pub(crate) fn baseline(hw: &str) -> Defaults {
 /// caller hardcoded. A target that says nothing therefore resolves exactly as
 /// it did, including `kernels/metal`, `kernels/strix` and
 /// `kernels/strix-hip`, whose SM/CU counts this number does not describe.
+/// `kernels/r9700` left that list when a real board reported 32
+/// multiprocessors (its WGP count) against this 48.
 pub(crate) const BASELINE_SM_COUNT: u32 = 48;
 
 /// `[hardware] sm_count`, or [`BASELINE_SM_COUNT`].

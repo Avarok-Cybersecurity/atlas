@@ -355,6 +355,24 @@ pub(crate) fn load_model(
         ptx_set.modules.len(),
     );
 
+    // --text-only: the OPERATOR asking for the same thing the kernel-target check
+    // below asks for on the target's behalf. Both reach it the same way, by
+    // clearing `config.vision` before the weight store is built, because that field
+    // is what `load_vision_encoder` reads, what `skip_vision` is derived from
+    // and what the API's image-input check consults. Setting it here means the
+    // tower is never read from disk rather than read, ignored and reclaimed.
+    if args.text_only {
+        if config.vision.is_some() {
+            tracing::info!(
+                "--text-only: dropping this checkpoint's vision tower before load. \
+                 Image and video inputs will be refused with a 400."
+            );
+            config.vision = None;
+        } else {
+            tracing::info!("--text-only: this checkpoint has no vision tower; nothing to drop.");
+        }
+    }
+
     // Text-only kernel target + a checkpoint that ships a vision tower: honor the
     // TARGET spec and serve text-only rather than failing the build at
     // `vision_encoder module not loaded`. Some VL checkpoints (e.g.
@@ -462,13 +480,39 @@ pub(crate) fn load_model(
     // CUDA-only: Apple Silicon UMA already exposes `currentAllocatedSize`
     // and the OS handles memory pressure via Metal's working-set policy,
     // so the dedicated watchdog isn't needed.
+    //
+    // The 2 GB threshold is a unified-memory number: on GB10 the GPU pool is
+    // the system's RAM, so "GPU free < 2 GB" means the host is about to lock
+    // up. On a discrete board (kernels/r9700, 32 GB of dedicated VRAM) the
+    // same reading is an ordinary allocation about to fail with an error, and
+    // exit(1) three polls later hides which allocation it was. AVAROK_OOM_WATCHDOG_MB
+    // overrides the threshold in MB; 0 disables the watchdog so the real
+    // allocation failure surfaces instead. Default unchanged.
     #[cfg(feature = "cuda")]
-    let _oom_watchdog = spark_runtime::cuda_backend::spawn_oom_watchdog(
-        2048, // 2 GB threshold
-        std::time::Duration::from_secs(2),
-    );
+    let oom_watchdog_mb: usize = std::env::var("AVAROK_OOM_WATCHDOG_MB")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(2048);
     #[cfg(feature = "cuda")]
-    tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
+    let _oom_watchdog = if oom_watchdog_mb == 0 {
+        tracing::warn!(
+            "OOM watchdog DISABLED (AVAROK_OOM_WATCHDOG_MB=0); a GPU OOM will surface as an \
+             allocation error instead of an early exit. Do not use on unified-memory boards."
+        );
+        None
+    } else {
+        spark_runtime::cuda_backend::spawn_oom_watchdog(
+            oom_watchdog_mb,
+            std::time::Duration::from_secs(2),
+        )
+    };
+    #[cfg(feature = "cuda")]
+    if oom_watchdog_mb != 0 {
+        tracing::info!(
+            "OOM watchdog started (threshold: {} MB, interval: 2s)",
+            oom_watchdog_mb
+        );
+    }
 
     // FP8 KV calibration precedence (highest wins): an explicit
     // --fp8-kv-calibration-tokens ALWAYS wins — including 0, which

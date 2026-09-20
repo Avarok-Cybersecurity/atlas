@@ -143,11 +143,15 @@ pub fn detect_nvfp4_variant(
             format!("{pfx}.mlp.gate_proj.weight"),
             format!("{pfx}.self_attn.q_proj.weight"),
         ] {
-            if store
-                .get(&key)
-                .map(|w| w.dtype == WeightDtype::FP8E4M3)
-                .unwrap_or(false)
-            {
+            // `checkpoint_dtype`, not `get`: this asks what the FILE ships.
+            // Under `AVAROK_LOAD_RELEASE_SOURCES` the loader frees exactly
+            // these projections once it has requantised them, and this
+            // function is called again afterwards (`load_mtp_weights`,
+            // `prune_after_load`, `detect_quant_format`). Probing through
+            // `get` would make a block-FP8 compressed-tensors checkpoint
+            // detect as `Fp8Dequanted` before the layer loop and `Standard`
+            // after it.
+            if store.checkpoint_dtype(&key) == Some(WeightDtype::FP8E4M3) {
                 return Nvfp4Variant::Fp8Dequanted;
             }
         }
@@ -329,7 +333,19 @@ pub(crate) fn quantized_any(
             // `quantized_any`) holds BOTH the ~60GB BF16 experts AND the ~22GB
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
-            gpu.free(w.ptr)?;
+            //
+            // THROUGH THE STORE, because `w` came straight from `store.get`,
+            // this is the store's own pointer, not an intermediate. The free is
+            // right, for the reason above; the ROUTE was wrong. A bare
+            // `gpu.free` left the entry listed, so teardown freed the same
+            // pointer a second time, on EVERY `Bf16Raw` checkpoint, which is
+            // every raw BF16 fine-tune Atlas serves.
+            // `release_tensor` frees the identical pointer and records it, so
+            // `free_matching` and teardown skip it and a later reader gets a
+            // named error instead of reused memory. Residency is unchanged to
+            // the byte. See docs/porting/r9700-residency.md, "Two latent
+            // double-frees this accounting surfaced".
+            store.release_tensor(gpu, &format!("{prefix}.weight"))?;
             T_FREE.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let c = N.fetch_add(1, Ordering::Relaxed) + 1;
             if c.is_multiple_of(512) {

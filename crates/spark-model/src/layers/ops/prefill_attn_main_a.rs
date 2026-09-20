@@ -137,8 +137,10 @@ pub fn prefill_attention_64(
     // MUST match the kernel's BR64, else CTAs are spaced 64 rows apart while each
     // writes only 32 → query rows 32..63 of every 64-row band are silently left
     // unwritten (gross attention corruption for any prompt >32 tokens). cfg!
-    // (avarok_scale) is set for both `strix` and `strix-hip`; NVIDIA keeps 64
-    // (byte-identical). See the @human-review note in inferspark_prefill.cu.
+    // (avarok_scale) is set for every `vendor = "amd"`/`"hip"` target, matching
+    // the kernel's own `__SCALE__`/`__HIP_PLATFORM_AMD__` gate rather than a
+    // directory name; NVIDIA keeps 64 (byte-identical). See the @human-review
+    // note in inferspark_prefill.cu.
     let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])

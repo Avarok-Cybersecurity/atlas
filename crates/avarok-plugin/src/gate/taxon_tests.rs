@@ -110,6 +110,20 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "hopper/qwen3.8-27b/nvfp4",
             "metal/nllb-200-3.3b/bf16",
             "metal/qwen3-5-4b-vlm-mlx-int8/mlx_int8",
+            // r9700 (gfx1201). Same shape as the strix rows below: sources are
+            // symlinks into gb10's and `sources()` follows them, and qwen3.8-27b
+            // resolves through `kernel_source = "qwen3.6-27b"` to this target's
+            // own 3.6 tree, exactly as gb10's and hopper's 3.8 rows do. The two
+            // small models redirect the same way for a different reason: gb10's
+            // own holo-3.1-4b/nvfp4 and ornith-1.0-9b/nvfp4 are one shared fork
+            // of the 3.6 tree, two of whose six files do not compile for
+            // gfx1201, so this target compiles its 3.6 tree for them instead.
+            // They therefore resolve the SAME source set as the two rows below
+            // them, which is correct and is what a redirect means.
+            "r9700/holo-3.1-4b/nvfp4",
+            "r9700/ornith-1.0-9b/nvfp4",
+            "r9700/qwen3.6-27b/nvfp4",
+            "r9700/qwen3.8-27b/nvfp4",
             "strix/qwen3.6-27b/nvfp4",
             "strix/qwen3.6-35b-a3b/nvfp4",
             "strix-hip/qwen3.6-27b/nvfp4",

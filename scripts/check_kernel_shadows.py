@@ -18,10 +18,23 @@ that mechanism against the two defects that silently corrupt a build:
     is a relative symlink to one canonical file (see
     kernels/gb10/holo-3.1-4b/nvfp4/).
 
-  RULE 3 (undeclared common/ override): a REGULAR file in an INHERITING
-    target's `common/` -- kernels/hopper and kernels/b200, whose entries are
-    otherwise relative symlinks into kernels/gb10/common -- that the target's
-    HARDWARE.toml does not list in `[kernels] overrides`.
+  RULE 3 (undeclared common/ override, undeclared common/ OMISSION): a
+    REGULAR file in an INHERITING target's `common/` -- kernels/hopper,
+    kernels/b200 and kernels/r9700, whose entries are otherwise relative
+    symlinks into kernels/gb10/common -- that the target's HARDWARE.toml does
+    not list in `[kernels] overrides`; and, the mirror image, an entry the
+    origin has that the mirror does NOT carry and that the same HARDWARE.toml
+    does not list in `[kernels] absent`.
+
+    The omission half is what kernels/r9700 is for. Its mirror is SUBTRACTIVE:
+    ten .cu and one header of kernels/gb10/common do not compile with SCALE
+    1.7.1 for gfx1201, so they are not linked, and each is declared
+    `[expected_absent]` in the MODEL.tomls so the boot audit accepts the gap.
+    Silence is not available as a third option: the curated 99-entry tree that
+    preceded the mirror was missing dense_gemv_bf16_batch2 by nothing more
+    than not having been updated when gb10 gained it, and the only signal was
+    a model build that died at "Module 'dense_gemv_bf16_batch2' not loaded".
+    An undeclared omission now fails here instead.
 
     Maintainer rule, 2026-09-11 (tbraun96): "symlinks are fine provided the
     pointed-to gb10 file is not edited when iterating on Hopper; Hopper-tuned
@@ -71,6 +84,7 @@ HW_SOURCE_EXT = {
     "gb10": "cu",
     "hopper": "cu",
     "metal": "metal",
+    "r9700": "cu",
     "strix": "cu",
     "strix-hip": "cu",
 }
@@ -78,31 +92,43 @@ HW_SOURCE_EXT = {
 
 # Hardware trees whose `common/` MIRRORS another tree's: {mirror: origin}.
 # They compile the origin's kernels through relative symlinks, so a regular
-# file in their common/ is an override and must be declared. SSOT shared with
-# crates/avarok-kernels/tests/support/inherited.rs `INHERITED`; adding a target
-# means adding it in both, which is the moment to decide what it inherits.
+# file in their common/ is an override and must be declared, and an origin
+# entry they do not carry is an omission and must be declared too.
+#
+# crates/avarok-kernels/tests/support/inherited.rs `INHERITED` is the Rust-side
+# list and it is a SUBSET of this one, deliberately: it asserts vendor =
+# "nvidia" and drives the Hopper/B200 campaign's HARDWARE.toml and MODEL.toml
+# parity checks, none of which describe an AMD/SCALE target. r9700 mirrors the
+# same origin and gets the same structural guard here; adding a target to
+# either list is the moment to decide whether it belongs in the other.
 MIRRORED_COMMON = {
     "b200": "gb10",
     "hopper": "gb10",
+    "r9700": "gb10",
 }
 
 
-def declared_overrides(hw_dir: Path) -> set[str]:
-    """`[kernels] overrides` from one HARDWARE.toml, as file names."""
+def declared_kernels(hw_dir: Path, key: str) -> set[str]:
+    """`[kernels] <key>` from one HARDWARE.toml, as file names."""
     path = hw_dir / "HARDWARE.toml"
     if not path.is_file():
         return set()
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    return set(data.get("kernels", {}).get("overrides", []))
+    return set(data.get("kernels", {}).get(key, []))
 
 
-def check_common_overrides(hw_name: str, hw_dir: Path) -> tuple[list[str], list[str]]:
-    """RULE 3 for one mirrored tree. Returns (violations, override names)."""
+def check_common_overrides(
+    hw_name: str, hw_dir: Path
+) -> tuple[list[str], list[str], list[str]]:
+    """RULE 3 for one mirrored tree.
+
+    Returns (violations, override names, declared omissions).
+    """
     common = hw_dir / "common"
     if not common.is_dir():
-        return ([f"RULE3 {hw_name}: no common/ directory to check"], [])
-    declared = declared_overrides(hw_dir)
+        return ([f"RULE3 {hw_name}: no common/ directory to check"], [], [])
+    declared = declared_kernels(hw_dir, "overrides")
     violations = []
     real = {f.name for f in sorted(common.iterdir()) if not f.is_symlink() and f.is_file()}
     for undeclared in sorted(real - declared):
@@ -140,7 +166,35 @@ def check_common_overrides(hw_name: str, hw_dir: Path) -> tuple[list[str], list[
             reported.append(f"{name} ({shape}) -> {os.readlink(path)}")
         else:
             reported.append(f"{name} ({shape}, own source)")
-    return (violations, reported)
+
+    # The OMISSION half. `origin - mirror` is what this target does not
+    # compile; `[kernels] absent` is what it says it does not compile. They
+    # must be the same set. An entry only in the first is the silent-shrink
+    # defect (a gb10 kernel that never got a link); an entry only in the
+    # second is a declaration that has outlived its reason -- the file came
+    # back, or the origin dropped it -- and both are reported.
+    origin_dir = hw_dir.parent / MIRRORED_COMMON[hw_name] / "common"
+    origin_names = {f.name for f in origin_dir.iterdir()} if origin_dir.is_dir() else set()
+    mirrored = {f.name for f in common.iterdir()}
+    missing = origin_names - mirrored
+    absent = declared_kernels(hw_dir, "absent")
+    for undeclared in sorted(missing - absent):
+        violations.append(
+            f"RULE3 {hw_name}: {MIRRORED_COMMON[hw_name]}/common/{undeclared} has "
+            f"no counterpart in kernels/{hw_name}/common and is not listed in "
+            f"kernels/{hw_name}/HARDWARE.toml [kernels] absent. A mirror that "
+            f"silently carries fewer kernels than its origin is the defect that "
+            f"took down the r9700 qwen3.8-27b model build -- link it, or declare "
+            f"it absent with the compiler error that justifies the omission."
+        )
+    for stale in sorted(absent - missing):
+        violations.append(
+            f"RULE3 {hw_name}: common/{stale} is listed in [kernels] absent but "
+            f"is not missing from this mirror (either it is linked here now, or "
+            f"{MIRRORED_COMMON[hw_name]}/common no longer has it) -- drop the "
+            f"declaration"
+        )
+    return (violations, reported, sorted(missing))
 
 
 def content_hash(path: Path) -> str:
@@ -223,13 +277,15 @@ def main() -> int:
 
     violations = []
     overrides_by_hw: dict[str, list[str]] = {}
+    omissions_by_hw: dict[str, list[str]] = {}
     for hw_name, ext in sorted(HW_SOURCE_EXT.items()):
         hw_dir = kernels_root / hw_name
         violations.extend(check_hw(hw_name, hw_dir, ext))
         if hw_name in MIRRORED_COMMON:
-            hw_violations, overrides = check_common_overrides(hw_name, hw_dir)
+            hw_violations, overrides, omissions = check_common_overrides(hw_name, hw_dir)
             violations.extend(hw_violations)
             overrides_by_hw[hw_name] = overrides
+            omissions_by_hw[hw_name] = omissions
 
     if violations:
         print(f"kernel shadow structure: {len(violations)} violation(s)")
@@ -256,7 +312,23 @@ def main() -> int:
             for entry in overrides:
                 print(f"      {entry}")
         else:
-            print(f"  {hw_name}/common inherits every kernel from {origin}/common")
+            print(f"  {hw_name}/common declares no override of {origin}/common")
+    # And which entries it does NOT carry. Printed even when the list is empty,
+    # because "this mirror is complete" is the claim a reader most wants
+    # confirmed and an absent line reads as an unasked question.
+    for hw_name in sorted(omissions_by_hw):
+        omissions = omissions_by_hw[hw_name]
+        origin = MIRRORED_COMMON[hw_name]
+        if omissions:
+            print(
+                f"  {hw_name}/common omits {len(omissions)} {origin}/common "
+                f"entr{'y' if len(omissions) == 1 else 'ies'}, each declared in "
+                f"kernels/{hw_name}/HARDWARE.toml [kernels] absent:"
+            )
+            for name in omissions:
+                print(f"      {name}")
+        else:
+            print(f"  {hw_name}/common carries every {origin}/common entry")
     return 0
 
 

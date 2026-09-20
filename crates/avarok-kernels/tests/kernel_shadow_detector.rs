@@ -36,6 +36,7 @@ const HW_SOURCE_EXT: &[(&str, &str)] = &[
     ("gb10", "cu"),
     ("hopper", "cu"),
     ("metal", "metal"),
+    ("r9700", "cu"),
     ("strix", "cu"),
     ("strix-hip", "cu"),
 ];

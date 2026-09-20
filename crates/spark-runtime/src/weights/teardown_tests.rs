@@ -158,3 +158,117 @@ fn releasing_twice_is_harmless_for_derived_buffers() {
     store.release(&gpu).expect("released again");
     assert_eq!(gpu.alloc_count(), 0);
 }
+
+// ── release-on-consume (`release_tensor`) ────────────────────────────────
+//
+// The invariant every one of these guards: a released tensor's pointer is
+// freed memory. It must never be handed out, never be freed a second time,
+// and never be counted as resident.
+
+#[test]
+fn release_tensor_frees_the_allocation_and_reports_the_bytes() {
+    let gpu = MockGpuBackend::new();
+    let store = store_with(&gpu, 3);
+    assert_eq!(gpu.alloc_count(), 3);
+    // 16 x 16 BF16 = 512 bytes, not the 1024 the mock was asked for: the
+    // ledger's number is the SHAPE, which is what the residency table adds up.
+    assert_eq!(store.release_tensor(&gpu, "w1").expect("released"), 512);
+    assert_eq!(gpu.alloc_count(), 2, "exactly one allocation went away");
+    assert_eq!(store.released_count(), 1);
+    assert_eq!(store.released_bytes(), 512);
+}
+
+#[test]
+fn a_released_tensor_is_reported_as_released_not_as_missing() {
+    let gpu = MockGpuBackend::new();
+    let store = store_with(&gpu, 2);
+    store.release_tensor(&gpu, "w0").expect("released");
+    let msg = match store.get("w0") {
+        Ok(_) => panic!("a freed pointer must not be handed out"),
+        Err(e) => format!("{e}"),
+    };
+    assert!(msg.contains("RELEASED"), "got: {msg}");
+    assert!(
+        msg.contains("AVAROK_LOAD_RELEASE_SOURCES"),
+        "the message must name the knob that turns this off: {msg}"
+    );
+    // And a genuinely absent name still says so, so the two faults stay
+    // distinguishable in a log.
+    let missing = match store.get("nope") {
+        Ok(_) => panic!("an absent name must not resolve"),
+        Err(e) => format!("{e}"),
+    };
+    assert!(missing.contains("not found in store"), "got: {missing}");
+}
+
+#[test]
+fn a_released_tensor_leaves_contains_len_and_resident_bytes() {
+    let gpu = MockGpuBackend::new();
+    let store = store_with(&gpu, 4);
+    assert_eq!(store.resident_bytes(), 4 * 512);
+    store.release_tensor(&gpu, "w2").expect("released");
+    assert!(
+        !store.contains("w2"),
+        "a caller deciding whether to read it gets 'no'"
+    );
+    assert!(store.contains("w3"));
+    assert_eq!(store.len(), 3);
+    assert_eq!(store.resident_bytes(), 3 * 512);
+    assert_eq!(store.total_bytes(), 3 * 512);
+    let names: Vec<&str> = store.names().collect();
+    assert_eq!(names.len(), 3);
+    assert!(!names.contains(&"w2"));
+}
+
+#[test]
+fn releasing_the_same_name_twice_frees_once() {
+    let gpu = MockGpuBackend::new();
+    let store = store_with(&gpu, 2);
+    assert_eq!(store.release_tensor(&gpu, "w0").expect("first"), 512);
+    assert_eq!(
+        store.release_tensor(&gpu, "w0").expect("second"),
+        0,
+        "the second call must be a no-op, not a double free"
+    );
+    assert_eq!(gpu.alloc_count(), 1);
+    assert_eq!(
+        store.released_bytes(),
+        512,
+        "and must not be double counted"
+    );
+}
+
+#[test]
+fn releasing_an_unknown_name_is_a_no_op() {
+    let gpu = MockGpuBackend::new();
+    let store = store_with(&gpu, 1);
+    assert_eq!(store.release_tensor(&gpu, "not-here").expect("ok"), 0);
+    assert_eq!(gpu.alloc_count(), 1);
+    assert_eq!(store.released_count(), 0);
+}
+
+/// Teardown is where a double free would actually fire: the map still holds
+/// the entry, so a `release` that did not filter would free it again.
+#[test]
+fn teardown_does_not_free_a_tensor_that_was_released_on_consume() {
+    let gpu = MockGpuBackend::new();
+    let mut store = store_with(&gpu, 5);
+    store.release_tensor(&gpu, "w0").expect("released");
+    store.release_tensor(&gpu, "w4").expect("released");
+    assert_eq!(gpu.alloc_count(), 3);
+    store.release(&gpu).expect("teardown");
+    assert_eq!(gpu.alloc_count(), 0, "the remaining three, and only those");
+}
+
+/// `prune_after_load` builds its doomed set from checkpoint NAMES and has no
+/// way to know a release site already claimed one.
+#[test]
+fn free_matching_skips_a_tensor_that_was_released_on_consume() {
+    let gpu = MockGpuBackend::new();
+    let mut store = store_with(&gpu, 4);
+    store.release_tensor(&gpu, "w1").expect("released");
+    let (count, bytes) = store.free_matching(&gpu, |_| true).expect("pruned");
+    assert_eq!(count, 3, "w1 was already gone");
+    assert_eq!(bytes, 3 * 512);
+    assert_eq!(gpu.alloc_count(), 0);
+}

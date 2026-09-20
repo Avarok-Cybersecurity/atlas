@@ -265,10 +265,21 @@ fn ffn_gateup_fused_selected(
 pub mod fp8_residency;
 mod loaders_b;
 pub mod predicted_residency;
+// Release-on-consume: which checkpoint tensors this loader frees during the
+// layer loop, why each is provably dead, and the residency line it is judged
+// on. Measured basis: `docs/porting/r9700-residency.md`.
+mod release_sources;
 mod rowwise_fp8;
+// The second weight layout: whether this loader builds the transposed prefill
+// copy of every quantised projection, what declining costs in prefill
+// throughput, and the per-consumer proof that every one of them tolerates a
+// `None` twin. Measured basis: `docs/porting/r9700-residency.md`.
+mod transposed_twins;
 
 use crate::layers::qwen3_attention::Fp8TwinSet;
 use fp8_residency::{DerivedResidency, RouteEnv};
+use release_sources::SourceReleaser;
+use transposed_twins::TwinPlan;
 
 pub struct Qwen35DenseWeightLoader;
 
@@ -369,6 +380,19 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // `fp8_residency.rs`.
         let route_env = RouteEnv::from_env();
         let mut residency = DerivedResidency::default();
+        // Release-on-consume. Default ON under `cfg!(avarok_scale)`, OFF
+        // otherwise: an NVIDIA build with AVAROK_LOAD_RELEASE_SOURCES unset
+        // takes every branch below as `false` and allocates and frees exactly
+        // what it did before this existed. `release_sources.rs` carries the
+        // soundness rule and the R9700 measurement that motivates it.
+        let mut releaser = SourceReleaser::new();
+        // The second layout, decided ONCE before any layer allocates. Under
+        // `auto` this reads `free_memory()` at the only moment the question has
+        // a stable answer: the checkpoint is resident and nothing layer-owned
+        // exists yet. `transposed_twins.rs` carries the per-consumer proof that
+        // a `None` twin degrades to the untransposed GEMM rather than launching
+        // on a null pointer, and the prefill cost of taking that fallback.
+        let twins = TwinPlan::resolve(config, &layer_types, gpu);
 
         for (i, lt) in layer_types.iter().enumerate() {
             if i % 8 == 0 {
@@ -462,7 +486,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             let ffn_nvfp4 = !ffn_q2 && plan.ffn_nvfp4;
             let ffn_weights = if ffn_nvfp4 {
                 load_dense_ffn(
-                    store, &lp, gpu, variant, absmax_k, quantize_k, stream, config,
+                    store,
+                    &lp,
+                    gpu,
+                    variant,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                    config,
+                    twins.build,
                 )?
             } else {
                 // NULL NVFP4 fallback. Packed-Q2 (Tier-1c): decode uses the
@@ -483,6 +515,34 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                 }
             };
             residency.twins.ffn_nvfp4 |= ffn_nvfp4;
+            // The three `_t` copies `load_dense_ffn` did NOT build. Tallied
+            // here rather than inside it so the loader's own "not built" line
+            // prices the twin lever the same way it prices the #915 plan.
+            if ffn_nvfp4 && !twins.build {
+                residency.skip(transposed_twins::ffn_twin_bytes(h, ffn_inter(config)));
+            }
+            // RELEASE SITE 1, dense FFN. On a mixed-precision checkpoint the
+            // tail layers (56..63 of Qwen3.8-27B) ship gate/up/down as FP8
+            // E4M3 with a per-row scale inside an otherwise-NVFP4 net;
+            // `quantized_any` detects that per key and routes them through
+            // `quantized_from_fp8`, which dequants to BF16, requantises to
+            // NVFP4 and frees its own intermediate. `DenseFfnWeights` then
+            // holds only the NVFP4 result and its transposed twin, so the
+            // checkpoint's E4M3 bytes are dead. 1.99 GiB across the eight.
+            //
+            // GUARDED on `!ffn_fp8`: `load_ffn_fp8` below binds `.weight`
+            // ZERO-COPY, and `AVAROK_DENSE_FP8_KEEP_NVFP4` is a state where
+            // BOTH `ffn_nvfp4` and `ffn_fp8` are true. Guarded on `!ffn_q2`
+            // for the same reason: `set_q2_weights` borrows the store's
+            // packed blocks. The packed-NVFP4 layers are not claimed at all:
+            // they have no `.weight` key, so `consumed_fp8_source` says no.
+            if ffn_nvfp4 && !ffn_fp8 && !ffn_q2 {
+                let projs: Vec<String> = ["gate_proj", "up_proj", "down_proj"]
+                    .iter()
+                    .map(|n| format!("{lp}.mlp.{n}"))
+                    .collect();
+                releaser.release_projections(store, gpu, stream, &projs)?;
+            }
             let mut dffn = DenseFfnLayer::new(ffn_weights, gpu)?;
             if ffn_q2 {
                 dffn.set_q2_weights(
@@ -583,7 +643,17 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
             // was given; the adapter itself is installed later (build step 8),
             // so this is the only point where the decision can be made before
             // the twins are freed.
-            if config.adapter_max_rank == 0 {
+            //
+            // ALSO SKIPPED when the transposed twins were not built. This
+            // finalize is residency-NEUTRAL only because it frees the `_t`
+            // copies it makes dead; with no twins to free it is a pure ADD of
+            // one repacked gate/up (and down) copy per layer, which is the same
+            // order as the 8.96 GiB the twin lever just declined to spend. On a
+            // board that cannot fit the second layout it cannot fit this one
+            // either, and the FP4-MMQ arm is a prefill optimisation on a serve
+            // that has already accepted slow prefill. `AVAROK_LOAD_TRANSPOSED_TWINS=1`
+            // restores both together.
+            if config.adapter_max_rank == 0 && twins.build {
                 dffn.finalize_nvfp4_mmq_load(
                     gpu,
                     h as u32,
@@ -694,6 +764,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         Nvfp4Variant::CompressedTensors => {
                             // NVFP4-from-disk path: column-parallel Q/K/V, row-parallel O.
                             let group_size = 16usize;
+                            // See RELEASE SITE 2 below. `Cell` because the
+                            // closure is an `Fn` handed to `load_qkvo_tp`, so
+                            // it cannot hold `&mut SourceReleaser`.
+                            let leaked_here = std::cell::Cell::new(0usize);
                             let load_nvfp4 = |name: &str,
                                               full_n: usize,
                                               full_k: usize,
@@ -715,7 +789,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 } else {
                                     let dense_bf16 =
                                         dense_auto(store, &format!("{prefix}.weight"), gpu)?;
-                                    quantize_to_nvfp4(
+                                    let q = quantize_to_nvfp4(
                                         &dense_bf16,
                                         full_n,
                                         full_k,
@@ -723,7 +797,51 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                         absmax_k,
                                         quantize_k,
                                         stream,
-                                    )?
+                                    )?;
+                                    // THE LEAK, FIXED UNCONDITIONALLY. Every
+                                    // sibling site frees its dequant
+                                    // intermediate (the
+                                    // `Standard | Fp8Dequanted` attention arm
+                                    // below, the SSM path,
+                                    // `quantized_from_fp8` and the `Bf16Raw`
+                                    // arm of `quantized_any`), and this one
+                                    // never did: 200 MiB per full-attention
+                                    // layer, 3.12 GiB across the sixteen, on
+                                    // every target including NVIDIA, and the
+                                    // 28 stale `quant_helpers.rs:98`
+                                    // allocations the R9700 allocation ledger
+                                    // shows at layer 28.
+                                    //
+                                    // It is not gated on
+                                    // `AVAROK_LOAD_RELEASE_SOURCES`, because
+                                    // what "byte-identical on NVIDIA" protects
+                                    // is which values the GEMMs read, and this
+                                    // buffer has no reader: `quantize_to_nvfp4`
+                                    // has already consumed it into a fresh
+                                    // NVFP4 allocation and `AttentionWeights`
+                                    // keeps only that result and the two norm
+                                    // pointers.
+                                    //
+                                    // ORDERING: `quantize_to_nvfp4`
+                                    // synchronizes `stream` before returning
+                                    // (loaders_fp8.rs:247) and the dequant was
+                                    // enqueued on the same stream, so the
+                                    // buffer is idle here.
+                                    //
+                                    // THE FP8 TEST STAYS, and it is not the
+                                    // knob in disguise: it is what proves
+                                    // `dense_bf16` is a FRESH allocation rather
+                                    // than the store's own pointer, which
+                                    // `dense_auto` returns uncopied for a BF16
+                                    // tensor. Freeing it on a BF16 checkpoint
+                                    // would be the double free the two sites
+                                    // below were just routed through
+                                    // `release_tensor` to avoid.
+                                    if release_sources::consumed_fp8_source(store, &prefix) {
+                                        gpu.free(dense_bf16.weight)?;
+                                        leaked_here.set(leaked_here.get() + full_n * full_k * 2);
+                                    }
+                                    q
                                 };
                                 if tp_size == 1 {
                                     return Ok(src);
@@ -736,6 +854,29 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 Ok(sharded)
                             };
                             let [q, k, v, o] = load_qkvo_tp(config, load_nvfp4)?;
+                            releaser.note_leaked_free(leaked_here.get());
+                            // RELEASE SITE 2, attention q/k/v/o. The four
+                            // projections of this checkpoint family are FP8
+                            // E4M3 with a per-CHANNEL `[N,1]` scale and carry
+                            // no `weight_packed`, so the arm above dequanted
+                            // and requantised every one of them.
+                            // `AttentionWeights` keeps the NVFP4 result and the
+                            // two norm pointers; nothing aliases the E4M3
+                            // bytes. 1.56 GiB across the sixteen layers.
+                            //
+                            // No `attn_fp8` guard is needed here and one would
+                            // be misleading: the FP8 overlay requires
+                            // `Nvfp4Variant::Fp8Dequanted`, so it cannot be
+                            // live inside this `CompressedTensors` arm. The
+                            // `Fp8Dequanted` attention arms are deliberately
+                            // NOT release sites for that reason.
+                            {
+                                let projs: Vec<String> = ["q_proj", "k_proj", "v_proj", "o_proj"]
+                                    .iter()
+                                    .map(|n| format!("{p}.{n}"))
+                                    .collect();
+                                releaser.release_projections(store, gpu, stream, &projs)?;
+                            }
                             let dummy = DenseWeight {
                                 weight: spark_runtime::gpu::DevicePtr::NULL,
                             };
@@ -975,7 +1116,17 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // of prefill GPU time on the base w4a16_gemm path; ~1.3x e2e).
                     // predequant_for_prefill() is deliberately NOT called: the FP8
                     // predequant route is slower for these bandwidth-bound GEMMs.
-                    if let (Some(qw), Some(kw), Some(vw)) = (q_nvfp4, k_nvfp4, v_nvfp4) {
+                    //
+                    // `twins.build` gates the whole block, the fused `[q|k|v]`
+                    // copy included. With it false every reader falls back:
+                    // `prefill/paged_qkv.rs`, `prefill/cache_skip_qkv.rs` and
+                    // `multi_seq/qkv.rs::wide_verify_gemm` all reach
+                    // `ops::w4a16_gemm` on the packed original, `paged_oproj.rs`
+                    // the same for o_proj, and the fused arm is behind
+                    // `self.qkv_nvfp4_t.is_some()`. 0.88 GiB on Qwen3.8-27B.
+                    if twins.build
+                        && let (Some(qw), Some(kw), Some(vw)) = (q_nvfp4, k_nvfp4, v_nvfp4)
+                    {
                         let (nh, hd) = (config.num_attention_heads, config.head_dim);
                         let (nkv, hh) = (config.num_key_value_heads, config.hidden_size);
                         let q_n = nh * hd * if config.attn_gated { 2 } else { 1 };
@@ -1010,6 +1161,16 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                                 "attention q/k/v have differing weight_scale_2 — fused QKV GEMM disabled (3 separate launches per layer)"
                             );
                         }
+                    }
+                    if !twins.build && q_nvfp4.is_some() {
+                        let (nh, hd) = (config.num_attention_heads, config.head_dim);
+                        let q_n = nh * hd * if config.attn_gated { 2 } else { 1 };
+                        residency.skip(transposed_twins::attn_twin_bytes(
+                            q_n,
+                            config.num_key_value_heads * hd,
+                            nh * hd,
+                            config.hidden_size,
+                        ));
                     }
                     // Native-BF16 (Bf16Raw): install the dense O-proj so decode +
                     // prefill prefer it over the (NULL) NVFP4 o_proj. Mutually
@@ -1156,9 +1317,25 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             quantize_k,
                             stream,
                         )?;
-                        let out_proj_nvfp4_t =
-                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
-                        gpu.free(out_proj_dense.weight)?;
+                        // Second layout, gated: every `out_proj_nvfp4_t` reader
+                        // (`trait_prefill_helper.rs:97`/`:261`,
+                        // `trait_decode_batched.rs:1069`/`:1159`) is behind an
+                        // `if let Some`, and `predequant_for_prefill` keys its FP8
+                        // copy off the same option. See `transposed_twins.rs`.
+                        let out_proj_nvfp4_t = twins
+                            .build
+                            .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                            .transpose()?;
+                        // Same aliasing as the main GDN path below: `dense_auto`
+                        // returns the store's pointer for a BF16 `out_proj`, and
+                        // the sidecar that dequants a Q2 checkpoint's reorder
+                        // tensors produces exactly that.
+                        release_sources::free_maybe_store_owned(
+                            store,
+                            gpu,
+                            &format!("{la}.out_proj.weight"),
+                            out_proj_dense.weight,
+                        )?;
                         let ssm = SsmWeights {
                             in_proj_qkvz: DenseWeight {
                                 weight: spark_runtime::gpu::DevicePtr::NULL,
@@ -1177,7 +1354,7 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             ffn,
                             None,
                             None,
-                            Some(out_proj_nvfp4_t),
+                            out_proj_nvfp4_t,
                             config,
                             gpu,
                         )?;
@@ -1395,7 +1572,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             Nvfp4Variant::Standard,
                         )?;
                         let qkvz_nvfp4 = qkv_qw.concat_rows(&z_qw, qkv_rows, z_rows, h, gpu)?;
-                        let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                        // Second layout, gated: see `transposed_twins.rs` for the
+                        // per-consumer proof that both of these degrade to the
+                        // untransposed GEMM rather than a null launch.
+                        let qkvz_nvfp4_t = twins
+                            .build
+                            .then(|| qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h))
+                            .transpose()?;
 
                         let out_proj_nvfp4 = quantized_auto(
                             store,
@@ -1403,8 +1586,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             gpu,
                             Nvfp4Variant::Standard,
                         )?;
-                        let out_proj_nvfp4_t =
-                            out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                        let out_proj_nvfp4_t = twins
+                            .build
+                            .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                            .transpose()?;
 
                         let ssm = SsmWeights {
                             in_proj_qkvz: DenseWeight {
@@ -1423,8 +1608,8 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                             post_attn_norm,
                             ffn,
                             Some(qkvz_nvfp4),
-                            Some(qkvz_nvfp4_t),
-                            Some(out_proj_nvfp4_t),
+                            qkvz_nvfp4_t,
+                            out_proj_nvfp4_t,
                             config,
                             gpu,
                         )?;
@@ -1476,8 +1661,28 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         gpu_concat_rows(&qkv_dense, qkv_rows, &z_dense, z_rows, h, gpu)?;
                     // qkv/z BF16 are only inputs to the concat above; free them now
                     // rather than leaking them for the layer's lifetime (Atlas issue #A1).
-                    gpu.free(qkv_dense.weight)?;
-                    gpu.free(z_dense.weight)?;
+                    //
+                    // Through the store, because on a `Bf16Raw` GDN checkpoint
+                    // these ARE the store's pointers: `load_ssm_proj` falls
+                    // through to `dense_auto`, which hands back `w.ptr`
+                    // uncopied for a BF16 tensor. The free is right either
+                    // way, since the concat copied them, but done with a bare
+                    // `gpu.free` it left the store listing memory that is gone,
+                    // and teardown freed it again. `free_maybe_store_owned`
+                    // compares pointers, so a dequant output or a TP shard
+                    // still takes the plain path.
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.in_proj_qkv.weight"),
+                        qkv_dense.weight,
+                    )?;
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.in_proj_z.weight"),
+                        z_dense.weight,
+                    )?;
 
                     let ba_dense =
                         interleave_ba(&in_proj_a, &in_proj_b, dims.full_nv, dims.full_nk, h, gpu)?;
@@ -1635,7 +1840,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         stream,
                     )?;
 
-                    let qkvz_nvfp4_t = qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h)?;
+                    // Second layout, gated. 2.90 GiB across the 48 GDN layers of
+                    // Qwen3.8-27B, and dropping `out_proj_nvfp4_t` also drops the
+                    // 1.41 GiB FP8 predequant below, which
+                    // `qwen3_ssm/init_fp8.rs:110` builds only when that twin is
+                    // `Some`. See `transposed_twins.rs`.
+                    let qkvz_nvfp4_t = twins
+                        .build
+                        .then(|| qkvz_nvfp4.transpose_for_gemm(gpu, qkvz_size, h))
+                        .transpose()?;
 
                     let out_proj_nvfp4 = quantize_to_nvfp4(
                         &out_proj_dense,
@@ -1647,7 +1860,10 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         stream,
                     )?;
 
-                    let out_proj_nvfp4_t = out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim)?;
+                    let out_proj_nvfp4_t = twins
+                        .build
+                        .then(|| out_proj_nvfp4.transpose_for_gemm(gpu, h, value_dim))
+                        .transpose()?;
 
                     // Native FP8 SSM prefill GEMM: build a single-scale FP8
                     // copy of `qkvz_dense` [qkvz_size, h] and `out_proj_dense`
@@ -1690,7 +1906,40 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // inputs. Free them rather than keep a third full-precision copy of
                     // the largest SSM tensor across every layer (Atlas issue #A1).
                     gpu.free(qkvz_dense.weight)?;
-                    gpu.free(out_proj_dense.weight)?;
+                    // `qkvz_dense` above is always a fresh concat (or a fresh TP
+                    // shard of one), so it can never be the store's. `out_proj_dense`
+                    // can: same `Bf16Raw` aliasing as the two in_proj frees above.
+                    release_sources::free_maybe_store_owned(
+                        store,
+                        gpu,
+                        &format!("{la}.out_proj.weight"),
+                        out_proj_dense.weight,
+                    )?;
+
+                    // RELEASE SITE 3, GDN projections. On this checkpoint
+                    // family `in_proj_qkv`/`in_proj_z`/`out_proj` are FP8 E4M3
+                    // with a per-CHANNEL scale, which `proj_is_fp8_any_scale`
+                    // correctly refuses (a `w8a16` kernel would index it as a
+                    // `[N/128, K/128]` grid), so the native-FP8 GDN arm above
+                    // did not fire and this path dequanted all three to BF16,
+                    // concatenated, requantised to NVFP4 and has just freed
+                    // both intermediates. 5.16 GiB across the 48 layers, the
+                    // single largest item in the residency table.
+                    //
+                    // `out_proj` is EXCLUDED under `AVAROK_FP8_ROWWISE=1`:
+                    // `load_fp8_per_row` returns `weight: w.ptr`, so
+                    // `out_proj_rowwise`, installed a few lines below by
+                    // `set_fp8_rowwise_prefill_weights`, is the store's own
+                    // bytes. `qkvz_rowwise` is a `concat_fp8_per_row` COPY, so
+                    // the two in_proj tensors are dead either way.
+                    {
+                        let mut projs =
+                            vec![format!("{la}.in_proj_qkv"), format!("{la}.in_proj_z")];
+                        if out_proj_rowwise.is_none() {
+                            projs.push(format!("{la}.out_proj"));
+                        }
+                        releaser.release_projections(store, gpu, stream, &projs)?;
+                    }
 
                     let ssm = SsmWeights {
                         in_proj_qkvz: DenseWeight {
@@ -1710,11 +1959,14 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         post_attn_norm,
                         ffn,
                         Some(qkvz_nvfp4),
-                        Some(qkvz_nvfp4_t),
-                        Some(out_proj_nvfp4_t),
+                        qkvz_nvfp4_t,
+                        out_proj_nvfp4_t,
                         config,
                         gpu,
                     )?;
+                    if !twins.build {
+                        residency.skip(transposed_twins::ssm_twin_bytes(h, qkvz_size, value_dim));
+                    }
                     layer.predequant_for_prefill(gpu, config, stream)?;
                     // Install the FP8 prefill weights AFTER `predequant_for_prefill`
                     // (which sets `out_proj_fp8` from NVFP4 + scale2). The
@@ -1771,6 +2023,13 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
         // proved unreachable. Emitted unconditionally — a residency regression
         // that only shows under a debug flag is one nobody sees.
         tracing::info!("{}", residency.summary(store.resident_bytes()));
+        // The residency line of the R9700 work: the store's half and the
+        // layer-owned half of the same total, with what release-on-consume
+        // gave back named in between. `DerivedResidency` above counts only the
+        // copies THIS loader adopted; this one counts everything the ledger
+        // sees, so the two together say whether an unexplained gap exists.
+        // Emitted unconditionally, for the reason the line above gives.
+        tracing::info!("{}", releaser.summary(store, gpu));
         for (label, bytes, count) in store.derived().by_label() {
             tracing::debug!(
                 "  derived-weight owner: {:>9.1} MB x{:<5} {label}",

@@ -7,12 +7,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FLASHINFER_HOME");
     println!("cargo:rerun-if-env-changed=AVAROK_CUDA_ARCH");
     // Register the `avarok_scale` cfg so `#[cfg(avarok_scale)]` does not trip
-    // the `unexpected_cfgs` lint. `avarok_scale` selects SCALE/AMD (gfx1151)
-    // codepaths over NVIDIA ones where the CUDA driver ABI differs — e.g.
-    // SCALE's libcuda exports `cuGraphInstantiate` (not the NVIDIA-only
-    // `cuGraphInstantiateWithFlags`). Driven by the same `AVAROK_TARGET_HW`
-    // signal the avarok-kernels build uses; covers both the SCALE (`strix`)
-    // and native-HIP (`strix-hip`) AMD targets.
+    // the `unexpected_cfgs` lint. `avarok_scale` selects SCALE/AMD codepaths
+    // over NVIDIA ones where the CUDA driver ABI differs, e.g. SCALE's libcuda
+    // exports `cuGraphInstantiate` (not the NVIDIA-only
+    // `cuGraphInstantiateWithFlags`).
     println!("cargo:rustc-check-cfg=cfg(avarok_scale)");
     println!("cargo:rustc-check-cfg=cfg(avarok_cutlass)");
     println!("cargo:rustc-check-cfg=cfg(avarok_flashinfer)");
@@ -22,12 +20,31 @@ fn main() {
     // object happens to be compiled, and resolving it once is what stops the
     // CUTLASS and FlashInfer objects from disagreeing with each other or with
     // the PTX they are benchmarked against.
-    let cuda_arch = resolve_cuda_arch();
-    if std::env::var("AVAROK_TARGET_HW")
-        .as_deref()
-        .map(|hw| hw.starts_with("strix"))
-        .unwrap_or(false)
-    {
+    let hardware_toml = hardware_toml_path();
+    println!("cargo:rerun-if-changed={}", hardware_toml.display());
+    let cuda_arch = resolve_cuda_arch(&hardware_toml);
+
+    // Vendor, not name. This used to read
+    // `AVAROK_TARGET_HW.starts_with("strix")`, which made the driver-ABI
+    // choice a function of the directory name. It is a property of the
+    // toolchain: `[hardware].vendor` is what avarok-kernels/build.rs already
+    // switches `resolve_compute_target` on, so `amd` (SCALE) and `hip` (native
+    // ROCm) are exactly the targets whose libcuda is not NVIDIA's. A second
+    // SCALE target whose directory is not named "strix" (`kernels/r9700`,
+    // gfx1201) would otherwise be built against the NVIDIA driver surface and
+    // fail to link, or worse, call an entry point SCALE's libcuda does not
+    // export.
+    //
+    // Same file `resolve_cuda_arch` below reads for `-arch=`, and its
+    // `rerun-if-changed` is emitted once above for both. Behaviour is
+    // unchanged for every existing target: strix declares `amd`, strix-hip
+    // declares `hip`, gb10/hopper/b200 declare `nvidia`, metal `apple`, and an
+    // unset AVAROK_TARGET_HW still resolves to gb10, no cfg either way. An
+    // unreadable file leaves the cfg unset, as it did before.
+    if matches!(
+        hardware_vendor(&hardware_toml).as_deref(),
+        Some("amd") | Some("hip")
+    ) {
         println!("cargo:rustc-cfg=avarok_scale");
     }
 
@@ -247,23 +264,12 @@ fn build_cutlass_object(cutlass_home: std::path::PathBuf, arch: &str) {
 ///
 /// The literal survives only as the fallback for an unreadable file, announced
 /// as a `cargo:warning` rather than applied silently.
-fn resolve_cuda_arch() -> String {
+fn resolve_cuda_arch(hardware_toml: &std::path::Path) -> String {
     const FALLBACK: &str = "sm_121f";
     if let Ok(explicit) = std::env::var("AVAROK_CUDA_ARCH") {
         return explicit;
     }
-    let hw = std::env::var("AVAROK_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
-    let manifest =
-        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let hardware_toml = manifest
-        .parent()
-        .and_then(|crates| crates.parent())
-        .expect("crates/<crate> sits two levels below the workspace root")
-        .join("kernels")
-        .join(&hw)
-        .join("HARDWARE.toml");
-    println!("cargo:rerun-if-changed={}", hardware_toml.display());
-    match hardware_arch(&hardware_toml) {
+    match hardware_arch(hardware_toml) {
         Some(arch) => arch,
         None => {
             println!(
@@ -277,9 +283,33 @@ fn resolve_cuda_arch() -> String {
     }
 }
 
+/// `kernels/<AVAROK_TARGET_HW>/HARDWARE.toml`: the one hardware declaration
+/// this build reads, for both `-arch=` and the vendor cfg above. Defaults to
+/// gb10 when `AVAROK_TARGET_HW` is unset, exactly as the arch resolution did.
+fn hardware_toml_path() -> std::path::PathBuf {
+    let hw = std::env::var("AVAROK_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
+    std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("crates/<crate> sits two levels below the workspace root")
+        .join("kernels")
+        .join(&hw)
+        .join("HARDWARE.toml")
+}
+
 /// `[hardware].arch` from a `HARDWARE.toml`, or `None` if it cannot be read.
 fn hardware_arch(path: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let doc: toml::Value = text.parse().ok()?;
     Some(doc.get("hardware")?.get("arch")?.as_str()?.to_string())
+}
+
+/// `[hardware].vendor` from a `HARDWARE.toml`, or `None` if it cannot be read.
+///
+/// The compiler-family key: `nvidia` | `apple` | `amd` | `hip`, the same
+/// values `avarok-kernels/build_target.rs::resolve_compute_target` switches on.
+fn hardware_vendor(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc: toml::Value = text.parse().ok()?;
+    Some(doc.get("hardware")?.get("vendor")?.as_str()?.to_string())
 }

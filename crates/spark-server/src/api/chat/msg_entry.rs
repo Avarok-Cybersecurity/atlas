@@ -400,7 +400,11 @@ pub(super) fn build_msg_entries(
         let Some(vcfg) = vision_config else {
             return Err(openai_error_response(
                 StatusCode::BAD_REQUEST,
-                "this model does not accept image or video input (no vision config)".to_string(),
+                "this model does not accept image or video input: this serve has no vision \
+             config. Either the checkpoint ships no vision tower, or the server was \
+             started with --text-only, or the compiled kernel target has no \
+             vision_encoder module."
+                    .to_string(),
             ));
         };
         for (idx, input) in media.iter().enumerate() {
