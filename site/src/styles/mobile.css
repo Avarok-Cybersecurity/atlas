@@ -382,3 +382,21 @@ img, svg, video { max-width: 100%; }
   .nav-burger span { transition: opacity 0.18s; }
   .nav-drawer { animation: none; }
 }
+
+/* ---- cost section (all viewport rules live here, beside the dashboard's) --- */
+@media (max-width: 860px) {
+  .co-tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; max-width: 100%; }
+  /* SVG text scales with the 720-unit viewBox, like .gc-axis above. */
+  .cost-rail { font-size: 15px; }
+  .cost-lose { font-size: 16px; }
+  .cost-price-box input { width: 4.5rem; }
+}
+@media (pointer: coarse) {
+  .co-tab { min-height: 42px; }
+}
+/* The subject strip scrolls rather than squeezing: a three-word chip inside a
+   three-word label wrapped to four lines and clipped its own text at 390px. */
+@media (max-width: 860px) {
+  .co-tab { flex: 0 0 auto; white-space: nowrap; }
+  .co-chip { white-space: nowrap; }
+}

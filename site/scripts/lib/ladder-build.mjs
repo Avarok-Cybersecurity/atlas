@@ -98,6 +98,49 @@ function checkHeader(doc, file, workload) {
 }
 
 /** One rung of one series: the reps for concurrency `c` inside `doc`. */
+/**
+ * The GPU-rail energy of one rung, when the harness recorded it.
+ *
+ * Joules and tokens ADD across reps (that is why the producer stores them and
+ * not a ratio); the sample count takes the WORST rep, because the trust rule
+ * the page applies must not be flattered by a well-sampled sibling. The key
+ * names are the producer's own (`EnergyWindow::metrics`), carried unchanged so
+ * a vLLM rung and an Atlas gate cell are read by one function on the page.
+ *
+ * Three refusals, none of which can be reached by an absence:
+ *   * no rep carries energy -> the rung simply has none (PCND: absent is not
+ *     zero, and an energyless rung draws no cost point);
+ *   * SOME reps carry it -> refused, because a partial sum is not a
+ *     measurement of the rung;
+ *   * a rep's joules, tokens or window are not positive numbers -> refused by
+ *     file, series and rung.
+ */
+function rungEnergy(seriesId, c, file, reps) {
+  const where = `${file} rung C=${c} (series ${seriesId})`;
+  const carried = reps.filter((r) => r.gpu_rail_energy_j !== undefined && r.gpu_rail_energy_j !== null);
+  if (carried.length === 0) return {};
+  if (carried.length !== reps.length)
+    fail(`${where} recorded energy on ${carried.length} of ${reps.length} reps — a partial sum is not a measurement`);
+  const positive = (r, k) => {
+    const v = r[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) fail(`${where} has ${k} = ${JSON.stringify(v)}`);
+    return v;
+  };
+  const sum = (k) => reps.reduce((a, r) => a + positive(r, k), 0);
+  // A joule count is only comparable to another taken at the same cadence, so
+  // a rung whose reps disagree about it is refused rather than averaged.
+  const periods = [...new Set(reps.map((r) => r.gpu_rail_sample_period_ms).filter((v) => v !== undefined && v !== null))];
+  if (periods.length > 1) fail(`${where} mixes sampler cadences: ${periods.join(', ')} ms`);
+  const samples = reps.map((r) => r.gpu_rail_power_samples).filter((v) => typeof v === 'number');
+  return {
+    gpu_rail_energy_j: r2(sum('gpu_rail_energy_j')),
+    gpu_rail_energy_window_tokens: sum('gpu_rail_energy_window_tokens'),
+    gpu_rail_energy_window_s: r2(sum('gpu_rail_energy_window_s')),
+    ...(samples.length === reps.length ? { gpu_rail_power_samples: Math.min(...samples) } : {}),
+    ...(periods.length === 1 ? { gpu_rail_sample_period_ms: periods[0] } : {})
+  };
+}
+
 export function rungStats(seriesId, c, file, doc) {
   const rung = (doc.rungs ?? []).find((r) => r.concurrency === c);
   if (!rung) fail(`${file} has no rung for C=${c} (series ${seriesId})`);
@@ -114,6 +157,7 @@ export function rungStats(seriesId, c, file, doc) {
 
   return {
     c,
+    ...rungEnergy(seriesId, c, file, reps),
     tok_s: r2(mean(tok)),
     tok_s_median: r2(median(tok)),
     // Spread as a share of the mean: how much the rung moved run to run. A

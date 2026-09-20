@@ -438,3 +438,71 @@
 /* The in-plot baseline stamp gets the same halo as end-value labels so it
    stays legible where the Atlas line crosses it. */
 .cl-stamp { paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
+
+/* ---- cost section --------------------------------------------------------- */
+/* APPEND-ONLY. Nothing above is edited: the chart rules (.gc-*, .gate-panel)
+   and the comparison rules (.cmp-*) are reused verbatim, so the cost cards
+   share one width, one inset and one mark vocabulary with every other panel.
+   Colours are tokens only — both themes are defined by the token file, and a
+   hard-coded hue here would read correctly in exactly one of them. */
+
+/* The subject strip, prefix "co": the same level as the concurrency subject
+   strip (.cs-*), so the two tabs read as two views of one list. */
+.co-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+.co-tab {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+  padding: 0.4rem 0.8rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--t2);
+}
+.co-tab:hover { border-color: var(--accent); color: var(--t1); }
+.co-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* "energy not yet measured" is a state, not a verdict: never red, never amber. */
+.co-chip {
+  font-size: 0.6rem; font-weight: 600; letter-spacing: 0.04em; text-transform: none;
+  padding: 0.1rem 0.4rem; border-radius: 999px;
+  border: 1px solid currentColor; opacity: 0.8;
+}
+
+.cost-panel { display: grid; gap: 1rem; }
+
+/* The one input on the tab. Boxed and labelled so it reads as something the
+   reader typed, never as something that was measured. */
+.cost-price { display: grid; gap: 0.35rem; }
+.cost-price-field { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.cost-price-label {
+  font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--t3);
+}
+.cost-price-box {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--t2);
+  border: 1px dashed var(--border-strong); border-radius: 8px; padding: 0.25rem 0.55rem;
+  background: var(--card);
+}
+.cost-price-box input {
+  font: inherit; color: var(--t1); background: none; border: 0;
+  width: 5.5rem; padding: 0.1rem 0;
+}
+.cost-price-box input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cost-price-note { margin: 0; font-size: 0.74rem; color: var(--t2); line-height: 1.55; }
+.cost-price-note strong { color: var(--t1); }
+.cost-warn { color: var(--amber); }
+
+.cost-toggles { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.cost-toggle-why { font-family: var(--font-mono); font-size: 0.68rem; color: var(--t3); }
+.cost-rungs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.cmp-chip:disabled { cursor: not-allowed; opacity: 0.45; }
+
+/* The rail, stated INSIDE the plot: every mark on this axis is a lower bound
+   on the energy the machine drew, and that belongs where the marks are. */
+.cost-rail { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
+/* A losing rung's factor. Same ink as the axis: a loss is stated, not alarmed. */
+.cost-lose { fill: var(--t2); font-family: var(--font-mono); font-size: 10px; }
+
+.cost-refused { color: var(--amber); }
+.cost-disclosure { font-size: 0.74rem; color: var(--t2); line-height: 1.6; display: grid; gap: 0.4rem; }
+.cost-disclosure p { margin: 0; }
+.cost-disclosure strong { color: var(--t1); }
+.cost-provenance { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); }
