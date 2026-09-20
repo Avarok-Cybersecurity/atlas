@@ -112,3 +112,12 @@ overconfidence arXiv:2306.13063, arXiv:2305.14975 · R-Tuning arXiv:2311.09677 �
 Debate grounding arXiv:2402.06782 · Debate sycophancy arXiv:2509.23055,
 arXiv:2509.05396 · Provenance arXiv:2606.04990 · Process supervision
 arXiv:2305.20050 · CORE-Bench arXiv:2409.11363.
+
+## When the number already exists
+
+This skill runs **before** measuring. If you are holding a number someone else
+produced — or one of your own you now doubt — the forensic counterpart is
+**`measurement-artifact-oracle`** (M.A.O.). It takes the metric plus a pointer
+to the code that measured it and returns ARTIFACT / SOUND / UNDETERMINED with
+the failure class and the experiment that would settle it. Reach for it
+whenever a number is surprising, too flat, too good, or the wrong sign.
