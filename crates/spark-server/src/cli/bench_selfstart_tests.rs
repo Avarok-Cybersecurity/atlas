@@ -112,6 +112,7 @@ fn served_forever() -> (SelfServed, tokio::sync::oneshot::Receiver<()>) {
         target: TargetEndpoint::local(1, "m"),
         recipe_id: "r".to_string(),
         overrides: Default::default(),
+        resolved: Default::default(),
         baseline_entry: Default::default(),
         server: Some(server),
     };

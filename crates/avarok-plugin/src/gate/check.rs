@@ -30,7 +30,9 @@ pub enum GateStatus {
 /// by each record's own `recorded_at`. `BASELINE.json` is not a record.
 ///
 /// ★ **The filename is not a clock.** A record is named
-/// `YYYY-MM-DD-<sha>.json`, so a lexical sort orders by DATE and then by SHA —
+/// `YYYY-MM-DD-<sha>.json` (a same-day re-run that must not erase a failure
+/// is `YYYY-MM-DDTHHMMSSZ-<sha>.json` — see `record_write`), so a lexical
+/// sort orders by DATE and then by SHA —
 /// and a sha is random. Two records cut on the same UTC day therefore sorted by
 /// which hex digit happened to come first, which is exactly the situation a
 /// re-run produces: measure, commit a fix, measure again, both records dated

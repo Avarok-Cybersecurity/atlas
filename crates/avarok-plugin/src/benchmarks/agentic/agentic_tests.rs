@@ -46,11 +46,15 @@ fn defaults_are_the_gate_a_tier() {
 /// `f64::INFINITY` an earlier revision used to switch the bound off. These
 /// fixtures pin the CORRECTNESS halves and the Σwall bound; the speed bound
 /// gets its own fixtures, on measured tiers, below.
-fn with_rows(rows: Vec<IterationRow>, budget: f64) -> AgenticWebserver {
+pub(super) fn with_rows(rows: Vec<IterationRow>, budget: f64) -> AgenticWebserver {
     with_budgets(rows, budget, 0.0)
 }
 
-fn with_budgets(rows: Vec<IterationRow>, budget: f64, s_per_turn: f64) -> AgenticWebserver {
+pub(super) fn with_budgets(
+    rows: Vec<IterationRow>,
+    budget: f64,
+    s_per_turn: f64,
+) -> AgenticWebserver {
     AgenticWebserver {
         iterations: rows.len(),
         wall_budget_s: budget,
@@ -69,7 +73,7 @@ fn with_budgets(rows: Vec<IterationRow>, budget: f64, s_per_turn: f64) -> Agenti
 /// and both agentic BENCH.toml entries pin `iterations` to exactly 10, so a
 /// one-row tier would be rejected by `check_record` even when every bound here
 /// passes. Anything testing the RECORD rather than the verdict needs ten rows.
-fn tier(wall: f64, turns: usize) -> IterationRow {
+pub(super) fn tier(wall: f64, turns: usize) -> IterationRow {
     IterationRow {
         turns,
         ..row(true, true, wall)
@@ -100,6 +104,10 @@ fn row(ok: bool, steps_ok: bool, wall: f64) -> IterationRow {
         turns: 3,
         tool_calls: 9,
         completion_tokens: 300,
+        // A clean trajectory: fixtures that exercise the diagnostics set these.
+        hit_turn_cap: false,
+        truncated_turns: 0,
+        unparsed_call_turns: 0,
         note: String::new(),
     }
 }

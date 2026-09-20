@@ -54,6 +54,10 @@ pub struct SelfServed {
     /// numbers describe a config that exists nowhere in the repo, which the
     /// record must state — otherwise it reads as a measurement of the recipe.
     pub overrides: BTreeMap<String, String>,
+    /// What the serve RESOLVED, for the record's `serve_resolved` — see
+    /// `ServePlan::disclosed`. Empty only for a fixture; every real serve
+    /// comes from a plan.
+    pub resolved: BTreeMap<String, String>,
     /// The served variant's baseline entry — its committed thresholds, note
     /// and label. Carried so the run can DERIVE anything its own verdict
     /// shares with the gate (`BenchmarkDescriptor::threshold_params`) from the
@@ -74,12 +78,14 @@ impl SelfServed {
         target: TargetEndpoint,
         recipe_id: String,
         overrides: BTreeMap<String, String>,
+        resolved: BTreeMap<String, String>,
         baseline_entry: gate::ModelBaseline,
     ) -> Self {
         Self {
             target,
             recipe_id,
             overrides,
+            resolved,
             baseline_entry,
             server: None,
         }
@@ -155,6 +161,7 @@ pub async fn serve_for(
     let plan = super::bench_serve_plan::plan_serve(benchmark_id, hardware, checkpoint, overrides)?;
     let port = avarok_plugin::benchmarks::agentic::score::free_port()?;
     let serve_args = plan.serve_args(port)?;
+    let resolved = plan.disclosed(port)?;
     check_box_is_free_enough(
         serve_args.gpu_memory_utilization,
         &plan.recipe_id,
@@ -183,6 +190,7 @@ pub async fn serve_for(
         target: TargetEndpoint::local(port, &model),
         recipe_id: plan.recipe_id,
         overrides: plan.requested,
+        resolved,
         baseline_entry: plan.entry,
         server: Some(server),
     };
