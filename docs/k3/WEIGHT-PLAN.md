@@ -15,7 +15,9 @@ AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo run -p avarok-core --example
 
 The header reader performs bounded HTTP Range requests against one pinned
 checkpoint and rejects full-body responses. It does not download complete
-shards. Offline config estimates and actual header accounting differ: preserve
+shards. Its output directory must not already exist, so stale header JSON cannot
+contaminate a new receipt. A failed run preserves partial evidence; use a new
+output path for the next attempt. Offline config estimates and actual header accounting differ: preserve
 which mode produced a result. Neither predicts exact GPU peak memory, allocator
 fragmentation, context, NCCL buffers, KV cache or inference scratch. Binding-copy
 accounting describes the extracted binder contract, not every future loader.

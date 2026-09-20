@@ -45,10 +45,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    args.output.mkdir(parents=True, exist_ok=False)
     headers = args.output / "headers"
     a_log_dir = args.output / "a-log"
-    headers.mkdir(parents=True, exist_ok=True)
-    a_log_dir.mkdir(parents=True, exist_ok=True)
+    headers.mkdir()
+    a_log_dir.mkdir()
 
     def header(index):
         shard = f"model-{index:05d}-of-000096.safetensors"

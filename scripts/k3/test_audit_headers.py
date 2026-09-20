@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
+from pathlib import Path
 import struct
+import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 import audit_headers
@@ -38,6 +41,20 @@ class BoundedHeaderReads(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 audit_headers.read_header("model.safetensors")
         read.assert_called_once_with("model.safetensors", 0, 7)
+
+    def test_existing_output_refuses_before_network_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "existing"
+            output.mkdir()
+            stale = output / "headers" / "stale-extra.json"
+            stale.parent.mkdir()
+            stale.write_text('{"unrelated.stale.tensor": {}}')
+            with patch.object(sys, "argv", ["audit_headers.py", "--output", str(output)]), \
+                 patch.object(audit_headers, "read_header") as read:
+                with self.assertRaises(FileExistsError):
+                    audit_headers.main()
+            read.assert_not_called()
+            self.assertTrue(stale.exists())
 
 
 if __name__ == "__main__":
