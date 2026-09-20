@@ -56,6 +56,15 @@ class LaunchTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 launch.validate(bad)
 
+    def test_cuda_cache_path_is_explicit_and_validated(self):
+        config = dict(self.config, env={'CUDA_CACHE_PATH': str(self.root)})
+        self.assertEqual(launch.environment(config)['CUDA_CACHE_PATH'], str(self.root))
+        self.assertNotIn('HOME', launch.environment(config))
+        self.assertNotIn('CUDA_CACHE_PATH', launch.environment(self.config))
+        for path in ('relative-cache', str(self.root/'missing'), str(self.binary)):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                launch.environment(dict(self.config, env={'CUDA_CACHE_PATH': path}))
+
     def test_explicit_prefill_and_cache_settings_are_forwarded(self):
         for dtype in ('bf16', 'fp8', 'nvfp4'):
             for enabled in (False, True):

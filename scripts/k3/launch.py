@@ -93,12 +93,16 @@ def environment(c):
         raise ValueError('env must be an explicit object')
     result = {'PATH': os.defpath, 'HF_HUB_OFFLINE': '1', 'HF_DATASETS_OFFLINE': '1'}
     for key, value in c['env'].items():
-        if (not re.fullmatch(r'(NCCL_[A-Z0-9_]+|AVAROK_[A-Z0-9_]+|RUST_LOG|LD_LIBRARY_PATH|K3_ALLOW_MXFP4|K3_CUDA_KDA|K3_CUDA_MLA)', key)
+        if (not re.fullmatch(r'(NCCL_[A-Z0-9_]+|AVAROK_[A-Z0-9_]+|RUST_LOG|LD_LIBRARY_PATH|CUDA_CACHE_PATH|K3_ALLOW_MXFP4|K3_CUDA_KDA|K3_CUDA_MLA)', key)
                 or re.search(r'TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY', key)
                 or not isinstance(value, str) or '\0' in value):
             raise ValueError(f'environment key/value not allowed: {key}')
         if key.startswith('K3_') and value not in ('0', '1'):
             raise ValueError(f'{key} requires explicit 0 or 1')
+        if key == 'CUDA_CACHE_PATH':
+            cache = Path(value)
+            if not cache.is_absolute() or not cache.is_dir() or not os.access(cache, os.W_OK | os.X_OK):
+                raise ValueError('CUDA_CACHE_PATH must be an absolute writable existing directory')
         result[key] = value
     return result
 
