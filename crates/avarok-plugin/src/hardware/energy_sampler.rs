@@ -57,7 +57,7 @@ impl EnergySampler {
     /// Start the child and wait for its first reading.
     ///
     /// `Err` when `nvidia-smi` is absent, exits, or produces no parseable
-    /// reading within [`FIRST_SAMPLE_TIMEOUT`] — the caller logs the reason
+    /// reading within `FIRST_SAMPLE_TIMEOUT` (3 s) — the caller logs the reason
     /// and runs WITHOUT energy rather than recording a rail it cannot read.
     pub async fn spawn() -> Result<Self> {
         let mut child = tokio::process::Command::new("nvidia-smi")
@@ -71,7 +71,9 @@ impl EnergySampler {
             .kill_on_drop(true)
             .spawn()
             .context("spawning nvidia-smi for power sampling")?;
-        let pid = child.id().context("nvidia-smi exited before it was polled")?;
+        let pid = child
+            .id()
+            .context("nvidia-smi exited before it was polled")?;
         let stdout = child.stdout.take().context("nvidia-smi stdout not piped")?;
         let samples = Arc::new(Mutex::new(Vec::new()));
         let rejected = Arc::new(AtomicU64::new(0));

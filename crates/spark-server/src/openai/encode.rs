@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Json, Response};
 use crate::AppState;
 
 use super::{
-    ChatChoice, ChatCompletionResponse, ChatMessage, ChoiceLogprobs, TokenLogprobInfo,
-    TopLogprob, Usage, merged_annotations,
+    ChatChoice, ChatCompletionResponse, ChatMessage, ChoiceLogprobs, TokenLogprobInfo, TopLogprob,
+    Usage, merged_annotations,
 };
 
 /// Serialize the response IR for the `/v1/chat/completions` surface.

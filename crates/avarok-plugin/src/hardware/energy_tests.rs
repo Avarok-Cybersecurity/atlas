@@ -115,7 +115,10 @@ fn above_idle_subtracts_the_baseline_over_the_same_duration_and_may_go_negative(
         mean_power_w: 4.0,
         ..busy
     };
-    assert!((quieter.above_idle_j(&idle) - -10.0).abs() < 1e-9, "not clamped");
+    assert!(
+        (quieter.above_idle_j(&idle) - -10.0).abs() < 1e-9,
+        "not clamped"
+    );
 }
 
 /// Joules and seconds add; the mean is re-derived; fractions weight by
@@ -148,7 +151,11 @@ fn summing_windows_adds_the_additive_primitives_and_rederives_the_mean() {
     assert!((s.mean_power_w - 37.5).abs() < 1e-9);
     assert_eq!(s.max_power_w, 70.0);
     assert!((s.sw_power_cap_frac.unwrap() - (40.0 + 60.0) / 160.0).abs() < 1e-9);
-    assert_eq!(s.hw_power_brake_frac, Some(0.0), "weighted over the reporting window only");
+    assert_eq!(
+        s.hw_power_brake_frac,
+        Some(0.0),
+        "weighted over the reporting window only"
+    );
     assert_eq!(EnergyWindow::sum(&[]), None);
 }
 
@@ -180,7 +187,10 @@ fn every_energy_key_names_the_rail_and_the_sample_count_rides_beside_the_joules(
     assert_eq!(m["c8_gpu_rail_max_power_w"], 75.0);
     assert_eq!(m["c8_gpu_rail_energy_window_s"], 30.0);
     assert_eq!(m["c8_gpu_rail_sw_power_cap_frac"], 0.9);
-    assert!(!m.contains_key("c8_gpu_rail_hw_power_brake_frac"), "unreported stays absent");
+    assert!(
+        !m.contains_key("c8_gpu_rail_hw_power_brake_frac"),
+        "unreported stays absent"
+    );
     assert!((m["c8_gpu_rail_energy_above_idle_j"] - 1650.0).abs() < 1e-9);
     // Without a baseline the above-idle key is absent, never zero.
     let mut bare = BTreeMap::new();
@@ -219,7 +229,10 @@ fn sampler_cost_reports_its_cadence_and_never_hides_rejected_lines() {
     };
     cost.metrics(&mut m);
     assert_eq!(m["gpu_rail_sampler_rejected_lines"], 17.0);
-    assert!(!m.contains_key("gpu_rail_sampler_cpu_s"), "unmeasured is absent, not 0");
+    assert!(
+        !m.contains_key("gpu_rail_sampler_cpu_s"),
+        "unmeasured is absent, not 0"
+    );
     assert!(cost.one_line().contains("unmeasured"));
     assert!(cost.one_line().contains("17 unparseable"));
 }

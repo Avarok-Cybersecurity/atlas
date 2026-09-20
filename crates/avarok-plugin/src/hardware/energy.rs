@@ -178,10 +178,12 @@ impl EnergyWindow {
         let energy_j: f64 = windows.iter().map(|w| w.energy_j).sum();
         let samples: usize = windows.iter().map(|w| w.samples).sum();
         let weighted = |pick: fn(&EnergyWindow) -> Option<f64>| {
-            let (num, den) = windows.iter().fold((0.0, 0usize), |(n, d), w| match pick(w) {
-                Some(f) => (n + f * w.samples as f64, d + w.samples),
-                None => (n, d),
-            });
+            let (num, den) = windows
+                .iter()
+                .fold((0.0, 0usize), |(n, d), w| match pick(w) {
+                    Some(f) => (n + f * w.samples as f64, d + w.samples),
+                    None => (n, d),
+                });
             (den > 0).then(|| num / den as f64)
         };
         Some(EnergyWindow {

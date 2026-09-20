@@ -838,7 +838,9 @@ mod fused_kv_probe_guard {
             // Walk back to the probe call that owns this module argument.
             let head = &src[..i];
             let call = head.rfind("try_kernel(").map(|p| (p, "try_kernel"));
-            let tcall = head.rfind("try_target_kernel(").map(|p| (p, "try_target_kernel"));
+            let tcall = head
+                .rfind("try_target_kernel(")
+                .map(|p| (p, "try_target_kernel"));
             let chosen = match (call, tcall) {
                 (Some((a, _)), Some((b, n))) if b >= a => Some((b, n)),
                 (Some((a, n)), _) => Some((a, n)),

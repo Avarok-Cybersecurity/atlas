@@ -418,21 +418,42 @@ fn instrument_metrics_keep_both_clocks_and_store_joules_beside_tokens() {
     };
     let mut m = BTreeMap::new();
     instrument_metrics(&runs, Some(&idle), &mut m);
-    assert_eq!(m.get("client_tpot_ms"), Some(&35.0), "median of the three runs");
-    assert!(!m.contains_key("server_tpot_ms"), "server ITL is server_decode_tok_s, no dup");
+    assert_eq!(
+        m.get("client_tpot_ms"),
+        Some(&35.0),
+        "median of the three runs"
+    );
+    assert!(
+        !m.contains_key("server_tpot_ms"),
+        "server ITL is server_decode_tok_s, no dup"
+    );
     assert!(!m.keys().any(|k| k.contains("itl")), "{m:?}");
-    assert_eq!(m.get("arrival_gap_count"), Some(&15.0), "pooled over the runs");
+    assert_eq!(
+        m.get("arrival_gap_count"),
+        Some(&15.0),
+        "pooled over the runs"
+    );
     assert_eq!(m.get("arrival_gap_max_ms"), Some(&34.0));
     assert!(m.contains_key("stability"));
     assert_eq!(m.get("gpu_rail_energy_j"), Some(&9000.0), "joules add");
     assert_eq!(m.get("gpu_rail_energy_window_s"), Some(&150.0));
     assert_eq!(m.get("gpu_rail_power_samples"), Some(&600.0));
-    assert_eq!(m.get("gpu_rail_energy_window_tokens"), Some(&(1450.0 * 3.0)));
+    assert_eq!(
+        m.get("gpu_rail_energy_window_tokens"),
+        Some(&(1450.0 * 3.0))
+    );
     assert!((m["gpu_rail_energy_above_idle_j"] - (9000.0 - 5.0 * 150.0)).abs() < 1e-9);
-    assert!(!m.keys().any(|k| k.contains("per_token")), "ratios are derived downstream");
+    assert!(
+        !m.keys().any(|k| k.contains("per_token")),
+        "ratios are derived downstream"
+    );
 
     // Nothing instrumented → nothing emitted, never zeros.
     let mut bare = BTreeMap::new();
-    instrument_metrics(&[healthy(30.0), healthy(30.0), healthy(30.0)], None, &mut bare);
+    instrument_metrics(
+        &[healthy(30.0), healthy(30.0), healthy(30.0)],
+        None,
+        &mut bare,
+    );
     assert!(bare.is_empty(), "{bare:?}");
 }

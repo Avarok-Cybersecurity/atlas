@@ -118,8 +118,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 
 mod score;
 pub(crate) use score::{
-    Evaluation, MAX_TOKENS, MINHEAP_PROMPT, RUNS, RunObs, evaluate, instrument_metrics,
-    verdict_for,
+    Evaluation, MAX_TOKENS, MINHEAP_PROMPT, RUNS, RunObs, evaluate, instrument_metrics, verdict_for,
 };
 
 #[derive(Default)]
@@ -288,10 +287,8 @@ impl Benchmark for DecodeFloor {
             let window_end = Instant::now();
             let mut obs = RunObs::from_outcome(&outcome);
             obs.energy = self.energy.window(window_start, window_end);
-            let fmt_ms = |v: Option<f64>| {
-                v.map(|v| format!("{v:.2}"))
-                    .unwrap_or_else(|| "—".into())
-            };
+            let fmt_ms =
+                |v: Option<f64>| v.map(|v| format!("{v:.2}")).unwrap_or_else(|| "—".into());
             let mut line = LogLine::info(format!(
                 "run {}/{RUNS}: {} tok · decode {} tok/s (server) · itl {} ms server / {} ms \
                  client · accepted {} · E2E {:.0} ms",
@@ -308,7 +305,8 @@ impl Benchmark for DecodeFloor {
                 obs.e2e_ms,
             ));
             if let Some(e) = &obs.energy {
-                line.text.push_str(&format!(" · {}", e.one_line(self.energy.idle())));
+                line.text
+                    .push_str(&format!(" · {}", e.one_line(self.energy.idle())));
             }
             self.samples.push(obs);
             let done = self.samples.len() as u64;

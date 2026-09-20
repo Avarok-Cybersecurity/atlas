@@ -649,7 +649,10 @@ impl ConcurrencySweep {
             .collect();
         let outcomes = futures::future::join_all(futures).await;
         let batch_end = Instant::now();
-        let wall = batch_end.duration_since(batch_start).as_secs_f64().max(1e-6);
+        let wall = batch_end
+            .duration_since(batch_start)
+            .as_secs_f64()
+            .max(1e-6);
 
         let mut ttft = Vec::new();
         let mut tpot = Vec::new();

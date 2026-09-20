@@ -97,7 +97,10 @@ fn merge_equals_the_concatenation() {
     assert!((got.mean_ms - want.mean_ms).abs() < 1e-9);
     assert!((got.stddev_ms - want.stddev_ms).abs() < 1e-9);
     assert_eq!(got.max_ms, want.max_ms);
-    assert_eq!((got.p50_ms, got.p90_ms, got.p99_ms), (want.p50_ms, want.p90_ms, want.p99_ms));
+    assert_eq!(
+        (got.p50_ms, got.p90_ms, got.p99_ms),
+        (want.p50_ms, want.p90_ms, want.p99_ms)
+    );
     // Merging an empty sample is a no-op, and merging INTO an empty one
     // yields the other side exactly.
     let mut untouched = sample(&a);

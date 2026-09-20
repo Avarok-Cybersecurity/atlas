@@ -45,7 +45,17 @@ const GateChart = (await import('./components/GateChart.svelte')).default;
 const GateLadderChart = (await import('./components/GateLadderChart.svelte')).default;
 const ConcurrencyComparison = (await import('./components/ConcurrencyComparison.svelte')).default;
 
-const html = (C, props) => render(C, { props }).body.replace(/<!--[^]*?-->/g, '').replace(/\s+/g, ' ');
+// Svelte's SSR anchors (`<!--[-->`, `<!--]-->`, `<!---->`) are stripped so the
+// assertions read the markup a browser would show. The `-->|$` alternative
+// closes an UNTERMINATED `<!--` as well: without it a trailing marker survives
+// the pass, which is what CodeQL's incomplete-multi-character-sanitization
+// query reports (js/incomplete-multi-character-sanitization). Nothing here is a
+// sanitizer -- the input is this file's own rendered components -- but the
+// complete form costs one token and leaves no `<!--` behind by construction.
+const html = (C, props) =>
+  render(C, { props })
+    .body.replace(/<!--[^]*?(?:-->|$)/g, '')
+    .replace(/\s+/g, ' ');
 // The plot alone: the legend's swatches reuse the plot's classes on purpose
 // (a key that stops matching the chart is worse than none), so they must be
 // kept out of counts of what the plot draws.
