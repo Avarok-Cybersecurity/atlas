@@ -344,13 +344,10 @@ impl SsmSnapshotPool {
                 "AVAROK_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
             );
         }
-        let snap_slot = match self.free_slots.lock().pop() {
+        let snap_slot = match self.claim_free_slot() {
             Some(s) => s,
             None => return Ok(None),
         };
-        // Reusing a freed slot: drop any stale last-token hidden tag. The
-        // caller re-populates it via `save_hidden` for leaf snapshots only.
-        self.slot_has_hidden.lock().remove(&snap_slot);
         for i in 0..self.num_ssm_layers {
             if h_is_f16 {
                 crate::layers::ops::ssm_h_state_f16_to_f32(
@@ -449,13 +446,45 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
+    /// Take a slot off the free list, carrying NO bookkeeping from whoever held
+    /// it last.
+    ///
+    /// 🔴 One chokepoint on purpose. `free` already clears all three side tables,
+    /// so in today's call graph a popped slot is clean and this is defence in
+    /// depth — but "clean" is an invariant spread across every acquire site, and
+    /// there are three (`save`, `reserve_tail_slot`, and the spill path's
+    /// `try_pop_free_slot`). An acquire site that pops the list directly and
+    /// forgets one table does not fail loudly: the stale entry is
+    /// STRUCTURALLY VALID. `slot_has_hidden` would make `session_has_history`
+    /// report phantom history; `session_tags` would leak another session's
+    /// isolation; and `aux_blobs` is the worst of the three, because the restore
+    /// gate asks only `aux(snap_id).is_some()` and `restore_aux` validates
+    /// geometry and length — never provenance. A correctly sized blob from
+    /// another sequence therefore passes every check and lands that sequence's
+    /// PLE history or DSA indexer keys in this one: HTTP 200, wrong answer.
+    ///
+    /// Popping through here means a fourth acquire site cannot reintroduce the
+    /// gap by omission — the invalidation travels with the pop instead of being
+    /// remembered at each caller.
+    fn claim_free_slot(&self) -> Option<usize> {
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.clear_slot_bookkeeping(snap_slot);
+        Some(snap_slot)
+    }
+
+    /// Drop every side table keyed by `snap_slot`. Add a table here, not at the
+    /// call sites: that is what keeps `free` and every acquire path in agreement.
+    pub(super) fn clear_slot_bookkeeping(&self, snap_slot: usize) {
+        self.slot_has_hidden.lock().remove(&snap_slot);
+        self.session_tags.lock().remove(&snap_slot);
+        self.aux_blobs.lock().remove(&snap_slot);
+    }
+
     /// Return a snapshot slot to the free list. Clears the slot's session
     /// tag: a freed slot carries no restorable state, so leaving the tag
     /// would make [`Self::session_has_history`] report phantom history.
     pub(super) fn free(&self, snap_slot: usize) {
-        self.slot_has_hidden.lock().remove(&snap_slot);
-        self.session_tags.lock().remove(&snap_slot);
-        self.aux_blobs.lock().remove(&snap_slot);
+        self.clear_slot_bookkeeping(snap_slot);
         self.free_slots.lock().push(snap_slot);
     }
 
@@ -496,8 +525,7 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return None;
         }
-        let snap_slot = self.free_slots.lock().pop()?;
-        self.slot_has_hidden.lock().remove(&snap_slot);
+        let snap_slot = self.claim_free_slot()?;
         if session_hash != 0 {
             self.session_tags.lock().insert(snap_slot, session_hash);
         }
