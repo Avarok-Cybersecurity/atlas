@@ -104,7 +104,7 @@
        with no data behind it. -->
 
   {#if latest && gatePanel}
-    <p class="cc-bridge">
+    <p class="cmp-bridge">
       {#if state === 'published'}
         Not the chart above's instrument: this is the gate's
         <code>{instrumentLabel(latest)}</code>, against the published pair's

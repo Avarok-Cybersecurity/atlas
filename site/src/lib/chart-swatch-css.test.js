@@ -35,15 +35,17 @@ const svgSizingSelectors = (text, panelClass) =>
     .filter(([, sel, body]) => sel.includes(panelClass) && /width\s*:\s*100%/.test(body))
     .map(([, sel]) => sel.trim());
 
+// dashboard.css exempts BOTH swatches: the published ladder (ConcurrencyLadder,
+// .cl-swatch) is mounted inside a .gate-panel on the concurrency tab.
 describe.each([
-  ['dashboard.css', '.gate-panel', '.gl-swatch'],
-  ['ladder.css', '.cl-panel', '.cl-swatch']
-])('%s', (file, panelClass, swatchClass) => {
-  test('the panel-wide svg sizing rule exempts the legend swatch', () => {
+  ['dashboard.css', '.gate-panel', '.gl-swatch', ['.gl-swatch', '.cl-swatch']],
+  ['ladder.css', '.cl-panel', '.cl-swatch', ['.cl-swatch']]
+])('%s', (file, panelClass, swatchClass, exempt) => {
+  test('the panel-wide svg sizing rule exempts every legend swatch it can reach', () => {
     const rules = svgSizingSelectors(css(file), panelClass);
     expect(rules.length).toBeGreaterThan(0); // the rule exists at all
     for (const sel of rules) {
-      expect(sel).toContain(`:not(${swatchClass})`);
+      for (const sw of exempt) expect(sel).toContain(`:not(${sw})`);
     }
   });
 

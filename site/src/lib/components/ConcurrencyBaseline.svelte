@@ -50,7 +50,7 @@
   );
 </script>
 
-<figure class="gate-panel cc">
+<figure class="gate-panel cmp">
   <figcaption class="gate-panel-head">
     <span class="gate-panel-title">{title}</span>
     <span class="gate-panel-unit">tok/s</span>
@@ -71,7 +71,7 @@
             <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
               <line x1="1" y1="5" x2="19" y2="5" stroke="var(--t2)" stroke-width="1.5" />
               <rect x="6.5" y="1.5" width="7" height="7" fill="var(--t2)" />
-            </svg><span class="cc-chip">{oneShotChip(b)}</span>
+            </svg>{oneShotChip(b)}
           </span>
         {/each}
       </span>
@@ -88,7 +88,7 @@
       <text class="gc-axis" x={x(c)} y={H - 8} text-anchor="middle">C={c}</text>
     {/each}
     {#each absent as c}
-      <g class="cc-absent">
+      <g class="cmp-absent">
         <title>{absentReasonOf(ladder, c)}</title>
         <line class="gc-grid gc-grid-clipped" x1={x(c)} y1={PT} x2={x(c)} y2={H - PB} />
         <text class="gc-ref-label" x={x(c)} y={PT + 10} text-anchor="middle">not measured</text>
@@ -97,7 +97,7 @@
     {#each baselines as b}
       <path d={path(b)} fill="none" stroke="var(--t2)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="square" />
       {#each b.rungs as r}
-        <rect class="cc-sq" x={x(r.c) - 3.5} y={y(r.tok_s) - 3.5} width="7" height="7" fill="var(--t2)">
+        <rect class="cmp-sq" x={x(r.c) - 3.5} y={y(r.tok_s) - 3.5} width="7" height="7" fill="var(--t2)">
           <title>{b.label} · C={r.c} · {fmtV(r.tok_s)} tok/s · mean of {r.reps} reps · spread {r.spread_pct}% · {r.source}</title>
         </rect>
       {/each}
@@ -109,7 +109,7 @@
     {/each}
   </svg>
 
-  <p class="cc-caption">
+  <p class="cmp-caption">
     vLLM was measured <strong>once</strong>, on {range}, with
     {#each engines as e, i}{i ? '; ' : ''}<code>{e}</code>{/each} on {ladder.box.name}, at this
     ladder's own instrument — ISL {w.isl_tokens} / OSL {w.osl_tokens}, {w.reps} timed reps +
@@ -127,7 +127,7 @@
   </p>
 
   <!-- What is missing, why, what fills it — in that order, and never a zero. -->
-  <div class="cc-empty">
+  <div class="cmp-empty">
     <p><strong>No Atlas run at this instrument yet for <code>{subject.checkpoint}</code>.</strong></p>
     <p>
       What fills the comparison: one Atlas leg of <code>{w.harness}</code> at these settings, filed
