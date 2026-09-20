@@ -5,6 +5,7 @@
 //! Math lives in `avarok_core::kimi_k3` so Mac unit tests compile without
 //! spark-storage. CUDA launch: [`kda_cuda`].
 
+pub mod dense_cuda;
 pub mod device_cache;
 pub mod kda;
 pub mod kda_cuda;
