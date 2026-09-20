@@ -60,7 +60,14 @@ pub(super) fn load_layers(
     // ── geometry ──
     let max_seq = env_usize("ATLAS_DS41_MAX_SEQ", 8192).min(config.max_position_embeddings.max(1));
     let max_tokens = env_usize("ATLAS_DS41_MAX_TOKENS", 2048).min(max_seq);
-    let cache_gib = env_usize("ATLAS_DS41_EXPERT_CACHE_GIB", 88);
+    // Fractional GiB parse ("100.5"): the arena edge on MinHeap is 37 slots
+    // (452 MiB) past 100 GiB and the box swaps at 102 (phase 7).
+    let cache_gib: f64 = std::env::var("ATLAS_DS41_EXPERT_CACHE_GIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|g: &f64| g.is_finite() && *g > 0.0)
+        .unwrap_or(88.0);
+    let cache_bytes = (cache_gib * (1u64 << 30) as f64) as usize;
     // 16 readers: one 12.22 MiB expert reads in ~2 ms whatever the split, but
     // a prefill's gather of hundreds runs at the disk's 10-11 GB/s only past
     // eight threads (09-19 NVMe probe)
@@ -185,7 +192,7 @@ pub(super) fn load_layers(
     let arena_device = !std::env::var("ATLAS_DS41_ARENA_DEVICE").is_ok_and(|v| v == "0");
     let staging_slots = env_usize("ATLAS_DS41_STAGING_SLOTS", 16);
     let (arena, mut lru) =
-        ExpertArena::alloc(gpu, cache_gib << 30, layout, arena_device, staging_slots)?;
+        ExpertArena::alloc(gpu, cache_bytes, layout, arena_device, staging_slots)?;
     tracing::info!(
         "DeepSeek-V4.1: expert arena {}; MemAvailable now {}",
         arena.describe(),
