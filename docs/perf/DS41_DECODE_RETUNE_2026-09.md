@@ -425,3 +425,35 @@ nsys (one warm token): expert GEMVs 17.15 -> 15.23 ms (233 / 154 us a layer from
 
 GPU busy 42.8 ms of a 42.4 ms wall (the shared expert overlaps on its side stream), idle gaps 1.6 ms a token. One layer, nearly gap-free: router 41 us (under the shared expert), the routing read-back and the host's selection hidden under the shared expert's 45 us down projection, the routed experts 228 + 153 = 380 us (43% of the layer), HC 22, attention projections 243 (`wq_b` 79 on 8,192 blocks, `wo_a` groups 67, `wo_b` 72, `wq_a` 16, `wkv` 9), sparse attention 69 on 64 blocks. The host waits (186 a token) are no longer on the critical path at 1.6 ms of idle; the step is the bytes the kernels read: experts at 205 GB/s now, attention projections at 130-170. What passes this on one Spark is fewer bytes (a smaller expert quant, which changes the numbers) or a second Spark (every expert resident); the B200 plan (#1140-#1142) carries the same kernels with 8 TB/s under them.
 
+
+## Phase 5 (PR #1160, branch `ds41-decode-retune-5`): the last of one Spark
+
+Start: 38c4c2097 (PR #1156's head: the sm_100a gate, device routing kept, segment graphs default off). The standard gains `ATLAS_DS41_DEVICE_ROUTE=1` (kept in #1156, byte-identical). Baseline `p5base` (38c4c2097 rebuilt and re-measured the same evening): MinHeap 18.17 (10.58 / 18.17 / 18.77), Volvo 20.60 (11.92 / 20.60 / 20.70), 6/6 byte-identical; the S2 binary re-run under the same env at the same hour gave 18.18 / 21.56, so the box ran about a token a second under the afternoon's 19.19 / 21.87 and the phase's deltas are against `p5base`.
+
+### L1, the miss path (a94bedaa3): KEPT
+
+Measured first. One real expert of layer 3 (gate 3,870,720 B + up 3,870,720 B Q2_K, down 5,068,800 B Q3_K; per-expert strides 0 mod 512, tensor bases 416 mod 512) read by 16 threads from the shard: buffered `pread` + `fadvise(DONTNEED)` 2.27-2.69 ms at 12-16 parts; `O_DIRECT` in 512 B aligned windows straight into the destination 1.37-1.42 ms, flat from 4 to 24 parts. Eviction on the phase 2 route trace at 8,381 slots (misses a step, MinHeap r2 / r3 / Volvo r2): LRU 5.53 / 5.53 / 0.00; random victim among the oldest 5% (kept in phase 2) 1.14 / 1.03 / 0.00; 7% 0.84 / 0.80 / 0.01; 8% 0.78 / 0.80 / 0.01; 10% 0.68 / 0.75 / 0.21; 15% 0.57 / 0.56 / 0.99; CLOCK 4.79 / 4.79 / 0.15; S3FIFO, TWOQ, SLRU, LRU2 worse on Volvo; BELADY 0.12 / 0.12 / 0.00.
+
+Built: every shard also opened `O_DIRECT` (`ATLAS_DS41_DIRECT_READS=0` restores the buffered path); the staging ring slot padded per segment so each segment lands at the residue of its file offset mod 512; windows cut 512-aligned in file space (disjoint; the head rounds down into the slack, the tail rounds up, a tail past the end of the file tolerated up to the tensor's bytes); three stream-ordered copies into the unchanged device slot (`expert_reads.rs`, `expert_direct.rs`). The victim window at 8% (`ATLAS_DS41_EVICT_RANDOM_PCT`). Not built: launching the resident experts before the misses land (~0.3 ms a miss layer once the read is 1.4 ms; byte-identical since the per-expert rows are independent until `sum_rows`, but a two-phase fetch API for well under 1%).
+
+### L2, the engram `wkv` projection off its raw Q2_K blocks (36752d456): KEPT
+
+Layers 1 and 14 project the 24 looked-up rows through `wkv` `[25600 x 6144]`, shipped Q2_K (49.2 MiB a layer) and expanded to bf16 (300 MiB a layer) for the prefill GEMM; the single-token step read the expansion, 600 MiB and 3.0 ms a token. `engram_v41_wkv_q2k_gemv` reads the raw blocks and is `dense_gemv_bf16` over the expansion bit for bit by construction (same 64 threads an output, same uint4 groups in the same per-thread order, each weight dequantised as `dequant_q2_k_to_bf16` does it and rounded to bf16 before the product, same shuffle tree and two-warp sum; both modules `--fmad=false`), proved by a GPU test against the bf16 GEMV over the device expansion of random blocks (390 x 6144, bitwise) before the suite. The raw blocks sit on the device beside the expansion (`ShardFiles::locate_q2k`, `deepseek_v41/engram_q2k.rs`; `ATLAS_DS41_ENGRAM_Q2K=0` keeps the bf16 path).
+
+| | MinHeap | best | TTFT | Volvo | best | TTFT | oracle | nsys kernel ms | launches / syncs / D2H |
+|---|---|---|---|---|---|---|---|---|---|
+| p5base 38c4c2097 | 18.17 (10.58 / 18.17 / 18.77) | 18.77 | 1296 | 20.60 (11.92 / 20.60 / 20.70) | 20.70 | 391 | 6/6 | 44.5 (S2) | 1905 / 186 / 49 |
+| L1 a94bedaa3 | 19.31 (12.80 / 19.31 / 19.51) | 19.51 | 1234 | 20.89 (14.29 / 21.28 / 20.89) | 21.28 | 521 | 6/6 | 44.7 | 1905 / 186 / 49 |
+| L2 36752d456 | 20.50 (13.35 / 20.50 / 20.98) | 20.98 | 1156 | 22.99 (15.00 / 22.99 / 23.00) | 23.00 | 487 | 6/6 | 42.3 | 1905 / 186 / 49 |
+
+After L2 (kernel time a warm token, `ds41_nsys_decode_L2`): routed experts 14.8 ms (`q2_k_experts_w8` 8.99 at 229 us a layer, `q3_k_experts_w8` 5.78 at 147 us), attention projections 9.9 (`q2_k_w`, 276 launches) + 2.75 (`groups_w`) + 2.27 (`q3_k_w`), head 2.77, sparse attention 2.10, router 1.71, HC 1.4, quantisation 0.8, engram 0.6.
+
+### L3, the expert GEMV latency chain: REVERTED TWICE, the phase stops here
+
+Bench first (`bench_kq3.cu`, the real per-layer shapes, one layer's six experts from device memory, an 8-layer ring, every variant bitwise identical to the shipped `_w8` entries on the layer-0 outputs): shipped 217-222 us gate + up (Q2_K, 210 GB/s) / 186-191 us down (Q3_K, 163 GB/s) = 404-413 us a layer; two rows a warp with each row's own serial chain (`kq_mmvq_warp_m1x2`, scalar accumulators) 219-220 / 151-152 = 371 us (-8.6%, all of it in down); three or four rows a warp, 4 or 16 warps a block, and the two-row form over `tmp[KQ_MAX_M]` stack arrays were all slower. ncu: Q3_K 202.5 -> 157.8 us (40 -> 48 registers, occupancy 100 / 96.6% -> 83.3 / 72.7%, 27.2 -> 23.6 warp cycles an issued instruction); Q2_K 239 -> 222 us at the same occupancy loss. (One harness process launching two kernel variants deadlocked in a driver spin lock inside `cuLaunchKernel`; the bench runs one variant a process.)
+
+On the standard the isolated gain did not survive the serve, where the experts come from anywhere in a 100 GiB arena: two rows a warp on both projections MinHeap 20.09 (13.14 / 20.09 / 20.62), Volvo 22.48 (14.75 / 22.48 / 22.51); on the down projection only 19.90 (13.09 / 19.90 / 20.40), 22.27 (14.66 / 22.27 / 22.32); both 6/6 byte-identical and both under L2, whose binary re-run between them gave 20.32 (13.29 / 20.32 / 20.83), 22.83 (14.94 / 22.83 / 22.88). Two arms not kept: L3 reverted, L4 not attempted. The kernel source is kept in the phase record for the B200, where the same chain runs under 8 TB/s.
+
+### Phase 5 closing line
+
+38c4c2097 -> 36752d456: MinHeap 18.17 -> 20.50 (best 20.98), Volvo 20.60 -> 22.99 (best 23.00), every text byte-identical to the phase 1 oracle; GPU kernel time a warm token 44.5 -> 42.3 ms; the miss read 2.3-2.7 -> 1.4 ms and 0.3 fewer misses a step on MinHeap. Against the 09-17 standard of 10.6 / 10.9 the one-Spark line now stands at +93% / +111%.
