@@ -8,26 +8,32 @@
   // variant and the one before it are drawn as lines; everything older becomes
   // the corridor they sit in (gate-band.js). Dash carries the variant; colour
   // still follows the model, because both variants serve the same checkpoint.
-  import { colorFor, fmtDate, ladderPoints } from '$lib/gates.js';
+  import { colorFor, fmtDate, ladderPoints, rungFloors } from '$lib/gates.js';
   import { dashFor, variantLabel } from '$lib/gate-variants.js';
   import { bandPath, historyBand, splitHistory } from '$lib/gate-band.js';
   import { dodgeLabels } from '$lib/gate-domain.js';
+  import { fmtLimit, limitLabel, rungSpans, stepPath, violationOf } from '$lib/gate-limits.js';
 
   let { records, panel, onselect } = $props();
 
   const W = 720, H = 232, PL = 56, PR = 16, PT = 14, PB = 30;
   const LABEL_H = 13;
 
+  // Each run carries the per-rung floors that judged IT (gate-limits.js), so
+  // a point is marked against its own run's rule, never against today's.
   const runs = $derived(
     records
       .map((rec) => ({
         rec,
         pts: ladderPoints(rec),
         dash: dashFor(rec.benchmark_id),
-        variant: variantLabel(rec.benchmark_id)
+        variant: variantLabel(rec.benchmark_id),
+        floors: rungFloors(rec)
       }))
       .filter((r) => r.pts.length > 0)
   );
+  const floorAt = (run, c) => ({ min: run.floors.find((f) => f.c === c)?.value ?? null, max: null });
+  const violAt = (run, p) => violationOf(p.v, floorAt(run, p.c));
 
   // One lane per (benchmark id, model): a lane is the thing that has a history,
   // and mixing two variants' runs into one corridor would claim a spread that
@@ -58,7 +64,9 @@
     const cs = runs.flatMap((r) => r.pts.map((p) => p.c));
     const vs = [
       ...lanes.flatMap((l) => [l.latest, l.previous].filter(Boolean).flatMap((r) => r.pts.map((p) => p.v))),
-      ...lanes.flatMap((l) => l.band.flatMap((b) => [b.lo, b.hi]))
+      ...lanes.flatMap((l) => l.band.flatMap((b) => [b.lo, b.hi])),
+      // The floor in force is part of the claim: the axis holds it.
+      ...lanes.flatMap((l) => l.latest.floors.map((f) => f.value))
     ];
     const [c0, c1] = [Math.min(...cs), Math.max(...cs)];
     const [lo, hi] = [Math.min(...vs), Math.max(...vs)];
@@ -80,6 +88,30 @@
   const models = $derived([...new Set(lanes.map((l) => l.model))]);
   const variants = $derived([...new Map(lanes.filter((l) => l.variant).map((l) => [l.variant, l])).values()]);
   const hasHistory = $derived(lanes.some((l) => l.band.length > 1));
+
+  // The per-rung floor of each lane's NEWEST run, stepped across the rungs it
+  // measured: one rule per lane, drawn once, in the lane's colour. The first
+  // step names the bound; the rest carry only their value.
+  const floorLines = $derived(
+    lanes
+      .filter((l) => l.latest.floors.length > 0)
+      .map((l) => {
+        const spans = rungSpans(l.latest.floors, x);
+        return {
+          d: stepPath(spans, 'min', y),
+          color: l.color,
+          labels: spans.map((sp, i) => ({
+            text: i === 0 ? limitLabel('min', sp.min, 'tok/s') : fmtLimit(sp.min),
+            x: (sp.x0 + sp.x1) / 2,
+            y: Math.min(y(sp.min) + 11, H - PB - 2)
+          }))
+        };
+      })
+  );
+  const hasFloor = $derived(floorLines.length > 0);
+  const hasViol = $derived(
+    lanes.some((l) => [l.previous, l.latest].filter(Boolean).some((r) => r.pts.some((p) => violAt(r, p))))
+  );
 
   const endLabels = $derived.by(() => {
     const ends = lanes
@@ -128,14 +160,30 @@
           {/each}
         </span>
       {/if}
-      {#if hasHistory}
+      {#if hasHistory || hasFloor || hasViol}
         <span class="gl-sep" aria-hidden="true"></span>
         <span class="gl-group">
-          <span class="gate-legend-item">
-            <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
-              <rect x="1" y="2" width="18" height="6" fill="currentColor" opacity="0.16" />
-            </svg>earlier runs
-          </span>
+          {#if hasHistory}
+            <span class="gate-legend-item">
+              <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
+                <rect x="1" y="2" width="18" height="6" fill="currentColor" opacity="0.16" />
+              </svg>earlier runs
+            </span>
+          {/if}
+          {#if hasFloor}
+            <span class="gate-legend-item">
+              <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
+                <path class="gc-limit" d="M1 7 H8 V3 H19" fill="none" stroke="currentColor" />
+              </svg>gate floor per rung
+            </span>
+          {/if}
+          {#if hasViol}
+            <span class="gate-legend-item">
+              <svg class="gl-swatch" viewBox="0 0 12 10" aria-hidden="true"
+                ><circle class="gc-viol" cx="6" cy="5" r="4.2" /></svg>
+              below its floor
+            </span>
+          {/if}
         </span>
       {/if}
     </span>
@@ -157,6 +205,15 @@
     {/each}
     {#each cTicks as c}
       <text class="gc-axis" x={x(c)} y={H - 8} text-anchor="middle">C={c}</text>
+    {/each}
+
+    <!-- The newest run's per-rung floor, under everything: it is the rule
+         the points are judged against, not a reading of its own. -->
+    {#each floorLines as f}
+      <path class="gc-limit" d={f.d} fill="none" stroke={f.color} />
+      {#each f.labels as t}
+        <text class="gc-limit-label" x={t.x} y={t.y} text-anchor="middle" fill={f.color}>{t.text}</text>
+      {/each}
     {/each}
 
     {#each lanes as lane}
@@ -181,16 +238,20 @@
           <path d={path(r.pts)} fill="none" stroke={lane.color} stroke-width={isLatest ? 2 : 1.25}
             stroke-dasharray={lane.dash} stroke-linejoin="round" stroke-linecap="round" />
           {#each r.pts as p}
+            {@const broke = violAt(r, p) ? ` · below floor ${fmtLimit(floorAt(r, p.c).min)}` : ''}
             <g
               class="gc-pt"
               role="button"
               tabindex="0"
-              aria-label="C={p.c}: {fmtV(p.v)} tok/s{lane.variant ? ', ' + lane.variant : ''} on {fmtDate(r.rec.recorded_at)}, {r.rec.verdict} — details"
+              aria-label="C={p.c}: {fmtV(p.v)} tok/s{broke}{lane.variant ? ', ' + lane.variant : ''} on {fmtDate(r.rec.recorded_at)}, {r.rec.verdict} — details"
               onclick={() => onselect([r.rec])}
               onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onselect([r.rec]))}
             >
-              <title>C={p.c} · {fmtV(p.v)} tok/s{lane.variant ? ' · ' + lane.variant : ''} · {fmtDate(r.rec.recorded_at)} · {r.rec.verdict} · click for record</title>
+              <title>C={p.c} · {fmtV(p.v)} tok/s{broke}{lane.variant ? ' · ' + lane.variant : ''} · {fmtDate(r.rec.recorded_at)} · {r.rec.verdict} · click for record</title>
               <circle class="gc-hit" cx={x(p.c)} cy={y(p.v)} r="11" />
+              {#if broke}
+                <circle class="gc-viol" cx={x(p.c)} cy={y(p.v)} r="7.5" data-limit="floor" />
+              {/if}
               {#if r.rec.verdict === 'PASS'}
                 <circle class="gc-mark" cx={x(p.c)} cy={y(p.v)} r={isLatest ? 3.5 : 2.5} fill={lane.color}
                   stroke="var(--card)" stroke-width="1" />
