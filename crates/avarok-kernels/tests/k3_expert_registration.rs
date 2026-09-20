@@ -23,7 +23,7 @@ fn each_gb10_k3_quant_exposes_the_e8m0_expert_source() {
         assert!(
             std::fs::read_to_string(&source)
                 .unwrap()
-                .contains("moe_w4a16_grouped_gemm_ptrtable_e8m0")
+                .contains("extern \"C\" __global__ void moe_w4a16_grouped_gemm_ptrtable_e8m0(")
         );
         let manifest: toml::Value =
             toml::from_str(&std::fs::read_to_string(dir.join("KERNEL.toml")).unwrap()).unwrap();
@@ -39,4 +39,13 @@ fn each_gb10_k3_quant_exposes_the_e8m0_expert_source() {
             "unused external-source declaration"
         );
     }
+}
+
+#[test]
+fn k3_kda_aliases_keep_one_source_copy() {
+    let k3 = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../kernels/gb10/kimi-k3");
+    assert!(k3.join("bf16/kda_decode.cu").is_file());
+    assert!(k3.join("nvfp4/kda_decode.cu").is_file());
+    let mxfp4 = k3.join("mxfp4/kda_decode.cu");
+    assert!(!mxfp4.exists() || mxfp4.is_symlink());
 }
