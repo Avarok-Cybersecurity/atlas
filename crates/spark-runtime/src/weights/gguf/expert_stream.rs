@@ -38,57 +38,16 @@ use crate::weights::{find_gguf, find_gguf_shards};
 pub use super::engram_rows::{EngramRowReader, EngramTable};
 pub use super::expert_arena::{DeviceArena, ExpertArena};
 pub use super::expert_lru::{ExpertLru, ExpertSlot, LruStats, PinnedArena};
-
-/// Positional read of exactly `dst.len()` bytes at `offset`. No file position
-/// is shared, so any number of threads may read one `File` at once.
-pub fn pread(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileExt;
-        file.read_exact_at(dst, offset)
-            .with_context(|| format!("pread {} bytes at {offset}", dst.len()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (file, offset, dst);
-        bail!("expert streaming needs positional reads (unix)")
-    }
-}
-
-/// `pread`, then drop the range from the page cache: the bytes now live in
-/// the arena and the cache copy is dead weight. With a 100 GiB page-locked
-/// arena on a 121 GiB Spark, leaving 12 MiB of cache behind every miss made
-/// the kernel reclaim into swap in the middle of a step (single steps of 2 to
-/// 18 s on the 09-19 standard). `ATLAS_DS41_KEEP_PAGE_CACHE=1` keeps the old
-/// behaviour.
-pub fn pread_uncached(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
-    pread(file, offset, dst)?;
-    #[cfg(target_os = "linux")]
-    if !keep_page_cache() {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: an advisory call on an open descriptor; the kernel checks
-        // the range.
-        unsafe {
-            libc::posix_fadvise(
-                file.as_raw_fd(),
-                offset as libc::off_t,
-                dst.len() as libc::off_t,
-                libc::POSIX_FADV_DONTNEED,
-            );
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn keep_page_cache() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("ATLAS_DS41_KEEP_PAGE_CACHE").is_ok_and(|v| v == "1"))
-}
+use super::expert_reads::open_direct;
+pub use super::expert_reads::{DirectSeg, pread, pread_at_least, pread_uncached};
 
 struct Shard {
     path: PathBuf,
     file: File,
+    /// The same file opened `O_DIRECT` for the expert miss path (`None`
+    /// when the platform or `ATLAS_DS41_DIRECT_READS=0` says no; the
+    /// buffered `file` then serves every read).
+    direct: Option<File>,
     gguf: GgufFile,
 }
 
@@ -107,8 +66,19 @@ impl ShardFiles {
         for path in set.paths {
             let (file, mmap, gguf) = sidecar::open_gguf(&path)?;
             drop(mmap);
-            shards.push(Shard { path, file, gguf });
+            let direct = open_direct(&path);
+            shards.push(Shard {
+                path,
+                file,
+                direct,
+                gguf,
+            });
         }
+        let n_direct = shards.iter().filter(|s| s.direct.is_some()).count();
+        tracing::info!(
+            "GGUF shards: {} open, {n_direct} with an O_DIRECT descriptor for expert misses",
+            shards.len()
+        );
         Ok(ShardFiles { shards })
     }
 
@@ -132,6 +102,11 @@ impl ShardFiles {
 
     pub fn file(&self, shard: usize) -> &File {
         &self.shards[shard].file
+    }
+
+    /// The `O_DIRECT` descriptor of `shard`, if it opened.
+    pub fn direct_file(&self, shard: usize) -> Option<&File> {
+        self.shards[shard].direct.as_ref()
     }
 
     /// The parsed header of `shard` (shard 0 carries the model metadata).
@@ -239,6 +214,18 @@ pub trait ExpertSource: Sync {
         self.read_expert(layer, expert, &mut whole)?;
         dst.copy_from_slice(&whole[off..off + dst.len()]);
         Ok(())
+    }
+    /// The expert's slot image as file ranges for `O_DIRECT` reads, or
+    /// `None` when this source has no direct descriptor (the default): the
+    /// staged miss path then reads through `read_expert_range`.
+    fn direct_segments(&self, layer: u32, expert: u32) -> Result<Option<Vec<DirectSeg>>> {
+        let _ = (layer, expert);
+        Ok(None)
+    }
+    /// The `O_DIRECT` descriptor a `DirectSeg` names.
+    fn direct_file(&self, shard: usize) -> Option<&File> {
+        let _ = shard;
+        None
     }
 }
 
@@ -436,5 +423,39 @@ impl ExpertSource for ExpertSliceMap {
             })?;
         }
         Ok(())
+    }
+
+    fn direct_segments(&self, layer: u32, expert: u32) -> Result<Option<Vec<DirectSeg>>> {
+        let l = self
+            .layer(layer as usize)
+            .with_context(|| format!("layer {layer} has no routed experts"))?;
+        ensure!(
+            (expert as usize) < self.num_experts,
+            "expert {expert} >= {}",
+            self.num_experts
+        );
+        let lay = self.layout;
+        let mut segs = Vec::with_capacity(3);
+        for (loc, slot_off, len) in [
+            (&l.gate, lay.gate_off, lay.gate_bytes),
+            (&l.up, lay.up_off, lay.up_bytes),
+            (&l.down, lay.down_off, lay.down_bytes),
+        ] {
+            let (shard, file_off) = self.slice_at(loc, expert as usize);
+            if self.files.direct_file(shard).is_none() {
+                return Ok(None);
+            }
+            segs.push(DirectSeg {
+                shard,
+                file_off,
+                slot_off,
+                len,
+            });
+        }
+        Ok(Some(segs))
+    }
+
+    fn direct_file(&self, shard: usize) -> Option<&File> {
+        self.files.direct_file(shard)
     }
 }

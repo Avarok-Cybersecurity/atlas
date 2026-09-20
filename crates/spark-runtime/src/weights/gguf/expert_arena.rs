@@ -27,10 +27,11 @@
 //! [`ExpertArena`] is the owner's handle for either kind of arena;
 //! [`ExpertLru::fetch_many_on`] is the one fetch that works on every kind.
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 
+use super::expert_direct::{StagedRead, direct_plan, ring_slot_bytes};
 use super::expert_lru::{ExpertLru, ExpertSlot, PinnedArena, SlotPtr};
-use super::expert_stream::{ExpertSource, SlotLayout};
+use super::expert_stream::{DirectSeg, ExpertSource, SlotLayout, pread_at_least};
 use crate::gpu::{DevicePtr, GpuBackend};
 
 /// One device arena plus its page-locked staging ring.
@@ -52,6 +53,9 @@ pub struct Staging {
     pub(super) ring: *mut u8,
     /// Slots in the ring (even, >= 2); a half is `ring_slots / 2`.
     pub(super) ring_slots: usize,
+    /// Ring bytes per slot (`expert_direct::ring_slot_bytes`: the slot image
+    /// plus the padding the direct windows need).
+    pub(super) slot_bytes: usize,
     /// One per half, recorded on the compute stream behind the half's copies.
     pub(super) events: [u64; 2],
     /// The event was recorded since the half was last waited for.
@@ -74,7 +78,8 @@ impl DeviceArena {
     ) -> Result<(Self, ExpertLru)> {
         let ring_slots = ring_slots.max(2).next_multiple_of(2);
         let dev = gpu.alloc_arena(bytes)?;
-        let ring_bytes = ring_slots * layout.bytes;
+        let slot_bytes = ring_slot_bytes(&layout);
+        let ring_bytes = ring_slots * slot_bytes;
         let ring = match gpu.alloc_host_pinned(ring_bytes) {
             Ok(p) => p,
             Err(e) => {
@@ -87,6 +92,7 @@ impl DeviceArena {
         lru.staging = Some(Staging {
             ring,
             ring_slots,
+            slot_bytes,
             events,
             armed: [false; 2],
             half: 0,
@@ -176,8 +182,6 @@ impl ExpertArena {
 
 /// One byte range of a missed expert as a reader thread sees it: `(slot,
 /// key, ring slot within the half, byte offset, byte length)`.
-type StagedRange = (u32, (u32, u32), usize, usize, usize);
-
 impl ExpertLru {
     /// The arena's device address (slot `i` starts at `i * layout.bytes`).
     pub fn arena_dev(&self) -> DevicePtr {
@@ -229,8 +233,8 @@ impl ExpertLru {
         keys: &[(u32, u32)],
         threads: usize,
     ) -> Result<Vec<ExpertSlot>> {
-        let (ring, ring_slots, events) = match &self.staging {
-            Some(s) => (s.ring, s.ring_slots, s.events),
+        let (ring, ring_slots, slot_bytes, events) = match &self.staging {
+            Some(s) => (s.ring, s.ring_slots, s.slot_bytes, s.events),
             None => bail!("fetch_many_staged on a page-locked expert cache"),
         };
         let evictions0 = self.stats.evictions;
@@ -247,7 +251,8 @@ impl ExpertLru {
             misses.push((i, key));
             out.push(i);
         }
-        let bytes = self.layout().bytes;
+        let layout = self.layout();
+        let bytes = layout.bytes;
         let half_slots = ring_slots / 2;
         let threads = threads.max(1);
         let mut failures: Vec<(u32, anyhow::Error)> = Vec::new();
@@ -264,43 +269,55 @@ impl ExpertLru {
                 gpu.event_synchronize(events[h])?;
                 self.staging.as_mut().expect("staging").armed[h] = false;
             }
-            // SAFETY: `h * half_slots * bytes + half_slots * bytes <= ring bytes`.
-            let half_base = SlotPtr(unsafe { ring.add(h * half_slots * bytes) });
+            // SAFETY: `(h + 1) * half_slots * slot_bytes <= ring bytes`.
+            let half_base = SlotPtr(unsafe { ring.add(h * half_slots * slot_bytes) });
             // the reads: every miss cut into `parts` ranges spread over the
-            // threads (>= 1 MiB a range), exactly as `fetch_many` does
+            // threads (>= 1 MiB a range), exactly as `fetch_many` does; a
+            // source with direct descriptors reads aligned windows instead
             let parts = (threads / batch.len())
                 .clamp(1, threads)
                 .min((bytes / (1 << 20)).max(1));
             let per_part = bytes.div_ceil(parts);
-            let work: Vec<StagedRange> = batch
-                .iter()
-                .enumerate()
-                .flat_map(|(j, &(i, k))| {
-                    (0..parts).map(move |p| {
-                        let off = p * per_part;
-                        (i, k, j, off, per_part.min(bytes - off))
-                    })
-                })
-                .filter(|w| w.4 > 0)
-                .collect();
-            let per = work.len().div_ceil(threads.min(work.len()));
+            let mut work: Vec<StagedRead> = Vec::new();
+            // per miss: its segments and their ring offsets (direct) or none
+            let mut direct: Vec<Option<(Vec<DirectSeg>, Vec<usize>)>> =
+                Vec::with_capacity(batch.len());
+            for (j, &(i, (l, e))) in batch.iter().enumerate() {
+                let slot_ring_off = j * slot_bytes;
+                match src.direct_segments(l, e)? {
+                    Some(segs) => {
+                        let (reads, bases) = direct_plan(i, &segs, &layout, slot_ring_off, parts);
+                        work.extend(reads);
+                        direct.push(Some((segs, bases)));
+                    }
+                    None => {
+                        for p in 0..parts {
+                            let off = p * per_part;
+                            let len = per_part.min(bytes.saturating_sub(off));
+                            if len > 0 {
+                                work.push(StagedRead::Buffered {
+                                    slot: i,
+                                    key: (l, e),
+                                    off,
+                                    len,
+                                    ring_off: slot_ring_off + off,
+                                });
+                            }
+                        }
+                        direct.push(None);
+                    }
+                }
+            }
+            let per = work.len().div_ceil(threads.min(work.len()).max(1)).max(1);
             let results: Vec<Vec<(u32, anyhow::Error)>> = std::thread::scope(|s| {
                 let handles: Vec<_> = work
                     .chunks(per)
                     .map(|chunk| {
                         s.spawn(move || {
                             let mut errs = Vec::new();
-                            for &(i, (l, e), j, off, len) in chunk {
-                                // SAFETY: ring slot `j` of this half is this
-                                // miss's alone and its ranges are disjoint.
-                                let dst = unsafe {
-                                    std::slice::from_raw_parts_mut(
-                                        half_base.get().add(j * bytes + off),
-                                        len,
-                                    )
-                                };
-                                if let Err(err) = src.read_expert_range(l, e, off, dst) {
-                                    errs.push((i, err));
+                            for r in chunk {
+                                if let Err(err) = staged_read(src, half_base, r) {
+                                    errs.push((r.slot(), err));
                                 }
                             }
                             errs
@@ -318,17 +335,32 @@ impl ExpertLru {
                 .flatten()
                 .filter(|(i, _)| seen.insert(*i))
                 .collect();
-            // the copies, one per miss that read whole, stream-ordered ahead
-            // of this token's launches; the ring stays valid until the event
+            // the copies, per miss that read whole, stream-ordered ahead of
+            // this token's launches; the ring stays valid until the event
             for (j, &(i, _)) in batch.iter().enumerate() {
                 if seen.contains(&i) {
                     continue;
                 }
-                // SAFETY: as above; the readers have joined.
-                let src_bytes =
-                    unsafe { std::slice::from_raw_parts(half_base.get().add(j * bytes), bytes) };
-                let dst = DevicePtr(self.slot(i).gate.0 - self.layout().gate_off as u64);
-                gpu.copy_h2d_async_retained(src_bytes, dst, stream)?;
+                let slot_dev = self.slot(i).gate.0 - layout.gate_off as u64;
+                // (ring offset, bytes, device offset) of each copy
+                let copies: Vec<(usize, usize, usize)> = match &direct[j] {
+                    Some((segs, bases)) => segs
+                        .iter()
+                        .zip(bases)
+                        .map(|(seg, &base)| (base, seg.len, seg.slot_off))
+                        .collect(),
+                    None => vec![(j * slot_bytes, bytes, 0)],
+                };
+                for (ring_off, len, dev_off) in copies {
+                    // SAFETY: as above; the readers have joined.
+                    let src_bytes =
+                        unsafe { std::slice::from_raw_parts(half_base.get().add(ring_off), len) };
+                    gpu.copy_h2d_async_retained(
+                        src_bytes,
+                        DevicePtr(slot_dev + dev_off as u64),
+                        stream,
+                    )?;
+                }
             }
             gpu.record_event(events[h], stream)?;
             self.staging.as_mut().expect("staging").armed[h] = true;
@@ -354,5 +386,46 @@ impl ExpertLru {
         }
         ensure!(out.len() == keys.len(), "staged fetch lost a key");
         Ok(out.into_iter().map(|i| self.slot(i)).collect())
+    }
+}
+
+/// One read of the staged miss path into the ring half at `half_base`.
+fn staged_read<S: ExpertSource + ?Sized>(
+    src: &S,
+    half_base: SlotPtr,
+    r: &StagedRead,
+) -> Result<()> {
+    match r {
+        StagedRead::Buffered {
+            key: (l, e),
+            off,
+            len,
+            ring_off,
+            ..
+        } => {
+            // SAFETY: the ring slot of this miss is its alone for the batch
+            // and the ranges of one slot are disjoint.
+            let dst =
+                unsafe { std::slice::from_raw_parts_mut(half_base.get().add(*ring_off), *len) };
+            src.read_expert_range(*l, *e, *off, dst)
+        }
+        StagedRead::Direct {
+            shard,
+            file_off,
+            len,
+            need,
+            ring_off,
+            ..
+        } => {
+            // SAFETY: the windows of one slot are disjoint and inside its
+            // padded regions (`direct_plan`).
+            let dst =
+                unsafe { std::slice::from_raw_parts_mut(half_base.get().add(*ring_off), *len) };
+            let f = src
+                .direct_file(*shard)
+                .with_context(|| format!("shard {shard} has no direct descriptor"))?;
+            pread_at_least(f, *file_off, dst, *need)
+                .with_context(|| format!("direct read, shard {shard}"))
+        }
     }
 }

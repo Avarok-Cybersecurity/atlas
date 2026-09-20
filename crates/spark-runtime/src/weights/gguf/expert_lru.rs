@@ -214,7 +214,7 @@ impl ExpertLru {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .filter(|p| *p <= 100)
-                .unwrap_or(5),
+                .unwrap_or(8),
             rng: 0x9E37_79B9_7F4A_7C15,
             trace: None,
             t0: std::time::Instant::now(),
