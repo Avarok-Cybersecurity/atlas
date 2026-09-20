@@ -11,6 +11,7 @@
   // between them says so in words, so no reader has to work it out — or
   // conclude the engine is inconsistent.
   import ConcurrencyComparison, {
+    baselineTileOf,
     comparisonStateOf,
     instrumentLabel,
     liveRecordOf,
@@ -27,6 +28,10 @@
   const live = $derived(liveRecordOf(records));
   const state = $derived(comparisonStateOf(subject, records));
   const published = $derived(publishedFor(subject));
+  // The vLLM baseline tile follows the chart's own decision (a pair, a dated
+  // one-shot, one on another instrument, none); the date is read from the
+  // one-shot's rungs, never typed.
+  const baselineTile = $derived(baselineTileOf(subject, records));
   // `records` is already this subject's, so the lookup is the identity.
   const declared = $derived(rungsDeclared(subject, () => records));
 
@@ -38,7 +43,7 @@
       return [
         { value: '0', label: 'records' },
         { value: 'declared, unmeasured', label: `gate ${subject.gate}` },
-        { value: 'none', label: 'vLLM baseline' }
+        { value: baselineTile, label: 'vLLM baseline' }
       ];
     }
     const out = [];
@@ -48,7 +53,7 @@
       out.push({ value: `${peak.v.toFixed(1)} tok/s`, label: `peak (C=${peak.c}) · ${fmtDate(latest.recorded_at)}` });
     }
     out.push({ value: `${declared.length} of ${rungs.length}`, label: 'rungs declared' });
-    out.push({ value: published ? 'published pair' : 'none', label: 'vLLM baseline' });
+    out.push({ value: baselineTile, label: 'vLLM baseline' });
     return out;
   });
 
