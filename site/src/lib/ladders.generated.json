@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-20T02:27:42Z",
+  "generated_utc": "2026-09-20T15:41:06Z",
   "subjects": {
     "qwen38-27b": {
       "manifest": "bench/ladder38/published.json",
@@ -661,6 +661,7 @@
           "instrument": {
             "isl": 128,
             "osl": 1024,
+            "prompt_mode": "essay",
             "max_model_len": 2048,
             "max_batch_size": 128,
             "kv_cache_dtype": "bf16",
@@ -669,7 +670,7 @@
             "temperature": 0,
             "seed": 42
           },
-          "instrument_note": "kv_cache_dtype is bf16 although the command says `--kv-cache-dtype auto`: auto takes the model dtype, and `--dtype bfloat16` is set, so the KV cache is bf16 BECAUSE the dtype is bfloat16. Spelled `bf16` because that is how an Atlas gate record writes serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against; vLLM's own spelling is bfloat16. No prompt_mode: the ladder harness has no fixture, it sends a nonce-prefixed padded prompt, so a gate record (natural fixture) can never fingerprint as this instrument.",
+          "instrument_note": "kv_cache_dtype is bf16 although the command says `--kv-cache-dtype auto`: auto takes the model dtype, and `--dtype bfloat16` is set, so the KV cache is bf16 BECAUSE the dtype is bfloat16. Spelled `bf16` because that is how an Atlas gate record writes serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against; vLLM's own spelling is bfloat16. No prompt_mode: the ladder harness has no fixture, it sends a nonce-prefixed padded prompt, so a gate record (natural fixture) can never fingerprint as this instrument. prompt_mode is essay because the pinned harness defaults to it (bench/ladder38/harness_w55_conc_ladder.py:75, PROMPT_MODE = os.environ.get(\"W55_PROMPT_MODE\", \"essay\")) and this series' recorded env (HF_HUB_OFFLINE=1 VLLM_USE_DEEP_GEMM=0 VLLM_TEST_FORCE_FP8_MARLIN=1) does not set it. DERIVED, NOT RECORDED: the raw file carries isl, osl, reps, warmup, temperature, seed and chat_template_kwargs but not prompt_mode, so re-check this if the raw file is ever replaced -- a harness that recorded it would make this a fact instead of an inference. It is declared because ladder-baselines.js treats an undeclared axis as a DIFFERENCE, never a match: without it a future concurrency-sweep-moe gate record measured on this exact instrument could never be drawn against this bar.",
           "unmeasured": {
             "rungs": [
               32,
