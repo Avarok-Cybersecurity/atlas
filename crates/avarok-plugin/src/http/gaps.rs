@@ -39,10 +39,16 @@
 //!
 //! Primitives — the distribution summary — so it can be re-aggregated: a
 //! cell pools its requests' gaps ([`GapSample::merge`]) and reports the
-//! pooled distribution. The dimensionless headline,
-//! [`GapStats::jitter_index`] = `(p99 − p50) / p50`, and the coefficient
-//! of variation are DERIVED from the stored primitives; lower is smoother.
-//! No inverted "stability score" is baked into the record.
+//! pooled distribution. The dimensionless headline, **`stability`** =
+//! `(p99 − p50) / p50` ([`GapStats::stability`]), and the coefficient of
+//! variation are DERIVED from the stored primitives.
+//!
+//! ★ `stability` is a DISPERSION measure: **lower is better** — a smaller
+//! value means smoother token delivery, 0 means every arrival gap was the
+//! median. The owner chose the name and the direction (2026-09-20); the
+//! stored value is the honest primitive, never an inverted 0–100 score,
+//! because a score baked into a record cannot be un-inverted once other
+//! records sit beside it. A presentation layer may relabel it.
 
 use std::collections::BTreeMap;
 
@@ -143,15 +149,20 @@ pub struct GapStats {
 }
 
 impl GapStats {
-    /// `(p99 − p50) / p50`, dimensionless so it compares across models and
-    /// rungs whose absolute step times differ by an order of magnitude.
-    /// Lower is smoother. `None` when p50 is not a positive finite number.
-    pub fn jitter_index(&self) -> Option<f64> {
+    /// `stability = (p99 − p50) / p50`: the arrival-gap tail spread relative
+    /// to its median. Dimensionless, so it compares across models and rungs
+    /// whose absolute step times differ by an order of magnitude.
+    ///
+    /// **Lower is better.** This is a dispersion measure — a smaller value
+    /// means smoother token delivery; 0 means no tail at all. `None` when
+    /// p50 is not a positive finite number.
+    pub fn stability(&self) -> Option<f64> {
         (self.p50_ms.is_finite() && self.p50_ms > 0.0 && self.p99_ms.is_finite())
             .then(|| (self.p99_ms - self.p50_ms) / self.p50_ms)
     }
 
-    /// Coefficient of variation, `σ / mean`. Lower is smoother.
+    /// Coefficient of variation, `σ / mean`. Also a dispersion measure:
+    /// lower is better (smoother).
     pub fn cv(&self) -> Option<f64> {
         (self.mean_ms > 0.0).then(|| self.stddev_ms / self.mean_ms)
     }
@@ -170,8 +181,9 @@ impl GapStats {
         put(m, "arrival_gap_p50_ms", self.p50_ms);
         put(m, "arrival_gap_p90_ms", self.p90_ms);
         put(m, "arrival_gap_p99_ms", self.p99_ms);
-        if let Some(j) = self.jitter_index() {
-            put(m, "jitter_index", j);
+        // `stability`: LOWER IS BETTER (dispersion; see `Self::stability`).
+        if let Some(s) = self.stability() {
+            put(m, "stability", s);
         }
         if let Some(cv) = self.cv() {
             put(m, "arrival_gap_cv", cv);

@@ -545,7 +545,7 @@ fn metrics_map_carries_both_itl_clocks_jitter_and_energy_per_rung() {
     assert_eq!(m.get("c4_arrival_gap_max_ms"), Some(&180.0));
     assert_eq!(m.get("c4_arrival_gap_p50_ms"), Some(&30.0));
     assert_eq!(m.get("c4_arrival_gap_p99_ms"), Some(&180.0));
-    assert_eq!(m.get("c4_jitter_index"), Some(&5.0));
+    assert_eq!(m.get("c4_stability"), Some(&5.0), "lower is better; a stall raises it");
     assert!(m.contains_key("c4_arrival_gap_cv"));
     assert_eq!(m.get("c4_gpu_rail_energy_j"), Some(&720.0));
     assert_eq!(m.get("c4_gpu_rail_power_samples"), Some(&48.0));

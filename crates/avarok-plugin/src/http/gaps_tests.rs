@@ -36,29 +36,30 @@ fn online_moments_match_the_closed_form() {
 }
 
 /// THE STALL SIGNAL. One 180 ms hiccup in a run of ~20 ms steps barely
-/// moves the mean but must dominate the max, the p99 and the jitter index.
+/// moves the mean but must dominate the max, the p99 and `stability`
+/// (which RISES: lower is better, so a stall makes it worse).
 #[test]
 fn a_single_stall_is_a_tail_event_the_mean_hides_and_the_index_shows() {
     let smooth = sample(&[20.0; 100]).stats().unwrap();
     let mut gaps = vec![20.0; 100];
     gaps[50] = 180.0;
     let stalled = sample(&gaps).stats().unwrap();
-    assert_eq!(smooth.jitter_index(), Some(0.0));
+    assert_eq!(smooth.stability(), Some(0.0));
     assert_eq!(smooth.cv(), Some(0.0));
     assert!((stalled.mean_ms - 21.6).abs() < 1e-9, "mean barely moves");
     assert_eq!(stalled.max_ms, 180.0);
     assert_eq!(stalled.p99_ms, 180.0);
-    assert_eq!(stalled.jitter_index(), Some(8.0));
+    assert_eq!(stalled.stability(), Some(8.0));
     assert!(stalled.cv().unwrap() > 0.7);
 }
 
 /// Dimensionless: a model twice as slow with the same SHAPE of jitter
 /// reports the same index, which is what lets rungs be compared.
 #[test]
-fn jitter_index_is_scale_free() {
+fn stability_is_scale_free() {
     let fast = sample(&[10.0, 10.0, 10.0, 12.0, 30.0]).stats().unwrap();
     let slow = sample(&[20.0, 20.0, 20.0, 24.0, 60.0]).stats().unwrap();
-    assert!((fast.jitter_index().unwrap() - slow.jitter_index().unwrap()).abs() < 1e-12);
+    assert!((fast.stability().unwrap() - slow.stability().unwrap()).abs() < 1e-12);
     assert!((fast.cv().unwrap() - slow.cv().unwrap()).abs() < 1e-12);
 }
 
@@ -119,7 +120,7 @@ fn metrics_emit_the_primitives_and_the_derived_ratios_under_the_prefix() {
     assert_eq!(m["c8_arrival_gap_max_ms"], 40.0);
     assert_eq!(m["c8_arrival_gap_p50_ms"], 20.0);
     assert_eq!(m["c8_arrival_gap_p99_ms"], 40.0);
-    assert_eq!(m["c8_jitter_index"], 1.0);
+    assert_eq!(m["c8_stability"], 1.0);
     assert!(m.contains_key("c8_arrival_gap_cv"));
     assert!(m.contains_key("c8_arrival_gap_mean_ms"));
     assert!(m.contains_key("c8_arrival_gap_stddev_ms"));

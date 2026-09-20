@@ -423,7 +423,7 @@ fn instrument_metrics_keep_both_clocks_and_store_joules_beside_tokens() {
     assert!(!m.keys().any(|k| k.contains("itl")), "{m:?}");
     assert_eq!(m.get("arrival_gap_count"), Some(&15.0), "pooled over the runs");
     assert_eq!(m.get("arrival_gap_max_ms"), Some(&34.0));
-    assert!(m.contains_key("jitter_index"));
+    assert!(m.contains_key("stability"));
     assert_eq!(m.get("gpu_rail_energy_j"), Some(&9000.0), "joules add");
     assert_eq!(m.get("gpu_rail_energy_window_s"), Some(&150.0));
     assert_eq!(m.get("gpu_rail_power_samples"), Some(&600.0));

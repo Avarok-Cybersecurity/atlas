@@ -589,8 +589,8 @@ async fn arrival_gaps_are_per_read_and_a_stall_shows_in_the_tail() {
     assert!(g.max_ms >= 400.0, "the stall is the max: {g:?}");
     assert!(g.p99_ms >= 400.0, "…and the p99: {g:?}");
     assert!(g.p50_ms < 200.0, "the median is a normal step: {g:?}");
-    let j = g.jitter_index().expect("p50 > 0");
-    assert!(j > 1.0, "one stall in nine steps is a large index: {j}");
+    let s = g.stability().expect("p50 > 0");
+    assert!(s > 1.0, "one stall in nine steps: stability RISES (lower is better): {s}");
     assert!(g.cv().unwrap() > 0.5, "{g:?}");
 }
 
