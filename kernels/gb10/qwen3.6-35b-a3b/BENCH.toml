@@ -204,23 +204,49 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C cold-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
-recipe) × the gate limits: median 1576.3 ms × +3% and p90 4268.6 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it.
-
-RE-CUT 2026-08-21. The prior ceilings came from a 2026-08-04 baseline and were never \
-re-derived, so they had drifted to 9.6% (median) and 12.7% (p90) of slack against a \
-gate designed for 3%/5% — a backstop 3x looser than intended cannot catch the \
-regression it exists for. Note `update_baseline = true` means the gate compares each \
-run to the PREVIOUS run, so it tracks drift while these committed values are the only \
-ABSOLUTE bound; they therefore have to be re-cut whenever the path gets materially \
-faster, which it did (shared-kernel wins: fused GDN spine + token-parallel conv1d)."""
+Gate C cold-TTFT guard. RE-CUT 2026-09-20 to the owner's stated ceilings, median 950 ms and \
+p90 2100 ms, against the latest committed record: \
+.benchmarks/ttft-cold-gate/2026-09-20-43a3c9b202.json (spark-28c2 = dgx3, 2026-09-20 12:06 \
+UTC, prompt_lengths 256/1024/4096 x 12 repeats = 36 samples) reads median 908.07 ms and p90 \
+2019.86 ms, so the ceilings sit 4.6% and 4.0% above it. \
+SPEED-BOUND POLICY (owner, 2026-09-20), stated here so the next re-cut is a derivation and not \
+a judgement: a CEILING (lower-is-better: TTFT, latency, wall) is the latest measured value x \
+1.05 rounded UP to a clean step; a FLOOR (higher-is-better: tok/s) is measured x 0.975 rounded \
+DOWN; the clean step is 0.5 below 100, 10 from 100 to 1000 and 50 above 1000; "measured" is \
+ONE named committed record, never a best run. These two ceilings were GIVEN by the owner rather than \
+derived (the policy on this record would read 960 / 2150) and are written exactly as stated. \
+SPREAD, so nobody re-cuts from one draw: every committed record since the level settled on \
+main at 2026-08-29 (d8bc9c9d86) through 2026-09-20 — n=30 across spark-256a (dgx1), spark-43fa \
+(dgx2), spark-28c2 (dgx3), edgexpert-aae5 and edgexpert-2640 — reads median 880.3-923.3 ms \
+(sigma 7.7) and p90 2000.9-2066.7 ms (sigma 18.9), so both ceilings clear every healthy run on \
+every box; the p90 ceiling clears the widest value (2026-08-29-d8bc9c9d86, spark-256a) by \
+1.6%, the thinnest margin in this file, and is the first bound to re-examine if this gate ever \
+fails on p90 alone. The two spark-15df records of 2026-08-26/27 (sha 60812ca7b6: 1003.8 / \
+2178.8 and 1008.3 / 2167.0) would NOT clear these ceilings; 60812ca7b6 is an ancestor of the \
+2026-08-29 step and dgx1 read 994 / 2140 on 2026-08-28 too, so they are pre-step records, not \
+evidence about the current level. \
+LEVEL HISTORY, from the records: median 1640 on 2026-08-06; 1583 after the 2026-08-21 re-cut; \
+976 on 2026-08-23 (e1fd858f14, spark-256a, the first sub-1000 record); 923 on 2026-08-29 and \
+~900 since. The superseded ceilings (1623.59 / 4482.03, cut 2026-08-21 from the dgx1 baseline \
+1576.3 x +3% and 4268.6 x +5%) had drifted to 1.8x / 2.2x the measured level, so no cold-TTFT \
+regression short of a near-doubling could fail them — the same drift the 2026-08-21 re-cut \
+itself complained about, one step later. \
+TTFT is box-local by nature; the five boxes above now agree to within ~5%, but a NEW box must \
+still be read against these before its first record is called a regression. \
+`update_baseline = true` means the gate ALSO compares each run to the previous one at +3%/+5%; \
+these committed values are the only ABSOLUTE bound and must be re-cut whenever the path gets \
+materially faster."""
 
 [benchmarks.metrics.median_ms]
-max = 1623.59
+# The ceiling of 950 is the owner's stated bound (2026-09-20). Measured 908.07
+# ms on 2026-09-20-43a3c9b202 (spark-28c2); the x1.05 policy would read 960.
+max = 950.0
 
 [benchmarks.metrics.p90_ms]
-max = 4482.03
+# The ceiling of 2100 is the owner's stated bound (2026-09-20). Measured
+# 2019.86 ms on the same record; the x1.05 policy would read 2150. The widest
+# committed p90 since 2026-08-29 (2066.7, spark-256a) clears it by 1.6%.
+max = 2100.0
 
 # ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
 # The FP8 entry above is the DEFAULT subject, and until this entry existed it
@@ -270,18 +296,46 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C warm-TTFT guard. Ceilings = same-box baseline (dgx1, 2026-08-21, canonical serve \
-recipe) × the gate limits: median 1513.9 ms × +3% and p90 4292.8 ms × +5%. TTFT is \
-box-local by nature — a different box must re-record this baseline, not reuse it.
-
-RE-CUT 2026-08-21, same reasoning as the cold entry above: the 2026-08-04 ceilings had \
-drifted to 8.9%/12.2% of slack on a 3%/5% gate."""
+Gate C warm-TTFT guard. RE-CUT 2026-09-20 to the owner's stated ceilings, median 210 ms and \
+p90 230 ms, against the latest committed record: \
+.benchmarks/ttft-warm-gate/2026-09-20-43a3c9b202.json (spark-28c2 = dgx3, 2026-09-20 12:06 \
+UTC, 36 samples) reads median 192.92 ms and p90 212.14 ms, so the ceilings sit 8.9% and 8.4% \
+above it. The policy (stated in full on the cold entry above: ceiling = measured x 1.05 rounded \
+UP to a clean step, 10 in the 100-1000 range) reads 210 / 230 from this record — here the \
+owner's values and the derivation agree. \
+SPREAD: every committed record since the level stepped, 2026-09-14 through 2026-09-20 — n=14 \
+across spark-43fa (dgx2), spark-28c2 (dgx3) and edgexpert-2640 — reads median 190.4-195.7 ms \
+(sigma 1.3) and p90 210.7-213.4 ms (sigma 0.7); both ceilings clear every one by more than 7%. \
+spark-256a (dgx1) has NO record on the post-step level yet: its last, 2026-09-13-1a0dc88a8c, \
+read 835.4 / 2055.6 on the pre-step tree, so the first dgx1 record is the one to watch. Two \
+boxes stepping on the same day from the same tree says the step is code, not a box. \
+THE STEP: warm median 835 -> 191 ms and p90 2056 -> 213 ms between the records at 1a0dc88a8c \
+(2026-09-13 12:03 UTC, spark-256a) and 1a9edba35d (2026-09-14 14:11 UTC, spark-43fa). The cold \
+gate did NOT move (906 -> 903), so whatever landed changed only the cached-prefix path. \
+Candidates on the first-parent path 1a0dc88a8c..1a9edba35d, STATED AS CANDIDATES, NOT A \
+FINDING — no A/B has been run: 9625ef1a03 (#1039, grammar token-mask cache persisted and \
+prewarm overlapped with prefill), 0e171c0a48 (warm-capacity budget counts every earlier cell's \
+stale leaves), d54f3631b8 (#1035, SSM rollback ring sized from free memory). Whichever it was, \
+a warm-TTFT regression that undid it would land near 835 ms and FAIL here by 4x; at the \
+superseded ceilings (1559.32 / 4507.44, cut 2026-08-21 from the dgx1 baseline 1513.9 x +3% and \
+4292.8 x +5%) the entire step could have been lost — 8x the measured level — and still passed. \
+LEVEL HISTORY, from the records: median 1560 on 2026-08-06; 1514 after the 2026-08-21 re-cut; \
+889 on 2026-08-23 (e1fd858f14, spark-256a); 843 on 2026-08-29; 826-847 through 2026-09-13; \
+190-196 since 2026-09-14. \
+TTFT is box-local by nature — a new box must be read against these before its first record is \
+called a regression. `update_baseline = true` means the gate ALSO compares each run to the \
+previous one at +3%/+5%; these committed values are the only ABSOLUTE bound and must be re-cut \
+whenever the path gets materially faster."""
 
 [benchmarks.metrics.median_ms]
-max = 1559.32
+# The ceiling of 210 is the owner's stated bound (2026-09-20), and equals the
+# x1.05 policy on the measured 192.92 ms (2026-09-20-43a3c9b202, spark-28c2).
+max = 210.0
 
 [benchmarks.metrics.p90_ms]
-max = 4507.44
+# The ceiling of 230 is the owner's stated bound (2026-09-20), and equals the
+# x1.05 policy on the measured 212.14 ms on the same record.
+max = 230.0
 
 # ── NVFP4-MoE VARIANT of the warm-TTFT guard (see the cold note above) ──────
 [[benchmarks]]
