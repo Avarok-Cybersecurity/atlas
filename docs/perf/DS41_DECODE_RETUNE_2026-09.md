@@ -457,3 +457,27 @@ On the standard the isolated gain did not survive the serve, where the experts c
 ### Phase 5 closing line
 
 38c4c2097 -> 36752d456: MinHeap 18.17 -> 20.50 (best 20.98), Volvo 20.60 -> 22.99 (best 23.00), every text byte-identical to the phase 1 oracle; GPU kernel time a warm token 44.5 -> 42.3 ms; the miss read 2.3-2.7 -> 1.4 ms and 0.3 fewer misses a step on MinHeap. Against the 09-17 standard of 10.6 / 10.9 the one-Spark line now stands at +93% / +111%.
+
+## Phase 6 (PR #1161, branch `ds41-decode-retune-6`): the segment graphs done right, the miss path, the attention
+
+Start: ae9a1dea7 (PR #1160's head). Baseline `p6base` (rebuilt and re-measured): MinHeap 20.49 (13.33 / 20.49 / 20.92), Volvo 22.93 (14.98 / 22.93 / 22.96), 6/6; the same as the phase 5 close.
+
+### M1, the segment graphs with per-layer snapshots (d21e5501f): BYTE-IDENTICAL, opt-in, not faster on GB10
+
+The design the phase 4 module doc wrote down, built: a snapshot before every layer's ffn inside the graph (streams, the attention output, `pre_a`, the attention site's `post_s` / `comb_s`), a segment launched only at its owner's step, the first flagged layer's misses fetched and its snapshot restored, that layer run from its ffn on with the eager step's own code (`ffn_eager`, `step_ffn.rs`) and the rest of the segment eagerly, the capture token recorded on a second stream while every layer runs eagerly, the graphs recaptured when a sequence's window rings change, the recorded shared expert forked onto a captured side stream. Four bugs found by tracing the highway hash per layer against the eager step (the snapshot set, the `hc_post` left in the attention half, the baked window rings of request 1 read by request 2, and a race in `slot_table_update`: a batch's (layer, expert, slot) triples written in parallel, so a key assigned, evicted and re-assigned in one batch could end at -1 = a false miss flag; now the last triple per key, on for the eager path too). With the graphs on: MinHeap 18.43 (10.48 / 18.43 / 19.46), Volvo 22.56 (11.80 / 22.56 / 22.61), 6/6; Volvo r2 / r3 replay with 2 / 0 falls and are 1.6% under eager (nine host bubbles a token against the eager step's pipelined launches), MinHeap's ~1.2 misses a step each cost a fall (10% under). The same binary with the graphs off: 20.39 / 22.90, 6/6. `ATLAS_DS41_STEP_GRAPH` stays off by default; the case is the B200 (#1141 / #1142).
+
+### M2 not built, M3 simulated and not built
+
+M2 (the resident experts launched before the misses land): ~0.3 ms a miss layer x ~1.2 miss layers a step on MinHeap r2 / r3 = 0.8%, 0 on Volvo, under what the standard resolves (identical binaries re-run 0.1-0.5 tok/s apart); needs a two-phase fetch API. M3 (eviction toward Belady) on the phase 2 trace at 8,381 slots: LFU 4.81 / 4.79 (Volvo 9.26 / 7.61), REUSE (last access + mean gap) 4.79 / 4.79 (Volvo 11.8), leftovers-first variants no better than LRU; the kept 8% window stays at 0.78 / 0.80 against Belady's 0.12: the gap is the request's own cycle, which only the future sees.
+
+### M4a, the sparse attention split across blocks per head (9b319b43a): KEPT
+
+`attn_v41_sparse_attn` ran 64 blocks on 48 SMs; `gridDim.z` blocks per (token, head) each recompute the scores and softmax identically and write their own slice of `hd` by the same j-ordered sum per element (same bytes for any split). `ATLAS_DS41_SPARSE_SPLIT` default 2: MinHeap 21.59 (13.73 / 21.59 / 22.26), Volvo 24.07 (15.44 / 24.07 / 24.10), 6/6 (+5.4% / +5.0%); split 4 21.31 / 23.95.
+
+### M4b, the `wq_a` + `wkv` pair kernel (df5ffcb4f): KEPT
+
+The phase 3 draft landed: `kquant_mmvq_q2_k_pair_w` runs both Q2_K projections of the token in one launch off one q8_1 quantisation (`blockIdx.y` picks the tensor; the per-row math is `kq_mmvq_warp`'s), proved against the two launches bit for bit by `kquant_pair_w_matches_two_launches_bitwise` before the suite. Split-2 base 21.59 / 24.07 and its re-run 21.42 / 24.03; with the pair kernel MinHeap 21.54 (13.76 / 21.54 / 22.02), Volvo 24.15 (15.45 / 24.15 / 24.17), 6/6: Volvo r2 / r3 above both controls (+0.4%), 64 launches a token fewer.
+
+### Phase 6 closing line
+
+ae9a1dea7 -> df5ffcb4f: MinHeap 20.49 -> 21.54 (best 22.02; 22.26 in the split-2 run), Volvo 22.93 -> 24.15 (best 24.17), every text byte-identical (fourteen standards tonight, 6/6 each once M1 was right); nsys of a warm 60-token token (`ds41_nsys_decode_M4b`): GPU kernel time 42.3 -> 41.9 ms, launches 1,905 -> 1,825, syncs 186, D2H 49; sparse attention 2.10 -> 1.50 ms, the pair kernel 0.81 ms for 40 launches where `q2_k_w` lost 80 (276 -> 196). Against the 09-17 standard of 10.6 / 10.9: +103% / +122%. The segment graphs are correct and off by default; the remaining one-Spark step is the bytes the kernels read (experts 15.0 ms at 205 GB/s, attention projections 12.1, head 2.8) and the B200 carries the same kernels with 8 TB/s under them.
