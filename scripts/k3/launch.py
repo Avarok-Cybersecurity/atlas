@@ -108,7 +108,7 @@ def environment(c):
         raise ValueError('env must be an explicit object')
     result = {'PATH': os.defpath, 'HF_HUB_OFFLINE': '1', 'HF_DATASETS_OFFLINE': '1'}
     for key, value in c['env'].items():
-        if (not re.fullmatch(r'(NCCL_[A-Z0-9_]+|AVAROK_[A-Z0-9_]+|RUST_LOG|LD_LIBRARY_PATH|CUDA_CACHE_PATH|K3_ALLOW_MXFP4|K3_CUDA_KDA|K3_CUDA_MLA)', key)
+        if (not re.fullmatch(r'(NCCL_[A-Z0-9_]+|AVAROK_[A-Z0-9_]+|RUST_LOG|LD_LIBRARY_PATH|CUDA_CACHE_PATH|K3_ALLOW_MXFP4|K3_CUDA_KDA|K3_CUDA_MLA|K3_CUDA_DENSE)', key)
                 or re.search(r'TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY', key)
                 or not isinstance(value, str) or '\0' in value):
             raise ValueError(f'environment key/value not allowed: {key}')

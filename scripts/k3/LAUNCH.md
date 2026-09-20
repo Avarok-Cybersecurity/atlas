@@ -163,6 +163,13 @@ loader's experimental packed-expert path, not a promise of full-model support.
 The CUDA mixer switches let a controlled test select CPU references. Preserve
 their exact values in every comparison; the environment does not inherit them.
 
+`K3_CUDA_DENSE=1` opts into the experimental B200 resident dense/shared-MLP
+path. It reuses the loaded FP32/BF16 weights, retains FP32 intermediates on the
+GPU, and transfers only the input and final output for this MLP operation.
+Omit it or set `"0"` for the CPU reference. Record the flag in the manifest;
+unsupported kernels, dtypes, or geometry fail explicitly. This switch does
+not remove the existing host weight copies or make the whole model resident.
+
 This is single-host only. It intentionally refuses partial rank maps and remote
 master addresses. For two separate Sparks, use a reviewed multi-host launcher
 and the same pinned binary/model/probe contract on both hosts; do not run two

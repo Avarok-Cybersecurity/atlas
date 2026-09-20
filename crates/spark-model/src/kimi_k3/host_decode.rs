@@ -59,6 +59,28 @@ impl K3BoundLayer {
         let comm = ctx.comm;
         let do_reduce = |v: &mut [f32]| tp_allreduce(gpu, comm, hidden, h, tp, v, stream);
         let reduce_ref: HiddenReduce<'_> = &do_reduce;
+        let use_dense = match std::env::var("K3_CUDA_DENSE").as_deref() {
+            Ok("1") => true,
+            Ok("0") | Err(std::env::VarError::NotPresent) => false,
+            _ => anyhow::bail!("K3_CUDA_DENSE requires explicit 0 or 1"),
+        };
+        let dense_core = |_weights: &avarok_core::kimi_k3::cpu_weights::DenseMlp,
+                          x: &[f32],
+                          hidden: usize,
+                          inter: usize,
+                          beta: f32,
+                          linear_beta: f32| {
+            super::dense_cuda::launch_dense_mlp(
+                self,
+                gpu,
+                x,
+                hidden,
+                inter,
+                beta,
+                linear_beta,
+                stream,
+            )
+        };
         let lctx = K3LayerCtx {
             kda: &self.shared.kda,
             mla: &self.shared.mla,
@@ -70,6 +92,7 @@ impl K3BoundLayer {
             eps: ctx.config.rms_norm_eps as f32,
             rope_theta: ctx.config.rope_theta as f32,
             reduce_hidden: Some(reduce_ref),
+            dense_mlp: if use_dense { Some(&dense_core) } else { None },
         };
         let use_cuda_kda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
         let use_cuda_mla = want_cuda_mla && self.spec.mixer == MixerKind::Mla;

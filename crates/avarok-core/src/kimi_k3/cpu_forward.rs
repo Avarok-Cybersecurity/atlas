@@ -13,13 +13,18 @@ use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
 use super::latent_moe::{LatentMoeConfig, mix_routed_experts, sigmoid_topk};
 use super::mla::{MlaConfig, mla_decode_token};
 use super::ops::{embed_token, matvec, matvec_column_tp};
-use super::situ::{sigmoid, situ_glu_vec};
+use super::situ::sigmoid;
 
+mod dense;
 mod stream;
 pub use stream::AttnResStream;
 
 /// After row-parallel `o_proj` / dense MLP `down`. None at TP=1.
 pub type HiddenReduce<'a> = &'a dyn Fn(&mut [f32]) -> Result<()>;
+
+/// Optional resident dense/shared MLP, with local TP intermediate width.
+pub type DenseMlpCore<'a> =
+    &'a dyn Fn(&DenseMlp, &[f32], usize, usize, f32, f32) -> Result<Vec<f32>>;
 
 /// Per-layer geometry the GPU wrapper and `forward_token` share.
 ///
@@ -38,6 +43,7 @@ pub struct K3LayerCtx<'a> {
     pub rope_theta: f32,
     /// After row-parallel `o_proj` (and dense MLP `down`). None at TP=1.
     pub reduce_hidden: Option<HiddenReduce<'a>>,
+    pub dense_mlp: Option<DenseMlpCore<'a>>,
 }
 
 impl<'a> K3LayerCtx<'a> {
@@ -53,6 +59,7 @@ impl<'a> K3LayerCtx<'a> {
             eps: model.eps,
             rope_theta: model.rope_theta,
             reduce_hidden: None,
+            dense_mlp: None,
         }
     }
 }
@@ -284,14 +291,7 @@ where
     let x = rms_norm(&h, &layer.post_norm, eps);
     let mlp_out = match &layer.mlp {
         MlpW::Dense(w) => {
-            let mut y = dense_mlp(
-                w,
-                &x,
-                ctx.hidden,
-                ctx.dense_intermediate,
-                ctx.situ_beta,
-                ctx.situ_linear_beta,
-            );
+            let mut y = dense::run(ctx, w, &x, ctx.dense_intermediate)?;
             if let Some(f) = ctx.reduce_hidden {
                 f(&mut y)?;
             }
@@ -433,27 +433,6 @@ fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32
     (k, v)
 }
 
-fn dense_mlp(
-    w: &DenseMlp,
-    x: &[f32],
-    hidden: usize,
-    inter: usize,
-    situ_beta: f32,
-    situ_linear_beta: f32,
-) -> Vec<f32> {
-    // Local intermediate under TP (gate/up column-sharded). `inter` is the
-    // config full width; prefer the weight's own row count.
-    let inter = if hidden == 0 {
-        inter
-    } else {
-        w.gate.len() / hidden
-    };
-    let gate = matvec(&w.gate, x, inter, hidden);
-    let up = matvec(&w.up, x, inter, hidden);
-    let mid = situ_glu_vec(&gate, &up, situ_beta, situ_linear_beta);
-    matvec(&w.down, &mid, hidden, inter)
-}
-
 fn moe_mlp_with<F>(
     w: &MoeWeights,
     x: &[f32],
@@ -469,16 +448,11 @@ where
         logits.fill(0.0);
         logits[e] = 8.0;
     }
-    let shared = w.shared.as_ref().map(|s| {
-        dense_mlp(
-            s,
-            x,
-            ctx.moe.hidden,
-            ctx.moe.expert_hidden,
-            ctx.situ_beta,
-            ctx.situ_linear_beta,
-        )
-    });
+    let shared = w
+        .shared
+        .as_ref()
+        .map(|s| dense::run(ctx, s, x, ctx.moe.expert_hidden))
+        .transpose()?;
     let latent = matvec(&w.down, x, ctx.moe.latent, ctx.moe.hidden);
     let (ids, weights) = sigmoid_topk(&logits, &w.bias, ctx.moe.top_k);
     let mixed = experts_fn(w, &latent, &ids, &weights, ctx.moe)?;

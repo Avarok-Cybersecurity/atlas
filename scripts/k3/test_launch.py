@@ -142,6 +142,15 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             launch.environment(self.config)
 
+    def test_dense_cuda_requires_explicit_boolean(self):
+        for value in ('0', '1'):
+            config = dict(self.config, env={'K3_CUDA_DENSE': value})
+            self.assertEqual(launch.environment(config)['K3_CUDA_DENSE'], value)
+        for value in ('', 'true', 'maybe', '2'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                launch.environment(dict(self.config, env={'K3_CUDA_DENSE': value}))
+        self.assertNotIn('K3_CUDA_DENSE', launch.environment(self.config))
+
     def configure_process(self, source):
         self.binary.write_text(f'#!{sys.executable}\n'+source)
         self.config['binary_sha256'] = hashlib.sha256(self.binary.read_bytes()).hexdigest()
