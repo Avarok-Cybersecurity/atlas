@@ -204,24 +204,29 @@ recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
 default = true
 status = "measured"
 note = """\
-Gate C cold-TTFT guard. RE-CUT 2026-09-20 to the owner's stated ceilings, median 950 ms and \
-p90 2100 ms, against the latest committed record: \
+Gate C cold-TTFT guard. RE-CUT 2026-09-20: median 950 ms is the owner's stated ceiling; p90 \
+2150 ms is the coordinator's, under delegated authority (see below). Latest committed record: \
 .benchmarks/ttft-cold-gate/2026-09-20-43a3c9b202.json (spark-28c2 = dgx3, 2026-09-20 12:06 \
 UTC, prompt_lengths 256/1024/4096 x 12 repeats = 36 samples) reads median 908.07 ms and p90 \
-2019.86 ms, so the ceilings sit 4.6% and 4.0% above it. \
+2019.86 ms, so the ceilings sit 4.6% and 6.4% above it. \
 SPEED-BOUND POLICY (owner, 2026-09-20), stated here so the next re-cut is a derivation and not \
 a judgement: a CEILING (lower-is-better: TTFT, latency, wall) is the latest measured value x \
 1.05 rounded UP to a clean step; a FLOOR (higher-is-better: tok/s) is measured x 0.975 rounded \
 DOWN; the clean step is 0.5 below 100, 10 from 100 to 1000 and 50 above 1000; "measured" is \
-ONE named committed record, never a best run. These two ceilings were GIVEN by the owner rather than \
-derived (the policy on this record would read 960 / 2150) and are written exactly as stated. \
+ONE named committed record, never a best run. The median ceiling was GIVEN by the owner rather than \
+derived (the policy on this record would read 960) and is written exactly as stated. The p90 \
+ceiling was first stated as 2100 and re-cut to 2150 on 2026-09-20 by the coordinator, to whom \
+the owner delegated it, because a ceiling's job is to fail on regression without failing on \
+normal variation, so the margin that matters is against the WORST observed PASS in the regime, \
+not the median run: 2100 cleared the regime maximum of 2066.7 ms by only 1.6%; 2150 clears it \
+by 4.0% and the reference run by 6.4%, is the clean 50-step the policy would derive, and is \
+still a 52% tightening from the superseded 4482.03. \
 SPREAD, so nobody re-cuts from one draw: every committed record since the level settled on \
 main at 2026-08-29 (d8bc9c9d86) through 2026-09-20 — n=30 across spark-256a (dgx1), spark-43fa \
 (dgx2), spark-28c2 (dgx3), edgexpert-aae5 and edgexpert-2640 — reads median 880.3-923.3 ms \
 (sigma 7.7) and p90 2000.9-2066.7 ms (sigma 18.9), so both ceilings clear every healthy run on \
 every box; the p90 ceiling clears the widest value (2026-08-29-d8bc9c9d86, spark-256a) by \
-1.6%, the thinnest margin in this file, and is the first bound to re-examine if this gate ever \
-fails on p90 alone. The two spark-15df records of 2026-08-26/27 (sha 60812ca7b6: 1003.8 / \
+4.0%, and is still the bound to re-examine first if this gate ever fails on p90 alone. The two spark-15df records of 2026-08-26/27 (sha 60812ca7b6: 1003.8 / \
 2178.8 and 1008.3 / 2167.0) would NOT clear these ceilings; 60812ca7b6 is an ancestor of the \
 2026-08-29 step and dgx1 read 994 / 2140 on 2026-08-28 too, so they are pre-step records, not \
 evidence about the current level. \
@@ -243,10 +248,11 @@ materially faster."""
 max = 950.0
 
 [benchmarks.metrics.p90_ms]
-# The ceiling of 2100 is the owner's stated bound (2026-09-20). Measured
-# 2019.86 ms on the same record; the x1.05 policy would read 2150. The widest
-# committed p90 since 2026-08-29 (2066.7, spark-256a) clears it by 1.6%.
-max = 2100.0
+# The ceiling of 2150 is the coordinator's re-cut of the owner's 2100 (2026-09-20,
+# delegated; reasoning in the note). Measured 2019.86 ms on the same record;
+# equals the x1.05 policy. The widest committed p90 since 2026-08-29 (2066.7,
+# spark-256a) clears it by 4.0%.
+max = 2150.0
 
 # ── NVFP4-MoE VARIANT of the cold-TTFT guard ────────────────────────────────
 # The FP8 entry above is the DEFAULT subject, and until this entry existed it
