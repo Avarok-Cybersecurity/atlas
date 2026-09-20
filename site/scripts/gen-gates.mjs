@@ -36,11 +36,13 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { assignTrendPredecessors } from '../src/lib/gate-lineage.js';
+import { declaredLimitsOf, mergeDeclaredLimits, parseToml } from './lib/bench-toml.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const RECORDS_ROOT = resolve(REPO, '.benchmarks');
 const DESCRIPTOR_ROOT = resolve(REPO, 'crates', 'avarok-plugin', 'src', 'benchmarks');
+const KERNELS_ROOT = resolve(REPO, 'kernels', 'gb10');
 const OUT = resolve(here, '..', 'src', 'lib', 'gates.generated.json');
 
 function git(args, opts = {}) {
@@ -152,6 +154,23 @@ function serveAllowanceSecs() {
   if (!existsSync(p)) return null;
   const m = /^serve_allowance_s\s*=\s*(\d+)/m.exec(readFileSync(p, 'utf8'));
   return m ? Number(m[1]) : null;
+}
+
+// The floors and ceilings each gate declares per checkpoint, from every
+// kernels/gb10/<model>/BENCH.toml `[benchmarks.metrics.<name>] min / max`.
+// The dashboard draws these as reference lines (src/lib/gate-limits.js). A
+// file that does not parse fails the build: a bound read wrongly would draw
+// a wrong line, and silence here would look like "no limit declared".
+function gateLimits() {
+  const tables = [];
+  if (!existsSync(KERNELS_ROOT)) return {};
+  for (const model of readdirSync(KERNELS_ROOT).sort()) {
+    const p = join(KERNELS_ROOT, model, 'BENCH.toml');
+    if (!existsSync(p)) continue;
+    const source = `kernels/gb10/${model}/BENCH.toml`;
+    tables.push([source, declaredLimitsOf(parseToml(readFileSync(p, 'utf8')), source)]);
+  }
+  return mergeDeclaredLimits(tables);
 }
 
 // --- record slimming ---------------------------------------------------------
@@ -299,6 +318,7 @@ const obj = {
   registered: registered.ids,
   registered_meta: registered.meta,
   limits: { serve_allowance_s: serveAllowanceSecs() },
+  gate_limits: gateLimits(),
   sources: { committed: committedCount, branches_scanned: branchesScanned, from_branches: fromBranches },
   benchmarks
 };

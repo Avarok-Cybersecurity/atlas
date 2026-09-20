@@ -7,9 +7,20 @@
 import gates from '$lib/gates.generated.json';
 import { splitByVariant } from './gate-variants.js';
 import { foldPartitions } from './bfcl-partition.js';
+import { limitFor as limitForRecord, rungFloors as rungFloorsOf } from './gate-limits.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
+
+// The floors and ceilings BENCH.toml declares, per gate and checkpoint —
+// carried by gen-gates.mjs. Its absence means the generated file predates the
+// generator that writes it; that is a stale build to fix, not a "no limits"
+// state to draw.
+if (!gates.gate_limits) throw new Error('gates.generated.json has no gate_limits — run node site/scripts/gen-gates.mjs');
+export const gateLimits = gates.gate_limits;
+/** The floor/ceiling governing one record's metric — see gate-limits.js. */
+export const limitFor = (record, metricKey) => limitForRecord(record, metricKey, gateLimits);
+export const rungFloors = (record) => rungFloorsOf(record, gateLimits);
 
 export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
 export {
@@ -61,12 +72,9 @@ export const unpublished = (gates.registered ?? []).filter((id) => !withRecords.
 export const models = [...new Set(Object.values(gates.benchmarks).flatMap((b) => b.records.map((r) => r.target_model)))].sort();
 
 // ---- panel specs ------------------------------------------------------------
-// floor/cap lines are read from the records themselves (params or the
-// verdict_reason's "(floor N)" text) — never invented here.
-const floorFromReason = (r) => {
-  const m = /floor ([0-9.]+)/.exec(r.verdict_reason ?? '');
-  return m ? +m[1] : null;
-};
+// Floor/ceiling lines are NOT part of a panel spec: GateChart reads them per
+// record through `limitFor` (gate-limits.js), so a ratcheted floor steps
+// where it was ratcheted and nothing is invented here.
 
 export function panelsFor(benchId, records) {
   if (records.length === 0) return [];
@@ -76,11 +84,7 @@ export function panelsFor(benchId, records) {
       {
         title: 'Σ wall time',
         unit: 's',
-        metrics: [{ key: 'sum_wall_s', label: 'Σ wall (s)' }],
-        caps: [...new Set(records.map((r) => +r.params?.wall_budget_s || 0).filter(Boolean))].map((v) => ({
-          value: v,
-          label: `budget ${v}s`
-        }))
+        metrics: [{ key: 'sum_wall_s', label: 'Σ wall (s)' }]
       },
       {
         title: 'webserver_ok per run',
@@ -95,12 +99,7 @@ export function panelsFor(benchId, records) {
       {
         title: 'overall accuracy',
         unit: 'score',
-        metrics: [{ key: 'overall_accuracy', label: 'overall' }],
-        caps: [],
-        floors: [...new Set(records.map(floorFromReason).filter(Boolean))].map((v) => ({
-          value: v,
-          label: `floor ${v}`
-        }))
+        metrics: [{ key: 'overall_accuracy', label: 'overall' }]
       }
     ];
   }

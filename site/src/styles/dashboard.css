@@ -187,6 +187,18 @@
 .gc-axis { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
 .gc-ref { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .gc-ref-label { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
+/* A gate floor or ceiling: a stepped rule in the series' own colour, dashed
+   so it never reads as data. Its label carries the bound and the value; the
+   floor's sits under the rule and the ceiling's above it, so the side that
+   passes is the side the text is not on. */
+.gc-limit { stroke-width: 1.5; stroke-dasharray: 6 4; opacity: 0.8; pointer-events: none; }
+.gc-limit-label {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; opacity: 0.9;
+  paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round;
+}
+/* A point past its limit wears a red ring under its mark — the mark keeps
+   its shape (pass/fail/aggregate), the ring says the gate's rule was broken. */
+.gc-viol { fill: none; stroke: var(--red); stroke-width: 1.75; }
 /* The halo keeps a value readable where it crosses a gridline, a spread
    whisker or another series — the labels are dodged apart, not moved off the
    data. */
