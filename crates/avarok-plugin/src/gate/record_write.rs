@@ -35,7 +35,7 @@ use super::record_path::rerun_path;
 ///
 /// The path is the canonical `record_path_for` name unless that name already
 /// holds a failing record, in which case it is the re-run name beside it —
-/// see the module doc and [`preserving_path`].
+/// see the module doc and the private `preserving_path` helper.
 pub fn write_record(root: &Path, record: &GateRecord) -> Result<PathBuf> {
     let path = preserving_path(&record_path_for(root, record), record)?;
     std::fs::create_dir_all(path.parent().expect("record path has a parent")).with_context(
