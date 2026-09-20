@@ -527,6 +527,25 @@ impl Qwen3AttentionLayer {
                 | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
+            // The GQA-packed non-split twins. `try_target_kernel`, not
+            // `kernel`: the sources are gb10's
+            // (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`), so
+            // a target that does not carry them resolves a zero handle and the
+            // dispatch keeps the unpacked kernel. Resolved unconditionally
+            // rather than behind `AVAROK_ATTN_DECODE_GQA_PACK` for the same
+            // reason the Hopper twins below are: a handle set that depended on
+            // the environment is a handle set a CUDA graph capture cannot
+            // trust.
+            paged_decode_bf16_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_bf16_gqa",
+                "paged_decode_attn_bf16_gqa",
+            )),
+            paged_decode_fp8_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_fp8_gqa",
+                "paged_decode_attn_fp8_gqa",
+            )),
             // The Hopper split-K twins (#928). `try_kernel`, not `kernel`: the
             // sources live only in `kernels/hopper/common`, so on gb10, b200,
             // strix and metal the lookup returns a zero handle and the dispatch
