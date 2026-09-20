@@ -312,6 +312,16 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemm_tc_k: KernelHandle,
     pub(super) paged_decode_splitk_k: Option<KernelHandle>,
     pub(super) paged_decode_reduce_k: Option<KernelHandle>,
+    /// The GQA-PACKED non-split paged-decode twins: one CTA per
+    /// `(kv_head, seq)` reading each K and V row once for the whole query
+    /// group (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`).
+    ///
+    /// `None` on a target whose `common/` tree does not carry the sources, and
+    /// unused unless `AVAROK_ATTN_DECODE_GQA_PACK` arms them AND the launch
+    /// shape passes `attn_splitk::gqa_pack_shape_ok`; either way the dispatch
+    /// keeps the unpacked kernel, which is what every target serves today.
+    pub(super) paged_decode_bf16_gqa_k: Option<KernelHandle>,
+    pub(super) paged_decode_fp8_gqa_k: Option<KernelHandle>,
     /// The Hopper paged-decode split-K twins (#928), when this build carries
     /// them: `kernels/hopper/common/paged_decode_{fp8,bf16}_splitk_hopper.cu`.
     ///
