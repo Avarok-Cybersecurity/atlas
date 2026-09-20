@@ -156,8 +156,11 @@ pub(super) async fn run_blocking(
             };
             // Strips apply to the COMPLETION only; echoed prompt text is
             // returned verbatim per the legacy spec.
-            let completion_text = strip_stop_sequences(completion_text, &req.stop);
-            let completion_text = strip_thinking_tags(&completion_text);
+            let completion_text = finish_completion_text(
+                completion_text,
+                &req.stop,
+                state.tokenizer.uses_kimi_k3_xtml(),
+            );
             let text = if req.echo {
                 let prompt_text = state.tokenizer.decode(prompt_tokens).unwrap_or_default();
                 format!("{prompt_text}{completion_text}")
@@ -224,3 +227,18 @@ pub(super) async fn run_blocking(
     ))
     .into_response()
 }
+
+fn finish_completion_text(text: String, stops: &[String], raw_xtml: bool) -> String {
+    let text = strip_stop_sequences(text, stops);
+    // XTML channels have their own structure. Plain <think> strings may be
+    // literal response/tool data, so the legacy Qwen extractor corrupts them.
+    if raw_xtml {
+        text
+    } else {
+        strip_thinking_tags(&text)
+    }
+}
+
+#[cfg(test)]
+#[path = "completions_exec_tests.rs"]
+mod tests;
