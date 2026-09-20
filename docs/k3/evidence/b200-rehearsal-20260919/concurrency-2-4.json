@@ -1,0 +1,27 @@
+{
+  "status": "passed",
+  "binary_sha256": "89ec58530084fe58828702e5a37d413e1368b63f3a300e61ba4254b660acf29b",
+  "tp": 2,
+  "requests": 9,
+  "completion_tokens_per_request": 64,
+  "serial_baselines": 2,
+  "concurrent_clients": [
+    2,
+    4
+  ],
+  "all_text_finish_and_token_counts_exactly_match_serial": true,
+  "recovery_request_passed": true,
+  "all_owned_processes_exit_zero": true,
+  "phases": [
+    {
+      "clients": 2,
+      "wall_seconds": 4.091082868631929
+    },
+    {
+      "clients": 4,
+      "wall_seconds": 7.863274779170752
+    }
+  ],
+  "scope": "Concurrent client correctness, not fused GPU batching; wall times descriptive only because compilation overlapped",
+  "receipt_sha256": "1e4f12aa383a24da91e6cb91a0056114bd2762779bd4de424bb1e66b139daf6d"
+}

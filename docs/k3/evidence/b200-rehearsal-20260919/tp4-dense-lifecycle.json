@@ -1,0 +1,105 @@
+{
+  "candidate_commit": "083260451",
+  "binary_sha256": "e36f14822006b4aa19329314c573325bdf97107bdd5b4a4a98f9d04cbfd6bac8",
+  "dense_cuda_enabled": "1",
+  "tp": 4,
+  "ep": 1,
+  "checks": 121,
+  "cycles": 5,
+  "trusted_baseline_checked": true,
+  "elapsed_soak_seconds": 111.11872559413314,
+  "idle": {
+    "request_free_seconds": 45.00010837195441
+  },
+  "startup": {
+    "start_to_owned_healthy_seconds": 11.756618993822485,
+    "cuda_cache_path": "/root/.nv/ComputeCache"
+  },
+  "collectives": {
+    "status": "MATCH_SUBMISSIONS",
+    "world_size": 4,
+    "submissions_per_rank": {
+      "0": 118883,
+      "1": 118883,
+      "2": 118883,
+      "3": 118883
+    },
+    "collectives_per_rank": 118883,
+    "peer_transfers": 0,
+    "expected_submissions_per_rank": 118883,
+    "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+  },
+  "cleanup_timeout_seconds": 15,
+  "all_owned_processes_exit_zero": true,
+  "clean_restart_canary": {
+    "status": "passed",
+    "prompt_tokens": 8,
+    "completion_tokens": 16,
+    "full_text_finish_counts_exactly_match_baseline": true,
+    "all_owned_processes_exit_zero": true,
+    "baseline_topology": 4,
+    "baseline_probe_sha256": "4d841a3c91640349c13d071407281374061ed1be6593370f5865cdbd132ba347"
+  },
+  "memory": {
+    "sample_count": 269,
+    "period_seconds": 0.5,
+    "ranks": [
+      {
+        "rank": 0,
+        "device": 0,
+        "uuid": "GPU-bec70d9b-383d-3161-92f7-906d61d39ad6",
+        "pids": [
+          "83031"
+        ],
+        "peak_observed_device_mib": 3800.0,
+        "peak_observed_process_mib": 3786.0,
+        "observed_cpu_seconds": {
+          "83031": 104.58999999999999
+        }
+      },
+      {
+        "rank": 1,
+        "device": 1,
+        "uuid": "GPU-e0447692-90f8-d7b9-af5c-5742636f5d1a",
+        "pids": [
+          "83028"
+        ],
+        "peak_observed_device_mib": 3798.0,
+        "peak_observed_process_mib": 3784.0,
+        "observed_cpu_seconds": {
+          "83028": 104.6
+        }
+      },
+      {
+        "rank": 2,
+        "device": 2,
+        "uuid": "GPU-7d8caae1-d463-6a1e-e936-eb062ea8380a",
+        "pids": [
+          "83029"
+        ],
+        "peak_observed_device_mib": 3798.0,
+        "peak_observed_process_mib": 3784.0,
+        "observed_cpu_seconds": {
+          "83029": 105.41
+        }
+      },
+      {
+        "rank": 3,
+        "device": 3,
+        "uuid": "GPU-c2f46995-1b60-06cb-f173-b3dfc59a0824",
+        "pids": [
+          "83030"
+        ],
+        "peak_observed_device_mib": 3798.0,
+        "peak_observed_process_mib": 3784.0,
+        "observed_cpu_seconds": {
+          "83030": 104.49
+        }
+      }
+    ],
+    "limitation": "Observed high-water from NVIDIA driver process/device sampling, not exact allocator peak. CPU times are sampled process CPU execution, not GPU kernel compute or collective wait. No balance claim."
+  },
+  "soak_receipts_sha256": "06b4241ece3dd8f257570be0f36b979c21dae56f52ef3deedc8f4ef30b7df6c6",
+  "memory_samples_sha256": "1821e2ce708e3e7bff478c5c9e88a890312b1adf7ce02d9855ca8bd8c0d19a24",
+  "collective_count_derivation": "118639 validated TP2 submissions + (4-2) additional rooted broadcasts per request * (121 soak requests +1 launch canary) =118883; ep_min_u32 in crates/spark-model/src/model/impl_a2.rs loops over communicator world. Histogram differs only by122 broadcasts from each added root2/root3. Rejected borrowed TP2-count receipt preserved."
+}

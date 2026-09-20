@@ -1,0 +1,263 @@
+{
+  "schema": 1,
+  "capture_database": "tp4-supported-memory-v2.sqlite (bulk evidence retained outside Git)",
+  "scope": "Entire instrumented capture including startup and shutdown; API elapsed is host wall time, not GPU allocation lifetime or pure wait.",
+  "allocation_peak_bytes": null,
+  "ranks": [
+    {
+      "rank": 0,
+      "pid": 88040,
+      "globalPid": 282952042807296,
+      "api": [
+        {
+          "name": "cuMemAllocHost_v2",
+          "count": 1,
+          "total_ms": 0.035516,
+          "max_ms": 0.035516,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemAlloc_v2",
+          "count": 73089,
+          "total_ms": 264.541335,
+          "max_ms": 14.838332,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemCreate",
+          "count": 196,
+          "total_ms": 54.444801,
+          "max_ms": 36.537534,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFreeHost",
+          "count": 1,
+          "total_ms": 1.581588,
+          "max_ms": 1.581588,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFree_v2",
+          "count": 73088,
+          "total_ms": 571.943712,
+          "max_ms": 2.889141,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemMap",
+          "count": 260,
+          "total_ms": 53.536923,
+          "max_ms": 38.135239,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuStreamSynchronize",
+          "count": 110694,
+          "total_ms": 3999.762585,
+          "max_ms": 8.291085,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cudaStreamSynchronize_v3020",
+          "count": 67,
+          "total_ms": 0.569389,
+          "max_ms": 0.020059,
+          "nonzero_returns": 0
+        }
+      ]
+    },
+    {
+      "rank": 1,
+      "pid": 88037,
+      "globalPid": 282951992475648,
+      "api": [
+        {
+          "name": "cuMemAllocHost_v2",
+          "count": 1,
+          "total_ms": 0.015427,
+          "max_ms": 0.015427,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemAlloc_v2",
+          "count": 73089,
+          "total_ms": 232.415105,
+          "max_ms": 0.903786,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemCreate",
+          "count": 196,
+          "total_ms": 7.548271,
+          "max_ms": 0.394935,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFreeHost",
+          "count": 1,
+          "total_ms": 0.011055,
+          "max_ms": 0.011055,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFree_v2",
+          "count": 73088,
+          "total_ms": 566.222487,
+          "max_ms": 3.405104,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemMap",
+          "count": 260,
+          "total_ms": 8.343322,
+          "max_ms": 0.255549,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuStreamSynchronize",
+          "count": 111039,
+          "total_ms": 4006.984202,
+          "max_ms": 8.322334,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cudaStreamSynchronize_v3020",
+          "count": 67,
+          "total_ms": 0.534411,
+          "max_ms": 0.020144,
+          "nonzero_returns": 0
+        }
+      ]
+    },
+    {
+      "rank": 2,
+      "pid": 88038,
+      "globalPid": 282952009252864,
+      "api": [
+        {
+          "name": "cuMemAllocHost_v2",
+          "count": 1,
+          "total_ms": 0.018354,
+          "max_ms": 0.018354,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemAlloc_v2",
+          "count": 73089,
+          "total_ms": 245.107572,
+          "max_ms": 1.113458,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemCreate",
+          "count": 196,
+          "total_ms": 30.555548,
+          "max_ms": 0.892434,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFreeHost",
+          "count": 1,
+          "total_ms": 0.017475,
+          "max_ms": 0.017475,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFree_v2",
+          "count": 73088,
+          "total_ms": 570.600289,
+          "max_ms": 2.282924,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemMap",
+          "count": 260,
+          "total_ms": 11.505481,
+          "max_ms": 0.850545,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuStreamSynchronize",
+          "count": 111039,
+          "total_ms": 3907.690174,
+          "max_ms": 8.308286,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cudaStreamSynchronize_v3020",
+          "count": 67,
+          "total_ms": 0.539666,
+          "max_ms": 0.016458,
+          "nonzero_returns": 0
+        }
+      ]
+    },
+    {
+      "rank": 3,
+      "pid": 88039,
+      "globalPid": 282952026030080,
+      "api": [
+        {
+          "name": "cuMemAllocHost_v2",
+          "count": 1,
+          "total_ms": 0.013029,
+          "max_ms": 0.013029,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemAlloc_v2",
+          "count": 73089,
+          "total_ms": 262.968066,
+          "max_ms": 13.425284,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemCreate",
+          "count": 196,
+          "total_ms": 7.765747,
+          "max_ms": 0.297762,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFreeHost",
+          "count": 1,
+          "total_ms": 0.011508,
+          "max_ms": 0.011508,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemFree_v2",
+          "count": 73088,
+          "total_ms": 577.549665,
+          "max_ms": 2.607429,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuMemMap",
+          "count": 260,
+          "total_ms": 7.816372,
+          "max_ms": 0.220159,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cuStreamSynchronize",
+          "count": 111039,
+          "total_ms": 3912.280502,
+          "max_ms": 10.827058,
+          "nonzero_returns": 0
+        },
+        {
+          "name": "cudaStreamSynchronize_v3020",
+          "count": 67,
+          "total_ms": 0.559086,
+          "max_ms": 0.013326,
+          "nonzero_returns": 0
+        }
+      ]
+    }
+  ],
+  "memory_event_tables": {},
+  "warnings": [],
+  "allocation_peak_status": "unavailable_no_allocation_lifetime_events"
+}
