@@ -380,7 +380,12 @@ extern "C" __global__ void attn_v41_index_score(
 // q: [T, nh, hd] bf16. Rows come from two sources: index i < split reads
 // rows_a[i], else rows_b[i - split] (window rows, then the compressed cache).
 // idx: [T, topk] i32, -1 = absent. sink: [nh] f32. o: [T, nh, hd] bf16.
-// Grid: (T, nh). Block: 256. Scores in shared memory (topk <= AV_MAX_TOPK).
+// Grid: (T, nh, S). Block: 256. Scores in shared memory (topk <= AV_MAX_TOPK).
+// S > 1 splits the OUTPUT dimension hd across S blocks per (token, head):
+// every block recomputes the scores and the softmax (the same values in the
+// same thread layout) and writes its own hd / S outputs, each by the same
+// j-ordered sum as the single block, so the bytes are the same for any S;
+// only the number of blocks in flight changes (64 blocks on 48 SMs at S = 1).
 #define AV_MAX_TOPK 2048
 extern "C" __global__ void attn_v41_sparse_attn(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ rows_a,
@@ -426,9 +431,11 @@ extern "C" __global__ void attn_v41_sparse_attn(
     }
     den = av_block_sum(den, red) + expf(sink[h] - m);
     __syncthreads();
-    // o[d] = sum_j p_j * row_j[d]
+    // o[d] = sum_j p_j * row_j[d], this block's slice of d
     __nv_bfloat16* ov = o + ((size_t)t * nh + h) * hd;
-    for (unsigned int d = tid; d < hd; d += blockDim.x) {
+    const unsigned int d0 = blockIdx.z * hd / gridDim.z;
+    const unsigned int d1 = (blockIdx.z + 1) * hd / gridDim.z;
+    for (unsigned int d = d0 + tid; d < d1; d += blockDim.x) {
         float acc = 0.0f;
         for (unsigned int j = 0; j < topk; ++j) {
             const int i = ids[j];

@@ -16,6 +16,22 @@ use super::{
 };
 use crate::layers::deepseek_v41_ref::attn::window_topk_idxs;
 
+/// `ATLAS_DS41_SPARSE_SPLIT` (default 2): the blocks per (token, head) the
+/// sparse attention's output dimension is split across; the same bytes for
+/// any value (see `attn_v41_sparse_attn`). One block a head left 64 blocks
+/// on 48 SMs; two put a thread on every output (hd / 2 = 256) and measured
+/// +5% on the standard, four a little under two. Read once.
+fn sparse_split() -> u32 {
+    static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("ATLAS_DS41_SPARSE_SPLIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&s| (1..=8).contains(&s))
+            .unwrap_or(2)
+    })
+}
+
 impl AttnV41 {
     /// q (low-rank, normed, up-projected, rotated) and kv (one latent row per
     /// token, normed, rotated, fp8) from the normed input `x`. Device work
@@ -72,7 +88,7 @@ impl AttnV41 {
         // sparse attention with the sink, then the inverse rotation
         let scale = (hd as f32).powf(-0.5);
         KernelLaunch::new(gpu, self.k.sparse_attn)
-            .grid([m as u32, nh as u32, 1])
+            .grid([m as u32, nh as u32, sparse_split()])
             .block([256, 1, 1])
             .arg_ptr(self.q)
             .arg_ptr(rows_a)
