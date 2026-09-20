@@ -380,3 +380,66 @@ fn kquant_groups_w_matches_per_group_launches_bitwise() {
     }
     g.free(w_dev).unwrap();
 }
+
+/// The paired `wq_a` + `wkv` launch (`kquant_mmvq_q2_k_pair_w`) against the
+/// two `kquant_mmvq_q2_k_w` launches over the same q8_1 row: the same bytes
+/// out at M = 1 and 5, with unequal row counts (N and N / 4 + 8 = 88, so the
+/// short tensor's grid tail and the odd row count are both exercised).
+#[test]
+#[ignore = "requires a CUDA GB10 + the deepseek-v4-flash kernel target"]
+fn kquant_pair_w_matches_two_launches_bitwise() {
+    let gpu = backend();
+    let g: &dyn GpuBackend = &gpu;
+    let stream = g.default_stream();
+    let n1 = N / 4 + 8;
+    let raw0 = build_weight(Q2K_BLOCK_BYTES, &[80, 82], 0x6E0F_0003);
+    let raw1 = build_weight(Q2K_BLOCK_BYTES, &[80, 82], 0x6E0F_0004);
+    let w0 = upload(g, &raw0);
+    let w1 = upload(
+        g,
+        &raw1[..n1 as usize * (K as usize / 256) * Q2K_BLOCK_BYTES],
+    );
+    let k_rows = g.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16").unwrap();
+    let k_w = g.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w").unwrap();
+    let k_pair = g.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_pair_w").unwrap();
+    for m in [1u32, 5] {
+        let (bits, _) = build_act(m as usize, 0x7B7B + m);
+        let x_bytes: Vec<u8> = bits.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let x_dev = upload(g, &x_bytes);
+        let y = g.alloc(kquant_q8_1_rows_bytes(m, K)).unwrap();
+        let out0 = g.alloc((m * N) as usize * 2).unwrap();
+        let out1 = g.alloc((m * n1) as usize * 2).unwrap();
+        kquant_q8_1_rows(g, k_rows, x_dev, y, m, K, stream).unwrap();
+        kquant_mmvq_pair_w(g, k_pair, (w0, out0, N), (w1, out1, n1), y, K, m, stream).unwrap();
+        g.synchronize(stream).unwrap();
+        let mut got0 = vec![0u8; (m * N) as usize * 2];
+        let mut got1 = vec![0u8; (m * n1) as usize * 2];
+        g.copy_d2h(out0, &mut got0).unwrap();
+        g.copy_d2h(out1, &mut got1).unwrap();
+        kquant_mmvq_w(g, k_w, w0, y, out0, N, K, m, stream).unwrap();
+        kquant_mmvq_w(g, k_w, w1, y, out1, n1, K, m, stream).unwrap();
+        g.synchronize(stream).unwrap();
+        let mut want0 = vec![0u8; got0.len()];
+        let mut want1 = vec![0u8; got1.len()];
+        g.copy_d2h(out0, &mut want0).unwrap();
+        g.copy_d2h(out1, &mut want1).unwrap();
+        assert!(
+            got0 == want0,
+            "pair launch differs from the wq_a launch at M={m}"
+        );
+        assert!(
+            got1 == want1,
+            "pair launch differs from the wkv launch at M={m}"
+        );
+        println!(
+            "  Q2_K pair_w M={m}: {} + {} bytes identical to the two launches",
+            got0.len(),
+            got1.len()
+        );
+        for p in [x_dev, y, out0, out1] {
+            g.free(p).unwrap();
+        }
+    }
+    g.free(w0).unwrap();
+    g.free(w1).unwrap();
+}

@@ -294,6 +294,26 @@ extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q2_k_groups_w(
                                    (int)ncols_x, (int)nrows_x, (int)m);
 }
 
+// Two projections of one input in one launch (decode: wq_a [q_rank x dim]
+// and wkv [head_dim x dim] both read the same normed token): blockIdx.y picks
+// the tensor (its blocks, row count and output), the q8_1 activation is
+// shared, and the per-row math is kq_mmvq_warp's, so each tensor's numbers
+// match its own kquant_mmvq_q2_k_w launch bit for bit. The two launches, and
+// the second quantisation of the same input, become one of each; the
+// under-filled grids (320 + 128 blocks on 48 SMs) share one wave.
+// Grid: (ceil(max(nrows0, nrows1) / KQ_NWARPS), 2, 1)  Block: (32, KQ_NWARPS, 1)
+extern "C" __global__ void __launch_bounds__(128) kquant_mmvq_q2_k_pair_w(
+        const void* __restrict__ vx0, __nv_bfloat16* __restrict__ dst0, unsigned int nrows0,
+        const void* __restrict__ vx1, __nv_bfloat16* __restrict__ dst1, unsigned int nrows1,
+        const void* __restrict__ vy, unsigned int ncols_x, unsigned int m) {
+    const bool second = blockIdx.y != 0;
+    const void* vx = second ? vx1 : vx0;
+    __nv_bfloat16* dst = second ? dst1 : dst0;
+    const unsigned int nrows_x = second ? nrows1 : nrows0;
+    kq_mmvq_warp<GGML_TYPE_Q2_K>((const char*)vx, (size_t)(ncols_x / QK_K) * sizeof(block_q2_K),
+                                 (const block_q8_1*)vy, dst, (int)ncols_x, (int)nrows_x, (int)m);
+}
+
 // The Q6_K output head on raw 210-byte super-blocks (qi = 32: one super-block
 // per warp iteration, a lane per 8-value group), the same ggml mmvq dot as
 // llama.cpp's Q6_K x q8_1 path. Grid: (ceil(nrows_x / KQ_NWARPS), 1, 1).

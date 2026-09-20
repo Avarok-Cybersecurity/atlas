@@ -34,6 +34,7 @@ impl AttnV41 {
             q8_rows: gpu.kernel(KQUANT_MODULE, "kquant_q8_1_rows_bf16")?,
             mmvq_q2k_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_w")?,
             mmvq_q2k_groups_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_groups_w")?,
+            mmvq_q2k_pair_w: gpu.kernel(KQUANT_MODULE, "kquant_mmvq_q2_k_pair_w")?,
             quant_d2s6: gpu.kernel(KQUANT_MODULE, "atlas_q8_1_quantize_d2s6_bf16")?,
             mmq_q2k_nc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_nc")?,
             mmq_q2k_wc: gpu.kernel(KQUANT_MODULE, "atlas_q2_k_mmq128_wc")?,

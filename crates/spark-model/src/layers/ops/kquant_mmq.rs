@@ -241,6 +241,44 @@ pub fn kquant_mmvq_groups_w(
         .launch(stream)
 }
 
+/// `kquant_mmvq_q2_k_pair_w`: two `[n_i, k]` Q2_K projections of ONE
+/// activation (`y_q8`, `block_q8_1 [m][k/32]`) in one launch, `out_i` =
+/// `[m][n_i]` bf16. Bit-identical to two [`kquant_mmvq_w`] launches.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_mmvq_pair_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    (w0, out0, n0): (DevicePtr, DevicePtr, u32),
+    (w1, out1, n1): (DevicePtr, DevicePtr, u32),
+    y_q8: DevicePtr,
+    k: u32,
+    m: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&m),
+        "kquant_mmvq_pair_w: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k.is_multiple_of(QK_K),
+        "kquant_mmvq_pair_w: k={k} is not a multiple of {QK_K}"
+    );
+    anyhow::ensure!(n0 >= 1 && n1 >= 1, "kquant_mmvq_pair_w: empty projection");
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n0.max(n1), 4), 2, 1])
+        .block([32, 4, 1])
+        .arg_ptr(w0)
+        .arg_ptr(out0)
+        .arg_u32(n0)
+        .arg_ptr(w1)
+        .arg_ptr(out1)
+        .arg_u32(n1)
+        .arg_ptr(y_q8)
+        .arg_u32(k)
+        .arg_u32(m)
+        .launch(stream)
+}
+
 /// [`kquant_mmvq_experts_w`] with `nwarps` rows a block (the `_w2` / `_w8`
 /// entries for 2 / 8; the plain `_w` entry is 4). Same bytes for any `nwarps`.
 #[allow(clippy::too_many_arguments)]

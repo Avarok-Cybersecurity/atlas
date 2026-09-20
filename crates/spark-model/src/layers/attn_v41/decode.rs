@@ -15,6 +15,7 @@ use super::{
     AttnMat, AttnV41, AttnV41LayerState, AttnV41LayerWeights, SharedV41, upload_i32_async,
 };
 use crate::layers::deepseek_v41_ref::attn::window_topk_idxs;
+use crate::layers::ops::{kquant_mmvq_pair_w, kquant_q8_1_rows};
 
 /// `ATLAS_DS41_SPARSE_SPLIT` (default 2): the blocks per (token, head) the
 /// sparse attention's output dimension is split across; the same bytes for
@@ -47,7 +48,32 @@ impl AttnV41 {
     ) -> Result<()> {
         let c = &self.cfg;
         let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
-        self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
+        // wq_a and wkv read the same input: one quantisation, one launch
+        // (bit-identical to the two, see `kquant_mmvq_q2_k_pair_w`)
+        if let (AttnMat::Q2K(a), AttnMat::Q2K(kv), true) = (w.wq_a, w.wkv, m <= 8) {
+            kquant_q8_1_rows(
+                gpu,
+                self.k.q8_rows,
+                x,
+                self.a_q8,
+                m as u32,
+                dim as u32,
+                stream,
+            )?;
+            kquant_mmvq_pair_w(
+                gpu,
+                self.k.mmvq_q2k_pair_w,
+                (a, self.qr_raw, c.q_rank as u32),
+                (kv, self.kv_raw, hd as u32),
+                self.a_q8,
+                dim as u32,
+                m as u32,
+                stream,
+            )?;
+        } else {
+            self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
+            self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
+        }
         self.rmsnorm(
             gpu,
             false,
@@ -60,7 +86,6 @@ impl AttnV41 {
         )?;
         self.gemm(gpu, self.qr, w.wq_b, self.q, m, nh * hd, c.q_rank, stream)?;
         self.rope(gpu, self.q, self.head_pos, m * nh, hd, yarn, false, stream)?;
-        self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
         self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
         self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
         self.act_quant(gpu, self.kv, m * hd, stream)
