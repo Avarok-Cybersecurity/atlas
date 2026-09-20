@@ -74,9 +74,79 @@ impl MoeV41 {
         fits
     }
 
+    /// Words in one layer's header: the miss flag, the picks, the weight
+    /// bits, the plan slots.
+    pub fn header_words(&self) -> usize {
+        1 + 3 * self.cfg.topk
+    }
+
+    /// Layer `layer`'s header inside `route_hdr`.
+    fn header_of(&self, layer: u32) -> DevicePtr {
+        DevicePtr(self.route_hdr.0 + (layer as usize * self.header_words() * 4) as u64)
+    }
+
+    /// The arena facts the selection kernel builds pointers from.
+    pub fn arena_of(lru: &ExpertLru) -> (u64, u64, u64, u64, u64) {
+        let lay = lru.layout();
+        (
+            lru.arena_dev().0,
+            lay.bytes as u64,
+            lay.gate_off as u64,
+            lay.up_off as u64,
+            lay.down_off as u64,
+        )
+    }
+
+    /// The device selection for a replayed step: the slot table brought up
+    /// to date, the kernel launched with its header at layer `w.layer`'s row
+    /// and NO read-back (`read_headers` after the segment). Device work only
+    /// past the table update.
+    pub fn route_select_deferred(
+        &self,
+        gpu: &dyn GpuBackend,
+        w: &MoeV41LayerWeights,
+        arena: (u64, u64, u64, u64, u64),
+        stream: u64,
+    ) -> Result<()> {
+        ensure!(
+            self.device_route_ok(w),
+            "moe_v41: the step graph needs ATLAS_DS41_DEVICE_ROUTE=1 (layer {})",
+            w.layer
+        );
+        self.route_select_launch(gpu, w.layer, w.gate_bias_dev, arena, stream)
+    }
+
+    /// Every layer's header, one read-back (drains `stream`).
+    pub fn read_headers(&self, gpu: &dyn GpuBackend, stream: u64) -> Result<Vec<u8>> {
+        let mut hdr = vec![0u8; SLOT_TABLE_LAYERS * self.header_words() * 4];
+        gpu.copy_d2h_on_stream(self.route_hdr, &mut hdr, stream)?;
+        Ok(hdr)
+    }
+
+    /// `(miss flag, picks, weights)` of layer `layer` out of `read_headers`.
+    pub fn parse_header(&self, hdr: &[u8], layer: u32) -> Result<(bool, Vec<usize>, Vec<f32>)> {
+        let k = self.cfg.topk;
+        let base = layer as usize * self.header_words();
+        let word = |i: usize| {
+            let o = 4 * (base + i);
+            i32::from_le_bytes([hdr[o], hdr[o + 1], hdr[o + 2], hdr[o + 3]])
+        };
+        let picks: Vec<usize> = (0..k).map(|i| word(1 + i) as usize).collect();
+        ensure!(
+            picks.iter().all(|&e| e < self.cfg.n_routed),
+            "device route L{layer}: pick outside 0..{}",
+            self.cfg.n_routed
+        );
+        let weights = (0..k)
+            .map(|i| f32::from_bits(word(1 + k + i) as u32))
+            .collect();
+        Ok((word(0) != 0, picks, weights))
+    }
+
     /// The selection kernel on `self.logits` (row 0) for layer `layer`, the
     /// pointer table from `arena` = (base, slot bytes, gate / up / down
-    /// offsets). Device work only; the header lands in `self.route_hdr`.
+    /// offsets). Device work only; the header lands in layer `layer`'s row
+    /// of `self.route_hdr`.
     pub(super) fn route_select_launch(
         &self,
         gpu: &dyn GpuBackend,
@@ -101,7 +171,7 @@ impl MoeV41 {
             .arg_u64(arena.2)
             .arg_u64(arena.3)
             .arg_u64(arena.4)
-            .arg_ptr(self.route_hdr)
+            .arg_ptr(self.header_of(layer))
             .arg_ptr(self.weight_dev)
             .arg_ptr(self.rows_dev)
             .arg_ptr(self.ptrs_dev)
@@ -109,7 +179,7 @@ impl MoeV41 {
     }
 
     /// Bring the device slot table up to date with the cache's changes.
-    pub(super) fn slot_table_update(
+    pub(crate) fn slot_table_update(
         &self,
         gpu: &dyn GpuBackend,
         changes: &[(u32, u32, i32)],
@@ -165,14 +235,7 @@ impl MoeV41 {
         stream: u64,
     ) -> Result<(Vec<f32>, Vec<usize>)> {
         let c = &self.cfg;
-        let lay = lru.layout();
-        let arena = (
-            lru.arena_dev().0,
-            lay.bytes as u64,
-            lay.gate_off as u64,
-            lay.up_off as u64,
-            lay.down_off as u64,
-        );
+        let arena = Self::arena_of(lru);
         // the table must know every slot the cache filled so far (prefill,
         // the host-routed layers): drain before the kernel reads it
         let pending = lru.drain_slot_changes();
@@ -180,20 +243,8 @@ impl MoeV41 {
         self.route_select_launch(gpu, w.layer, w.gate_bias_dev, arena, stream)?;
         let k = c.topk;
         let mut hdr = vec![0u8; (1 + 3 * k) * 4];
-        gpu.copy_d2h_on_stream(self.route_hdr, &mut hdr, stream)?;
-        let word = |i: usize| {
-            i32::from_le_bytes([hdr[4 * i], hdr[4 * i + 1], hdr[4 * i + 2], hdr[4 * i + 3]])
-        };
-        let miss_flag = word(0) != 0;
-        let indices: Vec<usize> = (0..k).map(|i| word(1 + i) as usize).collect();
-        let weights: Vec<f32> = (0..k)
-            .map(|i| f32::from_bits(word(1 + k + i) as u32))
-            .collect();
-        ensure!(
-            indices.iter().all(|&e| e < c.n_routed),
-            "device route: pick outside 0..{}",
-            c.n_routed
-        );
+        gpu.copy_d2h_on_stream(self.header_of(w.layer), &mut hdr, stream)?;
+        let (miss_flag, indices, weights) = self.parse_header(&hdr, 0)?;
         // the cache: hits touched, misses read (and, on the device arena,
         // their copies enqueued on `stream` ahead of the experts)
         lru.begin_token();

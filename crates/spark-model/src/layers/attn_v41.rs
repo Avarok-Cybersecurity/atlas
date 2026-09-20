@@ -297,6 +297,9 @@ pub struct AttnV41 {
     idx_pos: DevicePtr,
     grp_pos: DevicePtr,
     idx_dev: DevicePtr,
+    /// The captured step's selection for ratio-0 layers (window only), so a
+    /// multi-layer capture can hold both selection classes at once.
+    idx_dev_win: DevicePtr,
     ckv: DevicePtr,
     cscore: DevicePtr,
     pooled: DevicePtr,
@@ -313,6 +316,7 @@ pub struct AttnV41 {
     /// step re-uploads only what changed. `None` = unknown, upload.
     decode_pos: Option<usize>,
     decode_idx: Option<Vec<i32>>,
+    decode_idx_win: Option<Vec<i32>>,
 }
 
 fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {

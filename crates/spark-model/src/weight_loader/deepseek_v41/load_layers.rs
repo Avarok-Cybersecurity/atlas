@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, ensure};
 use avarok_core::config::ModelConfig;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 use spark_runtime::weights::expert_stream::{
     EngramRowReader, ExpertArena, ExpertSliceMap, ExpertSource, ShardFiles,
@@ -16,6 +16,7 @@ use crate::layers::attn_v41::{
     AttnV41, AttnV41Cfg, AttnV41LayerWeights, CompressorWeightsGpu, IndexerWeightsGpu, LayerRole,
     SharedV41,
 };
+use crate::layers::deepseek_v41_layer::SegState;
 use crate::layers::deepseek_v41_layer::{DeepSeekV41Layer, V41Runtime};
 use crate::layers::engram_v41::{EngramHashTables, EngramHasher, EngramLayerWeights, EngramV41};
 use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights, RouterWeights};
@@ -237,11 +238,16 @@ pub(super) fn load_layers(
             k.len(),
             hc * dim
         );
-        engram.add_layer(EngramLayerWeights {
-            layer: l,
-            wkv: bf16_ptr(store, &format!("{lp}.engram.wkv"))?,
-            qk: EngramV41::upload_qk(gpu, &q, &k)?,
-        });
+        engram.add_layer(
+            gpu,
+            EngramLayerWeights {
+                layer: l,
+                wkv: bf16_ptr(store, &format!("{lp}.engram.wkv"))?,
+                qk: EngramV41::upload_qk(gpu, &q, &k)?,
+                raw: DevicePtr(0),
+                rows: DevicePtr(0),
+            },
+        )?;
     }
     let alloc_f32 = |n: usize| gpu.alloc((n * 4).max(16));
     let rt = Arc::new(V41Runtime {
@@ -265,6 +271,16 @@ pub(super) fn load_layers(
         sinkhorn_iters: config.hc_sinkhorn_iters.max(1),
         hc_eps: config.hc_eps,
         norm_eps: config.rms_norm_eps as f32,
+        seg: Mutex::new(SegState::default()),
+        roles: Mutex::new(vec![None; n_layers]),
+        engram_layers: Mutex::new(Vec::new()),
+        seg_save: [
+            gpu.alloc(dim * 2)?,
+            alloc_f32(hc * dim)?,
+            alloc_f32(hc)?,
+            alloc_f32(hc)?,
+            gpu.alloc(dim * 2)?,
+        ],
         pre_a: alloc_f32(max_tokens * hc)?,
         pre_f: alloc_f32(max_tokens * hc)?,
         post_s: alloc_f32(max_tokens * hc)?,
@@ -423,6 +439,10 @@ pub(super) fn load_layers(
             None
         };
         let engram_index = rt.tables.hash_index(l);
+        rt.roles.lock().unwrap()[l] = Some(role);
+        if let Some(hi) = engram_index {
+            rt.engram_layers.lock().unwrap().push((l, hi));
+        }
         layers.push(Box::new(DeepSeekV41Layer {
             idx: l,
             role,

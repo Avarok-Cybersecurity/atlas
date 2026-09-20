@@ -79,7 +79,8 @@ fn device_route_select_matches_the_host_chain_bitwise() {
             .unwrap();
         g.synchronize(stream).unwrap();
         let mut hdr = vec![0u8; (1 + 3 * K) * 4];
-        g.copy_d2h(moe.route_hdr, &mut hdr).unwrap();
+        let row = DevicePtr(moe.route_hdr.0 + (layer as usize * (1 + 3 * K) * 4) as u64);
+        g.copy_d2h(row, &mut hdr).unwrap();
         let word = |i: usize| {
             i32::from_le_bytes([hdr[4 * i], hdr[4 * i + 1], hdr[4 * i + 2], hdr[4 * i + 3]])
         };
@@ -127,6 +128,5 @@ fn device_route_select_matches_the_host_chain_bitwise() {
         (0, 0, 0, 0, 0)
     );
     g.free(bias_dev).unwrap();
-    let _ = DevicePtr(0);
     moe.free(g).unwrap();
 }

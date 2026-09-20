@@ -230,6 +230,11 @@ pub struct EngramLayerWeights {
     pub wkv: DevicePtr,
     /// `[hc, dim]` f32, the elementwise product `q_weight * k_weight`.
     pub qk: DevicePtr,
+    /// This layer's row workspace (`add_layer` allocates): the raw Q2_K rows
+    /// and their bf16 expansion, so every engram layer's rows for a step can
+    /// be resident at once (the whole-step graph uploads them all up front).
+    pub raw: DevicePtr,
+    pub rows: DevicePtr,
 }
 
 /// The GPU side: kernels, per-layer weights, and workspaces for up to
@@ -296,8 +301,13 @@ impl EngramV41 {
         self.dim * (self.hc + 1)
     }
 
-    pub fn add_layer(&mut self, w: EngramLayerWeights) {
+    /// Register a layer's weights; its row workspace is allocated here.
+    pub fn add_layer(&mut self, gpu: &dyn GpuBackend, mut w: EngramLayerWeights) -> Result<()> {
+        let n_rows = self.max_tokens * self.cols;
+        w.raw = gpu.alloc(n_rows * ENGRAM_ROW_BYTES)?;
+        w.rows = gpu.alloc(n_rows * self.head_dim * 2)?;
         self.layers.push(w);
+        Ok(())
     }
 
     pub fn layer(&self, layer: usize) -> Option<&EngramLayerWeights> {
@@ -323,10 +333,12 @@ impl EngramV41 {
     pub fn rows_from_q2k(
         &self,
         gpu: &dyn GpuBackend,
+        layer: Option<usize>,
         raw_blocks: &[u8],
         n_rows: usize,
         stream: u64,
     ) -> Result<()> {
+        let (raw, rows) = self.row_bufs(layer)?;
         ensure!(
             n_rows <= self.max_tokens * self.cols,
             "engram: {n_rows} rows exceeds the {} workspace",
@@ -342,12 +354,12 @@ impl EngramV41 {
             "engram: {} raw bytes for {n_rows} rows",
             raw_blocks.len()
         );
-        gpu.copy_h2d_async(raw_blocks, self.raw, stream)?;
+        gpu.copy_h2d_async(raw_blocks, raw, stream)?;
         KernelLaunch::new(gpu, self.dequant_k)
             .grid([n_rows as u32, 1, 1])
             .block([256, 1, 1])
-            .arg_ptr(self.raw)
-            .arg_ptr(self.rows)
+            .arg_ptr(raw)
+            .arg_ptr(rows)
             .arg_u32(n_rows as u32)
             .arg_u32(ENGRAM_ROW_BYTES as u32)
             .launch(stream)
@@ -358,6 +370,7 @@ impl EngramV41 {
     pub fn rows_from_bf16(
         &self,
         gpu: &dyn GpuBackend,
+        layer: Option<usize>,
         rows_bf16: &[u16],
         n_rows: usize,
     ) -> Result<()> {
@@ -371,12 +384,32 @@ impl EngramV41 {
             rows_bf16.len()
         );
         let bytes: Vec<u8> = rows_bf16.iter().flat_map(|v| v.to_le_bytes()).collect();
-        gpu.copy_h2d(&bytes, self.rows)
+        gpu.copy_h2d(&bytes, self.row_bufs(layer)?.1)
     }
 
-    /// The dequantised rows as the GEMM sees them (`[n_rows, head_dim]` bf16).
+    /// The dequantised rows as the GEMM sees them (`[n_rows, head_dim]` bf16):
+    /// the shared workspace (`layer` = `None`).
     pub fn rows_ptr(&self) -> DevicePtr {
         self.rows
+    }
+
+    /// `(raw, rows)` of layer `layer`'s own workspace, or the shared one.
+    fn row_bufs(&self, layer: Option<usize>) -> Result<(DevicePtr, DevicePtr)> {
+        match layer {
+            None => Ok((self.raw, self.rows)),
+            Some(l) => {
+                let w = self
+                    .layer(l)
+                    .with_context(|| format!("engram: layer {l} has no weights"))?;
+                Ok((w.raw, w.rows))
+            }
+        }
+    }
+
+    /// The rows `apply` reads for `w`: its own workspace (a null `rows` is a
+    /// layer registered without one: the shared workspace).
+    fn rows_of(&self, w: &EngramLayerWeights) -> DevicePtr {
+        if w.rows.is_null() { self.rows } else { w.rows }
     }
 
     /// Project the rows already in the workspace and gate `tokens` positions
@@ -402,7 +435,7 @@ impl EngramV41 {
             ops::dense_gemv(
                 gpu,
                 self.gemv_k,
-                self.rows,
+                self.rows_of(w),
                 &wkv,
                 self.kv,
                 self.out_features() as u32,
@@ -413,7 +446,7 @@ impl EngramV41 {
             ops::dense_gemm(
                 gpu,
                 self.gemm_k,
-                self.rows,
+                self.rows_of(w),
                 &wkv,
                 self.kv,
                 tokens as u32,
@@ -443,6 +476,8 @@ impl EngramV41 {
         for l in &self.layers {
             gpu.free(l.wkv)?;
             gpu.free(l.qk)?;
+            gpu.free(l.raw)?;
+            gpu.free(l.rows)?;
         }
         gpu.free(self.rows)?;
         gpu.free(self.raw)?;

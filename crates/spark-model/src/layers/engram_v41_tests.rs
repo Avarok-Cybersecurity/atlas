@@ -169,11 +169,17 @@ fn gpu_engram_matches_the_golden_within_bf16() {
         let wkv = g.alloc(w_bytes.len()).unwrap();
         g.copy_h2d(&w_bytes, wkv).unwrap();
         let qk = EngramV41::upload_qk(g, &q, &k).unwrap();
-        eng.add_layer(EngramLayerWeights {
-            layer: lid,
-            wkv,
-            qk,
-        });
+        eng.add_layer(
+            g,
+            EngramLayerWeights {
+                layer: lid,
+                wkv,
+                qk,
+                raw: DevicePtr(0),
+                rows: DevicePtr(0),
+            },
+        )
+        .unwrap();
         let _ = li;
     }
     let mut hasher = EngramHasher::new(tables.clone(), f.max_seq);
@@ -188,7 +194,7 @@ fn gpu_engram_matches_the_golden_within_bf16() {
                 .collect();
             let emb = embed_rows(&table, hd, &ids);
             let rows: Vec<u16> = emb.iter().map(|&v| bf16_bits(v)).collect();
-            eng.rows_from_bf16(g, &rows, len * cols).unwrap();
+            eng.rows_from_bf16(g, Some(lid), &rows, len * cols).unwrap();
             let xin = f.g.tensor(&r, &format!("L{lid}.engram_in"));
             assert_eq!(xin.stride, 1, "engram_in must be stored at full resolution");
             let x: Vec<f32> = xin.data.iter().map(|&v| v as f32).collect();
@@ -253,7 +259,7 @@ fn gpu_engram_rows_from_the_real_tables_match_the_cpu_decoder() {
             .collect();
         let mut raw = vec![0u8; n_rows * ENGRAM_ROW_BYTES];
         rd.read_rows(t.layer, &ids, &mut raw).unwrap();
-        eng.rows_from_q2k(g, &raw, n_rows, stream).unwrap();
+        eng.rows_from_q2k(g, None, &raw, n_rows, stream).unwrap();
         g.synchronize(stream).unwrap();
         let mut got = vec![0u8; n_rows * 256 * 2];
         g.copy_d2h(eng.rows_ptr(), &mut got).unwrap();

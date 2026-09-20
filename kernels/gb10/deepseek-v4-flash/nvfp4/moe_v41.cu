@@ -344,8 +344,9 @@ static __device__ __forceinline__ float moe_v41_glibc_log1pf(float x) {
   else return __fmaf_rn(kf, ln2_hi, -__fsub_rn(__fsub_rn(hfsq, __fadd_rn(__fmul_rn(s, hr), __fmaf_rn(kf, ln2_lo, c))), f));
 }
 
-// hdr: [0] miss flag, [1..1+K) picks in top-k order, [1+K..1+2K) weight bits
-// in top-k order, [1+2K..1+3K) plan slots (ascending expert id, -1 = miss).
+// hdr: this layer's 1 + 3K words: [0] miss flag, [1..1+K) picks in top-k
+// order, [1+K..1+2K) weight bits in top-k order, [1+2K..1+3K) plan slots
+// (ascending expert id, -1 = miss).
 // plan_w / plan_rows: `weight_dev` / `rows_dev` in plan order (m = 1: row 0).
 // ptrs: [3][K] gate / up / down addresses in plan order from
 // arena_base + slot * slot_bytes + off.
@@ -379,10 +380,11 @@ extern "C" __global__ void __launch_bounds__(MOE_V41_ROUTE_NR) moe_v41_route_sel
     plan_w[pos] = w; plan_rows[pos] = 0;
     const int sl = slot_of[pick[e]];
     hdr[1 + 2 * K + pos] = sl;
-    if (sl < 0) { atomicOr(hdr, 1); } else {
-      const unsigned long long base = arena_base + (unsigned long long)sl * slot_bytes;
-      ptrs[pos] = base + gate_off; ptrs[K + pos] = base + up_off; ptrs[2 * K + pos] = base + down_off;
-    }
+    // an absent expert points at slot 0 (valid memory, wrong bytes) and sets
+    // the flag: a replayed step never faults, and the host re-runs it
+    if (sl < 0) atomicOr(hdr, 1);
+    const unsigned long long base = arena_base + (unsigned long long)(sl < 0 ? 0 : sl) * slot_bytes;
+    ptrs[pos] = base + gate_off; ptrs[K + pos] = base + up_off; ptrs[2 * K + pos] = base + down_off;
   }
 }
 

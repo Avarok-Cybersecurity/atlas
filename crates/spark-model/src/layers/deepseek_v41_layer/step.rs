@@ -7,6 +7,7 @@
 use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
+use super::step_graph_on;
 use super::{DeepSeekV41Layer, GraphMode, V41LayerState, graph_mode};
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::attn_v41::SharedV41;
@@ -115,7 +116,7 @@ impl DeepSeekV41Layer {
         let mut raw = vec![0u8; row_ids.len() * ENGRAM_ROW_BYTES];
         rt.rows.read_rows(self.idx, &row_ids, &mut raw)?;
         let engram = rt.engram.lock().unwrap();
-        engram.rows_from_q2k(gpu, &raw, row_ids.len(), stream)?;
+        engram.rows_from_q2k(gpu, Some(self.idx), &raw, row_ids.len(), stream)?;
         engram.apply(gpu, self.idx, streams, m, stream)
     }
 
@@ -179,6 +180,13 @@ impl DeepSeekV41Layer {
             *rt.step_moe.lock().unwrap() = Default::default();
             *rt.step_attn_ms.lock().unwrap() = 0.0;
             *rt.step_engram_ms.lock().unwrap() = 0.0;
+        }
+        // the whole-step segment graphs: the single-token step at a position
+        // > 0, with the engram rows for every engram layer uploaded up front
+        // by layer 0 (`step_seg.rs`)
+        let seg_mode = step_graph_on() && m == 1 && start_pos > 0 && !gpu.debug_sync_kernels();
+        if seg_mode {
+            return self.step_seg(hidden, start_pos, st, ctx, stream);
         }
         let te = std::time::Instant::now();
         if let Some(hi) = self.engram_index

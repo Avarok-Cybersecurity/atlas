@@ -61,6 +61,7 @@ impl AttnV41 {
         rows_a: DevicePtr,
         rows_a_len: usize,
         rows_b: Option<DevicePtr>,
+        idx: DevicePtr,
         topk: usize,
         m: usize,
         yarn: bool,
@@ -77,7 +78,7 @@ impl AttnV41 {
             .arg_ptr(rows_a)
             .arg_ptr(rows_b.unwrap_or(rows_a))
             .arg_u32(rows_a_len as u32)
-            .arg_ptr(self.idx_dev)
+            .arg_ptr(idx)
             .arg_ptr(w.sink)
             .arg_ptr(self.o)
             .arg_u32(nh as u32)
@@ -171,8 +172,12 @@ impl AttnV41 {
     /// entry adds a zero to the denominator sum and nothing to the output,
     /// so the result is the eager step's bit for bit).
     pub fn decode_fixed_topk(&self, w: &AttnV41LayerWeights) -> usize {
+        self.decode_fixed_topk_of(w.role.ratio > 0)
+    }
+
+    fn decode_fixed_topk_of(&self, ratio_positive: bool) -> usize {
         let c = &self.cfg;
-        if w.role.ratio > 0 {
+        if ratio_positive {
             (c.window + c.index_topk).min(2048)
         } else {
             c.window
@@ -185,6 +190,18 @@ impl AttnV41 {
     pub fn invalidate_decode_uploads(&mut self) {
         self.decode_pos = None;
         self.decode_idx = None;
+        self.decode_idx_win = None;
+    }
+
+    /// The selection buffer a captured step reads for a layer of this class:
+    /// `idx_dev` for the layers that attend compressed rows, `idx_dev_win`
+    /// for the window-only ones.
+    fn decode_idx_of(&self, ratio_positive: bool) -> DevicePtr {
+        if ratio_positive {
+            self.idx_dev
+        } else {
+            self.idx_dev_win
+        }
     }
 
     /// The HOST half of a capturable layer's single-token step at `start_pos`:
@@ -201,11 +218,26 @@ impl AttnV41 {
         start_pos: usize,
         stream: u64,
     ) -> Result<Option<DevicePtr>> {
-        let c = &self.cfg;
         ensure!(
             self.decode_capturable(w),
             "attn_v41: decode_prep on a kv/index source layer"
         );
+        self.decode_prep_role(w.role.ratio > 0, shared, gpu, start_pos, stream)
+    }
+
+    /// [`Self::decode_prep`] by selection class: `ratio_positive` layers read
+    /// the window plus the shared index selection from `idx_dev`, the others
+    /// the window alone from `idx_dev_win`; both classes can be prepared for
+    /// one multi-layer capture.
+    pub fn decode_prep_role(
+        &mut self,
+        ratio_positive: bool,
+        shared: &SharedV41,
+        gpu: &dyn GpuBackend,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<Option<DevicePtr>> {
+        let c = &self.cfg;
         ensure!(
             start_pos >= 1 && start_pos < c.max_seq,
             "attn_v41: position {start_pos} outside the decode range 1..{}",
@@ -217,10 +249,10 @@ impl AttnV41 {
             upload_i32_async(gpu, self.head_pos, &vec![p; c.n_heads], stream)?;
             self.decode_pos = Some(start_pos);
         }
-        let fixed = self.decode_fixed_topk(w);
+        let fixed = self.decode_fixed_topk_of(ratio_positive);
         let (mut idx, topk) = window_topk_idxs(c.window, 1, start_pos);
         debug_assert_eq!(topk, c.window);
-        let rows_b = if w.role.ratio > 0 {
+        let rows_b = if ratio_positive {
             ensure!(
                 shared.topk_idxs.len() == shared.topk,
                 "attn_v41: shared index selection is {} for one token x {}",
@@ -242,9 +274,14 @@ impl AttnV41 {
             idx.len()
         );
         idx.resize(fixed, -1);
-        if self.decode_idx.as_deref() != Some(&idx[..]) {
-            upload_i32_async(gpu, self.idx_dev, &idx, stream)?;
-            self.decode_idx = Some(idx);
+        let (buf, cache) = if ratio_positive {
+            (self.idx_dev, &mut self.decode_idx)
+        } else {
+            (self.idx_dev_win, &mut self.decode_idx_win)
+        };
+        if cache.as_deref() != Some(&idx[..]) {
+            upload_i32_async(gpu, buf, &idx, stream)?;
+            *cache = Some(idx);
         }
         Ok(rows_b)
     }
@@ -292,6 +329,7 @@ impl AttnV41 {
             st.window,
             c.window,
             rows_b,
+            self.decode_idx_of(yarn),
             self.decode_fixed_topk(w),
             1,
             yarn,

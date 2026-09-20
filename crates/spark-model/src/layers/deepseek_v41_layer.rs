@@ -60,7 +60,11 @@ use crate::weight_map::DenseWeight;
 mod graph;
 mod hc_launch;
 mod step;
+mod step_seg;
+mod step_seg_run;
 mod trait_impl;
+
+pub use step_seg::{SegState, step_graph_on};
 
 /// Everything the forty layers share for the ONE sequence in flight.
 pub struct V41Runtime {
@@ -106,6 +110,16 @@ pub struct V41Runtime {
     /// Set when a capture failed: every segment from then on runs eagerly
     /// (graphs already captured keep replaying; they are valid).
     pub graph_disabled: AtomicBool,
+    /// The whole-step segment graphs (`ATLAS_DS41_STEP_GRAPH=1`, `step_seg.rs`).
+    pub seg: Mutex<SegState>,
+    /// Every layer's role, filled as the layers are built (the segment owner
+    /// reads the roles of the layers its graph spans).
+    pub roles: Mutex<Vec<Option<LayerRole>>>,
+    /// `(layer, hash index)` of the engram layers.
+    pub engram_layers: Mutex<Vec<(usize, usize)>>,
+    /// The segment's save set for the miss re-run: hidden, streams,
+    /// pre_prev, pre_a, the attention output.
+    pub seg_save: [DevicePtr; 5],
     /// `ATLAS_DS41_PREDICT_TRACE`: the last three layers' MoE inputs
     /// (`[3, hidden]` bf16, slot `layer % 3`) and the trace file.
     pub pred_x: DevicePtr,

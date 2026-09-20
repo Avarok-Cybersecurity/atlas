@@ -88,7 +88,7 @@ impl MoeV41 {
             down_out: alloc(me * cfg.dim * 2)?,
             rows_dev: alloc(m * cfg.topk * 4)?,
             weight_dev: alloc(m * cfg.topk * 4)?,
-            route_hdr: alloc((1 + 3 * cfg.topk) * 4)?,
+            route_hdr: alloc(SLOT_TABLE_LAYERS * (1 + 3 * cfg.topk) * 4)?,
             slot_table: {
                 let t = alloc(SLOT_TABLE_LAYERS * cfg.n_routed * 4)?;
                 gpu.memset(t, 0xFF, SLOT_TABLE_LAYERS * cfg.n_routed * 4)?;

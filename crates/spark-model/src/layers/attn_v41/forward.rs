@@ -168,7 +168,18 @@ impl AttnV41 {
         );
         upload_i32(gpu, self.idx_dev, &idx)?;
 
-        self.attend_and_project(gpu, w, rows_a, rows_a_len, rows_b, topk, m, yarn, stream)?;
+        self.attend_and_project(
+            gpu,
+            w,
+            rows_a,
+            rows_a_len,
+            rows_b,
+            self.idx_dev,
+            topk,
+            m,
+            yarn,
+            stream,
+        )?;
         // no host sync here: everything downstream runs on the same stream,
         // and the routing download in the MoE block drains it before any
         // expert slot can be rewritten
