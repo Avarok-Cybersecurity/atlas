@@ -193,7 +193,32 @@ pub(super) fn gqa_pack_kernel(
     num_kv_heads: u32,
     head_dim: u32,
 ) -> Option<KernelHandle> {
-    if !attn_splitk::gqa_pack_enabled() {
+    gqa_pack_route(
+        attn_splitk::gqa_pack_enabled(),
+        handle,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+    )
+}
+
+/// The conjunction itself, with the lever's value PASSED rather than read.
+///
+/// Split from [`gqa_pack_kernel`] so the shape and handle legs are gradeable
+/// at `armed = true`. `gqa_pack_enabled` is a process-wide `OnceLock` over the
+/// environment; a test that could only ever see it resolve `false` would find
+/// this function returning `None` at the first line and would pass without
+/// exercising either of the other two legs — a vacuous green over the exact
+/// check that stops a mismatched GQA ratio from indexing the wrong query
+/// heads.
+pub(super) fn gqa_pack_route(
+    armed: bool,
+    handle: Option<KernelHandle>,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+) -> Option<KernelHandle> {
+    if !armed {
         return None;
     }
     if !attn_splitk::gqa_pack_shape_ok(num_q_heads, num_kv_heads, head_dim) {
