@@ -70,20 +70,21 @@ fn packed_for_layer(
 }
 
 fn run_layers(steps: &[(usize, bool, bool)]) -> (usize, Vec<(String, String)>) {
-    run_layers_try(steps, None, false).unwrap()
+    run_layers_try(steps, None, false, false).unwrap()
 }
 
 fn run_layers_inner(
     steps: &[(usize, bool, bool)],
     packed_layer: Option<usize>,
 ) -> (usize, Vec<(String, String)>) {
-    run_layers_try(steps, packed_layer, false).unwrap()
+    run_layers_try(steps, packed_layer, false, false).unwrap()
 }
 
 fn run_layers_try(
     steps: &[(usize, bool, bool)],
     packed_layer: Option<usize>,
     deny_moe: bool,
+    deny_kda_allocation: bool,
 ) -> anyhow::Result<(usize, Vec<(String, String)>)> {
     let gpu = MockGpuBackend::new();
     if deny_moe {
@@ -157,17 +158,18 @@ fn run_layers_try(
             host,
             shared: shared.clone(),
         };
-        let mut state = K3CpuFallbackState {
-            cache: match layer.spec.mixer {
-                MixerKind::Kda => avarok_core::kimi_k3::LayerCache::Kda(
-                    avarok_core::kimi_k3::KdaState::new(&model.kda),
-                ),
-                MixerKind::Mla => {
-                    avarok_core::kimi_k3::LayerCache::Mla(avarok_core::kimi_k3::MlaKv::default())
-                }
-            },
-        };
-        layer.decode_host(
+        let mut state = K3CpuFallbackState::new(match layer.spec.mixer {
+            MixerKind::Kda => avarok_core::kimi_k3::LayerCache::Kda(
+                avarok_core::kimi_k3::KdaState::new(&model.kda),
+            ),
+            MixerKind::Mla => {
+                avarok_core::kimi_k3::LayerCache::Mla(avarok_core::kimi_k3::MlaKv::default())
+            }
+        });
+        if deny_kda_allocation && layer_idx > 0 {
+            gpu.set_max_allocation_bytes(0);
+        }
+        let result = layer.decode_host(
             hidden,
             DevicePtr::NULL,
             &mut state,
@@ -176,7 +178,15 @@ fn run_layers_try(
             3,
             want_cuda_kda,
             want_cuda_mla,
-        )?;
+        );
+        if deny_kda_allocation && result.is_err() {
+            assert!(
+                shared.attnres.lock().is_empty(),
+                "failed token must not retain AttnRes"
+            );
+        }
+        state.release(&gpu)?;
+        result?;
     }
     Ok((gpu.launch_count(), gpu.kernel_lookups_snapshot()))
 }
@@ -269,11 +279,11 @@ fn latent_moe_unpacked_does_not_lookup_gemm() {
 }
 
 #[test]
-fn latent_moe_packed_launches_three_e8m0_gemms() {
+fn latent_moe_packed_batches_gate_up_before_down_gemm() {
     let model = K3CpuModel::synthetic_tiny();
     assert_eq!(model.layers[1].spec.mlp, MlpKind::LatentMoe);
     let (n, lookups) = run_layers_inner(&[(0, false, false), (1, false, false)], Some(1));
-    assert_eq!(n, 3, "w1, w3, w2 grouped GEMM");
+    assert_eq!(n, 2, "batched w1/w3 followed by w2 grouped GEMM");
     assert_eq!(
         lookups,
         vec![(MOE_MODULE.to_string(), E8M0_ENTRY.to_string())]
@@ -282,11 +292,17 @@ fn latent_moe_packed_launches_three_e8m0_gemms() {
 
 #[test]
 fn latent_moe_packed_lookup_fail_bails_not_cpu() {
-    let err = run_layers_try(&[(1, false, false)], Some(1), true)
+    let err = run_layers_try(&[(1, false, false)], Some(1), true, false)
         .unwrap_err()
         .to_string();
     assert!(
         err.contains(E8M0_ENTRY) && err.contains("cannot silently run host F32"),
         "{err}"
     );
+}
+
+#[test]
+fn resident_kda_allocation_failure_clears_inflight_attnres() {
+    let result = run_layers_try(&[(0, false, false), (1, true, false)], None, false, true);
+    assert!(result.is_err());
 }

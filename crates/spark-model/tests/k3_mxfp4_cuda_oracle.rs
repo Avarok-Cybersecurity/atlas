@@ -267,3 +267,156 @@ fn k3_e8m0_production_shapes_match_cpu() -> Result<()> {
         17,
     )
 }
+
+/// Independent launch schedule: three GEMMs, as before the gate/up batching.
+/// Existing tests above establish each GEMM's independent CPU arithmetic.
+fn separate_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    weights: &[QuantizedWeight],
+    input: &[f32],
+    n: usize,
+    k: usize,
+    stream: u64,
+) -> Result<Vec<f32>> {
+    let m = weights.len();
+    let mut mem = AllocationScope {
+        gpu,
+        pointers: Vec::new(),
+    };
+    let a = mem.upload(
+        &input
+            .iter()
+            .flat_map(|&x| bf16::from_f32(x).to_le_bytes())
+            .collect::<Vec<_>>(),
+    )?;
+    let c = mem.upload(&vec![0xff; m * n * 2])?;
+    let off = mem.upload(
+        &(0..=m as i32)
+            .flat_map(i32::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )?;
+    let ids = mem.upload(&(0..m as i32).flat_map(i32::to_le_bytes).collect::<Vec<_>>())?;
+    launch_k3_moe_e8m0_ptrtable(
+        gpu, kernel, a, weights, c, off, ids, m as u32, n as u32, k as u32, stream,
+    )?;
+    gpu.synchronize(stream)?;
+    let mut raw = vec![0; m * n * 2];
+    gpu.copy_d2h(c, &mut raw)?;
+    Ok(raw
+        .chunks_exact(2)
+        .map(|b| bf16::from_le_bytes([b[0], b[1]]).to_f32())
+        .collect())
+}
+
+#[test]
+#[ignore = "requires an explicitly selected idle CUDA device and compiled K3 MXFP4 kernels"]
+fn k3_gate_up_batching_preserves_selected_expert_pipeline() -> Result<()> {
+    use avarok_core::kimi_k3::{LatentMoeConfig, situ_glu_vec};
+    use spark_model::kimi_k3::moe_cuda::launch_k3_latent_moe_experts;
+    let ordinal = std::env::var("K3_ORACLE_GPU_ORDINAL")?.parse()?;
+    let target = avarok_kernels::ptx_for_exact_target("kimi-k3", "mxfp4").context("K3 target")?;
+    let gpu = AvarokCudaBackend::new(ordinal, &target.modules)?;
+    let kernels = K3MoeGemmKernels::resolve(&gpu)?;
+    let stream = gpu.create_stream()?;
+    let cfg = LatentMoeConfig {
+        hidden: 96,
+        latent: 96,
+        expert_hidden: 64,
+        n_routed: 4,
+        top_k: 3,
+        n_shared: 0,
+        situ_beta: 4.0,
+        situ_linear_beta: 25.0,
+        use_norm: false,
+        renormalize: true,
+    };
+    let mut mem = AllocationScope {
+        gpu: &gpu,
+        pointers: Vec::new(),
+    };
+    let mut all = Vec::new();
+    for e in 0..4 {
+        for (p, n, k) in [("w1", 64, 96), ("w2", 96, 64), ("w3", 64, 96)] {
+            let salt = e * 7
+                + match p {
+                    "w1" => 1,
+                    "w2" => 2,
+                    _ => 3,
+                };
+            let w = weight(n, k, salt);
+            all.push((
+                format!("model.layers.1.block_sparse_moe.experts.{e}.{p}"),
+                QuantizedWeight {
+                    weight: mem.upload(&w.packed)?,
+                    weight_scale: mem.upload(&w.scales)?,
+                    weight_scale_2: 1.0,
+                    ..QuantizedWeight::null()
+                },
+            ));
+        }
+    }
+    let input: Vec<f32> = (0..96)
+        .map(|i| ((i * 13 % 31) as f32 - 15.0) / 64.0)
+        .collect();
+    for selected in [vec![3], vec![2, 0], vec![3, 1, 0]] {
+        let m = selected.len();
+        let mixed: Vec<f32> = (0..m).map(|i| (i + 1) as f32 / 6.0).collect();
+        let select = |p: usize| {
+            selected
+                .iter()
+                .map(|&e| all[e * 3 + p].1)
+                .collect::<Vec<_>>()
+        };
+        let repeated: Vec<f32> = input.iter().copied().cycle().take(m * 96).collect();
+        let gate = separate_rows(
+            &gpu,
+            kernels.ptrtable,
+            &select(0),
+            &repeated,
+            64,
+            96,
+            stream,
+        )?;
+        let up = separate_rows(
+            &gpu,
+            kernels.ptrtable,
+            &select(2),
+            &repeated,
+            64,
+            96,
+            stream,
+        )?;
+        let mut middle = Vec::new();
+        for e in 0..m {
+            middle.extend(situ_glu_vec(
+                &gate[e * 64..(e + 1) * 64],
+                &up[e * 64..(e + 1) * 64],
+                4.0,
+                25.0,
+            ));
+        }
+        let down = separate_rows(&gpu, kernels.ptrtable, &select(1), &middle, 96, 64, stream)?;
+        let mut expected = vec![0.0f32; 96];
+        for e in 0..m {
+            for i in 0..96 {
+                expected[i] += mixed[e] * down[e * 96 + i];
+            }
+        }
+        let actual = launch_k3_latent_moe_experts(
+            &gpu, &kernels, &all, &input, &selected, &mixed, &cfg, stream,
+        )?;
+        ensure!(
+            actual.iter().all(|x| x.is_finite()),
+            "nonfinite selected-expert output"
+        );
+        ensure!(
+            actual == expected,
+            "batched gate/up changed selected-expert output: {selected:?}"
+        );
+        println!(
+            "PASS selected={selected:?}: gate/up batching matches separate three-GEMM pipeline exactly"
+        );
+    }
+    Ok(())
+}

@@ -1,0 +1,10 @@
+{
+  "binary_sha256": "89ec58530084fe58828702e5a37d413e1368b63f3a300e61ba4254b660acf29b",
+  "status": "passed",
+  "check": "Full generated text, finish and prompt/completion counts exactly match retained baseline",
+  "prompt_tokens": 8,
+  "completion_tokens": 16,
+  "all_owned_processes_exit_zero": true,
+  "probe_receipt_sha256": "4fe89f662ae1f8ef610331f4e99e356900a4b7edc79677568190d131930ec0c1",
+  "scope": "Final failure-path cleanup build; timing and121-check lifecycle receipts remain attached to pre-cleanup binary; dense primitive compiled but not wired to serving"
+}

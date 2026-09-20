@@ -21,7 +21,7 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightDtype;
 
 use super::bound::K3BoundLayer;
-use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token};
+use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token_on_device};
 use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
 use super::moe_cuda::{
     E8M0_ENTRY, K3MoeGemmKernels, MODULE as MOE_MODULE, launch_k3_latent_moe_experts,
@@ -77,6 +77,17 @@ impl K3BoundLayer {
 
         let key = if residual.is_null() { hidden } else { residual };
         let result = (|| -> Result<()> {
+            if use_cuda_kda {
+                st.ensure_device_kda(gpu)?;
+            } else if let (Some(device), avarok_core::kimi_k3::LayerCache::Kda(host)) =
+                (&st.device_kda, &mut st.cache)
+            {
+                // Preserve continuation if the explicit CPU escape is selected.
+                gpu.synchronize(stream)?;
+                device.download(gpu, host)?;
+                st.release(gpu)?;
+            }
+            let device_kda = st.device_kda.as_ref();
             {
                 let mut hub = self.shared.attnres.lock();
                 if self.index == 0 {
@@ -121,7 +132,17 @@ impl K3BoundLayer {
                     ablation,
                     |x, w, g, b, cfg, kst| {
                         if let Some(k) = kda_k {
-                            launch_k3_kda_decode_token(gpu, &k, x, w, g, b, cfg, kst, stream)
+                            launch_k3_kda_decode_token_on_device(
+                                gpu,
+                                &k,
+                                x,
+                                w,
+                                g,
+                                b,
+                                cfg,
+                                device_kda.context("K3 CUDA KDA resident state missing")?,
+                                stream,
+                            )
                         } else {
                             Ok(kda_decode_token(x, w, g, b, cfg, kst))
                         }

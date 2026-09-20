@@ -114,32 +114,27 @@ pub fn launch_k3_latent_moe_experts(
     let w2 = gather_proj(&table, ids, 1, "w2")?;
     let w3 = gather_proj(&table, ids, 2, "w3")?;
     let m = ids.len();
-    let a_w1: Vec<f32> = latent
+    // Each grouped row selects its own weight pointer. Batch the gate and up
+    // projections together; their dot products are independent and unchanged.
+    // This removes one upload/allocation/synchronization cycle per MoE layer.
+    let gate_up_weights: Vec<_> = w1.into_iter().chain(w3).collect();
+    let gate_up_input: Vec<f32> = latent
         .iter()
         .copied()
         .cycle()
-        .take(m * cfg.latent)
+        .take(2 * m * cfg.latent)
         .collect();
-    let gate = gemm_rows(
+    let gate_up = gemm_rows(
         gpu,
         kernels,
-        &a_w1,
-        m,
-        &w1,
+        &gate_up_input,
+        2 * m,
+        &gate_up_weights,
         cfg.expert_hidden as u32,
         cfg.latent as u32,
         stream,
     )?;
-    let up = gemm_rows(
-        gpu,
-        kernels,
-        &a_w1,
-        m,
-        &w3,
-        cfg.expert_hidden as u32,
-        cfg.latent as u32,
-        stream,
-    )?;
+    let (gate, up) = gate_up.split_at(m * cfg.expert_hidden);
     let mut mid = Vec::with_capacity(m * cfg.expert_hidden);
     for e in 0..m {
         let g = &gate[e * cfg.expert_hidden..(e + 1) * cfg.expert_hidden];
