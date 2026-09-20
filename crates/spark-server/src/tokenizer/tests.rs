@@ -3,6 +3,7 @@
 use super::*;
 
 mod deepseek_v4;
+mod kimi_k3;
 use serde_json::json;
 
 mod laguna;

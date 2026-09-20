@@ -1,0 +1,7 @@
+# K3 BF16: unique kda_decode + mla_decode stems. same-hardware alias for DSV4 E8M0 GEMM.
+# Handle: moe_w4a16_grouped_gemm_ptrtable_e8m0
+
+[build]
+
+[modules]
+moe_w4a16_grouped_gemm = "moe_w4a16"

@@ -29,10 +29,31 @@ metal = [
     "spark-storage/metal",
     "spark-comm/metal",
 ]
+# ★ EXAMPLES ARE NOT BUILT IN CI, AND THAT IS DELIBERATE.
+# `cargo build -p spark-server` does not build examples, but the release
+# matrix's `cargo test --no-run` DOES -- so an example here is linked on every
+# one of the nine target legs. Linking one pulls the CUDA *driver* API out of
+# avarok_core (cuLaunchKernel, cuModuleGetFunction, cuMemcpy*Async, ...), and
+# on windows-x86_64-amd-hip there is no libcuda to resolve them against:
+#   k3_tokenizer_check.exe : fatal error LNK1120: 9 unresolved externals
+# The binary itself links fine there, which is why `cargo build` stayed green
+# and only the test step failed.
+#
+# A `required-features` gate on `cuda` cannot separate the legs -- amd-hip and
+# nvidia-cuda pass the SAME `--no-default-features --features cuda`. So the
+# gate is its own opt-in feature that no CI leg sets, mirroring
+# spark-model's `gpu-examples`. Build these on a host with a CUDA driver:
+#   cargo run -p spark-server --features gpu-examples --example k3_tokenizer_check
+gpu-examples = []
 
 [[bin]]
 name = "spark"
 path = "src/main.rs"
+
+# Needs the crate, and the crate needs libcuda at link time -- see gpu-examples.
+[[example]]
+name = "k3_tokenizer_check"
+required-features = ["gpu-examples"]
 
 [dependencies]
 avarok-core = { workspace = true }
