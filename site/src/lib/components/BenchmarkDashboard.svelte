@@ -6,6 +6,7 @@
   // across ALL branches at build time, so the newest run shows even before its
   // PR merges (provenance shown per point and in the footer).
   import ConcurrencyTab from './ConcurrencyTab.svelte';
+  import CostTab from './CostTab.svelte';
   import GateBenchSection from './GateBenchSection.svelte';
   import GatePointCard from './GatePointCard.svelte';
   import TabStrip from './TabStrip.svelte';
@@ -44,20 +45,25 @@
 
   const tab = $derived(tabs.find((t) => t.id === activeTab) ?? tabs[0]);
   const onConcurrency = $derived(activeTab === 'concurrency');
+  // Cost is the second subject-tabbed view: its inner subject strip IS the
+  // model filter, exactly as on Concurrency, so the global model select is
+  // hidden and subject/rung travel in the hash on both.
+  const onCost = $derived(activeTab === 'cost');
+  const onSubjectTab = $derived(onConcurrency || onCost);
   const keep = (r) => modelFilter === 'all' || r.target_model === modelFilter;
   // One bench, one section — except on the concurrency tab, where the subject
   // tabs own every record (ConcurrencyTab) and the model select is hidden:
   // the subject strip is the model filter there, and a second filter on top
   // of it could empty a tab that still has records.
   const sections = $derived(
-    onConcurrency
+    onSubjectTab
       ? []
       : (tab?.benches ?? [])
           .map((b) => ({ benchId: b, name: benchName(b), records: recordsFor(b).filter(keep) }))
           .filter((s) => s.records.length > 0)
   );
   const hiddenByFilter = $derived(
-    onConcurrency
+    onSubjectTab
       ? []
       : (tab?.benches ?? []).filter((b) => recordsFor(b).length > 0 && !sections.some((s) => s.benchId === b))
   );
@@ -81,8 +87,8 @@
   $effect(() => {
     const hash = formatDashboardHash({
       tab: activeTab,
-      subject: onConcurrency ? subject : null,
-      c: onConcurrency ? rung : null
+      subject: onSubjectTab ? subject : null,
+      c: onSubjectTab ? rung : null
     });
     replaceState(hash ? `#${hash}` : location.pathname + location.search, {});
   });
@@ -130,7 +136,7 @@
 
     <div class="bd-controls">
       <TabStrip prefix="bd" label="Benchmarks" {tabs} bind:active={activeTab} />
-      {#if !onConcurrency}
+      {#if !onSubjectTab}
         <label class="bd-model">
           <span class="bd-model-label">model</span>
           <select bind:value={modelFilter} aria-label="Filter by model">
@@ -161,10 +167,19 @@
           onselect={(recs) => (selected = recs)}
         />
       {/if}
+      {#if onCost}
+        <CostTab
+          bind:subject
+          bind:rung
+          benches={tab.benches}
+          {recordsFor}
+          onselect={(recs) => (selected = recs)}
+        />
+      {/if}
       {#each sections as s (s.benchId)}
         <GateBenchSection {...s} onselect={(recs) => (selected = recs)} />
       {/each}
-      {#if sections.length === 0 && !onConcurrency}
+      {#if sections.length === 0 && !onSubjectTab}
         <p class="bd-empty">No records for this model in this benchmark family.</p>
       {/if}
       {#each hiddenByFilter as b}
