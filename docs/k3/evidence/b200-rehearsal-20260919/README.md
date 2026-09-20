@@ -65,3 +65,15 @@ PR #1158's transferable admission guidance was checked: actual driver
 NCCL 2.27.7, below that document's recommended 2.28+; these results describe
 2.27.7 only. Its DeepSeek expert-cache/throughput arithmetic is not a K3 result.
 Nsight Systems was unavailable; no profile or throughput claim is made here.
+
+## Extended TP2 lifecycle after shutdown fix
+
+The final `67d3b6...` binary passed 121 checks across five cycles in 187.03
+seconds after a 45-second request-free idle. These cover all 16 Spark baseline
+cases, streaming parity, five client cancellations and recovery, and two
+concurrent clients. Every baseline text, finish reason and token count matched.
+The launcher used leader-first cleanup from `b1312f57a`; every owned process
+exited zero. Full quiesced logs matched at 118,639 submissions per rank,
+including the tail. This supersedes the earlier TP2 shutdown failure for this
+run only; it does not retroactively make the original log audit pass.
+See `lifecycle.json`. No GPU memory-leak or fused-batching claim is made.

@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "cycles_completed": 5,
+  "requests": 121,
+  "concurrency": 2,
+  "elapsed_seconds": 187.02943886304274,
+  "trusted_baseline_checked": true,
+  "limitations": [
+    "client cancellation does not prove immediate GPU cancellation",
+    "concurrent client launches do not prove server batching",
+    "no memory measurements or leak claims"
+  ],
+  "request_free_seconds": 45.00021562399343,
+  "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+  "process_exit_codes": [
+    0,
+    0,
+    0
+  ],
+  "matching_submissions_per_rank": 118639,
+  "collective_audit": "MATCH_SUBMISSIONS; agreement only, not GPU completion proof",
+  "launcher_commit": "b1312f57a"
+}
