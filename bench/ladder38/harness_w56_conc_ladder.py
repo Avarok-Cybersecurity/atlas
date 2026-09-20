@@ -1,5 +1,43 @@
 #!/usr/bin/env python3
 """
+WAVE 56 of the concurrency ladder = wave 55 + a real in-window energy integral.
+
+★ WHY A NEW FILE INSTEAD OF EDITING w55.
+
+w55 is a PINNED INSTRUMENT. 87 committed ladder records carry a
+`driver_sha256` naming it, and `site/src/lib/ladders.test.js` asserts the
+records' sha equals the sha256 of the harness in the tree (and pins its md5
+outright). Editing w55 in place would silently orphan every one of those
+records -- they would claim provenance from a file that no longer exists at
+that hash. Re-pinning instead would assert the old records came from the new
+harness, which is false. So w55 stays frozen and this is the next wave.
+
+★ WHAT WAS WRONG IN w55, and is fixed here.
+
+w55 recorded `clock_sample_at_rep_start` under this comment:
+
+    # SM clock sampled INSIDE the rep window, not before it.
+    clk = os.popen("nvidia-smi ...").read().strip()
+    rep = await run_rep(...)
+
+`os.popen().read()` is synchronous: it completes BEFORE the rep issues a
+single request. Every value was the driver's 1 s trailing average over the
+PREVIOUS batch's tail. The comment asserted the opposite of what the code
+did; the field name told the truth.
+
+Two engines were compared on that field, yielding "Atlas draws ~2x vLLM" --
+an artifact. Three properties made it unusable: the sample never covered its
+own rep; one sample per rep at +-5 W with same-rung scatter reaching 20 W
+(repeatability ~30% of the reading); and what it captured differed BY ENGINE,
+catching each one's end-of-batch behaviour. That is an asymmetry of the
+instrument, not of the workload.
+
+Here the energy is integrated over exactly the rep's own window -- the same
+interval `wall_s` and `tok_s` are computed from. GPU RAIL ONLY: on GB10
+`power.limit`, Module Power and GPU Memory Power all read N/A, so Grace and
+LPDDR5X are outside the number and every figure is a LOWER BOUND on system
+energy. Say "GPU rail" wherever it is shown.
+
 PR #388 definitive concurrency ladder — C=1..128, one client, both engines.
 
 Pinned by recipes/qwen3.6/qwen3.6-27b-w55-sweep-dev.yaml. Every measurement
@@ -24,6 +62,8 @@ import asyncio
 import hashlib
 import json
 import os
+
+from power_window import PowerWindow, measure_idle_baseline
 import random
 import statistics
 import sys
@@ -237,16 +277,17 @@ async def one_request(session, url, model, prompt, osl):
     }
 
 
-async def run_rep(session, url, model, conc, isl, osl):
+async def run_rep(session, url, model, conc, isl, osl, power=None):
     prompts = [make_prompt(isl) for _ in range(conc)]
     t0 = time.perf_counter()
     outs = await asyncio.gather(*[one_request(session, url, model, p, osl) for p in prompts])
-    wall = time.perf_counter() - t0
+    t1 = time.perf_counter()
+    wall = t1 - t0
     good = [o for o in outs if "error" not in o]
     errs = [o for o in outs if "error" in o]
     ctok = sum(o["completion_tokens"] for o in good)
     ptok = sum(o["prompt_tokens"] for o in good)
-    return {
+    out = {
         "wall_s": wall,
         "completion_tokens": ctok,
         "prompt_tokens": ptok,
@@ -262,6 +303,11 @@ async def run_rep(session, url, model, conc, isl, osl):
         "finish_reasons": sorted({str(o["finish_reason"]) for o in good}),
         "completion_tokens_per_req": sorted(o["completion_tokens"] for o in good),
     }
+    # The integral covers exactly [t0, t1] -- the interval `wall_s` and `tok_s`
+    # are derived from. Absent keys mean "not measured", never zero.
+    if power is not None:
+        out.update(power.integrate(t0, t1))
+    return out
 
 
 def load_tokenizer(path):
@@ -430,50 +476,57 @@ async def main():
           f"({'pinned' if a.nonce_base is not None else 'random'})", flush=True)
 
     conn = aiohttp.TCPConnector(limit=0, force_close=True)
-    async with aiohttp.ClientSession(connector=conn) as session:
-        for conc in concs:
-            for w in range(a.warmup):
-                await run_rep(session, chat, a.model, conc, a.isl, a.osl)
-            reps = []
-            for r in range(a.reps):
-                # SM clock sampled INSIDE the rep window, not before it.
-                clk = os.popen("nvidia-smi --query-gpu=clocks.sm,power.draw "
-                               "--format=csv,noheader,nounits").read().strip()
-                rep = await run_rep(session, chat, a.model, conc, a.isl, a.osl)
-                rep["rep"] = r
-                rep["clock_sample_at_rep_start"] = clk
-                reps.append(rep)
-                print(f"[{a.label}] C={conc:>3} rep{r}  "
-                      f"tok/s={rep['tok_s']:8.2f}  wall={rep['wall_s']:7.2f}s  "
-                      f"ctok={rep['completion_tokens']:>7}  ptok/req={rep['prompt_tokens_per_req']}  "
-                      f"ttft_p50={rep['ttft_p50_ms']:.0f}ms  err={rep['n_err']}  clk={clk}",
+    # ONE long-lived sampler for the whole ladder, read off the critical path.
+    # The idle baseline is taken once, up front, and is VERIFIED idle rather
+    # than assumed -- one captured right after model load catches a clocked-up
+    # GPU and would subtract far too much.
+    with PowerWindow() as power_window:
+        idle = measure_idle_baseline(power_window)
+        print(f"# gpu-rail idle baseline: {idle}", flush=True)
+        if power_window.unavailable:
+            print(f"# WARNING: no GPU-rail energy this run ({power_window.unavailable})", flush=True)
+        async with aiohttp.ClientSession(connector=conn) as session:
+            for conc in concs:
+                for w in range(a.warmup):
+                    await run_rep(session, chat, a.model, conc, a.isl, a.osl)
+                reps = []
+                for r in range(a.reps):
+                    rep = await run_rep(session, chat, a.model, conc, a.isl, a.osl,
+                                        power=power_window)
+                    rep["rep"] = r
+                    clk = ""
+                    reps.append(rep)
+                    print(f"[{a.label}] C={conc:>3} rep{r}  "
+                          f"tok/s={rep['tok_s']:8.2f}  wall={rep['wall_s']:7.2f}s  "
+                          f"ctok={rep['completion_tokens']:>7}  ptok/req={rep['prompt_tokens_per_req']}  "
+                          f"ttft_p50={rep['ttft_p50_ms']:.0f}ms  err={rep['n_err']}  clk={clk}",
+                          flush=True)
+                series = [r["tok_s"] for r in reps]
+                rung = {
+                    "concurrency": conc,
+                    "reps": reps,
+                    "tok_s_series": series,
+                    "tok_s_mean": statistics.fmean(series),
+                    "tok_s_median": statistics.median(series),
+                    "tok_s_spread_pct": (max(series) - min(series)) / statistics.fmean(series) * 100.0
+                                        if statistics.fmean(series) > 0 else 0.0,
+                    "wall_s_series": [r["wall_s"] for r in reps],
+                    "wall_s_mean": statistics.fmean([r["wall_s"] for r in reps]),
+                    "completion_tokens_series": [r["completion_tokens"] for r in reps],
+                    "completion_tokens_mean": statistics.fmean([r["completion_tokens"] for r in reps]),
+                    "errors_total": sum(r["n_err"] for r in reps),
+                }
+                record["rungs"].append(rung)
+                print(f"[{a.label}] C={conc:>3} SERIES {['%.2f' % s for s in series]} "
+                      f"mean={rung['tok_s_mean']:.2f} spread={rung['tok_s_spread_pct']:.2f}%",
                       flush=True)
-            series = [r["tok_s"] for r in reps]
-            rung = {
-                "concurrency": conc,
-                "reps": reps,
-                "tok_s_series": series,
-                "tok_s_mean": statistics.fmean(series),
-                "tok_s_median": statistics.median(series),
-                "tok_s_spread_pct": (max(series) - min(series)) / statistics.fmean(series) * 100.0
-                                    if statistics.fmean(series) > 0 else 0.0,
-                "wall_s_series": [r["wall_s"] for r in reps],
-                "wall_s_mean": statistics.fmean([r["wall_s"] for r in reps]),
-                "completion_tokens_series": [r["completion_tokens"] for r in reps],
-                "completion_tokens_mean": statistics.fmean([r["completion_tokens"] for r in reps]),
-                "errors_total": sum(r["n_err"] for r in reps),
-            }
-            record["rungs"].append(rung)
-            print(f"[{a.label}] C={conc:>3} SERIES {['%.2f' % s for s in series]} "
-                  f"mean={rung['tok_s_mean']:.2f} spread={rung['tok_s_spread_pct']:.2f}%",
-                  flush=True)
-            # written after every rung so a crash never loses completed work
-            with open(a.out, "w") as f:
-                json.dump(record, f, indent=2)
-    record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    with open(a.out, "w") as f:
-        json.dump(record, f, indent=2)
-    print(f"# wrote {a.out}", flush=True)
+                # written after every rung so a crash never loses completed work
+                with open(a.out, "w") as f:
+                    json.dump(record, f, indent=2)
+        record["finished_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(a.out, "w") as f:
+            json.dump(record, f, indent=2)
+        print(f"# wrote {a.out}", flush=True)
 
 
 if __name__ == "__main__":
