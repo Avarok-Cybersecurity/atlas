@@ -34,21 +34,32 @@ def listener_inodes(port, net_root):
     return listeners
 
 
-def terminate(processes, grace):
+def terminate(processes, grace, leader=None):
     errors = []
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        for process in processes:
+    end = time.monotonic() + grace
+
+    def send(group, sig):
+        for process in group:
             try:
                 os.killpg(process.pid, sig)
             except ProcessLookupError:
                 pass
             except OSError as error:
                 errors.append(f'PID {process.pid}: {error}')
-        if sig == signal.SIGTERM and processes:
-            end = time.monotonic() + grace
-            # Keep the grace bounded across all ranks, not once per rank.
-            while time.monotonic() < end and any(p.poll() is None for p in processes):
-                time.sleep(0.02)
+
+    def wait_until(deadline):
+        while time.monotonic() < deadline and any(p.poll() is None for p in processes):
+            time.sleep(0.02)
+
+    # Workers must remain alive to receive the leader's shutdown collective.
+    # Reserve half the one shared grace period for fallback group termination.
+    if leader is not None and leader.poll() is None:
+        send([leader], signal.SIGTERM)
+        wait_until(time.monotonic() + max(0, end-time.monotonic())/2)
+    send(processes, signal.SIGTERM)
+    wait_until(end)
+    # Signal groups even if their original parent exited: descendants may remain.
+    send(processes, signal.SIGKILL)
     for process in processes:
         try:
             process.wait(timeout=1)

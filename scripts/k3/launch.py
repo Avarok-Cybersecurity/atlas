@@ -156,6 +156,7 @@ def run(c, output, io=None):
     validate(c)
     output.mkdir(parents=True, exist_ok=False)
     processes, logs = [], []
+    leader = None
     summary = {'schema': 1, 'status': 'failed', 'manifest': c, 'ranks': []}
     started = time.monotonic()
     try:
@@ -173,6 +174,8 @@ def run(c, output, io=None):
                                        stdin=subprocess.DEVNULL, env=environment(c),
                                        start_new_session=True)
             processes.append(process)
+            if rank['rank'] == 0:
+                leader = process
             summary['ranks'].append({'rank': rank['rank'], 'pid': process.pid, 'argv': argv})
         deadline = time.monotonic() + c['boot_timeout']
         endpoint = f'http://127.0.0.1:{c["port_base"]}'
@@ -211,7 +214,7 @@ def run(c, output, io=None):
     except (ValueError, OSError, TimeoutError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         summary['error'] = str(exc) or 'interrupted'
     finally:
-        failures = terminate(processes, c['cleanup_timeout'])
+        failures = terminate(processes, c['cleanup_timeout'], leader=leader)
         if failures:
             summary['status'] = 'failed'
             summary['cleanup_errors'] = failures

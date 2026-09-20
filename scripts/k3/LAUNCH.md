@@ -90,9 +90,11 @@ Startup admission runs three device queries with a 15-second timeout each.
 After rank creation, the boot deadline includes all health polling. Health
 checks have a separate child deadline to stop trickling headers from extending
 the boot wait. Generation has its own deadline, plus a two-second allowance for
-the probe to write its receipt. Teardown grants the configured grace to all
-ranks together, then kills their groups and reaps leaders (at most one second
-per leader). Account for **admission + boot + probe + teardown**, and disk hashing
+the probe to write its receipt. Teardown first signals rank zero, allowing
+workers to receive its shutdown collective for up to half the configured grace.
+It then signals all owned groups for the remaining grace, kills surviving
+groups (including descendants), and reaps leaders (at most one second per
+leader). The grace is shared across ranks, not multiplied by rank count. Account for **admission + boot + probe + teardown**, and disk hashing
 before admission, when reserving rental time. This is not a hard wall-clock
 deadline for an unresponsive filesystem or kernel.
 
