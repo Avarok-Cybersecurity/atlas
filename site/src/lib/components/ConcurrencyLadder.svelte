@@ -11,6 +11,7 @@
   // library) because the rungs double: linear spacing would crush C=1..8,
   // which is where single-stream latency lives.
   import publishedLadder from '$lib/ladder.generated.json';
+  import { visibleOf } from '$lib/series-visibility.js';
 
   // `embedded`: render as a block inside a section that already has a heading
   // and a container (the Verified entry). Default is the standalone section the
@@ -26,7 +27,13 @@
   // untouched; the benchmark dashboard passes the ladder of the subject tab
   // it is drawing, so one component serves every subject that earns a
   // published pair.
-  let { embedded = false, compact = false, ladder = publishedLadder } = $props();
+  //
+  // `hidden`: series ids the reader has toggled off (series-visibility.js
+  // owns the rule). A hidden series leaves the plot, the legend, the table
+  // and the y-axis domain together, so switching the tall series off is
+  // what rescales the rest. Every series hidden is a wiring bug: the toggle
+  // refuses it, so this throws instead of drawing an empty axis.
+  let { embedded = false, compact = false, ladder = publishedLadder, hidden = [] } = $props();
 
   const W = 760, H = 300, PL = 62, PR = 20, PT = 18, PB = 34;
 
@@ -34,14 +41,19 @@
   // freeze the first ladder it saw while the heading below re-rendered from
   // the new one.
   const subject = $derived(ladder.series.find((s) => s.role === 'subject'));
-  const baselines = $derived(ladder.series.filter((s) => s.role === 'baseline'));
+  const subjectShown = $derived(!hidden.includes(subject.id));
+  const baselines = $derived(visibleOf(ladder.series.filter((s) => s.role === 'baseline'), hidden));
   // `variant`: another configuration of the SUBJECT engine, drawn but never
   // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
   // the published claim is Atlas against the matched vLLM baseline, and
   // letting a second Atlas configuration into that comparison would change
   // what the headline means rather than adding evidence for it.
-  const variants = $derived(ladder.series.filter((s) => s.role === 'variant'));
-  const plotted = $derived([subject, ...variants, ...baselines]);
+  const variants = $derived(visibleOf(ladder.series.filter((s) => s.role === 'variant'), hidden));
+  const plotted = $derived.by(() => {
+    const drawn = [...(subjectShown ? [subject] : []), ...variants, ...baselines];
+    if (drawn.length === 0) throw new Error('ConcurrencyLadder: every series is hidden');
+    return drawn;
+  });
 
   // Series are styled by role, not by id: the ids come from the published
   // bench manifest (bench/ladder38/published.json), which is a recorded
@@ -170,20 +182,20 @@
         <thead>
           <tr>
             <th scope="col">C</th>
-            <th scope="col">Atlas</th>
+            {#if subjectShown}<th scope="col">Atlas</th>{/if}
             {#each baselines as b}<th scope="col">{b.label}</th>{/each}
-            <th scope="col">Ratio</th>
+            {#if subjectShown}<th scope="col">Ratio</th>{/if}
           </tr>
         </thead>
         <tbody>
           {#each ladder.rows as row}
             <tr>
               <th scope="row" class="mono">{row.c}</th>
-              <td class="mono cl-win">{fmtV(row.atlas)}</td>
-              {#each row.baselines as b}
+              {#if subjectShown}<td class="mono cl-win">{fmtV(row.atlas)}</td>{/if}
+              {#each visibleOf(row.baselines, hidden) as b}
                 <td class="mono" class:cl-best={b.id === row.best_baseline_id}>{fmtV(b.tok_s)}</td>
               {/each}
-              <td class="mono cl-ratio">{ratio(row.ratio_vs_best)}</td>
+              {#if subjectShown}<td class="mono cl-ratio">{ratio(row.ratio_vs_best)}</td>{/if}
             </tr>
           {/each}
         </tbody>

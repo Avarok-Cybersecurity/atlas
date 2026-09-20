@@ -46,6 +46,7 @@
   import ConcurrencyBaseline from './ConcurrencyBaseline.svelte';
   import { colorFor, fmtDate, ladderPoints } from '$lib/gates.js';
   import { dashFor } from '$lib/gate-variants.js';
+  import { toggleSeries } from '$lib/series-visibility.js';
 
   let { subject, records, rungs, onselect, ladders = LADDERS } = $props();
 
@@ -60,6 +61,17 @@
   const baselines = $derived(series.filter((s) => s.role === 'baseline'));
   const baselineRange = $derived(measuredRange(baselines.flatMap((b) => b.rungs)));
   const engines = $derived([...new Set(baselines.map((b) => `${b.engine} (${b.build})`))]);
+  // The legend pills toggle a series in and out of the ladder below. The
+  // rule (never the last one) is series-visibility.js's; a refused press is
+  // printed, not swallowed.
+  let hidden = $state([]);
+  let refused = $state(null);
+  const shown = (id) => !hidden.includes(id);
+  const toggle = (id) => {
+    const next = toggleSeries(series, hidden, id);
+    hidden = next.hidden;
+    refused = next.refused;
+  };
   // The published ladder is the nearest vLLM number a live-only tab without
   // a manifest has, and the caption must say why it is not drawn here:
   // different ISL/OSL and, if its matched leg recorded one, a different
@@ -111,32 +123,41 @@
 </script>
 
 {#if state === 'published'}
-  <div class="cc">
-    <div class="gate-panel-head">
+  <!-- The same chrome as the gate sweep below (figure.gate-panel), so the
+       two cards share one width and one inset. -->
+  <figure class="gate-panel cmp">
+    <figcaption class="gate-panel-head">
       <span class="gate-panel-title">{title}</span>
       <span class="gate-panel-unit">tok/s</span>
-    </div>
+    </figcaption>
     <!-- Generated from the series, never typed: a flat vLLM line must read as
-         a dated snapshot, and the dates are the proof. -->
-    <p class="cc-keys">
-      <span class="cc-chip" style="border-color:{color}">Atlas · published campaign · {measuredRange(atlas.rungs)}</span>
+         a dated snapshot, and the dates are the proof. Each pill is a real
+         button that shows or hides its series in the chart and the table. -->
+    <div class="cmp-keys" role="group" aria-label="Series drawn">
+      <button type="button" class="cmp-chip" style="border-color:{color}"
+        aria-pressed={shown(atlas.id)} onclick={() => toggle(atlas.id)}
+        >Atlas · published campaign · {measuredRange(atlas.rungs)}</button>
       {#each baselines as b}
-        <span class="cc-chip">{oneShotChip(b)}</span>
+        <button type="button" class="cmp-chip" aria-pressed={shown(b.id)} onclick={() => toggle(b.id)}
+          >{oneShotChip(b)}</button>
       {/each}
-    </p>
-    <ConcurrencyLadder embedded ladder={published} />
-    <p class="cc-caption">
+    </div>
+    {#if refused}
+      <p class="cmp-refused" role="status">{refused}</p>
+    {/if}
+    <ConcurrencyLadder embedded ladder={published} {hidden} />
+    <p class="cmp-caption">
       vLLM was measured <strong>once</strong>, on {baselineRange}, with
       {#each engines as e, i}{i ? '; ' : ''}<code>{e}</code>{/each} on {published.box.name}, and is
       not re-measured when Atlas moves. Atlas on this chart is the published campaign run of
       {measuredRange(atlas.rungs)} at <code>{atlas.build}</code>; the live series is in
       "Latest gate sweep" below.
     </p>
-  </div>
+  </figure>
 {:else if state === 'baseline'}
   <ConcurrencyBaseline {subject} ladder={baselineOnlyFor(subject, ladders)} {rungs} />
 {:else}
-  <figure class="gate-panel cc">
+  <figure class="gate-panel cmp">
     <figcaption class="gate-panel-head">
       <span class="gate-panel-title">{title}</span>
       <span class="gate-panel-unit">tok/s</span>
@@ -196,7 +217,7 @@
         <text class="gc-axis" x={x(c)} y={H - 8} text-anchor="middle">C={c}</text>
       {/each}
       {#each absent as c}
-        <g class="cc-absent">
+        <g class="cmp-absent">
           <title>{absentReason(c)}</title>
           <line class="gc-grid gc-grid-clipped" x1={x(c)} y1={PT} x2={x(c)} y2={H - PB} />
           <text class="gc-ref-label" x={x(c)} y={PT + 10} text-anchor="middle">not run</text>
@@ -205,7 +226,7 @@
       {#each pair.drawn as b}
         <path d={bPath(b)} fill="none" stroke="var(--t2)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="square" />
         {#each b.rungs as r}
-          <rect class="cc-sq" x={x(r.c) - 3.5} y={y(r.tok_s) - 3.5} width="7" height="7" fill="var(--t2)">
+          <rect class="cmp-sq" x={x(r.c) - 3.5} y={y(r.tok_s) - 3.5} width="7" height="7" fill="var(--t2)">
             <title>{b.label} · C={r.c} · {fmtB(r.tok_s)} tok/s · mean of {r.reps} reps · spread {r.spread_pct}% · {r.source}</title>
           </rect>
         {/each}
@@ -231,7 +252,7 @@
     </svg>
 
     {#if state === 'live' && pair.drawn.length}
-      <p class="cc-caption">
+      <p class="cmp-caption">
         vLLM was measured <strong>once</strong>, on {measuredRange(pair.drawn.flatMap((b) => b.rungs))}, with
         {#each [...new Set(pair.drawn.map((b) => `${b.engine} (${b.build})`))] as e, i}{i ? '; ' : ''}<code>{e}</code>{/each}
         on {ladder.box.name}, on this instrument ({instrumentLabel(live)}), and is not re-measured
@@ -243,7 +264,7 @@
         {/each}
       </p>
     {:else if state === 'live'}
-      <p class="cc-caption">
+      <p class="cmp-caption">
         <strong>vLLM has not been run on this instrument</strong> ({instrumentLabel(live)}).
         {#each pair.refused as r}
           The {r.series.label} one-shot of {measuredRange(r.series.rungs)} is on another
@@ -259,7 +280,7 @@
       </p>
     {:else}
       <!-- What is missing, why, what fills it — in that order, and never a zero. -->
-      <div class="cc-empty">
+      <div class="cmp-empty">
         <p><strong>No concurrency run on main yet for <code>{subject.checkpoint}</code>.</strong></p>
         <p>
           The gate <code>{subject.gate}</code> is declared for this checkpoint with

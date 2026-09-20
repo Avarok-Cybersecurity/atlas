@@ -176,7 +176,7 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
       'class="gate-panel-title">Atlas vs vLLM · published instrument · ISL 128 / OSL 1024 · vLLM one-shot, no Atlas run yet</span>'
     );
     const svg = comparisonSvg(page);
-    expect(svg.match(/class="cc-sq"/g)).toHaveLength(vllm.rungs.length);
+    expect(svg.match(/class="cmp-sq"/g)).toHaveLength(vllm.rungs.length);
     for (const r of vllm.rungs)
       expect(svg).toContain(`<title>vLLM + MTP · C=${r.c} · ${r.tok_s.toFixed(2)} tok/s · mean of ${r.reps} reps · spread ${r.spread_pct}% · ${r.source}</title>`);
     expect(svg).toContain(`>${vllm.engine} · 2026-09-19</text>`); // the dated stamp, inside the plot
@@ -185,7 +185,9 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
     expect(svg).not.toContain('gc-mark');
     expect(svg).not.toContain(`stroke="${colorFor(MOE.checkpoint)}"`);
     expect(page).toContain('Atlas · no run at this instrument yet');
-    expect(page).toContain('<span class="cc-chip">vLLM + MTP · one-shot · measured 2026-09-19 · not re-run</span>');
+    // Legend text, not a pill: nothing here is pressable, so nothing may look it.
+    expect(page).toContain('</svg>vLLM + MTP · one-shot · measured 2026-09-19 · not re-run</span>');
+    expect(page).not.toContain('cmp-chip');
   });
 
   test('C=32/64/128 are absent with the recorded reason where the point would be — no zero, no interpolation', () => {
@@ -227,7 +229,7 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
     expect(live).not.toContain('not yet measured');
     const svg = comparisonSvg(live);
     expect(svg.match(/class="gc-mark"/g)).toHaveLength(3);
-    expect(svg).not.toContain('cc-sq');
+    expect(svg).not.toContain('cmp-sq');
     expect(live).toContain('vLLM + MTP · other instrument · not drawn');
     expect(tile(live, 'vLLM baseline')).toBe('other instrument');
     inOrder(
@@ -248,7 +250,7 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
     const props = { subject: MOE, records: [fakeRecord(MOE, [1, 2, 4])], rungs, onselect: () => {}, ladders: fake };
     const drawn = html(Comparison.default, props);
     const svg = comparisonSvg(drawn);
-    expect(svg.match(/class="cc-sq"/g)).toHaveLength(vllm.rungs.length);
+    expect(svg.match(/class="cmp-sq"/g)).toHaveLength(vllm.rungs.length);
     expect(svg.match(/class="gc-mark"/g)).toHaveLength(3);
     expect(drawn).toContain('vLLM + MTP · one-shot · measured 2026-09-19 · not re-run');
     inOrder(
@@ -357,9 +359,11 @@ describe('the dense tab today: the published pair over the live gate', () => {
 
   test('legend chips: Atlas is the campaign, every vLLM leg is a dated one-shot, dates from the series', () => {
     const atlas = series.find((s) => s.role === 'subject');
-    expect(page).toContain(`>Atlas · published campaign · ${range(atlas)}</span>`);
+    expect(page).toContain(`>Atlas · published campaign · ${range(atlas)}</button>`);
     for (const b of series.filter((s) => s.role === 'baseline'))
-      expect(page).toContain(`<span class="cc-chip">${b.label} · one-shot · measured ${range(b)} · not re-run</span>`);
+      expect(page).toContain(
+        `<button type="button" class="cmp-chip" aria-pressed="true">${b.label} · one-shot · measured ${range(b)} · not re-run</button>`
+      );
     expect(range(series.find((s) => s.id === 'vllm-nospec'))).toBe('2026-08-16'); // one-day series prints one date
   });
 
@@ -473,5 +477,93 @@ describe('the dashboard wires the hash to the subject', () => {
     expect(page).toContain('aria-label="Filter by model"');
     expect(page).toContain('<article class="gbs"');
     expect(page).not.toContain('role="tablist" aria-label="Concurrency subjects"');
+  });
+});
+
+// The owner's screenshot: three legend pills that looked pressable and did
+// nothing, a table cut off after C=2, and a top card narrower than the gate
+// sweep under it. The pills are now buttons that drive the ladder through
+// series-visibility.js; the two cards share .gate-panel. The clipping and the
+// width were CSS (chat.css's `.cc`), which concurrency-css.test.js guards —
+// SSR cannot see a stylesheet, so the table check here proves only that every
+// rung is in the markup, never that it is on screen.
+describe('the published pair: series pills and the ladder they drive', () => {
+  const page = renderTab('qwen38-27b');
+  const series = publishedLadder.series;
+  const subject = series.find((s) => s.role === 'subject');
+  const rows = (h) => [...h.matchAll(/<th scope="row" class="mono">(\d+)<\/th>/g)].map((m) => +m[1]);
+  const cols = (h) => [...h.matchAll(/<th scope="col">([^<]*)<\/th>/g)].map((m) => m[1]);
+  const topTick = (h) =>
+    Math.max(...[...ladderSvg(h).matchAll(/<text class="gc-axis" x="54" y="[\d.]+" text-anchor="end">(\d+)<\/text>/g)].map((m) => +m[1]));
+  const cells = (h, c) =>
+    (new RegExp(`<th scope="row" class="mono">${c}</th>((?:\\s*<td[^>]*>[^<]*</td>)+)`).exec(h)?.[1].match(/<td/g) ?? []).length;
+  const mainTable = (h) => h.slice(h.indexOf('<table class="cl-table">'), h.indexOf('</table>'));
+
+  test('every rung of the ladder is a row of the table, C=1 to 128, in order', () => {
+    expect(rows(mainTable(page))).toEqual(publishedLadder.concurrencies);
+    expect(rows(mainTable(page))).toEqual([1, 2, 4, 8, 16, 32, 64, 128]);
+  });
+
+  test('the published card is the same chrome as the gate sweep: one figure.gate-panel each, head in a figcaption', () => {
+    expect(page).toContain(
+      '<figure class="gate-panel cmp"><figcaption class="gate-panel-head"><span class="gate-panel-title">Atlas vs vLLM · published campaign'
+    );
+    expect(page).toContain(
+      '<figure class="gate-panel"><figcaption class="gate-panel-head"><span class="gate-panel-title">latest gate sweep'
+    );
+    // Nothing in the tab carries the chat modal's class family.
+    expect(page).not.toMatch(/class="[^"]*\bcc(-[a-z]+)?\b/);
+  });
+
+  test('each series pill is a real button, pressed, one per series, and the group is named', () => {
+    const at = page.indexOf('<div class="cmp-keys"');
+    const keys = page.slice(at, page.indexOf('</div>', at));
+    expect(keys).toContain('role="group" aria-label="Series drawn"');
+    expect(keys.match(/<button type="button" class="cmp-chip"/g)).toHaveLength(series.length);
+    expect(keys.match(/aria-pressed="true"/g)).toHaveLength(series.length);
+    expect(keys).not.toContain('<span');
+    expect(page).not.toContain('cmp-refused'); // nothing has been refused yet
+  });
+
+  // The pill's onclick is `toggleSeries` (series-visibility.test.js) fed back
+  // into the ladder's `hidden` prop; the harness has no DOM to press it in, so
+  // the prop is driven directly and the rendered result is asserted.
+  test('hiding a vLLM series removes its line, its marks, its legend key and its table column; the rest stays', () => {
+    const before = html(Ladder, { embedded: true });
+    const after = html(Ladder, { embedded: true, hidden: ['vllm-mtp'] });
+    expect(before.match(/<path /g)).toHaveLength(series.length);
+    expect(after.match(/<path /g)).toHaveLength(series.length - 1);
+    expect(before).toContain('<title>vLLM + MTP · C=128');
+    expect(after).not.toContain('<title>vLLM + MTP · C=128');
+    expect(after).toContain('<title>vLLM, no speculation · C=128');
+    expect(after).toContain('<title>Atlas · C=128');
+    expect(cols(mainTable(before))).toEqual(['C', 'Atlas', 'vLLM + MTP', 'vLLM, no speculation', 'Ratio']);
+    expect(cols(mainTable(after))).toEqual(['C', 'Atlas', 'vLLM, no speculation', 'Ratio']);
+    expect(cells(mainTable(before), 128)).toBe(4);
+    expect(cells(mainTable(after), 128)).toBe(3);
+    expect(rows(mainTable(after))).toEqual([1, 2, 4, 8, 16, 32, 64, 128]); // rows never go
+    expect(after.match(/class="cl-key"/g)).toHaveLength(series.length - 1);
+    expect(after).not.toContain('vLLM 0.27.1 · 2026-08-17</text>'); // its in-plot stamp goes with it
+  });
+
+  test('hiding the tall series rescales the y axis to what is still drawn', () => {
+    const before = html(Ladder, { embedded: true });
+    const after = html(Ladder, { embedded: true, hidden: [subject.id] });
+    const max = (ids) =>
+      Math.max(...series.filter((s) => ids.includes(s.id)).flatMap((s) => s.rungs.map((r) => r.tok_s)));
+    expect(topTick(before)).toBe(Math.round(max(series.map((s) => s.id)) * 1.08));
+    expect(topTick(after)).toBe(Math.round(max(['vllm-mtp', 'vllm-nospec']) * 1.08));
+    expect(topTick(after)).toBeLessThan(topTick(before));
+    // Atlas gone: its column and the ratio (Atlas over vLLM) go together.
+    expect(cols(mainTable(after))).toEqual(['C', 'vLLM + MTP', 'vLLM, no speculation']);
+    expect(mainTable(after)).not.toContain('cl-ratio');
+  });
+
+  test('every series hidden is a wiring bug: the ladder throws rather than drawing empty axes', () => {
+    expect(() => html(Ladder, { embedded: true, hidden: series.map((s) => s.id) })).toThrow(/every series is hidden/);
+  });
+
+  test('NEGATIVE CONTROL: an id that hides nothing changes nothing', () => {
+    expect(html(Ladder, { embedded: true, hidden: ['no-such-series'] })).toBe(html(Ladder, { embedded: true }));
   });
 });
