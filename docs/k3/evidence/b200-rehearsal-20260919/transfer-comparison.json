@@ -1,0 +1,289 @@
+{
+  "scope": "Packed K3 0.40B twin on one B200 host; development measurements, not certification",
+  "protocol": "Raw greedy completions, 128 actual generated tokens; two fixed prompts of8/65tokens, one warmup +three measured repeats; cache enabled equally; diagnostics disabled equally; all48 responses exactly agree",
+  "compiler_control": "Compiler/linker process names sampled every0.5s during timed requests; any overlap rejects session",
+  "rows": [
+    {
+      "tp": 1,
+      "label": "gemv-candidate",
+      "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 41.44697317787262,
+          "decode_tokens_per_second": [
+            41.44697317787262,
+            39.52830989807271,
+            41.760350656311246
+          ],
+          "median_ttft_ms": 107.526106,
+          "ttft_ms": [
+            107.66962,
+            107.098253,
+            107.526106
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 30.58007869451446,
+          "decode_tokens_per_second": [
+            30.955091717154446,
+            30.58007869451446,
+            30.409116653172617
+          ],
+          "median_ttft_ms": 1100.037632,
+          "ttft_ms": [
+            1103.8378739999998,
+            1098.4613789999999,
+            1100.037632
+          ]
+        }
+      ],
+      "compiler_samples": 61,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "52a31a9843d535c33de959518df0880929729917513b5af3f005ddcaff2ebeea",
+      "all_owned_processes_exit_zero": true
+    },
+    {
+      "tp": 1,
+      "label": "kda-resident",
+      "binary_sha256": "61e37f7c1d054a6624efd969d78fb1c3870e5d5446415387f319f82e7ada190d",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 40.56455727052943,
+          "decode_tokens_per_second": [
+            38.71005233166864,
+            40.56455727052943,
+            40.69347641072485
+          ],
+          "median_ttft_ms": 105.01509300000001,
+          "ttft_ms": [
+            105.11542299999999,
+            104.989379,
+            105.01509300000001
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 30.441320208925816,
+          "decode_tokens_per_second": [
+            30.22634631485665,
+            30.505666496489724,
+            30.441320208925816
+          ],
+          "median_ttft_ms": 1121.256075,
+          "ttft_ms": [
+            1121.256075,
+            1117.5204569999999,
+            1139.78998
+          ]
+        }
+      ],
+      "compiler_samples": 62,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "0d45b4312bde46692cf7b578aacbd05b84af6152330146d9b5021b8ac1066cb1",
+      "all_owned_processes_exit_zero": true
+    },
+    {
+      "tp": 1,
+      "label": "resident-batched",
+      "binary_sha256": "670c2d733f02fccd7e9ab1c893afd24048a893649eba1ababc017e46c0920b93",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 43.85426682787693,
+          "decode_tokens_per_second": [
+            44.11076957384896,
+            43.85426682787693,
+            43.784777229350546
+          ],
+          "median_ttft_ms": 92.928057,
+          "ttft_ms": [
+            92.928057,
+            92.989704,
+            92.833623
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 32.23851148633135,
+          "decode_tokens_per_second": [
+            32.47763572230968,
+            32.23851148633135,
+            32.18636084184794
+          ],
+          "median_ttft_ms": 1024.362001,
+          "ttft_ms": [
+            1005.6773290000001,
+            1036.1475280000002,
+            1024.362001
+          ]
+        }
+      ],
+      "compiler_samples": 57,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "a7abb5b99485c2ffd9ab51243a064c42abef36f0a7895bbd02d9fb8a05884fdd",
+      "all_owned_processes_exit_zero": true
+    },
+    {
+      "tp": 2,
+      "label": "gemv-candidate",
+      "binary_sha256": "e04b4756d45a82e233dc8421dba94a4b8d92b6622f830de6a3dfa159ef92cfc6",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 41.90442836499525,
+          "decode_tokens_per_second": [
+            41.86332384698658,
+            42.085129980532024,
+            41.90442836499525
+          ],
+          "median_ttft_ms": 107.88492,
+          "ttft_ms": [
+            108.003856,
+            107.88492,
+            107.817468
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 31.943694681494158,
+          "decode_tokens_per_second": [
+            31.72784837773103,
+            31.943694681494158,
+            31.946810635074446
+          ],
+          "median_ttft_ms": 1049.739045,
+          "ttft_ms": [
+            1049.739045,
+            1054.050968,
+            1049.479106
+          ]
+        }
+      ],
+      "compiler_samples": 59,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "0be5263b7a099ef4b281d8c2c1ab47fd0d6663882511ea46bdbb08cf45f57a9b",
+      "all_owned_processes_exit_zero": true
+    },
+    {
+      "tp": 2,
+      "label": "kda-resident",
+      "binary_sha256": "61e37f7c1d054a6624efd969d78fb1c3870e5d5446415387f319f82e7ada190d",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 43.065315272190425,
+          "decode_tokens_per_second": [
+            43.12846265246137,
+            43.065315272190425,
+            42.94464222753467
+          ],
+          "median_ttft_ms": 103.381625,
+          "ttft_ms": [
+            104.066204,
+            102.75367200000001,
+            103.381625
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 32.02954158767759,
+          "decode_tokens_per_second": [
+            32.54237582211311,
+            31.770961328587255,
+            32.02954158767759
+          ],
+          "median_ttft_ms": 1024.534682,
+          "ttft_ms": [
+            1003.2379709999999,
+            1034.879797,
+            1024.534682
+          ]
+        }
+      ],
+      "compiler_samples": 57,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "614496ec818d962bba2859d20184e1f777a30426abf8d473a3a7f9156cc935b2",
+      "all_owned_processes_exit_zero": true
+    },
+    {
+      "tp": 2,
+      "label": "resident-batched",
+      "binary_sha256": "670c2d733f02fccd7e9ab1c893afd24048a893649eba1ababc017e46c0920b93",
+      "cases": [
+        {
+          "case": "aviation-a",
+          "prompt_tokens": 8,
+          "completion_tokens": 128,
+          "output_sha256": "bd8624f11c0e8a1389c0637183efc2bfda72a8f1c487a14cafc7bfe69dd5c053",
+          "median_decode_tokens_per_second": 44.97688066329691,
+          "decode_tokens_per_second": [
+            44.97688066329691,
+            44.934616050611176,
+            44.98841853400093
+          ],
+          "median_ttft_ms": 95.702921,
+          "ttft_ms": [
+            95.702921,
+            95.616134,
+            95.713568
+          ]
+        },
+        {
+          "case": "repeated-words-64",
+          "prompt_tokens": 65,
+          "completion_tokens": 128,
+          "output_sha256": "34b81291999bbceef31715c585f9eaafc548eb5486ffdf18b86dd2b33ae6fe24",
+          "median_decode_tokens_per_second": 33.45046323835824,
+          "decode_tokens_per_second": [
+            33.45046323835824,
+            33.49124541692876,
+            33.40993478120554
+          ],
+          "median_ttft_ms": 956.351699,
+          "ttft_ms": [
+            949.801459,
+            967.816778,
+            956.351699
+          ]
+        }
+      ],
+      "compiler_samples": 55,
+      "maximum_observed_compilers": 0,
+      "performance_receipt_sha256": "b223c3f1368e9cb375a252df3fc292c35c49f9dd102b18fb8ffc77619ac71ea5",
+      "all_owned_processes_exit_zero": true
+    }
+  ]
+}

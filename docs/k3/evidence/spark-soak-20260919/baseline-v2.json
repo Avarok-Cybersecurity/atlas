@@ -1,0 +1,117 @@
+{
+  "baseline_cases": [
+    {
+      "id": "aviation-a",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16
+    },
+    {
+      "id": "one-token",
+      "text": " my name is Inigo Montoya. You killed my father. Prepare to die",
+      "finish_reason": "length",
+      "prompt_tokens": 1,
+      "completion_tokens": 16
+    },
+    {
+      "id": "aviation-after-other",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16
+    },
+    {
+      "id": "repeated-words-30",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 31,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-31",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 32,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-32",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 33,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-33",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 34,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-62",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 63,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-63",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 64,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-64",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 65,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-65",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 66,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-126",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 127,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-127",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 128,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-128",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 129,
+      "completion_tokens": 8
+    },
+    {
+      "id": "repeated-words-129",
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "prompt_tokens": 130,
+      "completion_tokens": 8
+    },
+    {
+      "id": "aviation-final",
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16
+    }
+  ],
+  "migration": "Original exact decoded whitespace preserved after API strip_thinking_tags fix. Every baseline checked against prior receipt after stripping whitespace; token counts and finish reason unchanged. Subsequent soak comparisons are byte-exact without stripping."
+}

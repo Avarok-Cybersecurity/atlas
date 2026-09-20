@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "runtime_source_commit": "345db2a7c3baaa39baf599e5f5f5509e7d0df2a0",
+  "image_id": "sha256:177afee2a81b6f7d57ea8213745beacead438d8bf5f16f91faacdd6165095dcb",
+  "same_image_on_both_hosts": true,
+  "host_arch": "aarch64",
+  "binary_sha256": "f61a9eb0459b8fe45b2a8d41f0d121f51ddc0f5a562312a7201cdfd73a4b8ee9",
+  "cuda_nvcc": "13.0.48",
+  "nccl_package": "2.31.2-1+cuda13.4",
+  "tp1": {
+    "status": "passed",
+    "boot_seconds": 34.2895863391459,
+    "exit_code": 0,
+    "remaining_gpu_pids": []
+  },
+  "tp2": {
+    "status": "passed",
+    "transport": "NCCL Socket; IB disabled",
+    "boot_seconds": 42.94718237500638,
+    "exit_codes": [
+      0,
+      0
+    ],
+    "remaining_gpu_pids": [],
+    "collective_check": {
+      "status": "MATCH_SUBMISSIONS",
+      "world_size": 2,
+      "submissions_per_rank": {
+        "0": 409,
+        "1": 409
+      },
+      "collectives_per_rank": 409,
+      "peer_transfers": 0,
+      "expected_submissions_per_rank": null,
+      "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+    }
+  },
+  "limitation": "Small packed fixture only. Socket transport is not container RDMA or NVSwitch validation. Image precedes final hardware registry/test metadata changes. APT versions are receipted, not fully pinned.",
+  "generation": {
+    "exact_tp1_tp2_choices_match": true,
+    "choices": [
+      {
+        "index": 0,
+        "text": "there is no way a bee should be able to fly. Its wings are too",
+        "finish_reason": "length"
+      }
+    ],
+    "prompt_tokens": 8,
+    "completion_tokens": 16,
+    "total_tokens": 24
+  }
+}

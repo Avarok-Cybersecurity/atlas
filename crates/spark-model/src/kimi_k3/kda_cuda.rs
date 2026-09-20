@@ -65,9 +65,21 @@ impl KdaDeviceState {
         let conv_b = f32_bytes(&host.conv);
         let rec_b = f32_bytes(&host.recurrent);
         let conv = gpu.alloc(conv_b.len().max(1))?;
-        let recurrent = gpu.alloc(rec_b.len().max(1))?;
-        gpu.copy_h2d(&conv_b, conv)?;
-        gpu.copy_h2d(&rec_b, recurrent)?;
+        let recurrent = match gpu.alloc(rec_b.len().max(1)) {
+            Ok(ptr) => ptr,
+            Err(error) => {
+                let _ = gpu.free(conv);
+                return Err(error);
+            }
+        };
+        let upload = gpu
+            .copy_h2d(&conv_b, conv)
+            .and_then(|()| gpu.copy_h2d(&rec_b, recurrent));
+        if let Err(error) = upload {
+            let _ = gpu.free(conv);
+            let _ = gpu.free(recurrent);
+            return Err(error);
+        }
         Ok(Self { conv, recurrent })
     }
 
@@ -82,9 +94,9 @@ impl KdaDeviceState {
     }
 
     pub fn free(self, gpu: &dyn GpuBackend) -> Result<()> {
-        gpu.free(self.conv)?;
-        gpu.free(self.recurrent)?;
-        Ok(())
+        let conv = gpu.free(self.conv);
+        let recurrent = gpu.free(self.recurrent);
+        conv.and(recurrent)
     }
 }
 

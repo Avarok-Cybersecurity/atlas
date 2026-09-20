@@ -95,13 +95,31 @@ pub fn model_type_ships_vanilla_norm_weights(model_type: &str) -> bool {
 /// invisible to it. Answering true capped every GLM prompt at `2 × --max-prefill-tokens`,
 /// because `prefill_a_step` splits the FIRST chunk at the cap regardless and this gate then
 /// made the remainder one unsplit chunk the buffer arena refused. ANOMALIES A61.
+/// K3 also uses the default per-token prefill walk: `K3BoundLayer::decode` advances
+/// its sequence-owned KDA/MLA cache at each absolute position. Its MLA decode
+/// attends that whole retained cache, so it must honor the scheduler chunk budget.
 pub fn requires_single_chunk_prefill(model_type: &str, kv_lora_rank: usize) -> bool {
-    kv_lora_rank > 0 && model_type != "glm5_next"
+    kv_lora_rank > 0 && !matches!(model_type, "glm5_next" | "kimi_k3")
 }
 
 #[cfg(test)]
 mod single_chunk_prefill_tests {
     use super::requires_single_chunk_prefill as single;
+
+    #[test]
+    fn kimi_k3_keeps_prefill_bounded_beyond_two_chunks() {
+        // Live regression: a 130-token prompt with a 32-token budget first
+        // advances 33 tokens, then the old MLA gate dispatches all 97 remaining
+        // tokens into a 33-token arena. K3's per-token MLA retains its full cache.
+        assert!(!single("kimi_k3", 512));
+        assert!(!single("kimi_k3", 64));
+        for model in ["deepseek_v3", "deepseek_v4", "mistral", "unknown_mla"] {
+            assert!(
+                single(model, 512),
+                "{model} must retain its correctness gate"
+            );
+        }
+    }
 
     /// GLM-5.3 is MLA and must still be chunked — that is the whole of A61.
     #[test]

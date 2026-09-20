@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "recorded_at_utc": "2026-09-20T02:53:50Z",
+  "instance_id": 51664218,
+  "provider": "Vast.ai",
+  "status": "stopped",
+  "status_source": "user confirmation",
+  "remaining_account_credit_usd": 32.35,
+  "balance_source": "user report; not independently queried",
+  "next_work": "Extract clean draft PRs; address remaining CPU fallbacks on available Sparks. No additional rental experiments."
+}

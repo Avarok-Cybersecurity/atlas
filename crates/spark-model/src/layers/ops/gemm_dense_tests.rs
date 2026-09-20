@@ -222,10 +222,11 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             }
         }
     }
-    // ★ 5 PATHS, 2 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
+    // ★ 6 PATHS, 3 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
     // are all SYMLINKS to `../../gb10/common/w4a16_gemm.cu`, so those copies
     // were ported the moment gb10's was. `strix-hip/common/` is a real,
-    // separate HIP file and had to be done by hand.
+    // separate HIP file and had to be done by hand. B300 owns a separate CUDA
+    // copy; the bounds above are checked independently for that copy too.
     //
     // BOTH numbers are asserted, and the second is the one that matters. Path
     // count is what the build walks, so it has to track the tree — but a new
@@ -234,14 +235,14 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
     // exists to catch. Asserting only the total would fire on the free case
     // and, once bumped, would go quiet on the expensive one.
     assert_eq!(
-        scalar, 5,
+        scalar, 6,
         "the shared `common/` scalar paths moved (gb10, strix, strix-hip, \
-         hopper, b200) — update this count with the tree"
+         hopper, b200, b300) — update this count with the tree"
     );
     assert_eq!(
-        scalar_forked, 2,
-        "expected exactly 2 FORKED `common/` scalar copies (gb10 and \
-         strix-hip); a 3rd is a new backend that needs the same hand port, \
+        scalar_forked, 3,
+        "expected exactly 3 FORKED `common/` scalar copies (gb10, b300 and \
+         strix-hip); a 4th is a new backend that needs the same hand port, \
          where a symlinked one would have inherited it"
     );
     assert!(tile > 20, "only {tile} tile copies found — tree moved?");

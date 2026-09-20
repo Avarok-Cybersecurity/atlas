@@ -174,6 +174,7 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    prepartitioned_tp: Option<(usize, usize)>,
     /// Buffers a loader derived from these tensors — fused concats, transposed
     /// twins, requants. Owned here so teardown RELEASES them instead of the
     /// backend sweep reclaiming them unowned (#736, #915); see `derived.rs`.
@@ -191,23 +192,15 @@ pub struct WeightStore {
     deferred: HashMap<String, DeferredTensor>,
 }
 
-/// Where a skipped tensor lives, so a consumer can read it in place.
-#[derive(Clone, Debug)]
-pub struct DeferredTensor {
-    /// Shard file containing the tensor.
-    pub path: std::path::PathBuf,
-    /// ABSOLUTE byte offset of the tensor's first element in that file
-    /// (safetensors header length + the tensor's `data_offsets[0]`).
-    pub offset: u64,
-    pub shape: Vec<usize>,
-    pub dtype: WeightDtype,
-}
+mod deferred;
+pub use deferred::DeferredTensor;
 
 impl WeightStore {
     /// Create an empty weight store (for testing).
     pub fn empty() -> Self {
         Self {
             weights: HashMap::new(),
+            prepartitioned_tp: None,
             deferred: HashMap::new(),
             derived: DerivedStore::default(),
         }
@@ -239,6 +232,7 @@ impl WeightStore {
     pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
         Self {
             weights,
+            prepartitioned_tp: None,
             deferred: HashMap::new(),
             derived: DerivedStore::default(),
         }
@@ -474,7 +468,9 @@ pub mod adapter;
 mod derived;
 pub use derived::DerivedStore;
 mod gguf;
+mod k3;
 mod loader;
+pub use k3::K3SafetensorsLoader;
 pub mod mlx_int8;
 pub use gguf::dequant_cpu;
 pub use gguf::expert_stream;
@@ -497,40 +493,7 @@ mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
 
-/// Release every weight tensor.
-///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
-impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
-    fn label(&self) -> &'static str {
-        "weight store"
-    }
-
-    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        // Derived buffers FIRST: they are re-encodings of the tensors below and
-        // nothing reads one after the other is gone, but freeing the source a
-        // derivation was built from while the derivation is still listed would
-        // make a later failure here impossible to attribute.
-        let mut first_error = self.derived.release(gpu).err();
-        // `drain` rather than iterate: the map must not be left holding
-        // pointers to memory that is gone, and it makes this idempotent.
-        for (name, tensor) in self.weights.drain() {
-            if let Err(e) = gpu.free(tensor.ptr)
-                && first_error.is_none()
-            {
-                first_error = Some(e.context(format!("freeing weight {name}")));
-            }
-        }
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
+mod release;
 
 #[cfg(test)]
 mod teardown_tests;

@@ -209,3 +209,15 @@ fn default_kwargs_fail_fast_on_typos() {
     // Invalid JSON.
     assert!(parse_default_chat_template_kwargs("not json").is_err());
 }
+
+#[test]
+fn official_k3_mxfp4_is_distinct_from_nvfp4_and_bf16() {
+    let config = avarok_core::config::parse_config(include_str!(
+        "../../../../docs/k3/fixtures/moonshotai-Kimi-K3-config.json"
+    ))
+    .unwrap();
+    assert_eq!(canonicalize_model_quant(&config), "mxfp4");
+    assert!(quant_pair_compatible("mxfp4", "mxfp4"));
+    assert!(!quant_pair_compatible("bf16", "mxfp4"));
+    assert!(!quant_pair_compatible("nvfp4", "mxfp4"));
+}

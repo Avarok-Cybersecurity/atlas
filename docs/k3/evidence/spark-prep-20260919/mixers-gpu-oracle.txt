@@ -1,0 +1,30 @@
+running 1 test
+test k3_tp8_mixers_match_core_cpu ... K3 mixer oracle PTX architecture: sm_121f
+KDA output token 0: 1536 FP32 values, max_abs_error=0.0000000023283064
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000014901161
+KDA output token 1: 1536 FP32 values, max_abs_error=0.0000000027939677
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000014901161
+KDA output token 2: 1536 FP32 values, max_abs_error=0.0000000013969839
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000014901161
+KDA output token 3: 1536 FP32 values, max_abs_error=0.0000000011641532
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000014901161
+KDA output token 4: 1536 FP32 values, max_abs_error=0.00000000069849193
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000018626451
+KDA output token 5: 1536 FP32 values, max_abs_error=0.00000000069849193
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000013038516
+KDA output token 6: 1536 FP32 values, max_abs_error=0.0000000007566996
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000016763806
+KDA output token 7: 1536 FP32 values, max_abs_error=0.00000000072759576
+KDA recurrent state: 196608 FP32 values, max_abs_error=0.000000018626451
+PASS KDA TP8 heads=12 dim=128 tokens=8 nonzero history + restored continuation + cleared-history negative control
+MLA output position 31: 1536 FP32 values, max_abs_error=0.000000074505806
+MLA output position 32: 1536 FP32 values, max_abs_error=0.000000044703484
+MLA output position 33: 1536 FP32 values, max_abs_error=0.000000059604645
+MLA output position 34: 1536 FP32 values, max_abs_error=0.000000044703484
+MLA output position 35: 1536 FP32 values, max_abs_error=0.000000074505806
+MLA output position 36: 1536 FP32 values, max_abs_error=0.000000052154064
+PASS MLA TP8 heads=12 qk_dim=192 v_dim=128 prefix=31 decode=6 + restored continuation + gate/prefix negative controls
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+

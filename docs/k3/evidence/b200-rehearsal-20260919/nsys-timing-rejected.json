@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "status": "rejected_for_final_compute_balance_gate",
+  "candidate_commit": "083260451",
+  "binary_sha256": "e36f14822006b4aa19329314c573325bdf97107bdd5b4a4a98f9d04cbfd6bac8",
+  "profiler_version": "2026.3.2",
+  "source_capture": "tp4-supported-timing.sqlite",
+  "source_summary": "tp4-frozen-nsys-supported-timing/summary.json",
+  "unsupported_driver_warnings": 0,
+  "compiler_occupancy": {
+    "samples": 40,
+    "nonempty_samples": 0
+  },
+  "loss_diagnostic": {
+    "rank": 0,
+    "pid": 88748,
+    "timestamp_ns": 19022664704,
+    "cupti_buffers_received": 48,
+    "cupti_buffers_total": 50,
+    "message": "Some CUPTI events might be missing."
+  },
+  "measured_regions": [
+    {
+      "name": "measured/aviation-a",
+      "start_ns": 12798612335,
+      "end_ns": 13987381970
+    },
+    {
+      "name": "measured/repeated-words-64",
+      "start_ns": 16459705418,
+      "end_ns": 18925789739
+    }
+  ],
+  "rank0_latest_captured_kernel_end_ns": 18956329227,
+  "rank0_latest_captured_cuda_api_end_ns": 19011167921,
+  "nccl_sequence_check": {
+    "count_per_rank": 7617,
+    "matched_stream_counts": [
+      7008,
+      609
+    ],
+    "method": "Unique full-capture per-stream kernel type/geometry histogram mapping followed by exact ordered type/geometry sequence matching; no ordering inferred across streams",
+    "limitation": "NCCL sequence agreement cannot establish that compute or CUDA API events were not lost."
+  },
+  "decision": "The warning occurs after the measured windows and captured activity extends beyond them, but the diagnostic does not locate the missing buffers. Loss outside the measured windows cannot be proven. Per-rank compute/collective balance remains inconclusive; derived timings must not be promoted as validated balance evidence.",
+  "measurement_definitions": [
+    "Non-NCCL GPU kernels measure GPU compute activity, not host CPU work.",
+    "NCCL kernel time includes transport, protocol and waiting; it is not pure wait.",
+    "CUDA stream-synchronize API wall time can include compute, copies and collective waits.",
+    "Sequence-aligned GPU kernel start-skew is an arrival proxy including scheduling, not pure collective wait."
+  ],
+  "wrapup": "No additional profiler or GPU run was started after the wrap-up instruction. Retain this rejected capture and audit reason; follow-up profiling must use lossless collection."
+}

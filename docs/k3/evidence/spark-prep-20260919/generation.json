@@ -1,0 +1,338 @@
+{
+  "baseline_mode": "packed-tp1-boundaries16",
+  "baseline_cases": [
+    {
+      "id": "aviation-a",
+      "passed": true,
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "text": "there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "one-token",
+      "passed": true,
+      "prompt_tokens": 1,
+      "completion_tokens": 16,
+      "text": "my name is Inigo Montoya. You killed my father. Prepare to die",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "aviation-after-other",
+      "passed": true,
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "text": "there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-30",
+      "passed": true,
+      "prompt_tokens": 31,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-31",
+      "passed": true,
+      "prompt_tokens": 32,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-32",
+      "passed": true,
+      "prompt_tokens": 33,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-33",
+      "passed": true,
+      "prompt_tokens": 34,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-62",
+      "passed": true,
+      "prompt_tokens": 63,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-63",
+      "passed": true,
+      "prompt_tokens": 64,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-64",
+      "passed": true,
+      "prompt_tokens": 65,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-65",
+      "passed": true,
+      "prompt_tokens": 66,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-126",
+      "passed": true,
+      "prompt_tokens": 127,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-127",
+      "passed": true,
+      "prompt_tokens": 128,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-128",
+      "passed": true,
+      "prompt_tokens": 129,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "repeated-words-129",
+      "passed": true,
+      "prompt_tokens": 130,
+      "completion_tokens": 8,
+      "text": "20 meter pacer test will begin in",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    },
+    {
+      "id": "aviation-final",
+      "passed": true,
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "text": "there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "cached_tokens": 0
+    }
+  ],
+  "runs": [
+    {
+      "mode": "packed-tp1-chunk32-fixed",
+      "world": 1,
+      "cache": false,
+      "status": "passed",
+      "case_count": 13,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "3c42c2993512d91839f6ad8cd9c689a1dd4425830e4144def86976824c1f896a"
+    },
+    {
+      "mode": "packed-tp2-chunk32-fixed",
+      "world": 2,
+      "cache": false,
+      "status": "passed",
+      "collectives": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 13704,
+          "1": 13704
+        },
+        "collectives_per_rank": 13704,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": null,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "case_count": 13,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "3c42c2993512d91839f6ad8cd9c689a1dd4425830e4144def86976824c1f896a"
+    },
+    {
+      "mode": "packed-tp2-cache-chunk32",
+      "world": 2,
+      "cache": true,
+      "status": "passed",
+      "case_count": 13,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "3c42c2993512d91839f6ad8cd9c689a1dd4425830e4144def86976824c1f896a"
+    },
+    {
+      "mode": "packed-tp2-owned-release",
+      "world": 2,
+      "cache": false,
+      "status": "passed",
+      "collectives": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 13704,
+          "1": 13704
+        },
+        "collectives_per_rank": 13704,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": null,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "case_count": 13,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "3c42c2993512d91839f6ad8cd9c689a1dd4425830e4144def86976824c1f896a"
+    },
+    {
+      "mode": "packed-tp1-boundaries16",
+      "world": 1,
+      "cache": false,
+      "status": "passed",
+      "case_count": 16,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-30",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-62",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-126",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "c05b91dd7b12f562a4f92ae34defbda557790872e3179b186f4fa751ee6a0aff"
+    },
+    {
+      "mode": "packed-tp2-boundaries16",
+      "world": 2,
+      "cache": false,
+      "status": "passed",
+      "collectives": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 17665,
+          "1": 17665
+        },
+        "collectives_per_rank": 17665,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": null,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "case_count": 16,
+      "case_ids": [
+        "aviation-a",
+        "one-token",
+        "aviation-after-other",
+        "repeated-words-30",
+        "repeated-words-31",
+        "repeated-words-32",
+        "repeated-words-33",
+        "repeated-words-62",
+        "repeated-words-63",
+        "repeated-words-64",
+        "repeated-words-65",
+        "repeated-words-126",
+        "repeated-words-127",
+        "repeated-words-128",
+        "repeated-words-129",
+        "aviation-final"
+      ],
+      "exactly_matches_baseline_cases": true,
+      "cases_sha256": "c05b91dd7b12f562a4f92ae34defbda557790872e3179b186f4fa751ee6a0aff"
+    }
+  ],
+  "note": "Exact comparison includes text, finish reason, token counts, cached tokens and pass result. Full raw HTTP/log receipts retained outside Git."
+}

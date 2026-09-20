@@ -1,0 +1,79 @@
+{
+  "source_commit": "4dd0d6a78",
+  "harness": "leader-first shutdown patch",
+  "driver": "595.91.07",
+  "cuda": "13.0.48",
+  "nccl": "2.27.7",
+  "runs": [
+    {
+      "tp": 1,
+      "status": "passed",
+      "all_processes_exit_zero": true,
+      "elapsed_seconds": 57.82243183301762,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "driver_shutdown_warning": false,
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "exact_spark_baseline_match": true,
+      "probe_receipt_sha256": "d1e39321c25aa3854fd0559302621fd13a01ec2c82e58f97b002973eb36af2fd"
+    },
+    {
+      "tp": 2,
+      "status": "passed",
+      "all_processes_exit_zero": true,
+      "elapsed_seconds": 59.963481223676354,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "collective_audit": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 427,
+          "1": 427
+        },
+        "collectives_per_rank": 427,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": null,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "driver_shutdown_warning": true,
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "exact_spark_baseline_match": true,
+      "probe_receipt_sha256": "59ff96f5b92ccd6bb83be70f508494d57e87872fdb0cc26f5812520a8484a1a1"
+    },
+    {
+      "tp": 4,
+      "status": "passed",
+      "all_processes_exit_zero": true,
+      "elapsed_seconds": 60.92442778125405,
+      "binary_sha256": "67d3b6db662b73af2adbbbb1fcd6c89922087ebffcc8fe4670a2e68ab7cbb168",
+      "collective_audit": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 4,
+        "submissions_per_rank": {
+          "0": 429,
+          "1": 429,
+          "2": 429,
+          "3": 429
+        },
+        "collectives_per_rank": 429,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": null,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "driver_shutdown_warning": true,
+      "text": " there is no way a bee should be able to fly. Its wings are too",
+      "finish_reason": "length",
+      "prompt_tokens": 8,
+      "completion_tokens": 16,
+      "exact_spark_baseline_match": true,
+      "probe_receipt_sha256": "a876ef356f447f0bd4330c3a367327e4663e3d1f78957d34fc75237b4a96776f"
+    }
+  ],
+  "python_tests_passed": 70,
+  "scope": "One canary per topology; submission agreement is not a proof of GPU completion or long-term stability."
+}

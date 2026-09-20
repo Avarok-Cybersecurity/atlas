@@ -13,6 +13,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use super::attnres::rms_norm;
+use super::ops::matvec;
 use super::situ::{sigmoid, situ_glu_vec};
 use crate::config::ModelConfig;
 
@@ -141,21 +142,6 @@ pub fn mix_routed_experts(
         }
     }
     mixed
-}
-
-fn matvec(w: &[f32], x: &[f32], out: usize, inn: usize) -> Vec<f32> {
-    assert_eq!(w.len(), out * inn);
-    assert_eq!(x.len(), inn);
-    let mut y = vec![0.0f32; out];
-    for o in 0..out {
-        let mut acc = 0.0f32;
-        let row = &w[o * inn..(o + 1) * inn];
-        for i in 0..inn {
-            acc += row[i] * x[i];
-        }
-        y[o] = acc;
-    }
-    y
 }
 
 /// Routed latent path + optional shared expert (identity-scale for tests).

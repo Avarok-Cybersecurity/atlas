@@ -174,18 +174,28 @@ fn a_blackwell_datacentre_device_is_pointed_at_the_b200_target() {
     }
 }
 
-/// B300 / GB300 are SM 10.3 and Atlas compiles nothing for them. The hint must
-/// stay silent rather than nominate `b200`: `sm_100a` is architecture-specific
-/// and does not run on 10.3, so pointing an operator at that build would send
-/// them to rebuild an image that fails the same way.
+/// B300 has its own target; a B200 image still must refuse it.
 #[test]
-fn blackwell_ultra_has_no_shipped_target_and_is_not_pointed_at_b200() {
-    assert_eq!(target_hint((10, 3)), None);
-    let msg = ptx_arch_runs_on_device("sm_100a", (10, 3))
-        .expect_err("sm_100a cannot run on CC 10.3")
-        .to_string();
-    assert!(msg.contains("no shipped target"), "{msg}");
-    assert!(!msg.contains("AVAROK_TARGET_HW="), "{msg}");
+fn blackwell_ultra_is_pointed_at_its_own_target() {
+    assert_eq!(target_hint((10, 3)), Some("b300"));
+    for compiled in ["sm_100a", "sm_121f", "sm_90a"] {
+        let msg = ptx_arch_runs_on_device(compiled, (10, 3))
+            .expect_err("another target must not pass the B300 preflight")
+            .to_string();
+        assert!(msg.contains("AVAROK_TARGET_HW=b300"), "{msg}");
+        assert!(!msg.contains("AVAROK_TARGET_HW=b200"), "{msg}");
+    }
+}
+
+/// Architecture-specific B300 PTX is neither backward nor forward compatible.
+#[test]
+fn b300_ptx_requires_exactly_compute_capability_10_3() {
+    assert!(ptx_arch_runs_on_device("sm_103a", (10, 3)).is_ok());
+    for device in [(9, 0), (10, 0), (10, 7), (12, 1)] {
+        let err = ptx_arch_runs_on_device("sm_103a", device).unwrap_err();
+        assert_eq!(err.compiled_arch, "sm_103a");
+        assert_eq!(err.device_cc, device);
+    }
 }
 
 /// A CC with no shipped target says so instead of naming a target that does

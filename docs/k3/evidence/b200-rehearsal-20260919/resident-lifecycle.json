@@ -1,0 +1,63 @@
+{
+  "scope": "Development lifecycle validation, not certification; no immediate GPU cancellation or memory leak claim",
+  "runs": [
+    {
+      "name": "tp2-lifecycle-kda-resident-5cycles-retry",
+      "binary_sha256": "61e37f7c1d054a6624efd969d78fb1c3870e5d5446415387f319f82e7ada190d",
+      "checks": 121,
+      "cycles": 5,
+      "trusted_baseline_checked": true,
+      "elapsed_soak_seconds": 138.74277082597837,
+      "idle": {
+        "request_free_seconds": 45.00014632707462
+      },
+      "startup": {
+        "start_to_owned_healthy_seconds": 10.442860519047827,
+        "cuda_cache_path": "/root/.nv/ComputeCache"
+      },
+      "collectives": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 118639,
+          "1": 118639
+        },
+        "collectives_per_rank": 118639,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": 118639,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "all_owned_processes_exit_zero": true,
+      "soak_receipts_sha256": "2278a308fde14a272b48f5069b7d69905452539de35816be31288f76275b80ae"
+    },
+    {
+      "name": "tp2-lifecycle-resident-batched-5cycles",
+      "binary_sha256": "670c2d733f02fccd7e9ab1c893afd24048a893649eba1ababc017e46c0920b93",
+      "checks": 121,
+      "cycles": 5,
+      "trusted_baseline_checked": true,
+      "elapsed_soak_seconds": 126.67987905303016,
+      "idle": {
+        "request_free_seconds": 45.00015824241564
+      },
+      "startup": {
+        "start_to_owned_healthy_seconds": 10.283497828990221,
+        "cuda_cache_path": "/root/.nv/ComputeCache"
+      },
+      "collectives": {
+        "status": "MATCH_SUBMISSIONS",
+        "world_size": 2,
+        "submissions_per_rank": {
+          "0": 118639,
+          "1": 118639
+        },
+        "collectives_per_rank": 118639,
+        "peer_transfers": 0,
+        "expected_submissions_per_rank": 118639,
+        "limitation": "Submission agreement only; not GPU completion or deadlock freedom. Equal truncation is undetectable without an external expected count; graph replays are not traced."
+      },
+      "all_owned_processes_exit_zero": true,
+      "soak_receipts_sha256": "2ac8a87fad39fcbd695029b5c495924783c0432558b83dc338d6e67d9336c8e2"
+    }
+  ]
+}

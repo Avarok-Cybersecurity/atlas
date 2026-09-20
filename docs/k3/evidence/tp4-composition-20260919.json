@@ -1,0 +1,43 @@
+{
+  "result": "PASS",
+  "scope": "One TP4 rank-local synthetic two-layer production host graph with CUDA callbacks; not loader, NCCL or full-model inference.",
+  "device": "NVIDIA B200",
+  "gpu_ordinal": 2,
+  "local_base_commit": "083260451fab36ba704cc01cc8780847c8604ecb",
+  "test_source_sha256": "6b85e4ef7447687d95f4b230089b3640a13b59cedf76415f29e1e10fcc4bfe0b",
+  "test_binary_sha256": "f1ffa71a5095c8b588739787cc2e9d1a3e5f3017bf025ff3c507e0b9b78434d7",
+  "toolchain": "Rust1.93.1 release, b200/kimi-k3/mxfp4, locked dependency resolution",
+  "tests": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "tokens": 5,
+    "layers": 2,
+    "reset_replay": "exact",
+    "cleared_history_max_abs_delta": 0.06444836,
+    "all_five_cuda_callback_categories_executed": true
+  },
+  "payload_bytes": {
+    "host_matrices_calculated": 2210299904,
+    "persistent_gpu_weights_tracked": 697761792,
+    "limits": "excludes context, allocator overhead, small vectors, upload temporaries, wrapper scratch and KDA state; not measured RSS or GPU high-water"
+  },
+  "wall_seconds": {
+    "fixture_build": 0.771,
+    "five_token_graph": 0.369,
+    "whole_test": 4.74,
+    "callbacks_aggregate": {
+      "dense": 0.001108112,
+      "kda": 0.001247512,
+      "mla_host_kv": 0.002952245,
+      "packed_experts": 0.007542462,
+      "shared": 0.00102869
+    }
+  },
+  "limitations": [
+    "Sparse deterministic full-size matrices; not representative trained-weight performance.",
+    "896-way router, only16 selected experts provisioned.",
+    "Single local rank with no hidden all-reduce; no TP4 collective correctness claim.",
+    "Uses current host-KV MLA wrapper to match production graph, not unused resident helper."
+  ]
+}
