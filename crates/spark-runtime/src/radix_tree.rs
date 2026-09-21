@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
+mod partial_tail;
 mod snapshot;
 mod snapshot_insert;
 mod snapshot_session;
