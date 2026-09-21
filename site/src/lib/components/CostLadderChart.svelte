@@ -19,6 +19,19 @@
   //   * an under-sampled window is HOLLOW and is in no tile, verdict or trend;
   //   * the rail is named inside the plot area, because every figure on this
   //     axis is a lower bound on system energy.
+  //
+  // FACILITY OVERHEAD (PUE) is a BAND, not a line, and it is drawn for BOTH
+  // engines. A reader's building is a range rather than a number, and drawing
+  // one curve at an assumed multiplier would turn their guess into this
+  // page's claim. At the default 1.0/1.0 there is no band and every mark sits
+  // exactly where it sat before the control existed — asserted in
+  // cost-render.test.js, because "the default changes nothing" is the promise
+  // that makes the control safe to ship.
+  //
+  // The MARKS stay on the LOW edge. That edge is the rail reading itself at
+  // the default, and this page's whole doctrine is that its numbers are a
+  // floor; a mark floating in the middle of an assumed band would be a figure
+  // nothing measured.
   import { colorFor } from '$lib/gates.js';
   import { dashFor } from '$lib/gate-variants.js';
   import { costPerMillion, fmtUsd } from '$lib/cost.js';
@@ -28,29 +41,36 @@
    *   subject: object,
    *   cost: object,        the costLadder() result
    *   usdPerKwh: number,
+   *   pue: {low: number, high: number, band: boolean},   cost.js#pueRange
    *   rungs: number[],
    *   title: string,
    *   aboveIdle: boolean,
    *   onselect: (recs: object[]) => void
    * }}
    */
-  let { subject, cost, usdPerKwh, rungs, title, aboveIdle = false, onselect } = $props();
+  let { subject, cost, usdPerKwh, pue, rungs, title, aboveIdle = false, onselect } = $props();
 
   const W = 720, H = 260, PL = 62, PR = 16, PT = 26, PB = 44;
 
   // The dollar value of one cell at the price now in the box. `above idle`
   // subtracts the resident-model idle draw, and is only ever offered when
   // both sides recorded one (cost.js#idleAvailability).
-  const usdOf = (e) => {
+  const usdAt = (e, mult) => {
     const j = aboveIdle && e.aboveIdleJ !== null ? e.aboveIdleJ : e.energyJ;
-    return costPerMillion(j / e.tokens, usdPerKwh);
+    return costPerMillion(j / e.tokens, usdPerKwh, mult);
   };
+  // The drawn value: the low edge, which at the default PUE of 1.0 is the
+  // rail reading and nothing else.
+  const usdOf = (e) => usdAt(e, pue.low);
   const measured = (s) => s.points.filter((p) => p.energy.state === 'measured');
   const seriesList = $derived([
     ...(cost.atlas ? [{ ...cost.atlas, role: 'atlas' }] : []),
     ...cost.baselines.map((b) => ({ ...b, role: 'baseline' }))
   ]);
-  const values = $derived(seriesList.flatMap((s) => measured(s).map((p) => usdOf(p.energy))));
+  // BOTH edges feed the axis, or the top of the band is drawn off the chart.
+  const values = $derived(
+    seriesList.flatMap((s) => measured(s).flatMap((p) => [usdAt(p.energy, pue.low), usdAt(p.energy, pue.high)]))
+  );
 
   // Log axis, padded by an eighth of a decade at each end so no mark sits on
   // a rule. A single value gets a decade around it rather than a zero span.
@@ -63,11 +83,30 @@
   const x = (c) => PL + (l1 === l0 ? 0.5 : (Math.log2(c) - l0) / (l1 - l0)) * (W - PL - PR);
 
   const yTicks = $derived(values.length ? [0, 0.5, 1].map((f) => 10 ** (lo + f * span)) : []);
+  const ordered = (s) => measured(s).sort((a, b) => a.c - b.c);
   const pathOf = (s) =>
-    measured(s)
-      .sort((a, b) => a.c - b.c)
+    ordered(s)
       .map((p, i) => `${i ? 'L' : 'M'}${x(p.c).toFixed(1)} ${y(usdOf(p.energy)).toFixed(1)}`)
       .join(' ');
+  /**
+   * The facility band of one series: the HIGH-PUE curve out, the LOW-PUE curve
+   * back, closed. Empty unless there is a band to draw and at least two rungs
+   * to draw it across — a single rung gets a vertical range tick instead, so
+   * the range is still visible when only one cell has been measured.
+   */
+  const bandOf = (s) => {
+    const pts = ordered(s);
+    if (!pue.band || pts.length < 2) return '';
+    const out = pts
+      .map((p, i) => `${i ? 'L' : 'M'}${x(p.c).toFixed(1)} ${y(usdAt(p.energy, pue.high)).toFixed(1)}`)
+      .join(' ');
+    const back = [...pts]
+      .reverse()
+      .map((p) => `L${x(p.c).toFixed(1)} ${y(usdAt(p.energy, pue.low)).toFixed(1)}`)
+      .join(' ');
+    return `${out} ${back} Z`;
+  };
+  const ticksOf = (s) => (pue.band && ordered(s).length === 1 ? ordered(s) : []);
 
   const color = $derived(colorFor(subject.checkpoint));
   const dash = $derived(dashFor(subject.gate));
@@ -92,7 +131,10 @@
     const e = p.energy;
     const parts = [
       `${label} · C=${p.c}`,
-      `$${fmtUsd(usdOf(e))} per 1M tokens at ${usdPerKwh} $/kWh`,
+      pue.band
+        ? `$${fmtUsd(usdAt(e, pue.low))}–${fmtUsd(usdAt(e, pue.high))} per 1M tokens at ` +
+          `${usdPerKwh} $/kWh, PUE ${pue.low}–${pue.high}`
+        : `$${fmtUsd(usdOf(e))} per 1M tokens at ${usdPerKwh} $/kWh${pue.low === 1 ? '' : `, PUE ${pue.low}`}`,
       `${e.jPerToken.toFixed(3)} J/token`,
       `${e.tokPerWh.toFixed(0)} tok/Wh`,
       `${e.watts.toFixed(1)} W over the window`,
@@ -108,7 +150,8 @@
 <figure class="gate-panel cost-chart">
   <figcaption class="gate-panel-head">
     <span class="gate-panel-title">{title}</span>
-    <span class="gate-panel-unit">$ per 1M tokens · log scale</span>
+    <span class="gate-panel-unit"
+      >$ per 1M tokens · log scale{pue.band ? ` · PUE ${pue.low}–${pue.high}×` : pue.low === 1 ? '' : ` · PUE ${pue.low}×`}</span>
     <span class="gate-legend">
       <span class="gl-group">
         {#if cost.atlas}
@@ -135,6 +178,18 @@
           </span>
         {/each}
       </span>
+      {#if pue.band}
+        <span class="gl-sep" aria-hidden="true"></span>
+        <span class="gl-group">
+          <span class="gate-legend-item">
+            <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
+              <rect class="cost-band" x="1" y="1.5" width="18" height="7" style="--band: currentColor" />
+              <line x1="1" y1="8.5" x2="19" y2="8.5" stroke="currentColor" stroke-width="1.2" />
+            </svg>
+            facility overhead · PUE {pue.low}–{pue.high}× · the line is the rail, the band is the building
+          </span>
+        </span>
+      {/if}
       {#if hasHollow || hasRing}
         <span class="gl-sep" aria-hidden="true"></span>
         <span class="gl-group">
@@ -158,7 +213,7 @@
   </figcaption>
 
   <svg viewBox="0 0 {W} {H}" role="img"
-    aria-label="Cost per million tokens against concurrency for {subject.label}, GPU rail only, {cost.baselines.length ? 'Atlas against vLLM' : 'Atlas alone — no comparable vLLM energy'}">
+    aria-label="Cost per million tokens against concurrency for {subject.label}, GPU rail only, {cost.baselines.length ? 'Atlas against vLLM' : 'Atlas alone — no comparable vLLM energy'}{pue.band ? `, shaded between PUE ${pue.low} and ${pue.high}` : pue.low === 1 ? '' : `, at PUE ${pue.low}`}">
     {#each yTicks as t}
       <line class="gc-grid" x1={PL} y1={y(t)} x2={W - PR} y2={y(t)} />
       <text class="gc-axis" x={PL - 8} y={y(t) + 3.5} text-anchor="end">${fmtUsd(t)}</text>
@@ -180,6 +235,24 @@
         <text class="gc-ref-label" x={x(p.c)} y={PT + 10} text-anchor="middle">not measured</text>
       </g>
     {/each}
+
+    <!-- The facility bands, UNDER every line and mark: an assumption must
+         never be drawn over a measurement. Both engines get one, because PUE
+         applies to both equally and showing it on one would be a claim about
+         the comparison that is not true. -->
+    {#if pue.band}
+      {#each seriesList as s}
+        {@const d = bandOf(s)}
+        {#if d}
+          <path class="cost-band" d={d} style="--band: {s.role === 'atlas' ? color : 'var(--t2)'}" />
+        {/if}
+        {#each ticksOf(s) as p}
+          <line class="cost-band-tick" x1={x(p.c)} y1={y(usdAt(p.energy, pue.low))}
+            x2={x(p.c)} y2={y(usdAt(p.energy, pue.high))}
+            stroke={s.role === 'atlas' ? color : 'var(--t2)'} />
+        {/each}
+      {/each}
+    {/if}
 
     {#each cost.baselines as b}
       <path d={pathOf(b)} fill="none" stroke="var(--t2)" stroke-width="1.5" stroke-linejoin="round" />

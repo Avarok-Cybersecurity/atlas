@@ -80,6 +80,73 @@ export const DEFAULT_USD_PER_KWH = 0.15;
 export const PRICE_STORAGE_KEY = 'atlas.cost.usd_per_kwh';
 
 /**
+ * POWER USAGE EFFECTIVENESS — the reader's second input, and like the price it
+ * is an assumption rather than a measurement.
+ *
+ * PUE is total facility energy divided by IT energy: cooling, power
+ * conversion, lighting and everything else the building spends to keep the
+ * machine running. A figure on this page is GPU-rail joules, so multiplying by
+ * PUE is what turns "what the part drew" into "what the meter in the building
+ * reads".
+ *
+ * ★ THE DEFAULT IS 1.0, AND THAT IS NOT A GUESS — it is the identity. At 1.0
+ * nothing is applied and the chart is exactly the rail reading it has always
+ * been. Every other value is the reader's own facility, typed in. The page
+ * never assumes a multiplier on a number that is already a lower bound.
+ *
+ * ★ PUE CANNOT CHANGE WHO WINS. It multiplies both engines equally, so every
+ * ratio, verdict and tile on this tab is invariant under it. That is asserted
+ * in cost.test.js rather than merely stated here, because it is the property
+ * that makes offering the control safe: a reader can explore their own
+ * facility's overhead without being able to move the comparison.
+ *
+ * The LOW/HIGH pair exists because a facility is a range, not a number, and a
+ * reader who does not know theirs to two decimals should not have to pretend.
+ * Equal low and high is one curve; a gap is a band, and the band is the honest
+ * shape of "somewhere in here".
+ */
+export const DEFAULT_PUE = 1.0;
+/** Below 1.0 a building would be producing energy. A hard floor, not a taste. */
+export const PUE_MIN = 1.0;
+/**
+ * A typo guard, NOT a physical bound. Real facilities above 2.0 exist (and
+ * have existed at 3.0); this stops a stray keystroke rescaling the axis by a
+ * thousand, and the input says so rather than implying 3.0 is impossible.
+ */
+export const PUE_MAX = 3.0;
+/**
+ * The band offered as a preset, and the one figure pair this module asserts
+ * about the outside world: 1.1-1.5 is the range this tab's own disclosure has
+ * quoted for a datacentre since it was written. Offered, never applied.
+ */
+export const PUE_TYPICAL = Object.freeze({ low: 1.1, high: 1.5 });
+export const PUE_LOW_STORAGE_KEY = 'atlas.cost.pue_low';
+export const PUE_HIGH_STORAGE_KEY = 'atlas.cost.pue_high';
+
+/** A usable PUE: finite and in [PUE_MIN, PUE_MAX]. Anything else is not one. */
+export const isPue = (v) => Number.isFinite(v) && v >= PUE_MIN && v <= PUE_MAX;
+
+/**
+ * The pair the charts draw, from whatever the two boxes currently hold.
+ *
+ * Invalid input does not silently become a default that then looks measured:
+ * an unusable box falls back to `DEFAULT_PUE` (the identity), and the caller
+ * is told which box was refused so the page can say so next to it. A high
+ * below the low is not an error either — it is two numbers a reader typed in
+ * the order that suited them, so they are ordered rather than rejected.
+ *
+ * @param {number} low @param {number} high
+ * @returns {{low: number, high: number, band: boolean, lowOk: boolean, highOk: boolean}}
+ */
+export function pueRange(low, high) {
+  const lowOk = isPue(low);
+  const highOk = isPue(high);
+  const a = lowOk ? low : DEFAULT_PUE;
+  const b = highOk ? high : DEFAULT_PUE;
+  return { low: Math.min(a, b), high: Math.max(a, b), band: a !== b, lowOk, highOk };
+}
+
+/**
  * Trust rules for one window, calibrated against the producer's own pinned
  * cadence (`SAMPLE_PERIOD_MS = 250`, four readings a second): ten readings is
  * 2.5 s of evidence, and a sampler that covered less than 90% of the window
@@ -119,15 +186,21 @@ export const wattsOf = (energyJ, windowS) => energyJ / windowS;
 export const tokPerWh = (tokens, energyJ) => (tokens / energyJ) * 3600;
 
 /**
- * Dollars per million tokens.
+ * Dollars per million tokens, at a price and a facility overhead.
  *
- *   1e6 tokens × J/token = J;  J / 3.6e6 = kWh;  × $/kWh = $
- *   ⇒ $ = J/token × ($/kWh) / 3.6
+ *   1e6 tokens × J/token = J;  J / 3.6e6 = kWh;  × PUE × $/kWh = $
+ *   ⇒ $ = J/token × ($/kWh) × PUE / 3.6
  *
  * Worked: 80 W at 25 tok/s is 3.2 J/token; a million tokens is 11.1 h and
- * 0.89 kWh, which at $0.15/kWh is $0.13.
+ * 0.89 kWh, which at $0.15/kWh and PUE 1.0 is $0.13, and at PUE 1.5 is $0.20.
+ *
+ * ★ `pue` IS REQUIRED, deliberately. It was tempting to default it to 1.0 —
+ * the identity, so nothing would break — but a defaulted overhead is exactly
+ * the kind of assumption that later becomes invisible: every call site must
+ * say which facility multiplier its number carries, and a caller that forgets
+ * gets NaN rather than a figure that silently means something else.
  */
-export const costPerMillion = (jPerTok, usdPerKwh) => (jPerTok * usdPerKwh) / 3.6;
+export const costPerMillion = (jPerTok, usdPerKwh, pue) => (jPerTok * usdPerKwh * pue) / 3.6;
 
 /** Two significant figures below a dollar, two decimals above: `0.13`, `0.0054`, `12.40`. */
 export const fmtUsd = (v) => (v >= 1 ? v.toFixed(2) : Number(v.toPrecision(2)).toString());
@@ -689,11 +762,14 @@ export const DISCLOSURES = Object.freeze([
       'verdict and trend line — visible, but never counted.'
   },
   {
-    head: 'Facility overhead is not applied.',
+    head: 'Facility overhead is yours to set, and it starts at none.',
     body:
-      'A datacentre multiplies this by its PUE (typically 1.1–1.5×). It applies to both engines equally ' +
-      'and does not change the ratio, so no assumed multiplier is stacked on a reading that is already a ' +
-      'lower bound.'
+      `PUE — total facility energy over IT energy — defaults to ${DEFAULT_PUE}×, the identity: nothing is ` +
+      'applied and the figures are the GPU rail as measured. Set a low and a high (a datacentre is ' +
+      `typically ${PUE_TYPICAL.low}–${PUE_TYPICAL.high}×) and the chart draws the band between them. It ` +
+      'multiplies both engines equally, so it moves every absolute figure and changes no ratio, no ' +
+      'verdict and no winner — which is why it can be offered at all. It is still stacked on a reading ' +
+      'that is already a lower bound.'
   },
   {
     head: '$/kWh is your input.',

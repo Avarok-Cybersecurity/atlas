@@ -390,6 +390,11 @@ img, svg, video { max-width: 100%; }
   .cost-rail { font-size: 15px; }
   .cost-lose { font-size: 16px; }
   .cost-price-box input { width: 4.5rem; }
+  /* The PUE pair stacks under its label rather than beside it, so two boxes
+     plus two preset chips never push the row past the card. */
+  .cost-inputs { gap: 0.9rem; }
+  .cost-price-field { align-items: flex-start; }
+  .cost-pue-box input { width: 3.2rem; }
 }
 @media (pointer: coarse) {
   .co-tab { min-height: 42px; }
