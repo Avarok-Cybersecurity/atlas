@@ -24,6 +24,16 @@ fn simhash_loop_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var("AVAROK_SIMHASH_LOOP").as_deref() != Ok("0"))
 }
+
+/// `AVAROK_DISABLE_WATCHDOGS=1` covers the token loop watchdog too (#1135).
+fn watchdogs_disabled() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| {
+        crate::scheduler::parse_disable_watchdogs(
+            std::env::var("AVAROK_DISABLE_WATCHDOGS").ok().as_deref(),
+        )
+    })
+}
 use super::strip::{
     maybe_log_decode_trace, strip_all_preserving_boundary, strip_preserving_boundary,
 };
@@ -680,11 +690,12 @@ fn process_detector_content(
         false
     };
 
-    let token_trip = check_loop_watchdog(
-        sanitized,
-        &mut state.loop_scan_buf,
-        state.loop_watchdog_triggered,
-    );
+    let token_trip = !watchdogs_disabled()
+        && check_loop_watchdog(
+            sanitized,
+            &mut state.loop_scan_buf,
+            state.loop_watchdog_triggered,
+        );
 
     if semantic_trip || token_trip {
         if semantic_trip {
