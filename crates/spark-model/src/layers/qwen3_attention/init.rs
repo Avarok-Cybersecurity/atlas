@@ -334,12 +334,23 @@ impl Qwen3AttentionLayer {
             ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
-            fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
+            // ★ try_TARGET_kernel, not try_kernel. `fused_k_norm_rope_cache`
+            // is a module only SOME targets compile -- it is absent from the
+            // `strix` and `strix-hip` trees. A plain `try_kernel` there issues
+            // a lookup that fails, and the boot audit records every failed
+            // lookup as a dispatch site on a silent fallback path and REFUSES
+            // TO SERVE. A target that never built the module has no fallback
+            // to be silent about; it has its only path. This is the exact
+            // class that left stack 1089308's first campaign unable to boot
+            // with 17 such lookups. On a target that DOES carry the module
+            // this is identical to `try_kernel`, audit included.
+            fused_k_norm_rope_cache_write_bf16_k: super::super::try_target_kernel(
                 gpu,
                 "fused_k_norm_rope_cache",
                 "fused_k_norm_rope_cache_write_bf16",
             ),
-            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_kernel(
+            // Same module, same reason — see the note above.
+            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_target_kernel(
                 gpu,
                 "fused_k_norm_rope_cache",
                 "fused_k_norm_rope_mrope_cache_write_bf16",
@@ -348,6 +359,20 @@ impl Qwen3AttentionLayer {
                 gpu,
                 "reshape_and_cache",
                 "reshape_and_cache_flash_v_only",
+            ),
+            // `try_target_kernel`, not `try_kernel`:
+            // `reshape_and_cache_fused_k_fp8.cu` is a gb10-tree file, mirrored
+            // into the targets that inherit gb10's common/ (hopper, b200) and
+            // absent from the ones with their own (b300, strix, metal). A
+            // plain lookup on a target that never built the module is recorded
+            // by the boot audit as a dispatch site on a silent fallback and
+            // REFUSES TO SERVE — this probes for the module first and issues
+            // no lookup when it is absent, so those targets keep the un-fused
+            // chain.
+            fused_k_norm_rope_cache_write_fp8_kv_k: super::super::try_target_kernel(
+                gpu,
+                "reshape_and_cache_fused_k_fp8",
+                "fused_k_norm_rope_cache_write_fp8_kv",
             ),
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
             wht_bf16_k_inv: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace_inv"),
@@ -502,6 +527,25 @@ impl Qwen3AttentionLayer {
                 | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
+            // The GQA-packed non-split twins. `try_target_kernel`, not
+            // `kernel`: the sources are gb10's
+            // (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`), so
+            // a target that does not carry them resolves a zero handle and the
+            // dispatch keeps the unpacked kernel. Resolved unconditionally
+            // rather than behind `AVAROK_ATTN_DECODE_GQA_PACK` for the same
+            // reason the Hopper twins below are: a handle set that depended on
+            // the environment is a handle set a CUDA graph capture cannot
+            // trust.
+            paged_decode_bf16_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_bf16_gqa",
+                "paged_decode_attn_bf16_gqa",
+            )),
+            paged_decode_fp8_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_fp8_gqa",
+                "paged_decode_attn_fp8_gqa",
+            )),
             // The Hopper split-K twins (#928). `try_kernel`, not `kernel`: the
             // sources live only in `kernels/hopper/common`, so on gb10, b200,
             // strix and metal the lookup returns a zero handle and the dispatch
@@ -765,5 +809,55 @@ impl Qwen3AttentionLayer {
                 None
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod fused_kv_probe_guard {
+    /// Every lookup of `fused_k_norm_rope_cache` must go through
+    /// `try_target_kernel`, never plain `try_kernel`.
+    ///
+    /// That module is absent from the `strix` and `strix-hip` kernel trees. A
+    /// plain `try_kernel` there issues a lookup that FAILS, and the boot audit
+    /// records every failed lookup as a dispatch site on a silent fallback
+    /// path and refuses to serve — so the engine will not boot on those
+    /// targets at all. A target that never built the module has no fallback to
+    /// be silent about; it has its only path. This is the class that left
+    /// stack 1089308's first campaign unable to boot with 17 such lookups.
+    ///
+    /// Source-level rather than behavioural on purpose: the failure is a
+    /// BOOT-time refusal on a target this test suite never runs on, so no
+    /// mock backend reproduces it. The guard that can actually fire here is
+    /// the one that reads the call site.
+    #[test]
+    fn fused_k_norm_rope_cache_is_probed_target_scoped() {
+        let src = include_str!("init.rs");
+        let mut offenders = Vec::new();
+        for (i, window) in src.match_indices("\"fused_k_norm_rope_cache\"") {
+            let _ = window;
+            // Walk back to the probe call that owns this module argument.
+            let head = &src[..i];
+            let call = head.rfind("try_kernel(").map(|p| (p, "try_kernel"));
+            let tcall = head
+                .rfind("try_target_kernel(")
+                .map(|p| (p, "try_target_kernel"));
+            let chosen = match (call, tcall) {
+                (Some((a, _)), Some((b, n))) if b >= a => Some((b, n)),
+                (Some((a, n)), _) => Some((a, n)),
+                (None, t) => t,
+            };
+            match chosen {
+                Some((_, "try_target_kernel")) => {}
+                other => offenders.push(format!("{other:?} before byte {i}")),
+            }
+        }
+        assert!(
+            !offenders.is_empty() || src.contains("fused_k_norm_rope_cache"),
+            "guard found no lookups at all — it has stopped measuring anything"
+        );
+        assert!(
+            offenders.is_empty(),
+            "fused_k_norm_rope_cache probed without try_target_kernel: {offenders:?}"
+        );
     }
 }

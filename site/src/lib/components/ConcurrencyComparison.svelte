@@ -44,8 +44,9 @@
 <script>
   import ConcurrencyLadder from './ConcurrencyLadder.svelte';
   import ConcurrencyBaseline from './ConcurrencyBaseline.svelte';
-  import { colorFor, fmtDate, ladderPoints } from '$lib/gates.js';
+  import { colorFor, fmtDate, ladderPoints, rungFloors } from '$lib/gates.js';
   import { dashFor } from '$lib/gate-variants.js';
+  import { fmtLimit, limitLabel, rungSpans, stepPath, violationOf } from '$lib/gate-limits.js';
   import { toggleSeries } from '$lib/series-visibility.js';
 
   let { subject, records, rungs, onselect, ladders = LADDERS } = $props();
@@ -91,12 +92,29 @@
   // stops short; with no record every rung is simply empty chrome.
   const absent = $derived(live ? rungs.filter((c) => !present.has(c)) : []);
   const drawnMax = $derived(Math.max(0, ...pair.drawn.flatMap((b) => b.rungs.map((r) => r.tok_s))));
-  const vMax = $derived(pts.length ? Math.max(drawnMax, ...pts.map((p) => p.v)) * 1.12 : 1);
+  // The per-rung floors that judged the live record (gate-limits.js): drawn
+  // under the Atlas curve, and held by the axis like any other claim.
+  const floors = $derived(live ? rungFloors(live) : []);
+  const vMax = $derived(
+    pts.length ? Math.max(drawnMax, ...pts.map((p) => p.v), ...floors.map((f) => f.value)) * 1.12 : 1
+  );
   const l0 = $derived(Math.log2(Math.min(...rungs)));
   const l1 = $derived(Math.log2(Math.max(...rungs)));
   const x = (c) => PL + (l1 === l0 ? 0.5 : (Math.log2(c) - l0) / (l1 - l0)) * (W - PL - PR);
   const y = (v) => PT + (1 - v / vMax) * (H - PT - PB);
   const path = $derived(pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.c).toFixed(1)} ${y(p.v).toFixed(1)}`).join(' '));
+  const floorSpans = $derived(rungSpans(floors, x));
+  const floorPath = $derived(stepPath(floorSpans, 'min', y));
+  const floorLabels = $derived(
+    floorSpans.map((sp, i) => ({
+      text: i === 0 ? limitLabel('min', sp.min, 'tok/s') : fmtLimit(sp.min),
+      x: (sp.x0 + sp.x1) / 2,
+      y: Math.min(y(sp.min) + 11, H - PB - 2)
+    }))
+  );
+  const floorAt = (c) => ({ min: floors.find((f) => f.c === c)?.value ?? null, max: null });
+  const violAt = (p) => violationOf(p.v, floorAt(p.c));
+  const hasViol = $derived(pts.some(violAt));
   const bPath = (b) => b.rungs.map((r, i) => `${i ? 'L' : 'M'}${x(r.c).toFixed(1)} ${y(r.tok_s).toFixed(1)}`).join(' ');
   const yTicks = $derived(pts.length ? [0, vMax / 2, vMax] : []);
   const fmtV = (v) => +v.toFixed(1);
@@ -198,6 +216,25 @@
               </span>
             {/if}
           </span>
+          {#if floorPath || hasViol}
+            <span class="gl-sep" aria-hidden="true"></span>
+            <span class="gl-group">
+              {#if floorPath}
+                <span class="gate-legend-item">
+                  <svg class="gl-swatch" viewBox="0 0 20 10" aria-hidden="true">
+                    <path class="gc-limit" d="M1 7 H8 V3 H19" fill="none" stroke="currentColor" />
+                  </svg>gate floor per rung
+                </span>
+              {/if}
+              {#if hasViol}
+                <span class="gate-legend-item">
+                  <svg class="gl-swatch" viewBox="0 0 12 10" aria-hidden="true"
+                    ><circle class="gc-viol" cx="6" cy="5" r="4.2" /></svg>
+                  below its floor
+                </span>
+              {/if}
+            </span>
+          {/if}
         </span>
       {/if}
     </figcaption>
@@ -231,20 +268,30 @@
           </rect>
         {/each}
       {/each}
+      {#if floorPath}
+        <path class="gc-limit" d={floorPath} fill="none" stroke={color} />
+        {#each floorLabels as t}
+          <text class="gc-limit-label" x={t.x} y={t.y} text-anchor="middle" fill={color}>{t.text}</text>
+        {/each}
+      {/if}
       {#if pts.length}
         <path d={path} fill="none" stroke={color} stroke-width="2" stroke-dasharray={dash}
           stroke-linejoin="round" stroke-linecap="round" />
         {#each pts as p}
+          {@const broke = violAt(p) ? ` · below floor ${fmtLimit(floorAt(p.c).min)}` : ''}
           <g
             class="gc-pt"
             role="button"
             tabindex="0"
-            aria-label="C={p.c}: {fmtV(p.v)} tok/s, gate record {fmtDate(live.recorded_at)} — details"
+            aria-label="C={p.c}: {fmtV(p.v)} tok/s{broke}, gate record {fmtDate(live.recorded_at)} — details"
             onclick={() => onselect([live])}
             onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onselect([live]))}
           >
-            <title>Atlas · C={p.c} · {fmtV(p.v)} tok/s · gate record {fmtDate(live.recorded_at)} · {live.git_sha} · click for record</title>
+            <title>Atlas · C={p.c} · {fmtV(p.v)} tok/s{broke} · gate record {fmtDate(live.recorded_at)} · {live.git_sha} · click for record</title>
             <circle class="gc-hit" cx={x(p.c)} cy={y(p.v)} r="11" />
+            {#if broke}
+              <circle class="gc-viol" cx={x(p.c)} cy={y(p.v)} r="7.5" data-limit="floor" />
+            {/if}
             <circle class="gc-mark" cx={x(p.c)} cy={y(p.v)} r="3.5" fill={color} stroke="var(--card)" stroke-width="1" />
           </g>
         {/each}

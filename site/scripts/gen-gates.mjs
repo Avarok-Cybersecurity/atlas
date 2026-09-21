@@ -36,11 +36,13 @@ import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { assignTrendPredecessors } from '../src/lib/gate-lineage.js';
+import { declaredLimitsOf, mergeDeclaredLimits, parseToml } from './lib/bench-toml.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(here, '..', '..');
 const RECORDS_ROOT = resolve(REPO, '.benchmarks');
 const DESCRIPTOR_ROOT = resolve(REPO, 'crates', 'avarok-plugin', 'src', 'benchmarks');
+const KERNELS_ROOT = resolve(REPO, 'kernels', 'gb10');
 const OUT = resolve(here, '..', 'src', 'lib', 'gates.generated.json');
 
 function git(args, opts = {}) {
@@ -153,6 +155,166 @@ function serveAllowanceSecs() {
   const m = /^serve_allowance_s\s*=\s*(\d+)/m.exec(readFileSync(p, 'utf8'));
   return m ? Number(m[1]) : null;
 }
+
+// --- declared gate limits, dated -------------------------------------------
+// The floors and ceilings each gate declares per checkpoint, from every
+// kernels/gb10/<model>/BENCH.toml `[benchmarks.metrics.<name>] min / max`,
+// as a DATED series per bound:
+//   gate_limits[gate][checkpoint][metric][min|max] = [{since, value}, …]
+// The dashboard judges a record against the entry in force at its own
+// `recorded_at` (src/lib/gate-limits.js): a ceiling re-cut 7x this week must
+// not paint last month's healthy runs as violations.
+//
+// `since` is the committer date of the commit that introduced the value —
+// the nearest thing to "took effect on main" (a squash-merge is dated when it
+// merged). It comes from walking each file's `git log --follow`, done BEFORE
+// this script's own `--depth=1` fetch below, which shallows every ref it
+// touches. That walk is honest but not always complete: CI checks out at
+// depth 1, and a shallow walk sees only the boundary commit. So the series is
+// a LEDGER: the union of what git can see now and what the previous
+// generation of this file already recorded, sorted, with runs of one value
+// collapsed to the earliest date each was observed. The error this leaves is
+// one-sided — a bound observed late is a bound applied late — which is the
+// side the invariant allows (a point is never ringed for a limit that post-
+// dates it).
+//
+// The working tree is the final observation: dated by its file's newest
+// commit when clean, by NOW when it differs from HEAD (an uncommitted re-cut
+// is in force from now). A working-tree file that does not parse fails the
+// build: a bound read wrongly draws a wrong line, and silence here would look
+// like "no limit declared". A HISTORICAL version that does not parse is
+// skipped with a note: it can only lose a date, never invent one.
+const nowTs = () => Math.floor(Date.now() / 1000);
+
+function benchTomlPaths() {
+  if (!existsSync(KERNELS_ROOT)) return [];
+  return readdirSync(KERNELS_ROOT)
+    .sort()
+    .map((model) => ({ abs: join(KERNELS_ROOT, model, 'BENCH.toml'), rel: `kernels/gb10/${model}/BENCH.toml` }))
+    .filter((p) => existsSync(p.abs));
+}
+
+/** Every committed version of `rel`, oldest first: {sha, ct, path}. */
+function fileVersions(rel) {
+  const out = [];
+  let cur = null;
+  for (const line of gitSoft(['log', '--follow', '--format=%H%x09%ct', '--name-only', '--', rel]).split('\n')) {
+    const m = /^([0-9a-f]{40})\t(\d+)$/.exec(line);
+    if (m) {
+      cur = { sha: m[1], ct: Number(m[2]), path: rel };
+      out.push(cur);
+    } else if (line.trim() && cur) {
+      cur.path = line.trim();
+    }
+  }
+  return out.reverse();
+}
+
+/** Copy of the previous ledger, keeping only well-formed dated series. */
+function priorLedger() {
+  if (!existsSync(OUT)) return {};
+  let prev;
+  try {
+    prev = JSON.parse(readFileSync(OUT, 'utf8')).gate_limits ?? {};
+  } catch {
+    return {};
+  }
+  const out = {};
+  for (const [gate, byCk] of Object.entries(prev)) {
+    for (const [ck, metrics] of Object.entries(byCk ?? {})) {
+      for (const [metric, row] of Object.entries(metrics ?? {})) {
+        for (const bound of ['min', 'max']) {
+          const series = row?.[bound];
+          if (!Array.isArray(series)) continue;
+          const clean = series.filter(
+            (e) => Number.isFinite(e?.since) && (e.value === null || Number.isFinite(e.value))
+          );
+          if (clean.length) (((out[gate] ??= {})[ck] ??= {})[metric] ??= {})[bound] = clean.map((e) => ({ ...e }));
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function gateLimits() {
+  const ledger = priorLedger();
+  const observe = (gate, ck, metric, bound, since, value) => {
+    const series = (((ledger[gate] ??= {})[ck] ??= {})[metric] ??= {})[bound] ??= [];
+    series.push({ since, value });
+  };
+  const observeTable = (table, since) => {
+    for (const [gate, byCk] of Object.entries(table)) {
+      for (const [ck, metrics] of Object.entries(byCk)) {
+        for (const [metric, lim] of Object.entries(metrics)) {
+          for (const bound of ['min', 'max']) if (lim[bound] !== undefined) observe(gate, ck, metric, bound, since, lim[bound]);
+        }
+      }
+    }
+  };
+
+  const current = [];
+  let currentSince = 0;
+  for (const { abs, rel } of benchTomlPaths()) {
+    const versions = fileVersions(rel);
+    for (const v of versions) {
+      const text = gitSoft(['show', `${v.sha}:${v.path}`]);
+      if (!text) continue;
+      try {
+        observeTable(declaredLimitsOf(parseToml(text), `${rel}@${v.sha.slice(0, 10)}`), v.ct);
+      } catch (err) {
+        console.error(`gen-gates: ${rel}@${v.sha.slice(0, 10)} skipped (${String(err.message).split('\n')[0]})`);
+      }
+    }
+    const text = readFileSync(abs, 'utf8');
+    const table = declaredLimitsOf(parseToml(text), rel);
+    const head = versions[versions.length - 1];
+    const since = head && gitSoft(['show', `HEAD:${rel}`]) === text ? head.ct : nowTs();
+    observeTable(table, since);
+    current.push([rel, table]);
+    currentSince = Math.max(currentSince, since);
+  }
+  // Two files declaring one (gate, checkpoint) is refused as before.
+  const now = mergeDeclaredLimits(current);
+
+  // A bound the ledger still carries but no file declares any more is
+  // withdrawn from the newest observation on: its last entry becomes null.
+  for (const [gate, byCk] of Object.entries(ledger)) {
+    for (const [ck, metrics] of Object.entries(byCk)) {
+      for (const [metric, row] of Object.entries(metrics)) {
+        for (const bound of ['min', 'max']) {
+          const series = row[bound];
+          if (!series) continue;
+          const declared = now[gate]?.[ck]?.[metric]?.[bound];
+          const last = [...series].sort((a, b) => a.since - b.since).at(-1);
+          if (declared === undefined && last.value !== null) series.push({ since: currentSince, value: null });
+        }
+      }
+    }
+  }
+
+  // Sort, then collapse each run of one value to the earliest date it was seen.
+  for (const byCk of Object.values(ledger)) {
+    for (const metrics of Object.values(byCk)) {
+      for (const row of Object.values(metrics)) {
+        for (const bound of ['min', 'max']) {
+          if (!row[bound]) continue;
+          const sorted = row[bound].sort((a, b) => a.since - b.since || String(a.value).localeCompare(String(b.value)));
+          const collapsed = [];
+          for (const e of sorted) {
+            const prev = collapsed[collapsed.length - 1];
+            if (prev && prev.value === e.value) continue;
+            collapsed.push({ since: e.since, value: e.value });
+          }
+          row[bound] = collapsed;
+        }
+      }
+    }
+  }
+  return ledger;
+}
+// Walked before leg 2's shallow fetch, which would truncate every history.
+const GATE_LIMITS = gateLimits();
 
 // --- record slimming ---------------------------------------------------------
 // Keep exactly the fields the dashboard shows; `branch` is provenance added
@@ -299,6 +461,7 @@ const obj = {
   registered: registered.ids,
   registered_meta: registered.meta,
   limits: { serve_allowance_s: serveAllowanceSecs() },
+  gate_limits: GATE_LIMITS,
   sources: { committed: committedCount, branches_scanned: branchesScanned, from_branches: fromBranches },
   benchmarks
 };

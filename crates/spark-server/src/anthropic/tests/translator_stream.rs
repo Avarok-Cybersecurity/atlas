@@ -18,6 +18,7 @@ fn usage(prompt: usize, completion: usize) -> Usage {
         reasoning_tokens: 0,
         accepted_prediction_tokens: 0,
         time_to_first_token_ms: 0.0,
+        decode_time_ms: 0.0,
         response_tokens_per_second: 0.0,
     }
 }

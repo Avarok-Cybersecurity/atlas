@@ -10,7 +10,7 @@ use axum::response::sse::Event;
 
 use crate::ir::StreamDelta;
 
-use super::{ChatCompletionChunk, CompletionTokensDetails, PromptTokensDetails, Usage};
+use super::{ChatCompletionChunk, Usage};
 
 /// Encode one neutral delta into its OpenAI SSE event(s).
 ///
@@ -115,28 +115,11 @@ fn chunk_json(chunk: ChatCompletionChunk) -> String {
     serde_json::to_string(&chunk).unwrap_or_default()
 }
 
-/// `ir::Usage` → OpenAI wire usage, field for field the construction
-/// the streaming Done arm performed historically (`total_tokens` is
-/// prompt + completion; audio counters pinned to 0,
-/// `accepted_prediction_tokens` carried through from the IR).
+/// `ir::Usage` → OpenAI wire usage: the same mapping the blocking
+/// encoder uses (`impl From<&ir::Usage> for Usage`), so the two paths
+/// cannot disagree on a key.
 fn wire_usage(u: &crate::ir::Usage) -> Usage {
-    Usage {
-        prompt_tokens: u.prompt_tokens,
-        completion_tokens: u.completion_tokens,
-        total_tokens: u.prompt_tokens + u.completion_tokens,
-        prompt_tokens_details: Some(PromptTokensDetails {
-            cached_tokens: u.cached_prompt_tokens,
-            audio_tokens: 0,
-        }),
-        completion_tokens_details: Some(CompletionTokensDetails {
-            reasoning_tokens: u.reasoning_tokens,
-            audio_tokens: 0,
-            accepted_prediction_tokens: u.accepted_prediction_tokens,
-            rejected_prediction_tokens: 0,
-        }),
-        time_to_first_token_ms: u.time_to_first_token_ms,
-        response_tokens_per_second: u.response_tokens_per_second,
-    }
+    Usage::from(u)
 }
 
 /// Full OpenAI SSE response for the `/v1/chat/completions` surface:
@@ -277,6 +260,35 @@ mod tests {
         assert_eq!(norm(&p[0]), norm(&expected));
     }
 
+    /// The usage-only chunk of a stream carries the same raw timing
+    /// components the blocking response does — both go through
+    /// `Usage::from(&ir::Usage)`, and this is the streaming half of
+    /// that agreement on the wire.
+    #[test]
+    fn finish_usage_chunk_carries_the_raw_timing_components() {
+        let usage = crate::ir::Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            cached_prompt_tokens: 0,
+            reasoning_tokens: 0,
+            accepted_prediction_tokens: 0,
+            time_to_first_token_ms: 12.5,
+            decode_time_ms: 100.0,
+            response_tokens_per_second: 40.0,
+        };
+        let d = StreamDelta::Finish {
+            reason: FinishReason::Stop,
+            usage,
+            token_ids: Vec::new(),
+        };
+        let p = delta_to_payloads(&d, "m", "id-1", true);
+        let v: serde_json::Value = serde_json::from_str(&p[0]).unwrap();
+        assert_eq!(v["usage"]["decode_time_ms"], 100.0, "{}", p[0]);
+        assert_eq!(v["usage"]["total_time_ms"], 112.5, "{}", p[0]);
+        assert_eq!(v["usage"]["time_to_first_token_ms"], 12.5, "{}", p[0]);
+        assert_eq!(v["usage"]["response_token/s"], 40.0, "{}", p[0]);
+    }
+
     #[test]
     fn finish_framing_matches_include_usage_modes() {
         let usage = crate::ir::Usage {
@@ -286,6 +298,7 @@ mod tests {
             reasoning_tokens: 3,
             accepted_prediction_tokens: 4,
             time_to_first_token_ms: 12.5,
+            decode_time_ms: 100.0,
             response_tokens_per_second: 40.0,
         };
         let d = StreamDelta::Finish {

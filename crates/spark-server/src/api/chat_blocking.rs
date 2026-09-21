@@ -389,11 +389,6 @@ fn finalize_response(
     total_accepted_prediction_tokens: usize,
     prompt_len: usize,
 ) -> super::chat::ChatOutcome {
-    let tokens_per_second = if last_decode_time_ms > 0.0 && total_completion_tokens > 0 {
-        (total_completion_tokens.saturating_sub(1)) as f64 / (last_decode_time_ms / 1000.0)
-    } else {
-        0.0
-    };
     let usage = ir::Usage {
         prompt_tokens: prompt_len,
         completion_tokens: total_completion_tokens,
@@ -401,7 +396,13 @@ fn finalize_response(
         reasoning_tokens: total_reasoning_tokens as usize,
         accepted_prediction_tokens: total_accepted_prediction_tokens,
         time_to_first_token_ms: first_ttft,
-        response_tokens_per_second: tokens_per_second,
+        // The raw decode window (the last choice's, matching the rate
+        // below — the historical `n > 1` convention, unchanged here).
+        decode_time_ms: last_decode_time_ms,
+        response_tokens_per_second: ir::Usage::decode_rate_tok_s(
+            total_completion_tokens,
+            last_decode_time_ms,
+        ),
     };
 
     // REQUESTS_ACTIVE released by the caller's ActiveRequestGuard on return.

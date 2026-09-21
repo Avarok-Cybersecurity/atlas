@@ -392,6 +392,16 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        // FP8 KV decode fusion: when this layer qualifies, the K-side
+        // `rms_norm` below and the K half of the RoPE launch are SKIPPED and
+        // redone inside `write_kv_cache_fp8_fused`, which consumes the raw
+        // projection output and writes K and V to the FP8 cache in one launch.
+        // Bit-identical to the chain it replaces — see
+        // `reshape_and_cache_fused_k_fp8.cu`. 4 launches -> 3 per layer.
+        let rotary_dim = self
+            .rotary_dim_override
+            .unwrap_or(ctx.config.rotary_dim() as u32);
+        let fused_k_fp8 = self.fused_fp8_kv_decode_eligible(hd, rotary_dim);
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
@@ -404,7 +414,7 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-        } else if !self.attn.k_norm.weight.is_null() {
+        } else if !self.attn.k_norm.weight.is_null() && !fused_k_fp8 {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -503,6 +513,11 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
+            // `num_kv_heads = 0` makes `rope_forward` Q-only: its grid is
+            // `num_q_heads + num_kv_heads` and every block then takes the Q
+            // arm. Same single launch, strictly less work — and K MUST be
+            // left un-rotated here because the fused writer rotates the raw
+            // projection itself.
             ops::rope(
                 ctx.gpu,
                 self.rope_k,
@@ -511,10 +526,9 @@ impl Qwen3AttentionLayer {
                 meta.positions,
                 1,
                 nq,
-                nkv,
+                if fused_k_fp8 { 0 } else { nkv },
                 hd,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                rotary_dim,
                 self.rope_theta_override
                     .unwrap_or(ctx.config.rope_theta as f32),
                 stream,
@@ -523,21 +537,44 @@ impl Qwen3AttentionLayer {
 
         // K/V are contiguous (separate dense_gemm outputs), stride = nkv * hd
         let kv_stride = nkv * hd;
-        self.write_kv_cache(
-            ctx.gpu,
-            k_out,
-            v_out,
-            kv_cache,
-            meta.slot,
-            1,
-            nkv,
-            hd,
-            bs as u32,
-            kv_stride,
-            kv_stride,
-            stream,
-            ctx.graph_capture,
-        )?;
+        if fused_k_fp8 {
+            self.write_kv_cache_fp8_fused(
+                ctx.gpu,
+                k_out,
+                v_out,
+                kv_cache,
+                meta.slot,
+                meta.positions,
+                1,
+                nkv,
+                hd,
+                // SSOT with the `rotary_dim` the eligibility check above read.
+                rotary_dim,
+                bs as u32,
+                kv_stride,
+                kv_stride,
+                eps,
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                stream,
+            )?;
+        } else {
+            self.write_kv_cache(
+                ctx.gpu,
+                k_out,
+                v_out,
+                kv_cache,
+                meta.slot,
+                1,
+                nkv,
+                hd,
+                bs as u32,
+                kv_stride,
+                kv_stride,
+                stream,
+                ctx.graph_capture,
+            )?;
+        }
 
         // Turbo KV cache: apply WHT to Q before paged decode.
         // KV cache stores WHT(K) and WHT(V). By Parseval's theorem,

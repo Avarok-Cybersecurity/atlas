@@ -25,8 +25,21 @@ mod splitk_dispatch;
 #[cfg(test)]
 #[path = "decode/splitk_route_tests.rs"]
 mod splitk_route_tests;
+// The GPU equality test for the GQA-packed non-split twins: both kernels over
+// one set of inputs, compared byte for byte. `#[ignore]`d — it needs a GPU and
+// a built PTX set — and it asserts its own lever rather than skipping.
+#[cfg(test)]
+#[path = "decode/gqa_pack_fixture.rs"]
+mod gqa_pack_fixture;
+#[cfg(test)]
+#[path = "decode/gqa_pack_gpu_tests.rs"]
+mod gqa_pack_gpu_tests;
 mod write_kv_cache;
 mod write_kv_cache_fp8;
+// Bit-identity guard for the fused FP8 KV decode write (#fuse-knorm-rope-cache-fp8).
+#[cfg(test)]
+#[path = "decode/write_kv_cache_fp8_tests.rs"]
+mod write_kv_cache_fp8_tests;
 
 impl Qwen3AttentionLayer {
     pub(super) fn effective_fp8_scales(&self) -> (f32, f32) {

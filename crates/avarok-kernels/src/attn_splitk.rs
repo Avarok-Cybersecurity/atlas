@@ -217,6 +217,179 @@ pub fn workspace_slots(
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// GQA-PACKED PAGED DECODE — the other half of the same launch geometry.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Hosted in this module rather than a new one because it answers the same
+// question the split policy answers — HOW MANY CTAs a paged-decode launch
+// gets, and over what — and because the two are coupled: the packed kernel
+// divides the CTA count by [`DECODE_GQA_PACK_WIDTH`], which is only safe where
+// the split policy has already resolved one split. One module, one answer.
+//
+// # What the packed kernel is
+//
+// `paged_decode_attn{,_fp8}` launch `grid (num_q_heads, num_seqs)`. With
+// `gqa_ratio = num_q_heads / num_kv_heads` heads sharing a KV head, the
+// `gqa_ratio` CTAs of a group each walk that head's WHOLE K and V
+// independently — `kv_head = q_head / gqa_ratio` is all that separates their
+// address streams, and it is equal across the group. The packed twins
+// (`kernels/gb10/common/paged_decode_attn_{fp8,bf16}_gqa.cu`) put the whole
+// group in ONE CTA, hold its query vectors in registers, and read each K and
+// V row once: `grid (num_kv_heads, num_seqs)`.
+//
+// # Why it is restricted to the non-split arm
+//
+// Packing divides the CTA count by the pack width, so a shape that needed
+// split-K to fill the device needs MORE splits after packing, derived from
+// `num_kv_heads` instead of `num_q_heads`. A different split count is a
+// different partition of the KV range, hence a different online-softmax merge
+// tree, hence different output bytes — the exact non-associativity the split
+// policy above is pinned against. The non-split arm has no such coupling, so
+// the packed kernel there is BIT-IDENTICAL to the unpacked one and needs no
+// gate record re-opened. Extending packing to the split arm is a separate,
+// numerics-visible change and is deliberately not made here.
+
+// # The fused last-CTA reduce, CONSIDERED AND DECLINED (2026-09-20)
+//
+// The obvious companion change is to fold `paged_decode_attn_reduce_fp8` into
+// the split kernel — an arrival counter per `(seq, head)`, last CTA merges —
+// removing one launch per layer per token. It is not done, and the reason is
+// this module's own arithmetic rather than a difficulty:
+//
+// * On every target that declares [`SplitkPolicy::Legacy`] — which is all of
+//   them but Hopper — `legacy_splits(48, 24, ref_seqs)` is `1` for every
+//   `ref_seqs >= 2`, and `ref_seqs` is `max(max_batch_size, num_seqs)`. So on
+//   GB10 the reduce kernel is LAUNCHED ONLY AT `--max-batch 1`. Every
+//   co-batched shape a campaign measures takes the non-split arm, where there
+//   is no second launch to remove.
+// * The saving it targets is a LAUNCH, and the launch it removes is inside a
+//   captured CUDA graph, where launch cost is already the cheap case. What it
+//   adds is a `__threadfence` and an atomic on every split CTA, plus a merge
+//   serialised into the last arriver while the rest of the device drains.
+// * The counter has nowhere to live inside this change's blast radius. The
+//   split-K workspace is sized by [`workspace_slots`] and allocated in
+//   `spark-runtime`'s buffer arena, so a counter region means changing the
+//   arena's layout; a module-scope `__device__` array instead would need a
+//   compile-time capacity bound with no configuration to derive it from, and
+//   would be shared — unsynchronised — by any two launches of the same kernel
+//   in flight on different streams.
+//
+// Worth recording that it would be BIT-IDENTICAL if done: the separate reduce
+// merges splits in INDEX order `0..num_splits`, and a last-CTA reduction that
+// keeps that order does the same additions in the same sequence. The reason
+// not to do it is that it is small, and small on an arm GB10 does not take.
+
+/// Query heads one packed CTA carries.
+///
+/// A COMPILE-TIME shape on both sides: the kernels size `q_reg`/`o_reg`
+/// register arrays from `#define PD_GQA`, because a runtime bound would put
+/// them in local memory and defeat the change. This constant is the Rust
+/// spelling of that `#define`, and
+/// `cuda_sources_declare_the_pack_width_rust_dispatches_on` fails if the two
+/// drift.
+///
+/// 6 is the Qwen3.8-27B decode ratio (`nq = 24`, `nkv = 4`). A model with any
+/// other ratio is REFUSED by [`gqa_pack_shape_ok`] and keeps the unpacked
+/// kernel; it is not approximated.
+pub const DECODE_GQA_PACK_WIDTH: u32 = 6;
+
+/// The head dim the packed kernels are compiled for.
+///
+/// Same reason as the split-K siblings' [`crate::attn_splitk`] head-dim pin:
+/// the sources fix `PD_HDIM` at 256 and derive every lane's element count from
+/// it, so a 128- or 512-wide head would have every lane stride past its own
+/// row.
+pub const DECODE_GQA_PACK_HEAD_DIM: u32 = 256;
+
+/// The packed kernels are OFF unless explicitly armed.
+///
+/// Declared here rather than in `kernels/<hw>/HARDWARE.toml` because there is
+/// no receipt for this arm on any target yet: it is a launch-geometry change
+/// whose payoff (`DECODE_GQA_PACK_WIDTH`x fewer KV load instructions) trades
+/// against a measured occupancy cost — ptxas reports 227 registers for the FP8
+/// twin and 243 for the BF16 one, zero spills, i.e. ONE resident CTA per SM,
+/// against 48/56 registers and up to five for the unpacked kernels. That trade
+/// can only be settled by an A/B on the box. `AVAROK_ATTN_DECODE_GQA_PACK=1`
+/// is how that A/B is run — the same mechanism `AVAROK_ATTN_DECODE_SPLITK=auto`
+/// uses for the policy above. A target that wins the A/B moves this to a
+/// `[defaults]` row with the receipt beside it.
+pub const DECODE_GQA_PACK_DECLARED: bool = false;
+
+/// `1`/`on`/`true`/`yes` | `0`/`off`/`false`/`no`.
+///
+/// `None` for anything else, so a typo keeps the declaration rather than
+/// silently arming (or disarming) a geometry change — same rule as [`parse`].
+pub fn parse_gqa_pack(spelling: &str) -> Option<bool> {
+    match spelling.trim().to_ascii_lowercase().as_str() {
+        "1" | "on" | "true" | "yes" => Some(true),
+        "0" | "off" | "false" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// [`DECODE_GQA_PACK_DECLARED`], overridden by `AVAROK_ATTN_DECODE_GQA_PACK`.
+///
+/// Pure in its arguments so the resolution is testable without touching the
+/// process environment; [`gqa_pack_enabled`] is the one site that reads it.
+pub fn resolve_gqa_pack(declared: bool, env_raw: Option<&str>) -> bool {
+    env_raw.and_then(parse_gqa_pack).unwrap_or(declared)
+}
+
+/// The armed/disarmed answer for this process, resolved ONCE.
+///
+/// `OnceLock`, not a per-call `env::var`: this is read on the decode path, per
+/// layer per token, and `spark_model`'s `hot_path_env_guards` exists because
+/// that read takes the process-wide environment lock and costs 5.76 us at 16
+/// threads. Resolving once is also what CUDA graph capture requires — the
+/// kernel a captured graph holds cannot depend on an environment read that
+/// might answer differently on replay.
+pub fn gqa_pack_enabled() -> bool {
+    static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ARMED.get_or_init(|| {
+        resolve_gqa_pack(
+            DECODE_GQA_PACK_DECLARED,
+            std::env::var("AVAROK_ATTN_DECODE_GQA_PACK").ok().as_deref(),
+        )
+    })
+}
+
+/// Whether this launch's SHAPE is one the packed kernels can serve.
+///
+/// Every condition is a hard precondition of the kernel, not a preference:
+///
+/// * `num_kv_heads > 0` — it is the grid's x extent and the divisor below.
+/// * `num_q_heads == num_kv_heads * DECODE_GQA_PACK_WIDTH` — the kernel
+///   recovers its heads as `kv_head * PD_GQA + h`, the exact inverse of the
+///   unpacked kernel's `q_head / gqa_ratio`. Any other ratio reads and writes
+///   the wrong heads, silently, so it is refused rather than clamped. Stated
+///   as a MULTIPLICATION on purpose: `num_q_heads / num_kv_heads` truncates,
+///   so 25 q heads over 4 kv heads would pass a division test and then have
+///   the last head read past the group.
+/// * `head_dim == DECODE_GQA_PACK_HEAD_DIM` — see that constant.
+///
+/// The caller keeps the unpacked kernel when this is false. That is a
+/// documented route, not a fallback that hides an error: the unpacked kernel
+/// is the one every target has been serving.
+pub fn gqa_pack_shape_ok(num_q_heads: u32, num_kv_heads: u32, head_dim: u32) -> bool {
+    num_kv_heads > 0
+        && num_q_heads == num_kv_heads.saturating_mul(DECODE_GQA_PACK_WIDTH)
+        && head_dim == DECODE_GQA_PACK_HEAD_DIM
+}
+
+/// CTAs a packed launch puts on the device, against the unpacked count.
+///
+/// Exposed because it is the whole trade and it belongs next to the constant
+/// that sets it, not only in a comment: `(nkv, num_seqs)` against
+/// `(nq, num_seqs)` is a `DECODE_GQA_PACK_WIDTH`-fold cut in CTAs for an
+/// unchanged amount of work. At the GB10 shape (`nkv = 4`, 48 SMs) the packed
+/// grid stops under-filling the device at `num_seqs >= 12`; below that the
+/// launch leaves SMs idle, which is the cost side of the A/B this is gated
+/// behind.
+pub fn gqa_pack_ctas(num_kv_heads: u32, num_seqs: u32) -> u32 {
+    num_kv_heads.saturating_mul(num_seqs)
+}
+
 #[cfg(test)]
 #[path = "attn_splitk_tests.rs"]
 mod tests;

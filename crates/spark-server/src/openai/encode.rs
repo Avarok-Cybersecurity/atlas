@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Json, Response};
 use crate::AppState;
 
 use super::{
-    ChatChoice, ChatCompletionResponse, ChatMessage, ChoiceLogprobs, CompletionTokensDetails,
-    PromptTokensDetails, TokenLogprobInfo, TopLogprob, Usage, merged_annotations,
+    ChatChoice, ChatCompletionResponse, ChatMessage, ChoiceLogprobs, TokenLogprobInfo, TopLogprob,
+    Usage, merged_annotations,
 };
 
 /// Serialize the response IR for the `/v1/chat/completions` surface.
@@ -22,23 +22,9 @@ pub(crate) fn encode_chat_response(
     echo: &crate::api::ResponseEcho,
     dump_seq: Option<u64>,
 ) -> Response {
-    let usage = Usage {
-        prompt_tokens: ir.usage.prompt_tokens,
-        completion_tokens: ir.usage.completion_tokens,
-        total_tokens: ir.usage.prompt_tokens + ir.usage.completion_tokens,
-        prompt_tokens_details: Some(PromptTokensDetails {
-            cached_tokens: ir.usage.cached_prompt_tokens,
-            audio_tokens: 0,
-        }),
-        completion_tokens_details: Some(CompletionTokensDetails {
-            reasoning_tokens: ir.usage.reasoning_tokens,
-            audio_tokens: 0,
-            accepted_prediction_tokens: ir.usage.accepted_prediction_tokens,
-            rejected_prediction_tokens: 0,
-        }),
-        time_to_first_token_ms: ir.usage.time_to_first_token_ms,
-        response_tokens_per_second: ir.usage.response_tokens_per_second,
-    };
+    // One mapping for every surface that speaks OpenAI usage
+    // (`impl From<&ir::Usage> for Usage`).
+    let usage = Usage::from(&ir.usage);
 
     let choices: Vec<ChatChoice> = ir
         .choices
