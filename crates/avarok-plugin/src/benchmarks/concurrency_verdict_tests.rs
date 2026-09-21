@@ -131,7 +131,6 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     for rung in ["C1", "C2", "C4", "C8", "C16", "C32", "C64", "C128", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
     }
-
 }
 
 /// FAIL names the violating cell — and the comparison is the raw value
@@ -182,7 +181,8 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
-        v.reason.contains(&format!("{c8_under:.1}")) && v.reason.contains(&format!("{c8_floor:.1}")),
+        v.reason.contains(&format!("{c8_under:.1}"))
+            && v.reason.contains(&format!("{c8_floor:.1}")),
         "{}",
         v.reason
     );
