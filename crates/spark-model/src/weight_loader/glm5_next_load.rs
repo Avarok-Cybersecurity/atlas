@@ -49,6 +49,9 @@ use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX
 use crate::weight_map::DenseWeight;
 
 #[cfg(test)]
+mod export_layout_tests;
+mod nvfp4_dequant;
+#[cfg(test)]
 mod plan_cast_tests;
 mod plan_dtype;
 
@@ -181,7 +184,7 @@ impl LayerSource {
     }
 
     pub(super) fn f32(&self, name: &str) -> Result<Vec<f32>> {
-        let (dtype, _, bytes) = self
+        let (dtype, shape, bytes) = self
             .tensors
             .get(name)
             .with_context(|| format!("missing tensor {name}"))?;
@@ -194,8 +197,43 @@ impl LayerSource {
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()),
+            // 🪤 QUANTISATION is an EXPORT choice too, not a model change.
+            // NVIDIA's `nvidia/GLM-5.3-Flash-NVFP4` quantises the three dense
+            // MLP layers `LibertAIDAI/GLM-5.3-Flash-NVFP4` leaves BF16. The
+            // dense MLP builder and its kernels are BF16-only by contract, so
+            // the packed codes are unpacked HERE and nothing downstream moves.
+            WeightDtype::UInt8 => self.dequant_packed_nvfp4(name, shape, bytes),
             other => bail!("{name}: dtype {other:?} is not a plain float tensor"),
         }
+    }
+
+    /// One packed-NVFP4 tensor of this layer as `f32`, read with its own
+    /// `.weight_scale` / `.weight_scale_2` siblings.
+    ///
+    /// Reached only from the `UInt8` arm of [`Self::f32`], so a checkpoint
+    /// whose dense MLP is BF16 never enters it.
+    ///
+    /// 🪤 The siblings are looked up by NAME, not assumed: a `.weight` without
+    /// them is a format this loader has not been taught (compressed-tensors
+    /// spells them `weight_packed` / `weight_global_scale` and stores the
+    /// RECIPROCAL global scale), and guessing would apply the wrong
+    /// convention with no error.
+    fn dequant_packed_nvfp4(&self, name: &str, shape: &[usize], bytes: &[u8]) -> Result<Vec<f32>> {
+        let base = name.strip_suffix(".weight").with_context(|| {
+            format!("{name}: packed NVFP4 must be a `.weight`, with scale siblings beside it")
+        })?;
+        let (scale_dtype, _, scale_bytes) = self
+            .tensors
+            .get(&format!("{base}.weight_scale"))
+            .with_context(|| format!("{name} is packed NVFP4 but {base}.weight_scale is absent"))?;
+        if *scale_dtype != WeightDtype::FP8E4M3 {
+            bail!("{base}.weight_scale is {scale_dtype:?}, expected F8_E4M3 block scales");
+        }
+        let s2 = self.f32(&format!("{base}.weight_scale_2"))?;
+        let [scale_2] = s2[..] else {
+            bail!("{base}.weight_scale_2 is not a scalar");
+        };
+        nvfp4_dequant::dequant_nvfp4_to_f32(name, bytes, shape, scale_bytes, scale_2)
     }
 }
 
