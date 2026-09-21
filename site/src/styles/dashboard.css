@@ -537,3 +537,19 @@
 .cost-savings-figure.is-loss { color: var(--warn, var(--t2)); }
 .cost-savings-sub { display: block; margin-top: .2rem; font-size: .72rem; color: var(--t3); }
 .cost-savings-spark { display: block; width: 100%; max-width: 320px; height: auto; color: var(--accent); }
+
+/* ---- energy glyphs ------------------------------------------------------- */
+/* The box is reserved before the chunk arrives, so nothing reflows when it
+   does. `currentColor` throughout, so the icons inherit whatever the
+   surrounding text is and the theme swap needs no rule of its own. */
+.lazy-icon { display: inline-flex; align-items: center; justify-content: center; vertical-align: -0.16em; flex: 0 0 auto; }
+.cost-savings h3 .lazy-icon { color: var(--accent); margin-right: .15rem; }
+.cost-savings-figure .lazy-icon { color: var(--ok, var(--accent)); margin-right: .1rem; }
+.energy-icon { display: block; }
+@media (prefers-reduced-motion: no-preference) {
+  .energy-icon { animation: icon-in .18s ease-out both; }
+  @keyframes icon-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
+}
+.cost-trend-h { display: flex; align-items: center; gap: .3rem; margin: .8rem 0 .4rem; font-size: .8rem;
+  letter-spacing: .04em; text-transform: uppercase; color: var(--t2); }
+.cost-trend-h .lazy-icon { color: var(--accent); }

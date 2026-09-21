@@ -14,6 +14,7 @@
     savingsOverTime, SAVINGS_HORIZONS, DEFAULT_TOKENS_PER_DAY,
     TOKENS_PER_DAY_STORAGE_KEY, fmtUsd
   } from '$lib/cost.js';
+  import LazyIcon from './LazyIcon.svelte';
 
   let { cost, rung, usdPerKwh, pue, aboveIdle = false } = $props();
 
@@ -70,7 +71,7 @@
 </script>
 
 <section class="cost-savings" aria-labelledby="cost-savings-h">
-  <h3 id="cost-savings-h">Energy savings over time</h3>
+  <h3 id="cost-savings-h"><LazyIcon name="bolt" size={16} /> Energy savings over time</h3>
 
   {#if result.state !== 'measured'}
     <p class="cost-savings-none">
@@ -95,7 +96,9 @@
       {#if losing}
         Atlas costs <strong>${fmtUsd(Math.abs(result.totalUsd))}</strong> more
       {:else}
-        <strong>${fmtUsd(result.totalUsd)}</strong> saved
+        <!-- The leaf appears ONLY on a saving. An icon that means "good" must
+             never sit beside a number that is bad. -->
+        <LazyIcon name="leaf" size={17} /> <strong>${fmtUsd(result.totalUsd)}</strong> saved
       {/if}
       over {days === 1 ? 'a day' : days === 365 ? 'a year' : `${days} days`}
       · {Math.abs(result.totalKwh).toFixed(Math.abs(result.totalKwh) < 10 ? 1 : 0)} kWh

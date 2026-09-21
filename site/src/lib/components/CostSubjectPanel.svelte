@@ -9,6 +9,7 @@
   // this section is built to render, not an edge case it avoids.
   import CostLadderChart from './CostLadderChart.svelte';
   import CostSavings from './CostSavings.svelte';
+  import LazyIcon from './LazyIcon.svelte';
   import GateChart from './GateChart.svelte';
   import LADDERS from '$lib/ladders.generated.json';
   import { colorFor, fmtDate } from '$lib/gates.js';
@@ -340,17 +341,23 @@
         </button>
       {/each}
     </div>
+    <h3 class="cost-trend-h"><LazyIcon name="gauge" size={16} /> {trend.title}</h3>
     <GateChart records={trend.records} panel={{ title: trend.title, unit: trend.unit, metrics: trend.metrics }}
       {onselect} />
     <p class="cmp-caption">
-      One point is one certified run: <code>tokens ÷ joules × 3600</code> for that rung's batch. Runs on
-      different cost instruments are drawn as separate lines and are never joined —
-      {trend.generations.length > 1
-        ? `${trend.generations.length} instruments here (${trend.generations
-            .filter((g) => g.differs)
-            .map((g) => g.differs)
-            .join('; ')})`
-        : `one instrument, ${trend.runs} ${trend.runs === 1 ? 'run' : 'runs'}`}.
+      One point is one certified run: <code>tokens ÷ joules × 3600</code> for that rung's batch. This
+      line shows the CURRENT cost instrument only — {`${trend.runs} ${trend.runs === 1 ? 'run' : 'runs'}`}.
+      <!-- ★ THE CAPTION MOVED WITH THE CODE. It used to say earlier instruments
+           "are drawn as separate lines and are never joined", which stopped
+           being true the moment they stopped being drawn. A caption describing
+           behaviour the component no longer has is a harder bug to find than a
+           wrong number, because nothing fails. -->
+      {#if trend.superseded}
+        {trend.superseded.runs} earlier {trend.superseded.runs === 1 ? 'run is' : 'runs are'} not
+        drawn: measured on a different instrument ({trend.superseded.differs}), so their tok/Wh is a
+        different measurement rather than an earlier value of this one. They stay in
+        <code>.benchmarks/</code> as certification evidence.
+      {/if}
       <!-- ★ THE VERDICT IS CARRIED IN WORDS, UNCONDITIONALLY. GateChart
            suppresses a spread bar shorter than 3 px, so at the narrow rungs the
            bar may not be visible at all — and a chart that looks like a clean

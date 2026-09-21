@@ -691,6 +691,17 @@ export function costTrend(c, records) {
   const base = trendMetricKey(c);
   const metrics = [];
   const derived = [];
+    // ★ ONLY THE CURRENT INSTRUMENT IS PLOTTED (owner decision, 2026-09-21:
+    // "let's start fresh from now on"). Earlier generations used to be drawn
+    // as dashed companion series; they are now set aside, because a
+    // re-instrumented gate makes the old points a DIFFERENT MEASUREMENT rather
+    // than an earlier value of the same one, and two lines on one axis invite
+    // exactly the comparison that is invalid.
+    //
+    // They are set aside, NOT deleted, and not silently: the records stay on
+    // disk as certification evidence, and `superseded` below reports how many
+    // there are and which axes moved so the panel can say it in words. A chart
+    // that quietly drops half its history is worse than one that shows it.
   gens.forEach((g, i) => {
     const newest = i === gens.length - 1;
     g.key = newest ? base : `${base}__g${i + 1}`;
@@ -699,6 +710,7 @@ export function costTrend(c, records) {
       g.differs = describeDiffers(differs) || 'sampler cadence';
     }
     g.label = newest ? 'tokens per Wh' : `tokens per Wh · earlier instrument (${g.differs})`;
+      if (!newest) return; // set aside: no chart series, no derived points
     // Recompute the key from the member rather than splitting it back out of
     // `g.instrument`: costInstrumentKey is `${instrumentKey}|gpu_rail|${period}`
     // and instrumentKey is a JSON array string, so a `|` inside any axis value
@@ -709,8 +721,19 @@ export function costTrend(c, records) {
     for (const u of g.members) derived.push({ ...u.rec, metrics: { ...u.rec.metrics, [g.key]: u.e.tokPerWh } });
   });
 
+    // What was set aside, named rather than implied.
+    const older = gens.slice(0, -1);
+    const superseded = older.length
+      ? {
+          runs: older.reduce((n, g) => n + g.members.length, 0),
+          generations: older.length,
+          differs: older[older.length - 1].differs
+        }
+      : null;
+
   return {
     c,
+      superseded,
     key: base,
     title: `tokens per Wh · C=${c}`,
     unit: 'tok/Wh',
