@@ -206,6 +206,20 @@ export function readEnergy(m, prefix, run, id, expectTokS) {
           `(${samples} readings at ${periodMs} ms)`
       );
   }
+  // ★ ABSENT IS NOT ZERO, APPLIED TO THE GUARD ITSELF. Coverage is
+  // `samples x period / window`, so with no recorded cadence it cannot be
+  // computed -- and the chain above used to simply fall off its end: a record
+  // with ample samples and no period collected NO concern at all, was marked
+  // trusted, drawn solid, and counted in every tile, verdict and trend line
+  // with its coverage never checked. The window could have been sampled at a
+  // cadence leaving most of it unobserved and the page would have shown a full
+  // measurement. Only 2 of the 72 committed concurrency-sweep records carry the
+  // key, so this was inert almost everywhere it mattered.
+  else
+    concerns.push(
+      `sampler cadence not recorded (${RUN_KEY.periodMs}) — coverage of the ` +
+        `${windowS.toFixed(1)} s window cannot be verified`
+    );
   // SW Power Cap is this box's NORMAL steady state under load (energy.rs), so
   // it is reported and never disqualifying. The HW power brake is not normal.
   const hwBrakeFrac = num(at(KEY.hwBrakeFrac));

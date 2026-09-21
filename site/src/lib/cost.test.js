@@ -639,3 +639,57 @@ describe('spreadVerdict', () => {
     expect(spreadVerdict([1000], envelope).state).toBe('unmeasured');
   });
 });
+
+// ---------------------------------------------------------------------------
+// The sampler-coverage guard runs on every record, or says it could not (#1216)
+//
+// Coverage is samples x period / window. With no recorded cadence it cannot be
+// computed, and the if/else-if chain used to fall off its end: ample samples
+// and no period collected NO concern, so the record was trusted, drawn solid
+// and counted everywhere, coverage unchecked. 2 of 72 committed records carry
+// the key.
+// ---------------------------------------------------------------------------
+describe('readEnergy · coverage with no recorded cadence', () => {
+  /** A well-formed window: 400 readings over 100 s, 80 W. */
+  const window = (o = {}) => ({
+    [KEY.energyJ]: 8000,
+    [KEY.tokens]: 2000,
+    [KEY.windowS]: 100,
+    [KEY.samples]: 400,
+    ...o
+  });
+
+  test('a record with ample samples and NO period is not silently trusted', () => {
+    const e = readEnergy(window(), '', {}, 'r', null);
+    expect(e.state).toBe('measured');
+    expect(e.trusted).toBe(false);
+    expect(e.concerns.join(' ')).toContain('cadence not recorded');
+  });
+
+  // ★ THE CONTROL. A record that DOES carry the cadence, and whose coverage is
+  // fine, must be unaffected — otherwise the fix makes every good record hollow.
+  test('a record that records its cadence, and is well covered, stays trusted', () => {
+    const e = readEnergy(window(), '', { [RUN_KEY.periodMs]: 250 }, 'r', null);
+    expect(e.trusted).toBe(true);
+    expect(e.concerns).toEqual([]);
+  });
+
+  test('the existing under-coverage refusal still fires and still names the numbers', () => {
+    // 100 readings at 250 ms = 25 s of a 100 s window = 25%.
+    const e = readEnergy(window({ [KEY.samples]: 100 }), '', { [RUN_KEY.periodMs]: 250 }, 'r', null);
+    expect(e.trusted).toBe(false);
+    expect(e.concerns.join(' ')).toContain('25%');
+  });
+
+  test('too few samples is still reported as under-sampling, not as a missing cadence', () => {
+    const e = readEnergy(window({ [KEY.samples]: MIN_POWER_SAMPLES - 1 }), '', {}, 'r', null);
+    expect(e.concerns.join(' ')).toContain('under-sampled');
+    expect(e.concerns.join(' ')).not.toContain('cadence not recorded');
+  });
+
+  test('no sample count at all is still reported as unauditable', () => {
+    const e = readEnergy(window({ [KEY.samples]: undefined }), '', {}, 'r', null);
+    expect(e.concerns.join(' ')).toContain('unauditable');
+    expect(e.concerns.join(' ')).not.toContain('cadence not recorded');
+  });
+});
