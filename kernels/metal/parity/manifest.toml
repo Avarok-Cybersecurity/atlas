@@ -1830,6 +1830,11 @@ entry  = "paged_decode_attn_splitk"
 state  = "unported"
 
 [[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16_gqa.cu"
+entry  = "paged_decode_attn_bf16_gqa"
+state  = "unported"
+
+[[kernel]]
 source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo2v.cu"
 entry  = "paged_decode_attn_bf16k_turbo2v"
 state  = "unported"
@@ -1872,6 +1877,11 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/paged_decode_attn_fp8.cu"
 entry  = "paged_decode_attn_splitk_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8_gqa.cu"
+entry  = "paged_decode_attn_fp8_gqa"
 state  = "unported"
 
 [[kernel]]
@@ -2182,6 +2192,11 @@ state  = "unported"
 [[kernel]]
 source = "kernels/gb10/common/reshape_and_cache.cu"
 entry  = "reshape_and_cache_flash_v_only"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_fused_k_fp8.cu"
+entry  = "fused_k_norm_rope_cache_write_fp8_kv"
 state  = "unported"
 
 [[kernel]]
