@@ -24,7 +24,7 @@ mod decode_a3;
 mod decode_a_diag;
 mod decode_b;
 mod decode_b2;
-mod decode_checkpoint;
+pub(in crate::model) mod decode_checkpoint;
 mod decode_graph_key;
 mod decode_multi_seq_gate;
 mod drafter_prefill;
@@ -837,6 +837,10 @@ impl Model for TransformerModel {
     }
     fn num_total_blocks(&self) -> usize {
         self.num_total_blocks_dispatch()
+    }
+    fn ssm_snapshot_occupancy(&self) -> Option<(u32, u32)> {
+        let (used, total) = self.ssm_snapshots.occupancy();
+        (total > 0).then_some((used as u32, total as u32))
     }
     fn reclaim_prefix_blocks(&self, num_blocks: usize) -> usize {
         self.reclaim_prefix_blocks_dispatch(num_blocks)

@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 /// `build_target.rs`.
 const HW_SOURCE_EXT: &[(&str, &str)] = &[
     ("b200", "cu"),
+    ("b300", "cu"),
     ("gb10", "cu"),
     ("hopper", "cu"),
     ("metal", "metal"),

@@ -47,6 +47,7 @@ impl ChatTokenizer {
         repo_root: Option<&Path>,
         disable_template_overrides: bool,
     ) -> Result<Self> {
+        let official_k3 = super::kimi_k3::uses_xtml(model_dir, model_type)?;
         let tokenizer_path = model_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
@@ -90,7 +91,10 @@ impl ChatTokenizer {
         } else {
             super::jinja_helpers::load_override_template(model_type, repo_root)
         };
-        let (chat_template, checkpoint_template) = if let Some(override_tmpl) = override_tmpl {
+        let (chat_template, checkpoint_template) = if official_k3 {
+            tracing::warn!("Official Kimi K3: raw completions only; XTML chat is unavailable");
+            (String::new(), false)
+        } else if let Some(override_tmpl) = override_tmpl {
             (override_tmpl, false)
         } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
             (config_tmpl, true)
@@ -112,7 +116,9 @@ impl ChatTokenizer {
                 tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
                 super::jinja_helpers::build_jinja_env(&tmpl).ok()
             });
-        let chat_encoding = if model_type == "deepseek_v4" {
+        let chat_encoding = if official_k3 {
+            ChatEncoding::KimiK3XtmlUnsupported
+        } else if model_type == "deepseek_v4" {
             tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
             ChatEncoding::DeepseekV4
         } else {
@@ -258,6 +264,7 @@ impl ChatTokenizer {
         reasoning_effort: Option<&str>,
         preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
+        super::kimi_k3::require_chat_support(self.chat_encoding)?;
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             let rendered = super::deepseek_v4::encode_messages(
                 messages,
@@ -324,6 +331,7 @@ impl ChatTokenizer {
         reasoning_effort: Option<&str>,
         preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
+        super::kimi_k3::require_chat_support(self.chat_encoding)?;
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             return self.apply_chat_template_jinja_with_effort(
                 messages,

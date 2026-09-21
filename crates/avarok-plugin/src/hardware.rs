@@ -26,6 +26,8 @@
 use serde::{Deserialize, Serialize};
 
 pub mod collect;
+pub mod energy;
+pub mod energy_sampler;
 pub mod equivalence;
 pub mod ids;
 pub mod limits;

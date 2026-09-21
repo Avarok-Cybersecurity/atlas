@@ -159,7 +159,9 @@
    the chart's full width: an 18x8 viewBox scaled to ~900px with a stroke-width
    2 line scaled with it, i.e. a giant filled pill with the label shoved off the
    edge. The same trap, and the same fix, as ladder.css:19. */
-.gate-panel svg:not(.gl-swatch) { width: 100%; height: auto; display: block; }
+/* The published ladder (ConcurrencyLadder) now sits inside a .gate-panel too,
+   so its own .cl-swatch legend glyphs are exempted here as well. */
+.gate-panel svg:not(.gl-swatch):not(.cl-swatch) { width: 100%; height: auto; display: block; }
 .gate-panel-head {
   display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap;
   margin-bottom: 0.5rem;
@@ -185,6 +187,18 @@
 .gc-axis { fill: var(--t3); font-family: var(--font-mono); font-size: 11px; }
 .gc-ref { stroke: var(--border-strong); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .gc-ref-label { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
+/* A gate floor or ceiling: a stepped rule in the series' own colour, dashed
+   so it never reads as data. Its label carries the bound and the value; the
+   floor's sits under the rule and the ceiling's above it, so the side that
+   passes is the side the text is not on. */
+.gc-limit { stroke-width: 1.5; stroke-dasharray: 6 4; opacity: 0.8; pointer-events: none; }
+.gc-limit-label {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; opacity: 0.9;
+  paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round;
+}
+/* A point past its limit wears a red ring under its mark — the mark keeps
+   its shape (pass/fail/aggregate), the ring says the gate's rule was broken. */
+.gc-viol { fill: none; stroke: var(--red); stroke-width: 1.75; }
 /* The halo keeps a value readable where it crosses a gridline, a spread
    whisker or another series — the labels are dodged apart, not moved off the
    data. */
@@ -364,3 +378,146 @@
   .gpc-step { break-inside: avoid; }
   .gpc-step:not([open]) > summary ~ * { display: block; }
 }
+
+/* ---- concurrency subject panel + comparison chart ------------------------
+   (ConcurrencyTab / ConcurrencySubjectPanel / ConcurrencyComparison.)
+   Appended block; the rules above are untouched. Reuses .gbs-* for the header
+   tiles and .gate-panel / .gl-swatch for the chart chrome, so the swatch-
+   sizing guard in chart-swatch-css.test.js needs no new row.
+
+   Prefix `cmp-`, NOT `cc-`: chat.css owns `.cc` (the chat modal — a fixed
+   width, a max-height with overflow hidden, a mono face and a receipt-tear
+   ::before) and `.cc-chip` (an accent pill with a pointer cursor), and it
+   loads after this file. The comparison card once shared those names, which
+   is what clipped its table at C=2, narrowed it against the gate sweep and
+   made its legend spans look pressable. concurrency-css.test.js keeps the
+   two families apart. */
+.ct { display: grid; gap: 0.25rem; }
+.csp { display: grid; gap: 1rem; outline: none; }
+.csp:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 8px; }
+/* The embedded ladder brings a bare h3 and its own subtitle; size them to the
+   panel's heading scale rather than the landing page's. */
+.csp .cl-h { font-size: 1rem; font-weight: 750; margin: 0 0 0.3rem; }
+.csp .cl-sub { font-size: 0.82rem; margin: 0 0 0.9rem; }
+.cmp { display: grid; gap: 0.5rem; min-width: 0; }
+/* The embedded ladder brings the landing page's section spacing and its own
+   card around the plot; inside this card it is the content, so the outer
+   gap and the inner chrome go. */
+.cmp .cl-embed { margin-top: 0; }
+.cmp .cl-panel { background: none; border: 0; border-radius: 0; padding: 0; margin: 0 0 1rem; }
+/* Series pills: generated from the series' own dates, mono like every other
+   provenance string on the dashboard. Neutral ink — the vLLM baselines are
+   never drawn in a series colour, and their pills are not either. Each is a
+   toggle: pressed = drawn; released = hidden from the plot and the table. */
+.cmp-keys { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0; }
+.cmp-chip {
+  font: inherit; font-family: var(--font-mono); font-size: 0.66rem; color: var(--t2);
+  background: var(--card); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 0.12rem 0.55rem; cursor: pointer; text-align: left;
+  transition: color 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.cmp-chip:hover { color: var(--t1); }
+.cmp-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cmp-chip[aria-pressed='false'] { color: var(--t3); border-style: dashed; opacity: 0.7; text-decoration: line-through; }
+.cmp-refused { margin: 0; font-size: 0.72rem; font-family: var(--font-mono); color: var(--amber); }
+.cmp-caption { margin: 0.4rem 0 0; font-size: 0.76rem; color: var(--t2); line-height: 1.55; }
+.cmp-caption code, .cmp-empty code, .cmp-bridge code { font-size: 0.92em; overflow-wrap: anywhere; }
+/* The empty state keeps the chart's chrome and says three things in order;
+   it is a state, so nothing here is red, amber or green. */
+.cmp-empty { font-size: 0.78rem; color: var(--t2); line-height: 1.55; padding: 0.3rem 0 0.4rem; }
+.cmp-empty p { margin: 0 0 0.35rem; }
+.cmp-empty strong { color: var(--t1); }
+.cmp-empty ul { margin: 0 0 0.4rem; padding-left: 1.1rem; }
+/* A rung the gate does not run: a dotted guide and a word, never a mark at zero. */
+.cmp-absent text { fill: var(--t3); }
+/* The bridge between the two instruments, styled as the footnote it is. */
+.cmp-bridge {
+  margin: 0; font-size: 0.76rem; color: var(--t2); line-height: 1.55;
+  border-left: 3px solid var(--border-strong); padding-left: 0.8rem;
+}
+/* The in-plot baseline stamp gets the same halo as end-value labels so it
+   stays legible where the Atlas line crosses it. */
+.cl-stamp { paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round; }
+
+/* ---- cost section --------------------------------------------------------- */
+/* APPEND-ONLY. Nothing above is edited: the chart rules (.gc-*, .gate-panel)
+   and the comparison rules (.cmp-*) are reused verbatim, so the cost cards
+   share one width, one inset and one mark vocabulary with every other panel.
+   Colours are tokens only — both themes are defined by the token file, and a
+   hard-coded hue here would read correctly in exactly one of them. */
+
+/* The subject strip, prefix "co": the same level as the concurrency subject
+   strip (.cs-*), so the two tabs read as two views of one list. */
+.co-tabs { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+.co-tab {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  font-family: var(--font-mono); font-size: 0.72rem; font-weight: 700;
+  letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer;
+  padding: 0.4rem 0.8rem; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--t2);
+}
+.co-tab:hover { border-color: var(--accent); color: var(--t1); }
+.co-tab.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* "energy not yet measured" is a state, not a verdict: never red, never amber. */
+.co-chip {
+  font-size: 0.6rem; font-weight: 600; letter-spacing: 0.04em; text-transform: none;
+  padding: 0.1rem 0.4rem; border-radius: 999px;
+  border: 1px solid currentColor; opacity: 0.8;
+}
+
+.cost-panel { display: grid; gap: 1rem; }
+
+/* The one input on the tab. Boxed and labelled so it reads as something the
+   reader typed, never as something that was measured. */
+.cost-price { display: grid; gap: 0.35rem; }
+/* Price and facility overhead sit side by side and wrap together: they are
+   the same KIND of thing — the reader's assumptions — and separating them
+   would imply one is more measured than the other. */
+.cost-inputs { display: flex; align-items: flex-start; gap: 1.4rem; flex-wrap: wrap; }
+.cost-pue-presets { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; }
+/* Two boxes in the width one price box takes: a PUE is `1.15`, never a
+   tariff, so 5.5rem each would push the row off a phone. */
+.cost-pue-box input { width: 3.4rem; text-align: right; }
+.cost-price-field { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.cost-price-label {
+  font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--t3);
+}
+.cost-price-box {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-family: var(--font-mono); font-size: 0.8rem; color: var(--t2);
+  border: 1px dashed var(--border-strong); border-radius: 8px; padding: 0.25rem 0.55rem;
+  background: var(--card);
+}
+.cost-price-box input {
+  font: inherit; color: var(--t1); background: none; border: 0;
+  width: 5.5rem; padding: 0.1rem 0;
+}
+.cost-price-box input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cost-price-note { margin: 0; font-size: 0.74rem; color: var(--t2); line-height: 1.55; }
+.cost-price-note strong { color: var(--t1); }
+.cost-warn { color: var(--amber); }
+
+.cost-toggles { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.cost-toggle-why { font-family: var(--font-mono); font-size: 0.68rem; color: var(--t3); }
+.cost-rungs { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+.cmp-chip:disabled { cursor: not-allowed; opacity: 0.45; }
+
+/* The rail, stated INSIDE the plot: every mark on this axis is a lower bound
+   on the energy the machine drew, and that belongs where the marks are. */
+.cost-rail { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
+/* A losing rung's factor. Same ink as the axis: a loss is stated, not alarmed. */
+.cost-lose { fill: var(--t2); font-family: var(--font-mono); font-size: 10px; }
+
+/* The facility-overhead band. Deliberately faint and strokeless: it is the
+   reader's ASSUMPTION drawn around a measurement, so it must read as a
+   region of uncertainty and never as a second measured series. The colour is
+   the series' own, passed in as --band. */
+.cost-band { fill: var(--band, var(--t2)); opacity: 0.14; stroke: none; }
+.cost-band-tick { stroke-width: 6; opacity: 0.14; stroke-linecap: butt; }
+
+.cost-refused { color: var(--amber); }
+.cost-disclosure { font-size: 0.74rem; color: var(--t2); line-height: 1.6; display: grid; gap: 0.4rem; }
+.cost-disclosure p { margin: 0; }
+.cost-disclosure strong { color: var(--t1); }
+.cost-provenance { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); }

@@ -85,6 +85,46 @@ fn ebnf_until_close_ladder(close: &str) -> String {
     ebnf_until_close_ladder_opts(close, false)
 }
 
+/// Like [`ebnf_until_close_ladder`], but the FIRST character's arm also
+/// excludes ASCII whitespace (space/tab/CR/LF), so the ladder can be used as
+/// a "this must be a non-blank character" rule while still forbidding the
+/// literal `close` delimiter. Arms after the first (`k > 0`) begin with a
+/// literal, non-whitespace prefix of `close` and are left unchanged.
+///
+/// A117 (2026-09-17): poolside_v1's required-string guard (PR #1103) stopped
+/// at `minLength`-equivalent — non-EMPTY, not non-BLANK — so
+/// `web_search {"query":" "}` (a single space) still evaded it on
+/// GLM-5.3-Flash (tool-eval-bench TC-43). qwen3_coder's `first_content ::=
+/// [^ \t\r\n<=>] | {lt-arms}` already solves exactly this shape for its own
+/// `<parameter=NAME>VALUE</parameter>` envelope, but bakes in an extra
+/// `=`/`>` exclusion for a DIFFERENT bug (the `>=` merge-token phantom-`=`,
+/// 2026-06-03) that has no analogue in poolside's `<arg_value>…{close}`
+/// envelope — so this is the same TECHNIQUE (ladder-derived first-char
+/// exclusion), not the same production; see the poolside_v1 call site for
+/// why `nonempty_value` itself isn't reused.
+fn ebnf_until_close_ladder_no_leading_ws(close: &str) -> String {
+    let chars: Vec<char> = close.chars().collect();
+    debug_assert!(!chars.is_empty(), "close delimiter must be non-empty");
+    let mut alts: Vec<String> = Vec::with_capacity(chars.len().max(1));
+    for (k, &ch) in chars.iter().enumerate() {
+        let neg = ebnf_class_escape(ch);
+        if k == 0 {
+            alts.push(format!("[^ \\t\\r\\n{neg}]"));
+        } else {
+            let prefix: String = chars[..k]
+                .iter()
+                .copied()
+                .map(ebnf_literal_escape)
+                .collect();
+            alts.push(format!("\"{prefix}\" [^{neg}]"));
+        }
+    }
+    if alts.is_empty() {
+        return "[^ \\t\\r\\n\\x00]".to_string();
+    }
+    alts.join(" | ")
+}
+
 /// P1-1/P1-2 env opt-ins (read per call; set in the serving environment).
 fn grammar_allow_empty_value() -> bool {
     std::env::var("AVAROK_GRAMMAR_ALLOW_EMPTY_VALUE").as_deref() == Ok("1")
@@ -763,11 +803,16 @@ impl GrammarEngine {
             // precedent: it enforces non-empty in its value EBNF too
             // (`qwen3_coder_grammar_rejects_empty_parameter_body`).
             //
-            // Scope is deliberately minLength>=1 — at least one character. It does
-            // NOT reject whitespace-only (qwen3_coder is stricter), does NOT
-            // require the `required` set to be PRESENT, and does not touch
-            // optional strings or non-string parameters. Over-constraining value
-            // bytes has bitten this grammar before (the `<`-ban that made Svelte
+            // Scope was originally minLength>=1 — at least one character, not
+            // rejecting whitespace-only (qwen3_coder was stricter). A117
+            // (2026-09-17) closed that gap: `web_search {"query":" "}` (a
+            // single space) evaded the guard on GLM-5.3-Flash
+            // (tool-eval-bench TC-43), so poolside_v1 required strings now
+            // match qwen3_coder's behaviour — non-blank, not just non-empty
+            // (see `req_value` below). This still does NOT require the
+            // `required` set to be PRESENT, and does not touch optional
+            // strings or non-string parameters. Over-constraining value bytes
+            // has bitten this grammar before (the `<`-ban that made Svelte
             // and HTML writes unrepresentable).
             let required_strings: std::collections::BTreeSet<&str> = {
                 let props = schema
@@ -800,6 +845,10 @@ impl GrammarEngine {
                     .join(" | ")
             };
             let value_ladder = ebnf_until_close_ladder(value_close);
+            // A117 (2026-09-17): first character of a REQUIRED string's value,
+            // once any leading whitespace run is consumed, must be non-blank.
+            // Only used inside the required-string branch below.
+            let first_nonws_ladder = ebnf_until_close_ladder_no_leading_ws(value_close);
             let content = if has_no_parameters {
                 serde_json::json!({"type": "const_string", "value": ""})
             } else {
@@ -834,7 +883,22 @@ impl GrammarEngine {
                         // helper above defines its own `nonempty_value ::= first_content
                         // rest` in a SEPARATE grammar blob. Distinct names keep the two
                         // readable side by side in one file.
-                        rules.push("req_value ::= value_part value_part*".to_string());
+                        //
+                        // A117 (2026-09-17): a leading whitespace run is legal (the
+                        // opening `<arg_value>` may be immediately followed by a
+                        // real value that starts with e.g. a newline), but the value
+                        // as a whole must contain at least one non-whitespace byte —
+                        // `req_leading_ws req_first_nonws value_part*` mirrors
+                        // qwen3_coder's `leading_ws nonempty_value` shape: whatever
+                        // `req_leading_ws` doesn't consume, `req_first_nonws` must
+                        // start with a non-blank byte, so an all-whitespace value
+                        // (e.g. a single `" "`, tool-eval-bench TC-43 on
+                        // GLM-5.3-Flash) has no legal parse.
+                        rules.push(
+                            "req_value ::= req_leading_ws req_first_nonws value_part*".to_string(),
+                        );
+                        rules.push("req_leading_ws ::= [ \\t\\r\\n]*".to_string());
+                        rules.push(format!("req_first_nonws ::= {first_nonws_ladder}"));
                         rules.push(format!("value_part ::= {value_ladder}"));
                         rules.join("\n")
                     }

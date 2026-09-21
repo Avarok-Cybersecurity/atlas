@@ -155,7 +155,7 @@ pub(crate) fn resolve_topology(
 }
 
 /// `max_batch_tokens` and `hidden_size` size the 2-rank all-reduce receive
-/// buffer. Together they bound the largest payload any caller can hand a
+/// buffer alongside vocabulary-parallel logits. Together they bound a
 /// collective: prefill MoE, prefill attention and prefill SSM all reduce a
 /// `[num_tokens, hidden_size]` BF16 tensor, and `num_tokens` is capped by
 /// `max_batch_tokens` (the same bound the `moe_output` arena buffer is sized
@@ -168,27 +168,28 @@ pub(crate) fn init_nccl_comm(
     world_size: usize,
     max_batch_tokens: usize,
     hidden_size: usize,
+    vocab_size: usize,
 ) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
     use spark_comm::CommBackend;
     if world_size <= 1 {
         return Ok(None);
     }
-    let recv_capacity = spark_comm::nccl_backend::required_recv_bytes(
+    let recv_capacity = spark_comm::nccl_backend::required_model_recv_bytes(
         max_batch_tokens,
         hidden_size,
-        spark_comm::nccl_backend::ALL_REDUCE_DTYPE_BYTES,
+        vocab_size,
     )
     .context("Failed to size the NCCL receive buffer")?;
     tracing::info!(
         "Initializing NCCL: rank {}/{}, master {}:{}, recv_buffer {} MiB \
-         (max_batch_tokens={} × hidden_size={} × {} B)",
+         (max_batch_tokens={} × max(hidden_size,vocab_size)={} × {} B)",
         args.rank,
         world_size,
         args.master_addr,
         args.master_port,
         recv_capacity / (1024 * 1024),
         max_batch_tokens,
-        hidden_size,
+        hidden_size.max(vocab_size),
         spark_comm::nccl_backend::ALL_REDUCE_DTYPE_BYTES,
     );
     let cuda_stream = gpu.default_stream();
@@ -219,6 +220,7 @@ pub(crate) fn init_nccl_comm(
     world_size: usize,
     _max_batch_tokens: usize,
     _hidden_size: usize,
+    _vocab_size: usize,
 ) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
     if world_size > 1 {
         anyhow::bail!(
@@ -242,6 +244,7 @@ pub(crate) fn init_nccl_comm(
     world_size: usize,
     _max_batch_tokens: usize,
     _hidden_size: usize,
+    _vocab_size: usize,
 ) -> Result<Option<std::sync::Arc<dyn spark_comm::CommBackend>>> {
     if world_size > 1 {
         anyhow::bail!(

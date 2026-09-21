@@ -29,6 +29,7 @@
   "harness_shas": {
     "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
     "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
+    "1f10d4887b": "The 2026-08-18 C=2 hardening pair (c2_atlas_dgx2_20260818.json and c2_vllm_mtp_dgx2_20260818.json). Both raw files carry this one driver sha, which is what makes them a pair: same harness revision, same day, same box.",
     "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
   },
 
@@ -67,6 +68,7 @@
       "env": "HF_HUB_OFFLINE=1",
       "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype fp8 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
       "speculation": "vLLM's own Qwen3_5MTP, K=4 (num_speculative_tokens=3)",
+      "instrument": { "isl": 128, "osl": 1024, "max_model_len": 2048, "max_batch_size": 128, "kv_cache_dtype": "fp8", "reps": 3, "warmup": 1, "temperature": 0.0, "seed": 42 },
       "sources": {
         "1": "vllm_fp8_mtp_reference.json",
         "2": "c2_vllm_mtp_dgx2_20260818.json",
@@ -90,6 +92,8 @@
       "env": "HF_HUB_OFFLINE=1",
       "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16",
       "speculation": "none",
+      "instrument": { "isl": 128, "osl": 1024, "max_model_len": 4096, "max_batch_size": 128, "kv_cache_dtype": "bf16", "reps": 3, "warmup": 1, "temperature": 0.0, "seed": 42 },
+      "instrument_note": "kv_cache_dtype bf16 is the command's `--kv-cache-dtype bfloat16`, spelled as an Atlas gate record spells serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against.",
       "sources": {
         "1": "vllm_latest_reference.json",
         "2": "vllm_latest_reference.json",

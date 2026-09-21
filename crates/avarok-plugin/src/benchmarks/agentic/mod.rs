@@ -107,6 +107,16 @@ struct IterationRow {
     turns: usize,
     tool_calls: usize,
     completion_tokens: usize,
+    /// The loop ended at `max_turns`, not because the agent stopped calling
+    /// tools. Recorded per row so the tier can say, in ONE record, whether a
+    /// missing step-suffix means "ran out of turns" or "believed it was done"
+    /// — the two hypotheses six failing records could not separate (#1159).
+    hit_turn_cap: bool,
+    /// Turns cut at `max_tokens` and resumed — see `Transcript::truncated_turns`.
+    truncated_turns: usize,
+    /// Turns re-asked for tool-call syntax in the body — see
+    /// `Transcript::unparsed_call_turns`.
+    unparsed_call_turns: usize,
     note: String,
 }
 
@@ -227,6 +237,9 @@ impl AgenticWebserver {
             turns: transcript.turns,
             tool_calls: transcript.tool_calls,
             completion_tokens: transcript.completion_tokens,
+            hit_turn_cap: transcript.hit_turn_cap,
+            truncated_turns: transcript.truncated_turns,
+            unparsed_call_turns: transcript.unparsed_call_turns,
             note: one_line(note),
         })
     }
@@ -272,6 +285,7 @@ impl AgenticWebserver {
         m.extend(score::per_step_tallies(
             &self.rows.iter().map(|r| &r.directions).collect::<Vec<_>>(),
         ));
+        m.extend(trajectory_diagnostics(&self.rows));
         m
     }
 
@@ -284,6 +298,38 @@ impl AgenticWebserver {
             self.s_per_turn_budget,
         )
     }
+}
+
+/// Trajectory diagnostics, RECORDED and never gated: how each iteration's
+/// loop ended. The harness computed all four before this and emitted only the
+/// turn cap, into a log line that never reached the record — so no failing
+/// record could say whether its bad iteration exhausted `max_turns`
+/// (`sum_hit_turn_cap >= 1`: the turn budget or the cargo cache is the lever)
+/// or stopped voluntarily with a step-suffix missing (`= 0`: the loop believed
+/// the model was done, and the stop-labelling channel is not closed).
+///
+/// Sums over an empty tier are 0 like `sum_turns` beside them; the maximum
+/// over no iterations is ABSENT rather than 0, because "no iteration ran" and
+/// "an iteration took zero turns" are different facts and `check_record`
+/// reads numbers.
+fn trajectory_diagnostics(rows: &[IterationRow]) -> std::collections::BTreeMap<String, f64> {
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        "sum_hit_turn_cap".to_string(),
+        rows.iter().filter(|r| r.hit_turn_cap).count() as f64,
+    );
+    m.insert(
+        "sum_truncated_turns".to_string(),
+        rows.iter().map(|r| r.truncated_turns).sum::<usize>() as f64,
+    );
+    m.insert(
+        "sum_unparsed_call_turns".to_string(),
+        rows.iter().map(|r| r.unparsed_call_turns).sum::<usize>() as f64,
+    );
+    if let Some(max) = rows.iter().map(|r| r.turns).max() {
+        m.insert("max_iter_turns".to_string(), max as f64);
+    }
+    m
 }
 
 impl Plugin for AgenticWebserver {
@@ -423,6 +469,9 @@ impl Benchmark for AgenticWebserver {
     }
 }
 
+#[cfg(test)]
+#[path = "agentic_diagnostics_tests.rs"]
+mod diagnostics_tests;
 #[cfg(test)]
 #[path = "agentic_tests.rs"]
 mod tests;

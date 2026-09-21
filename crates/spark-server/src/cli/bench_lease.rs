@@ -146,10 +146,12 @@ pub async fn acquire(plan: ServePlan, owner_pid: Option<u32>) -> Result<SelfServ
                          same rendering",
                         lease.pid, lease.port, lease.recipe_id
                     );
+                    let resolved = plan.disclosed(lease.port)?;
                     return Ok(SelfServed::external(
                         target,
                         plan.recipe_id,
                         plan.requested,
+                        resolved,
                         plan.entry,
                     ));
                 }
@@ -245,10 +247,12 @@ async fn start(store: &ArtifactStore, plan: ServePlan, owner_pid: u32) -> Result
         return Err(e);
     }
     eprintln!("gate: endpoint is serving {}", plan.model);
+    let resolved = plan.disclosed(port)?;
     Ok(SelfServed::external(
         target,
         plan.recipe_id,
         plan.requested,
+        resolved,
         plan.entry,
     ))
 }

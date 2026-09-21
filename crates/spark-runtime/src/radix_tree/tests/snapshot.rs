@@ -9,6 +9,7 @@ use crate::radix_tree::RadixTree;
 
 use super::super::hash_token_prefix;
 use super::super::snapshot::SsmSnapshotIndex;
+use super::arm_legacy_partial_tail;
 
 #[test]
 fn test_insert_without_snapshot() {
@@ -120,10 +121,19 @@ fn test_intermediate_snapshot_survives_tree_eviction() {
 }
 
 // ── Partial suffix tests ──
+//
+// #1193: the sub-block tail arms these exercise ship OFF — they hand a block
+// another owner still writes to a second writer, and there is no copy-on-write
+// in the paged KV path. The shipped contract is pinned by
+// `tests::partial_tail`. These keep the ARMED arm's internals honest (the
+// different-suffix refusal, the `remainder > 0` guard, the multi-block prefix,
+// the shorter-lookup prefix match, the child-key match) so the A/B lever stays
+// trustworthy, and each opts in explicitly via `arm_legacy_partial_tail`.
 
 #[test]
 fn test_partial_suffix_insert_and_lookup() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // 20 tokens = 1 full block (16) + 4 partial
     let tokens: Vec<u32> = (0..20).collect();
     let block_table = vec![10, 20]; // block for full + block for partial
@@ -140,6 +150,7 @@ fn test_partial_suffix_insert_and_lookup() {
 #[test]
 fn test_partial_suffix_no_match_different_suffix() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // Insert 20 tokens
     let tokens_a: Vec<u32> = (0..20).collect();
     tree.insert(&tokens_a, &[10, 20], &[], 16, 0, 0);
@@ -158,6 +169,7 @@ fn test_partial_suffix_no_match_different_suffix() {
 #[test]
 fn test_partial_suffix_not_matched_for_full_block_request() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // Insert 20 tokens (1 full + 4 partial)
     let tokens: Vec<u32> = (0..20).collect();
     tree.insert(&tokens, &[10, 20], &[], 16, 0, 0);
@@ -224,6 +236,7 @@ fn test_partial_suffix_eviction_frees_both_blocks() {
 #[test]
 fn test_partial_suffix_cleared_when_extended() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // Insert 20 tokens (1 full + a 4-token partial held in block 20).
     let tokens_20: Vec<u32> = (0..20).collect();
     let first = tree.insert(&tokens_20, &[10, 20], &[], 16, 0, 0);
@@ -268,6 +281,7 @@ fn test_partial_suffix_cleared_when_extended() {
 #[test]
 fn test_partial_suffix_multi_block_prefix() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // 396 tokens = 24 full blocks + 12 partial
     let tokens: Vec<u32> = (0..396).collect();
     let block_table: Vec<u32> = (0..25).collect();
@@ -286,6 +300,7 @@ fn test_partial_suffix_multi_block_prefix() {
 #[test]
 fn test_partial_suffix_prefix_match_shorter_lookup() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // Insert 31 tokens (1 full block + 15 partial) — simulates prompt+generation
     let tokens_31: Vec<u32> = (0..31).collect();
     tree.insert(&tokens_31, &[10, 20], &[], 16, 0, 0);
@@ -303,6 +318,7 @@ fn test_partial_suffix_prefix_match_shorter_lookup() {
 #[test]
 fn test_sub_block_match_via_child_key_prefix() {
     let tree = RadixTree::new();
+    arm_legacy_partial_tail(&tree);
     // Insert 35 tokens (2 full blocks + 3 partial) — prompt + generation
     let tokens_35: Vec<u32> = (0..35).collect();
     tree.insert(&tokens_35, &[10, 20, 30], &[], 16, 0, 0);

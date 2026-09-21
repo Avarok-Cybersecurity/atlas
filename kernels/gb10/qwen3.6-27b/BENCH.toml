@@ -68,7 +68,22 @@ quant = "nvfp4"
 checkpoint = "unsloth/Qwen3.6-27B-NVFP4"
 gate = "concurrency-sweep"
 recipe = "qwen3.6/qwen3.6-27b-nvfp4-unsloth"
-default = true
+# ★ NOT a default subject, and never again. Qwen3.6 dense is
+# VERSION-SUPERSEDED by Qwen3.8 dense (owner, 2026-09-20), which already holds
+# concurrency-sweep's measured default on gb10.
+#
+# Left `default = true` this was a live trap. `baseline_for` (gate/bench.rs)
+# skips entries whose status is not "measured", so today it is inert -- but
+# the obvious next step for anyone who measures this model is to flip status
+# to "measured", and at that instant TWO measured defaults claim
+# concurrency-sweep on gb10 and baseline_for bails: "two defaults is a silent
+# coin-flip over which checkpoint a gate scores". That does not fail this
+# model's gate; it fails concurrency-sweep for EVERY PR in the repo. A
+# one-word edit in a campaign-free file would close the merge queue.
+#
+# `default = false` makes it a variant: recordable, never the subject, and
+# collision-proof whatever its status becomes.
+default = false
 status = "unmeasured"
 note = """\
 The DENSE half of the concurrency curve. Declared here so the intent is on \

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! K3 Megatron TP plan. `supports_tp` is true — the umbrella loader used to
-//! refuse `--tp-size 2`. Full `slice_for_rank` bind lives with the weight
-//! loader; this slice publishes the plan + the fail-fast flag.
+//! K3 device-binding adapter for the shared tensor-parallel storage plan.
+//! Runtime loading partitions packed and dense weights before GPU allocation.
 //!
 //! Head counts on `config` are already per-rank. Full sizes = local * tp.
 
@@ -23,83 +22,14 @@ pub fn tensor_plan(
     _mlp: MlpKind,
     config: &ModelConfig,
 ) -> (TpShardKind, usize, usize) {
-    let tp = config.tp_world_size.max(1);
-    let h = config.hidden_size;
-    let kda_heads = config.linear_num_key_heads * tp;
-    let kda_d = config.linear_key_head_dim;
-    let kda_q = kda_heads * kda_d;
-    let conv_k = config.linear_conv_kernel_dim.max(1);
-    let mla_heads = config.num_attention_heads * tp;
-    let qk = config.qk_nope_head_dim + config.qk_rope_head_dim;
-    let dv = mla_heads * config.v_head_dim;
-    let kv_b = mla_heads * (config.qk_nope_head_dim + config.v_head_dim);
-    let inter = config.intermediate_size;
-    let eh = config.moe_intermediate_size;
-    let lat = config.moe_latent_size;
-
-    if name.ends_with(".self_attn.q_proj.weight")
-        || name.ends_with(".self_attn.k_proj.weight")
-        || name.ends_with(".self_attn.v_proj.weight")
-    {
-        return (TpShardKind::ColumnParallel, kda_q, h);
-    }
-    if name.ends_with(".self_attn.q_conv1d.weight")
-        || name.ends_with(".self_attn.k_conv1d.weight")
-        || name.ends_with(".self_attn.v_conv1d.weight")
-    {
-        return (TpShardKind::ColumnParallel, kda_q, conv_k);
-    }
-    if name.ends_with(".self_attn.g_proj.weight") {
-        let n = match mixer {
-            MixerKind::Kda => kda_q,
-            MixerKind::Mla => dv,
-        };
-        return (TpShardKind::ColumnParallel, n, h);
-    }
-    if name.ends_with(".self_attn.o_proj.weight") {
-        let inn = match mixer {
-            MixerKind::Kda => kda_q,
-            MixerKind::Mla => dv,
-        };
-        return (TpShardKind::RowParallel, h, inn);
-    }
-    if name.ends_with(".self_attn.b_proj.weight") {
-        return (TpShardKind::ColumnParallel, kda_heads, h);
-    }
-    if name.ends_with(".self_attn.A_log") {
-        return (TpShardKind::ColumnParallel, kda_heads, 1);
-    }
-    if name.ends_with(".self_attn.dt_bias") {
-        return (TpShardKind::ColumnParallel, kda_q, 1);
-    }
-    if name.ends_with(".self_attn.f_b_proj.weight") {
-        return (TpShardKind::ColumnParallel, kda_q, kda_d);
-    }
-    if name.ends_with(".self_attn.q_b_proj.weight") {
-        return (
-            TpShardKind::ColumnParallel,
-            mla_heads * qk,
-            config.q_lora_rank,
-        );
-    }
-    if name.ends_with(".self_attn.kv_b_proj.weight") {
-        return (TpShardKind::ColumnParallel, kv_b, config.kv_lora_rank);
-    }
-    if name.ends_with(".mlp.gate_proj.weight") || name.ends_with(".mlp.up_proj.weight") {
-        return (TpShardKind::ColumnParallel, inter, h);
-    }
-    if name.ends_with(".mlp.down_proj.weight") {
-        return (TpShardKind::RowParallel, h, inter);
-    }
-    if name.contains(".block_sparse_moe.experts.") {
-        if name.ends_with(".w1.weight") || name.ends_with(".w3.weight") {
-            return (TpShardKind::ColumnParallel, eh, lat);
-        }
-        if name.ends_with(".w2.weight") {
-            return (TpShardKind::RowParallel, lat, eh);
-        }
-    }
-    (TpShardKind::Replicated, 1, 1)
+    use avarok_core::kimi_k3::tp::{TpAxis, tensor_plan};
+    let (axis, n, k) = tensor_plan(name, mixer, config);
+    let kind = match axis {
+        TpAxis::Replicated => TpShardKind::Replicated,
+        TpAxis::Rows => TpShardKind::ColumnParallel,
+        TpAxis::Columns => TpShardKind::RowParallel,
+    };
+    (kind, n, k)
 }
 
 #[cfg(test)]

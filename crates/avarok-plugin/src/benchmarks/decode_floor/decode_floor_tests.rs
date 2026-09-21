@@ -15,6 +15,7 @@ fn healthy(tps: f64) -> RunObs {
         server_tps: Some(tps),
         accepted_prediction_tokens: Some(700),
         e2e_ms: 50_000.0,
+        ..Default::default()
     }
 }
 
@@ -35,6 +36,7 @@ fn run_observation_preserves_wire_evidence() {
             server_tps: Some(28.125),
             accepted_prediction_tokens: Some(417),
             e2e_ms: 33_456.75,
+            ..Default::default()
         }
     );
 }
@@ -101,6 +103,7 @@ fn the_calibration_instruments_915_token_stop_is_a_measurement() {
         server_tps: Some(28.0),
         accepted_prediction_tokens: Some(569),
         e2e_ms: 33_000.0,
+        ..Default::default()
     };
     let samples = [run.clone(), run.clone(), run];
     match evaluate(&samples) {
@@ -124,6 +127,7 @@ fn accept_len_floor_is_inclusive() {
         server_tps: Some(25.0),
         accepted_prediction_tokens: Some(500),
         e2e_ms: 60_000.0,
+        ..Default::default()
     };
     let samples = [run.clone(), run.clone(), run];
     match evaluate(&samples) {
@@ -144,6 +148,7 @@ fn a_disengaged_speculation_mean_is_inconclusive_not_a_floor() {
         server_tps: Some(15.0),
         accepted_prediction_tokens: Some(100),
         e2e_ms: 90_000.0,
+        ..Default::default()
     };
     let samples = [run.clone(), run.clone(), run];
     match evaluate(&samples) {
@@ -337,6 +342,7 @@ fn accept_len_derivation_matches_its_definition() {
         server_tps: Some(30.0),
         accepted_prediction_tokens: Some(600),
         e2e_ms: 0.0,
+        ..Default::default()
     };
     // 1200 tokens over 600 steps = 2.0 tokens per decode step.
     assert_eq!(r.accept_len(), Some(2.0));
@@ -371,4 +377,83 @@ fn reconfiguring_clears_collected_samples() {
     b.configure(&v).unwrap();
     assert!(b.samples.is_empty());
     assert!(!b.probed);
+}
+
+// ── instrument keys ─────────────────────────────────────────────────────────
+
+/// The client-clock ITL, the pooled jitter distribution and the joules of
+/// the sampled windows ride beside the verdict metrics; the server-clock
+/// ITL is `server_decode_tok_s` already and gets no second key.
+#[test]
+fn instrument_metrics_keep_both_clocks_and_store_joules_beside_tokens() {
+    use crate::hardware::energy::EnergyWindow;
+    use crate::http::GapSample;
+    use std::collections::BTreeMap;
+
+    let mut runs = [healthy(31.5), healthy(29.6), healthy(30.5)];
+    for (i, r) in runs.iter_mut().enumerate() {
+        r.client_tpot_ms = Some(34.0 + i as f64);
+        r.server_tpot_ms = Some(33.0 + i as f64);
+        let mut g = GapSample::default();
+        for gap in [33.0, 33.0, 33.0, 34.0, 33.0] {
+            g.push(gap);
+        }
+        r.arrival_gaps = g;
+        r.energy = Some(EnergyWindow {
+            window_s: 50.0,
+            samples: 200,
+            energy_j: 3000.0,
+            mean_power_w: 60.0,
+            max_power_w: 62.0,
+            sw_power_cap_frac: Some(1.0),
+            hw_power_brake_frac: Some(0.0),
+        });
+    }
+    let idle = EnergyWindow {
+        window_s: 2.0,
+        samples: 8,
+        energy_j: 10.0,
+        mean_power_w: 5.0,
+        ..Default::default()
+    };
+    let mut m = BTreeMap::new();
+    instrument_metrics(&runs, Some(&idle), &mut m);
+    assert_eq!(
+        m.get("client_tpot_ms"),
+        Some(&35.0),
+        "median of the three runs"
+    );
+    assert!(
+        !m.contains_key("server_tpot_ms"),
+        "server ITL is server_decode_tok_s, no dup"
+    );
+    assert!(!m.keys().any(|k| k.contains("itl")), "{m:?}");
+    assert_eq!(
+        m.get("arrival_gap_count"),
+        Some(&15.0),
+        "pooled over the runs"
+    );
+    assert_eq!(m.get("arrival_gap_max_ms"), Some(&34.0));
+    assert!(m.contains_key("stability"));
+    assert_eq!(m.get("gpu_rail_energy_j"), Some(&9000.0), "joules add");
+    assert_eq!(m.get("gpu_rail_energy_window_s"), Some(&150.0));
+    assert_eq!(m.get("gpu_rail_power_samples"), Some(&600.0));
+    assert_eq!(
+        m.get("gpu_rail_energy_window_tokens"),
+        Some(&(1450.0 * 3.0))
+    );
+    assert!((m["gpu_rail_energy_above_idle_j"] - (9000.0 - 5.0 * 150.0)).abs() < 1e-9);
+    assert!(
+        !m.keys().any(|k| k.contains("per_token")),
+        "ratios are derived downstream"
+    );
+
+    // Nothing instrumented → nothing emitted, never zeros.
+    let mut bare = BTreeMap::new();
+    instrument_metrics(
+        &[healthy(30.0), healthy(30.0), healthy(30.0)],
+        None,
+        &mut bare,
+    );
+    assert!(bare.is_empty(), "{bare:?}");
 }

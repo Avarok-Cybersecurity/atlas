@@ -58,6 +58,23 @@ impl ServePlan {
             )
         })
     }
+
+    /// What the gate record DISCLOSES about this serve — the knobs resolved
+    /// the way the server resolves them (`ServeArgs::mtp_gate_force`, so
+    /// `--hermetic` counts), keyed as `gate::record_serve` names them. Read
+    /// off the same rendering `argv`/`serve_args` produce, so a leased server
+    /// — which `bench_lease` fingerprints against that rendering — discloses
+    /// the same values as one started here.
+    pub fn disclosed(&self, port: u16) -> Result<BTreeMap<String, String>> {
+        Ok(disclosed_from(&self.serve_args(port)?))
+    }
+}
+
+/// The disclosure for one rendered, validated serve — the single expression
+/// [`ServePlan::disclosed`] evaluates, kept free so a test can feed it a
+/// recipe without standing up a whole plan.
+pub(crate) fn disclosed_from(args: &crate::cli::ServeArgs) -> BTreeMap<String, String> {
+    gate::record_serve::disclosure(args.mtp_gate_force(), args.speculative)
 }
 
 /// Resolve what `benchmark_id`'s gate run serves.
@@ -160,3 +177,7 @@ pub fn plan_serve(
         limits,
     })
 }
+
+#[cfg(test)]
+#[path = "bench_serve_plan_tests.rs"]
+mod tests;

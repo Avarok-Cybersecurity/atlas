@@ -24,9 +24,36 @@ pub fn date_of(unix_secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// `HHMMSS` (UTC) from unix seconds — the intra-day half of a timestamp.
+pub fn time_of_day(unix_secs: u64) -> String {
+    let secs = unix_secs % 86_400;
+    format!("{:02}{:02}{:02}", secs / 3_600, (secs / 60) % 60, secs % 60)
+}
+
 /// The default-variant filename: `YYYY-MM-DD-<sha>.json`.
 pub fn record_path(root: &Path, benchmark_id: &str, unix_secs: u64, sha: &str) -> PathBuf {
     gate_dir(root, benchmark_id).join(format!("{}-{sha}.json", date_of(unix_secs)))
+}
+
+/// Where a same-day re-run lands when its `canonical` name is occupied by a
+/// record that must survive: the day segment gains the run's time of day,
+/// `YYYY-MM-DDTHHMMSSZ-<sha>[-<variant>][-s<i>of<n>].json`, and everything
+/// after it — sha, variant slug, shard suffix — is kept verbatim.
+///
+/// The time goes INSIDE the day segment rather than on the tail so that the
+/// variant and shard suffixes keep their positions for every reader that
+/// strips them, and so that a lexical sort still orders a re-run after the
+/// record it follows (`-` sorts before `T`).
+pub fn rerun_path(canonical: &Path, unix_secs: u64) -> PathBuf {
+    let name = canonical
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let day = date_of(unix_secs);
+    let tail = name
+        .strip_prefix(day.as_str())
+        .unwrap_or_else(|| panic!("record name {name:?} does not start with its day {day}"));
+    canonical.with_file_name(format!("{day}T{}Z{tail}", time_of_day(unix_secs)))
 }
 
 /// The filename tail that keeps one shard's record apart from its siblings:

@@ -217,7 +217,7 @@ pub(crate) fn maybe_run_ep_worker(
         return Ok(false);
     }
     let rank = args.rank;
-    let model_owned = model.take().expect("EP worker requires owned model");
+    let mut model_owned = model.take().expect("EP worker requires owned model");
     let model_has_proposer = model_owned.has_proposer();
     // `--dflash` counts as a speculative method here: a DFlash worker
     // participates in the head's speculative dispatch, so it must not trip
@@ -333,9 +333,17 @@ pub(crate) fn maybe_run_ep_worker(
             }
         }
         for slot in slots.iter_mut() {
-            if let Some(seq) = slot.as_mut() {
-                let _ = model_owned.free_sequence(seq);
+            if let Some(mut seq) = slot.take() {
+                let _ = model_owned.free_sequence(&mut seq);
             }
+        }
+        // Worker commands use the default stream. Match the head's ordered
+        // shutdown: quiesce outstanding work before releasing owned pools.
+        if let Err(error) = model_owned.synchronize(model_owned.default_stream()) {
+            tracing::error!("EP worker stream quiescence failed (rank {rank}): {error:#}");
+        }
+        if let Err(error) = model_owned.teardown() {
+            tracing::error!("EP worker teardown failed (rank {rank}): {error:#}");
         }
         tracing::info!("EP worker stopped (rank {rank})");
     });
@@ -359,6 +367,33 @@ mod prefix_cache_tests {
     fn safe_model_keeps_requested_prefix_cache() {
         let cache = build_prefix_cache(&enabled_args(), &ModelConfig::qwen3_next_80b_nvfp4());
         assert!(cache.is_active());
+    }
+
+    /// The flag is load-bearing on its own, for a model whose capability
+    /// predicate already answers TRUE.
+    ///
+    /// This is the half of "both switches are required" that the tests below do
+    /// not reach. They all pass `--enable-prefix-caching` and vary the model, so
+    /// they pin the PREDICATE arm; nothing pinned the FLAG arm. That matters now
+    /// that `AVAROK_GLM53_PREFIX_CACHE_UNPROVEN` can open the predicate for GLM at
+    /// runtime: opening it must never be enough by itself, and the general
+    /// statement — an open predicate plus no flag is still `NoPrefixCaching` — is
+    /// exactly what this asserts, without any test having to mutate a
+    /// process-global variable its siblings in this binary are reading.
+    #[test]
+    fn an_open_predicate_without_the_flag_still_installs_no_prefix_caching() {
+        let args = ServeArgs::parse_from(["spark"]);
+        assert!(
+            !args.prefix_caching_enabled(),
+            "clap default must stay false"
+        );
+
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert!(
+            config.kv_only_prefix_cache_is_safe(),
+            "this model's predicate is the open case the flag has to gate"
+        );
+        assert!(!build_prefix_cache(&args, &config).is_active());
     }
 
     #[test]

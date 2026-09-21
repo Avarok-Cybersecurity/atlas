@@ -19,6 +19,9 @@
 //! non-comparable instead of silently reported.
 
 use crate::hardware::Sensitivity;
+use crate::hardware::energy::EnergyWindow;
+use crate::hardware::energy_sampler::EnergyMeter;
+use crate::http::{GapSample, GapStats};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
@@ -35,6 +38,7 @@ use crate::plugin::{Plugin, PluginHandle};
 use crate::result::{
     BenchmarkResult, Cell, CellStyle, Column, LogLine, ResultTable, RunStatus, Stat,
 };
+use vacuity::{Delivery, VACUITY_FLOOR};
 
 const SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128";
 pub const METADATA: PluginMetadata = PluginMetadata::avarok(SUMMARY);
@@ -50,8 +54,9 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
              inverting in Atlas's favour, and C=128 is the widest rung the published ladder \
              quotes. Requests pin temperature 0.0 / \
              seed 0 and send reasoning_effort \"none\" so the ladder measures decode, not \
-             thinking. A cell where any request delivers under 80% of the output budget is \
-             flagged vacuous and its tok/s marked non-comparable. REQUIRED gate since \
+             thinking. A cell that delivers under 80% of its total output budget, or whose \
+             median request delivers under 80% of its own, is flagged vacuous and its tok/s \
+             marked non-comparable (`concurrency_vacuity.rs`). REQUIRED gate since \
              2026-08-15: under --pull-request-gate the run serves the calibrated instrument \
              (C=1..128, isl 512, osl 320 via the variant's param_overrides) and \
              self-verdicts against gate-filled per-rung floors; a sweep with any vacuous \
@@ -193,10 +198,85 @@ const CODE_TASK: &str = "Ignore the reference text above. Task: write a complete
     empty-heap, duplicate-key and single-element edge cases. Write every method and \
     every test out in full; do not summarize or elide any code.";
 
-/// Fraction of the output budget below which one request's completion makes
-/// its whole cell vacuous. 80%: a natural stop a few tokens early is fine; a
-/// 49-token burst against a 512-token budget is not a throughput measurement.
-const VACUITY_FLOOR: f64 = 0.8;
+/// The published ladder's fixture — `SUFFIX_ESSAY` in
+/// `bench/ladder38/harness_w55_conc_ladder.py`, byte for byte. The ladder the
+/// site quotes (ISL 128 / OSL 1024, C=1..128) was driven by that harness in
+/// its `essay` mode, so a gate cell that is to be compared with it must send
+/// the same bytes; `concurrency_verdict_tests` pins the whole prompt against
+/// SHA-256 digests taken from the Python harness itself.
+///
+/// Own constant, like `CODE_TASK` above, and NOT a `stats::PromptMode`
+/// variant: `stats.rs` sits in every required gate's invalidation closure
+/// (`gate::coverage`), so a prompt string added there would re-open BFCL,
+/// agentic, TTFT, KAT, video and vision certification for a change none of
+/// them can observe. This file re-opens exactly the two concurrency gates.
+const ESSAY_TASK: &str = " Using the text above only as a starting point, write a long, \
+    richly detailed essay that keeps introducing new specifics, examples and vocabulary. \
+    Never repeat a sentence or paraphrase one you have already written. \
+    Do not summarise and do not stop early.";
+
+/// The harness's `NONCE_WIDTH`: its per-request nonce is a FIXED-WIDTH field
+/// so that no request's prompt is a token longer than another's — the ladder
+/// is compared across rounds, and Qwen's tokenizer splits digits, so a
+/// variable-width tag (`c9` vs `c127`) would make prompt length depend on the
+/// request's index. Rendered as `[req 000042]`, exactly as the harness does.
+const ESSAY_NONCE_WIDTH: usize = 6;
+
+/// `[req NNNNNN]` for request `i`, reduced modulo `10^ESSAY_NONCE_WIDTH` so it
+/// can never widen — what the harness's `make_prompt` renders for nonce `i`
+/// (its `(base + seq) % NONCE_MODULUS`), so the digests it pins carry over.
+fn essay_nonce_tag(i: usize) -> String {
+    let modulus = 10usize.pow(ESSAY_NONCE_WIDTH as u32);
+    format!("req {:0width$}", i % modulus, width = ESSAY_NONCE_WIDTH)
+}
+
+/// Which prompt a cell sends. `Natural` and `Count` are the shared
+/// `stats::PromptMode` fixtures; `Essay` is this driver's own (see
+/// [`ESSAY_TASK`] for why it does not live beside them).
+///
+/// Chosen explicitly through the `prompt_mode` parameter and never defaulted
+/// into: the essay fixture changes the request's sampling pins as well as its
+/// bytes, so a sweep must say it wants the published instrument.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Fixture {
+    /// `Default` only so `ConcurrencySweep::default()` (the descriptor's
+    /// ctor) can exist before `configure` runs; `configure` always overwrites
+    /// it from `prompt_mode`, whose schema default is the one source.
+    #[default]
+    Natural,
+    Count,
+    /// The published ladder38 instrument's request: essay ask, fixed-width
+    /// nonce, and `presence_penalty` / `frequency_penalty` pinned to 0.0.
+    /// The harness pins both because the server otherwise fills an absent
+    /// `presence_penalty` from the model's `non_thinking` preset — 1.5 on
+    /// Qwen3.8-27B — and the published legs measured the penalty-free path
+    /// (`bench/ladder38/published.json`, `harness_shas.equivalence`).
+    Essay,
+}
+
+impl Fixture {
+    fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "essay" => Some(Fixture::Essay),
+            other => PromptMode::parse(other).map(|mode| match mode {
+                PromptMode::Natural => Fixture::Natural,
+                PromptMode::Count => Fixture::Count,
+            }),
+        }
+    }
+
+    /// The prompt identity for request `i` of a cell. The natural and count
+    /// fixtures keep their historical `c{i}` tags — every committed record
+    /// was measured on them — while the essay fixture uses the harness's
+    /// fixed-width nonce.
+    fn prefix_tag(self, i: usize) -> String {
+        match self {
+            Fixture::Natural | Fixture::Count => format!("c{i}"),
+            Fixture::Essay => essay_nonce_tag(i),
+        }
+    }
+}
+
 // `make_prompt` puts the distinguishing tag at byte zero of message content;
 // a wrong tag can share only the chat-template prefix, about 12 tokens against
 // the minimum 128-token ISL. An exact warmed prompt is block-aligned near the
@@ -219,15 +299,6 @@ struct RequestEvidence {
     /// parsed by the shared client and, until now, discarded here — which is
     /// why the sweep could see a cell's throughput halve and not say why.
     accepted_prediction_tokens: Option<usize>,
-}
-
-/// A cell is vacuous when ANY of its requests finished materially short of
-/// the output budget — the aggregate then divides missing tokens' wall time
-/// into real tokens and the number comparable to nothing.
-fn cell_is_vacuous(requests: &[RequestEvidence], osl: usize) -> bool {
-    requests
-        .iter()
-        .any(|r| (r.completion_tokens as f64) < VACUITY_FLOOR * osl as f64)
 }
 
 /// SSM snapshot slots one warm request holds LIVE on the server through a
@@ -304,8 +375,8 @@ struct PromptPlan {
     measured: Vec<String>,
 }
 
-fn prompt_plan(conc: usize, warmup: usize) -> PromptPlan {
-    let measured: Vec<String> = (0..conc).map(|i| format!("c{i}")).collect();
+fn prompt_plan(conc: usize, warmup: usize, fixture: Fixture) -> PromptPlan {
+    let measured: Vec<String> = (0..conc).map(|i| fixture.prefix_tag(i)).collect();
     PromptPlan {
         warmup_rounds: vec![measured.clone(); warmup],
         measured,
@@ -317,13 +388,23 @@ struct CellRow {
     isl: usize,
     conc: usize,
     ttft: Percentiles,
+    /// Client-clock ITL across the cell's requests.
     tpot: Percentiles,
+    /// Server-clock ITL across the cell's requests; empty on an older server.
+    server_tpot: Percentiles,
     e2e_p50: Option<f64>,
     throughput: f64,
+    /// Output tokens the batch delivered — `throughput`'s numerator, and the
+    /// denominator of any J/token derived from `energy`.
+    tokens: usize,
     errors: usize,
     requests: Vec<RequestEvidence>,
     vacuous: bool,
     cache_uncontrolled: bool,
+    /// The pooled arrival-gap distribution of the cell's requests.
+    gaps: Option<GapStats>,
+    /// GPU-rail joules over the measured batch window, when sampled.
+    energy: Option<EnergyWindow>,
 }
 
 impl CellRow {
@@ -419,7 +500,7 @@ pub struct ConcurrencySweep {
     cursor: usize,
     osl: usize,
     warmup: usize,
-    mode: PromptMode,
+    fixture: Fixture,
     timeout: Duration,
     rows: Vec<CellRow>,
     started: Option<Instant>,
@@ -427,6 +508,9 @@ pub struct ConcurrencySweep {
     /// Verdict floors (tok/s); all 0.0 = info verdict. Gate-filled per
     /// variant via `GATE_THRESHOLD_PARAMS`.
     floors: verdict::Floors,
+    /// The GPU-rail power sampler: started after the probe, idle baseline
+    /// taken before the first cell, one window per measured batch.
+    energy: EnergyMeter,
 }
 
 impl ConcurrencySweep {
@@ -458,26 +542,31 @@ impl ConcurrencySweep {
     }
 
     /// The prompt for one cell: ISL padding first (the prefix-cache
-    /// mechanics live in [`stats::make_prompt`]), the mode's task last.
+    /// mechanics live in [`stats::make_prompt`]), the fixture's task last.
     fn cell_prompt(&self, isl: usize, prefix_tag: &str) -> String {
-        match self.mode {
-            PromptMode::Count => stats::make_prompt(isl, PromptMode::Count, prefix_tag),
-            PromptMode::Natural => {
+        match self.fixture {
+            Fixture::Count => stats::make_prompt(isl, PromptMode::Count, prefix_tag),
+            Fixture::Natural => {
                 let mut p = stats::make_prompt(isl, PromptMode::Natural, prefix_tag);
                 p.push(' ');
                 p.push_str(CODE_TASK);
                 p
             }
+            // `[req NNNNNN] <filler>` + the essay ask: the harness's
+            // `make_prompt` output for the same nonce, byte for byte.
+            Fixture::Essay => {
+                let mut p = stats::make_prompt(isl, PromptMode::Natural, prefix_tag);
+                p.push_str(ESSAY_TASK);
+                p
+            }
         }
     }
 
-    /// One request. Returns `Err` only for transport failures — a completed
-    /// request with zero tokens is a data point, not an error.
-    async fn one(&self, isl: usize, prefix_tag: String) -> Result<http::ChatOutcome> {
-        let handle = self.handle()?;
-        let target = handle.target();
-        let body = json!({
-            "model": target.model,
+    /// The request body for one cell prompt — pure, so the sampling pins each
+    /// fixture sends can be asserted without an endpoint.
+    fn request_body(&self, model: &str, isl: usize, prefix_tag: &str) -> serde_json::Value {
+        let mut body = json!({
+            "model": model,
             "stream": true,
             "max_tokens": self.osl,
             // Pinned sampling: the ladder is a performance instrument, and an
@@ -489,14 +578,31 @@ impl ConcurrencySweep {
             // effort the template defaults to, and the cell measures
             // reasoning length instead of decode.
             "reasoning_effort": "none",
-            "messages": [{"role": "user", "content": self.cell_prompt(isl, &prefix_tag)}],
+            "messages": [{"role": "user", "content": self.cell_prompt(isl, prefix_tag)}],
         });
+        if self.fixture == Fixture::Essay {
+            // The published instrument's sampling parity (see `Fixture::Essay`).
+            // Only here: the natural and count fixtures' committed floors were
+            // calibrated with the server filling both from its preset, and a
+            // request-body change is invisible to `check_record`.
+            body["presence_penalty"] = json!(0.0);
+            body["frequency_penalty"] = json!(0.0);
+        }
+        body
+    }
+
+    /// One request. Returns `Err` only for transport failures — a completed
+    /// request with zero tokens is a data point, not an error.
+    async fn one(&self, isl: usize, prefix_tag: String) -> Result<http::ChatOutcome> {
+        let handle = self.handle()?;
+        let target = handle.target();
+        let body = self.request_body(&target.model, isl, &prefix_tag);
         http::chat_stream(target, &body, self.timeout).await
     }
 
     async fn run_cell(&mut self, isl: usize, conc: usize) -> Result<CellRow> {
         let handle = self.handle()?.clone();
-        let plan = prompt_plan(conc, self.warmup);
+        let plan = prompt_plan(conc, self.warmup, self.fixture);
         for (w, tags) in plan.warmup_rounds.iter().enumerate() {
             handle.check_cancelled()?;
             handle.status(format!(
@@ -542,10 +648,16 @@ impl ConcurrencySweep {
             .map(|tag| self.one(isl, tag))
             .collect();
         let outcomes = futures::future::join_all(futures).await;
-        let wall = batch_start.elapsed().as_secs_f64().max(1e-6);
+        let batch_end = Instant::now();
+        let wall = batch_end
+            .duration_since(batch_start)
+            .as_secs_f64()
+            .max(1e-6);
 
         let mut ttft = Vec::new();
         let mut tpot = Vec::new();
+        let mut server_tpot = Vec::new();
+        let mut gaps = GapSample::default();
         let mut e2e = Vec::new();
         let mut requests = Vec::new();
         let mut tokens = 0usize;
@@ -559,6 +671,10 @@ impl ConcurrencySweep {
                     if let Some(v) = o.tpot_ms {
                         tpot.push(v);
                     }
+                    if let Some(v) = o.server_tpot_ms() {
+                        server_tpot.push(v);
+                    }
+                    gaps.merge(&o.arrival_gaps);
                     e2e.push(o.e2e_ms);
                     tokens += o.completion_tokens;
                     requests.push(RequestEvidence {
@@ -577,7 +693,8 @@ impl ConcurrencySweep {
                 }
             }
         }
-        let vacuous = cell_is_vacuous(&requests, self.osl);
+        let delivery = Delivery::of(&requests, self.osl);
+        let vacuous = delivery.is_vacuous();
         // Matching prompt bytes reach the intended setup, but the endpoint's
         // usage is the oracle for whether the measured request actually used
         // the warmed prompt. A small shared chat-template prefix is not enough:
@@ -595,6 +712,14 @@ impl ConcurrencySweep {
         let warm_capable = warm_cache_capable(conc, slots, &earlier);
         let cache_uncontrolled = warm_capable && cache_is_uncontrolled(&requests, self.warmup);
         handle.info(evidence_line(isl, conc, &requests));
+        // The batch window, exactly: first request sent → last one complete.
+        let energy = self.energy.window(batch_start, batch_end);
+        if let Some(e) = &energy {
+            handle.info(format!(
+                "isl {isl} conc {conc}: {} · {tokens} tok in the window",
+                e.one_line(self.energy.idle())
+            ));
+        }
         if !warm_capable {
             handle.info(format!(
                 "isl {isl} conc {conc}: cache cold by construction — the server's {} \
@@ -608,15 +733,8 @@ impl ConcurrencySweep {
         }
         if vacuous {
             handle.warn(format!(
-                "isl {isl} conc {conc}: a request delivered under {:.0}% of the {}-token \
-                 budget (min {} tok) — this cell's tok/s is NOT comparable",
-                VACUITY_FLOOR * 100.0,
-                self.osl,
-                requests
-                    .iter()
-                    .map(|r| r.completion_tokens)
-                    .min()
-                    .unwrap_or(0),
+                "isl {isl} conc {conc}: this cell {} — its tok/s is NOT comparable",
+                delivery.describe(self.osl),
             ));
         }
         if cache_uncontrolled {
@@ -631,12 +749,16 @@ impl ConcurrencySweep {
             conc,
             ttft: Percentiles::of(&ttft),
             tpot: Percentiles::of(&tpot),
+            server_tpot: Percentiles::of(&server_tpot),
             e2e_p50: stats::percentile(&e2e, 50),
             throughput: tokens as f64 / wall,
+            tokens,
             errors,
             requests,
             vacuous,
             cache_uncontrolled,
+            gaps: gaps.stats(),
+            energy,
         })
     }
 
@@ -769,7 +891,11 @@ impl ConcurrencySweep {
             if let Some(a) = r.accept_len() {
                 m.insert(format!("c{c}_accept_len"), a);
             }
+            // Both ITL clocks, the jitter distribution and the batch's
+            // joules (`concurrency_instruments.rs`).
+            r.instrument_metrics(&format!("c{c}_"), self.energy.idle(), &mut m);
         }
+        self.energy.metrics(&mut m);
         if let Some(peak) = per_c.values().map(|r| r.throughput).max_by(f64::total_cmp) {
             m.insert("peak_aggregate_tok_s".to_string(), peak);
         }
@@ -915,9 +1041,13 @@ impl Benchmark for ConcurrencySweep {
                 // completions are caught by the vacuity floor instead of
                 // being promised away here.
                 "natural (default) poses a code-generation task that reliably fills the output \
-                 budget; count appends a counting instruction the model may still stop early on. \
-                 Neither forces the budget — under-budget cells are flagged vacuous.",
-                ParamKind::Choice(&["natural", "count"]),
+                 budget; count appends a counting instruction the model may still stop early on; \
+                 essay sends the published ladder38 request (bench/ladder38/harness_w55_conc_ladder.py \
+                 essay mode: the long-essay ask, a fixed-width request nonce, presence/frequency \
+                 penalty pinned to 0.0) byte for byte, so a cell can be compared with the published \
+                 ISL 128 / OSL 1024 ladder. None forces the budget — under-budget cells are \
+                 flagged vacuous.",
+                ParamKind::Choice(&["natural", "count", "essay"]),
                 ParamValue::Text("natural".into()),
             ),
             ParamSpec::new(
@@ -956,8 +1086,8 @@ impl Benchmark for ConcurrencySweep {
             .collect();
         self.osl = values.usize("osl")?;
         self.warmup = values.usize("warmup")?;
-        self.mode = PromptMode::parse(values.text("prompt_mode")?)
-            .context("prompt_mode must be natural or count")?;
+        self.fixture = Fixture::parse(values.text("prompt_mode")?)
+            .context("prompt_mode must be natural, count or essay")?;
         self.timeout = Duration::from_secs(values.usize("request_timeout_s")? as u64);
         let mut per_c = Vec::with_capacity(RUNGS.len());
         for (c, key, _, _) in RUNGS {
@@ -969,6 +1099,9 @@ impl Benchmark for ConcurrencySweep {
         };
         self.cursor = 0;
         self.rows.clear();
+        // A fresh meter per configuration; dropping a live sampler kills its
+        // child (`kill_on_drop`), so a re-run never inherits one.
+        self.energy = EnergyMeter::default();
         Ok(())
     }
 
@@ -987,6 +1120,11 @@ impl Benchmark for ConcurrencySweep {
             if total == 0 {
                 bail!("no cells to run — check the concurrency and input-length lists");
             }
+            // Power sampling starts here — model loaded, nothing in flight —
+            // so the idle baseline precedes the first measured window.
+            for line in self.energy.start(handle.target()).await {
+                handle.log(line.level, line.text);
+            }
             return Ok(BenchmarkResult::running("probe", self.elapsed())
                 .with_progress(0, total)
                 .log_line(LogLine::info(format!(
@@ -1001,6 +1139,8 @@ impl Benchmark for ConcurrencySweep {
             let vacuous = self.rows.iter().filter(|r| r.vacuous).count();
             let cache_uncontrolled = self.rows.iter().filter(|r| r.cache_uncontrolled).count();
             let non_mtp_arm = self.rows.iter().filter(|r| r.arm_is_not_mtp()).count();
+            // Stop the sampler FIRST: its measured cost is one of the keys.
+            let sampler_cost_line = self.energy.stop().await;
             // The verdict is computed over the SAME metrics map the gate
             // record carries (see `verdict::sweep_verdict`), so the two can
             // never disagree about a rung's value. Floors all-zero keeps the
@@ -1027,6 +1167,9 @@ impl Benchmark for ConcurrencySweep {
             .with_table(self.table())
             .with_metrics(metrics)
             .with_verdict(verdict);
+            if let Some(line) = sampler_cost_line {
+                frame = frame.log_line(line);
+            }
             // A "—" in the TPOT column is a measurement limit, not a broken
             // number, and it is worth saying which: the endpoint delivered the
             // whole reply in ONE SSE delta, so there is no inter-token interval
@@ -1046,9 +1189,11 @@ impl Benchmark for ConcurrencySweep {
         let (isl, conc) = self.cells[self.cursor];
         let row = self.run_cell(isl, conc).await?;
         let line = LogLine::info(format!(
-            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms · {:.1} tok/s{}",
+            "isl {isl} conc {conc}: ttft p50 {} ms · tpot p50 {} ms (server clock {} ms) · \
+             {:.1} tok/s{}",
             stats::fmt_ms(row.ttft.p50),
             stats::fmt_ms(row.tpot.p50),
+            stats::fmt_ms(row.server_tpot.p50),
             row.throughput,
             if row.vacuous { " (vacuous)" } else { "" }
         ));
@@ -1065,8 +1210,14 @@ impl Benchmark for ConcurrencySweep {
     }
 }
 
+#[path = "concurrency_instruments.rs"]
+mod instruments;
+
 #[path = "concurrency_verdict.rs"]
 mod verdict;
+
+#[path = "concurrency_vacuity.rs"]
+mod vacuity;
 
 #[cfg(test)]
 #[path = "concurrency_tests.rs"]
@@ -1075,3 +1226,7 @@ mod concurrency_tests;
 #[cfg(test)]
 #[path = "concurrency_verdict_tests.rs"]
 mod concurrency_verdict_tests;
+
+#[cfg(test)]
+#[path = "concurrency_vacuity_tests.rs"]
+mod concurrency_vacuity_tests;

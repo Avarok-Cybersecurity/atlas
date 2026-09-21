@@ -36,6 +36,8 @@ pub mod hermetic;
 pub mod record;
 mod record_path;
 pub use record_path::shard_suffix;
+pub mod record_serve;
+mod record_write;
 pub mod scoring;
 pub mod signing;
 pub mod taxon;

@@ -37,10 +37,10 @@
 /// TWO KINDS OF ID LIVE HERE, and the difference is worth stating because it
 /// is not visible from the strings:
 ///
-/// * **architecture classes** — `gb10`, `hopper`, `b200`, `metal`, `strix`.
+/// * **architecture classes** — `gb10`, `hopper`, `b200`, `b300`, `metal`, `strix`.
 ///   These are `kernels/<hw>/` directory names. One kernel set is compiled per
 ///   architecture, so this is the unit a `-arch=` and a PTX artefact exist for.
-/// * **bench SKUs** — `h100`, `h200`, `gh200`, `b200`, `gb200`, `mi300x`.
+/// * **bench SKUs** — `h100`, `h200`, `gh200`, `b200`, `gb200`, `b300`, `mi300x`.
 ///   These are what an operator types at `--hardware`, what
 ///   `GateBaseline.hardware` is keyed by, and what the campaign results
 ///   template's columns are. This is the unit a THRESHOLD is meaningful for.
@@ -50,7 +50,7 @@
 /// 43%. Both kinds must be registered: the arch classes because
 /// `every_kernel_hardware_dir_is_registered` demands it, the SKUs because
 /// `--hardware` validates against this list.
-pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
+pub const KNOWN_HARDWARE_IDS: [&str; 12] = [
     // NVIDIA GB10 / DGX Spark — the box every committed record was measured on.
     // Architecture class and SKU at once.
     "gb10",
@@ -70,12 +70,13 @@ pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
     // the architecture class and the discrete SXM SKU are the same id, so this
     // entry wears both hats. GB200 is the Grace-Blackwell superchip: same
     // silicon and same kernel set, its own baseline key, for exactly the
-    // reason `gh200` has one. B300 / GB300 are SM 10.3 and get NEITHER — a
-    // different arch (`sm_103a`, not forward-compatible from `sm_100a`) that
-    // Atlas ships no target for, so registering them would promise a build
-    // that does not exist.
+    // reason `gh200` has one.
     "b200",
     "gb200",
+    // Blackwell Ultra: separate SM 10.3 target and discrete B300 baseline key.
+    // Recognition is not a certification or measured baseline. GB300 remains
+    // distinct and unregistered; never score it against B300/B200 thresholds.
+    "b300",
     // Apple Silicon, via the Metal backend.
     "metal",
     // AMD Strix Halo — Vulkan and HIP are separate targets and separate
@@ -100,13 +101,14 @@ pub const KNOWN_HARDWARE_IDS: [&str; 11] = [
 /// and generation in the key (`a100sxm480gb`) and so cannot silently merge two
 /// parts. Absent is therefore the SAFE default, and the reason this returns
 /// `Option` rather than guessing.
-const SKU_TOKENS: [(&str, &str); 7] = [
+const SKU_TOKENS: [(&str, &str); 8] = [
     ("gb10", "gb10"),
     ("h100", "h100"),
     ("h200", "h200"),
     ("gh200", "gh200"),
     ("b200", "b200"),
     ("gb200", "gb200"),
+    ("b300", "b300"),
     ("mi300x", "mi300x"),
 ];
 
@@ -121,11 +123,10 @@ const SKU_TOKENS: [(&str, &str); 7] = [
 /// `h100` and `h200` entries sit unused.
 ///
 /// `None` means "no opinion", not "unknown box": the caller keeps its existing
-/// normalisation, which never merges two parts. That is why `"NVIDIA B300"`
-/// and the A100 capacities are absent rather than mapped — a wrong merge is
-/// silent, a missing entry costs one line. B300/GB300 are SM 10.3 and Atlas
-/// compiles nothing for them; the A100 capacities differ only in memory, so a
-/// family-level guess would merge two parts whose numbers are not comparable.
+/// normalisation, which never merges two parts. GB300 remains absent rather
+/// than sharing the new B300 key: a wrong merge is silent. A100 capacities
+/// also remain separate; a family-level guess would merge parts whose
+/// numbers are not comparable.
 ///
 /// One SKU family, one id. `H100 PCIe` and `H100 SXM` share `h100` even though
 /// their bandwidths differ, because the campaign's unit of comparison is the
@@ -173,11 +174,8 @@ mod tests {
         assert!(!is_known_hardware_id("h800"));
         assert!(!is_known_hardware_id("H100"));
         assert!(!is_known_hardware_id(""));
-        // B300 / GB300 are SM 10.3 (`sm_103a`), a different architecture from
-        // B200's 10.0 with no forward compatibility between them, and Atlas
-        // ships no target for either. They hold the slot `b200` held before
-        // `kernels/b200/` landed.
-        assert!(!is_known_hardware_id("b300"));
+        // GB300 has no registered benchmark SKU; sharing SM 10.3 with B300
+        // does not establish interchangeable thresholds.
         assert!(!is_known_hardware_id("gb300"));
     }
 
@@ -191,10 +189,10 @@ mod tests {
     /// this list holds all of them rather than one set.
     #[test]
     fn the_kernel_arch_classes_and_the_bench_skus_are_both_registered() {
-        for arch_class in ["gb10", "hopper", "b200"] {
+        for arch_class in ["gb10", "hopper", "b200", "b300"] {
             assert!(is_known_hardware_id(arch_class), "{arch_class}");
         }
-        for sku in ["h100", "h200", "b200", "gb200"] {
+        for sku in ["h100", "h200", "b200", "gb200", "b300"] {
             assert!(is_known_hardware_id(sku), "{sku}");
         }
     }
@@ -246,11 +244,8 @@ mod tests {
     #[test]
     fn an_unlisted_part_answers_none_rather_than_the_nearest_id() {
         for name in [
-            // Blackwell ULTRA. B300/GB300 are SM 10.3 and `sm_103a` PTX is a
-            // different, non-interchangeable target from B200's `sm_100a`;
-            // Atlas compiles neither. Filing them under `b200` would score a
-            // box Atlas cannot even build for against B200 thresholds.
-            "NVIDIA B300",
+            // Grace Blackwell Ultra must not inherit discrete B300/B200
+            // thresholds merely because its name contains the same token.
             "NVIDIA GB300",
             "NVIDIA A100-SXM4-40GB",
             "NVIDIA A100-SXM4-80GB",
@@ -313,6 +308,20 @@ mod tests {
             assert_ne!(got, Some("h200"), "{name}");
             assert_ne!(got, Some("gh200"), "{name}");
         }
+    }
+
+    #[test]
+    fn b300_has_its_own_key_and_gb300_is_not_misfiled() {
+        assert!(is_known_hardware_id("b300"));
+        for name in ["NVIDIA B300", "NVIDIA B300 SXM6 AC", "nvidia b300"] {
+            assert_eq!(hardware_id_from_gpu_name(name), Some("b300"));
+        }
+        // Grace Blackwell Ultra is a distinct SKU: keep its fallback identity
+        // until it earns its own registered baseline class, never B300/B200.
+        for name in ["NVIDIA GB300", "NVIDIA GB300 NVL72"] {
+            assert_eq!(hardware_id_from_gpu_name(name), None);
+        }
+        assert!(!is_known_hardware_id("gb300"));
     }
 
     /// Oracle: the registry above. An id the SKU table can produce but

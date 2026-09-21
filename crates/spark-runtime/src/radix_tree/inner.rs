@@ -68,6 +68,14 @@ pub(super) struct RadixTreeInner {
     /// the pre-LoRA single-root tree.
     roots: HashMap<u64, NodeId>,
     access_counter: u64,
+    /// Whether `walk` may end a match INSIDE a block, handing the requester a
+    /// block another owner still writes (issue #1193). Resolved once at
+    /// construction from `AVAROK_PREFIX_SUBBLOCK` — see
+    /// [`super::partial_tail`] for why the shipped value is `false` and what
+    /// that costs. Carried as state rather than read at the match site so the
+    /// unsound arms stay deterministically exercisable from a test binary,
+    /// where a process-global env read is not.
+    pub(super) partial_tail_sharing: bool,
 }
 
 impl RadixTreeInner {
@@ -90,6 +98,7 @@ impl RadixTreeInner {
             free_nodes: Vec::new(),
             roots,
             access_counter: 0,
+            partial_tail_sharing: super::partial_tail::partial_tail_sharing_enabled(),
         }
     }
 
@@ -186,21 +195,17 @@ impl RadixTreeInner {
         // This enables warm-cache TTFT optimization by matching ALL prompt tokens
         // even when total % block_size != 0.
         let remainder = tokens.len() - matched_tokens;
-        // AVAROK_PREFIX_SUBBLOCK=0 restricts matching to WHOLE blocks.
-        //
-        // The sub-block arms below return a `matched_tokens` that is NOT
-        // block-aligned, and they do it by reusing a block whose KV was
-        // computed for a LONGER key — i.e. for a different continuation past
-        // our suffix. If any consumer treats `matched_tokens` as a block
-        // boundary, the tail of that block is foreign context the model then
-        // attends to. This lever exists to A/B exactly that.
-        // Resolved once: `walk` runs on every prefix lookup. This is one of
-        // the #936 arm-ladder levers, so it must stay operable — caching does
-        // not change that, since nothing mutates the environment after start.
-        static SUBBLOCK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let subblock_ok =
-            *SUBBLOCK.get_or_init(|| std::env::var("AVAROK_PREFIX_SUBBLOCK").as_deref() != Ok("0"));
-        if subblock_ok
+        // Both arms below are OFF by default (issue #1193). They return a
+        // `matched_tokens` that is NOT block-aligned, and they do it by handing
+        // out a block that stays another owner's: the requester's very next KV
+        // rows (positions `matched..block_end`) land in a block the donor is
+        // still decoding into (partial-suffix arm) or that other sequences map
+        // read-only as committed prompt K/V (child-key arm). There is no
+        // copy-on-write anywhere in the paged KV path, so that is two live
+        // writers on one set of physical slots. `AVAROK_PREFIX_SUBBLOCK=1`
+        // restores the pre-#1193 behaviour for A/B only; see
+        // `super::partial_tail` for the measurement and the cost of OFF.
+        if self.partial_tail_sharing
             && remainder > 0
             && remainder < block_size
             && matched_tokens == num_full_blocks * block_size
@@ -229,6 +234,9 @@ impl RadixTreeInner {
             {
                 // Partial suffix doesn't have context_hash — only match if parent chain matched.
                 // ref_count check not applicable to partial suffix (it's metadata, not a node).
+                // #1193: this block belongs to a sequence that published it at
+                // END OF PREFILL and is still decoding into it. Reachable only
+                // with `AVAROK_PREFIX_SUBBLOCK=1`.
                 matched_blocks.push(partial_block);
                 matched_disk.push(partial_disk);
                 matched_tokens += remainder;

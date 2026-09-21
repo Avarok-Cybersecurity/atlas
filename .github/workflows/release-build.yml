@@ -103,6 +103,57 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # Cache-poisoning guard. CodeQL `actions/cache-poisoning` flags the
+      # `cargo test` step and the release-notes step below, and it is right:
+      # `inputs.ref` flows into the checkouts that precede them, after which
+      # this workflow COMPILES AND RUNS that ref's code (build scripts under
+      # `cargo test`, and `scripts/release-notes.sh` directly).
+      #
+      # A workflow_dispatch run carries default-branch cache WRITE scope no
+      # matter which ref it builds, so an arbitrary ref lets whoever can
+      # dispatch poison the cache that every later main build restores from.
+      # The existing `save-if: github.event_name != 'workflow_dispatch'` on
+      # Swatinem/rust-cache does NOT close this: it stops that one action from
+      # saving, while any `run` step still holds the scope's write token.
+      #
+      # dev-release.yml solved this by taking no `ref` input at all. release.yml
+      # needs one, so constrain it instead: the ref must already be contained in
+      # the default branch. A release is cut from main or from a tag on main, so
+      # this rejects only refs that were never on main -- which is exactly the
+      # untrusted case. No `v*` tag has ever been cut outside it.
+      #
+      # Asks the API rather than the local clone: this job checks out at the
+      # default shallow depth, where `git merge-base --is-ancestor` answers
+      # wrongly with NO warning. `compare/<base>...<ref>` reports `behind` when
+      # ref is an ancestor of base, `identical` when equal.
+      #
+      # `REF` goes through env, never interpolated into the script body: a ref
+      # is caller-controlled text and `${{ }}` inside `run:` is a shell
+      # injection site.
+      - name: Ref must be contained in the default branch
+        if: ${{ inputs.ref != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          base=$(gh api "repos/$REPO" --jq .default_branch)
+          status=$(gh api "repos/$REPO/compare/$base...$REF" --jq .status)
+          case "$status" in
+            identical|behind)
+              echo "ref '$REF' is contained in '$base' (compare: $status)"
+              ;;
+            *)
+              # One line: a `::error::` annotation does not survive a newline.
+              echo "::error::ref '$REF' is not contained in '$base' (compare: $status); this workflow builds only refs already on the default branch"
+              echo "This job compiles and runs the checked-out ref while the run"
+              echo "holds default-branch cache write scope. Merge '$REF' first,"
+              echo "or build from a tag that is already on '$base'."
+              exit 1
+              ;;
+          esac
+
       - name: Validate matrix shape
         run: |
           set -euo pipefail

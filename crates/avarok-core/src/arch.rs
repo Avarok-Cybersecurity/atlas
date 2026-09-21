@@ -76,8 +76,8 @@ pub fn parse_sm_arch(arch: &str) -> Option<SmArch> {
 /// an operator what to rebuild instead of leaving them to guess. `None` means
 /// Atlas ships nothing for that GPU, and is the honest answer for every CC not
 /// listed: naming a target that cannot run either would send someone to
-/// rebuild an image that fails the same way (SM 10.3 Blackwell Ultra against
-/// the 10.0 `sm_100a` build is the live example).
+/// rebuild an image that fails the same way. B200 and B300 have separate
+/// targets because their architecture-specific PTX is not interchangeable.
 ///
 /// HAND-MAINTAINED, and deliberately so, even though
 /// `kernels/<hw>/HARDWARE.toml` already declares `compute_capability` for each
@@ -93,9 +93,9 @@ pub fn parse_sm_arch(arch: &str) -> Option<SmArch> {
 pub fn target_hint(device_cc: (u32, u32)) -> Option<&'static str> {
     match device_cc {
         (9, 0) => Some("hopper"),
-        // Blackwell datacentre. NOT (10, 3): B300/GB300 are `sm_103a`, a
-        // separate arch-specific target that does not exist in `kernels/`.
+        // Separate arch-specific datacentre targets: their PTX is not interchangeable.
         (10, 0) => Some("b200"),
+        (10, 3) => Some("b300"),
         (12, 1) => Some("gb10"),
         _ => None,
     }

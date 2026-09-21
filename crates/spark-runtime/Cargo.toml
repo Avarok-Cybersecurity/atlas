@@ -104,6 +104,9 @@ toml = "0.8"
 [lints]
 workspace = true
 
+[dev-dependencies]
+tempfile = "3"
+
 # ── Target-conditional backends ───────────────────────────────────────────
 # Cargo cannot make a FEATURE target-conditional, but it can make a
 # DEPENDENCY target-conditional -- and that is the half that matters. The

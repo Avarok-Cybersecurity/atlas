@@ -1,5 +1,6 @@
 {
-  "generated_utc": "2026-09-16T23:47:53Z",
+  "generated_utc": "2026-09-19T23:09:39Z",
+  "manifest": "bench/ladder38/published.json",
   "title": "Qwen3.8-27B NVFP4 concurrency ladder",
   "subtitle": "Atlas vs vLLM 0.27.1, C=1..128, every workload axis matched",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
@@ -27,6 +28,7 @@
   "harness_shas": {
     "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
     "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
+    "1f10d4887b": "The 2026-08-18 C=2 hardening pair (c2_atlas_dgx2_20260818.json and c2_vllm_mtp_dgx2_20260818.json). Both raw files carry this one driver sha, which is what makes them a pair: same harness revision, same day, same box.",
     "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
   },
   "harness_repo_sha256": "41e242c072a1b90be55acc8ba60cd751b66ec0d68e59bd1c0fe1e6d29c62a400",
@@ -163,6 +165,17 @@
       "env": "HF_HUB_OFFLINE=1",
       "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype fp8 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
       "speculation": "vLLM's own Qwen3_5MTP, K=4 (num_speculative_tokens=3)",
+      "instrument": {
+        "isl": 128,
+        "osl": 1024,
+        "max_model_len": 2048,
+        "max_batch_size": 128,
+        "kv_cache_dtype": "fp8",
+        "reps": 3,
+        "warmup": 1,
+        "temperature": 0,
+        "seed": 42
+      },
       "source_note": "The apples-to-apples reference: ctx 2048, batch cap 128, util 0.85, fp8 KV, prefix caching, thinking off and MTP K=4 -- every axis matched to Atlas. vLLM at its best, not a handicapped baseline.",
       "rungs": [
         {
@@ -278,6 +291,18 @@
       "env": "HF_HUB_OFFLINE=1",
       "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 4096 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype bfloat16",
       "speculation": "none",
+      "instrument": {
+        "isl": 128,
+        "osl": 1024,
+        "max_model_len": 4096,
+        "max_batch_size": 128,
+        "kv_cache_dtype": "bf16",
+        "reps": 3,
+        "warmup": 1,
+        "temperature": 0,
+        "seed": 42
+      },
+      "instrument_note": "kv_cache_dtype bf16 is the command's `--kv-cache-dtype bfloat16`, spelled as an Atlas gate record spells serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against.",
       "source_note": "Unmatched fingerprint: bf16 KV, ctx 4096, no speculation. It beats vLLM+MTP at C=128 (390.42 vs 358.57) because MTP verification costs vLLM more than it gains 128-wide. Plotted for completeness. The published ratio uses the matched MTP leg, not this one.",
       "rungs": [
         {
