@@ -303,9 +303,9 @@ static __device__ __forceinline__ float moe_v41_glibc_expf(float x) {
   const double N = 32.0, InvLn2N = 0x1.71547652b82fep+0 * N, C0 = 0x1.c6af84b912394p-5 / N / N / N, C1 = 0x1.ebfce50fac4f3p-3 / N / N, C2 = 0x1.62e42ff0c52d6p-1 / N;
   unsigned int abstop = (__float_as_uint(x) >> 20) & 0x7ff;
   if (abstop >= ((__float_as_uint(88.0f) >> 20) & 0x7ff)) {
-    if (__float_as_uint(x) == __float_as_uint(-INFINITY)) return 0.0f;
-    if (abstop >= ((__float_as_uint(INFINITY) >> 20) & 0x7ff)) return x + x;
-    if (x > 0x1.62e42ep6f) return INFINITY;
+    if (__float_as_uint(x) == 0xff800000u) return 0.0f;
+    if (abstop >= ((0x7f800000u >> 20) & 0x7ff)) return x + x;
+    if (x > 0x1.62e42ep6f) return __int_as_float(0x7f800000);
     if (x < -0x1.9fe368p6f) return 0.0f;
   }
   double z = __dmul_rn(InvLn2N, (double)x); double kd = round(z); long long ki = (long long)kd; double r = __dsub_rn(z, kd);
@@ -314,12 +314,12 @@ static __device__ __forceinline__ float moe_v41_glibc_expf(float x) {
   return (float)y;
 }
 static __device__ __forceinline__ float moe_v41_glibc_log1pf(float x) {
-  const float ln2_hi = 6.9313812256e-01f, ln2_lo = 9.0580006145e-06f, two25 = 3.355443200e+07f;
+  const float ln2_hi = 6.9313812256e-01f, ln2_lo = 9.0580006145e-06f;
   const float Lp1 = 6.6666668653e-01f, Lp2 = 4.0000000596e-01f, Lp3 = 2.8571429849e-01f, Lp4 = 2.2222198546e-01f, Lp5 = 1.8183572590e-01f, Lp6 = 1.5313838422e-01f, Lp7 = 1.4798198640e-01f;
   float hfsq, f, c = 0.0f, s, z, R, u; int k, hx, hu, ax;
   hx = (int)__float_as_uint(x); ax = hx & 0x7fffffff; k = 1;
   if (hx < 0x3ed413d7) {
-    if (ax >= 0x3f800000) { if (x == -1.0f) return -two25 / 0.0f; else return (x - x) / (x - x); }
+    if (ax >= 0x3f800000) { if (x == -1.0f) return __int_as_float(0xff800000); else return (x - x) / (x - x); }
     if (ax < 0x31000000) { if (ax < 0x24800000) return x; else return __fmaf_rn(-__fmul_rn(x, x), 0.5f, x); }
     if (hx > 0 || hx <= (int)0xbe95f61f) { k = 0; f = x; hu = 1; }
   }
