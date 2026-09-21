@@ -39,6 +39,8 @@ pub mod expert_stream;
 mod names;
 mod shards;
 mod sidecar;
+mod kimi_tp_slice;
+mod kimi_gguf_load;
 mod value_transform;
 
 pub use config::config_from_gguf_dir;
@@ -109,6 +111,10 @@ pub struct GgufLoader {
     pub ep_rank: usize,
     /// EP world size. When > 1, remote expert slices are skipped.
     pub ep_world_size: usize,
+    /// TP rank for keep-packed column splits (optional; 0 when unused).
+    pub tp_rank: usize,
+    /// TP world; when >1, column-parallel Direct keep-packed tensors upload a row slice.
+    pub tp_world_size: usize,
     /// Total number of MoE experts in the model (for EP partitioning).
     pub num_experts: usize,
     /// Override for the peak-memory multiplier in the pre-flight OOM check.
@@ -127,6 +133,8 @@ impl GgufLoader {
         Self {
             ep_rank: 0,
             ep_world_size: 1,
+            tp_rank: 0,
+            tp_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
         }
@@ -137,9 +145,18 @@ impl GgufLoader {
         Self {
             ep_rank,
             ep_world_size,
+            tp_rank: 0,
+            tp_world_size: 1,
             num_experts,
             peak_memory_multiplier: None,
         }
+    }
+
+    /// Set TP rank/world for keep-packed column-parallel row slices.
+    pub fn with_tp(mut self, tp_rank: usize, tp_world_size: usize) -> Self {
+        self.tp_rank = tp_rank;
+        self.tp_world_size = tp_world_size.max(1);
+        self
     }
 
     /// True if expert `idx` lives on a remote EP rank and should be skipped.
@@ -168,6 +185,7 @@ impl GgufLoader {
         layer: usize,
         proj: &str,
         skipped: &mut usize,
+        arch: &str,
     ) -> Result<()> {
         let count = *shape
             .first()
@@ -181,7 +199,11 @@ impl GgufLoader {
                 continue;
             }
             let ptr = base_ptr.offset(e * per_bytes);
-            let name = names::expert_name(layer, proj, e);
+            let name = if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3") {
+                names::kimi_k3_expert_name(layer, proj, e)
+            } else {
+                names::expert_name(layer, proj, e)
+            };
             weights.insert(
                 name,
                 WeightTensor {
@@ -333,14 +355,26 @@ impl super::WeightLoader for GgufLoader {
             }
         };
         // Pre-flight: combined BF16 footprint of every shard plus the sidecar.
-        let mut est = sidecar::est_bf16(&bb_gguf, &arch);
-        for p in shard_paths.iter().skip(1) {
-            let (_f, _m, g) = sidecar::open_gguf(p)?;
-            est += sidecar::est_bf16(&g, &arch);
-        }
-        if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
-            est += sidecar::est_bf16(mm_gguf, mm_arch);
-        }
+        // kimi-k3 keep-packed: estimate on-disk quant bytes (not BF16 expand).
+        let est = if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") {
+            let n = kimi_gguf_load::estimate_resident_bytes(self.tp_world_size);
+            tracing::info!(
+                "K3 GGUF keep-packed preflight: ~{:.2} GiB/rank packed experts+attn (tp={})",
+                n as f64 / (1024.0 * 1024.0 * 1024.0),
+                self.tp_world_size.max(1)
+            );
+            n
+        } else {
+            let mut est = sidecar::est_bf16(&bb_gguf, &arch);
+            for p in shard_paths.iter().skip(1) {
+                let (_f, _m, g) = sidecar::open_gguf(p)?;
+                est += sidecar::est_bf16(&g, &arch);
+            }
+            if let (Some((_, _, mm_gguf)), Some(mm_arch)) = (mmproj.as_ref(), mmproj_arch.as_ref()) {
+                est += sidecar::est_bf16(mm_gguf, mm_arch);
+            }
+            est
+        };
         preflight_oom(gpu, est, oom_reserve_bytes, self.peak_memory_multiplier)?;
 
         let mut weights: HashMap<String, WeightTensor> = HashMap::new();
@@ -430,6 +464,9 @@ impl super::WeightLoader for GgufLoader {
         check_oom_guard(gpu, oom_reserve_bytes, "weight loading (GGUF)")?;
         tracing::info!("Loaded {} weight tensors (GGUF → BF16)", weights.len());
         let mut store = WeightStore::from_map(weights);
+        if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") && self.tp_world_size > 1 {
+            store.prepartitioned_tp = Some((self.tp_rank, self.tp_world_size));
+        }
         for (name, t) in deferred {
             store.defer(name, t);
         }

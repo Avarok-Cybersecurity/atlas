@@ -51,13 +51,29 @@ pub(crate) fn load_weight_store(
         config.model_type.as_str(),
         "kimi_k3" | "kimi_linear" | "Kimi-K3"
     ) {
+        // Unsloth GGUF: TP-slice keep-packed experts; EP must stay 1.
+        if spark_runtime::weights::find_gguf(model_dir).is_some() {
+            anyhow::ensure!(
+                ep_size <= 1,
+                "K3 GGUF keep-packed path is TP-only; refuse --ep-size {ep_size}"
+            );
+            tracing::info!(
+                tp_rank = config.tp_rank,
+                tp_world = config.tp_world_size,
+                "K3 GGUF: using GgufLoader keep-packed TP path"
+            );
+            let mut loader = spark_runtime::weights::GgufLoader::new()
+                .with_tp(config.tp_rank, config.tp_world_size.max(1));
+            loader.peak_memory_multiplier = Some(1.0);
+            let store = loader
+                .load(model_dir, gpu, oom_reserve_bytes)
+                .context("Failed to load K3 GGUF weights")?;
+            tracing::info!("Loaded {} K3 GGUF weight tensors", store.len());
+            return Ok(store);
+        }
         anyhow::ensure!(
             ep_size == 1,
-            "K3 rank-aware loading supports TP only; expert parallelism is not implemented"
-        );
-        anyhow::ensure!(
-            spark_runtime::weights::find_gguf(model_dir).is_none(),
-            "K3 rank-aware loading requires safetensors"
+            "K3 rank-aware safetensors loading supports TP only; expert parallelism is not implemented"
         );
         tracing::info!(
             rank = config.tp_rank,

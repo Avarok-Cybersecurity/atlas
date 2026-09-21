@@ -200,6 +200,10 @@ impl GgmlType {
                 Q2Group::G128 => (128, 34),
                 Q2Group::G64 => (64, 18),
             },
+            // llama.cpp: sizeof(block_iq2_xs) = 2 + 64 + 8 = 74; IQ3_XXS = 2 + 96 = 98.
+            Iq2Xs => (256, 74),
+            Iq3Xxs => (256, 98),
+            Iq2Xxs => (256, 66),
             other => bail!("block layout not defined for {other:?}"),
         })
     }

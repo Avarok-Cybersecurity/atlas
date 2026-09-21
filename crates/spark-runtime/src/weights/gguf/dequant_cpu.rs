@@ -12,6 +12,8 @@
 use anyhow::{Context, Result, bail};
 
 mod blocks;
+pub mod iq2_xs;
+pub mod iq3_xxs;
 
 #[cfg(test)]
 mod tests;
@@ -47,6 +49,8 @@ pub enum GgmlType {
     Q2_0 {
         group: usize,
     },
+    Iq2Xs,
+    Iq3Xxs,
 }
 
 impl GgmlType {
@@ -73,6 +77,8 @@ impl GgmlType {
             34 => Self::Tq1_0,
             35 => Self::Tq2_0,
             42 => Self::Q2_0 { group: q2_0_group },
+            17 => Self::Iq2Xs,
+            18 => Self::Iq3Xxs,
             other => bail!("unsupported / unknown ggml type id {other}"),
         })
     }
@@ -91,6 +97,7 @@ impl GgmlType {
             | Self::Tq1_0
             | Self::Tq2_0 => 256,
             Self::Q2_0 { group } => group,
+            Self::Iq2Xs | Self::Iq3Xxs => 256,
         }
     }
 
@@ -119,6 +126,8 @@ impl GgmlType {
                 }
                 2 + group / 4
             }
+            Self::Iq2Xs => 74,
+            Self::Iq3Xxs => 98,
         })
     }
 }
@@ -247,6 +256,8 @@ fn dequant_block(t: GgmlType, blk: &[u8], out: &mut [f32]) {
         GgmlType::Q5_0 => blocks::dequant_q5_0(blk, out),
         GgmlType::Q5_1 => blocks::dequant_q5_1(blk, out),
         GgmlType::Q8_0 => blocks::dequant_q8_0(blk, out),
+        GgmlType::Iq2Xs => iq2_xs::dequant_iq2_xs(blk, out),
+        GgmlType::Iq3Xxs => iq3_xxs::dequant_iq3_xxs(blk, out),
         GgmlType::Q8_1 => blocks::dequant_q8_1(blk, out),
         GgmlType::Q2K => blocks::dequant_q2_k(blk, out),
         GgmlType::Q3K => blocks::dequant_q3_k(blk, out),

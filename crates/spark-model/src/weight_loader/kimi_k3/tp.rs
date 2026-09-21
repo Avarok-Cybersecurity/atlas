@@ -50,7 +50,21 @@ pub fn load_sharded(
     config: &ModelConfig,
     gpu: &dyn GpuBackend,
 ) -> Result<(DenseWeight, WeightMeta)> {
-    let t = store.get(name)?;
+    let t = match store.get(name) {
+        Ok(t) => t,
+        Err(e) => {
+            // GGUF AttnRes/MLPRes: one score vector mapped to *_res_proj only.
+            if let Some(proj) = name.strip_suffix("_res_norm.weight") {
+                let alt = format!("{proj}_res_proj.weight");
+                store.get(&alt).map_err(|_| e)?
+            } else if let Some(stem) = name.strip_suffix("output_attn_res_norm.weight") {
+                let alt = format!("{stem}output_attn_res_proj.weight");
+                store.get(&alt).map_err(|_| e)?
+            } else {
+                return Err(e);
+            }
+        }
+    };
     let (kind, full_out, full_in) = tensor_plan(name, mixer, mlp, config);
     if is_prepartitioned(store, config)? {
         if kind != TpShardKind::Replicated {
@@ -78,7 +92,13 @@ pub fn load_sharded(
                 t.shape
             );
             ensure!(
-                matches!(t.dtype, WeightDtype::BF16 | WeightDtype::FP32),
+                matches!(
+                    t.dtype,
+                    WeightDtype::BF16
+                        | WeightDtype::FP32
+                        | WeightDtype::Q8_0
+                        | WeightDtype::Iq2Xs
+                ),
                 "{name}: unsupported dense prepartitioned dtype {:?}",
                 t.dtype
             );
@@ -94,6 +114,25 @@ pub fn load_sharded(
     }
 
     if config.tp_world_size.max(1) <= 1 || kind == TpShardKind::Replicated {
+        return Ok((
+            DenseWeight { weight: t.ptr },
+            WeightMeta {
+                name: name.to_string(),
+                dtype: t.dtype,
+                numel: t.num_elements(),
+            },
+        ));
+    }
+    // Keep-packed GGUF (Q8/IQ*): cannot BF16-shard in place. Under EP-overlapped
+    // TP the loader replicates these; expert residency is EP-local.
+    if matches!(
+        t.dtype,
+        WeightDtype::Q8_0
+            | WeightDtype::Q2K
+            | WeightDtype::Q3K
+            | WeightDtype::Iq2Xs
+            | WeightDtype::Iq3Xxs
+    ) {
         return Ok((
             DenseWeight { weight: t.ptr },
             WeightMeta {
@@ -147,6 +186,16 @@ fn as_bf16(
             let dst = gpu.alloc(bf.len())?;
             gpu.copy_h2d(&bf, dst)?;
             Ok((dst, true))
+        }
+        WeightDtype::Q8_0
+        | WeightDtype::Q2K
+        | WeightDtype::Q3K
+        | WeightDtype::Iq2Xs
+        | WeightDtype::Iq3Xxs => {
+            // GGUF keep-packed: leave resident. TP column/row splits for these
+            // dtypes are applied at GGUF upload when ep/tp overlap; bind uses
+            // the pointer as-is (EP owns expert residency).
+            Ok((ptr, false))
         }
         other => bail!("K3 TP shard: unsupported dtype {other:?}"),
     }

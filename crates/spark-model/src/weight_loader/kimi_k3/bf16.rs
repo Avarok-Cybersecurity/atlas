@@ -128,7 +128,11 @@ pub fn load_layers(
     let out_proj_n = text_key(config, "model.output_attn_res_proj.weight");
     let out_norm_n = text_key(config, "model.output_attn_res_norm.weight");
     let out_proj_t = store.get(&out_proj_n)?;
-    let out_norm_t = store.get(&out_norm_n)?;
+    // GGUF ships one F32 score vector; atlas wants proj+norm. Alias when absent.
+    let out_norm_t = match store.get(&out_norm_n) {
+        Ok(t) => t,
+        Err(_) => out_proj_t,
+    };
     let shared = Arc::new(K3HostShared {
         config: config.clone(),
         graph: graph.clone(),
@@ -156,7 +160,10 @@ pub fn load_layers(
     }
     let mut layers: Vec<Box<dyn TransformerLayer>> = Vec::with_capacity(graph.layers.len());
     for spec in &graph.layers {
-        let keys = layer_keys(config, spec.index, spec.mixer, spec.mlp, config.num_experts);
+        let keys = filter_keys_for_ep(
+            layer_keys(config, spec.index, spec.mixer, spec.mlp, config.num_experts),
+            config,
+        );
         let mut weights = Vec::with_capacity(keys.len());
         let mut weight_meta = Vec::with_capacity(keys.len());
         let mut mxfp4_experts: Vec<(String, QuantizedWeight)> = Vec::new();
@@ -181,6 +188,42 @@ pub fn load_layers(
         }));
     }
     Ok(layers)
+}
+
+fn local_expert_range(config: &avarok_core::config::ModelConfig) -> (usize, usize) {
+    let world = config.ep_world_size.max(1);
+    if world <= 1 {
+        return (0, config.num_experts);
+    }
+    let per = config.num_experts / world;
+    let start = config.ep_rank * per;
+    let end = if config.ep_rank + 1 == world {
+        config.num_experts
+    } else {
+        start + per
+    };
+    (start, end)
+}
+
+fn filter_keys_for_ep(keys: Vec<String>, config: &avarok_core::config::ModelConfig) -> Vec<String> {
+    let (lo, hi) = local_expert_range(config);
+    if config.ep_world_size.max(1) <= 1 {
+        return keys;
+    }
+    keys.into_iter()
+        .filter(|k| {
+            let Some(rest) = k.split("block_sparse_moe.experts.").nth(1) else {
+                return true;
+            };
+            let Some(idx_str) = rest.split('.').next() else {
+                return true;
+            };
+            let Ok(idx) = idx_str.parse::<usize>() else {
+                return true;
+            };
+            idx >= lo && idx < hi
+        })
+        .collect()
 }
 
 fn packed_expert_prefix(store: &WeightStore, weight_key: &str) -> Option<String> {

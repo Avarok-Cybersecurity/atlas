@@ -95,7 +95,7 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         "deepseek41" => ("deepseek_v41", false),
         other => bail!(
             "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
-             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41."
+             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41, kimi-k3."
         ),
     })
 }
@@ -108,6 +108,10 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
         .get_str("general.architecture")
         .context("GGUF metadata missing required key 'general.architecture'")?
         .to_string();
+    let arch_l = arch.to_ascii_lowercase();
+    if matches!(arch_l.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") {
+        return kimi_k3::config_from_kimi_k3_gguf(meta);
+    }
     let (model_type, attn_gated) = arch_to_model_type(&arch)?;
 
     // Namespaced key helper: `{arch}.<suffix>`.
@@ -421,6 +425,8 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 //   * All SSM/MLA/DeepSeek/MiniMax/vision fields: 0 / empty — not applicable to
 //     the llama/qwen/gemma decoder families this builder targets.
 //   * ep_rank/ep_world_size/tp_*: set at runtime by the caller, not here.
+
+mod kimi_k3;
 
 #[cfg(test)]
 mod tests;

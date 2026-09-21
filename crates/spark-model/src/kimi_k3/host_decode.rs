@@ -214,6 +214,20 @@ impl K3BoundLayer {
                                 cfg,
                                 stream,
                             )?
+                        } else if super::iq2_moe::layer_has_iq2(self) {
+                            super::iq2_moe::mix_iq2_experts(
+                                self,
+                                gpu,
+                                latent,
+                                ids,
+                                mix_w,
+                                cfg.expert_hidden,
+                                cfg.latent,
+                                ctx.config.tp_rank,
+                                ctx.config.tp_world_size.max(1),
+                                cfg.situ_beta,
+                                cfg.situ_linear_beta,
+                            )?
                         } else {
                             mix_routed_experts(latent, ids, mix_w, &wts.experts, cfg)
                         };
@@ -345,6 +359,11 @@ fn tp_allreduce(
 fn bind_layer(layer: &K3BoundLayer, gpu: &dyn GpuBackend) -> Result<K3CpuLayer> {
     let mut got = HashMap::new();
     for (w, meta) in layer.weights.iter().zip(&layer.weight_meta) {
+        // IQ2 experts stay packed on GPU; assemble_moe leaves empty slots and
+        // the mix callback dequants top-k on demand.
+        if matches!(meta.dtype, WeightDtype::Iq2Xs | WeightDtype::Q8_0 | WeightDtype::Iq3Xxs) {
+            continue;
+        }
         got.insert(
             meta.name.clone(),
             copy_weight_f32(gpu, w.weight, meta.dtype, meta.numel)?,
