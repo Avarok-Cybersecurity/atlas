@@ -105,6 +105,10 @@ export function buildSeries(panel, records, cap) {
       model,
       variant: metric.variant ?? null,
       dashed: Boolean(metric.dashed),
+      // The measured run-to-run envelope this metric's points must clear to be
+      // told apart (cost.js#rungSpread). Null on every metric that has not
+      // measured one, which is all of them outside the Cost tab.
+      envelope: metric.envelope ?? null,
       sparse: nodes.length < MIN_POINTS_FOR_A_LINE,
       nodes,
       edges: liftEdges(nodes, trendEdges(pts))
@@ -112,8 +116,21 @@ export function buildSeries(panel, records, cap) {
   });
 }
 
-/** Every value that will actually be drawn — the input to the axis policy. */
-export const drawnValues = (series) => series.flatMap((s) => s.nodes.map((n) => n.v));
+/**
+ * Every value that will actually be drawn — the input to the axis policy.
+ *
+ * Envelope extremes are included because they are DRAWN: a bar whose ends fall
+ * outside the domain is silently clipped, which reads as a shorter spread than
+ * was measured — the one misreading this bar exists to prevent.
+ */
+export const drawnValues = (series) =>
+  series.flatMap((s) =>
+    s.nodes.flatMap((n) =>
+      s.envelope && !n.aggregated
+        ? [n.v, n.v * s.envelope.lo, n.v * s.envelope.hi]
+        : [n.v]
+    )
+  );
 
 /** The models present, in first-drawn order, for the legend. */
 export const modelsOf = (series) => [...new Set(series.map((s) => s.model))];

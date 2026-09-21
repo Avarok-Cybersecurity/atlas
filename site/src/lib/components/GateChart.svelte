@@ -313,6 +313,19 @@
           <line class="gc-spread" x1={x(n.t)} y1={hi} x2={x(n.t)} y2={lo} stroke={c} />
         {/if}
       {/each}
+      <!-- A single run gets the MEASURED run-to-run envelope of its instrument
+           instead. Only on non-aggregated nodes: an aggregated group already
+           shows the span of its own members, and an observed span must never be
+           replaced by an imputed one. -->
+      {#if s.envelope}
+        {#each s.nodes.filter((n) => !n.aggregated) as n}
+          {@const hi = y(clampValue(n.v * s.envelope.hi, ext).y)}
+          {@const lo = y(clampValue(n.v * s.envelope.lo, ext).y)}
+          {#if Math.abs(lo - hi) >= 3}
+            <line class="gc-spread" x1={x(n.t)} y1={hi} x2={x(n.t)} y2={lo} stroke={c} />
+          {/if}
+        {/each}
+      {/if}
     {/each}
 
     {#each series as s}
