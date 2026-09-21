@@ -71,20 +71,13 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // adding a rung moves this assertion instead of failing it; the VALUES are
     // pinned because a silent floor change is the thing worth catching.
     //
-    // ★ REPINNED TO ZERO, 2026-09-21. The gate was re-pointed to the published
-    // ladder's instrument (ISL 128 / OSL 1024 / essay) and every rung floor was
-    // cut at the retired 512/320 one, so all nine are `min = 0.0` until they
-    // are re-cut from records on the new instrument. `RUNGS` names 0.0 as the
-    // record-without-gating state.
-    //
-    // This pin is KEPT AT ZERO rather than deleted, and that is the point of it
-    // right now: while the ladder gates nothing, this assertion is the tripwire
-    // that catches a floor silently REAPPEARING before it has been measured.
-    //
-    // The consequence for this test is that the committed-floor leg below is
-    // now trivially true — everything clears a floor of zero — so it no longer
-    // proves that a clean sweep passes. The EXPLICIT-floor leg after it does
-    // that, on the same ladder, and must be kept until the re-cut lands.
+    // ★ REPINNED TO ZERO, 2026-09-21: the gate moved to the published ladder's
+    // instrument and all nine floors, cut at the retired 512/320 one, are
+    // `min = 0.0` until re-cut (`RUNGS` names 0.0 as record-without-gating).
+    // The pin is KEPT rather than deleted — while the ladder gates nothing it
+    // is the tripwire against a floor silently REAPPEARING unmeasured. Its
+    // cost is that the committed-floor leg below is now trivially true, so the
+    // explicit-floor leg after it carries the real claim until the re-cut.
     let m = ladder(&[
         ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
@@ -129,12 +122,10 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
         assert!(v.reason.contains(rung), "{}", v.reason);
     }
 
-    // ★ THE LEG THAT STILL BITES while the committed floors are off: the SAME
-    // ladder against REAL bars. These are the floors that were in force until
-    // 2026-09-21 — the 2026-09-20 speed-bound re-cut — used here as a fixture
-    // rather than read from the tree, because what is under test is
-    // `sweep_verdict`'s comparison, not what the tree currently declares.
-    // Without this the test would assert only that everything clears zero.
+    // ★ THE LEG THAT BITES while the committed floors are off: the SAME ladder
+    // against the bars in force until 2026-09-21 (the 2026-09-20 speed-bound
+    // re-cut), as a fixture — what is under test is `sweep_verdict`'s
+    // comparison, not what the tree declares today.
     let real = Floors {
         per_c: vec![
             (1, 20.5),
@@ -168,16 +159,12 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
 /// value + noise >= min.
 #[test]
 fn a_sweep_below_one_floor_fails_naming_the_cell() {
-    // ★ DRIVEN BY AN EXPLICIT FLOOR SET SINCE 2026-09-21, not by the committed
-    // one. The gate's own floors are all 0.0 while it is re-pointed to the
-    // published instrument, and nothing can fall below zero — read from the
-    // tree, this test would have silently become unable to fail, which is
-    // worse than no test. `sweep_verdict` takes the floors as an argument, so
-    // an explicit set is an input the call site really produces.
-    //
-    // The values are the ones that WERE in force (the 2026-09-20 speed-bound
-    // re-cut). Point this back at `committed_floors()` when the ladder is
-    // re-cut on the new instrument — the coupling is worth having back.
+    // ★ EXPLICIT FLOORS SINCE 2026-09-21, not the committed ones: those are
+    // all 0.0 while the gate is re-pointed, and nothing falls below zero — read
+    // from the tree this test would have become unable to fail, which is worse
+    // than no test. `sweep_verdict` takes floors as an argument, so this is an
+    // input the call site really produces. Values are the bars that WERE in
+    // force; point it back at `committed_floors()` after the re-cut.
     let committed = Floors {
         per_c: vec![
             (1, 20.5),
