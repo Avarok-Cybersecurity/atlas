@@ -132,6 +132,69 @@ pub const DFLASH2_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 
 const DFLASH2_SUMMARY: &str = "Latency/throughput curve across concurrency 1 → 128, DFlash2 armed";
 
+/// The same ladder on the 35B MoE flagship, at the PUBLISHED instrument.
+///
+/// A THIRD gate id, for the reason the DFlash2 one exists. A required gate
+/// has ONE declared subject per box class (`check::record_is_required_subject`)
+/// and `bench::baseline_for` refuses two `default = true` checkpoints on one
+/// gate — so the MoE can never be a second subject of `concurrency-sweep`,
+/// only a non-default variant, and a variant is never run by `bench certify`
+/// (it spawns each REQUIRED id with no `--checkpoint`) and its floors gate
+/// nothing. The requirement is the opposite: the MoE curve re-measured on
+/// every campaign, with a floor per rung that fails the gate.
+///
+/// Born on the published instrument (ISL 128 / OSL 1024, the harness's essay
+/// request, C=1..16) rather than the dense gate's ISL 512 / OSL 320 natural
+/// fixture: it has no history on any instrument, so nothing is lost; the only
+/// vLLM measurement of this checkpoint
+/// (`bench/baselines/qwen36-35b-a3b/published.json`) was taken there and
+/// stops at C=16 by design; and the `essay` fixture exists precisely so a
+/// gate cell can be read against that ladder. Its tok/s are ~4x the dense
+/// gate's and MUST NOT share an axis with them — each concurrency gate is
+/// scored against its own history, and the site's instrument fingerprint
+/// refuses a cross-instrument pair by name.
+///
+/// Registered as a PROMOTION CANDIDATE (`gate::coverage`), not REQUIRED,
+/// until its first measured floors land: `sweep_verdict` says PASS only when
+/// a floor is populated, `check_record` demands PASS, and `baseline_for`
+/// drops an unmeasured entry — so a REQUIRED entry with no floors would block
+/// every PR while refusing to run under `--pull-request-gate`. The promotion
+/// is the PR that commits the floors; the BENCH.toml entry says what that
+/// takes.
+pub const MOE_DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
+    id: "concurrency-sweep-moe",
+    name: "Concurrency Sweep (MoE)",
+    summary: MOE_SUMMARY,
+    detail: "The concurrency ladder on the Qwen3.6-35B-A3B MoE flagship, pinned by the \
+             variant's param_overrides to the PUBLISHED instrument the vLLM one-shot for \
+             this checkpoint was measured on: ISL 128 / OSL 1024, the ladder38 essay \
+             request byte for byte, C=1..16. Same driver, same rungs-and-floors shape and \
+             same vacuity rule as `concurrency-sweep`; the MoE decode path takes the \
+             grouped-GEMM expert arm above the width gate that the dense ladder never \
+             reaches, which is why a dense record cannot speak for it. Its numbers are \
+             NOT comparable to the dense gates' (a different checkpoint on a different \
+             instrument, ~4x apart) and each is read against its own history only.",
+    duration_hint: "~5–15 min",
+    // A DECLARED estimate: two passes (warm-up + measured) over five rungs at
+    // OSL 1024 on a ~3B-active MoE, plus the serve. The first record measures
+    // it (`Estimate::Measured`); nothing here is quoted as a result.
+    expected_secs: 600,
+    updated: "2026-09-20",
+    needs_confirmation: false,
+    intended_for: Some(crate::benchmark::ModelExpectation {
+        families: &["qwen3.6-35b-a3b"],
+        note: "The MoE ladder is defined on the Qwen3.6-35B-A3B family (the FP8 flagship \
+               is its declared subject). Pointing it at the dense 27B measures the dense \
+               FFN path under the MoE's instrument — a number with no history and no floor.",
+    }),
+    threshold_params: GATE_THRESHOLD_PARAMS,
+    sensitivity: Sensitivity::Speed,
+    ctor: || Box::new(ConcurrencySweep::default()),
+};
+
+const MOE_SUMMARY: &str =
+    "Latency/throughput curve across concurrency 1 → 16 on the 35B MoE, published instrument";
+
 /// The gated ladder, declared ONCE: `(C, floor param, metric key, label)`.
 ///
 /// Three things are derived from this and nothing else — the descriptor's
@@ -1230,3 +1293,7 @@ mod concurrency_verdict_tests;
 #[cfg(test)]
 #[path = "concurrency_vacuity_tests.rs"]
 mod concurrency_vacuity_tests;
+
+#[cfg(test)]
+#[path = "concurrency_moe_tests.rs"]
+mod concurrency_moe_tests;

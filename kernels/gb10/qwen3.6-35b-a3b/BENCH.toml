@@ -365,21 +365,122 @@ max = 1355.65
 [[benchmarks]]
 quant = "nvfp4"
 checkpoint = "Qwen/Qwen3.6-35B-A3B-FP8"
-gate = "concurrency-sweep"
+gate = "concurrency-sweep-moe"
 recipe = "qwen3.6/qwen3.6-35b-a3b-fp8-bf16head"
+label = "Qwen3.6-35B-A3B MoE flagship (FP8), published instrument"
 default = true
 status = "unmeasured"
 note = """\
-The MoE half of the concurrency curve — the sibling of the dense entry in \
-qwen3.6-27b/BENCH.toml, and the reason both exist. The MoE decode path takes \
-the grouped-GEMM expert arm above the width gate (n >= 16, layers/mod.rs \
-moe_grouped_decode_min_rows) where the dense path never does, so C=16 and \
-C=32 exercise code on this model that the dense sweep cannot reach at any \
-concurrency.
-
-NO [benchmarks.metrics] TABLE ON PURPOSE — see the dense entry. Unmeasured \
-means unmeasured; thresholds follow the first run on main.\
+The MoE half of the concurrency curve. The MoE decode path takes the \
+grouped-GEMM expert arm above the width gate (n >= 16, layers/mod.rs \
+moe_grouped_decode_min_rows) where the dense path never does, so C=16 \
+exercises code on this model that the dense sweep cannot reach at any \
+concurrency; a dense record cannot speak for it. \
+★ ITS OWN GATE ID (2026-09-20), `concurrency-sweep-moe`, not a second \
+checkpoint of `concurrency-sweep`. A required gate has ONE declared subject \
+per box class (check.rs record_is_required_subject) and baseline_for refuses \
+two `default = true` checkpoints on one gate, so as a variant of the dense \
+gate this entry could never be run by `bench certify` (it spawns each \
+REQUIRED id with no --checkpoint) and its floors could never fail a merge. \
+The mechanism is the one `concurrency-sweep-dflash2` already uses. \
+★ THE INSTRUMENT IS THE PUBLISHED ONE, not the dense gate's. The dense gate \
+measures ISL 512 / OSL 320 on the natural code fixture; this entry pins ISL \
+128 / OSL 1024 on the `essay` request (bench/ladder38 harness, byte for \
+byte, #1154) at C=1,2,4,8,16 — the instrument the ONLY vLLM measurement of \
+this checkpoint was taken on (bench/baselines/qwen36-35b-a3b/published.json, \
+2026-09-19, dgx2), which stops at C=16 by design because C >= 32 exhausted \
+GB10's unified memory under vLLM and powercycled the box. This entry has no \
+history on any instrument, so nothing is lost by choosing the comparable \
+one; its tok/s will read ~4x the dense gate's and MUST NEVER share an axis \
+with them. Read each gate against its own history only. \
+★ SERVE PROFILE = the one-shot's adjudicated parity profile, as the \
+manifest's parity_note records it: ctx 2048, batch cap 128, util 0.85, bf16 \
+KV, MTP K=4, thinking off, presence/frequency penalties 0.0 (the essay \
+request pins those per request), fifo scheduling (the recipe defaults to \
+slai, which vLLM has no counterpart for). Each key is justified inline in \
+[benchmarks.serve_overrides] below; every one is disclosed on the record and \
+demanded there by check_record, and together they DECLARE every axis \
+site/src/lib/ladder-baselines.js fingerprints, so a record can be judged \
+against the one-shot axis by axis instead of refused as undeclared. \
+★ NO [benchmarks.metrics] TABLE ON PURPOSE, and no floor may be guessed in: \
+ZERO records of this checkpoint exist under .benchmarks/concurrency-sweep*/ \
+(every one of the 72 concurrency-sweep records is unsloth/Qwen3.8-27B-NVFP4). \
+A guessed threshold a run could clear would report PASS for something nobody \
+measured — this file's header rule. \
+★ BOOTSTRAP, in order (the gate cannot bootstrap itself: baseline_for drops \
+an unmeasured entry, so --pull-request-gate refuses to run it): (1) serve \
+the recipe by hand with EXACTLY the serve_overrides below applied — the same \
+argv a --pull-request-gate self-start would render from recipe defaults + \
+pins; (2) run `spark benchmark run concurrency-sweep-moe --url <it> --model \
+Qwen/Qwen3.6-35B-A3B-FP8 --param prompt_mode=essay --param isls=128 --param \
+osl=1024 --param concurrencies=1,2,4,8,16` at least THREE times on one \
+frozen binary, zero request errors and zero vacuous cells in every rep; (3) \
+commit floors per rung at mean - max(3*sigma, 5%), cut together, never from \
+a best rep (the dense entry's rule), plus peak_aggregate_tok_s at the C=16 \
+bar, vacuous_cells max 0 and min_completion_tokens from the observed \
+minimum, flip status to "measured", and in the SAME PR move the gate from \
+gate::coverage::PROMOTION_CANDIDATES to REQUIRED — the campaign certifying \
+that PR writes the first gated record. (4) Ratchet later only from >= 10 \
+consecutive gate runs AND the committed history split by regime (the C=1 \
+comment in qwen3.8-27b/BENCH.toml is the worked example). \
+bench_override_tree_tests pins this entry BY VALUE — the instrument pins, \
+`status = "unmeasured"` and the absence of metrics — so the bootstrap PR \
+must edit that test to land the floors, which is the review it deserves.\
 """
+
+[benchmarks.serve_overrides]
+# The published instrument's context: ISL 128 + ~200 template tokens + OSL
+# 1024 is under 1.5K, so 2048 holds every sequence with headroom and matches
+# the one-shot's `--max-model-len 2048`. The recipe's 32768 is its agentic
+# operating point and would size the KV budget for a workload this ladder
+# never sends.
+max_model_len = "2048"
+# The one-shot's `--max-num-seqs 128`. Above the widest measured rung (16),
+# as the batch-cap rule requires: a cap below the widest rung makes that rung
+# serial by construction and the top of the curve measures the cap.
+max_batch_size = "128"
+# The recipe's own default, restated so the RECORD declares it: the site's
+# fingerprint (ladder-baselines.js REQUIRED_AXES) treats an undeclared KV
+# dtype as a mismatch, never as "the default". bf16 is also the one-shot's
+# parity (`--kv-cache-dtype auto` resolves to bf16 there).
+kv_cache_dtype = "bf16"
+# GB10 unified memory: 0.90 froze dgx2 and needed a powercycle; 0.85 is the
+# ceiling every gate serve on this class uses and the one-shot's
+# `--gpu-memory-utilization 0.85`.
+gpu_memory_utilization = "0.85"
+# The recipe defaults to slai (SLO-aware). vLLM has no counterpart, so the
+# parity oracle pinned Atlas to fifo for the MoE ladder; a scheduling policy
+# is part of the instrument, not a knob to leave to the recipe.
+scheduling_policy = "fifo"
+# MTP K=4 on both engines (vLLM: num_speculative_tokens=3). Atlas's
+# `--num-drafts 3` is "3=K=4 verify" (serve_args.rs); this MODEL.toml sets no
+# default_num_drafts, so without the pin the serve would draft K=2 and the
+# record would not say so.
+num_drafts = "3"
+# Thinking off at the SERVE, like the ssm-state-poisoning gate on this same
+# recipe: per-request `enable_thinking:false` degenerates to a ~2-token stop
+# on qwen3_6_moe (see that entry), and the one-shot ran thinking off. The
+# driver also sends reasoning_effort "none"; the serve pin makes the record
+# carry the fact.
+disable_thinking = "true"
+# Marconi pool for the warm-up round: the sweep runs every measured prompt
+# once before timing, and the one-shot served `--enable-prefix-caching`, so
+# the comparable Atlas cell is a warm one where the pool can hold it. 32
+# slots warm C=1/2/4 (`concurrency::slots_needed`) and the sweep declares
+# the wider rungs cold by construction; the recipe's default pool of 16
+# would not hold C=4.
+ssm_cache_slots = "32"
+# lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
+# correctness pin (exact argmax over the 248K vocab), not a throughput knob.
+
+[benchmarks.param_overrides]
+# The published instrument — see the note. Values are parsed by each
+# parameter's own schema kind, exactly like --param KEY=VALUE, and
+# check_record demands every pin on the record.
+concurrencies = "1,2,4,8,16"
+isls = "128"
+osl = "1024"
+prompt_mode = "essay"
 
 [[benchmarks]]
 quant = "nvfp4"
