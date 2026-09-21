@@ -132,10 +132,35 @@ function rungEnergy(seriesId, c, file, reps) {
   const periods = [...new Set(reps.map((r) => r.gpu_rail_sample_period_ms).filter((v) => v !== undefined && v !== null))];
   if (periods.length > 1) fail(`${where} mixes sampler cadences: ${periods.join(', ')} ms`);
   const samples = reps.map((r) => r.gpu_rail_power_samples).filter((v) => typeof v === 'number');
+  // ★ THE WINDOW AND ITS DENOMINATOR HAVE TWO SPELLINGS, ONE PER PRODUCER.
+  //
+  //   RUST   `EnergySampler::metrics`      gpu_rail_energy_window_s
+  //                                        gpu_rail_energy_window_tokens
+  //          -> reaches the page through gen-gates.mjs, as a GATE RECORD
+  //   PYTHON `bench/ladder38/power_window.py` + the ladder harness
+  //                                        gpu_rail_window_s
+  //                                        completion_tokens (on the rep)
+  //          -> reaches the page through THIS function, as a BASELINE rung
+  //
+  // `rungEnergy` only ever sees Python-produced rungs, and until 2026-09-21 it
+  // demanded the Rust spelling — keys nothing under bench/ has ever written.
+  // `positive()` then failed the whole build on the first vLLM leg that
+  // carried joules, which is why no vLLM baseline had ever had energy and the
+  // Cost tab's "comparable but carries no joules" was structural, not a gap in
+  // the data. Accept either spelling; a rung whose reps disagree about WHICH is
+  // refused, because that is two measurements wearing one name.
+  const pick = (ks) => {
+    const found = [...new Set(reps.map((r) => ks.find((k) => typeof r[k] === 'number')))];
+    if (found.length !== 1 || found[0] === undefined)
+      fail(`${where} reps disagree about the energy-window key (looked for ${ks.join(' / ')})`);
+    return found[0];
+  };
+  const winKey = pick(['gpu_rail_energy_window_s', 'gpu_rail_window_s']);
+  const tokKey = pick(['gpu_rail_energy_window_tokens', 'completion_tokens']);
   return {
     gpu_rail_energy_j: r2(sum('gpu_rail_energy_j')),
-    gpu_rail_energy_window_tokens: sum('gpu_rail_energy_window_tokens'),
-    gpu_rail_energy_window_s: r2(sum('gpu_rail_energy_window_s')),
+    gpu_rail_energy_window_tokens: sum(tokKey),
+    gpu_rail_energy_window_s: r2(sum(winKey)),
     ...(samples.length === reps.length ? { gpu_rail_power_samples: Math.min(...samples) } : {}),
     ...(periods.length === 1 ? { gpu_rail_sample_period_ms: periods[0] } : {})
   };
@@ -295,8 +320,13 @@ export function buildLadder(manifest, { subject, rawOf, harnessRepoSha256 }) {
   // A pair: score the subject against the MATCHED-parity baseline. Ratios and
   // the win count are derived, never asserted, so a lost rung changes the copy
   // instead of leaving it stale.
-  const matched = baselines.find((s) => s.parity === 'matched');
-  if (!matched) fail('no matched-parity baseline');
+  // ★ EXACTLY ONE, not "the first one found". `matched` names THE leg the
+  // published ratio is computed against, and a `find` over two claimants picks
+  // by array order -- so adding a second matched baseline would silently move
+  // every ratio on the page. Caught on 2026-09-21 by the `no matched-parity
+  // baseline` test, which stopped failing because a newly added energy leg had
+  // quietly become the reference.
+  // The reference is chosen below, from the FULL-LADDER baselines only.
   // `variant`: another configuration of the SUBJECT engine. Drawn, never
   // scored, and held to the subject's rung coverage for the same reason a
   // baseline is: a line that stops partway along a log2 axis reads as a
@@ -305,8 +335,43 @@ export function buildLadder(manifest, { subject, rawOf, harnessRepoSha256 }) {
     for (const row of subj.rungs) if (!at(v, row.c)) fail(`variant ${v.id} is missing rung C=${row.c}`);
   }
   out.concurrencies = subj.rungs.map((r) => r.c);
+  // ★ THE PUBLISHED TABLE USES FULL-LADDER LEGS ONLY. `out.rows` is what
+  // ConcurrencyLadder, Verified and marketing.js render -- the per-rung
+  // "Atlas vs vLLM" claim -- so a leg that stops partway would either break
+  // the row or, worse, silently enter `ratio_vs_fastest` at the rungs it does
+  // have and change a published ratio at some rungs but not others.
+  //
+  // A PARTIAL leg is still a first-class series: it keeps its `rungs`, which
+  // is what cost.js reads for the energy curves, and its `unmeasured.reason`,
+  // which absentReasonOf prints. It simply does not vote in the throughput
+  // table. The 2026-09-21 energy leg is the first of these -- driven only at
+  // C=1..16 because vLLM+MTP has taken a GB10 down at the widest rungs.
+  //
+  // A rung missing WITHOUT being declared unmeasured is still a failure: that
+  // is a gap nobody wrote down, which is the thing this file exists to refuse.
+  const covers = (b) => subj.rungs.every((row) => at(b, row.c));
+  // Name the RUNG, not just the fact. The old check said
+  // `baseline X is missing rung C=64`, and a diagnostic that loses the number
+  // is a worse diagnostic even when the refusal is the same -- so the message
+  // keeps that shape and adds why it was not forgiven.
+  for (const b of baselines)
+    for (const row of subj.rungs)
+      if (!at(b, row.c) && !(b.unmeasured?.rungs ?? []).includes(row.c))
+        fail(`baseline ${b.id} is missing rung C=${row.c} and never declared it unmeasured`);
+  const tableBaselines = baselines.filter(covers);
+  // ★ THE REFERENCE COMES FROM THE FULL-LADDER LEGS, not from every baseline.
+  // `parity: matched` describes the INSTRUMENT -- a leg can match on every
+  // axis and still not be the leg the published ratio is computed against.
+  // Selecting from `baselines` made a partial energy leg compete for that role
+  // by array order; selecting from `tableBaselines` means a leg that cannot
+  // fill the table cannot become its denominator either.
+  const matchedAll = tableBaselines.filter((s) => s.parity === 'matched');
+  if (matchedAll.length === 0) fail('no matched-parity baseline');
+  if (matchedAll.length > 1)
+    fail(`more than one full-ladder matched-parity baseline (${matchedAll.map((s) => s.id).join(', ')}) — exactly one leg is the published ratio's reference`);
+  const matched = matchedAll[0];
   out.rows = subj.rungs.map((row) => {
-    const perBaseline = baselines.map((b) => {
+    const perBaseline = tableBaselines.map((b) => {
       const r = at(b, row.c);
       if (!r) fail(`baseline ${b.id} is missing rung C=${row.c}`);
       return { id: b.id, label: b.label, parity: b.parity, tok_s: r.tok_s };

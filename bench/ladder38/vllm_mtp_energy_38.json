@@ -1,0 +1,860 @@
+{
+  "label": "vllm_mtp_energy_38",
+  "url": "http://127.0.0.1:8001",
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "isl": 128,
+  "osl": 1024,
+  "reps": 3,
+  "warmup": 1,
+  "temperature": 0.0,
+  "seed": 42,
+  "chat_template_kwargs": {
+    "enable_thinking": false
+  },
+  "nonce_base": 813039,
+  "nonce_base_pinned": false,
+  "nonce_width": 6,
+  "driver_sha256": "664302439b930c5744004bb4b3c5a8036126eb401e11004f811ea162a33d33cc",
+  "started_utc": "2026-09-21T17:57:41Z",
+  "rungs": [
+    {
+      "concurrency": 1,
+      "reps": [
+        {
+          "wall_s": 53.773384341970086,
+          "completion_tokens": 1024,
+          "prompt_tokens": 200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 19.042878043306803,
+          "n_ok": 1,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 301.26008158549666,
+          "ttft_p99_ms": 301.26008158549666,
+          "tpot_p50_ms": 52.26980212243785,
+          "e2e_p50_s": 53.77329014893621,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2022.426433673808,
+          "gpu_rail_mean_power_w": 37.74535388937018,
+          "gpu_rail_max_power_w": 42.33,
+          "gpu_rail_min_power_w": 37.26,
+          "gpu_rail_power_samples": 215,
+          "gpu_rail_window_s": 53.773384341970086,
+          "gpu_rail_covered_s": 53.580804662778974,
+          "gpu_rail_coverage_frac": 0.9964186803276802,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25096252001821995,
+          "gpu_rail_edge_error_frac": 0.0185965605891668,
+          "gpu_rail_avg_instant_lag_w": 2.13906976744186,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2502.0651162790696,
+          "gpu_util_mean_pct": 95.11162790697675,
+          "gpu_temp_c_max": 67.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 0
+        },
+        {
+          "wall_s": 53.28782795695588,
+          "completion_tokens": 1024,
+          "prompt_tokens": 200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 19.216395924922157,
+          "n_ok": 1,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 281.9284461438656,
+          "ttft_p99_ms": 281.9284461438656,
+          "tpot_p50_ms": 51.81397615457618,
+          "e2e_p50_s": 53.28767136391252,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2019.1569136885887,
+          "gpu_rail_mean_power_w": 38.207303238013644,
+          "gpu_rail_max_power_w": 43.7,
+          "gpu_rail_min_power_w": 37.75,
+          "gpu_rail_power_samples": 212,
+          "gpu_rail_window_s": 53.28782795695588,
+          "gpu_rail_covered_s": 52.84740723809227,
+          "gpu_rail_coverage_frac": 0.9917350596609161,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25477502401918173,
+          "gpu_rail_edge_error_frac": 0.018766011645431794,
+          "gpu_rail_avg_instant_lag_w": 2.0280660377358495,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2502.0,
+          "gpu_util_mean_pct": 95.16981132075472,
+          "gpu_temp_c_max": 68.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 1
+        },
+        {
+          "wall_s": 54.75334039563313,
+          "completion_tokens": 1024,
+          "prompt_tokens": 200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 18.70205530111674,
+          "n_ok": 1,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 293.688977137208,
+          "ttft_p99_ms": 293.688977137208,
+          "tpot_p50_ms": 53.23495142223752,
+          "e2e_p50_s": 54.753090570215136,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2107.3477387569083,
+          "gpu_rail_mean_power_w": 38.603830925360164,
+          "gpu_rail_max_power_w": 43.83,
+          "gpu_rail_min_power_w": 38.02,
+          "gpu_rail_power_samples": 219,
+          "gpu_rail_window_s": 54.75334039563313,
+          "gpu_rail_covered_s": 54.58908321382478,
+          "gpu_rail_coverage_frac": 0.9970000518576314,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2510150158777833,
+          "gpu_rail_edge_error_frac": 0.018263725879996816,
+          "gpu_rail_avg_instant_lag_w": 2.295890410958904,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2501.945205479452,
+          "gpu_util_mean_pct": 95.09132420091325,
+          "gpu_temp_c_max": 69.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 2
+        }
+      ],
+      "tok_s_series": [
+        19.042878043306803,
+        19.216395924922157,
+        18.70205530111674
+      ],
+      "tok_s_mean": 18.987109756448564,
+      "tok_s_median": 19.042878043306803,
+      "tok_s_spread_pct": 2.708893720018299,
+      "wall_s_series": [
+        53.773384341970086,
+        53.28782795695588,
+        54.75334039563313
+      ],
+      "wall_s_mean": 53.9381842315197,
+      "completion_tokens_series": [
+        1024,
+        1024,
+        1024
+      ],
+      "completion_tokens_mean": 1024.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 2,
+      "reps": [
+        {
+          "wall_s": 55.71484908601269,
+          "completion_tokens": 2048,
+          "prompt_tokens": 400,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 36.75860266332757,
+          "n_ok": 2,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 369.5772660430521,
+          "ttft_p99_ms": 369.7400410613045,
+          "tpot_p50_ms": 54.04025751606672,
+          "e2e_p50_s": 55.65280165732838,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2173.0687204687147,
+          "gpu_rail_mean_power_w": 39.26708864653327,
+          "gpu_rail_max_power_w": 47.52,
+          "gpu_rail_min_power_w": 38.82,
+          "gpu_rail_power_samples": 222,
+          "gpu_rail_window_s": 55.71484908601269,
+          "gpu_rail_covered_s": 55.340713950805366,
+          "gpu_rail_coverage_frac": 0.9932848218859979,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2510303519666195,
+          "gpu_rail_edge_error_frac": 0.017948536456702916,
+          "gpu_rail_avg_instant_lag_w": 2.438108108108108,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2501.846846846847,
+          "gpu_util_mean_pct": 95.21621621621621,
+          "gpu_temp_c_max": 77.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 0
+        },
+        {
+          "wall_s": 56.199744001962245,
+          "completion_tokens": 2048,
+          "prompt_tokens": 400,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 36.441447134145186,
+          "n_ok": 2,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 363.66164265200496,
+          "ttft_p99_ms": 363.9528538659215,
+          "tpot_p50_ms": 53.36523808803835,
+          "e2e_p50_s": 54.95634427876212,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2214.6030690084217,
+          "gpu_rail_mean_power_w": 39.47346433184484,
+          "gpu_rail_max_power_w": 47.63,
+          "gpu_rail_min_power_w": 39.1,
+          "gpu_rail_power_samples": 225,
+          "gpu_rail_window_s": 56.199744001962245,
+          "gpu_rail_covered_s": 56.103590259794146,
+          "gpu_rail_coverage_frac": 0.9982890715273589,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25635051308199763,
+          "gpu_rail_edge_error_frac": 0.01779367535846933,
+          "gpu_rail_avg_instant_lag_w": 2.818666666666666,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2501.351111111111,
+          "gpu_util_mean_pct": 95.14222222222222,
+          "gpu_temp_c_max": 75.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 1
+        },
+        {
+          "wall_s": 57.56127771222964,
+          "completion_tokens": 2048,
+          "prompt_tokens": 400,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 35.57947428197682,
+          "n_ok": 2,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 362.6370581332594,
+          "ttft_p99_ms": 362.973436168395,
+          "tpot_p50_ms": 55.60829804209722,
+          "e2e_p50_s": 57.249972220277414,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2272.261260696837,
+          "gpu_rail_mean_power_w": 39.62413807486392,
+          "gpu_rail_max_power_w": 48.22,
+          "gpu_rail_min_power_w": 38.92,
+          "gpu_rail_power_samples": 230,
+          "gpu_rail_window_s": 57.56127771222964,
+          "gpu_rail_covered_s": 57.34538014186546,
+          "gpu_rail_coverage_frac": 0.9962492568103938,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25113377859815955,
+          "gpu_rail_edge_error_frac": 0.017372790176746495,
+          "gpu_rail_avg_instant_lag_w": 2.354956521739131,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2501.8434782608697,
+          "gpu_util_mean_pct": 95.17391304347827,
+          "gpu_temp_c_max": 72.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 2
+        }
+      ],
+      "tok_s_series": [
+        36.75860266332757,
+        36.441447134145186,
+        35.57947428197682
+      ],
+      "tok_s_mean": 36.25984135981653,
+      "tok_s_median": 36.441447134145186,
+      "tok_s_spread_pct": 3.2518851079626367,
+      "wall_s_series": [
+        55.71484908601269,
+        56.199744001962245,
+        57.56127771222964
+      ],
+      "wall_s_mean": 56.491956933401525,
+      "completion_tokens_series": [
+        2048,
+        2048,
+        2048
+      ],
+      "completion_tokens_mean": 2048.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 4,
+      "reps": [
+        {
+          "wall_s": 60.6984531651251,
+          "completion_tokens": 4096,
+          "prompt_tokens": 800,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 67.48112655947214,
+          "n_ok": 4,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 878.0554099939764,
+          "ttft_p99_ms": 878.1354240514338,
+          "tpot_p50_ms": 57.534497318186695,
+          "e2e_p50_s": 59.735891493968666,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2445.2566524187564,
+          "gpu_rail_mean_power_w": 40.50819259414119,
+          "gpu_rail_max_power_w": 48.31,
+          "gpu_rail_min_power_w": 39.63,
+          "gpu_rail_power_samples": 242,
+          "gpu_rail_window_s": 60.6984531651251,
+          "gpu_rail_covered_s": 60.364496557973325,
+          "gpu_rail_coverage_frac": 0.994498103497905,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.26369574200361967,
+          "gpu_rail_edge_error_frac": 0.01647488441393363,
+          "gpu_rail_avg_instant_lag_w": 2.556446280991736,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2489.6363636363635,
+          "gpu_util_mean_pct": 95.11570247933884,
+          "gpu_temp_c_max": 79.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 0
+        },
+        {
+          "wall_s": 61.267126789316535,
+          "completion_tokens": 4096,
+          "prompt_tokens": 800,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 66.85477538525996,
+          "n_ok": 4,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 544.2547569982708,
+          "ttft_p99_ms": 613.26048059389,
+          "tpot_p50_ms": 58.25392898665568,
+          "e2e_p50_s": 60.13815346243791,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2494.8759767145875,
+          "gpu_rail_mean_power_w": 40.827051857567454,
+          "gpu_rail_max_power_w": 58.5,
+          "gpu_rail_min_power_w": 40.08,
+          "gpu_rail_power_samples": 245,
+          "gpu_rail_window_s": 61.267126789316535,
+          "gpu_rail_covered_s": 61.1084039430134,
+          "gpu_rail_coverage_frac": 0.9974093309965564,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2510432689450681,
+          "gpu_rail_edge_error_frac": 0.01632196664679198,
+          "gpu_rail_avg_instant_lag_w": 1.8911428571428572,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2488.8448979591835,
+          "gpu_util_mean_pct": 95.24489795918367,
+          "gpu_temp_c_max": 80.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 1
+        },
+        {
+          "wall_s": 58.27328760828823,
+          "completion_tokens": 4096,
+          "prompt_tokens": 800,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 70.28949572114796,
+          "n_ok": 4,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 511.39791077002883,
+          "ttft_p99_ms": 512.1473882580176,
+          "tpot_p50_ms": 56.32131207253664,
+          "e2e_p50_s": 58.12857921724208,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2378.202564452384,
+          "gpu_rail_mean_power_w": 40.935768205422754,
+          "gpu_rail_max_power_w": 56.39,
+          "gpu_rail_min_power_w": 40.25,
+          "gpu_rail_power_samples": 233,
+          "gpu_rail_window_s": 58.27328760828823,
+          "gpu_rail_covered_s": 58.09595541283488,
+          "gpu_rail_coverage_frac": 0.996956887062124,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2511925552971661,
+          "gpu_rail_edge_error_frac": 0.017160521416295888,
+          "gpu_rail_avg_instant_lag_w": 2.452918454935622,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2489.0515021459228,
+          "gpu_util_mean_pct": 95.29184549356223,
+          "gpu_temp_c_max": 81.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 2
+        }
+      ],
+      "tok_s_series": [
+        67.48112655947214,
+        66.85477538525996,
+        70.28949572114796
+      ],
+      "tok_s_mean": 68.20846588862669,
+      "tok_s_median": 67.48112655947214,
+      "tok_s_spread_pct": 5.035621738650948,
+      "wall_s_series": [
+        60.6984531651251,
+        61.267126789316535,
+        58.27328760828823
+      ],
+      "wall_s_mean": 60.07962252090996,
+      "completion_tokens_series": [
+        4096,
+        4096,
+        4096
+      ],
+      "completion_tokens_mean": 4096.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 8,
+      "reps": [
+        {
+          "wall_s": 70.81137155555189,
+          "completion_tokens": 8192,
+          "prompt_tokens": 1600,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 115.68763349786741,
+          "n_ok": 8,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 974.2865231819451,
+          "ttft_p99_ms": 974.9531556526199,
+          "tpot_p50_ms": 66.41298617379246,
+          "e2e_p50_s": 68.91497979522683,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 3016.819321446316,
+          "gpu_rail_mean_power_w": 42.736754805519965,
+          "gpu_rail_max_power_w": 72.13,
+          "gpu_rail_min_power_w": 40.39,
+          "gpu_rail_power_samples": 283,
+          "gpu_rail_window_s": 70.81137155555189,
+          "gpu_rail_covered_s": 70.59074408374727,
+          "gpu_rail_coverage_frac": 0.996884293200965,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2510645720176399,
+          "gpu_rail_edge_error_frac": 0.014122025573470143,
+          "gpu_rail_avg_instant_lag_w": 2.4725441696113073,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2490.5971731448763,
+          "gpu_util_mean_pct": 95.26855123674912,
+          "gpu_temp_c_max": 82.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 0
+        },
+        {
+          "wall_s": 70.10653953673318,
+          "completion_tokens": 8192,
+          "prompt_tokens": 1600,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 116.8507253978454,
+          "n_ok": 8,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 942.5080311484635,
+          "ttft_p99_ms": 943.0178199801594,
+          "tpot_p50_ms": 64.11070250091257,
+          "e2e_p50_s": 66.51833544718102,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2982.9035767916484,
+          "gpu_rail_mean_power_w": 42.810824930724486,
+          "gpu_rail_max_power_w": 67.17,
+          "gpu_rail_min_power_w": 40.51,
+          "gpu_rail_power_samples": 279,
+          "gpu_rail_window_s": 70.10653953673318,
+          "gpu_rail_covered_s": 69.67638632562011,
+          "gpu_rail_coverage_frac": 0.9938642926329622,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2511180257424712,
+          "gpu_rail_edge_error_frac": 0.014264004565166674,
+          "gpu_rail_avg_instant_lag_w": 2.294695340501792,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2490.4265232974913,
+          "gpu_util_mean_pct": 95.27240143369175,
+          "gpu_temp_c_max": 82.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 1
+        },
+        {
+          "wall_s": 68.80348532507196,
+          "completion_tokens": 8192,
+          "prompt_tokens": 1600,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 119.06373581651741,
+          "n_ok": 8,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 931.0609721578658,
+          "ttft_p99_ms": 931.3377225166187,
+          "tpot_p50_ms": 64.05555924108454,
+          "e2e_p50_s": 66.38256155210547,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 2940.487593140621,
+          "gpu_rail_mean_power_w": 42.80906829716078,
+          "gpu_rail_max_power_w": 69.62,
+          "gpu_rail_min_power_w": 40.51,
+          "gpu_rail_power_samples": 275,
+          "gpu_rail_window_s": 68.80348532507196,
+          "gpu_rail_covered_s": 68.688427711837,
+          "gpu_rail_coverage_frac": 0.9983277356853165,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.2512653791345656,
+          "gpu_rail_edge_error_frac": 0.014534147438539723,
+          "gpu_rail_avg_instant_lag_w": 2.5778909090909083,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2489.836363636364,
+          "gpu_util_mean_pct": 95.08727272727273,
+          "gpu_temp_c_max": 82.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 2
+        }
+      ],
+      "tok_s_series": [
+        115.68763349786741,
+        116.8507253978454,
+        119.06373581651741
+      ],
+      "tok_s_mean": 117.20069823741007,
+      "tok_s_median": 116.8507253978454,
+      "tok_s_spread_pct": 2.880616215964111,
+      "wall_s_series": [
+        70.81137155555189,
+        70.10653953673318,
+        68.80348532507196
+      ],
+      "wall_s_mean": 69.90713213911901,
+      "completion_tokens_series": [
+        8192,
+        8192,
+        8192
+      ],
+      "completion_tokens_mean": 8192.0,
+      "errors_total": 0
+    },
+    {
+      "concurrency": 16,
+      "reps": [
+        {
+          "wall_s": 87.12175169726834,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 188.05866136543386,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 1597.7519985754043,
+          "ttft_p99_ms": 1788.0730502307415,
+          "tpot_p50_ms": 79.66188073453228,
+          "e2e_p50_s": 83.18666258500889,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 4288.04757967712,
+          "gpu_rail_mean_power_w": 49.4544976792576,
+          "gpu_rail_max_power_w": 81.55,
+          "gpu_rail_min_power_w": 41.62,
+          "gpu_rail_power_samples": 347,
+          "gpu_rail_window_s": 87.12175169726834,
+          "gpu_rail_covered_s": 86.70692820474505,
+          "gpu_rail_coverage_frac": 0.9952385772273643,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.26831524819135666,
+          "gpu_rail_edge_error_frac": 0.011478189780605094,
+          "gpu_rail_avg_instant_lag_w": 2.905533141210375,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2491.8530259365994,
+          "gpu_util_mean_pct": 95.492795389049,
+          "gpu_temp_c_max": 83.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 0
+        },
+        {
+          "wall_s": 85.50749868806452,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 191.608926133714,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 1607.7955872751772,
+          "ttft_p99_ms": 1795.1251588994637,
+          "tpot_p50_ms": 79.36174825279048,
+          "e2e_p50_s": 82.74123688461259,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 4245.084151918974,
+          "gpu_rail_mean_power_w": 49.719643657138974,
+          "gpu_rail_max_power_w": 80.96,
+          "gpu_rail_min_power_w": 41.63,
+          "gpu_rail_power_samples": 342,
+          "gpu_rail_window_s": 85.50749868806452,
+          "gpu_rail_covered_s": 85.38042189506814,
+          "gpu_rail_coverage_frac": 0.9985138520603911,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25089108385145664,
+          "gpu_rail_edge_error_frac": 0.011694880745465942,
+          "gpu_rail_avg_instant_lag_w": 3.4406725146198824,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2492.216374269006,
+          "gpu_util_mean_pct": 95.50584795321637,
+          "gpu_temp_c_max": 86.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 1
+        },
+        {
+          "wall_s": 86.49163629906252,
+          "completion_tokens": 16384,
+          "prompt_tokens": 3200,
+          "prompt_tokens_per_req": [
+            200
+          ],
+          "tok_s": 189.42872052216666,
+          "n_ok": 16,
+          "n_err": 0,
+          "errors": [],
+          "ttft_p50_ms": 1632.1640110109001,
+          "ttft_p99_ms": 1819.1873615374789,
+          "tpot_p50_ms": 79.40764127541351,
+          "e2e_p50_s": 82.95942088169977,
+          "finish_reasons": [
+            "length"
+          ],
+          "completion_tokens_per_req": [
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024,
+            1024
+          ],
+          "gpu_rail_status": "ok",
+          "gpu_rail_energy_j": 4176.46599773046,
+          "gpu_rail_mean_power_w": 48.48535665825865,
+          "gpu_rail_max_power_w": 78.39,
+          "gpu_rail_min_power_w": 39.94,
+          "gpu_rail_power_samples": 345,
+          "gpu_rail_window_s": 86.49163629906252,
+          "gpu_rail_covered_s": 86.13870837679133,
+          "gpu_rail_coverage_frac": 0.995919513870094,
+          "gpu_rail_sample_period_ms": 250,
+          "gpu_rail_max_gap_s": 0.25103916972875595,
+          "gpu_rail_edge_error_frac": 0.011561811555308023,
+          "gpu_rail_avg_instant_lag_w": 2.9504347826086956,
+          "gpu_rail_sw_power_cap_frac": 0.0,
+          "gpu_rail_hw_power_brake_frac": 0.0,
+          "sm_clock_mhz_mean": 2491.942028985507,
+          "gpu_util_mean_pct": 95.4840579710145,
+          "gpu_temp_c_max": 86.0,
+          "gpu_rail_trustworthy": true,
+          "rep": 2
+        }
+      ],
+      "tok_s_series": [
+        188.05866136543386,
+        191.608926133714,
+        189.42872052216666
+      ],
+      "tok_s_mean": 189.69876934043816,
+      "tok_s_median": 189.42872052216666,
+      "tok_s_spread_pct": 1.8715275700649041,
+      "wall_s_series": [
+        87.12175169726834,
+        85.50749868806452,
+        86.49163629906252
+      ],
+      "wall_s_mean": 86.37362889479846,
+      "completion_tokens_series": [
+        16384,
+        16384,
+        16384
+      ],
+      "completion_tokens_mean": 16384.0,
+      "errors_total": 0
+    }
+  ],
+  "finished_utc": "2026-09-21T18:19:38Z"
+}

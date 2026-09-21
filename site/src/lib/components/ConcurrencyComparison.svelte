@@ -57,7 +57,15 @@
   const state = $derived(comparisonStateOf(subject, records, ladders));
 
   // -- published pair: legend chips and caption, all read from the ladder ----
-  const series = $derived(published ? published.series : []);
+  // ★ THE SERIES THIS VIEW DRAWS, not every leg in the manifest. A leg with
+  // `scope: 'cost'` belongs to the Cost tab (vllm-mtp-energy: the same engine,
+  // checkpoint and instrument as vllm-mtp, re-measured with power sampling so
+  // that tab has a vLLM curve carrying joules). Filtering HERE is what keeps
+  // the pills, the ladder and the table agreeing about how many series exist
+  // -- this component owns the pill list and ConcurrencyLadder owns the lines,
+  // and they must not disagree. cost.js reads the leg through
+  // `baselineSeriesOf`, which is deliberately unfiltered.
+  const series = $derived(published ? published.series.filter((s) => s.scope !== 'cost') : []);
   const atlas = $derived(series.find((s) => s.role === 'subject'));
   const baselines = $derived(series.filter((s) => s.role === 'baseline'));
   const baselineRange = $derived(measuredRange(baselines.flatMap((b) => b.rungs)));
