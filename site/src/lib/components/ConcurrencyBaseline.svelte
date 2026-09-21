@@ -16,12 +16,12 @@
   //
   // A rung the baseline did not measure is a dotted guide and the recorded
   // reason, where the point would be. Never a mark at zero.
-  import { absentReasonOf, baselineSeriesOf, measuredRange, oneShotChip } from '$lib/concurrency-comparison.js';
+  import { absentReasonOf, concurrencyBaselinesOf, measuredRange, oneShotChip } from '$lib/concurrency-comparison.js';
 
   /** @type {{ subject: object, ladder: object, rungs: number[] }} */
   let { subject, ladder, rungs } = $props();
 
-  const baselines = $derived(baselineSeriesOf(ladder));
+  const baselines = $derived(concurrencyBaselinesOf(ladder));
   const w = $derived(ladder.workload);
   const engines = $derived([...new Set(baselines.map((b) => `${b.engine} (${b.build})`))]);
   const range = $derived(measuredRange(baselines.flatMap((b) => b.rungs)));

@@ -335,7 +335,14 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
 
 describe('the dense tab today: the published pair over the live gate', () => {
   const page = renderTab('qwen38-27b');
-  const series = publishedLadder.series;
+  // ★ WHAT THE LADDER DRAWS, not every series in the manifest. A leg with
+  // `scope: 'cost'` (vllm-mtp-energy: same engine and instrument as vllm-mtp,
+  // re-measured with power sampling) is read by cost.js and deliberately NOT
+  // drawn here — it would be a near-duplicate line that stops at C=16 on a
+  // chart whose claim is about throughput. Filtering the same way the
+  // component does keeps this test tracking the component rather than the
+  // manifest's length.
+  const series = publishedLadder.series.filter((s) => s.scope !== 'cost');
   const days = (s) => s.rungs.map((r) => r.measured_utc.slice(0, 10)).sort();
   const range = (s) => (days(s)[0] === days(s).at(-1) ? days(s)[0] : `${days(s)[0]} → ${days(s).at(-1)}`);
 
@@ -499,7 +506,14 @@ describe('the dashboard wires the hash to the subject', () => {
 // rung is in the markup, never that it is on screen.
 describe('the published pair: series pills and the ladder they drive', () => {
   const page = renderTab('qwen38-27b');
-  const series = publishedLadder.series;
+  // ★ WHAT THE LADDER DRAWS, not every series in the manifest. A leg with
+  // `scope: 'cost'` (vllm-mtp-energy: same engine and instrument as vllm-mtp,
+  // re-measured with power sampling) is read by cost.js and deliberately NOT
+  // drawn here — it would be a near-duplicate line that stops at C=16 on a
+  // chart whose claim is about throughput. Filtering the same way the
+  // component does keeps this test tracking the component rather than the
+  // manifest's length.
+  const series = publishedLadder.series.filter((s) => s.scope !== 'cost');
   const subject = series.find((s) => s.role === 'subject');
   const rows = (h) => [...h.matchAll(/<th scope="row" class="mono">(\d+)<\/th>/g)].map((m) => +m[1]);
   const cols = (h) => [...h.matchAll(/<th scope="col">([^<]*)<\/th>/g)].map((m) => m[1]);

@@ -12,6 +12,7 @@ import subjects from './concurrency-subjects.json';
 import {
   absentReasonOf,
   baselineOnlyFor,
+  baselineSeriesOf,
   baselineTileOf,
   comparisonStateOf,
   fingerprintOf,
@@ -225,6 +226,24 @@ describe('a live record that pairs outranks the published pair', () => {
     expect(drawn).toEqual([]);
     expect(refused.find((r) => r.series.id === 'vllm-mtp').why).toContain('prompt_mode essay → undeclared');
     expect(comparisonStateOf(DENSE, [repointed()], { subjects: { ...ladders.subjects, [DENSE.id]: stripped } })).toBe('published');
+  });
+
+  test('a cost-scoped energy leg cannot make the concurrency tab live', () => {
+    // The vLLM energy leg (#1224) is measured on EXACTLY the published
+    // instrument, so `comparable()` pairs it happily. If it counted, this tab
+    // would report 'live' and then render nothing -- every concurrency
+    // component filters `scope: 'cost'` back out at draw time. The published
+    // ladder already carries it, so this asserts against the real manifest
+    // rather than a fixture: it must be absent from `drawn` and from `refused`
+    // alike, because it was never a candidate.
+    const energy = dense.series.find((b) => b.id === 'vllm-mtp-energy');
+    expect(energy?.scope).toBe('cost');
+    const { drawn, refused } = pairWith(repointed(), dense);
+    expect([...drawn, ...refused.map((r) => r.series)].map((b) => b.id)).not.toContain(
+      'vllm-mtp-energy'
+    );
+    // and the same leg IS still visible to the reader that wants it
+    expect(baselineSeriesOf(dense).map((b) => b.id)).toContain('vllm-mtp-energy');
   });
 
   test('a paired record that is not eligible to be live does not win — the live rules still apply first', () => {

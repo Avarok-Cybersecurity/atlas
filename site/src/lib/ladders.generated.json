@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-21T13:04:52Z",
+  "generated_utc": "2026-09-21T20:07:36Z",
   "subjects": {
     "qwen38-27b": {
       "manifest": "bench/ladder38/published.json",
@@ -31,6 +31,7 @@
         "6412b12d4d": "vLLM legs. Does not send the penalty keys.",
         "1c77e1d8e9": "Atlas legs (rounds 7-11). Adds explicit presence_penalty/frequency_penalty = 0.0.",
         "1f10d4887b": "The 2026-08-18 C=2 hardening pair (c2_atlas_dgx2_20260818.json and c2_vllm_mtp_dgx2_20260818.json). Both raw files carry this one driver sha, which is what makes them a pair: same harness revision, same day, same box.",
+        "664302439b": "The ENERGY leg (vllm-mtp-energy), 2026-09-21. harness_w56_conc_ladder.py -- the w55 harness plus power_window.py, which is the half that records gpu_rail_energy_j; w55 has no power sampling at all, which is why the throughput-only legs above carry no joules. This is the sha256 of the copy committed at bench/ladder38/harness_w56_conc_ladder.py and asserted equal to the raw file's driver_sha256 at the time it was added, so the two are checkable against each other -- and gen-ladder.mjs re-hashes that file at every build as harness_repo_sha256.",
         "equivalence": "The only difference is those two keys. vLLM already defaults both to 0.0, so its sampling is byte-identical either way; the keys exist to stop Atlas's non_thinking preset injecting presence_penalty=1.5. Both engines therefore ran identical sampling."
       },
       "harness_repo_sha256": "41e242c072a1b90be55acc8ba60cd751b66ec0d68e59bd1c0fe1e6d29c62a400",
@@ -405,6 +406,125 @@
               "source": "vllm_latest_reference.json",
               "measured_utc": "2026-08-16T14:38:29Z",
               "harness_sha256": "6412b12d4d"
+            }
+          ]
+        },
+        {
+          "id": "vllm-mtp-energy",
+          "label": "vLLM + MTP (energy)",
+          "role": "baseline",
+          "parity": "matched",
+          "engine": "vLLM 0.27.1",
+          "build": "vllm/vllm-openai:latest @ sha256:2c211a1273b48e8929f893b267aeb1509e6b84654cdbde1bad56d79e3964224d",
+          "env": "HF_HUB_OFFLINE=1",
+          "cli": "vllm serve --model unsloth/Qwen3.8-27B-NVFP4 --served-model-name unsloth/Qwen3.8-27B-NVFP4 --host 0.0.0.0 --port 8001 --max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85 --enable-prefix-caching --dtype bfloat16 --kv-cache-dtype fp8 --speculative-config '{\"method\":\"mtp\",\"num_speculative_tokens\":3}'",
+          "instrument": {
+            "isl": 128,
+            "osl": 1024,
+            "prompt_mode": "essay",
+            "max_model_len": 2048,
+            "max_batch_size": 128,
+            "kv_cache_dtype": "fp8",
+            "reps": 3,
+            "warmup": 1,
+            "temperature": 0,
+            "seed": 42
+          },
+          "instrument_note": "Measured 2026-09-21 on spark-43fa to give the Cost tab a vLLM leg that carries JOULES; the existing vllm-mtp legs are throughput-only. Same engine (vLLM 0.27.1), same checkpoint, same instrument as vllm-mtp -- the CLI above is that leg's, verbatim. Throughput landed at 94-98% of it on every rung (18.99/36.26/68.21/117.20/189.70 vs 19.72/37.11/71.61/124.48/197.03), a different day and box, which is the agreement that makes the energy quotable rather than the point of the run. prompt_mode essay: the pinned harness defaults to it (harness_w56_conc_ladder.py, PROMPT_MODE = os.environ.get(\"W55_PROMPT_MODE\", \"essay\")) and the run's env did not set it. Driver 664302439b is harness_w56, the energy harness; w55 is the one without power_window. parity is `matched` because the instrument IS matched -- every axis equals vllm-mtp's. It is not the published ratio's reference all the same: ladder-build.mjs picks that from the FULL-LADDER baselines only, and this leg is C=1..16. `unmatched` would have been the wrong label twice over: it means 'differs on these named axes' and requires parity_deltas, which this leg has none of.",
+          "unmeasured": {
+            "rungs": [
+              32,
+              64,
+              128
+            ],
+            "reason": "not driven -- vLLM+MTP has taken a GB10 down at the widest rungs (powercycles recorded), so the serve keeps the published cap of 128 while only the rungs the Atlas gate's ladder shares with it were driven"
+          },
+          "scope": "cost",
+          "rungs": [
+            {
+              "c": 1,
+              "gpu_rail_energy_j": 6148.93,
+              "gpu_rail_energy_window_tokens": 3072,
+              "gpu_rail_energy_window_s": 161.81,
+              "gpu_rail_power_samples": 212,
+              "gpu_rail_sample_period_ms": 250,
+              "tok_s": 18.99,
+              "tok_s_median": 19.04,
+              "spread_pct": 2.71,
+              "reps": 3,
+              "ttft_p50_ms": 293.69,
+              "tpot_p50_ms": 52.27,
+              "source": "vllm_mtp_energy_38.json",
+              "measured_utc": "2026-09-21T17:57:41Z",
+              "harness_sha256": "664302439b"
+            },
+            {
+              "c": 2,
+              "gpu_rail_energy_j": 6659.93,
+              "gpu_rail_energy_window_tokens": 6144,
+              "gpu_rail_energy_window_s": 169.48,
+              "gpu_rail_power_samples": 222,
+              "gpu_rail_sample_period_ms": 250,
+              "tok_s": 36.26,
+              "tok_s_median": 36.44,
+              "spread_pct": 3.25,
+              "reps": 3,
+              "ttft_p50_ms": 363.66,
+              "tpot_p50_ms": 54.04,
+              "source": "vllm_mtp_energy_38.json",
+              "measured_utc": "2026-09-21T17:57:41Z",
+              "harness_sha256": "664302439b"
+            },
+            {
+              "c": 4,
+              "gpu_rail_energy_j": 7318.34,
+              "gpu_rail_energy_window_tokens": 12288,
+              "gpu_rail_energy_window_s": 180.24,
+              "gpu_rail_power_samples": 233,
+              "gpu_rail_sample_period_ms": 250,
+              "tok_s": 68.21,
+              "tok_s_median": 67.48,
+              "spread_pct": 5.04,
+              "reps": 3,
+              "ttft_p50_ms": 544.25,
+              "tpot_p50_ms": 57.53,
+              "source": "vllm_mtp_energy_38.json",
+              "measured_utc": "2026-09-21T17:57:41Z",
+              "harness_sha256": "664302439b"
+            },
+            {
+              "c": 8,
+              "gpu_rail_energy_j": 8940.21,
+              "gpu_rail_energy_window_tokens": 24576,
+              "gpu_rail_energy_window_s": 209.72,
+              "gpu_rail_power_samples": 275,
+              "gpu_rail_sample_period_ms": 250,
+              "tok_s": 117.2,
+              "tok_s_median": 116.85,
+              "spread_pct": 2.88,
+              "reps": 3,
+              "ttft_p50_ms": 942.51,
+              "tpot_p50_ms": 64.11,
+              "source": "vllm_mtp_energy_38.json",
+              "measured_utc": "2026-09-21T17:57:41Z",
+              "harness_sha256": "664302439b"
+            },
+            {
+              "c": 16,
+              "gpu_rail_energy_j": 12709.6,
+              "gpu_rail_energy_window_tokens": 49152,
+              "gpu_rail_energy_window_s": 259.12,
+              "gpu_rail_power_samples": 342,
+              "gpu_rail_sample_period_ms": 250,
+              "tok_s": 189.7,
+              "tok_s_median": 189.43,
+              "spread_pct": 1.87,
+              "reps": 3,
+              "ttft_p50_ms": 1607.8,
+              "tpot_p50_ms": 79.41,
+              "source": "vllm_mtp_energy_38.json",
+              "measured_utc": "2026-09-21T17:57:41Z",
+              "harness_sha256": "664302439b"
             }
           ]
         }

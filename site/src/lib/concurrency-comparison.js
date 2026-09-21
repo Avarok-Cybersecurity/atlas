@@ -26,6 +26,26 @@ import { comparable, describeDiffers } from './ladder-baselines.js';
 export const subjectSeriesOf = (ladder) => ladder.series.find((s) => s.role === 'subject') ?? null;
 export const baselineSeriesOf = (ladder) => ladder.series.filter((s) => s.role === 'baseline');
 
+/**
+ * The baselines the CONCURRENCY views may consider. `scope: 'cost'` legs are
+ * energy-instrumented runs that exist for the Cost tab; they are deliberately
+ * NOT part of the throughput comparison, and every concurrency component
+ * already drops them at render time.
+ *
+ * ★ WHY THIS IS A SEPARATE ACCESSOR AND NOT A FILTER INSIDE `baselineSeriesOf`.
+ * cost.js reads `baselineSeriesOf` precisely BECAUSE it wants the cost legs, so
+ * filtering at the source would empty the Cost tab. Two readers, two questions,
+ * one shared list -- so the narrowing belongs to the caller that needs it, once.
+ *
+ * ★ WHY IT MATTERS BEYOND TIDINESS. `comparisonStateOf` returns 'live' when
+ * ANY baseline pairs with the live record. The vLLM energy leg is measured on
+ * exactly the published instrument, so without this it pairs, the tab reports
+ * 'live' -- and then renders nothing, because the components filter that same
+ * series back out. State computed over a series the view excludes.
+ */
+export const concurrencyBaselinesOf = (ladder) =>
+  baselineSeriesOf(ladder).filter((s) => s.scope !== 'cost');
+
 /** The generated ladder of a subject, or null when it has none for THIS checkpoint. */
 export function ladderFor(subject, ladders) {
   if (subject.published_manifest === null) return null;
@@ -90,7 +110,7 @@ export const fingerprintOf = (ladder, series) => ({
 export function pairWith(live, ladder) {
   const drawn = [];
   const refused = [];
-  for (const b of baselineSeriesOf(ladder)) {
+  for (const b of concurrencyBaselinesOf(ladder)) {
     const { ok, differs } = comparable(live, fingerprintOf(ladder, b));
     if (ok) drawn.push(b);
     else refused.push({ series: b, differs, why: describeDiffers(differs) });
@@ -109,7 +129,7 @@ export function baselineTileOf(subject, records, ladders) {
   const ladder = ladderFor(subject, ladders);
   if (!ladder) return 'none';
   const dated = (bs) => `one-shot · ${measuredRange(bs.flatMap((b) => b.rungs))}`;
-  if (state === 'baseline') return dated(baselineSeriesOf(ladder));
+  if (state === 'baseline') return dated(concurrencyBaselinesOf(ladder));
   const { drawn, refused } = pairWith(liveRecordOf(records), ladder);
   if (drawn.length) return dated(drawn);
   return refused.length ? 'other instrument' : 'none';
@@ -121,7 +141,7 @@ export function baselineTileOf(subject, records, ladders) {
  * exactly that — never a zero, never a guess.
  */
 export function absentReasonOf(ladder, c) {
-  const listed = baselineSeriesOf(ladder).find((b) => b.unmeasured?.rungs.includes(c));
+  const listed = concurrencyBaselinesOf(ladder).find((b) => b.unmeasured?.rungs.includes(c));
   return listed
     ? `C=${c} · not measured — ${listed.unmeasured.reason}`
     : `C=${c} · not in this manifest: neither measured nor listed as unmeasured`;
