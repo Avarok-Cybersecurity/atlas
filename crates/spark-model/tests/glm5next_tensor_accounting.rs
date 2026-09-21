@@ -194,3 +194,55 @@ fn print_accounting_table() {
         Some(TensorRole::LmHead)
     ));
 }
+
+/// The OFFICIAL export's additional name patterns.
+///
+/// `nvidia/GLM-5.3-Flash-NVFP4` is a ModelOpt export of the same model and
+/// carries three families the fixture above (`LibertAIDAI/...`, which has
+/// **zero** `input_scale` tensors) does not:
+///
+///   * `mlp.{gate,up,down}_proj.weight_scale{,_2}` — the three dense MLP
+///     layers are quantised there and unquantised here;
+///   * `*.input_scale` — the W4A4 activation scale ModelOpt writes beside
+///     every quantised projection. Atlas serves w4a16 and never reads it;
+///   * nothing else: the MTP experts LOSE their scales (they are plain BF16),
+///     which removes patterns rather than adding them.
+///
+/// 🔴 `classify` returning `None` is a hard error by this module's contract,
+/// so an unused tensor must still be CLASSIFIED — "Atlas ignores it" and "the
+/// accounting does not know what it is" are different statements, and only the
+/// second one is a defect.
+#[test]
+fn the_official_modelopt_export_adds_no_unclassified_pattern() {
+    let mut extra: Vec<String> = Vec::new();
+    for proj in ["gate_proj", "up_proj", "down_proj"] {
+        // Dense MLP (layers 0..first_k_dense_replace), quantised there.
+        for leaf in ["weight_scale", "weight_scale_2", "input_scale"] {
+            extra.push(format!("model.language_model.layers.N.mlp.{proj}.{leaf}"));
+        }
+        // The W4A4 scalar on the routed and shared experts.
+        extra.push(format!(
+            "model.language_model.layers.N.mlp.experts.E.{proj}.input_scale"
+        ));
+        extra.push(format!(
+            "model.language_model.layers.N.mlp.shared_experts.{proj}.input_scale"
+        ));
+    }
+    for name in &extra {
+        assert!(
+            classify(name).is_some(),
+            "the official export's {name} is unclassified"
+        );
+    }
+    // And the accounting reconciles with them present: no unknown bucket.
+    let mut rows = rows();
+    let owned: Vec<(&str, usize)> = extra.iter().map(|s| (s.as_str(), 1usize)).collect();
+    rows.extend(owned);
+    let acc = account(rows);
+    assert!(
+        acc.unknown.is_empty(),
+        "unclassified with the official export's patterns: {:?}",
+        acc.unknown
+    );
+    assert_eq!(acc.total, EXPECTED_TENSORS + extra.len());
+}

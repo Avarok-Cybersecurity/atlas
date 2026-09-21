@@ -51,6 +51,7 @@ use crate::weight_map::DenseWeight;
 #[cfg(test)]
 mod export_layout_tests;
 mod nvfp4_dequant;
+mod nvfp4_quant;
 #[cfg(test)]
 mod plan_cast_tests;
 mod plan_dtype;
@@ -91,6 +92,26 @@ fn is_reuploaded(name: &str, num_layers: usize) -> bool {
         return false;
     };
     idx < num_layers && !rel.starts_with("mlp.experts.")
+}
+
+/// Is this store tensor a routed-expert projection [`bind_expert`] QUANTISED
+/// instead of binding zero-copy?
+///
+/// The discriminator is the on-disk dtype and nothing else. A packed U8 expert
+/// IS the kernel's operand and must never be freed — that is the
+/// use-after-free [`is_reuploaded`] exists to avoid. A BF16 one cannot be: no
+/// GLM routed-expert kernel reads BF16, so the only thing that ever touched it
+/// was the quantiser, and the NVFP4 result it produced lives in the layer.
+///
+/// 🪤 This can only be acted on AFTER `load_glm5next_mtp_module` has bound
+/// `layers.{num_hidden_layers}` — which `factory::build` guarantees by calling
+/// `prune_after_load` last, and which is the same ordering `is_reuploaded`'s
+/// "the MTP block is kept" rule already depends on.
+fn is_quantized_expert_weight(name: &str, dtype: WeightDtype) -> bool {
+    dtype == WeightDtype::BF16
+        && name.starts_with("model.language_model.layers.")
+        && name.contains(".mlp.experts.")
+        && name.ends_with("_proj.weight")
 }
 
 /// Read a device tensor back as host bytes.
@@ -318,7 +339,13 @@ fn bind_mhc_site(
     })
 }
 
-/// One routed expert, bound straight off the checkpoint's device pointers.
+/// One routed expert, bound straight off the checkpoint's device pointers —
+/// or quantised to the same operand triple when the export left it full width.
+///
+/// 🪤 The arm is chosen by the `.weight` tensor's ON-DISK dtype, never by a
+/// flag. `LibertAIDAI/GLM-5.3-Flash-NVFP4`'s experts are U8 everywhere, so that
+/// checkpoint takes the zero-copy arm for every expert of every layer exactly
+/// as it did before the BF16 arm existed.
 pub(super) fn bind_expert(
     gpu: &dyn GpuBackend,
     store: &WeightStore,
@@ -327,30 +354,83 @@ pub(super) fn bind_expert(
 ) -> Result<Glm5NextExpertWeights> {
     let proj = |p: &str| -> Result<Nvfp4Proj> {
         let base = format!("mlp.experts.{id}.{p}");
-        let packed = store.get(&qualify(layer, &format!("{base}.weight")))?;
-        let scale = store.get(&qualify(layer, &format!("{base}.weight_scale")))?;
-        let s2 = store.get(&qualify(layer, &format!("{base}.weight_scale_2")))?;
-        if packed.dtype != WeightDtype::UInt8 {
-            bail!(
-                "{base}.weight is {:?}, expected packed U8 NVFP4",
-                packed.dtype
-            );
+        let w = store.get(&qualify(layer, &format!("{base}.weight")))?;
+        match w.dtype {
+            // The checkpoint already carries the triple: bind it where it lies.
+            WeightDtype::UInt8 => {
+                let scale = store.get(&qualify(layer, &format!("{base}.weight_scale")))?;
+                let s2 = store.get(&qualify(layer, &format!("{base}.weight_scale_2")))?;
+                let s2 = host_f32(gpu, s2, &format!("{base}.weight_scale_2"))?;
+                let [s2] = s2[..] else {
+                    bail!("{base}.weight_scale_2 is not a scalar");
+                };
+                Ok(Nvfp4Proj {
+                    packed: w.ptr,
+                    scale: scale.ptr,
+                    scale_2: s2,
+                })
+            }
+            // 🪤 NVIDIA's official export leaves the MTP block's experts BF16
+            // with no scales at all. There is no BF16 routed-expert forward to
+            // fall back to, so the triple is MADE here — see [`nvfp4_quant`].
+            WeightDtype::BF16 => quantize_expert_proj(gpu, store, w, &base),
+            other => bail!("{base}.weight is {other:?}, expected packed U8 NVFP4 or BF16"),
         }
-        let s2 = host_f32(gpu, s2, &format!("{base}.weight_scale_2"))?;
-        let [s2] = s2[..] else {
-            bail!("{base}.weight_scale_2 is not a scalar");
-        };
-        Ok(Nvfp4Proj {
-            packed: packed.ptr,
-            scale: scale.ptr,
-            scale_2: s2,
-        })
     };
     Ok(Glm5NextExpertWeights {
         gate_proj: proj("gate_proj")?,
         up_proj: proj("up_proj")?,
         down_proj: proj("down_proj")?,
     })
+}
+
+/// Quantise one full-width BF16 expert projection to NVFP4 at load.
+///
+/// Only the ~3.6x smaller result reaches the device, and only for the experts
+/// this EP rank owns — `build_moe` calls `bind_expert` over
+/// `local_expert_range()` alone, and the checkpoint loader's own EP rule never
+/// uploaded a remote expert to begin with. The BF16 source is then dead; it is
+/// released by [`Glm5NextWeightLoader::prune_after_load`], which is the only
+/// place that can, because every binder takes `&WeightStore`.
+///
+/// 🪤 Both buffers are ADOPTED by the store's derived-weight ledger. A
+/// `gpu.alloc` that lives in a layer struct has no owner otherwise: teardown's
+/// `sweep_unreleased` reclaims it, but only after the backend is gone, so the
+/// bytes are unreclaimable for the life of the model (see
+/// `spark_runtime::weights::derived`).
+fn quantize_expert_proj(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    w: &WeightTensor,
+    base: &str,
+) -> Result<Nvfp4Proj> {
+    let [rows, cols] = w.shape[..] else {
+        bail!(
+            "{base}.weight must be 2-D to quantise, got shape {:?}",
+            w.shape
+        );
+    };
+    let values = host_f32(gpu, w, &format!("{base}.weight"))?;
+    let blob = nvfp4_quant::quantize_to_nvfp4(base, &values, rows, cols)?;
+    drop(values);
+    let packed = upload_bytes(gpu, store, &blob.packed)?;
+    let scale = upload_bytes(gpu, store, &blob.scales)?;
+    Ok(Nvfp4Proj {
+        packed,
+        scale,
+        scale_2: blob.scale_2,
+    })
+}
+
+/// Label for every buffer [`quantize_expert_proj`] adopts, so the residency
+/// report can attribute them as one line rather than per expert.
+const QUANTIZED_EXPERT_LABEL: &str = "glm5_next routed expert, NVFP4 at load";
+
+fn upload_bytes(gpu: &dyn GpuBackend, store: &WeightStore, b: &[u8]) -> Result<DevicePtr> {
+    let p = gpu.alloc(b.len().max(1))?;
+    gpu.copy_h2d(b, p)?;
+    store.derived().adopt(QUANTIZED_EXPERT_LABEL, p, b.len());
+    Ok(p)
 }
 
 fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
@@ -650,6 +730,28 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
              binders; routed experts and the MTP block kept",
             bytes as f64 / 1e9,
         );
+        // Full-width BF16 routed experts (NVIDIA's official export leaves the
+        // MTP block's that way) were re-encoded by `bind_expert`, so they are
+        // dead the same way every other re-uploaded tensor is — and they are
+        // the single largest such family: ~7 GB per EP rank against the ~2 GB
+        // of NVFP4 that replaced them.
+        let quantized: std::collections::BTreeSet<String> = store
+            .names()
+            .filter(|n| {
+                store
+                    .get(n)
+                    .is_ok_and(|t| is_quantized_expert_weight(n, t.dtype))
+            })
+            .map(str::to_string)
+            .collect();
+        if !quantized.is_empty() {
+            let (qcount, qbytes) = store.free_matching(gpu, |name| quantized.contains(name))?;
+            tracing::info!(
+                "glm5_next: released {qcount} full-width BF16 routed-expert tensors \
+                 ({:.2} GB) quantised to NVFP4 at bind time",
+                qbytes as f64 / 1e9,
+            );
+        }
         Ok(())
     }
 }

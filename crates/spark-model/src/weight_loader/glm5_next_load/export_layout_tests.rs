@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, mock::MockGpuBackend};
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
 
-use super::{LayerSource, nvfp4_dequant};
+use super::{LayerSource, bind_expert, is_quantized_expert_weight, nvfp4_dequant};
 
 const LAYER: usize = 45;
 
@@ -211,4 +211,144 @@ fn the_mhc_tensors_read_the_same_at_either_stored_width() {
         from_f32, from_bf16,
         "storage width must not change the mHC values"
     );
+}
+
+// ------------------------------------------------------------ routed expert
+
+fn put_expert(b: &mut StoreBuilder, id: usize, quantized: bool) -> Vec<DevicePtr> {
+    let mut ptrs = Vec::new();
+    for p in ["gate_proj", "up_proj", "down_proj"] {
+        let base = qualified(&format!("mlp.experts.{id}.{p}"));
+        if quantized {
+            ptrs.push(b.put(
+                &format!("{base}.weight"),
+                &[0x21u8; 16],
+                &[2, 8],
+                WeightDtype::UInt8,
+            ));
+            b.put(
+                &format!("{base}.weight_scale"),
+                &[0x38u8, 0x38],
+                &[2, 1],
+                WeightDtype::FP8E4M3,
+            );
+            b.put(
+                &format!("{base}.weight_scale_2"),
+                &0.5f32.to_le_bytes(),
+                &[],
+                WeightDtype::FP32,
+            );
+        } else {
+            ptrs.push(b.put(
+                &format!("{base}.weight"),
+                &bf16_bytes(&ramp(32)),
+                &[2, 16],
+                WeightDtype::BF16,
+            ));
+        }
+    }
+    ptrs
+}
+
+/// 🪤 The community checkpoint's experts are bound ZERO-COPY, off the store's
+/// own pointers. If this ever starts allocating, `prune_after_load`'s refusal
+/// to free `mlp.experts.*` becomes 30 GB of leak instead of a safety rule.
+#[test]
+fn a_packed_expert_is_still_bound_zero_copy() {
+    let mut b = StoreBuilder::new();
+    let ptrs = put_expert(&mut b, 0, true);
+    let (gpu, store) = b.finish();
+
+    let e = bind_expert(&gpu, &store, LAYER, 0).unwrap();
+    assert_eq!(e.gate_proj.packed, ptrs[0]);
+    assert_eq!(e.up_proj.packed, ptrs[1]);
+    assert_eq!(e.down_proj.packed, ptrs[2]);
+    assert_eq!(e.gate_proj.scale_2, 0.5);
+    assert!(
+        store.derived().is_empty(),
+        "the packed path must derive nothing"
+    );
+}
+
+/// The official export's MTP experts are BF16, so the operand triple is built
+/// here — a fresh, smaller allocation, adopted by the store so teardown owns
+/// it, and byte-identical to quantising the same values directly.
+#[test]
+fn a_bf16_expert_is_quantised_into_a_fresh_smaller_buffer() {
+    let mut b = StoreBuilder::new();
+    let ptrs = put_expert(&mut b, 0, false);
+    let (gpu, store) = b.finish();
+
+    let e = bind_expert(&gpu, &store, LAYER, 0).unwrap();
+    assert_ne!(
+        e.gate_proj.packed, ptrs[0],
+        "a BF16 expert cannot be bound in place"
+    );
+
+    let values: Vec<f32> = ramp(32)
+        .iter()
+        .map(|x| half::bf16::from_f32(*x).to_f32())
+        .collect();
+    let want = super::nvfp4_quant::quantize_to_nvfp4("ref", &values, 2, 16).unwrap();
+    assert_eq!(gpu.read_alloc(e.gate_proj.packed).unwrap(), want.packed);
+    assert_eq!(gpu.read_alloc(e.gate_proj.scale).unwrap(), want.scales);
+    assert_eq!(e.gate_proj.scale_2, want.scale_2);
+    assert_eq!(want.packed.len(), 16, "[2, 16] BF16 -> [2, 8] packed");
+
+    // 3 projections x (packed + scales), every one owned by the store's
+    // derived ledger rather than left for the teardown sweep to find.
+    assert_eq!(store.derived().len(), 6);
+    assert_eq!(store.derived().bytes(), 3 * (16 + 2));
+}
+
+/// Neither arm is a catch-all: a width no GLM export uses is refused by name
+/// rather than reinterpreted as one of the two that are understood.
+#[test]
+fn an_expert_at_an_unsupported_width_is_refused() {
+    let mut b = StoreBuilder::new();
+    b.put(
+        &qualified("mlp.experts.0.gate_proj.weight"),
+        &[0u8; 16],
+        &[1, 16],
+        WeightDtype::FP8E4M3,
+    );
+    let (gpu, store) = b.finish();
+    let err = bind_expert(&gpu, &store, LAYER, 0).unwrap_err().to_string();
+    assert!(err.contains("expected packed U8 NVFP4 or BF16"), "{err}");
+}
+
+// ---------------------------------------------------------------- the prune
+
+/// The predicate that decides which expert tensors `prune_after_load` may
+/// release. 🪤 A U8 expert IS the kernel's operand; freeing it is a
+/// use-after-free with no diagnostic.
+#[test]
+fn only_a_bf16_expert_weight_is_prunable() {
+    let w = qualified("mlp.experts.7.down_proj.weight");
+    assert!(is_quantized_expert_weight(&w, WeightDtype::BF16));
+    assert!(!is_quantized_expert_weight(&w, WeightDtype::UInt8));
+    // A BF16 tensor that is not a routed expert stays: `is_reuploaded` already
+    // rules on those, and this predicate must not overlap it.
+    assert!(!is_quantized_expert_weight(
+        &qualified("mlp.shared_experts.gate_proj.weight"),
+        WeightDtype::BF16
+    ));
+    assert!(!is_quantized_expert_weight(
+        &qualified("mlp.gate.weight"),
+        WeightDtype::BF16
+    ));
+    assert!(!is_quantized_expert_weight(
+        &qualified("self_attn.q_proj.weight"),
+        WeightDtype::BF16
+    ));
+    // Scale siblings are not weights and never take the quantising arm.
+    assert!(!is_quantized_expert_weight(
+        &qualified("mlp.experts.7.down_proj.weight_scale"),
+        WeightDtype::BF16
+    ));
+    // Another architecture's naming must not be swept in by accident.
+    assert!(!is_quantized_expert_weight(
+        "model.layers.7.mlp.experts.3.down_proj.weight",
+        WeightDtype::BF16
+    ));
 }
