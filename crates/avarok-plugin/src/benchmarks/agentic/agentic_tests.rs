@@ -329,10 +329,30 @@ fn old_regime_tiers_are_refused_by_the_700_ceiling_but_still_rank_fairly() {
         );
     }
 
-    // The fairness ordering itself, stated as a comparison rather than as two
-    // separate passes: dgx2's 1019 s / 166 turns is FASTER per turn than
-    // dgx1's 813 s / 115, and no bound in force may rank it lower.
-    assert!(1019.0 / 166.0 < 813.0 / 115.0);
+    // THE FAIRNESS ORDERING, asserted against the VERDICT rather than against
+    // arithmetic. dgx2's 1019 s / 166 turns is 6.14 s/turn and dgx1's 813 s /
+    // 115 is 7.07, so a bound placed BETWEEN them must pass the box with the
+    // larger Sigma-wall and fail the smaller one — the exact inversion the old
+    // wall-only bound produced, now impossible to reintroduce without this
+    // going red. (An `assert!` on two literal quotients would have been
+    // decorative: clippy's `assertions_on_constants` says so, and it is right
+    // — it proves something about division, not about this gate.)
+    let between = 6.5;
+    let faster = with_budgets(vec![tier(1019.0, 166)], 1800.0, between).verdict();
+    let slower = with_budgets(vec![tier(813.0, 115)], 1800.0, between).verdict();
+    assert_eq!(
+        faster.kind,
+        crate::result::VerdictKind::Pass,
+        "6.14 s/turn must clear a {between} s/turn bound however long its Sigma-wall: {}",
+        faster.reason
+    );
+    assert_eq!(
+        slower.kind,
+        crate::result::VerdictKind::Fail,
+        "7.07 s/turn must not clear a {between} s/turn bound however short its Sigma-wall: {}",
+        slower.reason
+    );
+    assert!(slower.reason.contains("s/turn"), "{}", slower.reason);
     // ...and the two that the OLD 1000 s bound rejected really were rejected,
     // so this proves a behaviour change rather than restating the status quo.
     for (wall, turns) in [(1039.0, 144), (1019.0, 166)] {
