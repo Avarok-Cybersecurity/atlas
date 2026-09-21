@@ -79,15 +79,23 @@ fn agentic_gate_record(rows: Vec<IterationRow>) -> crate::gate::GateRecord {
 fn trajectory_diagnostics_are_recorded_and_never_gated() {
     // 1. The tier verdict reads none of the counters.
     // Builders rather than values: `IterationRow` is deliberately not `Clone`.
+    // ★ 77.4 x 10 (Sigma 774 s) -> 57.3 x 10 (Sigma 573 s) on 2026-09-21, with the
+    // ceiling re-cut 1800 -> 700. The fixture is incidental to what this test
+    // proves — it only has to be a clean tier that PASSES the committed bounds,
+    // or the `check_record` comparison below cannot bite — but 774 stopped
+    // being one. 573 is the MEAN of the post-2026-09-12 regime the new ceiling
+    // was cut against (n=21, 521-647 s), and 57.3/9 = 6.37 s/turn sits inside
+    // the 6.14-7.22 band every measured correct tier has occupied, so the
+    // fixture is still a real shape rather than a number chosen to pass.
     let clean = || {
         (0..10)
-            .map(|_| tier(77.4, 11))
+            .map(|_| tier(57.3, 9))
             .collect::<Vec<IterationRow>>()
     };
     let noisy = || {
         (0..10)
             .map(|i| {
-                let mut r = tier(77.4, 11);
+                let mut r = tier(57.3, 9);
                 r.hit_turn_cap = i % 2 == 0;
                 r.truncated_turns = i;
                 r.unparsed_call_turns = 10 - i;

@@ -189,28 +189,47 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         !d.serve_overrides.contains_key("speculative"),
         "--dflash conflicts with --speculative at the CLI: pinning both would not start"
     );
-    // The one-variable rule, asserted rather than described — with exactly
-    // one documented exception. Every key the plain gate pins must be pinned
-    // identically here EXCEPT max_batch_size, which the drafter's memory
-    // footprint forces down (see the BENCH.toml note and its measured reserve
-    // table). Listing the exception rather than skipping the check is the
-    // point: a second axis of difference must never appear silently.
+    // The one-variable rule, asserted rather than described — with exactly TWO
+    // documented exceptions, each in its own list so the REASON a key differs
+    // is recorded and not just the fact. Every other key the plain gate pins
+    // must be pinned identically here. Listing an exception rather than
+    // skipping the check is the point: a third axis of difference must never
+    // appear silently, and a listed key that has quietly come back into
+    // agreement fails too, so an excuse cannot outlive its cause.
+    //
+    // max_batch_size: forced down by the drafter's memory footprint (see the
+    // BENCH.toml note and its measured reserve table).
     const FORCED_BY_THE_DRAFTER: [&str; 1] = ["max_batch_size"];
+    // max_model_len: forced apart on 2026-09-21 by the PLAIN gate's instrument
+    // re-point, not by anything about DFlash2. The plain ladder is now pinned
+    // to the published Atlas-vs-vLLM instrument (ISL 128 / OSL 1024 / essay,
+    // ctx 2048) so its live record can be drawn against the measured vLLM bar;
+    // `max_model_len` is a REQUIRED axis of that fingerprint
+    // (site/src/lib/ladder-baselines.js), so 2048 is not a free choice there.
+    // This gate deliberately did NOT follow: DFlash2 is not on the published
+    // ladder, its bars were cut at ctx 4096 / ISL 512 / OSL 200, and moving its
+    // context would refuse every record it has (`check_record` demands the pin)
+    // to buy a comparison nothing draws. The two ladders' shared rungs stopped
+    // being directly comparable at the same moment, which is stated in
+    // bench_override_tree_tests and in both BENCH.toml entries.
+    const FORCED_BY_THE_REPOINT: [&str; 1] = ["max_model_len"];
     for (key, want) in &c.serve_overrides {
-        if FORCED_BY_THE_DRAFTER.contains(&key.as_str()) {
+        if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
+            || FORCED_BY_THE_REPOINT.contains(&key.as_str())
+        {
             assert_ne!(
                 d.serve_overrides.get(key),
                 Some(want),
-                "{key} is listed as forced apart by the drafter but the two gates agree on \
-                 it — drop it from the exception list rather than leaving a stale excuse"
+                "{key} is listed as forced apart but the two gates agree on it — drop it \
+                 from the exception list rather than leaving a stale excuse"
             );
             continue;
         }
         assert_eq!(
             d.serve_overrides.get(key),
             Some(want),
-            "the two concurrency ladders must differ only in the drafter and the batch cap \
-             it forces, but {key} differs"
+            "the two concurrency ladders may differ only where an exception list says so \
+             and says why, but {key} differs"
         );
     }
 

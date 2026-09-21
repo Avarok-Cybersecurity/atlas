@@ -257,16 +257,38 @@ fn a_failed_iteration_names_the_directives_it_missed() {
 /// FASTEST tier ever measured here) while passing dgx1's 7.07.
 ///
 /// The budgets here are the 35B's COMMITTED BENCH.toml numbers, not invented
-/// ones: `sum_wall_s max = 1800`, `s_per_turn max = 8.5`. That matters because
-/// the gate substitutes those, never the schema defaults — an earlier revision
-/// of this test asserted 1300, a value the gate cannot produce.
+/// ones. That matters because the gate substitutes those, never the schema
+/// defaults — an earlier revision of this test asserted 1300, a value the gate
+/// cannot produce.
+///
+/// ★ THE WALL CEILING IS 700 SINCE 2026-09-21 (owner's call), AND EVERY TIER
+/// IN THE TABLE ABOVE IS NOW ABOVE IT. That is not this test breaking; it is
+/// the test reporting what the new ceiling means, so read it before touching
+/// either number:
+///
+///   * The five tiers are ALL pre-2026-09-12 and the ceiling was cut against
+///     the regime that began that day. The 109 recorded runs are not one
+///     population — before: n=88, 443-1025 s, mean 774, 66 of 88 ABOVE 700;
+///     since: n=21, 521-647 s, mean 573, stdev 30.2 (5.3% CoV), 0 of 21 above
+///     700. 700 is a blowup guard for the CURRENT regime exactly as 1800 was
+///     for the old one.
+///   * The 2026-08 decision this test was written to defend is INTACT, and the
+///     assertions below prove it rather than assuming it: wall is a blowup
+///     guard, `s_per_turn` is the fairness bound. All five tiers still clear
+///     8.5 s/turn — including dgx2's 6.14, the fastest ever measured here and
+///     the one the old 1000 s wall bound ranked BELOW dgx1's 7.07. A ceiling
+///     that fails a slow-regime run is doing its job; a bound that ranks a
+///     faster box below a slower one is the defect, and that has not returned.
+///
+/// So the test now asserts the two things that are true: the old-regime tiers
+/// are refused by the new wall ceiling, and the fairness ordering survives it.
 #[test]
-fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
+fn old_regime_tiers_are_refused_by_the_700_ceiling_but_still_rank_fairly() {
     let wall_budget =
         committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "sum_wall_s");
     let speed_budget =
         committed_agentic_max("qwen3.6-35b-a3b", "Qwen/Qwen3.6-35B-A3B-FP8", "s_per_turn");
-    assert_eq!(wall_budget, 1800.0, "the documented blowup bound drifted");
+    assert_eq!(wall_budget, 700.0, "the documented blowup bound drifted");
     assert_eq!(speed_budget, 8.5, "the documented speed bound drifted");
 
     const MEASURED: [(f64, usize); 5] = [
@@ -277,14 +299,36 @@ fn every_measured_correct_tier_passes_the_committed_35b_bounds() {
         (1019.0, 166),
     ];
     for (wall, turns) in MEASURED {
+        // Refused on WALL, by the ceiling that was cut against a later regime.
         let v = with_budgets(vec![tier(wall, turns)], wall_budget, speed_budget).verdict();
         assert_eq!(
             v.kind,
-            crate::result::VerdictKind::Pass,
-            "measured-correct tier {wall}s/{turns} turns must pass: {}",
+            crate::result::VerdictKind::Fail,
+            "old-regime tier {wall}s/{turns} turns is above the 700 s ceiling and must be \
+             refused; if this passes, the ceiling moved: {}",
             v.reason
         );
+        assert!(v.reason.contains("Σwall"), "the refusal must name Σwall: {}", v.reason);
+
+        // ...and NOT on speed. This is the 2026-08 property the wall bound was
+        // demoted to protect, asserted on every tier rather than described:
+        // 6.14-7.22 s/turn all clear 8.5, so the new ceiling has not smuggled
+        // the old "rank a faster box below a slower one" defect back in.
+        let generous_wall = with_budgets(vec![tier(wall, turns)], 1800.0, speed_budget).verdict();
+        assert_eq!(
+            generous_wall.kind,
+            crate::result::VerdictKind::Pass,
+            "tier {wall}s/{turns} turns is {:.2} s/turn and must clear the 8.5 speed bound \
+             once the wall guard is set for ITS regime: {}",
+            wall / turns as f64,
+            generous_wall.reason
+        );
     }
+
+    // The fairness ordering itself, stated as a comparison rather than as two
+    // separate passes: dgx2's 1019 s / 166 turns is FASTER per turn than
+    // dgx1's 813 s / 115, and no bound in force may rank it lower.
+    assert!(1019.0 / 166.0 < 813.0 / 115.0);
     // ...and the two that the OLD 1000 s bound rejected really were rejected,
     // so this proves a behaviour change rather than restating the status quo.
     for (wall, turns) in [(1039.0, 144), (1019.0, 166)] {

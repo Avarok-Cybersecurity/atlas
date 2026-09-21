@@ -71,13 +71,20 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // adding a rung moves this assertion instead of failing it; the VALUES are
     // pinned because a silent floor change is the thing worth catching.
     //
-    // ★ REPINNED to the 2026-09-20 re-cut. The floors below are the ones this
-    // PR's own ratchet wrote into kernels/gb10/qwen3.8-27b/BENCH.toml under the
-    // speed-bound policy; the change is stated there with its source record and
-    // its guard, so it is a DECLARED floor change, which is the case this pin
-    // is meant to let through. The ladder above still clears every one of them
-    // with margin, so the PASS this test asserts is still a real pass and not
-    // an artifact of the floors moving under it.
+    // ★ REPINNED TO ZERO, 2026-09-21. The gate was re-pointed to the published
+    // ladder's instrument (ISL 128 / OSL 1024 / essay) and every rung floor was
+    // cut at the retired 512/320 one, so all nine are `min = 0.0` until they
+    // are re-cut from records on the new instrument. `RUNGS` names 0.0 as the
+    // record-without-gating state.
+    //
+    // This pin is KEPT AT ZERO rather than deleted, and that is the point of it
+    // right now: while the ladder gates nothing, this assertion is the tripwire
+    // that catches a floor silently REAPPEARING before it has been measured.
+    //
+    // The consequence for this test is that the committed-floor leg below is
+    // now trivially true — everything clears a floor of zero — so it no longer
+    // proves that a clean sweep passes. The EXPLICIT-floor leg after it does
+    // that, on the same ladder, and must be kept until the re-cut lands.
     let m = ladder(&[
         ("c1_aggregate_tok_s", 21.2),
         ("c2_aggregate_tok_s", 27.7),
@@ -93,17 +100,18 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     assert_eq!(
         floors.per_c,
         vec![
-            (1, 20.5),
-            (2, 25.0),
-            (4, 43.5),
-            (8, 57.0),
-            (16, 86.0),
-            (32, 100.0),
-            (64, 110.0),
-            (128, 110.0)
-        ]
+            (1, 0.0),
+            (2, 0.0),
+            (4, 0.0),
+            (8, 0.0),
+            (16, 0.0),
+            (32, 0.0),
+            (64, 0.0),
+            (128, 0.0)
+        ],
+        "a rung floor reappeared before the re-cut — see the BENCH.toml note"
     );
-    assert_eq!(floors.peak, 110.0);
+    assert_eq!(floors.peak, 0.0);
     let v = sweep_verdict(
         &m,
         8,
@@ -120,6 +128,39 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     for rung in ["C1", "C2", "C4", "C8", "C16", "C32", "C64", "C128", "peak"] {
         assert!(v.reason.contains(rung), "{}", v.reason);
     }
+
+    // ★ THE LEG THAT STILL BITES while the committed floors are off: the SAME
+    // ladder against REAL bars. These are the floors that were in force until
+    // 2026-09-21 — the 2026-09-20 speed-bound re-cut — used here as a fixture
+    // rather than read from the tree, because what is under test is
+    // `sweep_verdict`'s comparison, not what the tree currently declares.
+    // Without this the test would assert only that everything clears zero.
+    let real = Floors {
+        per_c: vec![
+            (1, 20.5),
+            (2, 25.0),
+            (4, 43.5),
+            (8, 57.0),
+            (16, 86.0),
+            (32, 100.0),
+            (64, 110.0),
+            (128, 110.0),
+        ],
+        peak: 110.0,
+    };
+    let v = sweep_verdict(
+        &m,
+        8,
+        0,
+        Exclusions {
+            vacuous: 0,
+            cache_uncontrolled: 0,
+            non_mtp_arm: 0,
+        },
+        80.0,
+        &real,
+    );
+    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
 /// FAIL names the violating cell — and the comparison is the raw value
@@ -127,15 +168,36 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
 /// value + noise >= min.
 #[test]
 fn a_sweep_below_one_floor_fails_naming_the_cell() {
-    let committed = committed_floors();
-    // Index 3 is C=8 on the widened rung list (1, 2, 4, 8, ...). Found by
-    // value rather than by position so a rung inserted ahead of it cannot
-    // silently retarget this test at a different cell.
+    // ★ DRIVEN BY AN EXPLICIT FLOOR SET SINCE 2026-09-21, not by the committed
+    // one. The gate's own floors are all 0.0 while it is re-pointed to the
+    // published instrument, and nothing can fall below zero — read from the
+    // tree, this test would have silently become unable to fail, which is
+    // worse than no test. `sweep_verdict` takes the floors as an argument, so
+    // an explicit set is an input the call site really produces.
+    //
+    // The values are the ones that WERE in force (the 2026-09-20 speed-bound
+    // re-cut). Point this back at `committed_floors()` when the ladder is
+    // re-cut on the new instrument — the coupling is worth having back.
+    let committed = Floors {
+        per_c: vec![
+            (1, 20.5),
+            (2, 25.0),
+            (4, 43.5),
+            (8, 57.0),
+            (16, 86.0),
+            (32, 100.0),
+            (64, 110.0),
+            (128, 110.0),
+        ],
+        peak: 110.0,
+    };
+    // C=8 is found by VALUE rather than by position so a rung inserted ahead
+    // of it cannot silently retarget this test at a different cell.
     let c8_floor = committed
         .per_c
         .iter()
         .find(|(c, _)| *c == 8)
-        .expect("C=8 is a committed rung")
+        .expect("C=8 is a rung")
         .1;
     // A hair under the C=8 floor, everything else comfortably clear.
     let m = ladder(&[

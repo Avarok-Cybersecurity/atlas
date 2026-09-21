@@ -232,5 +232,14 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
     // only while `slots > 3·C` — see the BENCH.toml serve_overrides comment
     // and `concurrency::warm_cache_capable`.
     assert_eq!(args.ssm_cache_slots, 32);
-    assert_eq!(args.max_seq_len, 4096);
+    // ★ Read from the committed pin, not re-typed — the same convention the
+    // batch assertion above already follows, and applying it here is why this
+    // line no longer has to be edited when the instrument moves. It was a
+    // hardcoded 4096 until 2026-09-21, when the gate's context went to 2048
+    // with the re-point to the published ladder's instrument.
+    assert_eq!(
+        args.max_seq_len.to_string(),
+        merged["max_model_len"],
+        "the context pin reached the serve"
+    );
 }
