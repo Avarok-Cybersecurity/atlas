@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-09-21T20:07:36Z",
+  "generated_utc": "2026-09-21T20:22:57Z",
   "subjects": {
     "qwen38-27b": {
       "manifest": "bench/ladder38/published.json",
