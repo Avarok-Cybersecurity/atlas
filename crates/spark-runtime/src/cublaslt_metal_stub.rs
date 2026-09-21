@@ -3,7 +3,7 @@
 //! Metal-build stub of the cuda-only `cublaslt` module.
 //!
 //! The real [`crate::cublaslt`] module (cuBLASLt BF16/FP8 act·weightᵀ GEMMs)
-//! is gated behind `feature = "cuda"` because it links cuBLASLt, which does
+//! is gated behind `avarok_cuda` because it links cuBLASLt, which does
 //! not exist on macOS. spark-model names these entry points unconditionally,
 //! so the metal build (`cargo check --features metal`, cuda off) needs the
 //! symbols to resolve even though FP8 inference never runs there. The bodies

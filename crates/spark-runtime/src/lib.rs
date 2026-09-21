@@ -4,25 +4,25 @@
 #![deny(clippy::all)]
 
 pub mod buffers;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cublaslt;
 // Metal/no-cuda builds get unreachable stubs so spark-model's unconditional
 // references to these cuda-only entry points still resolve (compile-only).
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 #[path = "cublaslt_metal_stub.rs"]
 pub mod cublaslt;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cuda_backend;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cutlass;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 #[path = "cutlass_metal_stub.rs"]
 pub mod cutlass;
 #[cfg(unix)]
 pub mod fast_weights;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod flashinfer;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 #[path = "flashinfer_metal_stub.rs"]
 pub mod flashinfer;
 pub mod gpu;
@@ -34,7 +34,7 @@ pub mod kv_cache;
 pub mod kv_dequant;
 pub mod kv_spill;
 pub mod launch_trace;
-#[cfg(feature = "metal")]
+#[cfg(avarok_metal)]
 pub mod metal_backend;
 pub mod op_cache;
 pub mod pinned_hosts;

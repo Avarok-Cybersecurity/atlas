@@ -19,7 +19,7 @@ mod per_sequence_state;
 mod post_load_audit;
 mod refusal;
 mod ssm_h_fp16;
-#[cfg(any(feature = "cuda", feature = "metal"))]
+#[cfg(any(avarok_cuda, avarok_metal))]
 pub(crate) use gpu_backend::init_gpu_backend;
 pub(crate) use headroom::PostLoadInputs;
 pub(crate) use post_load_audit::post_load_memory_audit;

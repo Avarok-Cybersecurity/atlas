@@ -27,11 +27,11 @@ pub mod device;
 
 // CUDA-only modules: rely on `cudarc` and the NVIDIA driver. Gated so the
 // crate compiles on hosts without a CUDA toolchain (e.g. Apple Silicon).
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cuda_host;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod kernel;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod registry;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod stream;

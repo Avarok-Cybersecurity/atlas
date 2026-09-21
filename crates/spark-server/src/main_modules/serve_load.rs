@@ -472,12 +472,12 @@ pub(crate) fn load_model(
     // CUDA-only: Apple Silicon UMA already exposes `currentAllocatedSize`
     // and the OS handles memory pressure via Metal's working-set policy,
     // so the dedicated watchdog isn't needed.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     let _oom_watchdog = spark_runtime::cuda_backend::spawn_oom_watchdog(
         2048, // 2 GB threshold
         std::time::Duration::from_secs(2),
     );
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
 
     // FP8 KV calibration precedence (highest wins): an explicit
@@ -573,7 +573,7 @@ pub(crate) fn load_model(
     // handle create + 64 MB workspace + the library's kernel-image load, all
     // deferred to first use. Cold TTFT is a headline metric; load time is not.
     // Failure is logged inside and never fails the serve.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     spark_runtime::cublaslt::prewarm(0);
 
     // 4. Post-load OOM check + audit log.

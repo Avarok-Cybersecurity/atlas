@@ -213,7 +213,7 @@ pub(crate) fn init_nccl_comm(
 /// collectives are unavailable. `world_size > 1` is rejected explicitly
 /// so a misconfigured `--rank > 0` invocation fails fast instead of
 /// silently degrading to single-rank.
-#[cfg(all(feature = "cuda", not(feature = "nccl")))]
+#[cfg(all(avarok_cuda, not(feature = "nccl")))]
 pub(crate) fn init_nccl_comm(
     _args: &cli::ServeArgs,
     _gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -237,7 +237,7 @@ pub(crate) fn init_nccl_comm(
 /// `SingleGpuBackend`. `world_size > 1` is rejected explicitly so a
 /// misconfigured `--rank > 0` invocation fails fast instead of
 /// silently degrading to single-rank.
-#[cfg(all(feature = "metal", not(feature = "cuda")))]
+#[cfg(all(avarok_metal, not(avarok_cuda)))]
 pub(crate) fn init_nccl_comm(
     _args: &cli::ServeArgs,
     _gpu: &dyn spark_runtime::gpu::GpuBackend,

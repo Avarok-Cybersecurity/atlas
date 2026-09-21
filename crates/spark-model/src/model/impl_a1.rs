@@ -868,7 +868,7 @@ impl TransformerModel {
             derived: crate::layers::ops::DerivedWeights::new(),
             levers,
             stats: ops::ModelStats::new(),
-            #[cfg(feature = "cuda")]
+            #[cfg(avarok_cuda)]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;
                 match driver.start() {

@@ -10,12 +10,13 @@ repository.workspace = true
 # Default to CUDA so existing Linux/NVIDIA builds remain unchanged. macOS
 # Apple Silicon builds opt out via `--no-default-features --features metal`.
 default = ["cuda"]
-cuda = ["dep:cudarc"]
+# ★ NO-OP for the dependency: see the target table below.
+cuda = []
 metal = []
 
 [dependencies]
 anyhow = { workspace = true }
-cudarc = { workspace = true, optional = true }
+
 memmap2 = "0.9"
 safetensors = "0.8"
 serde = { workspace = true }
@@ -24,3 +25,12 @@ thiserror = { workspace = true }
 
 [lints]
 workspace = true
+
+# ── Target-conditional backend ────────────────────────────────────────────
+# cudarc's build script shells out to `nvcc --version` and PANICS when it is
+# absent, so on macOS it must not be in the dependency graph at all -- being
+# unused is not enough. Cargo cannot make a FEATURE target-conditional, but a
+# DEPENDENCY can be, which is the half that matters. The `cuda` feature stays
+# as a no-op alias so existing call sites keep working.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+cudarc = { workspace = true }

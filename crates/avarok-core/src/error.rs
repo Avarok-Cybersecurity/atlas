@@ -4,7 +4,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AvarokError {
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     #[error("CUDA driver error: {0}")]
     CudaDriver(#[from] cudarc::driver::DriverError),
 

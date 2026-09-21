@@ -22,12 +22,12 @@
 // The real transport needs the CUDA pinned bounce + the verbs FFI; when either
 // is absent, a stub whose `connect` always errors lets dependents reference the
 // type unconditionally (the tier selector then falls back to host-RAM).
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub use imp::RdmaSnapshotArena;
-#[cfg(not(all(feature = "cuda", avarok_rdma_verbs)))]
+#[cfg(not(all(avarok_cuda, avarok_rdma_verbs)))]
 pub use stub::RdmaSnapshotArena;
 
-#[cfg(not(all(feature = "cuda", avarok_rdma_verbs)))]
+#[cfg(not(all(avarok_cuda, avarok_rdma_verbs)))]
 mod stub {
     use anyhow::{Result, bail};
     /// Placeholder when RDMA verbs / CUDA aren't built. `connect` always errors,
@@ -59,7 +59,7 @@ mod stub {
     }
 }
 
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 mod imp {
     use std::io::Write;
     use std::net::TcpStream;

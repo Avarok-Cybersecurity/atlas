@@ -49,7 +49,7 @@ pub use types::*;
 // The RDMA network entry point is CUDA-only, but its landing-plan and pair-
 // rebuild logic is pure host code. Compile that logic in tests as well so its
 // contracts remain testable on non-CUDA hosts.
-#[cfg(any(feature = "cuda", test))]
+#[cfg(any(avarok_cuda, test))]
 // RDMA LoRA staging lands adapter tensors via spark-storage's RDMA weight
 // loader; RDMA needs rdma-core, so this stays unix-only even though the NVMe
 // tier itself is now portable.

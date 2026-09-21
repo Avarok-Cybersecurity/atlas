@@ -441,7 +441,7 @@ mod expert_stream_tests;
 #[cfg(test)]
 mod real_file_test;
 
-#[cfg(all(test, feature = "cuda"))]
+#[cfg(all(test, avarok_cuda))]
 mod gpu_validate_test;
 
 #[cfg(test)]

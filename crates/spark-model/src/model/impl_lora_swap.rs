@@ -21,7 +21,7 @@ impl TransformerModel {
     /// rebuilds the slot's `LoraLayerWeights` with the NEW adapter's r/scale —
     /// re-installing if the swapped slot is currently active. Requires rotation
     /// armed (`AVAROK_LORA_ROTATE`/`$AVAROK_LORA_PEER`) so decode is eager.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     // Peer staging pulls adapter tensors over RDMA (rdma-core), so this half
     // is unix-only. The `_from_disk` twins below are plain file I/O and are
     // portable.
@@ -140,7 +140,7 @@ impl TransformerModel {
     /// correct. Making the promoted slot active mirrors the rotate/load control
     /// plane so the delta actually applies under batch-1 (the per-slot bgmv route
     /// tables are still dormant — compute reads the installed active adapter).
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     // Peer staging pulls adapter tensors over RDMA (rdma-core), so this half
     // is unix-only. The `_from_disk` twins below are plain file I/O and are
     // portable.

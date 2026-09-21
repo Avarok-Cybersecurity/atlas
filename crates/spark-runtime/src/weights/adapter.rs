@@ -110,9 +110,9 @@ pub fn load_adapter_safetensors(
     Ok(WeightStore::from_map(weights))
 }
 
-// Gated on `feature = "cuda"`: the test constructs a real `AvarokCudaBackend`
+// Gated on `avarok_cuda`: the test constructs a real `AvarokCudaBackend`
 // (a CUDA-only module), so the metal / no-CUDA build must not compile it.
-#[cfg(all(test, feature = "cuda"))]
+#[cfg(all(test, avarok_cuda))]
 mod tests {
     use super::load_adapter_safetensors;
     use crate::cuda_backend::AvarokCudaBackend;

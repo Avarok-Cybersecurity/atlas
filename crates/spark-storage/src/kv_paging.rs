@@ -31,14 +31,14 @@
 
 pub mod ns;
 
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 mod backend;
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 mod connect;
 
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub use backend::{KvPagingBackend, KvPagingConnect};
-#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub use connect::connect_kv_peer_backend;
 
 /// The hard-error a KV paging GET miss maps to. `StorageBackend::read` has no
