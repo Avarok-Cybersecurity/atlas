@@ -149,12 +149,12 @@ describe('lineage', () => {
 });
 
 describe('sparse series', () => {
-  test('a one- or two-point series is marked sparse so no line is drawn', () => {
+  test('a one-point series is marked sparse so no line is drawn', () => {
     expect(buildSeries(panel, [rec()])[0].sparse).toBe(true);
-    expect(buildSeries(panel, [rec(), rec()])[0].sparse).toBe(true);
   });
 
-  test('NEGATIVE CONTROL: three points is enough for a line', () => {
+  test('NEGATIVE CONTROL: two points is enough for a line', () => {
+    expect(buildSeries(panel, [rec(), rec()])[0].sparse).toBe(false);
     expect(buildSeries(panel, [rec(), rec(), rec()])[0].sparse).toBe(false);
   });
 });

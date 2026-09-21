@@ -426,11 +426,7 @@ pub(super) async fn completions_stream(
                 accepted_prediction_tokens,
                 guard_stop: _,
             } => {
-                let tps = if decode_time_ms > 0.0 {
-                    completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)
-                } else {
-                    0.0
-                };
+                let tps = crate::ir::Usage::decode_rate_tok_s(completion_tokens, decode_time_ms);
                 let usage = Usage {
                     prompt_tokens: prompt_len,
                     completion_tokens,
@@ -447,6 +443,8 @@ pub(super) async fn completions_stream(
                     }),
                     time_to_first_token_ms,
                     response_tokens_per_second: tps,
+                    decode_time_ms,
+                    total_time_ms: time_to_first_token_ms + decode_time_ms,
                 };
                 if include_usage {
                     // Chat parity: finish chunk without usage, then a

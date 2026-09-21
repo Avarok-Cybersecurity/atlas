@@ -47,6 +47,7 @@ plugin({
 const { render } = await import('svelte/server');
 const { recordsFor, tabs, ladderPoints, fmtDate, colorFor } = await import('./gates.js');
 const { SUBJECTS, rungsDeclared } = await import('./concurrency-subjects.js');
+const { liveRecordOf } = await import('./concurrency-comparison.js');
 const publishedLadder = (await import('./ladder.generated.json')).default;
 const ladders = (await import('./ladders.generated.json')).default;
 const Tab = (await import('./components/ConcurrencyTab.svelte')).default;
@@ -235,7 +236,7 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
     inOrder(
       live,
       '<strong>vLLM has not been run on this instrument</strong> (ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV)',
-      'The vLLM + MTP one-shot of 2026-09-19 is on another instrument and is not comparable: isl 512 → 128, osl 320 → 1024, prompt_mode natural → undeclared, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16.',
+      'The vLLM + MTP one-shot of 2026-09-19 is on another instrument and is not comparable: isl 512 → 128, osl 320 → 1024, prompt_mode natural → essay, max_model_len 4096 → 2048, kv_cache_dtype fp8 → bf16.',
       'filed under <code>bench/baselines/qwen36-35b-a3b/</code>, fills the comparison'
     );
     expect(live).toContain('latest gate sweep · ISL 512 / OSL 320 · natural fixture · batch cap 128 · fp8 KV');
@@ -267,8 +268,14 @@ describe('the MoE tab today: a vLLM one-shot on the published instrument, no Atl
 
 describe('the DFlash tab today: Atlas only, absent rungs answered in place', () => {
   const page = renderTab('qwen38-27b-dflash');
+  // Two records, two roles, as ConcurrencySubjectPanel keeps them: the header
+  // tiles read the NEWEST record wherever it sits; the comparison chart and
+  // the bridge draw the newest PASSING run ON MAIN (liveRecordOf). They were
+  // one and the same until a DFlash record landed on an unmerged branch.
   const latest = recordsFor(DFLASH.gate).at(-1);
+  const live = liveRecordOf(recordsFor(DFLASH.gate));
   const pts = ladderPoints(latest);
+  const livePts = ladderPoints(live);
 
   test('header tiles come from the newest record', () => {
     const peak = pts.reduce((a, b) => (b.v > a.v ? b : a));
@@ -281,13 +288,13 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
   test('the Atlas curve is drawn dashed (same engine, another configuration) at its measured rungs only', () => {
     const svg = comparisonSvg(page);
     expect(svg).toMatch(/<path d="M[^"]+" fill="none" stroke="var\(--series-teal[^"]*" stroke-width="2" stroke-dasharray="5 4"/);
-    expect(svg.match(/class="gc-mark"/g)).toHaveLength(pts.length);
+    expect(svg.match(/class="gc-mark"/g)).toHaveLength(livePts.length);
     for (const c of rungs) expect(svg).toContain(`>C=${c}</text>`);
   });
 
   test('each rung the gate does not run says so where the point would be, with the recorded reason', () => {
     const svg = comparisonSvg(page);
-    const absent = rungs.filter((c) => !pts.some((p) => p.c === c));
+    const absent = rungs.filter((c) => !livePts.some((p) => p.c === c));
     expect(absent).toEqual([32, 64, 128]);
     for (const c of absent)
       expect(svg).toContain(
@@ -297,7 +304,7 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
   });
 
   test('NEGATIVE CONTROL: without a recorded batch cap the reason is the declared rung list, never "undefined"', () => {
-    const stripped = { ...latest, serve_overrides: { kv_cache_dtype: 'fp8' } };
+    const stripped = { ...live, serve_overrides: { kv_cache_dtype: 'fp8' } };
     const rf = (bench) => (bench === DFLASH.gate ? [stripped] : recordsFor(bench));
     const svg = comparisonSvg(renderTab('qwen38-27b-dflash', rf));
     expect(svg).toContain('the concurrency-sweep-dflash2 gate declares concurrencies = "1, 2, 4, 8, 16"');
@@ -305,7 +312,7 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
   });
 
   test('the legend and caption say vLLM was not run on THIS instrument, and what would fill it', () => {
-    expect(page).toContain(`Atlas · live · latest gate ${fmtDate(latest.recorded_at)} · ${latest.git_sha}`);
+    expect(page).toContain(`Atlas · live · latest gate ${fmtDate(live.recorded_at)} · ${live.git_sha}`);
     expect(page).toMatch(/<rect [^>]*fill="none"[^>]*><\/rect>\s*<\/svg>vLLM · not measured on this instrument/);
     expect(page).toContain('class="gate-panel-title">Atlas vs vLLM · gate instrument · ISL 512 / OSL 200 · natural fixture · batch cap 16 · fp8 KV<');
     inOrder(
@@ -319,7 +326,7 @@ describe('the DFlash tab today: Atlas only, absent rungs answered in place', () 
 
   test('the gate sweep below carries the same instrument and the bridge names the record', () => {
     expect(page).toContain('class="gate-panel-title">latest gate sweep · ISL 512 / OSL 200 · natural fixture · batch cap 16 · fp8 KV<');
-    expect(page).toContain(`newest passing run on main (${fmtDate(latest.recorded_at)} · ${latest.git_sha})`);
+    expect(page).toContain(`newest passing run on main (${fmtDate(live.recorded_at)} · ${live.git_sha})`);
   });
 });
 

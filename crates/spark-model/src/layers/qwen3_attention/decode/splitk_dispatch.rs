@@ -159,6 +159,74 @@ pub(super) fn route_line(
     )
 }
 
+/// The GQA-packed non-split entry points, as nsys spells them.
+pub(super) const ROUTE_GQA_FP8: &str = "paged_decode_attn_fp8_gqa";
+pub(super) const ROUTE_GQA_BF16: &str = "paged_decode_attn_bf16_gqa";
+
+/// The packed non-split kernel for this launch, or `None` to keep the
+/// unpacked one.
+///
+/// THREE conditions, all of which must hold, and none of which is a
+/// preference:
+///
+/// 1. The lever is armed (`AVAROK_ATTN_DECODE_GQA_PACK`, declared off —
+///    [`attn_splitk::gqa_pack_enabled`]). There is no GB10 receipt for the
+///    occupancy trade yet: the packed kernels measure 227/243 registers with
+///    zero spills against the unpacked 48/56, i.e. one resident CTA per SM
+///    against up to five, bought with a `DECODE_GQA_PACK_WIDTH`-fold cut in KV
+///    load instructions.
+/// 2. The shape is the one the kernels are COMPILED for
+///    ([`attn_splitk::gqa_pack_shape_ok`]) — a mismatched GQA ratio would have
+///    the kernel index the wrong query heads, silently.
+/// 3. This build carries the sources at all (a zero handle is already `None`
+///    at the field, via `init_arch_gates::present`).
+///
+/// ⚠️ Only reachable from the NON-SPLIT arms. The packed grid is
+/// `(num_kv_heads, num_seqs)`; putting it under split-K would mean deriving
+/// `num_splits` from `num_kv_heads` instead of `num_q_heads`, which is a
+/// different partition of the KV range and therefore a different
+/// online-softmax merge tree — a numerics change, where the non-split packed
+/// kernel is bit-identical to the unpacked one it replaces.
+pub(super) fn gqa_pack_kernel(
+    handle: Option<KernelHandle>,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+) -> Option<KernelHandle> {
+    gqa_pack_route(
+        attn_splitk::gqa_pack_enabled(),
+        handle,
+        num_q_heads,
+        num_kv_heads,
+        head_dim,
+    )
+}
+
+/// The conjunction itself, with the lever's value PASSED rather than read.
+///
+/// Split from [`gqa_pack_kernel`] so the shape and handle legs are gradeable
+/// at `armed = true`. `gqa_pack_enabled` is a process-wide `OnceLock` over the
+/// environment; a test that could only ever see it resolve `false` would find
+/// this function returning `None` at the first line and would pass without
+/// exercising either of the other two legs — a vacuous green over the exact
+/// check that stops a mismatched GQA ratio from indexing the wrong query
+/// heads.
+pub(super) fn gqa_pack_route(
+    armed: bool,
+    handle: Option<KernelHandle>,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+) -> Option<KernelHandle> {
+    if !armed {
+        return None;
+    }
+    if !attn_splitk::gqa_pack_shape_ok(num_q_heads, num_kv_heads, head_dim) {
+        return None;
+    }
+    handle
+}
+
 /// Which once-flag a route line belongs to. One per KV dtype: the three arms
 /// dispatch independently (Qwen3.8-27B runs FP8 KV on 44 layers and BF16 on the
 /// 4 `--kv-high-precision-layers auto` ones), so a shared flag would report

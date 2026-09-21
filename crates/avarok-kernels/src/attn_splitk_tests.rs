@@ -194,3 +194,200 @@ fn the_workspace_covers_every_slot_the_grid_can_address() {
         32 * 24 * 11
     );
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// GQA-packed paged decode.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// The Qwen3.8-27B KV head count — `nq = 24`, `nkv = 4`, so `gqa_ratio = 6`.
+const NKV: u32 = 4;
+/// The head dim both the split-K and the packed kernels are compiled for.
+const HD: u32 = 256;
+
+/// `kernels/gb10/common/`, from this crate's manifest dir.
+fn kernel_src(name: &str) -> String {
+    let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../kernels/gb10/common")
+        .join(name);
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
+
+/// `#define <name> <int>` from a CUDA source, as an integer.
+fn cuda_define(src: &str, name: &str) -> u32 {
+    let needle = format!("\n#define {name} ");
+    let at = src
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no `#define {name}` in source"));
+    let rest = &src[at + needle.len()..];
+    let end = rest.find('\n').unwrap_or(rest.len());
+    rest[..end]
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("`#define {name} {}`: {e}", &rest[..end]))
+}
+
+/// The full text of a `__device__ __forceinline__` helper, signature through
+/// its closing brace at column 0.
+fn device_helper(src: &str, name: &str) -> String {
+    let needle = format!("__device__ __forceinline__ void {name}(");
+    let at = src
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no helper `{name}` in source"));
+    let rest = &src[at..];
+    let end = rest
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("helper `{name}` has no closing brace at column 0"));
+    rest[..end + 3].to_string()
+}
+
+/// ★ The shape gate is the ONLY thing standing between a mismatched model and
+/// silent cross-head corruption.
+///
+/// The packed kernel recovers its query heads as `kv_head * PD_GQA + h`. If
+/// the real ratio is not `PD_GQA` that expression indexes the wrong heads —
+/// reads the wrong Q, writes the wrong O — and nothing downstream can tell,
+/// because the output is the right SHAPE. So every shape but the one the
+/// kernel is compiled for must be refused here.
+#[test]
+fn the_pack_gate_admits_only_the_shape_the_kernel_is_compiled_for() {
+    // Qwen3.8-27B: 24 q heads over 4 kv heads at head_dim 256.
+    assert!(gqa_pack_shape_ok(NQ, NKV, HD));
+    assert_eq!(NQ / NKV, DECODE_GQA_PACK_WIDTH);
+
+    // A ratio the kernel is not compiled for, on both sides of 6.
+    assert!(!gqa_pack_shape_ok(32, NKV, HD), "gqa 8 must be refused");
+    assert!(!gqa_pack_shape_ok(16, NKV, HD), "gqa 4 must be refused");
+    // Multi-head attention (ratio 1) and MQA (one kv head) alike.
+    assert!(!gqa_pack_shape_ok(NQ, NQ, HD), "MHA must be refused");
+    assert!(!gqa_pack_shape_ok(NQ, 1, HD), "MQA must be refused");
+    // A ratio that is 6 only after truncation: 25 / 4 == 6 in integer
+    // division, and 25 != 4 * 6. The gate must multiply, not divide.
+    assert!(
+        !gqa_pack_shape_ok(25, NKV, HD),
+        "a non-exact ratio must be refused, not truncated"
+    );
+    // Head dims the sources are not compiled for.
+    assert!(!gqa_pack_shape_ok(NQ, NKV, 128), "hd 128 must be refused");
+    assert!(!gqa_pack_shape_ok(NQ, NKV, 512), "hd 512 must be refused");
+    // A degenerate count that would divide by zero in the kernel's grid.
+    assert!(!gqa_pack_shape_ok(0, 0, HD), "nkv 0 must be refused");
+}
+
+/// The packed kernels are OFF until somebody arms them, and a typo does not
+/// arm them. `AVAROK_ATTN_DECODE_GQA_PACK` is the A/B handle, so the
+/// unparseable case has to keep the declaration rather than guess — the same
+/// rule `parse` holds for the split policy.
+#[test]
+fn the_pack_lever_is_declared_off_and_a_typo_keeps_the_declaration() {
+    const { assert!(!DECODE_GQA_PACK_DECLARED) };
+    assert!(!resolve_gqa_pack(DECODE_GQA_PACK_DECLARED, None));
+    for on in ["1", "on", "true", "YES", " on "] {
+        assert!(resolve_gqa_pack(false, Some(on)), "{on:?} must arm");
+    }
+    for off in ["0", "off", "false", "NO"] {
+        assert!(!resolve_gqa_pack(true, Some(off)), "{off:?} must disarm");
+    }
+    for junk in ["auto", "2", "", "yes please"] {
+        assert!(
+            resolve_gqa_pack(true, Some(junk)),
+            "{junk:?} must keep the declaration, not disarm"
+        );
+        assert!(
+            !resolve_gqa_pack(false, Some(junk)),
+            "{junk:?} must keep the declaration, not arm"
+        );
+    }
+}
+
+/// ★ The pack width lives in THREE places — this crate and two CUDA sources —
+/// and the two CUDA copies are what actually index the registers. A Rust-side
+/// change that did not reach them would dispatch a 6-wide launch into an
+/// 8-wide kernel and corrupt every head above the fifth, with no error.
+#[test]
+fn cuda_sources_declare_the_pack_width_rust_dispatches_on() {
+    for name in [
+        "paged_decode_attn_fp8_gqa.cu",
+        "paged_decode_attn_bf16_gqa.cu",
+    ] {
+        let src = kernel_src(name);
+        assert_eq!(
+            cuda_define(&src, "PD_GQA"),
+            DECODE_GQA_PACK_WIDTH,
+            "{name}: PD_GQA must equal DECODE_GQA_PACK_WIDTH"
+        );
+        assert_eq!(
+            cuda_define(&src, "PD_HDIM"),
+            DECODE_GQA_PACK_HEAD_DIM,
+            "{name}: PD_HDIM must equal DECODE_GQA_PACK_HEAD_DIM"
+        );
+        // Both are register-array bounds. `#ifndef` around either would let a
+        // model KERNEL.toml's `-D` reshape the kernel without changing the
+        // host gate that dispatches to it — and `-DHDIM=128` is a spelling
+        // several model builds really do pass, which is why the head dim here
+        // is named PD_HDIM and is not the command line's to set.
+        assert!(
+            !src.contains("#ifndef PD_GQA"),
+            "{name}: PD_GQA must not be overridable from the build"
+        );
+        assert!(
+            !src.contains("#ifndef PD_HDIM"),
+            "{name}: PD_HDIM must not be overridable from the build"
+        );
+        assert!(
+            !src.contains("#define HDIM"),
+            "{name}: must not define HDIM — model builds pass -DHDIM on the \
+             command line and nvcc treats the redefinition as an error"
+        );
+    }
+}
+
+/// ★ Bit-identity with the unpacked kernels rests on the packed twins doing
+/// the SAME arithmetic, and the dequant helpers are that arithmetic. They are
+/// per-translation-unit copies (CUDA device helpers do not cross a TU without
+/// a header), so the only thing keeping them from drifting is this test.
+#[test]
+fn gqa_kernels_copy_the_unpack_helpers_verbatim() {
+    let bf16 = kernel_src("paged_decode_attn.cu");
+    let bf16_gqa = kernel_src("paged_decode_attn_bf16_gqa.cu");
+    assert_eq!(
+        device_helper(&bf16, "unpack2_pd"),
+        device_helper(&bf16_gqa, "unpack2_pd"),
+        "unpack2_pd drifted between paged_decode_attn.cu and its packed twin"
+    );
+
+    let fp8 = kernel_src("paged_decode_attn_fp8.cu");
+    let fp8_gqa = kernel_src("paged_decode_attn_fp8_gqa.cu");
+    for helper in ["unpack2_bf16", "unpack4_fp8_raw"] {
+        assert_eq!(
+            device_helper(&fp8, helper),
+            device_helper(&fp8_gqa, helper),
+            "{helper} drifted between paged_decode_attn_fp8.cu and its packed twin"
+        );
+    }
+}
+
+/// The trade, as arithmetic rather than prose: packing divides the CTA count
+/// by the pack width for an unchanged amount of work, and at the GB10 shape
+/// that leaves the device under-filled below 12 co-batched sequences.
+///
+/// This is the cost side of the A/B `DECODE_GQA_PACK_DECLARED` is gated
+/// behind, and the reason the packed kernels are wired only where the split
+/// policy has already resolved one split.
+#[test]
+fn packing_divides_the_cta_count_and_moves_the_fill_threshold() {
+    for seqs in [1u32, 2, 8, 16, 128] {
+        assert_eq!(
+            gqa_pack_ctas(NKV, seqs) * DECODE_GQA_PACK_WIDTH,
+            NQ * seqs,
+            "packed CTAs x pack width must equal the unpacked CTA count"
+        );
+    }
+    // Under-filled below 12 sequences on a 48-SM GB10, full at and above.
+    assert!(gqa_pack_ctas(NKV, 8) < GB10_SMS);
+    assert!(gqa_pack_ctas(NKV, 11) < GB10_SMS);
+    assert!(gqa_pack_ctas(NKV, 12) >= GB10_SMS);
+    // The unpacked grid is already full at two sequences, which is exactly
+    // why `legacy_splits` stops splitting there.
+    const { assert!(NQ * 2 >= GB10_SMS) };
+    assert_eq!(legacy_splits(GB10_SMS, NQ, 2), 1);
+}

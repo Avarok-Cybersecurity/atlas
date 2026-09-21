@@ -150,9 +150,18 @@ describe('the MoE one-shot of 2026-09-19', () => {
   test('the instrument the fingerprint compares: read from the raw header, spelled as a gate record spells it', () => {
     expect(vllm.instrument).toEqual({
       isl: raw.isl, osl: raw.osl, reps: raw.reps, warmup: raw.warmup, temperature: raw.temperature, seed: raw.seed,
+      prompt_mode: 'essay',
       max_model_len: 2048, max_batch_size: 128, kv_cache_dtype: 'bf16'
     });
-    expect(vllm.instrument.prompt_mode).toBeUndefined();
+    // Declared 2026-09-20 (owner decision). It is DERIVED, not recorded: the
+    // raw file carries isl, osl, reps, warmup, temperature, seed and
+    // chat_template_kwargs but NOT prompt_mode, so this asserts the value the
+    // pinned harness defaults to (harness_w55_conc_ladder.py:75) given that
+    // this series' recorded env does not set W55_PROMPT_MODE. It exists so a
+    // future concurrency-sweep-moe record on this same instrument can pair
+    // with this bar -- ladder-baselines.js counts an undeclared axis as a
+    // DIFFERENCE, never a match. Re-check if the raw file is ever replaced.
+    expect(vllm.instrument.prompt_mode).toBe('essay');
     expect(vllm.cli).toContain('--max-model-len 2048 --max-num-seqs 128 --gpu-memory-utilization 0.85');
     expect(vllm.cli).toContain('--dtype bfloat16 --kv-cache-dtype auto');
     expect(vllm.cli).toContain('--speculative-config \'{"method":"mtp","num_speculative_tokens":3}\'');

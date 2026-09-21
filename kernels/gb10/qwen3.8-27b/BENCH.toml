@@ -267,9 +267,36 @@ measured without proof of speculative engagement is the 2026-08-15 decode \
 flip-flop all over again."""
 
 [benchmarks.metrics.server_decode_tok_s]
-# Median-of-3 server decode rate. The floor of 25.0 is the bound in force —
-# an effective floor of 24.5 tok/s once noise 0.5 is applied by
+# Median-of-3 server decode rate. The floor of 25.5 is the bound in force —
+# an effective floor of 25.0 tok/s once noise 0.5 is applied by
 # scoring::compare.
+#
+# ★ RATCHETED 2026-09-20, 25.0 -> 25.5 (effective 24.5 -> 25.0), to the
+# owner's stated floor. Source record: .benchmarks/decode-floor/
+# 2026-09-20-43a3c9b202.json (spark-28c2 = dgx3, 2026-09-20 12:06 UTC), which
+# reads 26.16 tok/s. SPEED-BOUND POLICY (owner, 2026-09-20): a FLOOR is the
+# latest measured value x 0.975 rounded DOWN to a clean step (0.5 below 100,
+# 10 from 100 to 1000, 50 above 1000); a CEILING is measured x 1.05 rounded
+# UP; "measured" is ONE named committed record, never a best run. 26.16 x
+# 0.975 is 25.51, which rounds down to 25.5 — here the owner's stated value
+# and the derivation agree. `noise` stays at 0.5 on purpose: it is the
+# instrument's measured run-to-run band, not part of the margin, and every
+# prior ratchet in this block kept it fixed so the ratchet shows in `min`.
+#
+# The set this floor is checked against, so it is not a one-draw floor:
+# every committed record since the 2026-09-08 step, n=22 across five boxes —
+#
+#     spark-256a (dgx1)  n=4  25.91 26.02 26.11 25.98    <- slowest box
+#     spark-43fa (dgx2)  n=8  26.09-26.26
+#     spark-28c2 (dgx3)  n=8  26.15-26.27
+#     edgexpert-aae5 / edgexpert-2640   n=1 each   26.13 / 26.04
+#     all                n=22  mean 26.16  sigma 0.10  range 25.91-26.27
+#
+# The effective bar 25.0 sits 0.91 below the slowest committed run
+# (2026-09-11-da446c920b, dgx1) and ~11 sigma below the mean, so it cannot
+# fail a healthy run on any box in the set; a regression of 4.5% on dgx3 or
+# 3.5% on dgx1 fails it. dgx1's four runs all sit below every dgx2/dgx3 run,
+# which is why the margin is quoted against dgx1 and not against the mean.
 #
 # ★ RATCHETED 2026-09-11, 22.7 -> 25.0, from a fresh 12-run set on this
 # entry's own instrument and on dgx2 (spark-43fa) — the SLOWEST box, which is
@@ -358,7 +385,7 @@ flip-flop all over again."""
 # noise 0.5 covers the run-to-run band (observed 0.2 peak-to-peak over the
 # twelve runs) and stays under the 5% validate_noise cap (5% of 25.0 = 1.25).
 # Ratchet only from a fresh >=10-run set on this same instrument.
-min = 25.0
+min = 25.5
 noise = 0.5
 [benchmarks.metrics.output_tokens]
 # The driver emits the MINIMUM completion_tokens across the 3 runs, so this
@@ -568,7 +595,57 @@ osl = "320"
 # same phenomenon avarok#812 is chasing; when that is root-caused these two can
 # be re-cut much tighter. Stated here so nobody reads C=8 as well-guarded.
 
+# ── RE-CUT 2026-09-20 under the SPEED-BOUND POLICY (owner, 2026-09-20): a
+# FLOOR is the latest measured value x 0.975 rounded DOWN to a clean step (0.5
+# below 100, 10 from 100 to 1000, 50 above 1000); a CEILING is measured x 1.05
+# rounded UP. "Measured" is ONE named committed record, never a best run: here
+# .benchmarks/concurrency-sweep/2026-09-20-43a3c9b202.json (spark-28c2 = dgx3,
+# 2026-09-20 11:36 UTC, on the current 32-slot pin), which reads
+#
+#     C1 21.21  C2 31.66  C4 53.17  C8 64.73  C16 91.76
+#     C32 104.99  C64 116.38  C128 116.26  peak 116.38 (at C=64)
+#
+# ★ THE GUARD, applied to every rung before its policy floor is written: the
+# effective bar (min - noise) must not exceed ANY committed PASS value of the
+# rung since the 2026-09-08 step (the post-#968 regime: n=22 across
+# spark-256a/dgx1, spark-43fa/dgx2, spark-28c2/dgx3, edgexpert-aae5 and
+# edgexpert-2640). A floor that would have failed a committed healthy run is a
+# floor cut from a biased draw — the trap already met twice at C=2, where 26.0
+# and then 25.2 were each proposed from a biased set and each was wrong — so
+# where the policy floor fails the guard, the rung is cut at the regime
+# MINIMUM x 0.975 rounded down instead, and if even that does not exceed the
+# old floor, the old floor stands. The regime deliberately includes the 8-slot
+# records of 2026-09-08..13 (the pin moved to 32 slots at
+# 2026-09-14-1a9edba35d): dgx1, the slowest box, has NO record on the 32-slot
+# pin yet, and it is the box a floor is most likely to fail on.
+#
+#     rung  latest  policy  regime min (record, box)          written  basis
+#     C1    21.21   20.5    20.95 (09-13-93f380f24b, dgx1)    20.5     policy
+#     C2    31.66   30.5    26.74 (09-19-18d809f1ab, dgx2)    25.0     KEPT, see block
+#     C4    53.17   51.5    44.66 (09-12-8b33b70627, dgx1)    43.5     regime min
+#     C8    64.73   63.0    58.83 (09-11-da446c920b, dgx1)    57.0     regime min
+#     C16   91.76   89.5    88.61 (09-18-0719dea47d, dgx3)    86.0     regime min
+#     C32   104.99  100     103.60 (09-13-1a0dc88a8c, dgx1)   100      policy
+#     C64   116.38  110     114.57 (09-11-da446c920b, dgx1)   110      policy
+#     C128  116.26  110     114.00 (09-11-da446c920b, dgx1)   110      policy
+#     peak  116.38  110     114.57 (09-11-da446c920b, dgx1)   110      policy
+#
+# Five rungs and the peak take the policy floor; the three that do not are the
+# ones whose spread is wider than the policy's 2.5% margin (C4 sigma 3.05, C8
+# 2.96, C16 1.39 on n=22, each multimodal by box and by warm/cold cell state)
+# and each says so in its own block. The 10-step above 100 makes C32 land 4.8%
+# under its latest value rather than 2.5%; that is the policy's rounding, not
+# a judgement. `noise` is untouched on every rung, as the 2026-09-11 ratchet
+# left it, so the ratchet is visible in `min` and not hidden in the allowance.
+
 [benchmarks.metrics.c1_aggregate_tok_s]
+# ★ RATCHETED 2026-09-20, 20.4 -> 20.5 (effective 20.1 -> 20.2 after the
+# unchanged noise 0.3): the floor of 20.5 is the policy floor on the
+# 2026-09-20-43a3c9b202 value 21.21 (x 0.975 = 20.68, rounded down). Guard:
+# regime min 20.95 (2026-09-13-93f380f24b, dgx1; n=22, sigma 0.11), 0.75
+# above the effective bar. The smallest ratchet in this re-cut, because the
+# 2026-09-11 one below already sat at the mean minus 5%.
+#
 # ★ RATCHETED 2026-09-11, 17.5 -> 20.4 (effective 20.1 after noise 0.3). This
 # rung is cut ALONE, which the block above says the ladder is not — "every rung
 # cut together". The exception is deliberate and the reason is that only this
@@ -610,44 +687,109 @@ osl = "320"
 #   C32/C64/C128  all clear their formula bars by ~4.5%, but each has only
 #        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
 #        not worth spending that thin a record on; re-cut them with the ladder.
-min = 20.4
+min = 20.5
 noise = 0.3
 
 [benchmarks.metrics.c2_aggregate_tok_s]
+# ★ NOT RATCHETED 2026-09-20, deliberately. The policy floor on the latest
+# value (31.66 -> 30.5, effective 29.55) fails the guard outright: three of
+# the fourteen 32-slot-pin records read 26.74 / 27.40 / 27.43
+# (2026-09-19-18d809f1ab and 2026-09-15-3c8809557c, dgx2; 2026-09-20-f648b50f86,
+# dgx3) against eleven in 31.1-31.9 — the rung is still bimodal, exactly as
+# the C1 block's 2026-09-11 survey found it, and a floor in the upper mode
+# fails one healthy run in four. The regime-minimum basis (26.74 x 0.975 =
+# 26.0, effective 25.05) is not written either: 26.0 was already proposed
+# once from a biased set, and the 25.5 run in the C1 block's survey would
+# clear that bar by 0.45, which is not a margin. The floor of 25.0 stays in
+# the gap between modes.
 min = 25.0
 noise = 0.95
 
 [benchmarks.metrics.c4_aggregate_tok_s]
-min = 37.5
+# ★ RATCHETED 2026-09-20, 37.5 -> 43.5 (effective 35.7 -> 41.7 after the
+# unchanged noise 1.8), on the REGIME-MINIMUM basis, not the policy one. The
+# policy floor on 2026-09-20-43a3c9b202 (53.17 -> 51.5, effective 49.7) fails
+# the guard: the 32-slot-pin records alone read 47.04-53.84 (n=14, sigma 2.27,
+# two modes near 47.5 and 53), and dgx1 — no record on this pin yet — read
+# 44.66-51.5 on the 8-slot pin (2026-09-12-8b33b70627 is the 44.66). The floor
+# of 43.5 is 44.66 x 0.975 rounded down; it clears every one of the 22
+# committed runs since 2026-09-08, on every box, by at least 2.9. Re-cut
+# toward the policy once dgx1 has recorded on the 32-slot pin and the two
+# modes are understood (avarok#812 is still the open question at this rung).
+min = 43.5
 noise = 1.8
 
 [benchmarks.metrics.c8_aggregate_tok_s]
-min = 48.0
+# ★ RATCHETED 2026-09-20, 48.0 -> 57.0 (effective 45.7 -> 54.7 after the
+# unchanged noise 2.3), on the REGIME-MINIMUM basis. The policy floor on
+# 2026-09-20-43a3c9b202 (64.73 -> 63.0, effective 60.7) clears the fourteen
+# 32-slot-pin records (62.40-70.08) but fails the guard on dgx1: its four
+# 8-slot-pin runs read 58.83 / 61.4 / 60.6 / 59.4 (2026-09-11-da446c920b is
+# the 58.83) against 62.9-63.0 on dgx2 on the same days — a ~3 tok/s box gap
+# at this rung, an order of magnitude above the policy's margin. dgx2/dgx3
+# rose ~3 when the pin moved, so dgx1 may have too; "may" is not a record.
+# The floor of 57.0 is 58.83 x 0.975 rounded down; it clears every committed
+# run since 2026-09-08 by at least 4.1. Re-cut toward the policy once dgx1
+# has recorded on the 32-slot pin.
+min = 57.0
 noise = 2.3
 
 [benchmarks.metrics.c16_aggregate_tok_s]
-min = 84.0
+# ★ RATCHETED 2026-09-20, 84.0 -> 86.0 (effective 82.55 -> 84.55 after the
+# unchanged noise 1.45), on the REGIME-MINIMUM basis. The policy floor on
+# 2026-09-20-43a3c9b202 (91.76 -> 89.5, effective 88.05) fails the guard by
+# 0.56: the regime minimum is 88.61 (2026-09-18-0719dea47d, dgx3; n=22, sigma
+# 1.39, range 88.61-93.55), and the widened-instrument history before the
+# regime dips to 87.8 (2026-08-30-f0f6e48845). This is the rung the C1 block
+# already named as the proof that a fresh set is no substitute for reading
+# the history. The floor of 86.0 is 88.61 x 0.975 rounded down; it clears
+# every committed run on the widened instrument (since 2026-08-30) by at
+# least 3.2.
+min = 86.0
 noise = 1.45
 
 [benchmarks.metrics.c32_aggregate_tok_s]
-min = 98.5
+# ★ RATCHETED 2026-09-20, 98.5 -> 100 (effective 96.8 -> 98.3 after the
+# unchanged noise 1.7): the floor of 100 is the policy floor on the
+# 2026-09-20-43a3c9b202 value 104.99 (x 0.975 = 102.37, rounded DOWN to the
+# 10-step that applies from 100 up — which is why it lands 4.8% under the
+# latest value and not 2.5%). Guard: regime min 103.60 (2026-09-13-1a0dc88a8c,
+# dgx1; n=22, sigma 0.49), 5.3 above the effective bar.
+min = 100.0
 noise = 1.7
 
 [benchmarks.metrics.c64_aggregate_tok_s]
-min = 109.5
+# ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
+# unchanged noise 1.9): the floor of 110 is the policy floor on the
+# 2026-09-20-43a3c9b202 value 116.38 (x 0.975 = 113.47, rounded down to the
+# 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1; n=22, sigma
+# 0.62), 6.5 above the effective bar.
+min = 110.0
 noise = 1.9
 
 [benchmarks.metrics.c128_aggregate_tok_s]
-min = 109.5
+# ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
+# unchanged noise 1.9): the floor of 110 is the policy floor on the
+# 2026-09-20-43a3c9b202 value 116.26 (x 0.975 = 113.35, rounded down to the
+# 10-step). Guard: regime min 114.00 (2026-09-11-da446c920b, dgx1; n=22, sigma
+# 0.72), 5.9 above the effective bar.
+min = 110.0
 noise = 1.9
 
 [benchmarks.metrics.peak_aggregate_tok_s]
+# ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
+# unchanged noise 1.90): the floor of 110 is the policy floor on the
+# 2026-09-20-43a3c9b202 peak 116.38 (at C=64; x 0.975 = 113.47, rounded down
+# to the 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1;
+# n=22), 6.5 above the effective bar. The peak still lands at C=64 or C=128
+# in every regime record.
+#
 # The peak rung is NO LONGER C=16. On the widened ladder it lands at C=64 in
 # two of three reps and C=128 in the third (115.52 / 115.32 / 115.44), the
 # curve having saturated near 115 from C=64 on. The floor is therefore the
 # C=64/C=128 bar, not the C=16 one the previous comment described: a sweep
 # whose peak fell below this has lost its top rung whichever C produced it.
-min = 109.5
+min = 110.0
 noise = 1.90
 
 [benchmarks.metrics.min_completion_tokens]
@@ -801,7 +943,38 @@ isls = "512"
 # hits the budget at 200; at 320 the C=1 cell is deterministically vacuous.
 osl = "200"
 
+# ── RE-CUT 2026-09-20 under the SPEED-BOUND POLICY (owner, 2026-09-20; stated
+# in full above the plain ladder's metric tables): floor = latest measured x
+# 0.975 rounded DOWN to a clean step (0.5 below 100). Source record:
+# .benchmarks/concurrency-sweep-dflash2/2026-09-20-43a3c9b202.json (spark-28c2
+# = dgx3, 2026-09-20 12:04 UTC, on the current 32-slot pin), which reads
+#
+#     C1 25.06  C2 45.43  C4 57.80  C8 66.52  C16 67.25  peak 67.25 (at C=16)
+#
+# Same GUARD as the plain ladder: the effective bar (min - noise) must not
+# exceed any committed PASS value of the rung since the 2026-09-08 step (n=22,
+# five boxes; the 8-slot records of 2026-09-08..13 included because dgx1 has
+# no record on the 32-slot pin). On THIS ladder the pin change moved the mid
+# rungs by far more than any margin — C4 ~44 -> ~56 and C8 ~56 -> ~69 on
+# dgx2/dgx3 between 2026-09-13 and 2026-09-14 — so dgx1's 8-slot values
+# dominate the guard at C4/C8 and hold those floors well under the current
+# level. That is the honest cost of one unmeasured box; re-cut once it records.
+#
+#     rung  latest  policy  regime min (record, box)              written  basis
+#     C1    25.06   24.0    24.69 (09-12-8b33b70627, dgx1)        24.0     policy
+#     C2    45.43   44.0    41.96 (09-08-e63bedf098, edgexpert)   40.5     regime min
+#     C4    57.80   56.0    42.24 (09-13-1a0dc88a8c, dgx1)        42.5     KEPT (41.0 < 42.5)
+#     C8    66.52   64.5    55.36 (09-11-da446c920b, dgx1)        54.0     regime min
+#     C16   67.25   65.5    60.98 (09-08-e63bedf098, edgexpert)   59.0     regime min
+#     peak  67.25   65.5    60.98 (09-08-e63bedf098, edgexpert)   59.0     regime min
+
 [benchmarks.metrics.c1_aggregate_tok_s]
+# ★ RATCHETED 2026-09-20, 23.7 -> 24.0 (effective 22.75 -> 23.05 after the
+# unchanged noise 0.95): the floor of 24.0 is the policy floor on the
+# 2026-09-20-43a3c9b202 value 25.06 (x 0.975 = 24.43, rounded down). Guard:
+# regime min 24.69 (2026-09-12-8b33b70627, dgx1; n=22, sigma 0.14), 1.6 above
+# the effective bar.
+#
 # ★ RATCHETED 2026-09-11, 20.0 -> 23.7 (effective 22.75 after noise 0.95),
 # alongside the plain ladder's C=1 rung and for the same reason: this rung's
 # LEVEL moved and the floor did not follow, so 30% of the measured throughput
@@ -827,29 +1000,77 @@ osl = "200"
 # lands near 23.3 and FAILS. At the superseded 19.05 a regression could have
 # undone the entire step -- back to the 21.7-23.5 pre-step band -- and still
 # passed, silently.
-min = 23.7
+min = 24.0
 noise = 0.95
 
 [benchmarks.metrics.c2_aggregate_tok_s]
-min = 36.0
+# ★ RATCHETED 2026-09-20, 36.0 -> 40.5 (effective 35.38 -> 39.88 after the
+# unchanged noise 0.62), on the REGIME-MINIMUM basis. The policy floor on
+# 2026-09-20-43a3c9b202 (45.43 -> 44.0, effective 43.38) fails the guard:
+# three regime records read 41.96-42.0 (2026-09-08-e63bedf098, edgexpert-aae5;
+# 2026-09-08-3cfe4d8c45 and 2026-09-11-12c2875ca4, dgx2), and even the
+# 32-slot-pin set is trimodal near 45.4 / 48.7 / 51.4 (n=14, sigma 2.12). The
+# floor of 40.5 is 41.96 x 0.975 rounded down; it clears every committed run
+# since 2026-09-08 by at least 2.1.
+min = 40.5
 noise = 0.62
 
 [benchmarks.metrics.c4_aggregate_tok_s]
+# ★ NOT RATCHETED 2026-09-20. The policy floor on 2026-09-20-43a3c9b202
+# (57.80 -> 56.0, effective 55.27) fails the guard twice over: two 32-slot-pin
+# records read 54.50 / 54.8 (2026-09-17-c9bd822f15, dgx2; 2026-09-17-8cd40290ad,
+# dgx3), and dgx1 — no record on this pin — read 42.24-45.2 on the 8-slot pin
+# (2026-09-13-1a0dc88a8c is the 42.24), because this rung's level moved WITH
+# the pin (~44 -> ~56 on dgx2/dgx3 between 2026-09-13 and 2026-09-14). The
+# regime-minimum basis, 42.24 x 0.975 = 41.0, is BELOW the floor of 42.5
+# already in force, so nothing the data supports is a tightening. A floor cut
+# from the 32-slot set alone (54.50 x 0.975 = 53.0) is the obvious next step
+# and is deliberately not taken until dgx1 has recorded on this pin: at C=4
+# dgx1 trailed dgx2/dgx3 by 1-2 tok/s on the old pin, and a floor that fails
+# the slowest box's first run costs a certification campaign.
 min = 42.5
 noise = 0.73
 
 [benchmarks.metrics.c8_aggregate_tok_s]
-min = 50.5
+# ★ RATCHETED 2026-09-20, 50.5 -> 54.0 (effective 49.62 -> 53.12 after the
+# unchanged noise 0.88), on the REGIME-MINIMUM basis. The policy floor on
+# 2026-09-20-43a3c9b202 (66.52 -> 64.5, effective 63.62) clears all fourteen
+# 32-slot-pin records (66.08-72.90, sigma 2.05) but fails the guard on dgx1,
+# which has no record on this pin and read 55.36-56.0 on the 8-slot pin
+# (2026-09-11-da446c920b is the 55.36); the rung's level moved with the pin
+# (~56 -> ~69 on dgx2/dgx3), and dgx1 matched dgx2 to within 0.6 on the old
+# pin, so it very probably moved too — "probably" is not a record. The floor
+# of 54.0 is 55.36 x 0.975 rounded down; it clears every committed run since
+# 2026-09-08 by at least 2.2. Re-cut toward the policy once dgx1 has recorded
+# on the 32-slot pin.
+min = 54.0
 noise = 0.88
 
 [benchmarks.metrics.c16_aggregate_tok_s]
-min = 58.0
+# ★ RATCHETED 2026-09-20, 58.0 -> 59.0 (effective 57.0 -> 58.0 after the
+# unchanged noise 1.0), on the REGIME-MINIMUM basis. The policy floor on
+# 2026-09-20-43a3c9b202 (67.25 -> 65.5, effective 64.5) fails the guard: the
+# rung reads 60.98-70.46 across the regime (n=22, sigma 2.92; 62.73 and 62.9
+# on the 32-slot pin, 2026-09-17-456a4f247e and 2026-09-17-8cd40290ad),
+# because C=16 is the batch cap on this serve and measures the cap, not the
+# engine (see the serve pin note). The floor of 59.0 is 60.98 x 0.975 rounded
+# down; it clears every committed run since 2026-09-08 by at least 3.0.
+min = 59.0
 noise = 1.0
 
 [benchmarks.metrics.peak_aggregate_tok_s]
-# The peak rung IS C=16 on this ladder — the curve rises monotonically to the
-# batch cap and stops there, so the peak floor is the C=16 bar.
-min = 58.0
+# The peak rung is NO LONGER C=16 by construction on this ladder. Since the
+# 32-slot pin (2026-09-14) the peak lands at C=8 in ten of fourteen records
+# and at C=16 in four, so the peak floor is bounded by the C=8/C=16 bars and
+# no longer equals the C=16 one.
+# ★ RATCHETED 2026-09-20, 58.0 -> 59.0 (effective 57.0 -> 58.0 after the
+# unchanged noise 1.00), on the REGIME-MINIMUM basis: the policy floor on
+# 2026-09-20-43a3c9b202 (67.25 -> 65.5, effective 64.5) fails the guard on the
+# 8-slot records, whose peak WAS the C=16 cell (60.98, 2026-09-08-e63bedf098).
+# The floor of 59.0 is 60.98 x 0.975 rounded down; every committed peak since
+# 2026-09-08 clears it by at least 3.0, and every 32-slot-pin peak
+# (66.08-72.90) by at least 8.
+min = 59.0
 noise = 1.00
 
 [benchmarks.metrics.min_completion_tokens]

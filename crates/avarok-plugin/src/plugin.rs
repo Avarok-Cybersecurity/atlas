@@ -75,6 +75,25 @@ impl TargetEndpoint {
         Self::new(format!("http://127.0.0.1:{port}"), model)
     }
 
+    /// Is this endpoint served on THIS box?
+    ///
+    /// A benchmark that reads a local instrument — the GPU-rail power
+    /// sampler — only measures the serving GPU when the target is loopback;
+    /// for any other host the local reading describes some other machine
+    /// and must not be recorded against this run. Conservative: an
+    /// unparseable host is not local.
+    pub fn is_loopback(&self) -> bool {
+        let Ok((host, _)) = self.host_port() else {
+            return false;
+        };
+        host == "localhost"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+
     /// Split into `(host, port)` for a raw TCP connect.
     pub fn host_port(&self) -> Result<(String, u16)> {
         let rest = self.base_url.strip_prefix("http://").ok_or_else(|| {

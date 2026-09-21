@@ -24,11 +24,13 @@ import { trendEdges } from './gate-lineage.js';
 import { shortModel } from './series-colors.js';
 
 /**
- * A series with fewer than this many points gets no connecting line: two dots
- * joined by a segment assert a trend that two observations cannot support.
- * Those points are drawn as standalone marks instead.
+ * A series with fewer than this many points gets no connecting line — a
+ * single observation has nothing to join. Every series with two or more is
+ * drawn as one line through its points in time order (owner's call, 2026-09:
+ * the marks alone read as scatter, and the trend, however thin, is what the
+ * dashboard is for); a lone point is drawn as a standalone mark.
  */
-export const MIN_POINTS_FOR_A_LINE = 3;
+export const MIN_POINTS_FOR_A_LINE = 2;
 
 /**
  * @typedef {object} Series

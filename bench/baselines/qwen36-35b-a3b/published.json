@@ -4,9 +4,7 @@
   "subtitle": "vLLM 0.27.1 + MTP, C=1..16, on the published ladder instrument; no Atlas leg at this instrument yet",
   "aggregate": "mean tok/s over 3 timed reps (1 warmup discarded)",
   "results_doc": "bench/baselines/qwen36-35b-a3b/published.json",
-
   "subject_note": "No series has role \"subject\": no Atlas run exists at this instrument for this checkpoint. This manifest deliberately mirrors bench/ladder38/published.json so that when one does, it is added as a series with role \"subject\" whose sources name its raw harness files, and gen-ladder.mjs scores the pair with the same code it scores the dense ladder with. Until then the generator emits no rows and no summary for this ladder, and the site says so instead of drawing a zero.",
-
   "workload": {
     "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8",
     "checkpoint_note": "MoE 35B, 256 experts top-8 (~3B active per token), FP8 block-scale weights, 40 layers; architecture qwen3_5_moe",
@@ -21,18 +19,15 @@
     "sampling_parity": "presence_penalty and frequency_penalty pinned to 0.0 by the harness",
     "harness": "bench/ladder38/harness_w55_conc_ladder.py"
   },
-
   "box": {
     "name": "dgx2 (spark-43fa)",
     "gpu": "NVIDIA GB10 Grace Blackwell, 121.7 GB unified",
     "note": "the box the published dense ladder's vLLM legs ran on; the serve was refused unless nothing else held the box"
   },
-
   "harness_shas": {
     "41e242c072": "vLLM MoE leg, the only leg in this manifest. This is the sha256 of the copy committed at bench/ladder38/harness_w55_conc_ladder.py (md5 4aa694d8aabe404edc8f1e3eb2acbf31) and gen-ladder.mjs re-hashes that file at every build as harness_repo_sha256, so the two are checkable against each other. The dense ladder's raw files carry earlier revisions of this same file (6412b12d4d, 1c77e1d8e9, 1f10d4887b); the deck prints the recorded and the repo hash side by side.",
     "equivalence": "One revision, one leg. The copy on dgx2 (/home/claude/ladder38-pinned/) was a DIFFERENT, older revision and was replaced with the repo copy before measuring; the driver_sha256 in the raw file is the proof of which copy ran, and the generator refuses any raw file whose driver sha is not listed here."
   },
-
   "series": [
     {
       "id": "vllm-mtp",
@@ -56,6 +51,7 @@
       "instrument": {
         "isl": 128,
         "osl": 1024,
+        "prompt_mode": "essay",
         "max_model_len": 2048,
         "max_batch_size": 128,
         "kv_cache_dtype": "bf16",
@@ -64,7 +60,7 @@
         "temperature": 0.0,
         "seed": 42
       },
-      "instrument_note": "kv_cache_dtype is bf16 although the command says `--kv-cache-dtype auto`: auto takes the model dtype, and `--dtype bfloat16` is set, so the KV cache is bf16 BECAUSE the dtype is bfloat16. Spelled `bf16` because that is how an Atlas gate record writes serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against; vLLM's own spelling is bfloat16. No prompt_mode: the ladder harness has no fixture, it sends a nonce-prefixed padded prompt, so a gate record (natural fixture) can never fingerprint as this instrument.",
+      "instrument_note": "kv_cache_dtype is bf16 although the command says `--kv-cache-dtype auto`: auto takes the model dtype, and `--dtype bfloat16` is set, so the KV cache is bf16 BECAUSE the dtype is bfloat16. Spelled `bf16` because that is how an Atlas gate record writes serve_overrides.kv_cache_dtype, which is what this fingerprint is compared against; vLLM's own spelling is bfloat16. No prompt_mode: the ladder harness has no fixture, it sends a nonce-prefixed padded prompt, so a gate record (natural fixture) can never fingerprint as this instrument. prompt_mode is essay because the pinned harness defaults to it (bench/ladder38/harness_w55_conc_ladder.py:75, PROMPT_MODE = os.environ.get(\"W55_PROMPT_MODE\", \"essay\")) and this series' recorded env (HF_HUB_OFFLINE=1 VLLM_USE_DEEP_GEMM=0 VLLM_TEST_FORCE_FP8_MARLIN=1) does not set it. DERIVED, NOT RECORDED: the raw file carries isl, osl, reps, warmup, temperature, seed and chat_template_kwargs but not prompt_mode, so re-check this if the raw file is ever replaced -- a harness that recorded it would make this a fact instead of an inference. It is declared because ladder-baselines.js treats an undeclared axis as a DIFFERENCE, never a match: without it a future concurrency-sweep-moe gate record measured on this exact instrument could never be drawn against this bar.",
       "sources": {
         "1": "vllm_moe_c1_16.json",
         "2": "vllm_moe_c1_16.json",
@@ -73,7 +69,11 @@
         "16": "vllm_moe_c1_16.json"
       },
       "unmeasured": {
-        "rungs": [32, 64, 128],
+        "rungs": [
+          32,
+          64,
+          128
+        ],
         "reason": "The ladder stops at C=16 because of memory, not because of time. GB10 carries 121.7 GB of UNIFIED memory shared between CPU and GPU -- there is no separate VRAM to fall back on. At C >= 32 the vLLM + MTP working set (per-sequence KV cache plus MTP's speculative draft state) outgrows what that shared pool can carry alongside the host, and because the pool is shared, exhausting it takes the whole machine down rather than failing a single allocation: three physical powercycles in one day, at the safe util 0.85 and with --max-num-seqs already capped. We did not isolate it further because every attempt costs the box. These rungs were deliberately not run. They have no value here: not zero, not interpolated, and the generator refuses a raw file that contains them."
       },
       "source_note": "One-shot: measured once, on 2026-09-19 on dgx2, and never re-run. Every rung comes from the single raw file vllm_moe_c1_16.json (sha256 7788d19a16bb32466a53f72fc13c70c8f9352fb888b758f786a54c1a6b7ad648, byte-identical to dgx2:/home/claude/ladder-moe-baseline/). Two earlier attempts the same evening produced no numbers and are not here: one died in DeepGEMM at weight load (kernel_override), one ran the ladder against a serve whose harness preflight had failed (no first token; TypeError on ttft_p50_ms). Zero request errors at every rung."

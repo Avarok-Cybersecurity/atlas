@@ -84,6 +84,12 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             "gb10/kimi-k3/mxfp4",
             "gb10/kimi-k3/nvfp4",
             "gb10/laguna-s-2.1/nvfp4",
+            // Laguna-XS-2.1 (#484): its own target, sources symlinked to
+            // minimax-m2-229b and deepseek-v4-flash. Registered here because
+            // the census enumerates targets BY VALUE -- a new target that
+            // resolves sources but is not listed fails this test on purpose,
+            // so adding a target is never silent.
+            "gb10/laguna-xs-2.1/nvfp4",
             "gb10/longcat-flash-lite/nvfp4",
             "gb10/minimax-m2-229b/nvfp4",
             "gb10/mistral-small-4/nvfp4",

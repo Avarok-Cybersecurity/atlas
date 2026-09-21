@@ -266,6 +266,12 @@ pub struct Qwen3AttentionLayer {
     /// V-only paged cache write. Used alongside the fused K-path so the
     /// K side of the cache stays single-rounded.
     pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
+    /// Decode-path fusion of k_norm + RoPE + FP8 K/V cache write. Bit-identical
+    /// to the `rms_norm` -> `rope_forward` -> `reshape_and_cache_flash_fp8`
+    /// chain it replaces; see `reshape_and_cache_fused_k_fp8.cu`. Zero handle
+    /// when the module is absent (non-GB10 kernel targets) — callers must
+    /// guard on `.0 != 0` and fall back to the un-fused chain.
+    pub(super) fused_k_norm_rope_cache_write_fp8_kv_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
     /// Inverse WHT. With TQ_PLUS_SIGNS off this aliases the forward kernel
@@ -312,6 +318,16 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemm_tc_k: KernelHandle,
     pub(super) paged_decode_splitk_k: Option<KernelHandle>,
     pub(super) paged_decode_reduce_k: Option<KernelHandle>,
+    /// The GQA-PACKED non-split paged-decode twins: one CTA per
+    /// `(kv_head, seq)` reading each K and V row once for the whole query
+    /// group (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`).
+    ///
+    /// `None` on a target whose `common/` tree does not carry the sources, and
+    /// unused unless `AVAROK_ATTN_DECODE_GQA_PACK` arms them AND the launch
+    /// shape passes `attn_splitk::gqa_pack_shape_ok`; either way the dispatch
+    /// keeps the unpacked kernel, which is what every target serves today.
+    pub(super) paged_decode_bf16_gqa_k: Option<KernelHandle>,
+    pub(super) paged_decode_fp8_gqa_k: Option<KernelHandle>,
     /// The Hopper paged-decode split-K twins (#928), when this build carries
     /// them: `kernels/hopper/common/paged_decode_{fp8,bf16}_splitk_hopper.cu`.
     ///

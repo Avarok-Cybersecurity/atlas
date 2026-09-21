@@ -451,3 +451,6 @@ async fn blocking_client_reports_the_decoded_openai_error() {
     assert!(message.contains("Library"), "{message}");
     assert!(!message.contains(r#"{"error"#), "decoded detail: {message}");
 }
+
+#[path = "http_itl_tests.rs"]
+mod itl;

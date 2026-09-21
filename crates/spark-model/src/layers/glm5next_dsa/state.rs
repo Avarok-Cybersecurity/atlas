@@ -130,6 +130,11 @@ impl Glm5NextDsaState {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+    /// Indexer key width. Read by the aux-state codec to refuse a blob taken
+    /// under a different model geometry.
+    pub fn index_head_dim(&self) -> usize {
+        self.index_head_dim
+    }
 
     /// Byte offset of row `pos` in `k_normed` / `gate`.
     pub fn row_offset(&self, pos: usize) -> usize {

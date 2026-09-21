@@ -24,7 +24,7 @@ mod decode_a3;
 mod decode_a_diag;
 mod decode_b;
 mod decode_b2;
-mod decode_checkpoint;
+pub(in crate::model) mod decode_checkpoint;
 mod decode_graph_key;
 mod decode_multi_seq_gate;
 mod drafter_prefill;

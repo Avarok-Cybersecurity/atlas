@@ -176,6 +176,89 @@ pub struct Glm5NextLayer {
 /// there), so R = 8 takes the whole available win. ANOMALIES A65.
 pub(crate) const PREFILL_ROWS: usize = 16;
 
+/// Route GLM prefill's KDA mixer through the chunked scan instead of the per-token
+/// recurrent walk. `AVAROK_GLM_KDA_CHUNK_PREFILL=1` to enable.
+///
+/// Default OFF while it is measured: the chunked scan is NOT bit-identical to the
+/// recurrent walk, so this is a numerics change as well as a speed one, and the default
+/// does not move without evidence on both.
+fn kda_chunk_prefill() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("AVAROK_GLM_KDA_CHUNK_PREFILL").as_deref() == Ok("1");
+        if on {
+            tracing::warn!(
+                "AVAROK_GLM_KDA_CHUNK_PREFILL=1 - GLM prefill KDA uses the CHUNKED scan \
+                 (kda_chunk_prepare + kda_chunk_scan). Not bit-identical to the per-token \
+                 recurrent walk."
+            );
+        }
+        on
+    })
+}
+
+/// Route GLM projections WIDER than the bit-exact tier through cuBLASLt BF16 instead of
+/// the scalar tile GEMM. Shared by the KDA and DSA blocks.
+///
+/// 🔴 DEFAULT ON. `AVAROK_GLM_CUBLAS_PROJ=0` is the kill-switch.
+///
+/// `dense_gemm_bf16` is, by its own doc, a "scalar strict-order BF16 GEMM, no
+/// reassociation" — correctness-first, one thread per output element, not a tensor-core
+/// kernel. With `kda_mixer` split three ways it was the largest leaf in prefill by a wide
+/// margin: `kda_front` 24.4% + `kda_back` 7.7% + `dsa_proj` 14.9% = 47% of prefill in
+/// projections alone, against the per-token KDA recurrence — the assumed culprit — at
+/// 4.6%. At 256 rows `kda_front` cost 19.8 ms per layer-call to move ~268 MB of weights,
+/// ~20x off a 273 GB/s part.
+///
+/// 🪤 The M threshold is a NUMERICS boundary, not a tuning knob. `dense_mm_bf16` sends
+/// M=1 to the GEMV and M=2..=16 to the batched single-sweep kernel; both accumulate per
+/// row in FP32 in a fixed K order and are BIT-IDENTICAL. Only above
+/// `DENSE_GEMV_BATCHM_MAX_M` does it fall to the tile GEMM, which already reassociates.
+/// So this replaces one non-bit-exact path with another and leaves every bit-exact tier
+/// alone: decode is M=1 and a speculative verify is M<=16, so neither can reach here, and
+/// a verify still matches what decode produced.
+pub(crate) fn cublas_wide_proj() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("AVAROK_GLM_CUBLAS_PROJ").as_deref() != Ok("0");
+        tracing::warn!(
+            "AVAROK_GLM_CUBLAS_PROJ: wide GLM projections (M > {}) use {}",
+            crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M,
+            if on {
+                "cuBLASLt BF16"
+            } else {
+                "the scalar tile GEMM"
+            }
+        );
+        on
+    })
+}
+
+/// Batch the DSA indexer `wq_b` projection across all prefill rows in one cuBLASLt GEMM
+/// instead of one M=1 GEMV per row. `AVAROK_GLM_DSA_BATCH_QIDX=1` opts in.
+///
+/// 🟡 DEFAULT OFF. Prefill-only (see the call site in `glm5next_dsa::layer`), so decode and
+/// the speculative verify already keep their bit-exact M=1 GEMV regardless of this flag. The
+/// batched GEMM changes prefill numerics enough to flip a tool-calling scenario (tool-eval
+/// TC-08) on GLM-5.3-Flash NVFP4 from pass to a partial call, so it ships opt-in rather than
+/// on-by-default; the M=1-per-row GEMV fallback is the default path and is the numerically
+/// reference-matching one.
+pub(crate) fn dsa_batch_qidx() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| {
+        let on = std::env::var("AVAROK_GLM_DSA_BATCH_QIDX").as_deref() == Ok("1");
+        tracing::warn!(
+            "AVAROK_GLM_DSA_BATCH_QIDX: prefill DSA indexer q uses {}",
+            if on {
+                "ONE batched cuBLASLt GEMM"
+            } else {
+                "one M=1 GEMV per row"
+            }
+        );
+        on
+    })
+}
+
 /// `PREFILL_ROWS`, overridable at launch with `AVAROK_GLM_PREFILL_ROWS`.
 ///
 /// 🔬 Kept as the A/B lever it was built as. It found A65's real defect (the DSA attend read
@@ -825,7 +908,46 @@ impl Glm5NextLayer {
         let t = profile::start();
         let attn_out = match (&self.mixer, &kda_ctx) {
             (Glm5NextMixer::Kda { layer, ws, .. }, Some((kda, snaps))) => {
-                layer.decode_k(gpu, normed, k, kda, ws, snaps, stream)?;
+                // 🔴 The CHUNKED scan, on prefill only. `decode_k` walks `stateful_row` once
+                // per token in a host loop: at `AVAROK_GLM_PREFILL_ROWS=256` x 34 KDA layers
+                // that is 8,704 conv + 8,704 recurrent launches per sub-chunk, each a
+                // 1-warp-per-block kernel that re-reads and rewrites the WHOLE recurrent
+                // state (~4 MB/layer at 64 heads), fully serialised by the state dependency.
+                // A corrected profile puts `kda_mixer` at 53.5% of prefill — the largest
+                // single bucket by 5x. `kda_chunk_prepare` + `kda_chunk_scan` compute the
+                // same recurrence chunk-wise, touching the state once per `cfg.chunk` (32)
+                // tokens instead of once per token.
+                //
+                // The path was already written, numerically gated against the CPU reference,
+                // and its workspace buffers (`chunk_gc/u/w`, sized `t_pad`) are ALLOCATED in
+                // production — it simply had no caller outside a microtest harness. The
+                // loader's stale note ("prefill still runs token-by-token ... the mHC highway
+                // forces per-token anyway") predates `forward_k`, which already does K rows
+                // of mHC in one call.
+                //
+                // 🪤 NOT bit-identical to `decode_k`: the chunked scan reassociates the
+                // recurrence, so it is refused for a speculative VERIFY, whose accepted
+                // tokens must match what decode would have produced. Three conditions keep
+                // it to prefill, and all three are stated rather than inferred:
+                //   * `is_prefill` — the caller's own flag, not `!decode_step` (a verify
+                //     also clears that) and not `k > 1` (a verify is K rows too).
+                //   * `snaps.is_empty()` — belt and braces. Prefill takes no per-row
+                //     snapshots (see `take_snapshots` above), and the chunked path CANNOT
+                //     produce them: it never materialises the state at interior rows. If a
+                //     caller ever asks for them here, fall back rather than silently drop
+                //     the rewind points.
+                //   * `k > 1` — a 1-row chunk has nothing to batch.
+                //
+                // 🪤 Prefix caching: a Marconi replay of `[snap_tok, matched)` must not be
+                // recomputed by a DIFFERENT association than the pass that produced the
+                // cached blocks, or the state drifts and ratchets across turns. That holds
+                // here because the choice keys on `is_prefill` alone, so the original pass
+                // and its replay both take this arm.
+                if is_prefill && k > 1 && snaps.is_empty() && kda_chunk_prefill() {
+                    layer.prefill(gpu, normed, k, kda, ws, stream)?;
+                } else {
+                    layer.decode_k(gpu, normed, k, kda, ws, snaps, stream)?;
+                }
                 ws.final_out
             }
             (Glm5NextMixer::Dsa(layer), _) => {
@@ -1121,6 +1243,64 @@ impl TransformerLayer for Glm5NextLayer {
     /// answer true here, and `rollback_ssm_states_dispatch` needs both.
     fn uses_ssm_pool(&self) -> bool {
         matches!(self.mixer, Glm5NextMixer::Kda { .. })
+    }
+
+    /// Marconi aux state: the DSA indexer cache, and ONLY the DSA indexer cache.
+    ///
+    /// 🪤 KDA is deliberately absent. Its recurrent and conv state live in the SSM pool
+    /// (`uses_ssm_pool()` is true for `Kda`), and `SsmSnapshotPool` already captures and
+    /// restores that region device-to-device for every snapshot. Carrying it here as well
+    /// would serialize 148.75 MiB a snapshot to the host to duplicate a copy the pool
+    /// already made.
+    ///
+    /// 🔴 The indexer is the reason `per_sequence_state_is_kv_complete()` returns false for
+    /// `glm5_next`: `k_normed`/`gate` are projections of the HIDDEN state, so a KV-only
+    /// prefix-cache hit cannot reconstruct them. This hook is what would make the snapshot
+    /// complete — the gate stays shut until that is proven on GPU.
+    fn has_aux_state(&self) -> bool {
+        matches!(self.mixer, Glm5NextMixer::Dsa(_))
+    }
+
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        if !matches!(self.mixer, Glm5NextMixer::Dsa(_)) {
+            return Ok(None);
+        }
+        let st = state
+            .as_any()
+            .downcast_ref::<Glm5NextDsaState>()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GLM layer {}: a DSA mixer was handed state that is not a Glm5NextDsaState",
+                    self.layer_idx
+                )
+            })?;
+        Ok(Some(st.snapshot_blob(gpu, stream)?))
+    }
+
+    /// 🔴 Refuses rather than skipping. `apply_aux_states` propagates this with `?`, so a
+    /// blob that does not match this sequence's geometry or reservation fails the
+    /// prefix-cache hit outright. The alternative — applying it anyway — selects over
+    /// another sequence's indexer keys and answers HTTP 200 with the wrong text.
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if !matches!(self.mixer, Glm5NextMixer::Dsa(_)) {
+            bail!(
+                "GLM layer {}: restore_aux on a KDA layer — KDA state is pool-backed and \
+                 travels with the SSM snapshot, so a blob addressed here is a routing bug",
+                self.layer_idx
+            );
+        }
+        self.dsa_state(state)?.restore_blob(blob, gpu, stream)
     }
 
     #[allow(clippy::too_many_arguments)]

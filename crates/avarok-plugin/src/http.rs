@@ -46,10 +46,21 @@ pub struct ChatOutcome {
     pub finish_reason: Option<String>,
     /// Client-measured: request start → first reasoning/content/tool delta.
     pub ttft_ms: Option<f64>,
-    /// Client-measured decode inter-token latency.
+    /// Client-measured Inter-Token Latency (the repo calls this quantity
+    /// TPOT), per AIPerf: `(request_latency − TTFT) / (completion_tokens −
+    /// 1)`, i.e. first delta → END OF STREAM (the `[DONE]` sentinel or
+    /// EOF), over `n − 1`. The numerator ends at the final chunk, NOT the
+    /// last content token: the usage chunk and the sentinel that follow the
+    /// last token are part of the response's latency. Aligned to AIPerf on
+    /// 2026-09-20; before that it ended at the last token-carrying delta,
+    /// so historical client TPOT values are smaller by (final chunk − last
+    /// token)/(n − 1) — one SSE flush spread over the response, ~µs per
+    /// token on loopback. `None` below two tokens ([`itl_ms`]).
     pub tpot_ms: Option<f64>,
     /// Client-measured: request start → last byte.
     pub e2e_ms: f64,
+    /// Intra-response arrival gaps — the jitter instrument ([`gaps`]).
+    pub arrival_gaps: GapSample,
     /// Streamed delta count, overridden by the server's `usage` when present.
     pub completion_tokens: usize,
     pub prompt_tokens: usize,
@@ -70,6 +81,28 @@ pub struct ChatOutcome {
     /// instrumentation" (None) can, which is exactly the distinction the
     /// decode-floor gate's vacuity pin makes.
     pub accepted_prediction_tokens: Option<usize>,
+    /// Server-reported decode window (`usage.decode_time_ms`): first token →
+    /// terminal frame on the server's clock. The raw numerator of the
+    /// server-clock ITL; `None` on a server predating the field.
+    pub server_decode_time_ms: Option<f64>,
+    /// Server-reported total (`usage.total_time_ms`): scheduler receipt →
+    /// terminal frame. HTTP handling and queue wait precede that clock, so
+    /// `e2e_ms − server_total_time_ms` is transport + queue, not transport
+    /// alone.
+    pub server_total_time_ms: Option<f64>,
+}
+
+impl ChatOutcome {
+    /// The SERVER-clock Inter-Token Latency, from the raw window the server
+    /// published: `decode_time_ms / (completion_tokens − 1)` — the same
+    /// [`itl_ms`] rule as the client-clock [`Self::tpot_ms`], on the
+    /// server's numbers. The difference between the two is the SSE /
+    /// transport overhead, which is why both are kept per request rather
+    /// than one overwriting the other. `None` when the server did not
+    /// report the window or fewer than two tokens were produced.
+    pub fn server_tpot_ms(&self) -> Option<f64> {
+        itl_ms(self.server_decode_time_ms?, self.completion_tokens)
+    }
 }
 
 /// POST `/v1/chat/completions` with `"stream": true` and measure it.
@@ -106,9 +139,11 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
     let mut reader = Reader::default();
     let mut out = ChatOutcome::default();
     let mut first_delta: Option<Instant> = None;
-    let mut last_delta: Option<Instant> = None;
+    // The previous socket read that carried a token — one ARRIVAL, see
+    // `gaps` for why the jitter instrument is per read and not per delta.
+    let mut last_arrival: Option<Instant> = None;
     let mut buf = [0u8; 16 * 1024];
-    'read: loop {
+    loop {
         let n = sock.read(&mut buf).await.context("read")?;
         if n == 0 {
             // EOF. If an error response was still being collected — no
@@ -118,35 +153,51 @@ async fn chat_stream_inner(target: &TargetEndpoint, body: &Value) -> Result<Chat
             reader.finish()?;
             break;
         }
+        let arrived = Instant::now();
+        let mut carried = false;
+        let mut done = false;
         for line in reader.push(&buf[..n])? {
             let Some(data) = line.strip_prefix("data:") else {
                 continue;
             };
             let data = data.trim();
             if data == "[DONE]" {
-                break 'read;
+                done = true;
+                break;
             }
             let Ok(chunk) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
             if apply_chunk(&chunk, &mut out) {
-                let now = Instant::now();
-                first_delta.get_or_insert(now);
-                last_delta = Some(now);
+                first_delta.get_or_insert_with(Instant::now);
+                carried = true;
             }
         }
+        // Book the arrival BEFORE honouring `[DONE]`: the sentinel often
+        // shares a read with the last token, and that read's gap is real.
+        if carried {
+            if let Some(prev) = last_arrival {
+                out.arrival_gaps
+                    .push(arrived.duration_since(prev).as_secs_f64() * 1000.0);
+            }
+            last_arrival = Some(arrived);
+        }
+        if done {
+            break;
+        }
     }
-    out.e2e_ms = started.elapsed().as_secs_f64() * 1000.0;
-    out.ttft_ms = first_delta.map(|t| (t - started).as_secs_f64() * 1000.0);
-    // TPOT is the DECODE rate: it excludes prefill, so it is measured from the
-    // first delta, not from the request start, and needs at least two tokens.
-    if let (Some(f), Some(l)) = (first_delta, last_delta)
-        && out.completion_tokens >= 2
-        && l > f
-    {
-        out.tpot_ms =
-            Some((l - f).as_secs_f64() * 1000.0 / (out.completion_tokens.saturating_sub(1)) as f64);
-    }
+    // ONE end instant for both: `e2e_ms` and the ITL numerator end at the
+    // same point — the final chunk (`[DONE]` or EOF) — so on the client's
+    // numbers `(e2e − ttft) / (n − 1)` IS `tpot_ms`, the AIPerf identity.
+    let ended = Instant::now();
+    out.e2e_ms = ended.duration_since(started).as_secs_f64() * 1000.0;
+    out.ttft_ms = first_delta.map(|t| t.duration_since(started).as_secs_f64() * 1000.0);
+    out.tpot_ms = first_delta.and_then(|f| {
+        itl_ms(
+            ended.duration_since(f).as_secs_f64() * 1000.0,
+            out.completion_tokens,
+        )
+    });
     Ok(out)
 }
 
@@ -171,6 +222,12 @@ fn apply_chunk(chunk: &Value, out: &mut ChatOutcome) -> bool {
         }
         if let Some(v) = usage.get("response_token/s").and_then(Value::as_f64) {
             out.server_tps = Some(v);
+        }
+        if let Some(v) = usage.get("decode_time_ms").and_then(Value::as_f64) {
+            out.server_decode_time_ms = Some(v);
+        }
+        if let Some(v) = usage.get("total_time_ms").and_then(Value::as_f64) {
+            out.server_total_time_ms = Some(v);
         }
         if let Some(v) = usage
             .get("completion_tokens_details")
@@ -702,6 +759,9 @@ pub(super) fn content_length(head: &str) -> Option<usize> {
 
 mod reader;
 use reader::Reader;
+
+pub mod gaps;
+pub use gaps::{GapSample, GapStats, itl_ms};
 
 pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)

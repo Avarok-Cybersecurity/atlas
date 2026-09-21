@@ -67,12 +67,16 @@ pub(super) fn row(
             p99: ttft_p50,
         },
         tpot: Percentiles::default(),
+        server_tpot: Percentiles::default(),
         e2e_p50: None,
         throughput,
+        tokens: requests.iter().map(|r| r.completion_tokens).sum(),
         errors: 0,
         requests,
         vacuous,
         cache_uncontrolled: false,
+        gaps: None,
+        energy: None,
     }
 }
 
@@ -380,116 +384,5 @@ fn metrics_map_with_no_comparable_cells_still_reports_evidence() {
     assert_eq!(m.get("vacuous_cells"), Some(&1.0));
 }
 
-// ── THE ARM PIN (#835) ───────────────────────────────────────────────────
-//
-// `c2_aggregate_tok_s` is trimodal (~30.6 / ~27.5 / ~23.5 tok/s, nothing
-// between) because the C=2 cell's ~640 measured tokens contain only one to
-// three MTP-gate arbitrations, so its outcome is all-MTP, mixed, or
-// all-serial. The committed floor sits in the empty gap, which makes it a
-// mode detector rather than a regression detector.
-//
-// ★ CORRECTED after a real campaign. The arm was first wired as a COMPARABILITY
-// class — a serial cell excluded from scoring, and any such cell failing the run
-// INCONCLUSIVE. That was wrong, and only a live gate run showed it: at wide batch
-// the MTP gate drops speculation ON PURPOSE, so C=8 upward legitimately run
-// serial, and the floors for those rungs were calibrated on runs that did
-// exactly that. The pin dropped five of eight cells, made `peak_aggregate_tok_s`
-// read 49.5 (from C=4) instead of ~115 (from C=64), and failed a gate with nine
-// consecutive passing records.
-//
-// The arm is now PUBLISHED and never gated on: the benchmark cannot know which
-// arm should have run, and asserting otherwise is a claim it cannot support.
-// What #835 needs is that a human reading a low C=2 can see whether the serial
-// arm explains it — and a metric on the record does that.
-
-#[test]
-fn a_serial_arm_cell_is_reported_but_still_scored() {
-    // accept_len == 1.00 exactly: every emitted token cost one step.
-    let serial = row(
-        2,
-        23.5,
-        Some(2000.0),
-        vec![evidence_with_arm(320, Some(0)); 2],
-        320,
-    );
-    assert_eq!(serial.accept_len(), Some(1.0));
-    assert!(serial.arm_is_not_mtp(), "accept_len 1.00 is the serial arm");
-    // ★ THE CORRECTION. It stays comparable. At wide batch the gate drops
-    // speculation deliberately and those floors were calibrated that way, so
-    // excluding a serial cell throws away a measurement the floor expects.
-    assert!(
-        serial.comparable(),
-        "a serial cell is still comparable to a floor calibrated on serial"
-    );
-    assert!(!serial.vacuous);
-    assert!(!serial.cache_uncontrolled);
-}
-
-#[test]
-fn an_mtp_arm_cell_is_comparable() {
-    let mtp = row(2, 30.6, Some(2000.0), vec![evidence(320); 2], 320);
-    let a = mtp.accept_len().expect("accept_len derivable");
-    assert!(
-        a > 1.5,
-        "the MTP arm sits well above the 1.5 threshold, got {a}"
-    );
-    assert!(!mtp.arm_is_not_mtp());
-    assert!(mtp.comparable());
-}
-
-#[test]
-fn a_mixed_cell_reports_the_minimum_arm_and_is_still_scored() {
-    // One request served serial, one speculative. The MINIMUM governs the
-    // reported figure, so a cell that touched the serial arm at all says so —
-    // that is the signal a human needs to explain a low reading.
-    let mixed = row(
-        2,
-        27.5,
-        Some(2000.0),
-        vec![evidence_with_arm(320, Some(0)), evidence(320)],
-        320,
-    );
-    assert_eq!(mixed.accept_len(), Some(1.0), "the minimum, not the mean");
-    assert!(
-        mixed.comparable(),
-        "reporting the arm must not remove the cell from scoring"
-    );
-}
-
-#[test]
-fn a_missing_accept_field_is_not_read_as_serial() {
-    // ★ THE TRAP. `None` means the server did not report the field. Treating
-    // it as 1.00 would convert a missing instrument into a verdict about the
-    // engine — and every pre-existing recorded sweep has no accept field.
-    let unknown = row(
-        2,
-        27.5,
-        Some(2000.0),
-        vec![evidence_with_arm(320, None); 2],
-        320,
-    );
-    assert_eq!(unknown.accept_len(), None);
-    assert!(
-        !unknown.arm_is_not_mtp(),
-        "an unreported arm is unknown, not serial"
-    );
-    assert!(
-        unknown.comparable(),
-        "a sweep from before this instrument existed must stay comparable"
-    );
-}
-
-#[test]
-fn a_corrupt_accept_count_does_not_divide_by_zero() {
-    // accepted >= completion is impossible on the wire but must not panic or
-    // produce a negative/infinite accept depth if it ever appears.
-    let corrupt = row(
-        2,
-        27.5,
-        Some(2000.0),
-        vec![evidence_with_arm(320, Some(320)); 2],
-        320,
-    );
-    assert_eq!(corrupt.accept_len(), None);
-    assert!(!corrupt.arm_is_not_mtp());
-}
+#[path = "concurrency_instrument_tests.rs"]
+mod instrument;

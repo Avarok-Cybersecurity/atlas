@@ -62,6 +62,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 
 use crate::benchmark::{Benchmark, BenchmarkDescriptor, ModelExpectation};
+use crate::hardware::energy_sampler::EnergyMeter;
 use crate::http;
 use crate::metadata::PluginMetadata;
 use crate::params::{ParamKind, ParamSpec, ParamValue, ParamValues};
@@ -117,7 +118,7 @@ pub const DESCRIPTOR: BenchmarkDescriptor = BenchmarkDescriptor {
 
 mod score;
 pub(crate) use score::{
-    Evaluation, MAX_TOKENS, MINHEAP_PROMPT, RUNS, RunObs, evaluate, verdict_for,
+    Evaluation, MAX_TOKENS, MINHEAP_PROMPT, RUNS, RunObs, evaluate, instrument_metrics, verdict_for,
 };
 
 #[derive(Default)]
@@ -129,6 +130,9 @@ pub struct DecodeFloor {
     samples: Vec<RunObs>,
     started: Option<Instant>,
     probed: bool,
+    /// GPU-rail power sampling: started after the probe (idle baseline),
+    /// one window per pinned run.
+    energy: EnergyMeter,
 }
 
 impl DecodeFloor {
@@ -249,6 +253,7 @@ impl Benchmark for DecodeFloor {
         self.min_tok_s = values.float("min_tok_s")?;
         self.samples.clear();
         self.probed = false;
+        self.energy = EnergyMeter::default();
         Ok(())
     }
 
@@ -262,6 +267,10 @@ impl Benchmark for DecodeFloor {
             http::probe(handle.target(), Duration::from_secs(10))
                 .await
                 .context("endpoint probe failed — check the target URL and port")?;
+            // Model loaded, nothing in flight: the idle baseline is taken now.
+            for line in self.energy.start(handle.target()).await {
+                handle.log(line.level, line.text);
+            }
             return Ok(BenchmarkResult::running("probe", self.elapsed())
                 .with_progress(0, total)
                 .log_line(LogLine::info(format!(
@@ -273,20 +282,32 @@ impl Benchmark for DecodeFloor {
 
         if self.samples.len() < RUNS {
             handle.status(format!("run {}/{RUNS}", self.samples.len() + 1));
+            let window_start = Instant::now();
             let outcome = self.one_run().await?;
-            let obs = RunObs::from_outcome(&outcome);
-            let line = LogLine::info(format!(
-                "run {}/{RUNS}: {} tok · decode {} tok/s (server) · accepted {} · E2E {:.0} ms",
+            let window_end = Instant::now();
+            let mut obs = RunObs::from_outcome(&outcome);
+            obs.energy = self.energy.window(window_start, window_end);
+            let fmt_ms =
+                |v: Option<f64>| v.map(|v| format!("{v:.2}")).unwrap_or_else(|| "—".into());
+            let mut line = LogLine::info(format!(
+                "run {}/{RUNS}: {} tok · decode {} tok/s (server) · itl {} ms server / {} ms \
+                 client · accepted {} · E2E {:.0} ms",
                 self.samples.len() + 1,
                 obs.completion_tokens,
                 obs.server_tps
                     .map(|v| format!("{v:.1}"))
                     .unwrap_or_else(|| "—".into()),
+                fmt_ms(obs.server_tpot_ms),
+                fmt_ms(obs.client_tpot_ms),
                 obs.accepted_prediction_tokens
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "—".into()),
                 obs.e2e_ms,
             ));
+            if let Some(e) = &obs.energy {
+                line.text
+                    .push_str(&format!(" · {}", e.one_line(self.energy.idle())));
+            }
             self.samples.push(obs);
             let done = self.samples.len() as u64;
             handle.progress(done, total);
@@ -300,8 +321,11 @@ impl Benchmark for DecodeFloor {
             bail!("no run produced any output token — nothing to measure");
         }
 
+        let sampler_cost_line = self.energy.stop().await;
         let mut metrics = BTreeMap::new();
         metrics.insert("runs".to_string(), self.samples.len() as f64);
+        instrument_metrics(&self.samples, self.energy.idle(), &mut metrics);
+        self.energy.metrics(&mut metrics);
         let eval = evaluate(&self.samples);
         let verdict = verdict_for(&eval, self.min_tok_s);
         let summary = match eval {
@@ -330,7 +354,7 @@ impl Benchmark for DecodeFloor {
                 ]
             }
         };
-        Ok(BenchmarkResult {
+        let mut frame = BenchmarkResult {
             status: RunStatus::Completed,
             ..BenchmarkResult::running("done", self.elapsed())
         }
@@ -338,7 +362,11 @@ impl Benchmark for DecodeFloor {
         .with_summary(summary)
         .with_table(self.table())
         .with_metrics(metrics)
-        .with_verdict(verdict))
+        .with_verdict(verdict);
+        if let Some(line) = sampler_cost_line {
+            frame = frame.log_line(line);
+        }
+        Ok(frame)
     }
 }
 

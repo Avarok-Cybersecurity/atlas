@@ -371,3 +371,111 @@ pub fn paged_decode_attn_fp8(
         .arg_u32(sliding_window)
         .launch(stream)
 }
+
+/// GQA-PACKED BF16-KV paged decode: one CTA per `(kv_head, seq)`.
+///
+/// Same arguments, same kernel ABI order and same block as
+/// [`paged_decode_attn_bf16`] — only the grid's x extent changes, from
+/// `num_q_heads` to `num_kv_heads`, because the kernel
+/// (`kernels/gb10/common/paged_decode_attn_bf16_gqa.cu`) carries the whole
+/// query group of a KV head in registers and reads each K and V row once for
+/// all of them.
+///
+/// ⚠️ `num_q_heads == num_kv_heads * DECODE_GQA_PACK_WIDTH` and
+/// `head_dim == DECODE_GQA_PACK_HEAD_DIM` are hard preconditions — the kernel
+/// recovers its heads as `kv_head * PD_GQA + h` and sizes its register arrays
+/// from `PD_GQA`. The caller checks both with
+/// `avarok_kernels::attn_splitk::gqa_pack_shape_ok` and keeps the unpacked
+/// kernel when they do not hold.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_decode_attn_bf16_gqa(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_seqs: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    q_stride: u32,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_kv_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_u32(q_stride)
+        .arg_u32(sliding_window)
+        .launch(stream)
+}
+
+/// GQA-PACKED FP8-KV paged decode: one CTA per `(kv_head, seq)`.
+///
+/// The FP8 twin of [`paged_decode_attn_bf16_gqa`] — same argument list and
+/// same ABI order as [`paged_decode_attn_fp8`], grid x extent `num_kv_heads`.
+/// The same two preconditions apply, checked by the same predicate.
+#[allow(clippy::too_many_arguments)]
+pub fn paged_decode_attn_fp8_gqa(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    output: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_seqs: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    k_scale: f32,
+    v_scale: f32,
+    q_stride: u32,
+    cache_stride: u64,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_kv_heads, num_seqs, 1])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(output)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_f32(k_scale)
+        .arg_f32(v_scale)
+        .arg_u32(q_stride)
+        .arg_u64(cache_stride)
+        .arg_u32(sliding_window)
+        .launch(stream)
+}

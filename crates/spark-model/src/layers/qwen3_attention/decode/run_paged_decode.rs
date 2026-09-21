@@ -588,6 +588,44 @@ impl Qwen3AttentionLayer {
                         stream,
                     );
                 }
+                // GQA-packed twin: one CTA per (kv_head, seq) instead of per
+                // (q_head, seq), reading each K and V row ONCE for the whole
+                // query group. Armed, shape-checked and present-checked by
+                // `gqa_pack_kernel`; bit-identical to the arm below when it
+                // fires, because it is the same per-head arithmetic in the
+                // same order with the loads hoisted.
+                if let Some(gqa_k) = splitk_dispatch::gqa_pack_kernel(
+                    self.paged_decode_bf16_gqa_k,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                ) {
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Bf16,
+                        splitk_dispatch::ROUTE_GQA_BF16,
+                        num_splits,
+                    );
+                    return ops::paged_decode_attn_bf16_gqa(
+                        gpu,
+                        gqa_k,
+                        q,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        output,
+                        block_table,
+                        seq_lens,
+                        max_blocks_per_seq,
+                        num_seqs,
+                        num_q_heads,
+                        num_kv_heads,
+                        head_dim,
+                        block_size,
+                        inv_sqrt_d,
+                        q_stride,
+                        sliding,
+                        stream,
+                    );
+                }
                 splitk_dispatch::log_decode_route(
                     splitk_dispatch::RouteArm::Bf16,
                     splitk_dispatch::ROUTE_NONSPLIT_BF16,
@@ -672,6 +710,45 @@ impl Qwen3AttentionLayer {
                         k_scale,
                         v_scale,
                         kv_cache.cache_stride() as u64,
+                        stream,
+                    )
+                } else if let Some(gqa_k) = splitk_dispatch::gqa_pack_kernel(
+                    self.paged_decode_fp8_gqa_k,
+                    num_q_heads,
+                    num_kv_heads,
+                    head_dim,
+                ) {
+                    // GQA-packed twin — see the BF16 arm above. Reachable only
+                    // here, on the no-split branch: the packed grid is
+                    // (num_kv_heads, num_seqs) and pairing it with split-K
+                    // would change the split partition, hence the merge tree,
+                    // hence the output bytes.
+                    splitk_dispatch::log_decode_route(
+                        splitk_dispatch::RouteArm::Fp8,
+                        splitk_dispatch::ROUTE_GQA_FP8,
+                        num_splits,
+                    );
+                    ops::paged_decode_attn_fp8_gqa(
+                        gpu,
+                        gqa_k,
+                        q,
+                        kv_cache.k_pool_ptr(self.attn_layer_idx),
+                        kv_cache.v_pool_ptr(self.attn_layer_idx),
+                        output,
+                        block_table,
+                        seq_lens,
+                        max_blocks_per_seq,
+                        num_seqs,
+                        num_q_heads,
+                        num_kv_heads,
+                        head_dim,
+                        block_size,
+                        inv_sqrt_d,
+                        k_scale,
+                        v_scale,
+                        q_stride,
+                        kv_cache.cache_stride() as u64,
+                        sliding,
                         stream,
                     )
                 } else {

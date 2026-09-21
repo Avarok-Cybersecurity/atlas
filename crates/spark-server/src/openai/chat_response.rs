@@ -55,6 +55,49 @@ pub struct Usage {
     /// Decode throughput in tokens per second.
     #[serde(rename = "response_token/s")]
     pub response_tokens_per_second: f64,
+    /// Decode window in milliseconds: first token → final (terminal)
+    /// chunk, on the server's clock. ADDITIVE (2026-09-20): lets a client
+    /// compute Inter-Token Latency, `decode_time_ms / (completion_tokens
+    /// − 1)`, without depending on SSE arrival times. Undefined below two
+    /// completion tokens — the client decides that, this is the raw window.
+    #[serde(rename = "decode_time_ms")]
+    pub decode_time_ms: f64,
+    /// Total server-side request time in milliseconds: scheduler receipt →
+    /// final chunk (`time_to_first_token_ms + decode_time_ms`; see
+    /// `ir::Usage::total_time_ms` for what the origin excludes). ADDITIVE.
+    #[serde(rename = "total_time_ms")]
+    pub total_time_ms: f64,
+}
+
+impl From<&crate::ir::Usage> for Usage {
+    /// `ir::Usage` → OpenAI wire usage — THE mapping. `total_tokens` is
+    /// prompt + completion, the audio counters are pinned to 0, the
+    /// accept count carries through, and the timing block is the IR's
+    /// three raw components plus the derived total. The blocking encoder,
+    /// the streaming encoder and the `--dump` capture all read this one
+    /// function; before it each held its own copy of the field list, and a
+    /// key added to one was silently absent from the others.
+    fn from(u: &crate::ir::Usage) -> Self {
+        Self {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.prompt_tokens + u.completion_tokens,
+            prompt_tokens_details: Some(PromptTokensDetails {
+                cached_tokens: u.cached_prompt_tokens,
+                audio_tokens: 0,
+            }),
+            completion_tokens_details: Some(CompletionTokensDetails {
+                reasoning_tokens: u.reasoning_tokens,
+                audio_tokens: 0,
+                accepted_prediction_tokens: u.accepted_prediction_tokens,
+                rejected_prediction_tokens: 0,
+            }),
+            time_to_first_token_ms: u.time_to_first_token_ms,
+            response_tokens_per_second: u.response_tokens_per_second,
+            decode_time_ms: u.decode_time_ms,
+            total_time_ms: u.total_time_ms(),
+        }
+    }
 }
 
 /// Prompt-token breakdown (OpenAI-compatible `prompt_tokens_details`).
