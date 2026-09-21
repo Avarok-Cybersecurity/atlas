@@ -202,6 +202,71 @@ export const tokPerWh = (tokens, energyJ) => (tokens / energyJ) * 3600;
  */
 export const costPerMillion = (jPerTok, usdPerKwh, pue) => (jPerTok * usdPerKwh * pue) / 3.6;
 
+// ---- savings over time ------------------------------------------------------
+
+/**
+ * Horizons the savings view offers. Days, not months, because a month is not a
+ * fixed length and a cumulative line that jumps at month boundaries is a lie
+ * about the rate.
+ */
+export const SAVINGS_HORIZONS = Object.freeze([
+  Object.freeze({ days: 1, label: 'a day' }),
+  Object.freeze({ days: 30, label: '30 days' }),
+  Object.freeze({ days: 365, label: 'a year' })
+]);
+
+/** Demand the savings view assumes until the reader sets their own. */
+export const DEFAULT_TOKENS_PER_DAY = 1e9;
+export const TOKENS_PER_DAY_STORAGE_KEY = 'atlas.cost.tokens_per_day';
+
+/**
+ * Cumulative energy and money saved by serving a FIXED token demand on Atlas
+ * instead of the baseline.
+ *
+ * ★ THE COMPARISON IS SAME-WORKLOAD, AND THAT CHOICE IS THE WHOLE MEANING.
+ * Two honest questions exist: "the same N tokens, which engine spends less?"
+ * and "the same box flat out, which delivers more?". Only the first is a
+ * SAVING — the second is a throughput win and would be double-counted if it
+ * were folded in here. So demand is held fixed at `tokensPerDay` and the only
+ * difference is joules per token. A reader who wants the throughput story has
+ * the ladder chart directly above.
+ *
+ * ★ A NEGATIVE RESULT IS RETURNED, NOT CLAMPED. If Atlas spends more per token
+ * at some rung, this says so with a negative number. A savings calculator that
+ * cannot express a loss is marketing, not measurement.
+ *
+ * ★ `pue` IS REQUIRED, for the same reason `costPerMillion` requires it.
+ *
+ * @returns {{state:'measured', perDayKwh:number, perDayUsd:number,
+ *            points:{day:number,kwh:number,usd:number}[],
+ *            totalKwh:number, totalUsd:number}
+ *          |{state:'unavailable', why:string}}
+ */
+export function savingsOverTime({ atlasJPerTok, baseJPerTok, tokensPerDay, usdPerKwh, pue, days }) {
+  // Each missing input is named individually: "cannot compute" sends a reader
+  // looking at the wrong thing, and the usual absence here is one specific
+  // one -- Atlas energy that has not been measured on this instrument yet.
+  if (!Number.isFinite(atlasJPerTok)) return { state: 'unavailable', why: 'Atlas energy is not measured on this instrument' };
+  if (!Number.isFinite(baseJPerTok)) return { state: 'unavailable', why: 'the baseline carries no energy-instrumented run' };
+  if (!Number.isFinite(tokensPerDay) || tokensPerDay <= 0) return { state: 'unavailable', why: 'daily token demand must be a positive number' };
+  if (!Number.isFinite(usdPerKwh) || usdPerKwh < 0) return { state: 'unavailable', why: 'electricity price must be zero or more' };
+  if (!isPue(pue)) return { state: 'unavailable', why: `PUE must be between ${PUE_MIN} and ${PUE_MAX}` };
+  if (!Number.isFinite(days) || days <= 0) return { state: 'unavailable', why: 'the horizon must be a positive number of days' };
+
+  // J -> kWh is 3.6e6. Facility overhead multiplies the whole draw, so it
+  // multiplies the DIFFERENCE too -- a datacentre saves the cooling it would
+  // have spent on the joules it no longer burns.
+  const perDayKwh = ((baseJPerTok - atlasJPerTok) * tokensPerDay * pue) / 3.6e6;
+  const perDayUsd = perDayKwh * usdPerKwh;
+  // One point per day up to 60, then sampled, so a year does not ship 365
+  // points into an SVG path that is 200px wide.
+  const step = days <= 60 ? 1 : Math.ceil(days / 60);
+  const points = [];
+  for (let d = 0; d <= days; d += step) points.push({ day: d, kwh: perDayKwh * d, usd: perDayUsd * d });
+  if (points[points.length - 1].day !== days) points.push({ day: days, kwh: perDayKwh * days, usd: perDayUsd * days });
+  return { state: 'measured', perDayKwh, perDayUsd, points, totalKwh: perDayKwh * days, totalUsd: perDayUsd * days };
+}
+
 /** Two significant figures below a dollar, two decimals above: `0.13`, `0.0054`, `12.40`. */
 export const fmtUsd = (v) => (v >= 1 ? v.toFixed(2) : Number(v.toPrecision(2)).toString());
 

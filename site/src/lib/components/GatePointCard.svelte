@@ -16,9 +16,17 @@
 
   let { records, onclose } = $props();
 
-  // "Reproduction steps" reveals in place under the receipt (per tab for a
-  // grouped point) and widens the card; focus moves to the panel heading so a
-  // keyboard reader lands on what just appeared.
+  // "Reproduction steps" sits at the TOP of the panel (owner decision,
+  // 2026-09-21): it is the first thing a reader wants from a receipt, so it
+  // should not be reachable only after scrolling the record body. It reveals
+  // in place directly beneath its own button -- above the receipt, per tab for
+  // a grouped point -- and widens the card; focus moves to the panel heading
+  // so a keyboard reader lands on what just appeared.
+  //
+  // Ordering note: the button lives INSIDE #gpc-panel rather than above the
+  // tablist, because the steps it reveals are per-record (`record={r}`).
+  // Hoisting it above the tabs would put a control for one run outside the
+  // element that selects which run is showing.
   let repro = $state(false);
   let reproEl = $state(null);
   async function toggleRepro() {
@@ -92,7 +100,6 @@
       {/if}
 
       <div id="gpc-panel" role={many ? 'tabpanel' : undefined} aria-labelledby={many ? `gpc-tab-${active}` : undefined}>
-        <GateRecordBody record={r} />
         <button
           type="button"
           class="gpc-repro-toggle"
@@ -107,6 +114,7 @@
             <GateReproSteps record={r} />
           </div>
         {/if}
+        <GateRecordBody record={r} />
       </div>
 
       <div class="receipt-foot">

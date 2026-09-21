@@ -521,3 +521,19 @@
 .cost-disclosure p { margin: 0; }
 .cost-disclosure strong { color: var(--t1); }
 .cost-provenance { font-family: var(--font-mono); font-size: 0.7rem; color: var(--t3); }
+
+/* ---- energy savings over time ------------------------------------------- */
+/* Tokens only; no literal colours, so the light/dark swap is inherited. */
+.cost-savings { margin-top: 1.1rem; padding-top: .9rem; border-top: 1px solid var(--line); }
+.cost-savings h3 { margin: 0 0 .55rem; font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; color: var(--t2); }
+.cost-savings-none { margin: 0; color: var(--t3); font-size: .82rem; }
+.cost-savings-inputs { display: flex; flex-wrap: wrap; gap: .75rem 1.2rem; align-items: flex-end; }
+.cost-savings-inputs label { display: flex; flex-direction: column; gap: .25rem; font-size: .74rem; color: var(--t3); }
+.cost-savings-inputs input { width: 11ch; padding: .3rem .4rem; font: inherit; font-size: .8rem; }
+.cost-savings-horizons { display: flex; gap: .3rem; }
+.cost-horizon { padding: .28rem .6rem; font-size: .74rem; border: 1px solid var(--line); background: transparent; color: var(--t2); cursor: pointer; border-radius: 3px; }
+.cost-horizon.is-on { border-color: var(--accent); color: var(--t1); }
+.cost-savings-figure { margin: .7rem 0 .3rem; font-size: .95rem; color: var(--t1); }
+.cost-savings-figure.is-loss { color: var(--warn, var(--t2)); }
+.cost-savings-sub { display: block; margin-top: .2rem; font-size: .72rem; color: var(--t3); }
+.cost-savings-spark { display: block; width: 100%; max-width: 320px; height: auto; color: var(--accent); }

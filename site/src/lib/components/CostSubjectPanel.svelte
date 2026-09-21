@@ -8,6 +8,7 @@
   // the loser when there is one — `vLLM cheaper at n of n rungs` is a state
   // this section is built to render, not an edge case it avoids.
   import CostLadderChart from './CostLadderChart.svelte';
+  import CostSavings from './CostSavings.svelte';
   import GateChart from './GateChart.svelte';
   import LADDERS from '$lib/ladders.generated.json';
   import { colorFor, fmtDate } from '$lib/gates.js';
@@ -322,6 +323,11 @@
         {n.label} is comparable but carries no joules, so it has no cost curve.
       {/each}
     </p>
+
+    <!-- What the per-token figure above is worth cumulatively. It follows
+         `selectedRung` and `showAboveIdle` so it can never disagree with the
+         chart it sits under. -->
+    <CostSavings {cost} rung={selectedRung} {usdPerKwh} {pue} aboveIdle={showAboveIdle} />
   {/if}
 
   <!-- Chart B: efficiency over time, through GateChart so it inherits the
