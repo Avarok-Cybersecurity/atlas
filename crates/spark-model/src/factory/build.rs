@@ -967,6 +967,16 @@ pub fn build_model(
         ssm_checkpoint_interval,
     )?;
 
+    // DeepSeek-V4.1: the GGUF's Q6_K output head stayed raw in the store (the
+    // sidecar's `v41_kquant_resident_dtype`); the K-quant GEMV serves the
+    // logits from those blocks (model/lm_head_q6k.rs). `lm_head` is Copy.
+    if store
+        .get("lm_head.weight")
+        .is_ok_and(|w| w.dtype == spark_runtime::weights::WeightDtype::Q6K)
+    {
+        model.set_lm_head_q6k(lm_head.weight)?;
+    }
+
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
     //
     // Built here (not inside `new()`, which only knows the Qwen-shaped

@@ -467,6 +467,7 @@ fn layer0_matches_the_cpu_reference_on_the_real_weights() {
         layer: 0,
         gate_w: bf16_ptr(&store, &format!("{lp}.ffn.gate.weight")).unwrap(),
         gate_bias: gate_bias.clone(),
+        gate_bias_dev: MoeV41::upload_bias(g, &gate_bias).unwrap(),
         shared_w1: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w1")).unwrap(),
         shared_w2: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w2")).unwrap(),
         shared_w3: resident_mat(&store, &format!("{lp}.ffn.shared_experts.w3")).unwrap(),
@@ -475,7 +476,7 @@ fn layer0_matches_the_cpu_reference_on_the_real_weights() {
     let mut lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), lay).unwrap();
     let f_in_d = up_bf16(g, &f_in_r);
     let (moe_out, rw_d, ri_d) = moe
-        .forward(g, &mw_d, &mut lru, &slices, f_in_d, m, 4, stream)
+        .forward(g, &mw_d, &mut lru, &slices, f_in_d, m, 4, None, stream)
         .unwrap();
     assert_eq!(ri_d, ri_r, "routing indices");
     report("moe routing weights", &rw_d, &rw_r);
