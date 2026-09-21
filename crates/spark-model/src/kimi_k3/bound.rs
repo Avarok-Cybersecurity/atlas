@@ -2,7 +2,8 @@
 
 //! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
 //! copies H2D. LinearAttention / KDA conv+recurrent uses CUDA `kda_decode`
-//! unless `K3_CUDA_KDA=0`. FullAttention / MLA uses CUDA `mla_decode`
+//! with per-sequence resident recurrence unless `K3_CUDA_KDA=0`.
+//! FullAttention / MLA uses CUDA `mla_decode`
 //! unless `K3_CUDA_MLA=0`. Packed LatentMoE experts launch DSV4
 //! `moe_w4a16_grouped_gemm_ptrtable_e8m0`. Router / down / up / shared / SiTU
 //! stay on the host.
@@ -107,29 +108,28 @@ impl TransformerLayer for K3BoundLayer {
     fn snapshot_aux(
         &self,
         state: &dyn LayerState,
-        _gpu: &dyn GpuBackend,
-        _stream: u64,
+        gpu: &dyn GpuBackend,
+        stream: u64,
     ) -> Result<Option<Vec<u8>>> {
         let st = state
             .as_any()
             .downcast_ref::<K3CpuFallbackState>()
             .context("K3 snapshot_aux: expected K3CpuFallbackState")?;
-        Ok(Some(st.cache.to_bytes()))
+        Ok(Some(st.snapshot(gpu, stream)?))
     }
 
     fn restore_aux(
         &self,
         state: &mut dyn LayerState,
         blob: &[u8],
-        _gpu: &dyn GpuBackend,
-        _stream: u64,
+        gpu: &dyn GpuBackend,
+        stream: u64,
     ) -> Result<()> {
         let st = state
             .as_any_mut()
             .downcast_mut::<K3CpuFallbackState>()
             .context("K3 restore_aux: expected K3CpuFallbackState")?;
-        st.cache = LayerCache::from_bytes(blob)?;
-        Ok(())
+        st.restore(gpu, blob, stream)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -165,6 +165,14 @@ impl TransformerLayer for K3BoundLayer {
             }
             MixerKind::Mla => LayerCache::Mla(avarok_core::kimi_k3::MlaKv::default()),
         };
-        Ok(Box::new(K3CpuFallbackState { cache }))
+        Ok(Box::new(K3CpuFallbackState::new(cache)))
+    }
+
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        state
+            .as_any_mut()
+            .downcast_mut::<K3CpuFallbackState>()
+            .context("K3 release_state: expected K3CpuFallbackState")?
+            .release(gpu)
     }
 }
