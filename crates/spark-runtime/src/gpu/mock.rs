@@ -53,6 +53,10 @@ pub struct MockGpuBackend {
     d2d_async_streams: Mutex<Vec<u64>>,
     d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
+    /// Blocking `copy_h2d` calls and total bytes. Resident MLA must not
+    /// re-upload `[0..T]` history; token-append H2D stays O(1) in T.
+    h2d: AtomicUsize,
+    h2d_bytes: AtomicUsize,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +103,8 @@ impl MockGpuBackend {
             d2d_async_streams: Mutex::new(Vec::new()),
             d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
+            h2d: AtomicUsize::new(0),
+            h2d_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -227,6 +233,8 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
+        self.h2d.fetch_add(1, Ordering::Relaxed);
+        self.h2d_bytes.fetch_add(src.len(), Ordering::Relaxed);
         let mut allocs = self.allocs.lock();
         // Support offset pointers: find the allocation containing dst
         let (offset, alloc) = find_alloc_mut(&mut allocs, dst)

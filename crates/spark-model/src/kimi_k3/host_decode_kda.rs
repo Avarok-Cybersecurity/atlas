@@ -39,6 +39,7 @@ fn tiny_config(hidden: usize, eps: f32, theta: f32, inter: usize) -> ModelConfig
     c.linear_value_head_dim = 2;
     c.num_attention_heads = 1;
     c.head_dim = 4;
+    c.serve_max_seq_len = 16;
     c
 }
 

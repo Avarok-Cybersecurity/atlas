@@ -4,7 +4,7 @@
 //!
 //! `MixerKind::Kda` runs conv+recurrent via [`launch_k3_kda_decode_token`]
 //! unless `K3_CUDA_KDA=0`. `MixerKind::Mla` runs rope+SDPA+gate via
-//! [`launch_k3_mla_decode_token`] unless `K3_CUDA_MLA=0`. Packed
+//! [`launch_k3_mla_decode_token_on_device`] unless `K3_CUDA_MLA=0`. Packed
 //! `MlpKind::LatentMoe` experts launch [`launch_k3_latent_moe_experts`].
 
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use spark_runtime::weights::WeightDtype;
 
 use super::bound::K3BoundLayer;
 use super::kda_cuda::{K3KdaDecodeKernels, launch_k3_kda_decode_token_on_device};
-use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token};
+use super::mla_cuda::{K3MlaDecodeKernels, launch_k3_mla_decode_token_on_device};
 use super::moe_cuda::{
     E8M0_ENTRY, K3MoeGemmKernels, MODULE as MOE_MODULE, launch_k3_latent_moe_experts,
 };
@@ -110,7 +110,26 @@ impl K3BoundLayer {
                 device.download(gpu, host)?;
                 st.release(gpu)?;
             }
+            if use_cuda_mla {
+                let host_seq = match &st.cache {
+                    avarok_core::kimi_k3::LayerCache::Mla(kv) => kv.seq_len,
+                    _ => 0,
+                };
+                let cap = ctx.config.serve_max_seq_len;
+                ensure!(
+                    cap > 0,
+                    "K3 CUDA MLA: set serve_max_seq_len (from --max-seq-len) to bound resident KV"
+                );
+                st.ensure_device_mla(gpu, &self.shared.mla, cap.max(host_seq.max(1)))?;
+            } else if let (Some(device), avarok_core::kimi_k3::LayerCache::Mla(host)) =
+                (&st.device_mla, &mut st.cache)
+            {
+                gpu.synchronize(stream)?;
+                device.download(gpu, host)?;
+                st.release(gpu)?;
+            }
             let device_kda = st.device_kda.as_ref();
+            let mut device_mla = st.device_mla.as_mut();
             {
                 let mut hub = self.shared.attnres.lock();
                 if self.index == 0 {
@@ -172,8 +191,12 @@ impl K3BoundLayer {
                     },
                     |q, k, v, g, kv, cfg, pos, theta| {
                         if let Some(kern) = mla_k {
-                            launch_k3_mla_decode_token(
-                                gpu, &kern, q, k, v, g, kv, cfg, pos, theta, stream,
+                            let device = device_mla
+                                .as_mut()
+                                .context("K3 CUDA MLA resident KV missing")?;
+                            device.validate_cfg(cfg)?;
+                            launch_k3_mla_decode_token_on_device(
+                                gpu, &kern, q, k, v, g, device, cfg, pos, theta, stream,
                             )
                         } else {
                             Ok(mla_decode_token(q, k, v, g, kv, cfg, pos, theta))
