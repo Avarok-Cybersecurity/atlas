@@ -13,7 +13,7 @@
 //! skipping it. Being unable to read a recipe is a good outcome; reading three
 //! quarters of one is not.
 //!
-//! Supported, because these are what the 25 real recipes contain:
+//! Supported, because these are what the 28 real recipes contain:
 //! `key: scalar`, nested maps by two-space indent, `key: |` literal blocks,
 //! `- item` sequences, `{}` empty maps, `#` comments and blank lines.
 

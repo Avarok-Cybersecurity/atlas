@@ -11,8 +11,8 @@ runtime: atlas
 # (hw=b200, model=deepseek-v4.1-flash); the container field is the schema's
 # required placeholder and names the image the other Atlas recipes use.
 container: avarok/atlas-gb10:latest
-min_nodes: 1
-max_nodes: 1
+min_nodes: 2
+max_nodes: 2
 
 metadata:
   description: |

@@ -39,8 +39,8 @@ fn all() -> Vec<Recipe> {
 #[test]
 fn the_whole_corpus_reads() {
     let all = all();
-    assert_eq!(all.len(), 25);
-    assert_eq!(all.iter().filter(|r| r.is_avarok()).count(), 23);
+    assert_eq!(all.len(), 28);
+    assert_eq!(all.iter().filter(|r| r.is_avarok()).count(), 26);
     assert_eq!(
         all.iter().filter(|r| r.version == "1").count(),
         2,
@@ -82,7 +82,7 @@ fn every_avarok_recipe_produces_a_valid_serve_config() {
             .unwrap_or_else(|e| panic!("{}: {e:#}", r.id));
         checked += 1;
     }
-    assert_eq!(checked, 23);
+    assert_eq!(checked, 26);
 }
 
 #[test]
