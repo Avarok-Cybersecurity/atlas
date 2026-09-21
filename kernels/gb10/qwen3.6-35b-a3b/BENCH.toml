@@ -46,7 +46,7 @@ counts to today's draw is still the wrong move, which is why they are unchanged.
 is not in question: the shell harness scored webserver_ok 10/10 and cargo_valid 10/10 on \
 this same binary. || original: Gate A (benchmark-pr skill): N=10 agentic-webserver on the \
 35B MoE flagship — 10/10 webserver_ok, 10/10 followed_directions, Σwall <= 1300 s \
-(SUPERSEDED: the ceiling in force is `sum_wall_s` <= 1800, raised 2026-08-18 — read its \
+(SUPERSEDED: the ceiling in force is `sum_wall_s` <= 700, lowered 2026-09-21 — read its \
 metric comment below, not this paragraph). The two \
 10/10 counts are ABSOLUTE correctness bounds and take no noise. ★ Σwall is DELIBERATELY NOT \
 RATCHETED to the 978.13 s best (PR #388, dgx3): unlike the BFCL scores, tier Σwall carries \
@@ -57,7 +57,7 @@ Historical band Σwall 950-1287 s; high-water (fastest) 978.13 s recorded here f
 only. Walls are box-specific: compare like-for-like or not at all. || ★ `iterations` is \
 PINNED at exactly 10, the N the two 10/10 bounds are written for. A count bound alone does \
 not describe the run that produced it: `webserver_ok >= 10` is satisfied by 12 successes out \
-of 20, and `sum_wall_s` <= 1800 is satisfied by 5 iterations. Neither is the gate. This adds a \
+of 20, and `sum_wall_s` <= 700 is satisfied by 5 iterations. Neither is the gate. This adds a \
 threshold, it does not relax one -- the recorded runs all carry iterations 10."""
 
 [benchmarks.metrics.followed_directions]
@@ -83,10 +83,29 @@ max = 10.0
 # record, while passing dgx1's 7.07. Speed is now bounded by `s_per_turn`
 # below; this ceiling only has to catch a blowup.
 #
-# 1800 = the 250-turn degeneracy ceiling (`sum_turns`) x the 7.22 s/turn worst
-# measured tier. Reachable, so not vacuous: the per-iteration cap is 40 turns
-# x 10 iterations = 400 turns.
-max = 1800.0
+# LOWERED 1800 -> 700 on 2026-09-21, owner's call, against a REGIME CHANGE the
+# 1800 predates. The 109 recorded runs are not one population; they split on
+# 2026-09-12:
+#
+#   before 2026-09-12   n=88   443-1025 s   mean 774   66 of 88 ABOVE 700
+#   since  2026-09-12   n=21   521-647 s    mean 573   0 of 21 above 700
+#                                           stdev 30.2 (5.3% CoV)
+#
+# The last fourteen runs, 2026-09-17 onward, sit in 564-647 s at 3.7% CoV; the
+# five most recent are 565.1, 565.7, 566.1, 566.9, 567.1. 1800 was sized for
+# the old band and cannot see a 2x blowup in the new one -- it would take a
+# 3.1x regression to trip, which is not a detector, it is an ornament.
+#
+# 700 keeps every run of the current regime: 8.2% over the worst (647.1) and
+# 22% over the mean (572.8). It is still a BLOWUP DETECTOR, not a speed gate --
+# speed is bounded by `s_per_turn` below, and the two 10/10 counts are the
+# correctness bounds. If the agent's turn count moves, `sum_turns` catches it.
+#
+# ★ A run from BEFORE the regime change cannot pass this. That is intended and
+# is the reason to write the split down rather than just the number: a bisect
+# that reaches back past 2026-09-12 will fail here on healthy old builds, and
+# the right reading of that is "different regime", not "regression".
+max = 700.0
 
 [benchmarks.metrics.sum_turns]
 # DEGENERACY, stated directly instead of being smuggled into a wall bound. An

@@ -138,7 +138,25 @@ export function panelsFor(benchId, records) {
     // chart forever. Prefer a tok/s-shaped key, else the first numeric one.
     const keys = Object.keys(latest.metrics ?? {});
     const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
-    return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
+    const panels = key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
+    // STABILITY, on its own axis. It is the tail spread of the inter-arrival
+    // gap (lower = smoother), so it shares no unit with tok/s and must not
+    // share a panel: a 0.04 line drawn against a 26 tok/s axis is a flat line
+    // at the bottom of the chart, which reads as "nothing happening" rather
+    // than as a different quantity.
+    //
+    // Emitted only when the records carry it — `absent is not zero`, and the
+    // key landed with the campaign-3 metrics work, so every record older than
+    // that has none. Nothing is interpolated across the gap; the chart simply
+    // starts where the measurement does.
+    if (keys.includes('stability')) {
+      panels.push({
+        title: 'stability · arrival-gap tail spread',
+        unit: 'lower = smoother',
+        metrics: [{ key: 'stability', label: 'stability' }]
+      });
+    }
+    return panels;
   }
   if (benchId === 'concurrency-sweep' || benchId === 'concurrency-sweep-dflash2') {
     // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
