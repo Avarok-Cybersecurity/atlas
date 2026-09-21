@@ -1,0 +1,63 @@
+# provenance-id: 526f6e616c6420522e205374657369616b
+# Two B200 on one NVLink node: the routed experts split across the two GPUs so the
+# full Q2_K checkpoint is resident and nothing streams. Layout and kernel retune
+# land on this branch; numbers are pending and reported as measured.
+recipe_version: "2"
+model: vcruz305/DeepSeek-V4.1-Flash-GGUF
+runtime: atlas
+# The campaign runs the native x86 binary from datacenter-binaries.yml
+# (hw=b200, model=deepseek-v4.1-flash); the container field is the schema's
+# required placeholder and names the image the other Atlas recipes use.
+container: avarok/atlas-gb10:latest
+min_nodes: 1
+max_nodes: 1
+
+metadata:
+  description: |
+    DeepSeek-V4.1 Flash, the seven-shard Q2_K GGUF, served natively by Atlas
+    on one datacenter Blackwell GPU. Same engine as the single-Spark line:
+    GGUF ingestion, the V4.1 graph and loader, routed experts streamed
+    through the device-visible LRU, K-quant GEMV for decode and MMQ for
+    prefill, engram on, shared compressed attention, the decode fix.
+
+    Two shapes, one recipe. On a B300 the 247 GB checkpoint is resident and
+    nothing streams. On a B200 about three quarters of the routed experts
+    are resident and the rest stream from NVMe through the same cache that
+    runs on the Spark; ATLAS_DS41_EXPERT_CACHE_GIB is sized to the box.
+
+    No speculation: the GGUF carries no DSpark keys. One request at a time.
+
+    Numbers are pending and will be reported as measured, with the launch
+    line, commit sha, driver line and receipt JSON, competing engines in the
+    same table. No figure is typed here until it has been run on the box.
+  maintainer: rrstesiak
+  category: agent
+  model_params: 748B
+  model_dtype: q2_k
+  quantization: q2_k
+  kv_dtype: bf16
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  tensor_parallel: 1
+  ep_size: 2
+  max_model_len: 32768
+  max_batch_size: 1
+  kv_cache_dtype: bf16
+  gpu_memory_utilization: 0.90
+  enable_prefix_caching: false
+  speculative: false
+  oom_guard_mb: 512
+
+env:
+  # Resident expert cache in GiB. Sized to the box: on a B300 the whole
+  # routed-expert set (183 GiB) fits and nothing streams; on a B200 set it
+  # to what the card leaves after the resident 2.9 GiB, the KV and the
+  # workspace, and the remainder streams from NVMe.
+  ATLAS_DS41_EXPERT_CACHE_GIB: "88"
+  # Parallel pread threads for the expert slices; the Spark number, retune
+  # against the box's NVMe.
+  ATLAS_DS41_READER_THREADS: "8"
+  ATLAS_DS41_MAX_SEQ: "4096"
+  ATLAS_DS41_MAX_TOKENS: "512"
