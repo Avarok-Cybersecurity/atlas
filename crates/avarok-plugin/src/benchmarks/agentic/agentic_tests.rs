@@ -308,7 +308,11 @@ fn old_regime_tiers_are_refused_by_the_700_ceiling_but_still_rank_fairly() {
              refused; if this passes, the ceiling moved: {}",
             v.reason
         );
-        assert!(v.reason.contains("Σwall"), "the refusal must name Σwall: {}", v.reason);
+        assert!(
+            v.reason.contains("Σwall"),
+            "the refusal must name Σwall: {}",
+            v.reason
+        );
 
         // ...and NOT on speed. This is the 2026-08 property the wall bound was
         // demoted to protect, asserted on every tier rather than described:
