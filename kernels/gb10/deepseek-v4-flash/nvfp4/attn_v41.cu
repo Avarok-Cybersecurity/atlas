@@ -17,11 +17,14 @@
 //   attn_v41_fp4_quant             fp4_act_quant: e2m1 with an e8m0 (mode 0) or
 //                                  e4m3 (mode 1) scale, any block size
 //   attn_v41_gemm_f32              C[M,N] = A[M,K](bf16) * B[N,K](f32)^T in f32 (compressor)
+//   attn_v41_gemv_f32_staged       the same at decode, one output a block, strict k order
 //   attn_v41_scale_bf16            out = bf16(bf16(in) * s) (the indexer's head weights)
 //   attn_v41_pool                  the ratio-2 compressor's per-dim softmax pooling
 //   attn_v41_index_score           the indexer's rectified, weighted head scores
 //   attn_v41_sparse_attn           softmax over gathered rows plus the sink
 //   attn_v41_slice_cols / _scatter_cols   column slices for the grouped wo_a
+//   attn_v41_ring_put              one row into the window ring at pos % win,
+//                                  the position read from the device (CUDA graph)
 
 #include <cuda_bf16.h>
 #include <math_constants.h>
@@ -221,6 +224,72 @@ extern "C" __global__ void attn_v41_gemm_f32(
     if (row < M && col < N) C[(size_t)row * N + col] = acc;
 }
 
+// The same product at decode, one output per block: the 256 threads compute
+// the K per-element PRODUCTS bf16(A[k]) * B[n][k] into shared memory (each
+// the tiled kernel's own FMUL result: --fmad=false keeps mul and add apart),
+// then thread 0 adds them in k order from 0.0f, eight float4 at a time from
+// registers. The tiled kernel accumulates each output in the same order
+// (tile after tile, k ascending), so the bits are identical; what changes is
+// that the 16x16 tile no longer idles 15 of its 16 rows and no load sits on
+// the chain (144 us a launch for a 10 MB weight on GB10, nsys 09-19; 67 us in
+// this form). K a multiple of 8, rows 16-byte aligned. Dynamic shared
+// memory: K * 4 bytes. Grid: (N, M, 1)  Block: (256, 1, 1)
+#define AV_CHAIN_UNROLL 8
+extern "C" __global__ void __launch_bounds__(256) attn_v41_gemv_f32_staged(
+    const __nv_bfloat16* __restrict__ A, const float* __restrict__ B, float* __restrict__ C,
+    const unsigned int M, const unsigned int N, const unsigned int K) {
+    extern __shared__ float av_gemv_products[];
+    const unsigned int t = blockIdx.y;
+    const unsigned int n = blockIdx.x;
+    if (t >= M || n >= N) return;
+    const uint4* a4 = (const uint4*)(A + (size_t)t * K);
+    const float4* b4 = (const float4*)(B + (size_t)n * K);
+    for (unsigned int i = threadIdx.x; i < K / 8; i += blockDim.x) {
+        const uint4 av = a4[i];
+        const float4 b0 = b4[2 * i], b1 = b4[2 * i + 1];
+        const unsigned int ar[4] = {av.x, av.y, av.z, av.w};
+        const float bb[8] = {b0.x, b0.y, b0.z, b0.w, b1.x, b1.y, b1.z, b1.w};
+        float pr[8];
+#pragma unroll
+        for (int q = 0; q < 4; ++q) {
+            __nv_bfloat16 a_lo, a_hi;
+            *(unsigned short*)&a_lo = (unsigned short)(ar[q] & 0xFFFFu);
+            *(unsigned short*)&a_hi = (unsigned short)(ar[q] >> 16);
+            pr[2 * q] = __bfloat162float(a_lo) * bb[2 * q];
+            pr[2 * q + 1] = __bfloat162float(a_hi) * bb[2 * q + 1];
+        }
+        float4* p4 = (float4*)(av_gemv_products + 8 * i);
+        p4[0] = make_float4(pr[0], pr[1], pr[2], pr[3]);
+        p4[1] = make_float4(pr[4], pr[5], pr[6], pr[7]);
+    }
+    __syncthreads();
+    if (threadIdx.x != 0) return;
+    const float4* p4 = (const float4*)av_gemv_products;
+    const unsigned int k4n = K / 4;
+    float acc = 0.0f;
+    unsigned int k = 0;
+    for (; k + AV_CHAIN_UNROLL <= k4n; k += AV_CHAIN_UNROLL) {
+        float4 v[AV_CHAIN_UNROLL];
+#pragma unroll
+        for (int u = 0; u < AV_CHAIN_UNROLL; ++u) v[u] = p4[k + u];
+#pragma unroll
+        for (int u = 0; u < AV_CHAIN_UNROLL; ++u) {
+            acc += v[u].x;
+            acc += v[u].y;
+            acc += v[u].z;
+            acc += v[u].w;
+        }
+    }
+    for (; k < k4n; ++k) {
+        const float4 v = p4[k];
+        acc += v.x;
+        acc += v.y;
+        acc += v.z;
+        acc += v.w;
+    }
+    C[(size_t)t * N + n] = acc;
+}
+
 // ── compressor pooling: per group g and dim d, softmax over `ratio` members of
 // score, weighted sum of kv; result rounded to bf16 and stored as f32 for the
 // f32 RMSNorm that follows ─────────────────────────────────────────────────────
@@ -246,6 +315,41 @@ extern "C" __global__ void attn_v41_pool(
 // ── indexer scores: score[t, p] = bf16(sum_h bf16(relu(bf16(q[t,h] . k[p])) * w[t,h])) ──
 // q: [T, nh, ihd] bf16, k: [width, ihd] bf16, w: [T, nh] bf16 (already scaled),
 // out: [T, width] f32. Grid: (ceil(width / 256), T). Block: 256, one (t, p) per thread.
+// One (t, p) per thread as before; with IHD a compile-time 128 the thread
+// keeps its key row in registers (16 x 16 bytes) and reads each query row 16
+// bytes at a time, so the d loop is a pure FMUL/FADD chain with no load on
+// it (the generic form waited on an L1 load per product: 122 us a launch on
+// a single block, nsys 09-19). Same products, same order, same roundings.
+__device__ __forceinline__ float av_bf16_at(const uint4& v, const int j) {
+    const unsigned int word = j < 2 ? v.x : j < 4 ? v.y : j < 6 ? v.z : v.w;
+    const unsigned short bits = (j & 1) ? (unsigned short)(word >> 16) : (unsigned short)(word & 0xFFFFu);
+    __nv_bfloat16 b;
+    *(unsigned short*)&b = bits;
+    return __bfloat162float(b);
+}
+template <int IHD>
+__device__ __forceinline__ float av_index_score_row(
+    const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ kr,
+    const __nv_bfloat16* __restrict__ w, const unsigned int nh) {
+    uint4 kk[IHD / 8];
+    const uint4* k4 = (const uint4*)kr;
+#pragma unroll
+    for (int i = 0; i < IHD / 8; ++i) kk[i] = k4[i];
+    float acc = 0.0f;
+    for (unsigned int h = 0; h < nh; ++h) {
+        const uint4* q4 = (const uint4*)(q + (size_t)h * IHD);
+        float dot = 0.0f;
+#pragma unroll
+        for (int i = 0; i < IHD / 8; ++i) {
+            const uint4 qq = q4[i];
+#pragma unroll
+            for (int j = 0; j < 8; ++j) dot += av_bf16_at(qq, j) * av_bf16_at(kk[i], j);
+        }
+        dot = av_bf16r(dot);
+        acc += av_bf16r(fmaxf(dot, 0.0f) * __bfloat162float(w[h]));
+    }
+    return acc;
+}
 extern "C" __global__ void attn_v41_index_score(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ k,
     const __nv_bfloat16* __restrict__ w, float* __restrict__ out,
@@ -254,13 +358,20 @@ extern "C" __global__ void attn_v41_index_score(
     const unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= width) return;
     const __nv_bfloat16* kr = k + (size_t)p * ihd;
-    float acc = 0.0f;
-    for (unsigned int h = 0; h < nh; ++h) {
-        const __nv_bfloat16* qv = q + ((size_t)t * nh + h) * ihd;
-        float dot = 0.0f;
-        for (unsigned int d = 0; d < ihd; ++d) dot += __bfloat162float(qv[d]) * __bfloat162float(kr[d]);
-        dot = av_bf16r(dot);
-        acc += av_bf16r(fmaxf(dot, 0.0f) * __bfloat162float(w[(size_t)t * nh + h]));
+    const __nv_bfloat16* qt = q + (size_t)t * nh * ihd;
+    const __nv_bfloat16* wt = w + (size_t)t * nh;
+    float acc;
+    if (ihd == 128) {
+        acc = av_index_score_row<128>(qt, kr, wt, nh);
+    } else {
+        acc = 0.0f;
+        for (unsigned int h = 0; h < nh; ++h) {
+            const __nv_bfloat16* qv = qt + (size_t)h * ihd;
+            float dot = 0.0f;
+            for (unsigned int d = 0; d < ihd; ++d) dot += __bfloat162float(qv[d]) * __bfloat162float(kr[d]);
+            dot = av_bf16r(dot);
+            acc += av_bf16r(fmaxf(dot, 0.0f) * __bfloat162float(wt[h]));
+        }
     }
     out[(size_t)t * width + p] = av_bf16r(acc);
 }
@@ -269,7 +380,12 @@ extern "C" __global__ void attn_v41_index_score(
 // q: [T, nh, hd] bf16. Rows come from two sources: index i < split reads
 // rows_a[i], else rows_b[i - split] (window rows, then the compressed cache).
 // idx: [T, topk] i32, -1 = absent. sink: [nh] f32. o: [T, nh, hd] bf16.
-// Grid: (T, nh). Block: 256. Scores in shared memory (topk <= AV_MAX_TOPK).
+// Grid: (T, nh, S). Block: 256. Scores in shared memory (topk <= AV_MAX_TOPK).
+// S > 1 splits the OUTPUT dimension hd across S blocks per (token, head):
+// every block recomputes the scores and the softmax (the same values in the
+// same thread layout) and writes its own hd / S outputs, each by the same
+// j-ordered sum as the single block, so the bytes are the same for any S;
+// only the number of blocks in flight changes (64 blocks on 48 SMs at S = 1).
 #define AV_MAX_TOPK 2048
 extern "C" __global__ void attn_v41_sparse_attn(
     const __nv_bfloat16* __restrict__ q, const __nv_bfloat16* __restrict__ rows_a,
@@ -315,9 +431,11 @@ extern "C" __global__ void attn_v41_sparse_attn(
     }
     den = av_block_sum(den, red) + expf(sink[h] - m);
     __syncthreads();
-    // o[d] = sum_j p_j * row_j[d]
+    // o[d] = sum_j p_j * row_j[d], this block's slice of d
     __nv_bfloat16* ov = o + ((size_t)t * nh + h) * hd;
-    for (unsigned int d = tid; d < hd; d += blockDim.x) {
+    const unsigned int d0 = blockIdx.z * hd / gridDim.z;
+    const unsigned int d1 = (blockIdx.z + 1) * hd / gridDim.z;
+    for (unsigned int d = d0 + tid; d < d1; d += blockDim.x) {
         float acc = 0.0f;
         for (unsigned int j = 0; j < topk; ++j) {
             const int i = ids[j];
@@ -355,4 +473,17 @@ extern "C" __global__ void attn_v41_scale_bf16(
     const unsigned int n, const float s) {
     const unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __float2bfloat16(__bfloat162float(in[i]) * s);
+}
+
+// ── the window ring write for the graph-captured decode step ─────────────────
+// ring[(pos[0] % win) * row + c] = src[c]. The eager step does this as a
+// device copy at a host-computed slot; a captured graph bakes its pointers,
+// so the slot has to come from device memory. Bit-identical to the copy.
+// Grid: (1). Block: 256.
+extern "C" __global__ void attn_v41_ring_put(
+    const __nv_bfloat16* __restrict__ src, __nv_bfloat16* __restrict__ ring,
+    const int* __restrict__ pos, const unsigned int win, const unsigned int row) {
+    const unsigned int slot = ((unsigned int)pos[0]) % win;
+    __nv_bfloat16* dst = ring + (size_t)slot * row;
+    for (unsigned int c = threadIdx.x; c < row; c += blockDim.x) dst[c] = src[c];
 }

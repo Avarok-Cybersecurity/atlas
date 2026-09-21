@@ -18,8 +18,8 @@
 //!   * [`ExpertSliceMap`]: where expert `e` of layer `l` lives for each of the
 //!     three stacked tensors (`blk.N.ffn_{gate,up,down}_exps.weight`, GGUF dims
 //!     `[k, n, experts]`), and the read of one expert into one slot.
-//!   * [`EngramRowReader`]: the ~30 GiB engram tables, one Q2_K block (84 B) per
-//!     row, read by row id on demand. 48 rows per token.
+//!   * [`EngramRowReader`] (`engram_rows.rs`): the ~30 GiB engram tables, one
+//!     Q2_K block (84 B) per row, read by row id on demand. 48 rows per token.
 //!
 //! Oracle: bytes identical to the mmap path, held by
 //! `deepseek_v41_stream_oracle_test.rs` on the real shards.
@@ -35,27 +35,19 @@ use super::container::{GgufFile, Q2Group, TensorInfo};
 use super::sidecar;
 use crate::weights::{find_gguf, find_gguf_shards};
 
+pub use super::engram_rows::{EngramRowReader, EngramTable};
+pub use super::expert_arena::{DeviceArena, ExpertArena};
 pub use super::expert_lru::{ExpertLru, ExpertSlot, LruStats, PinnedArena};
-
-/// Positional read of exactly `dst.len()` bytes at `offset`. No file position
-/// is shared, so any number of threads may read one `File` at once.
-pub fn pread(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::FileExt;
-        file.read_exact_at(dst, offset)
-            .with_context(|| format!("pread {} bytes at {offset}", dst.len()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (file, offset, dst);
-        bail!("expert streaming needs positional reads (unix)")
-    }
-}
+use super::expert_reads::open_direct;
+pub use super::expert_reads::{DirectSeg, pread, pread_at_least, pread_uncached};
 
 struct Shard {
     path: PathBuf,
     file: File,
+    /// The same file opened `O_DIRECT` for the expert miss path (`None`
+    /// when the platform or `ATLAS_DS41_DIRECT_READS=0` says no; the
+    /// buffered `file` then serves every read).
+    direct: Option<File>,
     gguf: GgufFile,
 }
 
@@ -74,8 +66,19 @@ impl ShardFiles {
         for path in set.paths {
             let (file, mmap, gguf) = sidecar::open_gguf(&path)?;
             drop(mmap);
-            shards.push(Shard { path, file, gguf });
+            let direct = open_direct(&path);
+            shards.push(Shard {
+                path,
+                file,
+                direct,
+                gguf,
+            });
         }
+        let n_direct = shards.iter().filter(|s| s.direct.is_some()).count();
+        tracing::info!(
+            "GGUF shards: {} open, {n_direct} with an O_DIRECT descriptor for expert misses",
+            shards.len()
+        );
         Ok(ShardFiles { shards })
     }
 
@@ -101,6 +104,24 @@ impl ShardFiles {
         &self.shards[shard].file
     }
 
+    /// The `O_DIRECT` descriptor of `shard`, if it opened.
+    pub fn direct_file(&self, shard: usize) -> Option<&File> {
+        self.shards[shard].direct.as_ref()
+    }
+
+    /// `(shard, absolute offset, bytes)` of tensor `name` if it is stored as
+    /// Q2_K (84 B super-blocks of 256): the raw blocks a kernel can read in
+    /// place of the loader's bf16 expansion.
+    pub fn locate_q2k(&self, name: &str) -> Option<(usize, u64, usize)> {
+        let (shard, t, off) = self.locate(name)?;
+        let n = t.num_elements();
+        (format!("{:?}", t.ggml_type) == "Q2_K" && n.is_multiple_of(256)).then_some((
+            shard,
+            off,
+            n / 256 * 84,
+        ))
+    }
+
     /// The parsed header of `shard` (shard 0 carries the model metadata).
     pub fn header(&self, shard: usize) -> &GgufFile {
         &self.shards[shard].gguf
@@ -116,7 +137,7 @@ impl ShardFiles {
     }
 
     /// Every `(shard, tensor)` whose name ends with `suffix`.
-    fn with_suffix<'a>(
+    pub(super) fn with_suffix<'a>(
         &'a self,
         suffix: &'a str,
     ) -> impl Iterator<Item = (usize, &'a TensorInfo)> + 'a {
@@ -129,13 +150,13 @@ impl ShardFiles {
         })
     }
 
-    fn abs_offset(&self, shard: usize, t: &TensorInfo) -> u64 {
+    pub(super) fn abs_offset(&self, shard: usize, t: &TensorInfo) -> u64 {
         self.shards[shard].gguf.tensor_abs_offset(t) as u64
     }
 }
 
 /// `blk.N.<rest>` -> `N`.
-fn block_layer(name: &str) -> Option<usize> {
+pub(super) fn block_layer(name: &str) -> Option<usize> {
     let rest = name.strip_prefix("blk.")?;
     let end = rest.find('.')?;
     rest[..end].parse().ok()
@@ -206,6 +227,18 @@ pub trait ExpertSource: Sync {
         self.read_expert(layer, expert, &mut whole)?;
         dst.copy_from_slice(&whole[off..off + dst.len()]);
         Ok(())
+    }
+    /// The expert's slot image as file ranges for `O_DIRECT` reads, or
+    /// `None` when this source has no direct descriptor (the default): the
+    /// staged miss path then reads through `read_expert_range`.
+    fn direct_segments(&self, layer: u32, expert: u32) -> Result<Option<Vec<DirectSeg>>> {
+        let _ = (layer, expert);
+        Ok(None)
+    }
+    /// The `O_DIRECT` descriptor a `DirectSeg` names.
+    fn direct_file(&self, shard: usize) -> Option<&File> {
+        let _ = shard;
+        None
     }
 }
 
@@ -361,7 +394,7 @@ impl ExpertSource for ExpertSliceMap {
             (&l.down, lay.down_off, lay.down_bytes),
         ] {
             let (shard, at) = self.slice_at(loc, expert as usize);
-            pread(self.files.file(shard), at, &mut dst[off..off + len])
+            pread_uncached(self.files.file(shard), at, &mut dst[off..off + len])
                 .with_context(|| format!("layer {layer} expert {expert} shard {shard}"))?;
         }
         Ok(())
@@ -393,7 +426,7 @@ impl ExpertSource for ExpertSliceMap {
                 continue;
             }
             let (shard, at) = self.slice_at(loc, expert as usize);
-            pread(
+            pread_uncached(
                 self.files.file(shard),
                 at + (a - s_off) as u64,
                 &mut dst[a - lo..b - lo],
@@ -404,96 +437,38 @@ impl ExpertSource for ExpertSliceMap {
         }
         Ok(())
     }
-}
 
-/// One engram table: `blk.N.engram_embd.weight`, GGUF dims `[head_dim, rows]`,
-/// one quant block per row.
-#[derive(Clone, Copy, Debug)]
-pub struct EngramTable {
-    pub layer: usize,
-    pub shard: usize,
-    pub base: u64,
-    pub rows: usize,
-    pub row_bytes: usize,
-    pub head_dim: usize,
-    pub ggml_type_id: u32,
-}
-
-/// Row reads from the engram tables. The tables are ~30 GiB each and a token
-/// touches 24 rows per table, so nothing is cached: every call is `ids.len()`
-/// positional reads of one block.
-pub struct EngramRowReader {
-    files: Arc<ShardFiles>,
-    tables: Vec<EngramTable>,
-}
-
-impl EngramRowReader {
-    pub fn new(files: Arc<ShardFiles>) -> Result<Self> {
-        let mut tables = Vec::new();
-        for (shard, t) in files.with_suffix("engram_embd.weight") {
-            let Some(layer) = block_layer(&t.name) else {
-                continue;
-            };
-            ensure!(
-                t.dims.len() == 2,
-                "{}: expected [head_dim, rows], got {:?}",
-                t.name,
-                t.dims
-            );
-            let (head_dim, rows) = (t.dims[0], t.dims[1]);
-            let (qk, bb) = t.ggml_type.block_layout(Q2Group::G128)?;
-            ensure!(
-                qk == head_dim,
-                "{}: head_dim {head_dim} is not one {qk}-element block per row",
-                t.name
-            );
-            tables.push(EngramTable {
-                layer,
+    fn direct_segments(&self, layer: u32, expert: u32) -> Result<Option<Vec<DirectSeg>>> {
+        let l = self
+            .layer(layer as usize)
+            .with_context(|| format!("layer {layer} has no routed experts"))?;
+        ensure!(
+            (expert as usize) < self.num_experts,
+            "expert {expert} >= {}",
+            self.num_experts
+        );
+        let lay = self.layout;
+        let mut segs = Vec::with_capacity(3);
+        for (loc, slot_off, len) in [
+            (&l.gate, lay.gate_off, lay.gate_bytes),
+            (&l.up, lay.up_off, lay.up_bytes),
+            (&l.down, lay.down_off, lay.down_bytes),
+        ] {
+            let (shard, file_off) = self.slice_at(loc, expert as usize);
+            if self.files.direct_file(shard).is_none() {
+                return Ok(None);
+            }
+            segs.push(DirectSeg {
                 shard,
-                base: files.abs_offset(shard, t),
-                rows,
-                row_bytes: bb,
-                head_dim,
-                ggml_type_id: t.ggml_type.id(),
+                file_off,
+                slot_off,
+                len,
             });
         }
-        ensure!(!tables.is_empty(), "no engram_embd tensors in this GGUF");
-        tables.sort_by_key(|t| t.layer);
-        Ok(EngramRowReader { files, tables })
+        Ok(Some(segs))
     }
 
-    pub fn tables(&self) -> &[EngramTable] {
-        &self.tables
-    }
-
-    pub fn table(&self, layer: usize) -> Option<&EngramTable> {
-        self.tables.iter().find(|t| t.layer == layer)
-    }
-
-    /// Read rows `ids` of layer `layer`'s table into `dst`
-    /// (`ids.len() * row_bytes` bytes, in `ids` order).
-    pub fn read_rows(&self, layer: usize, ids: &[u64], dst: &mut [u8]) -> Result<()> {
-        let t = self
-            .table(layer)
-            .with_context(|| format!("layer {layer} has no engram table"))?;
-        ensure!(
-            dst.len() == ids.len() * t.row_bytes,
-            "dst is {} bytes for {} rows of {}",
-            dst.len(),
-            ids.len(),
-            t.row_bytes
-        );
-        let file = self.files.file(t.shard);
-        for (i, &id) in ids.iter().enumerate() {
-            ensure!(
-                (id as usize) < t.rows,
-                "engram row {id} >= {} (layer {layer})",
-                t.rows
-            );
-            let off = t.base + id * t.row_bytes as u64;
-            pread(file, off, &mut dst[i * t.row_bytes..(i + 1) * t.row_bytes])
-                .with_context(|| format!("engram layer {layer} row {id}"))?;
-        }
-        Ok(())
+    fn direct_file(&self, shard: usize) -> Option<&File> {
+        self.files.direct_file(shard)
     }
 }

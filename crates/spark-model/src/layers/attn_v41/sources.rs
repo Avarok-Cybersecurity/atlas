@@ -60,10 +60,29 @@ impl AttnV41 {
         }
         let gate = comp.gate.context("ratio > 1 compressor without wgate")?;
         let (kv_state, score_state) = st.comp_state.context("compressor state")?;
+        // one output a block at decode (the staged strict-order chain, the
+        // tiled kernel's bits), the 16x16 tiles for a prefill
+        let staged = m == 1 && c.dim.is_multiple_of(8);
         let gemm_f32 = |wt: DevicePtr, out: DevicePtr| {
-            KernelLaunch::new(gpu, self.k.gemm_f32)
-                .grid([(hd as u32).div_ceil(16), (m as u32).div_ceil(16), 1])
-                .block([16, 16, 1])
+            let (kernel, grid, block, smem) = if staged {
+                (
+                    self.k.gemv_f32_staged,
+                    [hd as u32, m as u32, 1],
+                    [256, 1, 1],
+                    (c.dim * 4) as u32,
+                )
+            } else {
+                (
+                    self.k.gemm_f32,
+                    [(hd as u32).div_ceil(16), (m as u32).div_ceil(16), 1],
+                    [16, 16, 1],
+                    0,
+                )
+            };
+            KernelLaunch::new(gpu, kernel)
+                .grid(grid)
+                .block(block)
+                .shared_mem(smem)
                 .arg_ptr(x)
                 .arg_ptr(wt)
                 .arg_ptr(out)
@@ -265,9 +284,9 @@ impl AttnV41 {
             .arg_u32(nhi as u32)
             .arg_u32(ihd as u32)
             .launch(stream)?;
-        gpu.synchronize(stream)?;
+        // one stream-ordered read-back, not a sync plus a blocking copy
         let mut bytes = vec![0u8; m * width * 4];
-        gpu.copy_d2h(self.score, &mut bytes)?;
+        gpu.copy_d2h_on_stream(self.score, &mut bytes, stream)?;
         let mut score: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))

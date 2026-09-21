@@ -233,3 +233,66 @@ fn a_failed_read_leaves_nothing_mapped() {
     check_slot(&s, 1, 3);
     assert_eq!(lru.stats().evictions, 0);
 }
+
+#[test]
+fn pool_reads_misses_urgently_predictions_in_the_background_and_waits_for_the_keys_only() {
+    let src = std::sync::Arc::new(MemSource::new(64));
+    let mut arena = Arena::new(32);
+    let mut lru = arena.lru();
+    lru.set_pool(src.clone(), 4);
+    let keys: Vec<(u32, u32)> = (0..6u32).map(|e| (1, e)).collect();
+    let pred: Vec<(u32, u32)> = (10..14u32).map(|e| (2, e)).collect();
+    lru.begin_token();
+    let slots = lru.fetch_many_prefetching(&keys, &pred).unwrap();
+    for (s, &(l, e)) in slots.iter().zip(&keys) {
+        check_slot(s, l, e);
+    }
+    let st = lru.stats();
+    assert_eq!((st.misses, st.hits, st.prefetched), (6, 0, 4));
+    // the next layer of the same token asks for two of the predictions: hits,
+    // waited on if still landing
+    let got = lru
+        .fetch_many_prefetching(&[(2, 10), (2, 11)], &[])
+        .unwrap();
+    check_slot(&got[0], 2, 10);
+    check_slot(&got[1], 2, 11);
+    let st = lru.stats();
+    assert_eq!((st.misses, st.hits), (6, 2));
+    // the two predictions nobody asked for are demoted at the next token and
+    // go before anything else, even the empty slots (a real token is ~50 ms,
+    // the reads have landed; here we wait for them)
+    lru.wait_in_flight();
+    lru.begin_token();
+    assert_eq!(lru.stats().prefetch_unused, 2);
+    assert!(lru.contains(2, 12) && lru.contains(2, 13));
+    let many: Vec<(u32, u32)> = (0..24u32).map(|e| (3, e)).collect();
+    let got = lru.fetch_many_prefetching(&many, &[]).unwrap();
+    for (s, &(l, e)) in got.iter().zip(&many) {
+        check_slot(s, l, e);
+    }
+    assert!(!lru.contains(2, 12) && !lru.contains(2, 13));
+    assert!(lru.contains(1, 0) && lru.contains(2, 10) && lru.contains(2, 11));
+    assert_eq!(lru.resident(), 32);
+}
+
+#[test]
+fn pool_failures_unmap_a_failed_key_now_and_a_failed_prediction_at_the_next_token() {
+    let mut m = MemSource::new(64);
+    m.poison = vec![(1, 3), (2, 12)];
+    let src = std::sync::Arc::new(m);
+    let mut arena = Arena::new(16);
+    let mut lru = arena.lru();
+    lru.set_pool(src.clone(), 2);
+    lru.begin_token();
+    let r = lru.fetch_many_prefetching(&[(1, 2), (1, 3)], &[(2, 12), (2, 13)]);
+    assert!(r.is_err(), "a poisoned key fails the fetch");
+    assert!(!lru.contains(1, 3), "the failed key is unmapped");
+    assert!(lru.contains(1, 2), "the good key stays");
+    // the poisoned prediction is unmapped once its ticket is reaped
+    lru.wait_in_flight();
+    lru.begin_token();
+    assert!(!lru.contains(2, 12));
+    assert!(lru.contains(2, 13));
+    let s = lru.fetch_many_prefetching(&[(2, 13)], &[]).unwrap();
+    check_slot(&s[0], 2, 13);
+}

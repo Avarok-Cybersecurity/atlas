@@ -36,6 +36,7 @@ glm5_next   = "poolside_v1"     # GLM-5.3-Flash — SAME wire format, quoted ver
                                 # DROPPED before the template renders — the model is told
                                 # nothing and answers "I have no tools available".
 deepseek_v4 = "deepseek_v4"    # DeepSeek-V4-Flash — checkpoint-native typed DSML
+deepseek_v41 = "deepseek_v4"   # DeepSeek-V4.1-Flash (GGUF model_type deepseek_v41) — same DSML format
 
 # Default reasoning parser per model_type.
 # Override at runtime with --reasoning-parser <format>.
@@ -57,6 +58,7 @@ qwen3_6_moe = "qwen"
 holo3_1_moe = "qwen"
 nemotron_h  = "deepseek_r1"    # Nemotron-H ships the nano_v3 (DeepSeek-R1) parser
 deepseek_v4 = "deepseek_r1"    # DeepSeek-V4-Flash — official <think>/</think>; enables the reasoning
+deepseek_v41 = "deepseek_r1"   # DeepSeek-V4.1-Flash (GGUF model_type deepseek_v41) — same <think> tags
                                # parser so think_end_token resolves and inside_thinking can engage on
                                # enable_thinking=true. supports_thinking (has_ssm||has_mamba2) is false
                                # for this pure-attention MLA model, so the parser MUST be set here.

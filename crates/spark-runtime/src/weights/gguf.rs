@@ -27,7 +27,14 @@ mod container;
 /// Public for kernel oracles: the CPU reference decoders every GPU dequant is held to.
 pub mod dequant_cpu;
 mod dequant_gpu;
+mod engram_rows;
+mod expert_arena;
+mod expert_direct;
 mod expert_lru;
+mod expert_lru_evict;
+mod expert_lru_pool;
+mod expert_prefetch;
+mod expert_reads;
 pub mod expert_stream;
 mod names;
 mod shards;
@@ -436,6 +443,8 @@ mod deepseek_v41_real_file_test;
 mod deepseek_v41_stream_bench_test;
 #[cfg(test)]
 mod deepseek_v41_stream_oracle_test;
+#[cfg(test)]
+mod expert_arena_tests;
 #[cfg(test)]
 mod expert_stream_tests;
 #[cfg(test)]

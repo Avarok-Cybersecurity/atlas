@@ -538,6 +538,20 @@ pub trait GpuBackend: Send + Sync {
         }
         Ok(())
     }
+
+    /// Device memory for a weight arena that sits OUTSIDE the allocation
+    /// ledger, like the page-locked arena it can replace (the DeepSeek-V4.1
+    /// expert cache, 100 GiB on GB10). `factory::build` reads the ledger as
+    /// "Atlas-own" memory when it sizes the KV cache against
+    /// `--gpu-memory-utilization`; an arena on the ledger would leave that
+    /// pool nothing. The default is the ledgered `alloc` (mock, Metal); the
+    /// CUDA backend allocates off the ledger. Freed with `free_arena`.
+    fn alloc_arena(&self, bytes: usize) -> Result<DevicePtr> {
+        self.alloc(bytes)
+    }
+    fn free_arena(&self, ptr: DevicePtr) -> Result<()> {
+        self.free(ptr)
+    }
 }
 
 impl fmt::Display for DevicePtr {
