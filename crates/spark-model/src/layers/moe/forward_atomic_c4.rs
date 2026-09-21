@@ -18,6 +18,14 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // LongCat zero-experts are wired only on the single-token decode
+        // + prefill paths (v1); this variant would silently mis-route the
+        // 384-wide router. Named refusal, not silent wrongness.
+        anyhow::ensure!(
+            self.router_logits_n as usize == ctx.config.num_experts,
+            "zero-expert MoE routing is not wired on this dispatch variant yet (forward_atomic_c4)"
+        );
+
         // Feature-1 phase-1: decode does not yet fold the expert delta.
         self.reject_decode_lora(ctx, "forward_atomic_c4_decode")?;
         let has_shared = self.weights.shared_expert.gate_proj.weight.0 != 0
@@ -78,7 +86,7 @@ impl MoeLayer {
         let accum_bytes = num_tokens * h as usize * 4;
         anyhow::ensure!(
             ctx.buffers.scratch_bytes() >= accum_off + accum_bytes,
-            "scratch too small for ATLAS_MOE_ATOMIC_C4_DECODE: need {} bytes, have {}",
+            "scratch too small for AVAROK_MOE_ATOMIC_C4_DECODE: need {} bytes, have {}",
             accum_off + accum_bytes,
             ctx.buffers.scratch_bytes()
         );

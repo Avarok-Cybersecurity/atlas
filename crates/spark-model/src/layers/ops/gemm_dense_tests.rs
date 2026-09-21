@@ -7,8 +7,8 @@
 //!
 //! These are SOURCE tests. They read `kernels/**.cu` and `gemm_dense.rs` as
 //! text and pin the launcher/kernel contract on CPU. They compile nothing and
-//! run nothing on a GPU — `cargo test` runs with `ATLAS_SKIP_BUILD=1`, so the
-//! PTX-level sibling (`atlas-kernels/tests/kernel_arity.rs`) is VACUOUS in CI
+//! run nothing on a GPU — `cargo test` runs with `AVAROK_SKIP_BUILD=1`, so the
+//! PTX-level sibling (`avarok-kernels/tests/kernel_arity.rs`) is VACUOUS in CI
 //! and these are the only automatic guard the contract has there.
 
 #[path = "gemm_dense_tests_util.rs"]
@@ -121,9 +121,10 @@ fn ldb_kernels_actually_use_the_parameter() {
                 continue; // reported by the drift test; do not double-fail
             }
             let where_ = format!("{}::{name}", util::rel(p));
+            let code = util::strip_line_comments(&body);
             assert!(
-                body.contains("LDB"),
-                "{where_} DECLARES `ldb` but never uses it — B is still strided by N"
+                code.contains("const unsigned int LDB = ldb;"),
+                "{where_} must derive the body stride LDB from the launcher-supplied ldb"
             );
             for arr in ["B_packed", "B_scale"] {
                 let idx = indexed_exprs(&body, arr);
@@ -173,6 +174,11 @@ fn ldb_kernels_actually_use_the_parameter() {
 #[test]
 fn ldb_kernels_keep_their_dialect_specific_bounds() {
     let (mut scalar, mut tile) = (0usize, 0usize);
+    // Of the scalar paths, how many are REAL files rather than symlinks into
+    // another hardware set's `common/`. That is the number the alarm below is
+    // actually about: a symlinked backend inherits the port for free, a forked
+    // one has to be edited by hand.
+    let mut scalar_forked = 0usize;
     for p in &cu_files() {
         let src = std::fs::read_to_string(p).unwrap();
         for name in LDB_KERNELS {
@@ -189,6 +195,12 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             // independent of the property it is testing.
             if util::rel(p).contains("/common/") {
                 scalar += 1;
+                if std::fs::symlink_metadata(p)
+                    .map(|m| !m.file_type().is_symlink())
+                    .unwrap_or(true)
+                {
+                    scalar_forked += 1;
+                }
                 assert!(
                     body.contains("gn < N"),
                     "{where_}: the scalar column guard `gn < N` is gone. N is the \
@@ -210,23 +222,35 @@ fn ldb_kernels_keep_their_dialect_specific_bounds() {
             }
         }
     }
-    // ★ 3 PATHS, 2 FILES: `kernels/strix/common/w4a16_gemm.cu` is a SYMLINK to
-    // `../../gb10/common/w4a16_gemm.cu`, so the strix copy was ported the
-    // moment gb10's was. `strix-hip/common/` is a real, separate HIP file and
-    // had to be done by hand. Count paths — that is what the build walks — but
-    // do not read "3" as "3 edits".
+    // ★ 6 PATHS, 3 FILES. `kernels/{strix,hopper,b200}/common/w4a16_gemm.cu`
+    // are all SYMLINKS to `../../gb10/common/w4a16_gemm.cu`, so those copies
+    // were ported the moment gb10's was. `strix-hip/common/` is a real,
+    // separate HIP file and had to be done by hand. B300 owns a separate CUDA
+    // copy; the bounds above are checked independently for that copy too.
+    //
+    // BOTH numbers are asserted, and the second is the one that matters. Path
+    // count is what the build walks, so it has to track the tree — but a new
+    // symlinked hardware set costs nothing, while a new FORKED `common/` copy
+    // is a file somebody has to port by hand and is exactly what this test
+    // exists to catch. Asserting only the total would fire on the free case
+    // and, once bumped, would go quiet on the expensive one.
     assert_eq!(
-        scalar, 3,
-        "expected exactly the 3 shared `common/` scalar paths (gb10, strix -> \
-         symlink to gb10, strix-hip); a 4th means a new backend needs the same \
-         hand port"
+        scalar, 6,
+        "the shared `common/` scalar paths moved (gb10, strix, strix-hip, \
+         hopper, b200, b300) — update this count with the tree"
+    );
+    assert_eq!(
+        scalar_forked, 3,
+        "expected exactly 3 FORKED `common/` scalar copies (gb10, b300 and \
+         strix-hip); a 4th is a new backend that needs the same hand port, \
+         where a symlinked one would have inherited it"
     );
     assert!(tile > 20, "only {tile} tile copies found — tree moved?");
 }
 
 /// The launcher and the kernel must agree on ARITY in both directions. This is
-/// the CPU-side stand-in for `atlas-kernels/tests/kernel_arity.rs`, which reads
-/// the real PTX and is vacuous under `ATLAS_SKIP_BUILD=1`.
+/// the CPU-side stand-in for `avarok-kernels/tests/kernel_arity.rs`, which reads
+/// the real PTX and is vacuous under `AVAROK_SKIP_BUILD=1`.
 #[test]
 fn ldb_launcher_arg_count_matches_kernel_param_count() {
     let launchers = include_str!("gemm_dense.rs");

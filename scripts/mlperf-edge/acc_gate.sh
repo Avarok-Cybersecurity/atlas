@@ -2,7 +2,7 @@
 # Generic BFCL accuracy gate for a single env-flag candidate.
 #
 # Latency A/Bs cannot clear a flag for folding when the flag can change emitted
-# tokens. ATLAS_GDN_REGRESIDENT is the live case: it is advertised token-equal to
+# tokens. AVAROK_GDN_REGRESIDENT is the live case: it is advertised token-equal to
 # WY4 (cos 1.0, max|dH| ~1e-8) and DID match on the three shorter replay cells,
 # but DIFFERED on the longest (4320-char delta). Over a ~1200-token recurrence a
 # different accumulation order can tip razor-margin greedy tokens even at cos 1.0,
@@ -17,14 +17,14 @@
 # "Required: --mode", which reads like a MISSING argument, so a mistyped value
 # fails the accuracy leg silently while everything else completes.
 #
-# Usage: acc_gate.sh <atlas_bin> <outdir> <flag_env_or_NONE> [pct_scale]
-#   e.g. acc_gate.sh .../spark out/ ATLAS_NO_GDN_REGRESIDENT=1 4
+# Usage: acc_gate.sh <avarok_bin> <outdir> <flag_env_or_NONE> [pct_scale]
+#   e.g. acc_gate.sh .../spark out/ AVAROK_NO_GDN_REGRESIDENT=1 4
 #
 # NOTE on that example: the regresident lever is default-ON since PR #369 and
 # only the NEGATIVE spelling is read, so the candidate leg is the one that
 # switches the lever OFF and the accuracy question runs backwards — the gate is
 # "does removing it change BFCL", not "does adding it". A positive
-# `ATLAS_GDN_REGRESIDENT=1` (which this example used to pass) is read by nothing
+# `AVAROK_GDN_REGRESIDENT=1` (which this example used to pass) is read by nothing
 # and would have scored the default against itself.
 set -u
 BIN="${1:?path to the built spark binary}"
@@ -39,15 +39,15 @@ mkdir -p "$OUT"
 for leg in control cand; do
   EXTRA=""
   [ "$leg" = cand ] && [ "$FLAG" != NONE ] && EXTRA="-e $FLAG"
-  sudo docker rm -f atlas-acc >/dev/null 2>&1; sleep 3
+  sudo docker rm -f avarok-acc >/dev/null 2>&1; sleep 3
   # shellcheck disable=SC2086
-  sudo docker run -d --name atlas-acc --network host --gpus all --ipc=host \
-    -e ATLAS_NO_FFN_NVFP4_MMQ=1 -e ATLAS_SSM_TAIL_MIDCHUNK=0 -e ATLAS_MTP_CATCHUP=0 \
-    -e ATLAS_MTP_DRAFT_CONF=0.0 -e ATLAS_MTP_GATE_FORCE=1 \
-    -e ATLAS_SSM_TAIL_LEASE_TTL=128 -e ATLAS_BF16_TC_PREFILL=1 $EXTRA \
+  sudo docker run -d --name avarok-acc --network host --gpus all --ipc=host \
+    -e AVAROK_NO_FFN_NVFP4_MMQ=1 -e AVAROK_SSM_TAIL_MIDCHUNK=0 -e AVAROK_MTP_CATCHUP=0 \
+    -e AVAROK_MTP_DRAFT_CONF=0.0 -e AVAROK_MTP_GATE_FORCE=1 \
+    -e AVAROK_SSM_TAIL_LEASE_TTL=128 -e AVAROK_BF16_TC_PREFILL=1 $EXTRA \
     -v "$HOME/.cache/huggingface:/root/.cache/huggingface:ro" \
     -v "$BIN:/usr/local/bin/spark:ro" \
-    atlas-gb10:followups serve "$MODEL" \
+    avarok-gb10:followups serve "$MODEL" \
     --host 0.0.0.0 --port $PORT --model-name "$MODEL" \
     --max-seq-len 32768 --max-batch-size 1 --kv-cache-dtype bf16 --gpu-memory-utilization 0.70 \
     --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32 \
@@ -57,10 +57,10 @@ for leg in control cand; do
   ok=0
   for _ in $(seq 1 180); do
     curl -sf -m4 http://localhost:$PORT/v1/models 2>/dev/null | grep -q Qwen && { ok=1; break; }
-    sudo docker ps --format '{{.Names}}' | grep -q atlas-acc || { echo "SERVE_DIED leg=$leg"; break; }
+    sudo docker ps --format '{{.Names}}' | grep -q avarok-acc || { echo "SERVE_DIED leg=$leg"; break; }
     sleep 5
   done
-  [ $ok -eq 1 ] || { sudo docker logs atlas-acc 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
+  [ $ok -eq 1 ] || { sudo docker logs avarok-acc 2>&1 | tail -40 > "$OUT/$leg.died.txt"; continue; }
   echo "=== leg=$leg serve up (${EXTRA:-<control>}) ==="
 
   RD="results/accgate_${leg}_$(date +%H%M%S)"
@@ -93,9 +93,9 @@ PY
   cp "$HARNESS/$RD/report.txt" "$OUT/$leg.report.txt" 2>/dev/null
 
   # Banner: proof the flag engaged. Fires on first prefill/replay, not at startup.
-  sudo docker logs atlas-acc 2>&1 \
+  sudo docker logs avarok-acc 2>&1 \
     | grep -aE 'GDN prefill: (FLA chunked|REGISTER-RESIDENT)' | sort -u | tee "$OUT/$leg.banner.txt"
-  sudo docker rm -f atlas-acc >/dev/null 2>&1
+  sudo docker rm -f avarok-acc >/dev/null 2>&1
 done
 
 echo "=== ACCURACY GATE: $FLAG ==="

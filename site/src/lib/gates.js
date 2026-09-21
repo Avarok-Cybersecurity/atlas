@@ -5,35 +5,40 @@
 // components render what these specs say and add nothing of their own.
 // =============================================================================
 import gates from '$lib/gates.generated.json';
+import { splitByVariant } from './gate-variants.js';
+import { foldPartitions } from './bfcl-partition.js';
+import { latestDeclaredSince, limitFor as limitForRecord, rungFloors as rungFloorsOf } from './gate-limits.js';
 
 export const gateData = gates;
 export const GH_COMMIT = 'https://github.com/Avarok-Cybersecurity/atlas/commit/';
 
-// Series color follows the MODEL (the entity), never the tab or verdict.
-// Pair validated for CVD + contrast on the paper surfaces (#f4f0e8/#fbf9f3):
-// copper #b5622f ↔ steel #1f6a9e, protan ΔE 17.6, normal ΔE 24.5, both ≥3:1.
-//
-// Qwen3.8-27B added 2026-08-14 as teal #1c7a6b. The pair above was a PAIR —
-// a third entry has to hold against BOTH, and the load-bearing comparison is
-// 3.8 vs 3.6-27B (steel): same architecture, same draw, so they overlay on one
-// axis and the whole point is reading the generation-over-generation delta.
-// Measured under CIEDE2000 with Viénot CVD simulation (NOT the method behind
-// the 17.6/24.5 figures above, so these numbers are not continuous with them —
-// re-derive all three together if the palette is ever revisited):
-//   vs steel  #1f6a9e — normal 26.1, protan 27.5, deutan 20.3
-//   vs copper #b5622f — normal 43.8, protan 16.3, deutan 27.1
-//   contrast on both paper surfaces — 4.57:1 (≥3:1)
-// Plum #7d3c6e was rejected: only ΔE 12.1 from steel under both protan and
-// deutan, i.e. it blurred exactly the comparison this series exists to show.
-// Maroon #8f2f3f scored marginally better on worst case (19.1) but reads as a
-// failure color on a chart that already marks failed runs by verdict.
-const MODEL_COLORS = {
-  'Qwen/Qwen3.6-35B-A3B-FP8': '#b5622f',
-  'unsloth/Qwen3.6-27B-NVFP4': '#1f6a9e',
-  'unsloth/Qwen3.8-27B-NVFP4': '#1c7a6b'
-};
-export const colorFor = (model) => MODEL_COLORS[model] ?? '#625c51';
-export const shortModel = (model) => (model || '').split('/').pop() || model;
+// The floors and ceilings BENCH.toml declares, per gate and checkpoint —
+// carried by gen-gates.mjs. Its absence means the generated file predates the
+// generator that writes it; that is a stale build to fix, not a "no limits"
+// state to draw.
+if (!gates.gate_limits) throw new Error('gates.generated.json has no gate_limits — run node site/scripts/gen-gates.mjs');
+export const gateLimits = gates.gate_limits;
+/** The floor/ceiling governing one record's metric — see gate-limits.js. */
+export const limitFor = (record, metricKey) => limitForRecord(record, metricKey, gateLimits);
+/** The same record's limit with the declaration read as of another time. */
+export const limitAsOf = (record, metricKey, at) => limitForRecord(record, metricKey, gateLimits, at);
+/** When the declaration governing this record's metric last changed. */
+export const latestLimitChange = (record, metricKey) =>
+  latestDeclaredSince(gateLimits, record?.benchmark_id, record?.target_model, metricKey);
+export const rungFloors = (record) => rungFloorsOf(record, gateLimits);
+
+export { MODEL_COLORS, UNKNOWN_MODEL_COLOR, colorFor } from './series-colors.js';
+export {
+  dashFor,
+  groupFor,
+  groupRecords,
+  groupedBenches,
+  isLatestOfVariant,
+  splitByVariant,
+  variantLabel
+} from './gate-variants.js';
+
+export { shortModel } from './series-colors.js';
 
 // ---- tab taxonomy -----------------------------------------------------------
 // One tab per benchmark family; a family only earns a tab when it has records.
@@ -50,7 +55,26 @@ const TAB_DEFS = [
   // records-filter below keeps the tabs hidden and the ids show in the
   // footer's "gated, not yet published" line — nothing renders empty.
   { id: 'decode', label: 'Decode', benches: ['decode-floor'] },
-  { id: 'concurrency', label: 'Concurrency', benches: ['concurrency-sweep'] }
+  // Both concurrency gates share this tab AND one set of charts — see
+  // gate-variants.js. They run the same fixture at the same rungs on the
+  // same checkpoint and differ only in whether the engine speculates, so
+  // two lines on one axis is the comparison; two panels is not.
+  {
+    id: 'concurrency',
+    label: 'Concurrency',
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+  },
+  // Cost reads the SAME records as Concurrency — the GPU-rail joules and the
+  // token count of the window they span ride in each sweep record's metrics
+  // map — so it earns a tab on the same evidence. It renders an explicit
+  // "not yet measured" state per subject until an energy-instrumented run
+  // lands, which is the state it ships in: a cost tab that appeared only once
+  // a number existed would hide the fact that nothing has been measured.
+  {
+    id: 'cost',
+    label: 'Cost',
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+  }
 ];
 export const tabs = TAB_DEFS.filter((t) =>
   t.benches.some((b) => (gates.benchmarks[b]?.records ?? []).length > 0)
@@ -64,12 +88,9 @@ export const unpublished = (gates.registered ?? []).filter((id) => !withRecords.
 export const models = [...new Set(Object.values(gates.benchmarks).flatMap((b) => b.records.map((r) => r.target_model)))].sort();
 
 // ---- panel specs ------------------------------------------------------------
-// floor/cap lines are read from the records themselves (params or the
-// verdict_reason's "(floor N)" text) — never invented here.
-const floorFromReason = (r) => {
-  const m = /floor ([0-9.]+)/.exec(r.verdict_reason ?? '');
-  return m ? +m[1] : null;
-};
+// Floor/ceiling lines are NOT part of a panel spec: GateChart reads them per
+// record through `limitFor` (gate-limits.js), so a ratcheted floor steps
+// where it was ratcheted and nothing is invented here.
 
 export function panelsFor(benchId, records) {
   if (records.length === 0) return [];
@@ -79,11 +100,7 @@ export function panelsFor(benchId, records) {
       {
         title: 'Σ wall time',
         unit: 's',
-        metrics: [{ key: 'sum_wall_s', label: 'Σ wall (s)' }],
-        caps: [...new Set(records.map((r) => +r.params?.wall_budget_s || 0).filter(Boolean))].map((v) => ({
-          value: v,
-          label: `budget ${v}s`
-        }))
+        metrics: [{ key: 'sum_wall_s', label: 'Σ wall (s)' }]
       },
       {
         title: 'webserver_ok per run',
@@ -98,12 +115,7 @@ export function panelsFor(benchId, records) {
       {
         title: 'overall accuracy',
         unit: 'score',
-        metrics: [{ key: 'overall_accuracy', label: 'overall' }],
-        caps: [],
-        floors: [...new Set(records.map(floorFromReason).filter(Boolean))].map((v) => ({
-          value: v,
-          label: `floor ${v}`
-        }))
+        metrics: [{ key: 'overall_accuracy', label: 'overall' }]
       }
     ];
   }
@@ -128,7 +140,7 @@ export function panelsFor(benchId, records) {
     const key = keys.find((k) => /tok_s/.test(k)) ?? keys.find((k) => k !== 'samples');
     return key ? [{ title: 'decode floor', unit: 'tok/s', metrics: [{ key, label: key }] }] : [];
   }
-  if (benchId === 'concurrency-sweep') {
+  if (benchId === 'concurrency-sweep' || benchId === 'concurrency-sweep-dflash2') {
     // Two panels: the ladder curve (throughput vs C, latest runs overlaid —
     // rendered by GateLadderChart via kind: 'ladder') and the peak's trend
     // over time. Keys come from the sweep's metrics map
@@ -138,12 +150,22 @@ export function panelsFor(benchId, records) {
     if (records.some((r) => Object.keys(r.metrics ?? {}).some((k) => LADDER_KEY.test(k)))) {
       panels.push({ kind: 'ladder', title: 'throughput vs concurrency', unit: 'tok/s' });
     }
-    if (records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s))) {
-      panels.push({
-        title: 'peak aggregate throughput',
-        unit: 'tok/s',
-        metrics: [{ key: 'peak_aggregate_tok_s', label: 'peak' }]
-      });
+    // One series per variant present, never one series across both: a line
+    // that joined a DFlash2 peak to a no-drafter peak would read as a
+    // regression and a recovery at every alternation. `variant` filters the
+    // records inside GateChart; the dash is the only other difference,
+    // because colour follows the model and both variants serve one
+    // checkpoint.
+    const peak = splitByVariant(records)
+      .filter((v) => v.records.some((r) => Number.isFinite(r.metrics?.peak_aggregate_tok_s)))
+      .map((v) => ({
+        key: 'peak_aggregate_tok_s',
+        label: v.label ? `peak (${v.label})` : 'peak',
+        variant: v.bench,
+        dashed: v.dash !== null
+      }));
+    if (peak.length > 0) {
+      panels.push({ title: 'peak aggregate throughput', unit: 'tok/s', metrics: peak });
     }
     return panels;
   }
@@ -166,7 +188,37 @@ export const ladderPoints = (record) =>
     .filter(Boolean)
     .sort((a, b) => a.c - b.c);
 
-export const recordsFor = (benchId) => gates.benchmarks[benchId]?.records ?? [];
+/**
+ * The records for a benchmark, with every COMPLETE shard partition folded into
+ * the single aggregate the gate judged.
+ *
+ * The fold lives here, at the one place records enter the page, rather than in
+ * each chart: the record count printed beside a panel, the "latest" record in
+ * its header, the modal and the charts must all be talking about the same
+ * measurements. A chart-local fold would have left the header saying "124
+ * records" over a chart drawing 84 points.
+ *
+ * Memoised because it is called once per render per benchmark and the input is
+ * a frozen import.
+ */
+const foldCache = new Map();
+const folded = (benchId) => {
+  let f = foldCache.get(benchId);
+  if (!f) {
+    f = foldPartitions(gates.benchmarks[benchId]?.records ?? []);
+    foldCache.set(benchId, f);
+  }
+  return f;
+};
+
+export const recordsFor = (benchId) => folded(benchId).records;
+
+/**
+ * Shard records that do NOT complete a partition, grouped by the partition
+ * they belong to. Never plotted — half a strided draw is not a measurement —
+ * and never silently dropped either: the page says how many are withheld.
+ */
+export const withheldFor = (benchId) => folded(benchId).partial;
 export const benchName = (benchId) => gates.benchmarks[benchId]?.name ?? benchId;
 export const fmtDate = (unix) => new Date(unix * 1000).toISOString().slice(0, 10);
 export const fmtDateTime = (unix) => new Date(unix * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';

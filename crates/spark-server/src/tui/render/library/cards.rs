@@ -134,7 +134,7 @@ fn draw_cards(f: &mut Frame, app: &App, area: Rect) {
             bar,
             Span::styled(format!(" {}", stem(recipe)), title_style),
             Span::styled(
-                if recipe.is_atlas() {
+                if recipe.is_avarok() {
                     String::new()
                 } else {
                     format!("  ⊘ {}", recipe.runtime.as_deref().unwrap_or("non-atlas"))
@@ -216,11 +216,11 @@ fn draw_detail(f: &mut Frame, app: &App, area: Rect) {
     // Say on the card what Enter will do, including when it will refuse. A
     // multi-node recipe reaching the form only to fail on a world-size check
     // sends the reader after the wrong fix.
-    let launchable = recipe.is_atlas() && recipe.min_nodes <= 1;
+    let launchable = recipe.is_avarok() && recipe.min_nodes <= 1;
     lines.push(Line::from(Span::styled(
         if launchable {
             " ⏎ configure and start".to_string()
-        } else if !recipe.is_atlas() {
+        } else if !recipe.is_avarok() {
             " this runtime cannot be launched from here".to_string()
         } else {
             format!(

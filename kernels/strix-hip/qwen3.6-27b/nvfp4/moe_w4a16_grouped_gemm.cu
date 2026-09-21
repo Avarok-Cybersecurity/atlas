@@ -30,7 +30,7 @@ __device__ __forceinline__ float scl_fp8(unsigned char b) {
     else                       v = __uint_as_float(((e + 120u) << 23) | (m << 20));
     return s ? -v : v;
 }
-__device__ __forceinline__ float atlas_e4m3_to_f32(unsigned char b) { return scl_fp8(b); }
+__device__ __forceinline__ float avarok_e4m3_to_f32(unsigned char b) { return scl_fp8(b); }
 
 #define M_TILE 64
 #define N_TILE_SM 64
@@ -985,7 +985,7 @@ extern "C" __global__ void moe_fp8_grouped_gemm_ptrtable_t(
             v16bf a; \
             _Pragma("unroll") \
             for (int i = 0; i < 16; i++) \
-                a[i] = (__bf16)(float)atlas_e4m3_to_f32(smem_Af2[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
+                a[i] = (__bf16)(float)avarok_e4m3_to_f32(smem_Af2[(a_buf)][warp_m_offset + (lane_id & 15)][h * 16 + i]); \
             _Pragma("unroll") \
             for (int nb = 0; nb < 8; nb++) { \
                 unsigned int nc = nb * 16 + (lane_id & 15); \

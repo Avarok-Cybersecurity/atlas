@@ -1,0 +1,178 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! BF16/FP32 twin layer bind. Decode copies hidden D2H, runs mixer+MLP+AttnRes,
+//! copies H2D. LinearAttention / KDA conv+recurrent uses CUDA `kda_decode`
+//! with per-sequence resident recurrence unless `K3_CUDA_KDA=0`.
+//! FullAttention / MLA uses CUDA `mla_decode`
+//! unless `K3_CUDA_MLA=0`. Packed LatentMoE experts launch DSV4
+//! `moe_w4a16_grouped_gemm_ptrtable_e8m0`. Router / down / up / shared / SiTU
+//! stay on the host.
+
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
+
+use anyhow::{Context, Result};
+use avarok_core::config::ModelConfig;
+use avarok_core::kimi_k3::{
+    AttnResStream, K3CpuLayer, K3Graph, K3LayerSpec, KdaConfig, LatentMoeConfig, LayerCache,
+    MixerKind, MlaConfig,
+};
+use parking_lot::Mutex;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
+use spark_runtime::kv_cache::PagedKvCache;
+use spark_runtime::weights::WeightDtype;
+
+use super::kda_cuda::K3KdaDecodeKernels;
+use super::mla_cuda::K3MlaDecodeKernels;
+use super::moe_cuda::K3MoeGemmKernels;
+use super::state::K3CpuFallbackState;
+use crate::layer::{ForwardContext, LayerState, TransformerLayer};
+use crate::weight_map::{DenseWeight, QuantizedWeight};
+
+/// Name + device dtype/numel for a lazy host bind (copy from GPU if needed).
+#[derive(Clone, Debug)]
+pub struct WeightMeta {
+    pub name: String,
+    pub dtype: WeightDtype,
+    pub numel: usize,
+}
+
+/// Shared across every decoder layer of one loaded K3 model.
+pub struct K3HostShared {
+    pub config: ModelConfig,
+    pub graph: K3Graph,
+    pub kda: KdaConfig,
+    pub mla: MlaConfig,
+    pub moe: LatentMoeConfig,
+    pub output_res_proj: DenseWeight,
+    pub output_res_norm: DenseWeight,
+    pub output_res_proj_meta: (WeightDtype, usize),
+    pub output_res_norm_meta: (WeightDtype, usize),
+    pub output_host: OnceLock<(Vec<f32>, Vec<f32>)>,
+    /// Resolved once per loaded model. LinearAttention decode launches these.
+    pub kda_kernels: OnceLock<K3KdaDecodeKernels>,
+    /// Resolved once per loaded model. FullAttention decode launches these
+    /// unless `K3_CUDA_MLA=0`.
+    pub mla_kernels: OnceLock<K3MlaDecodeKernels>,
+    /// Resolved once per loaded model. Packed LatentMoE launches these.
+    pub moe_kernels: OnceLock<K3MoeGemmKernels>,
+    /// AttnRes is per-token across layers. Keyed by this step's `residual`
+    /// pointer so prefill (layer-outer, token-inner) still sees the same
+    /// stream as CPU `forward_token` (token-outer, layer-inner).
+    pub attnres: Mutex<HashMap<DevicePtr, AttnResStream>>,
+}
+
+/// One decoder layer whose BF16 (or FP32) tensors were bound from the store.
+pub struct K3BoundLayer {
+    pub index: usize,
+    pub spec: K3LayerSpec,
+    pub weights: Vec<DenseWeight>,
+    pub weight_meta: Vec<WeightMeta>,
+    /// Packed routed experts landed on DSV4 `quantized_mxfp4_e8m0_pair`.
+    /// Empty for the BF16 twin.
+    pub mxfp4_experts: Vec<(String, QuantizedWeight)>,
+    pub host: OnceLock<K3CpuLayer>,
+    pub shared: Arc<K3HostShared>,
+}
+
+impl TransformerLayer for K3BoundLayer {
+    fn decode_graph_unsupported(&self) -> bool {
+        // Host round-trip cannot live in a CUDA graph.
+        true
+    }
+
+    fn decode_multi_seq_unsupported(&self) -> bool {
+        true
+    }
+
+    fn decode_verify_multi_unsupported(&self) -> bool {
+        // Host AttnRes streams and mixer caches are advanced one sequence at a time.
+        true
+    }
+
+    fn decode_rollback_unsupported(&self) -> bool {
+        // Lowering a paged-KV cursor does not rewind the host KDA recurrence
+        // or MLA cache. Prefix snapshots are a separate explicit restore path.
+        true
+    }
+
+    fn uses_ssm_pool(&self) -> bool {
+        // KDA is `linear_attention` in config. Own [`K3CpuFallbackState`], not GDN pool.
+        false
+    }
+
+    fn has_aux_state(&self) -> bool {
+        true
+    }
+
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let st = state
+            .as_any()
+            .downcast_ref::<K3CpuFallbackState>()
+            .context("K3 snapshot_aux: expected K3CpuFallbackState")?;
+        Ok(Some(st.snapshot(gpu, stream)?))
+    }
+
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let st = state
+            .as_any_mut()
+            .downcast_mut::<K3CpuFallbackState>()
+            .context("K3 restore_aux: expected K3CpuFallbackState")?;
+        st.restore(gpu, blob, stream)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn decode(
+        &self,
+        hidden: DevicePtr,
+        residual: DevicePtr,
+        state: &mut dyn LayerState,
+        _kv_cache: &mut PagedKvCache,
+        seq_len: usize,
+        _block_table: &mut Vec<u32>,
+        _disk_block_ids: &mut Vec<u32>,
+        _disk_last_offloaded_per_layer: &mut Vec<u32>,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        self.decode_host(
+            hidden,
+            residual,
+            state,
+            seq_len,
+            ctx,
+            stream,
+            avarok_core::kimi_k3::cuda_kda_enabled(),
+            avarok_core::kimi_k3::cuda_mla_enabled(),
+        )
+    }
+
+    fn alloc_state(&self, _gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
+        let cache = match self.spec.mixer {
+            MixerKind::Kda => {
+                LayerCache::Kda(avarok_core::kimi_k3::KdaState::new(&self.shared.kda))
+            }
+            MixerKind::Mla => LayerCache::Mla(avarok_core::kimi_k3::MlaKv::default()),
+        };
+        Ok(Box::new(K3CpuFallbackState::new(cache)))
+    }
+
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        state
+            .as_any_mut()
+            .downcast_mut::<K3CpuFallbackState>()
+            .context("K3 release_state: expected K3CpuFallbackState")?
+            .release(gpu)
+    }
+}

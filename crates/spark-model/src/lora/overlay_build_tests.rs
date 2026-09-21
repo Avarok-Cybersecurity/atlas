@@ -7,6 +7,7 @@
 //! `slot_map` populated, ascending ids).
 
 use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::KernelHandle;
 use spark_runtime::gpu::mock::MockGpuBackend;
 
 use super::*;
@@ -26,6 +27,9 @@ fn f32_to_bf16_round_nearest_even() {
     let got = super::f32_to_bf16(x);
     let trunc = (x.to_bits() >> 16) as u16;
     assert_eq!(got, trunc + 1, "round-to-nearest bumps the bf16 mantissa");
+    // Exact halfway values resolve to an even retained mantissa.
+    assert_eq!(super::f32_to_bf16(f32::from_bits(0x3F80_8000)), 0x3F80);
+    assert_eq!(super::f32_to_bf16(f32::from_bits(0x3F81_8000)), 0x3F82);
 }
 
 #[test]
@@ -125,10 +129,26 @@ fn build_overlay_null_kernels_bails() {
         },
         trainable: vec![1],
     };
-    let kernels = OverlayKernels::default(); // all-null handles
-    let err = build_overlay(&gpu, &kernels, &slot, served, served, 8, 4, true, 0).unwrap_err();
-    assert!(
-        err.to_string().contains("overlay-kernels-missing"),
-        "got: {err}"
-    );
+    let live = KernelHandle(1);
+    for kernels in [
+        OverlayKernels::default(),
+        OverlayKernels {
+            rowdiff: KernelHandle(0),
+            embed_overlay: live,
+            lmhead_overlay_bf16: live,
+            lmhead_overlay_f32: live,
+        },
+        OverlayKernels {
+            rowdiff: live,
+            embed_overlay: KernelHandle(0),
+            lmhead_overlay_bf16: live,
+            lmhead_overlay_f32: live,
+        },
+    ] {
+        let err = build_overlay(&gpu, &kernels, &slot, served, served, 8, 4, true, 0).unwrap_err();
+        assert!(
+            err.to_string().contains("overlay-kernels-missing"),
+            "got: {err}"
+        );
+    }
 }

@@ -3,10 +3,10 @@
 
 use anyhow::{Result, bail};
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use std::ffi::c_void;
 
-#[cfg(atlas_cutlass)]
+#[cfg(avarok_cutlass)]
 use super::*;
 
 /// Repack an Atlas E4M3 weight scale into the CUTLASS SM120 blockscaled SFB
@@ -28,10 +28,10 @@ pub fn pack_weight_sfb(
     src_n_major: bool,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_pack_weight_sfb(
+            avarok_cutlass_pack_weight_sfb(
                 scale_in as *const c_void,
                 scale_out as *mut c_void,
                 n as i32,
@@ -45,7 +45,7 @@ pub fn pack_weight_sfb(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (scale_in, scale_out, n, k, src_n_major, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
@@ -64,10 +64,10 @@ pub fn pack_bf16_weight_to_nvfp4_t(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_pack_bf16_weight_to_nvfp4_t(
+            avarok_cutlass_pack_bf16_weight_to_nvfp4_t(
                 weight_bf16 as *const c_void,
                 packed_t as *mut c_void,
                 scale_t as *mut c_void,
@@ -81,7 +81,7 @@ pub fn pack_bf16_weight_to_nvfp4_t(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (weight_bf16, packed_t, scale_t, n, k, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")
@@ -100,10 +100,10 @@ pub fn transpose_nvfp4_packed_kton(
     k: u32,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_cutlass)]
+    #[cfg(avarok_cutlass)]
     {
         let status = unsafe {
-            atlas_cutlass_transpose_nvfp4_packed_kton(
+            avarok_cutlass_transpose_nvfp4_packed_kton(
                 src_packed_t as *const c_void,
                 dst_packed as *mut c_void,
                 n as i32,
@@ -116,7 +116,7 @@ pub fn transpose_nvfp4_packed_kton(
         }
         Ok(())
     }
-    #[cfg(not(atlas_cutlass))]
+    #[cfg(not(avarok_cutlass))]
     {
         let _ = (src_packed_t, dst_packed, n, k, stream);
         bail!("CUTLASS support was not built; set CUTLASS_HOME when building")

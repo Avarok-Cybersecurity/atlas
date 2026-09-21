@@ -496,6 +496,14 @@ impl ChatCompletionRequest {
                 // the server default instead of the asked-for tier.
                 return directive;
             }
+            if let Some(effort) = kwargs.reasoning_effort.as_deref()
+                && let Some((_, directive)) = crate::ir::parse_wire_effort(effort)
+            {
+                // Previously this key was silently DROPPED by serde
+                // (Trap B): the request parsed fine and rendered with
+                // the server default instead of the asked-for tier.
+                return directive;
+            }
         }
 
         // 5. Atlas legacy: enable_thinking in the request body. Now Option:

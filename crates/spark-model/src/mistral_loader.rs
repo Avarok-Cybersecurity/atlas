@@ -18,7 +18,7 @@ pub struct MistralWeightLoader;
 /// Allocate GPU memory, falling back to managed (UVM) if device alloc fails.
 /// Uses a static flag to avoid retrying device alloc after the first failure
 /// (which wastes time and fragments memory).
-fn gpu_alloc_or_managed(gpu: &dyn GpuBackend, bytes: usize) -> Result<DevicePtr> {
+pub(crate) fn gpu_alloc_or_managed(gpu: &dyn GpuBackend, bytes: usize) -> Result<DevicePtr> {
     // Latched on the BACKEND, not in a static: after a model is unloaded the
     // memory pressure that caused the fallback is gone, and the next load
     // should try device memory again instead of inheriting a UVM sentence
@@ -59,4 +59,4 @@ fn gpu_matmul(
     Ok(c)
 }
 
-mod loader_impl;
+pub(crate) mod loader_impl;

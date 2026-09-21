@@ -115,6 +115,7 @@ impl Qwen3SsmLayer {
         ops::dense_gemm_ba_gates_prefill(
             ctx.gpu,
             self.ba_gates_prefill_k,
+            self.ba_gates_prefill_hopper_k,
             normed,
             &self.ssm.in_proj_ba,
             self.ssm.a_log.weight,
@@ -140,6 +141,7 @@ impl Qwen3SsmLayer {
         ops::conv1d_update_prefill(
             ctx.gpu,
             self.conv1d_prefill_k,
+            self.conv1d_prefill_tp_k,
             ssm_state.conv_state,
             deinterleaved,
             &self.ssm.conv1d,
@@ -284,6 +286,7 @@ impl Qwen3SsmLayer {
         ops::dense_gemm_ba_gates_prefill(
             ctx.gpu,
             self.ba_gates_prefill_k,
+            self.ba_gates_prefill_hopper_k,
             normed,
             &self.ssm.in_proj_ba,
             self.ssm.a_log.weight,
@@ -356,6 +359,7 @@ impl Qwen3SsmLayer {
         ops::conv1d_update_prefill(
             ctx.gpu,
             self.conv1d_prefill_k,
+            self.conv1d_prefill_tp_k,
             ssm_state.conv_state,
             src,
             &self.ssm.conv1d,

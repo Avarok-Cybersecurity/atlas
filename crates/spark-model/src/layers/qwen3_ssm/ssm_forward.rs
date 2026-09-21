@@ -305,7 +305,7 @@ impl Qwen3SsmLayer {
         let fused_gdn_norm = use_f32_gdn
             && self.gdn_f32_norm_k.0 != 0
             && crate::layers::qwen3_ssm::gdn_fused_norm_enabled();
-        // FP16 h-state (ATLAS_SSM_H_FP16). This is the single-sequence decode
+        // FP16 h-state (AVAROK_SSM_H_FP16). This is the single-sequence decode
         // arm, so it must honour the same invariant the batched path does —
         // otherwise C=1 would read an FP16 pool through an FP32 kernel.
         let h_f16 = super::ssm_h_fp16_enabled();
@@ -313,7 +313,7 @@ impl Qwen3SsmLayer {
             super::ssm_h_fp16::require_h_f16(state)?;
             if !fused_gdn_norm {
                 anyhow::bail!(
-                    "ATLAS_SSM_H_FP16: single-seq decode fell through to the FP32-only                      gated_delta_rule_decode arm (use_f32_gdn={use_f32_gdn},                      gdn_f32_norm={}). Set ATLAS_GDN_FUSED_NORM=1.",
+                    "AVAROK_SSM_H_FP16: single-seq decode fell through to the FP32-only                      gated_delta_rule_decode arm (use_f32_gdn={use_f32_gdn},                      gdn_f32_norm={}). Set AVAROK_GDN_FUSED_NORM=1.",
                     self.gdn_f32_norm_k.0
                 );
             }
@@ -470,7 +470,11 @@ impl Qwen3SsmLayer {
         // (dense_gemv / w8a16_gemv / w4a16_gemv above → one position), so
         // num_tokens = 1. No-op at tp=1. Covers single-token decode
         // (trait_decode) and per-sequence multi-seq decode (trait_decode_multi_seq).
-        self.ssm_tp_all_reduce(out, 1, ctx, stream)?;
+        // Reduces across TP ranks AND applies the out_proj LoRA delta (in that
+        // order — see the helper). `normed_out` is the value_dim activation
+        // the base projection just consumed, which is what the delta contracts
+        // over.
+        self.ssm_tp_all_reduce(out, normed_out, 1, ctx, stream)?;
 
         Ok(out)
     }

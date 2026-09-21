@@ -31,6 +31,7 @@ impl Qwen3AttentionLayer {
             nq,
             nkv,
             hd: _,
+            seq_len_start: _,
             kv_dim: _,
             eps,
             bf16: _,

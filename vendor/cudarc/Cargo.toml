@@ -57,10 +57,10 @@ features = [
     "cutensor",
 ]
 
-# Atlas-vendored trim: only the `driver` + `nvrtc` backends remain. The
+# Avarok-vendored trim: only the `driver` + `nvrtc` backends remain. The
 # upstream cublas/cublaslt/cudnn/cufft/cufile/cupti/curand/cusolver/cusolvermg/
 # cusparse/cutensor/nccl/nvtx/runtime feature gates (and their modules) were
-# removed — Atlas never uses them, and keeping them would re-introduce ~190k
+# removed — Avarok never uses them, and keeping them would re-introduce ~190k
 # lines of generated `sys/mod.rs` FFI bindings.
 [features]
 cuda-11040 = []

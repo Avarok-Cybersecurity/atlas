@@ -17,9 +17,9 @@ fn compiled_in_identity_is_the_default() {
 
 #[test]
 fn overrides_replace_the_identity() {
-    let t = target_from(Some("Iv1fork".into()), Some("fork/atlas".into())).expect("override");
+    let t = target_from(Some("Iv1fork".into()), Some("fork/avarok".into())).expect("override");
     assert_eq!(t.client_id, "Iv1fork");
-    assert_eq!(t.repo, "fork/atlas");
+    assert_eq!(t.repo, "fork/avarok");
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn failure(status: u16, body: &str) -> IssueFailure {
 
 #[test]
 fn the_failure_table_row_by_row() {
-    let repo = "owner/atlas";
+    let repo = "owner/avarok";
     let msg = |s, b, ra| describe_issue_failure(&failure(s, b), repo, ra);
     assert_eq!(
         msg(403, r#"{"message":"API rate limit exceeded"}"#, Some(30)),

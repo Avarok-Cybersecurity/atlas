@@ -100,7 +100,6 @@ serves. The scheduler then resolves them by silent precedence (ngram → self-sp
 | `--scheduling-policy` | `fifo` | `fifo` or `slai` (SLO-aware) |
 | `--tbt-deadline-ms` | `100` | SLAI decode deadline |
 | `--auto-compact` | off | Active context compression threshold (e.g. 0.75 = 75% of max-seq-len) |
-| `--warmup-prompt` | — | File path; pre-filled at startup, its KV enters the prefix cache |
 
 Agent workloads (Claude Code, OpenCode): always enable `--enable-prefix-caching` and `--scheduling-policy slai`. The prefix cache dominates wall-clock for system prompts + tool schemas; SLAI keeps streaming smooth under concurrent load.
 
@@ -150,8 +149,8 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 ## Rate limiting and auth
 
 - `--require-auth` (with `--auth-token <key>` or `--auth-tokens-file <path>`) — requires an `Authorization: Bearer <key>` header on write endpoints. The presented token must match one of the loaded tokens (constant-time compare); there is no "accept any key" mode.
-- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `ATLAS_RATE_LIMIT_RPM` (requests/min) and/or `ATLAS_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `ATLAS_RATE_LIMIT_BURST_RPM` / `ATLAS_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
-- Body-size limit env-configurable via `ATLAS_MAX_BODY_BYTES` (default **32 MiB** — `main_modules/serve_router.rs`).
+- Token-bucket rate limiter per key (`crates/spark-server/src/rate_limiter.rs`). Off by default; enable by setting `AVAROK_RATE_LIMIT_RPM` (requests/min) and/or `AVAROK_RATE_LIMIT_TPM` (tokens/min) > 0 (bursts via `AVAROK_RATE_LIMIT_BURST_RPM` / `AVAROK_RATE_LIMIT_BURST_TPM`, default = the cap). A MAX_KEYS DoS guard bounds the key table.
+- Body-size limit env-configurable via `AVAROK_MAX_BODY_BYTES` (default **32 MiB** — `main_modules/serve_router.rs`).
 
 ## Changing the model without restarting
 

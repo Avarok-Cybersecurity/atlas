@@ -68,14 +68,14 @@ impl NemotronMamba2Layer {
         // their original NVFP4 form (no FP8 copies read) and activations are
         // dynamically quantized to NVFP4 (packed E2M1 + per-16 E4M3 scales) in one
         // pass. Halves B traffic vs the FP8 path and doubles per-MMA throughput.
-        // W4A4 changes activation numerics -- ATLAS_NO_SSM_W4A4=1 falls back to the
+        // W4A4 changes activation numerics -- AVAROK_NO_SSM_W4A4=1 falls back to the
         // FP8 path (same-binary A/B + quality escape hatch). Scratch: packed A at
         // fp8_act[0], scales at fp8_act[n*K/2]; total n*K*9/16 <= fp8_act's n*K.
         let w4a4 = n >= 512
             && self.w4a4_gemm_k.0 != 0
             && self.quantize_nvfp4_k.0 != 0
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * self.d_inner.max(h)
-            && std::env::var("ATLAS_NO_SSM_W4A4").is_err();
+            && ctx.levers.ssm_w4a4;
         // The predequant-FP8 arms below launch `fp8_fp8_gemm_t_m128_mfast` (when
         // `fp8_a`) or else `fp8_gemm_t_m128_mfast`. Both resolve through
         // `try_kernel`, which yields a NULL handle instead of failing, and a
@@ -101,6 +101,7 @@ impl NemotronMamba2Layer {
         ops::conv1d_update_prefill(
             ctx.gpu,
             self.conv1d_prefill_k,
+            self.conv1d_prefill_tp_k,
             ssm_state.conv_state,
             xbc_ptr,
             &self.ssm.conv1d_weight,
@@ -127,7 +128,7 @@ impl NemotronMamba2Layer {
         // SSD chunked scan: the recurrence becomes tensor-core matmuls with only
         // ceil(T/64) sequential links instead of T. Falls back to the sequential
         // kernels if the SSD kernels are unavailable, the shapes do not divide, or
-        // ATLAS_NO_SSD=1 (same-binary A/B + escape hatch).
+        // AVAROK_NO_SSD=1 (same-binary A/B + escape hatch).
         let ssd_ok = self.ssd_cumsum_k.0 != 0
             && self.ssd_bmm_k.0 != 0
             && self.ssd_scan_k.0 != 0
@@ -144,7 +145,7 @@ impl NemotronMamba2Layer {
             // this went unnoticed. Treat the fit as a precondition of the fast
             // path; failing it falls through to the sequential scan below.
             && ops::ssd_scan_fits(self.state_size as u32)
-            && std::env::var("ATLAS_NO_SSD").is_err();
+            && ctx.levers.ssd;
 
         if ssd_ok {
             let l = ops::SSD_L;
@@ -217,7 +218,7 @@ impl NemotronMamba2Layer {
             // persistent kernel keeps H in shared memory and is only reachable
             // when the SSD fast path is unavailable — a path no shipped model
             // took until Nemotron Nano-30B (state_size=128) fell out of SSD.
-            && std::env::var("ATLAS_NO_SSM_PERSISTENT").is_err()
+            && ctx.levers.ssm_persistent
         {
             ops::mamba2_ssm_prefill_persistent(
                 ctx.gpu,

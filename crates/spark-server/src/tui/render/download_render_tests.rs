@@ -39,7 +39,7 @@ fn app_with_row(model: &str) -> App {
 #[test]
 fn a_download_under_one_percent_still_looks_alive() {
     let mut a = app_with_row("org/big");
-    let root = std::env::temp_dir().join("atlas-render-dl");
+    let root = std::env::temp_dir().join("avarok-render-dl");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/big", root);
     {
@@ -72,7 +72,7 @@ fn a_download_at_exactly_zero_bytes_shows_an_empty_bar_honestly() {
     // The min-one-cell rule applies only once something has moved — before
     // that, an empty bar is the truth.
     let mut a = app_with_row("org/big");
-    let root = std::env::temp_dir().join("atlas-render-dl0");
+    let root = std::env::temp_dir().join("avarok-render-dl0");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/big", root);
     {
@@ -93,7 +93,7 @@ fn a_download_is_visible_from_every_section() {
     for section in crate::tui::section::Section::ALL {
         let mut a = app_with_row("nvidia/Qwen3-80B-NVFP4");
         a.section = section;
-        let root = std::env::temp_dir().join("atlas-render-chip");
+        let root = std::env::temp_dir().join("avarok-render-chip");
         std::fs::create_dir_all(&root).ok();
         a.download.start("nvidia/Qwen3-80B-NVFP4", root);
         {
@@ -120,7 +120,7 @@ fn a_download_is_visible_from_every_section() {
 fn an_unknown_total_shows_bytes_not_a_fake_percentage() {
     let mut a = app_with_row("org/big");
     a.section = crate::tui::section::Section::Stats;
-    let root = std::env::temp_dir().join("atlas-render-chip2");
+    let root = std::env::temp_dir().join("avarok-render-chip2");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/big", root);
     {
@@ -138,7 +138,7 @@ fn an_unknown_total_shows_bytes_not_a_fake_percentage() {
 fn a_cancelling_download_says_stopping_in_the_chip() {
     let mut a = app_with_row("org/big");
     a.section = crate::tui::section::Section::Network;
-    let root = std::env::temp_dir().join("atlas-render-chip3");
+    let root = std::env::temp_dir().join("avarok-render-chip3");
     std::fs::create_dir_all(&root).ok();
     a.download.start("org/big", root);
     {

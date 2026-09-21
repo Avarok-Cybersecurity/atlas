@@ -170,7 +170,7 @@ fn the_watchdog_cut_names_its_guard_and_wires_length() {
     // `</think>` is not eos-registered anyway (Qwen3.6 eos = {248046,
     // 248044}, `</think>` = 248069). Unnamed, `derive_finish_reason` falls
     // through every rung and wires "stop" — and the agentic harness's
-    // `was_cut_off()` (atlas-plugin agent.rs) grants a recovery turn ONLY
+    // `was_cut_off()` (avarok-plugin agent.rs) grants a recovery turn ONLY
     // on "length", so a "stop" with no tool calls ends the whole run.
     let sched = SchedCtx::for_test();
     let mut a = content_phase_seq();

@@ -6,7 +6,7 @@ opencode webserver_ok ~23% vs cache-OFF ~65%) to the MULTI-TURN partial-hit
 recompute path — restore SSM snapshot at snap_tok, recompute SSM over
 [snap_tok, total), reuse cached attention KV for [0, snap_tok).
 
-It needs ONLY ONE server (the cache-ON `atlas-gb10:pfxfix` build). It does
+It needs ONLY ONE server (the cache-ON `avarok-gb10:pfxfix` build). It does
 NOT compare head-vs-worker. Instead, per trial it compares the SAME final
 turn fired:
 

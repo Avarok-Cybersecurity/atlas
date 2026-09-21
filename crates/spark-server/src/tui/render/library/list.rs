@@ -69,7 +69,7 @@ fn badges(app: &App, entry: &Entry) -> Vec<Span<'static>> {
     out.push(Span::styled(label, style));
     out.push(Span::raw(" "));
     if let Some(r) = entry.primary() {
-        let (label, style) = if r.is_atlas() {
+        let (label, style) = if r.is_avarok() {
             (" recipe ", theme::brand_purple())
         } else {
             // Listed, never hidden — but it cannot be launched from here.

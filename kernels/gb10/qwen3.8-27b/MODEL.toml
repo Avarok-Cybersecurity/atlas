@@ -46,7 +46,7 @@ architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 #    (same model_type "qwen3_5", same hidden_size 5120, same every numeric
 #    field), so kernel-target resolution breaks the exact-(qwen3_5, 5120)
 #    tie by matching these needles against the checkpoint reference
-#    (HF id / --model-name / model dir). See atlas-kernels/src/resolve.rs;
+#    (HF id / --model-name / model dir). See avarok-kernels/src/resolve.rs;
 #    an unbroken tie is a hard startup error, never a build-order pick.
 match_names = ["qwen3.8-27b"]
 kernel_source = "qwen3.6-27b"
@@ -211,7 +211,7 @@ default_kv_dtype = "fp8"
 # Upstream Qwen/Qwen3.8-27B reports model_type = "qwen3_5" in config.json,
 # exactly like Qwen3.6-27B (verified: the configs are bit-identical). The
 # MRoPE -> "qwen3_6_moe" dispatch rewrite fires only for MoE checkpoints
-# (is_moe gate in atlas-core config/dispatch.rs), so this DENSE hybrid
+# (is_moe gate in avarok-core config/dispatch.rs), so this DENSE hybrid
 # stays "qwen3_5". No qwen3_6_moe belt-and-braces entry here: unlike
 # qwen3.5-27b/qwen3.6-27b (which carry one for historical re-uploads), no
 # 3.8 checkpoint is known to rewrite, and every extra colliding entry

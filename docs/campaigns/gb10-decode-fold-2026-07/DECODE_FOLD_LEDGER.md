@@ -7,7 +7,7 @@
 | #332 lm_head batched-GEMV M≤4 | decode GEMV | **YES** (w4a16_gemv_batchm) | fresh | banked — drop |
 | #330 f00df894 w4a16 2-chunk ILP | decode GEMV | **YES** (content-identical) | fresh | banked — drop |
 | GDN_FLA k-split (perf/gdn-fla-chunked) | **prefill only** (not decode) | no | 06-05 base | deprioritize |
-| **L1 ATLAS_GDN_FUSED_VERIFY** (fuse K=2 verify epilogue) | **decode** | in-tree, **default OFF** | fresh | **A/B now → flip if win** |
+| **L1 AVAROK_GDN_FUSED_VERIFY** (fuse K=2 verify epilogue) | **decode** | in-tree, **default OFF** | fresh | **A/B now → flip if win** |
 | **L6 unlock-K=3** (216724ec M≤4 verify proj + fuse K=3 conv epilogue) | **decode (2 tok/step)** | partial (#356 8bc3f783) | 07-18, 06-14 base | **dev track (hard)** |
 | FP8 MTP head (e0ab9087) | drafter step cost | no | 07-23, 06-14 base | low pri (accuracy risk) |
 
@@ -36,7 +36,7 @@ not per-lever.
 ## Baseline to beat (vLLM ref, MLPerf-edge agentic, dense-27B)
 wall 7438.35s · IoU 0.6194 · BFCL 79.90 · TTFT p50 2985ms · **TPOT p50 31.39ms**
 
-## Current best Atlas (documented, = base #356)
+## Current best Avarok (documented, = base #356)
 wall ~4984–5023s · IoU 0.6254–0.6285 · BFCL 87.0–87.6 · TTFT p50 ~1557–1582ms · **TPOT p50 39.95ms**
 → Wins wall/TTFT/BFCL/IoU. **Sole gap: TPOT 39.95 vs 31.39 (1.27×).**
 
@@ -46,26 +46,26 @@ wall ~4984–5023s · IoU 0.6254–0.6285 · BFCL 87.0–87.6 · TTFT p50 ~1557�
 --enable-prefix-caching --ssm-cache-slots 128 --ssm-checkpoint-interval 32
 --speculative --num-drafts 2 --mtp-quantization bf16
 --tool-call-parser qwen3_xml --disable-tool-grammar true --disable-thinking
-ENV: ATLAS_NO_FFN_NVFP4_MMQ=1 ATLAS_SSM_TAIL_MIDCHUNK=0 ATLAS_MTP_CATCHUP=0
-     ATLAS_MTP_DRAFT_CONF=0.0 ATLAS_MTP_GATE_FORCE=1 ATLAS_SSM_TAIL_PROTECT=1
-     ATLAS_SSM_TAIL_LEASE_TTL=128 ATLAS_BF16_TC_PREFILL=1
+ENV: AVAROK_NO_FFN_NVFP4_MMQ=1 AVAROK_SSM_TAIL_MIDCHUNK=0 AVAROK_MTP_CATCHUP=0
+     AVAROK_MTP_DRAFT_CONF=0.0 AVAROK_MTP_GATE_FORCE=1 AVAROK_SSM_TAIL_PROTECT=1
+     AVAROK_SSM_TAIL_LEASE_TTL=128 AVAROK_BF16_TC_PREFILL=1
 ```
-Build: `ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b cargo build --release -p spark-server --bin spark --features cuda`
+Build: `AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b cargo build --release -p spark-server --bin spark --features cuda`
 
 ## Lever queue (compounding order — cheapest/biggest first)
 
 | # | lever | source | needs rebuild? | expected decode effect | status |
 |---|---|---|---|---|---|
 | L0 | base #356 | main 011bee65 | building | anchor 39.95ms | BUILDING |
-| L1 | `ATLAS_GDN_FUSED_VERIFY=1` (fuse K=2 conv/norm epilogue) | in-tree, default OFF | NO (env A/B) | remove per-token epilogue at K=2 | queued |
-| L2 | `ATLAS_GDN_FLA` k-split chunk_delta_h (**1.75× vs wy4**) | branch `perf/gdn-fla-chunked` | yes (fold) | recurrence throughput | queued |
+| L1 | `AVAROK_GDN_FUSED_VERIFY=1` (fuse K=2 conv/norm epilogue) | in-tree, default OFF | NO (env A/B) | remove per-token epilogue at K=2 | queued |
+| L2 | `AVAROK_GDN_FLA` k-split chunk_delta_h (**1.75× vs wy4**) | branch `perf/gdn-fla-chunked` | yes (fold) | recurrence throughput | queued |
 | L3 | quantized MTP head | branch `feat/mtp-prefill-fp8-head-v2` | yes (fold) | cheaper drafter step | queued |
 | L4 | lm_head batched-GEMV 27B | PR #332 `perf/lmhead-27b` | yes (triage/fold) | lm_head at M≤4 | queued (may overlap batchm) |
 | L5 | w4a16 GEMV 2-chunk ILP | PR #330 | yes (triage/fold) | decode GEMV ILP | queued |
 | L6 | fuse K=3/K=4 conv epilogue + batched M=4 verify FFN | partial + `fix/mtp-k4-verify-dispatch` | yes | unblocks K=3 without TPOT penalty | profiling-gated |
 
 Refeed: the prefill/decode-refeed already ships in base (#356). Accepted-row refeed
-(`ATLAS_MTP_REFEED_ACCEPTED`) stays OFF (refuted on GB10, Gate A 9/10 fail). NOT in scope.
+(`AVAROK_MTP_REFEED_ACCEPTED`) stays OFF (refuted on GB10, Gate A 9/10 fail). NOT in scope.
 DFlash: OUT — changes verify/sampling, not a same-sampling MLCommons lever.
 
 ## Fold-scope archaeology (2026-07-24) — main already absorbed most decode wins
@@ -77,12 +77,12 @@ Checked each candidate's content against `origin/main @ 011bee65`:
 - **K=3/K=4 verify batched projections (`216724ec`)** → NOT in main (net diff on `dense_ffn.rs`+77 `impl_a1.rs`+51 `types.rs`); partially overlaps #356's `8bc3f783`. This is the "unlock K=3" lever. REAL, but hard + accuracy-sensitive.
 
 **Conclusion:** the "fragmented un-merged wins" are mostly already in main. Genuine un-banked TPOT levers reduce to TWO:
-  1. **L1 `ATLAS_GDN_FUSED_VERIFY`** (fused K=2 conv/norm verify epilogue) — in main, default OFF. ← testing.
+  1. **L1 `AVAROK_GDN_FUSED_VERIFY`** (fused K=2 conv/norm verify epilogue) — in main, default OFF. ← testing.
   2. **L6 unlock-K=3** (cheap K=3/K=4 verify: 216724ec projections + fuse K=3 conv epilogue) — net-new reconciliation, highest TPOT upside (2 accepted tok/step) but hardest.
 Therefore: base consolidation branch ≈ main; the decisive measurement is a **full e2e on consolidated (main + L1 if it wins)** vs vLLM — the compounding check that was never run.
 
 ## Log
-- L0 base: built OK, target=(gb10,qwen3.6-27b,nvfp4) 157 kernels, md5 bfb9d6e0. Serve img atlas-gb10:followups.
+- L0 base: built OK, target=(gb10,qwen3.6-27b,nvfp4) 157 kernels, md5 bfb9d6e0. Serve img avarok-gb10:followups.
 - **dgx3 PROFILE (2026-07-24, GPU idle, clean):** K=2 GDN verify/layer = 60% WY recurrence (wy2 15.2µs) + 22% per-token rms_norm + 18% per-token conv1d (epilogue 40% is launch-bound). **WY recurrence K-scaling is SUBLINEAR:** wy2 17.0µs / wy3 22.5µs (1.32×) / wy4 25.9µs (1.52×); per-token cost DROPS with K. → **verify COST is not the wall; tokens-accepted-per-step (p2 accept) is.** "Verify depth wall" = strix full-serialized path, NOT the GB10 recurrence. Caveat: microbench excludes lm_head/attn/FFN/rollback — confirm at full serve. lm_head M≤4 batchm already in main ✓. Artifacts dgx3:/workspace/decode_profile_20260724_020525/.
 - **qwen FRAME CONSULT (2026-07-24):** decisive scalar **G = (E3/E2)/(S3/S2)**. K=3 improves TPOT iff G>1; beats vLLM iff **G>1.273**. p2≈0.53 ⇒ only ~48% of steps reach draft3 (P12≈p1·p2≈0.477) ⇒ ΔE_max≈0.477 tok/step. With bonus-token accounting E2≈2.377: even perfect p3=1.0 → a=1.20 → at r=1.0 (fused K3 == K2 cost) G=1.20 → **improves but MISSES 31.39ms unless fused K3 is CHEAPER than K2**. Unfused K3 (56–59ms observed) → r≈1.4 → G≈0.86 → regresses (matches observation). **Verdict: K=3 unlikely a standalone TPOT closer given the p2 cliff.** Kill-gate: S3/S2>1.10 → kill L6; only viable if S3/S2≤1.05 AND p3≥0.6.
   - **qwen's Measurement C (I MISSED THIS):** run non-spec / --num-drafts 1 leg. If T_no_spec < 31.39ms → our SPEC path is making TPOT worse → fix spec overhead, not add drafts. If T_no_spec > 31.39ms → base decode cost problem, spec alone can't save. MUST measure.
@@ -97,7 +97,7 @@ Therefore: base consolidation branch ≈ main; the decisive measurement is a **f
   - **Reframe (correct this time):** with E~2.8 already, TPOT 39.95ms ⇒ per-step cost S~112ms. Gap to 31.39ms is now **per-step DECODE COST (~-21% needed)** — dense-27B is memory-bound (weights streamed each K=3 verify pass). Fused epilogue (L6) is marginal vs the model-forward cost; need full-serve step attribution to find the real cost slices. Also verify the 39.95ms itself (cold-turn drag on the median vs warm steady-state).
   - K=4 sweep: nd2(K3)=43.13ms vs nd3(K4)=55.11ms (+27.8%) → K=4 regresses, K=3 is the sweet spot. Consistent (3rd draft marginal, more cost).
 - **qwen RECONSULT / per-step teardown (2026-07-24):** COST is the wall (confirmed). Acceptance ~0.90 gives only ~7% headroom (E 2.8/3.0) → even perfect K=3 floors at **37.3ms, still misses 31.39**. Need **−21% per-step cost** (S 112→88ms). WY recurrence is NOT the suspect (L1 dead confirms epilogue≠wall). **Ranked overhead hypotheses:** #1 (30%) **non-overlapped drafter/MTP proposal** (2 sequential MTP passes not hidden behind verify; predict mtp_propose ≥18-25ms/step) · #2 (25%) **target verify not weight-once at M=3** (projections/FFN stream per-token or inefficient M=3; predict M=3 >1.3× M=1) · #3 (20%) launch/dispatch bubbles (predict GPU idle ≥12-15ms/step) · #4 (15%) SSM state/rollback D2D · #5 (10%) measurement artifact. **Method:** Step0 per-step phase split (NVTX/CUDA-events: target_verify/mtp_propose/sample/ssm-rollback/gaps) ← decisive; Step1 non-spec T_no_spec leg (decision tree); Step2 SHORT safe nsys on ONE warm decode loop (dgx3 idle, --delay/--duration, NOT full 1007); Step3 microbench M=1 vs M=3 projections/FFN/lm_head + GDN state traffic. Falsifier to confirm: live nd=2 dispatches batched wy3 (YES, seen in logs) and M=3 GEMVs truly batched. **L6 verdict: worth banking as small cost-cut but NOT the closer (epilogue is 2-6ms not 20+).**
-- **L1 `ATLAS_GDN_FUSED_VERIFY`: DEAD** (2026-07-24). base_off 42.87ms vs fused_on 43.12ms warm-median TPOT (+0.6%, noise; 9 runs/leg). Output BYTE-IDENTICAL (sha f0fdf42b, correctness confirmed). At K=2 the conv/norm epilogue is a small fraction of the verify step → fusing saves ~nothing. DO NOT FOLD. Lesson: reducing K=2 verify COST doesn't move TPOT; the lever is tokens-accepted-per-step (→ L6 unlock-K=3).
+- **L1 `AVAROK_GDN_FUSED_VERIFY`: DEAD** (2026-07-24). base_off 42.87ms vs fused_on 43.12ms warm-median TPOT (+0.6%, noise; 9 runs/leg). Output BYTE-IDENTICAL (sha f0fdf42b, correctness confirmed). At K=2 the conv/norm epilogue is a small fraction of the verify step → fusing saves ~nothing. DO NOT FOLD. Lesson: reducing K=2 verify COST doesn't move TPOT; the lever is tokens-accepted-per-step (→ L6 unlock-K=3).
 - Neighbour: idle ollama gpt-oss-120b on :8000, model NOT resident (111GB free) — no contention.
 
 ## ★★★★ RE-BASELINE (2026-07-24) — the vLLM reference was a WEAK/verbose run
@@ -107,10 +107,10 @@ User confirmed a WELL-CONFIGURED vLLM-on-GB10 (same nvidia/Qwen3.6-27B-NVFP4 ckp
 vs the artifact I anchored on (vllm_edge_full_20260716): wall 7438s, IoU 0.6194, BFCL 79.90,
 TTFT 2985, TPOT 31.39, TPS 18.68. The 07-16 run was VERBOSE (~521 tok/BFCL leg per CLAUDE.md) →
 slow wall + weak BFCL. **The confirmed 5361/86.43/0.6269 is the REAL bar.**
-Re-scored vs REAL vLLM: Atlas golden (~5000s / ~87 / ~0.625) ≈ **PARITY** on wall/BFCL/IoU
+Re-scored vs REAL vLLM: Avarok golden (~5000s / ~87 / ~0.625) ≈ **PARITY** on wall/BFCL/IoU
 (all within noise), NOT a 4/5 blowout. **TTFT/TPOT of the confirmed run are UNKNOWN** → the
 31.39ms target is from the weak run and may be invalid. MUST obtain confirmed-run TTFT/TPOT before
-grinding any decode-cost lever. dgx2 Atlas e2e gives the apples-to-apples Perf/Accuracy phases.
+grinding any decode-cost lever. dgx2 Avarok e2e gives the apples-to-apples Perf/Accuracy phases.
 
 ## L6 result: DO-NOT-FOLD
 Byte-identical (sha match), TPOT delta -0.01% (noise). Epilogue fusion dead on GB10 (conv snapshot

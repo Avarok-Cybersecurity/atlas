@@ -42,7 +42,7 @@ explicitly out of scope for the first wave; future ADRs may revisit.
 
 Implementation:
 
-- `crates/atlas-core/src/config.rs` recognizes the format from the
+- `crates/avarok-core/src/config.rs` recognizes the format from the
   model's `quantization_config` block in `config.json`.
 - `crates/spark-model/src/weight_map/` per-format loaders produce a
   typed `QuantizedWeight` enum.

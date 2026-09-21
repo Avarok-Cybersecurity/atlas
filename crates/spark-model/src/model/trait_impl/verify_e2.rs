@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 use spark_runtime::gpu::DevicePtr;
 
 use super::super::types::TransformerModel;
@@ -28,22 +28,27 @@ use crate::traits::SequenceState;
 pub(super) const VERIFY_BATCHED_GRAPH_CAP: usize = 32;
 
 /// Verify row-buffer capacity R = Σ ks — the exact capacity of the batched
-/// verify's metadata gaps (verify_e.rs layout: positions 384 B | seq_slot
-/// 384 B | slots 768 B | seq_lens 384 B | bt at +2048), the `bt_rows`
-/// staging and the logits rows (`sizes.rs`). 96 = the wave-11 depth-at-width
-/// envelope: 32:2 = n=32 × k=3 rows hits it dead on (24:2 = 72); previously
-/// 64 (the 32:1 rung's n=32 × k=2), 32 before that (n=16 × k=2). Sequence
-/// count stays bounded at `VERIFY_WY_TABLE_SEQS` = 32 — this cap widens
-/// ROWS (depth at width), not width. The scheduler-side `VERIFY_ROW_BUDGET`
-/// (`mtp_dcut.rs`) mirrors this bound — keep them in lock-step.
-pub(in crate::model) const VERIFY_ROW_CAP: usize = 96;
+/// verify's metadata gaps (verify_e.rs layout, every offset DERIVED from
+/// this constant: positions 4R | seq_slot 4R | slots 8R | seq_lens 4R | bt
+/// at 24R), the `bt_rows` staging and the logits rows (`sizes.rs`). History:
+/// 32 (n=16 × k=2), 64 (32:1), 96 (wave-11 depth-at-width, 32:2 = n=32 × k=3
+/// dead on), now 160: the DFlash uniform K=γ+1=8 shape needs n×8 rows, and
+/// 96 capped the batched verify at n=12 — a C=16 serve chunked 12+4 (better
+/// than the serial-all it did before, still one extra weight sweep per step)
+/// and C=20 fits exactly at 160. Cost is the logits arena: rows × vocab × 2 B
+/// = ~79.5 MB at vocab 248320, +32 MB over the 96-row arena. Sequence count
+/// stays bounded at `VERIFY_WY_TABLE_SEQS` = 32 — this cap widens ROWS
+/// (depth at width), not width. The scheduler-side `VERIFY_ROW_BUDGET`
+/// (`mtp_dcut.rs`) and `bt_rows`/`logits_tokens` (`sizes.rs`) mirror this
+/// bound — keep all four in lock-step.
+pub(in crate::model) const VERIFY_ROW_CAP: usize = 160;
 
 /// Batched-verify CUDA graphs: ON by default, disabled by PRESENCE of
-/// `ATLAS_NO_MTP_VERIFY_GRAPHS` (house convention — `=0` is NOT off).
+/// `AVAROK_NO_MTP_VERIFY_GRAPHS` (house convention — `=0` is NOT off).
 /// Read once per process.
 pub(super) fn verify_graphs_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_VERIFY_GRAPHS").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_VERIFY_GRAPHS").is_none())
 }
 
 /// House VALUE convention: a switch is armed by the literal `"1"` and by
@@ -61,7 +66,7 @@ fn read_value_switch(name: &str) -> bool {
     value_switch_armed(std::env::var(name).ok().as_deref())
 }
 
-/// Per-layer stream-sync diagnostic (`ATLAS_K4_DIAG=1`, VALUE check — this
+/// Per-layer stream-sync diagnostic (`AVAROK_K4_DIAG=1`, VALUE check — this
 /// one predates the presence convention and `=1` is its documented form).
 ///
 /// Read ONCE per process. The raw `std::env::var` sat in the batched verify
@@ -72,30 +77,30 @@ fn read_value_switch(name: &str) -> bool {
 /// tree does, and `std::env::set_var` is `unsafe` since Rust 2024.
 pub(super) fn k4_diag_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| read_value_switch("ATLAS_K4_DIAG"))
+    *ON.get_or_init(|| read_value_switch("AVAROK_K4_DIAG"))
 }
 
-/// Verify argmax D2H arm: `ATLAS_VERIFY_D2H_DEFAULT_STREAM=1` restores the
+/// Verify argmax D2H arm: `AVAROK_VERIFY_D2H_DEFAULT_STREAM=1` restores the
 /// original default-stream copy. Read once per process (was a per-step
 /// `std::env::var` in the D2H tail).
 pub(super) fn verify_d2h_default_stream() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| read_value_switch("ATLAS_VERIFY_D2H_DEFAULT_STREAM"))
+    *ON.get_or_init(|| read_value_switch("AVAROK_VERIFY_D2H_DEFAULT_STREAM"))
 }
 
-/// Verify argmax D2H arm: `ATLAS_NO_PINNED_VERIFY_D2H=1` forces the pageable
+/// Verify argmax D2H arm: `AVAROK_NO_PINNED_VERIFY_D2H=1` forces the pageable
 /// on-stream copy. Read once per process (was a per-step `std::env::var`).
 pub(super) fn verify_d2h_no_pinned() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| read_value_switch("ATLAS_NO_PINNED_VERIFY_D2H"))
+    *ON.get_or_init(|| read_value_switch("AVAROK_NO_PINNED_VERIFY_D2H"))
 }
 
 /// WY-table staging cache: ON by default, disabled by PRESENCE of
-/// `ATLAS_NO_VERIFY_WY_CACHE` (house convention — `=0` is NOT off).
+/// `AVAROK_NO_VERIFY_WY_CACHE` (house convention — `=0` is NOT off).
 /// Read once per process. OFF restores the unconditional per-step re-stage.
 pub(super) fn verify_wy_cache_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_WY_CACHE").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_VERIFY_WY_CACHE").is_none())
 }
 
 /// Encode the COMPLETE input set of `upload_verify_wy_tables`'s staged bytes.
@@ -158,13 +163,13 @@ pub(super) enum VerifyGraphOutcome {
     /// instantiated (the expensive outcome — `verify_key`'s module docs
     /// price instantiate+destroy at 23.2 ms/step at an 89% recapture rate).
     Capture,
-    /// No graph at all: `ATLAS_NO_MTP_VERIFY_GRAPHS`, `ATLAS_K4_DIAG`, or a
+    /// No graph at all: `AVAROK_NO_MTP_VERIFY_GRAPHS`, `AVAROK_K4_DIAG`, or a
     /// batch with a slotless sequence.
     Eager,
 }
 
 /// Periodic INFO summary of the batched-verify graph outcomes, under the
-/// existing `ATLAS_MTP_ACCEPT_DEBUG` gate (checked FIRST, so a default serve
+/// existing `AVAROK_MTP_ACCEPT_DEBUG` gate (checked FIRST, so a default serve
 /// pays one `OnceLock` load and no atomics).
 ///
 /// ★ Why this exists. The n>=2 verify path carries a per-step FIXED cost the
@@ -236,7 +241,7 @@ impl TransformerModel {
     /// arrangement-shaped ON PURPOSE — the space is 2 keys at n=2 and 10 at
     /// n=4, so there is nothing to collapse and the assignment measured net
     /// negative (`CANONICAL_KEY_MIN_WIDTH` carries the A/B table). Kill switch
-    /// `ATLAS_NO_CANONICAL_VERIFY_KEY` (scheduler side) restores the
+    /// `AVAROK_NO_CANONICAL_VERIFY_KEY` (scheduler side) restores the
     /// arrangement-keyed behaviour at every width. Key BYTES live in
     /// `verify_key` so the ordering rule and the key it produces cannot drift
     /// apart. `None` → no graph (a sequence without a pool slot).
@@ -245,6 +250,7 @@ impl TransformerModel {
         seqs: &[&mut SequenceState],
         ks: &[usize],
         wy_tables_null: bool,
+        write_on_accept: bool,
     ) -> Option<Vec<u32>> {
         let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(seqs.len());
         for (i, s) in seqs.iter().enumerate() {
@@ -253,6 +259,7 @@ impl TransformerModel {
         Some(crate::speculative::verify_key::verify_graph_key(
             &pairs,
             wy_tables_null,
+            write_on_accept,
         ))
     }
 
@@ -280,7 +287,7 @@ impl TransformerModel {
     /// The invariant is backstopped twice — the per-layer batched arm
     /// re-checks each state's intermediate capacity before reading a table
     /// (`trait_decode_batched_conv_gdn_multi.rs`), and the wy-tables-present
-    /// sentinel is in the CUDA-graph key — and `ATLAS_NO_VERIFY_WY_CACHE`
+    /// sentinel is in the CUDA-graph key — and `AVAROK_NO_VERIFY_WY_CACHE`
     /// restores the unconditional re-stage for A/B.
     ///
     /// `k` is this step's verify width (rows per sequence, 2..=4 from the

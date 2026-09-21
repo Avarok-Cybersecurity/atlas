@@ -42,13 +42,18 @@ pub enum WeightDtype {
     /// Keep-packed PrismML ternary Q2_0 (ggml id 42): raw on-disk blocks stay
     /// 2-bit in VRAM (fp16 scale + 2-bit codes per group of `group` elements),
     /// dequantized in-kernel by the native `q2_0_gemv` decode path. Only
-    /// produced by the GGUF loader under `ATLAS_GGUF_NATIVE_Q2=1`. Its byte
+    /// produced by the GGUF loader under `AVAROK_GGUF_NATIVE_Q2=1`. Its byte
     /// footprint is NOT a per-element size (2-bit codes + an inline scale per
     /// group), so [`WeightDtype::byte_size`] returns 0 for this variant and the
     /// real size is computed in [`WeightTensor::byte_size`] (shape + group).
     PackedQ2_0 {
         group: u16,
     },
+    /// Raw GGUF `Q2_K` blocks kept on the device (84 bytes per 256 weights,
+    /// `[N, K]` row-major in blocks) for the K-quant GEMV/MMQ kernels.
+    Q2K,
+    /// Raw GGUF `Q3_K` blocks kept on the device (110 bytes per 256 weights).
+    Q3K,
 }
 
 impl WeightDtype {
@@ -64,6 +69,8 @@ impl WeightDtype {
             Self::UInt8 => 1,
             Self::Int64 => 8,
             Self::PackedQ2_0 { .. } => 0,
+            Self::Q2K => 0,
+            Self::Q3K => 0,
         }
     }
 
@@ -144,6 +151,8 @@ impl WeightTensor {
                 let n_blocks = self.num_elements() / g.max(1);
                 n_blocks * (2 + g / 4)
             }
+            WeightDtype::Q2K => self.num_elements() / 256 * 84,
+            WeightDtype::Q3K => self.num_elements() / 256 * 110,
             d => self.num_elements() * d.byte_size(),
         }
     }
@@ -165,21 +174,68 @@ impl WeightTensor {
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    prepartitioned_tp: Option<(usize, usize)>,
+    /// Buffers a loader derived from these tensors — fused concats, transposed
+    /// twins, requants. Owned here so teardown RELEASES them instead of the
+    /// backend sweep reclaiming them unowned (#736, #915); see `derived.rs`.
+    derived: DerivedStore,
+    /// Tensors deliberately NOT uploaded, with where they live on disk.
+    ///
+    /// The n-gram embedding tables of the LongCat / Qwen3.8-Flash-Next family
+    /// are 63 GB (LongCat-Lite) to ~102 GB (Flash-Next) of BF16. Uploading
+    /// them through the generic path would exhaust a 121 GB unified box
+    /// before any quantization could run — and on GB10 the fallback is
+    /// `alloc_managed`, i.e. Linux swap, i.e. the documented kernel freeze.
+    /// They are skipped at load and served either by streaming per-table
+    /// quantize-on-load or straight off NVMe by `NgramRowCache`, both of
+    /// which need only this (path, offset) locator.
+    deferred: HashMap<String, DeferredTensor>,
 }
+
+mod deferred;
+pub use deferred::DeferredTensor;
 
 impl WeightStore {
     /// Create an empty weight store (for testing).
     pub fn empty() -> Self {
         Self {
             weights: HashMap::new(),
+            prepartitioned_tp: None,
+            deferred: HashMap::new(),
+            derived: DerivedStore::default(),
         }
+    }
+
+    /// Record a tensor that was skipped at load, with its on-disk location.
+    pub fn defer(&mut self, name: String, t: DeferredTensor) {
+        self.deferred.insert(name, t);
+    }
+
+    /// Look up a deferred (not-uploaded) tensor's on-disk location.
+    pub fn deferred(&self, name: &str) -> Option<&DeferredTensor> {
+        self.deferred.get(name)
+    }
+
+    /// Every deferred tensor, name-sorted (NUMERIC on a trailing index, so
+    /// `embedders.10` sorts after `embedders.2` — a lexicographic sort here
+    /// silently mis-maps the n-gram tables, which cost a real debugging
+    /// session the first time).
+    pub fn deferred_sorted(&self) -> Vec<(&String, &DeferredTensor)> {
+        let mut v: Vec<_> = self.deferred.iter().collect();
+        v.sort_by_key(|(n, _)| split_trailing_index(n));
+        v
     }
 
     /// Wrap a pre-built map. Used by alternate loaders (e.g.
     /// `fast_weights::FastSafetensorsLoader`, and the RDMA weight loader in
     /// `spark-storage`, which lives in a different crate and so needs this pub).
     pub fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
-        Self { weights }
+        Self {
+            weights,
+            prepartitioned_tp: None,
+            deferred: HashMap::new(),
+            derived: DerivedStore::default(),
+        }
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -204,9 +260,61 @@ impl WeightStore {
         self.weights.is_empty()
     }
 
+    /// Device bytes the store still holds. Not the on-disk load estimate:
+    /// this shrinks as `free_matching` drops tensors the binders replaced.
+    pub fn resident_bytes(&self) -> usize {
+        self.weights.values().map(|t| t.byte_size()).sum()
+    }
+
     /// Iterator over all weight names.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.weights.keys().map(|s| s.as_str())
+    }
+
+    /// Free and forget every tensor whose name matches `pred`. Returns
+    /// `(tensors freed, bytes freed)`.
+    ///
+    /// For loaders that do NOT bind zero-copy from the store's device pointers:
+    /// they upload their own copy, so the original is dead weight the moment the
+    /// binder returns, and on a unified-memory GB10 that duplicate is the
+    /// difference between fitting a KV cache and not.
+    ///
+    /// 🪤 The caller owns the "is it dead?" question. A tensor bound zero-copy
+    /// (every routed expert, and the fused per-expert views in
+    /// `weight_loader/step3p7.rs`) is still live in a layer struct — freeing it
+    /// here is a use-after-free with no diagnostic. Match narrowly.
+    ///
+    /// Per-entry free is sound for the same reason `release` gives below: the
+    /// loaders allocate one `gpu.alloc` per tensor, and no loader inserts an
+    /// `.offset()` view of a shared block into this map.
+    pub fn free_matching(
+        &mut self,
+        gpu: &dyn GpuBackend,
+        pred: impl Fn(&str) -> bool,
+    ) -> Result<(usize, usize)> {
+        let doomed: Vec<String> = self.weights.keys().filter(|n| pred(n)).cloned().collect();
+        let (mut count, mut bytes) = (0usize, 0usize);
+        for name in doomed {
+            // `remove` before `free`: the map must never hold a pointer to
+            // memory that is gone, even if the free below fails.
+            let Some(t) = self.weights.remove(&name) else {
+                continue;
+            };
+            bytes += t.byte_size();
+            gpu.free(t.ptr)
+                .map_err(|e| e.context(format!("freeing weight {name}")))?;
+            count += 1;
+        }
+        Ok((count, bytes))
+    }
+
+    /// The owner for buffers a loader derives from these tensors.
+    ///
+    /// `&self` because `ModelWeightLoader::load_layers` takes `&WeightStore`;
+    /// the interior `Mutex` is the whole reason `DerivedStore` exists as a
+    /// type rather than a `Vec` field. See `weights/derived.rs`.
+    pub fn derived(&self) -> &DerivedStore {
+        &self.derived
     }
 
     /// Total bytes across all weight tensors on the GPU.
@@ -253,6 +361,27 @@ pub struct SafetensorsLoader {
     /// Set from QuantFormat::peak_memory_multiplier() in the caller.
     /// When None, the pre-flight uses its own heuristic (1.3x NVFP4 / 1.5x FP8).
     pub peak_memory_multiplier: Option<f64>,
+    /// Skip the W4A4 `*.input_scale` activation scales at load.
+    ///
+    /// ModelOpt NVFP4 checkpoints ship one 0-dim F32 scalar per quantized
+    /// projection. On a 512-expert model that is ~74k four-byte allocations,
+    /// each taking a full allocation granule — GBs of padding for values
+    /// Atlas never reads, because it serves w4a16 (BF16 activations) and the
+    /// NVFP4 loader already treats the key as optional.
+    ///
+    /// OPT-IN: `step3p7` reads this key on its own path, so it must stay off
+    /// unless the model's loader is known not to need it.
+    pub skip_activation_scales: bool,
+    /// Skip `mtp.*` tensors at load.
+    ///
+    /// For models whose loader deliberately does not build an MTP head,
+    /// uploading its weights is pure waste — on Qwen3.8-Flash-Next that is a
+    /// 1.49 GB expert shard plus the MTP backbone, held resident while the KV
+    /// cache goes without.
+    ///
+    /// OPT-IN: a model that DOES build an MTP head must keep them, so this is
+    /// set only where `load_mtp_weights` is known to return `None`.
+    pub skip_mtp: bool,
 }
 
 impl Default for SafetensorsLoader {
@@ -269,6 +398,8 @@ impl SafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
         }
     }
 
@@ -279,13 +410,33 @@ impl SafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_activation_scales: false,
+            skip_mtp: false,
         }
     }
 
     /// Check if a tensor should be skipped under EP.
     /// Skips `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
-    fn should_skip_tensor(&self, name: &str) -> bool {
+    ///
+    /// 🪤 The MTP exemption keys on a leading `mtp.` — a DeepSeek-style name.
+    /// GLM-5.3 puts its MTP head at `model.language_model.layers.45.*` with no
+    /// `mtp.` prefix, so that layer's routed experts ARE sharded on GLM. Fine
+    /// while the MTP head is out of scope; revisit before enabling it.
+    ///
+    /// `pub` so residency can be PROVEN against a real checkpoint index
+    /// without collectives (see `spark-model/tests/glm53_ep_residency.rs`).
+    pub fn should_skip_tensor(&self, name: &str) -> bool {
+        // MTP head weights for a model whose loader does not build one.
+        if self.skip_mtp && name.starts_with("mtp.") {
+            return true;
+        }
+        // W4A4 activation scales: never read on the w4a16 path (the NVFP4
+        // loader falls back to `DevicePtr::NULL`), and 4-byte allocations are
+        // almost pure granule padding at expert scale.
+        if self.skip_activation_scales && name.ends_with(".input_scale") {
+            return true;
+        }
         if self.ep_world_size <= 1 {
             return false;
         }
@@ -309,22 +460,21 @@ impl SafetensorsLoader {
     }
 }
 
-/// Parse expert index from tensor name (e.g. "model.layers.3.mlp.experts.42.gate_proj.weight" → 42).
-pub fn parse_expert_index(name: &str) -> Option<usize> {
-    let parts: Vec<&str> = name.split('.').collect();
-    for (i, part) in parts.iter().enumerate() {
-        if *part == "experts" && i + 1 < parts.len() {
-            return parts[i + 1].parse().ok();
-        }
-    }
-    None
-}
-
+/// Split a tensor name into (everything but its last numeric path segment,
+/// that segment as a number) so names sort NUMERICALLY on the index.
+/// `embedders.2` must precede `embedders.10`; a plain lexicographic sort puts
+/// `10` first and silently mis-maps every table after the ninth.
 pub mod adapter;
+mod derived;
+pub use derived::DerivedStore;
 mod gguf;
+mod k3;
 mod loader;
+pub use k3::K3SafetensorsLoader;
 pub mod mlx_int8;
-pub use gguf::{GgufLoader, config_from_gguf_dir, find_gguf};
+pub use gguf::dequant_cpu;
+pub use gguf::expert_stream;
+pub use gguf::{GgufLoader, GgufShardSet, config_from_gguf_dir, find_gguf, find_gguf_shards};
 pub(crate) use loader::estimate_load_bytes;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
 // AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
@@ -334,92 +484,16 @@ pub(crate) use loader::check_oom_guard;
 #[cfg(unix)]
 pub(crate) use loader::estimate_has_fp8;
 
-#[cfg(test)]
-mod from_str_tests {
-    use super::WeightDtype;
-
-    #[test]
-    fn from_safetensors_str_matches_disk_mapping() {
-        // The RDMA weight peer publishes these raw header strings; the client
-        // must resolve them to the exact WeightDtype the disk loaders use, else
-        // byte_size/shape diverge and logits break. Locks the closed mapping.
-        use WeightDtype::*;
-        for (s, want) in [
-            ("F32", FP32),
-            ("BF16", BF16),
-            ("U8", UInt8),
-            ("I8", UInt8), // packed NVFP4 raw container
-            ("F8_E4M3", FP8E4M3),
-            ("F8_E8M0", FP8E8M0),
-            ("I64", Int64),
-        ] {
-            assert_eq!(
-                WeightDtype::from_safetensors_str(s).unwrap(),
-                want,
-                "dtype {s}"
-            );
-        }
-        // F16 is converted to BF16 at disk-load; a store (and therefore a
-        // peer manifest) can never contain it, so the wire mapping rejects it.
-        assert!(WeightDtype::from_safetensors_str("F16").is_err());
-        assert!(WeightDtype::from_safetensors_str("bogus").is_err());
-    }
-
-    #[test]
-    fn f16_bytes_convert_to_bf16_via_f32() {
-        use half::{bf16, f16};
-        // Cover sign, exact powers of two, a value needing mantissa rounding
-        // (f16 has 10 mantissa bits, bf16 only 7), f16 max, and a subnormal.
-        let vals = [0.0f32, 1.0, -1.5, 0.1, 65504.0, -6.1035156e-5];
-        let src: Vec<u8> = vals
-            .iter()
-            .flat_map(|v| f16::from_f32(*v).to_le_bytes())
-            .collect();
-        let out = super::f16_to_bf16_bytes(&src);
-        assert_eq!(out.len(), src.len());
-        for (i, v) in vals.iter().enumerate() {
-            let got = bf16::from_le_bytes([out[2 * i], out[2 * i + 1]]);
-            let want = bf16::from_f32(f16::from_f32(*v).to_f32());
-            assert_eq!(got, want, "value {v}");
-        }
-    }
-}
+mod name_utils;
+pub(crate) use name_utils::split_trailing_index;
+pub use name_utils::{is_ngram_table, parse_expert_index};
 
 #[cfg(test)]
 mod packed_q2_tests;
 mod prefix_detect;
 pub use prefix_detect::auto_detect_weight_prefix;
 
-/// Release every weight tensor.
-///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
-impl atlas_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
-    fn label(&self) -> &'static str {
-        "weight store"
-    }
-
-    fn release(&mut self, gpu: &dyn GpuBackend) -> anyhow::Result<()> {
-        let mut first_error = None;
-        // `drain` rather than iterate: the map must not be left holding
-        // pointers to memory that is gone, and it makes this idempotent.
-        for (name, tensor) in self.weights.drain() {
-            if let Err(e) = gpu.free(tensor.ptr)
-                && first_error.is_none()
-            {
-                first_error = Some(e.context(format!("freeing weight {name}")));
-            }
-        }
-        match first_error {
-            Some(e) => Err(e),
-            None => Ok(()),
-        }
-    }
-}
+mod release;
 
 #[cfg(test)]
 mod teardown_tests;

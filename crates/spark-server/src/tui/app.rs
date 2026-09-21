@@ -68,6 +68,10 @@ pub struct App {
     pub focus: Focus,
     pub progress: ProgressModel,
     pub stats: StatsModel,
+    /// Background thermal/throttle sampler. Reading the throttle counters costs
+    /// a 100-200 ms `nvidia-smi` spawn, so it runs off the render thread and the
+    /// UI only ever reads its latest snapshot — see `data::thermal`.
+    pub thermal: super::data::thermal::ThermalProbe,
     pub started: Instant,
     /// None = follow newest; Some(n) = scrolled up by n lines.
     pub log_scroll: Option<usize>,
@@ -183,6 +187,7 @@ impl App {
             focus: Focus::Content,
             progress: ProgressModel::default(),
             stats: StatsModel::default(),
+            thermal: super::data::thermal::ThermalProbe::spawn(),
             started: Instant::now(),
             log_scroll: None,
             log_filter: String::new(),

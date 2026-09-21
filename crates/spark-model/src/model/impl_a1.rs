@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -28,16 +28,16 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 /// lm_head tile-GEMM decode path: **ON by default**, disabled by
-/// `ATLAS_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
+/// `AVAROK_NO_LMHEAD_TGEMM=1`. Evaluated ONCE at construction — the switch
 /// decides whether the transposed twin is built at all, so setting it later has
-/// no effect. Presence-style check (`ATLAS_*=0` is NOT "off").
+/// no effect. Presence-style check (`AVAROK_*=0` is NOT "off").
 ///
 /// Measured C=16: 113.10 -> 119.32 tok/s (+5.50%, disjoint ranges, 4 reps).
 /// `padded_n <= 4` is untouched and stays byte-identical, so C=1 is unaffected.
 /// The twin costs ~681 MB and leaves the KV pool at 4759 blocks vs 4757 without
 /// it — no measurable KV impact.
 fn lmhead_tgemm_enabled() -> bool {
-    std::env::var("ATLAS_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
+    std::env::var("AVAROK_NO_LMHEAD_TGEMM").ok().as_deref() != Some("1")
 }
 
 impl TransformerModel {
@@ -93,15 +93,19 @@ impl TransformerModel {
         // the SSM/attention sites — it picks the 3-deep pipeline variant when
         // present. lm_head launches 1938 CTAs and already sits at ~83% of
         // achievable, so the expected gain here is small; measured, not assumed.
-        let w4a16_gemm_t_kernel = crate::layers::tgemm_kernel(gpu.as_ref());
-        // Lossless BF16-MMA sibling for lm_head, OPT-IN via ATLAS_LMHEAD_LOSSLESS=1.
+        let w4a16_gemm_t_kernel = if crate::layers::tgemm_probe_ok(&config.model_type) {
+            crate::layers::tgemm_kernel(gpu.as_ref())
+        } else {
+            KernelHandle(0)
+        };
+        // Lossless BF16-MMA sibling for lm_head, OPT-IN via AVAROK_LMHEAD_LOSSLESS=1.
         // Measured cost 1.81% at C=16 (129.68 -> 127.33). Default is the faster
         // FP8-activation path because the accuracy question it addresses CANNOT
         // BE MEASURED until vLLM parity lifts the BFCL embargo — and the 1.81%
         // is throughput needed to REACH parity. The risk is real but indirect:
         // the bf16-floor finding was superseded on the WEIGHT axis, and this is
         // the ACTIVATION axis, which was never examined. Re-decide at parity.
-        let w4a16_gemm_t_bf16_kernel = if std::env::var("ATLAS_LMHEAD_LOSSLESS").is_ok() {
+        let w4a16_gemm_t_bf16_kernel = if std::env::var("AVAROK_LMHEAD_LOSSLESS").is_ok() {
             crate::layers::try_kernel(gpu.as_ref(), "w4a16", "w4a16_gemm_t_m128_bf16_v2")
         } else {
             spark_runtime::gpu::KernelHandle(0)
@@ -134,6 +138,21 @@ impl TransformerModel {
         let dense_gemv_batchm_kernel = gpu
             .kernel("dense_gemv_bf16_batchm", "dense_gemv_bf16_batchm")
             .unwrap_or(spark_runtime::gpu::KernelHandle(0));
+        // Tensor-core BF16 head arm (#927/#928). Optional: a target whose tree
+        // does not carry `dense_gemm_m16_bf16.cu` (Hopper owns it) never looks
+        // it up, and a 0 handle is exactly how `lm_head_m16_tc_route`
+        // declines. Where the module is compiled, a handle is cheap and
+        // `AVAROK_LM_HEAD_M16_TC` decides whether it is ever launched.
+        let lm_head_m16_tc_kernel = crate::layers::try_target_kernel(
+            gpu.as_ref(),
+            "dense_gemm_m16_bf16",
+            "dense_gemm_m16_bf16",
+        );
+        let lm_head_m16_tc_n64_kernel = crate::layers::try_target_kernel(
+            gpu.as_ref(),
+            "dense_gemm_m16_bf16",
+            "dense_gemm_m16_bf16_n64",
+        );
         let argmax_kernel = gpu.kernel("argmax", "argmax_bf16")?;
         let argmax_batch_kernel = gpu
             .kernel("argmax", "argmax_bf16_batch")
@@ -142,12 +161,19 @@ impl TransformerModel {
         let batched_embed_kernel = gpu.kernel("embed_from_argmax", "batched_embed")?;
         let fill_slots_kernel = gpu.kernel("metadata_fill", "fill_slots_from_block_table")?;
         let profile = config.profile;
-        let profile_first = std::env::var("ATLAS_PROFILE_FIRST").is_ok();
+        let profile_first = std::env::var("AVAROK_PROFILE_FIRST").is_ok();
 
         // Pin the split-K attention split count to the configured max batch so
         // a sequence's attention reduction is invariant to how many other
         // sequences are co-batched (concurrent-decode determinism — see
         // tasks/determinism_investigation.md).
+        // ★ A FRESH RESOLVE, DELIBERATELY — not `*ModelLevers::get()`.
+        // `speculative::shadow_topk` documents the rule: the levers resolve
+        // "once per run rather than caching the answer in a `OnceLock` that a
+        // swap would pin". Building a second model must re-resolve, so this
+        // path stays uncached. It runs once per model, so it costs nothing;
+        // `get()` exists for the read-only sites that used to call this per
+        // layer per prefill.
         let mut levers = ops::ModelLevers::from_env();
         levers.max_decode_seqs = (max_batch_size as u32).max(1);
 
@@ -172,10 +198,15 @@ impl TransformerModel {
         // For DFlash K=γ verify: K = γ + 1 (drafter's γ drafts + 1 verified bonus slot).
         // Pool size = max of both so DFlash and MTP can coexist on the same model.
         let dflash_kgamma = if !config.dflash_capture_layers.is_empty() {
-            // Drafter's γ is fixed in dflash config; use the largest known γ
-            // (16 for `Qwen3.6-DFlash`). The +1 is the prefix bonus position
-            // in the verify input `[last_token, draft_0, ..., draft_{γ-1}]`.
-            17
+            // The +1 is the prefix bonus position in the verify input
+            // `[last_token, draft_0, ..., draft_{γ-1}]`. Sized from the
+            // RESOLVED drafter γ (factory sets `config.dflash_gamma` from the
+            // drafter checkpoint / --dflash-gamma): the legacy 17-wide
+            // ceiling (γ=16-era) cost ~1.5 GB of intermediates per slot per
+            // GB at γ=8 — ~12 GB across 8 slots on qwen3.8-27B — for slots
+            // the verify never touches (2026-08-19 256K/C8 boot ledger).
+            // Unknown γ keeps the 17-wide fallback.
+            config.dflash_gamma.map(|g| g + 1).unwrap_or(17)
         } else {
             0
         };
@@ -187,13 +218,44 @@ impl TransformerModel {
         // main head (NVFP4 default) or the draft-only head built when the main
         // head is BF16. `draft_lm_head_nvfp4` resolves to whichever is present.
         let draft_lm_head_nvfp4 = mtp_lm_head_nvfp4.or(lm_head_nvfp4);
+        // 🔴 This flag SIZES THE RECURRENT ROLLBACK POOLS (checkpoints + per-token
+        // intermediates). It has to be true for every proposer that can reject a draft, not
+        // just the Qwen-shaped one.
+        //
+        // 🪤 GLM-5.3 populates NEITHER of the first two signals: its MTP block is
+        // `layers.{num_hidden_layers}`, not the Qwen `MtpWeights`, and its LM head is BF16 so
+        // there is no NVFP4 draft head. Its proposer is installed AFTER construction via
+        // `set_dflash_proposer`, so `new()` cannot see it either. `mtp_layer_types` is what the
+        // config parser records when the CHECKPOINT declares MTP layers — the one signal
+        // available this early. Without it the pools are never allocated and the first decode
+        // panics in `ssm_pool::h_checkpoint` ("len is 0 but the index is 0").
+        let checkpoint_declares_mtp = !config.mtp_layer_types.is_empty();
         let has_mtp = self_speculative
-            || (use_speculative && !mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+            || (use_speculative
+                && ((!mtp_weights.is_empty() && draft_lm_head_nvfp4.is_some())
+                    || checkpoint_declares_mtp))
             || dflash_kgamma > 0;
-        let num_intermediates = if has_mtp {
-            (num_drafts + 1).max(dflash_kgamma)
-        } else {
+        let num_intermediates = if !has_mtp {
             0
+        } else if dflash_kgamma > 0 {
+            // DFlash serve: the block drafter OWNS the verify path, so the
+            // widest verify is K = gamma + 1 and `num_drafts` never reaches
+            // the pool. Taking max(num_drafts+1, kgamma) sized these pools for
+            // the MTP K=2/3/4 ladder that a DFlash serve never runs: at
+            // num_drafts=15 that is 16 wide against a real ceiling of 9, and
+            // these pools are the single largest non-weight allocation on the
+            // box — 21.9 GB at 8 slots x 48 layers, as large as the model
+            // itself. Sizing to the real ceiling reclaims ~9.6 GB
+            // (2026-08-19 128K/C8 boot ledger; observed verify widths were
+            // K=8 and ks=[8;n], never above).
+            //
+            // The K2/K3/K4 arms still reachable on a DFlash serve (when the
+            // drafter returns <4 drafts) verify at K<=4, comfortably inside
+            // this. `require_verify_rollback_supported` remains the backstop
+            // if a future path asks for more.
+            dflash_kgamma
+        } else {
+            num_drafts + 1
         };
         let ssm_pool = std::sync::Arc::new(SsmStatePool::new(
             &config,
@@ -211,7 +273,7 @@ impl TransformerModel {
             gpu.as_ref(),
         )?);
 
-        // Fail fast if an SSM tier was requested (`ATLAS_SSM_TIER`) on a model
+        // Fail fast if an SSM tier was requested (`AVAROK_SSM_TIER`) on a model
         // with no recurrent state — a tier request there was previously a
         // silent no-op. No-op when the tier is unset (default path).
         super::ssm_tier::ensure_ssm_tier_capability(&config)?;
@@ -232,8 +294,9 @@ impl TransformerModel {
         // therefore unreachable, and on this model it is NOT cheap: 8 slots x
         // max_batch x the full SSM blob (27B: 158.9 MB) = ~19.9 GB at batch 16,
         // allocated up front. Skip it when speculative decode is on.
-        // The ring-depth decision (env overrides + speculative/watchdog
-        // skip) is SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
+        // The ring-depth decision (the published `--ssm-decode-ring-slots` /
+        // #915 auto-fit depth, env overrides, speculative/watchdog skip) is
+        // SSOT'd in `crate::ssm_reserve::decode_rollback_ring_slots`
         // — spark-server's `preflight_reserve` calls the SAME helper, so the
         // GPU reservation and this allocation cannot drift. The scheduler
         // keys off `decode_rollback_ring_slots()`, so a 0 here disables save
@@ -246,20 +309,45 @@ impl TransformerModel {
         if let Some(reason) = ring.skip_reason {
             let per_seq = (ssm_pool.h_bytes + ssm_pool.conv_bytes)
                 * ssm_pool.num_ssm_layers
-                * atlas_kernels::DECODE_ROLLBACK_RING_SLOTS;
+                * avarok_kernels::DECODE_ROLLBACK_RING_SLOTS;
             tracing::info!(
                 "SSM decode-rollback ring: SKIPPED ({}) — the ring's save/rollback \
                  path only runs on plain decode with watchdogs enabled. Saves {:.1} GB \
                  ({} seqs x {} slots x full SSM blob). If plain-decode loop re-steer is \
-                 ever reached it fail-opens to decline; ATLAS_SSM_DECODE_RING=1 \
+                 ever reached it fail-opens to decline; AVAROK_SSM_DECODE_RING=1 \
                  force-restores the ring.",
                 reason,
                 (per_seq * max_batch_size) as f64 / 1e9,
                 max_batch_size,
-                atlas_kernels::DECODE_ROLLBACK_RING_SLOTS,
+                avarok_kernels::DECODE_ROLLBACK_RING_SLOTS,
             );
         }
         let decode_ring_slots = ring.slots;
+        // Marconi snapshot region (2380 MiB on GLM-5.3 at 16 slots). SSOT:
+        // `ssm_reserve::marconi_snapshot_slots` makes the SAME decision
+        // `preflight_reserve` made before the weights loaded. The region's
+        // only reader is a prefix-cache lookup, so an inactive cache makes
+        // every slot unreachable for the life of the process. Asking the
+        // constructed cache (`is_active`) rather than the CLI flag also
+        // covers the compressed-DeepSeek-V4 downgrade, where the flag is set
+        // but `NoPrefixCaching` is what actually gets installed.
+        let marconi =
+            crate::ssm_reserve::marconi_snapshot_slots(ssm_cache_slots, prefix_cache.is_active());
+        if let Some(reason) = marconi.skip_reason {
+            tracing::info!(
+                "SSM snapshot pool: Marconi region SKIPPED ({}) — {} slot(s) x {} layer(s) \
+                 = {:.0} MB freed for KV (restore with --enable-prefix-caching, or \
+                 AVAROK_SSM_MARCONI_FULL to allocate anyway)",
+                reason,
+                ssm_cache_slots,
+                ssm_pool.num_ssm_layers,
+                (ssm_cache_slots
+                    * ssm_pool.num_ssm_layers
+                    * (ssm_pool.h_bytes + ssm_pool.conv_bytes)) as f64
+                    / (1024.0 * 1024.0),
+            );
+        }
+        let ssm_cache_slots = marconi.slots;
         let ssm_snapshots = SsmSnapshotPool::new(
             ssm_cache_slots,
             ssm_pool.h_bytes,
@@ -306,7 +394,7 @@ impl TransformerModel {
         // loads are aligned. The stride must be a multiple of 16; 128 also keeps
         // whole N-tiles. Without the pad, N = vocab = 248077 (ODD) misaligns 15 of
         // every 16 k-rows => the campaign's long-standing sticky CUDA 716.
-        // Default ON (kill: ATLAS_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
+        // Default ON (kill: AVAROK_NO_LMHEAD_TGEMM=1). KV impact is nil: the pool
         // reads 4759 blocks with the twin vs 4757 without. See STATE.md.
         let lm_head_nvfp4_t = match (&lm_head_nvfp4, lmhead_tgemm_enabled()) {
             (Some(w), true) => {
@@ -328,7 +416,7 @@ impl TransformerModel {
                     tracing::warn!(
                         "lm_head twin uses a PADDED stride ({} != vocab {}): this target's \
                          w4a16_gemm_t MUST accept the `ldb` argument, or decode at padded_n>=5 \
-                         will read sheared rows. Disable with ATLAS_NO_LMHEAD_TGEMM=1.",
+                         will read sheared rows. Disable with AVAROK_NO_LMHEAD_TGEMM=1.",
                         stride,
                         config.vocab_size
                     );
@@ -403,6 +491,13 @@ impl TransformerModel {
         } else {
             DevicePtr::NULL
         };
+        let gdn_woa_na_tab = if verify_wy_tables.is_null() {
+            DevicePtr::NULL
+        } else {
+            let b = gpu.alloc(crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            gpu.memset(b, 0, crate::layer::VERIFY_WY_TABLE_SEQS * 4)?;
+            b
+        };
         // Catch-up ring: 512 rows covers the gate's serial re-probe interval
         // (256 tokens) with 2x margin; ~4 MB at hidden 4096. Only allocated
         // when the staged feature is enabled.
@@ -412,7 +507,7 @@ impl TransformerModel {
             DevicePtr::NULL
         };
 
-        // Whole-prompt hidden capture buffer, [max_seq_len, hidden_size] BF16 —
+        // Whole-prompt hidden capture buffer, [rows, hidden_size] BF16 —
         // 335 MB at 32k/h=5120. Backs BOTH halves of the drafter-context
         // feature (see `crate::model::drafter_context`); NULL here disables
         // prefill AND carry, since the carry path reads this buffer.
@@ -421,17 +516,64 @@ impl TransformerModel {
         // not be killed, and the head must be a precision the batched prefill
         // can actually run at — an NVFP4/FP8 MTP head would allocate this and
         // never write it.
+        //
+        // Two ceilings, both binding, one value. The proposer's reachable
+        // context (`DraftProposer::prefill_hidden_rows`, default `max_seq_len`):
+        // GLM-5.3's drafter is a DSA block capped at `max_dsa_context`, so at
+        // `--max-seq-len 524288` this buffer was 4.0 GiB of which all but
+        // 128 MiB was unreachable, and unreserved, because it is allocated
+        // after the KV pool is sized (ANOMALIES A59). And the DFlash ctx cap
+        // when DFlash is on: a DFlash serve above the 16K cap wrote past the
+        // allocation once a prompt crossed it (`cuMemcpyDtoDAsync` status 1,
+        // reported on #844 by rsafier). `capture_rows` is computed OUTSIDE the
+        // branch because it is also the buffer's row capacity
+        // (`mtp_prefill_capacity` below): the two numbers must be one value.
+        let mtp_prefill_rows = proposer
+            .as_ref()
+            .map_or(max_seq_len, |p| p.prefill_hidden_rows(max_seq_len))
+            .min(max_seq_len);
+        let capture_rows = if dflash_kgamma > 0 {
+            let cap = crate::layers::dflash_ctx_cap();
+            if cap == 0 {
+                mtp_prefill_rows
+            } else {
+                mtp_prefill_rows.min(cap)
+            }
+        } else {
+            mtp_prefill_rows
+        };
         let mtp_prefill_hidden = if has_mtp
             && mtp_quant.supports_drafter_prefill()
             && crate::layers::mtp_drafter_prefill_enabled(&levers)
         {
-            let bytes = max_seq_len * config.hidden_size * 2;
+            // Bound the capture to what the drafter can actually CONSUME.
+            // `prefill_drafter` writes into the drafter's own KV, which is
+            // capped at the DFlash ctx window, so a capture longer than that
+            // window is memory nothing can read: 1342 MB at --max-seq-len
+            // 131072 against a 16K window that can hold 168 MB of it.
+            // A prompt past the window simply does not get the whole-prompt
+            // drafter prefill (the coverage check at the consume site already
+            // handles that — blind beats poisoned); it costs acceptance on
+            // very long cold turns, not correctness.
+            //
+            // Pure-MTP serves keep the full ceiling: this narrowing is only
+            // sound because the DFlash drafter's own capacity is the binding
+            // constraint, and that reasoning does not transfer.
+            let bytes = capture_rows * config.hidden_size * 2;
             tracing::info!(
                 "MTP drafter context: allocating {:.0} MB prompt-hidden capture \
-                 ({} x {} BF16)",
+                 ({} x {} BF16){}",
                 bytes as f64 / 1e6,
-                max_seq_len,
+                capture_rows,
                 config.hidden_size,
+                if capture_rows < max_seq_len {
+                    format!(
+                        " — capped from --max-seq-len {max_seq_len} to the reachable \
+                         context (proposer ceiling A59 and/or the DFlash ctx cap)"
+                    )
+                } else {
+                    String::new()
+                },
             );
             gpu.alloc(bytes)?
         } else {
@@ -457,10 +599,17 @@ impl TransformerModel {
         // max verify K = gamma) so the K=gamma EAGLE path can capture every verify row;
         // pre-fix paths use only rows 0-1. Stored on the model as the single
         // source of truth so `try_dflash_capture_all` can bound its writes.
+        //
+        // Widened to `max_batch_size` K-row BANDS: a cross-sequence batched
+        // K=gamma verify (and batched decode) captures every (sequence, row)
+        // pair, sequence i writing band i at row `i * dflash_kgamma`. The
+        // scheduler reads a band back through `commit_ctx`'s `scratch_row`.
+        // Cost is trivial (8 seqs x 9 rows x 5 layers x 5120 x 2 B ~ 3.7 MB)
+        // and the single-sequence paths keep using band 0 unchanged.
         let dflash_hidden_save_rows = if dflash_capture_layers.is_empty() {
             0
         } else {
-            dflash_kgamma.max(2)
+            dflash_kgamma.max(2) * max_batch_size.max(1)
         };
         let dflash_hidden_save = if dflash_capture_layers.is_empty() {
             None
@@ -503,6 +652,39 @@ impl TransformerModel {
         //   - norm_output: attention o_proj decode output
         //     (`attention_forward_oproj` writes o_out = `buffers.norm_output()`),
         //     reduced per attention layer under TP.
+        // 🔴 D1. Levers that decide the COLLECTIVE SCHEDULE are read per-rank from the
+        // environment, so a rank skew is a hang or a wrong-extent reduce rather than a perf
+        // difference. Agree on them before the first token. See `crate::rank_agree`.
+        if let Some(ref comm) = comm {
+            crate::rank_agree::assert_ranks_agree(
+                &*gpu,
+                comm.as_ref(),
+                &[
+                    // Splits a prefill chunk into sub-chunks, and every sub-chunk issues its own
+                    // `reduce_partial` at the attention site and the MLP site.
+                    (
+                        "AVAROK_GLM_PREFILL_ROWS",
+                        crate::layers::glm5next_layer::prefill_rows() as u64,
+                    ),
+                    // Perf-only (the MLP reduces once per site whichever arm runs), but a skew
+                    // here is still a confusing asymmetry and the check is free.
+                    (
+                        "AVAROK_GLM_MOE_ROW_BATCH_MAX",
+                        crate::layers::glm5next_mlp::forward::row_batch_max() as u64,
+                    ),
+                    // Documented as "both ranks must agree" in `model/types.rs` since it was
+                    // introduced, and never checked.
+                    (
+                        "AVAROK_EP_PROTOCOL(v2)",
+                        u64::from(matches!(
+                            std::env::var("AVAROK_EP_PROTOCOL").as_deref(),
+                            Ok("v2")
+                        )),
+                    ),
+                ],
+            )?;
+        }
+
         if let Some(ref comm) = comm
             && comm.world_size() == 2
         {
@@ -517,6 +699,16 @@ impl TransformerModel {
             match comm.register_buffer(norm_ptr, norm_bytes) {
                 Ok(_) => tracing::info!("Registered norm_output ({norm_bytes} B) with NCCL"),
                 Err(e) => tracing::warn!("ncclCommRegister norm_output failed (non-fatal): {e}"),
+            }
+            //   - logits: the vocab-parallel BF16 LM head's all-reduce target
+            //     (`impl_a3::lm_head`). Unregistered it is the only per-step collective
+            //     whose SEND pointer NCCL has never seen, which costs an ibv_reg_mr on
+            //     the critical path of every token.
+            let logits_ptr = buffers.logits().0;
+            let logits_bytes = buffers.sizes().logits;
+            match comm.register_buffer(logits_ptr, logits_bytes) {
+                Ok(_) => tracing::info!("Registered logits ({logits_bytes} B) with NCCL"),
+                Err(e) => tracing::warn!("ncclCommRegister logits failed (non-fatal): {e}"),
             }
             match gpu.kernel("bf16_add", "bf16_add_inplace") {
                 Ok(k) => comm.set_add_kernel(k.0),
@@ -582,7 +774,7 @@ impl TransformerModel {
         // 0.14-margin tiebreak as BF16. The drift is upstream in attention
         // or MLP, not in the lm_head precision boundary. Code paths kept
         // wired so a future bisection (Phase 2 of the plan) can re-enable
-        // via `ATLAS_GEMMA4_FP32_LMHEAD=1`. Keep `use_fp32_logits=false`
+        // via `AVAROK_GEMMA4_FP32_LMHEAD=1`. Keep `use_fp32_logits=false`
         // by default so the rest of the model behaves identically to the
         // pre-fix BF16 path on every model family.
         // FP32 lm_head + softcap. Default OFF — empirically the gain on
@@ -591,7 +783,7 @@ impl TransformerModel {
         // FP32 forces host-side sampling (vocab=262144 × 4 bytes per
         // decode step → ~1 MB D2H per token) which crushes decode TPS
         // from ~35 tok/s to ~6 tok/s on Gemma-4-31B. Not worth it without
-        // a GPU-side FP32 argmax kernel. `ATLAS_GEMMA4_FP32_LMHEAD=1`
+        // a GPU-side FP32 argmax kernel. `AVAROK_GEMMA4_FP32_LMHEAD=1`
         // re-enables for bisection / future work.
         //
         // The earlier "FP32 doesn't fix haiku" comment in this file was
@@ -601,7 +793,7 @@ impl TransformerModel {
         // bisection's *qualitative* conclusion: FP32 lm_head + softcap
         // doesn't materially fix Gemma-4's structural NVFP4 attention
         // drift on greedy code generation. Fix is upstream of lm_head.
-        // FP32 logits (ATLAS_GEMMA4_FP32_LMHEAD) required an FP32 residual
+        // FP32 logits (AVAROK_GEMMA4_FP32_LMHEAD) required an FP32 residual
         // stream as a precondition. With the residual stream now always BF16,
         // the FP32 logits path can never activate, so it is permanently off.
         let use_fp32_logits = false;
@@ -676,7 +868,7 @@ impl TransformerModel {
             derived: crate::layers::ops::DerivedWeights::new(),
             levers,
             stats: ops::ModelStats::new(),
-            #[cfg(feature = "cuda")]
+            #[cfg(avarok_cuda)]
             innerq: gpu.kernel_registry().and_then(|reg| {
                 let driver = crate::layers::qwen3_attention::InnerQDriver::from_env(reg)?;
                 match driver.start() {
@@ -688,11 +880,15 @@ impl TransformerModel {
                 }
             }),
             embed_tokens,
+            ngram_embed: None,
             final_norm,
             lm_head_weight,
             lm_head_nvfp4,
             lm_head_nvfp4_t,
             lm_head_fp8,
+            // ★ Before `layers` is moved: the veto is a fold over the layers
+            // and must be computed while they are still nameable here.
+            decode_graph_veto: layers.iter().any(|l| l.decode_graph_unsupported()),
             layers,
             buffers,
             lora: None,
@@ -714,6 +910,8 @@ impl TransformerModel {
             dense_gemv_fp8w_batch2_kernel,
             dense_gemm_kernel,
             dense_gemv_batchm_kernel,
+            lm_head_m16_tc_kernel,
+            lm_head_m16_tc_n64_kernel,
             argmax_kernel,
             argmax_batch_kernel,
             argmax_logits_kernel,
@@ -729,11 +927,11 @@ impl TransformerModel {
             // naturally outside the captured region.
             suppress_graphs: std::sync::atomic::AtomicBool::new(
                 has_fp8_calibration
-                    || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
+                    || std::env::var("AVAROK_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
                     // PCND diagnostic: force eager decode (no CUDA-graph capture)
-                    // so ATLAS_DEBUG_SYNC_KERNELS can synchronize per launch and
+                    // so AVAROK_DEBUG_SYNC_KERNELS can synchronize per launch and
                     // surface async faults at the culprit kernel. Default-off.
-                    || std::env::var("ATLAS_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
+                    || std::env::var("AVAROK_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
             ),
             ssm_pool,
             ssm_snapshots,
@@ -748,23 +946,33 @@ impl TransformerModel {
             mtp_catchup_ring,
             mtp_catchup_meta: parking_lot::Mutex::new((0, 0)),
             mtp_prefill_hidden,
+            // SSOT for the capture bounds check: the ROW COUNT actually
+            // allocated (both ceilings applied), never `max_seq_len`. The
+            // capture guard in `drafter_prefill.rs` compares against this.
             mtp_prefill_capacity: if mtp_prefill_hidden.is_null() {
                 0
             } else {
-                max_seq_len
+                capture_rows
             },
             mtp_prefill_capture_len: std::sync::atomic::AtomicUsize::new(0),
             mtp_prefill_capture_gen: std::sync::atomic::AtomicU64::new(0),
+            mtp_store_gen_seq: std::sync::atomic::AtomicU64::new(0),
             mtp_carry: parking_lot::Mutex::new(None),
-            mtp_store_range: parking_lot::Mutex::new((0, 0)),
+            mtp_store_range: parking_lot::Mutex::new(super::mtp_carry::StoreRange::EMPTY),
             dflash_hidden_save,
+            verify_ptok_meta: std::sync::OnceLock::new(),
             dflash_hidden_save_rows,
+            dflash_kgamma,
             dflash_capture_layers,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_batched_graphs: Mutex::new((std::collections::HashMap::new(), 0)),
             verify_wy_tables,
+            gdn_woa_na_tab,
+            gdn_woa_folded_slots: parking_lot::Mutex::new(Vec::new()),
+            gdn_woa_eligible: std::sync::atomic::AtomicBool::new(false),
+            gdn_woa_bound: parking_lot::Mutex::new((DevicePtr::NULL, DevicePtr::NULL, 0)),
             // Nothing staged yet: the buffer was memset to zero above, and no
             // key describes zero, so the first verify step always uploads.
             verify_wy_cache: Mutex::new(None),
@@ -776,7 +984,7 @@ impl TransformerModel {
             snapshot_event,
             comm,
             ep_cmd_buf,
-            ep_protocol_v2: matches!(std::env::var("ATLAS_EP_PROTOCOL").as_deref(), Ok("v2")),
+            ep_protocol_v2: matches!(std::env::var("AVAROK_EP_PROTOCOL").as_deref(), Ok("v2")),
             self_speculative,
             last_mtp_hidden_idx: std::sync::atomic::AtomicUsize::new(0),
             vision_encoder,

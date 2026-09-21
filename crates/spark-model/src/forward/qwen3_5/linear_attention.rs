@@ -88,7 +88,7 @@ pub fn forward_linear_attention<Q: QuantWeights>(
     // Atlas applies the GDN `1/sqrt(d)` factor at the kernel output;
     // MLX applies its inv_scale at the rms_norm input. The two paths
     // are mathematically equivalent — see the rationale in
-    // `/Users/.../atlas/memory/feedback_mlx_rms_norm_vs_l2_norm.md`.
+    // `/Users/.../avarok/memory/feedback_mlx_rms_norm_vs_l2_norm.md`.
 
     // 4. gate = exp(softplus(dt + dt_bias) * -exp(A_log))
     let num_state_heads = cfg.num_state_heads();

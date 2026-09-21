@@ -72,7 +72,7 @@ test('the thinking trace streams, collapses to the disclosure, and the answer st
   await routeRetrieval(context);
   await withKey(page);
   await installPacedChat(page, { reasoning: REASONING, content: CONTENT, delayMs: 200 });
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
 
@@ -139,7 +139,7 @@ test('a one-shot SSE response settles into the full answer with the reasoning di
   await routeRetrieval(context);
   await context.route(OR_CHAT, sseChatHandler(REASONING, CONTENT));
   await withKey(page);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
 
@@ -171,12 +171,12 @@ test('a mid-stream error surfaces the rate card without any retry', async ({ pag
   const attempts = [];
   await context.route(OR_CHAT, sseMidStreamErrorHandler({ log: attempts }));
   await withKey(page);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
   // Backoff shrunk to ~0: if the engine wrongly retried after first byte, all
   // three attempts would land before the card shows and the count would say so.
-  await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+  await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
   await askQuestion(page, 'how do NVFP4 kernels dispatch?');
   const card = page.locator('.cc-error[role="alert"]');

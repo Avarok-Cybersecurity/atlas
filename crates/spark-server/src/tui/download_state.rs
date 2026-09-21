@@ -315,7 +315,7 @@ impl DownloadState {
         let owned = repo.to_string();
         let fallback = repo.to_string();
         let rx = crate::tui::worker::spawn(
-            "atlas-freshness",
+            "avarok-freshness",
             move || {
                 // An unreachable Hub is `Unknown`, which draws no badge —
                 // never a "stale" claim the network could not support.

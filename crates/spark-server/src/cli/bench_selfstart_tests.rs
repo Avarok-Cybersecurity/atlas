@@ -56,7 +56,8 @@ fn a_clean_box_serves_at_the_recipes_utilisation() {
     // ~0.94 available is what a clean GB10 reads. The line must repeat the
     // recipe's utilisation VERBATIM: this check exists to refuse co-tenants,
     // never to second-guess the config the thresholds were measured under.
-    let line = headroom_verdict(121.0, 114.0, 0.90, "qwen3.6/27b").expect("a clean box passes");
+    let line =
+        headroom_verdict(121.0, 114.0, 0.90, "qwen3.6/27b", 0.85).expect("a clean box passes");
     assert!(line.contains("0.90"), "{line}");
     assert!(line.contains("94 %"), "{line}");
 }
@@ -66,7 +67,7 @@ fn a_co_tenanted_box_is_refused_with_the_remedies() {
     // 16 GB of co-tenants on a 121 GB unified pool: measured to cost Atlas 32 %
     // at C=16 while costing vLLM ~0, so this corrupts the measurement long
     // before it OOM-freezes the box.
-    let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b").expect_err("refused");
+    let err = headroom_verdict(121.0, 98.0, 0.90, "qwen3.6/27b", 0.85).expect_err("refused");
     let msg = format!("{err:#}");
     assert!(msg.contains("qwen3.6/27b"), "names the recipe: {msg}");
     assert!(msg.contains("docker ps"), "names a remedy: {msg}");
@@ -82,8 +83,8 @@ fn the_threshold_itself_is_inclusive() {
     // Exactly at the line passes; a hair under does not. Stated because the
     // constant is the whole of the check.
     let total = 100.0;
-    assert!(headroom_verdict(total, total * MIN_FREE_FRACTION, 0.9, "r").is_ok());
-    assert!(headroom_verdict(total, total * MIN_FREE_FRACTION - 0.1, 0.9, "r").is_err());
+    assert!(headroom_verdict(total, total * 0.85, 0.9, "r", 0.85).is_ok());
+    assert!(headroom_verdict(total, total * 0.85 - 0.1, 0.9, "r", 0.85).is_err());
 }
 
 // ── Teardown ──
@@ -111,6 +112,7 @@ fn served_forever() -> (SelfServed, tokio::sync::oneshot::Receiver<()>) {
         target: TargetEndpoint::local(1, "m"),
         recipe_id: "r".to_string(),
         overrides: Default::default(),
+        resolved: Default::default(),
         baseline_entry: Default::default(),
         server: Some(server),
     };
@@ -162,7 +164,7 @@ fn baseline_pins_are_applied_and_the_operator_wins_a_clash() {
         ("kv_cache_dtype".to_string(), "bf16".to_string()),
     ]);
     let requested = BTreeMap::from([("kv_cache_dtype".to_string(), "fp8".to_string())]);
-    let merged = atlas_plugin::gate::merge_serve_overrides(baseline, requested);
+    let merged = avarok_plugin::gate::merge_serve_overrides(baseline, requested);
     assert_eq!(
         merged.get("ssm_cache_slots").map(String::as_str),
         Some("256"),
@@ -215,13 +217,20 @@ fn a_baseline_declared_serve_pin_reaches_the_rendered_serve_args_without_cli_fla
     let args = recipe
         .serve_args(&merged)
         .expect("pins render to valid serve args");
+    // 128 since the ladder widened to C=128: the cap must cover the widest
+    // measured rung or that rung measures the cap rather than the engine.
+    // Read from the committed pin above rather than re-typed, so a future
+    // change to the instrument moves this assertion with it instead of
+    // failing it.
     assert_eq!(
-        args.max_batch_size, 32,
+        args.max_batch_size.to_string(),
+        merged["max_batch_size"],
         "the batching pin reached the serve"
     );
     assert_eq!(args.kv_cache_dtype.as_deref(), Some("fp8"));
-    // Marconi pinned at 8 slots (2026-08-16): 1/4 the 32-slot reserve at
-    // 151.5 MiB/slot — see the BENCH.toml serve_overrides comment.
-    assert_eq!(args.ssm_cache_slots, 8);
+    // Marconi pinned at 32 slots (2026-09-13): the sweep's warm rule holds
+    // only while `slots > 3·C` — see the BENCH.toml serve_overrides comment
+    // and `concurrency::warm_cache_capable`.
+    assert_eq!(args.ssm_cache_slots, 32);
     assert_eq!(args.max_seq_len, 4096);
 }

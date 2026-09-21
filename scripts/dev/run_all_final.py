@@ -4,9 +4,9 @@ import json, urllib.request, re, time, subprocess, threading, sys
 
 import os
 
-IMAGE = os.environ.get("ATLAS_IMAGE", "atlas-gb10:latest")
+IMAGE = os.environ.get("AVAROK_IMAGE", "avarok-gb10:latest")
 HF = os.environ.get(
-    "ATLAS_HF_HUB",
+    "AVAROK_HF_HUB",
     os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub"),
 )
 # Rank-1 host for EP=2 (single-node default: localhost). Override with
@@ -124,7 +124,7 @@ for pair in pairs:
     for model, extra, node, short in pair:
         host = DGX2 if node == "dgx2" else None
         hf_path = HF
-        cname = f"atlas-{node}"
+        cname = f"avarok-{node}"
         stop(cname, host)
         print(f"Starting {short} on {node}...", file=sys.stderr)
         start(cname, model, 8888, extra, host, hf_path)
@@ -132,7 +132,7 @@ for pair in pairs:
     # Wait
     for model, extra, node, short in pair:
         host = DGX2 if node == "dgx2" else None
-        cname = f"atlas-{node}"
+        cname = f"avarok-{node}"
         if ready(cname, host):
             print(f"  ✓ {short} ready", file=sys.stderr)
         else:
@@ -169,26 +169,26 @@ for pair in pairs:
     # Cleanup
     for model, extra, node, short in pair:
         host = DGX2 if node == "dgx2" else None
-        stop(f"atlas-{node}", host)
+        stop(f"avarok-{node}", host)
 
 # ═══════════════════════════════════════════════════════════════
 # EP=2: Qwen3.5-122B
 # ═══════════════════════════════════════════════════════════════
 print("\n=== EP=2: Qwen3.5-122B ===", file=sys.stderr)
-stop("atlas-dgx1"); stop("atlas-dgx2", DGX2)
+stop("avarok-dgx1"); stop("avarok-dgx2", DGX2)
 
-start("atlas-dgx1", "Sehyo/Qwen3.5-122B-A10B-NVFP4", 8888, "", None, HF, 16384,
+start("avarok-dgx1", "Sehyo/Qwen3.5-122B-A10B-NVFP4", 8888, "", None, HF, 16384,
       f"--master-addr {EP_MASTER_ADDR} --world-size 2 --rank 0")
 # Wait for NCCL listener
 for _ in range(84):
-    l = sh("sudo docker logs atlas-dgx1 2>&1 | tail -5", 10)
+    l = sh("sudo docker logs avarok-dgx1 2>&1 | tail -5", 10)
     if "waiting for" in l: break
     if "Error:" in l and "FP8" not in l: break
     time.sleep(5)
-start("atlas-dgx2", "Sehyo/Qwen3.5-122B-A10B-NVFP4", 8889, "", DGX2, HF, 16384,
+start("avarok-dgx2", "Sehyo/Qwen3.5-122B-A10B-NVFP4", 8889, "", DGX2, HF, 16384,
       f"--master-addr {EP_MASTER_ADDR} --world-size 2 --rank 1")
 
-if ready("atlas-dgx1", secs=480):
+if ready("avarok-dgx1", secs=480):
     print("  EP=2 ready", file=sys.stderr)
     res = test_model(8888)
     all_results["122B EP=2"] = res
@@ -200,7 +200,7 @@ else:
     print("  EP=2 FAILED TO START", file=sys.stderr)
     all_results["122B EP=2"] = {"error": "failed to start"}
 
-stop("atlas-dgx1"); stop("atlas-dgx2", DGX2)
+stop("avarok-dgx1"); stop("avarok-dgx2", DGX2)
 
 # ═══════════════════════════════════════════════════════════════
 # Final table
@@ -222,6 +222,6 @@ for short in ["35B+MTP","80B+MTP","122B","Nano 30B","Super 120B","Mistral 119B",
     print(f"{short:<20} {std_p:>3}/4 {niah_p:>3}/2 {avg:>9.1f} {c1:>6.1f} {c4:>6.1f} {c16:>6.1f} {t4k_s:>13} {t16k_s:>14}")
 
 # Save JSON
-with open("/workspace/atlas/final_results.json", "w") as f:
+with open("/workspace/avarok/final_results.json", "w") as f:
     json.dump(all_results, f, indent=2, default=str)
-print("\nJSON: /workspace/atlas/final_results.json")
+print("\nJSON: /workspace/avarok/final_results.json")

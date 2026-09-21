@@ -36,7 +36,7 @@
 // Module layout (SDD split — the client-facing half is un-gated + verbs-free so LoRA lifts it cleanly):
 //   * `manifest` — the manifest types + address/rail math (un-gated).
 //   * `wire`     — the length-prefixed model-request / manifest codec (un-gated).
-//   * `serve`    — the `atlas-weight-peer` daemon (unix; holds the reg_mr true).
+//   * `serve`    — the `avarok-weight-peer` daemon (unix; holds the reg_mr true).
 //   * `shard`    — shard resolution + safetensors parse + the warm RO mmap (unix).
 
 mod manifest;

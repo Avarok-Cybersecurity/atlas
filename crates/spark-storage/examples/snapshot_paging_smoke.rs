@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // WS-A live smoke: drive the paging tier end-to-end over real RDMA against an
-// atlas-cache-peer started with --swap-dir. PUTs far more blobs than the RAM
+// avarok-cache-peer started with --swap-dir. PUTs far more blobs than the RAM
 // arena holds → forces the peer to spill the coldest to its NVMe swap file →
 // GETs them all back and asserts byte-identical (a fault-from-disk on each key
 // the peer evicted). Proves: connect_paging handshake, control channel
 // (alloc/commit/get), one-sided RDMA data plane, and peer-side NVMe swap +
 // rehydrate — the whole stack minus the model.
 //
-//   ATLAS_SNAP_PEER=host:port \
-//   ATLAS_EXPERT_RDMA_DEV=roceP2p1s0f1 ATLAS_EXPERT_RDMA_GID=3 \
+//   AVAROK_SNAP_PEER=host:port \
+//   AVAROK_EXPERT_RDMA_DEV=roceP2p1s0f1 AVAROK_EXPERT_RDMA_GID=3 \
 //   cargo run -p spark-storage --features cuda --example snapshot_paging_smoke
 //
 // Requires a GPU (pinned bounce) + rdma-core. Defaults to 127.0.0.1:9918 (start
-// the peer: `atlas-cache-peer --listen 0.0.0.0:9918 --swap-dir /some/nvme/dir`).
+// the peer: `avarok-cache-peer --listen 0.0.0.0:9918 --swap-dir /some/nvme/dir`).
 
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 fn main() -> anyhow::Result<()> {
     use spark_storage::RdmaSnapshotArena;
 
@@ -23,7 +23,7 @@ fn main() -> anyhow::Result<()> {
     // model serve creates one, so a standalone client must too.
     let _cuda = spark_storage::cuda_min::CudaCtx::new(0)?;
 
-    let addr = std::env::var("ATLAS_SNAP_PEER").unwrap_or_else(|_| "127.0.0.1:9918".into());
+    let addr = std::env::var("AVAROK_SNAP_PEER").unwrap_or_else(|_| "127.0.0.1:9918".into());
     let blob: usize = std::env::var("SMOKE_BLOB")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -124,23 +124,23 @@ fn main() -> anyhow::Result<()> {
 /// paging arena (v2 handshake, kind=0). Decode cold keys are SLOT COORDINATES
 /// (client-local `(seq, logical)` indices), so both clients derive
 /// byte-identical pre-namespace keys — only the per-process client salt folded
-/// into the decode namespace (`ATLAS_SSM_DECODE_CLIENT_ID` in the model serve)
+/// into the decode namespace (`AVAROK_SSM_DECODE_CLIENT_ID` in the model serve)
 /// keeps client B from faulting or deleting client A's rollback blobs.
 ///
 /// Phase 1: client A PUTs `n` keys (n ≫ slots forces peer NVMe spills).
 /// Phase 2: client B (salt 2) must MISS every key; its removes must not leak.
 /// Phase 3: a THIRD connection with A's salt HITs all byte-identically — the
 /// control proving phase 2's misses are isolation, not a dead connection.
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 fn decode_isolation_main(addr: &str, blob: usize, slots: usize, n: u64) -> anyhow::Result<()> {
-    use atlas_tier::hash::mix64;
+    use avarok_tier::hash::mix64;
     use spark_storage::RdmaSnapshotArena;
 
     // Mirrors the SHAPE of spark-model's shipped derivation:
     //   ns(salt)  = mix64(mix64(fp, DECODE_DOMAIN), client_salt)
     //   wire(key) = mix64(cold_key, ns)
     // DECODE_DOMAIN_LIT is an illustrative transcription of
-    // `atlas_kernels::DECODE_DOMAIN` (spark-storage has no atlas-kernels dep);
+    // `avarok_kernels::DECODE_DOMAIN` (spark-storage has no avarok-kernels dep);
     // the property under test is salt isolation on one shared arena, not the
     // production constant's value.
     const DECODE_DOMAIN_LIT: u64 = 0xD3C0_DE12_A5B6_C7D8;
@@ -210,7 +210,7 @@ fn decode_isolation_main(addr: &str, blob: usize, slots: usize, n: u64) -> anyho
 /// salts) against ONE peer arena: client B must MISS client A's blocks (the
 /// KV miss is a hard error naming --swap-cap-gb-kv), both round-trip their
 /// own — the client-local-block-id cross-serve hazard, proven on hardware.
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(feature = "cuda", avarok_rdma_verbs))]
 fn kv_main(addr: &str, blob: usize, slots: usize, n: u64, mode: &str) -> anyhow::Result<()> {
     use spark_storage::backend::BlockReadRequest;
     use spark_storage::backend::StorageBackend;
@@ -333,8 +333,8 @@ fn kv_main(addr: &str, blob: usize, slots: usize, n: u64, mode: &str) -> anyhow:
     Ok(())
 }
 
-#[cfg(not(all(feature = "cuda", atlas_rdma_verbs)))]
+#[cfg(not(all(feature = "cuda", avarok_rdma_verbs)))]
 fn main() {
-    eprintln!("snapshot_paging_smoke needs --features cuda + rdma-core (atlas_rdma_verbs)");
+    eprintln!("snapshot_paging_smoke needs --features cuda + rdma-core (avarok_rdma_verbs)");
     std::process::exit(1);
 }

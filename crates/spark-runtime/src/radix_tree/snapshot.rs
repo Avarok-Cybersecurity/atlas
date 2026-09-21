@@ -18,7 +18,7 @@ pub(super) struct SnapshotEntry {
     /// Phase 1b — spill-not-drop location. `false` = resident in HBM at
     /// `snapshot_id`. `true` = spilled to the byte tier; `snapshot_id` is stale
     /// and the state is addressed by `prefix_hash` (the tier key). Always
-    /// `false` when `ATLAS_SSM_TIER` is off, so the default path is unchanged.
+    /// `false` when `AVAROK_SSM_TIER` is off, so the default path is unchanged.
     pub(super) tiered: bool,
     /// True for the per-session TAIL snapshot (the restore point the next turn's
     /// block-floored `matched_tokens` looks up). Exactly one is kept per session.
@@ -92,7 +92,7 @@ pub(super) struct SsmSnapshotIndex {
     /// [`tail_lease_ttl`] evictions so a dead session's tail cannot
     /// squat a slot indefinitely.
     pub(super) evictions_since_lookup: u32,
-    /// Phase-0 measurement counters (ATLAS_SSM_SNAP_STATS). All aggregate,
+    /// Phase-0 measurement counters (AVAROK_SSM_SNAP_STATS). All aggregate,
     /// off the hot path's critical decisions — they only observe. The residual
     /// `recompute_tokens_on_hit` after tail-protect + a large pool is exactly
     /// what Phase 1 (spill-not-drop) converts from recompute → fault-in.
@@ -100,42 +100,55 @@ pub(super) struct SsmSnapshotIndex {
 }
 
 /// Tail-lease kill switch. Default ON; opt out with
-/// `ATLAS_DISABLE_SSM_TAIL_PROTECT=1` (or `on`/`true`). Renamed 2026-08-05
-/// from the opt-in `ATLAS_SSM_TAIL_PROTECT` (=0/off disabled): the lease is
+/// `AVAROK_DISABLE_SSM_TAIL_PROTECT=1` (or `on`/`true`). Renamed 2026-08-05
+/// from the opt-in `AVAROK_SSM_TAIL_PROTECT` (=0/off disabled): the lease is
 /// default-on, so the variable now expresses the exception, not the rule.
 ///
 /// **INERT IN THE SHIPPING (MLPerf-edge) CONFIG — it protects nothing there.**
 /// The lease only ever shields an entry with `is_tail == true`, and the sole
 /// production writer of that flag is `insert_tail_snapshot`, called only from
 /// `finalize_midchunk_capture`, which is unreachable when
-/// `ATLAS_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
+/// `AVAROK_SSM_TAIL_MIDCHUNK=0` — which the frozen MLPerf-edge config sets.
 /// Verified 2026-07-21 by call-graph audit (the 2026-07-20 eviction rig
 /// likewise measured 0 lease hits). A launch script setting neither this
-/// variable nor `ATLAS_SSM_TAIL_MIDCHUNK` is still running with the lease
-/// armed; check `ATLAS_SSM_TAIL_MIDCHUNK` first when asking whether tail
+/// variable nor `AVAROK_SSM_TAIL_MIDCHUNK` is still running with the lease
+/// armed; check `AVAROK_SSM_TAIL_MIDCHUNK` first when asking whether tail
 /// protection is doing work. Behaviour here is deliberately unchanged —
 /// this note is a warning to the next reader, not a defect report.
 fn tail_lease_enabled() -> bool {
-    !matches!(
-        std::env::var("ATLAS_DISABLE_SSM_TAIL_PROTECT").as_deref(),
-        Ok("1") | Ok("on") | Ok("true")
-    )
+    // Resolved ONCE. `tail_lease_active` reads this AND `tail_lease_ttl` on
+    // every call, and it is called from `evict_lru` and the tier walk — i.e.
+    // per eviction, in a loop over entries. Each raw read allocates a
+    // `String` and takes the process-wide environment lock, which serialises
+    // concurrent readers; the value cannot change after start.
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        !matches!(
+            std::env::var("AVAROK_DISABLE_SSM_TAIL_PROTECT").as_deref(),
+            Ok("1") | Ok("on") | Ok("true")
+        )
+    })
 }
 
 /// Evictions a leased tail survives without its session looking up again.
 /// Derivation: the 2026-07-20 eviction rig measured ~18 evictions between a
 /// deep session's turns at 8 slots with 6 churn requests/turn — 64 is a >3x
 /// margin there, while production pools (128–256 slots) evict rarely enough
-/// that the TTL almost never binds. Override: ATLAS_SSM_TAIL_LEASE_TTL.
+/// that the TTL almost never binds. Override: AVAROK_SSM_TAIL_LEASE_TTL.
 ///
-/// Same caveat as [`tail_lease_enabled`]: with `ATLAS_SSM_TAIL_MIDCHUNK=0` no
+/// Same caveat as [`tail_lease_enabled`]: with `AVAROK_SSM_TAIL_MIDCHUNK=0` no
 /// entry is ever marked `is_tail`, so this TTL governs an empty set and
-/// `ATLAS_SSM_TAIL_LEASE_TTL=128` in a launch script changes nothing.
+/// `AVAROK_SSM_TAIL_LEASE_TTL=128` in a launch script changes nothing.
 fn tail_lease_ttl() -> u32 {
-    std::env::var("ATLAS_SSM_TAIL_LEASE_TTL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(64)
+    // Resolved once — see [`tail_lease_enabled`]; the two are read together
+    // on the same per-eviction path.
+    static TTL: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *TTL.get_or_init(|| {
+        std::env::var("AVAROK_SSM_TAIL_LEASE_TTL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64)
+    })
 }
 
 /// Marconi Eq-2 depth weight (staged, INERT by default). Within a session,
@@ -147,13 +160,18 @@ fn tail_lease_ttl() -> u32 {
 /// exactly today's pure-LRU ordering (min-max normalization is monotonic);
 /// clamped to [0, 8] so a runaway env value cannot make depth
 /// recency-insensitive (a depth-pinned analog of the 07-10 hit-pinning).
-/// Default flip requires its own measured A/B: ATLAS_SNAP_EVICT_ALPHA.
+/// Default flip requires its own measured A/B: AVAROK_SNAP_EVICT_ALPHA.
 fn snap_evict_alpha() -> f64 {
-    std::env::var("ATLAS_SNAP_EVICT_ALPHA")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .map(|a| a.clamp(0.0, 8.0))
-        .unwrap_or(0.0)
+    // Resolved once: `session_aware_victim` calls this on every eviction, and
+    // eviction runs in a loop over candidate entries.
+    static ALPHA: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *ALPHA.get_or_init(|| {
+        std::env::var("AVAROK_SNAP_EVICT_ALPHA")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|a| a.clamp(0.0, 8.0))
+            .unwrap_or(0.0)
+    })
 }
 
 impl SsmSnapshotIndex {
@@ -202,12 +220,15 @@ impl SsmSnapshotIndex {
         // the next warm turn actually needs were evicted — the measured
         // frozen-anchor / 18.6k-token SSM replay pathology (2026-07-10,
         // re-landed after #317's re-cut reverted it).
+        // Resolved ONCE per lookup rather than per entry: the read is cheap but
+        // the scan is per-entry and this is the serving path's sibling.
+        let hermetic = crate::hermetic_enabled();
         let mut best: Option<(usize, usize)> = None; // (snapshot_id, token_count)
         let mut best_idx: Option<usize> = None;
         for (i, entry) in self.entries.iter().enumerate() {
             // Tiered entries hold no HBM slot — the non-tier `lookup` must never
             // hand back a spilled entry's stale slot. Tier-aware callers use
-            // `lookup_tiered`. (No entry is ever tiered when ATLAS_SSM_TIER off.)
+            // `lookup_tiered`. (No entry is ever tiered when AVAROK_SSM_TIER off.)
             if entry.tiered {
                 continue;
             }
@@ -217,13 +238,20 @@ impl SsmSnapshotIndex {
             // Session gate applies ONLY to tails (their state bleeds past the
             // advertised token_count). Exact + is_tail_sibling entries are a pure
             // function of the verified token prefix — safe cross-session.
-            if entry.is_tail && (session_hash == 0 || entry.session_hash != session_hash) {
+            if super::snapshot_session::session_gate_blocks(entry, session_hash, hermetic) {
                 continue;
             }
             let h = hash_token_prefix(tokens, entry.token_count, adapter_id);
             if h != entry.prefix_hash {
                 continue;
             }
+            tracing::debug!(
+                "snapshot candidate: id={} tokens={} tail={} sibling={} (matched {matched_tokens})",
+                entry.snapshot_id,
+                entry.token_count,
+                entry.is_tail,
+                entry.is_tail_sibling
+            );
             if best.is_none() || entry.token_count > best.unwrap().1 {
                 best = Some((entry.snapshot_id, entry.token_count));
                 best_idx = Some(i);
@@ -247,7 +275,10 @@ impl SsmSnapshotIndex {
                 self.stats.recompute_tokens_on_miss += matched_tokens as u64;
             }
         }
-        if std::env::var("ATLAS_SNAP_LOOKUP_DBG").is_ok() {
+        // Resolved once: `lookup` runs on every prefill, and a debug flag
+        // must not cost the environment lock on the path it observes.
+        static DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *DBG.get_or_init(|| std::env::var_os("AVAROK_SNAP_LOOKUP_DBG").is_some()) {
             let mut cands: Vec<usize> = self.entries.iter().map(|e| e.token_count).collect();
             cands.sort_unstable();
             tracing::info!(
@@ -262,12 +293,17 @@ impl SsmSnapshotIndex {
     }
 
     /// Emit an aggregate SSM-snapshot cache summary every 64 lookups when
-    /// `ATLAS_SSM_SNAP_STATS` is set. Off-by-default and read-only, so it never
+    /// `AVAROK_SSM_SNAP_STATS` is set. Off-by-default and read-only, so it never
     /// perturbs serving; the line is the Phase-0 measurement surface (hit-rate,
     /// mean restore anchor, mean recompute tok/turn — the #278 metrics).
     pub(super) fn log_stats_if_due(&self) {
+        // The `is_multiple_of(64)` short-circuits FIRST, so the flag was only
+        // read one lookup in 64 even before this — cached anyway, so the rule
+        // "the environment is read once" holds without a reader having to
+        // re-derive that the rate limit makes it safe.
+        static STATS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !self.stats.lookups.is_multiple_of(64)
-            || std::env::var_os("ATLAS_SSM_SNAP_STATS").is_none()
+            || !*STATS.get_or_init(|| std::env::var_os("AVAROK_SSM_SNAP_STATS").is_some())
         {
             return;
         }
@@ -312,8 +348,11 @@ impl SsmSnapshotIndex {
         // re-cut restored the old score.
         let escore = |e: &SnapshotEntry| e.last_access;
 
-        // SESSION-AWARE eviction (default ON; ATLAS_SNAP_EVICT_LEGACY=1 → old per-entry).
-        if std::env::var_os("ATLAS_SNAP_EVICT_LEGACY").is_none() {
+        // SESSION-AWARE eviction (default ON; AVAROK_SNAP_EVICT_LEGACY=1 → old per-entry).
+        // Resolved once: `evict_lru` runs per eviction, and eviction runs in
+        // a loop over candidate entries.
+        static LEGACY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if !*LEGACY.get_or_init(|| std::env::var_os("AVAROK_SNAP_EVICT_LEGACY").is_some()) {
             let tail_protect = self.tail_lease_active();
             // Skip tiered entries (no HBM slot to free).
             let victim_idx = self.session_aware_victim(tail_protect, true)?;

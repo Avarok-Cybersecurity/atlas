@@ -15,12 +15,12 @@
 //! harness lays the pools out with the REAL strides, so a regression to the old
 //! addressing fails here rather than corrupting rollback under load.
 //!
-//! Run: ATLAS_TARGET_MODEL=qwen3.6-27b cargo run -p spark-model --release \
+//! Run: AVAROK_TARGET_MODEL=qwen3.6-27b cargo run -p spark-model --release \
 //!        --example gdn_wy4_batched_microtest --features cuda,gpu-examples
 
 use anyhow::{Result, bail};
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -395,7 +395,7 @@ fn cost_gate(g: &dyn GpuBackend, wy4: spark_runtime::gpu::KernelHandle) -> Resul
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let kernel = g.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?;
     println!("wy4 batched pointer-table equivalence (nv={NV} kd={KD} vd={VD} K={K} ni={NI})");

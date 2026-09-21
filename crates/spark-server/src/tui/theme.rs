@@ -254,9 +254,9 @@ pub fn glow(tick: u64) -> Color {
 }
 
 /// Map a benchmark's semantic cell style onto the palette. The single place
-/// where `atlas-plugin`'s style-free results acquire color.
-pub fn cell_style(style: atlas_plugin::CellStyle) -> Style {
-    use atlas_plugin::CellStyle as S;
+/// where `avarok-plugin`'s style-free results acquire color.
+pub fn cell_style(style: avarok_plugin::CellStyle) -> Style {
+    use avarok_plugin::CellStyle as S;
     match style {
         S::Neutral => text(),
         S::Dim => dim(),

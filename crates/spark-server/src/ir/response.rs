@@ -80,8 +80,59 @@ pub struct Usage {
     /// Atlas's self-drafted MTP predictions are). 0 when speculation is off.
     pub accepted_prediction_tokens: usize,
     /// Atlas perf extensions; encoders may ignore.
+    ///
+    /// All three timing components are read off the SCHEDULER'S clock
+    /// (`scheduler::types::ActiveSeq::request_start` / `decode_start`),
+    /// which by design starts when the scheduler picks the request up —
+    /// HTTP parsing, template rendering, tokenisation and queue wait
+    /// precede it (see `scheduler::prefill_a_step`). Sharing one origin
+    /// is what makes them subtractable: a client's Inter-Token Latency
+    /// per the AIPerf definition, `(request_latency − TTFT) /
+    /// (output_tokens − 1)`, is exactly `decode_time_ms /
+    /// (completion_tokens − 1)` here, with no queue time leaking into
+    /// the numerator.
     pub time_to_first_token_ms: f64,
+    /// The decode window: first emitted token → the scheduler's terminal
+    /// (done) frame, which is the final chunk of the response on the
+    /// server side. The raw numerator of the server-clock ITL.
+    pub decode_time_ms: f64,
+    /// `(completion_tokens − 1) / decode_time` — see
+    /// [`Usage::decode_rate_tok_s`]. Kept beside its primitives because
+    /// it is a shipped wire key (`response_token/s`); new consumers
+    /// should read `decode_time_ms` and `completion_tokens` instead.
     pub response_tokens_per_second: f64,
+}
+
+impl Usage {
+    /// Total server-side request duration: scheduler receipt → terminal
+    /// frame. DERIVED — the two components are the stored primitives —
+    /// so it is defined once here and never assembled by an encoder.
+    ///
+    /// Ends at the terminal frame, not at the socket: the usage block
+    /// must exist before the final chunk can be serialised, so the
+    /// encoder's own serialisation and flush (sub-millisecond) are
+    /// necessarily outside it.
+    pub fn total_time_ms(&self) -> f64 {
+        self.time_to_first_token_ms + self.decode_time_ms
+    }
+
+    /// The `response_token/s` rate, `(completion_tokens − 1) / decode_s`:
+    /// the first token is produced by prefill, so only the remaining
+    /// `n − 1` are decode work. The ONE definition — the blocking and
+    /// streaming chat paths and both completions paths call this rather
+    /// than restating the formula.
+    ///
+    /// `0.0` when undefined (no decode window, or fewer than two
+    /// tokens): a SHIPPED contract for this key, which vLLM-comparison
+    /// tooling reads. Consumers that need the undefined case to be
+    /// distinguishable read the raw components, where it is.
+    pub fn decode_rate_tok_s(completion_tokens: usize, decode_time_ms: f64) -> f64 {
+        if decode_time_ms > 0.0 && completion_tokens > 0 {
+            completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Wire string for a response cut short by the server-side request

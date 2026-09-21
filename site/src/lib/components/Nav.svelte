@@ -1,13 +1,15 @@
 <script>
+  import { modal } from '$lib/modal.js';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
   // Desktop bar + mobile drawer render from the SAME `nav.links` in data.js.
   // Below the drawer breakpoint (styles/mobile.css) the bar hides and the
   // toggle appears, so phones keep every link the desktop has.
-  import { nav, githubUrl, discordUrl, xUrl, codeChat } from '$lib/data.js';
+  import { nav, githubUrl, codeChat } from '$lib/data.js';
   import stars from '$lib/stars.generated.json';
   import GithubIcon from './GithubIcon.svelte';
-  import DiscordIcon from './DiscordIcon.svelte';
-  import XIcon from './XIcon.svelte';
   import ChatLatticeIcon from './ChatLatticeIcon.svelte';
+  import FleetPill from './FleetPill.svelte';
+  import ThemeToggle from '$shared/components/ThemeToggle.svelte';
   import { preloadChat, prefetchWasmOnIdle } from '../chat/warmup.js';
 
   let open = $state(false);
@@ -55,19 +57,17 @@
 
 <nav>
   <div class="nav-inner">
-    <a class="nav-logo" href="/" aria-label="Atlas home">
-      <img class="nav-mark" src="/favicon.svg" alt="" width="34" height="34" />
-      <span class="nav-wordmark">Atlas</span>
+    <a class="nav-logo" href="/" aria-label="Atlas home" data-sveltekit-reload>
+      <AtlasLockup kind="horizontal" width={122} />
     </a>
     <div class="nav-links">
       {#each nav.links as l}
         <a href={l.href}>{l.text}</a>
       {/each}
-      <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener"><DiscordIcon size={18} /></a>
-      <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener"><XIcon size={16} /></a>
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener">
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>
+      <ThemeToggle />
       <button
         type="button"
         class="nav-chat-btn"
@@ -80,6 +80,11 @@
         <ChatLatticeIcon size={18} />
         {#if chatReady}<span class="nav-chat-dot" aria-hidden="true"></span>{/if}
       </button>
+      <!-- Fleet status chip. Last on purpose: status reads as chrome, not as a
+           destination, so it anchors the far right of the bar instead of
+           sitting between the links and the icons. Renders nothing for
+           visitors without a paired local agent (see FleetPill.svelte). -->
+      <FleetPill />
     </div>
 
     <button
@@ -99,11 +104,10 @@
       <a class="nav-drawer-link" href={l.href} tabindex={open ? 0 : -1} onclick={() => (open = false)}>{l.text}</a>
     {/each}
     <div class="nav-drawer-foot">
+      <ThemeToggle />
       <a class="nav-star-btn" href={githubUrl} target="_blank" rel="noopener" tabindex={open ? 0 : -1}>
         <GithubIcon size={15} /> Star <span class="nav-star-count">{stars.count}</span>
       </a>
-      <a class="nav-icon-link" href={discordUrl} aria-label="Discord" target="_blank" rel="noopener" tabindex={open ? 0 : -1}><DiscordIcon size={22} /></a>
-      <a class="nav-icon-link" href={xUrl} aria-label="X / Twitter" target="_blank" rel="noopener" tabindex={open ? 0 : -1}><XIcon size={19} /></a>
       <button
         type="button"
         class="nav-chat-btn"
@@ -141,6 +145,7 @@
         role="dialog"
         aria-modal="true"
         aria-label="{codeChat.navLabel}, loading"
+        use:modal
         aria-busy="true"
         onclick={(e) => e.stopPropagation()}
       >

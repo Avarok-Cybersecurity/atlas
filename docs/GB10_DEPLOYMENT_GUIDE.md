@@ -11,7 +11,7 @@ elsewhere:
 |------|------|
 | Copy-paste per-model `docker run` recipes | [`QUICKSTART.md`](../QUICKSTART.md) · the `@atlas` [recipe registry](https://github.com/Avarok-Cybersecurity/atlas-recipes) |
 | Deployment *modes* (single-GPU, EP=2/TP=2, NVMe swap) | [`docs/DEPLOYMENT.md`](DEPLOYMENT.md) |
-| Release/image pipeline, and the native binary | the `atlas-release` skill (`.claude/skills/atlas-release/`) |
+| Release/image pipeline, and the native binary | the `avarok-release` skill (`.claude/skills/avarok-release/`) |
 | Adding a new model/hardware target | [`docs/HARDWARE.md`](HARDWARE.md) · [`AGENTS.md`](../AGENTS.md) |
 
 **Serve config SSOT:** the `defaults:` block of the matching
@@ -35,7 +35,7 @@ recipe wins.** This guide is the *why*; the recipe is the exact *what*.
 
 **Prerequisites**, in order:
 1. NVIDIA driver ≥ 580 — verify: `nvidia-smi` shows CUDA 13.0+. (There is no
-   driver-version gate in the engine and **no `ATLAS_SKIP_DRIVER_CHECK` escape
+   driver-version gate in the engine and **no `AVAROK_SKIP_DRIVER_CHECK` escape
    hatch** — that variable has no read site. Below the floor you get a CUDA
    driver/PTX-load error at startup, not a friendly message.)
 2. NVIDIA Container Toolkit (for the Docker path).
@@ -209,10 +209,11 @@ The gotchas that cost people an evening, in one place:
    the spec flags verbatim. (See §7.)
 4. **Native binary: driver / glibc errors.** The tarball needs driver 580
    (CUDA 13.0) and is built against glibc 2.39 (Ubuntu 24.04). Older distro →
-   use the Docker image. There is no bypass env var; `ATLAS_SKIP_DRIVER_CHECK`
+   use the Docker image. There is no bypass env var; `AVAROK_SKIP_DRIVER_CHECK`
    is not read anywhere and setting it does nothing.
 5. **First request hangs for 5–30 s.** That's cold-start CUDA-graph capture +
-   autotuner + prefix-cache init, not a hang. Eliminate it with `--warmup-prompt`.
+   autotuner + prefix-cache init, not a hang. Move the cost off your first real
+   request by sending one throwaway request as soon as the server is up.
 6. **Garbage / incoherent output.** Two usual causes: (a) **tool-parser mismatch** —
    the parser must match the model (`qwen3_coder` for Qwen3.5/3.6, `hermes` for
    some, `gemma4` for Gemma-4); pass `--tool-call-parser` explicitly in production
@@ -289,7 +290,7 @@ Atlas or reproducing a claim, these are the signals and where they live:
 
 The full gate spec — exactly what each script asserts, and how the release
 pipeline turns it into a pass/fail before an image ships — is in the maintainer
-`atlas-release` skill (`references/verify-matrix.md`). *Note:* the ST-subset /
+`avarok-release` skill (`references/verify-matrix.md`). *Note:* the ST-subset /
 BFCL accuracy harness currently runs outside this repo; reproducing that specific
 number needs the external gorilla setup. Everything else in the table runs from a
 clean checkout against a running server.

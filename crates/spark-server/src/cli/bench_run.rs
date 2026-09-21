@@ -4,15 +4,14 @@
 //!
 //! This subcommand drives an endpoint that is already serving; it never starts
 //! a model and never touches the GPU. Everything below is a thin shell around
-//! `atlas_plugin::headless`, which the dashboard shares.
+//! `avarok_plugin::headless`, which the dashboard shares.
 
 use anyhow::{Context, Result, bail};
-use atlas_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
-use atlas_plugin::{
+use avarok_plugin::headless::{HeadlessOptions, RunRequest, SilentReporter, run_blocking};
+use avarok_plugin::{
     ArtifactStore, BenchmarkDescriptor, BenchmarkExecutor, ParamValues, TargetEndpoint, gate,
     history, registry,
 };
-use std::collections::BTreeMap;
 
 use super::bench_args::{BenchmarkArgs, BenchmarkCommand, HistoryArgs, OutputFormat, RunArgs};
 use super::bench_print;
@@ -46,6 +45,24 @@ pub async fn dispatch(args: BenchmarkArgs) -> Result<()> {
             None => bench_print::print_suite(a.format),
         },
         BenchmarkCommand::History(a) => history_cmd(a),
+        BenchmarkCommand::ServeRelease => {
+            let code = super::bench_lease::release_cmd()?;
+            std::process::exit(code);
+        }
+        BenchmarkCommand::Card(a) => super::bench_card::card_cmd(a),
+        BenchmarkCommand::Certify(a) => {
+            let code = super::bench_certify::certify_cmd(a).await?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        BenchmarkCommand::Aggregate(a) => {
+            // Exits with the code so a script can gate on "is this group
+            // complete", the same shape `Run` uses below.
+            let code = super::bench_aggregate::aggregate_cmd(a)?;
+            std::process::exit(code);
+        }
         BenchmarkCommand::Run(a) => {
             let code = run(a).await?;
             // `run` reports its own outcome; the exit code is the machine-
@@ -88,16 +105,18 @@ pub(crate) fn repo_root() -> Result<std::path::PathBuf> {
 /// because that is the only moment the warning can still save anything: a
 /// `bfcl-subset` gate takes ~3.5 hours, and an operator told at the end that
 /// the binary never matched the commit has already spent the afternoon. A
-/// failure to read the dirt is itself reported and does not abort — the run is
-/// the expensive thing, and `git_sha` above has already proven this is a
-/// checkout.
+/// A failure to read the dirt aborts before the model is loaded. A record with
+/// an empty dirty list asserts that the tree was clean; it must not also mean
+/// that git could not answer the question.
 fn capture_provenance() -> Result<(String, Vec<String>)> {
     let root = repo_root()?;
-    let sha = gate::git_sha(&root)?;
-    let dirty = gate::dirty_perf_paths(&root).unwrap_or_else(|e| {
-        eprintln!("gate: could not read the working tree's state ({e:#})");
-        Vec::new()
-    });
+    capture_provenance_at(&root)
+}
+
+fn capture_provenance_at(root: &std::path::Path) -> Result<(String, Vec<String>)> {
+    let sha = gate::git_sha(root)?;
+    let dirty = gate::dirty_perf_paths(root)
+        .context("reading the working tree state before the gate run")?;
     if !dirty.is_empty() {
         eprintln!(
             "gate: WARNING — {} uncommitted file(s) that change what a gate \
@@ -113,104 +132,64 @@ fn capture_provenance() -> Result<(String, Vec<String>)> {
              reject it. Commit (or stash) and rebuild first."
         );
     }
+    warn_if_signer_is_not_committed(root);
     Ok((sha, dirty))
 }
 
-/// Commit this run as a gate record under the repo's `.benchmarks/<id>/`.
+/// Say, BEFORE the GPU-hours are spent, which identity this box will sign with
+/// and whether that identity is committed.
 ///
-/// The hardware fingerprint is fetched from the endpoint that did the work —
-/// not probed locally — so the record describes the box that actually served
-/// the model. A write failure aborts the command with a clear error: the
-/// point of the flag is the record, so a run that did not produce one must
-/// not report success.
-async fn write_gate_record(
-    record: &atlas_plugin::RunRecord,
-    url: &str,
-    model: &str,
-    recipe: Option<String>,
-    serve_overrides: BTreeMap<String, String>,
-    sha_at_start: String,
-    dirty_at_start: Vec<String>,
-) -> Result<()> {
-    // ★ An INCOMPLETE run must not become a gate record.
-    //
-    // A cancelled or failed run still produces a RunRecord -- it just has no
-    // measurements in it. Committing that gives the branch a file that looks
-    // like evidence and contains none; `check_record` then reports every
-    // threshold as "missing from the record", blaming the baseline rather than
-    // the run that never finished. Observed for real: a BFCL run killed at
-    // 972/1004 left a committed record whose metrics were `{}`.
-    if record.frame.status != atlas_plugin::RunStatus::Completed {
-        bail!(
-            "the run ended as {:?}, not Completed -- no gate record was written. \
-             A record is evidence that a benchmark RAN; an interrupted one is not.",
-            record.frame.status
-        );
+/// `signing::register` writes `<fp>.pub` into `.github/record-signers/` on
+/// first use and `bench_record` prints a one-time notice — but both happen
+/// AFTER the run, into whatever log the operator redirected it to. On
+/// 2026-09-05 a campaign was split across three boxes to save wall-clock;
+/// each box minted its own identity (the key is per-AVAROK_HOME, not per
+/// machine — one box here holds two), and the notice scrolled past in three
+/// separate log files. The mistake only surfaced at CI, where
+/// `.github/workflows/ci.yml`'s "One PR, one commit, one signer" step rejects
+/// a record set spanning fingerprints outright. Seven gates had to be
+/// re-measured.
+///
+/// So this warns at the point the operator can still act on it. It never
+/// fails the run: a first record from a genuinely new box is legitimate, and
+/// refusing it would make bringing up a box impossible.
+fn warn_if_signer_is_not_committed(root: &std::path::Path) {
+    let Ok(store) = ArtifactStore::discover() else {
+        return;
+    };
+    let Ok(identity) = gate::signing::load_or_create(store.root()) else {
+        return;
+    };
+    let fp = identity.fingerprint();
+    match gate::signing::committed_signers(root) {
+        Ok(committed) => {
+            if let Some(msg) = gate::signing::signer_notice(&committed, fp) {
+                eprintln!("{msg}");
+            }
+        }
+        // Cannot answer: say so rather than imply the signer is fine.
+        Err(e) => eprintln!("gate: NOTE — could not read .github/record-signers/: {e:#}"),
     }
-    if record.frame.metrics.is_empty() {
-        bail!(
-            "the run produced no metrics -- no gate record was written. Every \
-             threshold would read as \"missing from the record\", which blames the \
-             baseline for a run that measured nothing."
-        );
-    }
-    let root = repo_root()?;
-    // ★ The sha is the one captured BEFORE the run, not the one HEAD happens to
-    // point at now. A record exists to say "these numbers came from this
-    // commit", and `bfcl-subset` takes ~3.5 hours: reading HEAD at write time
-    // stamps whatever was committed while the benchmark was running. Observed
-    // in practice -- a 4-hour run recorded a sha that was 14 commits newer than
-    // the binary that produced it.
-    let sha = sha_at_start;
-    if let Ok(now) = gate::git_sha(&root)
-        && now != sha
-    {
-        // Not fatal: the measurement is real and belongs to `sha`. But the
-        // tree moved underneath it, so whoever reads this record needs to know
-        // the working copy is no longer what was measured.
-        eprintln!(
-            "gate: HEAD moved during the run ({sha} -> {now}); the record is \
-             stamped {sha}, the commit that was actually measured"
-        );
-    }
-    let target = TargetEndpoint::new(url, model);
-    let hardware = atlas_plugin::http::fetch_hardware(&target, gate::HARDWARE_TIMEOUT).await;
-    let dirty = dirty_at_start;
-    let gate_record =
-        gate::GateRecord::from_run(record, hardware, sha, dirty, recipe, serve_overrides)?
-            // What THIS binary's kernels were compiled from. Baked at build
-            // time, so it describes the code that actually ran rather than the
-            // tree as it stands now.
-            .with_closure(atlas_kernels::TARGET_CLOSURES);
-    let path = gate::write_record(&root, &gate_record)?;
-    eprintln!("gate record written as {}", path.display());
-    // Loud, and at the point the operator is about to commit the file. The
-    // record itself carries the verdict (`hardware_state.postcheck`), but a
-    // number is quoted from a terminal long before anyone opens the JSON, and
-    // the 2026-08-15 retraction happened because nothing said this out loud.
-    if let Some(hw) = &gate_record.hardware_state
-        && hw.invalidated()
-    {
-        eprintln!(
-            "gate: ★ that record is marked INVALID — the box throttled while it was \
-             measuring, so its SPEED numbers are not comparable and must not be quoted. \
-             Concerns: {}",
-            hw.concerns().join("; ")
-        );
-    }
-    // Repeated at the end as well as the start: the start-of-run warning has
-    // scrolled hours off the top of the terminal by now, and this one names the
-    // file the reader is about to commit.
-    if !gate_record.dirty_paths.is_empty() {
-        eprintln!(
-            "gate: that record is stamped {} but was measured from a tree with \
-             {} uncommitted invalidation-set file(s); it records them, and \
-             --pull-request-gate-check will reject it. Re-run from a clean tree.",
-            gate_record.git_sha,
-            gate_record.dirty_paths.len()
-        );
-    }
-    Ok(())
+}
+
+#[cfg(test)]
+#[path = "bench_provenance_tests.rs"]
+mod provenance_tests;
+
+/// The box class's temperature ceilings for the hardware pre-check, from
+/// `kernels/<hw>/HARDWARE.toml` `[benchmarks.limits.thermal]` — the class
+/// named by `--hardware`, else the probed one. `None` (no repository here, or
+/// a class that declares none) is recorded on the run as "not judged".
+fn temp_ceilings(hardware: Option<&str>) -> Option<avarok_plugin::hardware::policy::TempCeilings> {
+    let root = repo_root().ok()?;
+    let class = match hardware {
+        Some(h) => h.to_string(),
+        None => avarok_plugin::hardware::Hardware::probe().gate_key(),
+    };
+    avarok_plugin::hardware::limits::limits(&root, &class)
+        .ok()
+        .flatten()
+        .map(|l| avarok_plugin::hardware::policy::TempCeilings::of(&l.thermal))
 }
 
 fn store() -> Result<ArtifactStore> {
@@ -238,6 +217,9 @@ fn history_cmd(args: HistoryArgs) -> Result<()> {
 
 async fn run(args: RunArgs) -> Result<i32> {
     if let Err(msg) = args.reject_orphan_checkpoint() {
+        bail!("{msg}");
+    }
+    if let Err(msg) = args.reject_orphan_image_args() {
         bail!("{msg}");
     }
     let descriptor = find(&args.id)?;
@@ -274,7 +256,15 @@ async fn run(args: RunArgs) -> Result<i32> {
     // it down; the ones that can happen first, should. (`SelfServed::drop`
     // covers the ones that cannot.)
     let store = store()?;
-    let served = if args.pull_request_gate {
+    let served = if args.pull_request_gate && args.serve_reuse {
+        let plan = super::bench_serve_plan::plan_serve(
+            &args.id,
+            args.hardware.as_deref(),
+            args.checkpoint.as_deref(),
+            super::bench_resolve::parse_serve_overrides(&args.serve_override)?,
+        )?;
+        Some(super::bench_lease::acquire(plan, args.serve_lease_owner).await?)
+    } else if args.pull_request_gate {
         Some(
             super::bench_selfstart::serve_for(
                 &args.id,
@@ -326,20 +316,29 @@ async fn run(args: RunArgs) -> Result<i32> {
     }
 
     let executor = BenchmarkExecutor::new(tokio::runtime::Handle::current(), store);
+    // The merged baseline + `--serve-override` set: the single authority on
+    // the regime this run was measured under. It goes onto the RunRecord, and
+    // the gate record DERIVES it from there rather than being handed its own
+    // copy — see `GateRecord::from_run`.
+    let serve_overrides = served
+        .as_ref()
+        .map(|s| s.overrides.clone())
+        .unwrap_or_default();
     let request = RunRequest {
         descriptor,
         values,
-        target: target.clone(),
+        target: target.clone().with_serve_overrides(serve_overrides),
         options: HeadlessOptions {
             poll: std::time::Duration::from_millis(args.poll_ms),
             save: !args.no_save,
-            source: atlas_plugin::RunSource::Cli,
-            atlas_version: super::ATLAS_VERSION.to_string(),
+            source: avarok_plugin::RunSource::Cli,
+            atlas_version: super::AVAROK_VERSION.to_string(),
             coherence: if args.skip_coherence_probe {
-                atlas_plugin::CoherencePolicy::Skip
+                avarok_plugin::CoherencePolicy::Skip
             } else {
-                atlas_plugin::CoherencePolicy::Probe
+                avarok_plugin::CoherencePolicy::Probe
             },
+            temp_ceilings: temp_ceilings(args.hardware.as_deref()),
         },
     };
 
@@ -356,12 +355,12 @@ async fn run(args: RunArgs) -> Result<i32> {
     let outcome = tokio::task::spawn_blocking(move || {
         let mut reporter = bench_print::StdoutReporter::new(quiet);
         let mut silent = SilentReporter;
-        let reporter: &mut dyn atlas_plugin::headless::RunReporter = if format == OutputFormat::Json
-        {
-            &mut silent // JSON on stdout must not be interleaved with progress
-        } else {
-            &mut reporter
-        };
+        let reporter: &mut dyn avarok_plugin::headless::RunReporter =
+            if format == OutputFormat::Json {
+                &mut silent // JSON on stdout must not be interleaved with progress
+            } else {
+                &mut reporter
+            };
         run_blocking(
             &executor,
             request,
@@ -406,19 +405,31 @@ async fn run(args: RunArgs) -> Result<i32> {
         // names no box and still exit 0. Write first, tear down second, and
         // tear down even when the write fails.
         let recipe = served.as_ref().map(|s| s.recipe_id.clone());
-        let serve_overrides = served
+        let serve_resolved = served
             .as_ref()
-            .map(|s| s.overrides.clone())
+            .map(|s| s.resolved.clone())
             .unwrap_or_default();
         let (sha_at_start, dirty_at_start) = provenance.unwrap_or_default();
-        let written = write_gate_record(
+        let written = super::bench_record::write_gate_record(
             &outcome.record,
             &target.base_url,
             &target.model,
             recipe,
-            serve_overrides,
+            serve_resolved,
             sha_at_start,
             dirty_at_start,
+            match &args.output_image {
+                Some(target) => Some((
+                    target.clone(),
+                    args.output_image_args
+                        .as_deref()
+                        .map(avarok_plugin::gate::card::parse_args)
+                        .transpose()
+                        .map_err(|e| anyhow::anyhow!("--output-image-args: {e}"))?
+                        .unwrap_or_default(),
+                )),
+                None => None,
+            },
         )
         .await;
         if let Some(s) = served {

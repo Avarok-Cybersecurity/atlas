@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -13,14 +13,15 @@ pub(crate) fn build_prefix_cache(
     args: &cli::ServeArgs,
     config: &ModelConfig,
 ) -> Box<dyn spark_runtime::prefix_cache::PrefixCache> {
-    if args.enable_prefix_caching && !config.kv_only_prefix_cache_is_safe() {
+    if args.prefix_caching_enabled() && !config.kv_only_prefix_cache_is_safe() {
         tracing::warn!(
-            "Prefix caching: DISABLED for compressed DeepSeek V4 because the cache does not yet \
-             preserve the compressor pool/ring state required for exact reuse"
+            model_type = %config.model_type,
+            "Prefix caching: DISABLED because this model builds per-sequence state outside KV; \
+             the KV-only cache cannot resume it exactly"
         );
         return Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
     }
-    if args.enable_prefix_caching {
+    if args.prefix_caching_enabled() {
         if args.high_speed_swap {
             tracing::info!(
                 "Prefix caching: ENABLED (radix tree, with --high-speed-swap disk-side refcounts)"
@@ -33,6 +34,32 @@ pub(crate) fn build_prefix_cache(
         tracing::info!("Prefix caching: disabled");
         Box::new(spark_runtime::prefix_cache::NoPrefixCaching)
     }
+}
+
+/// Resolve the effective `--swap-space-gb` for this model.
+///
+/// The spill image is KV-only (`save_sequence_state_dispatch` writes KV blocks
+/// plus linear-attention `SsmLayerState`, then `free_sequence` releases the
+/// rest), so a model that is not KV-complete would resume against a zeroed
+/// pool and answer wrongly with no error anywhere. The capability belongs to
+/// the model, so the engine refuses it here — the launcher's `--swap-space-gb 0`
+/// pin is defense in depth for one script, not the boundary.
+///
+/// Fail-closed, not fatal: the flag defaults to 3, so every GLM serve would
+/// otherwise have to opt out by hand, and erroring on a default nobody typed
+/// is a worse contract than disabling the feature the model cannot support.
+pub(crate) fn resolve_swap_space_gb(args: &cli::ServeArgs, config: &ModelConfig) -> usize {
+    if args.swap_space_gb > 0 && !config.kv_only_swap_out_is_safe() {
+        tracing::warn!(
+            model_type = %config.model_type,
+            requested_gb = args.swap_space_gb,
+            "Swap space: DISABLED because this model builds per-sequence state outside KV; \
+             the KV-only spill image cannot restore it. Decode preemption falls back to \
+             requeue-resume, which re-prefills and is always correct."
+        );
+        return 0;
+    }
+    args.swap_space_gb
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -53,6 +80,26 @@ pub(crate) fn build_model(
     nllb_lang: Option<(u32, u32)>,
     nllb_lora_dir: Option<std::path::PathBuf>,
 ) -> Result<Box<dyn spark_model::traits::Model>> {
+    // ★ PIN THE RESTORE THRESHOLD BEFORE THE MODEL EXISTS. `marconi_min_tokens`
+    // is a process-wide `OnceLock`, so whoever reads it first fixes it for the
+    // life of the serve. Setting it here — ahead of every prefill path that
+    // consults it — is what makes `--marconi-min-tokens` (and therefore the
+    // recipe key, and therefore the gate record) actually take effect.
+    //
+    // A lost race means something read the threshold before serve configured
+    // it, i.e. the flag silently did nothing. That is exactly the class of
+    // failure that cost a night on #936 — a lever set but never armed — so it
+    // warns loudly rather than being ignored.
+    if !spark_model::set_marconi_min_tokens(args.marconi_min_tokens) {
+        tracing::warn!(
+            "--marconi-min-tokens={} was NOT applied: the threshold had already \
+             been read and is fixed for this process. The serve is running with \
+             the earlier value, and any record it writes would misstate its \
+             configuration.",
+            args.marconi_min_tokens,
+        );
+    }
+
     let mtp_quant: spark_model::layers::MtpQuantization = args
         .mtp_quantization
         .parse()
@@ -72,7 +119,12 @@ pub(crate) fn build_model(
         comm,
         args.self_speculative || args.ngram_speculative,
         if args.dflash {
-            args.dflash_gamma.saturating_sub(1).max(1)
+            // Pre-build sizing: the head isn't constructed yet, so resolve
+            // from the flag/legacy default. serve_load re-derives the REAL
+            // num_drafts from the built head's gamma (the SSOT) afterwards;
+            // this value only sizes buffers, and legacy 16 is the upper
+            // bound of every published drafter's block size.
+            args.resolved_dflash_gamma(None).saturating_sub(1).max(1)
         } else {
             args.resolved_num_drafts()
         },
@@ -100,7 +152,7 @@ pub(crate) fn build_high_speed_swap_config(
     let dir = args
         .high_speed_swap_dir
         .clone()
-        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp/atlas-hsw"));
+        .unwrap_or_else(|| std::path::PathBuf::from("/var/tmp/avarok-hsw"));
     let bytes_gb = args.high_speed_swap_gb.unwrap_or(64);
     let resident_blocks = args.high_speed_swap_resident_blocks.unwrap_or(8192);
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -132,14 +184,14 @@ pub(crate) fn validate_head_high_speed_swap(
     };
     if swap_space_gb > 0
         && cfg.dir.canonicalize().ok().as_deref()
-            == std::path::Path::new("/tmp/atlas-swap")
+            == std::path::Path::new("/tmp/avarok-swap")
                 .canonicalize()
                 .ok()
                 .as_deref()
     {
         let _ = args;
         anyhow::bail!(
-            "--high-speed-swap-dir must not be /tmp/atlas-swap (already used \
+            "--high-speed-swap-dir must not be /tmp/avarok-swap (already used \
              by --swap-space-gb sequence-level fallback)"
         );
     }
@@ -165,12 +217,18 @@ pub(crate) fn maybe_run_ep_worker(
         return Ok(false);
     }
     let rank = args.rank;
-    let model_owned = model.take().expect("EP worker requires owned model");
+    let mut model_owned = model.take().expect("EP worker requires owned model");
     let model_has_proposer = model_owned.has_proposer();
-    if !args.speculative && !args.self_speculative && !args.ngram_speculative && model_has_proposer
-    {
+    // `--dflash` counts as a speculative method here: a DFlash worker
+    // participates in the head's speculative dispatch, so it must not trip
+    // the "started WITHOUT any --speculative flag" bail. (DFlash+EP is not
+    // an exercised combination today; this keeps the guard from lying about
+    // it when it becomes one.)
+    let worker_spec =
+        args.speculative || args.self_speculative || args.ngram_speculative || args.dflash;
+    if !worker_spec && model_has_proposer {
         let override_set = matches!(
-            std::env::var("ATLAS_ALLOW_SPEC_MISMATCH").as_deref(),
+            std::env::var("AVAROK_ALLOW_SPEC_MISMATCH").as_deref(),
             Ok("1") | Ok("true")
         );
         if !override_set {
@@ -178,19 +236,15 @@ pub(crate) fn maybe_run_ep_worker(
                 "EP worker (rank {rank}) started WITHOUT any --speculative flag, \
                  but this checkpoint has MTP weights and the head will likely use them. \
                  Mirror the head's --speculative / --mtp-quantization / --num-drafts \
-                 flags here, or set ATLAS_ALLOW_SPEC_MISMATCH=1 if the head is also \
+                 flags here, or set AVAROK_ALLOW_SPEC_MISMATCH=1 if the head is also \
                  non-speculative."
             );
         }
         tracing::warn!(
             "EP worker (rank {rank}) running WITHOUT speculative flags but \
-             ATLAS_ALLOW_SPEC_MISMATCH=1 — head must NOT issue MTP commands."
+             AVAROK_ALLOW_SPEC_MISMATCH=1 — head must NOT issue MTP commands."
         );
-    } else if !model_has_proposer
-        && !args.speculative
-        && !args.self_speculative
-        && !args.ngram_speculative
-    {
+    } else if !model_has_proposer && !worker_spec {
         tracing::info!(
             "EP worker (rank {rank}): checkpoint has no MTP weights; \
              spec-mismatch guard auto-skipped (head can't use MTP either)."
@@ -256,6 +310,22 @@ pub(crate) fn maybe_run_ep_worker(
             match model_owned.ep_worker_step(&mut slots) {
                 Ok(true) => {}
                 Ok(false) => break,
+                // 🔴 A command that EXECUTED and failed is request-scoped, not worker-scoped:
+                // the head raises the same error and answers the client with an HTTP 500,
+                // then keeps serving. Breaking here exited this process with status 0 while
+                // the head stayed up, and the head's next collective spun forever against a
+                // peer that no longer existed — a serve that answers 200 on every health
+                // endpoint and never completes another request. ANOMALIES A60/A62.
+                Err(e)
+                    if e.downcast_ref::<spark_model::traits::EpCommandFailed>()
+                        .is_some() =>
+                {
+                    tracing::error!(
+                        "EP worker command failed (rank {rank}); worker STAYS UP: {e:#}"
+                    );
+                }
+                // Anything else came from receiving the command: the link to the head is
+                // gone, so exiting is correct — the next receive would fail identically.
                 Err(e) => {
                     tracing::error!("EP worker error: {e:#}");
                     break;
@@ -263,9 +333,17 @@ pub(crate) fn maybe_run_ep_worker(
             }
         }
         for slot in slots.iter_mut() {
-            if let Some(seq) = slot.as_mut() {
-                let _ = model_owned.free_sequence(seq);
+            if let Some(mut seq) = slot.take() {
+                let _ = model_owned.free_sequence(&mut seq);
             }
+        }
+        // Worker commands use the default stream. Match the head's ordered
+        // shutdown: quiesce outstanding work before releasing owned pools.
+        if let Err(error) = model_owned.synchronize(model_owned.default_stream()) {
+            tracing::error!("EP worker stream quiescence failed (rank {rank}): {error:#}");
+        }
+        if let Err(error) = model_owned.teardown() {
+            tracing::error!("EP worker teardown failed (rank {rank}): {error:#}");
         }
         tracing::info!("EP worker stopped (rank {rank})");
     });
@@ -275,7 +353,7 @@ pub(crate) fn maybe_run_ep_worker(
 
 #[cfg(test)]
 mod prefix_cache_tests {
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use clap::Parser;
 
     use super::build_prefix_cache;
@@ -291,6 +369,33 @@ mod prefix_cache_tests {
         assert!(cache.is_active());
     }
 
+    /// The flag is load-bearing on its own, for a model whose capability
+    /// predicate already answers TRUE.
+    ///
+    /// This is the half of "both switches are required" that the tests below do
+    /// not reach. They all pass `--enable-prefix-caching` and vary the model, so
+    /// they pin the PREDICATE arm; nothing pinned the FLAG arm. That matters now
+    /// that `AVAROK_GLM53_PREFIX_CACHE_UNPROVEN` can open the predicate for GLM at
+    /// runtime: opening it must never be enough by itself, and the general
+    /// statement — an open predicate plus no flag is still `NoPrefixCaching` — is
+    /// exactly what this asserts, without any test having to mutate a
+    /// process-global variable its siblings in this binary are reading.
+    #[test]
+    fn an_open_predicate_without_the_flag_still_installs_no_prefix_caching() {
+        let args = ServeArgs::parse_from(["spark"]);
+        assert!(
+            !args.prefix_caching_enabled(),
+            "clap default must stay false"
+        );
+
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert!(
+            config.kv_only_prefix_cache_is_safe(),
+            "this model's predicate is the open case the flag has to gate"
+        );
+        assert!(!build_prefix_cache(&args, &config).is_active());
+    }
+
     #[test]
     fn compressed_deepseek_v4_disables_incomplete_prefix_cache() {
         let mut config = ModelConfig::qwen3_next_80b_nvfp4();
@@ -299,5 +404,96 @@ mod prefix_cache_tests {
 
         let cache = build_prefix_cache(&enabled_args(), &config);
         assert!(!cache.is_active());
+    }
+
+    #[test]
+    fn glm5_next_disables_incomplete_prefix_cache() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.model_type = "glm5_next".to_string();
+
+        let cache = build_prefix_cache(&enabled_args(), &config);
+        assert!(!cache.is_active());
+    }
+}
+
+#[cfg(test)]
+mod swap_space_tests {
+    use avarok_core::config::ModelConfig;
+    use clap::Parser;
+
+    use super::resolve_swap_space_gb;
+    use crate::cli::ServeArgs;
+
+    fn args_with(swap_gb: &str) -> ServeArgs {
+        ServeArgs::parse_from(["spark", "--swap-space-gb", swap_gb])
+    }
+
+    #[test]
+    fn a_kv_complete_model_keeps_the_requested_swap_space() {
+        let config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert_eq!(resolve_swap_space_gb(&args_with("3"), &config), 3);
+    }
+
+    /// The default is 3, not 0 — so a GLM serve that types no swap flag at all
+    /// is exactly the case the gate has to catch.
+    #[test]
+    fn the_default_swap_space_is_nonzero_so_the_gate_has_work_to_do() {
+        assert!(ServeArgs::parse_from(["spark"]).swap_space_gb > 0);
+    }
+
+    #[test]
+    fn a_model_with_state_outside_kv_gets_zero() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+
+        for model_type in ["glm5_next", "glm5_next_text"] {
+            config.model_type = model_type.to_string();
+            assert_eq!(
+                resolve_swap_space_gb(&ServeArgs::parse_from(["spark"]), &config),
+                0
+            );
+            assert_eq!(resolve_swap_space_gb(&args_with("64"), &config), 0);
+        }
+
+        config.model_type = "deepseek_v4".to_string();
+        config.compress_ratios = vec![0, 4, 128];
+        assert_eq!(resolve_swap_space_gb(&args_with("64"), &config), 0);
+    }
+
+    #[test]
+    fn an_explicit_zero_stays_zero_for_every_model() {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        assert_eq!(resolve_swap_space_gb(&args_with("0"), &config), 0);
+        config.model_type = "glm5_next".to_string();
+        assert_eq!(resolve_swap_space_gb(&args_with("0"), &config), 0);
+    }
+}
+
+#[cfg(test)]
+mod ep_worker_loop_tests {
+    /// 🔴 A60/A62. The worker loop must survive a command failure and still exit on a
+    /// receive failure. Getting this backwards in either direction is an availability bug:
+    /// break-on-both kills rank 1 and hangs rank 0 forever; continue-on-both spins on a
+    /// dead link. The ORDER of the two arms is the whole fix, so assert it.
+    #[test]
+    fn a_command_failure_keeps_the_worker_up_and_a_link_failure_does_not() {
+        let src = include_str!("build.rs");
+        let loop_body = src
+            .split_once("match model_owned.ep_worker_step(&mut slots)")
+            .expect("the EP worker loop must exist")
+            .1;
+        let recoverable = loop_body
+            .find("EpCommandFailed")
+            .expect("the loop must classify command failures");
+        let stays_up = loop_body
+            .find("worker STAYS UP")
+            .expect("the recoverable arm must say so in the log");
+        let fatal = loop_body
+            .find("break;\n                }\n            }\n        }")
+            .expect("the fatal arm must still break");
+        assert!(
+            recoverable < stays_up && stays_up < fatal,
+            "the EpCommandFailed arm must come BEFORE the catch-all break, or every command \
+             failure is fatal again"
+        );
     }
 }

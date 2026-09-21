@@ -10,7 +10,39 @@
 // parseability).
 
 use super::*;
+use crate::compiler::GrammarCompiler;
 use crate::grammar::parse_ebnf_default;
+use crate::matcher::GrammarMatcher;
+use crate::tokenizer::{TokenizerInfo, VocabType};
+
+/// Compile `ebnf` (root rule `root`) and test whether it matches
+/// `input` **exactly** — every byte accepted AND the root rule fully
+/// complete (not merely a legal prefix). This is the accept/reject
+/// oracle the converter tests need: `parse_ebnf_default(&got).is_ok()`
+/// only proves the *grammar text* is syntactically well-formed EBNF,
+/// never that the grammar accepts/rejects the JSON instances the
+/// source schema was supposed to allow/forbid.
+///
+/// A dummy empty-vocabulary tokenizer is enough: `accept_bytes` /
+/// `is_grammar_completed` walk the Earley parser directly and never
+/// consult the vocabulary (that only matters for token-bitmask fill,
+/// which no caller here needs).
+pub(super) fn accepts(ebnf: &str, input: &str) -> bool {
+    let tok = TokenizerInfo::new(&[], VocabType::Raw, None, None, false);
+    let compiler = GrammarCompiler::new(tok, 1, false, -1);
+    let cg = compiler
+        .compile_grammar_from_ebnf(ebnf, "root")
+        .expect("generated grammar should compile");
+    let mut m = GrammarMatcher::from_compiled_grammar(cg);
+    m.accept_bytes(input.as_bytes(), false) && m.is_grammar_completed()
+}
+
+/// Convert `schema` under `opts` then check whether the resulting
+/// grammar accepts `input` as a complete match.
+pub(super) fn schema_accepts(schema: &str, opts: &SchemaConverterOptions, input: &str) -> bool {
+    let ebnf = json_schema_to_ebnf(schema, opts).expect("schema should convert");
+    accepts(&ebnf, input)
+}
 
 /// The basic-rule prelude every converted grammar starts with, in
 /// `any_whitespace = false` mode — matches the Python
@@ -449,3 +481,9 @@ fn array_non_strict_adds_any_items() {
 // this file under the 500-LoC cap.
 #[path = "tests_objects.rs"]
 mod objects;
+
+// ...and its second half. #897's oracle work pushed tests_objects.rs from 495
+// to 579 lines; the cap is 500 and the allow-list wants a rationale plus a
+// tracking issue, so it is split rather than excused.
+#[path = "tests_objects_b.rs"]
+mod objects_b;

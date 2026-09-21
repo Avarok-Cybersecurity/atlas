@@ -43,7 +43,7 @@ public corrections. These rules would have blocked every wrong claim at the door
    profile AND checkpoint changed, you have two *observations*, not an A/B.
    Say so explicitly.
 6. **Verify engagement, don't assume it.** For speculative-decode comparisons,
-   serve with `ATLAS_MTP_ACCEPT_DEBUG=1` and check the `MTP accept` lines
+   serve with `AVAROK_MTP_ACCEPT_DEBUG=1` and check the `MTP accept` lines
    (`mean_na`, `tok_step`). The 2-minute engagement test:
    one MinHeap-style code prompt, `temperature 0.0, max_tokens 1500,
    reasoning_effort:"none"` → expect `tok_step≈3`; the same request without
@@ -79,7 +79,7 @@ public corrections. These rules would have blocked every wrong claim at the door
     deliverable — prefer it over a confident guess.
 11. **Commit-message gate (Rule 6).** No perf number enters a commit message,
     PR comment, or doc headline unless it satisfies rules 1, 5, and 7 and cites
-    its run-record IDs (`~/.atlas/runs/...`). Otherwise label it
+    its run-record IDs (`~/.avarok/runs/...`). Otherwise label it
     "preliminary, single-harness". The retraction cost is paid at claim time.
 12. **Ledger check (Rule 8).** Before asserting, grep prior session records and
     committed BENCH.toml notes for contradicting numbers. Contradicting a prior
@@ -112,3 +112,12 @@ overconfidence arXiv:2306.13063, arXiv:2305.14975 · R-Tuning arXiv:2311.09677 �
 Debate grounding arXiv:2402.06782 · Debate sycophancy arXiv:2509.23055,
 arXiv:2509.05396 · Provenance arXiv:2606.04990 · Process supervision
 arXiv:2305.20050 · CORE-Bench arXiv:2409.11363.
+
+## When the number already exists
+
+This skill runs **before** measuring. If you are holding a number someone else
+produced — or one of your own you now doubt — the forensic counterpart is
+**`measurement-artifact-oracle`** (M.A.O.). It takes the metric plus a pointer
+to the code that measured it and returns ARTIFACT / SOUND / UNDETERMINED with
+the failure class and the experiment that would settle it. Reach for it
+whenever a number is surprising, too flat, too good, or the wrong sign.

@@ -5,6 +5,7 @@
   import GateChart from './GateChart.svelte';
   import GateLadderChart from './GateLadderChart.svelte';
   import { panelsFor, colorFor, shortModel, fmtDate, sampleCount, ladderPoints } from '$lib/gates.js';
+  import { variantLabel } from '$lib/gate-variants.js';
 
   let { benchId, name, records, onselect } = $props();
 
@@ -32,8 +33,15 @@
       // metrics map (or one whose cells were all vacuous and published no
       // comparable curve).
       const tiles = [];
+      // The latest record in a grouped section can belong to either variant,
+      // so the tile has to say which one it is. Unlabelled, a DFlash2 peak
+      // would read as the plain gate's under the plain gate's heading.
+      const variant = variantLabel(latest.benchmark_id);
       if (Number.isFinite(m.peak_aggregate_tok_s))
-        tiles.push({ label: 'peak', value: `${(+m.peak_aggregate_tok_s).toFixed(1)} tok/s` });
+        tiles.push({
+          label: variant ? `peak · ${variant}` : 'peak',
+          value: `${(+m.peak_aggregate_tok_s).toFixed(1)} tok/s`
+        });
       const rungs = ladderPoints(latest).length;
       if (rungs > 0) tiles.push({ label: 'rungs', value: rungs });
       if (Number.isFinite(m.vacuous_cells) && m.vacuous_cells > 0)

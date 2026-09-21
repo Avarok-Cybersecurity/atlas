@@ -1,13 +1,20 @@
 <script>
-  import { footer, contactEmails, discordUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
+  import { footer, contactEmails, discordUrl, xUrl, mlperfTrademark, nvidiaInceptionUrl } from '$lib/data.js';
+  import AtlasLockup from '$shared/components/AtlasLockup.svelte';
+  import DiscordIcon from './DiscordIcon.svelte';
+  import XIcon from './XIcon.svelte';
 </script>
 
 <footer>
   <div class="footer-inner">
     <div class="footer-brand">
-      <div class="flogo"><img src="/favicon.svg" alt="" width="28" height="28" /> Atlas</div>
+      <div class="flogo"><AtlasLockup kind="corp" /></div>
       <p>{footer.tagline}</p>
       <p class="lic">{footer.license}</p>
+      <div class="footer-social">
+        <a href={discordUrl} aria-label="Atlas on Discord" target="_blank" rel="noopener"><DiscordIcon size={20} /></a>
+        <a href={xUrl} aria-label="Atlas on X" target="_blank" rel="noopener"><XIcon size={17} /></a>
+      </div>
     </div>
 
     {#each footer.cols as col}
@@ -30,7 +37,7 @@
 
   <div class="footer-member">
     <a href={nvidiaInceptionUrl} target="_blank" rel="noopener noreferrer">
-      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="114" loading="lazy" />
+      <img src="/nvidia-inception.webp" alt="NVIDIA Inception Program member" width="280" height="102" loading="lazy" />
     </a>
   </div>
 

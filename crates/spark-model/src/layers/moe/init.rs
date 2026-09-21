@@ -10,7 +10,7 @@ impl MoeLayer {
         num_experts: usize,
         gate_nvfp4: Option<QuantizedWeight>,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_hash(weights, num_experts, gate_nvfp4, None, gpu, config)
     }
@@ -25,7 +25,7 @@ impl MoeLayer {
         gate_nvfp4: Option<QuantizedWeight>,
         tid2eid_dev: Option<DevicePtr>,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         // Sanity-check the routing config: top-k that exceeds the
         // expert count would index OOB in the topk kernel and produce
@@ -80,12 +80,13 @@ impl MoeLayer {
             w4a16_gemv_sw: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w4a16_gemm: gpu.kernel("w4a16", "w4a16_gemm")?,
             dense_gemm: gpu.kernel("gemm", "dense_gemm_bf16")?,
+            dense_gemm_router: super::super::try_kernel(gpu, "gemm", "dense_gemm_bf16_router"),
             dense_gemm_pipelined: super::super::try_kernel(
                 gpu,
                 "gemm",
                 "dense_gemm_bf16_pipelined",
             ),
-            // FP32 gate path (ATLAS_FP32_GATE) — optional; KernelHandle(0) if the
+            // FP32 gate path (AVAROK_FP32_GATE) — optional; KernelHandle(0) if the
             // target's kernel set predates these symbols, dispatch then stays BF16.
             dense_gemm_f32out: super::super::try_kernel(gpu, "gemm", "dense_gemm_bf16_f32out"),
             dense_gemm_f32in: super::super::try_kernel(gpu, "gemm", "dense_gemm_f32in_f32out"),
@@ -132,6 +133,17 @@ impl MoeLayer {
             moe_sorted_gate_up: gpu.kernel("moe_sorted", "moe_sorted_gate_up")?,
             moe_sorted_silu_down: gpu.kernel("moe_sorted", "moe_sorted_silu_down")?,
             moe_grouped_gemm: gpu.kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable")?,
+            moe_grouped_gemm_k32: if std::env::var("AVAROK_MOE_GROUPED_K32").as_deref() == Ok("1") {
+                super::super::try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_k32")
+            } else {
+                KernelHandle(0)
+            },
+            moe_grouped_gemm_m256: if std::env::var("AVAROK_MOE_GROUPED_M256").as_deref() == Ok("1")
+            {
+                super::super::try_kernel(gpu, "moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_m256")
+            } else {
+                KernelHandle(0)
+            },
             moe_grouped_gemm_t: gpu.kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_t")?,
             moe_grouped_gemm_t_k64: gpu
                 .kernel("moe_w4a16", "moe_w4a16_grouped_gemm_ptrtable_t_k64")?,
@@ -172,7 +184,7 @@ impl MoeLayer {
                 "moe_w4a16",
                 "moe_w4a16_fused_gate_up_t_k64_m128",
             ),
-            // FUSED FP4 gate_up kernel (ATLAS_HOLO_MOE_GATEUP_FP4). try_kernel:
+            // FUSED FP4 gate_up kernel (AVAROK_HOLO_MOE_GATEUP_FP4). try_kernel:
             // KernelHandle(0) on images that didn't compile it; the FP4 dispatch
             // checks this handle != 0 before firing.
             moe_fused_gate_up_t_k64_fp4: super::super::try_kernel(
@@ -201,10 +213,21 @@ impl MoeLayer {
                 "moe_w8a8_grouped_gemm",
                 "moe_w8a8_grouped_gemm",
             ),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
+            // PM4-geometry W8A8 grouped GEMM (same module). Handle may be 0 on
+            // targets/images without it; dispatch falls back to the dense grid.
+            moe_w8a8_grouped_gemm_pm4_k: super::super::try_kernel(
                 gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
+                "moe_w8a8_grouped_gemm",
+                "moe_w8a8_grouped_gemm_pm4",
+            ),
+            per_token_group_quant_fp8_k: ops::Fp8ActQuant::resolve(gpu),
+            // Fused silu_mul + per-token-group quant. Same module as
+            // moe_silu_mul, so a model that shadows moe_silu_mul.cu without
+            // this entry point gets handle 0 → unfused fallback.
+            silu_mul_quant_fp8_k: super::super::try_kernel(
+                gpu,
+                "moe_silu_mul",
+                "silu_mul_quant_fp8",
             ),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
@@ -268,7 +291,7 @@ impl MoeLayer {
             moe_transpose_u8_batched_k: gpu
                 .kernel("moe_transpose_batched", "moe_transpose_u8_batched")?,
             // ── Phase 8a transposed-layout decode kernels ──
-            // Module name = file stem (default convention in atlas-kernels).
+            // Module name = file stem (default convention in avarok-kernels).
             moe_expert_gate_up_shared_t_k: gpu
                 .kernel("moe_shared_expert_fused_t", "moe_expert_gate_up_shared_t")?,
             moe_expert_silu_down_shared_t_k: gpu
@@ -301,6 +324,25 @@ impl MoeLayer {
             // Hash routing (DeepSeek-V4 hash_moe layers): lazy-loaded so other
             // models start fine. `tid2eid_dev` is the per-layer table (Some
             // only for hash layers).
+            router_logits_n: (config.num_experts + config.zero_expert_num) as u32,
+            moe_topk_softmax_bias_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias",
+            ),
+            moe_topk_softmax_bias_batched_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_topk_softmax_bias_batched",
+            ),
+            moe_zero_expert_add_k: super::super::try_kernel(
+                gpu,
+                "moe_topk_softmax_bias",
+                "moe_zero_expert_add",
+            ),
+            // 64 KB, unconditional: written by the softmax+bias router even
+            // with zero_expert_num == 0 (always zeros then).
+            zero_accum_dev: gpu.alloc(16384 * 4)?,
             moe_hash_route_k: super::super::try_kernel(gpu, "moe_hash_route", "moe_hash_route"),
             moe_hash_route_batched_k: super::super::try_kernel(
                 gpu,
@@ -348,20 +390,20 @@ impl MoeLayer {
                 "moe_shared_expert_fused_fp8_batch3_t",
                 "moe_expert_silu_down_shared_fp8_batch3_t",
             )?,
-            unified_layout: std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
+            unified_layout: std::env::var("AVAROK_UNIFIED_MOE_LAYOUT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            hybrid_layout: std::env::var("ATLAS_HYBRID_MOE_LAYOUT")
+            hybrid_layout: std::env::var("AVAROK_HYBRID_MOE_LAYOUT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            nvfp4_gate_up_m128: std::env::var("ATLAS_NVFP4_GATE_UP_M128")
+            nvfp4_gate_up_m128: std::env::var("AVAROK_NVFP4_GATE_UP_M128")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             // FP4 prefill MoE over the shared FAST_MOE=full [K/2,N] tables.
-            gateup_fp4: std::env::var("ATLAS_HOLO_MOE_GATEUP_FP4")
+            gateup_fp4: std::env::var("AVAROK_HOLO_MOE_GATEUP_FP4")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
-            down_fp4: std::env::var("ATLAS_HOLO_MOE_DOWN_FP4")
+            down_fp4: std::env::var("AVAROK_HOLO_MOE_DOWN_FP4")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             shared_gate_t: None,

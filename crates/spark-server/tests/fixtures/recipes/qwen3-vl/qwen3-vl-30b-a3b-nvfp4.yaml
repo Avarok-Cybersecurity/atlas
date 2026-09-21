@@ -11,7 +11,7 @@ metadata:
     Accepts images in OpenAI content-parts format (`{"type":
     "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}`).
     ~97 tok/s decode per the Atlas performance table (FP8 KV).
-  maintainer: avarok
+  maintainer: atlas
   category: vision
   model_params: 30B
   model_dtype: nvfp4

@@ -7,7 +7,7 @@
 //! This is the grounding oracle for the `w8a16_gemm_t_pipelined` rewrite:
 //! every kernel iteration is validated here (seconds) against an independent
 //! CPU reference BEFORE any full build→deploy→cosine cycle. It launches the
-//! real kernel via the production `GpuBackend`/`AtlasRegistry` path (SBIO/SSOT)
+//! real kernel via the production `GpuBackend`/`AvarokRegistry` path (SBIO/SSOT)
 //! and compares the BF16 output to a CPU recompute that mirrors the kernel's
 //! exact two-level FP32 accumulation (inner over a 128-K block, then `outer +=
 //! inner * block_scale`) — the accumulation order that holds the L31-39
@@ -33,7 +33,7 @@
 //! Exit code 0 = PASS (cosine >= threshold), 1 = FAIL — so it is scriptable.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -259,7 +259,7 @@ fn main() -> Result<()> {
     let scale_t = transpose_scale(&scale, n_blocks, k_blocks); // [K/128, N/128]
 
     // ── GPU ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

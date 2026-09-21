@@ -44,16 +44,21 @@
 //!
 //! ## Where the crossover comes from
 //!
-//! Not invented here. `dense_gemv_bf16_batchm` has a compile-time `MAX_M 8`
-//! ([`DENSE_GEMV_BATCHM_MAX_M`]) and **clamps silently** above it, so 8 is a
-//! hard ceiling, not a tuning choice. The floor is 2 because M=1 already has
-//! a dedicated kernel and never reaches this path. The main model runs the
-//! identical kernel over the identical `(2..=8)` band at three sites
+//! Not invented here. The floor is 2 because M=1 already has a dedicated
+//! kernel and never reaches this path. The main model runs the identical
+//! kernel over the identical `(2..=8)` band at three sites
 //! (`multi_seq/qkv.rs`, `multi_seq/attn/o_proj.rs` x2), measured +6% at C=2
 //! and +24% at C=4 (commit 84d5b763c). Above 8 the batched-GEMV family was
 //! measured NEGATIVE against the tile GEMM (-14.4% at C=16, -29.4% at C=32,
-//! commit 78d276832), which is why this tier stops at 8 instead of growing a
-//! wider kernel.
+//! commit 78d276832), which is why this tier stops at 8.
+//!
+//! 🔴 The 8 used to be the kernel's own `MAX_M`; since 2026-09-02 it is not.
+//! `dense_gemv_bf16_batchm` compiles to `MAX_M 16` for the batched prefill
+//! sub-chunk, so this band is now a POLICY — [`DENSE_GEMV_BATCHM_DECODE_MAX_M`]
+//! — held at 8 on purpose. The upper edge decides whether a width picks the
+//! batched GEMV or a **reassociating** GEMM, so moving it changes which bits a
+//! decode of that width produces. It moves on its own A/B against the sealed
+//! decode reference, not as a side effect of a prefill change.
 //!
 //! No drafter-specific microbench exists for these shapes (`batchm_bench` is
 //! the w4a16 family, not the BF16 one), so the band is mirrored from the
@@ -80,7 +85,7 @@
 //! accepted output is unaffected by construction. Only the ACCEPT RATE can
 //! move, and it moves toward the C=1 path.
 
-use crate::layers::ops::DENSE_GEMV_BATCHM_MAX_M;
+use crate::layers::ops::DENSE_GEMV_BATCHM_DECODE_MAX_M;
 
 /// N at or above which the pipelined tile GEMM fills its 128-wide tile well
 /// enough to beat the per-row GEMV loop. Pre-existing threshold, unchanged —
@@ -106,11 +111,11 @@ pub(crate) enum RowKernel {
 ///
 /// * `batchm_ready` — the `dense_gemv_bf16_batchm` handle resolved
 ///   (`try_kernel` misses are a silent 0; older kernel sets fall back).
-/// * `kv_gemv_pinned` — `ATLAS_MTP_KV_GEMV` present: the PRE-EXISTING lever
+/// * `kv_gemv_pinned` — `AVAROK_MTP_KV_GEMV` present: the PRE-EXISTING lever
 ///   that pins the small-N (K/V) projections to the per-row GEMV loop. It
 ///   keeps that meaning here rather than going inert at m == 8, the one width
 ///   where it used to bite and the new tier would otherwise swallow it.
-/// * `small_m_tier_off` — `ATLAS_NO_DRAFTER_SMALL_M_TIER=1`: restores the
+/// * `small_m_tier_off` — `AVAROK_NO_DRAFTER_SMALL_M_TIER=1`: restores the
 ///   pre-tier dispatch exactly, for a same-session A/B control.
 pub(crate) fn drafter_row_kernel(
     m: usize,
@@ -132,7 +137,7 @@ pub(crate) fn drafter_row_kernel(
     if batchm_ready
         && !small_m_tier_off
         && k_vec8
-        && (2..=DENSE_GEMV_BATCHM_MAX_M as usize).contains(&m)
+        && (2..=DENSE_GEMV_BATCHM_DECODE_MAX_M as usize).contains(&m)
         && !(small_n && kv_gemv_pinned)
     {
         return RowKernel::Batchm;
@@ -149,25 +154,25 @@ pub(crate) fn drafter_row_kernel(
     }
 }
 
-/// `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` — restore the pre-tier dispatch.
+/// `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` — restore the pre-tier dispatch.
 /// Read once (this is on the per-draft-position path: 8 projections x K
 /// draft positions x every step).
 pub(crate) fn small_m_tier_off() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *OFF.get_or_init(|| {
-        std::env::var("ATLAS_NO_DRAFTER_SMALL_M_TIER")
+        std::env::var("AVAROK_NO_DRAFTER_SMALL_M_TIER")
             .ok()
             .as_deref()
             == Some("1")
     })
 }
 
-/// `ATLAS_MTP_KV_GEMV` (presence) — pin the small-N K/V projections to the
+/// `AVAROK_MTP_KV_GEMV` (presence) — pin the small-N K/V projections to the
 /// per-row GEMV loop. Pre-existing lever; hoisted out of the hot path into a
 /// `OnceLock` alongside the new one.
 pub(crate) fn kv_gemv_pinned() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_MTP_KV_GEMV").is_some())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_MTP_KV_GEMV").is_some())
 }
 
 #[cfg(test)]
@@ -209,7 +214,7 @@ mod tests {
     /// `small_n_tile = m >= 8` sub-defect subsumed rather than re-tuned.
     #[test]
     fn every_projection_batches_across_the_covered_widths() {
-        for m in 2..=DENSE_GEMV_BATCHM_MAX_M as usize {
+        for m in 2..=DENSE_GEMV_BATCHM_DECODE_MAX_M as usize {
             for &(label, n, k) in DRAFTER_SHAPES {
                 assert_eq!(
                     drafter_row_kernel(m, n, k, true, false, false),
@@ -239,7 +244,7 @@ mod tests {
         }
     }
 
-    /// `ATLAS_NO_DRAFTER_SMALL_M_TIER=1` must reproduce the pre-tier decision
+    /// `AVAROK_NO_DRAFTER_SMALL_M_TIER=1` must reproduce the pre-tier decision
     /// for EVERY (m, shape, other-lever) combination — that is what makes it
     /// a valid same-session A/B control for the ladder.
     #[test]
@@ -272,23 +277,23 @@ mod tests {
         }
     }
 
-    /// `ATLAS_MTP_KV_GEMV` keeps meaning "small-N K/V on the per-row loop" at
+    /// `AVAROK_MTP_KV_GEMV` keeps meaning "small-N K/V on the per-row loop" at
     /// every width, including m=8 where the new tier would otherwise silently
     /// swallow it. Large-N projections still batch.
     #[test]
     fn kv_gemv_lever_still_pins_small_n_at_every_width() {
-        for m in 2..=DENSE_GEMV_BATCHM_MAX_M as usize {
+        for m in 2..=DENSE_GEMV_BATCHM_DECODE_MAX_M as usize {
             // N=1024 K/V.
             assert_eq!(
                 drafter_row_kernel(m, 1024, 5120, true, true, false),
                 RowKernel::GemvLoop,
-                "K/V at m={m} under ATLAS_MTP_KV_GEMV"
+                "K/V at m={m} under AVAROK_MTP_KV_GEMV"
             );
             // N=17408 FFN is not small-N; the lever does not reach it.
             assert_eq!(
                 drafter_row_kernel(m, 17408, 5120, true, true, false),
                 RowKernel::Batchm,
-                "ffn_gate at m={m} is unaffected by ATLAS_MTP_KV_GEMV"
+                "ffn_gate at m={m} is unaffected by AVAROK_MTP_KV_GEMV"
             );
         }
     }
@@ -308,8 +313,8 @@ mod tests {
                 ] {
                     if drafter_row_kernel(m, n, k, batchm, kv_pin, off) == RowKernel::Batchm {
                         assert!(
-                            (2..=DENSE_GEMV_BATCHM_MAX_M as usize).contains(&m),
-                            "batchm selected at m={m}, outside 2..={DENSE_GEMV_BATCHM_MAX_M}"
+                            (2..=DENSE_GEMV_BATCHM_DECODE_MAX_M as usize).contains(&m),
+                            "batchm selected at m={m}, outside 2..={DENSE_GEMV_BATCHM_DECODE_MAX_M}"
                         );
                     }
                 }

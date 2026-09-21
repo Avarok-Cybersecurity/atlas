@@ -32,13 +32,13 @@ use crate::layers::ops::lora_delta::{LoraKernels, LoraPair};
 use crate::layers::ops::moe_lora_grouped::{MoeExpertRoute, pack_expert_tables};
 use crate::lora::{ExpertLoraLayer, ExpertProj};
 
-/// Per-token cap for the LoRA apply scratch (`ATLAS_LORA_EXPERT_MAX_TOKENS`,
+/// Per-token cap for the LoRA apply scratch (`AVAROK_LORA_EXPERT_MAX_TOKENS`,
 /// default 4096). Folds over more rows than this are chunked; scratch is sized
 /// from it, so a huge prefill chunk stays bounded. Read once.
 fn max_tokens() -> u32 {
     static V: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
-        std::env::var("ATLAS_LORA_EXPERT_MAX_TOKENS")
+        std::env::var("AVAROK_LORA_EXPERT_MAX_TOKENS")
             .ok()
             .and_then(|v| v.parse().ok())
             .filter(|&t: &u32| t > 0)
@@ -317,10 +317,7 @@ impl MoeLayer {
         // xa reuse). `off=0, end=te` (te <= cap) is a single window ≡ the
         // pre-chunk kernel; rows have no cross-row reduction, so which window a
         // row lands in cannot change its folded result.
-        let cap = l.cap;
-        let mut off = 0u32;
-        while off < te {
-            let end = off.saturating_add(cap).min(te);
+        for (off, end) in ops::grouped_down_windows(te, l.cap) {
             // Incr-1: single active adapter -> moe_row_adapter NULL (the device
             // per-row base skip via ForwardContext.moe_row_adapter is Incr-2; the
             // request-level opt-out above already handles a pure base request).
@@ -339,7 +336,6 @@ impl MoeLayer {
                 0, // x_gather=0: down x is already sorted (x-row == sorted row)
                 stream,
             )?;
-            off = end;
         }
         Ok(())
     }
@@ -398,7 +394,7 @@ impl MoeLayer {
         anyhow::ensure!(
             n_slots <= l.cap,
             "MoE expert LoRA decode down-fold: n_slots ({n_slots}) exceeds LoRA scratch cap \
-             ({}); raise ATLAS_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
+             ({}); raise AVAROK_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
             l.cap
         );
         // x = silu(gate)*up -> BF16 into l.delta (prefill's EXACT boundary: same

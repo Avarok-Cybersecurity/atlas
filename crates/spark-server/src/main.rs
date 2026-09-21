@@ -14,7 +14,7 @@
 //! Startup sequence:
 //! 1. Parse CLI args
 //! 2. Load model config
-//! 3. Initialize GPU backend (AtlasCudaBackend)
+//! 3. Initialize GPU backend (AvarokCudaBackend)
 //! 4. Load model weights (SafetensorsLoader)
 //! 5. Build model via factory
 //! 6. Load tokenizer
@@ -30,6 +30,7 @@ mod citation_structured;
 mod cli;
 mod conversation_store;
 mod disk_guard;
+mod env_config;
 mod error_hints;
 pub mod grammar;
 mod halluc_probe;
@@ -75,13 +76,70 @@ use crate::main_modules::serve;
 pub(crate) use crate::main_modules::AppState;
 
 /// Re-export for convenience in api.rs / anthropic.rs.
-pub type ModelBehavior = atlas_kernels::ModelBehavior;
+pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // FIRST statement, before the runtime, any subscriber, any GPU context and
+    // any spawned thread: mirroring copies `ATLAS_*` onto `AVAROK_*` with
+    // `setenv`, which is only sound while this process is single threaded. The
+    // CLI that launches the server still exports the legacy names, and every
+    // `AVAROK_*` read downstream happens after this point.
+    // See `avarok_core::env_compat` for the removal conditions.
+    let mirrored_legacy_env = avarok_core::env_compat::mirror_legacy_env();
+    if !mirrored_legacy_env.is_empty() {
+        // Plain stderr on purpose: no subscriber exists yet, and this line must
+        // survive both the plain and the TUI startup paths.
+        eprintln!(
+            "spark: mirrored {} legacy ATLAS_* variables onto AVAROK_* \
+             (set AVAROK_* directly; the ATLAS_* names are deprecated)",
+            mirrored_legacy_env.len()
+        );
+    }
+
+    // The runtime is built here rather than by `#[tokio::main]`, which is the
+    // only difference from the previous entry point. That attribute builds the
+    // multi-threaded runtime BEFORE the first statement of the async body, so
+    // the worker threads would already be alive when the mirror above calls
+    // `setenv`. Flags match the attribute's defaults exactly: multi-threaded,
+    // `enable_all`, default worker count.
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(serve_main())
+}
+
+async fn serve_main() -> Result<()> {
     // Parse BEFORE subscriber install so the TUI gate can see `--no-tui`.
     // clap emits no tracing events, so plain-mode output is unchanged.
     let cli = Cli::parse();
+
+    // Answered before anything else initialises. This prints a document and
+    // exits: no subscriber, no TUI, no GPU. A dashboard would take the
+    // terminal and garble the only output the caller wants.
+    if matches!(cli.command, Command::DumpServeOptions) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&cli::manifest::build())
+                .expect("the manifest is plain data and always serialises")
+        );
+        return Ok(());
+    }
+
+    // Same treatment as `DumpServeOptions`: it talks to the network and prints
+    // a line. No subscriber, no TUI, no GPU — and no reason to initialise a
+    // dashboard for a command whose whole output is two lines of text.
+    if matches!(cli.command, Command::SyncRecipes) {
+        return cli::sync_recipes::run();
+    }
+
+    // Same treatment again: `doctor` reads paths and prints lines. It must run
+    // BEFORE any subscriber or dashboard, because the whole point is to work on
+    // a box too broken to serve.
+    if matches!(cli.command, Command::Doctor) {
+        let code = cli::doctor::dispatch()?;
+        std::process::exit(code);
+    }
+
     let no_tui = match &cli.command {
         // `--check-kernels` is a script's entry point too: it prints a report
         // and a JSON line on stdout and exits, so a dashboard would take the
@@ -90,17 +148,28 @@ async fn main() -> Result<()> {
         // The benchmark subcommand is a script's entry point: always plain, so
         // nothing here reaches `tui::start` or takes the terminal.
         Command::Benchmark(_) => true,
+        // Handled above; it never reaches here.
+        Command::DumpServeOptions | Command::SyncRecipes | Command::Doctor => true,
     };
 
+    // `bench certify --json` promises one JSON object per line on stdout and
+    // nothing else there; the log keeps its exact layout but moves to stderr
+    // for that one entry point.
+    let logs_to_stderr = matches!(
+        &cli.command,
+        Command::Benchmark(b) if b.json_stdout()
+    );
     let tui_channels = if tui::plain_mode(no_tui) {
         // The pre-TUI init, byte-for-byte: this exact fmt layout is the
         // contract every benchmark driver and gate script greps.
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "info".into()),
-            )
-            .init();
+        let fmt = tracing_subscriber::fmt().with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        );
+        if logs_to_stderr {
+            fmt.with_writer(std::io::stderr).init();
+        } else {
+            fmt.init();
+        }
         None
     } else {
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
@@ -116,6 +185,12 @@ async fn main() -> Result<()> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<&'static str>();
     tui::shutdown::arm_startup_escape(shutdown_tx);
     let result = match cli.command {
+        // Returned above, before anything initialised. Kept as an explicit arm
+        // rather than a wildcard so a future subcommand cannot land here by
+        // accident and silently do nothing.
+        Command::DumpServeOptions | Command::SyncRecipes | Command::Doctor => {
+            unreachable!("handled before initialisation")
+        }
         Command::Benchmark(args) => {
             // No model load, so none of the startup-escape plumbing below
             // applies — `dispatch` installs its own Ctrl-C handling. Drop the
@@ -159,9 +234,9 @@ async fn main() -> Result<()> {
                     // so this exit needs the same status mapping as the one
                     // below — otherwise the escape hatch silently reports a
                     // poisoned context as a clean stop.
-                    std::process::exit(atlas_core::fault::exit_code(
+                    std::process::exit(avarok_core::fault::exit_code(
                         true,
-                        atlas_core::fault::global().fault(),
+                        avarok_core::fault::global().fault(),
                     ));
                 }
             }
@@ -180,7 +255,7 @@ async fn main() -> Result<()> {
     // (issue #429), so without this the two are indistinguishable to a
     // supervisor and `restart: on-failure` leaves the endpoint down. Returning
     // `result` unchanged when healthy keeps every other exit byte-identical.
-    match atlas_core::fault::global().fault() {
+    match avarok_core::fault::global().fault() {
         Some(reason) => {
             if let Err(e) = &result {
                 tracing::error!("{e:#}");
@@ -189,7 +264,7 @@ async fn main() -> Result<()> {
                 "Exiting after a fatal GPU fault ({reason}). The CUDA context is \
                  destroyed and cannot be recovered in-process; restart the server."
             );
-            std::process::exit(atlas_core::fault::exit_code(result.is_ok(), Some(reason)));
+            std::process::exit(avarok_core::fault::exit_code(result.is_ok(), Some(reason)));
         }
         None => result,
     }

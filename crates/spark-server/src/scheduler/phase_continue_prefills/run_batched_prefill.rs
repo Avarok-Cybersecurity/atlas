@@ -14,8 +14,8 @@ use spark_model::traits::{Model, PrefillSlice};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
-use super::super::sample_first_token;
 use super::super::types::PrefillInProgress;
+use super::super::{FirstTokenPolicy, sample_first_token};
 use super::prefill_waves::{WaveGeom, plan_prefill_waves};
 
 pub(super) fn run_batched_prefill_step(
@@ -27,6 +27,8 @@ pub(super) fn run_batched_prefill_step(
     max_batch_tokens: usize,
     prefill_stream: u64,
     prefill_event: u64,
+    think_end_token: Option<u32>,
+    tool_call_start_token: Option<u32>,
 ) {
     // Per-chunk InnerQ finalize poll — see `phase_continue_prefills::poll_innerq`.
     super::poll_innerq(model);
@@ -48,13 +50,13 @@ pub(super) fn run_batched_prefill_step(
     // Precedence: when both `--prefill-varlen-batch` and the codispatch env
     // are set, varlen wins.
     let varlen = spark_model::layers::ops::prefill_varlen_enabled();
-    // Co-dispatch (ATLAS_PREFILL_CODISPATCH=1): when all streams are at chunk 0
+    // Co-dispatch (AVAROK_PREFILL_CODISPATCH=1): when all streams are at chunk 0
     // and equal-length, give them ONE shared geometry so the kernel-batched path
     // is eligible (check_kernel_batched_eligible requires identical chunk_len /
     // chunk_start / is_last across streams). Ragged or non-chunk-0 batches keep
     // per-stream geometry, which the dispatcher handles via per-stream fallback.
     let shared_geom: Option<(usize, bool)> = if !varlen
-        && std::env::var("ATLAS_PREFILL_CODISPATCH")
+        && std::env::var("AVAROK_PREFILL_CODISPATCH")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
         && !model.is_mla()
@@ -123,7 +125,7 @@ pub(super) fn run_batched_prefill_step(
         // with the planned wave shapes. M per wave = Σ chunk_len of its
         // members — the row count every fused per-layer GEMM launches at
         // (assuming the model-side dispatch admits; it logs its own verdict
-        // under target "atlas::q12").
+        // under target "avarok::q12").
         let wave_m: Vec<usize> = waves
             .iter()
             .map(|w| w.iter().map(|&i| chunk_lens[i]).sum())
@@ -207,7 +209,7 @@ pub(super) fn run_batched_prefill_step(
             // #131: grammar-constrain the FIRST token (and advance the matcher);
             // no-op without a grammar.
             // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
-            // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
+            // hardcoded 0.0 inside the sampler. Kill-switch: AVAROK_NO_MTP_MINP=1.
             match sample_first_token(
                 model,
                 logits,
@@ -217,6 +219,11 @@ pub(super) fn run_batched_prefill_step(
                 p.min_p,
                 &p.eos_tokens,
                 p.grammar_state.as_mut(),
+                FirstTokenPolicy::for_birth(
+                    p.enable_thinking,
+                    think_end_token,
+                    tool_call_start_token,
+                ),
                 &sched.levers.sampling(),
             ) {
                 Ok(first) => {

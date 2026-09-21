@@ -81,7 +81,7 @@ const opfsFiles = (page) =>
 
 test.describe('nav trigger', () => {
   test('is present with dialog aria wiring', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/engine');
     if (isMobile(page)) {
       await expect(page.locator('.nav-links .nav-chat-btn')).toBeHidden();
       const toggle = page.locator('.nav-toggle');
@@ -112,7 +112,7 @@ test.describe('modal shell', () => {
     context
   }) => {
     await routeCorpus(context);
-    await page.goto('/');
+    await page.goto('/engine');
     const dialog = await openChat(page);
 
     await expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -141,7 +141,7 @@ test.describe('modal shell', () => {
 
   test('close button and backdrop click both close', async ({ page, context }) => {
     await routeCorpus(context);
-    await page.goto('/');
+    await page.goto('/engine');
     let dialog = await openChat(page);
     await dialog.locator('.cc-close').click();
     await expect(dialog).toBeHidden();
@@ -162,7 +162,7 @@ test.describe('modal shell', () => {
 
 test('no corpus or manifest request before the modal opens', async ({ page, context }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine');
   if (!isMobile(page)) {
     // Hovering warms the lazy chunk + wasm, which must NOT touch the corpus.
     await page.locator('.nav-links .nav-chat-btn').hover();
@@ -187,7 +187,7 @@ test('first open walks download with MB progress to ready with fixture stats', a
   const hits = await routeCorpus(context);
   const slow = await routeSlowCorpus(context, hits, { chunkSize: 512, delayMs: 60 });
   try {
-    await page.goto('/');
+    await page.goto('/engine');
     // Record every status-line change so sub-second phases are still assertable.
     await page.evaluate(() => {
       window.__statusLog = [];
@@ -225,7 +225,7 @@ test('second open serves the corpus from OPFS with only a manifest request', asy
   context
 }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
   expect(hits).toEqual({ meta: 1, gz: 1 });
@@ -257,7 +257,7 @@ test('manifest failure falls back to the cached corpus with the offline badge', 
   context
 }) => {
   const hits = await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
 
@@ -272,6 +272,37 @@ test('manifest failure falls back to the cached corpus with the offline badge', 
   expect(hits.gz).toBe(1); // never re-downloaded
 });
 
+// A manifest that PARSES but whose commit_sha is not a string used to pass
+// validation on truthiness alone. It is then coerced into a filename
+// (lattice-db-12345.jsonl) and later fails pruneStale's typeof precondition,
+// which returns early — so pruning is silently disabled and cached corpora
+// accumulate in OPFS with nothing reporting it. Treated as a bad manifest now,
+// which takes the same offline path as an unreachable one.
+test('a manifest whose commit_sha is not a string is refused, not coerced', async ({
+  page,
+  context
+}) => {
+  const hits = await routeCorpus(context);
+  await page.goto('/engine');
+  await openChat(page);
+  await waitReady(page);
+
+  await context.unroute(CORPUS_META_URL);
+  await context.route(CORPUS_META_URL, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...META, commit_sha: 12345 })
+    });
+  });
+
+  await page.reload();
+  await openChat(page);
+  await waitReady(page);
+  await expect(statusText(page)).toContainText('cached · offline');
+  expect(hits.gz).toBe(1); // and it did not re-download under a coerced name
+});
+
 // =============================================================================
 // abort on close mid-download: no partial cache, clean re-run
 // =============================================================================
@@ -283,7 +314,7 @@ test('closing mid-download aborts cleanly and leaves no partial corpus', async (
   const hits = await routeCorpus(context);
   const slow = await routeSlowCorpus(context, hits, { chunkSize: 256, delayMs: 100 });
   try {
-    await page.goto('/');
+    await page.goto('/engine');
     const dialog = await openChat(page);
     await expect(statusText(page)).toContainText('downloading corpus');
     await page.keyboard.press('Escape');
@@ -313,7 +344,7 @@ test('asking is gated on an OpenRouter key that persists across visits', async (
   context
 }) => {
   await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
 
@@ -363,7 +394,7 @@ test('mocked round-trip prints prompt, receipt, markdown, and real source links'
   await routeCorpus(context);
   await routeOpenRouter(context, ANSWER);
   await withKey(page);
-  await page.goto('/');
+  await page.goto('/engine');
   await openChat(page);
   await waitReady(page);
 
@@ -430,7 +461,7 @@ test.describe('error states', () => {
     await context.route(CORPUS_GZ_URL, (route) =>
       route.fulfill({ status: 404, headers: JSON_HEADERS, body: 'not found' })
     );
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
 
     const card = page.locator('.cc-error[role="alert"]');
@@ -448,10 +479,10 @@ test.describe('error states', () => {
     const attempts = [];
     await context.route(OR_EMBEDDINGS, http429Handler({ log: attempts }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'what schedules decode batches?');
     const card = page.locator('.cc-error[role="alert"]');
@@ -467,10 +498,10 @@ test.describe('error states', () => {
     await context.route(OR_RERANK, rerankHandler());
     await context.route(OR_CHAT, ok200ErrorBodyHandler({ log: attempts }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'how do NVFP4 kernels dispatch?');
     const card = page.locator('.cc-error[role="alert"]');
@@ -483,7 +514,7 @@ test.describe('error states', () => {
     await routeCorpus(context);
     await context.route(OR_EMBEDDINGS, embeddingsHandler({ dim: 16 }));
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
 
@@ -496,6 +527,51 @@ test.describe('error states', () => {
     // A chat-time fault must not knock the corpus out of ready.
     await expect(statusText(page)).toContainText('ready ·');
   });
+
+  // The rerank API returns positions into the documents WE sent. rag.js used
+  // them to index `candidates` directly, so an index the response invented
+  // produced `undefined` in `picked` and the next line read `.payload` off it —
+  // a bare TypeError that took the whole answer down instead of degrading.
+  test('a rerank index that points nowhere does not take the answer down', async ({
+    page,
+    context
+  }) => {
+    await routeCorpus(context);
+    await context.route(OR_EMBEDDINGS, embeddingsHandler({ dim: META.dim }));
+    await context.route(OR_CHAT, chatHandler('The KV pool lives in `kv_pool.rs` [1].'));
+    await context.route(OR_RERANK, async (route) => {
+      const body = route.request().postDataJSON();
+      // One real position and two that do not exist.
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          // Scores matter: rag.js takes .slice(0, TOP_K) of the RANKED list,
+          // so a bad index only reaches the guard if it scores into the top
+          // few. The first version of this test put them last, and passed
+          // against a guard that did not hold.
+          results: [
+            { index: 'length', relevance_score: 0.99 },
+            { index: 'map', relevance_score: 0.98 },
+            { index: 0, relevance_score: 0.97 },
+            { index: body.documents.length + 5, relevance_score: 0.8 },
+            { index: -1, relevance_score: 0.7 },
+            { index: 1.5, relevance_score: 0.4 },
+            { index: null, relevance_score: 0.3 }
+          ]
+        })
+      });
+    });
+    await withKey(page);
+    await page.goto('/engine');
+    await openChat(page);
+    await waitReady(page);
+
+    await askQuestion(page, 'where is the kv pool?');
+    // The answer still arrives, built from the position that did resolve.
+    await expect(page.locator('.cm-body').first()).toBeVisible({ timeout: 20_000 });
+    await expect(statusText(page)).toContainText('ready ·');
+  });
 });
 
 // =============================================================================
@@ -505,7 +581,7 @@ test.describe('error states', () => {
 test('the modal is a full-bleed sheet on a phone', async ({ page, context }) => {
   test.skip(!isMobile(page), 'mobile project only');
   await routeCorpus(context);
-  await page.goto('/');
+  await page.goto('/engine');
   const dialog = await openChat(page);
 
   const viewport = page.viewportSize();

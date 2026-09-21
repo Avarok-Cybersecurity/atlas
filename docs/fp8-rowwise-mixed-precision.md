@@ -35,7 +35,7 @@ the video benchmark's hardest leg, the double-quantised checkpoint answered
   by the SSM prefill projection.
 * `weight_map/quantize_fns.rs::load_fp8_weight` — reads a `[N]` scale (widening BF16 →
   F32) and tags `WeightQuantFormat::Fp8PerRow`. **It has no callers.**
-* `ATLAS_GDN_BF16_WEIGHTS=1` — the BF16 mitigation for the GDN half, default-off,
+* `AVAROK_GDN_BF16_WEIGHTS=1` — the BF16 mitigation for the GDN half, default-off,
   "gated for a clean A/B + KL-drift gate before flipping the default".
 
 ## Done on this branch
@@ -55,7 +55,7 @@ throughput half of the measurement long before it OOMs.
 
 ## Measured: the BF16 lever is not the answer
 
-`ATLAS_GDN_BF16_WEIGHTS=1` vs baseline, unsloth/Qwen3.8-27B-NVFP4, same flags:
+`AVAROK_GDN_BF16_WEIGHTS=1` vs baseline, unsloth/Qwen3.8-27B-NVFP4, same flags:
 
 | | baseline (NVFP4 requant) | GDN BF16 | |
 |---|---|---|---|
@@ -101,7 +101,7 @@ the Strix branch (`38c9dea`, carried by the still-open **#336**) states the
 cost in the same terms this branch found: *"fixes the double-quant that
 regressed non_live to ~76"*, on a checkpoint that is mixed-precision because
 "modelopt keeps the SSM projections high-precision". #336 also names the lever
-and the expected evidence — serve with `ATLAS_NO_GDN_FP8=0` and look for
+and the expected evidence — serve with `AVAROK_NO_GDN_FP8=0` and look for
 `SSM in_proj_qkv ... native`, "no lossy FP8→BF16→NVFP4 double-quant".
 
 So the native-FP8 GDN path exists and works — for **block-scaled and
@@ -136,7 +136,7 @@ change; it does not replace that.
 
 ## ✔ LANDED — via BF16, because the FP8 GEMM is dead on GB10
 
-`ATLAS_FP8_ROWWISE=1` works and is measured. Getting there killed the
+`AVAROK_FP8_ROWWISE=1` works and is measured. Getting there killed the
 assumption the plan rested on.
 
 ### The FP8 GEMM does not work on this hardware
@@ -147,16 +147,16 @@ which declares both scales `SCALE_MODE_OUTER_VEC_32F`. On sm_121
 prefill 400s. Padding M to 16 — which that call also needed, and now does —
 does not change it.
 
-**Control**: the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` with `ATLAS_CUBLAS_FP8=1`,
+**Control**: the BLOCK-scaled `Qwen/Qwen3.8-27B-FP8` with `AVAROK_CUBLAS_FP8=1`,
 this branch's arm inert, reaches the same call through the requant path and
 fails identically. It is the GEMM, not per-row weights.
 
-**Its sibling is worse**: `ATLAS_FP8_W8A8=1` (block-scaled cuBLASLt) passes the
+**Its sibling is worse**: `AVAROK_FP8_W8A8=1` (block-scaled cuBLASLt) passes the
 heuristic and returns `"kililililil…"` to a plain prompt.
 
 So the cuBLASLt FP8 prefill family is dead code on GB10 — one arm errors, one
 is silently wrong — behind default-off flags nothing in the repo sets
-(`ATLAS_CUBLAS_FP8` appears exactly once, its own definition). Its docstring's
+(`AVAROK_CUBLAS_FP8` appears exactly once, its own definition). Its docstring's
 "~1.8× the bf16 path (152 vs 85 TF)" does not reproduce here.
 
 ### So: dequantise once to BF16, multiply with cuBLASLt BF16
@@ -168,7 +168,7 @@ new kernel. The same `dequant_fp8_blockscaled_bf16` serves both layouts:
 Measured on `unsloth/Qwen3.8-27B-NVFP4`, same box and flags, vs the NVFP4
 baseline:
 
-| | baseline | `ATLAS_FP8_ROWWISE=1` | `ATLAS_GDN_BF16_WEIGHTS=1` |
+| | baseline | `AVAROK_FP8_ROWWISE=1` | `AVAROK_GDN_BF16_WEIGHTS=1` |
 |---|---|---|---|
 | prefill | 507 tok/s | **585 tok/s (+15.5%)** | 137 tok/s (−72.9%) |
 | decode | 5.3 tok/s | 5.3 tok/s | 5.0 tok/s |
@@ -200,8 +200,8 @@ per-row `w8a16_gemv` variant.
 | config | decode |
 |---|---|
 | baseline (NVFP4 decode) | 5.26 tok/s |
-| `ATLAS_GDN_BF16_WEIGHTS=1` + cuBLASLt | 5.08 tok/s (−3.4%) |
-| `ATLAS_FP8_ROWWISE=1` (NVFP4 decode kept) | ~5.3, unchanged |
+| `AVAROK_GDN_BF16_WEIGHTS=1` + cuBLASLt | 5.08 tok/s (−3.4%) |
+| `AVAROK_FP8_ROWWISE=1` (NVFP4 decode kept) | ~5.3, unchanged |
 
 The −3.4% is not the GEMM change: under the BF16 lever the DECODE weights are
 BF16 too, 4× NVFP4's bytes, and decode is bandwidth-bound. The row-wise fold
@@ -214,13 +214,13 @@ noise and is superseded by the table above.
 
 ### Every CUTLASS / cuBLAS dispatch flag is OFF in all of these runs
 
-`GemmDispatch::from_env` turns each on only with `ATLAS_*=1`, and none were
+`GemmDispatch::from_env` turns each on only with `AVAROK_*=1`, and none were
 set — so `cublas_gemm`, `cutlass_gemm` and the whole `cutlass_nvfp4_*` family
 were false throughout. `fp8_blockscaled_prefill` is the one inverted default
-(on unless `ATLAS_FP8_SINGLE_SCALE=1`).
+(on unless `AVAROK_FP8_SINGLE_SCALE=1`).
 
 That is not a flaw in the A/B: **the qwen3.6-27b and qwen3.8-27b serving
-recipes set no `ATLAS_*` either**, so this is exactly the config the gates and
+recipes set no `AVAROK_*` either**, so this is exactly the config the gates and
 production run. The numbers are like-for-like.
 
 It does mean the absolute figures are the unflagged floor, and two things are
@@ -228,9 +228,9 @@ worth measuring separately:
 
 * **The documented prefill stack for this family is GDN, not CUTLASS.** The
   `qwen3.6/qwen3.6-27b-nvfp4-prefill-record` recipe pins
-  `ATLAS_FFN_NVFP4_MMQ=1`, `ATLAS_GDN_REGRESIDENT=1`, `ATLAS_GDN_FLASHINFER=1`
-  and `ATLAS_GDN_LIB=…/libatlasgdn.so`. FlashInfer-GDN is worth +17-20% there,
-  and it FAILS OPEN — without `ATLAS_GDN_LIB` and the CUTLASS DSL on
+  `AVAROK_FFN_NVFP4_MMQ=1`, `AVAROK_GDN_REGRESIDENT=1`, `AVAROK_GDN_FLASHINFER=1`
+  and `AVAROK_GDN_LIB=…/libatlasgdn.so`. FlashInfer-GDN is worth +17-20% there,
+  and it FAILS OPEN — without `AVAROK_GDN_LIB` and the CUTLASS DSL on
   `LD_LIBRARY_PATH` it silently falls back, costing 40-50% of prefill at
   concurrency, which C=1 cannot see.
 * **`cutlass_nvfp4_qkvz` is unmeasured on this target.** It would consume the
@@ -257,11 +257,11 @@ Same box, same binary, same serve; only the env differs.
 
 Legs:
 
-* GDN — `ATLAS_GDN_FLASHINFER=1`, `ATLAS_GDN_REGRESIDENT=1`, `ATLAS_GDN_LIB=…/libatlasgdn.so`,
+* GDN — `AVAROK_GDN_FLASHINFER=1`, `AVAROK_GDN_REGRESIDENT=1`, `AVAROK_GDN_LIB=…/libatlasgdn.so`,
   and the CUTLASS DSL lib dir on `LD_LIBRARY_PATH`. **Verified engaged** from the
-  boot log — `ATLAS_GDN_FLASHINFER: FlashInfer GDN kernel loaded (opt-in)` — not
+  boot log — `AVAROK_GDN_FLASHINFER: FlashInfer GDN kernel loaded (opt-in)` — not
   the silent fallback, which is the whole hazard with this flag.
-* CUTLASS — `ATLAS_CUTLASS_NVFP4_GEMM=1` plus `ATLAS_CUTLASS_NVFP4_SSM_OUT=1`,
+* CUTLASS — `AVAROK_CUTLASS_NVFP4_GEMM=1` plus `AVAROK_CUTLASS_NVFP4_SSM_OUT=1`,
   which the umbrella deliberately does NOT imply.
 
 Three things follow.
@@ -306,7 +306,7 @@ reference (1925 s over 10 = ~192 s), so the flags cost nothing agentically.
    `cublas_fp8_rowwise_proj`, keeping the NVFP4 copy for decode. Mixing precision
    across phases is already an accepted pattern here — the native-FP8 SSM path logs
    "NVFP4 kept as structural fallback for decode batch paths". Behind
-   `ATLAS_FP8_ROWWISE=1`, default-off.
+   `AVAROK_FP8_ROWWISE=1`, default-off.
 3. **Measure** with `scripts/fp8_rowwise_ab.py` + the vision/video gates. The
    hypothesis to kill: that row-wise recovers the BF16 quality gain without the
    −72.9% prefill.

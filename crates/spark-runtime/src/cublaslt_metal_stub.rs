@@ -3,13 +3,20 @@
 //! Metal-build stub of the cuda-only `cublaslt` module.
 //!
 //! The real [`crate::cublaslt`] module (cuBLASLt BF16/FP8 act·weightᵀ GEMMs)
-//! is gated behind `feature = "cuda"` because it links cuBLASLt, which does
+//! is gated behind `avarok_cuda` because it links cuBLASLt, which does
 //! not exist on macOS. spark-model names these entry points unconditionally,
 //! so the metal build (`cargo check --features metal`, cuda off) needs the
 //! symbols to resolve even though FP8 inference never runs there. The bodies
 //! are `unreachable!` — reaching one on metal is a bug.
 
 use anyhow::Result;
+
+// The scale-factor LAYOUT rules are pure index math with no cuBLASLt symbols in
+// them, so the metal build shares the REAL module instead of stubbing it — the
+// spark-model dispatch gate names it unconditionally, and a stub would be a
+// second, silently diverging copy of the layout contract.
+#[path = "cublaslt/scale_layout.rs"]
+pub mod scale_layout;
 
 pub fn bf16_gemm_act_weight_t(
     _act: u64,
@@ -21,6 +28,18 @@ pub fn bf16_gemm_act_weight_t(
     _stream: u64,
 ) -> Result<()> {
     unreachable!("cublaslt::bf16_gemm_act_weight_t is cuda-only (not built for metal)")
+}
+
+pub fn bf16_gemm_act_weight_t_f32_out(
+    _act: u64,
+    _weight: u64,
+    _out: u64,
+    _m: u32,
+    _n: u32,
+    _k: u32,
+    _stream: u64,
+) -> Result<()> {
+    unreachable!("cublaslt::bf16_gemm_act_weight_t_f32_out is cuda-only (not built for metal)")
 }
 
 pub fn fp8_gemm_act_weight_t_rowwise(
@@ -49,4 +68,20 @@ pub fn fp8_gemm_act_weight_t_blkscaled(
     _stream: u64,
 ) -> Result<()> {
     unreachable!("cublaslt::fp8_gemm_act_weight_t_blkscaled is cuda-only (not built for metal)")
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn fp8_gemm_act_weight_t_blkscaled_ldc(
+    _act_fp8: u64,
+    _act_scale: u64,
+    _weight_fp8: u64,
+    _weight_block_scale: u64,
+    _out: u64,
+    _m: u32,
+    _n: u32,
+    _k: u32,
+    _ldc: u32,
+    _stream: u64,
+) -> Result<()> {
+    unreachable!("cublaslt::fp8_gemm_act_weight_t_blkscaled_ldc is cuda-only (not built for metal)")
 }

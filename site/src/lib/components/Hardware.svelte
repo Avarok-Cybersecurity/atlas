@@ -1,18 +1,22 @@
 <script>
   import { hardware } from '$lib/data.js';
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="hardware" class="section-alt">
+<section id="hardware" class="section-alt sx-cyan">
   <div class="container">
-    <div class="slabel">{hardware.label}</div>
-    <h2 class="stitle">{hardware.title}</h2>
+    <SectionHead
+      label={hardware.label}
+      title={hardware.title}
+      sub={hardware.sub}
+    />
 
     <div class="hw-grid">
       {#each hardware.cards as c}
         <div class="hw-card">
           <div class="hw-top">
             <div>
-              <h3>{c.name}{#if c.gift} <span class="gift-emoji" title="Gifted hardware">🎁</span>{/if}</h3>
+              <h3>{c.name}</h3>
               <div class="hw-chip mono">{c.chip}</div>
             </div>
             <span class="hw-status {c.status}"><span class="dot"></span>{c.statusText}</span>

@@ -11,7 +11,7 @@
 //
 // The GENERIC half of this module — the `SlotArena`/`SwapStore` seams, the
 // `Residency` page table and the O_DIRECT
-// `DirectSwapFile` — lives in the CUDA-/verbs-free `atlas-tier` crate and is
+// `DirectSwapFile` — lives in the CUDA-/verbs-free `avarok-tier` crate and is
 // re-exported below, so consumers keep their `crate::snapshot_swap::*` paths
 // unchanged. What REMAINS here is the peer-specific half: the TCP control
 // protocol (byte-frozen, golden-pinned — what the fleet peer binary speaks),
@@ -20,9 +20,9 @@
 
 #![allow(dead_code)]
 
-/// The generic paging core, lifted to `atlas-tier` (CUDA- and verbs-free).
-/// Re-exported under the `atlas_tier` names (no historical aliases).
-pub use atlas_tier::{
+/// The generic paging core, lifted to `avarok-tier` (CUDA- and verbs-free).
+/// Re-exported under the `avarok_tier` names (no historical aliases).
+pub use avarok_tier::{
     DirectSwapFile, MemSwapStore, Residency, SlotArena, SwapStats, SwapStore, VecSlotArena,
 };
 

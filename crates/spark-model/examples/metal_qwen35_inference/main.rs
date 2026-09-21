@@ -15,9 +15,9 @@
 //!
 //! Run with:
 //!
-//!     ATLAS_TARGET_HW=metal \
-//!     ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-//!     ATLAS_TARGET_QUANT=mlx_int8 \
+//!     AVAROK_TARGET_HW=metal \
+//!     AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+//!     AVAROK_TARGET_QUANT=mlx_int8 \
 //!     PROMPT="What is the capital of France?" \
 //!     cargo run --release -p spark-model --example metal_qwen35_inference \
 //!         --features metal-example --no-default-features
@@ -49,7 +49,7 @@ pub const CFG: Qwen35ForwardConfig = Qwen35ForwardConfig::qwen3_5_4b_mlx_int8();
 fn main() -> Result<()> {
     let prompt =
         std::env::var("PROMPT").unwrap_or_else(|_| "What is the capital of France?".to_string());
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("$HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
@@ -102,12 +102,12 @@ fn main() -> Result<()> {
     );
 
     // Backend + kernel set.
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     if modules.is_empty() {
         bail!(
             "metal kernel registry empty — re-build with \
-             ATLAS_TARGET_HW=metal ATLAS_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
-             ATLAS_TARGET_QUANT=mlx_int8"
+             AVAROK_TARGET_HW=metal AVAROK_TARGET_MODEL=qwen3-5-4b-vlm-mlx-int8 \
+             AVAROK_TARGET_QUANT=mlx_int8"
         );
     }
     let backend = MetalGpuBackend::new(0, &modules)?;
@@ -161,17 +161,17 @@ fn main() -> Result<()> {
     println!("  → all weights loaded in {:.2?}", t0.elapsed());
 
     // Scratch + KV caches + GDN states.
-    let n_decode_budget: u32 = std::env::var("ATLAS_DECODE_TOKENS")
+    let n_decode_budget: u32 = std::env::var("AVAROK_DECODE_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
     let max_seq_len = prompt_len + n_decode_budget + 4;
     let scratch = alloc_full_attention_scratch(&backend)?;
     let lin_scratch = alloc_linear_attention_scratch(&backend)?;
-    // ATLAS_KV_DTYPE={turbo8,turbo4} switches the full-attention KV
+    // AVAROK_KV_DTYPE={turbo8,turbo4} switches the full-attention KV
     // caches to a TurboQuant format (WHT-rotated; 2.13× / 3.56× smaller
     // than bf16). Default stays raw bf16.
-    let kv_dtype: qwen3_5::MetalKvDtype = std::env::var("ATLAS_KV_DTYPE")
+    let kv_dtype: qwen3_5::MetalKvDtype = std::env::var("AVAROK_KV_DTYPE")
         .unwrap_or_else(|_| "bf16".into())
         .parse()?;
     let kv_caches: Vec<LayerKvCache> = (0..full_attn_count)
@@ -379,7 +379,7 @@ fn main() -> Result<()> {
     println!("  text:     {next_text:?}");
 
     // ── Greedy decode loop ─────────────────────────────────────────
-    let n_decode: usize = std::env::var("ATLAS_DECODE_TOKENS")
+    let n_decode: usize = std::env::var("AVAROK_DECODE_TOKENS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);

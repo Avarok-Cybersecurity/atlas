@@ -23,6 +23,9 @@ pub struct PromptTokenLogprob {
 /// empty top vector (chosen-token logprob only). A target outside the
 /// vocab yields `-inf` (fail-visible, never panics).
 pub fn logprob_of(f32_logits: &[f32], target: u32, k: usize) -> (f32, Vec<(u32, f32)>) {
+    if f32_logits.is_empty() {
+        return (f32::NEG_INFINITY, Vec::new());
+    }
     // Log-softmax: logprob = logit - log(sum(exp(logits)))
     let max_logit = f32_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let log_sum_exp = max_logit
@@ -105,6 +108,11 @@ mod tests {
     }
 
     #[test]
+    fn empty_vocab_is_neg_inf_with_no_alternatives() {
+        assert_eq!(logprob_of(&[], 0, 4), (f32::NEG_INFINITY, vec![]));
+    }
+
+    #[test]
     fn bf16_slice_roundtrip_extract() {
         // BF16 encodings of [0.0, 1.0, 2.0]: f32 bit patterns >> 16.
         let vals = [0.0f32, 1.0, 2.0];
@@ -116,7 +124,10 @@ mod tests {
         }
         let r = extract_bf16(&bytes, 2, 1, 3);
         let sum: f32 = vals.iter().map(|l| l.exp()).sum();
-        assert!((r.logprob - (2.0 - sum.ln())).abs() < 1e-3);
+        let expect = 2.0 - sum.ln();
+        assert_eq!(r.token_id, 2);
+        assert!((r.logprob - expect).abs() < 1e-3);
         assert_eq!(r.top[0].0, 2);
+        assert!((r.top[0].1 - expect).abs() < 1e-3);
     }
 }

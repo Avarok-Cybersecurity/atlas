@@ -6,7 +6,7 @@
 // inline because it owns enough closures to fight extraction.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -20,7 +20,7 @@ use crate::weight_map::{
 };
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn build_full_attention_nvfp4(
+pub(crate) fn build_full_attention_nvfp4(
     layer_idx: usize,
     store: &WeightStore,
     lp: &str,
@@ -121,7 +121,7 @@ pub(super) fn build_full_attention_nvfp4(
                     // launches on Q/K/V become redundant. O projection skipped (the
                     // input-side rotation needs a transpose). hd=128 only — 256/512
                     // sign arrays not yet vendored.
-                    if super::tq_plus_weight_rotation::weight_rotation_enabled()
+                    if crate::layers::ops::ModelLevers::get().weight_pre_rotated
                         && (name == "q_proj" || name == "k_proj" || name == "v_proj")
                         && config.head_dim == 128
                     {

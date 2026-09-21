@@ -144,7 +144,7 @@ pub fn handle_content_token(
     // the tool body: its emission outside the body forms a tight
     // period-N tail that the outside-body watchdog will detect.
     // Request `repetition_detection` outranks the operator's
-    // `--content-loop-min-repeats` / `ATLAS_CONTENT_LOOP_MIN_REPEATS`;
+    // `--content-loop-min-repeats` / `AVAROK_CONTENT_LOOP_MIN_REPEATS`;
     // both outrank the built-in constants.
     let loop_params = sched.watchdog.content_loop_params(a.repetition_detection);
     if !sched.levers.disable_watchdogs
@@ -191,9 +191,9 @@ pub fn handle_content_token(
                     matched_repeats = repeats,
                     ?reason,
                     "Content-loop watchdog fired (period-{}…{} repeat); ending response early (rollback declined). \
-                     Tune via --content-loop-min-repeats / ATLAS_CONTENT_LOOP_MIN_REPEATS, per-request \
+                     Tune via --content-loop-min-repeats / AVAROK_CONTENT_LOOP_MIN_REPEATS, per-request \
                      repetition_detection, or disarm via --content-loop-watchdog false / \
-                     ATLAS_CONTENT_LOOP_WATCHDOG=0",
+                     AVAROK_CONTENT_LOOP_WATCHDOG=0",
                     CONTENT_LOOP_PERIOD_MIN,
                     CONTENT_LOOP_PERIOD_MAX,
                 );
@@ -245,7 +245,7 @@ pub fn handle_content_token(
                         max = max_prose,
                         ?reason,
                         "Inter-tool prose budget exhausted, ending response (rollback declined); \
-                         raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                         raise via --max-inter-tool-prose / AVAROK_MAX_INTER_TOOL_PROSE / \
                          MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                     );
                     // #328: unnamed, this cut reached Pi.dev as a generic

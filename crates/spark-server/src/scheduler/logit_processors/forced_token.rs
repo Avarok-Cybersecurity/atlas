@@ -12,7 +12,7 @@
 //! GUARDS — the fast-path fires only when ALL hold:
 //!  * not inside `<think>` (thinking is unconstrained)
 //!  * `top_logprobs` is NOT requested (logprobs need the distribution)
-//!  * kill-switch enabled (`ATLAS_DISABLE_FORCED_TOKEN`)
+//!  * kill-switch enabled (`AVAROK_DISABLE_FORCED_TOKEN`)
 //!  * an active grammar state exists
 //!  * grammar reports exactly one legal next token
 //!
@@ -37,7 +37,17 @@ impl LogitsProcessor for ForcedTokenFastPath {
             && let Some(ref mut gs) = a.grammar_state
             && let Some(forced) = gs.forced_token()
         {
-            return ProcessorOutcome::EmitToken(forced as u32);
+            let forced = forced as u32;
+            // `min_tokens` guard: the fast path bypasses sampling, so a
+            // grammar-forced EOS would otherwise surface before the request
+            // reached its minimum token count even though the normal path
+            // masks EOS logits. Fall through to the standard pipeline (where
+            // the mask applies) instead of emitting the EOS early.
+            let effective_len = a.output_tokens.len().saturating_add(ctx.verify_pos);
+            if effective_len < a.min_tokens && a.eos_tokens.contains(&forced) {
+                return ProcessorOutcome::Continue;
+            }
+            return ProcessorOutcome::EmitToken(forced);
         }
         ProcessorOutcome::Continue
     }

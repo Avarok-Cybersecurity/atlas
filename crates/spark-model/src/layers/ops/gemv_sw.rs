@@ -31,9 +31,9 @@ pub fn w4a16_gemv_sw_grid_x(n: u32) -> u32 {
     div_ceil(n, W4A16_GEMV_SW_OUTS_PER_BLOCK)
 }
 
-/// Kill-switch polarity for lossless SW GEMV. ON unless `ATLAS_NO_GEMV_SW` is
+/// Kill-switch polarity for lossless SW GEMV. ON unless `AVAROK_NO_GEMV_SW` is
 /// exactly `"1"`. `=0` does **not** disable (same `== "1"` reading as
-/// `ATLAS_NO_LM_HEAD_BATCH_GEMV`).
+/// `AVAROK_NO_LM_HEAD_BATCH_GEMV`).
 pub fn gemv_sw_from(no_gemv_sw: Option<&str>) -> bool {
     no_gemv_sw != Some("1")
 }
@@ -68,6 +68,37 @@ pub fn w4a16_gemv_sw(
         .launch(stream)
 }
 
+/// Same launch as [`w4a16_gemv_sw`] for callers that hold the NVFP4 operand triple as
+/// loose pointers rather than a [`QuantizedWeight`] (GLM-5.3's `Nvfp4Proj`).
+///
+/// Exists so the `ceil(N/8)` grid stays in this file — the one place that is SSOT with the
+/// kernel's `N_PER_BLOCK_SW`.
+#[allow(clippy::too_many_arguments)]
+pub fn w4a16_gemv_sw_raw(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    input: DevicePtr,
+    packed: DevicePtr,
+    scale: DevicePtr,
+    scale_2: f32,
+    output: DevicePtr,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([w4a16_gemv_sw_grid_x(n), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(input)
+        .arg_ptr(packed)
+        .arg_ptr(scale)
+        .arg_f32(scale_2)
+        .arg_ptr(output)
+        .arg_u32(n)
+        .arg_u32(k)
+        .launch(stream)
+}
+
 /// Decode GEMV: software-pipelined single-warp when the lever and handle agree.
 #[allow(clippy::too_many_arguments)]
 pub fn w4a16_decode_gemv(
@@ -93,6 +124,7 @@ pub fn w4a16_decode_gemv(
 mod tests {
     use super::*;
     use spark_runtime::gpu::KernelHandle;
+    use spark_runtime::gpu::mock::MockGpuBackend;
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -127,6 +159,35 @@ mod tests {
                 w4a16_gemv_grid_x(n),
                 "N={n}: SW is 8 outs/block, base is 4 — grid_x must be half"
             );
+        }
+    }
+
+    #[test]
+    fn decode_dispatch_uses_the_selected_handle_and_matching_grid() {
+        for (lever, sw_handle, expected_handle, expected_grid_x) in [
+            (true, KernelHandle(22), 22, 2),
+            (false, KernelHandle(22), 11, 3),
+            (true, KernelHandle(0), 11, 3),
+        ] {
+            let gpu = MockGpuBackend::new();
+            w4a16_decode_gemv(
+                &gpu,
+                KernelHandle(11),
+                sw_handle,
+                lever,
+                DevicePtr::NULL,
+                &QuantizedWeight::null(),
+                DevicePtr::NULL,
+                9,
+                128,
+                0,
+            )
+            .unwrap();
+            let launches = gpu.launches_snapshot();
+            assert_eq!(launches.len(), 1);
+            assert_eq!(launches[0].func, expected_handle);
+            assert_eq!(launches[0].grid, [expected_grid_x, 1, 1]);
+            assert_eq!(launches[0].block, [256, 1, 1]);
         }
     }
 
@@ -262,24 +323,27 @@ mod tests {
 
     /// (file, partial signature, `__constant__` table it must NOT index,
     ///  callers that must hand it a shared-staged copy)
-    const DECODE_PARTIALS: &[(&str, &str, &str, &[&str])] = &[
+    const DECODE_PARTIALS: &[(&str, &str, &str, &[(&str, &str)])] = &[
         (
             "w4a16_gemv.cu",
             "__device__ __forceinline__ float w4a16_gemv_partial(",
             "E2M1_LUT",
-            &["w4a16_gemv", "w4a16_gemv_sw"],
+            &[("w4a16_gemv", "s_lut"), ("w4a16_gemv_sw", "warp_lut")],
         ),
         (
             "w4a16_gemv_fused.cu",
             "__device__ __forceinline__ float w4a16_dual_partial(",
             "E2M1_LUT_FUSED_W4",
-            &["w4a16_gemv_dual", "w4a16_gemv_dual_sw"],
+            &[
+                ("w4a16_gemv_dual", "s_lut"),
+                ("w4a16_gemv_dual_sw", "warp_lut"),
+            ],
         ),
         (
             "w4a16_gemv_fused.cu",
             "__device__ __forceinline__ float w4a16_silu_partial(",
             "E2M1_LUT_FUSED_W4",
-            &["w4a16_gemv_silu_input_sw"],
+            &[("w4a16_gemv_silu_input_sw", "warp_lut")],
         ),
     ];
 
@@ -304,6 +368,10 @@ mod tests {
     #[test]
     fn decode_gemv_partials_index_a_shared_staged_lut() {
         for &(file, sig, table, callers) in DECODE_PARTIALS {
+            let partial = sig
+                .strip_suffix('(')
+                .and_then(|sig| sig.split_whitespace().last())
+                .expect("partial signature ends in a function name");
             let paths = named_cu(file);
             assert!(paths.len() >= 3, "{file}: expected 3 backend copies");
             for path in paths {
@@ -323,18 +391,35 @@ mod tests {
                     params.contains("const float* __restrict__ lut"),
                     "{where_}: must accept the staged table as `const float* __restrict__ lut`"
                 );
-                for caller in callers {
+                for &(caller, expected_lut) in callers {
                     let cb = fn_body(&src, &format!("void {caller}("));
                     assert!(
                         cb.contains("__shared__ float s_lut"),
                         "{}::{caller}: must stage the E2M1 table in shared memory",
                         path.display()
                     );
+                    let calls: Vec<_> = cb
+                        .lines()
+                        .filter(|line| line.contains(&format!("{partial}(")))
+                        .collect();
                     assert!(
-                        cb.contains("s_lut"),
-                        "{}::{caller}: must pass its staged copy to the partial",
+                        !calls.is_empty(),
+                        "{}::{caller}: no {partial} call",
                         path.display()
                     );
+                    for call in calls {
+                        assert!(
+                            call.contains(&format!(", {expected_lut})")),
+                            "{}::{caller}: `{partial}` must receive {expected_lut}, got `{}`",
+                            path.display(),
+                            call.trim()
+                        );
+                        assert!(
+                            !call.contains(table),
+                            "{}::{caller}: `{partial}` received constant-memory {table}",
+                            path.display()
+                        );
+                    }
                 }
             }
         }
@@ -425,7 +510,7 @@ mod tests {
             "trait_impl/multi_seq/mla.rs",
         ] {
             let src = fs::read_to_string(attn.join(rel)).unwrap();
-            if src.contains("ops::w4a16_gemv(") {
+            if src.contains("w4a16_gemv(") {
                 offenders.push(rel);
             }
         }

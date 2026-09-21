@@ -4,7 +4,7 @@
 
 set -e
 
-IMAGE="atlas-gb10:latest"
+IMAGE="avarok-gb10:latest"
 NODE1="localhost"
 NODE2="${NODE2:-127.0.0.1}"
 PORT_A=8888

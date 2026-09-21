@@ -181,7 +181,15 @@ async function load(token) {
     const res = await fetch(CORPUS_META_URL, { cache: 'no-cache' });
     if (!res.ok) throw new Error(`manifest fetch failed: HTTP ${res.status}`);
     meta = await res.json();
-    if (!meta?.commit_sha || !Number.isFinite(meta?.dim)) {
+    // `commit_sha` must be a STRING, not merely truthy. A numeric one passes a
+    // truthiness check, is coerced into a filename (`lattice-db-12345.jsonl`),
+    // and then fails `pruneStale`'s `typeof` precondition — which returns
+    // early, so pruning is silently disabled and cached corpora accumulate in
+    // OPFS with nothing reporting it.
+    if (typeof meta?.commit_sha !== 'string' || meta.commit_sha === '') {
+      throw new Error('manifest is missing commit_sha/dim');
+    }
+    if (!Number.isFinite(meta?.dim)) {
       throw new Error('manifest is missing commit_sha/dim');
     }
   } catch (err) {

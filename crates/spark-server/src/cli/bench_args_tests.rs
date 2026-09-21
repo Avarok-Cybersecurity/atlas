@@ -260,3 +260,48 @@ fn bare_benchmark_without_gate_check_still_needs_a_subcommand() {
     // `spark benchmark` alone must not silently do nothing.
     assert!(Cli::try_parse_from(["spark", "benchmark"]).is_err());
 }
+
+/// `bench` is the short spelling of `benchmark`, and `certify` parses with
+/// its defaults and with the flags the runbook uses.
+#[test]
+fn bench_alias_and_certify_parse() {
+    let cli = Cli::try_parse_from(["spark", "bench", "certify", "--dry-run"]).unwrap();
+    match cli.command {
+        crate::cli::Command::Benchmark(b) => match b.command {
+            Some(BenchmarkCommand::Certify(c)) => {
+                assert!(c.dry_run);
+                assert!(!c.json);
+                assert_eq!(c.timeout_factor, 3.0);
+            }
+            other => panic!("{other:?}"),
+        },
+        other => panic!("{other:?}"),
+    }
+    let cli = Cli::try_parse_from([
+        "spark",
+        "benchmark",
+        "certify",
+        "--pr",
+        "1027",
+        "--gates",
+        "bfcl-subset,decode-floor",
+        "--with-nodes",
+        "10.10.10.2,dgx3.local:34334",
+        "--remote-only",
+        "--json",
+        "--yes",
+    ])
+    .unwrap();
+    let crate::cli::Command::Benchmark(b) = cli.command else {
+        panic!("not benchmark")
+    };
+    let Some(BenchmarkCommand::Certify(c)) = b.command else {
+        panic!("not certify")
+    };
+    assert_eq!(c.pr, Some(1027));
+    assert_eq!(c.gates, ["bfcl-subset", "decode-floor"]);
+    assert_eq!(c.with_nodes, ["10.10.10.2", "dgx3.local:34334"]);
+    assert!(c.remote_only && c.json && c.yes);
+    // `--remote-only` without `--with-nodes` is refused by clap itself.
+    assert!(Cli::try_parse_from(["spark", "bench", "certify", "--remote-only"]).is_err());
+}

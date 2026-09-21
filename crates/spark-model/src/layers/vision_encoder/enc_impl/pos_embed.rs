@@ -18,7 +18,13 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
-        self.resample_pos_embed_into(grid_h, grid_w, self.buf_pos_resampled, gpu, stream)
+        self.resample_pos_embed_into(
+            grid_h,
+            grid_w,
+            self.scratch().buf_pos_resampled,
+            gpu,
+            stream,
+        )
     }
 
     /// Bilinear interpolate the learned pos_embed grid
@@ -131,8 +137,8 @@ impl VisionEncoder {
         self.build_rope_cossin_into(
             grid_h,
             grid_w,
-            self.buf_rope_cos,
-            self.buf_rope_sin,
+            self.scratch().buf_rope_cos,
+            self.scratch().buf_rope_sin,
             gpu,
             stream,
         )
@@ -162,10 +168,10 @@ impl VisionEncoder {
         let mut cos_bf16 = vec![0u16; p * hd];
         let mut sin_bf16 = vec![0u16; p * hd];
 
-        // A/B toggle: when ATLAS_VISION_ROPE=0 we upload cos=1, sin=0 to
+        // A/B toggle: when AVAROK_VISION_ROPE=0 we upload cos=1, sin=0 to
         // make the kernel behave as identity (pre-RoPE). Lets the sweep
         // test pos_embed interpolation and RoPE as two independent bugs.
-        let rope_on = std::env::var("ATLAS_VISION_ROPE")
+        let rope_on = std::env::var("AVAROK_VISION_ROPE")
             .map(|v| v != "0")
             .unwrap_or(true);
         let one_bf16 = f32_to_bf16_bits(1.0);

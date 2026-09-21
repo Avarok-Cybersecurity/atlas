@@ -60,7 +60,7 @@ pub struct NemotronMoeWeights {
     pub shared_up: QuantizedWeight,
     /// Shared expert up_proj kept as NATIVE FP8 when the checkpoint ships it that
     /// way (ModelOpt MIXED_PRECISION), instead of the FP8→BF16→NVFP4 requant.
-    /// `Some` only under `ATLAS_NEMOTRON_NATIVE_FP8_SSM`; decode prefers it via
+    /// `Some` only under `AVAROK_NEMOTRON_NATIVE_FP8_SSM`; decode prefers it via
     /// `w8a16_gemv`. Measured on Puzzle-75B: with the SSM projections already
     /// native, a 977-token story went from calling the dog "Rover"/"Rex" to
     /// using the given name "Rufus" 8 times with no substitutions — proper-noun
@@ -216,7 +216,7 @@ pub(crate) fn load_nemotron_moe(
     layer: usize,
     num_experts: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     absmax_k: Option<spark_runtime::gpu::KernelHandle>,
     quantize_k: Option<spark_runtime::gpu::KernelHandle>,
     stream: u64,
@@ -249,7 +249,7 @@ pub(crate) fn load_nemotron_moe(
     // `relu2_down_shared` kernel, which takes NVFP4 (packed + scale + scale_2)
     // arguments, so making it native needs CUDA work rather than a loader change.
     let native_fp8_mode =
-        std::env::var("ATLAS_NEMOTRON_NATIVE_FP8_SSM").unwrap_or_else(|_| "1".to_string());
+        std::env::var("AVAROK_NEMOTRON_NATIVE_FP8_SSM").unwrap_or_else(|_| "1".to_string());
     let want_native_fp8 = matches!(native_fp8_mode.as_str(), "1" | "both" | "decode");
     let shared_up_fp8 = if want_native_fp8 && !shared_up_has_s2 && shared_up_has_s {
         match load_fp8_block_scaled_as_fp8weight(store, &shared_up_prefix, gpu) {

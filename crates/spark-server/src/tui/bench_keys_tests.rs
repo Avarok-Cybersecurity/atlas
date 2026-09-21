@@ -19,7 +19,7 @@ fn key(code: KeyCode) -> KeyEvent {
 fn state() -> BenchState {
     let mut s = BenchState::default();
     s.select(0);
-    s.target = atlas_plugin::TargetEndpoint::local(8888, "test-model");
+    s.target = avarok_plugin::TargetEndpoint::local(8888, "test-model");
     // Reload so the two target rows carry the endpoint set above.
     s.select(0);
     s
@@ -79,8 +79,8 @@ fn the_run_pane_is_only_reachable_from_the_list_once_there_is_a_run_to_see() {
 #[test]
 fn a_finished_run_stays_reachable_after_navigating_away() {
     let mut s = state();
-    s.frame = Some(atlas_plugin::BenchmarkResult {
-        status: atlas_plugin::RunStatus::Completed,
+    s.frame = Some(avarok_plugin::BenchmarkResult {
+        status: avarok_plugin::RunStatus::Completed,
         phase: "done".into(),
         progress: None,
         summary: Vec::new(),
@@ -88,6 +88,7 @@ fn a_finished_run_stays_reachable_after_navigating_away() {
         verdict: None,
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
+        dataset_fingerprint: None,
         elapsed: std::time::Duration::from_secs(1),
         hardware_state: None,
     });
@@ -175,11 +176,11 @@ fn the_coherence_probe_toggles_both_ways() {
     // valid latency target, so the operator has to be able to turn it off — and
     // back on.
     let mut s = params();
-    assert_eq!(s.coherence, atlas_plugin::CoherencePolicy::Probe);
+    assert_eq!(s.coherence, avarok_plugin::CoherencePolicy::Probe);
     s.on_key(key(KeyCode::Char('p')), BenchSub::Suite);
-    assert_eq!(s.coherence, atlas_plugin::CoherencePolicy::Skip);
+    assert_eq!(s.coherence, avarok_plugin::CoherencePolicy::Skip);
     s.on_key(key(KeyCode::Char('p')), BenchSub::Suite);
-    assert_eq!(s.coherence, atlas_plugin::CoherencePolicy::Probe);
+    assert_eq!(s.coherence, avarok_plugin::CoherencePolicy::Probe);
 }
 
 #[test]
@@ -225,7 +226,7 @@ fn a_start_refused_for_an_invalid_field_says_how_many_need_fixing() {
 #[test]
 fn the_consent_gate_only_opens_for_the_benchmark_that_runs_model_authored_shell() {
     let mut s = params();
-    let index = atlas_plugin::registry::all()
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.needs_confirmation)
         .expect("the agentic benchmark requires confirmation");
@@ -244,7 +245,7 @@ fn the_consent_gate_only_opens_for_the_benchmark_that_runs_model_authored_shell(
 #[test]
 fn the_form_underneath_the_consent_gate_is_not_edited_by_the_answer() {
     let mut s = params();
-    let index = atlas_plugin::registry::all()
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.needs_confirmation)
         .expect("a benchmark that asks");
@@ -274,7 +275,7 @@ fn only_esc_answers_a_pre_flight_that_is_still_checking() {
         assert!(s.preflight.is_some(), "{code:?} must not answer the check");
     }
     assert_eq!(s.row, 0, "and must not move the form underneath");
-    assert_eq!(s.coherence, atlas_plugin::CoherencePolicy::Probe);
+    assert_eq!(s.coherence, avarok_plugin::CoherencePolicy::Probe);
     s.on_key(key(KeyCode::Esc), BenchSub::Suite);
     assert!(s.preflight.is_none(), "Esc abandons the run");
     assert_eq!(s.view, View::Params);
@@ -377,16 +378,17 @@ fn history_navigation_is_clamped_to_the_rows_that_exist() {
 }
 
 /// A minimal persisted run, for the History pane's cursor.
-fn record() -> atlas_plugin::RunRecord {
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
-    atlas_plugin::RunRecord::new(
+fn record() -> avarok_plugin::RunRecord {
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
+    avarok_plugin::RunRecord::new(
         descriptor,
-        &atlas_plugin::ParamValues::default(),
-        &atlas_plugin::TargetEndpoint::local(8888, "m"),
-        atlas_plugin::RunSource::Tui,
-        crate::cli::ATLAS_VERSION,
-        atlas_plugin::BenchmarkResult {
-            status: atlas_plugin::RunStatus::Completed,
+        &avarok_plugin::ParamValues::default(),
+        &avarok_plugin::TargetEndpoint::local(8888, "m"),
+        Default::default(),
+        avarok_plugin::RunSource::Tui,
+        crate::cli::AVAROK_VERSION,
+        avarok_plugin::BenchmarkResult {
+            status: avarok_plugin::RunStatus::Completed,
             phase: "done".into(),
             progress: None,
             summary: Vec::new(),
@@ -394,6 +396,7 @@ fn record() -> atlas_plugin::RunRecord {
             verdict: None,
             metrics: std::collections::BTreeMap::new(),
             log: Vec::new(),
+            dataset_fingerprint: None,
             elapsed: std::time::Duration::from_secs(1),
             hardware_state: None,
         },

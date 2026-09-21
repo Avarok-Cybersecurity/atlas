@@ -41,7 +41,12 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return None;
         }
-        self.free_slots.lock().pop()
+        // Through the same invalidation every other acquire uses: a slot leaving
+        // the free list carries none of the previous holder's bookkeeping. A raw
+        // `pop` here would be the one path that still could.
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.clear_slot_bookkeeping(snap_slot);
+        Some(snap_slot)
     }
 
     /// Acquire a Marconi slot for a **fault-in target** (Phase 1b), spilling a
@@ -97,7 +102,7 @@ impl SsmSnapshotPool {
     /// pool method the whole cycle is reachable from a CPU-only test
     /// (`MockGpuBackend` + `RadixTree` + `MemBlobStore`), which is what pins
     /// the miss-arm behaviour. The caller keeps the gates (resident-hit,
-    /// tier-store-present, `ATLAS_SSM_FAULT_MIN_TOKENS` depth); this owns the
+    /// tier-store-present, `AVAROK_SSM_FAULT_MIN_TOKENS` depth); this owns the
     /// acquire → fault → promote/miss sequence.
     pub(in crate::model) fn fault_in_for_key(
         &self,
@@ -140,7 +145,7 @@ impl SsmSnapshotPool {
                 Some(slot)
             }
             // MISS: the store reported no bytes for this key — under
-            // `ATLAS_SSM_TIER_DISK_GB` that is `make_disk_room` having unmapped
+            // `AVAROK_SSM_TIER_DISK_GB` that is `make_disk_room` having unmapped
             // it. RETIRE the index entry so this prefix recomputes ONCE, rather
             // than re-running this whole doomed cycle (spill a LIVE 66 MB
             // snapshot D2H → allocate a slot → miss → free) on every warm turn,
@@ -158,12 +163,12 @@ impl SsmSnapshotPool {
                     // unmapped), but `get` also reports a miss for a LENGTH
                     // MISMATCH while KEEPING the record — without this that
                     // blob would be unreachable forever yet still consume
-                    // ATLAS_SSM_TIER_DISK_GB budget.
+                    // AVAROK_SSM_TIER_DISK_GB budget.
                     store.remove(key);
                     tracing::info!(
                         "SSM tier reap: no blob for key {key} (depth {depth} tok) — retired the \
                          index entry; this prefix now recomputes once instead of re-spilling a \
-                         live snapshot every turn. Sustained reaps mean ATLAS_SSM_TIER_DISK_GB \
+                         live snapshot every turn. Sustained reaps mean AVAROK_SSM_TIER_DISK_GB \
                          is undersized for the working set."
                     );
                 }
@@ -238,7 +243,7 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return Ok(false);
         }
-        let timing = std::env::var_os("ATLAS_SSM_TIER_TIMING").is_some();
+        let timing = std::env::var_os("AVAROK_SSM_TIER_TIMING").is_some();
         let t0 = std::time::Instant::now();
         gpu.synchronize(stream)?; // drain the pending save into this slot
         let bytes = self.spill_blob_bytes();
@@ -260,7 +265,7 @@ impl SsmSnapshotPool {
         // STRAIGHT in that slot was analysed and **REJECTED** — do not
         // re-litigate without new measurements:
         //   * It trades away the PINNED destination. `VecSlotArena::buf` is an
-        //     ordinary heap `Vec` and `atlas-tier`'s dependency budget forbids
+        //     ordinary heap `Vec` and `avarok-tier`'s dependency budget forbids
         //     GPU/RDMA deps, so it can never pin. Pinned, this 60-chunk gather
         //     is 1.38-1.42 ms; the ~28 ms pageable figure is INFERRED from the
         //     old H2D path, which also paid a fresh alloc + zero-fill, so it
@@ -279,7 +284,7 @@ impl SsmSnapshotPool {
         //   * It would hold the residency `Mutex` across the caller's 60
         //     enqueues + stream sync — flag-ON blocker #1 in `ssm_tier/unified`.
         // Pinning the arena from THIS crate with `cuMemHostRegister` (no
-        // `atlas-tier` dep) is the obvious escape and is also rejected: the
+        // `avarok-tier` dep) is the obvious escape and is also rejected: the
         // default hot arena is 64 x 66,846,720 B ~= 4.3 GB, and page-locking
         // that on a UMA box costs far more than the ~17 ms it saves.
         // Likely the real cost here is FIRST TOUCH, not memcpy bandwidth:

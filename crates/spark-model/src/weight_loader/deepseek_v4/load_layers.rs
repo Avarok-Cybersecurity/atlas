@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -84,6 +84,8 @@ pub fn load_all_layers(
                 hc_fn: fn_ptr,
                 hc_base: base_ptr,
                 hc_scale: scale_ptr,
+                // DeepSeek-V4 keeps the Sinkhorn mixer; None selects it.
+                lowrank: None,
             }),
             (fn_ok, base_ok, scale_ok) => {
                 anyhow::bail!(

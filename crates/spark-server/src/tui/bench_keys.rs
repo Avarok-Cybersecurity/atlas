@@ -38,7 +38,7 @@ impl BenchState {
     }
 
     fn list_key(&mut self, key: KeyEvent) -> Outcome {
-        let n = atlas_plugin::registry::all().len();
+        let n = avarok_plugin::registry::all().len();
         match key.code {
             KeyCode::Down | KeyCode::Char('j') if n > 0 => {
                 self.select((self.selected + 1).min(n - 1));
@@ -59,6 +59,21 @@ impl BenchState {
             }
             // A finished run stays reachable after you navigate away from it.
             KeyCode::Char('v') if self.frame.is_some() => self.view = View::Run,
+            // The pair the help overlay advertises globally. The list scrolls
+            // by keeping the selection in view, so first/last ARE top/bottom.
+            KeyCode::Char('g') | KeyCode::Home if n > 0 => self.select(0),
+            KeyCode::Char('G') | KeyCode::End if n > 0 => self.select(n - 1),
+            // Paged by the renderer-published viewport and clamped at both
+            // ends; `select` re-clamps, so a stale page size from a resize
+            // cannot walk the selection off the registry.
+            KeyCode::PageDown if n > 0 => {
+                let page = self.suite_page.get().max(1);
+                self.select((self.selected + page).min(n - 1));
+            }
+            KeyCode::PageUp => {
+                let page = self.suite_page.get().max(1);
+                self.select(self.selected.saturating_sub(page));
+            }
             _ => {}
         }
         Outcome::None
@@ -103,8 +118,8 @@ impl BenchState {
             // latency target.
             KeyCode::Char('p') => {
                 self.coherence = match self.coherence {
-                    atlas_plugin::CoherencePolicy::Probe => atlas_plugin::CoherencePolicy::Skip,
-                    atlas_plugin::CoherencePolicy::Skip => atlas_plugin::CoherencePolicy::Probe,
+                    avarok_plugin::CoherencePolicy::Probe => avarok_plugin::CoherencePolicy::Skip,
+                    avarok_plugin::CoherencePolicy::Skip => avarok_plugin::CoherencePolicy::Probe,
                 };
             }
             KeyCode::Char('s') => return self.request_start(),
@@ -266,6 +281,14 @@ impl BenchState {
             KeyCode::PageUp => {
                 self.history_table_scroll = self.history_table_scroll.saturating_sub(5);
             }
+            // Make a shareable card of the selected run.
+            //
+            // The card is rendered from the COMMITTED gate record for this
+            // benchmark, not from the history entry beside it. A `RunRecord`
+            // carries no hardware and no commit sha, and a card exists to print
+            // exactly those beside the number — inventing them would produce the
+            // artefact the card was designed to prevent.
+            KeyCode::Char('c') if n > 0 => return self.export_card(),
             _ => {}
         }
         Outcome::None
@@ -275,3 +298,7 @@ impl BenchState {
 #[cfg(test)]
 #[path = "bench_keys_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bench_keys_more_tests.rs"]
+mod more_tests;

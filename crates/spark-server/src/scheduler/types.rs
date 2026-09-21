@@ -163,6 +163,17 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Set when the sequence is being retired because an inference step FAILED,
+    /// not because the model finished. `finish_sequence` sends this to the client
+    /// as an error instead of synthesizing a normal completion.
+    ///
+    /// 🔴 Without it a failed verify step set only `finished = true`, and the
+    /// retirement funnel then derived an ordinary finish_reason and returned
+    /// **HTTP 200 with a truncated answer** — the caller could not tell "the model
+    /// stopped" from "the engine hit a hard architectural limit mid-generation".
+    /// Measured 2026-08-30: a K=3 verify refused at the 16,384-token DSA ceiling
+    /// and the client got 200 + `Done: 8 tokens (stop)`. ANOMALIES A62.
+    pub error: Option<String>,
     /// Which server-side guard force-finished this sequence (e.g.
     /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
     /// so a guard-cut turn is attributable without log archaeology (the
@@ -255,11 +266,11 @@ pub(super) struct ActiveSeq {
     pub think_just_ended: bool,
     /// Tokens emitted since `</think>` (0 while thinking; resets if the model
     /// re-enters a think block). Consumed by the DFlash spec-resume guard
-    /// (ATLAS_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
+    /// (AVAROK_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
     /// serial decode, where the T=0 verify-vs-decode low-margin flips
     /// concentrate (measured 2026-07-07).
     pub post_think_emitted: u32,
-    /// Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): rolling accept window
+    /// Adaptive speculation (AVAROK_DFLASH_ADAPTIVE=1): rolling accept window
     /// + suspend/re-probe state. Transient — reset on swap/restore (a
     /// resumed sequence re-measures). See `adaptive_spec` module docs.
     pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
@@ -358,7 +369,7 @@ pub(super) struct ActiveSeq {
     pub think_watchdog_fires: u32,
     /// Phase-C: how many times a degeneration watchdog has rolled this
     /// sequence back to a boundary and re-steered. Capped at
-    /// [`atlas_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
+    /// [`avarok_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
     /// watchdog reverts to a hard stop. See
     /// [`super::rollback::rollback_to_boundary`].
     pub rollback_count: u32,

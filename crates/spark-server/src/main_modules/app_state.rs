@@ -54,7 +54,7 @@ pub struct AppState {
     /// scheduler, which applies the rotation at a quiescent point.
     pub rotation_tx: Option<mpsc::Sender<crate::scheduler::LoraRotation>>,
     /// Vision config for VL models — None for text-only models.
-    pub vision_config: Option<atlas_core::config::VisionConfig>,
+    pub vision_config: Option<avarok_core::config::VisionConfig>,
     /// Optional vLLM-style image area cap applied before vision patching.
     pub vision_max_pixels: Option<usize>,
     /// Whether (and how) to fetch `image_url` parts carrying an http(s) URL.
@@ -101,7 +101,7 @@ pub struct AppState {
     /// Max output tokens for tool-calling requests (CLI --tool-max-tokens).
     pub tool_max_tokens: usize,
     /// Model-specific sampling presets from MODEL.toml (per-category defaults).
-    pub sampling_presets: atlas_kernels::SamplingPresets,
+    pub sampling_presets: avarok_kernels::SamplingPresets,
     /// Token ID for `<tool_call>` — used for logit bias boost when tools are active.
     pub tool_call_start_token_id: Option<u32>,
     /// Auto-compact threshold (fraction of max_seq_len). None = disabled.
@@ -113,8 +113,8 @@ pub struct AppState {
     /// 0 = use max_seq_len instead.
     pub effective_context: usize,
     /// Model-specific behavior overrides from MODEL.toml `[behavior]`.
-    /// Embedded at build time via atlas-kernels.
-    pub behavior: atlas_kernels::ModelBehavior,
+    /// Embedded at build time via avarok-kernels.
+    pub behavior: avarok_kernels::ModelBehavior,
     /// Global kill switch for thinking / reasoning output. When true,
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
@@ -138,7 +138,7 @@ pub struct AppState {
     /// (`store: true`). Bounded LRU + TTL; env-configured at startup.
     pub response_store: Arc<response_store::ResponseStore>,
     /// Per-identity rate limiter. Pure passthrough when both
-    /// ATLAS_RATE_LIMIT_RPM and ATLAS_RATE_LIMIT_TPM are 0 (default).
+    /// AVAROK_RATE_LIMIT_RPM and AVAROK_RATE_LIMIT_TPM are 0 (default).
     pub rate_limiter: Arc<rate_limiter::RateLimiter>,
     /// Conversations API store (items indexed by conv_id).
     pub conversation_store: Arc<conversation_store::ConversationStore>,
@@ -153,7 +153,7 @@ pub struct AppState {
     /// promotion (resident-only serve byte-identical).
     pub lora_stageable:
         std::collections::HashMap<String, crate::main_modules::promotion::StageableAdapter>,
-    /// Task #27: the `$ATLAS_LORA_PEER` weight-peer address a promote reads from.
+    /// Task #27: the `$AVAROK_LORA_PEER` weight-peer address a promote reads from.
     /// `None` ⇒ promotion disabled.
     pub lora_peer_addr: Option<String>,
     /// Task #27: load-coalescing single-flight coordinator. `Some` only when
@@ -169,7 +169,7 @@ pub struct AppState {
     /// (byte-identical to today). The no-RDMA sibling of `lora_stageable`.
     pub lora_disk_stageable: std::collections::HashMap<
         String,
-        (std::path::PathBuf, atlas_core::config::PeftAdapterConfig),
+        (std::path::PathBuf, avarok_core::config::PeftAdapterConfig),
     >,
 }
 
@@ -390,7 +390,7 @@ impl AppState {
 }
 
 /// Re-export for convenience in api.rs / anthropic.rs.
-pub type ModelBehavior = atlas_kernels::ModelBehavior;
+pub type ModelBehavior = avarok_kernels::ModelBehavior;
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "revision": "f831ab66814297da540d832a5235f8e904f29d06",
+  "sources": {
+    "encoding_k3.py": "49ff03305fdc4be26867972788d36150b67f8a9e852e62bb7959d87482223676",
+    "tokenization_kimi.py": "f28ea66e2d862a2a5814970b2ce40c2f7d8296ff09aed90a7e7def689b906944",
+    "tokenizer_config.json": "5d0803c94db9cd78763499e0956c95fd5a225c14a727e5a6cf5db3f96f010a6e",
+    "tiktoken.model": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103"
+  },
+  "scope": "Offline official segmented prompt encoding; not Atlas XTML chat or parser support",
+  "cases": [
+    {
+      "name": "plain",
+      "prompt_tokens": 22,
+      "thinking": false,
+      "prompt_token_ids_sha256": "fcca4b7962accd72886c3873cf21b8363f7d94bfac36329f82954bd566cc9f23"
+    },
+    {
+      "name": "thinking",
+      "prompt_tokens": 22,
+      "thinking": true,
+      "prompt_token_ids_sha256": "6091bd43e7f989a8cc8e7dc84e21e1a2f64a96e06d940f54e54ceb50b0dfa1a8"
+    },
+    {
+      "name": "literal_markers",
+      "prompt_tokens": 32,
+      "thinking": true,
+      "prompt_token_ids_sha256": "f705a026060255582724d1f4cab294610317c4ad2081a20a1ce4783d92733b51"
+    },
+    {
+      "name": "attribute_escape",
+      "prompt_tokens": 32,
+      "thinking": true,
+      "prompt_token_ids_sha256": "8f5e2c0a1575cc90118f50b4e3f10dd079debb12fffd96d0b669d455ec5e2a77"
+    },
+    {
+      "name": "unicode",
+      "prompt_tokens": 26,
+      "thinking": true,
+      "prompt_token_ids_sha256": "a3d25b894ca33a3cef37d22cc1d64348cede1694aa94f1a31db9323d37f12db2"
+    }
+  ]
+}

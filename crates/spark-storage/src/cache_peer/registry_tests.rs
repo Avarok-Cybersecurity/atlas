@@ -16,9 +16,9 @@ use super::carve_disk_slots;
 #[test]
 fn cross_kind_arenas_are_disjoint_in_the_real_registry() {
     // Real-filesystem dir (tmpfs/overlay EINVALs on O_DIRECT — skip like
-    // atlas-tier's direct_swap tests so containerized CI doesn't break).
+    // avarok-tier's direct_swap tests so containerized CI doesn't break).
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/atlas-kv-paging-registry-test");
+        .join("../../target/avarok-kv-paging-registry-test");
     std::fs::create_dir_all(&dir).unwrap();
     let rdma = super::RdmaConfig {
         swap_dir: Some(dir.clone()),
@@ -43,9 +43,9 @@ fn cross_kind_arenas_are_disjoint_in_the_real_registry() {
     // Same (kind, blob) ⇒ the ONE shared arena.
     let kv2 = super::get_or_init_shared_paging(&rdma, 1, 4 * blob, blob, &ledger).unwrap();
     assert!(std::sync::Arc::ptr_eq(&kv, &kv2));
-    // Per-kind swap files exist, named atlas-snap-{kind}-{blob}.swap.
-    assert!(dir.join(format!("atlas-snap-0-{blob}.swap")).exists());
-    assert!(dir.join(format!("atlas-snap-1-{blob}.swap")).exists());
+    // Per-kind swap files exist, named avarok-snap-{kind}-{blob}.swap.
+    assert!(dir.join(format!("avarok-snap-0-{blob}.swap")).exists());
+    assert!(dir.join(format!("avarok-snap-1-{blob}.swap")).exists());
     // A key resident in the KV arena is INVISIBLE to the SSM arena.
     let key = 0x4B56_4B56_4B56_4B56u64;
     kv.residency

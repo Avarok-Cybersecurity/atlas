@@ -223,12 +223,18 @@ pub fn clamp_trainable_to_vocab(
             skipped += 1;
             continue;
         }
+        if skipped > 0 {
+            bail!(
+                "REJECT[trainable-order]: served-vocab id {idx} appears after a skipped \
+                 vocab-extension id; extension ids must form one trailing suffix"
+            );
+        }
         if let Some(prev) = last_kept
-            && idx < prev
+            && idx <= prev
         {
             bail!(
-                "REJECT[trainable-order]: kept id {idx} follows larger kept id {prev}; \
-                 PEFT trainable-token order must be ascending in the served-vocab prefix"
+                "REJECT[trainable-order]: kept id {idx} follows id {prev}; \
+                 PEFT trainable-token order must be strictly ascending in the served-vocab prefix"
             );
         }
         last_kept = Some(idx);

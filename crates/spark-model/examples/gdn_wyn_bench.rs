@@ -4,7 +4,7 @@
 //! replaces (K× `gated_delta_rule_decode` + K× h-intermediate copy_d2d).
 //! 27B GDN dims: NK=16, NV=32, KD=VD=128 (h_state 2 MiB FP32).
 //!
-//!   ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
+//!   AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
 //!   cargo run -p spark-model --release --example gdn_wyn_bench \
 //!       --features cuda,gpu-examples
 //!
@@ -14,7 +14,7 @@
 //! from pre-uploaded buffers so only kernel + copy time is measured.
 use anyhow::Result;
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -34,7 +34,7 @@ fn up(g: &dyn GpuBackend, bytes: &[u8]) -> Result<DevicePtr> {
 }
 
 fn main() -> Result<()> {
-    let g0 = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let g0 = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &g0;
     let decode_k = g.kernel("gated_delta_rule", "gated_delta_rule_decode")?;
 

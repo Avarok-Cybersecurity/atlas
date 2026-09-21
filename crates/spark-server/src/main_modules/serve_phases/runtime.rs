@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -26,7 +26,7 @@ pub(crate) fn load_eos_tokens(model_dir: &Path, config: &ModelConfig) -> Vec<u32
                         tracing::info!("EOS tokens (from generation_config.json): {:?}", ids);
                         ids
                     } else {
-                        vec![config.eos_token_id]
+                        config.eos_ids()
                     }
                 }
                 Some(serde_json::Value::Number(n)) => {
@@ -34,13 +34,13 @@ pub(crate) fn load_eos_tokens(model_dir: &Path, config: &ModelConfig) -> Vec<u32
                     tracing::info!("EOS token (from generation_config.json): {}", id);
                     vec![id]
                 }
-                _ => vec![config.eos_token_id],
+                _ => config.eos_ids(),
             };
         }
-        return vec![config.eos_token_id];
+        return config.eos_ids();
     }
-    tracing::info!("EOS token (from config.json): {}", config.eos_token_id);
-    vec![config.eos_token_id]
+    tracing::info!("EOS tokens (from config.json): {:?}", config.eos_ids());
+    config.eos_ids()
 }
 
 pub(crate) struct SamplingDefaults {
@@ -54,7 +54,7 @@ pub(crate) struct SamplingDefaults {
 pub(crate) fn load_sampling_defaults(
     model_dir: &Path,
     args: &cli::ServeArgs,
-    preset: &atlas_kernels::SamplingCategory,
+    preset: &avarok_kernels::SamplingCategory,
 ) -> SamplingDefaults {
     let gen_config_path = model_dir.join("generation_config.json");
     let gen_cfg = std::fs::read_to_string(&gen_config_path)
@@ -101,7 +101,7 @@ pub(crate) fn load_sampling_defaults(
 pub(crate) fn resolve_sampling_defaults(
     gen_cfg: Option<&serde_json::Value>,
     args: &cli::ServeArgs,
-    preset: &atlas_kernels::SamplingCategory,
+    preset: &avarok_kernels::SamplingCategory,
 ) -> SamplingDefaults {
     let temperature = gen_cfg
         .and_then(|v| v.get("temperature")?.as_f64())
@@ -187,7 +187,7 @@ pub(crate) fn log_response_store_audit(
     }
 }
 
-pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels::TargetPtxSet) {
+pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &avarok_kernels::TargetPtxSet) {
     if !ptx_set.behavior.thinking_in_tools {
         tracing::info!("Model behavior: thinking disabled when tools active (MODEL.toml)");
     }
@@ -232,15 +232,15 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
             crate::scheduler::CONTENT_LOOP_PERIOD_MAX,
         );
     }
-    // 2026-05-24: ATLAS_DISABLE_WATCHDOGS env var disables ALL
+    // 2026-05-24: AVAROK_DISABLE_WATCHDOGS env var disables ALL
     // auto-watchdogs (content-loop, inter-tool prose, F2 confidence,
     // mid-word </think>, thinking-loop). Empirical test toggle —
     // surface its state prominently at boot.
     if crate::scheduler::parse_disable_watchdogs(
-        std::env::var("ATLAS_DISABLE_WATCHDOGS").ok().as_deref(),
+        std::env::var("AVAROK_DISABLE_WATCHDOGS").ok().as_deref(),
     ) {
         tracing::warn!(
-            "Model behavior: ALL auto-watchdogs DISABLED via ATLAS_DISABLE_WATCHDOGS=1 \
+            "Model behavior: ALL auto-watchdogs DISABLED via AVAROK_DISABLE_WATCHDOGS=1 \
              (content-loop, inter-tool prose, F2 confidence early-stop, mid-word </think> \
              defer, thinking-loop). User-set max_thinking_budget and safety masks unaffected. \
              Use only for empirical-test runs — re-enable for production."
@@ -257,7 +257,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     if b.rollback_resteer {
         tracing::info!(
             "Model behavior: watchdog rollback+re-steer ENABLED (cap {} per sequence)",
-            atlas_kernels::ROLLBACK_RESTEER_CAP,
+            avarok_kernels::ROLLBACK_RESTEER_CAP,
         );
     } else {
         tracing::info!("Model behavior: watchdog rollback+re-steer DISABLED (legacy hard-stop)");
@@ -318,7 +318,7 @@ pub(crate) fn resolve_model_name(
 
 pub(crate) fn resolve_tool_call_parser(
     args: &cli::ServeArgs,
-    ptx_set: &atlas_kernels::TargetPtxSet,
+    ptx_set: &avarok_kernels::TargetPtxSet,
     config: &ModelConfig,
 ) -> Result<Option<std::sync::Arc<dyn crate::tool_parser::ToolCallParser>>> {
     use crate::tool_parser;
@@ -391,8 +391,8 @@ mod sampling_defaults_tests {
     /// A preset with values distinct from both the old hard-coded constants
     /// (0.6 / 20 / 0.95) and the CLI defaults, so a wrong fallback source is
     /// unmistakable in every assertion below.
-    fn preset() -> atlas_kernels::SamplingCategory {
-        atlas_kernels::SamplingCategory {
+    fn preset() -> avarok_kernels::SamplingCategory {
+        avarok_kernels::SamplingCategory {
             temperature: 0.7,
             top_p: 0.8,
             top_k: 40,
@@ -404,6 +404,7 @@ mod sampling_defaults_tests {
             dry_allowed_length: 2,
             lz_penalty: 0.0,
             min_p: None,
+            top_n_sigma: None,
         }
     }
 
@@ -479,5 +480,62 @@ mod sampling_defaults_tests {
         p.min_p = Some(0.0);
         let d = resolve_sampling_defaults(Some(&cfg), &args(), &p);
         assert_eq!(d.min_p, 0.31);
+    }
+}
+
+#[cfg(test)]
+mod eos_tests {
+    use avarok_core::config::ModelConfig;
+
+    use super::load_eos_tokens;
+
+    /// GLM-5.3-Flash's three stop tokens: `<|endoftext|>`, `<|user|>`, `<|observation|>`.
+    const GLM_EOS: [u32; 3] = [154820, 154827, 154829];
+
+    fn cfg(primary: u32, all: &[u32]) -> ModelConfig {
+        let mut c = ModelConfig::qwen3_next_80b_nvfp4();
+        c.eos_token_id = primary;
+        c.eos_token_ids = all.to_vec();
+        c
+    }
+
+    /// 🔴 The regression this closes: with no `generation_config.json`, the fallback used to be
+    /// `vec![config.eos_token_id]` — one id — so a multi-EOS checkpoint silently lost its turn
+    /// terminators at serve time.
+    #[test]
+    fn without_generation_config_the_full_config_set_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
+    }
+
+    /// generation_config.json stays authoritative when present — precedence is unchanged.
+    #[test]
+    fn generation_config_array_still_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("generation_config.json"),
+            r#"{"eos_token_id": [154820, 154827, 154829]}"#,
+        )
+        .unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
+    }
+
+    /// A scalar-EOS model with an unpopulated set must behave exactly as before: one id.
+    #[test]
+    fn scalar_eos_model_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(151645, &[]));
+        assert_eq!(got, vec![151645]);
+    }
+
+    /// A malformed generation_config must not swallow the config's set.
+    #[test]
+    fn unreadable_generation_config_falls_back_to_the_full_set() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("generation_config.json"), "not json").unwrap();
+        let got = load_eos_tokens(dir.path(), &cfg(GLM_EOS[0], &GLM_EOS));
+        assert_eq!(got, GLM_EOS.to_vec());
     }
 }

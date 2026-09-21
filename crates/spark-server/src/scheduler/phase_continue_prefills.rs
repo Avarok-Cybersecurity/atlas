@@ -29,26 +29,28 @@ mod run_batched_mixed;
 mod run_batched_prefill;
 #[path = "phase_continue_prefills/run_standard.rs"]
 mod run_standard;
+mod spec_mixing;
 
 use std::time::Instant;
 
 use spark_model::traits::Model;
 
 use super::phase_promote_prefills::promote_completed_prefills;
-use super::sample_first_token;
 use super::types::{ActiveSeq, PrefillInProgress};
+use super::{FirstTokenPolicy, sample_first_token};
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 use run_batched_mixed::run_batched_mixed_step;
 use run_batched_prefill::run_batched_prefill_step;
 use run_standard::run_standard_chunk_loop;
+use spec_mixing::mixing_blocked_by_spec;
 
 /// Shared per-chunk InnerQ poll used by every prefill path (standard /
 /// batched-prefill / batched-mixed). `maybe_finalize` is idempotent post
 /// activation, and a no-op when `TURBO_INNERQ` was not set at startup —
 /// so calling on every chunk costs one scoped-cell load in the disabled case.
 /// On non-cuda backends the driver doesn't exist (it talks to the CUDA
-/// Driver API directly via `atlas_core::registry`), so this collapses to
+/// Driver API directly via `avarok_core::registry`), so this collapses to
 /// a no-op via the `#[cfg]` gate.
 pub(super) fn poll_innerq(model: &dyn Model) {
     model.poll_innerq();
@@ -90,17 +92,21 @@ pub(super) fn continue_in_progress_prefills(
         })
         .collect();
 
-    // single_active_with_spec: active.len()==1 AND a speculative path is
-    // active (those step_* paths require active.len()==1 and mixing would
-    // double-decode). Computed early because the always-mixed gate below
-    // needs it too. (Also reused by the Q12 mixed-batch gate further down.)
-    let single_active_with_spec =
-        active.len() == 1 && (use_mtp || use_self_speculative || use_ngram_speculative);
+    // Does an in-flight speculative step forbid fusing a prefill chunk into
+    // decode this tick? ONE home for the rule (`spec_mixing`), which also
+    // records the range over which it disagrees with the scheduler's real
+    // MTP dispatch gate — read that module before touching this.
+    // Computed early because the always-mixed gate below needs it too, and
+    // it is reused by the Q12 mixed-batch gate further down.
+    let single_active_with_spec = mixing_blocked_by_spec(
+        active.len(),
+        use_mtp || use_self_speculative || use_ngram_speculative,
+    );
 
     // ── Step 2 (spec): always-on fused mixed step ──
     //
     // slice_budget governs how many prefill tokens a fused mixed step
-    // injects. When ATLAS_HOLO_ALWAYS_MIXED is OFF the scheduler is
+    // injects. When AVAROK_HOLO_ALWAYS_MIXED is OFF the scheduler is
     // BYTE-IDENTICAL to today: binary should_prefill gate, full-chunk
     // budget (full_chunk == max_prefill_tokens, the current cap).
     //
@@ -128,6 +134,27 @@ pub(super) fn continue_in_progress_prefills(
         if fusable_mixed {
             // Compute the prefill slice (cost-driven; 0 == hard-deadline suppress).
             slice_budget = policy.prefill_slice_budget(&timings, max_prefill_tokens);
+            // AVAROK_MIXED_SLICE_TOKENS: experimental override of the
+            // policy's full-chunk default. MEASURED on qwen4_exp
+            // (2026-08-27): the Holo full-chunk lesson HOLDS here too — a
+            // fused chunk has a ~1.1-1.3 s FLOOR regardless of slice size
+            // (small-M prefill inefficiency across 48 layers; QSA
+            // exonerated by an under-bound A/B), so slice=256 on a
+            // 1598-token prompt cut the co-tenant's worst gap 2.8->1.3 s
+            // but cost the prefill 3->10 s TTFT. Wrong trade; default
+            // stays full-chunk. The real lever is the small-M prefill
+            // floor itself. Knob kept for re-measurement after that work.
+            // 0/unset = policy default. Never overrides a hard suppress.
+            static MIXED_SLICE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+            let cap = *MIXED_SLICE.get_or_init(|| {
+                std::env::var("AVAROK_MIXED_SLICE_TOKENS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0)
+            });
+            if cap > 0 && slice_budget > 0 {
+                slice_budget = slice_budget.min(cap);
+            }
             // Hard-deadline suppress: decode already past its TBT deadline —
             // skip prefill this tick, decode runs standalone at mod.rs:307.
             if slice_budget == 0 {
@@ -163,16 +190,16 @@ pub(super) fn continue_in_progress_prefills(
     // loops); Q12 Phase 2/3 replace with kernel-level batched dispatch.
     //
     // Gates: N≥2 prefilling, no EP (worker opcode pending, Phase 6),
-    // and for mixed-batch only: skip if active.len()==1 AND a speculative
-    // path is active (those step_* paths require active.len()==1 and
-    // mixing would double-decode). Spec is off by construction when
-    // active.len() ≥ 2, so the mixed branch is safe there.
-    // (`single_active_with_spec` computed near the top — reused here.)
-    // BISECT: ATLAS_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
+    // and for mixed-batch only: `single_active_with_spec` (computed near the
+    // top from `spec_mixing::mixing_blocked_by_spec`). NOTE: spec is NOT off
+    // by construction at active.len() >= 2 — the MTP dispatch cap is 32, not
+    // 1 — so this branch does run under a live speculative regime; see the
+    // `spec_mixing` module doc for what that costs and why it stands.
+    // BISECT: AVAROK_BISECT_Q12_DISABLE=1 forces the per-stream FIFO path
     // (pre-Q12 behavior) so we can isolate whether the chunked-prefill +
     // concurrent-decode crash originates in the Q12 batched-prefill
     // dispatch or pre-existing chunked-prefill state mutation.
-    let q12_dispatch_disabled = std::env::var("ATLAS_BISECT_Q12_DISABLE")
+    let q12_dispatch_disabled = std::env::var("AVAROK_BISECT_Q12_DISABLE")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     // Prompt-logprob collection (legacy echo scoring) is single-stream
@@ -181,12 +208,18 @@ pub(super) fn continue_in_progress_prefills(
     let any_collecting = prefilling
         .iter()
         .any(|p| p.seq.collect_prompt_logprobs.is_some());
+    // hc models ran these serialized (#753 item B v1) while per-stream aux
+    // state was still shared; per-seq PLE/QSA/SSM carries shipped with the
+    // concurrency milestones and the highway scratch is per-chunk transient
+    // (hc_expand re-derives it from hidden every forward), so the
+    // round-robin batched dispatch is safe for them now. The dispatch is
+    // per-stream underneath (Q12 phase 1) — no cross-stream kernel state.
     let can_batch_prefill_only = !q12_dispatch_disabled
         && !any_collecting
         && prefilling.len() >= 2
         && active.is_empty()
         && !model.is_ep();
-    // When ATLAS_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
+    // When AVAROK_HOLO_ALWAYS_MIXED is on, COLLAPSE the multi-prefill+decode
     // case onto the single-stream fused path below (FIFO head prefill fused
     // with all active decodes via mixed_forward, sized by the slice budget)
     // instead of the serializing N-stream run_batched_mixed_step — that batched
@@ -211,6 +244,8 @@ pub(super) fn continue_in_progress_prefills(
             max_batch_tokens,
             prefill_stream,
             prefill_event,
+            think_end_token,
+            tool_call_start_token,
         );
         promote_completed_prefills(
             model,
@@ -303,7 +338,7 @@ pub(super) fn continue_in_progress_prefills(
                     // matcher); no-op without a grammar.
                     // P1-4 (2026-07-09): thread the resolved `min_p` —
                     // previously a hardcoded 0.0 inside the sampler.
-                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                    // Kill-switch: AVAROK_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         logits,
@@ -313,6 +348,11 @@ pub(super) fn continue_in_progress_prefills(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        FirstTokenPolicy::for_birth(
+                            p.enable_thinking,
+                            think_end_token,
+                            tool_call_start_token,
+                        ),
                         &sched.levers.sampling(),
                     ) {
                         Ok(first) => {

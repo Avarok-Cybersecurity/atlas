@@ -24,7 +24,7 @@
 //! (0/unlimited ⇒ no clamp), i.e. the reservation is the request's own
 //! `max_tokens` — the honest conservative bound, since a request can never
 //! generate past it. Operators who prefer overcommit (betting that real
-//! generations stop early) set `ATLAS_KV_ADMIT_WATERMARK=<tokens>` lower;
+//! generations stop early) set `AVAROK_KV_ADMIT_WATERMARK=<tokens>` lower;
 //! `0` reserves prompt-only, which is the pre-gate legacy behavior, and any
 //! override below the honest bound keeps a WARN so the C=128 failure mode
 //! is at least attributable. The boot-time `KV OVERCOMMIT` warning in
@@ -40,13 +40,13 @@ pub(super) fn resolve_admit_watermark(max_seq_len: usize) -> usize {
     } else {
         usize::MAX
     };
-    match std::env::var("ATLAS_KV_ADMIT_WATERMARK") {
+    match std::env::var("AVAROK_KV_ADMIT_WATERMARK") {
         Err(_) => default,
         Ok(v) => match v.parse::<usize>() {
             Ok(w) => {
                 if w < default {
                     tracing::warn!(
-                        "ATLAS_KV_ADMIT_WATERMARK={w} < the honest bound ({default}): \
+                        "AVAROK_KV_ADMIT_WATERMARK={w} < the honest bound ({default}): \
                          admission may OVERCOMMIT the KV pool; sequences past the \
                          watermark depth will hit decode-time preemption (resume, \
                          not kill — but pure overhead). 0 = legacy prompt-only \
@@ -57,7 +57,7 @@ pub(super) fn resolve_admit_watermark(max_seq_len: usize) -> usize {
             }
             Err(_) => {
                 tracing::warn!(
-                    "ATLAS_KV_ADMIT_WATERMARK={v:?} is not an integer; using default {default}"
+                    "AVAROK_KV_ADMIT_WATERMARK={v:?} is not an integer; using default {default}"
                 );
                 default
             }
@@ -152,6 +152,54 @@ pub(super) fn admit_count(
     (n, false)
 }
 
+/// Defer any new request whose adapter differs from the in-flight cohort's.
+///
+/// Returns the requests that may join the current batch; the rest are pushed
+/// back to the FRONT of the pending queue (preserving their relative order) so
+/// they run as soon as the batch drains. A no-op when nothing is in flight
+/// (the first admitted request defines the cohort) or when no adapter pool is
+/// resident, in which case every id is the base sentinel and all requests
+/// compare equal.
+fn filter_adapter_cohort(
+    model: &dyn Model,
+    pending: &std::sync::Arc<(Mutex<PendingQueue>, Condvar)>,
+    new_reqs: Vec<InferenceRequest>,
+    active: &[ActiveSeq],
+    prefilling: &[PrefillInProgress],
+) -> Vec<InferenceRequest> {
+    let cohort = active
+        .first()
+        .map(|a| a.seq.adapter_slot)
+        .or_else(|| prefilling.first().map(|p| p.seq.adapter_slot));
+    // Nothing in flight: the FIRST request of this wave defines the cohort.
+    // Without this, two requests naming different adapters that arrive in the
+    // same wave are both admitted into an empty batch and poison each other —
+    // which is exactly what a concurrent streaming pair does.
+    let cohort_slot = match cohort {
+        Some(s) => s,
+        None => match new_reqs.first() {
+            Some(r) => r.adapter_slot(),
+            None => return new_reqs,
+        },
+    };
+    let cohort_id = model.adapter_id_for(cohort_slot);
+    let (admitted, deferred): (Vec<_>, Vec<_>) = new_reqs
+        .into_iter()
+        .partition(|r| model.adapter_id_for(r.adapter_slot()) == cohort_id);
+    if !deferred.is_empty() {
+        tracing::debug!(
+            "adapter cohort: holding {} request(s) for a different adapter until \
+             the current batch drains (v0 is single-active)",
+            deferred.len()
+        );
+        let mut g = pending.0.lock();
+        for (i, req) in deferred.into_iter().enumerate() {
+            g.requests.insert(i, req);
+        }
+    }
+    admitted
+}
+
 /// Runtime gate: split this tick's drained requests into an admissible
 /// prefix (returned) and an overflow tail (pushed back to the FRONT of the
 /// pending queue, preserving arrival order ahead of newer requests).
@@ -168,6 +216,27 @@ pub(super) fn gate_admissions(
     max_seq_len: usize,
     block_size: usize,
 ) -> Vec<InferenceRequest> {
+    if new_reqs.is_empty() {
+        return new_reqs;
+    }
+    // Adapter cohort: a batch may only hold sequences sharing ONE adapter.
+    //
+    // v0 LoRA is single-active. A decode batch containing a sequence routed to
+    // a non-active adapter is refused wholesale by
+    // `decode_batch_compute_main` — which kills EVERY request in that batch,
+    // including the innocent ones routed to the active adapter. Measured: two
+    // concurrent requests naming different resident adapters both died with
+    // HTTP 500, while either one ALONE completes normally.
+    //
+    // So hold the mismatched request instead of admitting it into a batch it
+    // will poison. It stays at the head of the pending queue and runs once the
+    // current cohort drains, which is the same discipline adapter rotation
+    // already follows. Serialised rather than failed.
+    //
+    // Identity comes from `adapter_id_for`, which resolves the `-1`
+    // "defer to active" sentinel the same way the model does — comparing raw
+    // slot indices would treat `-1` and the active slot as different cohorts.
+    let new_reqs = filter_adapter_cohort(model, pending, new_reqs, active, prefilling);
     if new_reqs.is_empty() {
         return new_reqs;
     }

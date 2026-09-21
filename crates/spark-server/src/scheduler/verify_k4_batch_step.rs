@@ -18,21 +18,21 @@
 //! accepted-row hidden stash (Phase 2) MUST complete for every sequence
 //! before ANY sequence's verdict/propose runs (Phase 3).
 //!
-//! Reachability: only via `step_mtp` Phase B when `ATLAS_MTP_MAX_SEQS > 1`
+//! Reachability: only via `step_mtp` Phase B when `AVAROK_MTP_MAX_SEQS > 1`
 //! (default 16 with the ladder) puts >= 2 verify-ready grammarless
 //! sequences holding drafts in one step AND the model says
-//! `can_batch_verify(&ks)`. `ATLAS_MTP_MAX_SEQS=1` keeps this
+//! `can_batch_verify(&ks)`. `AVAROK_MTP_MAX_SEQS=1` keeps this
 //! path dead and the single-seq path byte-unchanged.
 
 use super::*;
 
-/// Kill switch `ATLAS_NO_MTP_BATCH_VERIFY` — PRESENCE check per the
+/// Kill switch `AVAROK_NO_MTP_BATCH_VERIFY` — PRESENCE check per the
 /// house convention (`=0` is NOT off): any set value forces the
 /// serialized per-seq verify loop at n > 1 for A/B against the batched
 /// forward.
 pub(super) fn batch_verify_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_BATCH_VERIFY").is_ok())
+    *CACHED.get_or_init(|| std::env::var("AVAROK_NO_MTP_BATCH_VERIFY").is_ok())
 }
 
 /// Batched K-row verify for `batch.len() >= 2` sequences. Sequence `i` holds
@@ -73,7 +73,7 @@ pub(super) fn step_verify_k4_batched(
             && r_total <= crate::scheduler::mtp_dcut::VERIFY_ROW_BUDGET
     );
 
-    // ATLAS_MTP_TIMING step summary (same Drop-guard pattern as the
+    // AVAROK_MTP_TIMING step summary (same Drop-guard pattern as the
     // single-seq step; one timer for the whole batched step).
     let _step_timer =
         crate::scheduler::mtp_timing::StepTimer::new(&sched.timing, batch[0].seq.seq_len);
@@ -116,7 +116,11 @@ pub(super) fn step_verify_k4_batched(
     let t_verify = Instant::now();
     let results: Vec<u32> = {
         let mut seq_refs: Vec<&mut SequenceState> = batch.iter_mut().map(|a| &mut a.seq).collect();
-        match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0) {
+        // No write-on-accept here: this path commits through
+        // `verify_k4_verdict`, which restores from the parent kernel's
+        // intermediates and never folds.
+        let opts = spark_model::traits::VerifyBatchedOpts::default();
+        match model.decode_verify_batched(&tokens, ks, &mut seq_refs, 0, opts) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("decode_verify_batched (n={n} ks={ks:?}): {e:#}");
@@ -168,7 +172,7 @@ pub(super) fn step_verify_k4_batched(
                 a.seq.seq_len,
             );
         }
-        // Width-attributed accept telemetry (ATLAS_MTP_ACCEPT_DEBUG). The
+        // Width-attributed accept telemetry (AVAROK_MTP_ACCEPT_DEBUG). The
         // positional counters above are K=4-shaped and therefore SILENT at
         // the shipped n in [5,8] ladder step (k_drafts == 2); this one is not.
         crate::scheduler::mtp_accept_debug::record(n, k_drafts, drafts[0] == v[0], num_accepted);
@@ -348,10 +352,10 @@ pub(super) fn step_verify_k4_batched(
     // StepTotal is recorded by `_step_timer`'s Drop guard (every exit path).
 }
 
-/// Kill switch `ATLAS_NO_MTP_BATCH_PROPOSE` — PRESENCE check (`=0` is NOT
+/// Kill switch `AVAROK_NO_MTP_BATCH_PROPOSE` — PRESENCE check (`=0` is NOT
 /// off): forces the per-seq propose fallback inside the batched verify step,
 /// for A/B attribution of the propose-batching sub-lever.
 fn batch_propose_disabled() -> bool {
     static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CACHED.get_or_init(|| std::env::var("ATLAS_NO_MTP_BATCH_PROPOSE").is_ok())
+    *CACHED.get_or_init(|| std::env::var("AVAROK_NO_MTP_BATCH_PROPOSE").is_ok())
 }

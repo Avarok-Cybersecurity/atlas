@@ -2,10 +2,10 @@
 """Phase 2b cosine compare: post-RNE Atlas image vs both references.
 
 Reads:
-  - /workspace/atlas-dumps/numdrift/rne/atlas_L{0..39}.bin    (NEW post-RNE)
-  - /workspace/atlas-dumps/numdrift/atlas_L{0..39}.bin        (OLD truncating)
-  - /workspace/atlas-dumps/numdrift/hf_L{0..39}.bin           (unquant BF16 ref)
-  - /workspace/atlas-dumps/fp8dequant/hf_L{0..39}.bin         (FP8->BF16 ref)
+  - /workspace/avarok-dumps/numdrift/rne/avarok_L{0..39}.bin    (NEW post-RNE)
+  - /workspace/avarok-dumps/numdrift/avarok_L{0..39}.bin        (OLD truncating)
+  - /workspace/avarok-dumps/numdrift/hf_L{0..39}.bin           (unquant BF16 ref)
+  - /workspace/avarok-dumps/fp8dequant/hf_L{0..39}.bin         (FP8->BF16 ref)
 
 Reports four series:
   B_old: Atlas[truncating] vs HF[unquant]      -- Phase α baseline
@@ -23,9 +23,9 @@ import pathlib
 
 import numpy as np
 
-NUMDRIFT = pathlib.Path("/workspace/atlas-dumps/numdrift")
-DEQUANT = pathlib.Path("/workspace/atlas-dumps/fp8dequant")
-RNE = pathlib.Path("/workspace/atlas-dumps/numdrift/rne")
+NUMDRIFT = pathlib.Path("/workspace/avarok-dumps/numdrift")
+DEQUANT = pathlib.Path("/workspace/avarok-dumps/fp8dequant")
+RNE = pathlib.Path("/workspace/avarok-dumps/numdrift/rne")
 N_LAYERS = 40
 
 
@@ -67,14 +67,14 @@ def main() -> None:
     cosines_C_new: list[float] = []
 
     for i in range(N_LAYERS):
-        atlas_old_p = NUMDRIFT / f"atlas_L{i}.bin"
-        atlas_new_p = RNE / f"atlas_L{i}.bin"
+        avarok_old_p = NUMDRIFT / f"avarok_L{i}.bin"
+        avarok_new_p = RNE / f"avarok_L{i}.bin"
         hf_unquant_p = NUMDRIFT / f"hf_L{i}.bin"
         hf_fp8dq_p = DEQUANT / f"hf_L{i}.bin"
         missing: list[str] = []
         for p, label in [
-            (atlas_old_p, "atlas_old"),
-            (atlas_new_p, "atlas_new"),
+            (avarok_old_p, "avarok_old"),
+            (avarok_new_p, "avarok_new"),
             (hf_unquant_p, "hf_unquant"),
             (hf_fp8dq_p, "hf_fp8dq"),
         ]:
@@ -83,15 +83,15 @@ def main() -> None:
         if missing:
             print(f"L{i:2d}: MISSING {missing}")
             continue
-        atlas_old = load(atlas_old_p)
-        atlas_new = load(atlas_new_p)
+        avarok_old = load(avarok_old_p)
+        avarok_new = load(avarok_new_p)
         hf_unquant = load(hf_unquant_p)
         hf_fp8dq = load(hf_fp8dq_p)
         rA = cmp_pair(hf_fp8dq, hf_unquant)
-        rB_old = cmp_pair(atlas_old, hf_unquant)
-        rB_new = cmp_pair(atlas_new, hf_unquant)
-        rC_old = cmp_pair(atlas_old, hf_fp8dq)
-        rC_new = cmp_pair(atlas_new, hf_fp8dq)
+        rB_old = cmp_pair(avarok_old, hf_unquant)
+        rB_new = cmp_pair(avarok_new, hf_unquant)
+        rC_old = cmp_pair(avarok_old, hf_fp8dq)
+        rC_new = cmp_pair(avarok_new, hf_fp8dq)
         cosines_A.append(rA["cos"])
         cosines_B_old.append(rB_old["cos"])
         cosines_B_new.append(rB_new["cos"])

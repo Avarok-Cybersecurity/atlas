@@ -13,6 +13,7 @@ mod expert;
 mod fp8_dequant;
 #[path = "weight_map/fp8_lut.rs"]
 mod fp8_lut;
+pub(crate) use fp8_lut::dequant_nvfp4_to_bf16;
 #[path = "weight_map/loaders_fp8.rs"]
 mod loaders_fp8;
 #[path = "weight_map/loaders_moe.rs"]
@@ -33,16 +34,14 @@ mod nvfp4_detect;
 mod quant_helpers;
 #[path = "weight_map/quantize_fns.rs"]
 mod quantize_fns;
+#[path = "weight_map/quantize_fp8_bs.rs"]
+mod quantize_fp8_bs;
 #[path = "weight_map/quantized.rs"]
 mod quantized;
 #[path = "weight_map/ssm_qwen35.rs"]
 mod ssm_qwen35;
 #[path = "weight_map/ssm_qwen35_more.rs"]
 mod ssm_qwen35_more;
-
-#[cfg(test)]
-#[path = "weight_map/tests.rs"]
-mod tests;
 
 pub use expert::*;
 pub(crate) use fp8_dequant::*;
@@ -53,6 +52,7 @@ pub use moe::*;
 pub use nemotron::*;
 pub use nvfp4_detect::*;
 pub use quantize_fns::*;
+pub use quantize_fp8_bs::*;
 pub use quantized::*;
 pub use ssm_qwen35::*;
 

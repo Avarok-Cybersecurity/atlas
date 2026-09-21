@@ -27,7 +27,7 @@ impl Drop for Dir {
 
 fn a_recipe() -> String {
     "recipe_version: \"2\"\nmodel: Qwen/Qwen3.6-27B\nruntime: atlas\ncontainer: c\n\
-     metadata:\n  description: test\n  maintainer: avarok\ndefaults:\n  port: 8888\n"
+     metadata:\n  description: test\n  maintainer: atlas\ndefaults:\n  port: 8888\n"
         .to_string()
 }
 
@@ -138,6 +138,7 @@ fn a_successful_fetch_is_not_marked_offline() {
         tree_sha: "abc".into(),
         fetched_at: unix_now(),
         offline: None,
+        incomplete: None,
     };
     let index = refresh_with(&dir.0, || Ok(fresh));
     assert!(index.offline.is_none());
@@ -184,12 +185,12 @@ fn live_fetch_against_github() {
     let index = refresh(&dir.0, &std::sync::atomic::AtomicBool::new(false));
     assert!(index.offline.is_none(), "fetch failed: {:?}", index.offline);
     assert_eq!(index.recipes.len(), 25, "the corpus is 25 recipes");
-    assert_eq!(index.recipes.iter().filter(|r| r.is_atlas()).count(), 23);
+    assert_eq!(index.recipes.iter().filter(|r| r.is_avarok()).count(), 23);
     assert_eq!(index.tree_sha.len(), 40, "a full tree sha");
     // Every Atlas recipe upstream must still produce a valid serve config —
     // this is the guard the vendored fixtures cannot give, because it sees the
     // LIVE repo rather than the snapshot.
-    for r in index.recipes.iter().filter(|r| r.is_atlas()) {
+    for r in index.recipes.iter().filter(|r| r.is_avarok()) {
         r.serve_args(&BTreeMap::new())
             .unwrap_or_else(|e| panic!("live recipe {} is not servable: {e:#}", r.id));
     }
@@ -289,4 +290,112 @@ fn measure_refresh_wall_time() {
         index.offline
     );
     assert!(index.offline.is_none());
+}
+
+/// An index that EXISTS and cannot be read is not an empty index.
+///
+/// The measured failure: `$HOME/.avarok` created by uid 1000 while the server
+/// runs as uid 996. `cached` swallowed the `EACCES` into `Index::default()`,
+/// so `bench_selfstart` reported "not in the local index (0 cached)" and told
+/// the operator to run `spark sync-recipes` — which fetches from GitHub and
+/// then fails writing to the same unreadable path. The index was complete the
+/// whole time.
+#[test]
+fn an_unreadable_index_is_not_reported_as_an_absent_one() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = Dir::new("unreadable");
+        seed(&dir, unix_now());
+        let path = cache_dir(&dir.0).join(INDEX);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        // Staged, then PROVEN staged. root — and any ACL — ignores the mode
+        // bits, and a test that cannot create the fault would pass for a
+        // reason that has nothing to do with the code. Skip there rather than
+        // report a green nobody can trust.
+        if std::fs::read_to_string(&path).is_ok() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            return;
+        }
+
+        let index = cached(&dir.0);
+        let why = index.offline.as_deref().unwrap_or_default();
+        assert!(
+            !why.is_empty(),
+            "an unreadable index must say so, not answer `no recipes`"
+        );
+        assert!(
+            why.contains(&path.display().to_string()),
+            "the operator needs the path that could not be read: {why}"
+        );
+
+        // Restore so `Dir`'s cleanup can remove it.
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// And the ordinary case must stay quiet.
+///
+/// The control for the test above: a check that fires on a healthy box is
+/// worse than no check, and "never synced" is the state of every fresh
+/// install. `NotFound` is the one read error that IS an empty index.
+#[test]
+fn an_index_that_was_never_written_is_still_an_ordinary_empty_store() {
+    let dir = Dir::new("never-written");
+    let index = cached(&dir.0);
+    assert!(index.recipes.is_empty());
+    assert!(
+        index.offline.is_none(),
+        "a box that has never synced has no fault to report, got: {:?}",
+        index.offline
+    );
+}
+
+/// The current directory is what a box gets once it has one.
+#[test]
+fn the_cache_dir_is_the_current_name_when_it_exists() {
+    let dir = Dir::new("cache-current");
+    std::fs::create_dir_all(dir.0.join(CACHE)).expect("current");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
+}
+
+/// A box that synced before the rename keeps reading the index it already has.
+///
+/// Without this the rename alone empties the Library on every installed
+/// machine, and `sync-recipes` becomes mandatory to get back to where the box
+/// already was.
+#[test]
+fn the_cache_dir_falls_back_to_the_pre_rename_name() {
+    let dir = Dir::new("cache-legacy");
+    std::fs::create_dir_all(dir.0.join(LEGACY_CACHE)).expect("legacy");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(LEGACY_CACHE));
+
+    // And the fallback is a real read, not just a path: an index written under
+    // the old name is served through `cached`.
+    seed(&dir, unix_now());
+    let index = cached(&dir.0);
+    assert_eq!(
+        index.recipes.len(),
+        1,
+        "a pre-rename cache must still render, got: {:?}",
+        index.offline
+    );
+}
+
+/// Both present means the box has migrated (or a new build already synced),
+/// so the leftover directory must never win.
+#[test]
+fn the_current_cache_dir_wins_over_the_pre_rename_one() {
+    let dir = Dir::new("cache-both");
+    std::fs::create_dir_all(dir.0.join(CACHE)).expect("current");
+    std::fs::create_dir_all(dir.0.join(LEGACY_CACHE)).expect("legacy");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
+}
+
+/// Neither present is a fresh box, which must land on the current name so the
+/// first sync writes the new directory rather than recreating the old one.
+#[test]
+fn a_fresh_store_uses_the_current_cache_dir() {
+    let dir = Dir::new("cache-neither");
+    assert_eq!(cache_dir(&dir.0), dir.0.join(CACHE));
 }

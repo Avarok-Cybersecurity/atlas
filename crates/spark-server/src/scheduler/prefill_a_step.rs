@@ -83,6 +83,9 @@ pub fn start_chunked_prefill(
     let req_prompt_logprobs = req.prompt_logprobs();
     let req_timeout_at = req.timeout_at();
     let grammar_spec = req.take_grammar_spec();
+    // Scheduler-service TTFT includes grammar compilation and mask warmup.
+    // HTTP handling/queue time precedes this clock; decode_start stays unchanged.
+    let request_start = Instant::now();
     let mut grammar_state = compile_grammar_state(grammar_engine, &grammar_spec, eos_tokens);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature, cancel_flag) = match req {
         InferenceRequest::Streaming {
@@ -118,7 +121,6 @@ pub fn start_chunked_prefill(
         ),
     };
 
-    let request_start = Instant::now();
     let total = prompt_tokens.len();
     let chunk_len = total.min(max_prefill_tokens);
     let is_last = chunk_len >= total;
@@ -133,7 +135,13 @@ pub fn start_chunked_prefill(
     // error MUST be reported via send_error_to_sink before returning,
     // otherwise the API layer will turn the dropped channel into a
     // misleading "Inference cancelled" error.
-    let mut seq = match model.alloc_sequence() {
+    // Tell the model what this request can actually reach. Proposer state
+    // that scales with context (the DFlash ctx accumulator) is then sized to
+    // prompt + max_tokens instead of the global --max-seq-len ceiling — the
+    // ceiling is paid PER SEQUENCE, so at high concurrency it is the
+    // difference between fitting and OOMing.
+    let seq_budget = total.saturating_add(max_tokens);
+    let mut seq = match model.alloc_sequence_for(seq_budget) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!("alloc_sequence failed: {e:#}");
@@ -183,7 +191,7 @@ pub fn start_chunked_prefill(
             req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         let mut a = ActiveSeq {
             seq,
             session_hash: req_session_hash,
@@ -193,6 +201,7 @@ pub fn start_chunked_prefill(
             min_tokens: req_min_tokens,
             eos_tokens: eos_tokens.to_vec(),
             finished: true,
+            error: None,
             guard_stop: None,
             param_close_pending: 0,
             sink,
@@ -214,7 +223,7 @@ pub fn start_chunked_prefill(
             logit_bias: logit_bias.clone(),
             pending_drafts: Vec::new(),
             pending_draft_conf: Vec::new(),
-            inside_thinking: req_enable_thinking && think_end_token.is_some(),
+            inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
             repetition_detection: req_repetition_detection,
@@ -385,7 +394,7 @@ pub fn start_chunked_prefill(
             is_last,
             prefill_stream,
         );
-        if std::env::var("ATLAS_VISION_TIMING").is_ok() {
+        if sched.levers.vision_timing {
             let _ = model.synchronize(prefill_stream);
             tracing::info!(
                 "VIT_TIMING prefill_chunk {} tok (img={}): {:.1}ms",
@@ -435,7 +444,7 @@ pub fn start_chunked_prefill(
         // matcher). Mirrors prefill_b_step; no-op when no grammar is active.
         // P1-4 (2026-07-09): thread the resolved `min_p` (request +
         // MODEL.toml floor) — previously a hardcoded 0.0 inside the sampler.
-        // Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // Kill-switch: AVAROK_NO_MTP_MINP=1.
         let first = match sample_first_token(
             model,
             logits,
@@ -445,6 +454,11 @@ pub fn start_chunked_prefill(
             min_p,
             eos_tokens,
             grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(
+                req_enable_thinking,
+                think_end_token,
+                tool_call_start_token,
+            ),
             &sched.levers.sampling(),
         ) {
             Ok(t) => {
@@ -515,7 +529,7 @@ pub fn start_chunked_prefill(
         let tool_request = grammar_state.is_some() || use_legacy_tool_call;
 
         let now = Instant::now();
-        let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        let cached_prompt_tok = seq.reused_prefix_tokens as u32;
         if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
             let mut a = ActiveSeq {
                 seq,
@@ -532,6 +546,7 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: true,
+                error: None,
                 guard_stop: None,
                 param_close_pending: 0,
                 sink,
@@ -553,7 +568,7 @@ pub fn start_chunked_prefill(
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
-                inside_thinking: req_enable_thinking && think_end_token.is_some(),
+                inside_thinking: born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
                 repetition_detection: req_repetition_detection,
@@ -620,6 +635,7 @@ pub fn start_chunked_prefill(
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
                 finished: false,
+                error: None,
                 guard_stop: None,
                 param_close_pending: 0,
                 sink,
@@ -642,7 +658,7 @@ pub fn start_chunked_prefill(
                 pending_drafts: Vec::new(),
                 pending_draft_conf: Vec::new(),
                 inside_thinking: spontaneous_think
-                    || (req_enable_thinking && think_end_token.is_some()),
+                    || born_inside_thinking(req_enable_thinking, think_end_token),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: if spontaneous_think {
                     Some(spontaneous_think_budget)

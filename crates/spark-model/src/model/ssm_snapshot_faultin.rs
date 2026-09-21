@@ -45,7 +45,7 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return Ok(false);
         }
-        let timing = std::env::var_os("ATLAS_SSM_TIER_TIMING").is_some();
+        let timing = std::env::var_os("AVAROK_SSM_TIER_TIMING").is_some();
         let t0 = std::time::Instant::now();
         let bytes = self.spill_blob_bytes();
         let mut guard = self.spill_staging.acquire(gpu, bytes)?;
@@ -80,11 +80,11 @@ impl SsmSnapshotPool {
     /// cache's snapshot index. Snapshots are decoupled from tree nodes, so this
     /// directly frees a slot without evicting KV blocks.
     ///
-    /// Phase 1b: when `tier` is `Some` (`ATLAS_SSM_TIER`), a victim deep enough
+    /// Phase 1b: when `tier` is `Some` (`AVAROK_SSM_TIER`), a victim deep enough
     /// to repay the spill cost is **spilled** — its bytes moved to the tier and
     /// its index entry kept (findable), so a warm turn faults it back instead of
     /// recomputing — before the slot is freed for reuse. A victim below
-    /// `ATLAS_SSM_SPILL_MIN_TOKENS` is dropped instead (see
+    /// `AVAROK_SSM_SPILL_MIN_TOKENS` is dropped instead (see
     /// [`super::ssm_spill_gate`]). When `tier` is `None` the victim is dropped
     /// exactly as before (byte-identical default path). Returns whether a slot
     /// was reclaimed.
@@ -173,7 +173,7 @@ pub(super) fn log_spill_gate_skip(evict: &TierEvict) {
     if let TierEvict::Drop { depth, .. } = *evict {
         tracing::info!(
             "SSM spill SKIPPED (cost gate): victim depth {depth} < \
-             ATLAS_SSM_SPILL_MIN_TOKENS={} — dropped instead; a ~45ms spill cannot repay \
+             AVAROK_SSM_SPILL_MIN_TOKENS={} — dropped instead; a ~45ms spill cannot repay \
              {depth} tokens of prefill",
             spill_min_tokens(),
         );

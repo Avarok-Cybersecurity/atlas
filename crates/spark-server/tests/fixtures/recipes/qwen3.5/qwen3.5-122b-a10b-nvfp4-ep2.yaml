@@ -12,7 +12,7 @@ metadata:
     QUICKSTART). Both ranks must carry the same `--speculative` and
     `--mtp-quantization` flags — the worker's MTP verify lands in the SSM
     layer otherwise (Atlas-internal tracking: feedback_ep2_mtp_flags).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 122B
   model_dtype: nvfp4

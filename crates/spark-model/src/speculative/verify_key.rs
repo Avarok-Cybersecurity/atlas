@@ -42,13 +42,15 @@
 //! depths descending (equal depths must form contiguous runs — the batched
 //! conv+WY fast path launches once per run,
 //! `trait_decode_batched_conv_gdn_multi.rs`) and the SSM batched arms need
-//! slots ascending and consecutive in batch order (`ssm_batched_recurrent.rs`,
+//! slots ascending in batch order (`ssm_batched_recurrent.rs`,
 //! `decode_step.rs`, `mtp_step.rs`). Under the confidence-chosen arrangement
 //! those two demands are in direct conflict: a ragged batch sorted
 //! deepest-first scrambles the slot order, so each depth run gets an
 //! arbitrary SUBSET of the pool slots and the consecutive-slot precondition
 //! fails. Pairing depths-descending with slots-ascending makes the two orders
-//! THE SAME order, and each depth run then owns a consecutive slot block.
+//! THE SAME order. A depth run owns a consecutive slot block only when the
+//! selected pool slots are themselves consecutive; the model checks actual
+//! pointers and declines the batched fast path when fragmentation leaves gaps.
 //!
 //! Correctness: which sequence gets which depth is a pure PERFORMANCE choice.
 //! Every batchable sequence enters the step with exactly `ladder_nd` drafts
@@ -59,7 +61,7 @@
 //! POSITION and the slot whose pointers the graph baked there — hence one
 //! ordering rule, used by both the dispatch and the key.
 //!
-//! Kill switch `ATLAS_NO_CANONICAL_VERIFY_KEY` (PRESENCE — house convention,
+//! Kill switch `AVAROK_NO_CANONICAL_VERIFY_KEY` (PRESENCE — house convention,
 //! `=0` is NOT off) restores the pre-canonical behaviour: each sequence keeps
 //! its own confidence-chosen depth and the batch is sorted deepest-first,
 //! ssm-slot second.
@@ -77,11 +79,11 @@
 //! assignment applies. [`canonical_assignment`] is the single gate; call
 //! sites never re-derive it.
 
-/// Canonical assignment ON unless `ATLAS_NO_CANONICAL_VERIFY_KEY` is present.
+/// Canonical assignment ON unless `AVAROK_NO_CANONICAL_VERIFY_KEY` is present.
 /// Read once per process.
 pub fn canonical_verify_key_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_CANONICAL_VERIFY_KEY").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_CANONICAL_VERIFY_KEY").is_none())
 }
 
 /// Batch WIDTH (sequences) at or above which the canonical depth→slot
@@ -95,7 +97,7 @@ pub fn canonical_verify_key_enabled() -> bool {
 ///
 /// Default **8**, from a same-binary same-session A/B on dgx2 (ladder-38
 /// round 7, tip `e0b845f11`) with ONE variable — the kill switch
-/// `ATLAS_NO_CANONICAL_VERIFY_KEY=1`. tok/s, higher is better:
+/// `AVAROK_NO_CANONICAL_VERIFY_KEY=1`. tok/s, higher is better:
 ///
 /// ```text
 ///  C  | canonical ON            | canonical OFF          | verdict
@@ -121,10 +123,10 @@ pub fn canonical_verify_key_enabled() -> bool {
 /// the assignment makes the two-launch batched GDN conv+WY fast path decline
 /// more often, i.e. `n*(2k-1)` launches per layer instead of 2 — 768 vs 96
 /// per step at n=2, k=4 over 48 GDN layers. PR #553's rate telemetry under
-/// `ATLAS_MTP_ACCEPT_DEBUG` reports that decline rate directly.
+/// `AVAROK_MTP_ACCEPT_DEBUG` reports that decline rate directly.
 pub const CANONICAL_KEY_MIN_WIDTH: usize = 8;
 
-/// Sweep the threshold without a rebuild: `ATLAS_CANONICAL_KEY_MIN_WIDTH=<n>`
+/// Sweep the threshold without a rebuild: `AVAROK_CANONICAL_KEY_MIN_WIDTH=<n>`
 /// (VALUE-parsed; 0 = canonical at every width, a value above the widest
 /// batch = never). Unset or unparseable ⇒ [`CANONICAL_KEY_MIN_WIDTH`].
 /// Parsed once per process, like `dcut_width_cap`.
@@ -134,7 +136,7 @@ pub fn canonical_key_min_width() -> usize {
 }
 
 /// The env var name, named once so the parser and its tests cannot drift.
-const ENV_MIN_WIDTH: &str = "ATLAS_CANONICAL_KEY_MIN_WIDTH";
+const ENV_MIN_WIDTH: &str = "AVAROK_CANONICAL_KEY_MIN_WIDTH";
 
 /// Pure parse of [`ENV_MIN_WIDTH`] — the I/O lives in
 /// [`canonical_key_min_width`] so the policy is testable without touching
@@ -160,8 +162,8 @@ pub fn canonical_assignment(n: usize) -> bool {
 
 /// The gate policy, with its two environment inputs INJECTED (SBIO): the
 /// resolved threshold and whether the kill switch is CLEAR. The kill switch
-/// dominates — once `ATLAS_NO_CANONICAL_VERIFY_KEY` is set, no width and no
-/// `ATLAS_CANONICAL_KEY_MIN_WIDTH` value can turn the assignment back on.
+/// dominates — once `AVAROK_NO_CANONICAL_VERIFY_KEY` is set, no width and no
+/// `AVAROK_CANONICAL_KEY_MIN_WIDTH` value can turn the assignment back on.
 ///
 /// Split out because `OnceLock`-latched env cannot be moved from a test, and
 /// a policy nobody can exercise is a policy nobody has checked.
@@ -189,7 +191,7 @@ fn canonical_assignment_at(n: usize, min_width: usize, kill_switch_clear: bool) 
 /// Idempotent under `canonical = true`, so a chunked caller may re-apply it
 /// to a contiguous sub-range of an already-ordered batch.
 pub fn verify_batch_permutation(slots: &[usize], ks: &[usize], canonical: bool) -> Vec<usize> {
-    debug_assert_eq!(
+    assert_eq!(
         slots.len(),
         ks.len(),
         "verify_batch_permutation: slots/ks mismatch"
@@ -239,7 +241,8 @@ pub fn verify_batch_order(
 }
 
 /// The batched-verify CUDA-graph cache key for one batch: the `(ssm slot,
-/// row count)` pairs in DISPATCH order, then a wy-tables-present sentinel.
+/// row count)` pairs in DISPATCH order, then one sentinel word carrying the
+/// wy-tables-present bit and the write-on-accept bit.
 ///
 /// Every SSM pointer a capture bakes (h/conv state, rollback intermediates,
 /// WY table contents) is a pure function of the pair at that batch position,
@@ -252,13 +255,21 @@ pub fn verify_batch_order(
 /// Pairs arrive in the order [`verify_batch_order`] produced, so with
 /// canonicalization on the key is a pure function of (slot set, depth
 /// multiset, sentinel) — the whole point of this module.
-pub fn verify_graph_key(pairs: &[(u32, u32)], wy_tables_null: bool) -> Vec<u32> {
+///
+/// `write_on_accept` is part of the key because the captured GDN launch
+/// differs with it (the K=4 write-on-accept twin against the parent wy4):
+/// a graph captured for one request must never replay for the other.
+pub fn verify_graph_key(
+    pairs: &[(u32, u32)],
+    wy_tables_null: bool,
+    write_on_accept: bool,
+) -> Vec<u32> {
     let mut key: Vec<u32> = Vec::with_capacity(2 * pairs.len() + 1);
     for &(slot, k) in pairs {
         key.push(slot);
         key.push(k);
     }
-    key.push(u32::MAX - u32::from(wy_tables_null));
+    key.push(u32::MAX - u32::from(wy_tables_null) - 2 * u32::from(write_on_accept));
     key
 }
 

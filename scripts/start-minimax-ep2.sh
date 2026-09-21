@@ -8,7 +8,7 @@
 set -euo pipefail
 
 MODEL="${1:-lukealonso/MiniMax-M2.7-NVFP4}"
-IMAGE="${IMAGE:-atlas-gb10:minimax-ep2}"
+IMAGE="${IMAGE:-avarok-gb10:minimax-ep2}"
 HEAD_IP="${HEAD_IP:-127.0.0.1}"
 WORKER_IP="${WORKER_IP:-127.0.0.1}"
 MASTER_PORT="29500"
@@ -33,8 +33,8 @@ echo ""
 
 # Clean old containers
 echo "Cleaning up old containers..."
-sudo docker rm -f atlas-minimax-ep0 2>/dev/null || true
-ssh "$WORKER_IP" "sudo docker rm -f atlas-minimax-ep1 2>/dev/null || true"
+sudo docker rm -f avarok-minimax-ep0 2>/dev/null || true
+ssh "$WORKER_IP" "sudo docker rm -f avarok-minimax-ep1 2>/dev/null || true"
 
 # RDMA device and capability flags. SYS_NICE is required by io_uring's
 # IORING_SETUP_SQPOLL (kernel ≥ 5.13) used by --high-speed-swap; the
@@ -67,17 +67,17 @@ NCCL_ENV="\
 # Start rank 0 (head) — HTTP server + scheduler
 echo "Starting rank 0 on $HEAD_IP..."
 sudo docker run -d \
-  --name atlas-minimax-ep0 \
+  --name avarok-minimax-ep0 \
   --gpus all \
   --ipc=host \
   --network host \
   $RDMA_FLAGS \
   $NCCL_ENV \
   -e RUST_LOG=info \
-  ${ATLAS_PROFILE_FIRST:+-e ATLAS_PROFILE_FIRST=$ATLAS_PROFILE_FIRST} \
-  ${ATLAS_UNIFIED_MOE_LAYOUT:+-e ATLAS_UNIFIED_MOE_LAYOUT=$ATLAS_UNIFIED_MOE_LAYOUT} \
-  ${ATLAS_HYBRID_MOE_LAYOUT:+-e ATLAS_HYBRID_MOE_LAYOUT=$ATLAS_HYBRID_MOE_LAYOUT} \
-  ${ATLAS_NVFP4_GATE_UP_M128:+-e ATLAS_NVFP4_GATE_UP_M128=$ATLAS_NVFP4_GATE_UP_M128} \
+  ${AVAROK_PROFILE_FIRST:+-e AVAROK_PROFILE_FIRST=$AVAROK_PROFILE_FIRST} \
+  ${AVAROK_UNIFIED_MOE_LAYOUT:+-e AVAROK_UNIFIED_MOE_LAYOUT=$AVAROK_UNIFIED_MOE_LAYOUT} \
+  ${AVAROK_HYBRID_MOE_LAYOUT:+-e AVAROK_HYBRID_MOE_LAYOUT=$AVAROK_HYBRID_MOE_LAYOUT} \
+  ${AVAROK_NVFP4_GATE_UP_M128:+-e AVAROK_NVFP4_GATE_UP_M128=$AVAROK_NVFP4_GATE_UP_M128} \
   -v "${HOME}/.cache/huggingface:/root/.cache/huggingface" \
   "$IMAGE" serve "$MODEL" \
     --rank 0 \
@@ -98,17 +98,17 @@ sudo docker run -d \
 # Start rank 1 (worker)
 echo "Starting rank 1 on $WORKER_IP..."
 ssh "$WORKER_IP" "sudo docker run -d \
-  --name atlas-minimax-ep1 \
+  --name avarok-minimax-ep1 \
   --gpus all \
   --ipc=host \
   --network host \
   $RDMA_FLAGS \
   $NCCL_ENV \
   -e RUST_LOG=info \
-  ${ATLAS_PROFILE_FIRST:+-e ATLAS_PROFILE_FIRST=$ATLAS_PROFILE_FIRST} \
-  ${ATLAS_UNIFIED_MOE_LAYOUT:+-e ATLAS_UNIFIED_MOE_LAYOUT=$ATLAS_UNIFIED_MOE_LAYOUT} \
-  ${ATLAS_HYBRID_MOE_LAYOUT:+-e ATLAS_HYBRID_MOE_LAYOUT=$ATLAS_HYBRID_MOE_LAYOUT} \
-  ${ATLAS_NVFP4_GATE_UP_M128:+-e ATLAS_NVFP4_GATE_UP_M128=$ATLAS_NVFP4_GATE_UP_M128} \
+  ${AVAROK_PROFILE_FIRST:+-e AVAROK_PROFILE_FIRST=$AVAROK_PROFILE_FIRST} \
+  ${AVAROK_UNIFIED_MOE_LAYOUT:+-e AVAROK_UNIFIED_MOE_LAYOUT=$AVAROK_UNIFIED_MOE_LAYOUT} \
+  ${AVAROK_HYBRID_MOE_LAYOUT:+-e AVAROK_HYBRID_MOE_LAYOUT=$AVAROK_HYBRID_MOE_LAYOUT} \
+  ${AVAROK_NVFP4_GATE_UP_M128:+-e AVAROK_NVFP4_GATE_UP_M128=$AVAROK_NVFP4_GATE_UP_M128} \
   -v \"\${HOME}/.cache/huggingface:/root/.cache/huggingface\" \
   $IMAGE serve $MODEL \
     --rank 1 \
@@ -128,6 +128,6 @@ ssh "$WORKER_IP" "sudo docker run -d \
 
 echo ""
 echo "=== Both ranks starting ==="
-echo "Monitor rank 0: sudo docker logs -f atlas-minimax-ep0"
-echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f atlas-minimax-ep1'"
+echo "Monitor rank 0: sudo docker logs -f avarok-minimax-ep0"
+echo "Monitor rank 1: ssh $WORKER_IP 'sudo docker logs -f avarok-minimax-ep1'"
 echo "API endpoint:   http://$HEAD_IP:$PORT/v1/chat/completions"

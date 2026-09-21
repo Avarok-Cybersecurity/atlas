@@ -35,8 +35,8 @@ TWO WAYS TO RUN
     GPU → NCCL loopback). Build the server first:
 
       export LIBRARY_PATH=/home/ms/nccl/build/lib CUDARC_CUDA_VERSION=12000 \
-             ATLAS_TARGET_HW=gb10 ATLAS_TARGET_MODEL=qwen3.6-27b \
-             ATLAS_TARGET_QUANT=nvfp4
+             AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=qwen3.6-27b \
+             AVAROK_TARGET_QUANT=nvfp4
       cargo build --release -p spark-server --bin spark
 
       python3 scripts/gdn_tp_golden.py --launch \

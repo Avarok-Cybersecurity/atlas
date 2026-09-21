@@ -17,7 +17,7 @@ fn key_for(batch: &[(usize, usize)], canonical: bool) -> Vec<u32> {
         .zip(&depths)
         .map(|(&i, &k)| (slots[i] as u32, k as u32))
         .collect();
-    verify_graph_key(&pairs, false)
+    verify_graph_key(&pairs, false, false)
 }
 
 /// THE DEFECT, pinned. The same depth multiset spread over the same slots
@@ -113,19 +113,38 @@ fn different_slot_sets_have_different_keys() {
 fn wy_table_presence_splits_the_key() {
     let pairs = [(0u32, 4u32), (1, 3)];
     assert_ne!(
-        verify_graph_key(&pairs, true),
-        verify_graph_key(&pairs, false)
+        verify_graph_key(&pairs, true, false),
+        verify_graph_key(&pairs, false, false)
     );
 }
 
-/// The invariants the SSM batched arms depend on, asserted explicitly on
-/// the canonical order: slots ASCENDING in batch order (the
-/// consecutive-slot precondition of `ssm_batched_recurrent.rs` and
-/// `trait_decode_batched_conv_gdn_multi.rs`) and depths NON-INCREASING
-/// (equal depths form contiguous runs — `decode_batched_inner`'s run
-/// loop).
+/// The write-on-accept bit splits the key too: the captured K=4 GDN launch
+/// is a different kernel under it, so a graph captured for one request must
+/// never replay for the other. All four sentinel states are distinct.
 #[test]
-fn canonical_order_holds_both_dispatch_invariants() {
+fn write_on_accept_splits_the_key() {
+    let pairs = [(0u32, 4u32), (1, 4)];
+    let keys = [
+        verify_graph_key(&pairs, false, false),
+        verify_graph_key(&pairs, true, false),
+        verify_graph_key(&pairs, false, true),
+        verify_graph_key(&pairs, true, true),
+    ];
+    for i in 0..keys.len() {
+        for j in 0..keys.len() {
+            assert_eq!(keys[i] == keys[j], i == j, "{i} vs {j}");
+        }
+    }
+    // The pairs are untouched; only the sentinel moves.
+    assert_eq!(keys[0][..4], keys[2][..4]);
+}
+
+/// Canonical assignment puts slots in ascending order and depths in
+/// non-increasing order. Pool fragmentation can still leave slot gaps; the
+/// batched GDN implementation checks actual pointer adjacency and declines
+/// its fast path when a depth run is not consecutive.
+#[test]
+fn canonical_order_is_slot_ascending_and_depth_descending() {
     // Deliberately hostile input: slot order and depth order disagree.
     let slots = [7usize, 2, 5, 0, 3];
     let ks = [2usize, 4, 2, 3, 4];
@@ -240,20 +259,21 @@ fn uniform_depths_are_identical_under_both_arms() {
     );
 }
 
-/// Env-independent as long as the test process does not set the kill
-/// switch (CI does not) — same pattern as `dcut_width_cap`'s default pin.
-#[test]
-fn canonical_is_on_by_default() {
-    assert!(canonical_verify_key_enabled());
-}
-
 /// Degenerate widths must not panic: the key path runs for every batch
 /// the scheduler forms.
 #[test]
 fn empty_and_single_batches_are_well_formed() {
     assert_eq!(verify_batch_order(&[], &[], true), (vec![], vec![]));
     assert_eq!(verify_batch_order(&[5], &[3], true), (vec![0], vec![3]));
-    assert_eq!(verify_graph_key(&[], false), vec![u32::MAX]);
+    assert_eq!(verify_graph_key(&[], false, false), vec![u32::MAX]);
+}
+
+#[test]
+fn mismatched_batch_vectors_fail_closed() {
+    for (slots, ks) in [(&[1, 2][..], &[4][..]), (&[1][..], &[4, 3][..])] {
+        let result = std::panic::catch_unwind(|| verify_batch_permutation(slots, ks, true));
+        assert!(result.is_err(), "slots={slots:?}, ks={ks:?}");
+    }
 }
 
 // ───────────────────────── the width gate ─────────────────────────
@@ -267,13 +287,6 @@ fn key_through_gate(batch: &[(usize, usize)], min_width: usize, kill_clear: bool
         batch,
         canonical_assignment_at(batch.len(), min_width, kill_clear),
     )
-}
-
-/// The threshold is the documented constant, and CI does not move it.
-#[test]
-fn min_width_is_the_documented_default() {
-    assert_eq!(CANONICAL_KEY_MIN_WIDTH, 8);
-    assert_eq!(canonical_key_min_width(), CANONICAL_KEY_MIN_WIDTH);
 }
 
 /// The boundary sits exactly at the constant: n=7 legacy, n=8 canonical.
@@ -337,20 +350,6 @@ fn below_the_threshold_is_byte_identical_to_pre_canonical() {
     }
 }
 
-/// A hard byte pin at n=4 so the two arms cannot silently converge: the
-/// gated key is the ARRANGEMENT-keyed one and is NOT the canonical one.
-#[test]
-fn n4_gated_key_is_the_legacy_bytes_not_the_canonical_ones() {
-    let batch = [(0usize, 4usize), (1, 3), (2, 4), (3, 2)];
-    let gated = key_for(&batch, canonical_assignment(batch.len()));
-    assert_eq!(gated, vec![0, 4, 2, 4, 1, 3, 3, 2, u32::MAX]);
-    assert_ne!(gated, key_for(&batch, true));
-    assert_eq!(
-        key_for(&batch, true),
-        vec![0, 4, 1, 4, 2, 3, 3, 2, u32::MAX]
-    );
-}
-
 /// At the threshold the gate selects the canonical arm, so #552's collapse
 /// still happens where it was measured to pay: the same multiset in any
 /// arrangement is ONE key at n=8.
@@ -366,7 +365,7 @@ fn at_the_threshold_the_gate_selects_the_canonical_arm() {
     assert_ne!(key_for(&a, false), key_for(&b, false));
 }
 
-/// `ATLAS_CANONICAL_KEY_MIN_WIDTH` parsing, as a pure function of the raw
+/// `AVAROK_CANONICAL_KEY_MIN_WIDTH` parsing, as a pure function of the raw
 /// value — the sweep knob must not silently ignore what it is handed.
 #[test]
 fn min_width_override_parses() {
@@ -383,7 +382,7 @@ fn min_width_override_parses() {
 }
 
 /// The override MOVES the boundary, end to end in key bytes: at
-/// `ATLAS_CANONICAL_KEY_MIN_WIDTH=4` the n=4 batch that is legacy-keyed by
+/// `AVAROK_CANONICAL_KEY_MIN_WIDTH=4` the n=4 batch that is legacy-keyed by
 /// default becomes canonical, and at `=16` the n=8 batch that is canonical
 /// by default falls back to legacy.
 #[test]

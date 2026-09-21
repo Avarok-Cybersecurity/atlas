@@ -43,12 +43,12 @@ test.describe('@quota daily allowance', () => {
     await context.route(OR_CHAT, dailyQuota429Handler({ log: attempts }));
 
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
     // Shrink the backoff: if the engine wrongly retried, this test would still
     // finish fast and the attempt count below would catch the mistake.
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'how does the scheduler batch decode?');
 
@@ -80,10 +80,10 @@ test.describe('@quota daily allowance', () => {
     );
 
     await withKey(page);
-    await page.goto('/');
+    await page.goto('/engine');
     await openChat(page);
     await waitReady(page);
-    await page.evaluate(() => window.__atlasChatSetRetryBaseMs(1));
+    await page.evaluate(() => window.__avarokChatSetRetryBaseMs(1));
 
     await askQuestion(page, 'how does the scheduler batch decode?');
     const card = page.locator('.cc-error[role="alert"]');

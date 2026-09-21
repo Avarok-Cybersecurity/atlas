@@ -58,11 +58,11 @@ Per run, score_run.py extracts:
 | **Drift #11** | `drift_toml_newlines_collapsed` | section header on same line as a key=value |
 | **Drift #5** | `drift_xml_attr_leak` | content has `filePath="…"` or `content="…"` (XML-attr style) |
 | **Drift #X** | `drift_bash_as_content` | content starts with a shell verb (`cargo `, `ls `, `rm `, etc) |
-| **Atlas** | `atlas_ws1_mask_fires` | diagnostic INFO log `ws1/am1 mask active` |
-| **Atlas** | `atlas_b1_drift_fires` | B1 margin-ratio drift gauge summary lines |
-| **Atlas** | `atlas_tier5c_retries` | Tier 5c retry success count |
-| **Atlas** | `atlas_a2_fuzzy_fires` | A2 fuzzy_repair rescue count |
-| **Atlas** | `atlas_tool_call_lines` | total Atlas-side tool_call log lines |
+| **Atlas** | `avarok_ws1_mask_fires` | diagnostic INFO log `ws1/am1 mask active` |
+| **Atlas** | `avarok_b1_drift_fires` | B1 margin-ratio drift gauge summary lines |
+| **Atlas** | `avarok_tier5c_retries` | Tier 5c retry success count |
+| **Atlas** | `avarok_a2_fuzzy_fires` | A2 fuzzy_repair rescue count |
+| **Atlas** | `avarok_tool_call_lines` | total Atlas-side tool_call log lines |
 
 ## Statistical interpretation
 

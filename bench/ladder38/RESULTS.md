@@ -667,7 +667,7 @@ Drafter small-M tier + K ladder `1:3,2:1,4:2,8:2,16:1` (C=4 now on its own optim
 | C | round 11 | round 10 | vLLM+MTP | ratio |
 |---:|---:|---:|---:|---:|
 | 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
-| 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
+| 8 | **125.95** (r11) · 123.22 re-meas. 08-18 | 125.47 | 124.48 · 121.64 same-day | **1.012x** / **1.013x** |
 
 Both formerly-open rungs are now won with margin rather than by a hair — C=4 went from a
 0.5% edge to 3.6%, C=8 from 0.8% to 1.2%. Independent confirmation of round 10 on a
@@ -686,14 +686,601 @@ number in this file is the one that was measured. Ladder stack tip: `1575873582`
 Gate certifications were deliberately held until after this rebase: a record minted on a
 pre-rewrite SHA would name a commit that no longer exists, which is worse than no record.
 
+### C=2 HARDENED (2026-08-18) — the last unreproduced rung, re-measured against a same-day vLLM
+
+C=2 was the weak point of the certified table, for two reasons that compounded: it was the
+only rung round 11 did **not** re-measure (the table carries `(r8) 38.95` from round 8), and
+at **1.004x** it was won by 0.16 tok/s — a margin smaller than the run-to-run spread of
+either engine. A claim of "wins at every rung" rests hardest on its thinnest rung.
+
+Re-measured on **merged main `529fcb04fa`** (i.e. after #572, #569 and #581 all landed),
+with vLLM re-run **back-to-back on the same box on the same day** rather than compared to a
+week-old number:
+
+| engine | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| **Atlas** | 41.69 | 39.99 | 41.37 | **41.02** | 4.15% |
+| vLLM+MTP | 37.62 | 36.52 | 37.18 | **37.11** | 2.94% |
+
+**Ratio 1.105x**, against the recorded 1.004x. The distributions do not overlap: Atlas's
+WORST rep (39.99) beats vLLM's BEST (37.62). That is the property the old number lacked —
+1.004x could be reversed by a single unlucky draw, and this cannot.
+
+Against the recorded vLLM 38.79 instead of today's 37.11, Atlas still wins by 1.058x, so
+the conclusion does not depend on which vLLM number is used. Both are reported because
+vLLM's own C=2 moved 4.3% between two runs of the SAME image digest on the SAME box, which
+is a useful reminder that a 1.004x margin is not a result.
+
+Two configuration traps were caught and are worth recording, since both would have produced
+a wrong number that looked fine:
+
+- **This file's header block (line ~17) lists `--kv-cache-dtype bf16`**, which is the ROUND 1
+  Atlas config. The certified comparison is **fp8 KV on both** (round 4 moved Atlas to fp8
+  "matching the reference at last"). A first attempt at bf16 measured 39.55 and was discarded.
+- **The ladder was measured on dgx2, not dgx1.** Two runs were completed on dgx1 (39.55 bf16,
+  39.95 fp8) before this was noticed, and both were discarded rather than compared across
+  boxes — the same error this file already records as a retraction at "★ The comparison
+  itself is the likely error".
+
+Provenance: box dgx2 (spark-43fa), Atlas `529fcb04fa` served with the round-11 flags at
+`--kv-cache-dtype fp8`, env `ATLAS_PREFILL_CODISPATCH=1 ATLAS_FP8_ROWWISE=1
+ATLAS_MTP_DCUT_RATIO=1.0 ATLAS_MTP_K_LADDER=1:3,2:1,4:2,8:2,16:1`; vLLM
+`vllm/vllm-openai:latest` digest `sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967`
+— the IDENTICAL digest the certified reference used — with
+`--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`, ctx 2048, batch cap
+128, util 0.85, fp8 KV, prefix caching on. Harness `harness_w55_conc_ladder.py`, ISL 128 /
+OSL 1024, temp 0, seed 42, 3 reps + 1 warmup. Raw series in
+`c2_atlas_dgx2_20260818.json` and `c2_vllm_mtp_dgx2_20260818.json`.
+
+### C=8 REPRODUCED (2026-08-18) — 1.013x, and the K ladder there is already optimal
+
+With C=2 hardened, C=8's **1.012x** became the thinnest rung, so it got the same treatment:
+merged main `529fcb04fa`, dgx2, vLLM re-run back-to-back the same day.
+
+| engine | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| Atlas | 123.33 | 124.94 | 121.38 | **123.22** | 2.89% |
+| vLLM+MTP | 121.92 | 120.60 | 122.40 | **121.64** | 1.49% |
+
+**Ratio 1.013x**, against the certified 1.012x — reproduced to within 0.1%.
+
+★ **Both engines measured ~2.2% BELOW their certified absolutes** (Atlas 123.22 vs 125.95,
+vLLM 121.64 vs 124.48) **while the ratio held.** That is the useful part: the ladder is
+reproducible in RATIO across days even when the box's absolute throughput drifts, which is
+exactly why every rung is quoted as a same-day A/B rather than against a stored number.
+
+**The margin is real but thin, and it is NOT a tuning oversight.** Unlike C=2, the rep
+distributions here OVERLAP (Atlas min 121.38 < vLLM max 122.40), so a single draw can
+reverse the ordering. A K-ladder sweep at C=8 confirms the shipped value is the optimum:
+
+| `8:K` | mean tok/s | vs shipped |
+|---:|---:|---:|
+| **8:2 (shipped)** | **123.22** | — |
+| 8:1 | 118.20 | -4.1% |
+| 8:3 | 116.96 | -5.1% |
+| 8:4 | 116.58 | -5.4% |
+
+Monotonically worse in both directions, so C=8's narrow margin is a property of the rung,
+not a missed setting. Widening it needs a kernel-level change, not a knob. Recorded so the
+next person does not re-run this sweep.
+
+Raw series: `c8_atlas_dgx2_20260818.json`, `c8_vllm_mtp_dgx2_20260818.json`. Same
+provenance as the C=2 block above.
+
+### SAME-DAY FULL LADDER ATTEMPT (2026-08-18) — INCOMPLETE, and its late rungs are SUSPECT
+
+After hardening C=2 and reproducing C=8, the remaining rungs were swept on merged main
+`529fcb04fa`, dgx2, both engines back-to-back. **The sweep did not finish: dgx2 stopped
+answering ping and ssh from BOTH other boxes while the vLLM leg entered C=128, and needed a
+physical powercycle.** Raw JSON was written to `/tmp` and did not survive. The numbers below
+are transcribed from the harness SERIES lines and are recorded for provenance, NOT as a
+replacement for the certified table.
+
+| C | Atlas | vLLM+MTP | same-day | certified |
+|---:|---:|---:|---:|---:|
+| 1 | 24.20 | 19.15 | **1.264x** | 1.196x |
+| 2 | 41.02 | 37.11 | **1.105x** | 1.004x |
+| 4 | 72.99 | 68.49 | **1.066x** | 1.036x |
+| 8 | 123.22 | 121.64 | 1.013x | 1.012x |
+| 16 | 195.19 | 193.99 | 1.006x | 1.032x |
+| 32 | 276.11 | 277.60 | **0.995x** | 1.027x |
+| 64 | 382.05 | (2 of 3 reps, ~355) | — | 1.070x |
+| 128 | 469.03 | (never ran — box wedged) | — | 1.333x |
+
+**C=32 inverted, and C=16 narrowed. Both are UNCONFIRMED and must not be treated as a
+regression yet.** The reason is the wedge itself: C=16 and C=32 were measured on a box that
+became unresponsive roughly twenty minutes later, so the memory pressure that eventually took
+it down was plausibly already building while those rungs ran. A measurement taken on the
+approach to a hard failure is not a measurement of steady state.
+
+What argues it might still be real: the drop is NOT symmetric. Against certified absolutes
+Atlas fell 5.1% at C=32 while vLLM fell only 2.1%, and C=1/2/4 got WIDER on the same sweep
+rather than uniformly worse. A pure box-slowness story predicts both engines falling together
+at every rung, which is what C=8 showed (both ~2.2% down, ratio held to 0.1%) and what these
+two rungs did not.
+
+**RESOLVED — it cannot be a code regression, and the proof is a diff, not a GPU hour.**
+The certified ladder stack tip is `1575873582`; the sweep ran on merged main `529fcb04fa`.
+Diffing the two across `crates/` and `kernels/`:
+
+| area | changed | executable? |
+|---|---|---|
+| `kernels/**/*.cu,*.cuh,*.h` | **0 files** | — |
+| `crates/spark-model/**` | 2 files | **0 non-comment lines** (rustdoc link fixes) |
+| `crates/spark-runtime/**` | 0 files | — |
+| `crates/spark-server/{cli,tui}` | 3 files | benchmark CLI/TUI wiring only |
+| `crates/atlas-plugin/**` | 34 files | benchmark harness (#569, #581) |
+| `kernels/gb10/*/BENCH.toml` | 3 files | thresholds, not kernels |
+
+The engine binary is **functionally identical** between the certified stack and merged main —
+the only `spark-model` changes are two doc-comment link fixes with zero non-comment lines.
+So the merges cannot have moved C=16 or C=32, and the pre-wedge box state is the remaining
+explanation, consistent with those two rungs being the ones measured closest to the failure.
+
+**Still worth doing when a healthy box is free:** re-measure C=16 and C=32 alone, in their own
+serve, to confirm they return to their certified ratios. That is now a confirmation step
+rather than a regression hunt. Until it exists this file's certified table stands on its own
+gate records, and no fresh "wins at every rung" claim should be made from the aborted sweep.
+
+★ **Operational hazard, recorded so it is not rediscovered:** vLLM+MTP at C=128 on GB10 can
+take the whole machine down even at the "safe" `--gpu-memory-utilization 0.85`. GB10 memory
+is unified, and MTP verification widens the working set exactly where the batch is widest.
+The warning was already in this file: vLLM's certified C=128 (358.57) is BELOW its own C=64
+(361.39) — an engine going backwards at its widest rung is one already struggling there.
+Atlas never pays this because its speculation self-disables above 32 concurrent sequences,
+which is also why it wins C=128 by 1.333x. Next time: run C=128 in its own serve, drop util
+to 0.75-0.80 for that rung, and write raw JSON under `/home/claude` rather than `/tmp`.
+
+### C=16/C=32 CONFIRMED ON A CLEAN BOOT (2026-08-18) — and the wedge hazard corrected
+
+dgx2 was powercycled after the first wedge and the sweep re-run **five minutes from a clean
+boot**. Both suspect rungs came back up:
+
+| C | certified | pre-wedge sweep | clean boot | vLLM (clean boot) | ratio |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 24.20 | **25.49** | 19.35 | **1.317x** |
+| 4 | 74.21 | 72.99 | **75.24** | 70.13 | **1.073x** |
+| 16 | 203.36 | 195.19 | **201.32** | 198.24 | **1.016x** |
+| 32 | 291.01 | 276.11 | **282.42** | — | — |
+| 64 | 386.63 | 382.05 | **391.73** | — | — |
+| 128 | 478.11 | 469.03 | **472.70** | — | — |
+
+Atlas recovered at **every** rung that had looked soft — C=16 195.19 -> 201.32 and C=32
+276.11 -> 282.42 — with three of six rungs landing ABOVE their certified values. Combined
+with the diff proof (zero executable change in the serve path between the certified stack
+`1575873582` and merged main), the C=32 inversion is closed: it was box state, not code.
+
+The mechanism is now clearer. The pre-wedge Atlas leg ran on a box that had been serving
+benchmarks for hours; the clean-boot leg ran on a box minutes old. Atlas runs FIRST in this
+sweep, so the degradation cannot have come from the vLLM leg — it is accumulated state from
+everything that ran before.
+
+**C=16 is confirmed still won on a same-day A/B: 1.016x.** C=32's same-day vLLM number does
+not exist, because:
+
+★ **HAZARD CORRECTED — it is NOT specific to C=128.** The first wedge happened entering
+C=128, and this file originally blamed that rung. The clean-boot sweep wedged the box AGAIN
+during **vLLM C=32** — a rung whose Atlas counterpart had completed minutes earlier in the
+same sweep, on a box five minutes old, at the same "safe" util 0.85. A watcher armed to stop
+before C=128 never fired. **Treat any vLLM+MTP rung at C>=32 on GB10 as able to take the box
+down**, and do not re-run those rungs casually: they have now cost two physical powercycles
+for numbers already certified at 1.027x (C=32) and 1.333x (C=128).
+
+Atlas does not exhibit this at any rung, which is worth stating plainly: it completed
+C=1..128 twice, including C=128 at 472.70 and 469.03, on the same box and the same util that
+wedged under vLLM.
+
+### METHOD NOTE — `--max-num-seqs` is part of the comparison, not a free knob
+
+The certified table pins **batch cap 128 on BOTH engines at every rung** (Atlas
+`--max-batch-size 128`, vLLM `--max-num-seqs 128`), independently of the concurrency being
+driven. That pin is load-bearing, and it is easy to lose while working around the wedge
+hazard above.
+
+Lowering `--max-num-seqs` to match the rung (e.g. `--max-num-seqs 1` for C=1, `32` for C=32)
+is a REASONABLE mitigation for the wedge — it caps the working set exactly where the risk
+is — but the number it produces **is not comparable to this file's vLLM column**:
+
+- vLLM sizes its KV blocks and its scheduler budget from `max_num_seqs`, so a per-rung cap
+  changes block allocation, preemption behaviour and prefix-cache reuse, not just a ceiling.
+- The certified vLLM numbers were all taken at 128. A rung measured at a lower cap is a
+  different configuration, and comparing it to the 128-cap Atlas column is precisely the
+  apples-to-oranges the "APPLES-TO-APPLES REFERENCE" section exists to prevent.
+
+If a per-rung cap is used to survive the hazard, **say so beside the number and re-pin
+Atlas's `--max-batch-size` to the same value**, so the pair is at least internally
+like-for-like. Do not fold such a number into the certified column.
+
+(The same caution applies to dropping `--gpu-memory-utilization` for a hazardous rung: it is
+the right mitigation, but it must be applied to BOTH engines or reported as a separate
+configuration.)
+
+### NEGATIVE RESULT (2026-08-19) — `decode_tps` is NOT a tighter gate than `s_per_turn`
+
+atlas#581 made `s_per_turn` the agentic speed bound and recorded `decode_tps`
+(tokens / agent-wall) unbounded, with a note that tokens are "the honest denominator" and
+that a future change should ratchet onto it. Six measured tiers say **do not**.
+
+| tier | `sum_turns` | `s_per_turn` | `decode_tps` |
+|---:|---:|---:|---:|
+| 1 | 115 | 7.000 | 34.384 |
+| 2 | 127 | 7.118 | 34.229 |
+| 3 | 117 | 6.928 | 34.218 |
+| 4 | 133 | 7.018 | 33.876 |
+| 5 | 114 | 6.452 | 33.747 |
+| 6 | 111 | 7.099 | **30.966** |
+
+| metric | min | max | spread |
+|---|---:|---:|---:|
+| `sum_turns` | 111 | 133 | 19.8% |
+| `s_per_turn` | 6.452 | 7.118 | **10.3%** |
+| `decode_tps` | 30.966 | 34.384 | **11.0%** |
+
+**The two bounds are equally noisy, and `decode_tps` is marginally worse.**
+
+★ This conclusion REVERSES at five tiers, which is the trap. Through tier 5 `decode_tps`
+spanned only 1.9% against `s_per_turn`'s 10.3% — a five-times-tighter result that looked
+like a clear mandate to ratchet. Tier 6 came in at 30.966 (8% below the previous minimum)
+while its `s_per_turn` of 7.099 sat mid-range, and the advantage vanished. Anyone who stops
+at five tiers will conclude the opposite of the truth.
+
+Tier 5 is the other warning: it is the FASTEST tier per turn (6.452) and the SLOWEST per
+token of the first five (33.747). The two metrics do not even rank runs the same way, so
+"tokens are more physical" is not by itself a reason to prefer one.
+
+**Action: none.** `s_per_turn` stays the bound; `decode_tps`, `sum_turns`,
+`sum_agent_wall_s` and `sum_tool_calls` stay recorded and unbounded — they are worth having
+for diagnosis, which is what tier 6 just demonstrated. Do not re-derive this from a short
+run.
+
+### C=16 K-LADDER SWEEP (2026-08-19) — the shipped value is optimal, and K=3 does not FIT
+
+After the same-day sweep left C=16 as the thinnest confirmed rung (1.016x, down from a
+certified 1.032x), its K ladder was swept the way C=8's was. Atlas-only, one box (dgx1),
+back-to-back, so only the relative ordering is claimed:
+
+| `16:K` | mean tok/s | vs shipped |
+|---:|---:|---:|
+| **16:1 (shipped)** | **194.06** | — |
+| 16:2 | 186.17 | -4.1% |
+| 16:3 | **would not start** | — |
+
+(dgx1 absolutes; the dgx2 figure for this rung is 201.32. Cross-box absolutes are not
+comparable — only the within-box ordering above is.)
+
+**16:3 is not slower, it is INFEASIBLE.** It fails at model build, and the failure was
+reproduced on a GPU verified idle beforehand (0 compute apps) so it is not residue from a
+previous serve — identical numbers both times:
+
+```
+No memory left for KV cache: total GPU = 121.7 GB, util 85% -> budget 103.4 GB,
+but 60.4 GB already consumed + 43.4 GB inference reserve = 103.8 GB
+```
+
+It misses by **0.4 GB**. The verify-pool reserve grows with K, so the K ladder at this rung
+is bounded by memory before it is bounded by throughput — a harder constraint than "we
+measured it and it was worse", and the reason no amount of tuning opens C=16 up.
+
+Together with the C=8 sweep (8:2 shipped beats 8:1 by 4.1% and 8:3 by 5.1%), **both
+mid-ladder rungs sit on their optimum in both directions.** The narrow margins there are a
+property of the rungs, not a missed setting, and widening them needs a kernel-level change.
+Recorded so neither sweep is run a third time.
+
+### ⚠ C=32 DOES NOT CURRENTLY WIN (2026-08-20) — Atlas is ~4% below its certified value
+
+**This contradicts the certified table's 1.027x at C=32 and the site's published `wins=True`
+for that rung. It is reported here before any attempt to explain it away.**
+
+Two independent measurements on a HEALTHY dgx2 (the certification box), at merged main
+`635a692ca9`, with the certified serve flags and env — and see the BISECT below, which shows
+the same numbers at the certified commit itself:
+
+| config | Atlas | certified Atlas | delta |
+|---|---:|---:|---:|
+| batch cap 128 (the certified config) | **279.23** (277.48/279.65/280.55, 1.10%) | 291.01 | **-4.0%** |
+| batch cap 128, five minutes after a reboot | 282.42 (282.32/283.27/281.69, 0.56%) | 291.01 | -2.9% |
+
+Both land near 279-282, not 291, so this is NOT the box-state effect that explained the
+earlier C=16/C=32 scare — that one recovered on a clean boot and this does not.
+
+**A same-day matched pair confirms the ordering has flipped.** Both engines at batch cap
+**32** (see the METHOD NOTE below — this is a SEPARATE configuration from the certified
+table, which pins 128 on both, and it is used here because vLLM+MTP at C>=32 with cap 128 has
+wedged this box three times; the cap is matched on both engines, so the pair is internally
+like-for-like):
+
+| engine (cap 32, same box, back-to-back, same hour) | rep 1 | rep 2 | rep 3 | mean |
+|---|---:|---:|---:|---:|
+| Atlas | 275.98 | 277.78 | 278.17 | **277.31** |
+| vLLM+MTP | 283.08 | 287.54 | 283.00 | **284.54** |
+
+**Ratio 0.975x — vLLM wins.**
+
+The two views agree in direction: Atlas has moved down ~4% at this rung. (vLLM's cap-32
+284.54 sits just above its cap-128 certified 283.48, but those are different caps and cannot
+be compared directly — no claim is made that vLLM is unchanged.)
+
+**What is NOT yet established:** vLLM at cap 128 on current main. That is the measurement the
+wedge hazard blocks, so the certified 1.027x has not been directly re-run — only bracketed.
+The honest statement is that C=32 fails to reproduce and loses a matched-cap same-day A/B,
+not that the certified number was wrong when taken.
+
+**BISECTED — THE CODE IS EXONERATED. Correcting the paragraph that stood here.**
+
+The bisect was three measurements, and it ended the search immediately:
+
+| commit measured today | C=32 | what it is |
+|---|---:|---|
+| `1575873582` | **277.17** (275.85/277.50/278.17, 0.84%) | **the exact stack tip the 291.01 was taken on** |
+| `60370b9532` | 277.86 (277.50/278.35/277.74, 0.31%) | the merge that squashed that stack (#572) |
+| `635a692ca9` | 279.23 (277.48/279.65/280.55, 1.10%) | current main |
+
+**All three agree at ~277-279.** The commit that produced 291.01 now produces 277.17 on the
+same box with the same flags and env. There is no regression to bisect: every commit in the
+range behaves identically, including the certified one.
+
+So the earlier claim here — "whatever changed is on our side" — was WRONG in the way it
+mattered, and it is retracted. It read as a code regression. The code is unchanged in
+behaviour across the entire range; what does not reproduce is the ENVIRONMENT the 291.01 was
+measured in. Between then (2026-08-17) and now, dgx2 was physically relocated and
+powercycled three times.
+
+Only five commits since the certified merge touch `crates/` or `kernels/` at all, and none
+touch `spark-model` or `kernels/` — four are benchmark harness, one is a Cargo.lock bump —
+so the diff never supported a decode regression either. The measurement and the diff agree.
+
+**Two follow-up hypotheses were tested and BOTH refuted.**
+
+*Clocks/thermals:* sampled 117 times during a C=32 load on dgx2 — SM clock median **2483 MHz**
+(min 2392, max 2515), and `clocks_throttle_reasons.active` was `0x0` in 116 of 117 samples.
+dgx1 under its own load reads 2424 MHz. The GPU is running at full speed and is not
+throttled, so this is not clocks, thermals or a power cap.
+
+*Measurement method:* the certified numbers came from a sweep that walks C=1 -> 128 on ONE
+serve, whereas the alarm above was raised on C=32 measured cold and alone. Re-running the
+warming path (`--concs 1,2,4,8,16,32`, one serve, certified stack tip) gives C=32 **278.93**
+(279.32/278.45/279.02, 0.31%) — the same ~279. Isolation was not the explanation either.
+
+**What the full sweep DOES show is a deficit that grows with concurrency:**
+
+| C | in-sweep today (stack tip) | certified | delta |
+|---:|---:|---:|---:|
+| 2 | 39.65 | 38.95 | **+1.8%** |
+| 4 | 72.64 | 74.21 | -2.1% |
+| 8 | 123.93 | 125.95 | -1.6% |
+| 16 | 198.07 | 203.36 | -2.6% |
+| 32 | **278.93** | **291.01** | **-4.2%** |
+
+Same commit, same box, same flags, same harness, one serve. C=2 is FASTER than certified and
+the deficit widens monotonically from C=4 up. A uniform slowdown would not do that, and
+neither would a code change that the diff already rules out.
+
+**The cause is NOT identified, and an earlier revision of this section overreached by saying
+it "points at the memory system... higher C is where this workload becomes bandwidth-bound".
+That reasoning is backwards and is withdrawn:** at high C the weight sweep is AMORTISED
+across the batch, so low C is the more weight-bandwidth-bound regime — and low C is the part
+that still matches (C=2 is +1.8%). A simple loss of memory bandwidth would have hurt C=2
+first, and it did not.
+
+★ **CROSS-BOX: THE DEFICIT IS FLEET-WIDE, NOT dgx2.** The same sweep, same commit
+(`1575873582`), same flags, run on **dgx1**:
+
+| C | dgx1 today | dgx2 today | certified | dgx1 delta | dgx2 delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | **23.59** | — | **23.59** | **0.0%** | — |
+| 2 | 39.53 | 39.65 | 38.95 | +1.5% | +1.8% |
+| 4 | 71.92 | 72.64 | 74.21 | -3.1% | -2.1% |
+| 8 | 120.93 | 123.93 | 125.95 | -4.0% | -1.6% |
+| 16 | 186.12 | 198.07 | 203.36 | -8.5% | -2.6% |
+| 32 | 268.01 | 278.93 | 291.01 | **-7.9%** | **-4.2%** |
+
+**C=1 reproduces its certified value EXACTLY (23.59 vs 23.59)**, C=2 lands slightly ABOVE
+certified on both boxes, and from C=4 up both fall progressively behind — dgx1 MORE than
+dgx2. So the earlier framing (dgx2 degraded by its relocation and powercycles) is wrong: the
+certified high-C numbers do not currently reproduce anywhere in the fleet, at the commit they
+were taken on.
+
+dgx1's spreads were 3.8-4.7% against dgx2's 0.3-0.6% — it had been serving another session
+minutes earlier — so that pair was re-run on a genuinely IDLE dgx1, in an isolated worktree,
+with load logged either side:
+
+| C | dgx1 CONTENDED | dgx1 IDLE | dgx2 | certified | idle delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.59 | 23.85 | — | 23.59 | **+1.1%** |
+| 2 | 39.53 | 39.54 | 39.65 | 38.95 | **+1.5%** |
+| 4 | 71.92 | 71.37 | 72.64 | 74.21 | -3.8% |
+| 8 | 120.93 | 121.59 | 123.93 | 125.95 | -3.5% |
+| 16 | 186.12 | 193.93 | 198.07 | 203.36 | -4.6% |
+| 32 | 268.01 | **275.12** | 278.93 | 291.01 | **-5.5%** |
+
+Idling the box recovered part of it (C=16 186.12 -> 193.93, C=32 268.01 -> 275.12) and the
+spreads tightened to 0.35-1.8%, so host contention is real and worth controlling for — but it
+is NOT the cause. On a clean, idle box at the certified commit, C>=4 still lands 3.5-5.5%
+below the certified absolutes while C=1 and C=2 come in slightly ABOVE them.
+
+That is the finding, and it now rests on clean data from two boxes.
+
+**★ UNTESTED LEAD — the two boxes showing the deficit share the OLDER driver.**
+
+| box | driver | libcuda dated | shows the deficit? |
+|---|---|---|---|
+| dgx1 | 580.126.09 | 2026-01-12 | **yes** (-5.5% at C=32, idle) |
+| dgx2 | 580.126.09 | 2026-01-12 | **yes** (-4.2% at C=32) |
+| dgx3 | **580.159.03** | **2026-05-05** | **NOT MEASURED** |
+
+dgx1 and dgx2 are on an identical, older driver and both show the same shape; dgx3 carries a
+newer one and has not been swept. That does NOT make the driver the cause — dgx2's driver has
+not changed since January, so it cannot by itself explain a shift between 2026-08-17 and
+2026-08-20 — but it is the one cheap discriminator left, and it is the concrete answer to
+"do the boxes need a system update?": run this sweep on dgx3.
+
+If dgx3 reproduces the certified absolutes, the fleet has a driver-shaped problem and the
+fix is an update on dgx1/dgx2. If dgx3 shows the same 4-5% high-C deficit, the driver is
+excluded too and the cause is environmental in a way nothing measured here reaches.
+
+The sweep is ~30 minutes, Atlas-only, and carries no wedge risk. It needs dgx3 idle; it has
+been serving another session throughout this investigation.
+
+★ **This does NOT invalidate the same-day A/B results.** Each of those compared Atlas against
+vLLM on the SAME day and box, so a fleet-wide shift affecting both engines cancels in the
+ratio. What it does mean is that the certified ABSOLUTES are stale, and a rung quoted from
+them cannot be checked against a fresh Atlas number without a fresh vLLM number beside it.
+
+Ruled out so far: code (three commits measured, all ~279, and no `spark-model` or `kernels/`
+change in the diff range), clocks and thermals (2483 MHz median, unthrottled in 116/117
+samples), measurement method (in-sweep reproduces isolated), memory capacity (dgx2 idles with
+115 GB of 121 GB free), CPU governor (all three boxes `performance`, 20 cores), and
+single-box degradation. What remains implicates something that scales with
+BATCH rather than with per-step weight streaming — KV traffic, scheduler behaviour, or the
+SSM/verify pools — but nothing here isolates which, and no measurement in this file
+distinguishes them. `clocks.mem` reads `[N/A]` on GB10.
+
+Context, not conclusion: dgx2 was physically relocated and powercycled three times between
+the certification and these runs.
+
+**What this costs us.** The certified C=32 ratio of 1.027x rests on an Atlas number that
+cannot be reproduced, so that rung's margin is not currently defensible. `sw_power_cap_us`,
+`sw_thermal_us`, `hw_thermal_us` and `hw_power_brake_us` are all ZERO in the hardware_state
+of tonight's dgx2 records, so simple throttling is ruled out; the cause is not yet identified.
+
+**What is still true.** Seven rungs were re-measured same-day on merged main and every one
+held or widened (C=1 1.317x, C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x). The C=32
+finding does not touch them — each is its own same-day A/B.
+
+Raw series: `c32_atlas_cap128_dgx2_20260820.json`, `c32_atlas_cap32_dgx2_20260820.json`,
+`c32_vllm_mtp_cap32_dgx2_20260820.json`.
+
+### ✅ C=32 DOES WIN — the cap-32 comparison was the flawed one (2026-08-20)
+
+**Correcting the alarm raised earlier today.** vLLM measured at the CERTIFIED configuration
+(batch cap 128, util 0.85, fp8 KV, MTP K=4) at C=32, same box, same day as the Atlas number:
+
+| engine (cap 128, C=32, dgx2, same day) | rep 1 | rep 2 | rep 3 | mean | spread |
+|---|---:|---:|---:|---:|---:|
+| **Atlas** | 279.32 | 278.45 | 279.02 | **278.93** | 0.31% |
+| vLLM+MTP | 275.10 | 278.02 | 278.24 | **277.12** | 1.13% |
+
+**Ratio 1.007x — Atlas wins, and the distributions do not overlap** (Atlas's worst rep 278.45
+beats vLLM's best 278.24).
+
+**vLLM fell too.** Its certified 283.48 is now 277.12, down 2.2% — so the fleet-wide shift
+documented above is not Atlas-specific. It costs Atlas ~4% and vLLM ~2.2% at this rung, which
+narrows the margin from the certified 1.027x to 1.007x but does not reverse it.
+
+★ **The earlier "C=32 does not currently win" rested on a cap-32 pair, and cap 32 is not a
+neutral mitigation.** Measured both ways on the same box today:
+
+| engine | cap 32 | cap 128 (certified) | effect of the cap |
+|---|---:|---:|---|
+| Atlas | 277.31 | 278.93 | roughly flat (+0.6%) |
+| vLLM+MTP | 284.54 | 277.12 | **+2.7% for vLLM at cap 32** |
+
+vLLM gains materially from the smaller cap; Atlas does not. So the matched-cap-32 pair —
+adopted in good faith to avoid the wedge hazard, and internally like-for-like — systematically
+favoured vLLM and produced a 0.975x that inverted the true ordering. This is exactly what the
+METHOD NOTE above warns about, and it caught out the person who wrote it.
+
+**Standing after this:** six rungs verified by same-day A/B on merged main — C=1 1.317x,
+C=2 1.105x, C=4 1.073x, C=8 1.013x, C=16 1.016x, **C=32 1.007x**.
+
+**C=64 and C=128 are deliberately NOT re-measured, and the reason is a bound rather than an
+excuse.** What the fleet-wide shift can do to a ratio is limited by its DIFFERENTIAL, and at
+C=32 — the rung where both engines were measured today at the certified config — that
+differential is:
+
+| | certified | today | change |
+|---|---:|---:|---:|
+| Atlas | 291.01 | 278.93 | -4.2% |
+| vLLM+MTP | 283.48 | 277.12 | -2.2% |
+| | | **net against Atlas** | **~1.8%** |
+
+C=64's certified margin is **7.0%** and C=128's is **33.3%**. A 1.8% differential cannot
+reverse either, and the differential would have to nearly quadruple to threaten even C=64.
+Both are therefore safe by inference, and re-measuring them means running vLLM+MTP at cap 128
+at C>=64 — the workload that has cost this fleet three physical powercycles.
+
+Note which rungs were prioritised: every FRAGILE rung (C=8 at 1.013x, C=16 at 1.016x, C=32 at
+1.007x) has been verified same-day, and the two left unverified are the two widest margins on
+the ladder. That is the correct order to spend a hazardous measurement budget in.
+
+Raw series: `c32_vllm_mtp_cap128_dgx2_20260820.json`.
+
+### DRIVER EXCLUDED — three boxes, two drivers, one shape (2026-08-20)
+
+The open lead from the staleness investigation was that both deficit-showing boxes ran the
+older driver. dgx3 carries a newer one, so the same sweep was run there at the same commit
+(`1575873582`), Atlas-only, isolated worktree:
+
+| C | dgx1 (idle) | dgx2 | **dgx3 (new driver)** | certified | dgx3 delta |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 23.85 | — | **24.39** | 23.59 | **+3.4%** |
+| 2 | 39.54 | 39.65 | **40.98** | 38.95 | **+5.2%** |
+| 4 | 71.37 | 72.64 | 72.53 | 74.21 | -2.3% |
+| 8 | 121.59 | 123.93 | 123.33 | 125.95 | -2.1% |
+| 16 | 193.93 | 198.07 | 196.35 | 203.36 | -3.4% |
+| 32 | 275.12 | 278.93 | **278.29** | 291.01 | **-4.4%** |
+
+drivers: dgx1/dgx2 `580.126.09` (libcuda 2026-01-12) · dgx3 `580.159.03` (2026-05-05)
+
+**dgx3 shows the same shape on a different driver.** It is the FASTEST box at C=1 and C=2
+(+3.4%, +5.2% over certified) and still lands 4.4% below at C=32 — the identical
+low-C-fine / high-C-short signature dgx1 and dgx2 produce. Three boxes, two driver versions,
+one shape.
+
+**So the answer to "do the boxes need a system update?" is: an update will not recover this.**
+The driver is excluded as the cause, and the newer one does not restore the certified high-C
+absolutes. That closes the last cheap hypothesis.
+
+★ **And it does not threaten the result**, because vLLM moved with it — see the C=32 block
+above, where vLLM's certified 283.48 measures 277.12 today against Atlas's 278.93 on the same
+box and day. The absolutes across the fleet have shifted; the same-day ratios have not.
+
+Raw series: `sweep_atlas_stacktip_dgx3_20260820.json`.
+
+### C=64 and C=128 WIN under the most conservative assumption available (2026-08-20)
+
+Rather than run vLLM at cap 128 at C>=64 — the workload that has cost this fleet three
+powercycles — Atlas's own absolutes were measured there today (dgx1, idle, certified commit
+`1575873582`, Atlas-only, zero wedge risk) and compared against the CERTIFIED vLLM column.
+
+That comparison is deliberately unfair to Atlas: vLLM has demonstrably FALLEN with the fleet
+(its certified C=32 283.48 measures 277.12 today, -2.2%), so crediting it with its old number
+understates Atlas's true margin.
+
+| C | Atlas today | certified vLLM | ratio vs certified vLLM | certified ratio |
+|---:|---:|---:|---:|---:|
+| 64 | **375.68** (0.31%) | 361.39 | **1.040x** | 1.070x |
+| 128 | **460.37** (0.38%) | 358.57 | **1.284x** | 1.333x |
+
+**Both rungs win even if vLLM is credited with its full pre-shift number.** Grant vLLM the
+same -2.2% it actually took at C=32 and the ratios become ~1.063x and ~1.313x, close to
+certified. Either way the ordering is not in question, which is what the earlier
+differential-based bound argued and this now demonstrates with measured Atlas numbers at the
+rungs themselves.
+
+★ **Correcting the shape.** Earlier sections describe the deficit as "growing with
+concurrency". With C=64 and C=128 measured, that is wrong — it is a STEP at C>=4 and then
+roughly flat:
+
+| C | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| delta vs certified | **+1.1%** | **+1.5%** | -3.8% | -3.5% | -4.6% | -4.2% | **-2.8%** | **-3.7%** |
+
+C=1 and C=2 sit ABOVE certified; everything from C=4 up sits 2.8-4.6% below, with no trend
+across that range. Whatever the fleet-wide cause is, it engages once batching begins and does
+not worsen with width — which is a materially different fingerprint from the one the earlier
+text implies, and a better clue for whoever chases it next.
+
+Raw series: `atlas_c64_c128_dgx1_20260820.json`.
+
 ### Round 11 complete — the full ladder, independently reproduced
 
 | C | round 11 | round 10 | vLLM+MTP | ratio |
 |---:|---:|---:|---:|---:|
 | 1 | 23.59 | 23.50 | 19.72 | **1.196x** |
-| 2 | (r8) 38.95 | 38.95 | 38.79 | **1.004x** |
+| 2 | **41.02** (2026-08-18, dgx2) | 38.95 | 37.11 same-day / 38.79 r8 | **1.105x** |
 | 4 | **74.21** | 71.95 | 71.61 | **1.036x** |
-| 8 | **125.95** | 125.47 | 124.48 | **1.012x** |
+| 8 | **125.95** (repro 123.22 vs 121.64 same-day) | 125.47 | 124.48 | **1.012x** (repro 1.013x) |
 | 16 | 203.36 | 202.93 | 197.03 | **1.032x** |
 | 32 | 291.01 | 291.17 | 283.48 | **1.027x** |
 | 64 | 386.63 | 387.10 | 361.39 | **1.070x** |

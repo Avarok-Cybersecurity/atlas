@@ -6,7 +6,7 @@ Canonical: [`SECURITY.md`](https://github.com/Avarok-Cybersecurity/atlas/blob/ma
 
 **Do not open a public issue for security vulnerabilities.**
 
-Email **security@avarok.net** with:
+Email **security@atlas.net** with:
 
 1. **Description** — what the vulnerability is and its potential impact.
 2. **Reproduction steps** — minimal.
@@ -39,7 +39,7 @@ Automated: nothing — there is no static analyser on the CUDA sources. Human: k
 ### 2. HTTP API input
 
 - **Malformed JSON** — axum + serde handles schema validation; unknown fields are rejected by default.
-- **Oversized request bodies** — `ATLAS_MAX_BODY_BYTES` caps inbound body size. The default is **32 MiB**, not 8 (`main_modules/serve_router.rs`); size your reverse proxy against 32.
+- **Oversized request bodies** — `AVAROK_MAX_BODY_BYTES` caps inbound body size. The default is **32 MiB**, not 8 (`main_modules/serve_router.rs`); size your reverse proxy against 32.
 - **Prompt injection** via the chat template — the model is the primary defense; Atlas does not attempt content-level filtering.
 - **Rate-limit exhaustion** — per-key token bucket with a `MAX_KEYS` DoS guard against cardinality explosion.
 
@@ -96,4 +96,4 @@ Some things are *not* a security concern under this policy — they're bugs, but
 
 ## If you found something
 
-Email security@avarok.net. Include what you need, keep the repro minimal, and do not exploit the vulnerability against production deployments you do not own. The team has fixed every credibly-reported issue within the 7-day initial-assessment window; known-good practice gets a prompt response.
+Email security@atlas.net. Include what you need, keep the repro minimal, and do not exploit the vulnerability against production deployments you do not own. The team has fixed every credibly-reported issue within the 7-day initial-assessment window; known-good practice gets a prompt response.

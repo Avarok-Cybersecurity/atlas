@@ -72,7 +72,98 @@ pub fn moe_topk_softmax(
 /// Kernel: `moe_topk_sigmoid(gate_logits, bias, expert_indices, expert_weights,
 ///          num_experts, top_k, normalize, scaling_factor)`
 /// Grid: (1, 1, 1)  Block: (256, 1, 1)
+/// LongCat softmax + e_score_correction_bias router with the zero-expert
+/// fold (single token). `zero_accum` receives the token's summed
+/// zero-expert weight; folded slots are rewritten (expert 0, weight 0).
 #[allow(clippy::too_many_arguments)]
+pub fn moe_topk_softmax_bias(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    bias: DevicePtr,
+    expert_indices: DevicePtr,
+    expert_weights: DevicePtr,
+    zero_accum: DevicePtr,
+    num_logits: u32, // routed + zero
+    num_routed: u32,
+    top_k: u32,
+    normalize: bool,
+    scaling_factor: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([1, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(bias)
+        .arg_ptr(expert_indices)
+        .arg_ptr(expert_weights)
+        .arg_ptr(zero_accum)
+        .arg_u32(num_logits)
+        .arg_u32(num_routed)
+        .arg_u32(top_k)
+        .arg_u32(normalize as u32)
+        .arg_f32(scaling_factor)
+        .launch(stream)
+}
+
+/// Batched twin: one block per token.
+#[allow(clippy::too_many_arguments)]
+pub fn moe_topk_softmax_bias_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate_logits: DevicePtr,
+    bias: DevicePtr,
+    expert_indices: DevicePtr,
+    expert_weights: DevicePtr,
+    zero_accum: DevicePtr,
+    num_logits: u32,
+    num_routed: u32,
+    top_k: u32,
+    normalize: bool,
+    scaling_factor: f32,
+    n: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([n, 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(gate_logits)
+        .arg_ptr(bias)
+        .arg_ptr(expert_indices)
+        .arg_ptr(expert_weights)
+        .arg_ptr(zero_accum)
+        .arg_u32(num_logits)
+        .arg_u32(num_routed)
+        .arg_u32(top_k)
+        .arg_u32(normalize as u32)
+        .arg_f32(scaling_factor)
+        .launch(stream)
+}
+
+/// `out[t, :] += zero_accum[t] * x[t, :]` — the identity-expert blend.
+pub fn moe_zero_expert_add(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    out: DevicePtr,
+    x: DevicePtr,
+    zero_accum: DevicePtr,
+    n: u32,
+    h: u32,
+    stream: u64,
+) -> Result<()> {
+    use spark_runtime::kernel_args::div_ceil;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n * h, 256), 1, 1])
+        .block([256, 1, 1])
+        .arg_ptr(out)
+        .arg_ptr(x)
+        .arg_ptr(zero_accum)
+        .arg_u32(n)
+        .arg_u32(h)
+        .launch(stream)
+}
+
 pub fn moe_topk_sigmoid(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,

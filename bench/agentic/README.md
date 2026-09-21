@@ -5,7 +5,7 @@ through multi-turn tool calls — as opposed to the throughput soaks in `../`.
 Written while chasing KV-cache correctness and concurrency scaling on Laguna;
 all are model-parameterised, so pointing them at another model is a flag.
 
-Every script honours `ATLAS_URL` (default `http://localhost:8888/v1/chat/completions`).
+Every script honours `AVAROK_URL` (default `http://localhost:8888/v1/chat/completions`).
 
 | script | answers |
 |---|---|
@@ -20,7 +20,7 @@ Every script honours `ATLAS_URL` (default `http://localhost:8888/v1/chat/complet
 
 ```bash
 python3 conc_harness.py --levels 1,4,8 --include-csharp --model laguna-s-2.1
-ATLAS_CONTAINER=laguna-xs python3 conc_harness.py --levels 4 --model laguna-xs-2.1
+AVAROK_CONTAINER=laguna-xs python3 conc_harness.py --levels 4 --model laguna-xs-2.1
 ```
 
 Reports pass rate, per-task median/p95 latency, batch **makespan**, aggregate

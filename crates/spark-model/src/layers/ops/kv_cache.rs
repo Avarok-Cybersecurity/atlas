@@ -242,6 +242,70 @@ pub fn fused_k_norm_rope_cache_write_fp8(
         .launch(stream)
 }
 
+/// Decode-path fusion of `rms_norm` + `rope_forward` + `reshape_and_cache_flash_fp8`
+/// for an FP8 KV cache. Writes BOTH K (normed + rotated + quantized) and V
+/// (quantized) in one launch, so the FP8 decode chain drops from
+/// `rms_norm(K)` + `rope(Q,K)` + `reshape_and_cache_fp8(K,V)` to
+/// `rope(Q only)` + this kernel.
+///
+/// BIT-IDENTICAL to the chain it replaces — the kernel reproduces every
+/// intermediate BF16 rounding step rather than keeping intermediates in FP32.
+/// See the header of `reshape_and_cache_fused_k_fp8.cu`; do not "improve" the
+/// precision here, it would change committed cache bytes.
+///
+/// `k_scale`/`v_scale` are the DEQUANT scales; the kernel takes the reciprocal
+/// itself so the lowering matches `reshape_and_cache_flash_fp8` exactly.
+///
+/// Grid: (num_tokens, num_kv_heads, 1)  Block: (head_dim, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn fused_k_norm_rope_cache_write_fp8_kv(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    k_in: DevicePtr,
+    value: DevicePtr,
+    k_norm_weight: DevicePtr,
+    positions: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    slot_mapping: DevicePtr,
+    num_tokens: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    block_size: u32,
+    k_scale: f32,
+    v_scale: f32,
+    key_stride: u32,
+    value_stride: u32,
+    cache_stride: u64,
+    rms_eps: f32,
+    theta: f32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_tokens, num_kv_heads, 1])
+        .block([head_dim, 1, 1])
+        .arg_ptr(k_in)
+        .arg_ptr(value)
+        .arg_ptr(k_norm_weight)
+        .arg_ptr(positions)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(slot_mapping)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_u32(block_size)
+        .arg_f32(k_scale)
+        .arg_f32(v_scale)
+        .arg_u32(key_stride)
+        .arg_u32(value_stride)
+        .arg_u64(cache_stride)
+        .arg_f32(rms_eps)
+        .arg_f32(theta)
+        .launch(stream)
+}
+
 /// Write K/V to paged Bf16K + Turbo3V (TurboQuant+ safer-asym) cache.
 ///
 /// K is written as raw BF16 (NHD contiguous), V as 3-bit Lloyd-Max + FP8

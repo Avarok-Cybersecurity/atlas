@@ -20,7 +20,7 @@ impl Qwen3SsmLayer {
     /// when the SSM pool states are contiguous slots `[0..n)`.
     ///
     /// `detail_t0` / `detail_parts` thread the caller's profiling state through
-    /// so the `ATLAS_SSM_DETAIL` summary spans the whole mixer.
+    /// so the `AVAROK_SSM_DETAIL` summary spans the whole mixer.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn decode_ms_ssm_recurrent<'a, 'b: 'a>(
         &self,
@@ -64,7 +64,7 @@ impl Qwen3SsmLayer {
             };
         }
 
-        // FP16 h-state (ATLAS_SSM_H_FP16). The conversion itself happens in
+        // FP16 h-state (AVAROK_SSM_H_FP16). The conversion itself happens in
         // `ssm_h_to_f16_dispatch` at the model's decode entry, outside the CUDA
         // graph; here we only verify the invariant and pick the kernel.
         let h_f16 = super::super::ssm_h_fp16_enabled();
@@ -78,7 +78,7 @@ impl Qwen3SsmLayer {
             }
             if kd != 128 || vd != 128 {
                 anyhow::bail!(
-                    "ATLAS_SSM_H_FP16 needs linear head dims 128/128 (the FP16 twins size their                      smem for k_dim==128); this model is {kd}/{vd}"
+                    "AVAROK_SSM_H_FP16 needs linear head dims 128/128 (the FP16 twins size their                      smem for k_dim==128); this model is {kd}/{vd}"
                 );
             }
         }
@@ -151,6 +151,7 @@ impl Qwen3SsmLayer {
             ops::dense_gemm_ba_gates_prefill(
                 ctx.gpu,
                 self.ba_gates_prefill_k,
+                self.ba_gates_prefill_hopper_k,
                 normed_base,
                 &self.ssm.in_proj_ba,
                 self.ssm.a_log.weight,
@@ -226,7 +227,7 @@ impl Qwen3SsmLayer {
                 fn gdn_half_reg_enabled() -> bool {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
                     *ON.get_or_init(|| {
-                        std::env::var("ATLAS_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
+                        std::env::var("AVAROK_NO_GDN_HALF_REG").ok().as_deref() != Some("1")
                     })
                 }
                 // SRAM-staged twin: bit-identical to the register-retention
@@ -242,12 +243,12 @@ impl Qwen3SsmLayer {
                 // predicted -10.6% never appeared, which refutes the wave-15
                 // roofline premise that the scan moves 2.5 DRAM passes over H:
                 // the extra half-read was evidently already served by L2.
-                // Enable with ATLAS_GDN_SMEM_STAGE (PRESENCE — `=0` is NOT
+                // Enable with AVAROK_GDN_SMEM_STAGE (PRESENCE — `=0` is NOT
                 // "on") to re-probe at wider batches, where the state grows
                 // past L2 and the balance may change.
                 fn gdn_smem_stage_enabled() -> bool {
                     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-                    *ON.get_or_init(|| std::env::var("ATLAS_GDN_SMEM_STAGE").is_ok())
+                    *ON.get_or_init(|| std::env::var("AVAROK_GDN_SMEM_STAGE").is_ok())
                 }
                 let gdn_norm_k = if kd == 128
                     && vd == 128
@@ -335,8 +336,8 @@ impl Qwen3SsmLayer {
             } else {
                 if h_f16 {
                     anyhow::bail!(
-                        "ATLAS_SSM_H_FP16: the batched decode arm selected the FP32-only \
-                         gated_delta_rule_decode_f32_strided (ATLAS_GDN_FUSED_NORM is not 1)"
+                        "AVAROK_SSM_H_FP16: the batched decode arm selected the FP32-only \
+                         gated_delta_rule_decode_f32_strided (AVAROK_GDN_FUSED_NORM is not 1)"
                     );
                 }
                 let gdn_out = conv_out.offset(n * conv_dim as usize * 4);
@@ -363,25 +364,54 @@ impl Qwen3SsmLayer {
                 )?;
                 detail_step!("recurrent_batched_gdn");
 
-                for i in 0..n {
-                    let deint_i = deinterleaved.offset(i * qkvz_size * bf16);
-                    let z_i = deint_i.offset((key_dim * 2 + value_dim) * bf16);
-                    let gdn_out_i = gdn_out.offset(i * value_dim * 4);
-                    let normed_out_i = normed_out_base.offset(i * value_dim * bf16);
-                    ops::gated_rms_norm(
+                // ONE launch for all n sequences when the strided twin is
+                // resident (#927). The H100 batch-16 trace put the per-seq
+                // loop below at **768** launches per step (48 SSM layers x 16
+                // rows) for 1.612 ms = 3.70% of the 43.595 ms step, at 2.1 us
+                // each — pure launch/tail overhead, and the only per-layer
+                // kernel in that step still scaling with the row count. The
+                // strided kernel is bit-identical per (sequence, head) row:
+                // same block per row, same reduction, same addresses.
+                let z_base = deinterleaved.offset((key_dim * 2 + value_dim) * bf16);
+                if self.gated_rms_norm_f32_strided_k.0 != 0 {
+                    ops::gated_rms_norm_strided(
                         ctx.gpu,
-                        self.gated_rms_norm_f32_k,
-                        gdn_out_i,
-                        z_i,
+                        self.gated_rms_norm_f32_strided_k,
+                        gdn_out,
+                        z_base,
                         &self.ssm.norm,
-                        normed_out_i,
+                        normed_out_base,
                         nv as u32,
+                        n as u32,
                         vd as u32,
                         vd as u32,
                         eps,
                         vd as u32,
+                        value_dim as u32, // gdn_out rows: [n, value_dim] f32
+                        qkvz_size as u32, // z rows: one deinterleaved QKVZ block
+                        value_dim as u32, // normed_out rows: [n, value_dim] bf16
                         stream,
                     )?;
+                } else {
+                    for i in 0..n {
+                        let z_i = z_base.offset(i * qkvz_size * bf16);
+                        let gdn_out_i = gdn_out.offset(i * value_dim * 4);
+                        let normed_out_i = normed_out_base.offset(i * value_dim * bf16);
+                        ops::gated_rms_norm(
+                            ctx.gpu,
+                            self.gated_rms_norm_f32_k,
+                            gdn_out_i,
+                            z_i,
+                            &self.ssm.norm,
+                            normed_out_i,
+                            nv as u32,
+                            vd as u32,
+                            vd as u32,
+                            eps,
+                            vd as u32,
+                            stream,
+                        )?;
+                    }
                 }
                 detail_step!("recurrent_batched_norm");
             }
@@ -433,7 +463,7 @@ impl Qwen3SsmLayer {
                     && nv == nk * 2
                     && kd == 128
                     && vd == 128
-                    && std::env::var("ATLAS_GDN_FUSED_CONV").ok().as_deref() == Some("1");
+                    && crate::layers::ops::ModelLevers::get().gdn_fused_conv;
                 let sub_t0 = if detail_profile {
                     Some(std::time::Instant::now())
                 } else {
@@ -472,7 +502,7 @@ impl Qwen3SsmLayer {
                 };
                 if h_f16 && (use_fused_conv || self.gdn_f32_norm_k.0 == 0) {
                     anyhow::bail!(
-                        "ATLAS_SSM_H_FP16: the per-seq decode arm selected an FP32-only kernel                          (fused_conv={use_fused_conv}, gdn_f32_norm={}). That would read the FP16                          pool as FP32. Unset ATLAS_GDN_FUSED_CONV and set ATLAS_GDN_FUSED_NORM=1.",
+                        "AVAROK_SSM_H_FP16: the per-seq decode arm selected an FP32-only kernel                          (fused_conv={use_fused_conv}, gdn_f32_norm={}). That would read the FP16                          pool as FP32. Unset AVAROK_GDN_FUSED_CONV and set AVAROK_GDN_FUSED_NORM=1.",
                         self.gdn_f32_norm_k.0
                     );
                 }

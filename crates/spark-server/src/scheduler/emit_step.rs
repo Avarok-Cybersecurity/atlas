@@ -18,6 +18,17 @@ pub fn emit_token(
     logprobs: Option<crate::api::TokenLogprobs>,
     sched: &crate::scheduler::sched_ctx::SchedCtx,
 ) {
+    // Per-token ledger (debug): every emission path funnels through here,
+    // so `slot + out_idx + tok` gives a diffable per-stream token stream.
+    // The C>=2 temp-0 fork forensics reads this to find the first token
+    // where a concurrent run diverges from the C=1 run of the same prompt
+    // (step type comes from adjacent CTX_VERIFY / CTX_COMMIT debug lines).
+    tracing::debug!(
+        "TOK slot={} out_idx={} tok={}",
+        a.seq.slot_idx,
+        a.output_tokens.len(),
+        tok,
+    );
     // Cooperative cancellation from the streaming pipeline. The
     // stream-side guards (Bug-2 name-run cap, F11 within-dedup, F44
     // perm-fail, loop-watchdog, client stop-sequence match) flip this
@@ -68,7 +79,7 @@ pub fn emit_token(
     // Fix B (2026-06-05, kill-switch): <tool_response> hard stop — the model must
     // never generate this control token; if it does (post-tool-call runaway), end
     // the turn. Mirrors the <|im_start|> hard stop above.
-    if tool_response_stop_enabled()
+    if sched.levers.tool_response_stop
         && let Some(trs) = sched.limits.tool_response_hard_stop
         && tok == trs
     {
@@ -337,9 +348,9 @@ pub fn emit_token(
                 content_tokens = a.content_tokens,
                 output_len = a.output_tokens.len(),
                 "Content-loop watchdog fired in MTP/emit path (period-{}…{} repeat); ending response. \
-                 Tune via --content-loop-min-repeats / ATLAS_CONTENT_LOOP_MIN_REPEATS, per-request \
+                 Tune via --content-loop-min-repeats / AVAROK_CONTENT_LOOP_MIN_REPEATS, per-request \
                  repetition_detection, or disarm via --content-loop-watchdog false / \
-                 ATLAS_CONTENT_LOOP_WATCHDOG=0",
+                 AVAROK_CONTENT_LOOP_WATCHDOG=0",
                 CONTENT_LOOP_PERIOD_MIN,
                 CONTENT_LOOP_PERIOD_MAX,
             );
@@ -379,7 +390,7 @@ pub fn emit_token(
                     output_len = a.output_tokens.len(),
                     "Inter-tool prose budget exhausted in MTP/emit path; ending response \
                      (no tool call after budget — would otherwise burn to max_tokens); \
-                     raise via --max-inter-tool-prose / ATLAS_MAX_INTER_TOOL_PROSE / \
+                     raise via --max-inter-tool-prose / AVAROK_MAX_INTER_TOOL_PROSE / \
                      MODEL.toml [behavior].max_inter_tool_prose (0 disables)"
                 );
                 a.guard_stop = Some(GUARD_STOP_INTER_TOOL_PROSE);
@@ -394,8 +405,8 @@ pub fn emit_token(
     // forever — trapping the model into a hallucinated-transcript runaway. When
     // enabled and a tool call has completed (and we're not inside a tool body /
     // thinking), lift the grammar suppression so the model's natural EOS ends the
-    // turn. Inert unless ATLAS_TOOL_EOS_ESCAPE=1.
-    let eos_escape = tool_eos_escape_enabled()
+    // turn. Inert unless AVAROK_TOOL_EOS_ESCAPE=1.
+    let eos_escape = sched.levers.tool_eos_escape
         && a.tool_call_completed
         && !a.inside_tool_body
         && !a.inside_thinking;
@@ -417,7 +428,27 @@ pub fn emit_token(
             || crate::grammar::grammar_blocks_stop(a.grammar_state.as_mut(), &a.eos_tokens));
     let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
-    let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
+    // Thinking EOS suppression — the twin of decode_logits_step's explicit
+    // `thinking_suppresses_eos` term, which this emit path NEVER HAD (the
+    // grammar term above only covers grammar-armed turns). Invisible on the
+    // Qwen family, whose temp-0 argmax never lands on EOS inside <think>;
+    // Nemotron-3.5-Lightning DOES — its greedy reasoning opens by restating
+    // the prompt and then argmaxes <|im_end|>, which the serial lane
+    // discards (reasoning continues, 2k+ tokens) and this lane previously
+    // honored, ending every speculative thinking turn at ~30 tokens
+    // (found on Lightning + DFlash, 2026-08-25). Same hard-ceiling escape
+    // as the serial twin so generation cannot overrun at the budget edge.
+    let hard_ceiling = crate::scheduler::helpers::hard_ceiling_hit(
+        a.remaining,
+        a.seq.seq_len,
+        sched.limits.max_seq_len,
+    );
+    let thinking_suppresses_eos =
+        crate::scheduler::helpers::eos_suppressed_by_thinking(a.inside_thinking, hard_ceiling);
+    let suppress_eos = grammar_suppresses_eos
+        || legacy_suppresses_eos
+        || min_tokens_suppresses
+        || thinking_suppresses_eos;
 
     if a.eos_tokens.contains(&tok) && !suppress_eos {
         a.finished = true;
@@ -493,7 +524,7 @@ fn send_stream_event(a: &ActiveSeq, event: StreamEvent) -> bool {
 /// `output_tokens` and streamed through [`send_stream_event`] (so blocking and
 /// streaming responses agree); they intentionally exceed `max_tokens` by the
 /// bounded close length, mirroring a graceful EOS. No-op when disabled
-/// (`ATLAS_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
+/// (`AVAROK_GRAMMAR_BUDGET_CLOSE=0`), inside `<think>`, or when no bounded close
 /// is found — all of which fall back to the prior plain length-stop.
 pub(crate) fn emit_grammar_close(a: &mut ActiveSeq) {
     if a.inside_thinking || !grammar_budget_close_enabled() {
@@ -580,7 +611,11 @@ pub fn compile_grammar_state(
     match compiled {
         Ok(grammar) => {
             let vocab_size = engine.vocab_size();
-            match GrammarState::new(&grammar, vocab_size) {
+            // #918: `on_warm` persists the cross-grammar mask cache from
+            // the background prewarm thread, so the NEXT process starts
+            // warm. `None` when the on-disk cache is off.
+            let on_warm = engine.mask_snapshot_hook();
+            match GrammarState::new_with_hook(&grammar, vocab_size, on_warm) {
                 Ok(state) => {
                     tracing::info!("Grammar constrained decoding active: {label}");
                     // Exempt the model's stop/EOS tokens from grammar refusal

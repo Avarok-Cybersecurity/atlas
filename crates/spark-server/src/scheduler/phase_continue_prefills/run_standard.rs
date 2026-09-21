@@ -12,8 +12,8 @@ use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
 use super::super::lifecycle::send_error;
-use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
+use super::super::{FirstTokenPolicy, sample_first_token};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_standard_chunk_loop(
@@ -61,7 +61,7 @@ pub(super) fn run_standard_chunk_loop(
         max_prefill_tokens
     };
     // Step 2 (spec): cap the chunk to the policy's prefill slice budget so a
-    // fused mixed step stays under the TBT target. With ATLAS_HOLO_ALWAYS_MIXED
+    // fused mixed step stays under the TBT target. With AVAROK_HOLO_ALWAYS_MIXED
     // OFF the caller passes slice_budget == max_prefill_tokens, so this `.min`
     // is a no-op and the chunk cap is unchanged (byte-identical resting path).
     // MLA keeps its forced full-remaining chunk (correctness gate above) — the
@@ -77,7 +77,7 @@ pub(super) fn run_standard_chunk_loop(
     // looks up — otherwise the warm restore falls back to the coarse
     // --ssm-checkpoint-interval grid and replays ~254 SSM tokens per turn.
     // Suppressed when mid-chunk capture is ON (it captures in-pass, no clamp
-    // needed) and when the abandoned ATLAS_SSM_TAIL_CKPT is OFF (default).
+    // needed) and when the abandoned AVAROK_SSM_TAIL_CKPT is OFF (default).
     if spark_runtime::ssm_tail_ckpt_enabled()
         && !spark_runtime::ssm_tail_midchunk_enabled()
         && let Some(bs) = model.kv_block_size()
@@ -94,28 +94,31 @@ pub(super) fn run_standard_chunk_loop(
     }
 
     // ── Mixed forward: fuse prefill chunk + decode in one pass ──
-    // ATLAS_BISECT_NO_MIX=1 forces this branch to false so we can
+    // AVAROK_BISECT_NO_MIX=1 forces this branch to false so we can
     // diagnose whether the chunked-prefill+concurrent CUDA-700 lives
     // inside `mixed_forward` (active+prefill fused) vs the pure
     // decode-batch path.
-    let no_mix_bisect = std::env::var("ATLAS_BISECT_NO_MIX")
+    let no_mix_bisect = std::env::var("AVAROK_BISECT_NO_MIX")
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     // The spec gate here used to be the process-GLOBAL flags (`!use_mtp && ...`),
     // which meant a `--speculative` serve could NEVER fuse prefill with decode —
-    // at any concurrency. But speculative execution is per-STEP: the scheduler
-    // only runs a spec step when `active.len() == 1` (mod.rs:511/516/520);
-    // at C>=2 every sequence is on plain batched decode anyway, so fusing is
-    // exactly as safe as it is for a non-speculative serve. The correct
-    // predicate is "a spec step would run this tick", i.e. the same
-    // `single_active_with_spec` shape phase_continue_prefills.rs computes.
+    // at any concurrency. Speculative execution is per-STEP, so the predicate
+    // became "a spec step would run this tick".
     //
-    // Without this, one 8K prefill chunk froze every active decoder for the
+    // Without that, one 8K prefill chunk froze every active decoder for the
     // whole chunk (mixed_forward never fired in any --speculative production
     // config) — the single largest scheduler-level concurrency gap found by
     // the 2026-07-25 architecture map.
+    //
+    // ★ The rule now has ONE home, `super::spec_mixing`, because the
+    // justification it used to carry here ("the scheduler only runs a spec
+    // step when active.len() == 1") is STALE: the MTP dispatch cap is 32.
+    // Read that module's doc — it names the width range where this predicate
+    // and the real dispatch gate disagree, and what the disagreement costs —
+    // before changing this line.
     let any_spec = use_mtp || use_self_speculative || use_ngram_speculative;
-    let spec_step_this_tick = active.len() == 1 && any_spec;
+    let spec_step_this_tick = super::spec_mixing::mixing_blocked_by_spec(active.len(), any_spec);
     let can_mix = !no_mix_bisect && !active.is_empty() && !model.is_ep() && !spec_step_this_tick;
 
     if can_mix {
@@ -188,7 +191,7 @@ pub(super) fn run_standard_chunk_loop(
                     // matcher); no-op without a grammar.
                     // P1-4 (2026-07-09): thread the resolved `min_p` —
                     // previously a hardcoded 0.0 inside the sampler.
-                    // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                    // Kill-switch: AVAROK_NO_MTP_MINP=1.
                     match sample_first_token(
                         model,
                         result.prefill_logits,
@@ -198,6 +201,11 @@ pub(super) fn run_standard_chunk_loop(
                         p.min_p,
                         &p.eos_tokens,
                         p.grammar_state.as_mut(),
+                        FirstTokenPolicy::for_birth(
+                            p.enable_thinking,
+                            think_end_token,
+                            tool_call_start_token,
+                        ),
                         &sched.levers.sampling(),
                     ) {
                         Ok(first) => {
@@ -324,7 +332,7 @@ pub(super) fn run_standard_chunk_loop(
                 // matcher); no-op without a grammar.
                 // P1-4 (2026-07-09): thread the resolved `min_p` —
                 // previously a hardcoded 0.0 inside the sampler.
-                // Kill-switch: ATLAS_NO_MTP_MINP=1.
+                // Kill-switch: AVAROK_NO_MTP_MINP=1.
                 match sample_first_token(
                     model,
                     logits,
@@ -334,6 +342,11 @@ pub(super) fn run_standard_chunk_loop(
                     p.min_p,
                     &p.eos_tokens,
                     p.grammar_state.as_mut(),
+                    FirstTokenPolicy::for_birth(
+                        p.enable_thinking,
+                        think_end_token,
+                        tool_call_start_token,
+                    ),
                     &sched.levers.sampling(),
                 ) {
                     Ok(first) => {

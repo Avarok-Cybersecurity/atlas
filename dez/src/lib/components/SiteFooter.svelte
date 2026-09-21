@@ -16,14 +16,14 @@
 
     <nav class="col links" aria-label="Project links">
       <h2 class="eyebrow">Atlas</h2>
-      <a href={LINKS.atlasRepo} rel="noopener noreferrer">GitHub repository</a>
-      <a href={LINKS.atlasSite} rel="noopener noreferrer">atlasinference.io</a>
+      <a href={LINKS.avarokRepo} rel="noopener noreferrer">GitHub repository</a>
+      <a href={LINKS.avarokSite} rel="noopener noreferrer">atlascybernetics.ai</a>
       <a href={LINKS.discord} rel="noopener noreferrer">Community Discord</a>
     </nav>
 
     <nav class="col links" aria-label="Reference">
       <h2 class="eyebrow">Reference</h2>
-      <a href={LINKS.atlasLicense} rel="noopener noreferrer">Licence (AGPL-3.0)</a>
+      <a href={LINKS.avarokLicense} rel="noopener noreferrer">Licence (AGPL-3.0)</a>
       <a href={LINKS.webgpu} rel="noopener noreferrer">WebGPU specification</a>
     </nav>
   </div>

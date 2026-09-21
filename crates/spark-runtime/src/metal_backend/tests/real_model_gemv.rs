@@ -5,6 +5,7 @@
 use super::super::*;
 #[allow(unused_imports)]
 use super::helpers::*;
+use crate::weights::mlx_int8::MlxInt8Weight;
 
 /// Real-data parity check for `mlx_int8_gemv`. Loads the actual
 /// `language_model.model.layers.3.self_attn.q_proj` triplet (the
@@ -20,7 +21,7 @@ use super::helpers::*;
 fn metal_mlx_int8_gemv_real_model_q_proj() {
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
@@ -83,8 +84,11 @@ fn metal_mlx_int8_gemv_real_model_q_proj() {
         .map(|i| half::bf16::from_f32(0.05 + 0.001 * (i as f32).sin()))
         .collect();
 
-    // CPU reference: dequant byte-by-byte then dot with x.
+    // CPU reference: dequant byte-by-byte then dot with x. `sum_abs_terms`
+    // is the per-row sum of |w * x|, which sizes the fp32 reordering bound
+    // below -- it is measured from the same bytes, not assumed.
     let mut expected: Vec<half::bf16> = vec![half::bf16::ZERO; n_rows];
+    let mut sum_abs_terms: Vec<f32> = vec![0.0; n_rows];
     for r in 0..n_rows {
         let mut acc: f32 = 0.0;
         for c in 0..in_features as usize {
@@ -103,7 +107,9 @@ fn metal_mlx_int8_gemv_real_model_q_proj() {
             let b =
                 half::bf16::from_le_bytes([biases_slice[s_idx], biases_slice[s_idx + 1]]).to_f32();
             let w = byte * s + b;
-            acc += w * x_bf16[c].to_f32();
+            let term = w * x_bf16[c].to_f32();
+            acc += term;
+            sum_abs_terms[r] += term.abs();
         }
         expected[r] = half::bf16::from_f32(acc);
     }
@@ -127,25 +133,22 @@ fn metal_mlx_int8_gemv_real_model_q_proj() {
     backend.copy_h2d(&biases_slice, biases_ptr).unwrap();
     backend.copy_h2d(&x_bytes, x_ptr).unwrap();
 
-    let kernel = backend.kernel("mlx_int8_gemv", "mlx_int8_gemv").unwrap();
-    backend
-        .launch_typed(
-            kernel,
-            [n, 1, 1],
-            [64, 1, 1],
-            0,
-            backend.default_stream(),
-            &[
-                KernelArg::Bytes(&n.to_le_bytes()),
-                KernelArg::Bytes(&k.to_le_bytes()),
-                KernelArg::Bytes(&group_size.to_le_bytes()),
-                KernelArg::Buffer(packed_ptr),
-                KernelArg::Buffer(scales_ptr),
-                KernelArg::Buffer(biases_ptr),
-                KernelArg::Buffer(x_ptr),
-                KernelArg::Buffer(y_ptr),
-            ],
-        )
+    // ★ THE PRODUCTION WRAPPER, not a hand-rolled launch. This test used to
+    // dispatch `[n,1,1] x [64,1,1]` against a kernel whose contract
+    // (mlx_int8_gemv.metal:31) is `ceil(N/4)` threadgroups of 128 threads, so
+    // every row with r mod 4 in {2,3} was never written -- and the assertion
+    // below let that through. A test that encodes its own geometry tests a
+    // launch nothing ships; `MlxInt8Weight::gemv` is the launch that ships.
+    let weight = MlxInt8Weight {
+        packed: packed_ptr,
+        scales: scales_ptr,
+        biases: biases_ptr,
+        out_features: n,
+        in_features: k,
+        group_size,
+    };
+    weight
+        .gemv(&backend, x_ptr, y_ptr, backend.default_stream())
         .expect("launch real-model gemv");
     backend.synchronize(backend.default_stream()).unwrap();
 
@@ -153,32 +156,60 @@ fn metal_mlx_int8_gemv_real_model_q_proj() {
     backend.copy_d2h(y_ptr, &mut y_raw).unwrap();
     let actual = bytes_to_bf16_vec(&y_raw);
 
-    // 2560-element FP32 sum at output magnitudes ~0.1–1 has ULP
-    // ≈ 0.005 at 1.0; tolerate 0.1 for ordering drift across
-    // simdgroups versus the strictly-sequential CPU reference.
+    // ★ THE BOUND IS DERIVED, NOT PICKED, AND BOTH HALVES MUST HOLD.
+    //
+    // The old assertion was `max_abs < 0.1 || max_rel < 0.05`. With this
+    // input (x ~ 0.05) the outputs sit at |q| ~ 0.05, so a row that was NEVER
+    // WRITTEN (d = |e| < 0.1) satisfied the first disjunct on its own and the
+    // 100%-relative error never mattered. It passed with half the rows zero.
+    //
+    // Per row, kernel and reference both take the same fp32 products, sum them
+    // in a different order (lane-strided + simd_sum vs sequential), and round
+    // ONCE to bf16. So they may differ by:
+    //   * one bf16 ulp of the value (the two roundings straddle a boundary), plus
+    //   * the fp32 reordering allowance: each K-term summation carries at most
+    //     (K-1)*eps*sum|terms| of rounding error, so two orders differ by at
+    //     most twice that; +2 terms covers the fma-vs-mul-add contraction of
+    //     `byte*s+b` that -ffast-math permits.
+    // At these magnitudes that is ~1.5e-3 per row (vs 0.1), and a row left
+    // unwritten trips it whenever |e| exceeds ~1.5e-3 -- about 97% of rows.
+    // The cosine and norm-ratio gates below cover the aggregate: one zeroed
+    // row of 128 costs ~0.8% of the energy and scores cos ~0.996 < 0.9999.
     let mut max_abs_diff: f32 = 0.0;
-    let mut max_rel_diff: f32 = 0.0;
+    let mut worst_ratio: f32 = 0.0;
     for i in 0..n_rows {
         let e = expected[i].to_f32();
         let a = actual[i].to_f32();
-        let d = (e - a).abs();
-        if d > max_abs_diff {
-            max_abs_diff = d;
-        }
-        let rel = if e.abs() > 1e-3 { d / e.abs() } else { 0.0 };
-        if rel > max_rel_diff {
-            max_rel_diff = rel;
-        }
-        // Also assert no NaN / inf — the real signal that the
-        // chain is wired correctly.
         assert!(
             a.is_finite(),
             "real-model gemv produced non-finite at row {i}: {a}"
         );
+        let d = (e - a).abs();
+        max_abs_diff = max_abs_diff.max(d);
+        let fp32_allowance = (2.0 * k as f32 + 2.0) * f32::EPSILON * sum_abs_terms[i];
+        let bound = bf16_ulp(e.abs().max(a.abs())) + fp32_allowance;
+        worst_ratio = worst_ratio.max(d / bound);
+        assert!(
+            d <= bound,
+            "real-model gemv row {i}: |kernel - cpu| = {d} exceeds the derived \
+             bound {bound} (1 bf16 ulp + fp32 reorder allowance {fp32_allowance}); \
+             expected {e}, got {a}"
+        );
     }
+    let cos = cosine_bf16(&expected, &actual);
+    let mag = norm_ratio_bf16(&expected, &actual);
+    eprintln!(
+        "metal_mlx_int8_gemv_real_model_q_proj: rows={n_rows} K={k} \
+         max_abs={max_abs_diff:.3e} worst_d/bound={worst_ratio:.3} \
+         cos={cos:.7} norm_ratio={mag:.7}"
+    );
     assert!(
-        max_abs_diff < 0.1 || max_rel_diff < 0.05,
-        "real-model gemv: max abs diff {max_abs_diff}, max rel diff {max_rel_diff}"
+        cos >= COSINE_GATE,
+        "real-model gemv: cosine {cos} < {COSINE_GATE}"
+    );
+    assert!(
+        mag >= COSINE_GATE,
+        "real-model gemv: norm ratio {mag} < {COSINE_GATE}"
     );
 
     backend.free(packed_ptr).unwrap();

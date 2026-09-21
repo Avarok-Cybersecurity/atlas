@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Phase 2: prefix-cache lookup + EP-sync of matched count + Marconi
-//! SSM snapshot restore. Returns (kv_write_start, marconi_skip).
+//! Phase 2: prefix-cache lookup + EP-sync of matched count + rank-agreed
+//! Marconi SSM snapshot restore (A100). Returns (kv_write_start, marconi_skip).
 
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
@@ -11,6 +11,7 @@ use spark_runtime::prefix_cache::PrefixMatch;
 
 use super::super::super::block_mgmt::reuse_prefix_match_disk_ids;
 use super::super::super::types::TransformerModel;
+use super::snap_agree;
 use crate::traits::{PrefillSlice, SequenceState};
 
 impl TransformerModel {
@@ -32,6 +33,10 @@ impl TransformerModel {
         // second radix ref that nothing releases. Replay the original decision.
         if chunk_start == 0 && seq.prefix_lookup_applied {
             tracing::debug!(
+                "prefix lookup: replayed (already applied) slot={}",
+                seq.slot_idx
+            );
+            tracing::debug!(
                 "prefix lookup re-entered at chunk 0 (retry): replaying \
                  skip_to={} skip={} without re-acquiring the cached prefix",
                 seq.marconi_skip_to,
@@ -44,15 +49,17 @@ impl TransformerModel {
             // position — a cache/Marconi skip would leave gaps. Force the
             // full-recompute path (documented perf cost, scoring calls only).
             let reserved = reserved_match.is_some();
-            let mut prefix_match =
-                if self.tokens_have_vision_pad(tokens) || seq.collect_prompt_logprobs.is_some() {
-                    PrefixMatch::empty()
-                } else if let Some(prefix_match) = reserved_match {
-                    prefix_match
-                } else {
-                    self.prefix_cache
-                        .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
-                };
+            let mut prefix_match = if self.tokens_have_vision_pad(tokens)
+                || seq.collect_prompt_logprobs.is_some()
+                || self.mla_prefill_needs_full_recompute()
+            {
+                PrefixMatch::empty()
+            } else if let Some(prefix_match) = reserved_match {
+                prefix_match
+            } else {
+                self.prefix_cache
+                    .lookup(tokens, bs, seq.session_hash, seq.adapter_id)
+            };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
             // diverge (eviction order differences, async insert
@@ -102,8 +109,21 @@ impl TransformerModel {
                 }
             }
             let matched = prefix_match.matched_tokens;
+            // The one line that answers "why did this request not reuse":
+            // what the lookup saw, and whether it came from a scheduler
+            // reservation or a fresh radix walk.
+            tracing::debug!(
+                "prefix lookup: matched={matched} of {total} (reserved={reserved}) \
+                 snapshot_tokens={} tail={} slot={}",
+                prefix_match.ssm_snapshot_tokens,
+                prefix_match.ssm_snapshot_is_tail,
+                seq.slot_idx,
+            );
             seq.cached_prefix_tokens = matched;
             seq.cached_prefix_blocks = prefix_match.matched_blocks.len();
+            // A new prefill: whatever tail checkpoint the previous turn saved
+            // is that turn's, not this one's.
+            seq.tail_checkpoint_tokens = None;
             // Stash the matched prefix so `free_sequence` can release the radix
             // refs the lookup just bumped even if this prefill fails to allocate
             // its suffix before `seq.tokens` is populated (else those nodes leak
@@ -153,130 +173,162 @@ impl TransformerModel {
             // faulted-back spilled anchor; see `ssm_fault_in::eff_ssm_snapshot`.
             let (eff_snapshot, eff_snapshot_tokens) =
                 self.eff_ssm_snapshot(&prefix_match, seq.session_hash, stream);
+            let has_ssm = self.config.num_ssm_layers() > 0;
 
-            let mut skip = if let Some(snap_id) = eff_snapshot {
-                let snap_tok = eff_snapshot_tokens;
-                // Exact full-prompt hit on a hiddenless snapshot (finish
-                // leaves never stash a hidden): the exact-snap fixup cannot
-                // produce the first token's logits, so fall through to the
-                // no-snapshot full-recompute path. Only affects identical
-                // retried prompts; multi-turn warm hits have matched < total.
-                let exact_without_hidden = snap_tok == matched
-                    && matched == total
-                    && !self.ssm_snapshots.has_hidden(snap_id);
-                // The bypass must be decided HERE, not after the restore below.
-                // It used to be checked ~80 lines further down, where it set
-                // `skip = false` to force a full recompute — but by then
-                // `restore()` had ALREADY overwritten the SSM pool with the
-                // snapshot state, so the "full recompute" ran on top of a
-                // restored (non-zero) starting state and the flag did the
-                // opposite of what it documents (measured: 2/10 -> 5/10
-                // distinct warm completions with the old position).
-                //
-                // BYPASS IS THE DEFAULT. The exact-full-prompt shortcut is UNSOUND BY
-                // CONSTRUCTION, not merely buggy: computing the last token needs
-                // SSM state@(N-1), the snapshot holds state@N, and the recurrence
-                // is not invertible, so state@(N-1) cannot be recovered. The path
-                // therefore re-runs token N-1 from state@N (a deliberate
-                // "double-advance"), patches the SSM state back afterwards — and
-                // leaves the KV it wrote for position N-1 CORRUPTED, in a block
-                // SHARED with the prefix cache. `ctx.gdn_exact_replay`'s own doc
-                // in layer.rs describes this same poisoning for the GDN path.
-                // `ATLAS_MARCONI_EXACT=1` re-enables it for A/B.
-                let bypass_exact = snap_tok == matched
-                    && matched == total
-                    && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1");
-                // Session gate applies ONLY to TAIL snapshots (their state
-                // bleeds past the exact prefix). Exact / is_tail_sibling
-                // snapshots are content-addressed by the verified token prefix
-                // and safe cross-session — matching the KV radix. Gating them on
-                // the (unstable) session_hash is what rejected every valid warm-
-                // turn anchor and forced recompute-all. See lookup_tiered.
-                // Below `marconi_min_tokens()` the snapshot restore costs more in lost
-                // drafter acceptance than the skipped prefill saves — see the helper.
-                if snap_tok >= crate::model::mtp_carry::marconi_min_tokens()
-                    && snap_tok > 0
-                    && matched <= total
-                    && !exact_without_hidden
-                    && !bypass_exact
-                    && (!prefix_match.ssm_snapshot_is_tail
-                        || self
-                            .ssm_snapshots
-                            .session_matches(snap_id, seq.session_hash))
-                {
-                    // Cross-stream ordering: the snapshot we are about to read
-                    // was SAVED on the default stream (decode_marconi_checkpoint
-                    // / finish_leaf_snapshot / prefill_save_snapshot), but this
-                    // RESTORE runs on the prefill stream. Under concurrent
-                    // batched traffic the save's D2D can still be in flight when
-                    // this restore reads the slot — yielding torn/stale SSM
-                    // recurrent state and diverging the warm decode. Wait for
-                    // all snapshot saves recorded so far before reading.
-                    self.wait_snapshot_saves_dispatch(stream)?;
-                    self.ssm_snapshots.restore(
-                        snap_id,
+            // A100 (2026-09-09): F83 only agrees `matched`. Snapshot presence,
+            // depth and every gate below are RANK-LOCAL (independent pools and
+            // LRU order; the F83-capped rank re-looks-up a shorter prefix), and
+            // one rank restoring while the other recomputes desynchronises the
+            // collective schedule (TP=2/EP=2 wedge, 4-slot campaign). So: fold
+            // every local gate into a proposal, exchange proposals, restore
+            // only on an all-or-nothing agreement. See `snap_agree`.
+            //
+            // Gate notes (semantics unchanged, now evaluated BEFORE the vote):
+            // - exact_without_hidden / bypass_exact: the exact full-prompt
+            //   shortcut is UNSOUND BY CONSTRUCTION (state@(N-1) cannot be
+            //   recovered from state@N; the re-run poisons KV in a block shared
+            //   with the prefix cache) — bypassed by default,
+            //   `AVAROK_MARCONI_EXACT=1` re-enables it for A/B. Decided before
+            //   the restore: deciding after it once ran the "full recompute"
+            //   on top of an already-restored state (2/10 -> 5/10 distinct
+            //   warm completions).
+            // - the session gate applies ONLY to tail snapshots (their state
+            //   bleeds past the exact prefix); exact / tail-sibling snapshots
+            //   are content-addressed by the verified prefix and safe
+            //   cross-session, matching the KV radix.
+            // - `marconi_min_tokens()`: below it the restore costs more in
+            //   lost drafter acceptance than the skipped prefill saves.
+            // - aux-carrying models (PLE/QSA/DSA) decline aux-less slots
+            //   (e.g. mid-chunk tail captures) rather than restore a stale
+            //   lexical state. See prefill_a.
+            let gates = snap_agree::LocalGates {
+                snap_tok: if eff_snapshot.is_some() {
+                    eff_snapshot_tokens
+                } else {
+                    0
+                },
+                matched,
+                total,
+                min_tokens: crate::model::mtp_carry::marconi_min_tokens(),
+                has_hidden: eff_snapshot.is_some_and(|s| self.ssm_snapshots.has_hidden(s)),
+                // main (#1074 lineage): the flag now has one accessor.
+                exact_enabled: super::exact_leaf::marconi_exact_enabled(),
+                is_tail: prefix_match.ssm_snapshot_is_tail,
+                session_ok: eff_snapshot
+                    .is_some_and(|s| self.ssm_snapshots.session_matches(s, seq.session_hash)),
+                needs_aux: self.requires_aux_state(),
+                has_aux: eff_snapshot.is_some_and(|s| self.ssm_snapshots.aux(s).is_some()),
+            };
+            let proposal = snap_agree::local_proposal(&gates);
+            // UNCONDITIONAL on a multi-rank SSM world (exactly like F83): a
+            // rank with nothing to propose still takes part, or the rooted
+            // broadcasts of the other ranks have no receiver.
+            let agreed = if ep_active && has_ssm {
+                let votes = self.ep_gather_u32(proposal)?;
+                let agreed = snap_agree::agree(&votes);
+                if votes.iter().any(|&v| v != 0) {
+                    tracing::info!(
+                        "A100 snap-agree: rank={} local_proposal={proposal} votes={votes:?} \
+                         agreed={agreed:?} (matched={matched} total={total})",
+                        self.comm.as_ref().map_or(0, |c| c.rank()),
+                    );
+                } else {
+                    tracing::debug!(
+                        "A100 snap-agree: no rank holds a snapshot (matched={matched}) — recompute"
+                    );
+                }
+                agreed
+            } else {
+                snap_agree::agree(&[proposal])
+            };
+            let restore = match (agreed, eff_snapshot) {
+                (Some(t), Some(snap_id)) if t as usize == eff_snapshot_tokens => {
+                    Some((snap_id, t as usize))
+                }
+                (Some(t), _) => anyhow::bail!(
+                    "A100 invariant violated: ranks agreed to restore token {t} but this rank's \
+                     candidate is {eff_snapshot:?}@{eff_snapshot_tokens} (proposal {proposal})"
+                ),
+                (None, _) => None,
+            };
+
+            let mut skip = if let Some((snap_id, snap_tok)) = restore {
+                // Cross-stream ordering: the snapshot we are about to read
+                // was SAVED on the default stream (decode_marconi_checkpoint
+                // / finish_leaf_snapshot / prefill_save_snapshot), but this
+                // RESTORE runs on the prefill stream. Under concurrent
+                // batched traffic the save's D2D can still be in flight when
+                // this restore reads the slot — yielding torn/stale SSM
+                // recurrent state and diverging the warm decode. Wait for
+                // all snapshot saves recorded so far before reading.
+                self.wait_snapshot_saves_dispatch(stream)?;
+                self.ssm_snapshots.restore(
+                    snap_id,
+                    seq.slot_idx,
+                    &self.ssm_pool,
+                    self.gpu.as_ref(),
+                    stream,
+                )?;
+                if let Some(aux) = self.ssm_snapshots.aux(snap_id) {
+                    self.apply_aux_states(seq, &aux, stream)?;
+                }
+                // The anchor this prefill resumes from stays in the pool
+                // and serves the next request for this prompt exactly as
+                // a tail checkpoint saved now would; `finalize_last` reads
+                // this to keep from saving a redundant exact leaf on top of
+                // it (the warm-hit half of the measurement in
+                // `exact_leaf.rs`: the tail split does not fire on a warm
+                // prefill, so without this every warm hit re-saved the
+                // leaf that then shadowed the anchor it had just used).
+                seq.tail_checkpoint_tokens = Some(snap_tok);
+                if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
+                    self.ssm_pool.debug_state_checksum(
                         seq.slot_idx,
-                        &self.ssm_pool,
                         self.gpu.as_ref(),
                         stream,
-                    )?;
-                    if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
-                        self.ssm_pool.debug_state_checksum(
-                            seq.slot_idx,
-                            self.gpu.as_ref(),
-                            stream,
-                            &format!("restore@{snap_tok}"),
-                        );
-                    }
-                    if snap_tok < matched {
-                        // Report the REAL SSM replay length. The suffix
-                        // prefill resumes at `marconi_skip_to == snap_tok`
-                        // and runs the recurrence forward to `total`, so the
-                        // replay is `total - snap_tok`. This line used to
-                        // print `matched - snap_tok`, which silently omits
-                        // the whole `[matched, total)` suffix — on a warm
-                        // agentic turn that suffix IS the new user message,
-                        // so the logged cost understated the true replay by
-                        // exactly the part that grows with the conversation.
-                        // Both numbers are printed: the anchor->match gap is
-                        // the part attributable to snapshot granularity, the
-                        // total is what actually runs.
-                        tracing::info!(
-                            "Marconi intermediate hit: restored from checkpoint at token {} \
-                             (skipping {} tokens, replaying {} SSM tokens to reach {}; \
-                             {} of those are the anchor->match gap to {})",
-                            snap_tok,
-                            snap_tok,
-                            total.saturating_sub(snap_tok),
-                            total,
-                            matched.saturating_sub(snap_tok),
-                            matched,
-                        );
-                    } else {
-                        tracing::info!(
-                            "Marconi SSM cache hit: {} tokens skipped ({} blocks), \
-                             snapshot {}, replaying {} SSM tokens to reach {}",
-                            matched,
-                            prefix_match.matched_blocks.len(),
-                            snap_id,
-                            total.saturating_sub(snap_tok),
-                            total,
-                        );
-                        // Exact full-prompt leaf hit (snap_tok == matched ==
-                        // total): the last prompt token is re-run for logits,
-                        // double-advancing the SSM recurrent state. Flag it so
-                        // finalize_last re-restores state@N and emits the first
-                        // token from the snapshot's stashed hidden. Only when
-                        // the whole prompt matched — a shorter-than-total match
-                        // (matched < total) continues forward correctly.
-                        if matched == total {
-                            seq.marconi_exact_snap = Some(snap_id);
-                        }
-                    }
-                    true
-                } else {
-                    false
+                        &format!("restore@{snap_tok}"),
+                    );
                 }
+                if snap_tok < matched {
+                    // Report the REAL SSM replay length. The suffix prefill
+                    // resumes at `marconi_skip_to == snap_tok` and runs the
+                    // recurrence forward to `total`, so the replay is
+                    // `total - snap_tok`. Both numbers are printed: the
+                    // anchor->match gap is the part attributable to snapshot
+                    // granularity, the total is what actually runs.
+                    tracing::info!(
+                        "Marconi intermediate hit: restored from checkpoint at token {} \
+                         (skipping {} tokens, replaying {} SSM tokens to reach {}; \
+                         {} of those are the anchor->match gap to {})",
+                        snap_tok,
+                        snap_tok,
+                        total.saturating_sub(snap_tok),
+                        total,
+                        matched.saturating_sub(snap_tok),
+                        matched,
+                    );
+                } else {
+                    tracing::info!(
+                        "Marconi SSM cache hit: {} tokens skipped ({} blocks), \
+                         snapshot {}, replaying {} SSM tokens to reach {}",
+                        matched,
+                        prefix_match.matched_blocks.len(),
+                        snap_id,
+                        total.saturating_sub(snap_tok),
+                        total,
+                    );
+                    // Exact full-prompt leaf hit (snap_tok == matched ==
+                    // total): the last prompt token is re-run for logits,
+                    // double-advancing the SSM recurrent state. Flag it so
+                    // finalize_last re-restores state@N and emits the first
+                    // token from the snapshot's stashed hidden. Only when
+                    // the whole prompt matched — a shorter-than-total match
+                    // (matched < total) continues forward correctly.
+                    if matched == total {
+                        seq.marconi_exact_snap = Some(snap_id);
+                    }
+                }
+                true
             } else {
                 false
             };
@@ -287,19 +339,31 @@ impl TransformerModel {
             // path degrades output quality (cache-ON ws ~23% vs cache-OFF ~60% with
             // give-ups already eliminated). If ws climbs with this set, that path
             // is the residual bug.
+            //
+            // A105: `local_proposal`'s `bypass_exact` already refuses to
+            // propose an exact (snap_tok == matched == total) restore when
+            // `!exact_enabled`, so this probe's raw-field exactness check can
+            // only ever agree with an already-happened restore when
+            // `exact_enabled` is true — at which point `!exact_enabled` below
+            // is false and the probe doesn't fire either way. So today this
+            // branch is unreachable whenever `restore.is_some()`. Rather than
+            // rely on that chain staying true across future edits to
+            // `local_proposal`, gate on `restore.is_none()` explicitly: this
+            // probe may only ever act on a `skip` that did NOT come from a
+            // rank-agreed restore, never flip one that did.
             if skip
+                && restore.is_none()
                 && prefix_match.ssm_snapshot_tokens == matched
                 && matched == total
-                && std::env::var("ATLAS_MARCONI_EXACT").as_deref() != Ok("1")
+                && !super::exact_leaf::marconi_exact_enabled()
             {
                 skip = false;
                 seq.marconi_exact_snap = None;
                 tracing::info!(
-                    "exact-leaf snapshot shortcut bypassed (default; ATLAS_MARCONI_EXACT=1 re-enables) \
+                    "exact-leaf snapshot shortcut bypassed (default; AVAROK_MARCONI_EXACT=1 re-enables) \
                      for {matched}-token full hit — recomputing all KV+SSM"
                 );
             }
-            let has_ssm = self.config.num_ssm_layers() > 0;
             if matched > 0 && !skip && has_ssm {
                 tracing::info!(
                     "Prefix cache hit: {} tokens ({} blocks) but no SSM snapshot — recomputing all KV",
@@ -349,17 +413,29 @@ impl TransformerModel {
             // restore completes but skips nothing, making a warm fault-in slower
             // than a plain recompute. `eff_snapshot_tokens` makes the skip point
             // equal the restored state depth.
-            let snap_tok = eff_snapshot_tokens;
-            let skip_tokens = if skip && !has_ssm {
-                matched
-            } else if skip && matched == total && snap_tok == matched {
-                matched
-            } else if skip {
-                snap_tok
-            } else {
-                0
-            };
+            let snap_tok = restore.map_or(0, |(_, t)| t);
+            // A105: for SSM sequences, `skip` here must be exactly the
+            // rank-agreed restore outcome — nothing between the restore
+            // arm above and here may flip it (the CBD probe is gated off
+            // whenever `restore.is_some()`, see above). This does not hold
+            // for non-SSM sequences: F82's cache-hit skip sets `skip = true`
+            // with no snapshot/restore concept at all, by design.
+            debug_assert!(
+                !has_ssm || skip == restore.is_some(),
+                "A105: skip ({skip}) diverged from the rank-agreed restore outcome \
+                 ({}) for an SSM sequence — something flipped skip after the vote",
+                restore.is_some()
+            );
+            let skip_tokens = snap_agree::skip_point(skip, snap_tok, matched, total, has_ssm);
             seq.marconi_skip_to = skip_tokens;
+            // #919: report what was REUSED, not what the lookup matched. The
+            // SSM-without-snapshot and exact-leaf-bypass arms above leave
+            // `matched > 0` with `skip_tokens == 0` — a full prefill.
+            seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
+                matched,
+                skip_tokens,
+                skip,
+            );
             seq.prefix_lookup_skip = skip;
             seq.prefix_lookup_applied = true;
             Ok((skip_tokens, skip))
@@ -368,105 +444,6 @@ impl TransformerModel {
             Ok((seq.marconi_skip_to, true))
         } else {
             Ok((0, false))
-        }
-    }
-
-    /// Acquire all cache matches before the batched path mutates any sequence
-    /// or KV state. On rejection, roll back exactly the references acquired by
-    /// this pass; a later cache insertion cannot make that rollback touch a
-    /// deeper node.
-    pub(in crate::model) fn prefill_b_reserve_batched_prefix_matches(
-        &self,
-        streams: &[PrefillSlice<'_>],
-        block_size: usize,
-    ) -> Option<Vec<PrefixMatch>> {
-        if !self.prefix_cache.is_active() || streams.first()?.chunk_start != 0 {
-            return Some(Vec::new());
-        }
-        // A multi-rank prefix match needs the normal EP min-reduction, which
-        // is not safe inside this transactional admission.
-        if self.multi_rank_protocol_active() {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: multi-rank world needs \
-                 the EP min-reduction — falling back to per-stream"
-            );
-            return None;
-        }
-
-        let mut matches = Vec::with_capacity(streams.len());
-        for slice in streams {
-            let seq = &*slice.seq;
-            if self.tokens_have_vision_pad(slice.prompt_tokens)
-                || seq.collect_prompt_logprobs.is_some()
-            {
-                tracing::info!(
-                    target: "atlas::q12",
-                    "batched prefix reservation declined: vision pads or \
-                     prompt-logprob collection — falling back to per-stream"
-                );
-                self.release_batched_prefix_reservations(streams, &matches, block_size);
-                return None;
-            }
-            matches.push(self.prefix_cache.lookup(
-                slice.prompt_tokens,
-                block_size,
-                seq.session_hash,
-                seq.adapter_id,
-            ));
-        }
-
-        // Hybrid-SSM models: a WARM prefix match implies a KV/Marconi skip
-        // whose recurrent-state interplay this transactional admission does
-        // not handle (the v1 rule). But a model-level blanket veto rejected
-        // COLD batches too, which serialized every chunk-0 wave on hybrid
-        // checkpoints — the entire measured C=32/C=128 prefill ramp
-        // (2026-08-16 stackval: every wave logged "cache plan not admitted").
-        // An all-cold reservation (matched_tokens == 0 everywhere) acquires
-        // no blocks, restores no snapshot and skips nothing — provably the
-        // same state as the cache-inactive admission above, which has always
-        // admitted hybrid models. Warm hybrid batches keep falling back to
-        // the per-stream path, whose restore logic is established.
-        if !super::batch_kernel::batched_reserve_hybrid_ssm_ok(
-            &matches,
-            self.config.num_ssm_layers() != 0,
-        ) {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: hybrid-SSM model with a \
-                 warm prefix match — falling back to per-stream"
-            );
-            self.release_batched_prefix_reservations(streams, &matches, block_size);
-            return None;
-        }
-
-        if !super::batch_kernel::cache_batch_matches_compatible(&matches, streams[0].chunk_len) {
-            tracing::info!(
-                target: "atlas::q12",
-                "batched prefix reservation declined: prefix matches not \
-                 batch-compatible — falling back to per-stream"
-            );
-            self.release_batched_prefix_reservations(streams, &matches, block_size);
-            return None;
-        }
-        Some(matches)
-    }
-
-    fn release_batched_prefix_reservations(
-        &self,
-        streams: &[PrefillSlice<'_>],
-        matches: &[PrefixMatch],
-        block_size: usize,
-    ) {
-        for (slice, prefix_match) in streams.iter().zip(matches) {
-            if prefix_match.matched_tokens > 0 {
-                self.prefix_cache.release_matched(
-                    slice.prompt_tokens,
-                    block_size,
-                    prefix_match.matched_tokens,
-                    slice.seq.adapter_id,
-                );
-            }
         }
     }
 }

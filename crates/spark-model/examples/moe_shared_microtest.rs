@@ -16,7 +16,7 @@
 //! Exit 0 = PASS (gate & up cosine >= gate), 1 = FAIL.
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     let gs: Vec<f32> = (0..nb * kb).map(|_| rng.uniform(0.5, 1.5)).collect();
     let us: Vec<f32> = (0..nb * kb).map(|_| rng.uniform(0.5, 1.5)).collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let a_p = up_bytes(gpu, &u16le(&av))?;

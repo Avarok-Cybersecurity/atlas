@@ -77,6 +77,16 @@ pub struct Qwen3AttentionLayer {
     pub(crate) layer_scalar: Option<f32>,
     /// Secondary FFN (Gemma-4 26B MoE): runs in parallel with primary FFN (dense).
     pub(crate) moe_ffn: Option<FfnComponent>,
+    /// LongCat shortcut-MoE PRODUCER: this sublayer computes `moe_ffn` on its
+    /// post-attention normed input and STASHES the result into the carry
+    /// buffer `(ptr, token_capacity)` instead of adding it — the paired NEXT
+    /// sublayer adds it at its end. Gated separately from the Gemma-4 dual-FFN
+    /// arm (which requires the three Gemma norms, absent here).
+    pub(crate) shortcut_carry_out: Option<(spark_runtime::gpu::DevicePtr, usize)>,
+    /// LongCat shortcut-MoE CONSUMER: after this sublayer's FFN residual add,
+    /// `hidden += carry` (the shortcut MoE output stashed by the previous
+    /// sublayer).
+    pub(crate) shortcut_carry_in: Option<(spark_runtime::gpu::DevicePtr, usize)>,
     /// Pre-norm for MoE input (pre_feedforward_layernorm_2).
     pub(crate) pre_moe_norm: Option<DenseWeight>,
     /// Post-norm for MoE output (post_feedforward_layernorm_2).
@@ -103,6 +113,11 @@ pub struct Qwen3AttentionLayer {
     /// in which case the attn/ffn residual sites use `hc_pre`/`hc_post`
     /// against the `hc_streams` buffer instead of the standard residual add.
     pub(crate) hc: Option<HcWeights>,
+    // ── QSA indexer (Qwen3.8-Flash-Next) ──
+    /// Decode-side sparse-attention selection. `Some` only on the 12
+    /// full-attention layers of qwen4_exp. Presence vetoes decode-graph
+    /// capture (the selection top-k is a host round trip).
+    pub(crate) qsa: Option<crate::layers::qsa::QsaIndexer>,
     /// HC `hc_pre` kernel handle (NULL when HC disabled).
     pub(super) hc_pre_k: KernelHandle,
     /// HC `hc_post` kernel handle (NULL when HC disabled).
@@ -131,9 +146,15 @@ pub struct Qwen3AttentionLayer {
     // transpose_fp8 / transpose_block_scale already produce. KernelHandle(0) on
     // miss → fall back to w8a16_gemm_t.
     pub(super) w8a16_gemm_t_m128_k: KernelHandle,
-    // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by ATLAS_FP8_W8A8=1.
-    pub(super) per_token_group_quant_fp8_k: KernelHandle,
+    // W8A8 + FP32 epilogue (vLLM-equivalent) — gated by AVAROK_FP8_W8A8=1.
+    pub(super) per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant,
     pub(super) fp8_gemm_t_blockscaled_k: KernelHandle,
+    /// `fp8_act_scale_to_kmajor` — rewrites the quantizer's `[M, K/128]`
+    /// VEC128 activation scales into the `[K/128, ceil16(M)]` layout cuBLASLt
+    /// documents. 0 when the module is absent, which makes every cuBLASLt W8A8
+    /// arm on this layer decline (#927); the in-tree kernel reads the
+    /// quantizer's own order and needs no adapter.
+    pub(super) fp8_act_scale_kmajor_k: KernelHandle,
     // Kernels — decode (GEMV M=1)
     /// Offset-from-1 `rms_norm` (`out = x * (1 + w) / rms`). Used ONLY for the
     /// unweighted normalize (`norm_unit_w()` is zero-filled, so `1 + 0 = 1`).
@@ -156,7 +177,7 @@ pub struct Qwen3AttentionLayer {
     /// transient BF16 scratch, run the normal `dense_gemm`, free. Decode uses
     /// the native `q2_0_gemv_vec` (no dequant). `KernelHandle(0)` when absent.
     pub(super) dequant_q2_0_gn_k: KernelHandle,
-    /// Native Q2_0 MMQ prefill (Tier-2, `ATLAS_GGUF_NATIVE_Q2_MMQ`): keep-packed
+    /// Native Q2_0 MMQ prefill (Tier-2, `AVAROK_GGUF_NATIVE_Q2_MMQ`): keep-packed
     /// tensor-core int8 MMA vs a shared q8_1 activation. `KernelHandle(0)` when
     /// absent → the transient-dequant prefill path is used instead. The q8_1
     /// activation quantizer is shared with Q4_K (`q4k_quant_act_k`).
@@ -173,6 +194,44 @@ pub struct Qwen3AttentionLayer {
     /// Single-warp `w4a16_gemv_sw`. `KernelHandle(0)` on miss → base GEMV.
     pub(super) w4a16_gemv_sw_k: KernelHandle,
     pub(super) w8a16_gemv_k: KernelHandle,
+    /// Optional four-row block-scaled FP8 GEMV; zero retains scalar dispatch.
+    pub(super) w8a16_gemv_batch4_k: KernelHandle,
+    /// MAX_M=16 sibling (#927): the o_proj tier serves 5..=16 CONTIGUOUS rows
+    /// in one weight pass instead of ceil(n/4) batch4 launches. Zero → the
+    /// batch4 grouping, as before.
+    pub(super) w8a16_gemv_batch16_k: KernelHandle,
+    /// Strided siblings of the above (caller-supplied A/C row pitches) — the
+    /// multi-seq decode Q/K/V tier writes into the `per_seq_qkv`-strided QKV
+    /// buffer, which the contiguous `[M, N]` writers cannot address. Zero on
+    /// either handle retains the per-sequence scalar `w8a16_gemv` loop.
+    pub(super) w8a16_gemv_batch4_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_batch16_strided_k: KernelHandle,
+    /// Tensor-core 16-row-M-tile GEMM (#927) and its strided sibling — the
+    /// `AVAROK_FFN_M16_TC` tier for the FP8 o_proj (contiguous) and multi-seq
+    /// Q/K/V (strided) projections at 5..=16 concurrent decode rows. Zero on a
+    /// shadow that lacks the entry points, which keeps the batched GEMVs.
+    pub(super) w8a16_gemm_m16_k: KernelHandle,
+    pub(super) w8a16_gemm_m16_strided_k: KernelHandle,
+    /// `AVAROK_ATTN_M16_TC` (or the `AVAROK_M16_TC` umbrella), cached at
+    /// construction (SSOT: `layers::dense_ffn::m16_tc::m16_tc_levers`). This
+    /// lever A/Bs the QKV and o_proj tiers ONLY; the dense FFN arm has its own
+    /// (`AVAROK_FFN_M16_TC`), because round 6 on 1xH100 measured the two moving
+    /// in opposite directions — attention −21.7%, FFN +13.7%, net +5.2% — and a
+    /// single lever could ship only both or neither. A field, not a per-call env
+    /// read, so the route cannot vary across CUDA-graph replays.
+    pub(super) m16_tc: bool,
+    /// N-column-blocked W8A16 GEMVs (#927) — the BIT-EXACT sibling of
+    /// `w8a16_gemv_batch16`, contiguous (o_proj) and strided (multi-seq Q/K/V)
+    /// at 5..=16 rows. Zero on a shadow without the entry points, which keeps
+    /// the batch16 GEMVs. Rule + WHY: `attn_ncol_gemv.rs`.
+    pub(super) w8a16_gemv_ncol2_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol2_strided_k: KernelHandle,
+    pub(super) w8a16_gemv_ncol4_strided_k: KernelHandle,
+    /// `AVAROK_ATTN_NCOL_GEMV` (+ `AVAROK_ATTN_NCOL_WIDTH`), resolved ONCE at
+    /// construction for the same graph-replay reason as `m16_tc`. `None` when
+    /// the lever is unset or `AVAROK_NO_ATTN_DECODE_BATCH` forces it off.
+    pub(super) attn_ncol: Option<super::attn_ncol_gemv::NcolWidth>,
     pub(super) w8a16_gemm_k: KernelHandle,
     pub(super) w8a16_gemm_pipelined_k: KernelHandle,
     pub(super) w4a16_gemv_dual_k: KernelHandle,
@@ -207,6 +266,12 @@ pub struct Qwen3AttentionLayer {
     /// V-only paged cache write. Used alongside the fused K-path so the
     /// K side of the cache stays single-rounded.
     pub(super) reshape_and_cache_flash_v_only_k: KernelHandle,
+    /// Decode-path fusion of k_norm + RoPE + FP8 K/V cache write. Bit-identical
+    /// to the `rms_norm` -> `rope_forward` -> `reshape_and_cache_flash_fp8`
+    /// chain it replaces; see `reshape_and_cache_fused_k_fp8.cu`. Zero handle
+    /// when the module is absent (non-GB10 kernel targets) — callers must
+    /// guard on `.0 != 0` and fall back to the un-fused chain.
+    pub(super) fused_k_norm_rope_cache_write_fp8_kv_k: KernelHandle,
     /// WHT kernel for turbo KV cache.
     pub(super) wht_bf16_k: KernelHandle,
     /// Inverse WHT. With TQ_PLUS_SIGNS off this aliases the forward kernel
@@ -253,12 +318,34 @@ pub struct Qwen3AttentionLayer {
     pub(super) dense_gemm_tc_k: KernelHandle,
     pub(super) paged_decode_splitk_k: Option<KernelHandle>,
     pub(super) paged_decode_reduce_k: Option<KernelHandle>,
+    /// The GQA-PACKED non-split paged-decode twins: one CTA per
+    /// `(kv_head, seq)` reading each K and V row once for the whole query
+    /// group (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`).
+    ///
+    /// `None` on a target whose `common/` tree does not carry the sources, and
+    /// unused unless `AVAROK_ATTN_DECODE_GQA_PACK` arms them AND the launch
+    /// shape passes `attn_splitk::gqa_pack_shape_ok`; either way the dispatch
+    /// keeps the unpacked kernel, which is what every target serves today.
+    pub(super) paged_decode_bf16_gqa_k: Option<KernelHandle>,
+    pub(super) paged_decode_fp8_gqa_k: Option<KernelHandle>,
+    /// The Hopper paged-decode split-K twins (#928), when this build carries
+    /// them: `kernels/hopper/common/paged_decode_{fp8,bf16}_splitk_hopper.cu`.
+    ///
+    /// `None` on every target whose `common/` tree does not have the sources —
+    /// which is all of them but `hopper` — so the FP8 pair falls back to gb10's
+    /// and the BF16 pair to the single-CTA kernel, exactly as before. The FP8
+    /// twin restores the non-split kernel's batched inner loop; the BF16 twin
+    /// is split-K that BF16 KV never had.
+    pub(super) paged_decode_splitk_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_splitk_bf16_hopper_k: Option<KernelHandle>,
+    pub(super) paged_decode_reduce_bf16_hopper_k: Option<KernelHandle>,
     pub(super) residual_add_k: KernelHandle,
     pub(super) sigmoid_gate_mul_k: KernelHandle,
     pub(super) deinterleave_qg_k: KernelHandle,
     pub(super) w4a16_gemv_qg_k: KernelHandle,
     pub(super) residual_add_rms_norm_k: KernelHandle,
-    /// Dual-output (bf16 + f32) MoE-input norm for ATLAS_FP32_ROUTING. Zero if absent.
+    /// Dual-output (bf16 + f32) MoE-input norm for AVAROK_FP32_ROUTING. Zero if absent.
     pub(super) residual_add_rms_norm_gatef32_k: KernelHandle,
     // Kernels — batch2 (K=2 verify)
     pub(super) w4a16_gemv_qg_batch2_k: KernelHandle,
@@ -277,11 +364,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) w4a16_gemm_t_k: KernelHandle,
     pub(super) w4a16_gemm_t_k64_k: KernelHandle,
     /// K64 with a 64-wide N tile: same math, 2x the CTAs. `KernelHandle(0)`
-    /// when absent or killed by `ATLAS_NO_K64_N64`.
+    /// when absent or killed by `AVAROK_NO_K64_N64`.
     pub(super) w4a16_gemm_t_k64_n64_k: KernelHandle,
     pub(super) w4a16_gemm_t_m128_k: KernelHandle,
     /// LOSSLESS BF16-TC variant of t_m128 for QKV/o projection prefill (FP4→BF16
-    /// dequant + BF16 MMA, no FP8 activation crush). Opt-in via ATLAS_BF16_TC_PROJ
+    /// dequant + BF16 MMA, no FP8 activation crush). Opt-in via AVAROK_BF16_TC_PROJ
     /// (default off → t_m128 path unchanged). KernelHandle(0) on miss.
     pub(super) w4a16_gemm_t_m128_bf16_k: KernelHandle,
     /// MiniMax-only shadow kernel.
@@ -297,6 +384,11 @@ pub struct Qwen3AttentionLayer {
     pub(super) prefill_attn_k: KernelHandle,
     /// HDIM=512 contiguous prefill for Gemma-4 full-attention layers
     pub(super) prefill_attn_512_k: KernelHandle,
+    /// Did `prefill_attn_512_k` resolve to the TENSOR-CORE instantiation, or the
+    /// scalar reference? Only affects the profile label — but that label has now
+    /// been wrong twice, each time sending an investigation at the wrong kernel,
+    /// so which one ran is recorded rather than assumed.
+    pub(super) prefill_attn_512_is_tc: bool,
     /// DeepSeek-V4 CSA compressor: window softmax-gated KV compression.
     pub(super) csa_compress_k: KernelHandle,
     /// DeepSeek-V4 CSA prefill attention over [raw | compressed] KV + sink.

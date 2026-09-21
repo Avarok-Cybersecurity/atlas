@@ -30,14 +30,19 @@ mod batch_kernel;
 mod batch_kernel_tests;
 mod batched_layer;
 mod embed_chunk;
+mod exact_leaf;
 mod finalize_last;
 mod forward_layers;
 mod h_state_ptrs;
 mod midchunk_capture;
 mod prefix_lookup;
+mod prefix_reserve;
 mod proc_range;
 mod prompt_logprobs;
 mod save_checkpoint;
+mod snap_agree;
+#[cfg(test)]
+mod snap_agree_tests;
 mod stage_batched;
 mod upload_meta;
 mod upload_paged;
@@ -80,18 +85,28 @@ impl TransformerModel {
         // +~160ms/turn for two cuts vs <=31-token replay for one).
         //
         // The extra pass costs ~150ms on this class of MoE model (a tiny-M
-        // pass still sweeps most activated expert weights), which is -7% on
-        // a cold 2k prefill — so on single-GPU the split only fires when the
-        // radix already holds a prefix of this prompt (peek is read-only):
-        // single-shot requests never pay; conversations pay from turn 2
-        // onward, where the cost is amortized against the warm win. Known
-        // residual: turn 2 of a conversation still recomputes the full SSM
-        // state (its cold turn 1 saved no tail checkpoint). On EP>1 the
-        // split is unconditional instead: rank-local radix contents diverge,
-        // and chunk sequences must be deterministic on (tokens, config)
-        // across ranks (bug #33 invariant). Skipped for vision prompts (pad
-        // runs must not straddle chunk boundaries) and non-SSM models
-        // (KV-only cache hits need no snapshot).
+        // pass still sweeps most activated expert weights), which is -7% on a
+        // cold 2k prefill. Every request with prefix caching active pays it,
+        // including single-shot ones.
+        //
+        // ★ THIS PARAGRAPH USED TO SAY THE OPPOSITE and was left behind when
+        // the split was made unconditional. It read: "on single-GPU the split
+        // only fires when the radix already holds a prefix of this prompt
+        // (peek is read-only): single-shot requests never pay; conversations
+        // pay from turn 2 onward" — describing the `ep_active ||
+        // peek_matched_tokens(..) > 0` guard that the block below explains was
+        // REMOVED, precisely because making the shape depend on radix contents
+        // produced a temp-0 argmax flip. Two comments in one function
+        // disagreeing about whether behaviour is conditional is how that class
+        // of bug survives review, so it is corrected rather than deleted.
+        //
+        // Known residual: turn 2 of a conversation still recomputes the full
+        // SSM state (its cold turn 1 saved no tail checkpoint). On EP>1 the
+        // same unconditional rule applies for an additional reason: rank-local
+        // radix contents diverge, and chunk sequences must be deterministic on
+        // (tokens, config) across ranks (bug #33 invariant). Skipped for vision
+        // prompts (pad runs must not straddle chunk boundaries) and non-SSM
+        // models (KV-only cache hits need no snapshot).
         if is_last_chunk
             && self.config.num_ssm_layers() > 0
             && self.ssm_snapshots.is_enabled()
@@ -122,11 +137,11 @@ impl TransformerModel {
             // cold and warm identical by construction, at the cost of one extra pass
             // on cold prefills that cross the cut.
             //
-            // `ATLAS_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
+            // `AVAROK_NO_TAIL_SPLIT=1` disables the split entirely (same-binary A/B).
             // That is the OTHER way to satisfy the invariant — always one pass — and
             // it keeps the single-pass numerics, at the cost of the warm-turn tail
             // checkpoint this split exists to create.
-            let split_disabled = std::env::var("ATLAS_NO_TAIL_SPLIT").as_deref() == Ok("1");
+            let split_disabled = std::env::var("AVAROK_NO_TAIL_SPLIT").as_deref() == Ok("1");
             if !split_disabled && cut > chunk_start && cut < total {
                 self.prefill_chunk_dispatch(
                     tokens,
@@ -190,7 +205,7 @@ impl TransformerModel {
             None,
         )?;
 
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),

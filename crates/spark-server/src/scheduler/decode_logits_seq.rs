@@ -11,7 +11,7 @@ use super::*;
 // `process_position_logits` fn owns it. It is gated to the FINAL decode
 // position there.
 
-// `ATLAS_FORCE_TEMP_ZERO` is now `SchedLevers::force_temp_zero`, carried on
+// `AVAROK_FORCE_TEMP_ZERO` is now `SchedLevers::force_temp_zero`, carried on
 // `LogitsContext::sampling`.
 
 /// Process logits for a single active sequence: dequant, adjust, sample, return token + optional logprobs.
@@ -50,6 +50,30 @@ pub fn process_seq_logits(
             bf16_to_f32(lo, hi)
         }));
     };
+
+    // Raw-logits dump for numerics triage (`AVAROK_DUMP_LOGITS_PATH=/dir`):
+    // appends the RAW dequantised row (pre-pipeline, pre-penalty) so it can
+    // be compared against the post-pipeline AVAROK_LOGIT_DUMP view.
+    // Resolved ONCE. This runs per SEQUENCE per DECODE STEP and only
+    // `LogitsContext` is in scope here — `SchedLevers` is not reachable
+    // without threading a `String` through several types — so this takes the
+    // crate's `OnceLock` idiom rather than the levers struct. The value is a
+    // process constant either way.
+    static DUMP_DIR: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    if let Some(dir) = DUMP_DIR.get_or_init(|| std::env::var("AVAROK_DUMP_LOGITS_PATH").ok()) {
+        use std::io::Write;
+        let path = std::path::Path::new(&dir).join("logits_seq.bin");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4)
+            };
+            let _ = f.write_all(bytes);
+        }
+    }
 
     // ── Adaptive sampling: update zone, observe entropy, check greedy gate ──
     // Disabled by default (--adaptive-sampling flag). Each call scans the
@@ -104,7 +128,7 @@ pub fn process_seq_logits(
         a.logit_bias.clone(),
     );
 
-    // Run the unified per-position pipeline: ATLAS_FORCE_TEMP_ZERO bypass →
+    // Run the unified per-position pipeline: AVAROK_FORCE_TEMP_ZERO bypass →
     // pre-sample pipeline (8 masking stages + AdaDec `"decode"` diagnostic,
     // forced-token short-circuit) → B1 margin observer (FinalDecode only) →
     // penalties + bias applied in place on `f32_logits`. A `Some(tok)`
@@ -174,7 +198,7 @@ pub fn process_seq_logits(
     };
     let sampled = sample_with_params_history(f32_bytes, &sampler_shape, &[]);
 
-    // Complete per-step logit dump (#222): ATLAS_LOGIT_DUMP=<file>. Captures
+    // Complete per-step logit dump (#222): AVAROK_LOGIT_DUMP=<file>. Captures
     // top-K + every applied bias + sampled, for Atlas↔vLLM divergence
     // analysis. Inert unless the env var is set. NOTE: with the unified
     // pipeline `f32_logits` is now masked AND penalised here (the penalties

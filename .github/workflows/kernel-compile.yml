@@ -2,8 +2,8 @@ name: Kernel compile
 
 # CI COMPILED NO CUDA AT ALL until this job existed.
 #
-# `ci.yml` sets `ATLAS_SKIP_BUILD: "1"` repo-wide, which makes
-# `atlas-kernels/build.rs` emit a stub `target_ptx.rs` and invoke nvcc zero
+# `ci.yml` sets `AVAROK_SKIP_BUILD: "1"` repo-wide, which makes
+# `avarok-kernels/build.rs` emit a stub `target_ptx.rs` and invoke nvcc zero
 # times. That is the right default for the Rust jobs — they need no GPU and no
 # toolchain, and a 3583-invocation kernel build would dominate every PR — but it
 # means a `.cu` change was never compiled by anything before a human ran it on a
@@ -31,7 +31,7 @@ on:
     branches: [main]
     paths:
       - 'kernels/**'
-      - 'crates/atlas-kernels/**'
+      - 'crates/avarok-kernels/**'
   # Merge queue: queue commits (temporary gh-readonly-queue/** merge-commits)
   # fire none of the events above, and this check is required — without this
   # trigger it is never reported and the entry hangs until the queue's
@@ -47,8 +47,63 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      # The classifier reads the changed-file list from the API now, not from a
+      # clone, so it needs to see the pull request. `contents: read` alone was
+      # enough when the answer came from git.
+      pull-requests: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Depth 1: the classifier asks the API for the file list, so no
+          # commit graph is needed here — only the script itself. This job used
+          # to fetch the WHOLE history, six times per push, to compute three
+          # booleans.
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
   compile:
     name: nvcc -> PTX (all gb10 targets)
+    needs: [changes]
+    # Heavy and Rust-only. On a web-only diff this job is SKIPPED — the check
+    # run is still created with conclusion `skipped`, which branch protection
+    # and the merge queue count as satisfied. That is the crucial difference
+    # from a trigger-level `paths:` filter, which never creates the check at
+    # all and blocks the PR forever.
+    #
+    # `!cancelled() && ... != 'true'` fails OPEN: if `changes` errored its
+    # output is the empty string, empty != 'true', and naming a status function
+    # suppresses the implicit success() on `needs` — so this job RUNS. Written
+    # as `== 'false'` it would fail CLOSED and silently un-gate Rust changes.
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,7 +148,7 @@ jobs:
       - name: Compile every gb10 kernel target
         env:
           # ★ NOT set to 1. That is the whole point of this job.
-          ATLAS_TARGET_MODEL: "*"
+          AVAROK_TARGET_MODEL: "*"
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
@@ -107,7 +162,7 @@ jobs:
           # promotion ("clippy for kernels"). Reimplementing any of that here
           # would create a second source of truth that drifts silently — and
           # would be a weaker check than the one it imitates.
-          cargo build -p atlas-kernels 2>&1 | tail -40
+          cargo build -p avarok-kernels 2>&1 | tail -40
 
       - name: Confirm kernels were actually compiled
         run: |
@@ -121,7 +176,7 @@ jobs:
           #     too (returning an empty Vec), so it passes on a skipped build.
           #   * "no stub is present" — cargo keeps one `out/` per build-script
           #     fingerprint and never prunes the old ones, so a tree that has
-          #     ever been built with ATLAS_SKIP_BUILD=1 keeps those stubs
+          #     ever been built with AVAROK_SKIP_BUILD=1 keeps those stubs
           #     forever. On a DGX this failed a build that had in fact just
           #     compiled 14,342 PTX modules.
           #
@@ -133,7 +188,7 @@ jobs:
                    | grep -c 'do not edit' || true)
           if [ "${real:-0}" -eq 0 ]; then
             echo "::error::every generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
-            echo "::error::ATLAS_SKIP_BUILD must not be set for this job."
+            echo "::error::AVAROK_SKIP_BUILD must not be set for this job."
             exit 1
           fi
           ptx=$(find target -name '*.ptx' | wc -l)
@@ -147,17 +202,175 @@ jobs:
 
       - name: Run the PTX registry tests that have never had a runner
         env:
-          ATLAS_TARGET_MODEL: "*"
+          AVAROK_TARGET_MODEL: "*"
           CUDARC_CUDA_VERSION: "13000"
           PATH_CUDA: /usr/local/cuda/bin
         run: |
           set -euo pipefail
           export PATH="$PATH_CUDA:$PATH"
-          # `atlas-kernels`'s four `#[ignore]`d tests are marked
-          # "requires nvcc and ATLAS_SKIP_BUILD unset" — which, until this
-          # workflow, described no machine in CI. They have therefore never
-          # run anywhere but a developer's box. They assert more than the
-          # file count above: every module non-empty, every module carrying a
-          # `.version` directive, >= 31 modules per resolved target, and the
-          # default-model lookup resolving.
-          cargo test -p atlas-kernels -- --ignored
+          # Run every registry test marked "requires nvcc and AVAROK_SKIP_BUILD
+          # unset". They assert more than the file count above: every module
+          # is non-empty, every module carries a `.version` directive, each
+          # resolved target has at least 31 modules, and default-model lookup
+          # resolves.
+          cargo test -p avarok-kernels -- --ignored
+
+  # The second NVIDIA architecture. `kernels/hopper/` is 241 symlinks into
+  # `kernels/gb10/`, so nothing above compiles a single line of it for sm_90a —
+  # the gb10 job builds those same sources for sm_121f and a target that
+  # differs only in `-arch=` is exactly the kind of difference a compile finds.
+  #
+  # A SEPARATE JOB, not a matrix leg on `compile`. Turning that job into a
+  # matrix renames its check (`nvcc -> PTX (all gb10 targets)` becomes
+  # `... (gb10)`), and it is in the required set: branch protection would keep
+  # waiting on a check name that no longer exists, and every PR would hang on
+  # it. Renaming a required check needs a branch-protection change that cannot
+  # be made or verified from inside a PR, so this adds a check instead of
+  # moving one.
+  #
+  # One model, not `*`: hopper's seven model targets share the same 178
+  # `common/` sources, so the other six re-compile the same files with the
+  # same flags and find nothing the first target did not.
+  # `scripts/hopper_ptx_gate.sh` is what covers all seven; it runs on a CUDA
+  # box, off the PR path.
+  compile-hopper:
+    name: nvcc -> PTX (hopper, sm_90a)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config >/dev/null
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Compile the hopper Nemotron-Super target
+        env:
+          # ★ NOT set to 1, same as the gb10 job.
+          AVAROK_TARGET_HW: hopper
+          AVAROK_TARGET_MODEL: nemotron-super-120b-a12b
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          nvcc --version | tail -2
+          cargo build -p avarok-kernels 2>&1 | tail -40
+
+      - name: Confirm kernels were actually compiled
+        run: |
+          set -euo pipefail
+          # Same reasoning as the gb10 job: assert a REAL generated registry
+          # exists, not that no stub does — cargo keeps one `out/` per
+          # build-script fingerprint and never prunes the old ones.
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::the generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) for sm_90a"
+          # One target over `kernels/hopper/common` (178 sources) plus its own
+          # shadows. 50 only asserts resolution did not collapse.
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — the build resolved too few targets"
+            exit 1
+          fi
+
+      # Deliberately NOT `cargo test -p avarok-kernels -- --ignored` here. Those
+      # registry tests pin a gb10 MULTI-target build by name — `ptx_for_model`
+      # expects a compiled qwen3-next target, and the dense-27B tie-break case
+      # expects qwen3.6-27b and qwen3.8-27b. Running them against a
+      # single-target hopper registry would fail for reasons that say nothing
+      # about Hopper.
+
+  # The third NVIDIA architecture. `kernels/b200/` is 225 symlinks into
+  # `kernels/gb10/`, so — exactly as with hopper — nothing above compiles a
+  # line of it for sm_100a, and sm_100a is not a superset of anything already
+  # built: `sm_121f` is a different major family, and the warp-level
+  # `mma ... kind::mxf4nvf4.block_scale` the gb10 job compiles happily does NOT
+  # exist there. A target that differs only in `-arch=` is exactly the kind of
+  # difference a compile finds.
+  #
+  # A SEPARATE JOB for the same reason `compile-hopper` is one: `compile` is in
+  # the required set, and folding these into a matrix renames its check, which
+  # branch protection would then wait on forever.
+  #
+  # One model, not `*`: b200's five model targets share the same 178 `common/`
+  # sources, so the other four recompile the same files with the same flags.
+  # `scripts/hopper_ptx_gate.sh --hw b200` covers all five; it runs on a CUDA
+  # box, off the PR path.
+  #
+  # nemotron-super-120b-a12b, matching the hopper job — and deliberately NOT
+  # qwen3.6-35b-a3b, whose `moe_w4a16_grouped_gemm.cu` is known not to compile
+  # for sm_100a (measured; see docs/HARDWARE.md). A required check must be red
+  # only for regressions, and that one is a documented gap with an open fix.
+  compile-b200:
+    name: nvcc -> PTX (b200, sm_100a)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_only != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container: nvidia/cuda:13.0.2-devel-ubuntu24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Rust
+        run: |
+          set -euo pipefail
+          apt-get update -qq && apt-get install -y -qq curl build-essential pkg-config >/dev/null
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Compile the b200 Nemotron-Super target
+        env:
+          # ★ NOT set to 1, same as the gb10 and hopper jobs.
+          AVAROK_TARGET_HW: b200
+          AVAROK_TARGET_MODEL: nemotron-super-120b-a12b
+          CUDARC_CUDA_VERSION: "13000"
+          PATH_CUDA: /usr/local/cuda/bin
+        run: |
+          set -euo pipefail
+          export PATH="$PATH_CUDA:$PATH"
+          nvcc --version | tail -2
+          cargo build -p avarok-kernels 2>&1 | tail -40
+
+      - name: Confirm kernels were actually compiled
+        run: |
+          set -euo pipefail
+          # Same reasoning as the other two jobs: assert a REAL generated
+          # registry exists, not that no stub does — cargo keeps one `out/` per
+          # build-script fingerprint and never prunes the old ones.
+          real=$(find target -name 'target_ptx.rs' -exec head -1 {} + 2>/dev/null \
+                   | grep -c 'do not edit' || true)
+          if [ "${real:-0}" -eq 0 ]; then
+            echo "::error::the generated target_ptx.rs is build.rs's SKIP STUB — nvcc was never invoked."
+            exit 1
+          fi
+          ptx=$(find target -name '*.ptx' | wc -l)
+          echo "compiled $ptx PTX module(s) for sm_100a"
+          if [ "$ptx" -lt 50 ]; then
+            echo "::error::only $ptx PTX modules — the build resolved too few targets"
+            exit 1
+          fi
+
+      # Deliberately NOT `cargo test -p avarok-kernels -- --ignored`, for the
+      # same reason as the hopper job: those registry tests pin a gb10
+      # MULTI-target build by name.

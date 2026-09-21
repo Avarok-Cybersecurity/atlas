@@ -1,0 +1,156 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+name: Lighthouse
+
+# Scores the built site the way a visitor experiences it. The budgets in
+# lighthouserc.json are the contract; this job just runs them.
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+    paths:
+      - 'site/**'
+      - 'blog/**'
+      - 'web-shared/**'
+      - '.github/workflows/lighthouse.yml'
+  merge_group:
+
+concurrency:
+  group: lighthouse-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Which trees does this change touch? A PR that only edits the web
+  # properties does not need the Rust and CUDA work, but the SKIP has to happen
+  # at JOB level: a `paths:` filter on the trigger would stop the workflow
+  # running at all, the required check would never be created, and the PR would
+  # wait on it forever. Five workflows here carry that lesson in their
+  # comments; this is the safe half of it.
+  changes:
+    name: classify diff (web-only?)
+    runs-on: >-
+      ${{ vars.USE_AVAROK_UBUNTU_RUNNERS == '1'
+          && (github.event_name != 'pull_request'
+           || github.event.pull_request.head.repo.full_name == github.repository)
+          && (vars.PR_CHEAP_RUNNER || 'ubuntu-latest')
+          || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      # The classifier reads the changed-file list from the API now, not from a
+      # clone, so it needs to see the pull request. `contents: read` alone was
+      # enough when the answer came from git.
+      pull-requests: read
+    outputs:
+      web_only: ${{ steps.classify.outputs.web_only }}
+      web_touched: ${{ steps.classify.outputs.web_touched }}
+      blog_touched: ${{ steps.classify.outputs.blog_touched }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Depth 1: the classifier asks the API for the file list, so no
+          # commit graph is needed here — only the script itself. This job used
+          # to fetch the WHOLE history, six times per push, to compute three
+          # booleans.
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: .github/scripts
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: bash .github/scripts/classify-diff.sh
+
+  audit:
+    name: Lighthouse audit
+    needs: [changes]
+    # Inverse gating to the Rust jobs: this one is only interesting when a web
+    # tree changed, so a Rust-only PR skips it. It is not a required context
+    # today; running it as a job-level skip (rather than a trigger filter)
+    # keeps it promotable to one later with no hang risk.
+    if: ${{ !cancelled() && needs.changes.outputs.web_touched != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Checkout atlas-recipes (model SSOT)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Avarok-Cybersecurity/atlas-recipes
+          path: atlas-recipes-src
+
+      - name: Install dependencies
+        working-directory: site
+        run: bun install --frozen-lockfile
+
+      # Mirrors the deploy build, including the installer the front page's
+      # headline command is served from — auditing a page that differs from
+      # what ships would measure the wrong thing.
+      - name: Copy the installer from atlas-recipes
+        working-directory: site
+        run: |
+          src="${{ github.workspace }}/atlas-recipes-src/scripts/install.sh"
+          if [ -f "$src" ]; then cp "$src" static/install.sh; chmod 0755 static/install.sh; fi
+
+      - name: Build
+        working-directory: site
+        run: bun x --bun vite build
+        env:
+          AVAROK_RECIPES_ROOT: ${{ github.workspace }}/atlas-recipes-src/recipes
+          AVAROK_BASELINES_ROOT: ${{ github.workspace }}/tests/baselines
+
+      # 100 in all four categories, on every page the site ships — the same
+      # contract the blog has held since it was audited at all. The aggregation
+      # is what makes a 100 a gate rather than a coin flip: the three DOM
+      # categories score identically every run, so their median is exact, while
+      # performance takes the best of five, which a real regression depresses in
+      # every run and runner contention depresses in only some.
+      - name: Audit
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          configPath: ./site/lighthouse/lighthouserc.json
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+  audit-blog:
+    name: Lighthouse audit (blog)
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.web_touched != 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+      - name: Install dependencies
+        working-directory: blog
+        run: bun install --frozen-lockfile
+      # Drafts included on purpose: the example post is the worst case on the
+      # whole site — serif webfont, KaTeX stylesheet, three image formats and a
+      # video facade on one page. If anything is going to cost a point, it
+      # costs it there, and auditing only the easy pages would be theatre.
+      - name: Build
+        working-directory: blog
+        env:
+          VITE_DRAFTS: '1'
+        run: bun run build
+      - name: The build tools did not reach the browser
+        working-directory: blog
+        run: bun e2e/check-bundle.mjs
+      - name: Audit
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          configPath: ./blog/lighthouse/lighthouserc.cjs
+          uploadArtifacts: true
+          temporaryPublicStorage: true

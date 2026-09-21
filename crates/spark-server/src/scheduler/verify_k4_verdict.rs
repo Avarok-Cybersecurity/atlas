@@ -70,9 +70,38 @@ pub(super) fn k4_apply_verdict(
     verify_us: u128,
 ) {
     let defer = matches!(hidden, K4Hidden::DeferPropose);
-    let nd = drafts.len();
-    let k_rows = nd + 1;
-    debug_assert_eq!(v.len(), k_rows, "verdict picks must cover every row");
+    // ★ The rewind arithmetic below is sized by the FORWARD, not the draft
+    // list. `v` has one pick per verified row, so `v.len()` is ground truth
+    // for how many rows the forward committed (`seq_len += k_rows` happened
+    // in the model call); `drafts` is whatever the caller carried and CAN be
+    // longer. The single-seq K=4 step verifies only `drafts[0..3]` of a
+    // sequence that may hold DFlash γ=7 pending drafts — passing the full
+    // slice here made `nd = 7`, and `seq_len -= nd - na` rewound 4 rows the
+    // 4-row forward never added: the verdict EMITTED its accepted tokens and
+    // then erased them from the sequence (seq 46 -> 42, tokens popped back to
+    // the prompt, last_token left dangling on the emitted bonus). The model
+    // then continued from a history missing its own output — measured
+    // 2026-08-21 as the prefix-cache/concurrency "class Minimizing"
+    // derailment, though the trigger is any surplus-draft dispatch, cache or
+    // not. The old `debug_assert_eq!(v.len(), k_rows)` knew the contract and
+    // compiled out in release; the clamp below enforces it.
+    let k_rows = v.len();
+    debug_assert!(k_rows >= 1, "verdict needs at least the bonus row");
+    let nd = drafts.len().min(k_rows.saturating_sub(1));
+    if drafts.len() > nd {
+        // Surplus drafts were never verified: they are dropped here (the
+        // caller already took them out of `pending_drafts`), and the
+        // drafter's own row accounting is handled by `trim_proposer_state`,
+        // which trims from the drafter's internal `last_num_drafted` — not
+        // from this slice's length.
+        tracing::debug!(
+            "k4 verdict: {} drafts carried into a {}-row verify — verifying the \
+             first {nd}, dropping the surplus",
+            drafts.len(),
+            k_rows,
+        );
+    }
+    let drafts = &drafts[..nd];
     let na = num_accepted.min(nd);
 
     if na == nd {

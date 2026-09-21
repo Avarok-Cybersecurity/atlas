@@ -37,7 +37,7 @@
 
 use anyhow::{Result, bail};
 use half::bf16;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kernel_args::KernelLaunch;
 
@@ -53,6 +53,25 @@ const DV_BLK: usize = 64;
 const NUM_DV_BLK: usize = VD / DV_BLK; // 2
 
 // ksplit reference smem (99336 B): 2×{W,K,U} db (bf16) + 2×gc + 2×decay(CHUNK+1).
+/// Challenger under test, overridable (`AVAROK_GDN_CHALLENGER`) so a new candidate
+/// can be A/B'd against the same ksplit reference without forking this harness.
+fn challenger_name() -> String {
+    match std::env::var("AVAROK_GDN_CHALLENGER").ok().as_deref() {
+        Some("dvsplit") => "gated_delta_rule_chunk_delta_h_dvsplit".to_string(),
+        Some(v) if v.starts_with('v') => format!("gated_delta_rule_chunk_delta_h_{v}"),
+        _ => "gated_delta_rule_chunk_delta_h_tc_vblock".to_string(),
+    }
+}
+
+/// smem for the selected challenger (dvsplit/vtile are single-buffered).
+fn challenger_smem() -> u32 {
+    match std::env::var("AVAROK_GDN_CHALLENGER").ok().as_deref() {
+        Some("dvsplit") => (C * KD * 2 + C * KD * 2 + C * DV_BLK * 2 + (C + 1) * 4) as u32,
+        Some(v) if v.starts_with('v') => (C * (KD * 4 + VD * 2) + (C + 1) * 4) as u32,
+        _ => TC_VBLOCK_SMEM,
+    }
+}
+
 const KSPLIT_SMEM: u32 = (2 * (C * (2 * KD + VD) * 2) + 2 * C * 4 + 2 * (C + 1) * 4) as u32;
 // tc_vblock smem (82952 B): St[DV_BLK*KD] bf16 (Kb aliased onto it) + ws[CHUNK*DV_BLK]
 // f32 + buf[2][CHUNK*KD + CHUNK*DV_BLK] bf16 + gcb[2][CHUNK] f32 + decb[2][CHUNK+1] f32.
@@ -215,10 +234,10 @@ fn run_wu(
     up: DevicePtr,
     gcp: DevicePtr,
 ) -> Result<()> {
-    let smem1 = (C * KD * 2 + C * C * 4 + C * C * 4 + C * 4) as u32;
+    let smem1 = (C * KD * 2 + C * C * 4 + C * 4) as u32; // post-alias, as production
     KernelLaunch::new(g, k_wu)
         .grid([c.nt as u32, NV as u32, c.batch as u32])
-        .block([128, 1, 1])
+        .block([256, 1, 1]) // pass 2 (W) is guarded tid>=128: at 128, W_out is unwritten
         .shared_mem(smem1)
         .arg_ptr(kp)
         .arg_ptr(vp)
@@ -263,17 +282,22 @@ fn launch_scan(
     tc: bool,
     stream: u64,
 ) -> Result<()> {
-    let (grid, smem) = if tc {
+    let (grid, smem) = if tc && challenger_name().contains("_delta_h_v") {
+        // the fused spine does NOT split DV — one CTA per head keeps W/K loaded once.
+        ([NV as u32, c.batch as u32, 1], challenger_smem())
+    } else if tc {
         (
             [NV as u32, (NUM_DV_BLK * c.batch) as u32, 1],
-            TC_VBLOCK_SMEM,
+            challenger_smem(),
         )
     } else {
         ([NV as u32, c.batch as u32, 1], KSPLIT_SMEM)
     };
+    let wide = challenger_name().ends_with("vtile"); // only SPLIT=4 runs 512 threads
+    let block = if tc && wide { 512u32 } else { 256u32 };
     KernelLaunch::new(g, k)
         .grid(grid)
-        .block([256, 1, 1])
+        .block([block, 1, 1])
         .shared_mem(smem)
         .arg_ptr(hp)
         .arg_ptr(wp)
@@ -404,17 +428,14 @@ fn cmp_f32(new: &[u8], reference: &[u8]) -> (f64, f64) {
 }
 
 fn main() -> Result<()> {
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let g: &dyn GpuBackend = &backend;
     let k_wu = g.kernel("gated_delta_rule_fla", "gated_delta_rule_recompute_wu")?;
     let k_ref = g.kernel(
         "gated_delta_rule_fla",
         "gated_delta_rule_chunk_delta_h_ksplit",
     )?;
-    let k_tc = g.kernel(
-        "gated_delta_rule_fla",
-        "gated_delta_rule_chunk_delta_h_tc_vblock",
-    )?;
+    let k_tc = g.kernel("gated_delta_rule_fla", &challenger_name())?;
 
     let iters = 50u32;
     let mut all_ok = true;
@@ -425,7 +446,11 @@ fn main() -> Result<()> {
     println!(
         "Holo GDN: KD={KD} VD={VD} NK={NK} NV={NV} C={C}; DV_BLK={DV_BLK} NUM_DV_BLK={NUM_DV_BLK}"
     );
-    println!("ksplit smem={KSPLIT_SMEM}  tc_vblock smem={TC_VBLOCK_SMEM}");
+    println!(
+        "ksplit smem={KSPLIT_SMEM}  challenger={} smem={}",
+        challenger_name(),
+        challenger_smem()
+    );
     println!(
         "{:>5} {:>5} | {:>16} | {:>16} | {:>16} | {:>10} | {}",
         "t", "batch", "S_c: cos nrdev", "uc: cos nrdev", "S_final: cos nrdev", "speedup", "result"

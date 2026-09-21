@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -27,6 +27,14 @@ use crate::speculative::DraftProposer;
 use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
+// EP wire protocol + fire/skip plan computation for the decode-time Marconi
+// checkpoint (const, static asserts, `CkptPlan`/`CkptInputs`, pure functions
+// with no GPU/model dependency). Split out to keep this file under the
+// 500-LoC cap; re-exported here so `decode_checkpoint::X` paths (used by
+// `impl_a2.rs` and `snap_agree_tests.rs`) are unchanged.
+mod plan;
+pub(in crate::model) use plan::*;
+
 impl TransformerModel {
     /// #155 iter3: save a block-aligned Marconi SSM snapshot DURING decode so
     /// the next turn's warm hit restores from decode-produced state near the
@@ -37,59 +45,171 @@ impl TransformerModel {
     /// matched is within `interval` blocks → tiny replay tail. Live SSM state
     /// must be canonical at call time (post-commit on the MTP path).
     pub(super) fn decode_marconi_checkpoint_dispatch(&self, seq: &mut SequenceState) {
-        if !self.ssm_snapshots.is_enabled()
-            || !self.prefix_cache.is_active()
-            || self.config.num_ssm_layers() == 0
-            || seq.hss_window_start() != 0
-            || seq.slot_idx == usize::MAX
-        {
+        let enabled = self.ssm_snapshots.is_enabled() && self.prefix_cache.is_active();
+        // Cheap half first: this runs on EVERY decode step, and neither the
+        // env read nor the KV lock below should be paid by a model that can
+        // never checkpoint.
+        if !ckpt_preconditions(
+            enabled,
+            self.config.num_ssm_layers(),
+            seq.hss_window_start(),
+            seq.slot_idx,
+        ) {
             return;
         }
         // Block-count between decode checkpoints. Env-tunable (no rebuild) so
         // the cadence/drift tradeoff can be swept; default 4 blocks = 64 tok.
-        let interval = std::env::var("ATLAS_DECODE_CKPT_BLOCKS")
+        let interval = std::env::var("AVAROK_DECODE_CKPT_BLOCKS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(4);
-        let mut kv = self.kv_cache.lock();
-        let bs = kv.block_size();
-        // Derive the block count from tokens.len() (what we slice + cache),
-        // NOT seq_len: under MTP seq_len can transiently exceed tokens.len()
-        // (verify bonus position), which would overrun the token slice.
-        let complete_blocks = seq.tokens.len() / bs;
-        let end_block = complete_blocks;
-        if end_block == 0
-            || !end_block.is_multiple_of(interval)
-            || end_block == seq.last_decode_ckpt_block
-        {
+        let block_size = self.kv_cache.lock().block_size();
+        let Some(plan) = decode_ckpt_plan(&CkptInputs {
+            enabled,
+            num_ssm_layers: self.config.num_ssm_layers(),
+            hss_window_start: seq.hss_window_start(),
+            slot_idx: seq.slot_idx,
+            tokens_len: seq.tokens.len(),
+            block_size,
+            block_table_len: seq.block_table.len(),
+            last_ckpt_block: seq.last_decode_ckpt_block,
+            interval,
+        }) else {
             return;
-        }
-        // Only checkpoint blocks that physically exist. NOTE: the prefill-era
-        // `kv_valid_tokens` guard does NOT apply here — that field tracks the
-        // contiguous KV-written prefix during PREFILL and is never advanced by
-        // decode, so it would wrongly veto every decode checkpoint past the
-        // prompt length. During decode each token writes its KV inline, so all
-        // `end_block` complete blocks (= tokens.len()/bs) are fully written.
-        if end_block > seq.block_table.len() {
-            return;
-        }
-        // Cadence/log only — NOT the registered coverage (see snap_tokens below).
-        let end_token = end_block * bs;
+        };
         // The registered prefix is the FULL token slice, so vision-pad must be
         // checked over the full slice too.
         if self.tokens_have_vision_pad(&seq.tokens) {
             return;
         }
+        let session_hash = seq.session_hash;
+        let adapter_id = seq.adapter_id;
+        if !self.decode_ckpt_save_and_register(seq, plan, session_hash, adapter_id, "decode-ckpt") {
+            // Nothing was saved locally — emit NO command, so the worker does
+            // not end up holding a checkpoint rank 0 lacks. (Either asymmetry
+            // is answered correctly by the A100 vote; this is the cheaper one.)
+            return;
+        }
+        // A109: tell every worker rank to save the SAME (slot, token,
+        // session) checkpoint. Broadcast AFTER the local save succeeded so the
+        // command is emitted only for checkpoints rank 0 actually holds. The
+        // three call sites (verify_k2_step accept/reject, decode_logits_step)
+        // are all quiescent points in the command stream — the worker is
+        // parked in `ep_recv_seq_and_cmd`, exactly where the next decode or
+        // prefill command would land.
+        if let Err(e) = self.ep_broadcast_decode_ckpt(plan, session_hash, adapter_id, seq.slot_idx)
+        {
+            tracing::warn!("A109 decode-ckpt broadcast failed (ranks may diverge): {e:#}");
+        }
+    }
+
+    /// Head side of [`EP_CMD_DECODE_CKPT`]. No-op on a single-GPU build and on
+    /// any rank that is not driving the command stream.
+    fn ep_broadcast_decode_ckpt(
+        &self,
+        plan: CkptPlan,
+        session_hash: u64,
+        adapter_id: u64,
+        slot_idx: usize,
+    ) -> Result<()> {
+        if !self.multi_rank_protocol_active() {
+            return Ok(());
+        }
+        // Only rank 0 writes the command stream; a worker reaching here would
+        // pair its send against the head's send and desynchronise the wire.
+        if self.comm.as_ref().map(|c| c.rank()) != Some(0) {
+            return Ok(());
+        }
+        // Under v2 the preamble routes the command to the worker's matching
+        // slot; `alloc-slot` already bails if the worker's SSM-pool slot ever
+        // differs from the head's seq_id, so `slot_idx` IS the seq_id. Under
+        // v1 the preamble is skipped and everything targets slot 0.
+        self.ep_broadcast_seq_and_cmd(slot_idx as u32, EP_CMD_DECODE_CKPT, self.ep_protocol_v2)?;
+        self.ep_broadcast_tokens(&encode_ckpt_payload(plan, session_hash, adapter_id))?;
+        Ok(())
+    }
+
+    /// Worker side of [`EP_CMD_DECODE_CKPT`] (A109): save the checkpoint rank
+    /// 0 just saved, at the position rank 0 chose.
+    ///
+    /// The worker does NOT re-derive the decision — cadence, the thinking-gate
+    /// at the `decode_logits_step` call site and `session_hash` are all
+    /// head-side state, and any independent re-derivation is exactly the
+    /// divergence A109 is about. It obeys the broadcast or fails loudly.
+    ///
+    /// `session_hash` is adopted from the head (it is stored metadata only;
+    /// `session_matches` short-circuits to `true` for this rank's own lookups,
+    /// whose `seq.session_hash` is the worker-local default). `adapter_id`
+    /// stays RANK-LOCAL on purpose: it feeds `hash_token_prefix`, so
+    /// registering under the head's value would key the entry where this
+    /// rank's own lookup will never search for it.
+    pub(in crate::model) fn decode_marconi_checkpoint_worker(
+        &self,
+        seq: &mut SequenceState,
+        words: &[u32],
+    ) -> Result<()> {
+        let (plan, head_session, head_adapter) = decode_ckpt_payload(words)?;
+        if seq.slot_idx == usize::MAX {
+            bail!("A109 decode-ckpt: rank 0 checkpointed a slot this rank has no SSM state for");
+        }
+        if plan.snap_tokens > seq.tokens.len() || plan.end_block > seq.block_table.len() {
+            bail!(
+                "A109 decode-ckpt: head asked for snap_tokens={} end_block={} but this rank has \
+                 tokens={} blocks={} — head and worker have diverged",
+                plan.snap_tokens,
+                plan.end_block,
+                seq.tokens.len(),
+                seq.block_table.len(),
+            );
+        }
+        if head_adapter != seq.adapter_id {
+            // Pre-existing A109 residual (HANDOFF-30 §6): worker ranks never
+            // set adapter_id/session_hash. Keying stays rank-local, so the
+            // rank still finds its own entry; logged, not fixed here.
+            tracing::debug!(
+                "A109 decode-ckpt: head adapter_id={head_adapter} != local {} — registering \
+                 under the local id so this rank's own lookup can find it",
+                seq.adapter_id,
+            );
+        }
+        let adapter_id = seq.adapter_id;
+        if !self.decode_ckpt_save_and_register(seq, plan, head_session, adapter_id, "decode-ckpt/w")
+        {
+            tracing::warn!(
+                "A109 decode-ckpt: rank 0 saved (slot={} tok={}) but this rank could not — the \
+                 A100 vote will refuse the restore (correct, slower)",
+                seq.slot_idx,
+                plan.snap_tokens,
+            );
+        }
+        Ok(())
+    }
+
+    /// The save itself, shared by the head and the worker so neither can drift
+    /// from the other. Returns whether a checkpoint was registered.
+    ///
+    /// `session_hash` / `adapter_id` are parameters rather than reads of `seq`
+    /// precisely because the worker must register the HEAD's session tag.
+    fn decode_ckpt_save_and_register(
+        &self,
+        seq: &mut SequenceState,
+        plan: CkptPlan,
+        session_hash: u64,
+        adapter_id: u64,
+        who: &str,
+    ) -> bool {
         // Order the default stream after any in-flight secondary-stream commit
         // (MTP path writes the canonical live SSM state there) so the snapshot
         // reads the committed state, not a racing partial. No-op on the
         // non-MTP path (no pending secondary work). GPU-side, ~free.
         let _ = self.sync_secondary_dispatch();
         let stream = self.gpu.default_stream();
+        let mut kv = self.kv_cache.lock();
+        let bs = kv.block_size();
         let snap_id = match self.ssm_snapshots.save(
             seq.slot_idx,
-            seq.session_hash,
+            session_hash,
             self.seq_ssm_h_is_f16(seq),
             &self.ssm_pool,
             self.gpu.as_ref(),
@@ -105,29 +225,42 @@ impl TransformerModel {
                 ) {
                     match self.ssm_snapshots.save(
                         seq.slot_idx,
-                        seq.session_hash,
+                        session_hash,
                         self.seq_ssm_h_is_f16(seq),
                         &self.ssm_pool,
                         self.gpu.as_ref(),
                         stream,
                     ) {
                         Ok(Some(id)) => id,
-                        _ => return,
+                        _ => return false,
                     }
                 } else {
-                    return;
+                    return false;
                 }
             }
             Err(e) => {
-                tracing::warn!("decode Marconi checkpoint save error: {e}");
-                return;
+                tracing::warn!("{who} Marconi checkpoint save error: {e}");
+                return false;
             }
         };
         // Order any later warm restore (prefill stream) after this save's D2D.
         if let Err(e) = self.record_snapshot_save_dispatch(stream) {
-            tracing::warn!("decode Marconi checkpoint: record snapshot event: {e}");
+            tracing::warn!("{who} Marconi checkpoint: record snapshot event: {e}");
         }
         drop(kv);
+        // Aux (PLE + QSA lexical state) is canonical at exactly
+        // seq.tokens.len() here (same post-commit point the SSM save reads),
+        // matching the snap_tokens registration below. A collection failure
+        // leaves the snapshot aux-less: the restore gate then declines it —
+        // slower, never stale.
+        match self.collect_aux_states(seq, stream) {
+            Ok(aux) => {
+                if !aux.is_empty() {
+                    self.ssm_snapshots.set_aux(snap_id, aux);
+                }
+            }
+            Err(e) => tracing::warn!("{who} Marconi checkpoint: aux collect failed: {e:#}"),
+        }
         // #155 MTP×cache root cause: the live state just saved (post
         // sync_secondary, post-commit) is canonical at exactly
         // seq.tokens.len() tokens — under MTP K=2 the verify stride (+2 on
@@ -140,7 +273,11 @@ impl TransformerModel {
         // arbitrary non-block-aligned token counts (leaf snapshots already
         // are). On the non-MTP +1 stride tokens.len() == end_token at every
         // fire, so this is bit-identical to the old block-floored slice.
-        let snap_tokens = seq.tokens.len();
+        let CkptPlan {
+            snap_tokens,
+            end_block,
+        } = plan;
+        let end_token = end_block * bs;
         let boundary_tokens = &seq.tokens[..snap_tokens];
         let boundary_blocks = &seq.block_table[..end_block];
         let boundary_disk: &[u32] = if seq.disk_block_ids.len() >= end_block {
@@ -154,20 +291,21 @@ impl TransformerModel {
             boundary_disk,
             bs,
             snap_id,
-            seq.session_hash,
+            session_hash,
             snap_tokens,
-            seq.adapter_id,
+            adapter_id,
         );
         if let Some(old) = displaced {
             self.ssm_snapshots.free(old);
         }
         tracing::info!(
-            "decode-ckpt SAVE: snap_tokens={snap_tokens} end_block={end_block} snap_id={snap_id} \
-             block_table_len={} straddle={}",
+            "{who} SAVE: snap_tokens={snap_tokens} end_block={end_block} snap_id={snap_id} \
+             block_table_len={} straddle={} slot={} session={session_hash:#x}",
             seq.block_table.len(),
-            snap_tokens - end_token,
+            snap_tokens.saturating_sub(end_token),
+            seq.slot_idx,
         );
-        if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+        if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
             self.ssm_pool.debug_state_checksum(
                 seq.slot_idx,
                 self.gpu.as_ref(),
@@ -176,6 +314,7 @@ impl TransformerModel {
             );
         }
         seq.last_decode_ckpt_block = end_block;
+        true
     }
 
     /// #155: save the finish-leaf SSM snapshot at sequence retire (called by
@@ -238,12 +377,23 @@ impl TransformerModel {
             if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                 tracing::warn!("finish-leaf snapshot: record snapshot event: {e}");
             }
+            // Aux (PLE + QSA lexical state) at retire covers prompt +
+            // generated tokens — the deepest anchor a chat continuation can
+            // match. Failure => aux-less snapshot, declined on restore.
+            match self.collect_aux_states(seq, stream) {
+                Ok(aux) => {
+                    if !aux.is_empty() {
+                        self.ssm_snapshots.set_aux(id, aux);
+                    }
+                }
+                Err(e) => tracing::warn!("finish-leaf snapshot: aux collect failed: {e:#}"),
+            }
             tracing::info!(
                 "Saved finish-leaf SSM snapshot {} for {} tokens",
                 id,
                 seq.tokens.len(),
             );
-            if std::env::var("ATLAS_SSM_SAVE_DUMP").is_ok() {
+            if std::env::var("AVAROK_SSM_SAVE_DUMP").is_ok() {
                 self.ssm_pool.debug_state_checksum(
                     seq.slot_idx,
                     self.gpu.as_ref(),

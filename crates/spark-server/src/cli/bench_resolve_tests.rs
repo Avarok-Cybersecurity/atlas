@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use atlas_plugin::gate::{Bound, GateBaseline, HardwareBaseline, ModelBaseline};
+use avarok_plugin::gate::{Bound, GateBaseline, HardwareBaseline, ModelBaseline};
 
-fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
+pub(super) fn baseline(entries: &[(&str, &str, Option<&str>)]) -> GateBaseline {
     let mut hardware = BTreeMap::new();
     for (hw, model, recipe) in entries {
         let e = hardware
@@ -67,13 +67,23 @@ fn an_explicit_box_class_picks_its_entry() {
     assert_eq!(r.recipe_id, "recipe-b");
 }
 
+/// Oracle: `bench_resolve::resolve`'s own contract — "every refusal names both
+/// what was asked for and what exists". `h800` is a real NVIDIA part that Atlas
+/// has never registered as a box class, so it exercises the branch a typo
+/// reaches. (It used to be spelled `h100`; that id is a registered Hopper slot
+/// now, so it tests the OTHER refusal below.)
 #[test]
 fn an_unknown_box_class_names_what_exists() {
     let b = baseline(&[("gb10", "m", Some("r"))]);
-    let err = resolve(&b, "bfcl-subset", Some("h100"), None).expect_err("refused");
+    let err = resolve(&b, "bfcl-subset", Some("h800"), None).expect_err("refused");
     let msg = format!("{err:#}");
-    assert!(msg.contains("h100"), "{msg}");
+    assert!(msg.contains("h800"), "{msg}");
     assert!(msg.contains("gb10"), "lists what it has: {msg}");
+    assert!(
+        msg.contains("not a box class Atlas knows"),
+        "says WHY it is unresolvable, so a typo is distinguishable from an \
+         unmeasured box: {msg}"
+    );
 }
 
 #[test]
@@ -194,12 +204,12 @@ fn max_bound(max: f64) -> Bound {
 /// schema default standing. All three precedence arms in one place.
 #[test]
 fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
-    let descriptor = atlas_plugin::registry::find("agentic-webserver").expect("registered");
+    let descriptor = avarok_plugin::registry::find("agentic-webserver").expect("registered");
     let specs = descriptor.build().parameters();
     let entry = two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
 
     // Derived: no explicit --param, so the dense ceiling lands.
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let applied =
         apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
     assert_eq!(applied, vec![("wall_budget_s".to_string(), 2500.0)]);
@@ -208,7 +218,8 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
     // Explicit --param wins untouched.
     let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
     let mut values =
-        atlas_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")])
+            .unwrap();
     let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
         .expect("applies");
     assert!(applied.is_empty(), "stated intent is never overridden");
@@ -217,7 +228,7 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
     // No bound on the paired metric: schema default stands.
     let mut bare = entry.clone();
     bare.metrics.clear();
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let applied =
         apply_threshold_params(descriptor, &specs, &mut values, &bare, &[]).expect("applies");
     assert!(applied.is_empty());
@@ -231,7 +242,7 @@ fn threshold_params_derive_from_the_variant_and_yield_to_an_explicit_param() {
 /// machinery requires (review C1).
 #[test]
 fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
-    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let descriptor = avarok_plugin::registry::find("bfcl-subset").expect("registered");
     let specs = descriptor.build().parameters();
     let mut entry =
         two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
@@ -239,7 +250,7 @@ fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
         ("overall_accuracy".to_string(), min_bound(83.82)),
         ("normalized_single_turn_score".to_string(), min_bound(83.72)),
     ]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let applied =
         apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
     assert_eq!(
@@ -261,7 +272,7 @@ fn threshold_params_substitute_a_min_bound_when_the_metric_is_a_floor() {
 /// noise 0.4).
 #[test]
 fn threshold_params_hand_the_driver_the_noise_adjusted_bar() {
-    let descriptor = atlas_plugin::registry::find("bfcl-subset").expect("registered");
+    let descriptor = avarok_plugin::registry::find("bfcl-subset").expect("registered");
     let specs = descriptor.build().parameters();
     let mut entry =
         two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
@@ -283,7 +294,7 @@ fn threshold_params_hand_the_driver_the_noise_adjusted_bar() {
             },
         ),
     ]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let applied =
         apply_threshold_params(descriptor, &specs, &mut values, &entry, &[]).expect("applies");
     assert_eq!(
@@ -305,7 +316,7 @@ fn threshold_params_hand_the_driver_the_noise_adjusted_bar() {
 /// loudly instead of guessing a direction.
 #[test]
 fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
-    let descriptor = atlas_plugin::registry::find("agentic-webserver").expect("registered");
+    let descriptor = avarok_plugin::registry::find("agentic-webserver").expect("registered");
     let specs = descriptor.build().parameters();
     let mut entry =
         two_variant_baseline().hardware["gb10"].models["unsloth/Qwen3.8-27B-NVFP4"].clone();
@@ -317,7 +328,7 @@ fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
             noise: None,
         },
     )]);
-    let mut values = atlas_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
+    let mut values = avarok_plugin::ParamValues::from_overrides(&specs, vec![]).unwrap();
     let err = apply_threshold_params(descriptor, &specs, &mut values, &entry, &[])
         .expect_err("ambiguous bounds must not be resolved silently");
     let msg = format!("{err:#}");
@@ -327,7 +338,8 @@ fn a_paired_metric_with_both_bounds_is_a_loud_error_not_a_guess() {
     // no bound at all.
     let explicit = vec![("wall_budget_s".to_string(), "1234".to_string())];
     let mut values =
-        atlas_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")]).unwrap();
+        avarok_plugin::ParamValues::from_overrides(&specs, vec![("wall_budget_s", "1234")])
+            .unwrap();
     let applied = apply_threshold_params(descriptor, &specs, &mut values, &entry, &explicit)
         .expect("explicit param sidesteps the ambiguous bound");
     assert!(applied.is_empty());

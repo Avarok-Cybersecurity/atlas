@@ -33,7 +33,7 @@
 //! a shared `examples/` module once no agent holds w8a16_microtest.rs.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -42,7 +42,7 @@ use std::time::Instant;
 // metric below includes per-launch host overhead which swamps small per-lever
 // deltas at the representative compute-bound size. CUDA events recorded on the
 // launch stream measure GPU execution time only, so the optimization signal is
-// trustworthy. Signatures mirror atlas-spark-bench's gpu.rs (the SSOT).
+// trustworthy. Signatures mirror avarok-spark-bench's gpu.rs (the SSOT).
 unsafe extern "C" {
     fn cuEventCreate(event: *mut u64, flags: u32) -> i32;
     fn cuEventRecord(event: u64, stream: u64) -> i32;
@@ -210,7 +210,7 @@ fn main() -> Result<()> {
     }
 
     // ── GPU setup ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

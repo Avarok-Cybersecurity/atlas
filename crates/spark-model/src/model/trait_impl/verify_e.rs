@@ -8,7 +8,7 @@
 //! and made RAGGED per sequence by D-Cut) so the n weight-reading verify
 //! forwards collapse into one — the structural fix for the measured MTP
 //! serialization at C>1 (cap=4 at C=4: 25.8 vs 48.5 tok/s; see
-//! BATCHED_MTP_SPEC.md). R is capped at 96 = the exact capacity of the
+//! BATCHED_MTP_SPEC.md). R is capped at `VERIFY_ROW_CAP` = the exact capacity of the
 //! logits rows / meta gaps / bt staging (sizes.rs), reached at n=32 × k=3
 //! rows (the 32:2 depth-at-width shape, wave 11; previously 64 at n=32 ×
 //! k=2, 32 at n=16 × k=2).
@@ -19,7 +19,7 @@
 //! bakes EVERY sequence's state pointers, which are a function of the whole
 //! vector. Pre-graph each step (embed, KV-block ensure, metadata/bt/WY-table
 //! H2D into fixed addresses) and the argmax D2H stay eager — exactly the
-//! decode_a2 padded_n-graph pattern. Kill switch `ATLAS_NO_MTP_VERIFY_GRAPHS`
+//! decode_a2 padded_n-graph pattern. Kill switch `AVAROK_NO_MTP_VERIFY_GRAPHS`
 //! (PRESENCE). Everything per-sequence (GDN conv+WY4 body, block tables,
 //! rollback intermediates) reuses existing machinery verbatim — only base
 //! addresses move — with an optional cross-sequence batched conv+WY fast
@@ -31,7 +31,22 @@
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
 use anyhow::{Result, bail, ensure};
-use atlas_core::config::{LayerType, ModelConfig};
+
+/// Batched-verify metadata overlay, every offset derived from
+/// [`super::verify_e2::VERIFY_ROW_CAP`] so the cap and the layout cannot
+/// drift apart (they once lived as a literal 96 and 384/768/1536/2048-byte
+/// offsets that had to be moved in lock-step by hand):
+///   positions  u32 × R at [0, 4R)
+///   seq_slot   u32 × R at [4R, 8R)
+///   slots      i64 × R at [8R, 16R)   (8-byte aligned: R is even)
+///   seq_lens   i32 × R at [16R, 20R)
+///   bt         i32 × R × max_blocks at [24R, …)  (4R of slack before it)
+const VMETA_R: usize = super::verify_e2::VERIFY_ROW_CAP;
+const VMETA_SEQ_SLOT: usize = VMETA_R * 4;
+const VMETA_SLOTS: usize = VMETA_R * 8;
+const VMETA_SEQ_LENS: usize = VMETA_R * 16;
+const VMETA_BT: usize = VMETA_R * 24;
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::kv_cache::PagedKvCache;
 
@@ -50,18 +65,71 @@ impl TransformerModel {
     /// carries ONE adapter slot), MTP proposer present (stash allocated,
     /// `VERIFY_WY_TABLE_SEQS` = 32 slots ⇒ n ≤ 32), EVERY `ks[i]` in 2..=4
     /// (the MTP ladder range; intermediates pools are sized for the
-    /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` = 96 (the exact
+    /// configured max K), and R = Σ ks ≤ `VERIFY_ROW_CAP` (the exact
     /// logits-rows / meta-gap / bt-staging capacity — sizes.rs). Everything
     /// outside falls back to the per-seq loop.
     pub(super) fn can_batch_verify_dispatch(&self, ks: &[usize]) -> bool {
         let n = ks.len();
+        // Two admissible shapes:
+        //  * MTP ladder — every k in 2..=4, no DFlash capture buffer.
+        //  * DFlash — every k EXACTLY γ+1 (uniform; the block drafter has no
+        //    ragged ladder), and the per-sequence capture bands must fit.
+        //    K=γ+1 has no fused WY kernel, so the GDN body takes the
+        //    per-sequence fallback inside `decode_verify_multi` — byte-
+        //    identical to the single-sequence K=γ path it replaces, while
+        //    every weight-bearing op (QKVZ / o_proj / FFN / lm_head) batches
+        //    across all R rows. That is where the win is: measured gemm_t
+        //    M=9 3679us vs M=36 3837us, i.e. 4x the rows for +4%.
+        let shape_ok = if self.dflash_hidden_save.is_some() {
+            // UNIFORM k, any width the capture band holds. k is
+            // `drafts + 1` and the block drafter returns γ-1 drafts on a
+            // first propose and γ later, so k ranges over 2..=γ+1 — pinning
+            // it to exactly γ+1 silently refused every real batch.
+            self.dflash_kgamma >= 2
+                && ks.iter().all(|&k| (2..=self.dflash_kgamma).contains(&k))
+                && ks.iter().all(|&k| k == ks[0])
+                && n * self.dflash_kgamma <= self.dflash_hidden_save_rows
+        } else {
+            ks.iter().all(|k| (2..=4).contains(k))
+        };
         (2..=crate::layer::VERIFY_WY_TABLE_SEQS).contains(&n)
-            && ks.iter().all(|k| (2..=4).contains(k))
+            && shape_ok
             && ks.iter().sum::<usize>() <= super::verify_e2::VERIFY_ROW_CAP
             && self.comm.is_none()
-            && self.lora.is_none()
-            && self.dflash_hidden_save.is_none()
+            // LoRA is NOT a barrier here. Every weight-bearing op this path
+            // batches — QKVZ, o_proj, the dense FFN, lm_head — carries its
+            // delta on the batched variants (`forward_km` and the multi_seq
+            // qkv/o_proj), so the rows are adapted whether they are verified
+            // together or one at a time. And all rows necessarily share ONE
+            // adapter: a batch containing a sequence routed to a non-active
+            // slot is already refused upstream by the single-active guard, so
+            // a uniform delta across the batch is the correct delta.
+            //
+            // Refusing it cost the whole point of the batched path. With an
+            // adapter resident, DFlash aggregate throughput was FLAT at ~34
+            // tok/s from C=1 to C=4 (against 39 -> 71 -> 79 without one)
+            // because every sequence fell back to the per-sequence verify
+            // loop. `AVAROK_LORA_NO_BATCH_VERIFY=1` restores the refusal.
+            && !(self.lora.is_some() && crate::lora::no_batch_verify())
+            // NOT `dflash_hidden_save.is_none()`. That guard predates the
+            // DFlash gamma-block path and meant "batched verify is for plain
+            // MTP only". `shape_ok` above now branches on exactly that field:
+            // Some => the DFlash branch (uniform k, rows within
+            // dflash_hidden_save_rows), None => the K=2..4 ladder. Re-testing
+            // it here contradicts the Some arm and makes the DFlash batched
+            // verify unreachable — the whole path silently falls back to the
+            // per-sequence loop, which reads as "concurrency does not
+            // amortise" rather than as a disabled feature.
             && !self.verify_hidden_stash.is_null()
+            // A layer may DECLINE the batched verify sweep (Stage 0). Its
+            // absence was already fail-closed by `decode_verify_multi`'s
+            // `bail!`, but that is a mid-request abort; this makes the same
+            // answer a ROUTING decision, so the request falls back cleanly to
+            // the per-sequence verify loop — the sealed single-sequence path.
+            && !self
+                .layers
+                .iter()
+                .any(|l| l.decode_verify_multi_unsupported())
             // HSS: the paged-decode kernel reads HBM only, missing on-disk
             // history (see verify_c2's HSS fallback) — batched path unsupported.
             && self
@@ -97,7 +165,12 @@ impl TransformerModel {
         ks: &[usize],
         seqs: &mut [&mut SequenceState],
         _stream: u64,
+        opts: crate::traits::VerifyBatchedOpts,
     ) -> Result<Vec<u32>> {
+        // Nothing is foldable until THIS call says so at its end: an Err
+        // anywhere below leaves the fold declined and the host restore on.
+        self.gdn_woa_eligible
+            .store(false, std::sync::atomic::Ordering::Release);
         let t_launch = std::time::Instant::now();
         let mapped_argmax = mapped_argmax_host_dev(self.gpu.as_ref());
         let stream = self.gpu.default_stream();
@@ -115,18 +188,26 @@ impl TransformerModel {
         off.push(acc);
         let r_total = acc;
         let k_max = ks.iter().copied().max().unwrap_or(0);
+        // Width contract mirrors `can_batch_verify_dispatch`: the MTP ladder
+        // range, or DFlash's uniform K=γ+1.
+        let dflash_k = self
+            .dflash_hidden_save
+            .is_some()
+            .then_some(self.dflash_kgamma);
         ensure!(
             n >= 2
                 && ks.len() == n
-                && ks.iter().all(|k| (2..=4).contains(k))
+                && ks
+                    .iter()
+                    .all(|&k| dflash_k.map_or((2..=4).contains(&k), |g| (2..=g).contains(&k)))
                 && tokens.len() == r_total,
-            "batched verify: n={n} ks={ks:?} tokens={}",
+            "batched verify: n={n} ks={ks:?} tokens={} dflash_k={dflash_k:?}",
             tokens.len()
         );
-        // R ≤ VERIFY_ROW_CAP (96): the exact capacity of the meta gaps below
-        // (positions 384 B at +0, seq_slot at +384, slots 768 B at +768,
-        // seq_lens 384 B at +1536, bt at +2048 staged for 96 rows in
-        // sizes.rs) and the 96-row logits cap. Reached at n=32 × k=3 rows
+        // R ≤ VERIFY_ROW_CAP: the exact capacity of the meta gaps (the
+        // VMETA_* derived offsets at the top of this file), the bt staging
+        // and the logits rows (both sized in sizes.rs from the same cap —
+        // keep them in lock-step). Historically reached at n=32 × k=3 rows
         // (the 32:2 depth-at-width shape).
         ensure!(
             r_total <= super::verify_e2::VERIFY_ROW_CAP,
@@ -158,7 +239,7 @@ impl TransformerModel {
             )?;
         }
 
-        // ATLAS_K4_DIAG=1: stream-sync checkpoint after every layer so an
+        // AVAROK_K4_DIAG=1: stream-sync checkpoint after every layer so an
         // illegal access is attributed to the exact layer (same hatch as
         // verify_c2). Forces EAGER — per-layer syncs are illegal under
         // capture (verify_c2's gate pattern).
@@ -175,6 +256,13 @@ impl TransformerModel {
         // simply leaves its tail slabs unread (the WY launch for its depth
         // reads `k-1` intermediate tables), and the strides are k-independent.
         let wy_tables_base = self.upload_verify_wy_tables(&*seqs, k_max, &[], stream)?;
+        // Write-on-accept is a per-call request from the DFlash batched step
+        // (never a layer default): honoured only with the pointer tables
+        // staged, since without them the per-sequence loop runs and the
+        // fold's tables would describe some earlier batch. Binding the
+        // stash happens here, pre-capture, on the first request.
+        let write_on_accept =
+            opts.write_on_accept && !wy_tables_base.is_null() && self.gdn_woa_bind()?;
 
         // ── Graph decision: exact slot-vector hit, or drain-tail borrow ──
         // Keyed by the ssm-slot VECTOR (verify_e2.rs): every baked SSM
@@ -190,7 +278,7 @@ impl TransformerModel {
         // the baked depth.
         let graphs_on = super::verify_e2::verify_graphs_enabled() && !k4_diag;
         let graph_key = if graphs_on {
-            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null())
+            self.verify_batched_graph_key(&*seqs, ks, wy_tables_base.is_null(), write_on_accept)
         } else {
             None
         };
@@ -201,7 +289,7 @@ impl TransformerModel {
         // least-recently-replayed slot vector.
         let mut replay: Option<spark_runtime::gpu::GraphHandle> = None;
         let mut ghosts: Vec<(u32, u32)> = Vec::new();
-        // Graph outcome for the periodic ATLAS_MTP_ACCEPT_DEBUG summary
+        // Graph outcome for the periodic AVAROK_MTP_ACCEPT_DEBUG summary
         // (verify_e2). `Eager` until something claims otherwise — that is
         // also the honest value when graphs are off or the batch is
         // unkeyable.
@@ -221,8 +309,8 @@ impl TransformerModel {
                             && (!wy_present
                                 || self.ssm_pool.h_inter_count(s as usize) + 1 >= k as usize)
                     });
-                // Every cached key was captured under `ensure!(R <= 96)`, so
-                // the borrowed total row count fits the fixed 96-row meta
+                // Every cached key was captured under the VERIFY_ROW_CAP
+                // ensure!, so the borrowed total row count fits the meta
                 // arrays and logits cap by construction — but that bound
                 // guards the `unsafe` upload lengths below, so it is
                 // re-checked as a hard borrow veto, never assumed.
@@ -252,7 +340,7 @@ impl TransformerModel {
             }
         }
         // Rows the DISPATCH must prepare: active rows plus any ghost tail.
-        // `r_up <= VERIFY_ROW_CAP` (96) holds on every path: the no-ghost
+        // `r_up <= VERIFY_ROW_CAP` holds on every path: the no-ghost
         // case by the `ensure!` above, the borrow case by the veto at accept.
         let r_ghost: usize = ghosts.iter().map(|&(_, k)| k as usize).sum();
         let r_up = r_total + r_ghost;
@@ -277,8 +365,8 @@ impl TransformerModel {
         }
 
         // ── Phase 2: R-row attention metadata (verify_c2 layout SHAPE at
-        // WIDER gaps — 96 rows: positions [0,384) | seq_slot [384,768) |
-        // slots i64 [768,1536) | seq_lens [1536,1920) | bt at +2048. This
+        // WIDER gaps — VERIFY_ROW_CAP rows at the VMETA_* derived
+        // offsets (positions | seq_slot | slots | seq_lens | bt). This
         // path's own layout only: every metadata consumer receives absolute
         // pointers via `AttnMetadataDev`, and each step (and each graph's
         // replay) re-uploads its own layout pre-dispatch, so verify_c2 /
@@ -287,9 +375,9 @@ impl TransformerModel {
         let max_blocks = self.max_blocks_per_seq;
         let mb = max_blocks as usize;
 
-        let mut positions = [0u32; 96];
-        let mut slots = [0i64; 96];
-        let mut seq_lens = [0i32; 96];
+        let mut positions = [0u32; VMETA_R];
+        let mut slots = [0i64; VMETA_R];
+        let mut seq_lens = [0i32; VMETA_R];
         for (i, seq) in seqs.iter().enumerate() {
             for j in 0..ks[i] {
                 let r = off[i] + j;
@@ -312,10 +400,10 @@ impl TransformerModel {
             slots[r] = dummy_kv;
             seq_lens[r] = 1;
         }
-        // SAFETY: `positions` is the fixed `[0u32; 96]` above, so its size is
-        // 96 * 4 = 384 B; the `ensure!(r_total <= VERIFY_ROW_CAP)` guard plus
-        // the `debug_assert!(r_up <= VERIFY_ROW_CAP)` (r_up rows were
-        // captured under the same cap) make `r_up * 4 <= 384`.
+        // SAFETY: `positions` is the fixed `[0u32; VMETA_R]` above, so its
+        // size is VMETA_R * 4 bytes; the `ensure!(r_total <= VERIFY_ROW_CAP)`
+        // guard plus the `debug_assert!(r_up <= VERIFY_ROW_CAP)` (r_up rows
+        // were captured under the same cap) make `r_up * 4` fit.
         // The array is zero-init at declaration and rows `0..r_up` are all
         // written by the fill loops (`off` is the prefix sum of `ks`, so
         // `off[i]+j` covers `0..r_total` exactly; the ghost loop covers
@@ -323,20 +411,20 @@ impl TransformerModel {
         let pos_bytes =
             unsafe { std::slice::from_raw_parts(positions.as_ptr() as *const u8, r_up * 4) };
         self.gpu.copy_h2d_async(pos_bytes, meta_base, stream)?;
-        // SAFETY: `slots` is the fixed `[0i64; 96]` above (768 B); the same
-        // bounds argument gives `r_up * 8 <= 768`. Zero-init at declaration,
+        // SAFETY: `slots` is the fixed `[0i64; VMETA_R]` above (VMETA_R * 8
+        // bytes); the same bounds argument fits `r_up * 8`. Zero-init at declaration,
         // rows `0..r_up` written by the fill loops; `i64` is POD.
         let slot_bytes =
             unsafe { std::slice::from_raw_parts(slots.as_ptr() as *const u8, r_up * 8) };
         self.gpu
-            .copy_h2d_async(slot_bytes, meta_base.offset(768), stream)?;
-        // SAFETY: `seq_lens` is the fixed `[0i32; 96]` above (384 B); the same
-        // bounds argument gives `r_up * 4 <= 384`. Zero-init at declaration,
+            .copy_h2d_async(slot_bytes, meta_base.offset(VMETA_SLOTS), stream)?;
+        // SAFETY: `seq_lens` is the fixed `[0i32; VMETA_R]` above (VMETA_R *
+        // 4 bytes); the same bounds argument fits `r_up * 4`. Zero-init at declaration,
         // rows `0..r_up` written by the fill loops; `i32` is POD.
         let sl_bytes =
             unsafe { std::slice::from_raw_parts(seq_lens.as_ptr() as *const u8, r_up * 4) };
         self.gpu
-            .copy_h2d_async(sl_bytes, meta_base.offset(1536), stream)?;
+            .copy_h2d_async(sl_bytes, meta_base.offset(VMETA_SEQ_LENS), stream)?;
 
         // Block tables: row r = seq i's table (bt staging sized for 96 rows,
         // sizes.rs `bt_rows`). Ghost rows read only entry 0 (causal clamp 1)
@@ -362,18 +450,18 @@ impl TransformerModel {
         let bt_bytes =
             unsafe { std::slice::from_raw_parts(bt_buf.as_ptr() as *const u8, needed * 4) };
         self.gpu
-            .copy_h2d_async(bt_bytes, meta_base.offset(2048), stream)?;
+            .copy_h2d_async(bt_bytes, meta_base.offset(VMETA_BT), stream)?;
 
         // No-LoRA gate in can_batch: uniform upload returns DevicePtr(0)
         // (installed-pair path) — kept for structural parity with verify_c2.
         debug_assert!(
             r_up <= super::verify_e2::VERIFY_ROW_CAP,
-            "verify seq_slot [384,768) gap holds R ≤ 96"
+            "verify seq_slot gap holds R ≤ VERIFY_ROW_CAP"
         );
         let seq_slot = self.upload_seq_slot_uniform(
             seqs[0].adapter_slot,
             r_up,
-            meta_base.offset(384),
+            meta_base.offset(VMETA_SEQ_SLOT),
             stream,
         )?;
 
@@ -381,9 +469,9 @@ impl TransformerModel {
             positions: meta_base,
             positions_h: meta_base,
             positions_w: meta_base,
-            slot: meta_base.offset(768),
-            seq_len: meta_base.offset(1536),
-            block_table: meta_base.offset(2048),
+            slot: meta_base.offset(VMETA_SLOTS),
+            seq_len: meta_base.offset(VMETA_SEQ_LENS),
+            block_table: meta_base.offset(VMETA_BT),
             max_blocks_per_seq: max_blocks,
             num_seqs: r_up as u32,
             seq_slot,
@@ -410,6 +498,7 @@ impl TransformerModel {
 
             let ctx = ForwardContext {
                 buffers: &self.buffers,
+                hc_row_offset: 0,
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
                 dispatch: &self.dispatch,
@@ -424,8 +513,11 @@ impl TransformerModel {
                 profile: false,
                 comm: self.comm_ref(),
                 graph_capture: capture,
+                decode_step: false,
                 gdn_exact_replay: false,
+                gdn_write_on_accept: write_on_accept,
                 token_ids: None,
+                host_token_ids: None,
                 routed_lora_layers: None,
                 midchunk_capture: None,
             };
@@ -506,6 +598,26 @@ impl TransformerModel {
                     )?;
                 }
 
+                // DFlash per-sequence hidden capture. The rows of this
+                // batched forward are seq-major, so sequence i's k rows start
+                // at `off[i]` and land in ITS OWN capture band at
+                // `i * dflash_kgamma` — the `scratch_row` the scheduler then
+                // passes to `commit_ctx`. Without the band offset every
+                // sequence would overwrite band 0 (the single-sequence
+                // assumption that made batched decode drop ctx rows).
+                // No-op unless DFlash is on and this is a capture layer.
+                if self.dflash_hidden_save.is_some() {
+                    for i in 0..n {
+                        self.try_dflash_capture_all_at(
+                            layer_idx,
+                            off[i],
+                            ks[i],
+                            i * self.dflash_kgamma,
+                            stream,
+                        )?;
+                    }
+                }
+
                 if k4_diag && let Err(e) = self.gpu.synchronize(stream) {
                     anyhow::bail!(
                         "K4_DIAG(batched): CUDA error after layer {layer_idx} ({layer_type:?}): {e:#}"
@@ -515,11 +627,8 @@ impl TransformerModel {
 
             // ── Phase 4: final norm [R, H] + lm_head + per-row argmax ──
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 r_total as u32,
                 h as u32,
@@ -547,7 +656,7 @@ impl TransformerModel {
             // on a FREE copy engine before being picked up (1.8 us to execute
             // once it ran) — invariant to pageable/pinned/stream/spin/graph/
             // keep-awake arms, all buried by experiment. No copy op, no
-            // pickup. Kill switch ATLAS_NO_MAPPED_ARGMAX=1 restores scratch +
+            // pickup. Kill switch AVAROK_NO_MAPPED_ARGMAX=1 restores scratch +
             // on-stream copy. The mapped blob is allocated once (before the
             // first graph capture, so replays bake the same fixed address).
             let argmax_out = match mapped_argmax {
@@ -624,7 +733,7 @@ impl TransformerModel {
         // ── Phase 5: D2H + host bookkeeping ──
         // Argmax landed at scratch row 0 (graph replay and eager both write
         // the same fixed address). Blocking D2H = the step's one host sync.
-        // ATLAS_MTP_TIMING attribution (2026-07-30): everything above this
+        // AVAROK_MTP_TIMING attribution (2026-07-30): everything above this
         // line is the LAUNCH region (host-side dispatch + graph replay,
         // recorded as Argmax); the copy below is the wait-for-GPU + copy
         // (recorded as D2h). Splits the ~127 ms fwd cost between "host
@@ -659,8 +768,8 @@ impl TransformerModel {
         // a lazily-allocated 64 KB pinned blob (r_total <= 32 rows x 4 B
         // needs 128 B; headroom for future wider verifies), reused for the
         // process lifetime — the scheduler thread is the only caller.
-        // Kill switches: ATLAS_NO_PINNED_VERIFY_D2H=1 -> pageable on-stream;
-        // ATLAS_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
+        // Kill switches: AVAROK_NO_PINNED_VERIFY_D2H=1 -> pageable on-stream;
+        // AVAROK_VERIFY_D2H_DEFAULT_STREAM=1 -> the original default-stream arm.
         if filled {
             // mapped path already read the results — no copy arm runs.
         } else if super::verify_e2::verify_d2h_default_stream() {
@@ -698,7 +807,7 @@ impl TransformerModel {
             }
         }
         {
-            // Local fwd-split telemetry (ATLAS_MTP_TIMING=1): launch region vs
+            // Local fwd-split telemetry (AVAROK_MTP_TIMING=1): launch region vs
             // the blocking argmax D2H. Lives here because mtp_timing is a
             // spark-server module. One INFO line per 100 batched verifies.
             use std::sync::atomic::{AtomicU64, Ordering};
@@ -706,7 +815,7 @@ impl TransformerModel {
             static D2H_US: AtomicU64 = AtomicU64::new(0);
             static N: AtomicU64 = AtomicU64::new(0);
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *ON.get_or_init(|| std::env::var("ATLAS_MTP_TIMING").as_deref() == Ok("1")) {
+            if *ON.get_or_init(|| std::env::var("AVAROK_MTP_TIMING").as_deref() == Ok("1")) {
                 let d2h_us = t_d2h.elapsed().as_micros() as u64;
                 LAUNCH_US.fetch_add(launch_us, Ordering::Relaxed);
                 D2H_US.fetch_add(d2h_us, Ordering::Relaxed);
@@ -741,6 +850,9 @@ impl TransformerModel {
             seq.seq_len += ks[i];
         }
 
+        // The verify completed under the request: the fold may run once.
+        self.gdn_woa_eligible
+            .store(write_on_accept, std::sync::atomic::Ordering::Release);
         Ok(out)
     }
 }
@@ -749,7 +861,7 @@ impl TransformerModel {
 /// Allocated once per process (before the first verify graph capture, so
 /// captured replays bake the same fixed device address). Returns `None` when
 /// the backend cannot map (non-UMA / stub backends) or the kill switch
-/// `ATLAS_NO_MAPPED_ARGMAX=1` is set — callers then use the scratch + copy
+/// `AVAROK_NO_MAPPED_ARGMAX=1` is set — callers then use the scratch + copy
 /// path unchanged.
 fn mapped_argmax_host_dev(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
@@ -758,7 +870,7 @@ fn mapped_argmax_host_dev(
     static HOST: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
     static DEV: AtomicU64 = AtomicU64::new(0);
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *OFF.get_or_init(|| std::env::var("ATLAS_NO_MAPPED_ARGMAX").as_deref() == Ok("1")) {
+    if *OFF.get_or_init(|| std::env::var("AVAROK_NO_MAPPED_ARGMAX").as_deref() == Ok("1")) {
         return None;
     }
     let mut h = HOST.load(Ordering::Acquire);

@@ -1,0 +1,5937 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# THE 1:1 MAP. Generated skeleton -- every row starts `unported` and is
+# promoted BY HAND, because a row carries judgement (which Metal kernel, which
+# parity tier, which test, which mutations, or why 1:1 is impossible) that no
+# generator can invent. Regenerate with AVAROK_METAL_PARITY_EMIT=1; the
+# checker in crates/avarok-kernels/tests/metal_parity.rs is the verdict.
+#
+# Keyed by (source, entry), never by name: 121 gb10 entry-point names are
+# declared in more than one source file, and rms_norm alone has two different
+# formulas under one name.
+
+# resolved at generation time: 1000 gb10 kernels, 83 metal kernels
+
+[[kernel]]
+source = "kernels/gb10/common/argmax_bf16.cu"
+entry  = "argmax_bf16"
+state  = "mapped"
+metal  = "argmax_bf16"
+tier   = "T1"
+test   = "metal_argmax_bf16_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/argmax_bf16.cu"
+entry  = "argmax_bf16_batch"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/argmax_bf16.cu"
+entry  = "argmax_bf16_batch_lp"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/argmax_bf16.cu"
+entry  = "argmax_fp32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/bf16_add.cu"
+entry  = "bf16_add_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_fwd"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_l2norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_l2norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_l2norm_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/causal_conv1d.cu"
+entry  = "causal_conv1d_update_prefill_tp"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "dense_gemm_bf16"
+state  = "mapped"
+metal  = "dense_gemm_bf16"
+tier   = "T1"
+test   = "metal_dense_gemm_bf16_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "dense_gemm_bf16_f32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "dense_gemm_bf16_pipelined"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "dense_gemm_bf16_router"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "dense_gemm_f32in_f32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_bf16.cu"
+entry  = "fused_silu_mul"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_splitk.cu"
+entry  = "dense_gemm_splitk_partial"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_splitk.cu"
+entry  = "dense_gemm_splitk_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_tc.cu"
+entry  = "dense_gemm_tc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemm_tc.cu"
+entry  = "dense_gemm_tc_scaled_acc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_bf16.cu"
+entry  = "dense_gemv_bf16"
+state  = "mapped"
+metal  = "dense_gemv_bf16"
+tier   = "T1"
+test   = "metal_dense_gemv_bf16_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_bf16.cu"
+entry  = "dense_gemv_bf16_fp32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_bf16_batch2.cu"
+entry  = "dense_gemv_bf16_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_bf16_batchm.cu"
+entry  = "dense_gemv_bf16_batchm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_fp8w.cu"
+entry  = "dense_gemv_fp8w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_fp8w.cu"
+entry  = "quantize_bf16_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dense_gemv_fp8w_batch2.cu"
+entry  = "dense_gemv_fp8w_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_fp8_blockscaled_bf16.cu"
+entry  = "dequant_fp8_blockscaled_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q2_0_gn_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q2_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q3_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q4_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q6_k_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_gguf_bf16.cu"
+entry  = "dequant_q8_0_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dequant_nvfp4_bf16.cu"
+entry  = "dequant_nvfp4_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dflash2.cu"
+entry  = "dflash2_conv2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dflash2.cu"
+entry  = "dflash2_selector_walk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dflash2.cu"
+entry  = "dflash2_topk16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_compact_pools"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_expand_selection"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_index_scores"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_indexer_store"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_kpool_compress"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_mla_masked_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_topk_pools"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_topk_to_mask"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/dsa_indexer.cu"
+entry  = "dsa_write_geom"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/e2m1_branchless.cu"
+entry  = "e2m1_quantize"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/embed_from_argmax.cu"
+entry  = "batched_embed"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/embed_from_argmax.cu"
+entry  = "batched_embed_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/embed_from_argmax.cu"
+entry  = "batched_embed_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/embed_from_argmax.cu"
+entry  = "embed_from_argmax"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/embed_from_argmax.cu"
+entry  = "embed_from_argmax_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fp8_gemm_t_blockscaled.cu"
+entry  = "fp8_gemm_t_blockscaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fp8_gemv_rt.cu"
+entry  = "fp8_gemv_rowscale_batch16_rt2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fp8_gemv_rt.cu"
+entry  = "fp8_gemv_rowscale_batch8_rt2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fp8_scale_transpose.cu"
+entry  = "fp8_act_scale_to_kmajor"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fused_k_norm_rope_cache.cu"
+entry  = "fused_k_norm_rope_cache_write_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fused_k_norm_rope_cache.cu"
+entry  = "fused_k_norm_rope_cache_write_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/fused_k_norm_rope_cache.cu"
+entry  = "fused_k_norm_rope_mrope_cache_write_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_dvsplit"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_ksplit"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_ksplit_vblock2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_ksplit_vblock4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_ksplit_vblock8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_pipe"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_tc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_tc_vblock"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_tma"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_vfused"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_delta_h_vtile"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_chunk_fwd_o"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_fla.cu"
+entry  = "gated_delta_rule_recompute_wu"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent_multihead"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent_regtile"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent_wy4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_persistent.cu"
+entry  = "gated_delta_rule_prefill_persistent_wy4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_regresident.cu"
+entry  = "gated_delta_rule_prefill_regresident"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy.cu"
+entry  = "gated_delta_rule_wy2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy2_resident.cu"
+entry  = "gated_delta_rule_wy2_resident"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy2_resident_f16.cu"
+entry  = "gated_delta_rule_wy2_resident_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy3.cu"
+entry  = "gated_delta_rule_wy3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy3_f16.cu"
+entry  = "gated_delta_rule_wy3_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy3_resident.cu"
+entry  = "gated_delta_rule_wy3_resident"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy3_resident_f16.cu"
+entry  = "gated_delta_rule_wy3_resident_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4.cu"
+entry  = "gated_delta_rule_wy4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_f16.cu"
+entry  = "gated_delta_rule_wy4_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_flag_clear"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_fold"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy4_woa.cu"
+entry  = "gated_delta_rule_wy4_woa"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy64_prefill.cu"
+entry  = "gated_delta_rule_prefill_wy64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy64_prefill.cu"
+entry  = "gated_delta_rule_prefill_wy64_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wy_f16.cu"
+entry  = "gated_delta_rule_wy2_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy10_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy11_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy12_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy13_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy14_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy15_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy5_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy6_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy7_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy8_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9_f16_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gated_delta_rule_wyn.cu"
+entry  = "gated_delta_rule_wy9_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gdn_verify_fused_conv_kn.cu"
+entry  = "gdn_verify_fused_conv_kn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gdn_verify_fused_conv_kn.cu"
+entry  = "gdn_verify_fused_conv_kn_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gdn_verify_fused_k2.cu"
+entry  = "gdn_verify_fused_conv_k2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/gdn_verify_fused_k2.cu"
+entry  = "gdn_verify_fused_norm_k2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_ffn.cu"
+entry  = "glm5next_moe_combine"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_ffn.cu"
+entry  = "glm5next_router_topk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_ffn.cu"
+entry  = "glm5next_swiglu_clamp"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_ffn.cu"
+entry  = "glm5next_swiglu_clamp_f32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_expand"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_finish"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_head"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_mix"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_mix_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_post"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_post_ref"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/glm5next_mhc.cu"
+entry  = "glm5next_hc_pre"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_decode.cu"
+entry  = "inferspark_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_decode.cu"
+entry  = "inferspark_decode_multi_warp"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_decode.cu"
+entry  = "inferspark_decode_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_decode.cu"
+entry  = "inferspark_decode_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill.cu"
+entry  = "inferspark_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill.cu"
+entry  = "inferspark_prefill_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_fp8kv.cu"
+entry  = "inferspark_prefill_fp8kv_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_h128.cu"
+entry  = "inferspark_prefill_h128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_h128.cu"
+entry  = "inferspark_prefill_h128_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged.cu"
+entry  = "inferspark_prefill_paged"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged.cu"
+entry  = "inferspark_prefill_paged_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_512.cu"
+entry  = "inferspark_prefill_paged_512"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_batched.cu"
+entry  = "inferspark_prefill_paged_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_batched.cu"
+entry  = "inferspark_prefill_paged_batched_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo2v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo2v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo2v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo3v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo4v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_bf16k_turbo4v.cu"
+entry  = "inferspark_prefill_paged_bf16k_turbo4v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8.cu"
+entry  = "inferspark_prefill_paged_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8.cu"
+entry  = "inferspark_prefill_paged_fp8_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8_batched.cu"
+entry  = "inferspark_prefill_paged_fp8_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8_batched.cu"
+entry  = "inferspark_prefill_paged_fp8_batched_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo2v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo2v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo2v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo3v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo4v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_fp8k_turbo4v.cu"
+entry  = "inferspark_prefill_paged_fp8k_turbo4v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_indirect.cu"
+entry  = "inferspark_prefill_paged_indirect"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_indirect.cu"
+entry  = "inferspark_prefill_paged_indirect_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_nvfp4.cu"
+entry  = "inferspark_prefill_paged_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_nvfp4.cu"
+entry  = "inferspark_prefill_paged_nvfp4_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_nvfp4_batched.cu"
+entry  = "inferspark_prefill_paged_nvfp4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_nvfp4_batched.cu"
+entry  = "inferspark_prefill_paged_nvfp4_batched_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo2.cu"
+entry  = "inferspark_prefill_paged_turbo2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo2.cu"
+entry  = "inferspark_prefill_paged_turbo2_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo3.cu"
+entry  = "inferspark_prefill_paged_turbo3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo3.cu"
+entry  = "inferspark_prefill_paged_turbo3_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo3k_turbo8v.cu"
+entry  = "inferspark_prefill_paged_turbo3k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo3k_turbo8v.cu"
+entry  = "inferspark_prefill_paged_turbo3k_turbo8v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4.cu"
+entry  = "inferspark_prefill_paged_turbo4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4.cu"
+entry  = "inferspark_prefill_paged_turbo4_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_turbo4k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4k_turbo3v.cu"
+entry  = "inferspark_prefill_paged_turbo4k_turbo3v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4k_turbo8v.cu"
+entry  = "inferspark_prefill_paged_turbo4k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo4k_turbo8v.cu"
+entry  = "inferspark_prefill_paged_turbo4k_turbo8v_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo8.cu"
+entry  = "inferspark_prefill_paged_turbo8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_paged_turbo8.cu"
+entry  = "inferspark_prefill_paged_turbo8_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/inferspark_prefill_v47.cu"
+entry  = "inferspark_prefill_v47"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_chunk.cu"
+entry  = "kda_chunk_prepare"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_chunk.cu"
+entry  = "kda_chunk_scan"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_gate.cu"
+entry  = "kda_gate_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_gate.cu"
+entry  = "kda_gate_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_fill_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_o_norm_gated_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_o_norm_gated_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_pack_qkv_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_sigmoid_bf16_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_layer_ops.cu"
+entry  = "kda_split_widen"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_recurrent.cu"
+entry  = "kda_recurrent_decode_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_recurrent.cu"
+entry  = "kda_recurrent_decode_bf16_smem"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kda_recurrent.cu"
+entry  = "kda_recurrent_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/kv_cache_append.cu"
+entry  = "kv_cache_append"
+state  = "mapped"
+metal  = "kv_cache_append"
+tier   = "T1"
+test   = "metal_kv_cache_append_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/lora_bgmv.cu"
+entry  = "lora_bgmv_expand_fold"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/lora_bgmv.cu"
+entry  = "lora_bgmv_shrink"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssd_chunk.cu"
+entry  = "mamba2_ssd_bmm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssd_chunk.cu"
+entry  = "mamba2_ssd_cumsum"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssd_chunk.cu"
+entry  = "mamba2_ssd_scan"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssm_decode.cu"
+entry  = "mamba2_ssm_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssm_decode.cu"
+entry  = "mamba2_ssm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/mamba2_ssm_decode.cu"
+entry  = "mamba2_ssm_prefill_persistent"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/metadata_fill.cu"
+entry  = "fill_slots_from_block_table"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_bf16_grouped_gemm.cu"
+entry  = "moe_bf16_grouped_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_decode_atomic_c4.cu"
+entry  = "moe_decode_atomic_c4_finalize"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_decode_atomic_c4.cu"
+entry  = "moe_decode_atomic_c4_silu_down_accum"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv.cu"
+entry  = "moe_expert_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv.cu"
+entry  = "moe_weighted_sum"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv.cu"
+entry  = "moe_weighted_sum_blend"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv_fused.cu"
+entry  = "moe_expert_gemv_gate_up"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv_fused.cu"
+entry  = "moe_expert_gemv_gate_up_2x"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv_fused.cu"
+entry  = "moe_expert_gemv_silu_down"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv_fused.cu"
+entry  = "moe_expert_gemv_silu_down_2x"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_gemv_fused.cu"
+entry  = "moe_expert_gemv_silu_down_wide"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_expert_relu2_down_shared.cu"
+entry  = "moe_expert_relu2_down_shared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_fp8_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_gate_topk.cu"
+entry  = "moe_gate_topk_fused"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_hash_route.cu"
+entry  = "moe_hash_route"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_hash_route.cu"
+entry  = "moe_hash_route_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_lora_gather_bgmv.cu"
+entry  = "moe_lora_gather_bgmv_expand_fold"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_lora_gather_bgmv.cu"
+entry  = "moe_lora_gather_bgmv_shrink"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_lora_grouped_down.cu"
+entry  = "moe_lora_grouped_down_expand_fold"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_lora_grouped_down.cu"
+entry  = "moe_lora_grouped_down_shrink"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_batched_blend"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_build_tile_worklist"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_count_experts"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_permute_tokens"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_sort_by_expert"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_unpermute_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_permute.cu"
+entry  = "moe_unpermute_reduce_indexed"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_prefill.cu"
+entry  = "moe_expert_gate_up_shared_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_prefill.cu"
+entry  = "moe_expert_silu_down_shared_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_prefill.cu"
+entry  = "moe_weighted_sum_blend_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused.cu"
+entry  = "moe_expert_gate_up_shared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused.cu"
+entry  = "moe_expert_silu_down_shared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_expert_gate_up_shared_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_expert_silu_down_shared_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_weighted_sum_blend_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch2_t.cu"
+entry  = "moe_expert_gate_up_shared_batch2_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch2_t.cu"
+entry  = "moe_expert_silu_down_shared_batch2_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_expert_gate_up_shared_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_expert_silu_down_shared_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_weighted_sum_blend_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch3_t.cu"
+entry  = "moe_expert_gate_up_shared_batch3_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_batch3_t.cu"
+entry  = "moe_expert_silu_down_shared_batch3_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_bf16.cu"
+entry  = "moe_expert_gate_up_shared_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_bf16.cu"
+entry  = "moe_expert_silu_down_shared_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_bf16_batch2.cu"
+entry  = "moe_expert_gate_up_shared_bf16_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_bf16_batch2.cu"
+entry  = "moe_expert_silu_down_shared_bf16_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8.cu"
+entry  = "moe_expert_gate_up_shared_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8.cu"
+entry  = "moe_expert_silu_down_shared_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch2.cu"
+entry  = "moe_expert_gate_up_shared_fp8_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch2.cu"
+entry  = "moe_expert_silu_down_shared_fp8_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch2.cu"
+entry  = "moe_weighted_sum_blend_fp8_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch2_t.cu"
+entry  = "moe_expert_gate_up_shared_fp8_batch2_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch2_t.cu"
+entry  = "moe_expert_silu_down_shared_fp8_batch2_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch3.cu"
+entry  = "moe_expert_gate_up_shared_fp8_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch3.cu"
+entry  = "moe_expert_silu_down_shared_fp8_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch3.cu"
+entry  = "moe_weighted_sum_blend_fp8_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch3_t.cu"
+entry  = "moe_expert_gate_up_shared_fp8_batch3_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_batch3_t.cu"
+entry  = "moe_expert_silu_down_shared_fp8_batch3_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_t.cu"
+entry  = "moe_expert_gate_up_shared_fp8_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_fp8_t.cu"
+entry  = "moe_expert_silu_down_shared_fp8_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_t.cu"
+entry  = "moe_expert_gate_up_shared_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_t.cu"
+entry  = "moe_expert_gate_up_shared_t_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_t.cu"
+entry  = "moe_expert_silu_down_shared_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_shared_expert_fused_t.cu"
+entry  = "moe_expert_silu_down_shared_t_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_silu_mul.cu"
+entry  = "moe_silu_mul"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_silu_mul.cu"
+entry  = "silu_mul_quant_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_sorted_prefill.cu"
+entry  = "moe_sorted_gate_up"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_sorted_prefill.cu"
+entry  = "moe_sorted_silu_down"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk.cu"
+entry  = "moe_topk_softmax"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk.cu"
+entry  = "moe_topk_softmax_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk.cu"
+entry  = "moe_topk_softmax_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_sigmoid.cu"
+entry  = "moe_topk_sigmoid"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_sigmoid.cu"
+entry  = "moe_topk_sigmoid_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_softmax_bias.cu"
+entry  = "moe_topk_softmax_bias"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_softmax_bias.cu"
+entry  = "moe_topk_softmax_bias_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_softmax_bias.cu"
+entry  = "moe_zero_expert_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_sqrtsoftplus.cu"
+entry  = "moe_topk_sqrtsoftplus"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_topk_sqrtsoftplus.cu"
+entry  = "moe_topk_sqrtsoftplus_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_transpose_batched.cu"
+entry  = "moe_transpose_u8_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_w8a8_grouped_gemm.cu"
+entry  = "moe_w8a8_grouped_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/moe_w8a8_grouped_gemm.cu"
+entry  = "moe_w8a8_grouped_gemm_pm4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nemotron_moe_prefill.cu"
+entry  = "nemotron_moe_relu2_down_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nemotron_moe_prefill.cu"
+entry  = "nemotron_moe_topk_sigmoid_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nemotron_moe_prefill.cu"
+entry  = "nemotron_moe_up_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nemotron_moe_prefill.cu"
+entry  = "nemotron_moe_weighted_sum_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_add_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_add_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_add_row_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_argmax_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_attention"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_attn_bdecode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_attn_kv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_attn_kv_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_beam_topk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_bias_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_embed"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_embed_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_gather_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_gemv_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_layernorm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_layernorm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_layernorm_oop_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_linear"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_relu_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_relu_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_scale_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_scale_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/nllb_encoder.cu"
+entry  = "nllb_scatter_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn.cu"
+entry  = "paged_decode_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn.cu"
+entry  = "paged_decode_attn_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn.cu"
+entry  = "paged_decode_attn_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo2v.cu"
+entry  = "paged_decode_attn_bf16k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo2v_128.cu"
+entry  = "paged_decode_attn_bf16k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo3v.cu"
+entry  = "paged_decode_attn_bf16k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo3v_128.cu"
+entry  = "paged_decode_attn_bf16k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo4v.cu"
+entry  = "paged_decode_attn_bf16k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_bf16k_turbo4v_128.cu"
+entry  = "paged_decode_attn_bf16k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8.cu"
+entry  = "paged_decode_attn_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8.cu"
+entry  = "paged_decode_attn_reduce_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8.cu"
+entry  = "paged_decode_attn_splitk_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo2v.cu"
+entry  = "paged_decode_attn_fp8k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo2v_128.cu"
+entry  = "paged_decode_attn_fp8k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo3v.cu"
+entry  = "paged_decode_attn_fp8k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo3v_128.cu"
+entry  = "paged_decode_attn_fp8k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo4v.cu"
+entry  = "paged_decode_attn_fp8k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_fp8k_turbo4v_128.cu"
+entry  = "paged_decode_attn_fp8k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo2.cu"
+entry  = "paged_decode_attn_turbo2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo2_128.cu"
+entry  = "paged_decode_attn_turbo2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3.cu"
+entry  = "paged_decode_attn_turbo3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3_128.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3_128.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3_128.cu"
+entry  = "paged_decode_attn_turbo3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3k_turbo8v.cu"
+entry  = "paged_decode_attn_turbo3k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo3k_turbo8v_128.cu"
+entry  = "paged_decode_attn_turbo3k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4.cu"
+entry  = "paged_decode_attn_turbo4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_128.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_128.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_128.cu"
+entry  = "paged_decode_attn_turbo4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_512.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_512.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4_512.cu"
+entry  = "paged_decode_attn_turbo4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4k_turbo3v.cu"
+entry  = "paged_decode_attn_turbo4k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4k_turbo3v_128.cu"
+entry  = "paged_decode_attn_turbo4k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4k_turbo8v.cu"
+entry  = "paged_decode_attn_turbo4k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo4k_turbo8v_128.cu"
+entry  = "paged_decode_attn_turbo4k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8.cu"
+entry  = "paged_decode_attn_turbo8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_128.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_128.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_128.cu"
+entry  = "paged_decode_attn_turbo8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_512.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_512.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/paged_decode_attn_turbo8_512.cu"
+entry  = "paged_decode_attn_turbo8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/per_token_group_quant_fp8.cu"
+entry  = "per_token_group_quant_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/q2_0_gemv.cu"
+entry  = "q2_0_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/q2_0_gemv.cu"
+entry  = "q2_0_gemv_batchm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/q2_0_gemv_vec.cu"
+entry  = "q2_0_gemv_vec"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/q2_0_gemv_vec.cu"
+entry  = "q2_0_gemv_vec_batchm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/quant_rowwise_fp8.cu"
+entry  = "quant_rowwise_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/quantize_bf16_to_fp8_blockscaled.cu"
+entry  = "quantize_bf16_to_fp8_blockscaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/quantize_bf16_to_nvfp4.cu"
+entry  = "f32_to_bf16_trunc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/quantize_bf16_to_nvfp4.cu"
+entry  = "nvfp4_global_absmax"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/quantize_bf16_to_nvfp4.cu"
+entry  = "quantize_bf16_to_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/relu_squared.cu"
+entry  = "bias_add_bf16_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/relu_squared.cu"
+entry  = "convert_f32_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/relu_squared.cu"
+entry  = "moe_weighted_sum_scale"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/relu_squared.cu"
+entry  = "relu_squared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/relu_squared.cu"
+entry  = "relu_squared_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "bf16_absmax"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "bf16_absmax_per_head"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "reshape_and_cache_flash"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "reshape_and_cache_flash_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "reshape_and_cache_flash_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache.cu"
+entry  = "reshape_and_cache_flash_v_only"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_bf16k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_bf16k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_bf16k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_fp8k_turbo2v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_fp8k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_fp8k_turbo4v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo3k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo4k_turbo3v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo4k_turbo8v"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/reshape_and_cache_turbo.cu"
+entry  = "reshape_and_cache_flash_turbo8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_concat"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_scaled_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_sigmoid_blend"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_sigmoid_blend_device"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "bf16_to_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "sigmoid_gate_mul"
+state  = "mapped"
+metal  = "sigmoid_gate"
+tier   = "T1"
+test   = "metal_sigmoid_gate_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "sigmoid_gate_mul_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "sigmoid_gate_mul_head_broadcast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "silu_mul_separate"
+state  = "mapped"
+metal  = "silu_gate"
+tier   = "T1"
+test   = "metal_silu_gate_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/residual_add.cu"
+entry  = "softplus_gate_mul_head_broadcast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "residual_add_rms_norm_vanilla"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_residual_vanilla"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm_vanilla.cu"
+entry  = "rms_norm_vanilla"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rms_norm_vanilla.cu"
+entry  = "rms_norm_vanilla_warp_row"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_proportional"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_yarn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_yarn_interleaved"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_yarn_interleaved_inv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope.cu"
+entry  = "rope_forward_yarn_scaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope_mrope_interleaved.cu"
+entry  = "rope_forward_mrope_interleaved"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/rope_mrope_interleaved.cu"
+entry  = "rope_forward_mrope_interleaved_k_only"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_h_dtype.cu"
+entry  = "ssm_h_state_f16_to_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_h_dtype.cu"
+entry  = "ssm_h_state_f32_to_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "compute_gdn_gates"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "deinterleave_qg"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "deinterleave_qg_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "deinterleave_qg_split_qnorm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "deinterleave_qg_split_qnorm_mrope"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "deinterleave_qkvz"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "dense_gemm_ba_gates_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_preprocess.cu"
+entry  = "dense_gemv_ba_gates"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_state_norm.cu"
+entry  = "ssm_state_clamp_norm_fused"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/ssm_state_norm.cu"
+entry  = "ssm_state_clamp_norm_fused_f16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/token_overlay.cu"
+entry  = "embed_overlay_routed_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/token_overlay.cu"
+entry  = "embed_rowdiff_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/token_overlay.cu"
+entry  = "lmhead_overlay_routed_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/token_overlay.cu"
+entry  = "lmhead_overlay_routed_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/tq_plus_innerq_apply.cu"
+entry  = "tq_plus_innerq_apply_k"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/tq_plus_innerq_apply.cu"
+entry  = "tq_plus_innerq_apply_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/transpose_u8.cu"
+entry  = "transpose_u8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/vector_add.cu"
+entry  = "vector_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_fp8_ldmab.cu"
+entry  = "fp8_fp8_gemm_ldmab"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemm.cu"
+entry  = "w4a16_dequant"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemm.cu"
+entry  = "w4a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "glm5next_moe_row_union"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch5"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch6"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch7"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_pf"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_pf2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_pf3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_pf_free"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_rt2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_batch8_rt4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_dual_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_dual_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_logits"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_qg"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_qg_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_qg_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_qkvz"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m5"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m6"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m7"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv.cu"
+entry  = "w4a16_gemv_sw_moe_batchm_m8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv_fused.cu"
+entry  = "w4a16_gemv_dual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv_fused.cu"
+entry  = "w4a16_gemv_dual_sw"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv_fused.cu"
+entry  = "w4a16_gemv_silu_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w4a16_gemv_fused.cu"
+entry  = "w4a16_gemv_silu_input_sw"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm.cu"
+entry  = "w8a16_dequant"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm.cu"
+entry  = "w8a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_pipelined.cu"
+entry  = "w8a16_gemm_pipelined"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_t.cu"
+entry  = "transpose_block_scale"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_t.cu"
+entry  = "transpose_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_t.cu"
+entry  = "w8a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_t.cu"
+entry  = "w8a16_gemm_t_pipelined"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemm_t_m128.cu"
+entry  = "w8a16_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv.cu"
+entry  = "w8a16_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_batch4.cu"
+entry  = "w8a16_gemv_batch16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_batch4.cu"
+entry  = "w8a16_gemv_batch16_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_batch4.cu"
+entry  = "w8a16_gemv_batch4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_batch4.cu"
+entry  = "w8a16_gemv_batch4_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_fused.cu"
+entry  = "w8a16_gemv_dual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/w8a16_gemv_fused.cu"
+entry  = "w8a16_gemv_silu_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/common/wht_bf16.cu"
+entry  = "wht_bf16_inplace"
+state  = "mapped"
+metal  = "wht_bf16_inplace"
+tier   = "T1"
+test   = "metal_wht_bf16_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/common/wht_bf16.cu"
+entry  = "wht_bf16_inplace_inv"
+state  = "mapped"
+metal  = "wht_bf16_inplace_inv"
+tier   = "T1"
+test   = "metal_wht_bf16_inverse_roundtrip"
+
+[[kernel]]
+source = "kernels/gb10/common/widen_block_scale_f32.cu"
+entry  = "widen_block_scale_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_act_quant_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_fp4_quant"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_gemm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_index_score"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_pool"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rmsnorm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rmsnorm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_rope"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_scale_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_scatter_cols"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_slice_cols"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu"
+entry  = "attn_v41_sparse_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/csa_compress.cu"
+entry  = "csa_compress"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/engram_v41.cu"
+entry  = "engram_v41_gate"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/grouped_gemm_mla.cu"
+entry  = "grouped_gemm_mla"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_collapse"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes_dot"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu"
+entry  = "hc_v41_mixes_finish"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu"
+entry  = "hc_expand"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu"
+entry  = "hc_head"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu"
+entry  = "hc_post"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu"
+entry  = "hc_pre"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/inferspark_prefill_512.cu"
+entry  = "inferspark_prefill_512"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "NAME"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q2_k_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q2_k_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q3_k_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q3_k_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q8_1_quantize_d2s6_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "atlas_q8_1_quantize_d4_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_experts"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_experts_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q2_k_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_experts"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_experts_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_mmvq_q3_k_w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "kquant_q8_1_rows_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "mul_mat_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "mul_mat_q_stream_k_fixup"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_mxfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_mmq_q8_1_worker"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu"
+entry  = "quantize_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_batched_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_cache_assemble"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_cache_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_kv_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_final_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_extract_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_scatter"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_writeback"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_writeback_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_cache_assemble_fp8.cu"
+entry  = "mla_cache_assemble_fp8_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_fused_prefill.cu"
+entry  = "mla_fused_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_paged_decode.cu"
+entry  = "mla_paged_decode_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_paged_decode_fp8.cu"
+entry  = "mla_paged_decode_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/mla_prefill_attn.cu"
+entry  = "mla_prefill_attn_320"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_silu_mul.cu"
+entry  = "moe_silu_mul"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_accumulate"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_finish"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_gather_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_router_gemv_f32out"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_scatter_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_sum_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu"
+entry  = "moe_v41_swiglu"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64_e8m0"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_reduce_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_splitk_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_reduce_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu"
+entry  = "paged_decode_attn_splitk_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/prefill_attn_compressed.cu"
+entry  = "prefill_attn_compressed"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "bf16_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "predequant_nvfp4_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/embed_scale.cu"
+entry  = "bf16_scale_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/embed_scale.cu"
+entry  = "f32_scale_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gelu.cu"
+entry  = "gelu_mul"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/gelu.cu"
+entry  = "gelu_tanh"
+state  = "mapped"
+metal  = "gelu"
+tier   = "T1"
+test   = "metal_gelu_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/inferspark_prefill_512.cu"
+entry  = "inferspark_prefill_512"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/inferspark_prefill_512tc.cu"
+entry  = "inferspark_prefill_512tc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/inferspark_prefill_512tc.cu"
+entry  = "inferspark_prefill_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/logit_softcap.cu"
+entry  = "logit_softcap_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused.cu"
+entry  = "moe_expert_gate_up_shared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused.cu"
+entry  = "moe_expert_silu_down_shared"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_expert_gate_up_shared_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_expert_silu_down_shared_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch2.cu"
+entry  = "moe_weighted_sum_blend_batch2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_expert_gate_up_shared_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_expert_silu_down_shared_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_shared_expert_fused_batch3.cu"
+entry  = "moe_weighted_sum_blend_batch3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_512.cu"
+entry  = "paged_decode_attn_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_fp8_512.cu"
+entry  = "paged_decode_attn_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_fp8_512.cu"
+entry  = "paged_decode_attn_reduce_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/paged_decode_attn_fp8_512.cu"
+entry  = "paged_decode_attn_splitk_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-26b-a4b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/embed_scale.cu"
+entry  = "bf16_scale_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/embed_scale.cu"
+entry  = "f32_scale_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/inferspark_prefill_512.cu"
+entry  = "inferspark_prefill_512"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/inferspark_prefill_512tc.cu"
+entry  = "inferspark_prefill_512tc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/inferspark_prefill_512tc.cu"
+entry  = "inferspark_prefill_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/logit_softcap.cu"
+entry  = "logit_softcap_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/logit_softcap.cu"
+entry  = "logit_softcap_fp32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/gemma-4-31b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/glm-5.3-flash/nvfp4/glm5next_dsa_mla_decode.cu"
+entry  = "glm5next_dsa_mla_decode_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/glm-5.3-flash/nvfp4/glm5next_mla_latent_write.cu"
+entry  = "glm5next_mla_latent_write_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/holo-3.1-0.8b/nvfp4/fp4_mma_microtest.cu"
+entry  = "fp4_microtest_mma"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/holo-3.1-0.8b/nvfp4/fp4_mma_microtest.cu"
+entry  = "fp4_microtest_pack"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/kimi-k3/bf16/kda_decode.cu"
+entry  = "k3_kda_conv_update_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/kimi-k3/bf16/kda_decode.cu"
+entry  = "k3_kda_recurrent_step_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/kimi-k3/bf16/mla_decode.cu"
+entry  = "k3_mla_maybe_rope_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/kimi-k3/bf16/mla_decode.cu"
+entry  = "k3_mla_sdpa_gate_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/w4a16_gemm_v2.cu"
+entry  = "w4a16_gemm_t_m128_v2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/minimax-m2-229b/nvfp4/w4a16_gemm_v3.cu"
+entry  = "w4a16_gemm_t_m128_v3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_batched_gemv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_cache_assemble"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_cache_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_kv_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_final_assemble_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_extract_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_scatter"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_writeback"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_absorbed.cu"
+entry  = "mla_q_rope_writeback_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_fused_prefill.cu"
+entry  = "mla_fused_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/mla_prefill_attn.cu"
+entry  = "mla_prefill_attn_320"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_reduce_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_fp8_mla.cu"
+entry  = "paged_decode_attn_splitk_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/paged_decode_attn_mla.cu"
+entry  = "paged_decode_attn_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/rope.cu"
+entry  = "rope_forward"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/mistral-small-4/nvfp4/rope.cu"
+entry  = "rope_forward_yarn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_relu2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/moe_w4a4_grouped.cu"
+entry  = "moe_w4a4_grouped_gemm_relu2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "bf16_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t_m128_mfast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_m128_mfast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_mfast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "predequant_nvfp4_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a4_gemm.cu"
+entry  = "w4a4_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/nemotron-labs-3-puzzle-75b-a9b/nvfp4/w4a4_gemm.cu"
+entry  = "w4a4_gemm_mfast"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-next-80b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "f32_residual_add"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_f32_input"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "gated_rms_norm_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "l2_norm_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "residual_add_rms_norm_gatef32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm"
+state  = "mapped"
+metal  = "rms_norm"
+tier   = "T1"
+test   = "metal_rms_norm_matches_reference"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_f32_in_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_residual_f32_abs"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/rms_norm.cu"
+entry  = "rms_norm_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_add_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_attention_rope"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_bf16_copy"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_f32_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gelu"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gemm_bias"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gemm_bias_nn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_layer_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3-vl-30b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_spatial_merge"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.5-122b-a10b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f16_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f16_strided_norm_half"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm_half"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm_smem"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule_snap.cu"
+entry  = "gated_delta_rule_decode_f32_norm_snap"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gated_delta_rule_snap.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm_snap"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/gdn_verify_fused_conv_kn_f32.cu"
+entry  = "gdn_verify_fused_conv_kn_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/inferspark_prefill_paged_indirect.cu"
+entry  = "inferspark_prefill_paged_indirect"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/inferspark_prefill_paged_indirect.cu"
+entry  = "inferspark_prefill_paged_indirect_64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq16_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq16_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq32_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq32_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq64_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_mmq64_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_quantize_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_repack"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_scale_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_silu_mul_quant"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "avarok_nvfp4_silu_mul_scaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "mul_mat_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "mul_mat_q_stream_k_fixup"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "quantize_mmq_mxfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "quantize_mmq_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "quantize_mmq_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "quantize_mmq_q8_1_worker"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/nvfp4_mmq.cu"
+entry  = "quantize_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "avarok_q2_0_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "avarok_q2_0_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "mul_mat_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "mul_mat_q_stream_k_fixup"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "quantize_mmq_mxfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "quantize_mmq_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "quantize_mmq_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "quantize_mmq_q8_1_worker"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q2_0_mmq.cu"
+entry  = "quantize_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "avarok_q4k_mmq128_nc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "avarok_q4k_mmq128_wc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "avarok_q8_1_quantize_ds4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "avarok_q8_1_quantize_ds4_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "mul_mat_q"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "mul_mat_q_stream_k_fixup"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "quantize_mmq_mxfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "quantize_mmq_nvfp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "quantize_mmq_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "quantize_mmq_q8_1_worker"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_mmq.cu"
+entry  = "quantize_q8_1"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/q4k_quantize.cu"
+entry  = "q4k_quantize"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "bf16_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_m16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_p4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w_ilp"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w_ldm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w_ldmab"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_8w_pipe"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith10"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith5"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith6"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith7"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_faith9"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_i32acc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_mmq"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_mmq2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_mmqf"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_mmqf2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_mmqf3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_padA"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_splitk"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_t_m128_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_gemm_t_m64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "int8_splitk_reduce"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "predequant_nvfp4_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "requant_a_bf16_int8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "requant_a_bf16_int8_il"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "requant_w_nvfp4_int8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64_n64_p3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64_p3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128_bf16_v2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m64_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_p3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a16_gemm_v2.cu"
+entry  = "w4a16_gemm_t_m128_v2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-27b/nvfp4/w4a4_gemm.cu"
+entry  = "w4a4_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk2"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_chunk3"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_conv_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_decode_f32_strided_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule.cu"
+entry  = "gated_delta_rule_prefill_split4_batched"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/gated_delta_rule_wy17.cu"
+entry  = "gated_delta_rule_wy17"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_fp8_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_down_t_k64_fp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_fused_gate_up_t_k64_fp4"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_k32"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_m256"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/moe_w4a16_grouped_gemm.cu"
+entry  = "moe_w4a16_grouped_gemm_ptrtable_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_add_bias"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_add_inplace"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_attention_rope"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_bf16_copy"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_f32_to_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gelu"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gemm_bias"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_gemm_bias_nn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_layer_norm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vision_spatial_merge"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vit_rope_deinterleave"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vit_scatter_head"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/vision_encoder.cu"
+entry  = "vit_softmax_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "bf16_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "fp8_gemm_t_row_scaled_m16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "predequant_nvfp4_to_fp8"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_k64"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.6-35b-a3b/nvfp4/w4a16_gemm.cu"
+entry  = "w4a16_gemm_t_m128"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/gated_norm_sigmoid.cu"
+entry  = "gated_rms_norm_f32_input_sigmoid"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/gated_norm_sigmoid.cu"
+entry  = "gated_rms_norm_prefill_sigmoid"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/gated_norm_sigmoid.cu"
+entry  = "gated_rms_norm_sigmoid"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_expand"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_head"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_post"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre_down"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre_finish"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre_mix"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre_stage"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_pre_stage_bf16"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/hyper_connection.cu"
+entry  = "hc_silu_scale"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/ple.cu"
+entry  = "ple_add_highway"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/ple.cu"
+entry  = "ple_conv"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/ple.cu"
+entry  = "ple_gate"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_block_pool"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_gather"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_prefill_attn"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_qprep"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_qprep_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_score"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_score_rows"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/qwen3.8-flash-next/nvfp4/qsa_indexer.cu"
+entry  = "qsa_score_rows_tc"
+state  = "unported"
+
+[[kernel]]
+source = "kernels/gb10/step3p7-flash/nvfp4/moe_silu_mul.cu"
+entry  = "moe_silu_mul"
+state  = "unported"
+
+[[metal]]
+source = "kernels/metal/common/noop_smoke.metal"
+entry  = "noop_smoke"
+state  = "metal_only"
+why    = "Build-and-launch pipeline probe: zeros the first n floats of out so metal_alloc_copy_launch_roundtrip can prove alloc, copy, launch and readback work end to end. gb10 has no smoke kernel; its launch path is exercised by the real kernels' tests."
+
+[[metal]]
+source = "kernels/metal/common/softmax_topp.metal"
+entry  = "softmax_topp"
+state  = "metal_only"
+why    = "Top-p sampler: temperature softmax, nucleus truncation by a binary search on the survival threshold, and one inverse-CDF draw from a host uniform, in a single launch. gb10 samples on the host after argmax_bf16/argmax_fp32; no CUDA kernel performs a softmax or a top-p draw over the vocab."
+
+[[metal]]
+source = "kernels/metal/common/conv3d_patch_embed.metal"
+entry  = "conv3d_patch_embed"
+state  = "metal_only"
+why    = "Direct non-overlapping 3-D convolution for the Qwen3.5-VL patch embed, reading the HF weight layout [out, kT, kH, kW, in] and fusing the bias. gb10 does patch embedding by unfolding patches on the host and running a plain GEMM, so no CUDA kernel has a conv contract at all."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_dequant.metal"
+entry  = "mlx_int8_dequant"
+state  = "metal_only"
+why    = "Dequantizes the MLX 8-bit affine group format (4 uint8 per uint32, per-group bf16 scale AND bias, w = byte*s + b) to bf16. gb10 has no MLX-format kernel: its w8a16_* family consumes FP8-E4M3 block-scaled weights with no per-group bias, a different storage format and different arithmetic."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_gemm.metal"
+entry  = "mlx_int8_gemm"
+state  = "metal_only"
+why    = "Prefill GEMM with inline MLX 8-bit affine dequant (per-group bf16 scale and bias). gb10's int8 and w8a16 GEMMs (w8a16_gemm*.cu, the int8_gemm_* entries of w4a16_gemm.cu) read FP8-E4M3 or symmetric int8 block-scaled weights with no bias term; nothing on the CUDA side consumes the MLX uint32 packing."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_gemv.metal"
+entry  = "mlx_int8_gemv"
+state  = "metal_only"
+why    = "Decode GEMV with inline MLX 8-bit affine dequant, 4 rows per threadgroup and one simdgroup per row. gb10's w8a16_gemv*.cu reads FP8-E4M3 block-scaled weights without a per-group bias; the MLX uint32 packing and its scale-plus-bias affine recovery have no CUDA implementation."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_gemv_gate_up.metal"
+entry  = "mlx_int8_gemv_gate_up"
+state  = "metal_only"
+why    = "Fused dual GEMV (gate_proj and up_proj sharing one x) over MLX 8-bit affine weights. gb10 fuses gate/up only inside MoE expert kernels (moe_expert_gemv_gate_up) over NVFP4/FP8 experts, never over a dense MLX-packed int8 weight with a per-group bias, so there is no CUDA counterpart."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_gemv_silu_gate.metal"
+entry  = "mlx_int8_gemv_silu_gate"
+state  = "metal_only"
+why    = "down_proj GEMV over MLX 8-bit affine weights with the SwiGLU input silu(gate)*up computed inline. gb10 has silu-mul-then-GEMV only for FP8/NVFP4 MoE experts (moe_expert_gemv_silu_down); nothing on the CUDA side reads the MLX packing or applies its per-group bias."
+
+[[metal]]
+source = "kernels/metal/common/mlx_int8_gemv_silu_gate.metal"
+entry  = "mlx_int8_gemv_silu_gate_resid"
+state  = "metal_only"
+why    = "The same fused SwiGLU down_proj GEMV over MLX 8-bit affine weights, additionally folding the residual add y = x_resid + W*(silu(gate)*up). No CUDA kernel reads the MLX packing, and gb10 folds the residual in separate residual_add / residual_add_rms_norm kernels rather than in the GEMV."
+
+[[metal]]
+source = "kernels/metal/common/gdn_helpers.metal"
+entry  = "silu_apply"
+state  = "metal_only"
+why    = "Standalone elementwise silu(x) on bf16, used by the Metal GDN gate path before bf16_mul. gb10 never launches a bare SiLU: every CUDA SiLU is fused into a gate*up product (fused_silu_mul, silu_mul_separate) or into the conv1d / gated-norm kernels that need it."
+
+[[metal]]
+source = "kernels/metal/common/gdn_helpers.metal"
+entry  = "bf16_mul"
+state  = "metal_only"
+why    = "Plain elementwise bf16 Hadamard product out = a*b with fp32 internal math, pairing with silu_apply on the Metal GDN gate path. gb10 has no unfused elementwise multiply; its gate products are fused into sigmoid_gate_mul, silu_mul_separate and the gated_rms_norm family."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_linear_no_bias"
+state  = "metal_only"
+why    = "fp32 NLLB linear without a bias operand. gb10's nllb_linear takes a nullable bias pointer and branches on it in-kernel (bias ? bias[n] : 0), which Metal cannot express because buffer arguments are never null, so the bias-less case became its own Metal entry point with no CUDA twin."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_linear_bf16"
+state  = "metal_only"
+why    = "bf16 NLLB linear with fused bias (C = bias + A*W^T) for M > 1. gb10's nllb_encoder.cu has no bf16 GEMM: its batched bf16 projections go through dense_gemm_bf16_pipelined followed by nllb_bias_bf16, so this fused M>1 bf16 linear is a Metal-side composition of two CUDA kernels."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_linear_no_bias_bf16"
+state  = "metal_only"
+why    = "bf16 NLLB linear without bias for M > 1. gb10's nllb_encoder.cu has neither a bf16 GEMM nor a bias-less linear entry: its bf16 path is nllb_gemv_bf16 for M = 1 and dense_gemm_bf16_pipelined otherwise, so nothing on the CUDA side carries this signature."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_add_position_bf16"
+state  = "metal_only"
+why    = "Adds one position row to every batch row of a decoder step (dst[b, :] += pos[:] over batch x D). gb10 broadcasts positions with nllb_add_row_bf16 over a flat [n, d] view, which Metal also has; this batch-shaped variant exists only on the Metal side."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_cache_write_bf16"
+state  = "metal_only"
+why    = "Writes one decoder step's rows into a per-batch contiguous cache at position pos with an explicit rows count (src, cache, pos, batch, rows, D). gb10 writes its NLLB cache only through nllb_scatter_batched (src, dst, pos, B, stride, d), which Metal also carries; this second write path has no CUDA twin."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_gemv_bf16_no_bias"
+state  = "metal_only"
+why    = "bf16 NLLB GEMV without the bias operand. gb10's nllb_gemv_bf16 takes a nullable bias pointer and checks it in-kernel (if (bias) acc += bias[warp]); Metal cannot pass a null buffer, so the no-bias case became a separate Metal entry point that no CUDA kernel corresponds to."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_gemv_batched_bf16"
+state  = "metal_only"
+why    = "Batched bf16 NLLB GEMV (M rows of x against one W, bias applied per row) for multi-beam decode. gb10 has only the single-row nllb_gemv_bf16 and routes M > 1 projections through the dense_gemm_bf16_pipelined tensor-core GEMM, so no CUDA entry point takes an M axis here."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_attn_kv_batched_bf16"
+state  = "metal_only"
+why    = "Batched bf16 NLLB attention over a leading batch dimension (q[batch, tq, H*D] against k/v[batch, tk, H*D]). gb10's nllb_attn_kv_bf16 handles one sequence per launch and its batched decode goes through nllb_attn_bdecode with a per-row tk table, so no CUDA kernel has this batch-major prefill contract."
+
+[[metal]]
+source = "kernels/metal/common/lora_bgmv.metal"
+entry  = "lora_bgmv_shrink_stub"
+state  = "stub"
+gb10   = "kernels/gb10/common/lora_bgmv.cu::lora_bgmv_shrink"
+why    = "Empty body by its own header: per-request LoRA bgmv is not implemented on Metal. Stands in for gb10's lora_bgmv_shrink (xa[row, :] = x[row, :] @ A_s^T at max_rank, BF16 out) so the metal kernel set is not surprised by a missing stem. A real port must reproduce dense_gemv_bf16's reduction order."
+
+[[metal]]
+source = "kernels/metal/common/lora_bgmv.metal"
+entry  = "lora_bgmv_expand_fold_stub"
+state  = "stub"
+gb10   = "kernels/gb10/common/lora_bgmv.cu::lora_bgmv_expand_fold"
+why    = "Empty body by its own header: per-request LoRA bgmv is not implemented on Metal. Stands in for gb10's lora_bgmv_expand_fold (delta = xa @ B_s^T, then out += scale_s * bf16(delta) with the bf16 rounding BEFORE the scale). Nothing here can be mapped until a body exists and is measured."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode.metal"
+entry  = "attention_decode"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn.cu::paged_decode_attn"
+why    = "gb10 reads K/V through block_tables and seq_lens over a paged NHD pool for num_seqs sequences with an optional sliding_window; Metal reads one contiguous [seq_len, kv_heads, head_dim] cache for a single sequence and silently clamps seq_len to MAX_SEQ_DECODE = 4096 (threadgroup score array). Paged vs contiguous, plus the clamp."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_turbo2.metal"
+entry  = "attention_decode_turbo2"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_turbo2.cu::paged_decode_attn_turbo2"
+why    = "gb10 is paged (block_tables, seq_lens, block_stride_bytes, data_section_bytes) over num_seqs; Metal takes flat contiguous k_data/v_data/k_scales/v_scales for ONE sequence, exposes sparse_v_threshold as an argument where CUDA fixes it as a constant, and clamps seq_len to 4096. Same Turbo2 byte layout per token, different cache contract."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_turbo3.metal"
+entry  = "attention_decode_turbo3"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_turbo3.cu::paged_decode_attn_turbo3"
+why    = "gb10 is paged (block_tables, seq_lens, block_stride_bytes, data_section_bytes) over num_seqs; Metal takes flat contiguous k_data/v_data/k_scales/v_scales for ONE sequence, exposes sparse_v_threshold as an argument where CUDA fixes it as a constant, and clamps seq_len to 4096. Same Turbo3 byte layout per token, different cache contract."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_turbo4.metal"
+entry  = "attention_decode_turbo4"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_turbo4.cu::paged_decode_attn_turbo4"
+why    = "gb10 is paged (block_tables, seq_lens, block_stride_bytes, data_section_bytes) over num_seqs; Metal takes flat contiguous k_data/v_data/k_scales/v_scales for ONE sequence, exposes sparse_v_threshold as an argument where CUDA fixes it as a constant, and clamps seq_len to 4096. Same Turbo4 byte layout per token, different cache contract."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_turbo8.metal"
+entry  = "attention_decode_turbo8"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_turbo8.cu::paged_decode_attn_turbo8"
+why    = "gb10 is paged (block_tables, seq_lens, block_stride_bytes, data_section_bytes) over num_seqs; Metal takes flat contiguous k_data/v_data/k_scales/v_scales for ONE sequence, exposes sparse_v_threshold as an argument where CUDA fixes it as a constant, and clamps seq_len to 4096. Same Turbo8 byte layout per token, different cache contract."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_bf16k_turbov.metal"
+entry  = "attention_decode_bf16k_turbo2v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_bf16k_turbo2v.cu::paged_decode_attn_bf16k_turbo2v"
+why    = "gb10 reads a paged bf16 K pool and a separately strided paged Turbo2 V pool (block_tables, v_block_stride_bytes, v_data_section_bytes, sliding_window) for num_seqs; Metal reads one contiguous bf16 k_cache and flat v_data/v_scales for a single sequence, takes sparse_v_threshold as an argument, and clamps seq_len to MAX_SEQ_DECODE_ASYM = 4096."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_bf16k_turbov.metal"
+entry  = "attention_decode_bf16k_turbo3v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_bf16k_turbo3v.cu::paged_decode_attn_bf16k_turbo3v"
+why    = "gb10 reads a paged bf16 K pool and a separately strided paged Turbo3 V pool (block_tables, v_block_stride_bytes, v_data_section_bytes, sliding_window) for num_seqs; Metal reads one contiguous bf16 k_cache and flat v_data/v_scales for a single sequence, takes sparse_v_threshold as an argument, and clamps seq_len to MAX_SEQ_DECODE_ASYM = 4096."
+
+[[metal]]
+source = "kernels/metal/common/attention_decode_bf16k_turbov.metal"
+entry  = "attention_decode_bf16k_turbo4v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/paged_decode_attn_bf16k_turbo4v.cu::paged_decode_attn_bf16k_turbo4v"
+why    = "gb10 reads a paged bf16 K pool and a separately strided paged Turbo4 V pool (block_tables, v_block_stride_bytes, v_data_section_bytes, sliding_window) for num_seqs; Metal reads one contiguous bf16 k_cache and flat v_data/v_scales for a single sequence, takes sparse_v_threshold as an argument, and clamps seq_len to MAX_SEQ_DECODE_ASYM = 4096."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_turbo2.metal"
+entry  = "kv_cache_append_turbo2"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_turbo2"
+why    = "gb10 writes num_tokens tokens into a paged byte pool addressed by slot_mapping (block_size, block_stride_bytes, data_section_bytes, key/value strides); Metal writes exactly one token at cache_pos into flat contiguous k_data/v_data/k_scales/v_scales. Same Turbo2 codebook and group-scale encoding, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_turbo3.metal"
+entry  = "kv_cache_append_turbo3"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_turbo3"
+why    = "gb10 writes num_tokens tokens into a paged byte pool addressed by slot_mapping (block_size, block_stride_bytes, data_section_bytes, key/value strides); Metal writes exactly one token at cache_pos into flat contiguous k_data/v_data/k_scales/v_scales. Same Turbo3 codebook and group-scale encoding, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_turbo4.metal"
+entry  = "kv_cache_append_turbo4"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_turbo4"
+why    = "gb10 writes num_tokens tokens into a paged byte pool addressed by slot_mapping (block_size, block_stride_bytes, data_section_bytes, key/value strides); Metal writes exactly one token at cache_pos into flat contiguous k_data/v_data/k_scales/v_scales. Same Turbo4 codebook and group-scale encoding, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_turbo8.metal"
+entry  = "kv_cache_append_turbo8"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_turbo8"
+why    = "gb10 writes num_tokens tokens into a paged byte pool addressed by slot_mapping (block_size, block_stride_bytes, data_section_bytes, key/value strides); Metal writes exactly one token at cache_pos into flat contiguous k_data/v_data/k_scales/v_scales. Same Turbo8 codebook and group-scale encoding, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_bf16k_turbov.metal"
+entry  = "kv_cache_append_bf16k_turbo2v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_bf16k_turbo2v"
+why    = "gb10 writes num_tokens tokens through slot_mapping into a paged bf16 K pool and a separately strided paged Turbo2 V pool (k_block_stride_bytes, v_block_stride_bytes, v_data_section_bytes); Metal writes one token at cache_pos into a contiguous bf16 k_cache and flat v_data/v_scales. Same per-side rotation contract, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_bf16k_turbov.metal"
+entry  = "kv_cache_append_bf16k_turbo3v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_bf16k_turbo3v"
+why    = "gb10 writes num_tokens tokens through slot_mapping into a paged bf16 K pool and a separately strided paged Turbo3 V pool (k_block_stride_bytes, v_block_stride_bytes, v_data_section_bytes); Metal writes one token at cache_pos into a contiguous bf16 k_cache and flat v_data/v_scales. Same per-side rotation contract, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/kv_cache_append_bf16k_turbov.metal"
+entry  = "kv_cache_append_bf16k_turbo4v"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/reshape_and_cache_turbo.cu::reshape_and_cache_flash_bf16k_turbo4v"
+why    = "gb10 writes num_tokens tokens through slot_mapping into a paged bf16 K pool and a separately strided paged Turbo4 V pool (k_block_stride_bytes, v_block_stride_bytes, v_data_section_bytes); Metal writes one token at cache_pos into a contiguous bf16 k_cache and flat v_data/v_scales. Same per-side rotation contract, paged vs contiguous addressing."
+
+[[metal]]
+source = "kernels/metal/common/attention_prefill.metal"
+entry  = "attention_prefill"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/inferspark_prefill.cu::inferspark_prefill"
+why    = "gb10 is a tensor-core flash-attention kernel (mma.sync, cp.async, tiled online softmax) taking a causal flag and a sliding_window; Metal is a one-threadgroup-per-(token, head) three-pass softmax that implements only the causal, non-sliding-window subset and drops keys past MAX_SEQ_PREFILL = 4096 through its loop bound."
+
+[[metal]]
+source = "kernels/metal/common/attention_full.metal"
+entry  = "attention_full"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/inferspark_prefill.cu::inferspark_prefill"
+why    = "gb10 expresses non-causal attention as inferspark_prefill with causal = 0: one entry point and a flag. Metal splits it into a separate kernel with no mask, no sliding_window argument, a scalar softmax per (token, head) and a 4096-key cap from its threadgroup score array. One CUDA kernel serving two Metal kernels is not 1:1."
+
+[[metal]]
+source = "kernels/metal/common/rope_apply.metal"
+entry  = "rope_apply"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/rope.cu::rope_forward"
+why    = "gb10 rotates Q and K in one launch (the grid axis selects the tensor) and evaluates freq_i = theta^(-2i/rotary_dim) in FP64 inside the kernel; Metal rotates a single tensor per launch from a host-precomputed fp32 inv_freq table and has no theta argument. Same rotate-half pairing, different launch contract and frequency precision."
+
+[[metal]]
+source = "kernels/metal/common/causal_conv1d_decode.metal"
+entry  = "causal_conv1d_decode"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/causal_conv1d.cu::causal_conv1d_update"
+why    = "gb10 keeps conv_state as FP32 [batch, dim, d_conv], takes an optional bias, fuses SiLU into the output and runs over a batch; Metal keeps a BF16 [num_channels, kernel_size-1] ring buffer for one sequence, has no bias, and emits the raw conv sum without SiLU. Different state dtype and shape, different epilogue."
+
+[[metal]]
+source = "kernels/metal/common/causal_conv1d_update_l2norm.metal"
+entry  = "causal_conv1d_update_l2norm"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/causal_conv1d.cu::causal_conv1d_update_l2norm"
+why    = "Same math (shift, dot, SiLU, per-head L2 norm over the first qk_channels) and the same argument order, except the CUDA kernel's nullable bias pointer, which the Metal port drops (its header says the bias path is dropped). No test under crates/spark-runtime/src/metal_backend/tests launches it, so 1:1 is asserted by a header, not measured."
+
+[[metal]]
+source = "kernels/metal/common/selective_scan_decode.metal"
+entry  = "selective_scan_decode"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/mamba2_ssm_decode.cu::mamba2_ssm_decode"
+why    = "gb10 keeps a 3-D FP32 state [batch, heads, head_dim, state_size] with n_groups shared B/C vectors, a D skip term and a dt clamp to [dt_min, dt_max]; Metal keeps a BF16 [num_heads, num_channels] state with one scalar B[h]/C[h] per head, no D, no dt clamp and no batch. Different recurrence shape, state precision and epilogue."
+
+[[metal]]
+source = "kernels/metal/common/add_rms_norm.metal"
+entry  = "add_rms_norm"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/rms_norm.cu::residual_add_rms_norm_vanilla"
+why    = "gb10 accumulates in place (hidden += src), normalizes with plain weight and writes output plus a residual copy from that one buffer; Metal reads two inputs a and b and writes x_resid and out (four buffers, no aliasing), and no test launches add_rms_norm. The offset-from-1 residual_add_rms_norm is NOT the counterpart; the vanilla weight form is."
+
+[[metal]]
+source = "kernels/metal/common/gdn_helpers.metal"
+entry  = "gdn_compute_gate"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/ssm_preprocess.cu::compute_gdn_gates"
+why    = "gb10 deinterleaves a BA projection [num_tokens, num_groups*group_dim] and writes both the decay gate and the sigmoid beta for every token and v-head; Metal takes already-split per-head dt_raw/dt_bias for one token, writes the gate only (beta comes from sigmoid_bf16_to_f32) and has no test launching it. Fused two-output multi-token kernel vs single-output helper."
+
+[[metal]]
+source = "kernels/metal/common/gdn_helpers.metal"
+entry  = "sigmoid_bf16_to_f32"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/kda_layer_ops.cu::kda_sigmoid_bf16_f32"
+why    = "Same elementwise job (bf16 in, sigmoid, fp32 out) but the argument order differs (CUDA: src, dst, n; Metal: n, x, out) and no test under crates/spark-runtime/src/metal_backend/tests launches sigmoid_bf16_to_f32, so equality is a reading of two ten-line bodies rather than a measurement."
+
+[[metal]]
+source = "kernels/metal/common/qwen35_qkv_split.metal"
+entry  = "qwen35_qkv_split"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/ssm_preprocess.cu::deinterleave_qg_split"
+why    = "gb10 deinterleaves per-head [Q|gate] for num_tokens rows, writes Q to q_out and the gate back IN PLACE into data with a per-token stride; Metal reads q_full and writes Q and the gate to two separate contiguous buffers for one token, and no test launches it. Same permutation, different output aliasing and no token axis."
+
+[[metal]]
+source = "kernels/metal/common/gated_delta_rule_decode.metal"
+entry  = "gated_delta_rule_decode"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/gated_delta_rule.cu::gated_delta_rule_decode"
+why    = "Same math and argument order as the CUDA kernel, but Metal fixes k_dim <= 128 through two threadgroup arrays sized 128 where CUDA sizes shared memory from k_dim at launch, decodes (v_head, batch) from a flat 1-D grid rather than a 2-D one, and its parity test checks a CPU reference, not the CUDA kernel's bytes, so bit-identity with gb10 is not established."
+
+[[metal]]
+source = "kernels/metal/common/bf16_add.metal"
+entry  = "bf16_add"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/bf16_add.cu::bf16_add_inplace"
+why    = "gb10 accumulates in place (dst += src, int n) for the NCCL all-reduce path; Metal is out-of-place (out = a + b, uint n) for the residual stream, so the signatures differ and an in-place launch through the Metal entry would have to alias out to a. Same arithmetic, different signature and aliasing contract."
+
+[[metal]]
+source = "kernels/metal/common/embed_lookup.metal"
+entry  = "embed_lookup"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/embed_from_argmax.cu::batched_embed"
+why    = "gb10 gathers rows with no bounds check and takes only hidden_size; Metal additionally takes num_tokens and vocab_size and writes zeros for any token id >= vocab_size, so an out-of-range id yields different bytes (a garbage row vs zeros). The Metal header claims to mirror embed_from_argmax, whose signature (argmax_result, token_id_out) it does not match."
+
+[[metal]]
+source = "kernels/metal/common/layer_norm.metal"
+entry  = "layer_norm"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_layernorm_oop_bf16"
+why    = "gb10's only out-of-place bf16 LayerNorm-with-bias is the NLLB one, which takes rows and dim and reduces with a blockDim-sized shared tree; Metal's layer_norm serves the Qwen3.5-VL vision blocks, takes hidden_size only (one threadgroup per token, count from the grid) and reduces simdgroup-first. Same formula, different shape contract and reduction order."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_embed"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_embed"
+why    = "Same gather (out[tok, :] = table[ids[tok], :]) and same arguments, but Metal hardcodes a 256-thread stride (i += 256) where CUDA strides by blockDim.x, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* Metal kernel, so the row cannot be mapped until one drives it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_scale_inplace"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_scale_inplace"
+why    = "Same contract and the same one-line elementwise body as gb10's nllb_scale_inplace. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_add_inplace"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_add_inplace"
+why    = "Same contract and the same one-line elementwise body as gb10's nllb_add_inplace. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_relu_inplace"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_relu_inplace"
+why    = "Same contract and the same one-line elementwise body as gb10's nllb_relu_inplace. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_layernorm"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_layernorm"
+why    = "Same two-pass mean/variance formula and arguments as gb10's nllb_layernorm, but Metal fixes the threadgroup at 256 (sm[256], stride-128 tree, i += 256) where CUDA sizes the tree from blockDim.x and dynamic shared memory; a different launch width gives a different summation order. No Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_layernorm_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_layernorm_bf16"
+why    = "Same two-pass mean/variance formula and arguments as gb10's nllb_layernorm_bf16, but Metal fixes the threadgroup at 256 (sm[256], stride-128 tree, i += 256) where CUDA sizes the tree from blockDim.x and dynamic shared memory; a different launch width gives a different summation order. No Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_linear"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_linear"
+why    = "Same C = bias + A*W^T loop, but gb10's bias pointer is nullable and checked in-kernel (bias ? bias[n] : 0) while Metal reads bias[n] unconditionally, so the CUDA kernel's no-bias mode is unreachable here (Metal splits it into nllb_linear_no_bias). No test launches the Metal entry."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_attn_kv"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_attn_kv"
+why    = "Same scalar SDPA as gb10's nllb_attn_kv, but Metal carves scores[tk] and red[D] out of one fixed threadgroup array scratch[256], so tk + D > 256 silently overruns, where CUDA sizes dynamic shared memory from tk + D at launch. The context cap is in the Metal kernel, not the contract, and no Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_attention"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_attention"
+why    = "Same scalar SDPA as gb10's nllb_attention, but Metal carves scores[tk] and red[D] out of one fixed threadgroup array scratch[256], so tk + D > 256 silently overruns, where CUDA sizes dynamic shared memory from tk + D at launch. The context cap is in the Metal kernel, not the contract, and no Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_attn_kv_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_attn_kv_bf16"
+why    = "Same scalar SDPA as gb10's nllb_attn_kv_bf16, but Metal carves scores[tk] and red[D] out of one fixed threadgroup array scratch[256], so tk + D > 256 silently overruns, where CUDA sizes dynamic shared memory from tk + D at launch. The context cap is in the Metal kernel, not the contract, and no Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_attn_bdecode"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_attn_bdecode"
+why    = "gb10 takes a `group` argument and reads the K/V slab at b / group so grouped cross-attention rows share one padded slab; Metal has no group argument and always reads slab b, so the CUDA grouped mode cannot be expressed. Metal also caps scores + reduction at scratch[256]. Different signature, not 1:1."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_embed_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_embed_bf16"
+why    = "Same bf16 gather as gb10's nllb_embed_bf16 with the same arguments, but Metal hardcodes a 256-thread stride (i += 256) where CUDA strides by blockDim.x, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* Metal kernel, so the row cannot be mapped until one drives it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_scale_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_scale_bf16"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_scale_bf16. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_add_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_add_bf16"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_add_bf16. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_bias_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_bias_bf16"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_bias_bf16. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_relu_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_relu_bf16"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_relu_bf16. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_add_row_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_add_row_bf16"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_add_row_bf16. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_scatter_batched"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_scatter_batched"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_scatter_batched. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_gather_batched"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_gather_batched"
+why    = "Same contract and the same elementwise index arithmetic as gb10's nllb_gather_batched. It is counterpart rather than mapped only because mapped requires a Metal parity test that launches the entry, and no test under crates/spark-runtime/src/metal_backend/tests launches any nllb_* kernel yet."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_gemv_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_gemv_bf16"
+why    = "gb10 runs one warp per row indexed from the global thread id, reduces with __shfl_down_sync and checks a nullable bias; Metal runs one threadgroup per row, reduces simd_sum then a cross-simdgroup partial[32], and reads bias[row] unconditionally. Different reduction tree (different low bits) and no null-bias mode; no Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_argmax_batched"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_argmax_batched"
+why    = "Same per-row argmax over bf16 logits, but gb10's shared-memory tree keeps the FIRST tree position on equal values (strict > against sval[tid]) while Metal breaks ties toward the lower token id; equal logits can therefore return different ids. gb10 also initialises at -1e30, Metal at -INFINITY. No Metal test launches it."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_argmax_bf16_rows"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_argmax_batched"
+why    = "A second Metal spelling of nllb_argmax_batched: same body, arguments renamed (rows, N), tie-break toward the lower id in the per-thread loop as well. gb10 has ONE row-argmax kernel, whose tree reduction keeps the first tree position on ties, so two Metal entries stand against one CUDA kernel with a different tie rule."
+
+[[metal]]
+source = "kernels/metal/common/nllb_encoder.metal"
+entry  = "nllb_topk_lse_bf16"
+state  = "counterpart"
+gb10   = "kernels/gb10/common/nllb_encoder.cu::nllb_beam_topk"
+why    = "gb10's nllb_beam_topk takes K at runtime (<= 32), streams the log-sum-exp in one pass and writes (lse_out, val_out, idx_out); Metal fixes K = 10 as a constexpr, computes the lse in two passes (max, then sum of exp) with 256-wide fixed threadgroup arrays, and writes (top_vals, top_ids, lse_out). Same job, different signature and arithmetic."

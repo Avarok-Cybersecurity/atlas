@@ -1,0 +1,150 @@
+#!/usr/bin/env bun
+/**
+ * Post-deploy check for blog.atlascybernetics.ai.
+ *
+ *   bun blog/e2e/check-headers.mjs [base-url]
+ *
+ * Asserts the four response headers the vhost promises, on all three response
+ * classes that nginx routes differently: a document, a content-hashed asset,
+ * and a 404. It exists because the defect it guards against is invisible from
+ * inside the config file — `add_header` does not accumulate across contexts, so
+ * one location block setting Cache-Control silently discards every inherited
+ * security header, and nginx reports nothing. See
+ * blog/deploy/nginx/blog.atlascybernetics.ai.conf.
+ *
+ * This is a live check, deliberately: the thing being tested is the deployed
+ * server's behaviour, and nothing short of a request observes it.
+ *
+ * To watch it FAIL — which you should, before trusting it — point it at any
+ * deployment carrying the concatenated-header defect. The first Pages
+ * deployment of the blog still does, and is kept for exactly this reason:
+ *
+ *   bun blog/e2e/check-headers.mjs https://05ca5569.atlas-blog-3ja.pages.dev
+ *
+ * (The earlier control, docs.atlasinference.io with its location-level
+ * add_header, is a 301 to the new domain now and no longer serves anything.)
+ */
+
+const base = (process.argv[2] ?? 'https://blog.atlascybernetics.ai').replace(/\/$/, '');
+
+const SECURITY = {
+  'x-content-type-options': 'nosniff',
+  'x-frame-options': 'SAMEORIGIN',
+  'referrer-policy': 'strict-origin-when-cross-origin'
+};
+
+let failures = 0;
+const log = [];
+
+function check(what, ok, detail) {
+  log.push(`${ok ? '  ok  ' : '  FAIL'}  ${what}${detail ? `  (${detail})` : ''}`);
+  if (!ok) failures++;
+}
+
+async function get(path) {
+  const res = await fetch(base + path, { redirect: 'manual' });
+  return { res, h: (n) => res.headers.get(n) ?? '' };
+}
+
+/**
+ * Cloudflare Pages CONCATENATES a header re-declared by a later `_headers`
+ * rule rather than replacing it, so a misconfigured file yields
+ * "public, max-age=300, public, max-age=31536000, immutable". Browsers read the
+ * first max-age, so the assets meant to be held for a year are held for five
+ * minutes — and every substring assertion in this file passes anyway, because
+ * both values are present. That is exactly how it shipped once. Assert the
+ * directive appears once.
+ */
+function expectOneMaxAge(label, value) {
+  const n = (value.match(/max-age=/g) ?? []).length;
+  check(`${label}: one max-age, not a concatenation`, n === 1, `${n} in "${value}"`);
+}
+
+function expectSecurityHeaders(label, h) {
+  for (const [name, value] of Object.entries(SECURITY)) {
+    check(`${label}: ${name}`, h(name).toLowerCase() === value.toLowerCase(), h(name) || 'absent');
+  }
+}
+
+console.log(`checking ${base}`);
+
+/* 1. A document. This is the response class the add_header defect hits, and the
+      one where these headers actually do something. */
+{
+  const { res, h } = await get('/');
+  check('document: 200', res.status === 200, `status ${res.status}`);
+  check('document: cache-control is short', /max-age=300/.test(h('cache-control')), h('cache-control') || 'absent');
+  check('document: not cached forever', !/immutable/.test(h('cache-control')), h('cache-control'));
+  expectOneMaxAge('document', h('cache-control'));
+  expectSecurityHeaders('document', h);
+}
+
+/* 2. A content-hashed asset, discovered from the document rather than
+      hardcoded — the hash changes on every build. */
+{
+  const html = await (await fetch(base + '/')).text();
+  const m = html.match(/\/_app\/immutable\/[^"'\s>]+\.(?:js|css)/);
+  if (!m) {
+    check('asset: found a hashed asset to test', false, 'no /_app/immutable/ URL in the document');
+  } else {
+    const { res, h } = await get(m[0]);
+    check(`asset ${m[0]}: 200`, res.status === 200, `status ${res.status}`);
+    check('asset: immutable', /immutable/.test(h('cache-control')), h('cache-control') || 'absent');
+    check('asset: year-long max-age', /max-age=31536000/.test(h('cache-control')), h('cache-control'));
+    expectOneMaxAge('asset', h('cache-control'));
+    expectSecurityHeaders('asset', h);
+  }
+}
+
+/* 3. A 404. `error_page 404 /404.html` serves a real document here, so this
+      also proves the built 404 page landed at the path nginx expects. */
+{
+  const { res, h } = await get('/this-path-does-not-exist-' + 'x'.repeat(8));
+  check('missing page: 404', res.status === 404, `status ${res.status}`);
+  const body = await res.text();
+  check('missing page: serves the built 404 document', /Not found/i.test(body), `${body.length} bytes`);
+  expectSecurityHeaders('missing page', h);
+}
+
+/* 4. The feed and the sitemap. These are served by `location =` blocks that
+      exist only to set a content type — the exact shape that reintroduces the
+      add_header defect if anyone ever adds a Cache-Control line to one. */
+for (const [path, type] of [['/rss.xml', 'application/rss+xml'], ['/sitemap.xml', 'application/xml']]) {
+  const { res, h } = await get(path);
+  check(`${path}: 200`, res.status === 200, `status ${res.status}`);
+  check(`${path}: ${type}`, h('content-type').startsWith(type), h('content-type') || 'absent');
+  expectSecurityHeaders(path, h);
+}
+
+/* 5. Hidden files stay hidden. */
+{
+  const { res } = await get('/.env');
+  check('dotfile: refused', res.status === 404 || res.status === 403, `status ${res.status}`);
+}
+
+/* 6. Every document the sitemap advertises. On nginx the cache policy had a
+      `default` arm, so a new route inherited it; a Pages `_headers` file has no
+      else-branch, and a route added without a rule silently falls back to the
+      host default. This walks what the build itself says it published, so the
+      list cannot drift out of step with the routes. */
+{
+  const xml = await (await fetch(base + '/sitemap.xml')).text();
+  const paths = [...new Set(
+    [...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => new URL(m[1]).pathname)
+  )];
+  check('sitemap: lists documents to check', paths.length > 0, `${paths.length} URLs`);
+  for (const path of paths) {
+    const { res, h } = await get(path);
+    const cc = h('cache-control');
+    check(`sitemap ${path}: 200`, res.status === 200, `status ${res.status}`);
+    check(`sitemap ${path}: declares a short cache`, /max-age=300/.test(cc), cc || 'absent');
+    expectOneMaxAge(`sitemap ${path}`, cc);
+  }
+}
+
+console.log(log.join('\n'));
+if (failures) {
+  console.error(`\n${failures} check(s) failed against ${base}`);
+  process.exit(1);
+}
+console.log(`\nall ${log.length} checks passed against ${base}`);

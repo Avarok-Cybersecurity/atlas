@@ -31,7 +31,7 @@
 //! and recapture an identical slot-vector graph for the next occupant.
 //!
 //! Multi-seq decode graphs are DEFAULT-ON since 2026-07-27
-//! (`ATLAS_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
+//! (`AVAROK_NO_DECODE_GRAPHS_MULTISEQ=1` disables), validated: C=8
 //! 65.75 -> 67.6 (+2.8%), C=16 92.6 -> 95.6 (+3.2%), emitted-text SHA
 //! unchanged, 2 reps/cell. That measurement RETIRED a planned rewrite: the
 //! attention branch has ~2,300 per-sequence launches/step and hand-batching
@@ -60,35 +60,6 @@ use crate::traits::SequenceState;
 /// (cap 80). Pure LRU bound — bounds graph memory, never pins eager.
 pub(super) fn batch_decode_graph_cap(decode_meta_rows: usize) -> usize {
     16 + decode_meta_rows
-}
-
-/// What happens to a graph cache when a sequence leaves its slot.
-///
-/// Slot-keyed graphs bake SSM pool addresses that are a pure function of
-/// `(layer, slot)` for the life of the process, plus staging buffers that
-/// decode refreshes before every replay. A new occupant of the same slot
-/// can legally replay them. Graphs that bake a per-occupant LoRA adapter
-/// index (`verify_kgamma` / `fused`) cannot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum FreeSlotGraphPolicy {
-    Retain,
-    DropThisSlot,
-}
-
-pub(super) fn decode_graph_on_free() -> FreeSlotGraphPolicy {
-    FreeSlotGraphPolicy::Retain
-}
-
-pub(super) fn batch_decode_graphs_on_free() -> FreeSlotGraphPolicy {
-    FreeSlotGraphPolicy::Retain
-}
-
-pub(super) fn verify_k_graph_on_free() -> FreeSlotGraphPolicy {
-    FreeSlotGraphPolicy::Retain
-}
-
-pub(super) fn lora_baked_graph_on_free() -> FreeSlotGraphPolicy {
-    FreeSlotGraphPolicy::DropThisSlot
 }
 
 /// Insert `graph` at `key`, evicting the LRU entry when at `cap` and the key
@@ -122,14 +93,14 @@ pub(super) fn lru_insert_graph(
 
 /// Graph the batches the padded_n-keyed cache could not legally cover — the
 /// MTP bootstrap's slot SUBSET and any `n < padded_n` batch: **ON** by
-/// default, disabled by PRESENCE of `ATLAS_NO_MTP_BOOT_GRAPH` (house
+/// default, disabled by PRESENCE of `AVAROK_NO_MTP_BOOT_GRAPH` (house
 /// convention — `=0` is NOT off). Disabled, those batches run EAGER and only
 /// the canonical `slots == [0..n)` with `n == padded_n` batch is graphed,
 /// which is the pre-slot-key behaviour minus its unsound replays.
 /// Read once per process.
 pub(super) fn boot_graph_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_BOOT_GRAPH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_BOOT_GRAPH").is_none())
 }
 
 impl TransformerModel {
@@ -215,22 +186,15 @@ mod tests {
     }
 
     #[test]
-    fn slot_keyed_decode_graphs_survive_occupant_change() {
-        assert_eq!(decode_graph_on_free(), FreeSlotGraphPolicy::Retain);
-        assert_eq!(batch_decode_graphs_on_free(), FreeSlotGraphPolicy::Retain);
-        assert_eq!(verify_k_graph_on_free(), FreeSlotGraphPolicy::Retain);
-        assert_eq!(
-            lora_baked_graph_on_free(),
-            FreeSlotGraphPolicy::DropThisSlot
-        );
-    }
-
-    #[test]
     fn lru_insert_below_cap_drops_nothing() {
         let mut cache = empty_cache();
         let drop = lru_insert_graph(&mut cache, 2, vec![0], GraphHandle(1));
         assert!(drop.is_empty());
         assert_eq!(cache.0.len(), 1);
+        let (stored, tick) = cache.0.get(&vec![0]).unwrap();
+        assert_eq!(stored.0, 1);
+        assert_eq!(*tick, 1);
+        assert_eq!(cache.1, 1);
     }
 
     #[test]
@@ -255,23 +219,42 @@ mod tests {
         assert_eq!(cache.0.len(), 2);
         assert_eq!(cache.0.get(&vec![0]).unwrap().0.0, 99);
         assert_eq!(cache.0.get(&vec![1]).unwrap().0.0, 11);
+        assert_eq!(cache.0.get(&vec![0]).unwrap().1, 3, "replacement is MRU");
+
+        let drop = lru_insert_graph(&mut cache, 2, vec![2], GraphHandle(12));
+        assert_eq!(
+            drop.iter().map(|handle| handle.0).collect::<Vec<_>>(),
+            vec![11],
+            "the untouched peer is LRU"
+        );
+        assert_eq!(cache.0.get(&vec![0]).unwrap().0.0, 99);
+        assert_eq!(cache.0.get(&vec![2]).unwrap().0.0, 12);
+        assert!(!cache.0.contains_key(&vec![1]));
     }
 
     #[test]
     fn cap_is_headroom_over_decode_meta_rows() {
+        assert_eq!(batch_decode_graph_cap(0), 16);
+        assert_eq!(batch_decode_graph_cap(1), 17);
         assert_eq!(batch_decode_graph_cap(32), 48);
         assert_eq!(batch_decode_graph_cap(64), 80);
     }
 
-    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode
-    /// graphs. Recapturing on every completion was the cost this PR removes.
+    /// NEGATIVE: `free_sequence_dispatch` must not drain slot-keyed decode graphs.
+    /// Recapturing on every completion was the cost that removal bought back.
     /// LoRA-baked `verify_kgamma` / `fused` still drop (adapter index baked).
     ///
-    /// PROVEN BY: restoring `self.decode_graph.lock()` or
-    /// `self.batch_decode_graphs.lock()` inside `free_sequence_dispatch`
-    /// turns this red.
+    /// AMENDED 2026-08-28: the slot key is sound only while every per-sequence address a
+    /// capture bakes lives in the slot-addressed SSM pool. GLM-5.3 allocates its DSA
+    /// indexer cache and KDA state per SEQUENCE, so a slot's graph really does go stale
+    /// and the next request replayed the last one's freed buffers — request 2 continued
+    /// request 1's text. So a `graph_stale_on_new_sequence()`-guarded removal of THIS
+    /// slot's entries is now allowed, and an unguarded or wholesale one is still not.
+    ///
+    /// PROVEN BY: dropping the `graph_stale_on_new_sequence()` guard, or swapping the
+    /// per-slot `remove` for a `drain`/`clear`, turns this red.
     #[test]
-    fn free_sequence_does_not_destroy_slot_keyed_decode_graphs() {
+    fn free_sequence_only_drops_slot_graphs_a_layer_calls_stale() {
         let src = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("src/model/trait_impl/sequence.rs"),
@@ -283,13 +266,24 @@ mod tests {
         let body = &src[start..];
         let end = body.find("\n    pub(super) fn ").unwrap_or(body.len());
         let body = &body[..end];
+        // Wholesale invalidation is still forbidden on both caches.
+        for bad in ["decode_graph.lock().drain()", "decode_graph.lock().clear()"] {
+            assert!(
+                !body.contains(bad),
+                "free_sequence must not invalidate decode graphs wholesale ({bad})"
+            );
+        }
         assert!(
-            !body.contains("self.decode_graph.lock()"),
-            "free_sequence must retain decode_graph"
+            !body.contains("batch.0.drain()") && !body.contains("batch.0.clear()"),
+            "free_sequence must not invalidate batch decode graphs wholesale"
         );
-        assert!(
-            !body.contains("self.batch_decode_graphs.lock()"),
-            "free_sequence must retain batch_decode_graphs"
+        // Any touch of either cache must be under the layer-declared staleness guard.
+        let touches_graphs = body.contains("self.decode_graph.lock()")
+            || body.contains("self.batch_decode_graphs.lock()");
+        assert_eq!(
+            touches_graphs,
+            body.contains("graph_stale_on_new_sequence"),
+            "free_sequence may drop slot graphs ONLY behind graph_stale_on_new_sequence()"
         );
         assert!(
             body.contains("verify_kgamma_graph") && body.contains("fused_graph"),

@@ -1,4 +1,4 @@
-# DRAFT — Spectral Compute update (DO NOT auto-send; for Azeez to send)
+# DRAFT — Spectral Compute update (DO NOT auto-send; for a maintainer to send)
 
 Thread: Atlas ↔ Spectral (Michael Søndergaard / Chris Kitching / Jon).
 Context: first SCALE bring-up of Atlas (pure-Rust CUDA LLM engine) on
@@ -82,4 +82,4 @@ Repros are standalone single-file `.cu` (compile with
 
 Thanks — this is genuinely promising.
 
-— Azeez
+— Atlas Inference

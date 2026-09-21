@@ -13,7 +13,7 @@ impl Qwen3SsmLayer {
     /// QKVZ projection GEMM (+ deinterleave when QKVZ is interleaved).
     ///
     /// Writes the sequential `[Q|K|V|Z]` projection into the
-    /// `ssm_deinterleaved` buffer. `force_bf16` (= `ATLAS_GDN_BF16_WEIGHTS`)
+    /// `ssm_deinterleaved` buffer. `force_bf16` (= `AVAROK_GDN_BF16_WEIGHTS`)
     /// bypasses both the FP8 and NVFP4 weight-quant paths.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prefill_qkvz_proj(
@@ -45,18 +45,19 @@ impl Qwen3SsmLayer {
             self.qkvz_q2_prefill_gemm(ctx.gpu, normed, proj_dst, scratch, act_q8, k, stream)?;
             return Ok(());
         }
-        // Env override: ATLAS_GDN_BF16_WEIGHTS=1 forces the BF16 dense
+        // Env override: AVAROK_GDN_BF16_WEIGHTS=1 forces the BF16 dense
         // GEMM path for QKVZ — bypassing both FP8 and NVFP4 weight-quant
         // paths. Tests whether weight-quantization noise on qkvz (esp.
         // the W_z slice that feeds gnorm's silu gate) is the dominant
         // source of long-context layer-1+ drift.
         let force_bf16 = matches!(
-            std::env::var("ATLAS_GDN_BF16_WEIGHTS").ok().as_deref(),
+            std::env::var("AVAROK_GDN_BF16_WEIGHTS").ok().as_deref(),
             Some("1")
         );
         // PER-ROW FP8 straight from a mixed-precision checkpoint
-        // (`ATLAS_FP8_ROWWISE=1`), dequantised ONCE to BF16 and multiplied by
-        // cuBLASLt. Ahead of every arm below because it is the only one that
+        // (`AVAROK_FP8_ROWWISE=1`), dequantised ONCE to BF16 — into the
+        // LEDGERED `BufferSizes::ssm_rowwise_w_bf16` slab, see
+        // `rowwise_bf16.rs` (#917) — and multiplied by cuBLASLt. Ahead of every arm below because it is the only one that
         // never re-quantises: FP8 E4M3 is exactly representable in BF16, so
         // the checkpoint's precision survives, where the default path
         // dequantises to BF16 and then throws half of it away again by
@@ -65,11 +66,11 @@ impl Qwen3SsmLayer {
         // NOT the row-wise FP8 GEMM this was first written against —
         // `cublaslt::fp8_gemm_act_weight_t_rowwise` returns NOT_SUPPORTED on
         // sm_121 (measured 2026-08-15, and reproduced through the
-        // block-scaled path with `ATLAS_CUBLAS_FP8=1`, so it is the GEMM and
+        // block-scaled path with `AVAROK_CUBLAS_FP8=1`, so it is the GEMM and
         // not the weights). Keeping FP8 all the way needs a kernel that works
         // on this hardware; until then BF16 is what buys the precision back.
         //
-        // `force_bf16` still wins, so the `ATLAS_GDN_BF16_WEIGHTS` A/B lever
+        // `force_bf16` still wins, so the `AVAROK_GDN_BF16_WEIGHTS` A/B lever
         // keeps working.
         if !force_bf16 && let Some(ref fp8w) = self.qkvz_fp8w_rowwise {
             // This arm returns EARLY, so it shadows the CUTLASS / cuBLAS arms
@@ -83,18 +84,22 @@ impl Qwen3SsmLayer {
                     std::sync::atomic::AtomicBool::new(false);
                 if !SHADOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     tracing::warn!(
-                        "ATLAS_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
+                        "AVAROK_FP8_ROWWISE is shadowing an enabled CUTLASS/cuBLAS QKVZ \
                          prefill arm: the row-wise arm keeps the checkpoint's precision, \
                          the shadowed arms would consume the re-quantised NVFP4 copy. \
-                         Unset ATLAS_FP8_ROWWISE to get the CUTLASS path back."
+                         Unset AVAROK_FP8_ROWWISE to get the CUTLASS path back."
                     );
                 }
             }
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
+            // The BF16 weight comes from the LEDGERED slab, dequantised once
+            // per layer (`rowwise_bf16.rs`); this arm allocates nothing. It
+            // used to come from `ops::cublas_bf16_proj`'s by-pointer cache of
+            // `gpu.alloc`s — 167772160 B per layer with no `BufferSizes`
+            // entry, the #917 H100 OOM at layer 36.
+            let w_bf16 = self.rowwise_qkvz_bf16(ctx, fp8w, stream)?;
+            ops::cublas_bf16_proj_dense(
                 normed,
-                fp8w,
+                w_bf16,
                 proj_dst,
                 k,
                 qkvz_size as u32,
@@ -104,11 +109,13 @@ impl Qwen3SsmLayer {
             return Ok(());
         }
         let force_w8a8 = ctx.dispatch.fp8_blockscaled_prefill;
-        // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
-        // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
-        // ceiling on GB10 (32 vs 85 TFLOPS bf16 on this shape). Dequant the FP8
-        // weight to BF16 once (cached), then route the projection through
-        // cuBLASLt. W16A16 here is strictly more accurate than the W8A8 path.
+        // NO cuBLASLt-BF16 ARM HERE, deliberately. `AVAROK_CUBLAS_GEMM=1` used
+        // to route this projection to `ops::cublas_bf16_proj`, whose cached
+        // FP8→BF16 weight dequant cost 167772160 B per layer (~10.3 GiB over 48
+        // SSM layers) outside the buffer ledger and killed a 28-token H100
+        // prefill at layer 36 on 2026-09-11. The cuBLASLt arm now lives INSIDE
+        // the W8A8 branch below, consumes the FP8 weight directly, and
+        // allocates nothing — see `prefill_w8a8.rs` for the full receipt.
         if ctx.dispatch.cutlass_nvfp4_qkvz
             && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
         {
@@ -173,20 +180,6 @@ impl Qwen3SsmLayer {
                 h as u32,
                 stream,
             )?;
-        } else if ctx.dispatch.cublas_gemm
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                ctx.derived,
-                normed,
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
         } else if force_bf16 {
             // cuBLASLt, NOT the hand-written `dense_gemm`. The weights are
             // already BF16 [N,K] on this path, so there is no dequant step and
@@ -214,21 +207,24 @@ impl Qwen3SsmLayer {
             })?;
         } else if force_w8a8
             && let Some(ref fp8w) = self.qkvz_fp8w
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             tracing::debug!(
                 "ssm prefill: QKVZ via block-scaled FP8 (W8A8+FP32-epilogue, M={k} K={h} N={qkvz_size})"
             );
-            let m = k as usize;
             let k_dim = h;
             // Persistent arena scratch (no per-projection alloc/sync/free): the
-            // quant→GEMM chain is same-stream ordered.
+            // quant→GEMM chain is same-stream ordered. PADDED rows, because the
+            // cuBLASLt arm reads `ceil16(M)` of them.
+            let m_pad = ops::cublas_fp8_m_pad(k) as usize;
             let a_fp8_buf = ctx.buffers.fp8_act();
             let a_scale_buf = ctx.buffers.fp8_act_scale();
-            debug_assert!(m * k_dim <= ctx.buffers.fp8_act_bytes());
+            debug_assert!(m_pad * k_dim <= ctx.buffers.fp8_act_bytes());
+            debug_assert!(m_pad * k_dim.div_ceil(128) * 4 <= ctx.buffers.fp8_act_scale_bytes());
             // Per-token block FP8 quant of the activation, then block-scaled
-            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue.
+            // FP8×FP8 GEMM folding both per-128 scales in an FP32 epilogue —
+            // cuBLASLt or the in-tree kernel, chosen by `qkvz_w8a8_gemm`.
             ops::per_token_group_quant_fp8(
                 ctx.gpu,
                 self.per_token_group_quant_fp8_k,
@@ -239,14 +235,21 @@ impl Qwen3SsmLayer {
                 k_dim as u32,
                 stream,
             )?;
-            ops::fp8_gemm_t_blockscaled(
-                ctx.gpu,
-                self.fp8_gemm_t_blockscaled_k,
+            // `proj_dst` is one of two ARENA buffers, picked above by
+            // `sequential_qkvz`; the cuBLASLt arm writes `ceil16(M)` rows into
+            // it, so it is bounds-checked against the one it actually got.
+            let dst_capacity = if self.sequential_qkvz {
+                ctx.buffers.ssm_deinterleaved_bytes()
+            } else {
+                ctx.buffers.ssm_qkvz_bytes()
+            };
+            self.qkvz_w8a8_gemm(
+                ctx,
                 a_fp8_buf,
                 a_scale_buf,
-                fp8w.weight,
-                fp8w.row_scale,
+                fp8w,
                 proj_dst,
+                dst_capacity,
                 k,
                 qkvz_size as u32,
                 h as u32,
@@ -371,17 +374,37 @@ impl Qwen3SsmLayer {
                 anyhow::anyhow!("ssm prefill: QKVZ GEMM failed (M={k}, N={qkvz_size}): {e}")
             })?;
         } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
+            // Pure dense-BF16 weights (qwen4_exp keeps the GDN projections
+            // BF16 as shipped): cuBLASLt, NOT the hand-written scalar
+            // `dense_gemm`. Same finding as the `force_bf16` arm above —
+            // measured HERE on Qwen3.8-Flash-Next 2026-08-26: this arm
+            // through `dense_gemm` was 147 ms/call x 36 layers = 5.3 s of an
+            // 8.4 s TTFT (63% of prefill, ~2.7 TFLOPS on an 85-TFLOP part).
+            // The scalar kernel stays as the fallback for backends without
+            // cuBLASLt.
+            if ops::cublas_bf16_proj_dense(
                 normed,
-                &self.ssm.in_proj_qkvz,
+                self.ssm.in_proj_qkvz.weight,
                 proj_dst,
                 k,
                 qkvz_size as u32,
                 h as u32,
                 stream,
-            )?;
+            )
+            .is_err()
+            {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    normed,
+                    &self.ssm.in_proj_qkvz,
+                    proj_dst,
+                    k,
+                    qkvz_size as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
         }
         if !self.sequential_qkvz {
             ops::deinterleave_qkvz(

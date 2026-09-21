@@ -121,7 +121,7 @@ pub(super) fn decode_batch_with_preemption(
                     // and latched by this point, so the only thing left is to
                     // stop. `request` is idempotent, so the echoing failures of
                     // the remaining in-flight batches do not re-trigger it.
-                    if let Some(reason) = atlas_core::fault::global().fault() {
+                    if let Some(reason) = avarok_core::fault::global().fault() {
                         crate::tui::shutdown::request(reason);
                     }
                     return None;
@@ -147,7 +147,7 @@ pub(super) fn decode_batch_with_preemption(
                         Err((v, spill_err)) => {
                             tracing::warn!(
                                 "decode-preempt spill failed ({spill_err:#}); \
-                                 requeueing victim for re-prefill instead"
+                                 requeuing victim for re-prefill instead"
                             );
                             preempted.push(preempt_requeue(model, v));
                         }

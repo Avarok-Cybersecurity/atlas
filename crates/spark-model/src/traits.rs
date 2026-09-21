@@ -25,7 +25,7 @@ pub struct MixedForwardResult {
 /// One of these per concurrent prefilling stream — `prefill_batch_chunk` and
 /// `mixed_forward_batch` accept a `&mut [PrefillSlice<'_>]` and process all
 /// streams' chunks in a single forward pass. See Q12 in
-/// `/workspace/atlas-internal/qwen-refactor/notes.md` for the bug this
+/// `/workspace/avarok-internal/qwen-refactor/notes.md` for the bug this
 /// fixes (concurrent prefills serialized through `prefilling.first_mut()`
 /// in the scheduler, causing 5× asymmetric TTFT).
 pub struct PrefillSlice<'a> {
@@ -118,6 +118,17 @@ pub struct SequenceState {
     /// sequence's captured hiddens (poisoned drafter KV; blind is strictly
     /// better than poisoned). 0 = never owned a capture.
     pub mtp_capture_gen: u64,
+    /// Ownership ticket for the shared hidden-row interval
+    /// (`mtp_store_range`), drawn at `alloc_sequence` from the same atomic
+    /// that issues capture generations.
+    ///
+    /// Distinct from `mtp_capture_gen` because that one is assigned ONLY under
+    /// `chunk_start == 0`, and a warm turn never starts at 0 — so it is `0` for
+    /// the entire life of exactly the sequences the carry path serves, and
+    /// would make every warm sequence look like the same owner. This is drawn
+    /// unconditionally at admission. `0` = drawn outside `alloc_sequence` (the
+    /// mock and test fakes), and never matches anything.
+    pub mtp_store_gen: u64,
     /// Per-adapter prefix-cache namespace (adapter-correct KV). Folded into the
     /// prefix hash so two adapters that share a token prefix never reuse each
     /// other's blocks. `0` = base / no adapter (a strict no-op in the fold, so
@@ -126,11 +137,22 @@ pub struct SequenceState {
     /// Persistent paged metadata for chunked prefill, allocated lazily on the
     /// first chunk that needs paged attention.
     pub chunked_prefill_meta: Option<ChunkedPrefillPageMetadata>,
-    /// Number of prompt tokens served by the prefix cache (block-aligned).
-    /// Set by the model layer on the chunk-0 prefix-cache lookup; read by
-    /// the scheduler to populate `usage.prompt_tokens_details.cached_tokens`.
-    /// 0 when prefix caching is disabled or the prompt had no cache match.
+    /// Number of prompt tokens MATCHED by the chunk-0 prefix-cache lookup
+    /// (block-aligned). Load-bearing for block-ref accounting: `free_sequence`
+    /// release, `cache_sequence` double-bump avoidance, and the chunked-prefill
+    /// KV write floor all key off it. NOT what gets reported to clients —
+    /// a match can be found and then discarded (see `reused_prefix_tokens`).
     pub cached_prefix_tokens: usize,
+    /// Number of prompt tokens whose KV this request actually READ from the
+    /// prefix cache instead of recomputing. Stamped after the skip decision;
+    /// read by the scheduler to populate
+    /// `usage.prompt_tokens_details.cached_tokens`.
+    ///
+    /// Atlas #919: this used to be `cached_prefix_tokens`, which reports the
+    /// lookup result — so a request that matched 48 tokens and then recomputed
+    /// all of them (no SSM snapshot / exact-leaf bypass / declined Marconi
+    /// restore) advertised `cached_tokens: 48` next to a full-prefill log line.
+    pub reused_prefix_tokens: usize,
     /// Number of `block_table` entries that came FROM the prefix cache on this
     /// sequence's lookup (`matched_blocks.len()`). The cache already holds its
     /// own "+1" KV ref on each of those blocks, and eviction returns exactly ONE
@@ -163,6 +185,12 @@ pub struct SequenceState {
     /// The `skip` half of the chunk-0 lookup's return value, replayed verbatim
     /// when `prefix_lookup_applied` short-circuits a retry.
     pub prefix_lookup_skip: bool,
+    /// Token count of an SSM anchor near this prompt's end that the pool
+    /// holds for it: the tail-split checkpoint saved during THIS prefill, or
+    /// the checkpoint a warm prefill restored from. Cleared at chunk 0; read
+    /// by `finalize_last` to decide whether the exact prefill-end leaf earns
+    /// a pool slot (`prefill_b::exact_leaf`).
+    pub tail_checkpoint_tokens: Option<usize>,
     /// Contiguous prefix length (in tokens, from position 0) whose paged KV is
     /// guaranteed fully written for THIS sequence — either reused from a valid
     /// prefix-cache match or written by a real prefill pass this turn. Updated
@@ -282,12 +310,16 @@ impl SequenceState {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            // Not from `alloc_sequence`, so it owns no hidden rows.
+            mtp_store_gen: 0,
             adapter_id: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            reused_prefix_tokens: 0,
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,
+            tail_checkpoint_tokens: None,
             prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
@@ -359,4 +391,4 @@ impl SequenceState {
 mod logprobs;
 mod model;
 pub use logprobs::*;
-pub use model::{BeamReq, Model, padded_batch_n};
+pub use model::{BeamReq, EpCommandFailed, Model, VerifyBatchedOpts, padded_batch_n};

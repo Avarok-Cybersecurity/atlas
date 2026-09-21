@@ -1,0 +1,90 @@
+[package]
+name = "avarok-spark-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["cuda"]
+# ★ NO-OP for the dependency: see the target table below.
+cuda = ["avarok-core/cuda"]
+metal = ["avarok-core/metal"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+ureq = { version = "3", features = ["json"] }
+
+# Kernel microbenchmark dependencies
+avarok-core = { workspace = true }
+avarok-kernels = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+parking_lot = { workspace = true }
+
+# ── HTTP-level benchmarks ──
+
+[[bench]]
+name = "prefill"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false
+
+[[bench]]
+name = "e2e"
+harness = false
+
+[[bench]]
+name = "concurrent"
+harness = false
+
+# ── Kernel microbenchmarks ──
+
+[[bench]]
+name = "norm"
+harness = false
+
+[[bench]]
+name = "activation"
+harness = false
+
+[[bench]]
+name = "gemm"
+harness = false
+
+[[bench]]
+name = "rope"
+harness = false
+
+[[bench]]
+name = "moe"
+harness = false
+
+[[bench]]
+name = "moe_decode_vs_prefill"
+harness = false
+
+[[bench]]
+name = "attention"
+harness = false
+
+[[bench]]
+name = "ssm"
+harness = false
+
+
+[lints]
+workspace = true
+
+# ── Target-conditional backend ────────────────────────────────────────────
+# cudarc's build script shells out to `nvcc --version` and PANICS when it is
+# absent, so on macOS it must not be in the dependency graph at all -- being
+# unused is not enough. Cargo cannot make a FEATURE target-conditional, but a
+# DEPENDENCY can be, which is the half that matters. The `cuda` feature stays
+# as a no-op alias so existing call sites keep working.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+cudarc = { workspace = true }

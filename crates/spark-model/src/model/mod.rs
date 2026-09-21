@@ -30,14 +30,18 @@ pub(crate) mod impl_a1;
 pub(crate) mod impl_a1_init;
 pub(crate) mod impl_a2;
 pub(crate) mod impl_a3;
+mod impl_a3_embed;
+mod impl_a3_norm;
 pub(crate) mod impl_b1;
 pub(crate) mod impl_b2;
 pub(crate) mod impl_b3;
 pub(crate) mod impl_b3_accessors;
 pub(crate) mod impl_lora;
 pub(crate) mod impl_lora_swap;
+mod impl_ngram;
 pub(crate) mod mtp_carry;
 pub(crate) mod pinned_pack;
+pub(crate) mod seq_memtrace;
 pub(crate) mod ssm_batched_copy;
 pub(crate) mod ssm_pool;
 pub(crate) mod ssm_snapshot;
@@ -52,7 +56,10 @@ pub(crate) mod trait_impl;
 pub(crate) mod types;
 
 // Served NLLB-200 / M2M-100 encoder-decoder model (CUDA/GB10 serving path).
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod nllb;
+#[cfg(all(test, not(avarok_cuda)))]
+#[path = "nllb/host_tests.rs"]
+mod nllb_host_tests;
 
 pub use types::TransformerModel;

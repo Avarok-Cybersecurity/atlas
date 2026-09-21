@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -218,34 +218,11 @@ impl TransformerModel {
     /// most 2 NCCL ops per chunk-0 cache hit (negligible vs the prefill
     /// compute it unblocks).
     pub(super) fn ep_min_u32(&self, val: u32) -> Result<u32> {
-        let Some(comm) = self.comm.as_ref() else {
-            return Ok(val);
-        };
-        let stream = self.gpu.default_stream();
-        // Loop over the ranks of the ACTUAL communicator: under pure TP
-        // (`--tp-size 2 --ep-size 1`) `ep_world_size` is 1 but the comm
-        // spans `tp_world_size` ranks — looping only `0..1` would leave
-        // the head min-reducing over its own value alone (asymmetric
-        // agreement → proc_count mismatch → collective deadlock on a warm
-        // cache-hit divergence). For EP-only and overlapping TP==EP
-        // topologies `max()` is identical to the previous value.
-        let world = self.config.ep_world_size.max(self.config.tp_world_size);
-        let mut min_val = val;
-        for root in 0..world {
-            let v = if comm.rank() == root {
-                self.gpu.copy_h2d(&val.to_le_bytes(), self.ep_cmd_buf)?;
-                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
-                val
-            } else {
-                comm.broadcast(self.ep_cmd_buf.0, 4, root)?;
-                self.gpu.synchronize(stream)?;
-                let mut buf = [0u8; 4];
-                self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
-                u32::from_le_bytes(buf)
-            };
-            min_val = min_val.min(v);
-        }
-        Ok(min_val)
+        // A100 (2026-09-09): the rooted-broadcast loop now lives in
+        // `prefill_b::snap_agree::gather_u32_via_broadcast` so the snapshot
+        // restore agreement can reuse the exact same wire schedule.
+        let votes = self.ep_gather_u32(val)?;
+        Ok(votes.into_iter().min().unwrap_or(val))
     }
 
     /// Broadcast a `(seq_id, cmd)` pair from rank 0 to all ranks.
@@ -335,7 +312,7 @@ impl TransformerModel {
         }
         debug_assert!(
             self.ep_protocol_v2,
-            "ep_broadcast_decode_batch_dispatch called without ATLAS_EP_PROTOCOL=v2"
+            "ep_broadcast_decode_batch_dispatch called without AVAROK_EP_PROTOCOL=v2"
         );
         debug_assert_eq!(
             seq_ids.len(),
@@ -356,9 +333,22 @@ impl TransformerModel {
     /// the worker to dispatch the command into; with `v2` disabled the
     /// returned `seq_id` is always 0 (the legacy singleton slot).
     pub(super) fn ep_recv_seq_and_cmd(&self, v2: bool) -> Result<(u32, u32)> {
-        let seq_id = if v2 { self.ep_broadcast_u32(0)? } else { 0 };
-        let cmd = self.ep_broadcast_u32(0)?;
-        Ok((seq_id, cmd))
+        // Only the first word waits through server idle time. Once it arrives,
+        // the command is in flight and all remaining words keep their deadline.
+        let comm = self
+            .comm
+            .as_ref()
+            .expect("worker command receive without comm");
+        comm.recv_command_u32(self.ep_cmd_buf.0, 0)?;
+        self.gpu.synchronize(self.gpu.default_stream())?;
+        let mut buf = [0u8; 4];
+        self.gpu.copy_d2h(self.ep_cmd_buf, &mut buf)?;
+        let first = u32::from_le_bytes(buf);
+        if v2 {
+            Ok((first, self.ep_broadcast_u32(0)?))
+        } else {
+            Ok((0, first))
+        }
     }
 
     /// Broadcast a u32 command from rank 0 to all ranks.
@@ -388,7 +378,7 @@ impl TransformerModel {
     ///
     /// Returns false when the worker should shut down.
     ///
-    /// Protocol (`ATLAS_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
+    /// Protocol (`AVAROK_EP_PROTOCOL=v2`): rank 0 broadcasts the slot
     /// identifier first (worker uses it to pick the right `SequenceState`
     /// from `slots`), then the command code, then any per-command follow-on
     /// data. With v1 (the default) the preamble is skipped and every
@@ -400,10 +390,31 @@ impl TransformerModel {
     /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
     /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
+    /// - 0xFFFFFFF5: MTP propose → last_token, position, num_drafts, hidden_idx
+    /// - 0xFFFFFFF6/7: reserved for the DFlash lane (EP_CMD_VERIFY_KGAMMA / ctx-commit)
+    /// - 0xFFFFFFF8: decode Marconi checkpoint (A109, moved from F6 by A113) →
+    ///   6-word payload, one bulk broadcast; saves the same (slot, token,
+    ///   session) rank 0 saved
     /// - 0xFFFFFFFF: shutdown (seq_id is ignored; applies to the whole worker)
     pub(super) fn ep_worker_step_impl(&self, slots: &mut [Option<SequenceState>]) -> Result<bool> {
+        // 🔴 The RECEIVE is the only fatal half. If it fails the link to the head is gone
+        // and the worker must exit; everything after it is a per-request fault that the head
+        // raises identically and answers the client with, so it is tagged `EpCommandFailed`
+        // and the worker survives it. Breaking on both is what silently killed rank 1 and
+        // left rank 0 spinning in a collective against a dead peer — ANOMALIES A60/A62.
         let (seq_id, cmd) = self.ep_recv_seq_and_cmd(self.ep_protocol_v2)?;
+        self.ep_worker_execute(seq_id, cmd, slots)
+            .map_err(|e| anyhow::Error::new(crate::traits::EpCommandFailed(e)))
+    }
 
+    /// Execute one already-received worker command. Every error out of here is
+    /// request-scoped by construction — see the caller.
+    fn ep_worker_execute(
+        &self,
+        seq_id: u32,
+        cmd: u32,
+        slots: &mut [Option<SequenceState>],
+    ) -> Result<bool> {
         // Shutdown applies to the whole worker — seq_id is ignored.
         if cmd == 0xFFFFFFFF {
             return Ok(false);
@@ -506,6 +517,41 @@ impl TransformerModel {
                     seq.tokens.pop();
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
+                }
+            }
+            crate::model::trait_impl::decode_checkpoint::EP_CMD_DECODE_CKPT => {
+                // A109: rank 0 saved a decode-time Marconi checkpoint and told
+                // us where. Save the SAME (slot, token, session) one here, so
+                // the A100 rank-agreed restore has something every rank can
+                // serve. The slot is the preamble's; the rest is the payload.
+                let words = self.ep_broadcast_tokens(
+                    &[0u32; crate::model::trait_impl::decode_checkpoint::EP_CKPT_WORDS],
+                )?;
+                self.decode_marconi_checkpoint_worker(seq, &words)?;
+            }
+            crate::speculative::EP_CMD_MTP_PROPOSE => {
+                // Run the SAME drafter forward rank 0 is running, so its collectives have a
+                // partner. The drafts themselves are discarded — rank 0 broadcasts the tokens
+                // it actually verifies — but the drafter KV this writes must stay in lockstep,
+                // which it does because both ranks consume identical `(last_token, position)`
+                // and identical target hiddens (the target forward is already collective-correct).
+                let last_token = self.ep_broadcast_u32(0)?;
+                let position = self.ep_broadcast_u32(0)? as usize;
+                let num_drafts = self.ep_broadcast_u32(0)? as usize;
+                let hidden_idx = self.ep_broadcast_u32(0)? as usize;
+                // Mirror the head's `save_hidden_for_mtp`: the drafter's input vector must be
+                // the SAME on both ranks or the all-reduce sums partials of different inputs.
+                // No worker command arm writes `mtp_hidden_save`, so it has to happen here.
+                if let Err(e) = self.save_hidden_for_mtp(hidden_idx, stream) {
+                    tracing::warn!("EP worker save_hidden_for_mtp({hidden_idx}) failed: {e:#}");
+                }
+                if let Err(e) =
+                    self.run_mtp_propose_inner(last_token, position, num_drafts, seq, None)
+                {
+                    // Never fail the worker on a drafter error: rank 0 decides what is
+                    // verified, so a degraded worker draft costs acceptance, not correctness.
+                    // Bailing here would desynchronise the command stream instead.
+                    tracing::warn!("EP worker MTP propose failed (continuing): {e:#}");
                 }
             }
             0xFFFFFFF3 => {

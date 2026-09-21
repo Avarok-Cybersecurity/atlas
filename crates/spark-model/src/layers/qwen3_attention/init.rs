@@ -10,7 +10,7 @@ use spark_runtime::kv_cache::KvCacheDtype;
 // `gate` must be called through a real path, not through a `let`-bound
 // function pointer: coercing a `#[track_caller]` fn to a pointer inserts a shim
 // and the audit would name the shim instead of the dispatch site below.
-use super::init_arch_gates::{ArchProbes, gated as gate};
+use super::init_arch_gates::{ArchProbes, gated as gate, present};
 use super::types::{HeadGateActivation, Qwen3AttentionLayer};
 use crate::layers::FfnComponent;
 use crate::layers::fp8_calibration::Fp8KvCalibration;
@@ -29,7 +29,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -60,7 +60,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         Self::new_with_gating(
             input_norm,
@@ -93,7 +93,7 @@ impl Qwen3AttentionLayer {
         gpu: &dyn GpuBackend,
         kv_dtype: KvCacheDtype,
         fp8_calibration_tokens: usize,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
     ) -> Result<Self> {
         let (reshape_mod, reshape_fn, decode_mod, decode_fn) =
             super::init_kernel_dispatch::kernel_modules_for_dtype(kv_dtype, config.head_dim);
@@ -140,6 +140,8 @@ impl Qwen3AttentionLayer {
             post_ffn_out_norm: None,
             layer_scalar: None,
             moe_ffn: None,
+            shortcut_carry_out: None,
+            shortcut_carry_in: None,
             pre_moe_norm: None,
             post_moe_out_norm: None,
             post_dense_ffn_norm: None,
@@ -156,6 +158,7 @@ impl Qwen3AttentionLayer {
             // when the hyper_connection module is absent), so non-V4 models
             // still start cleanly.
             hc: None,
+            qsa: None,
             hc_pre_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_pre"),
             hc_post_k: gate(probes.hyper_connection, gpu, "hyper_connection", "hc_post"),
             hc_expand_k: gate(
@@ -185,15 +188,26 @@ impl Qwen3AttentionLayer {
                 "w8a16_gemm_t_m128",
                 "w8a16_gemm_t_m128",
             ),
-            per_token_group_quant_fp8_k: super::super::try_kernel(
-                gpu,
-                "per_token_group_quant_fp8",
-                "per_token_group_quant_fp8",
-            ),
+            // `Fp8ActQuant` probes the shared quantizer AND the Hopper
+            // twin, which only `kernels/hopper` ships, and carries both
+            // handles so a launcher can never pair one kernel's entry point
+            // with the other's grid. Every target still has the shared one.
+            // The shared name is the one `W8A8_PREFILL_KERNELS[0]` (#915)
+            // spells for preflight, which derives it from the same constants.
+            per_token_group_quant_fp8_k: crate::layers::ops::Fp8ActQuant::resolve(gpu),
             fp8_gemm_t_blockscaled_k: super::super::try_kernel(
                 gpu,
-                "fp8_gemm_t_blockscaled",
-                "fp8_gemm_t_blockscaled",
+                super::types_weights::W8A8_PREFILL_KERNELS[1].0,
+                super::types_weights::W8A8_PREFILL_KERNELS[1].1,
+            ),
+            // Same optional adapter the SSM layer loads (`init.rs`): absent on
+            // a shadow that has no `fp8_scale_transpose` module, which makes
+            // the cuBLASLt W8A8 arms decline rather than hand the library the
+            // wrong scale order.
+            fp8_act_scale_kmajor_k: super::super::try_kernel(
+                gpu,
+                "fp8_scale_transpose",
+                "fp8_act_scale_to_kmajor",
             ),
             rms_norm_k: gpu.kernel("norm", "rms_norm")?,
             rms_norm_w_k: if crate::ships_vanilla_norm_weights(config) {
@@ -232,6 +246,59 @@ impl Qwen3AttentionLayer {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: super::super::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             w8a16_gemv_k: gpu.kernel("w8a16_gemv", "w8a16_gemv")?,
+            w8a16_gemv_batch4_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4",
+            ),
+            w8a16_gemv_batch16_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16",
+            ),
+            w8a16_gemv_batch4_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch4_strided",
+            ),
+            w8a16_gemv_batch16_strided_k: super::super::try_kernel(
+                gpu,
+                "w8a16_gemv_batch4",
+                "w8a16_gemv_batch16_strided",
+            ),
+            w8a16_gemm_m16_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16",
+            ),
+            w8a16_gemm_m16_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemm_m16",
+                "w8a16_gemm_m16_strided",
+            ),
+            m16_tc: crate::layers::dense_ffn::m16_tc::m16_tc_levers().attn,
+            w8a16_gemv_ncol2_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2",
+            ),
+            w8a16_gemv_ncol4_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4",
+            ),
+            w8a16_gemv_ncol2_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol2_strided",
+            ),
+            w8a16_gemv_ncol4_strided_k: super::super::try_target_kernel(
+                gpu,
+                "w8a16_gemv_ncol",
+                "w8a16_gemv_batch16_ncol4_strided",
+            ),
+            attn_ncol: super::attn_ncol_gemv::ncol_gemv_enabled()
+                .then(super::attn_ncol_gemv::ncol_gemv_width),
             w8a16_gemm_k: super::super::try_kernel(gpu, "w8a16_gemm", "w8a16_gemm"),
             w8a16_gemm_pipelined_k: super::super::try_kernel(
                 gpu,
@@ -267,12 +334,23 @@ impl Qwen3AttentionLayer {
             ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
-            fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
+            // ★ try_TARGET_kernel, not try_kernel. `fused_k_norm_rope_cache`
+            // is a module only SOME targets compile -- it is absent from the
+            // `strix` and `strix-hip` trees. A plain `try_kernel` there issues
+            // a lookup that fails, and the boot audit records every failed
+            // lookup as a dispatch site on a silent fallback path and REFUSES
+            // TO SERVE. A target that never built the module has no fallback
+            // to be silent about; it has its only path. This is the exact
+            // class that left stack 1089308's first campaign unable to boot
+            // with 17 such lookups. On a target that DOES carry the module
+            // this is identical to `try_kernel`, audit included.
+            fused_k_norm_rope_cache_write_bf16_k: super::super::try_target_kernel(
                 gpu,
                 "fused_k_norm_rope_cache",
                 "fused_k_norm_rope_cache_write_bf16",
             ),
-            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_kernel(
+            // Same module, same reason — see the note above.
+            fused_k_norm_rope_mrope_cache_write_bf16_k: super::super::try_target_kernel(
                 gpu,
                 "fused_k_norm_rope_cache",
                 "fused_k_norm_rope_mrope_cache_write_bf16",
@@ -281,6 +359,20 @@ impl Qwen3AttentionLayer {
                 gpu,
                 "reshape_and_cache",
                 "reshape_and_cache_flash_v_only",
+            ),
+            // `try_target_kernel`, not `try_kernel`:
+            // `reshape_and_cache_fused_k_fp8.cu` is a gb10-tree file, mirrored
+            // into the targets that inherit gb10's common/ (hopper, b200) and
+            // absent from the ones with their own (b300, strix, metal). A
+            // plain lookup on a target that never built the module is recorded
+            // by the boot audit as a dispatch site on a silent fallback and
+            // REFUSES TO SERVE — this probes for the module first and issues
+            // no lookup when it is absent, so those targets keep the un-fused
+            // chain.
+            fused_k_norm_rope_cache_write_fp8_kv_k: super::super::try_target_kernel(
+                gpu,
+                "reshape_and_cache_fused_k_fp8",
+                "fused_k_norm_rope_cache_write_fp8_kv",
             ),
             wht_bf16_k: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace"),
             wht_bf16_k_inv: super::super::try_kernel(gpu, "wht_bf16", "wht_bf16_inplace_inv"),
@@ -435,6 +527,54 @@ impl Qwen3AttentionLayer {
                 | KvCacheDtype::Turbo3KTurbo8V => None,
                 _ => Some(gpu.kernel("paged_decode_fp8", "paged_decode_attn_reduce_fp8")?),
             },
+            // The GQA-packed non-split twins. `try_target_kernel`, not
+            // `kernel`: the sources are gb10's
+            // (`kernels/gb10/common/paged_decode_attn_{bf16,fp8}_gqa.cu`), so
+            // a target that does not carry them resolves a zero handle and the
+            // dispatch keeps the unpacked kernel. Resolved unconditionally
+            // rather than behind `AVAROK_ATTN_DECODE_GQA_PACK` for the same
+            // reason the Hopper twins below are: a handle set that depended on
+            // the environment is a handle set a CUDA graph capture cannot
+            // trust.
+            paged_decode_bf16_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_bf16_gqa",
+                "paged_decode_attn_bf16_gqa",
+            )),
+            paged_decode_fp8_gqa_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_attn_fp8_gqa",
+                "paged_decode_attn_fp8_gqa",
+            )),
+            // The Hopper split-K twins (#928). `try_kernel`, not `kernel`: the
+            // sources live only in `kernels/hopper/common`, so on gb10, b200,
+            // strix and metal the lookup returns a zero handle and the dispatch
+            // keeps its existing arm. Resolved unconditionally rather than
+            // behind the `attn_decode_splitk` lever because the FP8 twin is a
+            // drop-in for the gb10 pair whenever split-K runs at all, and
+            // probing on a lever the operator can flip at boot would make the
+            // handle set depend on the environment — which a CUDA graph
+            // capture must not.
+            paged_decode_splitk_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_splitk_fp8_hopper",
+            )),
+            paged_decode_reduce_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_fp8_splitk_hopper",
+                "paged_decode_attn_reduce_fp8_hopper",
+            )),
+            paged_decode_splitk_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_splitk_bf16_hopper",
+            )),
+            paged_decode_reduce_bf16_hopper_k: present(super::super::try_target_kernel(
+                gpu,
+                "paged_decode_bf16_splitk_hopper",
+                "paged_decode_attn_reduce_bf16_hopper",
+            )),
             residual_add_k: gpu.kernel("residual_add", "bf16_residual_add")?,
             // Gemma-4 rms-norm uses the absolute formula `out = x * rms * w`.
             rms_norm_f32_in_k: KernelHandle(0),
@@ -477,12 +617,19 @@ impl Qwen3AttentionLayer {
                 "dense_gemm_bf16_pipelined",
             ),
             prefill_attn_k: gpu.kernel("inferspark_prefill", "inferspark_prefill")?,
-            prefill_attn_512_k: gate(
-                probes.wide_head_dim,
-                gpu,
-                "inferspark_prefill_512",
-                "inferspark_prefill_512",
-            ),
+            // Name comes from the SSOT helper that also supplies the BR the
+            // launcher builds its grid from — see `ops::wide_prefill_kernel`.
+            // Module and entry share a name for both variants.
+            // Resolved WITH FALLBACK — see `ops::wide_prefill_kernel`. A target
+            // that ships only the scalar HDIM=512 kernel must still get it.
+            prefill_attn_512_k: if probes.wide_head_dim {
+                crate::layers::ops::wide_prefill_kernel(gpu).0
+            } else {
+                spark_runtime::gpu::KernelHandle(0)
+            },
+            // BR=32 is the tensor-core instantiation; BR=16 the scalar reference.
+            prefill_attn_512_is_tc: probes.wide_head_dim
+                && crate::layers::ops::wide_prefill_kernel(gpu).1 == 32,
             // DeepSeek-V4 sparse-attention compressor + compressed-KV prefill.
             csa_compress_k: gate(probes.compressed_attn, gpu, "csa_compress", "csa_compress"),
             prefill_attn_compressed_k: gate(
@@ -653,6 +800,7 @@ impl Qwen3AttentionLayer {
                 && crate::layers::fp8_calibration::dtype_runs_online_fp8_kv_calibration(kv_dtype)
             {
                 Some(Fp8KvCalibration::new(
+                    attn_layer_idx,
                     fp8_calibration_tokens,
                     config.fp8_kv_headroom,
                     gpu,
@@ -661,5 +809,55 @@ impl Qwen3AttentionLayer {
                 None
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod fused_kv_probe_guard {
+    /// Every lookup of `fused_k_norm_rope_cache` must go through
+    /// `try_target_kernel`, never plain `try_kernel`.
+    ///
+    /// That module is absent from the `strix` and `strix-hip` kernel trees. A
+    /// plain `try_kernel` there issues a lookup that FAILS, and the boot audit
+    /// records every failed lookup as a dispatch site on a silent fallback
+    /// path and refuses to serve — so the engine will not boot on those
+    /// targets at all. A target that never built the module has no fallback to
+    /// be silent about; it has its only path. This is the class that left
+    /// stack 1089308's first campaign unable to boot with 17 such lookups.
+    ///
+    /// Source-level rather than behavioural on purpose: the failure is a
+    /// BOOT-time refusal on a target this test suite never runs on, so no
+    /// mock backend reproduces it. The guard that can actually fire here is
+    /// the one that reads the call site.
+    #[test]
+    fn fused_k_norm_rope_cache_is_probed_target_scoped() {
+        let src = include_str!("init.rs");
+        let mut offenders = Vec::new();
+        for (i, window) in src.match_indices("\"fused_k_norm_rope_cache\"") {
+            let _ = window;
+            // Walk back to the probe call that owns this module argument.
+            let head = &src[..i];
+            let call = head.rfind("try_kernel(").map(|p| (p, "try_kernel"));
+            let tcall = head
+                .rfind("try_target_kernel(")
+                .map(|p| (p, "try_target_kernel"));
+            let chosen = match (call, tcall) {
+                (Some((a, _)), Some((b, n))) if b >= a => Some((b, n)),
+                (Some((a, n)), _) => Some((a, n)),
+                (None, t) => t,
+            };
+            match chosen {
+                Some((_, "try_target_kernel")) => {}
+                other => offenders.push(format!("{other:?} before byte {i}")),
+            }
+        }
+        assert!(
+            !offenders.is_empty() || src.contains("fused_k_norm_rope_cache"),
+            "guard found no lookups at all — it has stopped measuring anything"
+        );
+        assert!(
+            offenders.is_empty(),
+            "fused_k_norm_rope_cache probed without try_target_kernel: {offenders:?}"
+        );
     }
 }

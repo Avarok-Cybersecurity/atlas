@@ -21,7 +21,7 @@ set -euo pipefail
 # (FP8 weights + NVFP4 lm-head). If you have a pre-quantized NVFP4 weights repo,
 # set HF_REPO to it instead.
 HF_REPO="${HF_REPO:-Qwen/Qwen3.6-35B-A3B-FP8}"
-# Name the server advertises (so `@atlas/<SERVED_NAME>` in your client matches).
+# Name the server advertises (so `@avarok/<SERVED_NAME>` in your client matches).
 SERVED_NAME="${SERVED_NAME:-qwen3.6-35b-a3b-nvfp4}"
 
 HOST="${HOST:-127.0.0.1}"
@@ -46,7 +46,7 @@ DISABLE_THINKING="${DISABLE_THINKING:-1}"   # 1 = pass --disable-thinking
 # dir containing the symlinks and it's prepended to LD_LIBRARY_PATH.
 NCCL_DIR="${NCCL_DIR:-}"
 
-WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/atlas-qwen36-test.XXXXXX")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/avarok-qwen36-test.XXXXXX")"
 SERVER_LOG="${WORKDIR}/server.log"
 SERVER_PID=""
 STARTED_SERVER=0
@@ -74,7 +74,7 @@ need python3
 export SERVED_NAME            # consumed by the inline python request builders
 # huggingface-cli / hf is checked (with fallback) inside download_model.
 
-# ── a small, recognizable test image (white bg, red circle, "ATLAS") ─────────
+# ── a small, recognizable test image (white bg, red circle, "AVAROK") ─────────
 # Returns a `data:image/png;base64,...` URL on stdout. Uses Pillow if present,
 # else falls back to a pure-stdlib solid-red PNG (still describable as "red").
 make_image_data_url() {
@@ -86,7 +86,7 @@ from PIL import Image, ImageDraw
 img = Image.new("RGB", (256, 256), "white")
 d = ImageDraw.Draw(img)
 d.ellipse([48, 48, 208, 208], fill="red", outline="black", width=5)
-d.text((96, 120), "ATLAS", fill="white")
+d.text((96, 120), "AVAROK", fill="white")
 img.save(sys.argv[1], "PNG")
 PY
   else
@@ -133,7 +133,7 @@ start_server() {
 Build it from the feat/canonical-chat-ir branch first. Atlas links NCCL, so the
 linker needs a dir containing libnccl.so on LIBRARY_PATH (NCCL_DIR below is only
 the RUNTIME path):
-    LIBRARY_PATH=\$NCCL_DIR ATLAS_TARGET_MODEL=qwen3.6-35b-a3b \\
+    LIBRARY_PATH=\$NCCL_DIR AVAROK_TARGET_MODEL=qwen3.6-35b-a3b \\
         cargo build --release -p spark-server
 (then re-run, or set SPARK_BIN=/path/to/spark)"
 

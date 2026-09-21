@@ -1,0 +1,2 @@
+{"pr":596,"head_sha":"3540c1e63c78c4244b821d1945e1970aef0c9d34","run_id":"32162699589","attempt":1,"at":1787072166,"kind":"category","value":"correctness","status":"partial"}
+{"pr":596,"head_sha":"3540c1e63c78c4244b821d1945e1970aef0c9d34","run_id":"32162699589","attempt":1,"at":1787072190,"kind":"category","value":"infrastructure/ci","status":"ok"}

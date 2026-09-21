@@ -14,19 +14,19 @@ Both W4A4 prefill paths already exist behind opt-in env flags:
 
 | path | flag | state before this test |
 |---|---|---|
-| dense-FFN prefill via `w4a4_gemm` | `ATLAS_FP4_PREFILL` | implemented, **never A/B'd** |
-| QKV prefill via `w4a4_gemm_mfast` | `ATLAS_ATTN_W4A4` | already tried and **rejected** — hallucinated-multiple-choice signature on long prompts, and only ~2 ms |
+| dense-FFN prefill via `w4a4_gemm` | `AVAROK_FP4_PREFILL` | implemented, **never A/B'd** |
+| QKV prefill via `w4a4_gemm_mfast` | `AVAROK_ATTN_W4A4` | already tried and **rejected** — hallucinated-multiple-choice signature on long prompts, and only ~2 ms |
 
 So the "untested W4A4 prefill" in the handoff was one environment variable, not a build.
 
 ## The A/B
 
 Same box, sequential legs (GB10 unified memory cannot host two serves at util 0.70), frozen
-c2final env, nd=3, greedy temp 0 / seed 42. Only `ATLAS_FP4_PREFILL` differs. Each prompt is
+c2final env, nd=3, greedy temp 0 / seed 42. Only `AVAROK_FP4_PREFILL` differs. Each prompt is
 issued cold behind a unique preamble so the prefix cache cannot hide the prefill cost.
 `scripts/mlperf-edge/run_prefill_w4a4_ab.sh` + `prefill_w4a4_ab.py` + `prefill_w4a4_compare.py`.
 
-The flag was confirmed live rather than assumed — the `[atlas] ATLAS_FP4_PREFILL=1: dense-FFN
+The flag was confirmed live rather than assumed — the `[avarok] AVAROK_FP4_PREFILL=1: dense-FFN
 prefill via w4a4_gemm (native FP4 MMA sm_121a, W4A4)` banner fires on the first prefill (not at
 startup, which is why an early check reads zero).
 

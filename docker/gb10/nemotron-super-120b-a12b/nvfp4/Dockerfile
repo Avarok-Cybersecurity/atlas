@@ -1,12 +1,12 @@
 # Atlas Spark — NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4 on GB10
 #
 # Build from repo root:
-#   docker build -f docker/gb10/nemotron-super-120b-a12b/nvfp4/Dockerfile -t atlas-super-120b .
+#   docker build -f docker/gb10/nemotron-super-120b-a12b/nvfp4/Dockerfile -t avarok-super-120b .
 #
 # Run:
 #   docker run --gpus all --ipc=host -p 8888:8888 \
 #     -v ~/.cache/huggingface:/root/.cache/huggingface \
-#     atlas-super-120b serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
+#     avarok-super-120b serve nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 
 # ── Build stage ──────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
@@ -27,9 +27,9 @@ COPY vendor/ vendor/
 COPY kernels/ kernels/
 COPY jinja-templates/ jinja-templates/
 
-ENV ATLAS_TARGET_HW=gb10
-ENV ATLAS_TARGET_MODEL=nemotron-super-120b-a12b
-ENV ATLAS_TARGET_QUANT=nvfp4
+ENV AVAROK_TARGET_HW=gb10
+ENV AVAROK_TARGET_MODEL=nemotron-super-120b-a12b
+ENV AVAROK_TARGET_QUANT=nvfp4
 
 RUN cargo build --release -p spark-server
 

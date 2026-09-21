@@ -1,0 +1,116 @@
+# LongCat-Flash-Lite MLA kernels — this target owns them.
+#
+# WHY (learned the hard way, recorded so nobody re-runs the experiment):
+#
+# 1. The MLA kernels bake their latent width in as a COMPILE-TIME constant.
+#    `mla_prefill_attn.cu` is `#define MLA_HDIM 576` = LongCat's
+#    kv_lora_rank(512) + qk_rope_head_dim(64). Mistral-Small-4's tree is 320
+#    (kv_lora 256 + rope 64), so borrowing it silently TRUNCATED the latent by
+#    44% — the weights were correct and the kernel read the wrong geometry,
+#    which is why no tensor-layout hypothesis ever explained the divergence.
+#    DeepSeek-V4-Flash happens to use 576 too, hence these copies.
+#
+# 2. Borrowing another target's WHOLE tree (`kernel_source`) also drags in its
+#    shadows of the generic kernels and its module-name table. Doing that here
+#    made the RMSNorm output ~8x too large even though the MLA width was then
+#    right. Only the MLA kernels (+ the w4a16 / moe files the MLA path needs)
+#    are vendored; everything else comes from common/.
+#
+# 3. OPEN ITEM — the unabsorbed lane's head width. LongCat's qk head dim is
+#    192 (nope 128 + rope 64). `-DHDIM=192` DOES NOT BUILD: common's
+#    paged-decode kernels #error because 192 does not vectorize (4 or 8 BF16
+#    per lane; 192/32 = 6). Unset, common defaults to 256 — also wrong. The
+#    fix is one of: instantiate those kernels at 192, pad q/k to 256, or keep
+#    the model on the ABSORBED lane, which never materializes 192-dim heads
+#    (it works in the 576-wide latent) and is how DeepSeek-V4 avoids the same
+#    problem with its 448-dim nope. Until then this target's numerics are NOT
+#    correct — see bench/ngram_ref/slice_stage_cmp.py.
+
+[build]
+# LongCat-Flash-Lite: MLA kernels carry their latent width as a COMPILE-TIME
+# constant, so this target owns its own copies rather than borrowing another
+# model's tree. `mla_prefill_attn.cu` is `#define MLA_HDIM 576`, which is
+# LongCat's kv_lora_rank(512) + qk_rope_head_dim(64) — the same width
+# DeepSeek-V4-Flash happens to use, and NOT Mistral-Small-4's 320
+# (kv_lora 256 + rope 64). Borrowing Mistral's tree silently truncated the
+# latent by 44%: the weights were correct and the kernel read the wrong
+# geometry, which is why no tensor-layout hypothesis explained the divergence.
+#
+# Do NOT pass -DHDIM globally: the common paged-decode kernels only support
+# 128/256/320 and LongCat's qk head dim is 192 (nope 128 + rope 64). The MLA
+# kernels here override their own dims inline.
+# LongCat's qk head dim is 192 (qk_nope 128 + qk_rope 64). Common's
+# attention kernels take HDIM from the build and DEFAULT TO 256 when it is
+# unset, while Mistral-Small-4's tree forces 128 — so borrowing either tree
+# compiled the attention path for the wrong head width. 192 is declared here
+# explicitly because this target owns its tree; no other target is affected.
+# NOTE: -DHDIM=192 (LongCat's true qk head width, nope 128 + rope 64) does
+# NOT BUILD: common's paged-decode kernels #error out because 192 does not
+# vectorize (they need 4 or 8 BF16 per lane; 192/32 = 6). Left unset, so the
+# common kernels take their 256 default. That is WRONG for the unabsorbed
+# lane, and is the open item for this port — see the header comment.
+extra_nvcc_flags = ["--fmad=false"]
+
+# ONLY the MLA kernels are vendored. Everything else (rms_norm, gemm, moe,
+# w4a16, quantize, …) comes from common/ — deliberately: borrowing another
+# target's FULL tree also drags in its shadows of those generic kernels, and
+# doing that produced a wrong RMSNorm here (norm output 8x too large) even
+# though the MLA width was right.
+[modules]
+e2m1_branchless = "e2m1"
+moe_permute = "moe"
+dense_gemm_bf16 = "gemm"
+dense_gemm_splitk = "gemm_splitk"
+dense_gemm_tc = "gemm_tc"
+rms_norm = "norm"
+argmax_bf16 = "argmax"
+dense_gemv_bf16 = "gemv"
+dense_gemv_fp8w = "gemv_fp8w"
+moe_shared_expert_fused_batch2 = "moe_fused_batch2"
+moe_shared_expert_fused_batch3 = "moe_fused_batch3"
+quantize_bf16_to_nvfp4 = "quantize_nvfp4"
+paged_decode_attn = "paged_decode"
+paged_decode_attn_mla = "paged_decode_mla"
+paged_decode_attn_fp8 = "paged_decode_fp8"
+paged_decode_attn_fp8_mla = "paged_decode_fp8_mla"
+paged_decode_attn_nvfp4 = "paged_decode_nvfp4"
+w4a16_gemm = "w4a16"
+kv_cache_append = "kv_cache"
+moe_w4a16_grouped_gemm = "moe_w4a16"
+moe_sorted_prefill = "moe_sorted"
+inferspark_prefill_paged = "prefill_paged"
+inferspark_prefill_paged_fp8 = "prefill_paged_fp8"
+inferspark_prefill_paged_nvfp4 = "prefill_paged_nvfp4"
+inferspark_prefill_fp8kv = "prefill_fp8kv"
+nemotron_moe_prefill = "nemotron_moe_prefill"
+mla_absorbed = "mla_absorbed"
+mla_prefill_attn = "mla_prefill_attn"
+grouped_gemm_mla = "grouped_gemm_mla"
+mla_fused_prefill = "mla_fused_prefill"
+mla_paged_decode = "mla_paged_decode"
+mla_paged_decode_fp8 = "mla_paged_decode_fp8"
+reshape_and_cache_turbo = "reshape_and_cache_turbo"
+paged_decode_attn_turbo4 = "paged_decode_turbo4"
+wht_bf16 = "wht_bf16"
+paged_decode_attn_turbo8 = "paged_decode_turbo8"
+paged_decode_attn_turbo4_512 = "paged_decode_turbo4_512"
+paged_decode_attn_turbo8_512 = "paged_decode_turbo8_512"
+paged_decode_attn_turbo3 = "paged_decode_turbo3"
+paged_decode_attn_turbo3_128 = "paged_decode_turbo3_128"
+paged_decode_attn_turbo4_128 = "paged_decode_turbo4_128"
+paged_decode_attn_turbo8_128 = "paged_decode_turbo8_128"
+inferspark_prefill_512 = "inferspark_prefill_512"
+paged_decode_attn_512 = "paged_decode_attn_512"
+# Manifold-Constrained Hyper-Connections (mHC): hc_pre/hc_post/hc_head.
+hyper_connection = "hyper_connection"
+# DeepSeek Sparse Attention compressor (CSA/HCA window KV compression).
+csa_compress = "csa_compress"
+# CSA prefill attention over [raw causal | compressed windowed] KV + sink.
+prefill_attn_compressed = "prefill_attn_compressed"
+
+# The fused silu_mul_quant_fp8 entry point is deliberately absent from this
+# swiglu_limit shadow of moe_silu_mul.cu: the launch site checks the kernel
+# handle and falls back to the unfused silu_mul → per_token_group_quant_fp8
+# pair (see fused_silu_quant_ok in forward_prefill_fp8.rs).
+[shadow_exempt]
+moe_silu_mul = ["silu_mul_quant_fp8"]

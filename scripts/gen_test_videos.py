@@ -48,7 +48,7 @@ _ROOT = os.path.join(os.path.dirname(__file__), "..")
 # and left the compiled-in one alone. A generator whose output the program
 # never reads is worse than no generator.
 OUTS = [
-    os.path.join(_ROOT, "crates", "atlas-plugin", "assets", "video"),
+    os.path.join(_ROOT, "crates", "avarok-plugin", "assets", "video"),
     os.path.join(_ROOT, "tests", "fixtures", "videos"),
 ]
 SIZE = 224

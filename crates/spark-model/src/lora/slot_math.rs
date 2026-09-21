@@ -7,7 +7,7 @@
 //! Split out of the former monolithic `lora/mod.rs` (SDD seam: SLOT/OFFSET
 //! MATH) — visibility unchanged.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use super::*;
 use crate::layers::ops::lora_delta::LoraPair;
@@ -110,11 +110,17 @@ pub fn select_routed_pair(
 /// (max_rank·in + out·max_rank)·2. Holo @ max_rank=64: ≈ 2.44 MiB/layer
 /// × 6 = ~14.6 MiB/slot; × max_loras=8 ≈ 117 MiB total.
 pub(crate) fn pool_slot_bytes(cfg: &ModelConfig, max_rank: usize) -> usize {
-    full_attention_layers(cfg)
-        .iter()
-        .map(|_| {
+    // EVERY layer, each contributing only the modules that layer can carry
+    // (`LoraModule::applies_to_layer`). It used to be full-attention layers x
+    // ALL modules, which reserved q/k/v/o space on layers that have them but
+    // reserved NOTHING for the dense FFN a hybrid carries on its
+    // linear-attention layers — so those pairs had nowhere to land and were
+    // silently dropped. `pack_slot` walks in exactly this order.
+    (0..cfg.num_hidden_layers)
+        .map(|layer| {
             LoraModule::ALL
                 .iter()
+                .filter(|m| m.applies_to_layer(cfg, layer))
                 .map(|m| {
                     let (out, inp) = m.dims(cfg);
                     (max_rank * inp + out * max_rank) * BF16_BYTES
@@ -131,7 +137,7 @@ pub(crate) fn pool_slot_bytes(cfg: &ModelConfig, max_rank: usize) -> usize {
 // path is cuda AND unix (it lands through spark-storage's RDMA weight loader),
 // so the dead-code allowance must match: `not(all(cuda, unix))`, not
 // `not(cuda)`. It stays defined everywhere for the offset unit tests.
-#[cfg_attr(not(all(feature = "cuda", unix)), allow(dead_code))]
+#[cfg_attr(not(all(avarok_cuda, unix)), allow(dead_code))]
 pub(crate) fn slot_base_offset(slot: usize, cfg: &ModelConfig, max_rank: usize) -> usize {
     slot * pool_slot_bytes(cfg, max_rank)
 }
@@ -141,16 +147,23 @@ pub(crate) fn slot_base_offset(slot: usize, cfg: &ModelConfig, max_rank: usize) 
 /// A-then-B). `None` if `target_layer` is not a full-attention layer. Used by
 /// the pack loop, the RDMA landing path, and the offset unit tests so all three
 /// agree on the one frozen layout.
-#[cfg_attr(not(all(feature = "cuda", unix)), allow(dead_code))]
+#[cfg_attr(not(all(avarok_cuda, unix)), allow(dead_code))]
 pub(crate) fn module_slot_offsets(
     cfg: &ModelConfig,
     max_rank: usize,
     target_layer: usize,
     target_module: LoraModule,
 ) -> Option<(usize, usize)> {
+    // MUST walk exactly as `pack_slot` and `pool_slot_bytes` do — every
+    // layer, applicable modules only. This is the RDMA landing path's view of
+    // the layout; if it disagrees with the packer, staged weights land at the
+    // wrong offsets. The three share `applies_to_layer` for that reason.
     let mut off = 0usize;
-    for layer_idx in full_attention_layers(cfg) {
+    for layer_idx in 0..cfg.num_hidden_layers {
         for module in LoraModule::ALL {
+            if !module.applies_to_layer(cfg, layer_idx) {
+                continue;
+            }
             let (out_dim, in_dim) = module.dims(cfg);
             let a_off = off;
             let b_off = off + max_rank * in_dim * BF16_BYTES;

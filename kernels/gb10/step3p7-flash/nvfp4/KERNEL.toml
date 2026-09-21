@@ -41,3 +41,10 @@ paged_decode_attn_turbo3 = "paged_decode_turbo3"
 paged_decode_attn_turbo3_128 = "paged_decode_turbo3_128"
 paged_decode_attn_turbo4_128 = "paged_decode_turbo4_128"
 paged_decode_attn_turbo8_128 = "paged_decode_turbo8_128"
+
+# The fused silu_mul_quant_fp8 entry point is deliberately absent from this
+# swiglu_limit shadow of moe_silu_mul.cu: the launch site checks the kernel
+# handle and falls back to the unfused silu_mul → per_token_group_quant_fp8
+# pair (see fused_silu_quant_ok in forward_prefill_fp8.rs).
+[shadow_exempt]
+moe_silu_mul = ["silu_mul_quant_fp8"]

@@ -32,6 +32,13 @@ use crate::api::InferenceRequest;
 use crate::main_modules::AppState;
 use crate::main_modules::serve_phases;
 use crate::tokenizer::ChatTokenizer;
+
+/// Rank the LoRA pool pads to when `--max-lora-rank` is unset AND the rank
+/// cannot be derived (a stageable adapter may arrive at any rank). Historical
+/// fixed default; see `max_lora_rank` in `serve_args.rs` for why deriving is
+/// preferred when the resident set is known.
+const DEFAULT_MAX_LORA_RANK: usize = 64;
+
 use crate::{
     cli, conversation_store, rate_limiter, response_store, scheduler, scheduling_policy,
     session_manager,
@@ -61,13 +68,22 @@ impl Carried {
     /// loaded — and so there is exactly one of each: handlers refund through
     /// the same limiter the middleware debits, and read the same stores a swap
     /// carries forward.
-    pub fn from_env() -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// When any of the `AVAROK_RATE_LIMIT_*`, `AVAROK_STORE_*` or
+    /// `AVAROK_CONVERSATION_*` variables holds a value that does not parse.
+    /// Refused rather than defaulted: these are the process's SECURITY and
+    /// RETENTION settings, and the default for a rate limit is "no limit", so
+    /// a swallowed typo used to open the server up without a word. This runs
+    /// before the listener binds and before the weight load, so a bad value
+    /// costs milliseconds.
+    pub fn from_env() -> Result<Self, String> {
+        Ok(Self {
             // `from_env` already hands back an Arc.
-            response_store: response_store::ResponseStore::from_env(),
-            rate_limiter: rate_limiter::RateLimiter::from_env(),
-            conversation_store: conversation_store::ConversationStore::from_env(),
-        }
+            response_store: response_store::ResponseStore::from_env()?,
+            rate_limiter: rate_limiter::RateLimiter::from_env()?,
+            conversation_store: conversation_store::ConversationStore::from_env()?,
+        })
     }
 
     /// A swap: take them from the model being replaced.
@@ -112,7 +128,7 @@ pub(crate) fn load_model(
     spark_runtime::progress::phase(2, "config");
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
-    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
+    // CLI `--lm-head-dtype` override (replaces AVAROK_LMHEAD_BF16). Validate eagerly (PCND).
     // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
     // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
     // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
@@ -166,7 +182,7 @@ pub(crate) fn load_model(
                 // `read_preprocessor_max_pixels` logs the resolved path and
                 // key on its own line. Naming one here was wrong for every
                 // unsloth checkpoint, which ships only the other.
-                "checkpoint processor config / ATLAS_VISION_MAX_PIXELS"
+                "checkpoint processor config / AVAROK_VISION_MAX_PIXELS"
             }
         ),
         None => tracing::info!(
@@ -280,7 +296,7 @@ pub(crate) fn load_model(
     .into_iter()
     .flatten()
     .collect();
-    let ptx_set = atlas_kernels::ptx_for_config(
+    let ptx_set = avarok_kernels::ptx_for_config(
         &config.model_type,
         config.hidden_size,
         &model_refs,
@@ -293,12 +309,22 @@ pub(crate) fn load_model(
              Available targets: {:?}",
             config.model_type,
             config.hidden_size,
-            atlas_kernels::available_targets()
+            avarok_kernels::available_targets()
                 .iter()
                 .map(|t| &t.target.model)
                 .collect::<Vec<_>>(),
         )
     })?;
+    // K3 packed experts require the E8M0 module in the exact MXFP4 target.
+    // Multi-quant resolution otherwise picks the first variant (often BF16).
+    // Do not broaden the global quant compatibility table to hide that mismatch.
+    let ptx_set = if config.model_type == "kimi_k3" && canonicalize_model_quant(&config) == "mxfp4"
+    {
+        avarok_kernels::ptx_for_exact_target(ptx_set.target.model, "mxfp4")
+            .context("K3 MXFP4 requires its compiled mxfp4 target; rebuild with AVAROK_TARGET_QUANT=mxfp4 or *")?
+    } else {
+        ptx_set
+    };
     let sampling_presets = ptx_set.sampling;
     // Record the RESOLVED target identity for the dashboard's kernel table.
     // It used to re-run resolution from (model_type, hidden_size), but that
@@ -309,7 +335,7 @@ pub(crate) fn load_model(
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
     //
     // `ptx_for_config` selects on (model_type, hidden_size) but not on
-    // QUANT. With ATLAS_TARGET_QUANT=* the build emits one bundle per
+    // QUANT. With AVAROK_TARGET_QUANT=* the build emits one bundle per
     // model whose label happens to be the first variant compiled
     // ("nvfp4") even when the bundle contains native FP8 dispatch too.
     // For now we accept the historically-compatible pairs hardcoded in
@@ -326,7 +352,7 @@ pub(crate) fn load_model(
              Model declares quant={model_quant} ({}). \
              The compiled kernel set has no known dispatch path for \
              quant '{model_quant}' — loading would produce silent garbage. \
-             Rebuild with ATLAS_TARGET_QUANT={model_quant} (or =* to bundle multiple \
+             Rebuild with AVAROK_TARGET_QUANT={model_quant} (or =* to bundle multiple \
              variants) and restart.",
             ptx_set.target,
             describe_quant_source(&config),
@@ -368,14 +394,75 @@ pub(crate) fn load_model(
 
     let (gpu, free_mem) = serve_phases::init_gpu_backend(&args, &ptx_set)?;
 
+    // 2b. Resolve TP / EP topology and set on model config.
+    //
+    // MUST run BEFORE `preflight_reserve`. `resolve_topology` divides
+    // `num_attention_heads`, `num_key_value_heads`, `linear_num_key_heads` and
+    // `linear_num_value_heads` by `tp_size`, and every SSM/GDN reserve term —
+    // plus nine buffer-arena fields — is derived from exactly those fields.
+    // Sizing the reserve first meant sizing it from the GLOBAL, unsharded
+    // counts while the runtime pools allocate from the TP-local ones: a reserve
+    // inflated by exactly `tp_size` on every SSM term (byte-exact on GLM-5.3 at
+    // `--tp-size 2`: 2380.0 MiB reserved against 1190.0 MiB allocated), taken
+    // straight out of the KV budget.
+    //
+    // This was a latent regression, not a design choice. The head-count divide
+    // arrived with #254 (GDN HeadParallel), which touched only `topology.rs`;
+    // before it nothing here was sharded and the order did not matter.
+    //
+    // Reordering, rather than teaching preflight to divide, is deliberate: the
+    // divide must not be reimplemented in a second place. `resolve_topology`
+    // guards each divide with an `is_multiple_of` bail, so a duplicated divide
+    // would silently truncate (3 heads / 2 = 1 — a 33 % UNDER-reserve, the
+    // dangerous direction). Reordering inherits those guards for free, and it
+    // makes the cheap topology bails fail before the expensive memory gate.
+    //
+    // Safe by inspection: `resolve_topology` takes only `(&args, &mut config)`
+    // and consumes nothing `preflight_reserve` produces, while
+    // `preflight_reserve` needs only `free_mem` and a resolved
+    // `args.num_drafts` — both already established above. At `--tp-size 1` the
+    // whole divide is gated off (`topology.rs`), so this is a byte-exact no-op.
+    spark_runtime::progress::phase(4, "topology");
+    let serve_phases::Topology {
+        world_size,
+        tp_size: _tp_size,
+        ep_size,
+        tp_rank: _tp_rank,
+        ep_rank,
+    } = serve_phases::resolve_topology(&args, &mut config)?;
+
     // ── Pre-load reserve preflight ──
+    //
+    // The four post-load inputs are resolved HERE because they are the
+    // caller's to know (#915 second pass): the device total and the loaded
+    // kernel set come from the backend initialised above, the checkpoint
+    // directory from `resolve_model_dir`, and the KV dtype from the SAME
+    // `resolve_kv_dtype_str` precedence the cache itself uses later in this
+    // function — so preflight's bytes-per-token and the pool's cannot differ.
+    // A `--kv-cache-dtype` that fails to parse is left to the cache's own
+    // error path; the fit falls back to pre-load free memory rather than
+    // failing the boot early with a second, worse-worded copy of it.
+    let (preflight_kv_dtype_str, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
+    let post_load_inputs = serve_phases::PostLoadInputs {
+        total_mem: gpu.total_memory().unwrap_or(0),
+        model_dir: &model_dir,
+        kv_dtype: preflight_kv_dtype_str
+            .parse()
+            .unwrap_or(spark_runtime::kv_cache::KvCacheDtype::Bf16),
+        w8a8_prefill_kernels: spark_model::layers::qwen3_attention::w8a8_prefill_kernels_loaded(
+            gpu.as_ref(),
+        ),
+    };
     let serve_phases::ReservePreflight {
         inference_reserve,
         buffer_arena_bytes,
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
-    } = serve_phases::preflight_reserve(&args, &config, free_mem)?;
+    } = serve_phases::preflight_reserve(&args, &config, free_mem, &post_load_inputs)?;
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
@@ -385,23 +472,14 @@ pub(crate) fn load_model(
     // CUDA-only: Apple Silicon UMA already exposes `currentAllocatedSize`
     // and the OS handles memory pressure via Metal's working-set policy,
     // so the dedicated watchdog isn't needed.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     let _oom_watchdog = spark_runtime::cuda_backend::spawn_oom_watchdog(
         2048, // 2 GB threshold
         std::time::Duration::from_secs(2),
     );
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     tracing::info!("OOM watchdog started (threshold: 2 GB, interval: 2s)");
 
-    // 2b. Resolve TP / EP topology and set on model config.
-    spark_runtime::progress::phase(4, "topology");
-    let serve_phases::Topology {
-        world_size,
-        tp_size: _tp_size,
-        ep_size,
-        tp_rank: _tp_rank,
-        ep_rank,
-    } = serve_phases::resolve_topology(&args, &mut config)?;
     // FP8 KV calibration precedence (highest wins): an explicit
     // --fp8-kv-calibration-tokens ALWAYS wins — including 0, which
     // force-disables calibration on a model whose MODEL.toml enables it
@@ -439,8 +517,29 @@ pub(crate) fn load_model(
     // MiniMax M2.7 hang on NCCL init today because the actual mismatch
     // only surfaces later inside `build_model`; this check surfaces it
     // up-front.
-    spark_model::preflight::preflight(&store, &config, args.speculative)
-        .context("Checkpoint pre-flight check failed")?;
+    let (kv_dtype, _) = serve_phases::kv_cache::resolve_kv_dtype_str(
+        args.kv_cache_dtype.as_deref(),
+        ptx_set.behavior.default_kv_dtype,
+    );
+    spark_model::preflight::preflight(
+        &store,
+        &config,
+        args.speculative,
+        // The RESOLVED dtype, through the ENGINE'S resolver. An omitted
+        // `--kv-cache-dtype` is not "bf16": it resolves to the MODEL.toml
+        // `[behavior] default_kv_dtype` if the model states one, and only then to
+        // the engine default of fp8. Passed raw, the QSA check saw `None`, called
+        // it safe, and let the bare invocation -- the obvious one -- load a
+        // hundred-plus gigabytes before the decode path refused on the first
+        // request.
+        //
+        // `resolve_kv_dtype_str` and not a local `unwrap_or`: a second copy of
+        // the precedence gets the MODEL.toml layer wrong, and then preflight
+        // computes fp8 for a model that will actually run bf16 and REFUSES a
+        // deployment that would have worked. One resolver, one answer.
+        Some(kv_dtype.as_str()),
+    )
+    .context("Checkpoint pre-flight check failed")?;
 
     // Resolve and log the QuantFormat dispatch decision now so a silent
     // fallback is visible in the server log (and not just in the
@@ -468,6 +567,15 @@ pub(crate) fn load_model(
     // when it is provably net-negative (verify multiplier ≥ 1 + num_drafts).
     // See `scheduler::mtp_gate`.
 
+    // 3b. Pre-warm cuBLASLt so request 1 does not pay its lazy init.
+    // Measured (2026-08-22, 35B flagship, dgx1): once QKVZ prefill routes
+    // through cuBLASLt, the FIRST request read ~0.9 s slower than warm ones —
+    // handle create + 64 MB workspace + the library's kernel-image load, all
+    // deferred to first use. Cold TTFT is a headline metric; load time is not.
+    // Failure is logged inside and never fails the serve.
+    #[cfg(avarok_cuda)]
+    spark_runtime::cublaslt::prewarm(0);
+
     // 4. Post-load OOM check + audit log.
     serve_phases::post_load_memory_audit(
         &args,
@@ -488,11 +596,21 @@ pub(crate) fn load_model(
         max_batch_tokens,
         spec_tokens: _spec_tokens,
     } = serve_phases::resolve_prefill_budget(&args, ssm_prefill_chunk);
-    if args.dflash && args.enable_prefix_caching {
-        tracing::warn!(
-            "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
-        );
-    }
+    // 2026-08-21: the community-reported "prefix caching × DFlash wrong
+    // outputs on multi-turn cache hits (SM12.x)" warning that used to print
+    // here is RESOLVED and was never a cache or hardware defect. The carrier
+    // was `k4_apply_verdict` rewinding by `drafts.len()` instead of the
+    // forward's row count (PR #699): a K=4 verify dispatched onto a γ-draft
+    // DFlash sequence emitted its accepted tokens and then erased them from
+    // the sequence's history. Cache hits merely shifted the mtp_gate's lane
+    // flips into that collision more often, which is why it presented as a
+    // cache regression. Verified on the fix: pre-fix failures were
+    // byte-identical cache on/off; post-fix, cache ON runs cold + two hits
+    // byte-identical at C=1, four concurrent shared-prefix requests complete
+    // coherently (accept 36% -> 79%), and video-fidelity passes 1/1, 2/2,
+    // 4/4. The warning is removed rather than kept: a standing accusation
+    // against a feature agentic serves depend on steers operators away from
+    // it for no remaining reason.
     // 2026-06-18: the previously-documented warm-Marconi-restore × MTP
     // corruption on hybrid SSM models is RESOLVED. Verified by a greedy
     // ground-truth A/B at batch=1 (the level MTP runs at — MTP is gated to
@@ -513,6 +631,7 @@ pub(crate) fn load_model(
         world_size,
         max_batch_tokens,
         config.hidden_size,
+        config.vocab_size,
     )?;
     // Carried on the config rather than written into the environment: the old
     // `unsafe set_var` claimed "called before any threads are spawned", which
@@ -572,6 +691,28 @@ pub(crate) fn load_model(
              TP adapter sharding is M3"
         );
     }
+    // Pool rank: what the adapters ACTUALLY need, unless the operator pinned a
+    // ceiling. Both delta stages contract at this width and the B operand is
+    // `[n_out, max_rank]`, so padding an r=8 adapter to the old fixed 64 moved
+    // 8x the bytes for identical math — measured 5392 -> 674 MiB of pool and
+    // prefill 608 -> 730 tok/s on qwen3.8-27B.
+    //
+    // A configured stageable adapter keeps the historical 64: the pool layout
+    // is frozen at startup and a peer can hand us an adapter whose rank we
+    // cannot know here, so sizing to the resident set would turn a later
+    // stage-in into a hard reject.
+    let max_lora_rank = args.max_lora_rank.unwrap_or_else(|| {
+        if !args.lora_stageable.is_empty() || !args.lora_stageable_disk.is_empty() {
+            DEFAULT_MAX_LORA_RANK
+        } else {
+            lora_states
+                .iter()
+                .map(|l| l.peft_config.r)
+                .max()
+                .unwrap_or(DEFAULT_MAX_LORA_RANK)
+                .max(1)
+        }
+    });
     let lora_args = if lora_states.is_empty() {
         None
     } else {
@@ -584,7 +725,7 @@ pub(crate) fn load_model(
                     peft: l.peft_config.clone(),
                 })
                 .collect(),
-            max_lora_rank: args.max_lora_rank,
+            max_lora_rank,
             max_loras: args.max_loras,
         })
     };
@@ -594,7 +735,7 @@ pub(crate) fn load_model(
             .map(|(s, c)| spark_model::factory::DflashBuildArgs {
                 drafter_store: s,
                 drafter_config: c.clone(),
-                gamma: Some(args.dflash_gamma),
+                gamma: args.dflash_gamma, // None → head resolves via default_dflash_gamma()
                 window_size: if args.dflash_window_size > 0 {
                     Some(args.dflash_window_size)
                 } else {
@@ -738,6 +879,7 @@ pub(crate) fn load_model(
         &tokenizer,
         &mut eos_tokens,
         supports_thinking,
+        &model_dir,
     );
 
     // 7. Create scheduler channel + spawn scheduler
@@ -754,7 +896,7 @@ pub(crate) fn load_model(
     // EP gate. v1 single-sequence worker protocol required max_batch_size=1
     // because each cmd targeted one slot and the head's per-token broadcast
     // loop had no way to address slot N. v2 adds a per-cmd seq_id preamble
-    // (set ATLAS_EP_PROTOCOL=v2) so the worker routes commands by slot_idx
+    // (set AVAROK_EP_PROTOCOL=v2) so the worker routes commands by slot_idx
     // and runs decode() per-seq. The head's decode_batch_dispatch EP branch
     // stages each seq's logits row to host between decode() calls so all N
     // rows survive into process_decode_logits — without that, the single-row
@@ -773,6 +915,17 @@ pub(crate) fn load_model(
     } else {
         args.max_batch_size
     };
+    // mHC highway models (#753 item B): multi-seq decode runs the per-seq
+    // highway loop (decode_a2) with per-sequence PLE/QSA state; batched
+    // prefill/mixed steps are serialized scheduler-side. Concurrency is
+    // honored — the earlier clamp-to-1 mitigation is lifted.
+    if scheduler_model.hc_mult() > 0 && max_batch_size > 1 {
+        tracing::info!(
+            "mHC highway model: concurrency {max_batch_size} via the per-seq \
+             highway decode loop (batched highway kernels are the perf \
+             follow-up)"
+        );
+    }
     // Derived ceiling (wave-14a): the decode-metadata layout, logits rows and
     // scratch block-table envelope are all DERIVED from max_batch_size
     // (`spark_runtime::buffers::DecodeMetaLayout`, rows = max(32, bs) —
@@ -796,15 +949,29 @@ pub(crate) fn load_model(
     // proposer for γ tokens (DraftProposer::propose semantics: "up to
     // num_drafts" → drafts.len() = γ → routes to step_verify_dflash).
     let num_drafts = if args.dflash {
-        args.dflash_gamma.saturating_sub(1).max(1)
+        // γ must match what the drafter head resolved (block-diffusion
+        // drafters are trained at ONE block size): the head's own gamma is
+        // the SSOT once built.
+        let g = scheduler_model
+            .dflash_gamma()
+            .unwrap_or_else(|| args.resolved_dflash_gamma(None));
+        g.saturating_sub(1).max(1)
     } else {
         args.resolved_num_drafts()
     };
+    if args.dflash {
+        // Gamma resolver: the head's gamma is the cap; an explicit flag pins.
+        crate::scheduler::dflash_rung::configure(
+            num_drafts + 1,
+            args.dflash_gamma.is_some(),
+            spark_model::layers::qwen3_ssm::gdn_flags::gdn_woa_enabled(),
+        );
+    }
 
     if args.dflash {
         tracing::info!(
             "DFlash speculative decoding: ENABLED (γ={}, window={}, drafter installed)",
-            args.dflash_gamma,
+            num_drafts + 1,
             if args.dflash_window_size == 0 {
                 "full".to_string()
             } else {
@@ -846,7 +1013,10 @@ pub(crate) fn load_model(
 
     // Use prefill_budget (which accounts for SSM no-chunking override) instead of raw CLI arg.
     let max_prefill_tokens = prefill_budget;
-    let swap_space_gb = args.swap_space_gb;
+    // Model capability gate, not a flag default: the spill image is KV-only, so
+    // a model whose prefill builds state outside KV must not swap out at all.
+    // Sibling of `build_prefix_cache`'s gate above — same fact, second mechanism.
+    let swap_space_gb = serve_phases::resolve_swap_space_gb(&args, &config);
     let block_size = args.block_size;
 
     // ── --high-speed-swap config validation (PCND: required-when-set) ──
@@ -870,7 +1040,7 @@ pub(crate) fn load_model(
     // DFlash mode: the drafter proposes on raw argmax, so the verify steps
     // must judge acceptance on the same (GOLD) basis — skipping the
     // rep_pen/DRY pre-sample pipeline — or drafter and verifier disagree by
-    // construction and accept craters. ATLAS_DFLASH_MASKED_VERIFY=1 routes
+    // construction and accept craters. AVAROK_DFLASH_MASKED_VERIFY=1 routes
     // verify PICKS back through the pre-sample masking (unmasked
     // special-token leak fix); that is handled at the pick sites via
     // `verify_pipeline_helper::dflash_masked_verify_enabled()` and must NOT
@@ -894,7 +1064,9 @@ pub(crate) fn load_model(
     let sched_levers = std::sync::Arc::new(crate::scheduler::levers::SchedLevers::from_env());
     sched_levers.set_loop_watchdog(crate::scheduler::resolve_content_loop_watchdog(
         ptx_set.behavior.enable_loop_watchdog,
-        std::env::var("ATLAS_CONTENT_LOOP_WATCHDOG").ok().as_deref(),
+        std::env::var("AVAROK_CONTENT_LOOP_WATCHDOG")
+            .ok()
+            .as_deref(),
         args.content_loop_watchdog,
     ));
     // The run's snapshot cell, shared with the dashboard for the same reason
@@ -981,7 +1153,7 @@ pub(crate) fn load_model(
                 cfg_path.display()
             )
         })?;
-        let peft = atlas_core::config::parse_peft_adapter_config(&raw)
+        let peft = avarok_core::config::parse_peft_adapter_config(&raw)
             .with_context(|| format!("--lora-stageable '{name}': parse {}", cfg_path.display()))?;
         lora_stageable.insert(
             name.clone(),
@@ -993,7 +1165,7 @@ pub(crate) fn load_model(
     }
     if !lora_stageable.is_empty() && lora_peer_addr.is_none() {
         anyhow::bail!(
-            "--lora-stageable given ({} adapter(s)) but $ATLAS_LORA_PEER is unset; \
+            "--lora-stageable given ({} adapter(s)) but $AVAROK_LORA_PEER is unset; \
              demand promotion needs a weight peer to RDMA-stage from",
             lora_stageable.len()
         );
@@ -1026,17 +1198,17 @@ pub(crate) fn load_model(
                 cfg_path.display()
             )
         })?;
-        let peft = atlas_core::config::parse_peft_adapter_config(&raw).with_context(|| {
+        let peft = avarok_core::config::parse_peft_adapter_config(&raw).with_context(|| {
             format!(
                 "--lora-stageable-disk '{name}': parse {}",
                 cfg_path.display()
             )
         })?;
-        if peft.r > args.max_lora_rank {
+        let ceiling = args.max_lora_rank.unwrap_or(DEFAULT_MAX_LORA_RANK);
+        if peft.r > ceiling {
             anyhow::bail!(
-                "--lora-stageable-disk '{name}' r={} > --max-lora-rank {}",
-                peft.r,
-                args.max_lora_rank
+                "--lora-stageable-disk '{name}' r={} > --max-lora-rank {ceiling}",
+                peft.r
             );
         }
         lora_disk_stageable.insert(name.clone(), (dir, peft));
@@ -1048,14 +1220,14 @@ pub(crate) fn load_model(
         );
     }
     // The disk swap re-points a cache slot only when rotation is armed
-    // (decode runs eager). ATLAS_LORA_ROTATE=1 arms it; a peer being set also
+    // (decode runs eager). AVAROK_LORA_ROTATE=1 arms it; a peer being set also
     // forces eager decode, so accept either.
     if !lora_disk_stageable.is_empty()
         && !spark_model::lora::lora_rotate_env()
         && lora_peer_addr.is_none()
     {
         anyhow::bail!(
-            "--lora-stageable-disk needs rotation armed: set ATLAS_LORA_ROTATE=1 so decode \
+            "--lora-stageable-disk needs rotation armed: set AVAROK_LORA_ROTATE=1 so decode \
              runs eager and the disk swap can re-point a cache slot"
         );
     }

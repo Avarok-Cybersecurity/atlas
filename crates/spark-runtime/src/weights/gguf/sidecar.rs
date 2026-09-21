@@ -70,6 +70,7 @@ pub fn est_bf16(gguf: &container::GgufFile, arch: &str) -> usize {
     let is_clip = value_transform::is_clip(arch);
     gguf.tensors
         .iter()
+        .filter(|t| !(arch == "deepseek41" && names::deepseek41_deferred_name(&t.name).is_some()))
         .filter(|t| {
             (is_clip && value_transform::vision_patch_frame(&t.name).is_some())
                 || !matches!(
@@ -106,6 +107,8 @@ pub fn load_pass(
     q2_variant: container::Q2Group,
     weights: &mut HashMap<String, WeightTensor>,
     skipped: &mut usize,
+    shard_path: &std::path::Path,
+    deferred: &mut HashMap<String, crate::weights::DeferredTensor>,
 ) -> Result<()> {
     // Patch-embed temporal-frame fan-in state (clip only).
     let vpatch = if value_transform::is_clip(arch) {
@@ -144,6 +147,22 @@ pub fn load_pass(
             continue;
         }
 
+        if arch == "deepseek41"
+            && let Some(store_name) = names::deepseek41_deferred_name(&tensor.name)
+        {
+            let mut hf_shape: Vec<usize> = tensor.dims.clone();
+            hf_shape.reverse();
+            deferred.insert(
+                store_name,
+                crate::weights::DeferredTensor {
+                    path: shard_path.to_path_buf(),
+                    offset: gguf.tensor_abs_offset(tensor) as u64,
+                    shape: hf_shape,
+                    dtype: WeightDtype::BF16,
+                },
+            );
+            continue;
+        }
         let target = match names::translate(&tensor.name, arch) {
             Some(names::GgufName::Drop) | None => continue,
             Some(t) => t,
@@ -153,13 +172,39 @@ pub fn load_pass(
         let hf_shape: Vec<usize> = tensor.dims.iter().rev().copied().collect();
 
         // ── Native keep-packed Q2_0 short-circuit ──
-        // When `ATLAS_GGUF_NATIVE_Q2=1`, upload the raw `block_q2_0` bytes for
+        // When `AVAROK_GGUF_NATIVE_Q2=1`, upload the raw `block_q2_0` bytes for
         // the big transform-free FFN projections UNCHANGED and tag them
         // `PackedQ2_0` so the model's `q2_0_gemv` decode path dequants in-kernel
         // (no BF16 expansion, no downstream NVFP4 requant). This is the whole
         // memory win. Excludes GDN reorder tensors via `!value_transform::needs`
         // (a column reorder would split blocks). Non-id-42 and non-FFN tensors,
         // and the flag-off default, are untouched below.
+        // DeepSeek-V4.1 attention projections and shared expert stay Q2_K /
+        // Q3_K (ggml types 10 / 11) on the device; ATLAS_DS41_KQUANT_RESIDENT=0
+        // restores the bf16 expansion.
+        if arch == "deepseek41"
+            && (id == 10 || id == 11)
+            && let names::GgufName::Direct(ref hf_name) = target
+            && names::is_v41_kquant_resident(hf_name)
+            && !std::env::var("ATLAS_DS41_KQUANT_RESIDENT").is_ok_and(|v| v == "0")
+        {
+            let ptr = gpu.alloc(raw.len())?;
+            gpu.copy_h2d(raw, ptr)?;
+            weights.insert(
+                hf_name.clone(),
+                WeightTensor {
+                    ptr,
+                    shape: hf_shape,
+                    dtype: if id == 10 {
+                        WeightDtype::Q2K
+                    } else {
+                        WeightDtype::Q3K
+                    },
+                },
+            );
+            continue;
+        }
+
         if native_q2
             && id == 42
             && let names::GgufName::Direct(ref hf_name) = target

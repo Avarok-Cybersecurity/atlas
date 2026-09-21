@@ -11,7 +11,7 @@
 //!   another sequence's recurrent state, silently.
 //! * [`value_switch_armed`] must keep the house VALUE convention for the
 //!   three verify switches hoisted out of the per-step hot path. An inverted
-//!   or loosened predicate would arm `ATLAS_K4_DIAG` (which forces the verify
+//!   or loosened predicate would arm `AVAROK_K4_DIAG` (which forces the verify
 //!   path EAGER, destroying the graph replay) for anyone who exports it as
 //!   `=0`.
 
