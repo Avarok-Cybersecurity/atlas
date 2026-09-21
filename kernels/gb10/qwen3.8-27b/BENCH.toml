@@ -754,17 +754,30 @@ prompt_mode = "essay"
 #        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
 #        not worth spending that thin a record on; re-cut them with the ladder.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 20.5, noise = 0.3.
-# The published ladder reads 23.59 tok/s at C=1 on the instrument now in
-# force, 1.15x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 23.59 tok/s at C=1 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 11.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 11.5
 noise = 0.0
 
 [benchmarks.metrics.c2_aggregate_tok_s]
@@ -780,17 +793,30 @@ noise = 0.0
 # clear that bar by 0.45, which is not a margin. 25.0 stayed in
 # the gap between modes.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 25.0, noise = 0.95.
-# The published ladder reads 41.02 tok/s at C=2 on the instrument now in
-# force, 1.64x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 41.02 tok/s at C=2 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 20.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 20.5
 noise = 0.0
 
 [benchmarks.metrics.c4_aggregate_tok_s]
@@ -805,17 +831,30 @@ noise = 0.0
 # toward the policy once dgx1 has recorded on the 32-slot pin and the two
 # modes are understood (avarok#812 is still the open question at this rung).
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 43.5, noise = 1.8.
-# The published ladder reads 74.21 tok/s at C=4 on the instrument now in
-# force, 1.71x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 74.21 tok/s at C=4 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 37.0. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 37.0
 noise = 0.0
 
 [benchmarks.metrics.c8_aggregate_tok_s]
@@ -831,17 +870,30 @@ noise = 0.0
 # run since 2026-09-08 by at least 4.1. Re-cut toward the policy once dgx1
 # has recorded on the 32-slot pin.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 57.0, noise = 2.3.
-# The published ladder reads 125.95 tok/s at C=8 on the instrument now in
-# force, 2.21x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 125.95 tok/s at C=8 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 62.5. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 62.5
 noise = 0.0
 
 [benchmarks.metrics.c16_aggregate_tok_s]
@@ -856,17 +908,30 @@ noise = 0.0
 # every committed run on the widened instrument (since 2026-08-30) by at
 # least 3.2.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 86.0, noise = 1.45.
-# The published ladder reads 203.36 tok/s at C=16 on the instrument now in
-# force, 2.36x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 203.36 tok/s at C=16 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 100. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 100
 noise = 0.0
 
 [benchmarks.metrics.c32_aggregate_tok_s]
@@ -877,17 +942,30 @@ noise = 0.0
 # latest value and not 2.5%). Guard: regime min 103.60 (2026-09-13-1a0dc88a8c,
 # dgx1; n=22, sigma 0.49), 5.3 above the effective bar.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 100.0, noise = 1.7.
-# The published ladder reads 291.01 tok/s at C=32 on the instrument now in
-# force, 2.91x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 291.01 tok/s at C=32 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 140. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 140
 noise = 0.0
 
 [benchmarks.metrics.c64_aggregate_tok_s]
@@ -897,17 +975,30 @@ noise = 0.0
 # 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.62), 6.5 above the effective bar.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.9.
-# The published ladder reads 386.63 tok/s at C=64 on the instrument now in
-# force, 3.51x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 386.63 tok/s at C=64 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 190. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 190
 noise = 0.0
 
 [benchmarks.metrics.c128_aggregate_tok_s]
@@ -917,17 +1008,30 @@ noise = 0.0
 # 10-step). Guard: regime min 114.00 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.72), 5.9 above the effective bar.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.9.
-# The published ladder reads 478.11 tok/s at C=128 on the instrument now in
-# force, 4.35x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 478.11 tok/s at C=128 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 230. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 230
 noise = 0.0
 
 [benchmarks.metrics.peak_aggregate_tok_s]
@@ -944,17 +1048,30 @@ noise = 0.0
 # C=64/C=128 bar, not the C=16 one the previous comment described: a sweep
 # whose peak fell below this has lost its top rung whichever C produced it.
 #
-# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
-# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.90.
-# The published ladder reads 478.11 tok/s at C=64/C=128 on the instrument now in
-# force, 4.35x the retired bar: keeping it would report a guard that
-# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
-# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
-# bounded). The derivation above is kept, not archived: its GUARD (no effective
-# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
-# C=16 dips with no regime change) are facts about the RUNG, not about the
-# instrument, and both still govern the re-cut.
-min = 0.0
+# ★ PROVISIONAL, 2026-09-21. THE BAR ABOVE WAS CUT AT THE RETIRED 512/320
+# NATURAL INSTRUMENT AND IS NOT A BOUND ON THIS ONE — it sat 1.15x (C=1) to
+# 4.3x (C=128) under what this instrument produces, so carrying it would have
+# reported a guard that cannot fail while risking a false FAIL at C=1.
+#
+# ★ AND IT COULD NOT SIMPLY BE SWITCHED OFF. `RUNGS` says a rung with no
+# metrics block keeps the 0.0 default and gates nothing, which is true of ONE
+# rung beside bounded ones — but `Floors::gating()` in concurrency_verdict.rs
+# is `peak > 0 || any per_c > 0`, so ALL floors at zero flips the whole run to
+# the INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+# (gate/check.rs:382). Zeroing the ladder would have made this gate
+# unsatisfiable: every campaign record INFO, the gate red forever. CI caught
+# it; it is written here so the next person does not rediscover it.
+#
+# BASIS: the published ladder measured Atlas at 478.11 tok/s at C=64/C=128 on THIS
+# instrument (bench/ladder38, 2026-08-17/18, this checkpoint, this box class).
+# The floor is that x 0.5, rounded down to a clean step -> 230. The 2x margin
+# is not timidity, it is the honest price of the one thing that differs: that
+# leg ran an August build with its own CLI (fifo, 8 ssm slots, f16-pool,
+# --mtp-gate force), and this gate serves main's recipe. A bar 2x under
+# catches a collapse and cannot be reached by any drift or by noise.
+# RE-CUT under the speed-bound policy (latest x 0.975) once >= 3 records exist
+# on this instrument, with the same GUARD the block above records.
+min = 230
 noise = 0.0
 
 [benchmarks.metrics.min_completion_tokens]

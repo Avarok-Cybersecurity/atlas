@@ -71,40 +71,50 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
     // adding a rung moves this assertion instead of failing it; the VALUES are
     // pinned because a silent floor change is the thing worth catching.
     //
-    // ★ REPINNED TO ZERO, 2026-09-21: the gate moved to the published ladder's
-    // instrument and all nine floors, cut at the retired 512/320 one, are
-    // `min = 0.0` until re-cut (`RUNGS` names 0.0 as record-without-gating).
-    // The pin is KEPT rather than deleted — while the ladder gates nothing it
-    // is the tripwire against a floor silently REAPPEARING unmeasured. Its
-    // cost is that the committed-floor leg below is now trivially true, so the
-    // explicit-floor leg after it carries the real claim until the re-cut.
+    // ★ REPINNED 2026-09-21 to the PROVISIONAL ladder. The gate moved to the
+    // published instrument (ISL 128 / OSL 1024 / essay); the old bars were cut
+    // at 512/320 and describe nothing here, so each is the published Atlas
+    // value at that rung x 0.5, rounded down. The fixture below is the
+    // published ladder itself, which is what this gate should now measure.
+    //
+    // ★ ZERO WAS NOT AN OPTION, and this pin is where that is remembered.
+    // `RUNGS` says a rung with no metrics block gates nothing — true of ONE
+    // rung beside bounded ones. But `Floors::gating()` is
+    // `peak > 0 || any per_c > 0`, so ALL floors at zero flips the run to the
+    // INFO verdict, and `verdict_passes` accepts only "PASS": an all-zero
+    // ladder makes this gate unsatisfiable rather than ungated. The assertion
+    // below therefore pins that every floor is > 0 as well as its value.
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 21.2),
-        ("c2_aggregate_tok_s", 27.7),
-        ("c4_aggregate_tok_s", 44.8),
-        ("c8_aggregate_tok_s", 60.7),
-        ("c16_aggregate_tok_s", 88.3),
-        ("c32_aggregate_tok_s", 103.8),
-        ("c64_aggregate_tok_s", 115.4),
-        ("c128_aggregate_tok_s", 115.2),
-        ("peak_aggregate_tok_s", 115.4),
+        ("c1_aggregate_tok_s", 23.59),
+        ("c2_aggregate_tok_s", 41.02),
+        ("c4_aggregate_tok_s", 74.21),
+        ("c8_aggregate_tok_s", 125.95),
+        ("c16_aggregate_tok_s", 203.36),
+        ("c32_aggregate_tok_s", 291.01),
+        ("c64_aggregate_tok_s", 386.63),
+        ("c128_aggregate_tok_s", 478.11),
+        ("peak_aggregate_tok_s", 478.11),
     ]);
     let floors = committed_floors();
     assert_eq!(
         floors.per_c,
         vec![
-            (1, 0.0),
-            (2, 0.0),
-            (4, 0.0),
-            (8, 0.0),
-            (16, 0.0),
-            (32, 0.0),
-            (64, 0.0),
-            (128, 0.0)
-        ],
-        "a rung floor reappeared before the re-cut — see the BENCH.toml note"
+            (1, 11.5),
+            (2, 20.5),
+            (4, 37.0),
+            (8, 62.5),
+            (16, 100.0),
+            (32, 140.0),
+            (64, 190.0),
+            (128, 230.0)
+        ]
     );
-    assert_eq!(floors.peak, 0.0);
+    assert_eq!(floors.peak, 230.0);
+    assert!(
+        floors.gating(),
+        "an all-zero ladder is an INFO verdict, not an ungated one, and INFO is \
+         not a PASS — the gate would be unsatisfiable"
+    );
     let v = sweep_verdict(
         &m,
         8,
@@ -122,36 +132,6 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
         assert!(v.reason.contains(rung), "{}", v.reason);
     }
 
-    // ★ THE LEG THAT BITES while the committed floors are off: the SAME ladder
-    // against the bars in force until 2026-09-21 (the 2026-09-20 speed-bound
-    // re-cut), as a fixture — what is under test is `sweep_verdict`'s
-    // comparison, not what the tree declares today.
-    let real = Floors {
-        per_c: vec![
-            (1, 20.5),
-            (2, 25.0),
-            (4, 43.5),
-            (8, 57.0),
-            (16, 86.0),
-            (32, 100.0),
-            (64, 110.0),
-            (128, 110.0),
-        ],
-        peak: 110.0,
-    };
-    let v = sweep_verdict(
-        &m,
-        8,
-        0,
-        Exclusions {
-            vacuous: 0,
-            cache_uncontrolled: 0,
-            non_mtp_arm: 0,
-        },
-        80.0,
-        &real,
-    );
-    assert_eq!(v.kind, VerdictKind::Pass, "{}", v.reason);
 }
 
 /// FAIL names the violating cell — and the comparison is the raw value
@@ -159,44 +139,33 @@ fn a_clean_sweep_that_clears_every_floor_passes() {
 /// value + noise >= min.
 #[test]
 fn a_sweep_below_one_floor_fails_naming_the_cell() {
-    // ★ EXPLICIT FLOORS SINCE 2026-09-21, not the committed ones: those are
-    // all 0.0 while the gate is re-pointed, and nothing falls below zero — read
-    // from the tree this test would have become unable to fail, which is worse
-    // than no test. `sweep_verdict` takes floors as an argument, so this is an
-    // input the call site really produces. Values are the bars that WERE in
-    // force; point it back at `committed_floors()` after the re-cut.
-    let committed = Floors {
-        per_c: vec![
-            (1, 20.5),
-            (2, 25.0),
-            (4, 43.5),
-            (8, 57.0),
-            (16, 86.0),
-            (32, 100.0),
-            (64, 110.0),
-            (128, 110.0),
-        ],
-        peak: 110.0,
-    };
+    let committed = committed_floors();
     // C=8 is found by VALUE rather than by position so a rung inserted ahead
     // of it cannot silently retarget this test at a different cell.
     let c8_floor = committed
         .per_c
         .iter()
         .find(|(c, _)| *c == 8)
-        .expect("C=8 is a rung")
+        .expect("C=8 is a committed rung")
         .1;
-    // A hair under the C=8 floor, everything else comfortably clear.
+    // ★ REBASED 2026-09-21 onto the published ladder, the instrument this gate
+    // now measures; the old 21.2/27.7/44.8 fixture is a 512/320 reading and
+    // would fail five OTHER rungs against the current bars, which would leave
+    // this test passing for the wrong reason. Every rung is the published
+    // Atlas value except C=8, which is derived a hair under its own committed
+    // floor rather than typed — so a re-cut moves the fixture with the bar
+    // instead of silently making this test measure nothing.
+    let c8_under = c8_floor - 0.1;
     let m = ladder(&[
-        ("c1_aggregate_tok_s", 21.2),
-        ("c2_aggregate_tok_s", 27.7),
-        ("c4_aggregate_tok_s", 44.8),
-        ("c8_aggregate_tok_s", 47.2),
-        ("c16_aggregate_tok_s", 88.3),
-        ("c32_aggregate_tok_s", 103.8),
-        ("c64_aggregate_tok_s", 115.4),
-        ("c128_aggregate_tok_s", 115.2),
-        ("peak_aggregate_tok_s", 115.4),
+        ("c1_aggregate_tok_s", 23.59),
+        ("c2_aggregate_tok_s", 41.02),
+        ("c4_aggregate_tok_s", 74.21),
+        ("c8_aggregate_tok_s", c8_under),
+        ("c16_aggregate_tok_s", 203.36),
+        ("c32_aggregate_tok_s", 291.01),
+        ("c64_aggregate_tok_s", 386.63),
+        ("c128_aggregate_tok_s", 478.11),
+        ("peak_aggregate_tok_s", 478.11),
     ]);
     let v = sweep_verdict(
         &m,
@@ -213,10 +182,19 @@ fn a_sweep_below_one_floor_fails_naming_the_cell() {
     assert_eq!(v.kind, VerdictKind::Fail, "{}", v.reason);
     assert!(v.reason.contains("C=8"), "{}", v.reason);
     assert!(
-        v.reason.contains("47.2") && v.reason.contains(&format!("{c8_floor:.1}")),
+        v.reason.contains(&format!("{c8_under:.1}")) && v.reason.contains(&format!("{c8_floor:.1}")),
         "{}",
         v.reason
     );
+    // ...and ONLY C=8: the other eight rungs clear their bars, so this test
+    // fails for the reason it names rather than for five of them at once.
+    for other in ["C=1", "C=2", "C=4", "C=16", "C=32", "C=64", "C=128"] {
+        assert!(
+            !v.reason.contains(&format!("{other} ")),
+            "{other} should clear its floor: {}",
+            v.reason
+        );
+    }
     // Exactly on the floor passes — inclusive, like the BENCH.toml bound.
     let m = ladder(&[("c8_aggregate_tok_s", c8_floor)]);
     let v = sweep_verdict(

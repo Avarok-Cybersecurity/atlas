@@ -100,15 +100,31 @@ describe('the gate and the published bar declare one instrument', () => {
     expect(differs.map((d) => d.axis).sort()).toEqual(['kv_cache_dtype', 'max_model_len']);
   });
 
-  test('the rung floors are OFF, because they were cut on the retired instrument', () => {
-    // Re-pointing moved every rung 1.15x-4.3x; a floor carried over would
-    // report a guard that cannot fail. `RUNGS` in concurrency.rs documents
-    // 0.0 as record-without-gating. Delete this test when they are re-cut
-    // from records on THIS instrument — and not before.
-    for (const key of ['c1', 'c2', 'c4', 'c8', 'c16', 'c32', 'c64', 'c128', 'peak']) {
-      expect(`${key} ${entry.metrics[`${key}_aggregate_tok_s`].min}`).toBe(`${key} 0`);
+  test('the rung floors are PROVISIONAL — the published ladder halved, and never zero', () => {
+    // Re-pointing moved every rung 1.15x-4.3x, so the old bars describe
+    // nothing here. Each floor is the published Atlas value at that rung x 0.5
+    // rounded down to a clean step: a 2x margin, because the published leg ran
+    // an August build with its own CLI while this gate serves main's recipe.
+    //
+    // ★ AND NEVER ZERO. Switching the ladder off was the obvious move and it
+    // is wrong: `Floors::gating()` in concurrency_verdict.rs is
+    // `peak > 0 || any per_c > 0`, so an all-zero ladder flips the run to the
+    // INFO verdict, and `GateRecord::verdict_passes` accepts only "PASS"
+    // (gate/check.rs:382) — the gate would be UNSATISFIABLE, not ungated.
+    // Re-cut under the speed-bound policy once >= 3 records exist here.
+    const published = { c1: 23.59, c2: 41.02, c4: 74.21, c8: 125.95, c16: 203.36,
+                        c32: 291.01, c64: 386.63, c128: 478.11, peak: 478.11 };
+    const expected = { c1: 11.5, c2: 20.5, c4: 37, c8: 62.5, c16: 100,
+                       c32: 140, c64: 190, c128: 230, peak: 230 };
+    for (const [key, want] of Object.entries(expected)) {
+      const min = entry.metrics[`${key}_aggregate_tok_s`].min;
+      expect(`${key} ${min}`).toBe(`${key} ${want}`);
+      expect(min).toBeGreaterThan(0);
+      // the 2x margin, asserted rather than trusted to the arithmetic above
+      expect(published[key] / min).toBeGreaterThanOrEqual(2);
+      expect(published[key] / min).toBeLessThan(2.3);
     }
-    // what is NOT off: the two bars the re-point does not invalidate.
+    // what is NOT re-cut: the two bars the re-point does not invalidate.
     expect(entry.metrics.vacuous_cells.max).toBe(0);
     expect(entry.metrics.min_completion_tokens.min).toBe(260);
   });
