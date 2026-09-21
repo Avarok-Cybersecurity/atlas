@@ -76,7 +76,7 @@ pub(crate) fn count_declared_overrides(kernels_root: &std::path::Path, hw: &str)
     let Ok(text) = std::fs::read_to_string(&path) else {
         return 0;
     };
-    let Ok(value) = text.parse::<toml::Value>() else {
+    let Ok(value) = toml::from_str::<toml::Value>(&text) else {
         return 0;
     };
     declared_overrides(&value).len()
