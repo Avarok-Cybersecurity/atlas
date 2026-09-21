@@ -118,7 +118,7 @@ impl ChatTokenizer {
             });
         let chat_encoding = if official_k3 {
             ChatEncoding::KimiK3XtmlUnsupported
-        } else if model_type == "deepseek_v4" {
+        } else if model_type == "deepseek_v4" || model_type == "deepseek_v41" {
             tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
             ChatEncoding::DeepseekV4
         } else {

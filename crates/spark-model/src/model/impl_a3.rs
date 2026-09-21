@@ -169,6 +169,9 @@ impl TransformerModel {
         // aliasing: all streams' first token collapsed to one). Verify/decode
         // callers pass `self.buffers.logits()` (base) — unchanged behaviour.
         let logits = logits_dst;
+        if self.lm_head_q6k_run(hidden, num_tokens, logits, stream)? {
+            return Ok(logits);
+        }
         if let Some(ref fp8) = self.lm_head_fp8 {
             // FP8 E4M3 LM head. The dual-GEMV (batch=2) reads the FP8 weight
             // once for both K=2 verify tokens — bit-identical to two M=1 GEMVs
@@ -405,6 +408,14 @@ impl TransformerModel {
         } else {
             (self.buffers.logits(), false)
         };
+        if self.lm_head_q6k.is_some() {
+            // DeepSeek-V4.1: the GGUF's Q6_K head on its raw blocks
+            // (lm_head_q6k.rs). bf16 logits only; `use_fp32_logits` is off in
+            // production and this head has no FP32-output variant.
+            anyhow::ensure!(!fp32, "Q6_K lm_head has no FP32-logits variant");
+            self.lm_head_q6k_run(hidden, 1, logits, stream)?;
+            return Ok(logits);
+        }
         if let Some(ref fp8) = self.lm_head_fp8 {
             // FP8 E4M3 LM head (`--lm-head-dtype fp8`). `w8a16_gemv` has no
             // FP32-output variant — it writes to whichever buffer is passed.

@@ -578,4 +578,37 @@ impl GpuBackend for AvarokCudaBackend {
     fn free_host_pinned(&self, ptr: *mut u8, _bytes: usize) -> Result<()> {
         self.free_host_pinned_cu(ptr, _bytes)
     }
+
+    fn alloc_arena(&self, bytes: usize) -> Result<DevicePtr> {
+        let mut dptr: u64 = 0;
+        let status = unsafe { cuMemAlloc_v2(&mut dptr, bytes) };
+        if status != 0 {
+            let mut free: usize = 0;
+            let mut total: usize = 0;
+            unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+            bail!(
+                "cuMemAlloc_v2 (arena) failed: status {status}, requested {bytes} bytes \
+                 (device reports {:.1} GB free / {:.1} GB total)",
+                free as f64 / (1024.0 * 1024.0 * 1024.0),
+                total as f64 / (1024.0 * 1024.0 * 1024.0),
+            );
+        }
+        tracing::info!(
+            "arena: {:.2} GiB of device memory at {dptr:#x}, off the allocation ledger",
+            bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+        Ok(DevicePtr(dptr))
+    }
+    fn free_arena(&self, ptr: DevicePtr) -> Result<()> {
+        if ptr.is_null() {
+            return Ok(());
+        }
+        let status = unsafe { cuMemFree_v2(ptr.0) };
+        if status != 0 {
+            // as in `free`: a context already being torn down reports every
+            // free as failing, and at exit that is the normal case
+            tracing::warn!("cuMemFree_v2 (arena) returned status {status}");
+        }
+        Ok(())
+    }
 }

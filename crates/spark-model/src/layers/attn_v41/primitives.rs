@@ -11,7 +11,9 @@ use spark_runtime::kernel_args::KernelLaunch;
 
 use super::{AttnMat, AttnV41, QUANT_BLOCKS_PER_LAUNCH};
 use crate::layers::ops;
-use crate::layers::ops::{Q2K_MMQ_SMEM, kquant_mmq_gemm, kquant_mmvq_w, kquant_q8_1_rows};
+use crate::layers::ops::{
+    Q2K_MMQ_SMEM, kquant_mmq_gemm, kquant_mmvq_groups_w, kquant_mmvq_w, kquant_q8_1_rows,
+};
 use crate::weight_map::DenseWeight;
 
 impl AttnV41 {
@@ -82,6 +84,44 @@ impl AttnV41 {
             m as u32,
             n as u32,
             kk as u32,
+            stream,
+        )
+    }
+
+    /// `og = wo_a(o_rot)` for all `groups` output groups at once (decode,
+    /// `m <= 8`, Q2_K `wo_a`): one q8_1 pass over the whole `[m, n_heads *
+    /// head_dim]` row, one grouped launch writing `og` in place, instead of
+    /// slice, quantise, GEMV and scatter per group. Bit-identical to the
+    /// per-group path (see `kquant_mmvq_q2_k_groups_w`).
+    pub(super) fn wo_a_grouped(
+        &self,
+        gpu: &dyn GpuBackend,
+        blocks: DevicePtr,
+        o_rot: DevicePtr,
+        m: usize,
+        stream: u64,
+    ) -> Result<()> {
+        let c = &self.cfg;
+        let width = (c.n_heads * c.head_dim) as u32;
+        kquant_q8_1_rows(
+            gpu,
+            self.k.q8_rows,
+            o_rot,
+            self.a_q8,
+            m as u32,
+            width,
+            stream,
+        )?;
+        kquant_mmvq_groups_w(
+            gpu,
+            self.k.mmvq_q2k_groups_w,
+            blocks,
+            self.a_q8,
+            self.og,
+            c.o_rank as u32,
+            c.gw() as u32,
+            m as u32,
+            c.groups as u32,
             stream,
         )
     }

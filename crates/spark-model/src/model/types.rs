@@ -83,6 +83,9 @@ pub struct TransformerModel {
     /// with `lm_head_nvfp4` (that stays `None` on the FP8 path). Additive: when
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
+    /// The output head as raw Q6_K blocks (DeepSeek-V4.1 GGUF), run by the
+    /// K-quant GEMV; `None` on every other head. See `lm_head_q6k.rs`.
+    pub(super) lm_head_q6k: Option<super::lm_head_q6k::LmHeadQ6k>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     /// `true` when ANY layer's decode can never be captured into a CUDA
     /// graph, so the whole model stays eager.

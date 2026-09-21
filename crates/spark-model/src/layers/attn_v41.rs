@@ -248,6 +248,10 @@ struct Kernels {
     /// D2S6 tile quant + MMQ above
     q8_rows: KernelHandle,
     mmvq_q2k_w: KernelHandle,
+    /// The eight output groups of `wo_a` in one launch (decode, m <= 8).
+    mmvq_q2k_groups_w: KernelHandle,
+    /// `wq_a` and `wkv` of one token in one launch (decode, m <= 8).
+    mmvq_q2k_pair_w: KernelHandle,
     quant_d2s6: KernelHandle,
     mmq_q2k_nc: KernelHandle,
     mmq_q2k_wc: KernelHandle,
@@ -257,12 +261,16 @@ struct Kernels {
     act_quant: KernelHandle,
     fp4_quant: KernelHandle,
     gemm_f32: KernelHandle,
+    /// the compressor's f32 product at m = 1, staged, same bits as `gemm_f32`
+    gemv_f32_staged: KernelHandle,
     pool: KernelHandle,
     index_score: KernelHandle,
     sparse_attn: KernelHandle,
     slice_cols: KernelHandle,
     scatter_cols: KernelHandle,
     scale_bf16: KernelHandle,
+    /// the decode step's window ring write with the slot read on the device
+    ring_put: KernelHandle,
 }
 
 /// The attention runtime: kernels, RoPE tables, and workspaces for up to
@@ -291,6 +299,9 @@ pub struct AttnV41 {
     idx_pos: DevicePtr,
     grp_pos: DevicePtr,
     idx_dev: DevicePtr,
+    /// The captured step's selection for ratio-0 layers (window only), so a
+    /// multi-layer capture can hold both selection classes at once.
+    idx_dev_win: DevicePtr,
     ckv: DevicePtr,
     cscore: DevicePtr,
     pooled: DevicePtr,
@@ -302,6 +313,12 @@ pub struct AttnV41 {
     iw_raw: DevicePtr,
     iw: DevicePtr,
     score: DevicePtr,
+    /// What the graph-captured decode step last uploaded into `pos` /
+    /// `head_pos` (the position) and `idx_dev` (the padded selection), so a
+    /// step re-uploads only what changed. `None` = unknown, upload.
+    decode_pos: Option<usize>,
+    decode_idx: Option<Vec<i32>>,
+    decode_idx_win: Option<Vec<i32>>,
 }
 
 fn upload_f32(gpu: &dyn GpuBackend, v: &[f32]) -> Result<DevicePtr> {
@@ -316,10 +333,18 @@ fn upload_i32(gpu: &dyn GpuBackend, dst: DevicePtr, v: &[i32]) -> Result<()> {
     gpu.copy_h2d(&bytes, dst)
 }
 
+/// Stream-ordered upload from a transient host vector (staged by the driver,
+/// no stream drain), for the per-token inputs of the captured decode step.
+fn upload_i32_async(gpu: &dyn GpuBackend, dst: DevicePtr, v: &[i32], stream: u64) -> Result<()> {
+    let bytes: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+    gpu.copy_h2d_async(&bytes, dst, stream)
+}
+
 fn at(p: DevicePtr, byte_off: usize) -> DevicePtr {
     DevicePtr(p.0 + byte_off as u64)
 }
 
+mod decode;
 mod forward;
 mod init;
 mod primitives;

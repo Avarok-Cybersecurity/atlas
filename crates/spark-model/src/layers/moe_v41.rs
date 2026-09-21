@@ -26,9 +26,15 @@ use spark_runtime::gpu::{DevicePtr, KernelHandle};
 
 use crate::layers::ops::ResidentMat;
 
+mod device_route;
 mod forward;
+
+/// Layers the device slot table covers (V4.1 has 40; the loader checks).
+pub(crate) const SLOT_TABLE_LAYERS: usize = 64;
 mod init;
 mod route;
+mod shared;
+mod single;
 
 const MODULE: &str = "moe_v41";
 const GEMM_MODULE: &str = "gemm";
@@ -53,11 +59,38 @@ pub struct MoeV41LayerWeights {
     pub gate_w: DevicePtr,
     /// f32 `[n_routed]`, host: the selection runs on the CPU
     pub gate_bias: Vec<f32>,
+    /// The same bias on the device, for the device-side selection.
+    pub gate_bias_dev: DevicePtr,
     /// `[inter, dim]`, `[dim, inter]`, `[inter, dim]`: bf16 or the GGUF's
     /// Q2_K (w1, w3) / Q3_K (w2) blocks on the routed experts' kernels
     pub shared_w1: ResidentMat,
     pub shared_w2: ResidentMat,
     pub shared_w3: ResidentMat,
+}
+
+/// The router of one layer alone: what predicting a layer's selection from
+/// an earlier layer's input needs (see `MoeV41::predict_launch`).
+pub struct RouterWeights {
+    pub layer: u32,
+    /// bf16 `[n_routed, dim]`
+    pub gate_w: DevicePtr,
+    pub gate_bias: Vec<f32>,
+}
+
+/// `ATLAS_DS41_PREFETCH_K` (default 0 = off), read once: how many of the
+/// next layer's predicted experts to start reading while this layer computes
+/// (needs `ATLAS_DS41_READER_POOL=1`). Off by default: on the 09-19 standard
+/// the predictor's router launch (2.7 ms a token) and the wasted reads on
+/// the shared disk cost more than the caught misses saved (K=4: 12.50/16.67,
+/// K=6: 13.63/16.39, against 14.20/17.73 without).
+pub fn prefetch_k() -> usize {
+    static K: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *K.get_or_init(|| {
+        std::env::var("ATLAS_DS41_PREFETCH_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
 }
 
 struct Kernels {
@@ -67,13 +100,19 @@ struct Kernels {
     gemm_f32out: KernelHandle,
     /// router logits at m <= 8: strict-order GEMV, bit-identical to gemm_f32out
     router_gemv: KernelHandle,
+    /// the same logits from the products staged in shared memory, N blocks (decode)
+    router_gemv_staged: KernelHandle,
     q8_rows: KernelHandle,
     mmvq_q2k: KernelHandle,
     mmvq_q3k: KernelHandle,
     /// the single-token arm: every routed expert in one launch a projection
     mmvq_q2k_experts: KernelHandle,
     mmvq_q3k_experts: KernelHandle,
+    /// rows (warps) a block of the expert batch, 2 / 4 / 8 (ATLAS_DS41_EXPERT_WARPS)
+    experts_warps: u32,
     swiglu: KernelHandle,
+    /// the swiglu and the q8_1 rows of its output in one launch (decode)
+    swiglu_q8: KernelHandle,
     accumulate: KernelHandle,
     finish: KernelHandle,
     gather: KernelHandle,
@@ -85,6 +124,8 @@ struct Kernels {
     mmq_q2k_wc: KernelHandle,
     mmq_q3k_nc: KernelHandle,
     mmq_q3k_wc: KernelHandle,
+    route_select: KernelHandle,
+    slot_table_set: KernelHandle,
 }
 
 /// Where one call's time went (wall clock, host side).
@@ -109,6 +150,15 @@ impl MoeV41Timing {
     }
 }
 
+/// What `stage_m1` leaves for `compute_m1`: the distinct expert count and
+/// the routing (for callers and diagnostics), with the host-span timing.
+pub struct MoeV41Stage {
+    pub ne: usize,
+    pub weights: Vec<f32>,
+    pub indices: Vec<usize>,
+    pub timing: MoeV41Timing,
+}
+
 pub struct MoeV41 {
     /// The last forward's timing.
     pub last: std::cell::Cell<MoeV41Timing>,
@@ -117,6 +167,8 @@ pub struct MoeV41 {
     pub cfg: MoeV41Cfg,
     k: Kernels,
     logits: DevicePtr,
+    /// the next layer's router on this layer's input (`[n_routed]` f32)
+    pred_logits: DevicePtr,
     /// gathered rows of one expert group, `[m, dim]` bf16
     a_rows: DevicePtr,
     /// the group's q8_1 activations (plain rows or the MMQ layout)
@@ -129,6 +181,10 @@ pub struct MoeV41 {
     /// `[m * topk]` i32 token rows and f32 routing weights, group-major
     rows_dev: DevicePtr,
     weight_dev: DevicePtr,
+    /// The device selection's header (miss flag, picks, weight bits, plan
+    /// slots) and the `[64 layers][n_routed]` slot table (-1 = not resident).
+    route_hdr: DevicePtr,
+    slot_table: DevicePtr,
     /// gate / up / down block pointers of the token's experts, `3 * topk`
     ptrs_dev: DevicePtr,
     sg: DevicePtr,
@@ -137,6 +193,27 @@ pub struct MoeV41 {
     sd: DevicePtr,
     acc: DevicePtr,
     out: DevicePtr,
+    /// The shared expert's own q8_1 scratch for its SwiGLU output (`[1,
+    /// inter]`) on the side stream, so it never shares `h_q8` with the routed
+    /// experts running at the same time; the token's input rows (`a_q8`) are
+    /// written once on the forking stream and read by both.
+    sh_q8: DevicePtr,
+    /// The side stream the single-token shared expert runs on, and the two
+    /// events that fence it: `ev_in` (the input is ready, recorded on the
+    /// main stream) and `ev_out` (`sd` is ready, recorded on the side).
+    side: u64,
+    ev_in: u64,
+    ev_out: u64,
+}
+
+/// `ATLAS_DS41_SHARED_SIDE` (default on; `0` = off), read once: at decode the
+/// shared expert runs on a side stream while the main stream does the router
+/// and the host picks the experts (the GPU is otherwise idle for that span);
+/// its output is added into `acc` after the routed experts, as before, so the
+/// accumulation order and the bits are unchanged.
+pub fn shared_side() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| !std::env::var("ATLAS_DS41_SHARED_SIDE").is_ok_and(|v| v == "0"))
 }
 
 fn softplus(x: f32) -> f32 {
@@ -192,6 +269,9 @@ pub fn bf16_bytes(v: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+#[cfg(test)]
+#[path = "moe_v41_route_tests.rs"]
+mod route_tests;
 #[cfg(test)]
 #[path = "moe_v41_tests.rs"]
 mod tests;

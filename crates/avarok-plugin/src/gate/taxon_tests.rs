@@ -61,6 +61,7 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             // The B200 targets, sorting ahead of gb10's. Same symlinked
             // sources as hopper's, and the same reason they are not redundant.
             "b200/deepseek-v4-flash/nvfp4",
+            "b200/deepseek-v4.1-flash/nvfp4",
             "b200/kimi-k3/bf16",
             "b200/kimi-k3/mxfp4",
             "b200/kimi-k3/nvfp4",
@@ -115,6 +116,7 @@ fn every_real_target_resolves_a_nonempty_source_set() {
             // shared kernel affects both hardware sets and must not be
             // skippable for either.
             "hopper/deepseek-v4-flash/nvfp4",
+            "hopper/deepseek-v4.1-flash/nvfp4",
             "hopper/nemotron-3-nano-30b-a3b/nvfp4",
             "hopper/nemotron-super-120b-a12b/nvfp4",
             "hopper/qwen3-next-80b-a3b/nvfp4",

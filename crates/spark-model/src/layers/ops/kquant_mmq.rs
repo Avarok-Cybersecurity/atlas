@@ -17,6 +17,7 @@ pub const KQUANT_MODULE: &str = "kquant_moe";
 /// Bytes per 256-value super-block on disk.
 pub const Q2K_BLOCK_BYTES: usize = 84;
 pub const Q3K_BLOCK_BYTES: usize = 110;
+pub const Q6K_BLOCK_BYTES: usize = 210;
 
 /// A resident `[N, K]` row-major projection as the GGUF path left it on the
 /// device: expanded bf16, or the raw `Q2_K` / `Q3_K` blocks
@@ -93,6 +94,43 @@ pub fn kquant_q8_1_rows(
         .arg_ptr(out_q8)
         .arg_u32(k)
         .arg_u32(m)
+        .launch(stream)
+}
+
+/// `moe_v41_swiglu` and [`kquant_q8_1_rows`] in one launch
+/// (`kquant_swiglu_q8_1_rows_bf16`): `h[rows, inter] = bf16(swiglu(gate, up) *
+/// w[row])`, then the q8_1 blocks of those bf16 rows; byte-identical to the two
+/// launches. `w` may be null. `inter % 32 == 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_swiglu_q8_1_rows(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    gate: DevicePtr,
+    up: DevicePtr,
+    w: DevicePtr,
+    h_bf16: DevicePtr,
+    out_q8: DevicePtr,
+    rows: u32,
+    inter: u32,
+    limit: f32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        inter.is_multiple_of(32),
+        "kquant_swiglu_q8_1_rows: inter={inter} is not a multiple of 32"
+    );
+    let warps = rows * (inter / 32);
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(warps * 32, 128), 1, 1])
+        .block([128, 1, 1])
+        .arg_ptr(gate)
+        .arg_ptr(up)
+        .arg_ptr(w)
+        .arg_ptr(h_bf16)
+        .arg_ptr(out_q8)
+        .arg_u32(rows)
+        .arg_u32(inter)
+        .arg_f32(limit)
         .launch(stream)
 }
 
@@ -196,6 +234,127 @@ pub fn kquant_mmvq_w(
         .arg_u32(k)
         .arg_u32(n)
         .arg_u32(m)
+        .launch(stream)
+}
+
+/// `kquant_mmvq_q2_k_groups_w`: `n_groups` row-blocks of one `[n_groups * n,
+/// n_groups * k]`-shaped projection, group `g` = weight rows `[g*n, (g+1)*n)`
+/// (`w_blocks` is `[n_groups * n][k/256]`) against activation columns
+/// `[g*k, (g+1)*k)` of the `block_q8_1 [m][n_groups * k / 32]` row `y_q8`,
+/// written to columns `[g*n, (g+1)*n)` of `out_bf16` (`[m][n_groups * n]`).
+/// Bit-identical to `n_groups` launches of [`kquant_mmvq_w`] over the slices.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_mmvq_groups_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    w_blocks: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_groups: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&m),
+        "kquant_mmvq_groups_w: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k.is_multiple_of(QK_K),
+        "kquant_mmvq_groups_w: k={k} is not a multiple of {QK_K}"
+    );
+    anyhow::ensure!(n_groups >= 1, "kquant_mmvq_groups_w: no groups");
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, 4), n_groups, 1])
+        .block([32, 4, 1])
+        .arg_ptr(w_blocks)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(n_groups)
+        .launch(stream)
+}
+
+/// `kquant_mmvq_q2_k_pair_w`: two `[n_i, k]` Q2_K projections of ONE
+/// activation (`y_q8`, `block_q8_1 [m][k/32]`) in one launch, `out_i` =
+/// `[m][n_i]` bf16. Bit-identical to two [`kquant_mmvq_w`] launches.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_mmvq_pair_w(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    (w0, out0, n0): (DevicePtr, DevicePtr, u32),
+    (w1, out1, n1): (DevicePtr, DevicePtr, u32),
+    y_q8: DevicePtr,
+    k: u32,
+    m: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&m),
+        "kquant_mmvq_pair_w: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k.is_multiple_of(QK_K),
+        "kquant_mmvq_pair_w: k={k} is not a multiple of {QK_K}"
+    );
+    anyhow::ensure!(n0 >= 1 && n1 >= 1, "kquant_mmvq_pair_w: empty projection");
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n0.max(n1), 4), 2, 1])
+        .block([32, 4, 1])
+        .arg_ptr(w0)
+        .arg_ptr(out0)
+        .arg_u32(n0)
+        .arg_ptr(w1)
+        .arg_ptr(out1)
+        .arg_u32(n1)
+        .arg_ptr(y_q8)
+        .arg_u32(k)
+        .arg_u32(m)
+        .launch(stream)
+}
+
+/// [`kquant_mmvq_experts_w`] with `nwarps` rows a block (the `_w2` / `_w8`
+/// entries for 2 / 8; the plain `_w` entry is 4). Same bytes for any `nwarps`.
+#[allow(clippy::too_many_arguments)]
+pub fn kquant_mmvq_experts_wn(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    w_tables: DevicePtr,
+    y_q8: DevicePtr,
+    out_bf16: DevicePtr,
+    n: u32,
+    k: u32,
+    m: u32,
+    n_experts: u32,
+    y_stride_bytes: u32,
+    nwarps: u32,
+    stream: u64,
+) -> Result<()> {
+    anyhow::ensure!(
+        (1..=8).contains(&m),
+        "kquant_mmvq_experts_wn: m={m} outside 1..=8"
+    );
+    anyhow::ensure!(
+        k.is_multiple_of(QK_K),
+        "kquant_mmvq_experts_wn: k={k} is not a multiple of {QK_K}"
+    );
+    anyhow::ensure!(
+        matches!(nwarps, 2 | 4 | 8),
+        "kquant_mmvq_experts_wn: nwarps={nwarps} not in 2/4/8"
+    );
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(n, nwarps), n_experts, 1])
+        .block([32, nwarps, 1])
+        .arg_ptr(w_tables)
+        .arg_ptr(y_q8)
+        .arg_ptr(out_bf16)
+        .arg_u32(k)
+        .arg_u32(n)
+        .arg_u32(m)
+        .arg_u32(y_stride_bytes)
         .launch(stream)
 }
 
