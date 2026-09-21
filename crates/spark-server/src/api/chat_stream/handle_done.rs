@@ -173,11 +173,6 @@ pub(super) fn handle_done(
 
     // ── Usage block (neutral IR; the wire encoder derives
     //    total_tokens and the details sub-objects from it) ───────────
-    let tps = if decode_time_ms > 0.0 {
-        completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)
-    } else {
-        0.0
-    };
     let usage = crate::ir::Usage {
         prompt_tokens: ctx.prompt_len,
         completion_tokens,
@@ -185,7 +180,13 @@ pub(super) fn handle_done(
         reasoning_tokens: reasoning_tokens as usize,
         accepted_prediction_tokens,
         time_to_first_token_ms,
-        response_tokens_per_second: tps,
+        // The raw decode window rides the usage block beside the rate
+        // derived from it — same scheduler clock as the blocking path.
+        decode_time_ms,
+        response_tokens_per_second: crate::ir::Usage::decode_rate_tok_s(
+            completion_tokens,
+            decode_time_ms,
+        ),
     };
 
     let fr = resolve_wire_finish_reason(
@@ -242,23 +243,7 @@ pub(super) fn handle_done(
     // encoder derives for the terminal chunk).
     if let (Some(seq), Some(dump)) = (ctx.dump_seq, ctx.state.dump_writer.as_ref()) {
         let has_tool_calls = state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
-        let usage_for_dump = crate::openai::Usage {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            total_tokens: usage.prompt_tokens + usage.completion_tokens,
-            prompt_tokens_details: Some(crate::openai::PromptTokensDetails {
-                cached_tokens: usage.cached_prompt_tokens,
-                audio_tokens: 0,
-            }),
-            completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
-                reasoning_tokens: usage.reasoning_tokens,
-                audio_tokens: 0,
-                accepted_prediction_tokens: usage.accepted_prediction_tokens,
-                rejected_prediction_tokens: 0,
-            }),
-            time_to_first_token_ms: usage.time_to_first_token_ms,
-            response_tokens_per_second: usage.response_tokens_per_second,
-        };
+        let usage_for_dump = crate::openai::Usage::from(&usage);
         let body = serde_json::json!({
             "id": ctx.id,
             "model": ctx.model,

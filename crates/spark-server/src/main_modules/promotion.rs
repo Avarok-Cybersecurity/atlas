@@ -3,7 +3,7 @@
 //! Task #27: demand-driven RDMA adapter promotion — the HTTP-side pieces.
 //!
 //! A request naming a STAGEABLE (promotable-but-not-resident) adapter triggers
-//! an on-miss RDMA promotion of that adapter from the `$ATLAS_LORA_PEER` weight
+//! an on-miss RDMA promotion of that adapter from the `$AVAROK_LORA_PEER` weight
 //! peer into a cache pool slot, then routes to it (instead of a 404). The RDMA
 //! stage + victim selection run on the scheduler thread at a quiescent point
 //! (see [`crate::scheduler::LoraCommand::Promote`]); everything in THIS module
@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 #[derive(Clone, Debug)]
 pub struct StageableAdapter {
     pub peer_stage_id: String,
-    pub peft: atlas_core::config::PeftAdapterConfig,
+    pub peft: avarok_core::config::PeftAdapterConfig,
 }
 
 /// Why a demand-promotion did not yield a slot. Cloned to every coalesced

@@ -30,7 +30,7 @@ pub struct NemotronMamba2Layer {
     in_proj_fp8: Option<Fp8Weight>,
     out_proj_fp8: Option<Fp8Weight>,
     // Whether PREFILL may use the native FP8 weights above. False in the
-    // `ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode` bisect mode, where the native
+    // `AVAROK_NEMOTRON_NATIVE_FP8_SSM=decode` bisect mode, where the native
     // weights are installed for decode only and the legacy NVFP4 copies are
     // still built and used by prefill. Prefill must key off this flag, not off
     // `in_proj_fp8.is_some()`.
@@ -76,6 +76,7 @@ pub struct NemotronMamba2Layer {
     w4a4_gemm_k: KernelHandle,
     quantize_nvfp4_k: KernelHandle,
     conv1d_prefill_k: KernelHandle,
+    conv1d_prefill_tp_k: KernelHandle,
     mamba2_ssm_prefill_k: KernelHandle,
     mamba2_ssm_prefill_persistent_k: KernelHandle,
     // SSD chunked prefill scan (tensor-core; ceil(T/64) serial links instead of T).
@@ -100,7 +101,7 @@ impl NemotronMamba2Layer {
     pub fn new(
         input_norm: DenseWeight,
         ssm: NemotronSsmWeights,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         layer_idx: usize,
     ) -> Result<Self> {
@@ -150,6 +151,11 @@ impl NemotronMamba2Layer {
             w4a4_gemm_k: super::try_kernel(gpu, "w4a4", "w4a4_gemm_mfast"),
             quantize_nvfp4_k: super::try_kernel(gpu, "quantize_nvfp4", "quantize_bf16_to_nvfp4"),
             conv1d_prefill_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_prefill")?,
+            conv1d_prefill_tp_k: super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_prefill_tp",
+            ),
             mamba2_ssm_prefill_k: gpu.kernel("mamba2_ssm", "mamba2_ssm_prefill")?,
             ssd_cumsum_k: super::try_kernel(gpu, "mamba2_ssd_chunk", "mamba2_ssd_cumsum"),
             ssd_bmm_k: super::try_kernel(gpu, "mamba2_ssd_chunk", "mamba2_ssd_bmm"),
@@ -186,7 +192,7 @@ impl NemotronMamba2Layer {
     /// here at load, not deref NULL on the first token.
     ///
     /// `prefill` selects whether the prefill GEMMs may use these weights. When
-    /// false (`ATLAS_NEMOTRON_NATIVE_FP8_SSM=decode`) only `w8a16_gemv` reads
+    /// false (`AVAROK_NEMOTRON_NATIVE_FP8_SSM=decode`) only `w8a16_gemv` reads
     /// them and prefill stays on the legacy NVFP4 / pre-dequantized copies,
     /// which the loader still builds in that mode.
     pub fn set_fp8_weights(

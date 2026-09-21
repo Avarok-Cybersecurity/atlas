@@ -25,26 +25,47 @@ use spark_runtime::gpu::GpuBackend;
 
 /// Whether chunk-zero streams may use the paged batched-prefill path.
 ///
-/// `ATLAS_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
+/// `AVAROK_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
 /// keep the older Q12 spelling as a compatibility alias for existing recipes.
 pub fn prefill_batched_first_chunk_enabled() -> bool {
-    ["ATLAS_Q12_BATCHED_FIRST_CHUNK", "ATLAS_PREFILL_CODISPATCH"]
-        .iter()
-        .map(|name| std::env::var(name).ok())
-        .any(|value| bool_value_enabled(value.as_deref()))
+    prefill_batched_first_chunk_from_values([
+        std::env::var("AVAROK_Q12_BATCHED_FIRST_CHUNK")
+            .ok()
+            .as_deref(),
+        std::env::var("AVAROK_PREFILL_CODISPATCH").ok().as_deref(),
+    ])
 }
 
-/// VARLEN (ragged) batched prefill enabled? (`ATLAS_PREFILL_VARLEN=1`).
+fn prefill_batched_first_chunk_from_values(values: [Option<&str>; 2]) -> bool {
+    values.into_iter().any(bool_value_enabled)
+}
+
+/// The resolved VARLEN batched-prefill decision. One cell, three readers
+/// (admission predicate, batched-attention chunk-0 guard, scheduler wave
+/// planner) — a `OnceLock` so the decision cannot change mid-serve.
+static PREFILL_VARLEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Publish the command line's `--prefill-varlen-batch` decision. Returns the
+/// value IN FORCE, which differs from `enabled` when something already
+/// resolved the cell (then the command line did NOT take effect — the caller
+/// warns, mirroring `gdn_flags::set_from_cli`). Absent flag ⇒ never called ⇒
+/// the documented `AVAROK_PREFILL_VARLEN` fallback stays reachable.
+pub fn set_prefill_varlen_from_cli(enabled: bool) -> bool {
+    let _ = PREFILL_VARLEN.set(enabled);
+    *PREFILL_VARLEN.get().expect("just set")
+}
+
+/// VARLEN (ragged) batched prefill enabled? (`--prefill-varlen-batch`,
+/// legacy `AVAROK_PREFILL_VARLEN=1`; default OFF).
 ///
-/// SSOT for both the admission predicate (`check_kernel_batched_eligible`) and
-/// the batched-attention layer's chunk-0 guard. Those two must agree: if
-/// admission accepts a batch the layer then rejects, the bail happens
-/// mid-Phase-A with streams already mutated, and the per-stream fallback
-/// re-runs setup on dirty state.
+/// SSOT for the admission predicate (`check_kernel_batched_eligible`), the
+/// batched-attention layer's chunk-0 guard, and the scheduler's prefill wave
+/// planner. Those must agree: if admission accepts a batch the layer then
+/// rejects, the bail happens mid-Phase-A with streams already mutated, and
+/// the per-stream fallback re-runs setup on dirty state.
 pub fn prefill_varlen_enabled() -> bool {
-    use std::sync::OnceLock;
-    static EN: OnceLock<bool> = OnceLock::new();
-    *EN.get_or_init(|| bool_value_enabled(std::env::var("ATLAS_PREFILL_VARLEN").ok().as_deref()))
+    *PREFILL_VARLEN
+        .get_or_init(|| bool_value_enabled(std::env::var("AVAROK_PREFILL_VARLEN").ok().as_deref()))
 }
 
 fn bool_value_enabled(value: Option<&str>) -> bool {
@@ -71,10 +92,10 @@ pub fn log_cutlass_nvfp4_route(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32,
 }
 
 /// Roofline instrumentation: log each unique (kernel, M, N, K) GEMM shape once,
-/// gated by `ATLAS_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
+/// gated by `AVAROK_GEMM_SHAPE_LOG=1`. Used to cross-reference nsys per-call
 /// durations → achieved TFLOPS/bandwidth vs GB10 peak.
 pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) {
-    if std::env::var("ATLAS_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
+    if std::env::var("AVAROK_GEMM_SHAPE_LOG").ok().as_deref() != Some("1") {
         return;
     }
     if gpu.op_cache().first_shape(name, m, n, k) {
@@ -85,7 +106,7 @@ pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) 
 
 #[cfg(test)]
 mod tests {
-    use super::bool_value_enabled;
+    use super::{bool_value_enabled, prefill_batched_first_chunk_from_values};
 
     #[test]
     fn accepts_boolean_environment_spellings() {
@@ -98,8 +119,16 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_codispatch_alias_for_chunk_zero() {
-        let enabled = [None, Some("1")].into_iter().any(bool_value_enabled);
-        assert!(enabled);
+    fn either_chunk_zero_spelling_enables_admission() {
+        assert!(prefill_batched_first_chunk_from_values([Some("1"), None]));
+        assert!(prefill_batched_first_chunk_from_values([
+            None,
+            Some("true")
+        ]));
+        assert!(!prefill_batched_first_chunk_from_values([None, None]));
+        assert!(!prefill_batched_first_chunk_from_values([
+            Some("0"),
+            Some("false")
+        ]));
     }
 }

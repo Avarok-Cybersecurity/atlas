@@ -3,7 +3,7 @@
 //! Metal-build stub of the cuda-only `flashinfer` module.
 //!
 //! The real [`crate::flashinfer`] module (FlashInfer ragged BF16 prefill) is
-//! gated behind `feature = "cuda"`; it links the FlashInfer AOT artifacts that
+//! gated behind `avarok_cuda`; it links the FlashInfer AOT artifacts that
 //! do not exist on macOS. spark-model names these entry points unconditionally,
 //! so the metal build (`cargo check --features metal`, cuda off) needs them to
 //! resolve. `available()` reports `false`, so the (guarded) prefill call is

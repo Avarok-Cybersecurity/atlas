@@ -12,7 +12,7 @@ docker build -f docker/gb10/qwen3.5-397b-a17b/nvfp4/Dockerfile -t atlas-397b .
 ```
 
 The builder stage compiles only the `qwen3.5-397b-a17b` kernel target
-(`ATLAS_TARGET_MODEL=qwen3.5-397b-a17b`, `ATLAS_TARGET_QUANT=nvfp4`); the runtime
+(`AVAROK_TARGET_MODEL=qwen3.5-397b-a17b`, `AVAROK_TARGET_QUANT=nvfp4`); the runtime
 stage carries `libnccl2 (>= 2.28)` + RDMA userspace for the RoCE transport.
 
 Make the image available on all four nodes (build on each, or `docker save | ssh

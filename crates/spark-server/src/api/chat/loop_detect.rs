@@ -25,12 +25,12 @@ pub(super) struct LoopDetectOut {
 /// turns. During legitimate agentic coding the agent repeats commands
 /// (`ls`/`cargo check`/`cargo run` while iterating), trips this at turns>=3,
 /// and gets its next tool call BLOCKED — forcing a content/`<response>`
-/// fast-fail. vLLM applies no such mask. With `ATLAS_LOOP_NO_SUPPRESS=1` the
+/// fast-fail. vLLM applies no such mask. With `AVAROK_LOOP_NO_SUPPRESS=1` the
 /// verdict is still detected, logged, and metered, but the `<tool_call>`
 /// hard-mask is NOT applied (the benign Hint path is unaffected). Default OFF
 /// ⇒ byte-identical to today; additive, model-agnostic.
 fn loop_suppress_disabled() -> bool {
-    std::env::var("ATLAS_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
+    std::env::var("AVAROK_LOOP_NO_SUPPRESS").as_deref() == Ok("1")
 }
 
 pub(super) fn check_loops(messages: &[Message], tools_active: bool) -> LoopDetectOut {

@@ -48,6 +48,7 @@ pub mod forced_think_end;
 pub mod forced_token;
 pub mod grammar_bitmask;
 pub mod mid_word;
+pub mod min_tokens_eos;
 pub mod pin_tool_call;
 pub mod post_close;
 pub mod tool_during_think;
@@ -71,6 +72,8 @@ pub struct LogitsContext<'a> {
     pub think_start_token: Option<u32>,
     pub tool_call_start_token: Option<u32>,
     pub tool_call_end_token: Option<u32>,
+    /// Verify-position offset used by position-aware request masks.
+    pub verify_pos: usize,
     /// `mask[id]` iff token `id` decodes to text ending in a generation
     /// boundary. Vocab-sized and INDEXED BY TOKEN ID, so it is meaningless
     /// against a different tokenizer — carried beside the token ids it belongs
@@ -117,7 +120,7 @@ pub struct SamplingLevers {
     pub adadec_diagnostic: bool,
     /// DFlash masked verify.
     pub dflash_masked_verify: bool,
-    /// `ATLAS_DISABLE_WATCHDOGS` — every auto-watchdog off. Read by the F2
+    /// `AVAROK_DISABLE_WATCHDOGS` — every auto-watchdog off. Read by the F2
     /// and mid-word stages.
     pub disable_watchdogs: bool,
     /// Grammar forced-token (Coalescence) fast path. Default-on.
@@ -170,7 +173,7 @@ pub trait LogitsProcessor: Send + Sync {
 /// The post-pipeline AdaDec diagnostic is logged with the `"verify"`
 /// path label (this is the MTP/verify entry point). The non-MTP decode
 /// path uses `run_pipeline_with_path` with `"decode"` so its
-/// `ATLAS_ADADEC_DIAGNOSTIC` records keep their pre-unification label.
+/// `AVAROK_ADADEC_DIAGNOSTIC` records keep their pre-unification label.
 pub fn run_pipeline(logits: &mut [f32], seq: &mut ActiveSeq, ctx: &LogitsContext) -> Option<u32> {
     run_pipeline_with_path(logits, seq, ctx, "verify")
 }
@@ -180,7 +183,7 @@ pub fn run_pipeline(logits: &mut [f32], seq: &mut ActiveSeq, ctx: &LogitsContext
 /// decode path (`decode_logits_seq::process_seq_logits`, label
 /// `"decode"`) and the MTP verify path (`run_pipeline`, label
 /// `"verify"`) route through this one function. `path` only tags the
-/// env-gated `ATLAS_ADADEC_DIAGNOSTIC` JSONL record — it never alters
+/// env-gated `AVAROK_ADADEC_DIAGNOSTIC` JSONL record — it never alters
 /// any logit transform.
 pub fn run_pipeline_with_path(
     logits: &mut [f32],
@@ -188,7 +191,8 @@ pub fn run_pipeline_with_path(
     ctx: &LogitsContext,
     path: &'static str,
 ) -> Option<u32> {
-    let stages: [&dyn LogitsProcessor; 8] = [
+    let stages: [&dyn LogitsProcessor; 9] = [
+        &min_tokens_eos::MinTokensEosMask,
         &f2_confidence::F2ConfidenceEarlyStop,
         &mid_word::MidWordThinkEndMask,
         &post_close::PostCloseThinkMask,
@@ -205,7 +209,7 @@ pub fn run_pipeline_with_path(
         }
     }
     // AdaDec Phase 1 diagnostic — observes the post-grammar-bitmask
-    // distribution, never mutates. No-op when ATLAS_ADADEC_DIAGNOSTIC is
+    // distribution, never mutates. No-op when AVAROK_ADADEC_DIAGNOSTIC is
     // unset. Called directly (not as a pipeline stage) so the caller's
     // path label is preserved byte-identically across both decode paths.
     adadec_diag::log_step(ctx.dumps.adadec.as_ref(), logits, seq, path);
@@ -218,7 +222,7 @@ pub fn run_pipeline_with_path(
 /// call. Replaces the two divergent inline blocks.
 ///
 /// Stages, in order:
-///  1. **ATLAS_FORCE_TEMP_ZERO bypass** (eligible on BOTH kinds): when the
+///  1. **AVAROK_FORCE_TEMP_ZERO bypass** (eligible on BOTH kinds): when the
 ///     diagnostic flag is set, return the raw-logit argmax with no pipeline,
 ///     no penalties, no bias — matching vLLM at temperature 0 for
 ///     apples-to-apples layer-cosine comparison. Returned as the emitted
@@ -249,7 +253,7 @@ pub fn process_position_logits(
     penalties: &SamplingParams,
     kind: PositionKind,
 ) -> Option<u32> {
-    // 1. ATLAS_FORCE_TEMP_ZERO: pure argmax on raw logits — no pipeline, no
+    // 1. AVAROK_FORCE_TEMP_ZERO: pure argmax on raw logits — no pipeline, no
     //    penalties, no bias. Eligible on both kinds (the diagnostic's point
     //    is an identical bypass everywhere).
     if ctx.sampling.force_temp_zero {

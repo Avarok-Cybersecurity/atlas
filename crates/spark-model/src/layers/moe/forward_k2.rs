@@ -21,6 +21,14 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // LongCat zero-experts are wired only on the single-token decode
+        // + prefill paths (v1); this variant would silently mis-route the
+        // 384-wide router. Named refusal, not silent wrongness.
+        anyhow::ensure!(
+            self.router_logits_n as usize == ctx.config.num_experts,
+            "zero-expert MoE routing is not wired on this dispatch variant yet (forward_k2)"
+        );
+
         // Feature-1: the fused batch2 fast path has no fold hook. When a MoE
         // adapter is RESIDENT (install-time-fixed → graph-safe; graphs drain on
         // rotate/swap), route to the per-row batched fallback which folds
@@ -85,10 +93,10 @@ impl MoeLayer {
         let num_experts = ctx.config.num_experts as u32;
         let top_k = ctx.config.num_experts_per_tok as u32;
 
-        // DIAG (ATLAS_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
+        // DIAG (AVAROK_K2_DIAG=1): synchronize checkpoints to localize the K2-verify
         // illegal access (the V4 NVFP4 batch2 verify path is exercised for the first
         // time by MTP). The label of the FIRST failing sync names the bad stage.
-        let k2_diag = std::env::var("ATLAS_K2_DIAG").is_ok_and(|v| v == "1");
+        let k2_diag = ctx.levers.k2_diag;
         if k2_diag {
             ctx.gpu
                 .synchronize(stream)

@@ -12,6 +12,14 @@ mod batched;
 // encodes.
 
 impl Qwen3SsmLayer {
+    /// Two-phase (whole-prompt) GDN prefill.
+    ///
+    /// Splits into the h-state width wrapper and the kernel ladder so the
+    /// ladder can keep its nine `return ops::...` early exits: under the
+    /// stage-3 f16-SIZED pool the narrowing has to run on EVERY one of them,
+    /// which a per-arm epilogue could not guarantee. See
+    /// `Qwen3SsmLayer::prefill_gdn_recurrence_staged` for the same pattern on
+    /// the chunked path, and `ssm_h_fp16` for why the pair is safe here.
     pub(super) fn prefill_gdn_full_inner(
         &self,
         state: &mut dyn LayerState,
@@ -23,7 +31,31 @@ impl Qwen3SsmLayer {
             .as_any_mut()
             .downcast_mut::<SsmLayerState>()
             .ok_or_else(|| anyhow::anyhow!("Expected SsmLayerState"))?;
+        let h = super::ssm_h_fp16::prefill_h_begin(
+            ctx.gpu,
+            self.ssm_h_f16_to_f32_k,
+            ssm_state,
+            self.h_state_bytes,
+            stream,
+        )?;
+        self.prefill_gdn_full_over(h.ptr(), gdn_bufs, ctx, stream)?;
+        super::ssm_h_fp16::prefill_h_end(
+            ctx.gpu,
+            self.ssm_h_f32_to_f16_k,
+            h,
+            self.h_state_bytes,
+            stream,
+        )
+    }
 
+    /// The GDN kernel ladder, over an explicitly supplied FP32 h-state.
+    fn prefill_gdn_full_over(
+        &self,
+        h_state: DevicePtr,
+        gdn_bufs: &GdnPrefillBuffers,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
         let nv = ctx.config.linear_num_value_heads;
@@ -57,7 +89,7 @@ impl Qwen3SsmLayer {
             self.gdn_prefill_persistent_k.0 != 0,
             self.gdn_prefill_split4_k.0 != 0
         );
-        // gfx1151/SCALE (atlas_scale): every H-in-shared-memory GDN prefill
+        // gfx1151/SCALE (avarok_scale): every H-in-shared-memory GDN prefill
         // kernel exceeds RDNA3.5's hard 64KB LDS cap — WY32 ~84KB, WY4 =69688,
         // persistent =67584 (cuFuncSetAttribute(MAX_DYNAMIC_SHARED) →
         // CUDA_ERROR_INVALID_VALUE). Only split4 keeps the kd*vd H-state in
@@ -65,11 +97,11 @@ impl Qwen3SsmLayer {
         // there for all sizes. Correctness-equivalent, lower throughput; the
         // smem-H fast paths are a Blackwell-only optimization. NVIDIA (cfg
         // unset) takes the full ladder below unchanged.
-        if cfg!(atlas_scale) {
+        if cfg!(avarok_scale) {
             return ops::gdn_prefill_split4(
                 ctx.gpu,
                 self.gdn_prefill_split4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -97,7 +129,7 @@ impl Qwen3SsmLayer {
         // occupancy-starved wy64 — routing per-request GDN through FLA is the
         // batching lever. Skipped on exact-replay (FLA's 64-tok regrouping drifts
         // vs a snapshot-anchored pass) and non-128-dim heads.
-        // FlashInfer GDN (opt-in, ATLAS_GDN_FLASHINFER=1): tensor-core chunked delta-rule
+        // FlashInfer GDN (opt-in, AVAROK_GDN_FLASHINFER=1): tensor-core chunked delta-rule
         // scan, ~11× the scalar FLA chunk_delta_h at the Holo shape. Single-stream only;
         // takes Atlas's native packed-QKV + interleaved gate/beta directly (see
         // ops::gdn_flashinfer). FLA path below is the fallback when the flag/lib is absent.
@@ -108,7 +140,7 @@ impl Qwen3SsmLayer {
                 gdn_bufs.qkv,
                 gdn_bufs.gate_beta,
                 gdn_bufs.output,
-                ssm_state.h_state,
+                h_state,
                 scale,
                 total,
                 nk as u32,
@@ -141,10 +173,15 @@ impl Qwen3SsmLayer {
             return ops::gdn_prefill_fla(
                 ctx.gpu,
                 self.gdn_prefill_fla_recompute_wu_k,
+                self.gdn_prefill_fla_recompute_wu_hopper_k,
+                self.gdn_prefill_fla_chunk_fwd_o_hopper_k,
                 self.gdn_prefill_fla_chunk_delta_h_k,
                 self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
+                self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,
+                self.gdn_prefill_fla_chunk_delta_h_fused_k,
+                self.gdn_prefill_fla_chunk_delta_h_tma_k,
                 self.gdn_prefill_fla_chunk_fwd_o_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -174,7 +211,7 @@ impl Qwen3SsmLayer {
                 stream,
             );
         }
-        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 && !cfg!(atlas_scale) {
+        if self.gdn_prefill_wy32_k.0 != 0 && total > 32 && !cfg!(avarok_scale) {
             // #110: dynamic smem must cover the FULL kernel layout (H + smem_k +
             // smem_q + smem_warp[4] + smem_kd[C*C] + smem_g[C] + smem_bt[C], C=32).
             // The old `+256` slack under-counted the smem_warp(16)+smem_g(128)+
@@ -186,7 +223,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
                 self.gdn_prefill_wy32_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -222,7 +259,7 @@ impl Qwen3SsmLayer {
                     ops::gdn_prefill_persistent(
                         ctx.gpu,
                         self.gdn_prefill_persistent_k,
-                        ssm_state.h_state,
+                        h_state,
                         q_chunk,
                         k_chunk,
                         v_chunk,
@@ -244,7 +281,7 @@ impl Qwen3SsmLayer {
                     ops::gdn_prefill_split4(
                         ctx.gpu,
                         self.gdn_prefill_split4_k,
-                        ssm_state.h_state,
+                        h_state,
                         q_chunk,
                         k_chunk,
                         v_chunk,
@@ -265,12 +302,12 @@ impl Qwen3SsmLayer {
                 }
                 offset += chunk;
             }
-        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 && !cfg!(atlas_scale) {
+        } else if self.gdn_prefill_persistent_wy4_k.0 != 0 && !cfg!(avarok_scale) {
             let smem = (kd * vd * 4 + 8 * kd * 4 + 56) as u32;
             ops::gdn_prefill_persistent_smem(
                 ctx.gpu,
                 self.gdn_prefill_persistent_wy4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -293,7 +330,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_persistent(
                 ctx.gpu,
                 self.gdn_prefill_persistent_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,
@@ -315,7 +352,7 @@ impl Qwen3SsmLayer {
             ops::gdn_prefill_split4(
                 ctx.gpu,
                 self.gdn_prefill_split4_k,
-                ssm_state.h_state,
+                h_state,
                 q_ptr,
                 k_ptr,
                 v_ptr,

@@ -1,0 +1,176 @@
+/* Concurrency ladder (ConcurrencyLadder.svelte) — Atlas vs vLLM, C=1..128.
+   Global classes rather than component-scoped styles, matching the rest of the
+   site, so mobile.css stays the single source of truth for viewport rules.
+   Chart primitives (.gc-grid, .gc-axis) are reused from dashboard.css. */
+
+.cl-sub {
+  max-width: 62ch;
+  color: var(--t2);
+  margin: 0.5rem 0 1.5rem;
+}
+
+.cl-panel {
+  margin: 0 0 1.4rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.1rem 0.5rem;
+}
+.cl-panel svg:not(.cl-swatch) { width: 100%; height: auto; display: block; }
+/* :not(.cl-swatch) matters — `.cl-panel svg` is specificity 0,1,1 and beats the
+   swatch's own 0,1,0 rule below, so the 22x8 legend swatches were rendering at
+   the chart's full width. */
+
+.cl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.1rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.84rem;
+  color: var(--t2);
+}
+.cl-key { display: inline-flex; align-items: center; gap: 0.45rem; }
+.cl-swatch { width: 22px; height: 8px; flex: none; }
+.cl-tag {
+  font-size: 0.72rem;
+  color: var(--t3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.05rem 0.35rem;
+}
+.cl-ylab, .cl-xlab { fill: var(--t3); font-size: 11px; }
+
+.cl-tablewrap { overflow-x: auto; }
+
+.cl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.cl-caption {
+  caption-side: bottom;
+  text-align: left;
+  padding: 0.6rem 0.2rem 0;
+  font-size: 0.8rem;
+  color: var(--t3);
+}
+.cl-table th, .cl-table td {
+  padding: 0.5rem 0.8rem;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.cl-table thead th {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--t2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.cl-table tbody tr:last-child th,
+.cl-table tbody tr:last-child td { border-bottom: none; }
+.cl-table tbody th[scope='row'] { text-align: right; color: var(--t2); font-weight: 700; }
+.cl-win { font-weight: 750; color: var(--t1); }
+/* The faster of the two vLLM configurations at this rung — the one the ratio
+   is taken against, marked so the comparison basis is visible per row. */
+.cl-best { color: var(--t1); text-decoration: underline dotted var(--t3); }
+.cl-ratio { font-weight: 750; color: var(--accent); }
+.cl-table-dense { font-size: 0.82rem; }
+.cl-table-dense td, .cl-table-dense th { padding: 0.35rem 0.6rem; }
+.cl-table-dense td:first-child, .cl-table-dense th:first-child { text-align: left; }
+.cl-src { color: var(--t3); }
+
+.cl-toggle {
+  margin-top: 1.1rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--t2);
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+}
+.cl-toggle:hover { border-color: var(--accent); color: var(--t1); }
+
+.cl-meta { display: grid; gap: 1.1rem; margin-top: 1.1rem; }
+
+.cl-facts {
+  display: grid;
+  gap: 0.6rem;
+  margin: 0;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+}
+.cl-facts > div { display: grid; grid-template-columns: 9rem 1fr; gap: 0.8rem; }
+.cl-facts dt { font-size: 0.8rem; font-weight: 700; color: var(--t2); }
+.cl-facts dd { margin: 0; font-size: 0.86rem; color: var(--t1); }
+
+.cl-series {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+}
+.cl-series h3 { margin: 0 0 0.5rem; font-size: 0.98rem; }
+.cl-eng { font-weight: 500; color: var(--t3); font-size: 0.85rem; }
+.cl-note { margin: 0.45rem 0; font-size: 0.82rem; color: var(--t2); line-height: 1.55; }
+.cl-warn {
+  margin: 0.45rem 0;
+  font-size: 0.82rem;
+  color: var(--t1);
+  background: var(--bg2);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  padding: 0.5rem 0.7rem;
+}
+.cl-kv { display: grid; grid-template-columns: 7rem 1fr; gap: 0.7rem; margin-top: 0.5rem; align-items: start; }
+.cl-kv > span { font-size: 0.78rem; font-weight: 700; color: var(--t2); }
+.cl-kv code {
+  font-size: 0.78rem;
+  color: var(--t1);
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+  display: block;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cl-kv-block code { line-height: 1.6; }
+
+/* <details> rather than a scripted toggle: the provenance stays in the HTML
+   with JS off, and the disclosure is keyboard-accessible without ARIA. */
+.cl-details { margin-top: 1.1rem; }
+.cl-details > summary { display: inline-block; list-style: none; }
+.cl-details > summary::-webkit-details-marker { display: none; }
+.cl-details > summary::before { content: '▸ '; color: var(--t3); }
+.cl-details[open] > summary::before { content: '▾ '; }
+
+/* ---- inside the benchmark dashboard ---------------------------------------
+   The ladder was written as a landing-page section and now lives in the modal's
+   Concurrency tab, beside the concurrency-sweep gate chart. Strip the
+   full-bleed section dressing so it reads as a panel rather than a page: the
+   modal supplies its own background, padding and heading scale. */
+.bd-body > .section-alt {
+  background: none;
+  padding: 0 0 1.5rem;
+}
+.bd-body > .section-alt > .container {
+  max-width: none;
+  padding: 0;
+}
+.bd-body > .section-alt .stitle {
+  font-size: 1.15rem;
+  line-height: 1.3;
+  margin-bottom: 0.35rem;
+}
+.bd-body > .section-alt .ssub {
+  font-size: 0.82rem;
+}

@@ -17,8 +17,8 @@ use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
-use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
+use super::super::{FirstTokenPolicy, sample_first_token};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_batched_mixed_step(
@@ -154,7 +154,7 @@ pub(super) fn run_batched_mixed_step(
         // #131: grammar-constrain the FIRST token (and advance the matcher);
         // no-op without a grammar.
         // P1-4 (2026-07-09): thread the resolved `min_p` — previously a
-        // hardcoded 0.0 inside the sampler. Kill-switch: ATLAS_NO_MTP_MINP=1.
+        // hardcoded 0.0 inside the sampler. Kill-switch: AVAROK_NO_MTP_MINP=1.
         match sample_first_token(
             model,
             logits,
@@ -164,6 +164,7 @@ pub(super) fn run_batched_mixed_step(
             p.min_p,
             &p.eos_tokens,
             p.grammar_state.as_mut(),
+            FirstTokenPolicy::for_birth(p.enable_thinking, think_end_token, tool_call_start_token),
             &sched.levers.sampling(),
         ) {
             Ok(first) => {

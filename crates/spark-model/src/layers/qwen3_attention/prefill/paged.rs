@@ -13,6 +13,7 @@ use crate::layers::ops;
 impl Qwen3AttentionLayer {
     pub(in crate::layers::qwen3_attention) fn prefill_attention_paged(
         &self,
+        state: &mut dyn crate::layer::LayerState,
         normed: DevicePtr,
         num_tokens: usize,
         seq_len_start: usize,
@@ -70,6 +71,7 @@ impl Qwen3AttentionLayer {
                 nq,
                 nkv,
                 hd,
+                seq_len_start,
                 kv_dim,
                 eps,
                 bf16,
@@ -130,14 +132,14 @@ impl Qwen3AttentionLayer {
         // (it's written by FA later) and sized for `num_tokens * num_q_heads
         // * head_dim * 2`, plenty for our `num_tokens * num_kv_heads *
         // head_dim * 2` raw-K save. Gated on:
-        //   - ATLAS_FUSED_KV=1  (opt-in during dev; expected default later)
+        //   - AVAROK_FUSED_KV=1  (opt-in during dev; expected default later)
         //   - mrope_interleaved kernel handle loaded
         //   - BF16 KV cache (FP8 path has its own quantization noise that
         //     masks the cliff; not the workload that needs this fix)
         let fused_kv_enabled = self.mrope_interleaved
             && self.fused_k_norm_rope_mrope_cache_write_bf16_k.0 != 0
             && self.reshape_and_cache_flash_v_only_k.0 != 0
-            && std::env::var("ATLAS_FUSED_KV").ok().as_deref() == Some("1");
+            && std::env::var("AVAROK_FUSED_KV").ok().as_deref() == Some("1");
         let raw_k_scratch = if fused_kv_enabled {
             let scratch = ctx.buffers.attn_output();
             ctx.gpu
@@ -512,9 +514,7 @@ impl Qwen3AttentionLayer {
         let (wht_k_dtype, wht_v_dtype) = self.kv_dtype.kv_pair();
         let k_is_turbo = wht_k_dtype.is_wht_rotated();
         let v_is_turbo = wht_v_dtype.is_wht_rotated();
-        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
         let wht_runtime_active = !weight_pre_rotated && (hd == 128 || hd == 256 || hd == 512);
         if k_is_turbo && wht_runtime_active && self.wht_bf16_k.0 != 0 {
             use spark_runtime::kernel_args::KernelLaunch;
@@ -527,7 +527,7 @@ impl Qwen3AttentionLayer {
         }
         if let Some(bmeta) = batched_meta {
             // Cross-request prefill via FlashInfer ragged/varlen attention
-            // (ATLAS_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
+            // (AVAROK_FLASHINFER_PREFILL=1): the fresh contiguous, post-RoPE
             // Q/K/V already match FlashInfer's [rows, heads, 256] layout, so ONE
             // varlen launch runs all N co-dispatched requests' causal
             // self-attention — replacing the slow paged batched kernel (the
@@ -545,7 +545,7 @@ impl Qwen3AttentionLayer {
                 && !k_is_turbo
                 && !v_is_turbo
                 && spark_runtime::flashinfer::available()
-                && std::env::var("ATLAS_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
+                && std::env::var("AVAROK_FLASHINFER_PREFILL").ok().as_deref() == Some("1");
             if use_flashinfer {
                 // VARLEN: real per-request cu_seqlens from the staged metadata
                 // (host + device copies) — works for both uniform and varied
@@ -669,7 +669,7 @@ impl Qwen3AttentionLayer {
                 .launch(stream)?;
         }
 
-        // ATLAS_OP_DUMP: attn_out BEFORE sigmoid gate (raw attention-kernel output).
+        // AVAROK_OP_DUMP: attn_out BEFORE sigmoid gate (raw attention-kernel output).
         // Compares 1:1 against vLLM's "attn_out" dump in qwen3_next.py:_dump_op.
         // Use last-token slice n_elements = num_heads * head_dim.
         if num_tokens > 0 {
@@ -681,6 +681,41 @@ impl Qwen3AttentionLayer {
                 nq_hd,
                 self.attn_layer_idx,
                 "attn_out_pre_gate",
+                stream,
+            )?;
+        }
+
+        // ── 8b. QSA stage-2: per-query prefill selection for CHUNKED
+        // prefills (>8K prompts). Same overwrite-the-context hook as the
+        // chunk-0 cache-skip path; the paged cache already holds every
+        // prior chunk plus this one, and this path's host block table is
+        // the real physical mapping. Pre-gate so q_contiguous is intact
+        // and the gates/o_proj apply uniformly afterwards.
+        if let Some(ref qsa) = self.qsa
+            && seq_len_start + num_tokens > qsa.inert_bound()
+        {
+            anyhow::ensure!(
+                batched_meta.is_none(),
+                "QSA prefill selection is single-stream (batched paged \
+                 prefill is refused upstream for this model)"
+            );
+            let qsa_st =
+                crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
+            qsa.prefill_select(
+                qsa_st,
+                normed,
+                q_contiguous,
+                attn_out,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                block_table,
+                seq_len_start,
+                num_tokens,
+                nq,
+                bs as u32,
+                inv_sqrt_d,
+                ctx.buffers.qsa_select_scratch(),
+                ctx.gpu,
                 stream,
             )?;
         }
@@ -711,7 +746,7 @@ impl Qwen3AttentionLayer {
             // (grid [2, ceil(n/16)]) so the kernel is badly underutilized.
             // A/B (ISL 1024/8192, C=1): sTTFT 765->747 / 4177->4068 ms = ~2.5%.
             // dense_gemm_tc stays as the fallback when cuBLAS is off.
-            if ctx.dispatch.cublas_gemm {
+            if ctx.dispatch.cublas.attn {
                 ops::cublas_bf16_proj_dense(normed, g_proj.weight, gate_buf, n, nq, h, stream)?;
             } else {
                 ops::dense_gemm_tc(
@@ -756,7 +791,7 @@ impl Qwen3AttentionLayer {
             }
         }
 
-        // ATLAS_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
+        // AVAROK_OP_DUMP: attn_out AFTER sigmoid gate (input to o_proj linear).
         if num_tokens > 0 {
             let nq_hd = (nq * hd) as usize;
             super::super::op_dump::dump_bf16(

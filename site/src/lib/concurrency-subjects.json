@@ -1,0 +1,26 @@
+[
+  {
+    "id": "qwen38-27b",
+    "label": "Qwen 3.8 27B",
+    "checkpoint": "unsloth/Qwen3.8-27B-NVFP4",
+    "gate": "concurrency-sweep",
+    "published_manifest": "bench/ladder38/published.json",
+    "baselines_dir": "bench/baselines/qwen38-27b"
+  },
+  {
+    "id": "qwen36-35b-a3b",
+    "label": "Qwen 3.6 35B A3B",
+    "checkpoint": "Qwen/Qwen3.6-35B-A3B-FP8",
+    "gate": "concurrency-sweep",
+    "published_manifest": "bench/baselines/qwen36-35b-a3b/published.json",
+    "baselines_dir": "bench/baselines/qwen36-35b-a3b"
+  },
+  {
+    "id": "qwen38-27b-dflash",
+    "label": "Qwen 3.8 27B DFlash",
+    "checkpoint": "unsloth/Qwen3.8-27B-NVFP4",
+    "gate": "concurrency-sweep-dflash2",
+    "published_manifest": null,
+    "baselines_dir": "bench/baselines/qwen38-27b-dflash"
+  }
+]

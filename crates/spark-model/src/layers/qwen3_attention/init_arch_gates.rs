@@ -22,7 +22,7 @@
 
 use spark_runtime::gpu::{GpuBackend, KernelHandle};
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 /// Per-family presence flags, derived once per layer construction.
 #[derive(Clone, Copy, Debug)]
@@ -73,6 +73,18 @@ pub(super) fn gated(enabled: bool, gpu: &dyn GpuBackend, module: &str, func: &st
     }
 }
 
+/// A resolved handle as an `Option`: `None` when the lookup found nothing.
+///
+/// The shape a target-OWNED kernel is consumed in (#928). A source that exists
+/// only under `kernels/hopper/common` resolves to `KernelHandle(0)` everywhere
+/// else, and a zero handle is not an error there — it is the statement "this
+/// target does not carry that kernel", which the caller answers by keeping its
+/// existing arm. Spelling it as `Option` at the field makes the fallback
+/// impossible to forget at the call site.
+pub(super) fn present(handle: KernelHandle) -> Option<KernelHandle> {
+    (handle.0 != 0).then_some(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,20 +102,49 @@ mod tests {
         assert!(!p.wide_head_dim);
     }
 
-    /// DeepSeek-V4: latent KV, hyper-connections, compressed attention, and
-    /// the wide-head arms its 576-dim compressed cache needs.
     #[test]
-    fn deepseek_v4_claims_every_family() {
-        let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
-        cfg.head_dim = 128;
-        cfg.kv_lora_rank = 512;
-        cfg.hc_mult = 4;
-        cfg.compress_ratios = vec![0, 8, 8];
-        let p = ArchProbes::from_config(&cfg);
-        assert!(p.mla);
-        assert!(p.hyper_connection);
-        assert!(p.compressed_attn);
-        assert!(p.wide_head_dim, "MLA carries its own >256 shapes");
+    fn each_architecture_signal_enables_only_its_kernel_families() {
+        for (name, configure, expected) in [
+            (
+                "MLA",
+                (512usize, 0usize, Vec::new(), 128usize),
+                [true, false, false, true],
+            ),
+            (
+                "hyper connection",
+                (0, 4, Vec::new(), 128),
+                [false, true, false, false],
+            ),
+            (
+                "compressed attention",
+                (0, 0, vec![0, 8, 8], 128),
+                [false, false, true, false],
+            ),
+            (
+                "wide head",
+                (0, 0, Vec::new(), 512),
+                [false, false, false, true],
+            ),
+        ] {
+            let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
+            (
+                cfg.kv_lora_rank,
+                cfg.hc_mult,
+                cfg.compress_ratios,
+                cfg.head_dim,
+            ) = configure;
+            let p = ArchProbes::from_config(&cfg);
+            assert_eq!(
+                [
+                    p.mla,
+                    p.hyper_connection,
+                    p.compressed_attn,
+                    p.wide_head_dim
+                ],
+                expected,
+                "{name}"
+            );
+        }
     }
 
     /// Gemma-4 sizes buffers from the MAX per-layer head_dim, so the config

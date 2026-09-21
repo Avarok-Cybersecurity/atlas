@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
 use crate::speculative::DraftProposer;
@@ -161,7 +161,7 @@ pub(super) fn build_mtp_proposer(
 
 /// Build the optional SSM snapshot spill tier for `TransformerModel::new`,
 /// hoisted 1:1 to keep `impl_a1.rs` under the 500-LoC cap. Returns `None`
-/// (the byte-identical default) unless `ATLAS_SSM_TIER` is set on a recurrent
+/// (the byte-identical default) unless `AVAROK_SSM_TIER` is set on a recurrent
 /// model; otherwise selects the env-driven backend keyed by the model
 /// fingerprint (so different models sharing one peer can't collide).
 ///

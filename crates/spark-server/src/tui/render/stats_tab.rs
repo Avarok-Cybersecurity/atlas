@@ -36,7 +36,15 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
         .split(rows[2]);
     draw_sequences(f, app, bottom[0]);
-    draw_spec_cache(f, app, bottom[1]);
+    // Thermal sits under speculation & cache rather than taking a column of its
+    // own: it is a small fixed-height panel, and splitting the bottom row three
+    // ways would squeeze the two that carry per-sequence detail.
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(5), Constraint::Length(6)])
+        .split(bottom[1]);
+    draw_spec_cache(f, app, right[0]);
+    super::stats_thermal::draw(f, app, right[1]);
 }
 
 fn tile(f: &mut Frame, area: Rect, title: &str, value: Line, spark: Option<&[u64]>) {
@@ -116,7 +124,7 @@ fn draw_tiles(f: &mut Frame, app: &App, area: Rect) {
     let gpu = if s.gpu_known {
         Line::from(vec![
             Span::styled(
-                format!(" atlas {:.1} GB", s.atlas_used_gb),
+                format!(" avarok {:.1} GB", s.avarok_used_gb),
                 theme::text().add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("  free {:.1}", s.gpu_free_gb), theme::text2()),
@@ -307,7 +315,7 @@ fn draw_sequences(f: &mut Frame, app: &App, area: Rect) {
                 f,
                 r,
                 " GPU",
-                s.atlas_used_gb,
+                s.avarok_used_gb,
                 s.gpu_total_gb.max(0.001),
                 true,
             );

@@ -9,7 +9,7 @@
 // same physical block after it was returned to the free list early. By then
 // the guilty call site is long gone from the logs.
 //
-// With `ATLAS_KV_TRACE=1` every alloc/inc/dec/evict-return on every block is
+// With `AVAROK_KV_TRACE=1` every alloc/inc/dec/evict-return on every block is
 // appended to a per-block ring together with the caller's file:line (via
 // `#[track_caller]`, so no manual tagging at the call sites). When an
 // underflow is detected the whole ring for that block is dumped, naming the
@@ -41,14 +41,14 @@ pub(super) struct BlockTrace {
 
 pub(super) fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_KV_TRACE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_KV_TRACE").as_deref() == Ok("1"))
 }
 
 impl BlockTrace {
     pub(super) fn new(num_blocks: usize) -> Self {
         if enabled() {
             tracing::info!(
-                "ATLAS_KV_TRACE=1: recording per-block refcount history \
+                "AVAROK_KV_TRACE=1: recording per-block refcount history \
                  ({RING_LEN} events x {num_blocks} blocks)"
             );
             Self {

@@ -13,79 +13,6 @@ use crate::layer::ForwardContext;
 use crate::layers::ops;
 use crate::weight_map::{DenseWeight, Fp8ExpertWeight, MoeWeights, QuantizedWeight};
 
-/// Device-side pointer table for one projection across all experts.
-///
-/// Enables GPU-side expert dispatch: the batched GEMV kernel reads
-/// expert_id from device memory, then indexes these tables to find
-/// the correct weight pointers — no CPU involvement needed.
-pub(crate) struct ExpertPtrTable {
-    /// `[num_experts]` u64 device pointers to each expert's B_packed.
-    pub(crate) packed_ptrs: DevicePtr,
-    /// `[num_experts]` u64 device pointers to each expert's B_scale.
-    pub(crate) scale_ptrs: DevicePtr,
-    /// `[num_experts]` f32 per-expert scale2 values.
-    pub(crate) scale2_vals: DevicePtr,
-}
-
-/// Device-side pointer table for FP8 expert dispatch (one projection).
-///
-/// FP8 experts use 2 pointer arrays (weight + block_scale) instead of
-/// NVFP4's 3 (packed + scale + scale2). The fused FP8 MoE kernel indexes
-/// these tables by expert_id to load the correct FP8 weight matrix.
-pub(crate) struct Fp8ExpertPtrTable {
-    /// `[num_experts]` u64 device pointers to each expert's FP8 weight.
-    pub(crate) weight_ptrs: DevicePtr,
-    /// `[num_experts]` u64 device pointers to each expert's block scales.
-    pub(crate) scale_ptrs: DevicePtr,
-}
-
-/// Checkpoint-native BF16 weights for a shared expert.
-///
-/// This is intentionally independent of routed-expert precision. Models such
-/// as Laguna ship NVFP4 routed experts but explicitly exempt the shared expert
-/// from quantization, so coupling these pointers to the all-BF16 routed path
-/// silently changes model numerics.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Bf16SharedExpert {
-    gate_proj: DenseWeight,
-    up_proj: DenseWeight,
-    down_proj: DenseWeight,
-}
-
-impl Bf16SharedExpert {
-    fn new(gate_proj: DenseWeight, up_proj: DenseWeight, down_proj: DenseWeight) -> Result<Self> {
-        anyhow::ensure!(
-            !gate_proj.weight.is_null() && !up_proj.weight.is_null() && !down_proj.weight.is_null(),
-            "BF16 shared expert requires non-null gate/up/down weights"
-        );
-        Ok(Self {
-            gate_proj,
-            up_proj,
-            down_proj,
-        })
-    }
-}
-
-/// Unified expert pointer table for any quantization format.
-///
-/// Replaces the separate `ExpertPtrTable` (NVFP4) and `Fp8ExpertPtrTable` (FP8)
-/// with a single enum. The MoE forward path matches on this to select the
-/// correct fused kernel (moe_shared_expert_fused vs moe_shared_expert_fused_fp8).
-#[allow(dead_code)]
-pub(crate) enum ExpertPtrSet {
-    /// NVFP4: 3 pointer arrays (packed_ptrs, scale_ptrs, per-expert scale2 f32).
-    Nvfp4 {
-        packed_ptrs: DevicePtr,
-        scale_ptrs: DevicePtr,
-        scale2_vals: DevicePtr,
-    },
-    /// FP8: 2 pointer arrays (weight_ptrs, block_scale_ptrs).
-    Fp8 {
-        weight_ptrs: DevicePtr,
-        scale_ptrs: DevicePtr,
-    },
-}
-
 /// MoE feed-forward network component.
 ///
 /// Not a `TransformerLayer` — used as a component inside layers
@@ -122,11 +49,16 @@ pub struct MoeLayer {
     w4a16_gemv_sw: KernelHandle,
     w4a16_gemm: KernelHandle,
     dense_gemm: KernelHandle,
+    /// Order-preserving register-blocked router GEMM (`dense_gemm_bf16_router`):
+    /// bit-identical to the scalar `dense_gemm` (same per-output FP32 k-order,
+    /// `--fmad=false` build) at ~2x speed. `KernelHandle(0)` on miss → the
+    /// pinned scalar kernel. Used ONLY by `router_gate_gemm_dense`.
+    dense_gemm_router: KernelHandle,
     dense_gemm_pipelined: KernelHandle,
-    /// FP32-output router GEMM + FP32-input top-K for the ATLAS_FP32_GATE path.
+    /// FP32-output router GEMM + FP32-input top-K for the AVAROK_FP32_GATE path.
     /// Zero (unresolved) when the kernels are absent; dispatch falls back to BF16.
     dense_gemm_f32out: KernelHandle,
-    /// FP32-in/FP32-out router GEMM for ATLAS_FP32_ROUTING (reads the FP32
+    /// FP32-in/FP32-out router GEMM for AVAROK_FP32_ROUTING (reads the FP32
     /// router_in from residual_add_rms_norm_gatef32). Zero if absent.
     dense_gemm_f32in: KernelHandle,
     moe_topk_f32: KernelHandle,
@@ -158,6 +90,16 @@ pub struct MoeLayer {
     moe_sorted_gate_up: KernelHandle,
     moe_sorted_silu_down: KernelHandle,
     moe_grouped_gemm: KernelHandle,
+    /// Wider-K, grouped-dequant twin of `moe_grouped_gemm`, bit-exact with
+    /// it. `try_kernel` — absent on targets whose shadow predates it.
+    /// Opt-in via AVAROK_MOE_GROUPED_K32=1: measured on qwen4_exp only, and
+    /// the win is shape-dependent, so it is not switched on for every model
+    /// that happens to compile it.
+    moe_grouped_gemm_k32: KernelHandle,
+    /// M_TILE=256 twin: ONE pass over the expert weights instead of three
+    /// when rows/expert <= 256. Bit-exact. Opt-in via AVAROK_MOE_GROUPED_M256
+    /// because the win inverts for models with many rows per expert.
+    moe_grouped_gemm_m256: KernelHandle,
     moe_silu_mul: KernelHandle,
     /// Activation kernel for sorted/unfused path. SiLU by default, GeGLU for Gemma-4.
     moe_act_mul: KernelHandle,
@@ -173,7 +115,7 @@ pub struct MoeLayer {
     gate_ptrs_t: Option<ExpertPtrTable>,
     up_ptrs_t: Option<ExpertPtrTable>,
     down_ptrs_t: Option<ExpertPtrTable>,
-    /// CUTLASS grouped-NVFP4 host tables (`ATLAS_HOLO_MOE_GROUPED_CUTLASS`).
+    /// CUTLASS grouped-NVFP4 host tables (`AVAROK_HOLO_MOE_GROUPED_CUTLASS`).
     /// Per-expert packed/SFB pointer values + scale2, snapshotted ONCE at load
     /// by `build_cutlass_grouped_sfb` (the SFB swizzle is built there from the
     /// `gate_ptrs_t`/`up_ptrs_t` `[K/16,N]` scales via `pack_weight_sfb`). The
@@ -216,6 +158,16 @@ pub struct MoeLayer {
     // ── hash routing (DeepSeek-V4 first `num_hash_layers` MoE layers) ──
     moe_hash_route_k: KernelHandle,
     moe_hash_route_batched_k: KernelHandle,
+    // ── LongCat softmax+bias routing with zero-computation experts ──
+    /// Router logit width = num_experts + zero_expert_num. Equal to
+    /// num_experts on every non-LongCat model (behavior-neutral).
+    pub(crate) router_logits_n: u32,
+    moe_topk_softmax_bias_k: KernelHandle,
+    moe_topk_softmax_bias_batched_k: KernelHandle,
+    moe_zero_expert_add_k: KernelHandle,
+    /// Per-token folded zero-expert weight (f32, written by the softmax+bias
+    /// router kernels). Fixed-size allocation (16K tokens) — graph-safe.
+    zero_accum_dev: DevicePtr,
     /// Static `tid2eid` table [vocab_size, top_k] i64 — present ONLY for the
     /// hash-routed layers (the loader supplies it only for those). `Some`
     /// here is the SSOT that this layer routes via the static hash table
@@ -231,28 +183,28 @@ pub struct MoeLayer {
     moe_expert_silu_down_shared_fp8_batch2_t_k: KernelHandle,
     moe_expert_gate_up_shared_fp8_batch3_t_k: KernelHandle,
     moe_expert_silu_down_shared_fp8_batch3_t_k: KernelHandle,
-    /// `ATLAS_UNIFIED_MOE_LAYOUT=1` opts in to the unified-layout decode
+    /// `AVAROK_UNIFIED_MOE_LAYOUT=1` opts in to the unified-layout decode
     /// path: gate/up/down all use transposed `[K/2, N]` layout, decode
     /// dispatches to `moe_expert_*_shared_t` kernels. Default off — the
     /// dispatch falls through to the original `[N, K/2]` kernels.
     /// Resolved once at construction.
     unified_layout: bool,
-    /// `ATLAS_NVFP4_GATE_UP_M128=1` opts in to the M=128 fused gate+up
-    /// kernel (Block D #3, Avarok tile-shape rewrite). Halves block count
+    /// `AVAROK_NVFP4_GATE_UP_M128=1` opts in to the M=128 fused gate+up
+    /// kernel (Block D #3, Atlas tile-shape rewrite). Halves block count
     /// at large prefill — better SM amortization on GB10's 25-SM budget.
     /// Currently only minimax-m2-229b ships the kernel; other models keep
     /// `moe_fused_gate_up_t_k64_m128 == KernelHandle(0)` and dispatch
     /// falls through to the M=64 path even when the env var is set.
     nvfp4_gate_up_m128: bool,
-    /// `ATLAS_HOLO_MOE_GATEUP_FP4=1` opts the prefill fused gate_up onto the
+    /// `AVAROK_HOLO_MOE_GATEUP_FP4=1` opts the prefill fused gate_up onto the
     /// block-scaled FP4 kernel. Reads the SHARED FAST_MOE=full `gate_ptrs_t`/
     /// `up_ptrs_t` `[K/2,N]` tables (no extra MoE memory); dispatch also requires
     /// those tables present + the FP4 kernel handle != 0.
     gateup_fp4: bool,
-    /// `ATLAS_HOLO_MOE_DOWN_FP4=1` — same, for the prefill down projection over
+    /// `AVAROK_HOLO_MOE_DOWN_FP4=1` — same, for the prefill down projection over
     /// the shared `down_ptrs_t` table.
     down_fp4: bool,
-    /// `ATLAS_HYBRID_MOE_LAYOUT=1` opts in to the hybrid-layout path:
+    /// `AVAROK_HYBRID_MOE_LAYOUT=1` opts in to the hybrid-layout path:
     /// keep BOTH original `[N, K/2]` weights (for decode + MTP verify) AND
     /// transposed `[K/2, N]` weights (for prefill). Doubles MoE-weight
     /// memory but recovers the ~15 % decode regression that pure unified
@@ -277,13 +229,13 @@ pub struct MoeLayer {
     moe_grouped_gemm_t_k64_e8m0: KernelHandle,
     moe_fused_gate_up_t_e8m0: KernelHandle,
     moe_fused_gate_up_t_k64_e8m0: KernelHandle,
-    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Avarok
+    /// M=128 variant of the K64 fused gate+up kernel (Block D #3, Atlas
     /// tile-shape rewrite). Loaded with `try_kernel` — falls back to
     /// `KernelHandle(0)` on models that don't ship the kernel; dispatch
     /// gates on `nvfp4_gate_up_m128` AND handle non-zero.
     moe_fused_gate_up_t_k64_m128: KernelHandle,
     /// FUSED FP4 (block-scaled e2m1) variant of the K64 fused gate+up kernel
-    /// (`ATLAS_HOLO_MOE_GATEUP_FP4`). Same signature as `moe_fused_gate_up_t_k64`
+    /// (`AVAROK_HOLO_MOE_GATEUP_FP4`). Same signature as `moe_fused_gate_up_t_k64`
     /// but runs one `mma.sync.kind::mxf4nvf4.scale_vec::4X.m16n8k64` per k64
     /// tile (vs 2× m16n8k32 e4m3). `try_kernel` — `KernelHandle(0)` on images
     /// lacking it; the dispatch in `forward_prefill_routed` only fires when this
@@ -339,9 +291,20 @@ pub struct MoeLayer {
     // total_tiles). Handle may be 0 on older images.
     moe_build_tile_worklist_k: KernelHandle,
     // W8A8 + FP32 epilogue MoE GEMM (vLLM-equivalent). Opt-in via
-    // ATLAS_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
+    // AVAROK_FP8_W8A8=1. Requires per-token-quanted A_fp8 + a_scale.
     moe_w8a8_grouped_gemm_k: KernelHandle,
-    per_token_group_quant_fp8_k: KernelHandle,
+    // PM4-geometry W8A8 grouped GEMM over the compacted work-list (kernel
+    // `moe_w8a8_grouped_gemm_pm4`, same module). Bit-identical numerics to
+    // the dense kernel; preferred when present (gb10). Handle may be 0 on
+    // targets/images that don't ship it — dispatch falls back to the dense
+    // 3D-grid `moe_w8a8_grouped_gemm_k`.
+    moe_w8a8_grouped_gemm_pm4_k: KernelHandle,
+    per_token_group_quant_fp8_k: ops::Fp8ActQuant,
+    /// Fused SiLU·mul + per-token-group FP8 quant (bit-identical replacement
+    /// for the `silu_mul` → `per_token_group_quant_fp8` pair on the W8A8
+    /// prefill down-path). Optional: handle 0 (e.g. a model shadowing
+    /// moe_silu_mul.cu without this entry point) falls back to the pair.
+    silu_mul_quant_fp8_k: KernelHandle,
     // Dense W8A8 (same kernel used by attention QKV/O proj) for shared-expert path.
     fp8_gemm_t_blockscaled_k: KernelHandle,
     // BF16 grouped GEMM — for FP8-source models dequanted to BF16 at load.
@@ -359,7 +322,7 @@ pub struct MoeLayer {
     moe_expert_gate_up_shared_bf16_batch2_k: KernelHandle,
     moe_expert_silu_down_shared_bf16_batch2_k: KernelHandle,
     w8a16_gemm_k: KernelHandle,           // for shared expert FP8 prefill
-    w8a16_gemm_pipelined_k: KernelHandle, // ATLAS_W8A16_PIPELINED shared-expert variant
+    w8a16_gemm_pipelined_k: KernelHandle, // AVAROK_W8A16_PIPELINED shared-expert variant
     // Fused gate GEMV + topK softmax (saves 1 kernel launch per layer)
     moe_gate_topk_fused_k: KernelHandle,
     // FP8 expert pointer tables (None when experts are NVFP4)
@@ -391,7 +354,7 @@ pub struct MoeLayer {
     pub(crate) moe_permute_tokens_k: KernelHandle,
     // Phase 2.7 Tier C — Frankenstein dispatch flag.
     // True when this layer's index is in `config.dflash_capture_layers`.
-    // When the env var `ATLAS_FRANKENSTEIN_DECODE_VIA_PREFILL=1` is set,
+    // When the env var `AVAROK_FRANKENSTEIN_DECODE_VIA_PREFILL=1` is set,
     // `forward()` (single-token decode) will route through `forward_prefill`
     // (tensor-core grouped GEMM kernel) on this layer only, so the captured
     // hidden states use a different numerical recipe than the scalar GEMV
@@ -434,6 +397,11 @@ impl MoeLayer {
     }
 }
 
+mod tables;
+// Re-exported so every `moe::ExpertPtrTable`-style path in the sub-files keeps
+// resolving; the split is invisible to them.
+pub(crate) use tables::{Bf16SharedExpert, ExpertPtrTable, Fp8ExpertPtrTable};
+
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────
 mod dump;
 mod forward;
@@ -453,6 +421,7 @@ mod forward_prefill_bf16;
 mod forward_prefill_fp8;
 mod forward_prefill_phase;
 mod forward_prefill_routed;
+mod forward_prefill_router;
 mod forward_token_major;
 mod helpers_a;
 mod helpers_b;

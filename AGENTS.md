@@ -16,13 +16,13 @@ moving parts:
   `src/factory.rs`.
 - **`crates/spark-runtime/`** — GPU backend, KV cache, kernel dispatch,
   process-group comms.
-- **`crates/atlas-kernels/`** — Rust glue over compiled PTX (one artefact
+- **`crates/avarok-kernels/`** — Rust glue over compiled PTX (one artefact
   per `(hw, model, quant)` target).
 - **`kernels/<hw>/<model>/<quant>/`** — CUDA kernels + `MODEL.toml`
   (sampling, behaviour defaults, kernel target registration).
-- **`crates/atlas-*`** — smaller shared primitives (quant, gemm, ssm, norm,
+- **`crates/avarok-*`** — smaller shared primitives (quant, gemm, ssm, norm,
   attention, reduce, activation, embed).
-- **`crates/atlas-spark-bench/`** — benchmark harness.
+- **`crates/avarok-spark-bench/`** — benchmark harness.
 
 Architecture decision records live in `docs/adr/`; the benchmark journey in
 `docs/ATLAS_SPARK_JOURNEY.md`; release notes in `docs/releases/`.
@@ -51,7 +51,7 @@ cargo fmt --all -- --check
 
 # 2. Lints (the build-script gate lets clippy run without CUDA on the host;
 #    matches ci.yml — deny-warnings comes from [workspace.lints], not a flag)
-ATLAS_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
+AVAROK_SKIP_BUILD=1 CUDARC_CUDA_VERSION=13000 cargo clippy --workspace --tests
 
 # 3. License headers (SPDX AGPL-3.0-only line 1; wraps the same apache/skywalking-eyes
 #    engine CI runs against .licenserc.yaml):
@@ -59,10 +59,54 @@ bash scripts/check-license-headers.sh
 
 # 4. Typos
 typos  # crate-ci/typos — install once, `cargo install typos-cli`
+
+# 5. Cross-hardware kernel reach — ONLY if the diff touches kernels/.
+#    kernels/<hw>/ looks like one tree per hardware and is not: strix is 7 real
+#    files and 105 symlinks into kernels/gb10/common/. A gb10 edit therefore
+#    changes what AMD compiles, and the CI job `cross-hardware kernel reach
+#    (CHKI, advisory)` will say so. ADVISORY since 2026-09-11 — AMD is
+#    second-tier support, so a red does not block a merge. It is still the only
+#    thing that sees this class of reach: read it, do not skip it.
+python3 scripts/check_cross_hardware.py --base origin/main --worktree
 ```
 
 A real build + test cycle requires a CUDA-capable host; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### If the diff touches a perf path
+
+`crates`, `kernels`, `Cargo.*`, `vendor`, `jinja-templates`, `rust-toolchain.toml`,
+`3rdparty_patches` — the gate's `PERF_PATHS` — mean the PR owes a benchmark certification
+campaign of **~4.5–5 GPU-hours**, and campaigns have been wasted. Before spending one, and
+again before reading `stamp status` / `seal status`, committing `.benchmarks/` records, or
+commenting `/stamp` or `/seal`:
+
+```
+/oracle_certification_state_check pre --pr <N>     # then: begin → during → post → release
+```
+
+It is a blocking oracle (`.claude/agents/oracle_cert.md`) running fourteen litmus tests —
+clean perf tree, frozen sha, binary built from it, `spark doctor`, stray shard dirs, hermetic
+pins, BFCL scorer imports, box free, `campaign-guard.sh`, other PRs mid-certification, top of
+stack, stamp/seal job sequencing, one `git_sha` across added records, one Speed-class signer —
+and holding the gitignored lockfile `.oracle_should_begin_cert` for the life of the campaign.
+Overrides exist for what it cannot see and are recorded in the lockfile; quote them in the PR.
+
+★ **A red `stamp status` or `seal status` is not a failure until it is dated.** Those jobs
+freeze their outputs for the life of a CI run, so a mark minted *after* they ran leaves them
+red until a FULL `gh run rerun <id>` — `--failed` cannot work, because they *succeeded* while
+emitting `false`. The oracle's T12 does the dating; do not do it by eye.
+
+For a `kernels/` change that reaches a second hardware, run
+`/oracle_pre_commit_cross_hardware_check` before pushing: it chooses the remedy (benign,
+parameterize in `kernels/<hw>/HARDWARE.toml` **with a reader added in the same change**, or a
+separate kernel with **no symlink**) and writes the `Hardware:` and `CHKI-Verdict:` trailers.
+
+The CI job is **advisory** (AMD second-tier), so those trailers are no longer enforced at merge
+— which makes running the oracle a judgement you make rather than one CI makes for you. The
+reach it reports is real either way: a `kernels/gb10/common/` edit is compiled verbatim by
+hipcc through 105 symlinks, and `d584c0c50` was caught only because a release compile leg
+happened to fail.
 
 ## Adding a new model
 
@@ -77,9 +121,9 @@ High-level walkthrough — the patterns to follow are already in-tree.
    `MODEL.toml` declaring the model-type matches, sampling presets, and
    behaviour defaults. The top-level `kernels/<hw>/HARDWARE.toml` picks up
    the new target automatically if you set
-   `ATLAS_TARGET_MODEL=*` at build time (default).
+   `AVAROK_TARGET_MODEL=*` at build time (default).
 3. **Behavioural knobs.** `MODEL.toml` is the SSOT for per-model
-   sampling/thinking/tool-use policy. `build.rs` in `atlas-kernels` parses
+   sampling/thinking/tool-use policy. `build.rs` in `avarok-kernels` parses
    it into `SamplingPresets` + `ModelBehavior` consumed by the server.
 4. **Jinja template.** If the model uses a chat template that's not
    covered by `jinja-templates/`, add one. Naming convention matches the
@@ -99,14 +143,14 @@ Concrete recent examples worth reading:
 ## The kernel target system
 
 Three dimensions: **hardware** × **model** × **quantization**. At build
-time, `atlas-kernels/build.rs` enumerates the `ATLAS_TARGET_*` env vars
+time, `avarok-kernels/build.rs` enumerates the `AVAROK_TARGET_*` env vars
 (with `*` meaning "all matching") and produces one PTX artefact per
 target. Runtime selects the correct target based on the model's
 `model_type` and loaded config.
 
-- `ATLAS_TARGET_HW=gb10` — currently the only implemented hardware.
-- `ATLAS_TARGET_MODEL=*` / `ATLAS_TARGET_QUANT=*` — wildcard compiles all.
-- `ATLAS_SKIP_BUILD=1` — emits a stub so clippy/fmt can run without nvcc.
+- `AVAROK_TARGET_HW=gb10` — currently the only implemented hardware.
+- `AVAROK_TARGET_MODEL=*` / `AVAROK_TARGET_QUANT=*` — wildcard compiles all.
+- `AVAROK_SKIP_BUILD=1` — emits a stub so clippy/fmt can run without nvcc.
 
 ## Writing commits
 

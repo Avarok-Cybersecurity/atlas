@@ -8,6 +8,7 @@ pub mod catalogue;
 pub mod kernels;
 pub mod library;
 pub mod metrics_poll;
+pub mod thermal;
 
 /// Free GPU memory in bytes, or `None` where no such query exists.
 ///
@@ -16,11 +17,11 @@ pub mod metrics_poll;
 /// two call sites, no cfg, and the macOS CI job could not compile the crate.
 /// One gated accessor means the next caller cannot repeat that.
 pub fn gpu_free_bytes() -> Option<usize> {
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     {
         spark_runtime::cuda_backend::cuda_free_memory_bytes()
     }
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(avarok_cuda))]
     {
         None
     }

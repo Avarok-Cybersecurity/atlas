@@ -6,12 +6,15 @@
 //      `OUT_DIR/predictor_ptx.rs` so callers can `include!` to obtain the
 //      PTX text at compile time.
 //
-// Honours `ATLAS_SKIP_BUILD=1` (alias `SKIP_ATLAS_BUILD=1`): skip nvcc and
+// Honours `AVAROK_SKIP_BUILD=1` (alias `SKIP_AVAROK_BUILD=1`): skip nvcc and
 // emit a stub `storage_ptx.rs` with an empty registry. This lets `cargo
 // check`, `cargo clippy`, `cargo test`, and `rustdoc` run on hosts
-// without a CUDA toolchain — the same convention `crates/atlas-kernels`
+// without a CUDA toolchain — the same convention `crates/avarok-kernels`
 // follows. Anything that actually launches a kernel will fail at runtime
 // against the empty stub; production builds must keep this var unset.
+
+#[path = "../avarok-kernels/build_backend.rs"]
+mod build_backend;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,13 +28,28 @@ const KERNELS: &[&str] = &[
 ];
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=ATLAS_SKIP_BUILD");
-    println!("cargo:rerun-if-env-changed=SKIP_ATLAS_BUILD");
-    println!("cargo:rerun-if-env-changed=ATLAS_TARGET_HW");
+    // FIRST, before any early return. `rustc-check-cfg` does not cross crates,
+    // so each crate must register the names itself or `unexpected_cfgs` fires
+    // on whichever target takes the early path -- the scar spark-storage's
+    // build script already carries. The RULE lives in build_backend.rs so it
+    // can be tested; see crates/avarok-kernels/tests/backend_resolution.rs.
+    build_backend::register_cfgs();
+    if let Some(os) = build_backend::target_os_from_env() {
+        build_backend::emit(std::env::var_os("CARGO_FEATURE_CUDA").is_some(), &os);
+    }
+    println!("cargo:rerun-if-env-changed=AVAROK_SKIP_BUILD");
+    println!("cargo:rerun-if-env-changed=SKIP_AVAROK_BUILD");
+    println!("cargo:rerun-if-env-changed=AVAROK_TARGET_HW");
+    println!("cargo:rerun-if-env-changed=AVAROK_PREDICTOR_ARCH");
     // FIRST, before any early return: `rustc-check-cfg` does not cross crates,
-    // so this crate must declare the cfg name or every `#[cfg(atlas_rdma_verbs)]`
+    // so this crate must declare the cfg name or every `#[cfg(avarok_rdma_verbs)]`
     // below trips `unexpected_cfgs` (a hard error under `warnings = "deny"`).
-    println!("cargo:rustc-check-cfg=cfg(atlas_rdma_verbs)");
+    println!("cargo:rustc-check-cfg=cfg(avarok_rdma_verbs)");
+
+    // Resolved before every early return below, so the value and any fallback
+    // warning are the same whether or not nvcc ends up running. See
+    // `resolve_predictor_arch`.
+    let predictor_arch = resolve_predictor_arch();
 
     // Apple Silicon hosts have no libcuda and no nvcc. Emit the stub and
     // skip the linker hint so `cargo check` works under
@@ -50,14 +68,14 @@ fn main() {
     // symbols resolved at link time even when the kernel registry is
     // an empty stub.
     link_libcuda();
-    // The one-sided RDMA verbs shim is built by the CUDA-free `atlas-rdma`
+    // The one-sided RDMA verbs shim is built by the CUDA-free `avarok-rdma`
     // crate; `rustc-cfg` does not cross crate boundaries, so re-emit
-    // `atlas_rdma_verbs` here for this crate's own gated code, keyed off
-    // atlas-rdma's `links` metadata (`cargo:has_verbs=1` → the DEP_ var below,
-    // visible because we depend on atlas-rdma DIRECTLY). The ON condition
-    // (Linux AND !ATLAS_SKIP_BUILD) is decided in one place — atlas-rdma/build.rs.
-    if std::env::var("DEP_ATLAS_RDMA_SHIM_HAS_VERBS").is_ok() {
-        println!("cargo:rustc-cfg=atlas_rdma_verbs");
+    // `avarok_rdma_verbs` here for this crate's own gated code, keyed off
+    // avarok-rdma's `links` metadata (`cargo:has_verbs=1` → the DEP_ var below,
+    // visible because we depend on avarok-rdma DIRECTLY). The ON condition
+    // (Linux AND !AVAROK_SKIP_BUILD) is decided in one place — avarok-rdma/build.rs.
+    if std::env::var("DEP_AVAROK_RDMA_SHIM_HAS_VERBS").is_ok() {
+        println!("cargo:rustc-cfg=avarok_rdma_verbs");
     }
     if skip_build() {
         emit_stub();
@@ -69,12 +87,12 @@ fn main() {
     // code objects is future work. The windows/amd-hip build is compile-only
     // (hosted runners have no AMD GPU), so emit the empty registry rather than
     // panicking on a missing nvcc. SCALE (`strix`) keeps nvcc — it ships one.
-    if std::env::var("ATLAS_TARGET_HW").as_deref() == Ok("strix-hip") {
+    if std::env::var("AVAROK_TARGET_HW").as_deref() == Ok("strix-hip") {
         emit_stub();
         println!("cargo:rerun-if-changed=build.rs");
         return;
     }
-    compile_kernels();
+    compile_kernels(&predictor_arch);
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -85,12 +103,12 @@ fn skip_build() -> bool {
             Some("1") | Some("true") | Some("TRUE")
         )
     };
-    truthy("ATLAS_SKIP_BUILD") || truthy("SKIP_ATLAS_BUILD")
+    truthy("AVAROK_SKIP_BUILD") || truthy("SKIP_AVAROK_BUILD")
 }
 
 fn emit_stub() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let stub = "// Auto-generated by spark-storage/build.rs (ATLAS_SKIP_BUILD stub).\n\
+    let stub = "// Auto-generated by spark-storage/build.rs (AVAROK_SKIP_BUILD stub).\n\
         pub struct StoragePtx { pub name: &'static str, pub ptx: &'static str }\n\
         pub const STORAGE_PTX: &[StoragePtx] = &[];\n";
     std::fs::write(out_dir.join("storage_ptx.rs"), stub).expect("emit stub storage_ptx.rs");
@@ -112,12 +130,11 @@ fn link_libcuda() {
     println!("cargo:rustc-link-lib=dylib=cuda");
 }
 
-fn compile_kernels() {
+fn compile_kernels(arch: &str) {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let kernels_dir = manifest_dir.join("kernels");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let nvcc = find_nvcc();
-    let arch = std::env::var("ATLAS_PREDICTOR_ARCH").unwrap_or_else(|_| "sm_121".into());
 
     let mut emit = String::new();
     emit.push_str("// Auto-generated by spark-storage/build.rs.\n");
@@ -144,7 +161,7 @@ fn compile_kernels() {
             panic!("nvcc --ptx failed for {}", src.display());
         }
         // `{:?}` supplies the quotes AND escapes the path: a Windows OUT_DIR
-        // like `D:\a\atlas\...` interpolated raw makes `\a` an invalid Rust
+        // like `D:\a\avarok\...` interpolated raw makes `\a` an invalid Rust
         // escape, and the generated storage_ptx.rs fails to lex.
         emit.push_str(&format!(
             "    StoragePtx {{ name: \"{stem}\", ptx: include_str!({}) }},\n",
@@ -163,4 +180,47 @@ fn find_nvcc() -> PathBuf {
         }
     }
     PathBuf::from("nvcc")
+}
+
+/// The SM architecture the predictor kernels compile for.
+///
+/// SSOT is `kernels/<hw>/HARDWARE.toml` `[hardware].arch`, so these kernels
+/// cannot target a different GPU than the rest of the build — the hard-coded
+/// `sm_121` did exactly that for every non-GB10 target.
+/// `AVAROK_PREDICTOR_ARCH` still wins when set explicitly, and the literal
+/// survives as the announced fallback for an unreadable file.
+fn resolve_predictor_arch() -> String {
+    const FALLBACK: &str = "sm_121";
+    if let Ok(explicit) = std::env::var("AVAROK_PREDICTOR_ARCH") {
+        return explicit;
+    }
+    let hw = std::env::var("AVAROK_TARGET_HW").unwrap_or_else(|_| "gb10".to_string());
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let hardware_toml = manifest
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("crates/<crate> sits two levels below the workspace root")
+        .join("kernels")
+        .join(&hw)
+        .join("HARDWARE.toml");
+    println!("cargo:rerun-if-changed={}", hardware_toml.display());
+    match hardware_arch(&hardware_toml) {
+        Some(arch) => arch,
+        None => {
+            println!(
+                "cargo:warning=spark-storage: no [hardware].arch in {} — predictor kernels fall \
+                 back to {FALLBACK}; set AVAROK_TARGET_HW to a target under kernels/, or \
+                 AVAROK_PREDICTOR_ARCH to override",
+                hardware_toml.display()
+            );
+            FALLBACK.to_string()
+        }
+    }
+}
+
+/// `[hardware].arch` from a `HARDWARE.toml`, or `None` if it cannot be read.
+fn hardware_arch(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let doc: toml::Value = text.parse().ok()?;
+    Some(doc.get("hardware")?.get("arch")?.as_str()?.to_string())
 }

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{ModelConfig, PeftAdapterConfig};
+use avarok_core::config::{ModelConfig, PeftAdapterConfig};
 use spark_runtime::weights::WeightStore;
 
 use super::*;
@@ -54,6 +54,7 @@ pub(crate) fn audit_adapter(
     let mut router: expert_pack::RouterMap = BTreeMap::new();
     let mut experts: expert_pack::ExpertMap = BTreeMap::new();
     let mut overlay = OverlayTensors::default();
+    let mut gdn_skipped = 0usize;
     for name in adapter_store.names() {
         // Feature 2: token-overlay tensors (`…token_adapter.*`, bare
         // `modules_to_save` `.weight`, `lora_embedding_*`) are intercepted
@@ -61,6 +62,15 @@ pub(crate) fn audit_adapter(
         // mis-rejects them. Collected here, applied by the token-overlay path.
         if let Some(t) = classify_overlay_key(name) {
             overlay.insert(t, name)?;
+            continue;
+        }
+        // GDN / linear-attention tensors under the deliberate-partial opt-in:
+        // skip rather than reject. `classify_key` would bail, and on a hybrid
+        // that is 48 of 64 layers' worth of tensors — the whole reason the
+        // opt-in exists. Without the opt-in this is not reached and the reject
+        // below still fires.
+        if super::env::allow_partial_targets() && super::key::is_gdn_key(name) {
+            gdn_skipped += 1;
             continue;
         }
         let (layer, target, ab) = classify_key(name, cfg)?;
@@ -128,10 +138,18 @@ pub(crate) fn audit_adapter(
     }
 
     // Feature-1 router/expert audit: master gate + rank cap (flag-gated so an
-    // expert adapter is a NAMED reject unless ATLAS_LORA_EXPERTS=1) + shapes.
+    // expert adapter is a NAMED reject unless AVAROK_LORA_EXPERTS=1) + shapes.
     expert_pack::validate(cfg, peft, &router, &experts)?;
     if expert_pack::present(&router, &experts) {
         expert_pack::validate_shapes(adapter_store, cfg, peft, &router, &experts)?;
+    }
+
+    if gdn_skipped > 0 {
+        tracing::warn!(
+            "LoRA PARTIAL LOAD: skipped {gdn_skipped} GDN/linear-attention tensor(s) \
+             (out_proj / in_proj_*) — these layers have no v0 delta path, so that \
+             part of the adapter is NOT applied."
+        );
     }
 
     // 3) other audit direction: every target_modules entry matched ≥1 pair.
@@ -141,6 +159,18 @@ pub(crate) fn audit_adapter(
             || (last == "gate" && !router.is_empty())
             || experts.keys().any(|(_, _, p)| p.peft_name() == last);
         if !matched {
+            // Under AVAROK_LORA_ALLOW_PARTIAL the user has already been warned,
+            // by name, that these modules are skipped; `validate_peft_config`
+            // is the gate that decides. Bailing again here would make the
+            // opt-in unusable, since a module Atlas cannot apply is by
+            // definition a module that matches no pair.
+            if super::env::allow_partial_targets() {
+                tracing::warn!(
+                    "LoRA PARTIAL LOAD: target_modules entry '{t}' matched no \
+                     adapter tensor Atlas can place — skipped."
+                );
+                continue;
+            }
             bail!(
                 "REJECT[unmatched-target]: target_modules entry '{t}' matched \
                  no adapter tensor on any full-attention layer"

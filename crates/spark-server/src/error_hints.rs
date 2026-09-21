@@ -13,11 +13,11 @@
 //!
 //! ## Why the hint is appended to `message` as well as emitted as `hint`
 //!
-//! Benchmarks live in `atlas-plugin`, and `spark-server` depends on
-//! `atlas-plugin`, not the reverse — so the plugin crate cannot import this
+//! Benchmarks live in `avarok-plugin`, and `spark-server` depends on
+//! `avarok-plugin`, not the reverse — so the plugin crate cannot import this
 //! table. Duplicating it there would put the same strings in two crates with
 //! nothing keeping them in step. Instead the hint rides in `message`, which
-//! every client already reads, so `atlas-plugin` gets it for free by surfacing
+//! every client already reads, so `avarok-plugin` gets it for free by surfacing
 //! the body it was already receiving and discarding. `hint` is emitted
 //! separately as well, for clients that want to render it distinctly.
 
@@ -54,11 +54,11 @@ pub fn message_with_hint(message: &str, error_type: &str) -> String {
     }
 }
 
-// Reading an error body back out is `atlas_plugin::http`'s job, not this
+// Reading an error body back out is `avarok_plugin::http`'s job, not this
 // module's: the benchmark reader needs the identical rule including chunked
 // de-framing, `spark-server` depends on that crate and not the reverse, so it
 // is defined once there and called directly by both. See
-// `atlas_plugin::http::{message_from_body, error_message_from_response}`.
+// `avarok_plugin::http::{message_from_body, error_message_from_response}`.
 
 #[cfg(test)]
 #[path = "error_hints_tests.rs"]

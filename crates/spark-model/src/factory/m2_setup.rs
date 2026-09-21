@@ -3,7 +3,7 @@
 //! MiniMax M2 layout-mode memory audit (extracted from `build_model`).
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 
 use crate::layer::TransformerLayer;
@@ -21,7 +21,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     // them, run_routed_grouped_gemm falls to the non-transposed NVFP4 fallback,
     // which reads the E8M0 [N,K/32] scales as NVFP4 [N,K/16] → OOB. Unified layout
     // (frees originals between phases) is the fit for V4's tight EP=2 budget;
-    // requires ATLAS_UNIFIED_MOE_LAYOUT=1, same as minimax_m2/step3p7. Additive —
+    // requires AVAROK_UNIFIED_MOE_LAYOUT=1, same as minimax_m2/step3p7. Additive —
     // minimax_m2/step3p7 dispatch is byte-identical (they still match earlier).
     if config.model_type != "minimax_m2"
         && config.model_type != "step3p7"
@@ -29,10 +29,10 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     {
         return Ok(());
     }
-    let unified_layout = std::env::var("ATLAS_UNIFIED_MOE_LAYOUT")
+    let unified_layout = std::env::var("AVAROK_UNIFIED_MOE_LAYOUT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let hybrid_layout = std::env::var("ATLAS_HYBRID_MOE_LAYOUT")
+    let hybrid_layout = std::env::var("AVAROK_HYBRID_MOE_LAYOUT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     let local_experts: usize = (0..config.num_experts)
@@ -43,11 +43,11 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     let per_expert_one: usize = config.moe_intermediate_size * config.hidden_size * 9 / 16;
     let cost_full: usize = local_experts * 3 * per_expert_one * config.num_hidden_layers;
     let cost_gate_up: usize = local_experts * 2 * per_expert_one * config.num_hidden_layers;
-    let safety: usize = std::env::var("ATLAS_MOE_TRANSPOSE_SAFETY_MB")
+    let safety: usize = std::env::var("AVAROK_MOE_TRANSPOSE_SAFETY_MB")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .map(|mb| mb * 1024 * 1024)
-        .unwrap_or(2 * 1024 * 1024 * 1024); // 2 GB default, override via ATLAS_MOE_TRANSPOSE_SAFETY_MB
+        .unwrap_or(2 * 1024 * 1024 * 1024); // 2 GB default, override via AVAROK_MOE_TRANSPOSE_SAFETY_MB
     let free = gpu.free_memory()?;
     let gb = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
     // Hybrid mode pre-flight: Block C Path 2 needs ~2× the cost_full
@@ -57,7 +57,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
     let hybrid_fits = hybrid_layout && free >= 2 * cost_full + safety;
     if hybrid_layout && !hybrid_fits {
         tracing::warn!(
-            "MoE transpose pass (hybrid layout): ATLAS_HYBRID_MOE_LAYOUT=1 \
+            "MoE transpose pass (hybrid layout): AVAROK_HYBRID_MOE_LAYOUT=1 \
              requested but doesn't fit (need {:.1} GB, free {:.1} GB) — \
              falling back to unified-layout (decode regression).",
             gb(2 * cost_full + safety),
@@ -70,7 +70,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
         // 35 tok/s preserved); prefill (forward_batched) routes through
         // transposed (Phase 8a coalesced TTFT win retained).
         tracing::info!(
-            "MoE transpose pass (hybrid layout): ATLAS_HYBRID_MOE_LAYOUT=1, \
+            "MoE transpose pass (hybrid layout): AVAROK_HYBRID_MOE_LAYOUT=1, \
              dual-layout (cost {:.1} GB), free pre-pass {:.1} GB → RUNNING",
             gb(2 * cost_full),
             gb(free),
@@ -87,7 +87,7 @@ pub(super) fn maybe_run_minimax_m2_moe_transpose(
         // freed between phases. Fits in tight budgets that the
         // straight `transpose_moe_for_prefill` would reject.
         tracing::info!(
-            "MoE transpose pass (unified layout): ATLAS_UNIFIED_MOE_LAYOUT=1, \
+            "MoE transpose pass (unified layout): AVAROK_UNIFIED_MOE_LAYOUT=1, \
              phased transpose with frees, free pre-pass {:.1} GB → RUNNING",
             gb(free),
         );

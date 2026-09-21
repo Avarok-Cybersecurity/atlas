@@ -7,7 +7,7 @@ use std::os::raw::{c_void, c_int, c_float};
     fn cudaStreamCreate(s:*mut *mut c_void)->c_int;
     fn cudaDeviceSynchronize()->c_int;
 }
-#[link(name="atlasgdn")] extern "C" {
+#[link(name="avarokgdn")] extern "C" {
     fn atlas_gdn_load();
     fn atlas_gdn_prefill(q:*mut c_void,k:*mut c_void,v:*mut c_void,o:*mut c_void,
         alpha:*mut c_void,beta:*mut c_void,state:*mut c_void,init_state:*mut c_void,

@@ -8,17 +8,17 @@ description = "Atlas Spark model — Qwen3 forward pass orchestration"
 [features]
 default = ["cuda"]
 # spark-model has no Metal port yet (Phases 4–7 add it). The cuda feature
-# forwards atlas-core/cuda + spark-runtime/cuda so the default Linux build
+# forwards avarok-core/cuda + spark-runtime/cuda so the default Linux build
 # remains unchanged after the workspace-level default-features = false on
-# atlas-core.
+# avarok-core.
 cuda = [
-    "atlas-core/cuda",
+    "avarok-core/cuda",
     "spark-runtime/cuda",
     "spark-storage/cuda",
     "spark-comm/cuda",
 ]
 metal = [
-    "atlas-core/metal",
+    "avarok-core/metal",
     "spark-runtime/metal",
     "spark-storage/metal",
     "spark-comm/metal",
@@ -34,9 +34,9 @@ metal-example = ["metal", "dep:tokenizers", "dep:memmap2", "dep:safetensors"]
 gpu-examples = []
 
 [dependencies]
-atlas-core = { workspace = true }
-atlas-kernels = { workspace = true }
-atlas-tier = { workspace = true }
+avarok-core = { workspace = true }
+avarok-kernels = { workspace = true }
+avarok-tier = { workspace = true }
 # `default-features = false` so the metal feature can opt out of
 # spark-runtime's `cuda` default — otherwise the dep line silently
 # re-enables cudarc on every build.
@@ -50,7 +50,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 half = "2"
-base64 = "0.22"
+base64 = "0.23"
 # `gif` carries the video path: it is the one genuinely multi-frame container
 # decodable in pure Rust with no system dependency, so the whole temporal
 # pipeline can be proven before committing to an H.264 decoder.
@@ -89,7 +89,55 @@ workspace = true
 # NOTE: the ARM-2 Leg-2 native-MXFP4 (E8M0) numeric gate lives as a real
 # `#[ignore]`d integration test — see crates/spark-model/tests/arm2_leg2_*.rs.
 [[example]]
+name = "kda_gate_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_recurrent_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_chunk_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_conv_contract_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "kda_layer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "dsa_indexer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "mhc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_ffn_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "glm5next_moe_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_gdn_chunk_prefill_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_gdn_prefill_remnants_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "gdn_woa_oracle"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
@@ -181,6 +229,14 @@ name = "gdn_strided_norm_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "native_ssm_ba_gates_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_act_quant_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_wy4_batched_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -233,6 +289,10 @@ name = "w4a16_bf16_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "w8a16_batch_bitparity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "w4a16_batch_bitparity_microtest"
 required-features = ["cuda", "gpu-examples"]
 
@@ -242,4 +302,73 @@ required-features = ["cuda", "gpu-examples"]
 
 [[example]]
 name = "w4a16_qg_batch_bitparity_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_down_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_batch16_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_oproj_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_m16_tc_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_bf16_lm_head_m16_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_ffn_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]
+# The cuBLASLt-vs-kernel acceptance rule is CPU-testable; see the `tests`
+# module in `examples/common/native_fp8_bf16_compare.rs`, which the example
+# pulls in with `#[path]`.
+test = true
+
+# The FUSED gate+up decode GEMM (#927) against the two-GEMM pair. A BYTE
+# equality gate, not a tolerance: splitting N gives independent output columns
+# over the same K with the same block scales.
+[[example]]
+name = "native_fp8_ffn_gateup_fused_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_qkv_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_decode_proj_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+# The PREFILL sibling: the SSM out_proj and cache-skip Q/K/V shapes that round 9
+# left on W8A16 (#917/#928). Selector clauses are CPU-tested next to each site.
+name = "native_fp8_prefill_proj_w8a8_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+# Grades the Hopper paged-decode split-K twins on hardware: byte-equality of a
+# row decoded alone vs beside fifteen others (the determinism pin), and a
+# tolerance against the shipped non-split kernel across split counts, because
+# splitting re-brackets a non-associative online-softmax merge.
+name = "native_attn_decode_splitk_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_gemv_hopper_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "native_fp8_attn_decode_batch_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "fp8_gemm_twin_parity"
 required-features = ["cuda", "gpu-examples"]

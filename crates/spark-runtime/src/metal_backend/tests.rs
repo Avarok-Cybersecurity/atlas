@@ -8,6 +8,11 @@
 
 mod helpers;
 
+// Runs before any parity module can matter: it refuses a build that
+// embedded no metallibs at all, which is the state every one of them
+// silently reports `Metal: unknown module` from.
+mod embedded_kernels;
+
 mod parity_asym;
 mod parity_attention;
 mod parity_attention_full;

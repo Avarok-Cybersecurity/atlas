@@ -24,7 +24,7 @@
     <div class="split-body">
       <p>
         Dez is an IDE whose language model runs where your files already are. It is built on the
-        <a href={LINKS.atlasRepo} rel="noopener noreferrer">Atlas Inference Engine</a> — a pure-Rust
+        <a href={LINKS.avarokRepo} rel="noopener noreferrer">Atlas Inference Engine</a> — a pure-Rust
         LLM inference stack — compiled to WebAssembly and dispatched to your GPU through WebGPU.
         Open the page, load a model, and the editor works with no account and no network.
       </p>
@@ -81,7 +81,7 @@
       Atlas is open source under the AGPL-3.0 and ships hardware- and model-specific kernels behind
       swappable backend traits — the property that makes a WebGPU backend a port rather than a
       rewrite. Read the engine at
-      <a href={LINKS.atlasRepo} rel="noopener noreferrer">github.com/Avarok-Cybersecurity/atlas</a>.
+      <a href={LINKS.avarokRepo} rel="noopener noreferrer">github.com/Avarok-Cybersecurity/atlas</a>.
     </p>
   </div>
 </section>
@@ -94,7 +94,7 @@
       is built on, and you will see Dez arrive as it is built.
     </p>
     <div class="cta-row">
-      <a class="btn primary" href={LINKS.atlasRepo} rel="noopener noreferrer">
+      <a class="btn primary" href={LINKS.avarokRepo} rel="noopener noreferrer">
         Watch Atlas on GitHub
       </a>
       <a class="btn" href={LINKS.discord} rel="noopener noreferrer">Join the Discord</a>

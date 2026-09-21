@@ -10,6 +10,42 @@ use spark_runtime::weights::{WeightDtype, WeightStore};
 
 use super::*;
 
+/// Step (1) of [`detect_nvfp4_variant`]: the variant the CONFIG declares,
+/// asked WITHOUT a [`WeightStore`].
+///
+/// Factored out (#915, 2026-09-11) so a caller that has only `config.json` —
+/// the pre-load residency prediction in
+/// `weight_loader::predicted_residency`, which runs before the store
+/// exists — asks exactly the question the loader will later answer instead
+/// of keeping a second copy of this precedence. `None` means "the config
+/// does not say"; it is NEVER a guess, and the sniffing half of
+/// [`detect_nvfp4_variant`] is what resolves it once the store is loaded.
+pub fn config_declared_variant(config: &avarok_core::config::ModelConfig) -> Option<Nvfp4Variant> {
+    let qc = config.quantization_config.as_ref()?;
+    match qc.quant_method.as_str() {
+        "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => Some(Nvfp4Variant::Standard),
+        "modelopt" if qc.quant_algo.eq_ignore_ascii_case("FP8") => Some(Nvfp4Variant::Fp8Dequanted),
+        "compressed-tensors" => {
+            // `format` is the sub-selector here. Block-scaled FP8 is tagged
+            // either with a literal "fp8" OR with compressed-tensors'
+            // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
+            // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
+            // "pack-quantized") are NVFP4.
+            let fmt = qc.format.to_ascii_lowercase();
+            if fmt.contains("fp8") || fmt.contains("float-quant") {
+                Some(Nvfp4Variant::Fp8Dequanted)
+            } else {
+                Some(Nvfp4Variant::CompressedTensors)
+            }
+        }
+        "fp8" => Some(Nvfp4Variant::Fp8Dequanted),
+        // Unknown method with non-empty ignore list — the caller falls
+        // through to heuristic detection. A warning was already emitted by
+        // `quant_format::detect_quant_format`.
+        _ => None,
+    }
+}
+
 /// Detect the weight quantization variant from the weight store.
 ///
 /// Dispatch order matches vLLM / TRT-LLM / SGLang:
@@ -26,40 +62,15 @@ use super::*;
 ///      that ship without a `quantization_config` block.
 pub fn detect_nvfp4_variant(
     store: &WeightStore,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> Nvfp4Variant {
     // (1) Config-first dispatch. See module docs on `quant_format` for
     // the full rationale — this is the fix for the Discord 2026-04-17
-    // `CUDA_ERROR_ILLEGAL_ADDRESS` bug.
-    if let Some(qc) = &config.quantization_config {
-        match qc.quant_method.as_str() {
-            "modelopt" if qc.quant_algo.eq_ignore_ascii_case("NVFP4") => {
-                return Nvfp4Variant::Standard;
-            }
-            "modelopt" if qc.quant_algo.eq_ignore_ascii_case("FP8") => {
-                return Nvfp4Variant::Fp8Dequanted;
-            }
-            "compressed-tensors" => {
-                // `format` is the sub-selector here. Block-scaled FP8 is tagged
-                // either with a literal "fp8" OR with compressed-tensors'
-                // `"float-quantized"` (8-bit float = FP8 E4M3, e.g.
-                // Hcompany/Holo-3.1-*-FP8); the rest ("nvfp4-pack-quantized",
-                // "pack-quantized") are NVFP4.
-                let fmt = qc.format.to_ascii_lowercase();
-                if fmt.contains("fp8") || fmt.contains("float-quant") {
-                    return Nvfp4Variant::Fp8Dequanted;
-                }
-                return Nvfp4Variant::CompressedTensors;
-            }
-            "fp8" => {
-                return Nvfp4Variant::Fp8Dequanted;
-            }
-            _ => {
-                // Unknown method with non-empty ignore list — fall
-                // through to heuristic detection. A warning was already
-                // emitted by `quant_format::detect_quant_format`.
-            }
-        }
+    // `CUDA_ERROR_ILLEGAL_ADDRESS` bug. `None` = the config does not declare
+    // one (or declares a method this engine does not know), which is the only
+    // case that falls through to sniffing.
+    if let Some(declared) = config_declared_variant(config) {
+        return declared;
     }
 
     let lp = config.layer_prefix(0);
@@ -237,6 +248,7 @@ pub(crate) fn quantized_any(
     variant: Nvfp4Variant,
     qctx: QuantizeCtx,
 ) -> Result<QuantizedWeight> {
+    let _t_detect = std::time::Instant::now();
     // Per-key fallback (B8 #bugs RedHatAI/Qwen3-Coder-Next-NVFP4): some
     // models that are CompressedTensors overall keep certain projections
     // (e.g. `linear_attn.out_proj`) as raw BF16 with no quantization
@@ -283,6 +295,7 @@ pub(crate) fn quantized_any(
         variant
     };
 
+    let _t_detect_ns = _t_detect.elapsed().as_nanos() as u64;
     match effective_variant {
         Nvfp4Variant::Standard => quantized(store, prefix, gpu),
         Nvfp4Variant::CompressedTensors => quantized_v2(store, prefix, gpu),
@@ -297,9 +310,19 @@ pub(crate) fn quantized_any(
             qctx.stream,
         ),
         Nvfp4Variant::Bf16Raw => {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static T_DETECT: AtomicU64 = AtomicU64::new(0);
+            static T_GET: AtomicU64 = AtomicU64::new(0);
+            static T_QUANT: AtomicU64 = AtomicU64::new(0);
+            static T_FREE: AtomicU64 = AtomicU64::new(0);
+            static N: AtomicU64 = AtomicU64::new(0);
+            T_DETECT.fetch_add(_t_detect_ns, Ordering::Relaxed);
             // Raw BF16/FP16 fine-tune: load the dense weight then runtime-quantize.
+            let _t = std::time::Instant::now();
             let w = store.get(&format!("{prefix}.weight"))?;
             let bf16 = DenseWeight { weight: w.ptr };
+            T_GET.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let _t = std::time::Instant::now();
             let q = quantize_to_nvfp4(
                 &bf16,
                 n,
@@ -309,6 +332,8 @@ pub(crate) fn quantized_any(
                 qctx.quantize_k,
                 qctx.stream,
             )?;
+            T_QUANT.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let _t = std::time::Instant::now();
             // Free the BF16 source: the NVFP4 buffer is a fresh allocation, so the
             // on-disk BF16 weight is now redundant. Without this a 35B BF16 MoE
             // (Bf16Raw, SEPARATE per-expert layout routed through here by #200's
@@ -316,6 +341,21 @@ pub(crate) fn quantized_any(
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
             gpu.free(w.ptr)?;
+            T_FREE.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let c = N.fetch_add(1, Ordering::Relaxed) + 1;
+            if c.is_multiple_of(512) {
+                let ms = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64 / 1.0e6;
+                tracing::info!(
+                    "quantized_any(Bf16Raw) PROFILE after {c} calls (ms total): detect={:.1} \
+                     store_get={:.1} quantize={:.1} free={:.1} | sum={:.1} per_call={:.3}ms",
+                    ms(&T_DETECT),
+                    ms(&T_GET),
+                    ms(&T_QUANT),
+                    ms(&T_FREE),
+                    ms(&T_DETECT) + ms(&T_GET) + ms(&T_QUANT) + ms(&T_FREE),
+                    (ms(&T_DETECT) + ms(&T_GET) + ms(&T_QUANT) + ms(&T_FREE)) / c as f64,
+                );
+            }
             Ok(q)
         }
     }
@@ -393,7 +433,7 @@ pub(crate) fn load_quantized_proj_qwen35(
 #[cfg(test)]
 mod ep_detection_tests {
     use super::*;
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
     use spark_runtime::weights::WeightStore;
 
     /// A store holding only the FP8 attention marker at a given layer, which is
@@ -416,56 +456,30 @@ mod ep_detection_tests {
         WeightStore::from_map(map)
     }
 
-    /// Detection must not depend on which EP rank is asking.
-    ///
-    /// ★ CHARACTERISATION, not a regression test — it passes with the bug too,
-    /// and that is worth stating rather than hiding. The old expression indexed
-    /// the second FP8 prefix by `local_expert_range().0`, a global EXPERT index
-    /// used as a LAYER index, so rank 1 of 2 probed layer 47 where rank 0
-    /// probed layer 0. That is genuinely wrong, but UNREACHABLE: the global
-    /// `.weight_scale_inv` fallback below the per-prefix probes catches the
-    /// marker wherever it sits, so both ranks answer the same either way.
-    ///
-    /// This pins the property we want to keep — rank-independence — so that if
-    /// someone tightens or removes that fallback, the latent bug surfaces here
-    /// instead of in a two-rank EP deployment.
     #[test]
-    fn variant_detection_is_identical_across_ep_ranks() {
-        // Only a deep-layer FP8 attention marker: present at the layer rank 1
-        // used to probe, absent at layer 0. Under the bug the ranks disagree.
+    fn alternate_layer0_fp8_dtype_is_detected_on_every_ep_rank() {
         let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
-        // Reach the tensor-name sniffing path: a present `quantization_config`
-        // short-circuits detection before any prefix is built, so leaving it
-        // set makes this test assert the early return, not the bug.
         cfg.quantization_config = None;
-        let deep = cfg.num_hidden_layers.saturating_sub(1);
-        let store = store_with(&[format!(
-            "model.language_model.layers.{deep}.self_attn.q_proj.weight_scale_inv"
-        )]);
+        let store =
+            store_with(&["model.language_model.layers.0.self_attn.q_proj.weight".to_string()]);
 
         cfg.ep_world_size = 2;
-        cfg.ep_rank = 0;
-        let rank0 = detect_nvfp4_variant(&store, &cfg);
-        cfg.ep_rank = 1;
-        let rank1 = detect_nvfp4_variant(&store, &cfg);
-
-        assert_eq!(
-            rank0, rank1,
-            "EP rank changed the detected variant for one checkpoint: \
-             rank0={rank0:?} rank1={rank1:?}. Detection reads a file every rank \
-             sees identically, so it must not depend on the expert split."
-        );
+        for ep_rank in 0..2 {
+            cfg.ep_rank = ep_rank;
+            assert_eq!(
+                detect_nvfp4_variant(&store, &cfg),
+                Nvfp4Variant::Fp8Dequanted,
+                "EP rank {ep_rank} must inspect the same layer-zero checkpoint marker"
+            );
+        }
     }
 
-    /// The layer-0 spelling still detects FP8 — the fix must not break the
-    /// case the buggy expression happened to get right.
     #[test]
-    fn the_alternate_layer0_spelling_still_detects_fp8() {
+    fn scale_inv_suffix_fallback_detects_an_unexpected_prefix() {
         let mut cfg = ModelConfig::qwen3_next_80b_nvfp4();
         cfg.quantization_config = None;
-        let store = store_with(&[
-            "model.language_model.layers.0.self_attn.q_proj.weight_scale_inv".to_string(),
-        ]);
+        let store =
+            store_with(&["third_party.transformer.blocks.17.attn.q.weight_scale_inv".to_string()]);
         assert_eq!(
             detect_nvfp4_variant(&store, &cfg),
             Nvfp4Variant::Fp8Dequanted

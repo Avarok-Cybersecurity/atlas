@@ -41,8 +41,8 @@ SCCACHE_ENV = _sccache_env()
 WEBSERVER_PROMPT = (
     "Please create a pure Rust Axum project here in the current working directory. "
     "Just have a ping/pong endpoint (GET /ping returns the body 'pong'). The server "
-    "MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use "
-    "`let port: u16 = std::env::var(\"ATLAS_HARNESS_PORT\").unwrap_or_else(|_| \"3001\".to_string()).parse().unwrap();` "
+    "MUST bind to the port from the AVAROK_HARNESS_PORT env var (default 3001) — use "
+    "`let port: u16 = std::env::var(\"AVAROK_HARNESS_PORT\").unwrap_or_else(|_| \"3001\".to_string()).parse().unwrap();` "
     "then bind to 0.0.0.0:port. Add tests, run them and prove all tests pass, then run "
     "the server and use curl to prove it works. Whenever you run the server or any "
     "long-lived process in the background, start it detached with output redirected to a "
@@ -50,7 +50,7 @@ WEBSERVER_PROMPT = (
     "and wrap any command that might hang (curl checks, kills) in a short `timeout 15`. "
     "Finally, tear down the server by killing whatever is listening on its port rather "
     "than guessing the process name, wrapped in a short timeout, e.g. "
-    "`timeout 5 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`."
+    "`timeout 5 fuser -k ${AVAROK_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`."
 )
 
 # name, kind, prompt, verify_spec
@@ -73,11 +73,11 @@ TASKS = [
 
 # ── omp driver ───────────────────────────────────────────────────────────────
 def run_omp(prompt, workdir, timeout, model, thinking=None):
-    """Drive `opencode run`. Model is provider-qualified (atlas/<id>)."""
-    m = model if "/" in model else f"atlas/{model}"
+    """Drive `opencode run`. Model is provider-qualified (avarok/<id>)."""
+    m = model if "/" in model else f"avarok/{model}"
     cmd = [OC, "run", "--auto", "--format", "json", "--dir", str(workdir), "-m", m, prompt]
     env = {**os.environ,
-           "ATLAS_HARNESS_PORT": "3001",
+           "AVAROK_HARNESS_PORT": "3001",
            "CARGO_TARGET_DIR": WARM_TARGET,
            **SCCACHE_ENV}
     t0 = time.time()
@@ -156,7 +156,7 @@ def verify_webserver(workdir, build_timeout=420, run_timeout=20):
         out["note"] = "no Cargo.toml"
         return out
     port = _free_port()
-    env = {**os.environ, "ATLAS_HARNESS_PORT": str(port),
+    env = {**os.environ, "AVAROK_HARNESS_PORT": str(port),
            "CARGO_TARGET_DIR": WARM_TARGET, **SCCACHE_ENV}
     try:
         b = subprocess.run(["cargo", "build", "--release"], cwd=workdir,
@@ -221,7 +221,7 @@ def followed_directions(events, workdir):
         "ran_server": bool(_RE_RUN.search(blob)),
         "curled": bool(_RE_CURL.search(blob)),
         "tore_down": bool(_RE_KILL.search(blob)),
-        "reads_port_env": "ATLAS_HARNESS_PORT" in src_text,
+        "reads_port_env": "AVAROK_HARNESS_PORT" in src_text,
     }
     req = ["wrote_project", "wrote_tests", "ran_tests", "ran_server", "curled", "tore_down"]
     return steps, all(steps[s] for s in req), req

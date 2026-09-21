@@ -5,9 +5,10 @@
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -38,18 +39,18 @@ impl TransformerModel {
         // unconditionally and let the scheduler decide whether to install,
         // gated by the user's --high-speed-swap CLI choice.
         //
-        // KV paging identity (ATLAS_KV_PAGING): the SAME config-derived
+        // KV paging identity (AVAROK_KV_PAGING): the SAME config-derived
         // fingerprint the SSM tier uses (quant identity + geometry + the
-        // ATLAS_MODEL_ID salt), via the KV convention (blob_bytes = 0).
+        // AVAROK_MODEL_ID salt), via the KV convention (blob_bytes = 0).
         // Underivable ⇒ None with a loud warn; the flag-ON connect then fails
-        // fast with an actionable error unless ATLAS_KV_PAGING_NS is set. Every
+        // fast with an actionable error unless AVAROK_KV_PAGING_NS is set. Every
         // other path ignores the field (default-off ⇒ unread).
         let model_fp = match crate::model::ssm_tier::ModelFingerprint::derive_kv(&self.config) {
             Ok(fp) => Some(fp.nonzero()),
             Err(e) => {
                 tracing::warn!(
-                    "KV paging fingerprint underivable ({e:#}); ATLAS_KV_PAGING=1 \
-                     will fail fast unless ATLAS_KV_PAGING_NS is set"
+                    "KV paging fingerprint underivable ({e:#}); AVAROK_KV_PAGING=1 \
+                     will fail fast unless AVAROK_KV_PAGING_NS is set"
                 );
                 None
             }
@@ -65,7 +66,7 @@ impl TransformerModel {
         })
     }
 
-    /// Storage dtype of this sequence's SSM h-state (`ATLAS_SSM_H_FP16`).
+    /// Storage dtype of this sequence's SSM h-state (`AVAROK_SSM_H_FP16`).
     ///
     /// Read from the sequence's own first SSM layer state, which the decode
     /// mixer flips on its first decode step — so this is the invariant itself,
@@ -78,7 +79,7 @@ impl TransformerModel {
             .is_some_and(|s| s.h_is_f16)
     }
 
-    /// Narrow this sequence's SSM h-state to FP16 (`ATLAS_SSM_H_FP16`), once.
+    /// Narrow this sequence's SSM h-state to FP16 (`AVAROK_SSM_H_FP16`), once.
     ///
     /// ★ MUST be called from the model's decode entry points, OUTSIDE the CUDA
     /// graph region. Launching it from inside the layer puts the conversion
@@ -120,7 +121,7 @@ impl TransformerModel {
         }
         if self.ssm_h_f32_to_f16_kernel.0 == 0 {
             bail!(
-                "ATLAS_SSM_H_FP16: ssm_h_dtype::ssm_h_state_f32_to_f16 did not resolve on this                  target — refusing to run the FP16 decode kernels over an FP32 pool"
+                "AVAROK_SSM_H_FP16: ssm_h_dtype::ssm_h_state_f32_to_f16 did not resolve on this                  target — refusing to run the FP16 decode kernels over an FP32 pool"
             );
         }
         let scratch = match self.ssm_h_f16_scratch.get() {
@@ -150,7 +151,7 @@ impl TransformerModel {
                 .copy_d2d_async(scratch, s.h_state, f16_bytes, stream)?;
             s.h_is_f16 = true;
         }
-        if std::env::var("ATLAS_SSM_H_FP16_DEBUG").is_ok() {
+        if std::env::var("AVAROK_SSM_H_FP16_DEBUG").is_ok() {
             tracing::info!(
                 "SSM_H_FP16_CONVERT slot={} seq_len={} prompt_len={} hptr={:#x}",
                 seq.slot_idx,
@@ -186,7 +187,7 @@ impl TransformerModel {
         let norm_k = if self.seq_ssm_h_is_f16(seq) {
             if self.ssm_state_norm_f16_kernel.0 == 0 {
                 anyhow::bail!(
-                    "ATLAS_SSM_H_FP16: ssm_state_norm::ssm_state_clamp_norm_fused_f16 did not                      resolve, refusing to clamp an FP16 state through the FP32 kernel"
+                    "AVAROK_SSM_H_FP16: ssm_state_norm::ssm_state_clamp_norm_fused_f16 did not                      resolve, refusing to clamp an FP16 state through the FP32 kernel"
                 );
             }
             self.ssm_state_norm_f16_kernel
@@ -226,7 +227,9 @@ impl TransformerModel {
         self.gpu.bind_to_thread()
     }
 
-    pub(super) fn alloc_sequence_dispatch(&self) -> Result<SequenceState> {
+    pub(super) fn alloc_sequence_dispatch(&self, budget_tokens: usize) -> Result<SequenceState> {
+        // AVAROK_SEQ_MEMTRACE: the opening half of this sequence's memory bracket.
+        crate::model::seq_memtrace::trace(self.gpu.as_ref(), "alloc");
         // Claim via the RAII guard so the slot is returned to the pool on EVERY
         // sequence-exit path (normal finish, abort/cancel, decode error,
         // swap-out failure, panic). The explicit `free_sequence`/
@@ -248,27 +251,28 @@ impl TransformerModel {
         self.gpu.synchronize(stream)?;
         let has_mtp = self.proposer.is_some() || self.self_speculative;
 
-        // ATLAS_MTP_DRAFTER_PREFILL: a fresh sequence invalidates the
+        // AVAROK_MTP_DRAFTER_PREFILL: a fresh sequence invalidates the
         // whole-prompt hidden capture — without this, a warm-restored prefill
         // (no chunks computed) would pair the NEW prompt's tokens with the
         // PREVIOUS sequence's captured hiddens in the drafter prefill.
         self.mtp_prefill_capture_len
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        // ATLAS_MTP_CARRY_DRAFTER: the position-indexed hidden interval is
-        // per-sequence by construction. Resetting it here is what makes the
-        // carry path immune to the latent cross-sequence stale-hidden bug that
-        // the legacy `captured >= prompt_len` guard still has: a warm-turn
-        // append can only ever read rows THIS sequence's prefill wrote.
-        *self.mtp_store_range.lock() = (0, 0);
+        // AVAROK_MTP_CARRY_DRAFTER: this sequence's ownership ticket for the
+        // shared hidden-row interval. See `mtp_carry::StoreRange`.
+        let store_gen = self.mtp_store_gen_seq.fetch_add(1, Relaxed) + 1;
+        *self.mtp_store_range.lock() = super::super::mtp_carry::StoreRange::EMPTY;
 
-        // Build layer states: SSM layers point into the pool (fixed addresses),
-        // attention layers use their own alloc_state (EmptyLayerState).
+        // Build layer states: pool-backed recurrent layers point into the pool
+        // (fixed addresses) — Qwen GDN and GLM-5.3 KDA alike, both of which carry
+        // `SsmLayerState`; everything else uses its own `alloc_state`.
         // When MTP is available, pre-allocate checkpoint + K=2 intermediate
         // buffers so CUDA graph capture doesn't trigger lazy allocation.
         let mut ssm_layer_idx = 0usize;
         let mut layer_states: Vec<Box<dyn LayerState>> = Vec::with_capacity(self.layers.len());
         for (i, layer) in self.layers.iter().enumerate() {
-            if self.config.layer_type(i) == LayerType::LinearAttention {
+            if self.config.layer_type(i) == LayerType::LinearAttention && layer.uses_ssm_pool() {
+                // Layer-independent (one FP32 staging blob per SLOT), so it is
+                let stage = self.ssm_pool.h_prefill_stage(slot);
                 let mut ssm_state = SsmLayerState {
                     h_state: self.ssm_pool.h_state(ssm_layer_idx, slot),
                     conv_state: self.ssm_pool.conv_state(ssm_layer_idx, slot),
@@ -277,9 +281,17 @@ impl TransformerModel {
                     h_state_intermediates: Vec::new(),
                     conv_state_intermediates: Vec::new(),
                     // A freshly allocated slot has just been zeroed, and zero
-                    // is zero in both formats — but prefill writes it as FP32,
-                    // so FP32 is the truth until the decode mixer converts.
-                    h_is_f16: false,
+                    // is zero in both formats. Which format it then HOLDS is
+                    // decided by the pool width, not by the phase: under the
+                    // stage-3 f16-SIZED pool the slot is physically 2
+                    // bytes/element and prefill stages its FP32 work
+                    // elsewhere, so the slot is FP16 from here on and the
+                    // decode mixer has nothing to do. Under an FP32-sized
+                    // pool prefill writes FP32 in place and FP32 is the truth
+                    // until the mixer converts.
+                    h_is_f16: stage.is_some(),
+                    h_prefill_stage: stage,
+                    ple: None,
                 };
 
                 if has_mtp {
@@ -290,10 +302,15 @@ impl TransformerModel {
                     ssm_state.conv_state_checkpoint =
                         Some(self.ssm_pool.conv_checkpoint(ssm_layer_idx, slot));
 
-                    for t in 0..self.ssm_pool.num_intermediates {
+                    // Tiered pools: H count is per-SLOT (h_inter_count),
+                    // conv count is uniform. The vec lengths are the
+                    // capacity gates every verify arm checks before writing.
+                    for t in 0..self.ssm_pool.h_inter_count(slot) {
                         ssm_state
                             .h_state_intermediates
                             .push(self.ssm_pool.h_intermediate(ssm_layer_idx, slot, t));
+                    }
+                    for t in 0..self.ssm_pool.num_intermediates {
                         ssm_state
                             .conv_state_intermediates
                             .push(self.ssm_pool.conv_intermediate(ssm_layer_idx, slot, t));
@@ -314,9 +331,9 @@ impl TransformerModel {
         // Double-check: explicit sync to guarantee zero is complete
         self.gpu.synchronize(self.gpu.default_stream())?;
 
-        // Allocate MTP proposer state (owns its own KV cache block table)
+        // MTP proposer state; sized to this request's reach, not --max-seq-len.
         let proposer_state = match &self.proposer {
-            Some(p) => Some(p.alloc_state(self.gpu.as_ref())?),
+            Some(p) => Some(p.alloc_state_for(self.gpu.as_ref(), budget_tokens)?),
             None => None,
         };
 
@@ -349,11 +366,14 @@ impl TransformerModel {
             marconi_exact_snap: None,
             session_hash: 0,
             mtp_capture_gen: 0,
+            mtp_store_gen: store_gen,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,
+            reused_prefix_tokens: 0,
             cached_prefix_blocks: 0,
             prefix_ref_tokens: Vec::new(),
             prefix_lookup_applied: false,
+            tail_checkpoint_tokens: None,
             prefix_lookup_skip: false,
             kv_valid_tokens: 0,
             last_decode_ckpt_block: 0,
@@ -437,7 +457,7 @@ impl TransformerModel {
         // lacks the batched entry.
         fn argmax_batch_enabled() -> bool {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            *ON.get_or_init(|| std::env::var("ATLAS_NO_ARGMAX_BATCH").ok().as_deref() != Some("1"))
+            *ON.get_or_init(|| std::env::var("AVAROK_NO_ARGMAX_BATCH").ok().as_deref() != Some("1"))
         }
         if self.argmax_batch_kernel.0 != 0 && argmax_batch_enabled() {
             ops::argmax_bf16_batch(

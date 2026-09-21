@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -74,28 +74,10 @@ impl ModelWeightLoader for Qwen3WeightLoader {
 
         let h = config.hidden_size;
 
-        // Estimate MoE transpose memory — skip if GPU can't hold all layers' transposed copies.
-        let skip_moe_transpose = {
-            let inter = config.moe_intermediate_size;
-            let h = config.hidden_size;
-            let group_size = 16usize;
-            let gu_bytes = inter * h / 2 + inter * h / group_size;
-            let d_bytes = h * inter / 2 + h * inter / group_size;
-            let per_layer = config.num_experts * (2 * gu_bytes + d_bytes);
-            let total = per_layer * config.num_hidden_layers;
-            let available = gpu.free_memory().unwrap_or(0);
-            let headroom = 2 * 1024 * 1024 * 1024;
-            let skip = total > available.saturating_sub(headroom);
-            if skip {
-                tracing::warn!(
-                    "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \
-                     Prefill will use fallback grouped GEMM.",
-                    total as f64 / (1024.0 * 1024.0 * 1024.0),
-                    available as f64 / (1024.0 * 1024.0 * 1024.0),
-                );
-            }
-            skip
-        };
+        // SSOT: the budget arithmetic and the `AVAROK_MOE_PREFILL_COPIES` lever
+        // live in `super::moe_prefill_copies_fit` — shared with every other MoE
+        // loader instead of one inline copy per family.
+        let skip_moe_transpose = !super::moe_prefill_copies_fit(config, gpu);
 
         for (i, lt) in layer_types.iter().enumerate() {
             let lp = config.layer_prefix(i);
@@ -108,7 +90,7 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             } else {
                 load_moe(store, &lp, config.num_experts, gpu, config, variant, qctx)?
             };
-            // ATLAS_BF16_ROUTER=1: keep the MoE router/gate in BF16 (skip the
+            // AVAROK_BF16_ROUTER=1: keep the MoE router/gate in BF16 (skip the
             // NVFP4 quant) so expert SELECTION is decided by full-precision gate
             // logits. The bf16moe experiment showed dequanting EXPERTS to BF16
             // eliminates the empty_path tool-call drift (FP8 flips were the seed)
@@ -117,7 +99,7 @@ impl ModelWeightLoader for Qwen3WeightLoader {
             // flips at ~zero throughput cost (experts stay FP8). The forward
             // (dense_gemv/dense_gemm) already falls back to weights.gate (BF16)
             // when gate_nvfp4 is None. Explicit opt-in (PCND); default unchanged.
-            let gate_nvfp4 = if std::env::var("ATLAS_BF16_ROUTER").as_deref() == Ok("1") {
+            let gate_nvfp4 = if std::env::var("AVAROK_BF16_ROUTER").as_deref() == Ok("1") {
                 None
             } else {
                 Some(quantize_to_nvfp4(
@@ -405,6 +387,12 @@ impl ModelWeightLoader for Qwen3WeightLoader {
                     unreachable!("unexpected SlidingAttention in this loader")
                 }
                 LayerType::Moe => unreachable!("Qwen3 has no standalone MoE layers"),
+                // GLM-5.3's `deepseek_sparse_attention`: a full-rank mixer whose visible key set
+                // is chosen at runtime by an indexer. Hard error, not a silent fallthrough into
+                // the dense-attention arm -- that would attend over the WHOLE cache and look right.
+                LayerType::SparseAttention => anyhow::bail!(
+                    "layer {i}: SparseAttention needs a DSA indexer and per-query top-k; Qwen3 has neither"
+                ),
             }
 
             if (i + 1) % 12 == 0 {

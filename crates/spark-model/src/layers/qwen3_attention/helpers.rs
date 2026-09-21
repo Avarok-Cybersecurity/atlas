@@ -25,7 +25,7 @@ fn yarn_get_mscale(scale: f32, mscale: f32) -> f32 {
 /// Compute the YaRN `_mscale` ratio that DeepSeek folds into the rope
 /// cos/sin: `get_mscale(factor, mscale) / get_mscale(factor, mscale_all_dim)`.
 /// Returns 1.0 when YaRN is disabled (`yarn_factor <= 1`).
-pub(crate) fn yarn_rope_mscale(config: &atlas_core::config::ModelConfig) -> f32 {
+pub(crate) fn yarn_rope_mscale(config: &avarok_core::config::ModelConfig) -> f32 {
     let factor = config.yarn_factor;
     if factor <= 1.0 {
         return 1.0;
@@ -47,6 +47,11 @@ impl Qwen3AttentionLayer {
     /// `hc_pre`/`hc_post` against the model-level `hc_streams` buffer.
     pub fn set_hc_weights(&mut self, hc: HcWeights) {
         self.hc = Some(hc);
+    }
+
+    /// Attach the QSA indexer (Qwen3.8-Flash-Next full-attention layers).
+    pub fn set_qsa(&mut self, qsa: crate::layers::qsa::QsaIndexer) {
+        self.qsa = Some(qsa);
     }
 
     /// Set per-layer dimension overrides for heterogeneous models (Gemma-4).
@@ -191,6 +196,31 @@ impl Qwen3AttentionLayer {
         self.post_dense_ffn_norm = Some(post_dense_norm);
     }
 
+    /// LongCat: install the shortcut MoE on the FIRST sublayer of a
+    /// dual-sublayer block. The MoE runs on this sublayer's post-attention
+    /// normed input; its output is stashed into `carry` (capacity
+    /// `carry_tokens` tokens) and added by the SECOND sublayer via
+    /// [`Self::set_shortcut_carry_in`].
+    pub fn set_shortcut_moe(
+        &mut self,
+        moe: FfnComponent,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.moe_ffn = Some(moe);
+        self.shortcut_carry_out = Some((carry, carry_tokens));
+    }
+
+    /// LongCat: the SECOND sublayer of a dual-sublayer block adds the paired
+    /// first sublayer's stashed shortcut-MoE output at its end.
+    pub fn set_shortcut_carry_in(
+        &mut self,
+        carry: spark_runtime::gpu::DevicePtr,
+        carry_tokens: usize,
+    ) {
+        self.shortcut_carry_in = Some((carry, carry_tokens));
+    }
+
     /// Apply layer_scalar in-place: `hidden *= scalar`. Uses
     /// `bf16_scale_inplace` for the (always BF16) residual stream.
     pub(crate) fn apply_layer_scalar(
@@ -221,10 +251,27 @@ impl Qwen3AttentionLayer {
     }
 }
 
+/// The QSA per-seq carry from a sequence's [`crate::layer::AttnLayerState`],
+/// lazily created on first use (Atlas #753 item B).
+pub(in crate::layers::qwen3_attention) fn qsa_seq_state<'a>(
+    qsa: &crate::layers::qsa::QsaIndexer,
+    state: &'a mut dyn crate::layer::LayerState,
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+) -> anyhow::Result<&'a mut crate::layers::qsa::QsaSeqState> {
+    let attn = state
+        .as_any_mut()
+        .downcast_mut::<crate::layer::AttnLayerState>()
+        .ok_or_else(|| anyhow::anyhow!("QSA host layer state is not AttnLayerState"))?;
+    if attn.qsa.is_none() {
+        attn.qsa = Some(qsa.new_seq_state(gpu)?);
+    }
+    Ok(attn.qsa.as_mut().expect("just created"))
+}
+
 #[cfg(test)]
 mod yarn_mscale_tests {
     use super::yarn_rope_mscale;
-    use atlas_core::config::ModelConfig;
+    use avarok_core::config::ModelConfig;
 
     // Test 1 + Test 4: with the DS4F-forced config (yarn_mscale ==
     // yarn_mscale_all_dim == 0.0, factor 16), yarn_rope_mscale returns EXACTLY

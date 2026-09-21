@@ -55,8 +55,8 @@ pub(super) fn assemble_layer(
     };
 
     // MLA projections default to NVFP4 for GB10 decode throughput.
-    // Set ATLAS_NVFP4_MLA={0,false,no,off} (case-insensitive) to force BF16.
-    let disable_nvfp4_mla = std::env::var("ATLAS_NVFP4_MLA")
+    // Set AVAROK_NVFP4_MLA={0,false,no,off} (case-insensitive) to force BF16.
+    let disable_nvfp4_mla = std::env::var("AVAROK_NVFP4_MLA")
         .map(|v| {
             let v = v.trim().to_ascii_lowercase();
             matches!(v.as_str(), "0" | "false" | "no" | "off")
@@ -146,7 +146,7 @@ fn build_moe_ffn(
     store: &spark_runtime::weights::WeightStore,
     i: usize,
     gpu: &dyn GpuBackend,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
 ) -> FfnComponent {
     if config.num_experts == 0 {
         return FfnComponent::None;

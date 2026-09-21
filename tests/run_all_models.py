@@ -15,12 +15,12 @@ Design:
 - Individual failures are captured but do not abort the run.
 
 Configuration via env vars (all optional, sensible single-node defaults):
-  ATLAS_IMAGE        Docker image tag (default: atlas-gb10:latest)
-  ATLAS_HEAD_IP      IP of head node (default: 127.0.0.1)
-  ATLAS_WORKER_IP    IP of worker node (default: 127.0.0.1; same as head for single-node)
-  ATLAS_HF_CACHE     HuggingFace cache path (default: ~/.cache/huggingface)
+  AVAROK_IMAGE        Docker image tag (default: avarok-gb10:latest)
+  AVAROK_HEAD_IP      IP of head node (default: 127.0.0.1)
+  AVAROK_WORKER_IP    IP of worker node (default: 127.0.0.1; same as head for single-node)
+  AVAROK_HF_CACHE     HuggingFace cache path (default: ~/.cache/huggingface)
 
-Run: python3 tests/run_all_models.py 2>&1 | tee /tmp/atlas-full-run.log
+Run: python3 tests/run_all_models.py 2>&1 | tee /tmp/avarok-full-run.log
 """
 
 import argparse
@@ -39,17 +39,17 @@ from harness_paths import RESULTS_DIR, SUITE_PATH as SUITE  # noqa: E402
 
 # ─── Configuration ─────────────────────────────────────────────────────
 
-IMAGE = os.environ.get("ATLAS_IMAGE", "atlas-gb10:latest")
-HEAD_IP = os.environ.get("ATLAS_HEAD_IP", "127.0.0.1")
-WORKER_IP = os.environ.get("ATLAS_WORKER_IP", "127.0.0.1")
-HEAD_PORT = int(os.environ.get("ATLAS_HEAD_PORT", "8888"))
-WORKER_PORT = int(os.environ.get("ATLAS_WORKER_PORT", "8888"))
+IMAGE = os.environ.get("AVAROK_IMAGE", "avarok-gb10:latest")
+HEAD_IP = os.environ.get("AVAROK_HEAD_IP", "127.0.0.1")
+WORKER_IP = os.environ.get("AVAROK_WORKER_IP", "127.0.0.1")
+HEAD_PORT = int(os.environ.get("AVAROK_HEAD_PORT", "8888"))
+WORKER_PORT = int(os.environ.get("AVAROK_WORKER_PORT", "8888"))
 # HF cache may live in different paths on each node. Override per-host
-# via ATLAS_HF_CACHE_HEAD / ATLAS_HF_CACHE_WORKER if needed; otherwise
+# via AVAROK_HF_CACHE_HEAD / AVAROK_HF_CACHE_WORKER if needed; otherwise
 # both default to the user's standard ~/.cache/huggingface.
 _default_hf_cache = os.path.expanduser("~/.cache/huggingface")
-HF_CACHE_HEAD = os.environ.get("ATLAS_HF_CACHE_HEAD", _default_hf_cache)
-HF_CACHE_WORKER = os.environ.get("ATLAS_HF_CACHE_WORKER", _default_hf_cache)
+HF_CACHE_HEAD = os.environ.get("AVAROK_HF_CACHE_HEAD", _default_hf_cache)
+HF_CACHE_WORKER = os.environ.get("AVAROK_HF_CACHE_WORKER", _default_hf_cache)
 STARTUP_TIMEOUT = 600  # seconds
 
 # Address the served HTTP listener binds to. Atlas's `--bind` defaults to
@@ -250,14 +250,14 @@ TPEP_ROUNDS = [
 # The 397B NVFP4 (~200 GB across 512 experts) only fits with all four GB10
 # nodes in expert-parallel (EP=4, TP=1) — num_key_value_heads=2 can't shard
 # across 4 TP ranks. This harness's multi-rank driver (run_ep2_round) launches
-# exactly 2 ranks (head + one worker via ATLAS_WORKER_IP), so it CANNOT bring
+# exactly 2 ranks (head + one worker via AVAROK_WORKER_IP), so it CANNOT bring
 # up a 4-node EP=4 deployment as-is; generalizing the driver to N ranks is a
 # separate change.
 #
 # These specs are therefore recorded but SKIPPED by default. The real 4-node
-# smoke test runs via /home/cluster/launch-atlas-ep4.sh (see the notavault-atlas
+# smoke test runs via /home/cluster/launch-avarok-ep4.sh (see the notavault-avarok
 # notes / docs/DEPLOYMENT.md). Once the driver gains N-rank support, set
-# ATLAS_ENABLE_EP4=1 to execute these here.
+# AVAROK_ENABLE_EP4=1 to execute these here.
 EP4_ROUNDS: List[TestSpec] = [
     TestSpec("397B-nvfp4-ep4", "nvidia/Qwen3.5-397B-A17B-NVFP4",
              ep_size=4, skip_longctx=True),
@@ -328,7 +328,7 @@ def build_serve_cmd(spec: TestSpec, port: int) -> str:
 
 def start_container(host: str, spec: TestSpec, port: int) -> str:
     """Start a serve container. Returns container name."""
-    name = f"atlas-test-{spec.label}"
+    name = f"avarok-test-{spec.label}"
     # Ensure prior container is gone
     docker_on(host, f"rm -f {name}", check=False, capture=True)
     serve_cmd = build_serve_cmd(spec, port)
@@ -356,7 +356,15 @@ def ready_marker(port: int) -> str:
     downstream connection resets looked exactly like a model regression.
     Match the address we asked for, so a wrong bind cannot read as ready.
     """
-    return f"Listening on {SERVE_BIND}:{port}"
+    # Matched case-insensitively against a lower-cased log: the server does not
+    # start the line with the word. It logs
+    #   `Atlas is listening on 0.0.0.0:8888 — reachable from any host ...`
+    # so the old exact substring `Listening on 0.0.0.0:8888` matched nothing,
+    # wait_listening never saw the server come up, and EVERY model in the roster
+    # failed on a 600s startup timeout while the container sat there serving
+    # requests perfectly well. A readiness check that cannot observe readiness
+    # reports a healthy build as a total regression.
+    return f"listening on {SERVE_BIND}:{port}"
 
 
 def wait_listening(host: str, name: str, port: int,
@@ -371,17 +379,17 @@ def wait_listening(host: str, name: str, port: int,
             print(f"    [{host}/{name}] container exited unexpectedly")
             return False
         r = docker_on(host, f"logs {name} 2>&1", check=False, capture=True)
-        log = r.stdout
+        log = r.stdout.lower()
         if marker in log:
             return True
-        if "Listening on" in log:
+        if "listening on" in log:
             # Bound, but not where we asked. Fail fast and name the cause —
             # never let this fall through to a probe that will be refused.
             print(f"    [{host}/{name}] bound the WRONG address: expected "
                   f"'{marker}'. Not reachable from this harness — check the "
                   f"--bind argument and the container network mode.")
             return False
-        if "Error:" in log and "ERROR" in log:
+        if "error:" in log and "error" in log:
             print(f"    [{host}/{name}] error detected in log")
             return False
         time.sleep(10)
@@ -408,13 +416,31 @@ def settle() -> None:
     time.sleep(INTER_ROUND_SETTLE_SECONDS)
 
 
+def result_path(label: str) -> str:
+    """Keep generated result cleanup inside this run's results directory."""
+    if (not isinstance(label, str) or not label or "/" in label or "\\" in label
+            or label in (".", "..", "_manifest", "_partial", "all_results")):
+        raise ValueError(f"invalid result label: {label!r}")
+    return os.path.join(RESULTS_DIR, f"{label}.json")
+
+
+def remove_result(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
 def run_suite(host: str, spec: TestSpec, port: int) -> dict:
     """Run single_gpu_suite.py against the given server, return parsed JSON."""
     if host == "head":
         base_url = f"http://localhost:{port}/v1"
     else:
         base_url = f"http://{WORKER_IP}:{port}/v1"
-    out_json = os.path.join(RESULTS_DIR, f"{spec.label}.json")
+    out_json = result_path(spec.label)
+    # A failed or output-less subprocess must not inherit a prior result,
+    # including when run_suite is invoked independently of main's manifest.
+    remove_result(out_json)
     log_path = os.path.join(RESULTS_DIR, f"{spec.label}.log")
     cmd = [
         "python3", SUITE,
@@ -433,7 +459,13 @@ def run_suite(host: str, spec: TestSpec, port: int) -> dict:
 
 def wait_and_read(job: dict) -> Optional[dict]:
     proc = job["proc"]
-    proc.wait()
+    code = proc.wait()
+    if code != 0:
+        # The release gate reads these files independently of this return
+        # value. Discard even valid JSON written by a failed suite process.
+        remove_result(job["out_json"])
+        print(f"    [warn] suite exited {code}; rejected {job['out_json']}")
+        return None
     try:
         with open(job["out_json"]) as f:
             return json.load(f)
@@ -627,8 +659,8 @@ def build_ep2_serve_cmd(spec: TestSpec, rank: int) -> str:
 
 def start_ep2(spec: TestSpec) -> tuple:
     """Start rank 0 on head + rank 1 on worker. Returns (rank0_name, rank1_name)."""
-    rank0_name = f"atlas-ep0-{spec.label}"
-    rank1_name = f"atlas-ep1-{spec.label}"
+    rank0_name = f"avarok-ep0-{spec.label}"
+    rank1_name = f"avarok-ep1-{spec.label}"
     # Cleanup any stale containers
     docker_on("head", f"rm -f {rank0_name}", check=False, capture=True)
     docker_on("worker", f"rm -f {rank1_name}", check=False, capture=True)
@@ -805,6 +837,13 @@ def load_roster(path):
 
 def write_manifest(**flags):
     planned = planned_specs(**flags)
+    # Invalidate previous evidence before any container starts, including
+    # models that will fail at boot and never reach run_suite. Validate the
+    # whole roster before deleting anything. This directory has one writer;
+    # concurrent campaigns must use separate checkouts/results directories.
+    paths = [result_path(label) for label, _model in planned]
+    for path in paths:
+        remove_result(path)
     manifest = {
         "generated_by": "tests/run_all_models.py",
         "labels": [{"label": label, "model": model} for label, model in planned],
@@ -856,7 +895,7 @@ def main():
     run_ep2 = (not args.skip_ep2) and (args.only_round is None) and (not only_phase_active)
     run_tp2 = (not args.skip_tp2) and (args.only_round is None) and (not args.only_tpep)
     run_tpep = (not args.skip_tpep) and (args.only_round is None) and (not args.only_tp2)
-    run_ep4 = bool(EP4_ROUNDS) and os.environ.get("ATLAS_ENABLE_EP4") == "1"
+    run_ep4 = bool(EP4_ROUNDS) and os.environ.get("AVAROK_ENABLE_EP4") == "1"
 
     # Declare intent up front: the set of (label, model) this run is *supposed*
     # to cover, given the phase flags above. Written before any container boots
@@ -915,10 +954,10 @@ def main():
 
     # EP=4 (4-node). Recorded in EP4_ROUNDS but skipped by default: run_ep2_round
     # launches only 2 ranks, so it can't bring up a 4-node deployment. The real
-    # smoke test is /home/cluster/launch-atlas-ep4.sh. Opt in with ATLAS_ENABLE_EP4=1
+    # smoke test is /home/cluster/launch-avarok-ep4.sh. Opt in with AVAROK_ENABLE_EP4=1
     # ONLY after run_ep2_round is generalized to N ranks (separate change).
     if EP4_ROUNDS:
-        if os.environ.get("ATLAS_ENABLE_EP4") == "1":
+        if os.environ.get("AVAROK_ENABLE_EP4") == "1":
             for spec in EP4_ROUNDS:
                 res = run_ep2_round(spec)  # NOTE: requires N-rank driver support
                 if res:
@@ -928,8 +967,8 @@ def main():
         else:
             labels = ", ".join(s.label for s in EP4_ROUNDS)
             print(f"\n[skip] EP=4 round(s) [{labels}]: need a 4-node EP=4 deployment "
-                  f"(this harness launches 2 ranks). Run /home/cluster/launch-atlas-ep4.sh, "
-                  f"or set ATLAS_ENABLE_EP4=1 after the driver gains N-rank support.")
+                  f"(this harness launches 2 ranks). Run /home/cluster/launch-avarok-ep4.sh, "
+                  f"or set AVAROK_ENABLE_EP4=1 after the driver gains N-rank support.")
 
     # Final dump
     with open(os.path.join(RESULTS_DIR, "all_results.json"), "w") as f:

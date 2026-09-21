@@ -38,8 +38,8 @@ path. Each supported model family has its own `TransformerLayer` impl in
 safetensors → typed-struct mapping, and its own per-quant CUDA kernels under
 `kernels/<hw>/<model>/<quant>/*.cu`.
 
-The shared "vocabulary" lives in `atlas-core` (`ModelConfig`, `LayerType`,
-`KernelTarget`). The build script `atlas-kernels/build.rs` compiles `*.cu`
+The shared "vocabulary" lives in `avarok-core` (`ModelConfig`, `LayerType`,
+`KernelTarget`). The build script `avarok-kernels/build.rs` compiles `*.cu`
 files to PTX via `nvcc`, embeds the PTX in the binary at compile time, and
 loads it through cudarc's driver API at startup.
 

@@ -139,6 +139,32 @@ pub struct CompressorWeights {
     pub stage: spark_runtime::gpu::DevicePtr,
 }
 
+/// Qwen3.8-Flash-Next's LOW-RANK hyper-connection parameters for one site.
+///
+/// Present instead of — never alongside — the Sinkhorn `hc_fn`/`hc_base`/
+/// `hc_scale` triple above. DeepSeek-V4 mixes the `hc_mult` streams with a
+/// Sinkhorn-normalized matrix; Qwen mixes them through a rank-`rank` pair.
+/// Both share the `[T, hc_mult, H]` highway and `hc_mult`, so the presence of
+/// this struct — not the model name — is what selects the kernel.
+///
+/// All BF16, matching the checkpoint. See `bench/qwen4_exp/ARCHITECTURE.md` §1.
+#[derive(Clone, Copy)]
+pub struct HcLowRank {
+    /// `hc_norm` `[hc_mult*hidden]`. A GROUPED RMSNorm scale: the streams
+    /// normalize independently inside the vector, `group_size = hidden`.
+    pub norm_w: DevicePtr,
+    /// `input_mix_weight_down` `[rank, hc_mult*hidden]`.
+    pub down_w: DevicePtr,
+    /// `input_mix_weight_up` `[hc_mult*hidden, rank]`.
+    pub up_w: DevicePtr,
+    /// `block_inject_weight` `[hc_mult, hc_mult*hidden]`. NULL on the
+    /// model-level mixer, which is built `use_combine=False` and emits no
+    /// injection vector.
+    pub inject_w: DevicePtr,
+    /// `hc_lowrank` (320 on this checkpoint).
+    pub rank: usize,
+}
+
 /// Per-block Manifold-Constrained Hyper-Connection (mHC) parameters for one
 /// site (attention or FFN). All buffers are float32 device pointers, matching
 /// the checkpoint dtype. See `ops::hc_pre` / `ops::hc_post`.
@@ -150,6 +176,9 @@ pub struct HcSiteWeights {
     pub hc_base: DevicePtr,
     /// Mix scale: `[3]` f32 (pre / post / comb scalars).
     pub hc_scale: DevicePtr,
+    /// Qwen low-rank variant. `Some` => dispatch the low-rank kernels and
+    /// IGNORE `hc_fn`/`hc_base`/`hc_scale` (which are NULL in that case).
+    pub lowrank: Option<HcLowRank>,
 }
 
 /// Both HC sites for a DeepSeek-V4 block: the attention site runs before/after
@@ -164,6 +193,9 @@ pub struct HcHeadWeights {
     pub hc_base: DevicePtr,
     /// Mix scale: `[1]` f32.
     pub hc_scale: DevicePtr,
+    /// Qwen low-rank variant of the model-level mixer. `Some` => low-rank
+    /// kernels; its `inject_w` is NULL (`use_combine=False`).
+    pub lowrank: Option<HcLowRank>,
 }
 
 pub struct HcWeights {
@@ -175,4 +207,102 @@ pub struct HcWeights {
     pub hc_mult: usize,
     pub sinkhorn_iters: usize,
     pub hc_eps: f32,
+    /// Whether this is model layer 0 — the layer that seeds the highway with
+    /// `hc_expand`.
+    ///
+    /// Carried here rather than derived from `attn_layer_idx`, which counts
+    /// ATTENTION layers. On DeepSeek-V4 every layer is attention and the two
+    /// indices coincide; on a 3:1 GDN:attention interleave they do not, and
+    /// `attn_layer_idx == 0` is model layer 3 — three layers after the
+    /// highway needed seeding.
+    pub is_first_model_layer: bool,
+    /// Whether this is the LAST model layer — the one that collapses the
+    /// highway with `hc_head`.
+    ///
+    /// Same reason. The old guard was `attn_layer_idx + 1 ==
+    /// num_hidden_layers`, i.e. `12 == 48` on this model: never true, so the
+    /// LM head would have read an uncollapsed stream. On Qwen that also means
+    /// an UNNORMALIZED one, since `hyper_connection_mixer` is the model's
+    /// final norm and the checkpoint ships no `model.norm.weight`.
+    pub is_last_model_layer: bool,
+}
+
+/// Which of the four attention projections get an FP8 `[K, N]` transposed twin
+/// built by [`Qwen3AttentionLayer::transpose_fp8_for_prefill`].
+///
+/// [`Qwen3AttentionLayer::transpose_fp8_for_prefill`]:
+///     super::Qwen3AttentionLayer::transpose_fp8_for_prefill
+///
+/// WHY per projection and not one flag (#915): the four are reached by
+/// DIFFERENT prefill chains and only two of them are W8A8-gated.
+///
+/// * **K and V** are read by `prefill/cache_skip_qkv.rs:218` / `:235`, whose
+///   dispatch chain has **no W8A8 arm at all** — and `cache_skip` is the
+///   first-chunk path (`trait_impl/prefill_inner.rs:138`, `seq_len_start == 0`)
+///   taken by every request. Their twins are never dead.
+/// * **Q** on that chain is behind `AVAROK_ATTN_PREFILL_Q_T=1`
+///   (`cache_skip_qkv.rs:142`); otherwise it is reached only after the W8A8
+///   arm in `prefill/paged_qkv.rs:220` declines.
+/// * **O** is routed to `prefill/paged_oproj.rs` from both chains, so it is
+///   reached only after the W8A8 arm at `paged_oproj.rs:94` declines.
+///
+/// On 1xH100 (Qwen3.8-27B-FP8) the four cost 100 MiB/layer x 16 layers =
+/// 1,600 MB — the `weight_map/quantized.rs:643` ledger row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Fp8TwinSet {
+    pub q: bool,
+    pub k: bool,
+    pub v: bool,
+    pub o: bool,
+}
+
+impl Fp8TwinSet {
+    pub const NONE: Self = Self {
+        q: false,
+        k: false,
+        v: false,
+        o: false,
+    };
+    /// Every twin — what a loader that has not opted into the #915 plan asks
+    /// for, i.e. the pre-#915 behaviour.
+    pub const ALL: Self = Self {
+        q: true,
+        k: true,
+        v: true,
+        o: true,
+    };
+
+    pub fn any(self) -> bool {
+        self.q || self.k || self.v || self.o
+    }
+}
+
+/// The two `(module, function)` pairs the W8A8 block-scaled prefill arm needs
+/// (`prefill/paged_qkv.rs:220`, `prefill/paged_oproj.rs:94`).
+///
+/// SSOT for three readers that must not drift (#915): `init.rs` resolves the
+/// handles, `Qwen3AttentionLayer::has_w8a8_prefill_kernels` tests them, and
+/// [`w8a8_prefill_kernels_loaded`] asks the BACKEND the same question before
+/// any layer exists — which is what lets preflight predict, pre-load, whether
+/// the Q and O FP8 prefill twins will be built. A name typo'd in one of the
+/// three would mis-predict ~1.5 GB of residency on the 27B in silence.
+pub const W8A8_PREFILL_KERNELS: [(&str, &str); 2] = [
+    (
+        crate::layers::ops::FP8_QUANT_MODULE,
+        crate::layers::ops::FP8_QUANT_ENTRY,
+    ),
+    ("fp8_gemm_t_blockscaled", "fp8_gemm_t_blockscaled"),
+];
+
+/// Whether BOTH [`W8A8_PREFILL_KERNELS`] are loaded for this target, asked of
+/// the backend rather than of a constructed layer.
+///
+/// Same answer `Qwen3AttentionLayer::has_w8a8_prefill_kernels` gives — the
+/// layer just caches the handles `init.rs` already resolved through
+/// `try_kernel`, and `try_kernel` returns `KernelHandle(0)` for an absent
+/// kernel exactly as this does.
+pub fn w8a8_prefill_kernels_loaded(gpu: &dyn spark_runtime::gpu::GpuBackend) -> bool {
+    W8A8_PREFILL_KERNELS
+        .iter()
+        .all(|(module, func)| crate::layers::try_kernel(gpu, module, func).0 != 0)
 }

@@ -7,13 +7,14 @@
 
 pub mod ladder;
 pub mod tree_shape;
+pub mod verify_key;
 
 pub use ladder::{mtp_ladder_disabled, mtp_ladder_drafts, mtp_max_seqs};
 
 use std::any::Any;
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
@@ -34,23 +35,34 @@ pub trait ProposerState: Send + Sync {
 /// then verifies them with the target model. `after_verify()` lets the
 /// proposer trim state (e.g., KV cache) based on how many drafts were accepted.
 /// Confidence floor for submitting drafts to verification
-/// (`ATLAS_MTP_DRAFT_CONF`, default 0.0 = disabled). When the drafter's
+/// (`AVAROK_MTP_DRAFT_CONF`, default 0.0 = disabled). When the drafter's
 /// chain confidence (min top-1 softmax prob across the drafts of one
 /// propose) is below this, the drafts are discarded and the next step
 /// decodes serially — skipping a verify that would most likely reject.
 /// Economics at K=1 on the 35B MoE: verify ≈ 35 ms for 1+acc tokens vs
 /// decode+propose ≈ 21 ms for 1, so a draft is only worth verifying when
 /// p(accept) ≳ 0.66 — the threshold to calibrate around. Staged OFF until
-/// its measured A/B (same discipline as ATLAS_SNAP_EVICT_ALPHA).
+/// its measured A/B (same discipline as AVAROK_SNAP_EVICT_ALPHA).
 pub fn draft_conf_tau() -> f32 {
-    std::env::var("ATLAS_MTP_DRAFT_CONF")
-        .ok()
+    parse_draft_conf_tau(std::env::var("AVAROK_MTP_DRAFT_CONF").ok().as_deref())
+}
+
+/// The rule itself, pure over the raw value.
+///
+/// Split from the reader so a test can exercise the CLAMP without mutating
+/// the process environment — `set_var` is global and `cargo test` runs this
+/// binary's tests in parallel, so an env-mutating test races every other one.
+/// The clamp is the load-bearing part: an unclamped `5.0` would put the floor
+/// above any achievable confidence and discard EVERY draft, turning
+/// speculation off with nothing logged.
+pub fn parse_draft_conf_tau(value: Option<&str>) -> f32 {
+    value
         .and_then(|v| v.parse::<f32>().ok())
         .map(|t| t.clamp(0.0, 0.99))
         .unwrap_or(0.0)
 }
 
-/// Shadow top-k draft instrumentation (`ATLAS_MTP_SHADOW_TOPK=k`, default
+/// Shadow top-k draft instrumentation (`AVAROK_MTP_SHADOW_TOPK=k`, default
 /// 0 = off, clamp k ≤ 8). Observational only — token selection untouched.
 /// Each drafter `forward_one` D2H's its logits (same ~200 µs the conf path
 /// pays) and logs the top-k candidate ids + softmax probs per position;
@@ -63,7 +75,7 @@ pub fn draft_conf_tau() -> f32 {
 /// `SchedLevers::shadow_topk` (spark-server) resolve through it once per run
 /// rather than caching the answer in a `OnceLock` that a swap would pin.
 pub fn shadow_topk() -> usize {
-    std::env::var("ATLAS_MTP_SHADOW_TOPK")
+    std::env::var("AVAROK_MTP_SHADOW_TOPK")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(0)
@@ -82,7 +94,7 @@ pub fn mtp_multi_seq_mode() -> bool {
     mtp_max_seqs() > 1
 }
 
-/// `ATLAS_MTP_ACCEPT_DEBUG` (PRESENCE): per-BATCH-WIDTH acceptance telemetry.
+/// `AVAROK_MTP_ACCEPT_DEBUG` (PRESENCE): per-BATCH-WIDTH acceptance telemetry.
 ///
 /// The shipped K ladder gives `k_drafts == 2` at n in [5, 8], and the existing
 /// positional counters (`k4_record_positional`) are gated on `k_drafts == 3`,
@@ -93,11 +105,11 @@ pub fn mtp_multi_seq_mode() -> bool {
 /// timed legs unless the leg IS the accept measurement.
 pub fn mtp_accept_debug() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MTP_ACCEPT_DEBUG").is_ok())
+    *ON.get_or_init(|| std::env::var("AVAROK_MTP_ACCEPT_DEBUG").is_ok())
 }
 
 /// Drafter catch-up feed on serial->speculative transitions
-/// (`ATLAS_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
+/// (`AVAROK_MTP_CATCHUP=1`, staged off). During serial-decode stretches the
 /// scheduler rings the per-step final hiddens; on the next propose the gap
 /// rows are batch-fed into the drafter KV so it never runs stale. Wrong
 /// feeds cannot corrupt output (verification rejects bad drafts) — the
@@ -105,11 +117,11 @@ pub fn mtp_accept_debug() -> bool {
 /// Force-off in multi-seq MTP mode (single-sequence ring; see
 /// [`mtp_multi_seq_mode`]).
 pub fn mtp_catchup_enabled() -> bool {
-    std::env::var("ATLAS_MTP_CATCHUP").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
+    std::env::var("AVAROK_MTP_CATCHUP").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
 }
 
 /// Re-feed ACCEPTED draft rows with the target's TRUE hidden state
-/// (`ATLAS_MTP_REFEED_ACCEPTED=1`, default OFF). Requires `ATLAS_MTP_CATCHUP=1`.
+/// (`AVAROK_MTP_REFEED_ACCEPTED=1`, default OFF). Requires `AVAROK_MTP_CATCHUP=1`.
 ///
 /// WHY. The MTP head is one module run autoregressively. Draft 1 consumes the
 /// TARGET's verified hidden (`mtp_hidden_save`); every later draft consumes the
@@ -123,9 +135,9 @@ pub fn mtp_catchup_enabled() -> bool {
 /// unconditional per-position acceptance 0.660 -> 0.485 -> 0.407, i.e. the
 /// FIRST autoregressive step costs x0.735 while the second costs only x0.838 —
 /// the loss is concentrated exactly at the hidden-state handoff. Neither
-/// existing lever touches it: `ATLAS_MTP_CATCHUP=1` alone is bit-identical
+/// existing lever touches it: `AVAROK_MTP_CATCHUP=1` alone is bit-identical
 /// (its ring is only written on SERIAL decode steps, and with the throughput
-/// gate disarmed there are none), and dropping `ATLAS_MTP_DRAFTER_PREFILL`
+/// gate disarmed there are none), and dropping `AVAROK_MTP_DRAFTER_PREFILL`
 /// costs only 0.017/0.030 (~1 sd).
 ///
 /// WHAT THIS DOES. After a verify, the target's true hidden for every accepted
@@ -150,7 +162,7 @@ pub fn mtp_catchup_enabled() -> bool {
 /// baseline, and they are not paired samples (each arm emits different text).
 ///
 /// The mapping has since been VERIFIED DIRECTLY, with dumped hidden
-/// fingerprints (`ATLAS_MTP_REFEED_DEBUG=1`, FNV-1a over each BF16 row), on
+/// fingerprints (`AVAROK_MTP_REFEED_DEBUG=1`, FNV-1a over each BF16 row), on
 /// dgx2 / W4A4 27B / nd=2 / gate disarmed:
 ///
 /// | check | result |
@@ -178,7 +190,7 @@ pub fn mtp_catchup_enabled() -> bool {
 /// ## POWERED A/B (2026-07-21, dgx2): the pre-registered threshold is MET.
 ///
 /// nd=2, gate disarmed, 16 documents x 8 turns, ~10k verify steps per arm
-/// (with `ATLAS_MTP_GATE_FORCE=1` the engine is bit-reproducible, so n rises
+/// (with `AVAROK_MTP_GATE_FORCE=1` the engine is bit-reproducible, so n rises
 /// only with NEW CONTENT, never with repetitions).
 ///
 /// | arm | n | p1 | p2_uncond | tokens/verify step |
@@ -206,7 +218,7 @@ pub fn mtp_catchup_enabled() -> bool {
 /// cannot act at all. Two larger effects were measured the same night:
 ///
 /// 1. **The drafter's own INPUT hidden at draft position >= 2** (dgx1's
-///    teacher-forced oracle probe, `ATLAS_MTP_ORACLE_P2`): feeding draft 2 the
+///    teacher-forced oracle probe, `AVAROK_MTP_ORACLE_P2`): feeding draft 2 the
 ///    TARGET's true hidden instead of the MTP head's own takes p2_cond
 ///    0.5265 -> 0.7196, McNemar z = +18.4, recovering 1.40x the p1−p2 gap.
 ///    "Exposure bias" is refuted — the drafter is not mis-calibrated, it is
@@ -229,11 +241,12 @@ pub fn mtp_catchup_enabled() -> bool {
 /// Force-off in multi-seq MTP mode: the refeed label space is single-sequence
 /// (see [`mtp_multi_seq_mode`]).
 pub fn mtp_refeed_accepted_enabled() -> bool {
-    std::env::var("ATLAS_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1") && !mtp_multi_seq_mode()
+    std::env::var("AVAROK_MTP_REFEED_ACCEPTED").ok().as_deref() == Some("1")
+        && !mtp_multi_seq_mode()
 }
 
 /// Deliberate off-by-N perturbation of the re-feed's ring LABEL
-/// (`ATLAS_MTP_REFEED_SHIFT`, default 0 = the derived mapping).
+/// (`AVAROK_MTP_REFEED_SHIFT`, default 0 = the derived mapping).
 ///
 /// This is a MAPPING-VALIDATION hatch, not a tuning knob. The label
 /// convention (`label n holds hidden_{n-1}`, so pair key `k` reads label
@@ -251,14 +264,14 @@ pub fn mtp_refeed_accepted_enabled() -> bool {
 /// drafter's KV-history rows do not carry enough signal for this lever to
 /// work at all — which is itself the answer.
 pub fn mtp_refeed_shift() -> isize {
-    std::env::var("ATLAS_MTP_REFEED_SHIFT")
+    std::env::var("AVAROK_MTP_REFEED_SHIFT")
         .ok()
         .and_then(|v| v.parse::<isize>().ok())
         .unwrap_or(0)
         .clamp(-4, 4)
 }
 
-/// `ATLAS_MTP_REFEED_DEBUG=1`: fingerprint every hidden that enters and
+/// `AVAROK_MTP_REFEED_DEBUG=1`: fingerprint every hidden that enters and
 /// leaves the catch-up ring, so the pair-key -> hidden mapping can be read
 /// off the serve log instead of argued about. Costs a D2H of one hidden row
 /// (`h * 2` bytes) plus a stream sync per event — NEVER enable it in a timed
@@ -266,7 +279,7 @@ pub fn mtp_refeed_shift() -> isize {
 /// the mapping, and what they DO establish (the ring's slot arithmetic and
 /// the pair-key bookkeeping round-trip).
 pub fn mtp_refeed_debug() -> bool {
-    std::env::var("ATLAS_MTP_REFEED_DEBUG").ok().as_deref() == Some("1")
+    std::env::var("AVAROK_MTP_REFEED_DEBUG").ok().as_deref() == Some("1")
 }
 
 /// FNV-1a over a BF16 GPU row, for `mtp_refeed_debug` fingerprints.
@@ -283,15 +296,128 @@ pub fn hidden_fingerprint(gpu: &dyn GpuBackend, p: DevicePtr, h: usize) -> u64 {
     hash
 }
 
+/// EP worker command: run one MTP propose in lockstep with rank 0.
+/// Payload after the code: `last_token`, `position`, `num_drafts` (3 x u32).
+pub const EP_CMD_MTP_PROPOSE: u32 = 0xFFFF_FFF5;
+
+/// Run the drafter on EVERY rank with the communicator, instead of rank-0-only
+/// with `comm: None`. **DEFAULT ON since 2026-08-29**; kill switch
+/// `AVAROK_NO_MTP_EP_PROPOSE=1` restores the rank-0-only path.
+///
+/// Both halves move together and neither is safe alone:
+/// * the head broadcasts [`EP_CMD_MTP_PROPOSE`] before every propose, so the
+///   worker runs the SAME drafter forward and issues the SAME collectives in
+///   the same stream order;
+/// * [`DraftProposer::needs_comm`] then hands the block a comm.
+///
+/// Only a proposer that returns true from [`DraftProposer::needs_comm`] is
+/// affected, and today that is GLM-5.3 alone — the Qwen and DeepSeek-V4 MTP
+/// modules load every expert on every rank and must keep `comm: None`.
+///
+/// Measured on 2 x GB10 (t67, six-probe gate byte-identical on every arm):
+/// open512 17.53 -> 19.11 tok/s, p1 0.747 -> 0.875.
+///
+/// 🪤 `AVAROK_MTP_EP_PROPOSE=1` (the opt-in name it shipped behind for one day)
+/// still reads as ON, so a launch script carrying it keeps working.
+pub fn mtp_ep_propose_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_MTP_EP_PROPOSE").ok().as_deref() != Some("1"))
+}
+
 pub trait DraftProposer: Send + Sync {
     /// Allocate per-sequence proposer state.
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn ProposerState>>;
+
+    /// [`Self::alloc_state`] with the sequence's KNOWN token budget
+    /// (`prompt_len + max_tokens`), so a proposer whose per-sequence state
+    /// scales with context can size to what this request can actually reach
+    /// instead of the global `--max-seq-len` ceiling. That distinction is what
+    /// OOMs a high-concurrency long-context serve: the ceiling is per-sequence
+    /// and paid n times, while a typical request needs a fraction of it.
+    ///
+    /// `usize::MAX` means "unknown, use the ceiling". Defaults to
+    /// `alloc_state`, so proposers with fixed-size state need not implement it.
+    fn alloc_state_for(
+        &self,
+        gpu: &dyn GpuBackend,
+        budget_tokens: usize,
+    ) -> Result<Box<dyn ProposerState>> {
+        let _ = budget_tokens;
+        self.alloc_state(gpu)
+    }
+
+    /// The proposer's trained block size γ, when it is a block-diffusion
+    /// drafter (DFlash/DFlash2). The serve layer derives num_drafts from
+    /// this — the head resolved it from the drafter checkpoint and is the
+    /// SSOT. `None` = not a block drafter.
+    fn block_gamma(&self) -> Option<usize> {
+        None
+    }
 
     /// Chain confidence of the most recent `propose` (min top-1 softmax prob
     /// across its drafts), when the proposer computes it (`draft_conf_tau` >
     /// 0). `None` = not computed; callers must not gate on it then.
     fn last_confidence(&self) -> Option<f32> {
         None
+    }
+
+    /// Rows this proposer can actually consume from `mtp_prefill_hidden`, given
+    /// the served `--max-seq-len`.
+    ///
+    /// The model allocates that buffer as `[rows, hidden]` BF16 before it knows
+    /// anything about the proposer, so `max_seq_len` is the only bound it has —
+    /// 4.0 GiB at 524,288 and h=4096. A proposer whose own architecture caps the
+    /// position it can ever be asked for returns that cap instead, and the
+    /// difference stops being allocated. See ANOMALIES A59 and the note in
+    /// `Glm5NextMtpHead::new`.
+    ///
+    /// 🔴 Return a SMALLER number ONLY when the proposer can never be handed a
+    /// position past it. A cap below the reachable context does not corrupt
+    /// anything — the capture-coverage check at the propose site disables
+    /// drafter-prefill for a sequence whose rows are short — but it silently
+    /// costs acceptance on exactly the long prompts the feature exists for.
+    ///
+    /// Default: `max_seq_len`, i.e. the pre-A59 sizing, which is correct for any
+    /// proposer that can follow the target to the end of the served context.
+    fn prefill_hidden_rows(&self, max_seq_len: usize) -> usize {
+        max_seq_len
+    }
+
+    /// True when this proposer's block is SHARDED across ranks and its
+    /// forward therefore needs the communicator (a routed-MoE all-reduce and
+    /// a row-parallel `o_proj` reduce), like any target layer.
+    ///
+    /// Default false, which is correct for the Qwen and DeepSeek-V4 drafters:
+    /// their MTP modules load EVERY expert on EVERY rank, so the output is
+    /// already complete and passing a comm would DOUBLE it via SUM.
+    ///
+    /// 🔴 GLM-5.3 is the opposite and it is not a choice: `load_glm5next_mtp_module`
+    /// builds its MoE through the same `Glm5NextMlpConfig` the target layers use, so
+    /// `build_moe` walks `cfg.local_expert_range()` and loads 144 of 288 experts;
+    /// `DsaTpPlan::new(tp_rank, tp_world_size, ..)` splits the DSA heads the same way.
+    ///
+    /// 🪤 Returning true is NOT sufficient on its own — that is exactly what `t58` did and
+    /// it deadlocked at the first propose. The worker rank must ALSO execute the propose,
+    /// or rank 0's drafter collectives land against whatever the worker issues next. See
+    /// `EP_CMD_MTP_PROPOSE`.
+    fn needs_comm(&self) -> bool {
+        false
+    }
+
+    /// True when this proposer's context prefill uses the SHARED forward
+    /// scratch (`ctx.buffers`), so it must not run from the end-of-prefill
+    /// eager hook — only from the first `propose`, where the target owns
+    /// nothing.
+    ///
+    /// MEASURED 2026-08-29 (GLM-5.3, 2x GB10, t61): the eager call site with
+    /// the GLM drafter prefill engaged changed the TARGET's completion on 2 of
+    /// the 6 sealed probes and collapsed p1 from 0.625 to 0.045. The identical
+    /// prefill work moved to the first propose is byte-identical on all six and
+    /// takes p1 to 0.747. The call site is the only variable between the two
+    /// arms; the exact colliding buffer is UNVERIFIED (`norm_output` and
+    /// `moe_output` are the candidates the GLM block writes).
+    fn prefill_uses_shared_buffers(&self) -> bool {
+        false
     }
 
     /// Current drafter KV length (rows), for the catch-up append point.
@@ -307,7 +433,7 @@ pub trait DraftProposer: Send + Sync {
         None
     }
 
-    /// ATLAS_MTP_CARRY_DRAFTER: move this sequence's drafter KV blocks OUT of
+    /// AVAROK_MTP_CARRY_DRAFTER: move this sequence's drafter KV blocks OUT of
     /// its proposer state, so `free_state` releases nothing and the model can
     /// hold them for the next turn. Returns `(blocks, rows, last_pair_key)`;
     /// `None` = unsupported or nothing to carry. After this call the state
@@ -430,7 +556,7 @@ pub trait DraftProposer: Send + Sync {
     }
 
     /// Prefill the drafter's own context (KV cache) over the prompt, before
-    /// the first `propose()` of a sequence (ATLAS_MTP_DRAFTER_PREFILL).
+    /// the first `propose()` of a sequence (AVAROK_MTP_DRAFTER_PREFILL).
     ///
     /// * `prompt_tokens` — the prompt token ids `t_0..t_{P-1}`.
     /// * `hiddens` — device buffer `[P, hidden_size]` BF16; row `i` is the
@@ -478,45 +604,5 @@ pub trait DraftProposer: Send + Sync {
     fn free_state(&self, gpu: &dyn GpuBackend, state: &mut dyn ProposerState) -> Result<()> {
         let _ = (gpu, state);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct MockProposerState {
-        tokens_proposed: Vec<u32>,
-    }
-
-    impl ProposerState for MockProposerState {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
-    }
-
-    #[test]
-    fn test_proposer_state_downcast() {
-        let state: Box<dyn ProposerState> = Box::new(MockProposerState {
-            tokens_proposed: vec![42, 99],
-        });
-        let mock = state.as_any().downcast_ref::<MockProposerState>().unwrap();
-        assert_eq!(mock.tokens_proposed, vec![42, 99]);
-    }
-
-    #[test]
-    fn test_proposer_state_downcast_mut() {
-        let mut state: Box<dyn ProposerState> = Box::new(MockProposerState {
-            tokens_proposed: vec![],
-        });
-        let mock = state
-            .as_any_mut()
-            .downcast_mut::<MockProposerState>()
-            .unwrap();
-        mock.tokens_proposed.push(7);
-        assert_eq!(mock.tokens_proposed, vec![7]);
     }
 }

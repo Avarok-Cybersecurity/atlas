@@ -59,10 +59,7 @@ impl MoeLayer {
         // fully precedes up's shrink on the ordered stream, so a per-window
         // gate→up pair preserves the same serial-reuse discipline as the
         // unchunked path.
-        let cap = l.cap;
-        let mut off = 0u32;
-        while off < te {
-            let end = off.saturating_add(cap).min(te);
+        for (off, end) in ops::grouped_down_windows(te, l.cap) {
             if let Some(ref gate) = l.gate_route {
                 ops::moe_lora_grouped_down(
                     ctx.gpu,
@@ -97,7 +94,6 @@ impl MoeLayer {
                     stream,
                 )?;
             }
-            off = end;
         }
         Ok(())
     }
@@ -138,7 +134,7 @@ impl MoeLayer {
         anyhow::ensure!(
             n_slots <= l.cap,
             "MoE expert LoRA decode gate/up-fold: n_slots ({n_slots}) exceeds LoRA scratch cap \
-             ({}); raise ATLAS_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
+             ({}); raise AVAROK_LORA_EXPERT_MAX_TOKENS to >= num_tokens*top_k.",
             l.cap
         );
         if let Some(ref gate) = l.gate_route {

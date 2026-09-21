@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -28,23 +28,14 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 /// Presence kill switch for the wide (9..=VERIFY_ROW_CAP row) batched LM head arm:
-/// `ATLAS_NO_LMHEAD_BATCHED_WIDE` restores the M64-tile `w4a16_gemm` fallback.
-/// Presence, not value — `=0` is NOT "off" (see `atlas_env_presence_check_trap`).
+/// `AVAROK_NO_LMHEAD_BATCHED_WIDE` restores the M64-tile `w4a16_gemm` fallback.
+/// Presence, not value — `=0` is NOT "off" (see `avarok_env_presence_check_trap`).
 fn lmhead_batched_wide_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_LMHEAD_BATCHED_WIDE").is_err())
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_LMHEAD_BATCHED_WIDE").is_err())
 }
 
 impl TransformerModel {
-    pub(super) fn embed(&self, token: u32, output: DevicePtr, stream: u64) -> Result<()> {
-        let h = self.config.hidden_size;
-        let row_bytes = h * 2; // BF16 embedding row
-        let src = self.embed_tokens.weight.offset(token as usize * row_bytes);
-        self.gpu.copy_d2d_async(src, output, row_bytes, stream)?;
-        // Scale embeddings (Gemma-4: sqrt(hidden_size))
-        self.scale_embeddings(output, 1, stream)
-    }
-
     /// Scale in-place embeddings by config.embed_scale. The residual stream
     /// is always BF16, so this dispatches `embed_scale::bf16_scale_inplace`.
     pub(super) fn scale_embeddings(
@@ -110,7 +101,7 @@ impl TransformerModel {
             return Ok(false);
         };
         if let Some((ref nvfp4_t, ldb)) = self.lm_head_nvfp4_t {
-            // LOSSLESS path (ATLAS_LMHEAD_LOSSLESS): BF16 MMA, no activation
+            // LOSSLESS path (AVAROK_LMHEAD_LOSSLESS): BF16 MMA, no activation
             // downcast. Mirrors decode_a2 so the two heads never disagree.
             if self.w4a16_gemm_t_bf16_kernel.0 != 0 {
                 ops::w4a16_gemm_n128_m128_bf16_ldb(
@@ -143,7 +134,7 @@ impl TransformerModel {
                 return Ok(true);
             }
         }
-        // No twin (ATLAS_NO_LMHEAD_TGEMM): the M<=16 weight-streaming GEMV still
+        // No twin (AVAROK_NO_LMHEAD_TGEMM): the M<=16 weight-streaming GEMV still
         // beats the M64 tile. M=17..32 has no single-read form, so it keeps the
         // GEMM rather than paying two full weight passes.
         if num_tokens <= 16 && self.w4a16_gemv_batch16_kernel.0 != 0 {
@@ -209,6 +200,72 @@ impl TransformerModel {
                     )?;
                 }
             }
+        } else if self.lm_head_nvfp4.is_none()
+            && (2..=ops::DENSE_GEMV_BATCHM_DECODE_MAX_M).contains(&num_tokens)
+            && self.dense_gemv_batchm_kernel.0 != 0
+        {
+            // BF16 head, 2..8 verify rows: ONE sweep over `[vocab, hidden]` for every row.
+            //
+            // 🔴 This arm exists because the NVFP4 tiers below do not cover a BF16 head, so a
+            // BF16-head model fell through to "2x dense_gemv" — and on GLM-5.3 that measured
+            // **+5.57 ms per extra verify row** (nsys, 2026-08-29, differential between 365
+            // serial and 147 verify steps), the largest single item after the routed experts.
+            // The vocab is 154,880 x 4,096 BF16 = 1.27 GB, so re-reading it per row is the
+            // whole cost.
+            //
+            // Bit-identical to the per-row GEMVs it replaces: `dense_gemv_bf16_batchm`
+            // reproduces each row's K-iteration order and reduction tree.
+            let (w, n, dst) = match self.lmhead_vocab_shard(v) {
+                // VOCAB-PARALLEL, same construction as the single-token arm: each rank
+                // computes a contiguous row range of an otherwise REPLICATED head, the rest is
+                // zeroed, and the pieces are summed. Byte-identical rather than merely close —
+                // logit `n` is one full dot product over K = hidden by the same kernel in the
+                // same order, only WHICH rank runs it changes, and BF16 `x + 0` is exact.
+                //
+                // 🪤 Rests on `hidden` being bit-identical on every rank here. It is: the last
+                // thing the layer stack does is an all-reduce. The byte-identity gate is what
+                // actually checks that assumption.
+                Some((begin, len)) => {
+                    self.gpu.memset_async(
+                        logits,
+                        0,
+                        num_tokens as usize * v as usize * 2,
+                        stream,
+                    )?;
+                    (
+                        crate::weight_map::DenseWeight {
+                            weight: self.lm_head_weight.weight.offset(begin * h as usize * 2),
+                        },
+                        len as u32,
+                        logits.offset(begin * 2),
+                    )
+                }
+                None => (
+                    crate::weight_map::DenseWeight {
+                        weight: self.lm_head_weight.weight,
+                    },
+                    v,
+                    logits,
+                ),
+            };
+            ops::dense_gemv_batchm(
+                self.gpu.as_ref(),
+                self.dense_gemv_batchm_kernel,
+                hidden,
+                &w,
+                dst,
+                num_tokens,
+                n,
+                h,
+                // Rows of `logits` are a full vocab apart even when this rank writes a slice.
+                v,
+                stream,
+            )?;
+            if n != v
+                && let Some(comm) = self.comm_ref()
+            {
+                comm.all_reduce_async(logits.0, num_tokens as usize * v as usize * 2, stream)?;
+            }
         } else if num_tokens == 2 {
             // Double-GEMV: reads weights once, computes 2 outputs.
             // GEMM M=2 with 64×64 tiles wastes 97% of M-dimension → ~3× slower.
@@ -251,32 +308,21 @@ impl TransformerModel {
                 )?;
             }
         } else if (3..=8).contains(&num_tokens)
-            && {
-                if num_tokens <= 4 {
-                    self.w4a16_gemv_batch4_kernel.0 != 0
-                } else {
-                    self.w4a16_gemv_batch8_kernel.0 != 0
-                }
-            }
+            && self.w4a16_batchm.kernel(num_tokens).0 != 0
             && let Some(ref nvfp4) = self.lm_head_nvfp4
         {
             // K=3..8 verify lm_head: one weight read for all rows via the
-            // batched GEMV (batch4 M<=4, batch8 M=5..8 chain verify). nsys
+            // narrowest batched-GEMV tier covering the row count. nsys
             // (2026-07-18, drafts=3 serve): the base M64-tile `w4a16_gemm`
             // below cost 19.3 ms/verify-step on the [248320, 5120] NVFP4
             // lm_head at M=4 — 94% of the M-tile is padding, ~33 GB/s
             // effective. The batch GEMV streams the same 636 MB once at
             // near-peak (~2.5 ms), the single largest slice of the K=4
-            // verify-vs-K=2 cost gap; batch8 extends that to the K=5..8
+            // verify-vs-K=2 cost gap; the M=5..8 tiers extend that to the
             // chain-verify rows (batchm_bench).
-            let kh = if num_tokens <= 4 {
-                self.w4a16_gemv_batch4_kernel
-            } else {
-                self.w4a16_gemv_batch8_kernel
-            };
             ops::w4a16_gemv_batchm(
                 self.gpu.as_ref(),
-                kh,
+                self.w4a16_batchm.kernel(num_tokens),
                 hidden,
                 nvfp4,
                 logits,
@@ -326,6 +372,26 @@ impl TransformerModel {
             self.apply_logit_softcap(logits, total, cap, stream)?;
         }
         Ok(logits)
+    }
+
+    /// Row range of the BF16 LM head this rank should compute, or `None` to keep the
+    /// replicated whole-vocab projection.
+    ///
+    /// `None` unless there is a real multi-rank communicator and the vocab divides evenly.
+    /// Kill switch: `AVAROK_NO_LMHEAD_VOCAB_TP=1`. Only reachable from the plain BF16 dense
+    /// head — the FP8 / NVFP4 / FP32-logits heads keep their existing path untouched.
+    fn lmhead_vocab_shard(&self, v: u32) -> Option<(usize, usize)> {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var("AVAROK_NO_LMHEAD_VOCAB_TP").as_deref() == Ok("1")) {
+            return None;
+        }
+        let comm = self.comm_ref()?;
+        let ws = comm.world_size();
+        if ws < 2 || !(v as usize).is_multiple_of(ws) {
+            return None;
+        }
+        let len = v as usize / ws;
+        Some((comm.rank() * len, len))
     }
 
     pub(super) fn lm_head(&self, hidden: DevicePtr, stream: u64) -> Result<DevicePtr> {
@@ -389,6 +455,40 @@ impl TransformerModel {
                 h,
                 stream,
             )?;
+        } else if let Some((begin, len)) = self.lmhead_vocab_shard(v) {
+            // VOCAB-PARALLEL BF16 head. The BF16 `lm_head` is REPLICATED on every rank —
+            // no loader shards it — so at TP=2 both ranks stream the whole vocab weight
+            // for the same logits. On GLM-5.3 that is 1.27 GB and **5.49 ms of an 79 ms
+            // decode step** (nsys, 2026-08-28), the single largest kernel after the KDA
+            // projections.
+            //
+            // Each rank computes a contiguous row range instead. This is BYTE-IDENTICAL
+            // by construction, not by tolerance: logit `n` is one full dot product over
+            // K=hidden run by the same kernel with the same reduction order — only WHICH
+            // rank runs it changes. The rest of the buffer is zeroed and the pieces are
+            // summed, and BF16 `x + 0` is exact, so the assembled vector is the same
+            // bytes the replicated head produced.
+            //
+            // 🪤 Correctness rests on `hidden` being bit-identical on every rank at this
+            // point. It is: the last thing the layer stack does is an all-reduce, which
+            // lands the same bytes everywhere. The byte-identity gate is what actually
+            // checks it — if that assumption ever breaks, the completions diverge.
+            self.gpu.memset_async(logits, 0, v as usize * 2, stream)?;
+            ops::dense_gemv(
+                self.gpu.as_ref(),
+                self.dense_gemv_kernel,
+                hidden,
+                &crate::weight_map::DenseWeight {
+                    weight: self.lm_head_weight.weight.offset(begin * h as usize * 2),
+                },
+                logits.offset(begin * 2),
+                len as u32,
+                h,
+                stream,
+            )?;
+            if let Some(comm) = self.comm_ref() {
+                comm.all_reduce_async(logits.0, v as usize * 2, stream)?;
+            }
         } else {
             ops::dense_gemv(
                 self.gpu.as_ref(),

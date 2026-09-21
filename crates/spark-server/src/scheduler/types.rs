@@ -163,6 +163,17 @@ pub(super) struct ActiveSeq {
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,
     pub finished: bool,
+    /// Set when the sequence is being retired because an inference step FAILED,
+    /// not because the model finished. `finish_sequence` sends this to the client
+    /// as an error instead of synthesizing a normal completion.
+    ///
+    /// 🔴 Without it a failed verify step set only `finished = true`, and the
+    /// retirement funnel then derived an ordinary finish_reason and returned
+    /// **HTTP 200 with a truncated answer** — the caller could not tell "the model
+    /// stopped" from "the engine hit a hard architectural limit mid-generation".
+    /// Measured 2026-08-30: a K=3 verify refused at the 16,384-token DSA ceiling
+    /// and the client got 200 + `Done: 8 tokens (stop)`. ANOMALIES A62.
+    pub error: Option<String>,
     /// Which server-side guard force-finished this sequence (e.g.
     /// "fuzzy_repetition"), if any. Surfaced in the synthesized --dump body
     /// so a guard-cut turn is attributable without log archaeology (the
@@ -255,11 +266,11 @@ pub(super) struct ActiveSeq {
     pub think_just_ended: bool,
     /// Tokens emitted since `</think>` (0 while thinking; resets if the model
     /// re-enters a think block). Consumed by the DFlash spec-resume guard
-    /// (ATLAS_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
+    /// (AVAROK_DFLASH_RESUME_GUARD) to keep the answer's opening tokens on
     /// serial decode, where the T=0 verify-vs-decode low-margin flips
     /// concentrate (measured 2026-07-07).
     pub post_think_emitted: u32,
-    /// Adaptive speculation (ATLAS_DFLASH_ADAPTIVE=1): rolling accept window
+    /// Adaptive speculation (AVAROK_DFLASH_ADAPTIVE=1): rolling accept window
     /// + suspend/re-probe state. Transient — reset on swap/restore (a
     /// resumed sequence re-measures). See `adaptive_spec` module docs.
     pub spec_adapt: crate::scheduler::adaptive_spec::AdaptState,
@@ -358,7 +369,7 @@ pub(super) struct ActiveSeq {
     pub think_watchdog_fires: u32,
     /// Phase-C: how many times a degeneration watchdog has rolled this
     /// sequence back to a boundary and re-steered. Capped at
-    /// [`atlas_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
+    /// [`avarok_kernels::ROLLBACK_RESTEER_CAP`]; once the cap is hit the
     /// watchdog reverts to a hard stop. See
     /// [`super::rollback::rollback_to_boundary`].
     pub rollback_count: u32,
@@ -399,6 +410,14 @@ pub(super) struct ActiveSeq {
     pub adaptive: crate::adaptive_sampler::AdaptiveSamplingState,
     /// Number of prompt tokens served by the prefix cache (no prefill cost).
     pub cached_prompt_tokens: u32,
+    /// Decode-preemption starvation guard: this sequence must not be chosen
+    /// as a KV-preemption victim again until `output_tokens.len()` reaches
+    /// this threshold. Set on every resume (requeue re-prefill AND swap-in)
+    /// to `output_tokens.len() + preempt::PREEMPT_IMMUNITY_TOKENS`; 0 (the
+    /// default for fresh sequences) means "no immunity". Compared against
+    /// output length rather than decremented per step so it costs nothing
+    /// on the decode hot path and is deterministic to test.
+    pub preempt_immune_until_tokens: usize,
 }
 
 impl ActiveSeq {
@@ -526,6 +545,28 @@ pub(super) struct SwappedSeq {
     pub cached_prompt_tokens: u32,
     pub timeout_at: Option<Instant>,
     pub swap_id: u64,
+}
+
+/// A sequence preempted out of decode when the KV pool ran dry, awaiting a
+/// requeue-resume (the no-`--swap-space` counterpart of [`SwappedSeq`]).
+///
+/// Unlike a disk spill nothing is serialized: the victim's GPU resources are
+/// freed (its computed KV is offered to the prefix cache first, exactly like
+/// `finish_sequence`) and the WHOLE `ActiveSeq` — sink, sampling params,
+/// guard/think/tool state, output already streamed — is retained on the CPU.
+/// Resume re-prefills `tokens` to rebuild KV + SSM state and transplants the
+/// fresh `SequenceState` back into `a`, so the client's stream continues
+/// where it paused: nothing already streamed is invalidated or re-emitted.
+pub(super) struct PreemptedSeq {
+    /// Retained request state. `a.seq` holds NO GPU resources (freed at
+    /// preemption); everything CPU-side stays live, including `cancel_flag`
+    /// (requeue is same-process and short-lived, unlike a disk swap).
+    pub a: ActiveSeq,
+    /// Token history to re-prefill on resume: prompt + every PROCESSED
+    /// output token. Excludes `a.last_token`, which is the pending decode
+    /// input (already streamed) — resume feeds it to the first decode step,
+    /// so no token is re-sampled or re-emitted.
+    pub tokens: Vec<u32>,
 }
 
 #[cfg(test)]

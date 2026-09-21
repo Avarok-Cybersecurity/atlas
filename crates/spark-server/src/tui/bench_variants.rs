@@ -19,7 +19,7 @@
 //! flow then skips straight to the parameters, exactly as before this step
 //! existed.
 
-use atlas_plugin::gate;
+use avarok_plugin::gate;
 
 use super::bench_state::{BenchState, View};
 
@@ -113,7 +113,7 @@ impl BenchState {
         };
         self.variant_row = index;
         self.target =
-            atlas_plugin::TargetEndpoint::new(self.target.base_url.clone(), &row.checkpoint);
+            avarok_plugin::TargetEndpoint::new(self.target.base_url.clone(), &row.checkpoint);
         self.target_model_pinned = true;
         self.variant_pinned = true;
         if let Some(descriptor) = self.descriptor() {

@@ -2,7 +2,7 @@
 
 //! The KV-paging selection seam: env-driven choice between the raw
 //! one-sided `RdmaKvBackend` (flag OFF) and the peer-paging
-//! `KvPagingBackend` (`ATLAS_KV_PAGING=1`). Split from `backend.rs` to keep
+//! `KvPagingBackend` (`AVAROK_KV_PAGING=1`). Split from `backend.rs` to keep
 //! it under the 500-LoC cap.
 
 use std::num::NonZeroU64;
@@ -16,7 +16,7 @@ use crate::group::GroupLayout;
 use crate::model_dims::ModelDims;
 
 /// THE selection seam `HighSpeedSwap::new_on_stream` calls when
-/// `$ATLAS_KV_PEER` is set. Flag OFF (`ATLAS_KV_PAGING` unset/0) ⇒ the raw
+/// `$AVAROK_KV_PEER` is set. Flag OFF (`AVAROK_KV_PAGING` unset/0) ⇒ the raw
 /// one-sided `RdmaKvBackend::connect(peer, layout)` — the identical call and
 /// data plane (its handshake is the v2 header with blob == 0),
 /// so a regression bisects on this one flag. Flag ON ⇒ resolve the required
@@ -29,7 +29,7 @@ pub fn connect_kv_peer_backend(
     elem_bytes: u32,
     coalesce_blocks: bool,
 ) -> Result<Box<dyn StorageBackend>> {
-    let paging = ns::kv_paging_selected(std::env::var("ATLAS_KV_PAGING").ok().as_deref())?;
+    let paging = ns::kv_paging_selected(std::env::var("AVAROK_KV_PAGING").ok().as_deref())?;
     if !paging {
         // DEFAULT: the dumb one-sided path, untouched.
         return Ok(Box::new(crate::rdma_kv_backend::RdmaKvBackend::connect(
@@ -38,20 +38,20 @@ pub fn connect_kv_peer_backend(
     }
     if !coalesce_blocks {
         bail!(
-            "ATLAS_KV_PAGING=1 requires block coalescing (ATLAS_HSS_COALESCE_BLOCKS, the \
+            "AVAROK_KV_PAGING=1 requires block coalescing (AVAROK_HSS_COALESCE_BLOCKS, the \
              default): the paging record is one whole KV block, and the per-head offload \
              write path cannot be served by a peer-owned block arena"
         );
     }
     let arena_bytes = ns::resolve_arena_bytes_from(
-        std::env::var("ATLAS_KV_PAGING_ARENA_GB").ok().as_deref(),
+        std::env::var("AVAROK_KV_PAGING_ARENA_GB").ok().as_deref(),
         layout.block_bytes(),
     )?;
-    let ns = match std::env::var("ATLAS_KV_PAGING_NS").ok() {
+    let ns = match std::env::var("AVAROK_KV_PAGING_NS").ok() {
         Some(raw) => {
             let ns = ns::resolve_kv_ns_from(Some(&raw), NonZeroU64::new(1).expect("nonzero"))?;
             tracing::info!(
-                "kv-paging: namespace OVERRIDDEN via ATLAS_KV_PAGING_NS={:#018x} — two clients \
+                "kv-paging: namespace OVERRIDDEN via AVAROK_KV_PAGING_NS={:#018x} — two clients \
                  sharing one explicit ns on one peer WILL cross-serve KV blocks",
                 ns.get()
             );
@@ -63,13 +63,13 @@ pub fn connect_kv_peer_backend(
             // cross-serve the SSM fix made unrepresentable).
             let fp = model.model_fp.ok_or_else(|| {
                 anyhow!(
-                    "ATLAS_KV_PAGING=1 requires a model fingerprint (ModelDims::model_fp) and \
+                    "AVAROK_KV_PAGING=1 requires a model fingerprint (ModelDims::model_fp) and \
                      the loader did not derive one — fix the model config, or set \
-                     ATLAS_KV_PAGING_NS to an explicit non-zero u64"
+                     AVAROK_KV_PAGING_NS to an explicit non-zero u64"
                 )
             })?;
             let salt =
-                ns::resolve_salt_from(std::env::var("ATLAS_KV_PAGING_SALT").ok().as_deref())?
+                ns::resolve_salt_from(std::env::var("AVAROK_KV_PAGING_SALT").ok().as_deref())?
                     .unwrap_or_else(rand::random::<u64>);
             let derived = ns::derive_kv_ns(
                 fp.get(),
@@ -81,7 +81,7 @@ pub fn connect_kv_peer_backend(
             );
             tracing::info!(
                 "kv-paging: derived namespace {:#018x} (fp {:#018x}, client salt {salt:#018x} — \
-                 pin via ATLAS_KV_PAGING_SALT to reproduce; the salt makes keys CLIENT-PRIVATE: \
+                 pin via AVAROK_KV_PAGING_SALT to reproduce; the salt makes keys CLIENT-PRIVATE: \
                  capacity pooling yes, cross-client warm hits no)",
                 derived.get(),
                 fp.get(),

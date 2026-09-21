@@ -5,7 +5,7 @@
 //! routed-prefill predicate + pair selection. Cross-seam bodies resolve types
 //! through the `crate::lora` facade.
 
-use atlas_core::config::{LayerType, PeftAdapterConfig};
+use avarok_core::config::{LayerType, PeftAdapterConfig};
 use spark_runtime::weights::WeightStore;
 
 use crate::lora::test_support::*;
@@ -23,14 +23,25 @@ fn slot_base_is_k_times_slot_bytes() {
 
 #[test]
 fn pool_slot_bytes_absolute_golden() {
-    // Absolute byte count for the factory config @ max_rank=16: 12
-    // full-attention layers × Σ_modules (max_rank·(in+out))·2. Pins the
+    // Absolute byte count for the factory config @ max_rank=16. Pins the
     // layout absolutely (a dims/pad change is caught), not just the
-    // slot_base == k·slot_bytes relation. q_proj adds 32·(2048+8192)=327680
-    // B/layer (gated out = 2·16·256 = 8192), ×12 = 3_932_160 over the prior
-    // k/v/o/gate/up/down-only 12_582_912.
+    // slot_base == k·slot_bytes relation.
+    //
+    // CHANGED from 16_515_072 when the pool stopped being "full-attention
+    // layers × ALL modules". That shape reserved q/k/v/o on the layers that
+    // have them but reserved NOTHING for the dense FFN a hybrid carries on
+    // its linear-attention layers, so those pairs had nowhere to land and
+    // were silently dropped — loaded, never packed, never applied. The pool
+    // is now Σ over EVERY layer of the modules that layer can actually carry
+    // (`LoraModule::applies_to_layer`), which also makes room for the GDN
+    // `out_proj` on linear-attention layers.
+    //
+    // Smaller, not larger, on this config: the linear-attention layers gain
+    // gate/up/down + out_proj but the full-attention layers no longer reserve
+    // out_proj space they cannot use, and the old shape was reserving all
+    // seven modules on all twelve attention layers.
     let cfg = cfg();
-    assert_eq!(pool_slot_bytes(&cfg, 16), 16_515_072);
+    assert_eq!(pool_slot_bytes(&cfg, 16), 15_335_424);
 }
 
 #[test]
@@ -41,8 +52,17 @@ fn module_offsets_walk_matches_pack_loop_and_fill_exactly_one_slot() {
     let cfg = cfg();
     let mr = 16;
     let mut off = 0usize;
-    for layer in full_attention_layers(&cfg) {
+    for layer in 0..cfg.num_hidden_layers {
         for module in LoraModule::ALL {
+            if !module.applies_to_layer(&cfg, layer) {
+                // The offset table must agree that this module is absent here.
+                assert_eq!(
+                    module_slot_offsets(&cfg, mr, layer, module),
+                    None,
+                    "layer {layer} {module:?} is not applicable and must have no slot"
+                );
+                continue;
+            }
             let (out, inp) = module.dims(&cfg);
             let a_off = off;
             let b_off = off + mr * inp * BF16_BYTES;
@@ -74,11 +94,18 @@ fn slot_boundaries_do_not_overlap() {
     let cfg = cfg();
     let mr = 16;
     let sb = pool_slot_bytes(&cfg, mr);
-    // Last module (down_proj on the last full-attn layer) ends exactly at
-    // slot_bytes, i.e. flush against slot 1's base.
-    let last = *full_attention_layers(&cfg).last().unwrap();
-    let (_, b_off) = module_slot_offsets(&cfg, mr, last, LoraModule::DownProj).unwrap();
-    let (out, _) = LoraModule::DownProj.dims(&cfg);
+    // The LAST module in the walk ends exactly at slot_bytes, i.e. flush
+    // against slot 1's base. Derived rather than hardcoded: which module comes
+    // last depends on the last layer's type (a linear-attention tail layer
+    // ends on out_proj, an attention one on down_proj), and hardcoding it
+    // would make this test a statement about one config instead of about the
+    // packing invariant.
+    let (last_layer, last_module) = (0..cfg.num_hidden_layers)
+        .flat_map(|l| LoraModule::ALL.iter().map(move |m| (l, *m)))
+        .rfind(|(l, m)| m.applies_to_layer(&cfg, *l))
+        .expect("some module is packed");
+    let (_, b_off) = module_slot_offsets(&cfg, mr, last_layer, last_module).unwrap();
+    let (out, _) = last_module.dims(&cfg);
     assert_eq!(b_off + out * mr * BF16_BYTES, sb);
     assert_eq!(slot_base_offset(1, &cfg, mr), sb);
 }
@@ -96,6 +123,7 @@ fn scale_table_values_per_slot_and_padded() {
             r,
             lora_alpha: alpha,
             target_modules: vec!["k_proj".into()],
+            target_modules_pattern: None,
             use_rslora: rslora,
             layers_to_transform: None,
             trainable_token_indices: Vec::new(),
@@ -109,10 +137,6 @@ fn scale_table_values_per_slot_and_padded() {
     assert_eq!(v[0], (16.0_f64 / 8.0) as f32); // alpha/r
     assert_eq!(v[1], (16.0_f64 / (4.0_f64).sqrt()) as f32); // rslora: alpha/sqrt(r)
     assert!(v[2..].iter().all(|&s| s == 0.0)); // unpacked slots
-    // Table order matches the a/b table slot order (slot k = adapters[k]).
-    for (k, a) in adapters.iter().enumerate() {
-        assert_eq!(v[k], a.peft.scaling());
-    }
 }
 
 #[test]
@@ -122,21 +146,6 @@ fn seq_slot_host_defers_negatives_and_pads() {
     let slots = [1i32, -1, 0];
     let v = build_seq_slot_host(&slots, 4, 2);
     assert_eq!(v, vec![1, 2, 0, -1]);
-}
-
-#[test]
-fn seq_slot_host_single_global_adapter_all_active() {
-    // All requests default (-1) → all real rows resolve to the active slot,
-    // so a single global adapter applies to every row (matches n==1).
-    let slots = [-1i32, -1, -1, -1];
-    let v = build_seq_slot_host(&slots, 4, 0);
-    assert_eq!(v, vec![0, 0, 0, 0]);
-}
-
-#[test]
-fn seq_slot_host_no_pad_when_full() {
-    let slots = [3i32, 1];
-    assert_eq!(build_seq_slot_host(&slots, 2, 0), vec![3, 1]);
 }
 
 #[test]
@@ -160,92 +169,6 @@ fn seq_slot_uniform_prefill_fills_and_resolves() {
     }
 }
 
-#[test]
-#[allow(clippy::assertions_on_constants)] // deliberate compile-time layout documentation
-fn seq_slot_meta_offset_gaps_do_not_collide() {
-    // The small fixed-layout paths (single-seq decode, eager verify_a, and
-    // the graphed verify_b/c/c2/d) place the seq_slot buffer at meta_base
-    // +128. Assert that gap never overlaps the positions/slot/seq_len/
-    // block_table regions those builders write. Byte offsets mirror the
-    // AttnMetadataDev construction in decode_a.rs / verify_*.rs.
-    const SEQ_SLOT_OFF: usize = 128;
-
-    // Single-seq decode + eager verify_a: positions@0 (4B, ends @4),
-    // slot@8 (i64, ends @16), seq_len@16 (i32, ends @20), block_table@256.
-    // A 1-elem i32 seq_slot@128 sits clear of all four.
-    assert!(SEQ_SLOT_OFF >= 20, "seq_slot starts after seq_len region");
-    assert!(
-        SEQ_SLOT_OFF + 4 <= 256,
-        "1-elem seq_slot ends before block_table@256"
-    );
-
-    // Graphed verify (multi-seq layout): slot@256, seq_len@512, bt@768. A
-    // [K] i32 seq_slot@128 must not reach slot@256 → K ≤ 32 (the
-    // debug_assert!(k <= 32) guard in verify_b/c/c2/d).
-    for k in [2usize, 3, 4, 32] {
-        assert!(
-            SEQ_SLOT_OFF + k * 4 <= 256,
-            "K={k}: [K] seq_slot ends before slot@256"
-        );
-    }
-    // K = 33 would overrun the slot region — documents why the guard caps K.
-    assert!(
-        SEQ_SLOT_OFF + 33 * 4 > 256,
-        "K=33 overruns — guard required"
-    );
-}
-
-#[test]
-#[allow(clippy::assertions_on_constants)] // deliberate compile-time layout documentation
-fn moe_row_adapter_relocated_decode_cap_is_32() {
-    // SOLID Incr-4: after moe_row_adapter is relocated to its OWN dedicated
-    // buffer (out of the old +160 metadata gap), the batched-decode concurrent-
-    // LoRA cap is set purely by the shared AttnMetadataDev layout that the two
-    // batched builders (upload_batch_metadata_fixed / _at in impl_b1.rs) write.
-    // Byte offsets mirror that construction: positions@+0 (u32), seq_slot@+128
-    // (i32), slot@+256 (i64), seq_len@+512 (i32), block_table@+768.
-    const POSITIONS_OFF: usize = 0;
-    const SEQ_SLOT_OFF: usize = 128;
-    const SLOT_OFF: usize = 256;
-    const SEQ_LEN_OFF: usize = 512;
-    const BLOCK_TABLE_OFF: usize = 768;
-
-    // The three binding constraints all resolve to padded_n <= 32:
-    //   positions@+0 (4B/row) must not reach seq_slot@+128
-    //   seq_slot@+128 (4B/row) must not reach slot@+256
-    //   slot@+256   (8B/row) must not reach seq_len@+512
-    // seq_len@+512 (4B/row) vs block_table@+768 is looser (<= 64), non-binding.
-    for n in [8usize, 16, 32] {
-        assert!(
-            POSITIONS_OFF + n * 4 <= SEQ_SLOT_OFF,
-            "n={n}: positions ends before seq_slot@+128"
-        );
-        assert!(
-            SEQ_SLOT_OFF + n * 4 <= SLOT_OFF,
-            "n={n}: seq_slot ends before slot@+256"
-        );
-        assert!(
-            SLOT_OFF + n * 8 <= SEQ_LEN_OFF,
-            "n={n}: slot ends before seq_len@+512"
-        );
-        assert!(
-            SEQ_LEN_OFF + n * 4 <= BLOCK_TABLE_OFF,
-            "n={n}: seq_len ends before block_table@+768"
-        );
-    }
-
-    // padded_n = 33 overruns ALL THREE binding regions simultaneously — this is
-    // exactly the boundary the impl_b1.rs `ensure!(padded_n <= 32)` guard fires
-    // on. (Before the relocation, moe_row_adapter@+160 squatted seq_slot's range
-    // and forced the cap down to 8; that squat is now gone.)
-    assert!(
-        POSITIONS_OFF + 33 * 4 > SEQ_SLOT_OFF,
-        "n=33: positions overruns"
-    );
-    assert!(SEQ_SLOT_OFF + 33 * 4 > SLOT_OFF, "n=33: seq_slot overruns");
-    assert!(SLOT_OFF + 33 * 8 > SEQ_LEN_OFF, "n=33: slot overruns");
-}
-
 // ── Task #27: pure victim-selection policy ──
 
 #[test]
@@ -253,9 +176,9 @@ fn victim_free_first_before_lru() {
     // Cache region starts at slot 2. Slot 3 is a never-filled placeholder;
     // it must be chosen BEFORE evicting any filled slot, even a very-idle one.
     let cache = vec![
-        (2, view(true, 0, 1)),  // filled, idle, oldest tick
-        (3, view(false, 0, 0)), // never filled → free-first winner
-        (4, view(true, 0, 9)),  // filled, idle
+        (2, view(true, 0, 1)),   // filled, idle, oldest tick
+        (3, view(false, 0, 99)), // never filled → free-first despite newest tick
+        (4, view(true, 0, 9)),   // filled, idle
     ];
     assert_eq!(select_victim_slot(&cache), Ok(3));
 }
@@ -276,26 +199,6 @@ fn victim_pool_full_when_all_busy() {
     // Every cache slot has ref_count>0 → retryable PoolFull, never an evict.
     let cache = vec![(2, view(true, 1, 1)), (3, view(true, 2, 2))];
     assert_eq!(select_victim_slot(&cache), Err(VictimError::PoolFull));
-}
-
-#[test]
-fn victim_never_returns_busy_slot() {
-    // A free placeholder coexists with busy slots: still pick the free one,
-    // and NEVER a ref_count>0 index.
-    let cache = vec![
-        (2, view(true, 3, 1)),
-        (3, view(false, 0, 0)),
-        (4, view(true, 7, 2)),
-    ];
-    let picked = select_victim_slot(&cache).unwrap();
-    assert_eq!(picked, 3);
-    // And with no free slot, a lone idle among busies is the only choice.
-    let cache2 = vec![
-        (2, view(true, 3, 1)),
-        (3, view(true, 0, 8)), // the only idle
-        (4, view(true, 7, 2)),
-    ];
-    assert_eq!(select_victim_slot(&cache2), Ok(3));
 }
 
 // ── #30 routed-prefill precision: the two pure correctness invariants

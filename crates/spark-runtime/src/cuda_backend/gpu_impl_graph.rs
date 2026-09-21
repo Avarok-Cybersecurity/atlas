@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! CUDA graph capture/replay, stream + event management, memset, memory
-//! queries, and pinned-host allocation for [`AtlasCudaBackend`].
+//! queries, and pinned-host allocation for [`AvarokCudaBackend`].
 //!
 //! Split out of `gpu_impl.rs` to keep both files under the repo's 500-LoC cap.
 //! Same shape as `spark-model`'s `model/trait_impl/`: these are the inherent
@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use anyhow::{Result, bail};
 
 use super::{
-    AtlasCudaBackend, cuCtxGetDevice, cuCtxSetCurrent, cuDeviceGetAttribute, cuEventCreate,
+    AvarokCudaBackend, cuCtxGetDevice, cuCtxSetCurrent, cuDeviceGetAttribute, cuEventCreate,
     cuEventDestroy_v2, cuEventRecord, cuEventSynchronize, cuGraphDestroy, cuGraphExecDestroy,
     cuGraphLaunch, cuMemAllocHost_v2, cuMemFreeHost, cuMemGetInfo_v2, cuMemsetD8Async,
     cuStreamBeginCapture, cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize,
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::gpu::{DevicePtr, GraphHandle};
 
-impl AtlasCudaBackend {
+impl AvarokCudaBackend {
     pub(super) fn begin_capture_cu(&self, stream: u64) -> Result<()> {
         // CU_STREAM_CAPTURE_MODE_RELAXED = 2
         // Relaxed mode allows NCCL's internal streams to operate during
@@ -62,9 +62,9 @@ impl AtlasCudaBackend {
         // `cuGraphInstantiateWithFlags`; SCALE (gfx1151) exposes the
         // ABI-identical `cuGraphInstantiate` — see cuda_backend.rs.
         let mut graph_exec: u64 = 0;
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         let status = unsafe { super::cuGraphInstantiateWithFlags(&mut graph_exec, graph, 0) };
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         let status = unsafe { super::cuGraphInstantiate(&mut graph_exec, graph, 0) };
         if status != 0 {
             unsafe { cuGraphDestroy(graph) };
@@ -162,6 +162,18 @@ impl AtlasCudaBackend {
         Ok(count as u32)
     }
 
+    /// The driver leg alone — `cuMemGetInfo` with no `max(.., MemAvailable)`.
+    /// A73: `free_memory_cu` is not a driver query; this one is.
+    pub(super) fn device_free_memory_cu(&self) -> Result<usize> {
+        let mut free: usize = 0;
+        let mut total: usize = 0;
+        let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+        if status != 0 {
+            bail!("cuMemGetInfo_v2 failed: status {status}");
+        }
+        Ok(free)
+    }
+
     pub(super) fn free_memory_cu(&self) -> Result<usize> {
         let mut free: usize = 0;
         let mut total: usize = 0;
@@ -169,12 +181,57 @@ impl AtlasCudaBackend {
         if status != 0 {
             bail!("cuMemGetInfo_v2 failed: status {status}");
         }
-        // On unified memory (GB10), cuMemGetInfo reports Linux "free" memory
-        // which excludes reclaimable buff/cache. Use MemAvailable instead.
-        if let Some(mem_available) = super::system_available_memory_bytes() {
-            free = free.max(mem_available);
+        // RULE: host `MemAvailable` substitutes for the driver's device-free
+        // figure ONLY on an integrated GPU.
+        //
+        // On integrated memory (GB10 / DGX Spark, unified LPDDR5X) device and
+        // host share one physical pool and `cuMemGetInfo` reports Linux
+        // MemFree, which excludes reclaimable buff/cache — MemAvailable is the
+        // truer number, so taking the max is right there.
+        //
+        // On a DISCRETE GPU host RAM is a different pool entirely and the max
+        // is nonsense: on a 3x RTX PRO 6000 Blackwell box (95 GiB per card,
+        // 1 TB host RAM) MemAvailable read 1,038,438,936 kB, so this returned
+        // ~990 GB free for a 95 GB card, `used_so_far` came out 0, and the KV
+        // pool was sized as if nothing had been allocated — the load then died
+        // in `cuMemAlloc_v2` with 4280.2 MB actually free.
+        //
+        // `super::device_is_integrated` documents the discriminator and the
+        // attribute that looks like it would work but does not.
+        //
+        // 🔴 The substitution is why `free_memory()` is NOT a driver query, and
+        // it has repeatedly been mistaken for one. On one boot the driver leg
+        // wins and host frees are invisible; on the next the MemAvailable leg
+        // wins and the reading tracks host state exactly. Both were observed
+        // and separately mis-attributed to "unified-memory semantics". Log the
+        // two legs and which one the integrated verdict let through, so the
+        // question cannot be re-opened from a single reading. (A68 is OPEN and
+        // this line is its evidence surface — `device_free_memory_cu` above is
+        // the pure driver leg to compare it against.)
+        //
+        // It is also why an explicit host floor is required rather than
+        // optional: MemAvailable counts RECLAIMABLE page cache as available, so
+        // this hands the KV sizer memory obtainable only by reclaiming — and a
+        // ~100 GiB weight load turns that into direct reclaim.
+        let mem_available = super::system_available_memory_bytes();
+        let integrated = super::device_is_integrated()?;
+        if let Some(avail) = mem_available {
+            let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+            tracing::debug!(
+                "free_memory legs: cuMemGetInfo={:.3} GiB, MemAvailable={:.3} GiB, \
+                 integrated={}, winner={}, spread={:.3} GiB",
+                gib(free),
+                gib(avail),
+                integrated,
+                if integrated && avail > free {
+                    "MemAvailable"
+                } else {
+                    "cuMemGetInfo"
+                },
+                gib(avail.abs_diff(free)),
+            );
         }
-        Ok(free)
+        Ok(super::effective_free_bytes(free, mem_available, integrated))
     }
 
     pub(super) fn create_stream_cu(&self) -> Result<u64> {
@@ -277,10 +334,10 @@ impl AtlasCudaBackend {
             // handler, which can run before ours. Pinned host memory allocated
             // against a context that no longer exists was already reclaimed
             // with it — reporting that as a failure is noise at every exit.
-            if status != 0 && !atlas_core::registry::is_teardown_noop(status) {
+            if status != 0 && !avarok_core::registry::is_teardown_noop(status) {
                 bail!(
                     "cuMemFreeHost failed: {}",
-                    atlas_core::registry::cuda_error_text(status)
+                    avarok_core::registry::cuda_error_text(status)
                 );
             }
         }

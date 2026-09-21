@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::{Context, Result, ensure};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::{WeightDtype, WeightStore};
@@ -41,7 +41,7 @@ pub(super) fn load_layers(
         DevicePtr::NULL
     };
     let unified_moe_layout =
-        unified_moe_layout_enabled(std::env::var("ATLAS_UNIFIED_MOE_LAYOUT").ok().as_deref());
+        unified_moe_layout_enabled(std::env::var("AVAROK_UNIFIED_MOE_LAYOUT").ok().as_deref());
     if unified_moe_layout {
         tracing::info!(
             "Laguna: using unified transposed MoE layout; prefill uses fused K64 kernels and decode uses transposed experts"
@@ -135,15 +135,59 @@ fn load_moe_ffn(
         .collect::<Result<Vec<_>>>()?;
 
     let shared = format!("{mlp}.shared_expert");
-    let shared_gate = dense_auto(store, &format!("{shared}.gate_proj.weight"), gpu)?;
-    let shared_up = dense_auto(store, &format!("{shared}.up_proj.weight"), gpu)?;
-    let shared_down = dense_auto(store, &format!("{shared}.down_proj.weight"), gpu)?;
     let si = config.shared_expert_intermediate_size;
     let h = config.hidden_size;
-    let shared_expert = ExpertWeight {
-        gate_proj: quantize_to_nvfp4(&shared_gate, si, h, gpu, absmax_k, quantize_k, stream)?,
-        up_proj: quantize_to_nvfp4(&shared_up, si, h, gpu, absmax_k, quantize_k, stream)?,
-        down_proj: quantize_to_nvfp4(&shared_down, h, si, gpu, absmax_k, quantize_k, stream)?,
+    // Shared-expert precision differs across Laguna variants, and the
+    // checkpoint says which. S-2.1 lists `shared_expert.{gate,up,down}_proj` in
+    // its `quantization_config.ignore` set and ships them BF16; XS-2.1 lists
+    // them in `targets` instead and ships them NVFP4-packed, exactly like the
+    // routed experts. Detect by tensor presence (`.weight_packed`) rather than
+    // by hidden_size, so a future variant is classified by what it actually
+    // contains.
+    let shared_packed = store.contains(&format!("{shared}.gate_proj.weight_packed"));
+    let (shared_expert, bf16_shared) = if shared_packed {
+        // XS-2.1: the NVFP4 shared expert is authoritative and runs on the same
+        // machinery as the routed NVFP4 experts — no BF16 override.
+        (
+            ExpertWeight {
+                gate_proj: quantized_v2(store, &format!("{shared}.gate_proj"), gpu)?,
+                up_proj: quantized_v2(store, &format!("{shared}.up_proj"), gpu)?,
+                down_proj: quantized_v2(store, &format!("{shared}.down_proj"), gpu)?,
+            },
+            None,
+        )
+    } else {
+        // S-2.1: BF16 shared expert. The NVFP4 copies below are placeholders so
+        // the fused routed kernels have something to read; the BF16 tensors are
+        // installed as authoritative below and overwrite the shared
+        // contribution before blending.
+        let shared_gate = dense_auto(store, &format!("{shared}.gate_proj.weight"), gpu)?;
+        let shared_up = dense_auto(store, &format!("{shared}.up_proj.weight"), gpu)?;
+        let shared_down = dense_auto(store, &format!("{shared}.down_proj.weight"), gpu)?;
+        (
+            ExpertWeight {
+                gate_proj: quantize_to_nvfp4(
+                    &shared_gate,
+                    si,
+                    h,
+                    gpu,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                )?,
+                up_proj: quantize_to_nvfp4(&shared_up, si, h, gpu, absmax_k, quantize_k, stream)?,
+                down_proj: quantize_to_nvfp4(
+                    &shared_down,
+                    h,
+                    si,
+                    gpu,
+                    absmax_k,
+                    quantize_k,
+                    stream,
+                )?,
+            },
+            Some((shared_gate, shared_up, shared_down)),
+        )
     };
     let weights = MoeWeights {
         gate,
@@ -156,15 +200,19 @@ fn load_moe_ffn(
         correction_bias: Some(correction_bias),
     };
     let mut layer = MoeLayer::new(weights, config.num_experts, None, gpu, config)?;
-    // The checkpoint explicitly excludes the shared expert from NVFP4
-    // compression. Keep its BF16 weights authoritative for both prefill and
-    // decode; the quantized copies above are placeholders for fused routed
-    // kernels and their shared contribution is overwritten before blending.
-    layer.set_bf16_shared_expert(shared_gate, shared_up, shared_down)?;
+    // S-2.1 excludes the shared expert from NVFP4 compression: keep its BF16
+    // weights authoritative for both prefill and decode. XS-2.1 ships the
+    // shared expert NVFP4-packed, so nothing overrides `weights.shared_expert`
+    // and it stays on the quantized path (`has_mixed_bf16_shared_expert()`
+    // reports false, which is what keeps the fused routed kernels' shared
+    // contribution rather than recomputing it in BF16).
+    if let Some((shared_gate, shared_up, shared_down)) = bf16_shared {
+        layer.set_bf16_shared_expert(shared_gate, shared_up, shared_down)?;
+    }
     if unified_moe_layout {
         layer.transpose_for_prefill_unified(gpu, config)?;
     }
-    // Native NVFP4 CUTLASS grouped MoE (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1).
+    // Native NVFP4 CUTLASS grouped MoE (AVAROK_HOLO_MOE_GROUPED_CUTLASS=1).
     // The routed grouped GEMMs are ~47% of Laguna's C=1 prefill GPU time and
     // otherwise run on the w4a16 kernels, which LUT-dequant NVFP4 to FP8 per
     // tile. The SFB swizzle is built from whichever scale tables exist —
@@ -180,7 +228,7 @@ fn load_moe_ffn(
         // or a CUDA fault, with nothing in the logs to say why.
         anyhow::ensure!(
             !unified_moe_layout,
-            "ATLAS_UNIFIED_MOE_LAYOUT and ATLAS_HOLO_MOE_GROUPED_CUTLASS cannot \
+            "AVAROK_UNIFIED_MOE_LAYOUT and AVAROK_HOLO_MOE_GROUPED_CUTLASS cannot \
              both be set: the unified transpose frees the original expert \
              weights that the grouped-CUTLASS prefill path reads. Pick one."
         );
@@ -373,11 +421,11 @@ fn compute_yarn_inv_freq(config: &ModelConfig, gpu: &dyn GpuBackend) -> Result<D
 /// Computed in f64 and narrowed once, so the stored values are at least as
 /// accurate as the kernel's own FP64 `pow` followed by an f32 store.
 /// Build the CUTLASS grouped-NVFP4 SFB tables at load
-/// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS=1`). Costs ~7.1 GB of device memory for
+/// (`AVAROK_HOLO_MOE_GROUPED_CUTLASS=1`). Costs ~7.1 GB of device memory for
 /// Laguna (256 experts x 47 layers x 3 projections), so it is opt-in.
 fn cutlass_grouped_moe_enabled() -> bool {
     matches!(
-        std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS").as_deref(),
+        std::env::var("AVAROK_HOLO_MOE_GROUPED_CUTLASS").as_deref(),
         Ok("1") | Ok("true")
     )
 }
@@ -395,9 +443,9 @@ fn compute_plain_inv_freq(theta: f64, dim: usize, gpu: &dyn GpuBackend) -> Resul
 }
 
 /// Opt out of the precomputed sliding-layer RoPE table with
-/// `ATLAS_LAGUNA_ROPE_TABLE=0` (falls back to the on-the-fly rope kernel).
+/// `AVAROK_LAGUNA_ROPE_TABLE=0` (falls back to the on-the-fly rope kernel).
 fn sliding_rope_table_enabled() -> bool {
-    std::env::var("ATLAS_LAGUNA_ROPE_TABLE").as_deref() != Ok("0")
+    std::env::var("AVAROK_LAGUNA_ROPE_TABLE").as_deref() != Ok("0")
 }
 
 #[cfg(test)]

@@ -26,7 +26,7 @@ pub(super) fn load_lora_qkv(ctx: &mut MistralLayerCtx<'_>) -> Result<()> {
     // Runtime NVFP4 quantization of the MLA projection weights gives a
     // ~1.5× decode speedup on GB10. The RMS norm immediately after each
     // projection dampens NVFP4 errors before caching. Set
-    // ATLAS_NVFP4_MLA=0 to force BF16.
+    // AVAROK_NVFP4_MLA=0 to force BF16.
     let wq_a_dense = dense(ctx.store, &format!("{ap}.wq_a.weight"))?;
     let wq_a_nvfp4 = Some(quantize_to_nvfp4(
         &wq_a_dense,

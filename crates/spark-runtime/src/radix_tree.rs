@@ -13,8 +13,10 @@ use parking_lot::Mutex;
 use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
+mod partial_tail;
 mod snapshot;
 mod snapshot_insert;
+mod snapshot_session;
 mod snapshot_stats;
 mod snapshot_tier;
 
@@ -95,7 +97,7 @@ impl PrefixCache for RadixTree {
         // Tier-aware: `lookup_tiered` returns the deepest anchor across resident
         // AND spilled entries. A resident hit populates `ssm_snapshot` (restore
         // directly); a spilled hit populates `ssm_snapshot_tier_key` (caller
-        // faults it in). When nothing is spilled (ATLAS_SSM_TIER off) this is
+        // faults it in). When nothing is spilled (AVAROK_SSM_TIER off) this is
         // byte-identical to the old resident-only lookup.
         let mut ssm_snapshot = None;
         let mut ssm_snapshot_tokens = 0;

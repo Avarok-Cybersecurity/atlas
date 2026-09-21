@@ -21,7 +21,7 @@ And the kernel micro-benchmark summary: **Atlas wins 32/32** against PyTorch on 
 
 Atlas has two benchmark surfaces:
 
-1. **End-to-end HTTP throughput** — `atlas-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
+1. **End-to-end HTTP throughput** — `avarok-spark-bench` (client-side Criterion harness targeting a running server). This is what "131 tok/s" means.
 2. **Per-kernel micro-benchmarks** — Criterion benches in each primitive crate, run with `cargo bench`. This is where "4.95× prefill attention" comes from.
 
 Different things; both are meaningful. The E2E number is what an operator sees. The per-kernel number is what tells the kernel engineer where effort is paying back.
@@ -44,9 +44,9 @@ sudo docker run -d --name atlas-35b \
 Wait for `listening`. Then:
 
 ```bash
-export ATLAS_BENCH_URL=http://localhost:8888
+export AVAROK_BENCH_URL=http://localhost:8888
 cd /path/to/atlas
-cargo bench -p atlas-spark-bench
+cargo bench -p avarok-spark-bench
 ```
 
 Criterion saves results to `target/criterion/`. The stable JSON snapshots that the README quotes are pinned under `bench/`.
@@ -57,7 +57,7 @@ The `scripts/sweep_all_models.sh` helper boots each model in turn, runs the cano
 
 ```bash
 cargo bench -p spark-runtime        # KV cache ops, sampler micro
-cargo bench -p atlas-spark-bench    # end-to-end client benchmarks
+cargo bench -p avarok-spark-bench    # end-to-end client benchmarks
 ```
 
 Criterion-driven, from each crate's `benches/*.rs`. Reference shapes come from Qwen3-Next-80B (hidden=2048, 16 Q-heads, 2 KV-heads, head_dim=256, intermediate=512, num_experts=256, topk=10).
@@ -185,6 +185,84 @@ takes the schema default. An unknown key is an error listing the valid ones,
 because a silently-ignored override produces a run measuring something other
 than what you asked for.
 
+### Sharded benchmarks (known-answer tests)
+
+Two legs dominate every certification campaign: the BFCL draws are ~1000 samples
+each and run for hours, so a failure in one is not visible until the campaign is
+nearly over. They are **known-answer tests** — an input, an expected output,
+scored for accuracy — so the work is embarrassingly parallel: split the draw,
+run the pieces on different boxes, merge, score once.
+
+`bfcl-subset` and `bfcl-subset-echolp` are therefore **benchmark groups**. The
+gate id is unchanged; what changed is how its number is produced — and since
+2026-09-13 a complete partition of **shards** is the **only** thing that
+produces it: a whole-draw record under the gate's own id no longer satisfies
+the gate, and the verdict says so by name if one is all the directory holds.
+A shard is the group's own benchmark run with `--param shard=i/n`; its record
+is filed under the group with `-s<i>of<n>` in the name and carries
+`shard.index` / `shard.count` in its metrics. The shard **count is not
+fixed**: the campaign picks `n` for the fleet it has — `spark bench certify`
+defaults to two shards per box, and one box alone runs the whole draw as
+`0/1` — and the verdict accepts the newest complete partition the records at
+one commit form, whatever its `n`. A partition begun at this commit is
+finished at its own count (`gate::shards_owed`), never restarted at another.
+
+```
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=0/2   # on dgx1
+spark benchmark run bfcl-subset --pull-request-gate --hardware gb10 --param shard=1/2   # on dgx2
+spark benchmark aggregate bfcl-subset      # what the group scores, and what is missing
+spark bench certify --shards 6             # or let the campaign choose and place them
+```
+
+Selection is a **stride within each subset** — row `i` goes to shard `i % n` —
+so every shard gets a proportional slice of every subset, and a 16-row subset
+does not vanish from most of them.
+
+The index is **0-based**, so the whole draw is `0/1` and `1/1` is refused (it is
+index 1 of one shard). Run by hand without `--param shard`, the benchmark
+measures the whole draw and writes a whole-draw record — fine for a
+measurement, not evidence for the gate.
+
+#### What the group refuses, and why
+
+Merging counts is only sound if the parts really are the draw, so a group is
+judged only when these conditions hold. Each of these was a way to get a
+**passing number for a measurement that never happened**:
+
+| Refusal | What it catches |
+|---|---|
+| no complete partition at one commit | n-1 shards is not (n-1)/n measured, it is a different sample set; and a partition is never assembled across commits — a group is ONE measurement, so a shard re-run at a newer commit re-opens the group until its siblings join it there |
+| the shard indices are not `0..n` once each | two records of the same shard — the row count is still right, and one shard was measured twice while another never ran; the newest record per index counts, so a duplicate is a re-run, never a stand-in |
+| a shard reports transport failures | those samples were scored as "made no call", which is the *correct* answer across the irrelevance subsets, so a degraded shard can raise the aggregate while measuring less |
+| a shard is off-subject, failed, dirty or unsigned | the per-record rules a plain gate applies — required checkpoint, completed frame, clean tree, verified `.sig` — apply to every shard; a slice of a measurement is not exempt |
+
+The second deserves emphasis: the `samples` threshold is pinned exactly
+(`min == max == 995`) and **cannot** catch a duplicated shard, because the
+duplicate still contributes the right number of rows.
+
+Aggregation is over **counts, never scores**. `score.py` weights
+hierarchically, so the mean of shard scores is not the whole-set value; the
+group sums each subset's `(hits, n)` integers and applies the hierarchy once.
+
+#### The number is partition-dependent, and that is the certified regime
+
+The shards are scored **open**: cross-request SSM snapshot reuse stays on, as
+in production, and the serve is not `--hermetic`. The consequence is measured
+(#936): running the golden draw whole and as its four shards at one commit
+changes the answer on **12 of 995** samples — ten in `live_irrelevance`, one
+each in `live_multiple` and `live_parallel_multiple` — because a request
+restores from whichever SSM snapshot an earlier request left behind. The twelve
+are listed in `benchmarks::bfcl::sensitive`; every run warns on each one it
+scores and reports the count as `known_partition_sensitive`. The floors for
+both gates are cut from the **sharded** aggregate, so the bar and the
+measurement are taken under the same regime. `--hermetic` closes the channels
+(0 of 995) and is the subject of `kat-equality-gate`, not of these gates.
+
+Only `Sensitivity::Correctness` benchmarks may be grouped. For a speed
+benchmark the timing *is* the number, and four quarter-length runs across three
+boxes have a different wall, TTFT distribution and concurrency profile from one
+serial run — no arithmetic recovers the original.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -200,7 +278,7 @@ collecting numbers rather than gating on them.
 ### Run history
 
 Every run — from the CLI *or* the dashboard — is recorded under
-`~/.atlas/runs/<benchmark-id>/`, carrying the result, every parameter used (not
+`~/.avarok/runs/<benchmark-id>/`, carrying the result, every parameter used (not
 just the ones you overrode), the target, the source, and the Atlas version. So
 a stored run says what it measured and can be reproduced.
 
@@ -214,9 +292,9 @@ History pane, and a dashboard run appears in `spark benchmark history` marked
 `tui`.
 
 Machine-readable output goes to **stdout**, progress to **stderr**, so
-`--format json > run.json` is a clean file. `ATLAS_HOME` relocates the store.
+`--format json > run.json` is a clean file. `AVAROK_HOME` relocates the store.
 
-- `crates/atlas-spark-bench/src/lib.rs` — E2E harness.
+- `crates/avarok-spark-bench/src/lib.rs` — E2E harness.
 - Each primitive crate's `benches/*.rs` — per-kernel micro.
 - `bench/*.json` — pinned result snapshots.
 - `scripts/sweep_all_models.sh`, `scripts/run_conc_benchmark.sh` — automation.

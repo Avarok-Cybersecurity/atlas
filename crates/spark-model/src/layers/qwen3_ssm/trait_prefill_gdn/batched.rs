@@ -42,7 +42,7 @@ impl Qwen3SsmLayer {
         let beta_ptr = gdn_bufs.gate_beta.offset(nv * fp32);
         let gb_stride = (nv * 2) as u32;
 
-        // ── Batched FLA scan (ATLAS_GDN_BATCHED_FLA) ──
+        // ── Batched FLA scan (AVAROK_GDN_BATCHED_FLA) ──
         // Route the co-dispatched GDN through the chunk-parallel FLA kernels at
         // batch=N instead of the occupancy-starved wy64 [nv,batch]. FLA's
         // chunk_delta_h grid is [nv,batch] too, but at batch=N gives 32N CTAs
@@ -68,8 +68,13 @@ impl Qwen3SsmLayer {
                 return ops::gdn_prefill_fla(
                     ctx.gpu,
                     self.gdn_prefill_fla_recompute_wu_k,
+                    self.gdn_prefill_fla_recompute_wu_hopper_k,
+                    self.gdn_prefill_fla_chunk_fwd_o_hopper_k,
                     self.gdn_prefill_fla_chunk_delta_h_k,
                     self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
+                    self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,
+                    self.gdn_prefill_fla_chunk_delta_h_fused_k,
+                    self.gdn_prefill_fla_chunk_delta_h_tma_k,
                     self.gdn_prefill_fla_chunk_fwd_o_k,
                     h_state_ptrs, // per-request pointer table
                     q_ptr,
@@ -271,8 +276,13 @@ impl Qwen3SsmLayer {
         ops::gdn_prefill_fla(
             ctx.gpu,
             self.gdn_prefill_fla_recompute_wu_k,
+            self.gdn_prefill_fla_recompute_wu_hopper_k,
+            self.gdn_prefill_fla_chunk_fwd_o_hopper_k,
             self.gdn_prefill_fla_chunk_delta_h_k,
             self.gdn_prefill_fla_chunk_delta_h_tc_vblock_k,
+            self.gdn_prefill_fla_chunk_delta_h_tcfuse_k,
+            self.gdn_prefill_fla_chunk_delta_h_fused_k,
+            self.gdn_prefill_fla_chunk_delta_h_tma_k,
             self.gdn_prefill_fla_chunk_fwd_o_k,
             h_state_ptrs,
             q_ptr,

@@ -454,7 +454,7 @@ mod tests {
     #[test]
     fn load_from_dir_reads_multiple_lqer_files() {
         let tmp = std::env::temp_dir().join(format!(
-            "atlas_lqer_test_{}",
+            "avarok_lqer_test_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

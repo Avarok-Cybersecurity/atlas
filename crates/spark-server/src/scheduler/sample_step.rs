@@ -4,6 +4,21 @@
 
 use super::*;
 
+/// A4 POST_THINK_MIN_REASONING floor width, installed once at scheduler
+/// boot from MODEL.toml `[behavior].min_reasoning_floor_tokens`. Default 16
+/// preserves the historical constant for every model that does not set the
+/// key; 0 disables the floor.
+static MIN_REASONING_FLOOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16);
+
+/// Install the per-model A4 floor (called from `WatchdogCfg::from_behavior`).
+pub fn set_min_reasoning_floor(v: u32) {
+    MIN_REASONING_FLOOR.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn min_reasoning_floor() -> u32 {
+    MIN_REASONING_FLOOR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Which decode position a [`penalty_params_for`] /
 /// [`crate::scheduler::logit_processors::process_position_logits`] call is
 /// building for. The single discriminant that distinguishes the non-MTP
@@ -19,7 +34,7 @@ pub(super) enum PositionKind {
 
 impl PositionKind {
     /// AdaDec diagnostic path label — only tags the env-gated
-    /// `ATLAS_ADADEC_DIAGNOSTIC` JSONL record; never alters a transform.
+    /// `AVAROK_ADADEC_DIAGNOSTIC` JSONL record; never alters a transform.
     pub(super) fn adadec_label(self) -> &'static str {
         match self {
             PositionKind::FinalDecode => "decode",
@@ -88,7 +103,7 @@ pub(super) fn strip_in_tool_opener_bias(
 ///
 /// Those literals bypassed the exact FP8/NVFP4 argmax-flip safety net the
 /// floor exists for. Threading the resolved value is the SSOT wiring fix and
-/// is on by default; `ATLAS_NO_MTP_MINP=1` restores the literals. The switch
+/// is on by default; `AVAROK_NO_MTP_MINP=1` restores the literals. The switch
 /// is `SchedLevers::mtp_minp`, read off the run's levers rather than a static.
 pub(super) fn effective_min_p(
     min_p: f32,
@@ -156,10 +171,19 @@ pub(super) fn penalty_params_for(
     // on the non-MTP path. INTENDED DELTA: because the builder is now the
     // SSOT for BOTH paths, A4 is ALSO active on the MTP verify path (where
     // it was previously dead — the verify path never ran the inline floor).
-    const A4_MIN_REASONING_TOKENS: u32 = 16;
-    if a.inside_thinking
-        && a.thinking_tokens < A4_MIN_REASONING_TOKENS
-        && a.thinking_budget.unwrap_or(A4_MIN_REASONING_TOKENS) >= A4_MIN_REASONING_TOKENS
+    // Floor width is per-model (MODEL.toml `[behavior].min_reasoning_floor_tokens`,
+    // installed at boot via `set_min_reasoning_floor`): 16 is the historical
+    // constant; 0 disables. A model with card-native brief thinking
+    // (reasoning_effort=low closes its think at ~10 tokens) must not have
+    // `</think>` suppressed — the turn-ending mass reroutes to
+    // <|im_end|>/<|im_start|> and sampled runs EOS inside think (empty
+    // body) or simulate new template turns (measured on qwen4_exp,
+    // 2026-08-26, via AVAROK_LOGIT_DUMP).
+    let floor = min_reasoning_floor();
+    if floor > 0
+        && a.inside_thinking
+        && a.thinking_tokens < floor
+        && a.thinking_budget.unwrap_or(floor) >= floor
         && let Some(end_tok) = a.think_end_token
     {
         logit_bias.push((end_tok, -8.0f32));
@@ -265,7 +289,7 @@ pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f3
 /// internal `SamplingParams`, so the only stochastic first-token sample
 /// under MTP bypassed the FP8 argmax-flip safety net the floor documents
 /// (min_p_floor = 0.05 on this model family). Kill-switch:
-/// `ATLAS_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
+/// `AVAROK_NO_MTP_MINP=1` restores the old 0.0 literal via [`effective_min_p`].
 pub fn sample_token(
     model: &dyn Model,
     logits: DevicePtr,
@@ -304,6 +328,24 @@ pub fn sample_token(
             })
             .collect()
     };
+    // Raw-logits dump for numerics triage (`AVAROK_DUMP_LOGITS_PATH=/dir`):
+    // appends this step's FP32 logits to a flat binary. The reporting APIs
+    // only expose post-softmax values, which cannot distinguish flat from
+    // mis-scaled from stale; raw rows across consecutive steps can.
+    if let Ok(dir) = std::env::var("AVAROK_DUMP_LOGITS_PATH") {
+        use std::io::Write;
+        let path = std::path::Path::new(&dir).join("logits_stok.bin");
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(f32_logits.as_ptr() as *const u8, vocab_size * 4)
+            };
+            let _ = f.write_all(bytes);
+        }
+    }
     // Suppress EOS tokens on first token by setting to -inf.
     for &id in suppress_ids {
         if (id as usize) < vocab_size {
@@ -377,11 +419,11 @@ pub fn sample_token_with_grammar(
     // ── FAST PATH (#3, 2026-06-02): on-GPU greedy pick under grammar ──
     // The MTP bootstrap sample (~1 token/step) otherwise D2Hs + dequants the
     // full 248k vocab + applies the bitmask on host. When greedy (temp=0 or
-    // ATLAS_FORCE_TEMP_ZERO), penalties neutral, and no suppress list, the
+    // AVAROK_FORCE_TEMP_ZERO), penalties neutral, and no suppress list, the
     // masked-greedy pick == the GPU argmax whenever that argmax is grammar-
     // allowed (global max ∩ allowed-set = the max). Emit it directly; fall back
     // to the host path below only when the argmax is grammar-disallowed.
-    // Mirrors the verify-path fast path. Kill-switch ATLAS_DISABLE_FAST_GREEDY=1.
+    // Mirrors the verify-path fast path. Kill-switch AVAROK_DISABLE_FAST_GREEDY=1.
     //
     // #237 (fix 4a): penalty-neutrality relaxed to the SSOT `fast_greedy`
     // gate shared with the verify helper — reduce-only penalties cannot flip
@@ -475,7 +517,7 @@ pub fn sample_token_with_grammar(
             // hardcoded 0.0, so the MTP BOOTSTRAP token — one of only two
             // stochastic sample points under MTP — bypassed the FP8
             // argmax-flip safety net the floor documents. Kill-switch:
-            // ATLAS_NO_MTP_MINP=1 restores the 0.0 literal.
+            // AVAROK_NO_MTP_MINP=1 restores the 0.0 literal.
             min_p: effective_min_p(penalties.min_p, levers),
             logit_bias: Vec::new(),
             repetition_penalty: 1.0,
@@ -524,7 +566,14 @@ pub fn sample_token_with_grammar(
 /// the only two stochastic sample points under MTP (with the bootstrap),
 /// so the unfloored min_p let the FP8/NVFP4 degenerate logit tail be
 /// sampled exactly where the floor was designed to block it. Kill-switch:
-/// `ATLAS_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
+/// `AVAROK_NO_MTP_MINP=1` restores the 0.0 literals via [`effective_min_p`].
+///
+/// `policy` (2026-09-06): whether the grammar may act on token 0 at all.
+/// A sequence born inside `<think>` keeps its matcher paused until
+/// `</think>`, exactly as the decode loop does for tokens 1..N — see
+/// [`super::first_token_policy`] for the invariant and the defect it closes.
+/// The policy is derived by the caller from the SAME predicate that births
+/// `ActiveSeq::inside_thinking`; this function never re-derives it.
 pub fn sample_first_token(
     model: &dyn Model,
     logits: DevicePtr,
@@ -534,60 +583,48 @@ pub fn sample_first_token(
     min_p: f32,
     suppress_ids: &[u32],
     grammar_state: Option<&mut GrammarState>,
+    policy: FirstTokenPolicy,
     levers: &crate::scheduler::logit_processors::SamplingLevers,
 ) -> Result<u32> {
-    let Some(gs) = grammar_state else {
-        return sample_token(
+    first_token_with(policy, suppress_ids, grammar_state, |ids, gs| {
+        let Some(gs) = gs else {
+            return sample_token(model, logits, temperature, top_k, top_p, min_p, ids, levers);
+        };
+        let neutral = SamplingParams {
+            temperature,
+            top_k,
+            top_p,
+            top_n_sigma: 0.0,
+            // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
+            // inside `sample_token_with_grammar` (kill-switch applied there).
+            min_p,
+            logit_bias: Vec::new(),
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            repetition_penalty_window: 0,
+            lz_penalty: 0.0,
+            dry_multiplier: 0.0,
+            dry_base: DEFAULT_DRY_BASE,
+            dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
+            dry_sequence_breakers: Vec::new(),
+            max_tokens: 0,
+            stop_token_ids: Vec::new(),
+            seed: None,
+        };
+        sample_token_with_grammar(
             model,
             logits,
             temperature,
             top_k,
             top_p,
-            min_p,
-            suppress_ids,
+            ids,
+            Some(gs),
+            &neutral,
+            &[],
             levers,
-        );
-    };
-    let neutral = SamplingParams {
-        temperature,
-        top_k,
-        top_p,
-        top_n_sigma: 0.0,
-        // P1-4 (2026-07-09): resolved min_p, consumed via `penalties.min_p`
-        // inside `sample_token_with_grammar` (kill-switch applied there).
-        min_p,
-        logit_bias: Vec::new(),
-        repetition_penalty: 1.0,
-        presence_penalty: 0.0,
-        frequency_penalty: 0.0,
-        repetition_penalty_window: 0,
-        lz_penalty: 0.0,
-        dry_multiplier: 0.0,
-        dry_base: DEFAULT_DRY_BASE,
-        dry_allowed_length: DEFAULT_DRY_ALLOWED_LENGTH,
-        dry_sequence_breakers: Vec::new(),
-        max_tokens: 0,
-        stop_token_ids: Vec::new(),
-        seed: None,
-    };
-    let tok = sample_token_with_grammar(
-        model,
-        logits,
-        temperature,
-        top_k,
-        top_p,
-        suppress_ids,
-        Some(gs),
-        &neutral,
-        &[],
-        levers,
-    )?;
-    // Advance the matcher past the first token (the emit_step accept_token
-    // only runs for tokens 2..N). A grammar-disallowed first token here would
-    // indicate the mask was not applied — keep going rather than abort; the
-    // emit_step disengage path handles any later desync gracefully.
-    gs.accept_token(tok);
-    Ok(tok)
+        )
+    })
 }
 
 #[cfg(test)]

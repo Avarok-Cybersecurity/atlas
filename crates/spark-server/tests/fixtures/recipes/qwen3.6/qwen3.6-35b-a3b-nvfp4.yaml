@@ -52,7 +52,7 @@ metadata:
     the SSM snapshot-eviction fix (atlas#287). Without it, deep multi-turn
     conversations freeze the warm-restore anchor and replay up to 18.6k
     tokens/turn through the GDN layers (TTFT tail to 40 s).
-  maintainer: avarok
+  maintainer: atlas
   category: agent
   model_params: 35B
   model_dtype: nvfp4

@@ -3,11 +3,11 @@
 //! Integration smoke test: loads real model weights and runs inference.
 //!
 //! Requires GPU hardware and model weights. Set
-//! `ATLAS_INTEGRATION_MODEL_DIR` to the absolute path of a HuggingFace
+//! `AVAROK_INTEGRATION_MODEL_DIR` to the absolute path of a HuggingFace
 //! snapshot directory before running. Tests are `#[ignore]`d by default;
 //! invoke with:
 //!
-//!   ATLAS_INTEGRATION_MODEL_DIR=/path/to/snapshot \
+//!   AVAROK_INTEGRATION_MODEL_DIR=/path/to/snapshot \
 //!     cargo test -p spark-server --release -- --ignored
 //!
 //! When the env var is unset, tests skip with a clear message instead of
@@ -16,15 +16,15 @@
 use anyhow::Result;
 use std::path::Path;
 
-/// Default snapshot used when `ATLAS_INTEGRATION_MODEL_DIR` is unset.
+/// Default snapshot used when `AVAROK_INTEGRATION_MODEL_DIR` is unset.
 /// Pinned to a Qwen3-Next-80B NVFP4 snapshot known to exercise the
 /// hybrid SSM+attention path; override via env var to test other models.
 const DEFAULT_MODEL_DIR: &str = "~/.cache/huggingface/hub/models--nvidia--Qwen3-Next-80B-A3B-Instruct-NVFP4/snapshots/8fb2682f136cf94d932a498f18cb1e428832a912";
 
-/// Resolve the model dir from `ATLAS_INTEGRATION_MODEL_DIR` (env, with
+/// Resolve the model dir from `AVAROK_INTEGRATION_MODEL_DIR` (env, with
 /// `~` expansion) or fall back to `DEFAULT_MODEL_DIR`.
 fn model_dir_path() -> std::path::PathBuf {
-    let raw = std::env::var("ATLAS_INTEGRATION_MODEL_DIR")
+    let raw = std::env::var("AVAROK_INTEGRATION_MODEL_DIR")
         .unwrap_or_else(|_| DEFAULT_MODEL_DIR.to_string());
     if let Some(rest) = raw.strip_prefix("~/")
         && let Some(home) = std::env::var_os("HOME")
@@ -39,7 +39,7 @@ fn setup_model(
     model_dir: &Path,
 ) -> Result<(
     Box<dyn spark_model::traits::Model>,
-    atlas_core::config::ModelConfig,
+    avarok_core::config::ModelConfig,
 )> {
     let config_path = model_dir.join("config.json");
     let config_json = std::fs::read_to_string(&config_path)?;
@@ -48,7 +48,7 @@ fn setup_model(
     // `from_str::<ModelConfig>` fails on it with "missing field hidden_size".
     // This is the same parser the server uses, so the test cannot diverge from
     // what production accepts.
-    let mut config = atlas_core::config::parse_config(&config_json)?;
+    let mut config = avarok_core::config::parse_config(&config_json)?;
     tracing::info!(
         "Config: {} layers, vocab={}, hidden={}",
         config.num_hidden_layers,
@@ -56,9 +56,9 @@ fn setup_model(
         config.hidden_size
     );
 
-    let ptx_modules = atlas_kernels::ptx_modules();
+    let ptx_modules = avarok_kernels::ptx_modules();
     let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(
-        spark_runtime::cuda_backend::AtlasCudaBackend::new(0, &ptx_modules)?,
+        spark_runtime::cuda_backend::AvarokCudaBackend::new(0, &ptx_modules)?,
     );
     let total = gpu.total_memory()?;
     let free = gpu.free_memory()?;
@@ -73,6 +73,8 @@ fn setup_model(
         ep_world_size: 1,
         num_experts: 0,
         peak_memory_multiplier: None,
+        skip_activation_scales: false,
+        skip_mtp: false,
     };
     use spark_runtime::weights::WeightLoader;
     let store = loader.load(model_dir, gpu.as_ref(), 1024 * 1024 * 1024)?;
@@ -140,7 +142,7 @@ fn setup_model(
 /// Helper: generate tokens from a prompt, returning (generated_token_ids, tok_per_sec).
 fn generate(
     model: &dyn spark_model::traits::Model,
-    config: &atlas_core::config::ModelConfig,
+    config: &avarok_core::config::ModelConfig,
     prompt_tokens: &[u32],
     max_new_tokens: usize,
 ) -> Result<(Vec<u32>, f64)> {
@@ -190,7 +192,7 @@ fn smoke_test_single_decode() -> Result<()> {
     if !model_dir_buf.exists() {
         eprintln!(
             "SKIP: model directory not found: {}\n      \
-             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+             Set AVAROK_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
             model_dir_buf.display()
         );
         return Ok(());
@@ -296,7 +298,7 @@ fn coherence_test_capital_of_france() -> Result<()> {
     if !model_dir_buf.exists() {
         eprintln!(
             "SKIP: model directory not found: {}\n      \
-             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+             Set AVAROK_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
             model_dir_buf.display()
         );
         return Ok(());
@@ -377,7 +379,7 @@ fn streaming_coherence_test() -> Result<()> {
     if !model_dir_buf.exists() {
         eprintln!(
             "SKIP: model directory not found: {}\n      \
-             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+             Set AVAROK_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
             model_dir_buf.display()
         );
         return Ok(());
@@ -466,7 +468,7 @@ fn speculative_decode_coherence() -> Result<()> {
     if !model_dir_buf.exists() {
         eprintln!(
             "SKIP: model directory not found: {}\n      \
-             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+             Set AVAROK_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
             model_dir_buf.display()
         );
         return Ok(());
@@ -538,7 +540,7 @@ fn speculative_decode_coherence() -> Result<()> {
 /// 5. a control sequence WITHOUT the flag collects nothing (zero-cost
 ///    default path untouched).
 #[test]
-#[ignore] // Requires GPU + model weights (ATLAS_INTEGRATION_MODEL_DIR)
+#[ignore] // Requires GPU + model weights (AVAROK_INTEGRATION_MODEL_DIR)
 fn prompt_logprobs_collection_during_prefill() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter("info")
@@ -548,7 +550,7 @@ fn prompt_logprobs_collection_during_prefill() -> Result<()> {
     if !model_dir_buf.exists() {
         eprintln!(
             "SKIP: model directory not found: {}\n      \
-             Set ATLAS_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
+             Set AVAROK_INTEGRATION_MODEL_DIR to a HuggingFace snapshot path.",
             model_dir_buf.display()
         );
         return Ok(());
@@ -663,7 +665,7 @@ fn free_device_memory_bytes() -> Result<usize> {
 ///
 /// Run it deliberately:
 /// ```text
-/// ATLAS_INTEGRATION_MODEL_DIR=<snapshot> \
+/// AVAROK_INTEGRATION_MODEL_DIR=<snapshot> \
 ///   cargo test -p spark-server --test integration teardown_returns -- --ignored --nocapture
 /// ```
 /// Before trusting any self-relative number, check nothing else is on the GPU:
@@ -681,7 +683,7 @@ fn teardown_returns_the_vram_it_took() -> Result<()> {
     // keeps consuming until it OOMs) from driver RETENTION (which plateaus
     // because the freed pages are reused even though `MemAvailable` does not
     // show them coming back).
-    let cycles: usize = std::env::var("ATLAS_TEARDOWN_CYCLES")
+    let cycles: usize = std::env::var("AVAROK_TEARDOWN_CYCLES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3);

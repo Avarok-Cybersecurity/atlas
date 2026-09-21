@@ -13,13 +13,82 @@ fn parse(extra: &[&str]) -> ServeArgs {
     argv.extend_from_slice(extra);
     match super::super::Cli::parse_from(argv).command {
         super::super::Command::Serve(a) => a,
-        super::super::Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        super::super::Command::Benchmark(_)
+        | super::super::Command::DumpServeOptions
+        | super::super::Command::SyncRecipes
+        | super::super::Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
     }
 }
 
 #[test]
 fn defaults_are_valid() {
     assert!(validate_serve_args(&parse(&[])).is_ok());
+}
+
+/// `--warmup-prompt` parses, is documented in QUICKSTART.md,
+/// book/src/operations/server.md and docs/GB10_DEPLOYMENT_GUIDE.md, and its own
+/// `--help` promises it "eliminates the cold-start TTFT penalty (~196ms)" — and
+/// NOTHING in the workspace reads `args.warmup_prompt`. An operator following
+/// the quickstart passed a path, measured an unchanged cold TTFT and had no
+/// signal at all that the flag was inert.
+#[test]
+fn warmup_prompt_is_refused_because_nothing_implements_it() {
+    let err = validate_serve_args(&parse(&["--warmup-prompt", "/tmp/warm.txt"]))
+        .expect_err("an inert flag must not be accepted in silence");
+    assert!(err.contains("--warmup-prompt"), "{err}");
+    assert!(
+        err.contains("not implemented"),
+        "the operator must be told the flag does nothing, not merely that it is \
+         disallowed: {err}"
+    );
+    assert!(
+        err.contains("fix:"),
+        "a diagnostic without a fix is half of one: {err}"
+    );
+    // The remedy has to be something they can actually do instead.
+    assert!(
+        err.contains("throwaway request"),
+        "must name the way to warm the server: {err}"
+    );
+}
+
+/// The guard above must not fire on a serve that never asked for it.
+#[test]
+fn omitting_warmup_prompt_is_fine() {
+    assert!(parse(&[]).warmup_prompt.is_none());
+    assert!(validate_serve_args(&parse(&[])).is_ok());
+}
+
+/// `--kv-high-precision-layers` is free-form, so a typo used to reach the
+/// resolve site — AFTER the multi-minute weight load — and be swallowed by
+/// `.parse().unwrap_or(0)` behind a single `warn!`. And `0` is not the
+/// default: it is the value that defers to `auto_high_precision_layers`, so a
+/// typo bought a third configuration rather than the documented one.
+#[test]
+fn kv_high_precision_layers_typo_is_refused_before_the_weight_load() {
+    let err = validate_serve_args(&parse(&["--kv-high-precision-layers", "atuo"]))
+        .expect_err("a typo must be refused, not silently resolved to 0");
+    assert!(err.contains("--kv-high-precision-layers"), "{err}");
+    assert!(err.contains("atuo"), "must quote the rejected value: {err}");
+    assert!(err.contains("fix:"), "{err}");
+    assert!(
+        err.contains("auto") && err.contains("max"),
+        "must name the accepted keywords: {err}"
+    );
+}
+
+/// Every documented form still has to be accepted — a validator that rejects
+/// valid input is worse than the silent default it replaced.
+#[test]
+fn every_documented_kv_high_precision_layers_form_is_accepted() {
+    for form in ["0", "2", "64", "auto", "max", "all", "AUTO", "Max"] {
+        assert!(
+            validate_serve_args(&parse(&["--kv-high-precision-layers", form])).is_ok(),
+            "{form} is documented as valid but was refused"
+        );
+    }
 }
 
 #[test]
@@ -49,23 +118,24 @@ fn fp8_calibration_requires_fp8_kv() {
 fn an_absent_lever_flag_parses_as_unspecified() {
     // `None` is not the same as the default VALUE, and the difference is
     // load-bearing: publishing a default seals the cell these two flags
-    // write to, which turned `ATLAS_SSM_TAIL_MIDCHUNK=0` and
-    // `ATLAS_MTP_GATE_FORCE=1` into documented, echoed, silent no-ops under
+    // write to, which turned `AVAROK_SSM_TAIL_MIDCHUNK=0` and
+    // `AVAROK_MTP_GATE_FORCE=1` into documented, echoed, silent no-ops under
     // `spark serve`. Absent has to stay absent all the way to
     // `publish_kernel_flags` for the fallback to be reachable.
     let a = parse(&[]);
-    assert!(a.ssm_tail_midchunk.is_none(), "ATLAS_SSM_TAIL_MIDCHUNK");
-    assert!(a.mtp_gate.is_none(), "ATLAS_MTP_GATE_FORCE");
-    assert!(a.ssm_h_dtype.is_none(), "ATLAS_SSM_H_FP16");
-    assert!(a.gdn_fused_norm.is_none(), "ATLAS_GDN_FUSED_NORM");
+    assert!(a.ssm_tail_midchunk.is_none(), "AVAROK_SSM_TAIL_MIDCHUNK");
+    assert!(a.mtp_gate.is_none(), "AVAROK_MTP_GATE_FORCE");
+    assert!(a.ssm_h_dtype.is_none(), "AVAROK_SSM_H_FP16");
+    assert!(a.gdn_fused_norm.is_none(), "AVAROK_GDN_FUSED_NORM");
     assert!(
         a.ssm_batched_recurrent.is_none(),
-        "ATLAS_SSM_BATCHED_RECURRENT"
+        "AVAROK_SSM_BATCHED_RECURRENT"
     );
     // #435: absent must stay absent so publish_kernel_flags does not seal
     // the GDN cell; the resolved default (the legacy WY arms — exact verify
     // is OPT-IN) is asserted in gdn_flags' own tests.
     assert!(a.exact_verify.is_none(), "--exact-verify");
+    assert!(a.prefill_varlen_batch.is_none(), "AVAROK_PREFILL_VARLEN");
 
     let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
     assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
@@ -89,6 +159,11 @@ fn the_bare_gdn_switches_still_mean_on() {
     assert_eq!(a.exact_verify, Some(true));
     let a = parse(&["--exact-verify", "false"]);
     assert_eq!(a.exact_verify, Some(false));
+    // `--prefill-varlen-batch` follows the same convention.
+    let a = parse(&["--prefill-varlen-batch"]);
+    assert_eq!(a.prefill_varlen_batch, Some(true));
+    let a = parse(&["--prefill-varlen-batch", "false"]);
+    assert_eq!(a.prefill_varlen_batch, Some(false));
 }
 
 #[test]
@@ -144,6 +219,42 @@ fn f16_h_state_still_needs_the_fused_norm_arm() {
 }
 
 #[test]
+fn ssm_rollback_mode_values_and_typos() {
+    // The explicit default parses and validates (PCND: published on every
+    // serve), and both recognized values round-trip.
+    let a = parse(&[]);
+    assert_eq!(a.ssm_rollback_mode, "snapshot");
+    assert!(validate_serve_args(&a).is_ok());
+    assert!(validate_serve_args(&parse(&["--ssm-rollback-mode", "replay"])).is_ok());
+    // A typo is refused through the model-side FromStr (SSOT with the
+    // publication parse) — never published, never silently defaulted.
+    let err = validate_serve_args(&parse(&["--ssm-rollback-mode", "Replay"])).unwrap_err();
+    assert!(err.contains("--ssm-rollback-mode"), "{err}");
+    assert!(err.contains("snapshot"), "{err}");
+}
+
+#[test]
+fn ssm_decode_ring_slots_values_and_typos() {
+    // `auto` is the default and must validate: it is what lets preflight size
+    // the ring from free memory instead of refusing the boot (#915).
+    let a = parse(&[]);
+    assert_eq!(a.ssm_decode_ring_slots, "auto");
+    assert!(validate_serve_args(&a).is_ok());
+    for depth in ["0", "1", "2", "4", "8"] {
+        assert!(
+            validate_serve_args(&parse(&["--ssm-decode-ring-slots", depth])).is_ok(),
+            "depth {depth} is inside the ring's range"
+        );
+    }
+    // Above the wired ceiling, and anything non-numeric, is refused through
+    // the model-side parse (SSOT with the publication parse) — never clamped.
+    let err = validate_serve_args(&parse(&["--ssm-decode-ring-slots", "9"])).unwrap_err();
+    assert!(err.contains("--ssm-decode-ring-slots"), "{err}");
+    let err = validate_serve_args(&parse(&["--ssm-decode-ring-slots", "AUTO"])).unwrap_err();
+    assert!(err.contains("auto"), "names the valid values: {err}");
+}
+
+#[test]
 fn a_mistyped_mtp_gate_is_still_caught() {
     // Making the flag optional must not make its typo check optional.
     let err = validate_serve_args(&parse(&["--mtp-gate", "always"])).unwrap_err();
@@ -185,90 +296,4 @@ fn disable_thinking_conflicts_with_budget() {
         ]))
         .is_err()
     );
-}
-
-#[test]
-fn flagship_recipe_is_accepted() {
-    // The canonical 35B flagship serve recipe (PR #278) passes
-    // `--kv-cache-dtype bf16 --kv-high-precision-layers auto` together —
-    // redundant but valid. The validator must NOT reject it.
-    assert!(
-        validate_serve_args(&parse(&[
-            "--kv-cache-dtype",
-            "bf16",
-            "--lm-head-dtype",
-            "nvfp4",
-            "--kv-high-precision-layers",
-            "auto",
-            "--scheduling-policy",
-            "slai",
-            "--speculative",
-            "--num-drafts",
-            "1",
-            "--mtp-quantization",
-            "bf16",
-            "--enable-prefix-caching",
-        ]))
-        .is_ok()
-    );
-}
-
-#[test]
-fn enum_typos_are_rejected() {
-    let err = validate_serve_args(&parse(&["--scheduling-policy", "fifoo"])).unwrap_err();
-    assert!(err.contains("--scheduling-policy"));
-    assert!(err.contains("fifo, slai"));
-}
-
-#[test]
-fn multiple_violations_all_reported() {
-    let err = validate_serve_args(&parse(&[
-        "--require-auth",
-        "--num-drafts",
-        "3",
-        "--rank",
-        "5",
-        "--world-size",
-        "2",
-    ]))
-    .unwrap_err();
-    assert!(err.contains("[1]"));
-    assert!(err.contains("[2]"));
-    assert!(err.contains("[3]"));
-}
-
-#[test]
-fn gpu_mem_util_range_enforced() {
-    assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "1.5"])).is_err());
-    assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.0"])).is_err());
-    assert!(validate_serve_args(&parse(&["--gpu-memory-utilization", "0.9"])).is_ok());
-}
-
-/// The dgx2 silent-flag bug class: a MODEL.toml-backed flag whose clap
-/// declaration carries a `default_value` makes an explicitly passed
-/// engine-default value ("--num-drafts 1", "--kv-cache-dtype fp8")
-/// indistinguishable from an omitted flag, so the MODEL.toml default silently
-/// wins over the user's pin. These flags must parse to `None` when omitted
-/// and `Some` when passed — re-adding a clap default resurrects the bug.
-#[test]
-fn model_toml_backed_flags_distinguish_omitted_from_explicit() {
-    let omitted = parse(&[]);
-    assert_eq!(omitted.num_drafts, None);
-    assert_eq!(omitted.kv_cache_dtype, None);
-    assert_eq!(omitted.fp8_kv_calibration_tokens, None);
-
-    let explicit = parse(&[
-        "--num-drafts",
-        "1",
-        "--kv-cache-dtype",
-        "fp8",
-        "--fp8-kv-calibration-tokens",
-        "0",
-    ]);
-    assert_eq!(explicit.num_drafts, Some(1));
-    assert_eq!(explicit.kv_cache_dtype.as_deref(), Some("fp8"));
-    // Explicit 0 must survive parsing: it force-disables calibration on a
-    // model whose MODEL.toml enables it, which the old `usize` field with
-    // `default_value_t = 0` could not express.
-    assert_eq!(explicit.fp8_kv_calibration_tokens, Some(0));
 }

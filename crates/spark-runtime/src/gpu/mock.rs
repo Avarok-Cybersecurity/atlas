@@ -6,6 +6,9 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[path = "mock_counters.rs"]
+mod mock_counters;
+
 #[derive(Debug)]
 pub struct MockAlloc {
     pub bytes: usize,
@@ -17,7 +20,14 @@ pub struct MockGpuBackend {
     op_cache: crate::op_cache::OpCache,
     allocs: Mutex<HashMap<u64, MockAlloc>>,
     next_ptr: Mutex<u64>,
+    max_allocation_bytes: AtomicUsize,
     launches: Mutex<Vec<MockLaunch>>,
+    kernel_lookups: Mutex<Vec<(String, String)>>,
+    /// Modules a test declares NOT compiled into this build; every other
+    /// module is present, as it always was.
+    absent_modules: Mutex<std::collections::HashSet<String>>,
+    /// `kernel(module, func)` returns Err for these pairs (lookup-fail tests).
+    denied_kernels: Mutex<Vec<(String, String)>>,
     /// Copy/sync shape counters. These exist so tests can assert the SHAPE of a
     /// bulk transfer, not just its bytes: the SSM snapshot spill regressed to
     /// 60 blocking `copy_d2h` calls (one full stream drain each, ~400 ms for
@@ -25,7 +35,28 @@ pub struct MockGpuBackend {
     syncs: AtomicUsize,
     d2h_blocking: AtomicUsize,
     d2h_async: AtomicUsize,
+    d2h_async_streams: Mutex<Vec<u64>>,
+    /// `(stream, completed D2H enqueue count)` at every synchronize call.
+    sync_d2h_async_counts: Mutex<Vec<(u64, usize)>>,
+    /// `copy_d2d`/`copy_d2d_async` calls — one eager launch each on the real
+    /// backend. The SSM verify rollback issued 2 per SSM layer per sequence
+    /// (96 on the 27B), so this counter is what proves a batched form
+    /// actually batched rather than merely looking different.
+    d2d: AtomicUsize,
+    /// `copy_d2d_2d_async` calls — ONE `cudaMemcpy2DAsync` each on the real
+    /// backend regardless of `height`. Counted apart from `d2d` so a test can
+    /// assert the SHAPE of the transfer, not just the bytes.
+    d2d_2d: AtomicUsize,
+    /// Streams supplied to asynchronous D2D copies, in dispatch order. Byte
+    /// movement alone cannot expose an ordering bug caused by enqueuing a copy
+    /// on the wrong stream, so stream-sensitive tests inspect this trace.
+    d2d_async_streams: Mutex<Vec<u64>>,
+    d2d_2d_async_streams: Mutex<Vec<u64>>,
     host_pinned_allocs: AtomicUsize,
+    /// Blocking `copy_h2d` calls and total bytes. Resident MLA must not
+    /// re-upload `[0..T]` history; token-append H2D stays O(1) in T.
+    h2d: AtomicUsize,
+    h2d_bytes: AtomicUsize,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +64,16 @@ pub struct MockLaunch {
     pub func: u64,
     pub grid: [u32; 3],
     pub block: [u32; 3],
+    pub shared_mem: u32,
+    pub stream: u64,
+    pub args: Vec<MockArg>,
+}
+
+/// Owned copy of a typed kernel argument at mock dispatch time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockArg {
+    Buffer(DevicePtr),
+    Bytes(Vec<u8>),
 }
 
 impl Default for MockGpuBackend {
@@ -47,47 +88,58 @@ impl MockGpuBackend {
             op_cache: crate::op_cache::OpCache::new(),
             allocs: Mutex::new(HashMap::new()),
             next_ptr: Mutex::new(0x1000_0000),
+            max_allocation_bytes: AtomicUsize::new(usize::MAX),
             launches: Mutex::new(Vec::new()),
+            kernel_lookups: Mutex::new(Vec::new()),
+            absent_modules: Mutex::new(std::collections::HashSet::new()),
+            denied_kernels: Mutex::new(Vec::new()),
             syncs: AtomicUsize::new(0),
             d2h_blocking: AtomicUsize::new(0),
             d2h_async: AtomicUsize::new(0),
+            d2h_async_streams: Mutex::new(Vec::new()),
+            sync_d2h_async_counts: Mutex::new(Vec::new()),
+            d2d: AtomicUsize::new(0),
+            d2d_2d: AtomicUsize::new(0),
+            d2d_async_streams: Mutex::new(Vec::new()),
+            d2d_2d_async_streams: Mutex::new(Vec::new()),
             host_pinned_allocs: AtomicUsize::new(0),
+            h2d: AtomicUsize::new(0),
+            h2d_bytes: AtomicUsize::new(0),
         }
-    }
-
-    pub fn alloc_count(&self) -> usize {
-        self.allocs.lock().len()
-    }
-
-    pub fn launch_count(&self) -> usize {
-        self.launches.lock().len()
-    }
-
-    /// `synchronize` calls so far — a proxy for "full stream drains", the cost
-    /// a batched gather exists to amortize.
-    pub fn sync_count(&self) -> usize {
-        self.syncs.load(Ordering::Relaxed)
-    }
-
-    /// BLOCKING `copy_d2h` calls (each one drains the stream on the real
-    /// backend). A bulk gather must have zero of these.
-    pub fn d2h_blocking_count(&self) -> usize {
-        self.d2h_blocking.load(Ordering::Relaxed)
-    }
-
-    /// `copy_d2h_async` calls (enqueue-only).
-    pub fn d2h_async_count(&self) -> usize {
-        self.d2h_async.load(Ordering::Relaxed)
-    }
-
-    /// `alloc_host_pinned` calls — the tripwire for a staging buffer that is
-    /// re-allocated per event instead of reused.
-    pub fn host_pinned_alloc_count(&self) -> usize {
-        self.host_pinned_allocs.load(Ordering::Relaxed)
     }
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
         self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
+    }
+
+    /// `bytes` from `src` to `dst` inside the simulated device memory.
+    ///
+    /// Real byte movement, not a no-op: a D2D that silently succeeds without
+    /// moving anything lets a test "pass" while asserting the destination is
+    /// still zero — the exact shape of a rollback bug this backend exists to
+    /// catch. Source is staged through a temporary so `src` and `dst` may sit
+    /// in the same allocation (the borrow checker would otherwise reject it,
+    /// and the real `cudaMemcpyAsync` accepts it for non-overlapping ranges).
+    fn blit(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut allocs = self.allocs.lock();
+        let staged = {
+            let (offset, alloc) = find_alloc(&allocs, src)
+                .ok_or_else(|| anyhow::anyhow!("copy_d2d: src {src} not allocated"))?;
+            if offset + bytes > alloc.bytes {
+                anyhow::bail!("copy_d2d: src {src} + {bytes} overruns its allocation");
+            }
+            alloc.data[offset..offset + bytes].to_vec()
+        };
+        let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
+            .ok_or_else(|| anyhow::anyhow!("copy_d2d: dst {dst} not allocated"))?;
+        if offset + bytes > alloc.bytes {
+            anyhow::bail!("copy_d2d: dst {dst} + {bytes} overruns its allocation");
+        }
+        alloc.data[offset..offset + bytes].copy_from_slice(&staged);
+        Ok(())
     }
 
     /// Every launch recorded so far, in dispatch order. Lets a test assert
@@ -96,6 +148,25 @@ impl MockGpuBackend {
     /// the only per-launch identity available.
     pub fn launches_snapshot(&self) -> Vec<MockLaunch> {
         self.launches.lock().clone()
+    }
+
+    /// Module/function pairs requested through `kernel`, in lookup order.
+    /// Declare a module absent from this build, the way a GB10 image lacks a
+    /// Hopper-owned twin: `has_module` answers false and a lookup against it
+    /// is the caller's mistake.
+    pub fn mark_module_absent(&self, module: &str) {
+        self.absent_modules.lock().insert(module.to_owned());
+    }
+
+    pub fn kernel_lookups_snapshot(&self) -> Vec<(String, String)> {
+        self.kernel_lookups.lock().clone()
+    }
+
+    /// Next `kernel(module, func)` for this pair fails (records the lookup).
+    pub fn deny_kernel(&self, module: &str, func_name: &str) {
+        self.denied_kernels
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
     }
 }
 
@@ -128,6 +199,10 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
+        let limit = self.max_allocation_bytes.load(Ordering::Relaxed);
+        if bytes > limit {
+            anyhow::bail!("alloc: requested {bytes} bytes exceeds mock limit {limit}");
+        }
         let mut next = self.next_ptr.lock();
         let ptr = *next;
         *next += bytes as u64;
@@ -148,11 +223,18 @@ impl GpuBackend for MockGpuBackend {
     }
 
     fn free(&self, ptr: DevicePtr) -> Result<()> {
-        self.allocs.lock().remove(&ptr.0);
+        if ptr.is_null() {
+            return Ok(());
+        }
+        if self.allocs.lock().remove(&ptr.0).is_none() {
+            anyhow::bail!("free: ptr {ptr} is not an allocation base or is already free");
+        }
         Ok(())
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {
+        self.h2d.fetch_add(1, Ordering::Relaxed);
+        self.h2d_bytes.fetch_add(src.len(), Ordering::Relaxed);
         let mut allocs = self.allocs.lock();
         // Support offset pointers: find the allocation containing dst
         let (offset, alloc) = find_alloc_mut(&mut allocs, dst)
@@ -171,11 +253,12 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], _stream: u64) -> Result<()> {
+    fn copy_d2h_async(&self, src: DevicePtr, dst: &mut [u8], stream: u64) -> Result<()> {
         // Counted separately from `copy_d2h` and NOT delegating to it, so a
         // test can distinguish the batched shape from the blocking one (the
         // trait's default impl forwards, which would make them indistinguishable).
         self.d2h_async.fetch_add(1, Ordering::Relaxed);
+        self.d2h_async_streams.lock().push(stream);
         let allocs = self.allocs.lock();
         let (offset, alloc) = find_alloc(&allocs, src)
             .ok_or_else(|| anyhow::anyhow!("copy_d2h_async: ptr {src} not allocated"))?;
@@ -183,7 +266,55 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2d(&self, _src: DevicePtr, _dst: DevicePtr, _bytes: usize) -> Result<()> {
+    fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.blit(src, dst, bytes)
+    }
+
+    fn copy_d2d_async(
+        &self,
+        src: DevicePtr,
+        dst: DevicePtr,
+        bytes: usize,
+        stream: u64,
+    ) -> Result<()> {
+        // NOT delegating to `copy_d2d`: the trait default forwards, which
+        // would make the two indistinguishable to `d2d_count` consumers only
+        // by accident. Counted here so both forms land in one counter on
+        // purpose.
+        self.d2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_async_streams.lock().push(stream);
+        self.blit(src, dst, bytes)
+    }
+
+    fn copy_d2d_2d_async(
+        &self,
+        src: DevicePtr,
+        src_pitch: usize,
+        dst: DevicePtr,
+        dst_pitch: usize,
+        width_bytes: usize,
+        height: usize,
+        stream: u64,
+    ) -> Result<()> {
+        // ONE launch on the real backend (`cudaMemcpy2DAsync`), so ONE tick —
+        // the row loop below is emulation, not dispatch, and must not inflate
+        // `d2d_count` (which exists to prove a batched form batched).
+        self.d2d_2d.fetch_add(1, Ordering::Relaxed);
+        self.d2d_2d_async_streams.lock().push(stream);
+        if width_bytes > src_pitch || width_bytes > dst_pitch {
+            anyhow::bail!(
+                "copy_d2d_2d_async: width {width_bytes} exceeds pitch \
+                 (src {src_pitch}, dst {dst_pitch}) — rows would overlap"
+            );
+        }
+        for r in 0..height {
+            self.blit(
+                src.offset(r * src_pitch),
+                dst.offset(r * dst_pitch),
+                width_bytes,
+            )?;
+        }
         Ok(())
     }
 
@@ -192,19 +323,52 @@ impl GpuBackend for MockGpuBackend {
         func: KernelHandle,
         grid: [u32; 3],
         block: [u32; 3],
-        _shared_mem: u32,
-        _stream: u64,
+        shared_mem: u32,
+        stream: u64,
         _params: &mut [*mut std::ffi::c_void],
     ) -> Result<()> {
         self.launches.lock().push(MockLaunch {
             func: func.0,
             grid,
             block,
+            shared_mem,
+            stream,
+            args: Vec::new(),
         });
         Ok(())
     }
 
-    fn synchronize(&self, _stream: u64) -> Result<()> {
+    fn launch_typed(
+        &self,
+        func: KernelHandle,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem: u32,
+        stream: u64,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let args = args
+            .iter()
+            .map(|arg| match arg {
+                KernelArg::Buffer(ptr) => MockArg::Buffer(*ptr),
+                KernelArg::Bytes(bytes) => MockArg::Bytes(bytes.to_vec()),
+            })
+            .collect();
+        self.launches.lock().push(MockLaunch {
+            func: func.0,
+            grid,
+            block,
+            shared_mem,
+            stream,
+            args,
+        });
+        Ok(())
+    }
+
+    fn synchronize(&self, stream: u64) -> Result<()> {
+        self.sync_d2h_async_counts
+            .lock()
+            .push((stream, self.d2h_async.load(Ordering::Relaxed)));
         self.syncs.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -213,8 +377,23 @@ impl GpuBackend for MockGpuBackend {
         0
     }
 
+    fn has_module(&self, module: &str) -> bool {
+        !self.absent_modules.lock().contains(module)
+    }
+
     #[track_caller]
-    fn kernel(&self, _module: &str, _func_name: &str) -> Result<KernelHandle> {
+    fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
+        self.kernel_lookups
+            .lock()
+            .push((module.to_owned(), func_name.to_owned()));
+        if self
+            .denied_kernels
+            .lock()
+            .iter()
+            .any(|(m, f)| m == module && f == func_name)
+        {
+            anyhow::bail!("Kernel lookup {module}::{func_name}: missing");
+        }
         Ok(KernelHandle(0xDEAD))
     }
 
@@ -257,5 +436,17 @@ impl GpuBackend for MockGpuBackend {
 
     fn free_memory(&self) -> Result<usize> {
         Ok(120 * 1024 * 1024 * 1024) // 120 GB
+    }
+
+    /// The mock DOES keep a ledger (`allocs` carries per-allocation `bytes`), so it answers
+    /// this rather than falling back to `None`. That is what lets a lifecycle test assert the
+    /// L1 invariant in BYTES as well as in count — a same-count, different-size leak is
+    /// invisible to `live_alloc_count` alone.
+    fn live_bytes(&self) -> Option<usize> {
+        Some(self.allocs.lock().values().map(|a| a.bytes).sum())
+    }
+
+    fn live_alloc_count(&self) -> usize {
+        self.allocs.lock().len()
     }
 }

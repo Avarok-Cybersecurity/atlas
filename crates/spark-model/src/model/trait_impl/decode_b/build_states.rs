@@ -15,7 +15,7 @@ use anyhow::Result;
 use super::super::super::types::TransformerModel;
 use crate::layer::{LayerState, SsmLayerState};
 use crate::traits::SequenceState;
-use atlas_core::config::LayerType;
+use avarok_core::config::LayerType;
 
 impl TransformerModel {
     /// Build the decode portion's `(seq_lens, block_tables, all_layer_states)`
@@ -73,6 +73,11 @@ impl TransformerModel {
                         // them with the active mode so the decode mixer does
                         // not re-convert scratch on every single step.
                         h_is_f16: crate::layers::qwen3_ssm::ssm_h_fp16_enabled(),
+                        // Decode-only rows: never prefilled. Carried anyway so
+                        // the dummy slot's geometry matches a real one and a
+                        // stray prefill over it stages rather than overruns.
+                        h_prefill_stage: self.ssm_pool.h_prefill_stage(dummy_ssm_slot),
+                        ple: None,
                     }));
                     ssm_idx += 1;
                 } else {

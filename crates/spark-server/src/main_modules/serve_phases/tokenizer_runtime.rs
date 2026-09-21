@@ -4,7 +4,7 @@
 //! ChatML im_start hard-stop, reflection suppression, tool-call open/close
 //! tokens, and the XGrammar engine.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -40,6 +40,10 @@ pub(crate) fn resolve_tokenizer_runtime(
     tokenizer: &crate::tokenizer::ChatTokenizer,
     eos_tokens: &mut Vec<u32>,
     supports_thinking: bool,
+    // #918: where the cross-grammar token-mask snapshot lives, so a
+    // restart (or a second server on the same checkpoint) does not pay
+    // the cold mask compile again. See `grammar::mask_cache`.
+    model_dir: &std::path::Path,
 ) -> TokenizerRuntime {
     use crate::{grammar, reasoning_parser};
 
@@ -224,7 +228,7 @@ pub(crate) fn resolve_tokenizer_runtime(
     // single token id. NOT added to `eos_tokens` — that would alter behavior
     // even with the kill-switch OFF (the id would be treated as a stop token on
     // the always-on EOS path); registration stays inert until the decode-time
-    // gate `tool_response_stop_enabled()` (ATLAS_TOOL_RESPONSE_STOP=1, default
+    // gate `tool_response_stop_enabled()` (AVAROK_TOOL_RESPONSE_STOP=1, default
     // OFF) consults `SchedLimits::tool_response_hard_stop`.
     let tool_response_id: Option<u32> = tokenizer
         .encode("<tool_response>")
@@ -273,11 +277,14 @@ pub(crate) fn resolve_tokenizer_runtime(
         let model_vocab_size = Some(config.vocab_size);
         match grammar::GrammarEngine::from_tokenizer(tokenizer.inner(), model_vocab_size, &stop_ids)
         {
-            Ok(engine) => {
+            Ok(mut engine) => {
                 tracing::info!(
                     "Grammar engine initialized (vocab_size={}, vocab_type=auto-detected from tokenizer)",
                     engine.vocab_size()
                 );
+                // #918: seed the cross-grammar mask cache from disk and
+                // arm the background saver. Startup, never a request.
+                engine.attach_mask_cache(model_dir);
                 Some(engine)
             }
             Err(e) => {

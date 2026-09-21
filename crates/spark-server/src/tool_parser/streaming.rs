@@ -37,7 +37,7 @@ pub struct StreamingToolDetector {
     pub(super) tools: Vec<ToolDefinition>,
     /// When true, restore the legacy buffer-until-`</tool_call>` behaviour
     /// (a single `ToolCallDelta` with the full args at close). Set from the
-    /// `ATLAS_BUFFER_TOOL_ARGS` env kill-switch. Default false = live stream.
+    /// `AVAROK_BUFFER_TOOL_ARGS` env kill-switch. Default false = live stream.
     pub(super) buffer_args: bool,
     /// Live-streaming per-call state: whether the opening `{` of the current
     /// XML tool call's argument object has been emitted yet.

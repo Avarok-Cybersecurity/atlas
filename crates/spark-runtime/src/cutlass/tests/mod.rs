@@ -125,7 +125,7 @@ pub(super) fn run_cublaslt_algo(
     let ctx = ctx()?;
     let mut returned = 0i32;
     let status = unsafe {
-        atlas_cublaslt_bf16_gemm_act_weight_t_algo(
+        avarok_cublaslt_bf16_gemm_act_weight_t_algo(
             act,
             weight,
             out,

@@ -21,7 +21,7 @@
 // live) and passed in as `&[LoraLandTarget]`, keeping this crate free of any
 // spark-model dependency (spark-model → spark-storage is the acyclic direction).
 //
-// Like `weight_tier_rdma`, the verbs data path is gated on `atlas_rdma_verbs`;
+// Like `weight_tier_rdma`, the verbs data path is gated on `avarok_rdma_verbs`;
 // without rdma-core the loader compiles but `stage_into_slot` returns a clear
 // runtime error.
 
@@ -111,7 +111,7 @@ pub fn land_bytes_for_target(target: &LoraLandTarget, raw: &[u8], dtype: &str) -
 
 /// RDMA-stage a named adapter's A/B into pre-computed pool-slot sub-regions.
 pub struct RdmaLoraLoader {
-    /// `host:port` of the weight peer (from `$ATLAS_LORA_PEER`).
+    /// `host:port` of the weight peer (from `$AVAROK_LORA_PEER`).
     pub peer_addr: String,
     /// Adapter dir id/path the peer staged (its `adapter_model.safetensors`).
     pub adapter_id: String,
@@ -126,7 +126,7 @@ impl RdmaLoraLoader {
     }
 }
 
-#[cfg(all(feature = "cuda", not(atlas_rdma_verbs)))]
+#[cfg(all(avarok_cuda, not(avarok_rdma_verbs)))]
 impl RdmaLoraLoader {
     /// Stub: no rdma-core in this build.
     pub fn stage_into_slot(
@@ -135,13 +135,13 @@ impl RdmaLoraLoader {
         _targets: &[LoraLandTarget],
     ) -> Result<()> {
         anyhow::bail!(
-            "$ATLAS_LORA_PEER is set but this build has no rdma-core (atlas_rdma_verbs \
-             cfg); rebuild with rdma-core, or unset ATLAS_LORA_PEER to rotate from disk"
+            "$AVAROK_LORA_PEER is set but this build has no rdma-core (avarok_rdma_verbs \
+             cfg); rebuild with rdma-core, or unset AVAROK_LORA_PEER to rotate from disk"
         )
     }
 }
 
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 impl RdmaLoraLoader {
     /// Connect, request the adapter, and RDMA-READ each `lora_A/lora_B` tensor
     /// into its pool-slot sub-region (single rail — an adapter is one small
@@ -160,8 +160,8 @@ impl RdmaLoraLoader {
 
         use crate::expert_peer::MODE_VERBS;
         use crate::weight_peer::{read_weight_manifest, tensor_remote_addr, write_model_request};
-        use atlas_rdma::env::{first_set, first_set_u32};
-        use atlas_rdma::railset::{RailSet, RailSpec};
+        use avarok_rdma::env::{first_set, first_set_u32};
+        use avarok_rdma::railset::{RailSet, RailSpec};
 
         let by_name: HashMap<&str, &LoraLandTarget> = targets
             .iter()
@@ -191,18 +191,18 @@ impl RdmaLoraLoader {
 
         // 2. Single-rail verbs handshake via RailSet (adapter = one shard, few
         // MB). LoRA env: DEV chains LORA→WEIGHT→EXPERT (an exported-but-EMPTY
-        // var counts as set — `first_set`); GID reads ONLY ATLAS_LORA_RDMA_GID
+        // var counts as set — `first_set`); GID reads ONLY AVAROK_LORA_RDMA_GID
         // (no chain, deliberately). Always 1 rail; fresh random 24-bit PSN.
         let specs = vec![RailSpec::new(
             first_set(
                 &[
-                    "ATLAS_LORA_RDMA_DEV",
-                    "ATLAS_WEIGHT_RDMA_DEV",
-                    "ATLAS_EXPERT_RDMA_DEV",
+                    "AVAROK_LORA_RDMA_DEV",
+                    "AVAROK_WEIGHT_RDMA_DEV",
+                    "AVAROK_EXPERT_RDMA_DEV",
                 ],
                 "roceP2p1s0f1",
             ),
-            first_set_u32(&["ATLAS_LORA_RDMA_GID"], 3),
+            first_set_u32(&["AVAROK_LORA_RDMA_GID"], 3),
             rand::random::<u32>() & 0xff_ffff,
         )];
 

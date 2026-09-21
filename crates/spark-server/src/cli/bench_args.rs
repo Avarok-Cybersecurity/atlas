@@ -41,6 +41,13 @@ pub struct BenchmarkArgs {
 }
 
 impl BenchmarkArgs {
+    /// Whether this invocation promises stdout to a script: `certify --json`
+    /// writes one JSON object per line there and nothing else, so the log
+    /// goes to stderr instead.
+    pub fn json_stdout(&self) -> bool {
+        matches!(&self.command, Some(BenchmarkCommand::Certify(c)) if c.json)
+    }
+
     /// Refuse `--pr` without `--pull-request-gate-check`.
     ///
     /// `--pr` exists only to key the gate check's advisory intent lookup;
@@ -66,8 +73,44 @@ pub enum BenchmarkCommand {
     List(ListArgs),
     /// Run one benchmark against a served endpoint.
     Run(RunArgs),
-    /// Past runs, from `~/.atlas/runs`.
+    /// Show a benchmark group's aggregate over its committed shard records.
+    ///
+    /// Pure and GPU-free: it reads what is already in `.benchmarks/` and applies
+    /// the same aggregation the gate does, so an operator can see the group's
+    /// number — and WHICH shard is missing — without waiting for CI to say so.
+    Aggregate(AggregateArgs),
+    /// Past runs, from `~/.avarok/runs`.
     History(HistoryArgs),
+    /// Stop the server a `run --pull-request-gate --serve-reuse` left running
+    /// on this box, if any.
+    ServeRelease,
+    /// Run every required gate this commit still owes, and say whether the
+    /// tree is certified when they are done. See `certify --help`.
+    Certify(super::bench_certify::args::CertifyArgs),
+    /// Render a shareable result card from a committed gate record.
+    ///
+    /// Separate from `run --output-image` on purpose: a card can be regenerated
+    /// from any past record, with different attribution, without spending a GPU
+    /// hour re-measuring. It reads a COMMITTED record because that is the only
+    /// artefact carrying the hardware and the commit the number belongs to — the
+    /// configuration a card exists to print.
+    Card(CardArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct CardArgs {
+    /// A benchmark ID (`decode-floor`) or a path to a record.
+    ///
+    /// The ID form is the one people will use: it takes the newest committed
+    /// record for that benchmark, which is almost always the run they just did.
+    /// A path is the escape hatch for "that specific older result".
+    pub record: String,
+    /// Where to write. A NAME becomes `./<name>.svg`; a path is taken literally.
+    #[arg(long = "output-image", value_name = "NAME|PATH")]
+    pub output_image: Option<String>,
+    /// `author=Ada,handle=@ada,website=ada.dev`
+    #[arg(long = "output-image-args", value_name = "K=V,...")]
+    pub output_image_args: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -115,6 +158,12 @@ pub struct RunArgs {
     /// when a benchmark has thresholds for more than one box class. With a
     /// single entry it is inferred; with several, omitting it is an error
     /// rather than a guess.
+    ///
+    /// The value must be a registered box class
+    /// (`avarok_plugin::hardware::ids::KNOWN_HARDWARE_IDS`). A registered class
+    /// this benchmark has never been measured on is refused by saying exactly
+    /// that — it is the state every hardware port is in until its first record
+    /// lands, and it must not read as a misspelling.
     #[arg(long)]
     pub hardware: Option<String>,
     /// Which model VARIANT of the benchmark to run, as the checkpoint id its
@@ -145,7 +194,7 @@ pub struct RunArgs {
     /// How often to drain the run's channels, in milliseconds.
     #[arg(long, default_value_t = 250)]
     pub poll_ms: u64,
-    /// Do not write the run to `~/.atlas/runs`.
+    /// Do not write the run to `~/.avarok/runs`.
     #[arg(long)]
     pub no_save: bool,
     /// Confirm a benchmark with side effects beyond load on the endpoint.
@@ -169,7 +218,7 @@ pub struct RunArgs {
     ///
     /// The record carries the metrics, verdict, hardware fingerprint, the
     /// exact command and the current commit sha, so the branch itself can
-    /// answer "did this pass" — no `~/.atlas` state required.
+    /// answer "did this pass" — no `~/.avarok` state required.
     #[arg(long)]
     pub pull_request_gate: bool,
     /// Override one SERVE key from the benchmark's recipe, e.g.
@@ -195,6 +244,41 @@ pub struct RunArgs {
     /// exact failure this whole record format exists to prevent.
     #[arg(long = "serve-override", value_name = "KEY=VALUE")]
     pub serve_override: Vec<String>,
+    /// Reuse the server an earlier `--serve-reuse` run left on this box, if it
+    /// is the one this run would start (same binary, same recipe rendering,
+    /// same checkpoint — `GET /serve-config`); otherwise start one as a
+    /// separate process and LEAVE IT RUNNING for the next run. A campaign
+    /// running several gates on one recipe pays for one model load instead of
+    /// one per gate. `spark benchmark serve-release` stops it.
+    #[arg(long, requires = "pull_request_gate")]
+    pub serve_reuse: bool,
+    /// The process the leased server belongs to (the campaign driver). A
+    /// lease whose owner is gone is released by the next run rather than
+    /// kept warm for nobody. Default: this run.
+    #[arg(long, value_name = "PID", requires = "serve_reuse")]
+    pub serve_lease_owner: Option<u32>,
+    /// Write a shareable result card beside the run.
+    ///
+    /// Takes a NAME (`my-run` -> `./my-run.svg`) or a PATH (`/tmp/x.svg`,
+    /// `cards/run.svg`). A name is the common case and a path is the escape
+    /// hatch; distinguishing them by "does it contain a separator or an
+    /// extension" is guesswork the user should not have to reverse-engineer, so
+    /// the rule is written in the help text and in `card_output_path`.
+    ///
+    /// The card carries the model, quantization, recipe and hardware beside the
+    /// number, because this repository has already retracted a figure quoted
+    /// without them.
+    #[arg(long = "output-image", value_name = "NAME|PATH")]
+    pub output_image: Option<String>,
+
+    /// Attribution for the card: `author=Ada Lovelace,handle=@ada,website=ada.dev`.
+    ///
+    /// Comma-separated `key=value`. Unknown keys are accepted and ignored, so a
+    /// future card field does not break an old command line. Requires
+    /// `--output-image`; on its own it is a typo worth reporting rather than
+    /// silently discarding, which `reject_orphan_image_args` does.
+    #[arg(long = "output-image-args", value_name = "K=V,...")]
+    pub output_image_args: Option<String>,
 }
 
 impl RunArgs {
@@ -204,6 +288,25 @@ impl RunArgs {
     /// a variant selector would be a flag that visibly does nothing — the same
     /// confusion the `--model`/`--url` conflicts exist to remove. An `Err`
     /// here is a usage error, phrased like one.
+    /// `--output-image-args` without `--output-image` renders nothing.
+    ///
+    /// Same shape and same reason as [`Self::reject_orphan_checkpoint`]: clap's
+    /// `requires` cannot express it, because the target is an `Option` whose
+    /// `None` still counts as "present" for that check.
+    pub fn reject_orphan_image_args(&self) -> Result<(), String> {
+        if self.output_image_args.is_some() && self.output_image.is_none() {
+            return Err(
+                "--output-image-args needs --output-image: there is no card to put them on"
+                    .to_string(),
+            );
+        }
+        if let Some(raw) = &self.output_image_args {
+            avarok_plugin::gate::card::parse_args(raw)
+                .map_err(|e| format!("--output-image-args: {e}"))?;
+        }
+        Ok(())
+    }
+
     pub fn reject_orphan_checkpoint(&self) -> Result<(), String> {
         if self.checkpoint.is_some() && !self.pull_request_gate {
             return Err(
@@ -253,3 +356,15 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 #[cfg(test)]
 #[path = "bench_args_tests.rs"]
 mod tests;
+
+/// `spark benchmark aggregate <group>`.
+#[derive(clap::Args, Debug)]
+pub struct AggregateArgs {
+    /// The group id, e.g. `bfcl-subset`.
+    pub id: String,
+    /// The commit the records must cover. Defaults to HEAD.
+    #[arg(long)]
+    pub sha: Option<String>,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    pub format: OutputFormat,
+}

@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_layer_overrides_role_default_for_weights() {
+    fn sensitive_layer_overrides_bulk_default_for_weights() {
         let s = PrecisionSchedule::build(
             Dtype::Bf16,
             Dtype::Bf16,
@@ -290,8 +290,23 @@ mod tests {
         assert_eq!(s.dtype_for(Some(0), Role::Expert), Dtype::Fp8);
         // Layer 38 attention is sensitive → FP8
         assert_eq!(s.dtype_for(Some(38), Role::Attention), Dtype::Fp8);
+        // Shared experts are weight-bearing too.
+        assert_eq!(s.dtype_for(Some(1), Role::SharedExpert), Dtype::Fp8);
         // Layer 5 expert is bulk → NVFP4
         assert_eq!(s.dtype_for(Some(5), Role::Expert), Dtype::Nvfp4);
+
+        let sensitive_only = PrecisionSchedule::build(
+            Dtype::Inherit,
+            Dtype::Inherit,
+            &[7],
+            Dtype::Fp8,
+            Dtype::Inherit,
+        );
+        assert!(sensitive_only.has_any_override());
+        assert_eq!(
+            sensitive_only.dtype_for(Some(7), Role::Attention),
+            Dtype::Fp8
+        );
     }
 
     #[test]
@@ -301,6 +316,8 @@ mod tests {
         let s = PrecisionSchedule::build(Dtype::Bf16, Dtype::Bf16, &[0], Dtype::Fp8, Dtype::Nvfp4);
         assert_eq!(s.dtype_for(Some(0), Role::Router), Dtype::Bf16);
         assert_eq!(s.dtype_for(Some(0), Role::LmHead), Dtype::Bf16);
+        assert_eq!(s.dtype_for(Some(0), Role::Embedding), Dtype::Nvfp4);
+        assert_eq!(s.dtype_for(Some(0), Role::Norm), Dtype::Nvfp4);
     }
 
     #[test]

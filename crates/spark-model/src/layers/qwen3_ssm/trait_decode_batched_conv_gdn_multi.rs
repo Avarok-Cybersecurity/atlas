@@ -40,7 +40,7 @@
 //! (`upload_verify_wy_tables`, verify_e2.rs) into a fixed device buffer
 //! refreshed pre-replay, so both launches are CUDA-graph-stable.
 //!
-//! Kill switch `ATLAS_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
+//! Kill switch `AVAROK_NO_VERIFY_GDN_BATCH` (PRESENCE check per the house
 //! convention — `=0` is NOT off) forces the per-sequence loop for A/B.
 
 use anyhow::Result;
@@ -69,10 +69,40 @@ fn first_for_k(mask: &std::sync::atomic::AtomicU32, k: usize) -> bool {
     (mask.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit) == 0
 }
 
+/// Periodic engaged-vs-declined RATE at INFO, under the existing
+/// `AVAROK_MTP_ACCEPT_DEBUG` gate (checked FIRST — a default serve pays one
+/// `OnceLock` load and nothing else).
+///
+/// The per-`k` first-occurrence lines above prove WHICH widths ever took
+/// each arm; they say nothing about how often. That distinction is the whole
+/// question when the batched verify carries a per-step cost the n==1 path
+/// does not: a declined call runs `n*(2k-1)` launches per GDN layer instead
+/// of 2 (768 vs 96 at n=2, k=4 over 48 GDN layers), so a decline RATE is a
+/// millisecond-scale term while a single decline is noise.
+fn record_multi_rate(n: usize, kk: usize) {
+    use std::sync::atomic::Ordering;
+    const PERIOD: u64 = 2048;
+    static SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if !crate::speculative::mtp_accept_debug() {
+        return;
+    }
+    if SINCE.fetch_add(1, Ordering::Relaxed) + 1 >= PERIOD {
+        SINCE.store(0, Ordering::Relaxed);
+        let ok = BATCHED_OK.load(Ordering::Relaxed);
+        let fb = FALLBACK.load(Ordering::Relaxed);
+        tracing::info!(
+            "batched-verify GDN conv+WY [last n={n} k={kk}]: engaged={ok} declined={fb} \
+             declined_frac={:.3} (a declined call is {} launches/layer, not 2)",
+            fb as f64 / (ok + fb).max(1) as f64,
+            n * (kk + kk - 1),
+        );
+    }
+}
+
 /// Kill switch, PRESENCE check (`=0` is NOT off), read once per process.
 fn verify_gdn_batch_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_VERIFY_GDN_BATCH").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_VERIFY_GDN_BATCH").is_none())
 }
 
 impl Qwen3SsmLayer {
@@ -97,6 +127,15 @@ impl Qwen3SsmLayer {
     ) -> Result<bool> {
         let n = states.len();
         let kk = args.num_tokens;
+        // Write-on-accept request: clear this layer's engaged word FIRST,
+        // inside the same capture, so it describes this launch only (a
+        // previous step that ran the twin and never folded cannot leak its
+        // stash into this step's fold). Before every decline below on
+        // purpose: a declined arm runs the parent per-sequence loop, and the
+        // fold must then see 0.
+        if ctx.gdn_write_on_accept {
+            self.woa_clear_at_entry(ctx.gpu, args.stream)?;
+        }
         // ── Issue #435 route (a), OPT-IN via `--exact-verify`: exact batched
         // verify (strided sequential-decode chain at batch=n, bitwise-equal
         // to spec-off decode). Ok(false) → the caller's per-sequence loop,
@@ -118,9 +157,18 @@ impl Qwen3SsmLayer {
             2 => self.wy2_kernel(args.kd, args.vd, n),
             3 => self.wy3_kernel(args.kd, args.vd, n),
             4 => self.wy4_kernel(),
+            // 2026-09-01: gamma-width verifies join the two-launch path via
+            // the wyN pointer-table twins (state_is_table compiled in).
+            // None (out of range / module absent / AVAROK_GDN_WYN=0 / f16
+            // pool without twin) falls back per-sequence, byte-identical —
+            // the pre-twin behavior for these widths.
+            5..=16 => match self.wyn_table_kernel(kk, ctx.levers.gdn_wyn) {
+                Some(h) => h,
+                None => return Ok(false),
+            },
             _ => return Ok(false),
         };
-        // ATLAS_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
+        // AVAROK_SSM_H_FP16: a zero handle below turns into `Ok(false)` and the
         // caller runs the per-sequence FP32 loop — which, over an FP16 pool,
         // is silent corruption rather than an error. Refuse first.
         self.require_wy_f16(kk, wy_k)?;
@@ -237,10 +285,14 @@ impl Qwen3SsmLayer {
         let gate_ptr = gates_buf;
         let beta_ptr = gates_buf.offset(nv * fp32);
         let hi = |t: usize| wy_tables.offset(t * VERIFY_WY_TABLE_STRIDE_BYTES);
-        match kk {
-            2 => ops::gdn_decode_wy2(
+        // Write-on-accept (2026-09-03): the K=4 twin writes no state; the
+        // model folds the accepted rows after the verdict (`gdn_fold_accepted`).
+        // Engaged ONLY on the caller's request (`ctx.gdn_write_on_accept`,
+        // the DFlash batched step); the decision is `woa::woa_decision`.
+        let woa_now = self.woa_now(ctx.gdn_write_on_accept, kk, n);
+        if woa_now {
+            self.woa_launch(
                 ctx.gpu,
-                wy_k,
                 wy_tables,
                 q_ptr,
                 k_ptr,
@@ -248,68 +300,112 @@ impl Qwen3SsmLayer {
                 gate_ptr,
                 beta_ptr,
                 gdn_out_buf,
-                hi(1),
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32, // qk_stride
-                conv_dim as u32, // v_stride
-                (nv * 2) as u32, // gb_stride
-                true,            // state_is_table — one table entry per sequence
+                n,
+                conv_dim,
                 stream,
-            )?,
-            3 => ops::gdn_decode_wy3(
-                ctx.gpu,
-                wy_k,
-                wy_tables,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_out_buf,
-                hi(1),
-                hi(2),
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                (nv * 2) as u32,
-                true,
-                stream,
-            )?,
-            _ => ops::gdn_decode_wy4(
-                ctx.gpu,
-                wy_k,
-                wy_tables,
-                q_ptr,
-                k_ptr,
-                v_ptr,
-                gate_ptr,
-                beta_ptr,
-                gdn_out_buf,
-                hi(1),
-                hi(2),
-                hi(3),
-                n as u32,
-                nk as u32,
-                nv as u32,
-                kd as u32,
-                vd as u32,
-                conv_dim as u32,
-                conv_dim as u32,
-                (nv * 2) as u32,
-                true,
-                stream,
-            )?,
+            )?;
+        } else {
+            match kk {
+                2 => ops::gdn_decode_wy2(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32, // qk_stride
+                    conv_dim as u32, // v_stride
+                    (nv * 2) as u32, // gb_stride
+                    true,            // state_is_table — one table entry per sequence
+                    stream,
+                )?,
+                3 => ops::gdn_decode_wy3(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    hi(2),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    true,
+                    stream,
+                )?,
+                4 => ops::gdn_decode_wy4(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    hi(2),
+                    hi(3),
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    true,
+                    stream,
+                )?,
+                // K=5..16: the wyN table twin reads the Hi slabs itself — slab 0
+                // (h) as the state table, slab 1 (Hi0) as the intermediates
+                // table, and VERIFY_WY_TABLE_SEQS pointer entries between
+                // consecutive Hi slabs (the kernel's reinterpreted stride).
+                _ => ops::gdn_decode_wyn_table(
+                    ctx.gpu,
+                    wy_k,
+                    wy_tables,
+                    q_ptr,
+                    k_ptr,
+                    v_ptr,
+                    gate_ptr,
+                    beta_ptr,
+                    gdn_out_buf,
+                    hi(1),
+                    crate::layer::VERIFY_WY_TABLE_SEQS as u32,
+                    n as u32,
+                    nk as u32,
+                    nv as u32,
+                    kd as u32,
+                    vd as u32,
+                    conv_dim as u32,
+                    conv_dim as u32,
+                    (nv * 2) as u32,
+                    stream,
+                )?,
+            }
         }
 
         let ok = BATCHED_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        record_multi_rate(n, kk);
         if first_for_k(&ENGAGED_KMASK, kk) {
             tracing::info!(
                 "batched-verify GDN conv+WY ENGAGED (n={n}, k={kk}): per-layer {} launches \
@@ -328,6 +424,7 @@ impl Qwen3SsmLayer {
     /// `return Ok(self.gdn_multi_decline(n, kk))`.
     fn gdn_multi_decline(&self, n: usize, kk: usize) -> bool {
         let n_fb = FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        record_multi_rate(n, kk);
         if first_for_k(&DECLINED_KMASK, kk) {
             tracing::info!(
                 "batched-verify GDN conv+WY DECLINED (n={n}, k={kk}): batch is not on \

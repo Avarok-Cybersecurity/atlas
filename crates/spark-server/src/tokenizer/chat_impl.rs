@@ -47,6 +47,7 @@ impl ChatTokenizer {
         repo_root: Option<&Path>,
         disable_template_overrides: bool,
     ) -> Result<Self> {
+        let official_k3 = super::kimi_k3::uses_xtml(model_dir, model_type)?;
         let tokenizer_path = model_dir.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
@@ -90,13 +91,19 @@ impl ChatTokenizer {
         } else {
             super::jinja_helpers::load_override_template(model_type, repo_root)
         };
-        let chat_template = if let Some(override_tmpl) = override_tmpl {
-            override_tmpl
+        let (chat_template, checkpoint_template) = if official_k3 {
+            tracing::warn!("Official Kimi K3: raw completions only; XTML chat is unavailable");
+            (String::new(), false)
+        } else if let Some(override_tmpl) = override_tmpl {
+            (override_tmpl, false)
         } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
-            config_tmpl
+            (config_tmpl, true)
         } else {
             tracing::warn!("No chat template found — using default ChatML");
-            super::jinja_helpers::default_chatml_template(supports_thinking)
+            (
+                super::jinja_helpers::default_chatml_template(supports_thinking),
+                false,
+            )
         };
 
         let jinja_env = super::jinja_helpers::build_jinja_env(&chat_template)?;
@@ -109,23 +116,38 @@ impl ChatTokenizer {
                 tracing::info!("Loaded OpenAI-variant Jinja template for {model_type}");
                 super::jinja_helpers::build_jinja_env(&tmpl).ok()
             });
-        let chat_encoding = if model_type == "deepseek_v4" {
+        let chat_encoding = if official_k3 {
+            ChatEncoding::KimiK3XtmlUnsupported
+        } else if model_type == "deepseek_v4" {
             tracing::info!("Using checkpoint-native DeepSeek-V4 message encoding");
             ChatEncoding::DeepseekV4
         } else {
             ChatEncoding::Jinja
         };
 
+        let native_qwen_tool_template = checkpoint_owns_qwen_tool_prompt(
+            model_type,
+            checkpoint_template,
+            openai_jinja_env.is_some(),
+        ) && jinja_env
+            .get_template("chat")?
+            .undeclared_variables(false)
+            .contains("tools");
         tracing::info!("Loaded tokenizer from {}", tokenizer_path.display());
         Ok(Self {
             tokenizer,
             eos_token_id,
             supports_thinking,
             chat_encoding,
+            native_qwen_tool_template,
             chat_template,
             jinja_env,
             openai_jinja_env,
         })
+    }
+
+    pub(crate) fn uses_native_qwen_tool_template(&self) -> bool {
+        self.native_qwen_tool_template
     }
 
     /// Returns a borrowed reference to the underlying HF tokenizer (for
@@ -242,6 +264,7 @@ impl ChatTokenizer {
         reasoning_effort: Option<&str>,
         preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
+        super::kimi_k3::require_chat_support(self.chat_encoding)?;
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             let rendered = super::deepseek_v4::encode_messages(
                 messages,
@@ -308,6 +331,7 @@ impl ChatTokenizer {
         reasoning_effort: Option<&str>,
         preserve_thinking: Option<bool>,
     ) -> Result<Vec<u32>> {
+        super::kimi_k3::require_chat_support(self.chat_encoding)?;
         if self.chat_encoding == ChatEncoding::DeepseekV4 {
             return self.apply_chat_template_jinja_with_effort(
                 messages,
@@ -446,4 +470,19 @@ impl ChatTokenizer {
         }
         out
     }
+}
+
+/// Only the known Qwen checkpoint templates own XML tool instructions.
+/// Custom overrides and ChatML fallback retain parser-provided instructions.
+fn checkpoint_owns_qwen_tool_prompt(
+    model_type: &str,
+    checkpoint: bool,
+    openai_override: bool,
+) -> bool {
+    checkpoint
+        && !openai_override
+        && matches!(
+            model_type,
+            "qwen3_5" | "qwen3_5_moe" | "qwen3_6" | "qwen3_6_moe"
+        )
 }

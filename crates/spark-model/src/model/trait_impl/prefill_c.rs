@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -118,16 +118,21 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
-                hidden,
-                total_len as u32,
-                h as u32,
-                stream,
-            )?;
+            if self.has_ngram_embedding() {
+                // Whole prompt in one go: `tokens` IS the context.
+                self.embed_tokens_fused(tokens, total_len, hidden, stream)?;
+            } else {
+                ops::batched_embed(
+                    self.gpu.as_ref(),
+                    self.batched_embed_kernel,
+                    token_ids_dev,
+                    self.embed_tokens.weight,
+                    hidden,
+                    total_len as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
             self.scale_embeddings(hidden, total_len, stream)?;
         }
 
@@ -141,7 +146,10 @@ impl TransformerModel {
                 let mut img_idx = 0usize;
                 for (i, &tok) in tokens.iter().enumerate() {
                     if tok == image_pad || tok == video_pad {
-                        let src = ve.buf_out.offset(img_idx * ve.out_hidden_size * 2);
+                        let src = ve
+                            .scratch()
+                            .buf_out
+                            .offset(img_idx * ve.out_hidden_size * 2);
                         let dst = hidden.offset(i * h * fp32);
                         self.gpu
                             .copy_d2d_async(src, dst, ve.out_hidden_size * 2, stream)?;
@@ -185,6 +193,8 @@ impl TransformerModel {
                 && self
                     .ssm_snapshots
                     .session_matches(snap_id, seq.session_hash)
+                // See prefill_a: aux-carrying models decline aux-less slots.
+                && (!self.requires_aux_state() || self.ssm_snapshots.aux(snap_id).is_some())
             {
                 self.ssm_snapshots.restore(
                     snap_id,
@@ -193,6 +203,9 @@ impl TransformerModel {
                     self.gpu.as_ref(),
                     stream,
                 )?;
+                if let Some(aux) = self.ssm_snapshots.aux(snap_id) {
+                    self.apply_aux_states(seq, &aux, stream)?;
+                }
                 tracing::info!(
                     "Marconi two-phase: restored SSM snapshot at token {snap_tok} \
                          ({matched} KV blocks cached)",
@@ -230,6 +243,12 @@ impl TransformerModel {
             (0, false)
         };
         seq.marconi_skip_to = kv_write_start;
+        // #919: `cached_tokens` counts reused KV, not matched-then-discarded KV.
+        seq.reused_prefix_tokens = crate::model::trait_impl::prefix_reuse::reused_prefix_tokens(
+            matched,
+            kv_write_start,
+            marconi_skip,
+        );
 
         // Allocate all KV blocks upfront for the full sequence.
         let blocks_needed = (total_len - 1) / bs + 1;
@@ -272,16 +291,26 @@ impl TransformerModel {
             let token_ids_dev = self.buffers.scratch();
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
-            ops::batched_embed(
-                self.gpu.as_ref(),
-                self.batched_embed_kernel,
-                token_ids_dev,
-                self.embed_tokens.weight,
-                hidden,
-                proc_count as u32,
-                h as u32,
-                stream,
-            )?;
+            if self.has_ngram_embedding() {
+                let cs = proc_start.saturating_sub(self.ngram_lookbehind());
+                self.embed_tokens_fused(
+                    &tokens[cs..proc_start + proc_count],
+                    proc_count,
+                    hidden,
+                    stream,
+                )?;
+            } else {
+                ops::batched_embed(
+                    self.gpu.as_ref(),
+                    self.batched_embed_kernel,
+                    token_ids_dev,
+                    self.embed_tokens.weight,
+                    hidden,
+                    proc_count as u32,
+                    h as u32,
+                    stream,
+                )?;
+            }
             self.scale_embeddings(hidden, proc_count, stream)?;
         }
 
@@ -417,6 +446,7 @@ impl TransformerModel {
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -427,10 +457,13 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+            decode_step: false,
             // Marconi warm hit: GDN layers replay from a restored SSM state
             // and must use the bit-faithful WY4 recurrence (see layer.rs).
             gdn_exact_replay: marconi_skip,
+            gdn_write_on_accept: false,
             token_ids: None,
+            host_token_ids: None,
             // #30: request slot pairs (None unless routing to a non-active slot).
             routed_lora_layers: self.routed_slot_layers(seq.adapter_slot),
             midchunk_capture: None,
@@ -533,17 +566,7 @@ impl TransformerModel {
         let last_hidden = hidden.offset((proc_count - 1) * h * fp32);
         let normed = self.buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
-        ops::rms_norm(
-            self.gpu.as_ref(),
-            self.rms_norm_kernel,
-            last_hidden,
-            &self.final_norm,
-            normed,
-            1,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        self.final_norm_apply(last_hidden, normed, 1, h as u32, eps, stream)?;
 
         // ── 7. LM head on last token → logits ──
         self.lm_head(normed, stream)?;

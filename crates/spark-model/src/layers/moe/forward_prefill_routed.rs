@@ -10,16 +10,6 @@
 
 use super::*;
 
-/// Whether the single-launch CUTLASS grouped NVFP4 gate_up path is enabled
-/// (`ATLAS_HOLO_MOE_GROUPED_CUTLASS=1`). Off by default; falls back to the
-/// hand-rolled fused FP4/FP8 grouped kernels when unset.
-fn grouped_cutlass_gate_up_enabled() -> bool {
-    std::env::var("ATLAS_HOLO_MOE_GROUPED_CUTLASS")
-        .ok()
-        .as_deref()
-        == Some("1")
-}
-
 impl MoeLayer {
     /// Routed-expert grouped-GEMM path: upper-bound grid sizing → grouped
     /// gate+up GEMM → SiLU+mul → grouped down GEMM.
@@ -64,10 +54,28 @@ impl MoeLayer {
         // Holo experiments trade that safety margin for fewer empty expert
         // tiles after validating the router histogram.
         let worst_case_m_tiles = (num_tokens * top_k as usize).div_ceil(64).max(1) as u32;
-        let exact_tiles = std::env::var("ATLAS_MOE_PREFILL_EXACT_TILES")
-            .ok()
-            .as_deref()
-            == Some("1")
+        // Default-on for NVFP4 experts ONLY; opt-in ("=1") everywhere else.
+        //
+        // Reads the REAL expert offsets instead of the worst-case bound above, so it
+        // cannot truncate — that bound exists only to avoid this D2H copy+sync. On
+        // NVFP4 the trade is strongly positive: 120.7 ms of cold TTFT on the 35B by
+        // leave-one-out, and without it the rest of the fast-MoE stack buys nothing
+        // at all (690.94 ms vs 688.12 with no flags set).
+        //
+        // ★ On FP8 experts the same sync is a LOSS, and defaulting it on globally
+        // regressed the ttft-warm gate's TAIL — measured on that gate's own recipe
+        // (qwen3.6-35b-a3b-fp8-bf16head), one variable:
+        //     exact_tiles on   p90 +4.9%  (limit +5.0%)  <- 0.1% from failing
+        //     exact_tiles off  p90 -5.0%
+        // Median barely moved either way (+0.1% vs -0.9%), so only the tail shows it.
+        // The win was measured on NVFP4; scope the default to where it was measured.
+        // The lever is tri-state; the DEFAULT is model-dependent, so it
+        // stays here rather than in `ModelLevers` — the win was measured on
+        // NVFP4 and the default is scoped to where it was measured.
+        let exact_tiles = ctx
+            .levers
+            .moe_prefill_exact_tiles
+            .unwrap_or(self.experts_scale_kind == crate::weight_map::WeightQuantFormat::Nvfp4)
             && !ctx.graph_capture;
         let max_m_tiles = if exact_tiles {
             let mut offsets = vec![0u8; (ne + 1) * 4];
@@ -82,10 +90,8 @@ impl MoeLayer {
             }
             max_rows.div_ceil(64).max(1).min(worst_case_m_tiles)
         } else {
-            std::env::var("ATLAS_MOE_PREFILL_MAX_LOAD_FACTOR")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|&factor| factor > 0)
+            ctx.levers
+                .moe_prefill_max_load_factor
                 .map(|factor| {
                     let capped_rows = avg_per_expert.saturating_mul(factor);
                     worst_case_m_tiles.min(capped_rows.div_ceil(64).max(1) as u32)
@@ -113,7 +119,7 @@ impl MoeLayer {
         // dense token_to_perm over exactly [0, total_expanded), and grouped
         // kernels write every row that can be referenced by unpermute_reduce.
         // Skipping the memset removes ~138 MB/layer of scratch clears on Holo.
-        let force_zero = std::env::var("ATLAS_MOE_PREFILL_ZERO").ok().as_deref() == Some("1");
+        let force_zero = ctx.levers.moe_prefill_zero;
         if ctx.comm.is_some() || force_zero {
             let gate_bytes = total_expanded as usize * inter as usize * 2;
             let up_bytes = gate_bytes;
@@ -133,9 +139,9 @@ impl MoeLayer {
             // transposed ones, so it must be reachable when gate_ptrs_t is
             // absent — that is exactly the originals-only layout a
             // checkpoint-native model runs in.
-            if grouped_cutlass_gate_up_enabled() && self.cutlass_grouped_host.is_some() {
+            if ctx.levers.moe_grouped_cutlass && self.cutlass_grouped_host.is_some() {
                 // ── SINGLE-LAUNCH CUTLASS grouped NVFP4 gate_up
-                // (ATLAS_HOLO_MOE_GROUPED_CUTLASS=1) ── one
+                // (AVAROK_HOLO_MOE_GROUPED_CUTLASS=1) ── one
                 // GemmUniversalMode::kGrouped launch over all active experts in
                 // place of the per-expert collective loop. Weights: the load-time
                 // host snapshot (`cutlass_grouped_host`) of the decode
@@ -188,7 +194,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else if self.gateup_fp4 && self.moe_fused_gate_up_t_k64_fp4.0 != 0 {
-                    // ── FUSED FP4 gate_up (ATLAS_HOLO_MOE_GATEUP_FP4) ──
+                    // ── FUSED FP4 gate_up (AVAROK_HOLO_MOE_GATEUP_FP4) ──
                     // Block-scaled FP4 over the SHARED FAST_MOE=full [K/2,N] tables
                     // (gate_ptrs_t/up_ptrs_t — the SAME bytes the FP8 fused path
                     // reads, selected here only by kernel handle, so NO extra MoE
@@ -279,9 +285,8 @@ impl MoeLayer {
                     "prefill non-transposed gate_up fallback (no E8M0 variant wired)",
                 );
                 let (gp, up) = (&self.gate_ptrs, &self.up_ptrs);
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_input,
                     gp.packed_ptrs,
                     gp.scale_ptrs,
@@ -295,9 +300,8 @@ impl MoeLayer {
                     max_m_tiles,
                     stream,
                 )?;
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_input,
                     up.packed_ptrs,
                     up.scale_ptrs,
@@ -342,7 +346,7 @@ impl MoeLayer {
                 total_expanded * inter,
                 stream,
             )?;
-            // ── FP4 down (ATLAS_HOLO_MOE_DOWN_FP4) ── single block-scaled FP4
+            // ── FP4 down (AVAROK_HOLO_MOE_DOWN_FP4) ── single block-scaled FP4
             // MMA per k64 tile (mxf4nvf4.scale_vec::4X.m16n8k64), reading the
             // post-SiLU intermediate (expert_gate_out) and the per-expert FP4
             // down tables. Same sorted layout + null sorted_token_ids as the
@@ -350,15 +354,15 @@ impl MoeLayer {
             // Compounds with the FP4 gate_up path to run the whole FFN at FP4.
             // CUTLASS grouped down reads the ORIGINAL [N,K/2] table, so like
             // gate_up it must be reachable without down_ptrs_t.
-            if grouped_cutlass_gate_up_enabled()
+            if ctx.levers.moe_grouped_cutlass
                 && let Some(down_host) = self
                     .cutlass_grouped_host
                     .as_ref()
                     .and_then(|t| t.down.as_ref())
-                && std::env::var("ATLAS_HOLO_MOE_GROUPED_DOWN").ok().as_deref() == Some("1")
+                && ctx.levers.moe_grouped_down
             {
-                // ── CUTLASS grouped NVFP4 down (ATLAS_HOLO_MOE_GROUPED_CUTLASS
-                //    + ATLAS_HOLO_MOE_GROUPED_DOWN) ──
+                // ── CUTLASS grouped NVFP4 down (AVAROK_HOLO_MOE_GROUPED_CUTLASS
+                //    + AVAROK_HOLO_MOE_GROUPED_DOWN) ──
                 // A = post-SiLU expert_gate_out, already expert-contiguous (the grouped
                 // gate_up wrote it sorted), so NO gather. Weights = the load-time host
                 // snapshot of decode down_ptrs packed [N=hidden,K/2] + swizzled SFB +
@@ -400,7 +404,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else if self.down_fp4 && self.moe_down_t_k64_fp4.0 != 0 {
-                    // ── FP4 down (ATLAS_HOLO_MOE_DOWN_FP4) over the SHARED down_ptrs_t
+                    // ── FP4 down (AVAROK_HOLO_MOE_DOWN_FP4) over the SHARED down_ptrs_t
                     // [K/2,N] table (real per-expert scale2; coalesced K-major load +
                     // on-chip DN4_TRANSPOSE). Same sorted layout + null
                     // sorted_token_ids as the FP8/w4a16 down kernels, so unpermute is
@@ -422,8 +426,7 @@ impl MoeLayer {
                         stream,
                     )?;
                 } else {
-                    let fp8_down = std::env::var("ATLAS_MOE_PREFILL_FP8_DOWN").ok().as_deref()
-                        == Some("1")
+                    let fp8_down = ctx.levers.moe_prefill_fp8_down
                         && self.moe_fp8_grouped_gemm_t.0 != 0
                         && self.bf16_to_fp8_k.0 != 0;
                     if fp8_down {
@@ -476,9 +479,8 @@ impl MoeLayer {
                     crate::weight_map::WeightQuantFormat::Nvfp4,
                     "prefill non-transposed down fallback (no E8M0 variant wired)",
                 );
-                ops::moe_w4a16_grouped_gemm_ptrtable(
+                self.launch_grouped_gemm(
                     ctx.gpu,
-                    self.moe_grouped_gemm,
                     expert_gate_out,
                     self.down_ptrs.packed_ptrs,
                     self.down_ptrs.scale_ptrs,

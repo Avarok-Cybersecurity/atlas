@@ -1,0 +1,214 @@
+name: CodeRAG
+
+# Builds the "Ask the codebase" corpus. Every merge to main that touches Atlas
+# source chunks + embeds the changed code (incremental against the previously
+# published corpus, so steady state embeds only what moved) and publishes a
+# self-verifying lattice-jsonl corpus — gzip twin + metadata — for the website
+# to load into an in-browser lattice-db.
+#
+# Stable URLs this produces (no TTL, fetchable directly from the browser):
+#   https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz
+#   https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.meta.json
+#
+# Why gh-pages and not the alternatives: GitHub Pages serves with
+# `Access-Control-Allow-Origin: *` (verified 2026-08-16), so the site can fetch
+# the corpus cross-origin. Release assets send no CORS headers at all, and
+# workflow artifacts are auth-only downloads capped at 90 days — neither can
+# back an anonymous browser fetch. The 30-day artifact below is a CI copy for
+# inspection, not the serving path.
+#
+# One-time prerequisite (repo settings, not automatable from here):
+# Settings -> Pages -> "Deploy from a branch" -> branch `gh-pages`, folder
+# `/ (root)`. Until that is enabled the branch updates but nothing is served.
+#
+# Fallback if Pages ever misbehaves: ship the same two files through the site's
+# existing rsync deploy (site.yml) so they are served same-origin from
+# atlascybernetics.ai — same bytes, and no CORS in play at all.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'kernels/**'
+      - '.github/ai-models.json'
+      - '.github/workflows/coderag.yml'
+  workflow_dispatch:
+
+# Two corpus publishes must never race the gh-pages force-push; a superseded
+# run's corpus is worthless the moment a newer main exists, so cancel it.
+concurrency:
+  group: coderag-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  corpus:
+    name: Build and publish the corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read model SSOT
+        id: ssot
+        # .github/ai-models.json is the single source of truth for the embed
+        # model id and endpoint. Free-tier ids rotate without notice, so
+        # nothing model-shaped is hardcoded in this file. `jq -e` fails the
+        # step outright on a missing/null key instead of exporting "null".
+        run: |
+          set -euo pipefail
+          embed_model="$(jq -er '.models.embed' .github/ai-models.json)"
+          endpoint_base="$(jq -er '.endpoint_base' .github/ai-models.json)"
+          echo "embed_model=${embed_model}" >> "$GITHUB_OUTPUT"
+          echo "endpoint_base=${endpoint_base}" >> "$GITHUB_OUTPUT"
+
+      # ***********************************************************************
+      # * PLACEHOLDER PIN — CI FAILS ON THIS STEP UNTIL IT IS REPLACED.      *
+      # * v1 tag once Avarok-Cybersecurity/AutoRepoRAG is published, keeping *
+      # * the SHA-pinning convention every other action here follows. GitHub *
+      # * cannot resolve this ref until then — that is deliberate.           *
+      # ***********************************************************************
+      - name: Build corpus (incremental against the published one)
+        id: rag
+        # A corpus is DERIVED data. If the embedder is rate limited, a chunk
+        # trips a provider limit, or verification finds a real problem, the
+        # right outcome is a loud warning and yesterday's corpus staying up,
+        # not a red main that blocks unrelated work. Every downstream step is
+        # gated on this one's outcome and the job concludes green either way.
+        continue-on-error: true
+        uses: Avarok-Cybersecurity/AutoRepoRAG@7b74c743c9d2b0fe2775ee1a62715eca15e98799 # v1.0.0
+        with:
+          collection: atlas-coderag
+          # output-name is a basename: the action writes <name>.jsonl,
+          # <name>.jsonl.gz and <name>.meta.json. "atlas-coderag.jsonl" is
+          # deliberate — it makes the metadata file atlas-coderag.jsonl.meta.json,
+          # the exact name the site's OPFS preflight fetches; the doubled
+          # .jsonl.jsonl(.gz) intermediates are renamed at publish below.
+          output-name: atlas-coderag.jsonl
+          paths: |
+            crates/**/*.rs
+            crates/**/*.cu
+            crates/**/*.cuh
+            kernels/**/*.cu
+            kernels/**/*.cuh
+            kernels/**/*.h
+            kernels/**/*.metal
+          exclude: |
+            **/target/**
+            **/*_tests.rs
+            crates/**/tests/**
+          # Corpus size is bounded by GitHub's 100 MB per-file push limit on
+          # gh-pages. The first full run at the action defaults (90-line
+          # chunks, 6 significant digits) produced a 165 MB gz from 11 024
+          # chunks x dim 2048, so the corpus is tuned coarser here: 150-line
+          # chunks with light overlap, 5 significant digits (embedding noise
+          # floor sits well above the 5th digit), and test files excluded.
+          chunk-lines: '150'
+          chunk-overlap: '10'
+          # The embedder rejects inputs over 8192 tokens; dense generated code
+          # (hex tables, LUT headers) can reach ~2 bytes per token, so a
+          # 16 KB chunk overflowed at 8 245 tokens on 2026-08-16. Capping
+          # chunks at 8 192 BYTES guarantees <= 8 192 tokens even at the
+          # 1-byte-per-token worst case. Typical 150-line chunks are ~4.5 KB,
+          # so only outlier lines get truncated.
+          max-chunk-bytes: '8192'
+          vector-precision: '5'
+          embedding-endpoint: ${{ steps.ssot.outputs.endpoint_base }}
+          embedding-model: ${{ steps.ssot.outputs.embed_model }}
+          embedding-api-key: ${{ secrets.OPENROUTER_API_KEY_FREE }}
+          # The first run 404s here -> the action warns and does a full embed.
+          # Every later run reuses vectors for unchanged chunks by chunk_hash.
+          previous-corpus-url: https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz
+          # Slower than the action's 2500ms default: OPENROUTER_API_KEY_FREE
+          # rides the free tier, and a merge-time batch job has no latency SLO.
+          request-interval-ms: '3000'
+
+      - name: Upload CI copy (30-day artifact)
+        if: steps.rag.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: atlas-coderag
+          path: |
+            ${{ steps.rag.outputs.corpus-gz-file }}
+            ${{ steps.rag.outputs.metadata-file }}
+          retention-days: 30
+          if-no-files-found: error
+
+      # Orphan single-commit branch: gh-pages history never grows, this
+      # workflow is its sole owner, and the corpus URLs are stable forever.
+      - name: Refuse an unpublishable corpus
+        id: sizecheck
+        if: steps.rag.outcome == 'success'
+        env:
+          GZ: ${{ steps.rag.outputs.corpus-gz-file }}
+        run: |
+          set -euo pipefail
+          # GitHub rejects any pushed file over 100 MB. Fail here with the
+          # real number instead of dying inside git push with an LFS hint.
+          bytes=$(stat -c%s "$GZ")
+          limit=$(( 95 * 1024 * 1024 ))
+          echo "corpus gz: $bytes bytes (cap $limit)"
+          if [ "$bytes" -gt "$limit" ]; then
+            echo "::warning::corpus gz is $bytes bytes, over the $limit-byte publish cap. Keeping the published corpus as is. Raise chunk-lines, lower vector-precision, or trim paths."
+            echo "publishable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "publishable=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to orphan gh-pages
+        if: steps.rag.outcome == 'success' && steps.sizecheck.outputs.publishable == 'true'
+        env:
+          CORPUS_GZ: ${{ steps.rag.outputs.corpus-gz-file }}
+          META: ${{ steps.rag.outputs.metadata-file }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          site="$(mktemp -d)"
+          mkdir -p "$site/coderag"
+          cp "$CORPUS_GZ" "$site/coderag/atlas-coderag.jsonl.gz"
+          # One meta file, two published names, one per consumer:
+          #   atlas-coderag.jsonl.meta.json — the site's OPFS preflight name.
+          #   atlas-coderag.meta.json       — the sibling AutoRepoRAG derives
+          #     from previous-corpus-url (strip .gz, strip .jsonl, append
+          #     .meta.json); without it the model check 404s and every run
+          #     falls back to a full re-embed.
+          cp "$META" "$site/coderag/atlas-coderag.jsonl.meta.json"
+          cp "$META" "$site/coderag/atlas-coderag.meta.json"
+          touch "$site/.nojekyll"
+          cd "$site"
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "coderag corpus @ ${GITHUB_SHA}"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            gh-pages
+
+      - name: Report the outcome
+        if: always()
+        env:
+          BUILD: ${{ steps.rag.outcome }}
+          PUBLISHABLE: ${{ steps.sizecheck.outputs.publishable }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The job concludes green even when the corpus did not refresh, so
+          # this line is the only place a reader learns which happened.
+          if [ "$BUILD" != "success" ]; then
+            echo "::warning::CodeRAG corpus build did not succeed. The published corpus is unchanged and the site keeps serving it. See the build step log."
+            echo "### CodeRAG corpus NOT refreshed" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The build step failed at \`$SHA\`. The previously published corpus is still live, so the site keeps working with slightly older code knowledge." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PUBLISHABLE" != "true" ]; then
+            echo "### CodeRAG corpus built but NOT published" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The corpus exceeded the publish size cap. It is attached as an artifact and the previously published corpus is still live." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### CodeRAG corpus published" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Live at https://avarok-cybersecurity.github.io/avarok/coderag/atlas-coderag.jsonl.gz for commit \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
+          fi

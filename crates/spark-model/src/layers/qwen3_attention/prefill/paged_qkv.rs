@@ -39,7 +39,7 @@ impl Qwen3AttentionLayer {
         stream: u64,
     ) -> Result<()> {
         // Native FP4 path: quantize `normed` to NVFP4 ONCE and share it across
-        // the Q, K and V GEMMs (same input). OPT-IN ONLY (ATLAS_ATTN_W4A4=1):
+        // the Q, K and V GEMMs (same input). OPT-IN ONLY (AVAROK_ATTN_W4A4=1):
         // although the input is normed (the distribution class that gated clean
         // on the SSM projections), the outputs here are attention LOGIT inputs,
         // and same-binary A/B on long prompts showed the hallucinated-multiple-
@@ -50,7 +50,7 @@ impl Qwen3AttentionLayer {
             && self.quantize_nvfp4_k.0 != 0
             && self.q_weight.as_ref().and_then(|w| w.as_nvfp4()).is_some()
             && ctx.buffers.fp8_act_bytes() >= (n as usize) * (h as usize)
-            && std::env::var("ATLAS_ATTN_W4A4").is_ok();
+            && std::env::var("AVAROK_ATTN_W4A4").is_ok();
         let a4 = if w4a4 {
             let a4 = ctx.buffers.fp8_act();
             let a4_sf = a4.offset((n as usize) * (h as usize) / 2);
@@ -80,7 +80,7 @@ impl Qwen3AttentionLayer {
             ctx,
             stream,
         )?;
-        // ATLAS_OP_DUMP hook: q_proj output (last token, BF16 → f32).
+        // AVAROK_OP_DUMP hook: q_proj output (last token, BF16 → f32).
         // For gated Qwen3.6, q_proj_dim = 2*q_dim (Q+Gate interleaved).
         // We dump the FULL Q+Gate buffer; the HF reference will only
         // contain the deinterleaved Q so partial cosine on first half
@@ -219,7 +219,7 @@ impl Qwen3AttentionLayer {
             ops::cutlass_nvfp4_proj_from_fp8(ctx, normed, fp8w, out, n, out_dim, h, stream)?;
         } else if force_w8a8
             && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-            && self.per_token_group_quant_fp8_k.0 != 0
+            && self.per_token_group_quant_fp8_k.available()
             && self.fp8_gemm_t_blockscaled_k.0 != 0
         {
             let m = n as usize;
@@ -361,13 +361,13 @@ impl Qwen3AttentionLayer {
             )?;
         } else {
             // BF16 dense fallback. For native-FP8 models with
-            // ATLAS_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
+            // AVAROK_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
             // holds the FP8→BF16 dequanted weight; otherwise it is the
             // model's native dense weight.
             // Prefer the tensor-core pipelined GEMM (~40× the scalar kernel on
             // these large-M prefill projections; same math) — the scalar
             // `dense_gemm` dominated batched-prefill GPU time (nsys: 60%).
-            if ctx.dispatch.cublas_gemm && n > 1 {
+            if ctx.dispatch.cublas.attn && n > 1 {
                 ops::cublas_bf16_proj_dense(normed, dense.weight, out, n, out_dim, h, stream)?;
             } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(
@@ -400,7 +400,7 @@ impl Qwen3AttentionLayer {
         // (out_dim = q_proj_dim) BEFORE the caller's `deinterleave_qg_split`
         // (paged.rs / cache_skip.rs) — the PEFT `lora_B` was trained against
         // exactly that interleaved basis, so Q folds like K/V, just wider.
-        // Runs before the caller's ATLAS_OP_DUMP, so dumps show ADAPTED
+        // Runs before the caller's AVAROK_OP_DUMP, so dumps show ADAPTED
         // outputs (what an HF+PEFT forward hook shows).
         if let Some(ref lw) = self.lora {
             let (pair, route, module) = match proj {
@@ -467,7 +467,10 @@ impl Qwen3AttentionLayer {
                     )?;
                 } else if seq_slot.0 != 0
                     && let Some(route) = route
+                    && crate::lora::prefill_bgmv_forced()
                 {
+                    // OPT-IN ONLY: `n` row-wise GEMVs vs ONE GEMM in `else`;
+                    // a prefill is uniform-slot. Kept for PER-ROW slots.
                     ops::lora_delta::apply_lora_bgmv(
                         ctx.gpu,
                         &lw.kernels,

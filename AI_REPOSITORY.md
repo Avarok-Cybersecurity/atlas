@@ -49,7 +49,7 @@ symbol names are the stable reference, line numbers will drift.
 
 Atlas's correctness and performance gates run on real GPUs and cost real
 time — the two BFCL accuracy legs are ~3.5 GPU-hours *each*
-(`crates/atlas-plugin/src/benchmarks/bfcl/descriptors.rs:34`). CI cannot run
+(`crates/avarok-plugin/src/benchmarks/bfcl/descriptors.rs:34`). CI cannot run
 them per-push, so the results are measured on a GPU box, committed to the
 repo as JSON records under `.benchmarks/`, and a fast, GPU-free check decides
 on every PR whether those committed records still speak for the current
@@ -66,7 +66,7 @@ once:
    invisible.
 
 The design has one recurring asymmetry, stated in
-`crates/atlas-plugin/src/gate/mod.rs:81`: **over-broad costs a re-run;
+`crates/avarok-plugin/src/gate/mod.rs:81`: **over-broad costs a re-run;
 under-broad is a lie.** Every ambiguous case in the harness resolves toward
 re-running.
 
@@ -102,7 +102,7 @@ loops — see [Unfinished work](#unfinished-work-and-open-questions).
 
 ```mermaid
 flowchart LR
-    subgraph plugin ["crates/atlas-plugin/src/gate/"]
+    subgraph plugin ["crates/avarok-plugin/src/gate/"]
         COV["coverage.rs\nwhat invalidates what"]
         TAX["taxon.rs\nkernels/&lt;hw&gt;/&lt;model&gt;/&lt;quant&gt; walk"]
         CLO["closure.rs\ndevice-code attestations"]
@@ -113,12 +113,12 @@ flowchart LR
         REQ["required.rs\npath ∪ intent (PR #433)"]
         TEL["telemetry.rs\ncross-PR view, debt"]
     end
-    subgraph gov ["crates/atlas-governance"]
+    subgraph gov ["crates/avarok-governance"]
         LED["ledger.rs + event.rs\ngrow-only journey, JSONL"]
     end
     subgraph gh [".github/"]
         TJ["pr-taxonomy.json (PR #433)"]
-        CAT["actions/categorize\nactions/classify-path"]
+        CAT["actions/classify-path"]
         CIW["workflows/ci.yml\npr-categorize · pr-benchmark-gate"]
         PTW["workflows/pr-telemetry.yml"]
     end
@@ -128,7 +128,7 @@ flowchart LR
         GV["governance/pr-N.jsonl\n(none committed yet)"]
     end
     CLI["crates/spark-server/src/cli/bench_run.rs\nspark benchmark --pull-request-gate-check"]
-    ACL["crates/atlas-closure\nhash shared by build.rs and the gate"]
+    ACL["crates/avarok-closure\nhash shared by build.rs and the gate"]
 
     TJ --> PTX --> REQ
     COV --> CHK
@@ -148,19 +148,19 @@ Ownership, one line each:
 
 | Responsibility | Owner |
 |---|---|
-| Which paths invalidate which gate | `crates/atlas-plugin/src/gate/coverage.rs` |
-| Which kernel targets a path reaches | `crates/atlas-plugin/src/gate/taxon.rs` |
-| Whether device code actually changed | `crates/atlas-plugin/src/gate/closure.rs` + `crates/atlas-closure` |
-| Record and threshold schemas | `crates/atlas-plugin/src/gate/record.rs`, `gate/bench.rs` |
-| The verdict | `crates/atlas-plugin/src/gate/check.rs` |
+| Which paths invalidate which gate | `crates/avarok-plugin/src/gate/coverage.rs` |
+| Which kernel targets a path reaches | `crates/avarok-plugin/src/gate/taxon.rs` |
+| Whether device code actually changed | `crates/avarok-plugin/src/gate/closure.rs` + `crates/avarok-closure` |
+| Record and threshold schemas | `crates/avarok-plugin/src/gate/record.rs`, `gate/bench.rs` |
+| The verdict | `crates/avarok-plugin/src/gate/check.rs` |
 | The CLI entry point | `crates/spark-server/src/cli/bench_run.rs` (`gate_check_cmd`) |
 | The intent taxonomy and its rules | `.github/pr-taxonomy.json`, `gate/pr_taxonomy.rs` |
 | The union a PR owes | `gate/required.rs` |
-| The classifier plumbing | `.github/actions/categorize`, `.github/actions/classify-path`, `ci.yml` `pr-categorize` |
-| The journey ledger | `crates/atlas-governance` |
-| Artifact → ledger validation | `crates/atlas-plugin/src/bin/ledger_harvest.rs` |
+| The classifier plumbing | `.github/actions/classify-path`, `ci.yml` `pr-categorize` |
+| The journey ledger | `crates/avarok-governance` |
+| Artifact → ledger validation | `crates/avarok-plugin/src/bin/ledger_harvest.rs` |
 | The cross-PR/debt view | `gate/telemetry.rs`, `bin/pr_telemetry.rs`, `.github/workflows/pr-telemetry.yml` |
-| Benchmark registration | `crates/atlas-plugin/src/registry.rs` |
+| Benchmark registration | `crates/avarok-plugin/src/registry.rs` |
 
 <a name="component-status"></a>
 ## 4. Component status: merged vs in flight
@@ -172,10 +172,10 @@ Verified by diffing `origin/main` (654411f96) against
 |---|---|---|
 | `coverage.rs` floor (`PERF_PATHS`, `GATE_MACHINERY`, per-driver excludes) | yes | — |
 | `BOUNDARY_FILES` | 5 entries | grows to 7 (`required.rs`, `.github/pr-taxonomy.json`) |
-| `closure.rs`, `taxon.rs`, `atlas-closure`, ADR-0012 | yes | — |
+| `closure.rs`, `taxon.rs`, `avarok-closure`, ADR-0012 | yes | — |
 | `check.rs` content-not-ancestry coverage, dirty-tree refusal, ADR-0013 | yes | small additions |
 | `record.rs`, `bench.rs` (BENCH.toml thresholds) | yes | — |
-| `atlas-governance` (events, ledger, G-set) | yes — with **zero writers** | first writer (`ledger_append` in CI) |
+| `avarok-governance` (events, ledger, G-set) | yes — with **zero writers** | first writer (`ledger_append` in CI) |
 | Flat `pr-categorize` job + `actions/categorize` + `ai-models.json` | yes | — |
 | Descending classifier (`actions/classify-path`), taxonomy, `pr_taxonomy.rs`, `required.rs`, `implied_benches`, `ledger_append`, `ledger_harvest`, ADR-0014 | no | yes |
 | `NOT_REQUIRED` | 3 entries | 4 (adds `cross-contamination`) |
@@ -188,7 +188,7 @@ Verified by diffing `origin/main` (654411f96) against
 
 Every benchmark is a compile-time descriptor in one static table —
 registration is a code review event, not a runtime discovery
-(`crates/atlas-plugin/src/registry.rs:14`). The table is ordered cheapest
+(`crates/avarok-plugin/src/registry.rs:14`). The table is ordered cheapest
 first, and `serve-matrix` is deliberately last because it is the only entry
 that replaces the model the box is serving (`registry.rs:23`).
 
@@ -199,19 +199,28 @@ descriptor; the agentic figures are from the committed gate record
 
 | id | Gate status | Rough cost | What it measures |
 |---|---|---|---|
-| `concurrency-sweep` | not required (no thresholds) | ~10–30 min | exploratory throughput table across concurrency rungs |
+| `concurrency-sweep` | **required** (promoted 2026-08-15) | ~25–90 min | aggregate throughput at C=1..128 on the pinned instrument, vs per-rung floors |
+| `concurrency-sweep-dflash2` | **required** (added 2026-08-29) | ~25–90 min | the same ladder with the DFlash2 drafter armed — the only gate that exercises speculation |
+| `decode-floor` | **required** (promoted 2026-08-15) | ~5–10 min | single-user server decode rate vs a committed floor |
+| `ssm-state-poisoning-gate` | **required** | ~5–10 min | an identical replay must return identical bytes after accumulated SSM/prefix state |
+| `vision-fidelity` | **required** (vision targets) | ~5 min | the served model sees the image it was sent, at its checkpoint's permitted resolution |
+| `video-fidelity` | **required** (video targets) | ~5–15 min | the pad/sample contract on mixed-media input |
 | `ttft-warm-gate` | **required** | ~3–6 min | cached-prefix TTFT vs a stored same-box baseline (median ≤3%, p90 ≤5%) |
 | `ttft-cold-gate` | **required** | ~3–6 min | uncached prefill TTFT — the leg that sees a cold-load regression |
 | `cross-contamination` | promotion candidate (PR #433) | ~2–5 min | concurrent requests must not change each other's output; zero tolerance |
+| `kat-equality-gate` | **required** (since 2026-09-10) | ~65 min | the same sample must answer identically whatever ran before it — 257 samples, 2 request ORDERS, one server, byte-exact per `sample_id`. Its BENCH.toml entry pins `hermetic=true` plus the two keys `--hermetic` expands into, so the serve regime IS the subject. Open, it reads 36 of 257; closed, 0. The cap is a PREFIX of the golden draw, chosen as the smallest one covering every subset order-dependence has appeared in — it is not a random subsample, and it never looks at the remaining 738 — `live_simple` (25) plus the non_live half (713) |
 | `agentic-webserver` | **required** (35B MoE flagship); dense 27B registered unmeasured — baselining only, no thresholds | ~5 min × 10 iterations | the flagship agentic task, scored on outcome and process |
 | `bfcl-subset` | **required** | ~3.5 h | BFCL v4 single-turn, golden MLPerf draw (pinned n=995), dense 27B |
 | `bfcl-subset-echolp` | **required** | ~3.5 h | BFCL v4, echolp draw (pinned n=1004), 35B MoE — the two draws are not score-comparable (`gate/mod.rs:56`) |
 | `bfcl-full` | not required | ~12 h | the unsampled ~3,625-sample BFCL run |
 | `serve-matrix` | not required | ~5–10 min / checkpoint | multi-checkpoint breadth survey for release notes |
 
-The five **required** gates are `REQUIRED_GATES`
-(`crates/atlas-plugin/src/gate/mod.rs:66`), derived element-by-element from
-the coverage table so the two lists cannot diverge. Non-required entries
+The twelve **required** gates are `REQUIRED_GATES`
+(`crates/avarok-plugin/src/gate/mod.rs`), derived element-by-element from
+`coverage::REQUIRED` so the two lists cannot diverge. (This paragraph said
+"five" and listed `concurrency-sweep` as not required until 2026-08-29; the
+code had said otherwise since the 2026-08-15 promotion. If you are counting
+gates, count the array, not this sentence.) Non-required entries
 each carry a written reason in `coverage.rs::NOT_REQUIRED`
 (`gate/coverage.rs:307`) — stated rather than implied, so "why doesn't
 `bfcl-full` gate?" has a findable answer.
@@ -263,7 +272,7 @@ Two entries carry lessons worth knowing:
   the repo's template over the checkpoint's own chat template, and a
   template edit has been measured moving BFCL by +2.70 points
   (`gate/mod.rs:90-95`).
-- `3rdparty_patches` closed a real bypass: `ATLAS_GDN_LIB` dlopens an AOT
+- `3rdparty_patches` closed a real bypass: `AVAROK_GDN_LIB` dlopens an AOT
   `.so` committed there, so replacing that artefact used to invalidate
   nothing while changing engine behaviour (`gate/coverage.rs:53-59`).
 
@@ -291,7 +300,7 @@ flowchart TD
 The two exclusion families:
 
 - **`GATE_MACHINERY`** (`gate/coverage.rs:160`): the whole
-  `crates/atlas-plugin/src/gate` prefix is excluded from every gate,
+  `crates/avarok-plugin/src/gate` prefix is excluded from every gate,
   because gate bookkeeping never runs a model; its correctness is covered by
   `cargo test`, which is a required check. Re-measuring BFCL because a
   comparison operator moved buys nothing.
@@ -350,7 +359,7 @@ for paths inside `kernels/` (`gate/closure.rs:3-9`).
 is one holding `HARDWARE.toml`, a model dir one holding `MODEL.toml` (which
 is what excludes `common/`), and every subdir of a model is a quant
 (`taxon.rs:84-107`). It deliberately duplicates
-`atlas-kernels/build.rs::resolve_targets()` — build-script code is not
+`avarok-kernels/build.rs::resolve_targets()` — build-script code is not
 linkable, and a gate that needs a CUDA toolchain to enumerate targets cannot
 run in CI — with a cross-check test so "disagreement is a lie, not a
 discrepancy" (`taxon.rs:5-10`).
@@ -373,14 +382,14 @@ and fail-open), and headers are in no file set at all. So the hash covers
 the **transitive quoted-`#include` closure** of each target's resolved
 sources, plus `HARDWARE.toml`/`MODEL.toml`/`KERNEL.toml`, nvcc flags, arch,
 and compiler version (`gate/closure.rs:60-68`, `taxon.rs:152-165`). One
-crate — `crates/atlas-closure` — computes it for both the build script and
+crate — `crates/avarok-closure` — computes it for both the build script and
 the gate, because two implementations of one hash drift, and drift is
 indistinguishable from a real change (ADR-0012, consequences).
 
 ### Two-sided attestation
 
 A record does **not** attest from the working tree. It carries the closure
-values *baked into the measuring binary* (`atlas_kernels::TARGET_CLOSURES`,
+values *baked into the measuring binary* (`avarok_kernels::TARGET_CLOSURES`,
 attached via `GateRecord::with_closure`, `gate/record.rs:346-359`) — because
 the tree and the binary differ exactly when it matters: a stale `target/`, a
 dirty tree, an image carried between boxes (`gate/closure.rs:74-86`). The
@@ -437,7 +446,7 @@ From `GateRecord` (`gate/record.rs:19-84`) and a real committed record
 | `params`, `command` | every parameter including defaults, and the exact replayable CLI invocation (`record.rs:38-43`) |
 | `served_by` | the recipe (`<family>/<stem>`) when the gate provisioned its own server — the honest half of `command`, since a self-provisioned run's URL names an ephemeral port (`record.rs:44-52`) |
 | `serve_overrides` | recipe keys changed on the command line. Non-empty means `served_by` alone overstates provenance: the numbers describe a config that exists in no file (`record.rs:53-61`) |
-| `hardware` | the box that *served* the run (fetched from the endpoint's `/hardware`, not probed locally): `gpu`, `driver`, `sm_clock_mhz` (`record.rs:237-241`, `crates/atlas-plugin/src/hardware.rs:31`) |
+| `hardware` | the box that *served* the run (fetched from the endpoint's `/hardware`, not probed locally): `gpu`, `driver`, `sm_clock_mhz` (`record.rs:237-241`, `crates/avarok-plugin/src/hardware.rs:31`) |
 | `metrics` | headline numbers by stable name — e.g. `overall_accuracy: 87.64, samples: 995` |
 | `frame_status`, `verdict`, `verdict_reason`, `summary` | the run's own outcome; a `Failed` frame never passes whatever its numbers look like |
 | `closure` | per-target `{hash, arch, compiler, flags}` baked from the measuring binary (§7). Empty = pre-attestation, excuses nothing (`record.rs:76-83`) |
@@ -513,7 +522,7 @@ gate check for 0ff3d56d44 (/workspace/.wt-pr389)
   PASS  ttft-cold-gate
   NONE  bfcl-subset — latest record is for 8b7de2638d (2026-08-09-8b7de2638d.json)
         — invalidated by .github/pr-taxonomy.json, Cargo.lock,
-        crates/atlas-core/src/fault.rs and 35 more — device code changed for
+        crates/avarok-core/src/fault.rs and 35 more — device code changed for
         23 target(s): gb10/deepseek-v4-flash/nvfp4, gb10/gemma-4-26b-a4b/nvfp4,
         gb10/gemma-4-31b/nvfp4 and 20 more
   NONE  bfcl-subset-echolp — latest record is for 8b7de2638d (…) — invalidated
@@ -654,20 +663,22 @@ matched prefix — fewer *extra* benches, never a crash — and
 
 ### The classifier
 
-Two composite actions, both `run:`-steps-only because the org's SHA-pinning
-requirement applies transitively (`.github/actions/categorize/action.yml:6-11`):
+One composite action, `run:`-steps-only because the org's SHA-pinning
+requirement applies transitively — the same rule that blocked adopting
+`apache/skywalking-eyes/header` for the SPDX check (see `ci.yml`'s
+license-headers job). A second, flat action (`categorize`: one closed-set
+pick from seven siblings) ran beside the descent through the observe-only
+period and has since been **deleted**: three live runs on one PR produced
+`tooling`, `performance`, `tooling` from it while the descent held
+`infrastructure/*` throughout, its output fed nothing, and every call was
+free-tier budget. Its load-bearing properties were inherited, not lost —
+the caller-validated allowlist (the worst a hostile input achieves is a
+*wrong category from the allowed set*, never arbitrary text flowing into a
+later shell), the `abstain`-vs-`error` distinction (a provider outage must
+never be mistaken for a caller bug or vice versa), and every input crossing
+via `env:`, never `${{ }}` interpolation — the injection shape the repo's
+CODEOWNERS warns about. All of them now apply at *every level* of the walk:
 
-- **`categorize`**: one closed-set classification over an OpenAI-compatible
-  endpoint. The output is validated against a caller-supplied allowlist, so
-  the worst a hostile input achieves is a *wrong category from the allowed
-  set*, never arbitrary text flowing into a later shell
-  (`action.yml:13-19,193-198`). Statuses are `ok | abstain | error`, and
-  the distinction is load-bearing: `abstain` is "could not answer" (no key —
-  the fork-PR case, HTTP failure, off-list reply), `error` is "this action
-  was misconfigured"; a provider outage must never be mistaken for a caller
-  bug or vice versa (`action.yml:68-73`). Every input crosses into the
-  script via `env:`, never `${{ }}` interpolation — the injection shape the
-  repo's CODEOWNERS warns about (`action.yml:83-96`).
 - **`classify-path`**: descends the taxonomy **one level at a time**, one
   closed-set call per level (`.github/actions/classify-path/action.yml:1-27`).
   A flat 25-leaf list weakens the allowlist property (a near-miss is
@@ -729,13 +740,13 @@ Plainly: `.benchmarks/` answers *"did this commit pass?"*; it cannot answer
 which runs superseded which, what the classifier thought at the time. The
 ledger is one append-only JSONL file per PR, `governance/pr-<n>.jsonl`,
 committed to git, with a disposable graph view rebuilt on demand
-(`crates/atlas-governance/src/lib.rs:10-24`, `ledger.rs:100-159` — the
+(`crates/avarok-governance/src/lib.rs:10-24`, `ledger.rs:100-159` — the
 binary graph is never committed because an unmergeable file in the merge
 path would recreate the conflict problem the per-PR split designs out).
 
 Mechanics:
 
-- **Events** (`crates/atlas-governance/src/event.rs:28-58`):
+- **Events** (`crates/avarok-governance/src/event.rs:28-58`):
   `State { to }` — transitions through the eight-state lifecycle
   `CONTRIBUTING.md` already defines, so ledger and contributor docs cannot
   drift apart; `Gate { id, verdict: Pass|Fail|Missing, invalidated_by }` —
@@ -770,12 +781,12 @@ was dead three separate ways and had never once succeeded; zero
 `governance/` files have ever been committed, on any branch). So:
 
 1. The job appends the Category line locally (`ledger_append`,
-   `crates/atlas-plugin/src/bin/ledger_append.rs`) and uploads
+   `crates/avarok-plugin/src/bin/ledger_append.rs`) and uploads
    `governance/pr-<n>.jsonl` as a **workflow artifact** — no write scope
    needed, works from forks (`ci.yml:389-399`).
 2. A scheduled job running **default-branch code** downloads the artifact
    and runs `ledger_harvest`
-   (`crates/atlas-plugin/src/bin/ledger_harvest.rs`), which treats the
+   (`crates/avarok-plugin/src/bin/ledger_harvest.rs`), which treats the
    content as untrusted: every line must parse or the file is rejected
    wholesale; **only `Category` events are accepted** — `Gate` and
    `Measurement` are written where those things happen, beside the
@@ -847,7 +858,7 @@ flowchart LR
     A["registered benchmark\n(registry.rs)"] --> B["NOT_REQUIRED\nwith a written reason\n(coverage.rs:307)"]
     B -->|"owner intends to require it\nonce proven"| C["PROMOTION_CANDIDATE\ncarries a FULL GateCoverage;\npromotion_debt() joins it against\nevery PR's changed paths;\ntelemetry renders the debt rows,\nMerged? column included"]
     C -->|"proven on release cuts:\nstable, no false fails,\nbaselines recorded in BENCH.toml"| D["REQUIRED\n(coverage::REQUIRED +\nREQUIRED_GATES)\nrecords must pass on every PR"]
-    B -->|"permanently excused\n(bfcl-full, concurrency-sweep,\nserve-matrix)"| B
+    B -->|"permanently excused\n(bfcl-full, serve-matrix,\nquick-speed-bench)"| B
 ```
 
 A candidate carries a full `GateCoverage` — the same exclusion machinery as

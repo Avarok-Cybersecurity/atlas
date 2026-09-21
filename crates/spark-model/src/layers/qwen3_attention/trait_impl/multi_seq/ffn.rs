@@ -9,11 +9,11 @@ use super::ctx::MultiSeqCtx;
 use crate::layers::ops;
 use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 
-/// Kill-switch for the pairwise batched MoE decode path (`ATLAS_MOE_PAIRWISE_DECODE=0`).
+/// Kill-switch for the pairwise batched MoE decode path (`AVAROK_MOE_PAIRWISE_DECODE=0`).
 fn pairwise_moe_decode_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MOE_PAIRWISE_DECODE").as_deref() != Ok("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MOE_PAIRWISE_DECODE").as_deref() != Ok("0"))
 }
 
 /// Route batched decode MoE (n >= min) through the grouped read-once GEMM
@@ -22,13 +22,13 @@ fn pairwise_moe_decode_enabled() -> bool {
 fn grouped_routed_decode_enabled() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE").as_deref() == Ok("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_MOE_GROUPED_ROUTED_DECODE").as_deref() == Ok("1"))
 }
 fn grouped_routed_decode_min() -> usize {
     use std::sync::OnceLock;
     static M: OnceLock<usize> = OnceLock::new();
     *M.get_or_init(|| {
-        std::env::var("ATLAS_MOE_GROUPED_ROUTED_DECODE_MIN")
+        std::env::var("AVAROK_MOE_GROUPED_ROUTED_DECODE_MIN")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(2)
@@ -37,6 +37,17 @@ fn grouped_routed_decode_min() -> usize {
 
 impl Qwen3AttentionLayer {
     pub(super) fn ms_phase_ffn(&self, c: &MultiSeqCtx<'_>, o_out: DevicePtr) -> Result<()> {
+        // A model with a shortcut MoE (LongCat) has an architectural component
+        // that ONLY the per-token branch below implements. Every other arm
+        // would compute a structurally incomplete block and return no error —
+        // so refuse instead of serving it. `force_seq_ffn` is true whenever
+        // `mla.is_some()`, which is exactly the LongCat case, but assert it
+        // rather than rely on that coupling holding forever.
+        anyhow::ensure!(
+            (self.shortcut_carry_out.is_none() && self.shortcut_carry_in.is_none())
+                || self.mla.is_some(),
+            "shortcut-MoE model reached the batched FFN ladder, which does not              implement the shortcut; only the per-token branch does"
+        );
         let MultiSeqCtx {
             fwd,
             n,
@@ -169,7 +180,7 @@ impl Qwen3AttentionLayer {
         } else if !force_seq_ffn
             && (self.ffn.is_dense() || crate::layers::moe_grouped_decode_for(n))
         {
-            // TASK-167 (gx10): mirror the SSM-side ATLAS_MOE_GROUPED_DECODE arm
+            // TASK-167 (gx10): mirror the SSM-side AVAROK_MOE_GROUPED_DECODE arm
             // for the attention layers' MoE — at large n the per-token loop
             // below re-reads each routed expert per token; forward_prefill
             // reads each distinct expert once (same body as the dense branch).
@@ -305,7 +316,7 @@ impl Qwen3AttentionLayer {
             // dominates). Each forward() writes moe_output[0]; consume it
             // immediately before the next iteration overwrites it.
             let normed_base = fwd.buffers.norm_output();
-            if std::env::var("ATLAS_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
+            if std::env::var("AVAROK_MOE_BATCHED_DECODE").ok().as_deref() == Some("1") {
                 // Batched MoE decode over all N tokens (mirrors the SSM multi-seq
                 // path): the routed per-token expert kernels run under one call so
                 // the Feature-1 LoRA fold (which the per-token `forward` refuses
@@ -324,6 +335,33 @@ impl Qwen3AttentionLayer {
                 for i in 0..n {
                     let hidden_i = hidden.offset(i * h * residual_elem);
                     let normed2_i = normed_base.offset(i * h * bf16);
+                    // LongCat shortcut MoE (producer). MUST run before the
+                    // dense FFN below, which reuses `moe_output`. This is the
+                    // BATCHED mirror of the single-token path in
+                    // `decode_inner`: without it, batched decode silently drops
+                    // the block's entire 256-expert shortcut contribution for
+                    // every sequence — attention still reads the right tokens,
+                    // so the topic survives while the distribution does not,
+                    // which reads as words fragmenting mid-answer rather than
+                    // as anything crashing.
+                    if let (Some(moe_ffn), Some((carry, cap))) =
+                        (&self.moe_ffn, self.shortcut_carry_out)
+                    {
+                        anyhow::ensure!(
+                            n <= cap,
+                            "shortcut carry capacity {cap} < decode batch {n}"
+                        );
+                        let sc_out = moe_ffn.forward(normed2_i, fwd, stream)?;
+                        if let crate::layers::FfnComponent::Moe(m) = moe_ffn {
+                            m.apply_zero_expert(sc_out, normed2_i, 1, fwd, stream)?;
+                        }
+                        fwd.gpu.copy_d2d_async(
+                            sc_out,
+                            carry.offset(i * h * bf16),
+                            h * bf16,
+                            stream,
+                        )?;
+                    }
                     let moe_out = self.ffn.forward(normed2_i, fwd, stream)?;
                     ops::residual_add(
                         fwd.gpu,
@@ -333,6 +371,18 @@ impl Qwen3AttentionLayer {
                         h as u32,
                         stream,
                     )?;
+                    // LongCat shortcut carry (consumer): the paired previous
+                    // sublayer's stashed MoE output, this sequence's row.
+                    if let Some((carry, _cap)) = self.shortcut_carry_in {
+                        ops::residual_add(
+                            fwd.gpu,
+                            self.residual_add_k,
+                            hidden_i,
+                            carry.offset(i * h * bf16),
+                            h as u32,
+                            stream,
+                        )?;
+                    }
                 }
             }
         }

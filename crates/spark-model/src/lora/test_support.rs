@@ -4,7 +4,7 @@
 //! factory config, the `SlotView` builder, and the GPU-free `LoraPair` factory
 //! used across `slot_math_tests` / `key_tests` / `types_tests`.
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::DevicePtr;
 
 use crate::layers::ops::lora_delta::LoraPair;

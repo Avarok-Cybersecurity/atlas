@@ -1,0 +1,236 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+// The wire contract with the local agent.
+//
+// Mirrors crates/atlasctl-protocol in atlas-recipes. Kept deliberately small:
+// the whole surface a page can reach is a handful of message types, and that is
+// the point. There is no raw-command verb, no nested-message verb and no relay
+// of opaque bytes, and the enum is closed — an unknown `type` fails to
+// deserialize rather than reaching a handler.
+//
+// One scoped exception, stated here so this file cannot outgrow the doctrine it
+// mirrors: the seven single-node control verbs carry an optional `on` target,
+// which the agent honours by re-issuing the request AS ITSELF over its
+// authenticated peer channel — one hop, only toward a machine it has itself
+// pinned AND whose pin of the requester carries an explicit `controller` grant.
+// Forwarding is an ANNOTATION on closed verbs, never a wrapper around arbitrary
+// messages: the forwardable vocabulary cannot express pairing, joining, cluster
+// reservation, or a further hop. That is what still keeps the agent from being
+// an open proxy for whatever page is talking to it.
+
+// 2: pairing became two-phase. `pair_peer` runs the exchange and writes no
+// pin; `confirm_pairing` establishes trust and `reject_pairing` discards it.
+// `pair_result.paired` became `.exchanged` because it no longer means trusted.
+// The agent enforces an exact match, so a page still on 1 is refused at the
+// handshake rather than reading `exchanged` as "trusted" and showing a machine
+// as paired that the agent has not accepted.
+//
+// 4: control verbs gained an optional `on` target and the replies gained
+// `on`/`via`, so a page can drive a machine reached through a peer. See the
+// doctrine note above for what that deliberately cannot do.
+//
+// 3: `pair_peer_at` added, so a machine can be added by typing its address.
+// mDNS is link-local — it does not cross a router and is off on plenty of
+// managed networks — so without it the page could only reach machines on one
+// broadcast domain. Additive, but the handshake is exact-match by design.
+
+export const PROTOCOL_VERSION = 4;
+
+// The agent binds loopback only. Connecting to anything else would defeat the
+// entire security model, so the address is a literal here too.
+export const AGENT_PORT = 34333;
+export const AGENT_URL = `ws://127.0.0.1:${AGENT_PORT}/ws`;
+
+/** Where the pairing token is remembered between visits. */
+export const TOKEN_KEY = 'atlas.agent.token';
+
+/** Read the stored pairing token, if the user has pasted one. */
+export function storedToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? '';
+  } catch {
+    // Private browsing, or storage disabled. Not fatal: the user can paste the
+    // token again for this session.
+    return '';
+  }
+}
+
+/** Remember a pairing token. */
+export function storeToken(token) {
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* nothing we can do, and nothing that should break the page */
+  }
+}
+
+/** Forget the pairing token. */
+export function clearToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* see above */
+  }
+}
+
+/** A token is 32 bytes of hex. Checked here only to catch a bad paste early. */
+export function looksLikeToken(value) {
+  // Every other export here tolerates junk; this one used to throw on a
+  // non-string, which is the wrong answer to "does this look like a token".
+  return normaliseToken(value) !== null;
+}
+
+/**
+ * The token a paste MEANT, or `null` if it was not one.
+ *
+ * Whitespace is removed everywhere, not just at the ends. The agent prints the
+ * token on a labelled line, so a narrow terminal wraps it, and the copy carries
+ * a newline through the middle of 64 otherwise-perfect hex characters — which
+ * was rejected as "that does not look like a pairing token" while the operator
+ * looked at the very thing they had pasted.
+ *
+ * Case is folded for the same reason. The agent only ever emits lowercase, so
+ * an uppercase paste came through something that changed it, and refusing it
+ * teaches nothing.
+ *
+ * Removing interior whitespace cannot turn a wrong paste into a right one:
+ * what survives still has to be exactly 64 hex characters.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+export function normaliseToken(value) {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.replace(/\s+/g, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(cleaned) ? cleaned : null;
+}
+
+// Said when the agent reports something this page cannot name. Kept in one
+// place so every unnameable path says the same thing rather than going blank.
+const UNKNOWN_PROBLEM = 'The agent reported an unknown problem.';
+
+// Whether a detail field actually arrived. Interpolating one that did not put
+// the literal "undefined" in front of an operator who is, by definition,
+// already looking at something that went wrong — "your agent speaks
+// undefined–undefined" was the worst of them.
+function said(v) {
+  return typeof v === 'string' && v.trim() !== '';
+}
+
+/** Human text for an agent error code. */
+export function describeError(error) {
+  if (!error || typeof error !== 'object') return UNKNOWN_PROBLEM;
+  switch (error.code) {
+    case 'not_paired':
+      return 'The agent did not accept that pairing token. Run `atlasctl agent token` and paste the value it prints.';
+    case 'unsupported_protocol':
+      return Number.isInteger(error.min) && Number.isInteger(error.max)
+        ? `This page speaks protocol ${PROTOCOL_VERSION}; your agent speaks ${error.min}–${error.max}. Update whichever is older.`
+        : `This page speaks protocol ${PROTOCOL_VERSION}, and your agent did not say which it speaks. Reinstall the agent on that machine.`;
+    case 'unknown_recipe':
+      return said(error.recipe)
+        ? `Your agent does not have a recipe called “${error.recipe}”. Update atlasctl to get the latest recipe set.`
+        : 'Your agent does not have that recipe. Update atlasctl to get the latest recipe set.';
+    case 'not_launchable':
+      return said(error.reason)
+        ? `That recipe cannot run here: ${error.reason}`
+        : 'That recipe cannot run here, and the agent did not say why.';
+    case 'bad_settings': {
+      // This arrives over the socket, so `errors` is whatever the agent sent.
+      // A non-array used to throw here — turning the one function whose job is
+      // to explain a failure into a second failure.
+      const listed = Array.isArray(error.errors)
+        ? error.errors.map((e) => (typeof e?.key === 'string' ? e.key : 'setting'))
+        : [];
+      // An empty list rendered as an empty string: something was rejected and
+      // the screen said nothing at all.
+      return listed.length > 0
+        ? `The agent rejected these settings: ${listed.join(', ')}`
+        : 'The agent rejected the settings but did not say which.';
+    }
+    case 'already_running':
+      return 'That recipe is already running.';
+    case 'docker_unavailable':
+      return said(error.detail)
+        ? `Docker is not available on that machine: ${error.detail}`
+        : 'Docker is not available on that machine.';
+    case 'launch_failed':
+      return said(error.detail)
+        ? `The launch failed: ${error.detail}`
+        : 'The launch failed, and the agent did not say why.';
+    default:
+      // A non-string code would otherwise be returned as-is and reach the UI
+      // as "[object Object]".
+      return typeof error.code === 'string' && error.code !== '' ? error.code : UNKNOWN_PROBLEM;
+  }
+}
+
+/**
+ * What to tell an operator whose agent and page disagree about the protocol.
+ *
+ * "Update whichever is older" was true and unhelpful: it named no command, and
+ * it made the operator work out which side was behind from two version numbers
+ * they have no reason to care about. Protocol 4 shipped to a fleet of agents
+ * that all speak something older, so this is now the first thing many people
+ * will see — it has to end with something they can run.
+ *
+ * The two directions have genuinely different remedies, which is why this does
+ * not just print both:
+ *
+ * - the AGENT is behind — reinstall it, which is one line;
+ * - the PAGE is behind — the browser is holding a cached bundle, and no amount
+ *   of updating the agent will fix it. That one is a hard reload.
+ *
+ * The remedy is a command, and which command depends on the machine. This
+ * advice is always about the LOOPBACK agent -- `AGENT_URL` is 127.0.0.1 -- so
+ * the machine being advised about is the one the browser is running on, the one
+ * whose OS the page actually knows. It was still handing every visitor
+ * `curl … | sh`, so a Windows operator with a stale agent was told to paste a
+ * line PowerShell cannot parse: precisely the failure the install-command module
+ * was written to end.
+ *
+ * The command is passed IN rather than detected here, so this module stays pure
+ * and, more importantly, so there is one detection path. A second sniff is how
+ * the hero and the control page end up disagreeing about which machine the
+ * visitor is on -- worse than either answer alone.
+ *
+ * @param {number} page this bundle's `PROTOCOL_VERSION`
+ * @param {number} min the agent's lowest supported version
+ * @param {number} max the agent's highest
+ * @param {string} installCommand the install one-liner for THIS visitor's OS,
+ *   from `currentInstall().command`. No default: the caller knows the host and
+ *   this module does not, and guessing is the bug being fixed.
+ * @returns {{ok: true} | {ok: false, side: 'agent'|'page', message: string}}
+ */
+export function versionAdvice(page, min, max, installCommand) {
+  if (!Number.isInteger(page) || !Number.isInteger(min) || !Number.isInteger(max)) {
+    // A malformed welcome is not a version mismatch, and guessing which side is
+    // behind from a non-number would name a remedy at random.
+    return {
+      ok: false,
+      side: 'agent',
+      message: `The agent did not say which protocol it speaks, so this page cannot tell whether it is compatible. Reinstall the agent: ${installCommand}`
+    };
+  }
+  if (page >= min && page <= max) return { ok: true };
+
+  if (page > max) {
+    return {
+      ok: false,
+      side: 'agent',
+        // The closing sentence is a promise both callers keep. `client` hands
+        // this message to the launch dialog and to the fleet page, and each
+        // re-probes while showing it, so an agent that restarts on the new
+        // version is picked up without the visitor returning to the browser.
+        // Worth saying out loud: the remedy sends them to a terminal on another
+        // machine, and the reasonable assumption otherwise is that the page has
+        // given up and is waiting to be clicked.
+      message: `Your agent is out of date — it speaks protocol ${min === max ? min : `${min}–${max}`}, this page speaks ${page}. Update it on that machine: ${installCommand} — this page picks it up on its own once you have.`
+    };
+  }
+  return {
+    ok: false,
+    side: 'page',
+    message: `This page is out of date — it speaks protocol ${page}, your agent speaks ${min === max ? min : `${min}–${max}`}. Your browser is holding an old copy: reload with Ctrl-Shift-R (⌘-Shift-R on a Mac).`
+  };
+}

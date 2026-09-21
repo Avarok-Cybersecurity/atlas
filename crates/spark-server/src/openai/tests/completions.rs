@@ -73,10 +73,12 @@ fn completion_response_carries_system_fingerprint_and_optional_logprobs() {
         completion_tokens_details: None,
         time_to_first_token_ms: 0.0,
         response_tokens_per_second: 0.0,
+        decode_time_ms: 0.0,
+        total_time_ms: 0.0,
     };
     let resp = CompletionResponse::new("m", "hi".into(), usage, "stop");
     let v = serde_json::to_value(&resp).expect("serialize");
-    assert_eq!(v["system_fingerprint"], "fp_atlas");
+    assert_eq!(v["system_fingerprint"], "fp_avarok");
     // logprobs must be ABSENT (not null) when not requested — some
     // clients treat an explicit null as a malformed logprobs block.
     assert!(v["choices"][0].get("logprobs").is_none());

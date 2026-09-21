@@ -3,7 +3,9 @@
   // via site/scripts/gen-models.mjs -> models.generated.json.
   // 3-level tree: vendor (brand) -> subfamily (recipe dir) -> recipes.
   import vendorsRaw from '$lib/models.generated.json';
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import { models as mcopy, recipesUrl } from '$lib/data.js';
+  import RunButton from './RunButton.svelte';
 
   // Flagship first: Qwen3.6 leads its vendor, then Qwen3.5, then the rest as-is.
   const rankSub = (n) => (n === 'Qwen3.6' ? 0 : n === 'Qwen3.5' ? 1 : 2);
@@ -44,12 +46,27 @@
     selectedSub[selectedVendor] = i;
   }
 
-  async function copyCmd(cmd) {
-    try {
-      await navigator.clipboard.writeText(cmd);
-      copied = cmd;
-      setTimeout(() => { if (copied === cmd) copied = ''; }, 1600);
-    } catch {}
+  // Keyed by command: several rows are on screen and only the one clicked
+  // may change. The state travels with the key, because a refusal on one row
+  // must not read as a refusal on another.
+  let copyState = $state('idle');
+  let copyTimer;
+
+  // The slider unmounts on navigation while a flash is pending.
+  $effect(() => () => clearTimeout(copyTimer));
+
+  async function copyCmd(cmd, el) {
+    clearTimeout(copyTimer);
+    copied = cmd;
+    // Was `if (… !== 'copied') return;`, which left the button unchanged on a
+    // refusal — indistinguishable from success to the person clicking it.
+    copyState = await copyOrSelect(cmd, el);
+    copyTimer = setTimeout(() => {
+      if (copied === cmd) {
+        copied = '';
+        copyState = 'idle';
+      }
+    }, 2400);
   }
 
   const quantClass = (q) => {
@@ -61,13 +78,16 @@
   };
   const quantLabel = (q) => (q && q !== 'none' ? q.toUpperCase() : 'BF16');
   const topoClass = (t) => (t === 'EP=2' ? 'chip chip-ep2' : t === 'TP=2' ? 'chip chip-tp2' : 'chip chip-single');
+  import SectionHead from './SectionHead.svelte';
 </script>
 
-<section id="models">
+<section id="models" class="sx-violet">
   <div class="container">
-    <div class="slabel">{mcopy.label}</div>
-    <h2 class="stitle">{mcopy.title}</h2>
-    <p class="ssub">{mcopy.sub}</p>
+    <SectionHead
+      label={mcopy.label}
+      title={mcopy.title}
+      sub={mcopy.sub}
+    />
 
     <div class="mnav">
       <!-- Level 1: vendor brand tabs -->
@@ -126,11 +146,12 @@
                 <button
                   type="button"
                   class="cmd-copy"
-                  onclick={() => copyCmd(r.command)}
+                  onclick={(e) => copyCmd(r.command, e.currentTarget.closest('.cmd-pill')?.querySelector('code'))}
                   aria-label={`Copy ${r.command}`}
                 >
-                  {copied === r.command ? 'Copied' : 'Copy'}
+                  {copied === r.command ? copyLabel(copyState) : 'Copy'}
                 </button>
+                <RunButton recipeId={r.recipeId ?? r.recipeStem} runnable={r.runnable ?? true} />
               </div>
             </div>
           {/each}

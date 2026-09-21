@@ -17,17 +17,17 @@
 // crate compiles on Apple Silicon (`--no-default-features --features
 // metal`) where the high-speed-swap path won't be reachable anyway.
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cuda_graph;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cuda_min;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cuda_module;
 
 // Re-export the module/event/launch helpers from their new home so existing
 // `use spark_storage::cuda_min::{CudaModule, CudaEvent, launch_kernel}` paths
 // keep working.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use cuda_module::{CudaEvent, CudaModule, launch_kernel};
 
 // Pure CPU-side modules — types, configs, references. Always compiled.
@@ -46,7 +46,7 @@ pub mod projection;
 // The one-sided RDMA KV transport backend — a `StorageBackend` impl that
 // offloads/restores KV groups to a `cache_peer` blade over verbs. cuda (for the
 // pinned-host bounce + copy_h2d) + the verbs shim.
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub mod rdma_kv_backend;
 pub mod rdma_snapshot;
 pub mod snapshot_swap;
@@ -82,86 +82,94 @@ pub use model_dims::ModelDims;
 // assumption, and io_uring has no Windows analogue at all. The whole NVMe /
 // RDMA cold-tier stack below is therefore unix-only, and a Windows `spark`
 // binary is built without it rather than against an unvalidated IOCP port.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod layout;
 
 // CUDA-only modules: each holds raw `cu*` FFI calls or a `DeviceBuffer`,
 // or transitively imports from the cuda_* modules above. Gated together
 // because separating them would just smear the boundary.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod backend;
 // The tier micro-benchmark drives io_uring directly (submission queues, not
 // the StorageBackend trait), so it is Linux-only along with io_uring itself.
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(avarok_cuda, target_os = "linux"))]
 pub mod bench;
 // T1 write-back cache composite (wraps any StorageBackend). cuda but not verbs.
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod cascade_backend;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod expert_arena;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod expert_tier;
+// NVMe-backed n-gram embedding row cache (LongCat / Qwen3.8-Flash-Next):
+// pinned GPU-addressable slots + host-side CLOCK eviction, same arena
+// primitive as the expert tier.
+#[cfg(avarok_cuda)]
+pub mod ngram_cache;
+#[cfg(avarok_cuda)]
+mod ngram_cache_fault;
 // RDMA expert staging needs rdma-core (libibverbs), which is Linux-only.
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(all(avarok_cuda, unix))]
 pub mod expert_tier_rdma;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod high_speed_swap;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod predictor;
 // Capability probe for cuFile / GPUDirect Storage, which NVIDIA ships for
 // Linux only. There is nothing to probe on other platforms.
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(avarok_cuda, target_os = "linux"))]
 pub mod probe;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod scratch_pool;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod tiled_attention;
 // RDMA weight loader — the cuda client of `weight_peer` that one-sided-READs a
 // model's tensors into a `spark_runtime::weights::WeightStore` for fast swaps.
 // RDMA-stage a PEFT adapter's A/B tensors straight into a resident LoRA pool
 // slot (reuses the weight_peer manifest + wire; landing byte-identical to the
 // disk pack).
-#[cfg(feature = "cuda")]
 pub mod weight_lora_rdma;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub mod weight_tier_rdma;
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use backend::{PosixBackend, ReadRequest, StorageBackend};
 // io_uring is Linux-only; everything else in the tier is portable.
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(avarok_cuda, target_os = "linux"))]
 pub use backend::IoUringBackend;
 pub use config::HighSpeedSwapConfig;
 pub use eviction::EvictionPolicy;
 pub use expert::{
     ExpertKey, ExpertLayout, ExpertRecordHeader, ExpertRecordId, ExpertRecordSpec, Proj, ProjBytes,
 };
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use expert_arena::ExpertArena;
 pub use expert_pack::{ExpertFileReader, ExpertFileWriter};
 pub use expert_pack::{ExpertIndex, ProjData, ProjView, pack_record, unpack_record};
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use expert_tier::{
     ArenaSlot, ExpertResidency, ExpertTier, PosixTier, TierKind, UmaArenaTier, open_tier,
 };
-#[cfg(all(feature = "cuda", unix))]
+#[cfg(all(avarok_cuda, unix))]
 pub use expert_tier_rdma::RdmaTier;
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use high_speed_swap::{HighSpeedSwap, install_local, local_installed, with_local};
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub use kv_paging::KvPagingBackend;
-#[cfg(all(feature = "cuda", atlas_rdma_verbs))]
+#[cfg(avarok_cuda)]
+pub use ngram_cache::NgramRowCache;
+#[cfg(all(avarok_cuda, avarok_rdma_verbs))]
 pub use rdma_kv_backend::RdmaKvBackend;
 pub use rdma_snapshot::RdmaSnapshotArena;
 
-/// `true` iff `atlas_rdma_verbs` was re-emitted for this crate by build.rs (the
-/// one-sided verbs shim lives in the CUDA-free `atlas-rdma` crate; `rustc-cfg`
-/// doesn't cross crates, so build.rs re-emits it off atlas-rdma's `links`
+/// `true` iff `avarok_rdma_verbs` was re-emitted for this crate by build.rs (the
+/// one-sided verbs shim lives in the CUDA-free `avarok-rdma` crate; `rustc-cfg`
+/// doesn't cross crates, so build.rs re-emits it off avarok-rdma's `links`
 /// metadata). `rdma_verbs_probe_tests` asserts it, so a silent cfg evaporation
 /// fails `cargo test -p spark-storage --lib` on verbs hosts instead of
 /// green-building with the gated modules compiled out.
 pub const fn rdma_verbs_enabled() -> bool {
-    cfg!(atlas_rdma_verbs)
+    cfg!(avarok_rdma_verbs)
 }
 
 #[cfg(test)]
@@ -175,20 +183,21 @@ mod rdma_verbs_probe_tests;
 // Gated on the cuda feature alone: the orchestrator itself is now portable
 // (its backend is an alias -- io_uring on Linux, the positional-I/O backend
 // elsewhere), so a Windows CUDA build gets the REAL tier, not this stub.
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 mod stubs;
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(avarok_cuda))]
 pub use stubs::{HighSpeedSwap, install_local, local_installed, with_local};
 
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use predictor::{Predictor, PredictorDims};
-#[cfg(all(feature = "cuda", target_os = "linux"))]
+#[cfg(all(avarok_cuda, target_os = "linux"))]
 pub use probe::{Backend, ProbeConfig, ProbeResult, run_probe};
 pub use projection::{PredictorShape, build_projection};
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use tiled_attention::{TiledAttention, TiledAttentionDims};
-#[cfg(feature = "cuda")]
-pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget, RdmaLoraLoader};
+#[cfg(avarok_cuda)]
+pub use weight_lora_rdma::RdmaLoraLoader;
+pub use weight_lora_rdma::{LoraAbKind, LoraLandTarget};
 pub use weight_peer::{WeightManifest, WeightTensorRecord};
-#[cfg(feature = "cuda")]
+#[cfg(avarok_cuda)]
 pub use weight_tier_rdma::RdmaWeightLoader;

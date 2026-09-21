@@ -2,7 +2,7 @@
 """Compare per-step logit dumps from two metal_qwen35_inference runs.
 
 Each input is the raw little-endian bf16 dump written by
-ATLAS_LOGITS_OUT ([n_steps, vocab]). Reports per-step KL divergence
+AVAROK_LOGITS_OUT ([n_steps, vocab]). Reports per-step KL divergence
 (reference || candidate), mean KLD, and top-1 agreement.
 
 Greedy decode means the two runs share context only while their argmax
@@ -40,7 +40,7 @@ def main() -> None:
     ap.add_argument(
         "--teacher-forced",
         action="store_true",
-        help="both runs fed the same token list (ATLAS_FORCE_TOKENS_FILE): "
+        help="both runs fed the same token list (AVAROK_FORCE_TOKENS_FILE): "
         "contexts match at every position, so do not trim at the first "
         "argmax divergence",
     )

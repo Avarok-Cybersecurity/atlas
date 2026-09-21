@@ -44,7 +44,7 @@ fn selecting_loads_the_schema_and_its_defaults() {
 #[test]
 fn every_registered_benchmark_can_be_selected() {
     let mut s = state();
-    for i in 0..atlas_plugin::registry::all().len() {
+    for i in 0..avarok_plugin::registry::all().len() {
         s.select(i);
         assert!(s.descriptor().is_some());
         assert!(!s.plugin_metadata().description.is_empty());
@@ -150,7 +150,7 @@ fn starting_without_an_executor_is_refused_rather_than_panicking() {
 #[test]
 fn the_shell_running_benchmark_asks_for_confirmation_first() {
     let mut s = state();
-    let index = atlas_plugin::registry::all()
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| d.needs_confirmation)
         .expect("the agentic benchmark requires confirmation");
@@ -168,7 +168,7 @@ fn the_shell_running_benchmark_asks_for_confirmation_first() {
 #[test]
 fn a_benchmark_without_side_effects_does_not_ask() {
     let mut s = state();
-    let index = atlas_plugin::registry::all()
+    let index = avarok_plugin::registry::all()
         .iter()
         .position(|d| !d.needs_confirmation)
         .expect("most benchmarks need no confirmation");
@@ -183,7 +183,7 @@ fn a_benchmark_without_side_effects_does_not_ask() {
 #[test]
 fn list_navigation_is_clamped_to_the_registry() {
     let mut s = state();
-    let n = atlas_plugin::registry::all().len();
+    let n = avarok_plugin::registry::all().len();
     for _ in 0..n + 5 {
         s.on_key(key(KeyCode::Char('j')), BenchSub::Suite);
     }
@@ -221,11 +221,11 @@ fn the_glow_is_off_until_a_run_turns_it_on() {
 fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
     let dir = tempfile::tempdir().expect("scratch dir");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let store = atlas_plugin::ArtifactStore::with_root(dir.path());
-    let executor = atlas_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
+    let store = avarok_plugin::ArtifactStore::with_root(dir.path());
+    let executor = avarok_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
 
     let mut s = state();
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     s.select(0);
     s.attach(executor, TargetEndpoint::local(9001, "cross-path-model"));
     s.running_descriptor = Some(descriptor);
@@ -237,24 +237,26 @@ fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
         progress: None,
         summary: Vec::new(),
         table: None,
-        verdict: Some(atlas_plugin::Verdict::pass("fine")),
+        verdict: Some(avarok_plugin::Verdict::pass("fine")),
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
+        dataset_fingerprint: None,
         elapsed: std::time::Duration::from_secs(3),
+        hardware_state: None,
     };
     s.persist(&frame);
 
     // Read back through the CLI's reader, not the in-memory value.
-    let found = atlas_plugin::history::load_all(&store);
+    let found = avarok_plugin::history::load_all(&store);
     assert_eq!(found.len(), 1, "the dashboard's run is in the store");
     let r = &found[0];
     assert_eq!(r.benchmark_id, "concurrency-sweep");
     assert_eq!(
         r.source,
-        atlas_plugin::RunSource::Tui,
+        avarok_plugin::RunSource::Tui,
         "tagged as the TUI's"
     );
-    assert_eq!(r.atlas_version, crate::cli::ATLAS_VERSION);
+    assert_eq!(r.atlas_version, crate::cli::AVAROK_VERSION);
     assert_eq!(r.target(), TargetEndpoint::local(9001, "cross-path-model"));
     assert!(!r.is_legacy(), "written in the current schema");
     // Every parameter, not just the ones a user touched.
@@ -276,11 +278,11 @@ fn a_run_persisted_by_the_dashboard_is_readable_by_the_cli() {
 fn a_run_is_recorded_once_even_if_the_terminal_frame_repeats() {
     let dir = tempfile::tempdir().expect("scratch dir");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let store = atlas_plugin::ArtifactStore::with_root(dir.path());
-    let executor = atlas_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
+    let store = avarok_plugin::ArtifactStore::with_root(dir.path());
+    let executor = avarok_plugin::BenchmarkExecutor::new(runtime.handle().clone(), store.clone());
 
     let mut s = state();
-    let descriptor = atlas_plugin::registry::find("concurrency-sweep").expect("registered");
+    let descriptor = avarok_plugin::registry::find("concurrency-sweep").expect("registered");
     s.attach(executor, TargetEndpoint::local(9001, "m"));
     s.running_descriptor = Some(descriptor);
 
@@ -293,11 +295,13 @@ fn a_run_is_recorded_once_even_if_the_terminal_frame_repeats() {
         verdict: None,
         metrics: std::collections::BTreeMap::new(),
         log: Vec::new(),
+        dataset_fingerprint: None,
         elapsed: std::time::Duration::from_secs(1),
+        hardware_state: None,
     };
     s.persist(&frame);
     s.persist(&frame);
-    assert_eq!(atlas_plugin::history::load_all(&store).len(), 1);
+    assert_eq!(avarok_plugin::history::load_all(&store).len(), 1);
 }
 
 #[test]
@@ -306,7 +310,7 @@ fn the_target_follows_the_model_that_is_actually_serving() {
     // `spark serve` with no model, and stale the moment one is loaded from the
     // Library or swapped in by a request.
     let mut s = BenchState {
-        target: atlas_plugin::TargetEndpoint::local(8888, String::new()),
+        target: avarok_plugin::TargetEndpoint::local(8888, String::new()),
         ..BenchState::default()
     };
     assert_eq!(s.target.model, "");
@@ -322,7 +326,7 @@ fn the_target_follows_the_model_that_is_actually_serving() {
 fn a_target_the_operator_typed_is_left_alone() {
     // Benchmarking a different endpoint on purpose is a real thing to want.
     let mut s = BenchState {
-        target: atlas_plugin::TargetEndpoint::local(8888, "org/mine".to_string()),
+        target: avarok_plugin::TargetEndpoint::local(8888, "org/mine".to_string()),
         target_model_pinned: true,
         ..BenchState::default()
     };
@@ -333,7 +337,7 @@ fn a_target_the_operator_typed_is_left_alone() {
 #[test]
 fn an_empty_live_model_does_not_blank_the_target() {
     let mut s = BenchState {
-        target: atlas_plugin::TargetEndpoint::local(8888, "org/a".to_string()),
+        target: avarok_plugin::TargetEndpoint::local(8888, "org/a".to_string()),
         ..BenchState::default()
     };
     s.follow_live_model("");

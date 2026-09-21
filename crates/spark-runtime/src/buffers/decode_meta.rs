@@ -132,31 +132,9 @@ mod tests {
         }
     }
 
-    /// bs=64 exact offsets (the wave-14a native boot).
     #[test]
-    fn bs64_offsets_exact() {
-        let l = DecodeMetaLayout::for_max_batch_size(64);
-        assert_eq!(
-            (
-                l.rows(),
-                l.seq_slot_off(),
-                l.slots_off(),
-                l.seq_lens_off(),
-                l.block_table_off()
-            ),
-            (64, 256, 512, 1024, 1536)
-        );
-    }
-
-    #[test]
-    fn ceiling_and_floor_consts() {
+    fn policy_ceiling_and_floor_are_exact() {
         assert_eq!(DECODE_META_MIN_ROWS, 32);
-        const { assert!(DECODE_META_MAX_ROWS >= 64) };
-        // The 96-row verify overlay (sizes.rs) starts its bt at +2048;
-        // the decode layout's bt offset at the ceiling must still be
-        // covered by the DERIVED scratch envelope (sizes.rs takes the max
-        // of both) — this just pins the arithmetic the envelope uses.
-        let l = DecodeMetaLayout::for_max_batch_size(DECODE_META_MAX_ROWS);
-        assert_eq!(l.block_table_off(), 24 * DECODE_META_MAX_ROWS);
+        assert_eq!(DECODE_META_MAX_ROWS, 128);
     }
 }

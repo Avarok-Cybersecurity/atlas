@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -198,6 +198,7 @@ impl TransformerModel {
             let position = seq.seq_len;
             let ctx = ForwardContext {
                 buffers: &self.buffers,
+                hc_row_offset: 0,
                 gpu: self.gpu.as_ref(),
                 config: &self.config,
                 dispatch: &self.dispatch,
@@ -209,8 +210,11 @@ impl TransformerModel {
                 // MTP runs on rank 0 only — no EP all_reduce (BUG #26).
                 comm: None,
                 graph_capture: false,
+                decode_step: false,
                 gdn_exact_replay: false,
+                gdn_write_on_accept: false,
                 token_ids: None,
+                host_token_ids: None,
                 routed_lora_layers: None, // #30: MTP decode never routes prefill.
                 midchunk_capture: None,
                 moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) skips fold, adapter folds (single-seq reject lifted)

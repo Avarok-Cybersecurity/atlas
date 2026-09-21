@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The SPILL-side cost gate (`ATLAS_SSM_SPILL_MIN_TOKENS`) — the missing half
+//! The SPILL-side cost gate (`AVAROK_SSM_SPILL_MIN_TOKENS`) — the missing half
 //! of the tier's cost model.
 //!
 //! The fault-in side has had a depth gate since task #5
-//! (`ATLAS_SSM_FAULT_MIN_TOKENS`, `trait_impl/ssm_fault_in.rs`). The spill side
+//! (`AVAROK_SSM_FAULT_MIN_TOKENS`, `trait_impl/ssm_fault_in.rs`). The spill side
 //! had none, and that asymmetry is the design gap: a spill is charged in full
 //! to whichever request happened to trigger the eviction, while the benefit
 //! accrues to a different, later request — so an unbounded spill rate taxes the
@@ -20,11 +20,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 45 ms is the POST-FIX target (60 async D2H chunks + one stream sync into a
 /// reusable pinned buffer ≈ 20-30 ms gather + the unchanged 19 ms `store.put`
 /// host memcpy), not the ~400 ms the blocking-copy shape measured. Re-derive
-/// this from a fresh `ATLAS_SSM_TIER_TIMING` line if the gather changes again.
+/// this from a fresh `AVAROK_SSM_TIER_TIMING` line if the gather changes again.
 const SPILL_COST_MS: usize = 45;
 
 /// Minimum victim depth (tokens) worth spilling rather than dropping.
-/// `ATLAS_SSM_SPILL_MIN_TOKENS` overrides; `0` disables the gate.
+/// `AVAROK_SSM_SPILL_MIN_TOKENS` overrides; `0` disables the gate.
 ///
 /// Derivation: `spill_min ≈ R × (C_s / p_target + C_f)` where `R` ≈ 6500 tok/s
 /// is measured SSM prefill throughput, `C_s` = [`SPILL_COST_MS`] = 45 ms,
@@ -44,12 +44,12 @@ static CLAMP_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// The effective spill gate, already clamped to the fault-in gate.
 pub(in crate::model) fn spill_min_tokens() -> usize {
-    let raw = parse_spill_min_tokens(std::env::var("ATLAS_SSM_SPILL_MIN_TOKENS").ok());
+    let raw = parse_spill_min_tokens(std::env::var("AVAROK_SSM_SPILL_MIN_TOKENS").ok());
     let fault = super::trait_impl::ssm_fault_in::fault_in_min_tokens();
     let eff = clamp_spill_to_fault(raw, fault);
     if eff != raw && !CLAMP_WARNED.swap(true, Ordering::Relaxed) {
         tracing::warn!(
-            "ATLAS_SSM_SPILL_MIN_TOKENS={raw} is below ATLAS_SSM_FAULT_MIN_TOKENS={fault}; \
+            "AVAROK_SSM_SPILL_MIN_TOKENS={raw} is below AVAROK_SSM_FAULT_MIN_TOKENS={fault}; \
              clamping the spill gate to {eff}. Spilling a snapshot the fault-in gate would \
              then REFUSE to read back is a guaranteed pure loss — the spill cost is paid and \
              the benefit can never be claimed."
@@ -58,7 +58,7 @@ pub(in crate::model) fn spill_min_tokens() -> usize {
     eff
 }
 
-/// Pure parse of `ATLAS_SSM_SPILL_MIN_TOKENS`: unset or unparseable falls back
+/// Pure parse of `AVAROK_SSM_SPILL_MIN_TOKENS`: unset or unparseable falls back
 /// to [`DEFAULT_SPILL_MIN_TOKENS`]; `0` disables the gate. Same lenient idiom
 /// as `parse_fault_min_tokens` — a typo here only mis-tunes a heuristic.
 pub(in crate::model) fn parse_spill_min_tokens(raw: Option<String>) -> usize {
@@ -112,7 +112,7 @@ mod tests {
     /// fault-in default — a tripwire if either constant moves.
     #[test]
     fn shipped_defaults_satisfy_the_invariant() {
-        let fault = super::super::trait_impl::ssm_fault_in::fault_in_min_tokens();
+        let fault = super::super::trait_impl::ssm_fault_in::DEFAULT_FAULT_MIN_TOKENS;
         assert_eq!(
             clamp_spill_to_fault(DEFAULT_SPILL_MIN_TOKENS, fault),
             DEFAULT_SPILL_MIN_TOKENS,

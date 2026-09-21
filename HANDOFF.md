@@ -145,7 +145,7 @@ cce57d93  the concurrency campaign (245 files)
 
 ## 3. Benchmark gates — ALL PASS
 
-Image: **`avarok/atlas-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `ATLAS_TARGET_MODEL="*"` build).
+Image: **`avarok/atlas-gb10:7241a95`** (id `c52999044e25`, binary 75,939,392 B = all-target `AVAROK_TARGET_MODEL="*"` build).
 
 | gate | result | box | notes |
 |---|---|---|---|
@@ -184,7 +184,7 @@ Gate C's control was built fresh from `c19481aa` as `atlas-gb10:mainctl388` (do 
 - **New flags** in `cli/serve_args.rs`:
   - `--check-kernels` — resolves kernels, prints the report + a one-line JSON blob, **exits with the count of unresolved kernels, clamped to 255** (clamp announced on stdout *and* at `error!`; 8-bit exit statuses mean 256 would otherwise report as 0 = false pass). Ignores the dangerous flag for its exit code. Forces `no_tui`.
   - `--dangerously-allow-unresolved-kernel-lookups` (default **false**) — downgrades the hard failure to a loud warning that still enumerates everything, every boot.
-  - `ATLAS_ALLOW_SHADOWED_KERNELS` **deleted** — one switch, not two.
+  - `AVAROK_ALLOW_SHADOWED_KERNELS` **deleted** — one switch, not two.
 - **New `serve_phases/kernel_gate.rs`** replaces the old no-op at `serve_load.rs:554` (it intersected failures with `shadowed_dropped`, which for the 27B is 2 `[shadow_exempt]` entries with no dispatch site ⇒ provably empty).
 - `AUDIT_SEALED: AtomicBool` after the gate; a post-seal miss aborts (chosen over panic: a panic unwinds one scheduler thread and leaves a half-serving process).
 - `#[track_caller]` on the `GpuBackend::kernel` **trait declaration** + all impls, `layers::try_kernel`, and four resolver helpers; audit tuple widened to carry `&'static Location`.
@@ -258,7 +258,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 - **Verify teardown, never assert it**: `--query-compute-apps` empty, util ~0, clock ~208 MHz, `docker ps` clear. *A bench is done when the memory is free, not when an agent says it is done.*
 - `/workspace` is **not** shared between boxes.
 - `nvcc` is **not** on the default PATH — `export PATH=/usr/local/cuda/bin:$PATH` or `vendor/cudarc/build.rs` dies.
-- Always `ATLAS_TARGET_MODEL="*"` (67 MB / 22 targets; a single-model build is ~52 MB and cannot serve other models).
+- Always `AVAROK_TARGET_MODEL="*"` (67 MB / 22 targets; a single-model build is ~52 MB and cannot serve other models).
 
 ---
 
@@ -326,7 +326,7 @@ The 18 s was real decode time: TPOT a flat **77.6 ms/token** × 200–250 reason
 
 | # | item | status |
 |---|---|---|
-| 1 | **Compile the combined tree** (4a + 4b) | **DONE 2026-08-03.** Release build `ATLAS_TARGET_MODEL="*"` rc=0 (74 MB binary, all 22 targets). Fixed one real defect the first cargo pass surfaced: `qwen3.6-27b/MODEL.toml` `[expected_absent]` used backslash-newline line-continuation in a TOML basic string (invalid TOML → build panic); converted to a multi-line literal. fmt/clippy(workspace,-tests)/typos all clean. Full `cargo test --workspace`: 70 suites pass (dgx3 needs `LD_LIBRARY_PATH=...libnccl.so.2` for the `spark-model` test binary — environmental). One caveat: `atlas-plugin::e2e::the_warm_gate…` is a timing-sensitive mock test (30 ms TTFT, n=3) that failed once at +3.3% median (limit +3.0%) under heavy box load and passed 3/3 on rerun; it is committed code, not part of §4 |
+| 1 | **Compile the combined tree** (4a + 4b) | **DONE 2026-08-03.** Release build `AVAROK_TARGET_MODEL="*"` rc=0 (74 MB binary, all 22 targets). Fixed one real defect the first cargo pass surfaced: `qwen3.6-27b/MODEL.toml` `[expected_absent]` used backslash-newline line-continuation in a TOML basic string (invalid TOML → build panic); converted to a multi-line literal. fmt/clippy(workspace,-tests)/typos all clean. Full `cargo test --workspace`: 70 suites pass (dgx3 needs `LD_LIBRARY_PATH=...libnccl.so.2` for the `spark-model` test binary — environmental). One caveat: `avarok-plugin::e2e::the_warm_gate…` is a timing-sensitive mock test (30 ms TTFT, n=3) that failed once at +3.3% median (limit +3.0%) under heavy box load and passed 3/3 on rerun; it is committed code, not part of §4 |
 | 2 | **`--check-kernels` harvest sweep** | **20/22 targets DONE 2026-08-03/04** (see §9). `[expected_absent]` populated in 19 MODEL.tomls (383 entries total, every reason cites the dispatch fallback and marks porting UNMEASURED where applicable). `--check-kernels` rc=0 for every target checked — including the three oversized EP=2 targets (DS4/MiniMax/Step) harvested 2026-08-04 and `qwen3.5-27b` via single-target build. Remaining: `qwen3.5-397b-a17b` (EP=4-only, weights never downloaded); `qwen3.5-35b-a3b` accepted as legacy (owner decision — unreachable kernel set, identical module map to qwen3.6-35b-a3b) |
 | 3 | **Re-run gates C2/A/C/D** | still open — §4 + the harvest touch `crates/` + `kernels/` (~5 h). NOTE: the kernel-set hash changed only via `[expected_absent]` metadata + KERNEL.toml renames; PTX content unchanged, but per §3 the rule stands |
 | 4 | **Re-verify the C=1..128 sweep on the final binary** | **DONE 2026-08-03** — 8/8 rungs win on the gate image; results + confounds appended to `docs/campaigns/gb10-concurrency-2026-07/STATE.md` |
@@ -386,7 +386,7 @@ Checked rc=0 (unresolved=0) against weights on dgx1/dgx3:
 | deepseek-v4-flash | nvidia DS4-Flash-NVFP4, **EP=2** (dgx1 rank0 ↔ dgx3 rank1; identical report both ranks, hash 0532e96f02d0) | 9 |
 | minimax-m2-229b | lukealonso/MiniMax-M2.7-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash 41a9421cde36) | 12 |
 | step3p7-flash | stepfun-ai Step-3.7-Flash-NVFP4, **EP=2** (dgx2 rank0 ↔ dgx3 rank1; identical both ranks, hash a1a4f6b0f249) — weights must be the **per-expert split** from `scripts/preprocess_step3p7_experts.py` (504 fused → 145,152 per-expert tensors); the fused checkpoint defeats the EP-aware pre-flight (estimates full 120 GB → OOM bail) | 35 |
-| qwen3.5-27b | Kbenkhaled/Qwen3.5-27B-NVFP4 via a **single-target build** (`ATLAS_TARGET_MODEL=qwen3.5-27b`, hash fdf6bfaf23db, dgx1) — the standard multi-target build routes this checkpoint to `qwen3.6-27b` (exact `(qwen3_5, 5120)` match beats this target's wildcard `(qwen3_5, None)`), so that leg was checked separately there (2026-08-03, hash 6a0211057c4a). This target's own set is smaller (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources). Includes the standard four GDN f16/half-register/smem honesty-note arms | 33 |
+| qwen3.5-27b | Kbenkhaled/Qwen3.5-27B-NVFP4 via a **single-target build** (`AVAROK_TARGET_MODEL=qwen3.5-27b`, hash fdf6bfaf23db, dgx1) — the standard multi-target build routes this checkpoint to `qwen3.6-27b` (exact `(qwen3_5, 5120)` match beats this target's wildcard `(qwen3_5, None)`), so that leg was checked separately there (2026-08-03, hash 6a0211057c4a). This target's own set is smaller (no nvfp4_mmq/q4k/w4a4/w4a16_v2 sources). Includes the standard four GDN f16/half-register/smem honesty-note arms | 33 |
 
 **EP=2 harvest recipe** (used for all three oversized targets): docker `avarok/atlas-gb10:7241a95`
 with `--gpus all --ipc=host --network host --device=/dev/infiniband --cap-add=IPC_LOCK
@@ -413,7 +413,7 @@ The note is also pinned at the top of its MODEL.toml.
 **Step 3.7 loader fix (this harvest):** `num_attention_layers()` counted `FullAttention` only,
 undersizing `attn_layer_dtypes` (12) while the Step loader indexes all 45 attention layers
 (12 full + 33 sliding) → `index out of bounds: len 12, index 12` at
-`step3p7/load_layers.rs:414`. Fixed in `atlas-core/src/config/methods.rs`: sliding-attention
+`step3p7/load_layers.rs:414`. Fixed in `avarok-core/src/config/methods.rs`: sliding-attention
 layers consume the paged KV cache exactly like full-attention ones, so every consumer sized from
 that count (KV pool `num_layers`, `attn_layer_dtypes`, loader indexing) must see them all.
 Regression test: `test_num_attention_layers_counts_sliding_attention`. Gemma-4 was unaffected —
@@ -429,7 +429,7 @@ Downloads landed (spread across dgx1/dgx3, ≤3 in flight): Kbenkhaled-27B, VL-3
 
 ### 9c. What a new session must know about the sweep infrastructure
 
-- `--check-kernels` exit code = unresolved count (clamped 255, clamp announced); JSON blob line `{"atlas_kernel_check": …}` on stdout.
-- Tight-memory targets (122B, Super-120B, Mistral) need check-only flags: `--max-seq-len 512 --max-batch-size 1 --max-num-seqs 1 --ssm-cache-slots 0 --gpu-memory-utilization 0.99 --oom-guard-mb 512`. 122B-class also needs `ATLAS_KV_OVERCOMMIT` default behavior. **Never serve with these flags.**
+- `--check-kernels` exit code = unresolved count (clamped 255, clamp announced); JSON blob line `{"avarok_kernel_check": …}` on stdout.
+- Tight-memory targets (122B, Super-120B, Mistral) need check-only flags: `--max-seq-len 512 --max-batch-size 1 --max-num-seqs 1 --ssm-cache-slots 0 --gpu-memory-utilization 0.99 --oom-guard-mb 512`. 122B-class also needs `AVAROK_KV_OVERCOMMIT` default behavior. **Never serve with these flags.**
 - dgx3 quirk: run spark with `LD_LIBRARY_PATH=/home/claude/ttft-llama` (libnccl.so.2) or the binary won't load.
 - All sweep logs: `/workspace/kcheck-results/*.log` (dgx1), `~/kcheck-results/*.log` (dgx3).

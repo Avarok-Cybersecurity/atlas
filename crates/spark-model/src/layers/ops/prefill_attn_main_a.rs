@@ -40,8 +40,15 @@ pub fn prefill_attention(
     sliding_window: u32, // 0 = no sliding limit; >0 = mask keys where q - k >= window
     stream: u64,
 ) -> Result<()> {
-    // BR=16 for HDIM=512 (Gemma-4 full attention), BR=32 otherwise
-    let br = if head_dim > 256 { 16u32 } else { 32u32 };
+    // ★ SSOT: the kernel NAME and its BR must agree, and they are chosen in two
+    // different files — `init.rs` resolves the handle, this launches it. A grid
+    // computed from the wrong BR does not fail, it silently computes the wrong
+    // q-tiles. `wide_prefill_kernel()` is the one reader of that decision.
+    let br = if head_dim > 256 {
+        wide_prefill_kernel(gpu).1
+    } else {
+        32u32
+    };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])
         .block([128, 1, 1])
@@ -130,9 +137,9 @@ pub fn prefill_attention_64(
     // MUST match the kernel's BR64, else CTAs are spaced 64 rows apart while each
     // writes only 32 → query rows 32..63 of every 64-row band are silently left
     // unwritten (gross attention corruption for any prompt >32 tokens). cfg!
-    // (atlas_scale) is set for both `strix` and `strix-hip`; NVIDIA keeps 64
+    // (avarok_scale) is set for both `strix` and `strix-hip`; NVIDIA keeps 64
     // (byte-identical). See the @human-review note in inferspark_prefill.cu.
-    let br = if cfg!(atlas_scale) { 32u32 } else { 64u32 };
+    let br = if cfg!(avarok_scale) { 32u32 } else { 64u32 };
     KernelLaunch::new(gpu, kernel)
         .grid([num_q_heads, div_ceil(seq_len, br), batch])
         .block([256, 1, 1])

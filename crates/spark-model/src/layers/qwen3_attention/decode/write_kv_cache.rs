@@ -65,15 +65,13 @@ impl Qwen3AttentionLayer {
                 // the cache, which collapses long-context decode (the cache
                 // mixes WHT'd reads of Q with un-WHT'd K/V for tokens 1+).
                 // WHT bookend (Turbo3/4/8 with Walsh-Hadamard decorrelation).
-                // 2026-04-28: was temporarily gated behind ATLAS_TURBO_ENABLE_WHT=1
+                // 2026-04-28: was temporarily gated behind AVAROK_TURBO_ENABLE_WHT=1
                 // because FP8 per-group scales (~12% precision) compounded WHT
                 // round-trip errors catastrophically. Resolved by upgrading
                 // Turbo8 scales to BF16 (~0.4% precision); WHT is back on by
                 // default. Turbo3/4 still use FP8 scales — they're affected
                 // less because their LUTs already have lower precision targets.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -139,9 +137,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors symmetric turbo3 path). K stays
                 // in raw bf16 — no rotation needed because BF16 has enough
                 // dynamic range to absorb outliers natively.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -183,9 +179,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors bf16k_turbo3v path). K stays
                 // in raw bf16 — no rotation needed because BF16 has enough
                 // dynamic range to absorb outliers natively.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -222,9 +216,7 @@ impl Qwen3AttentionLayer {
             KvCacheDtype::Bf16KTurbo2V => {
                 // TurboQuant+ safer-asym: K = bf16, V = turbo2 (6.4x V
                 // compression). V-side WHT bookend; K stays raw bf16.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -264,9 +256,7 @@ impl Qwen3AttentionLayer {
                 // TurboQuant+ both-sides asym: K and V are BOTH turbo dtypes.
                 // WHT bookend applies to BOTH K and V (mirrors sym turbo3/4/8/2
                 // arm) — and InnerQ apply also fires on K when active.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -373,9 +363,7 @@ impl Qwen3AttentionLayer {
                 // V-side WHT bookend (mirrors bf16k_turbo*v path). K side gets
                 // no WHT — its FP8 dynamic range already covers attention scores
                 // adequately for the per-tensor scale model is calibrated for.
-                let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                    .unwrap_or(false);
+                let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
                 if !weight_pre_rotated
                     && self.wht_bf16_k.0 != 0
                     && (head_dim == 128 || head_dim == 256 || head_dim == 512)
@@ -477,32 +465,23 @@ impl Qwen3AttentionLayer {
                 kv_cache.cache_stride() as u64,
                 stream,
             ),
-            _ => {
-                // FP8 KV cache
-                if !graph_capture && let Some(ref cal) = self.fp8_calibration {
-                    cal.observe(gpu, k, v, num_tokens, num_kv_heads, head_dim, stream)?;
-                }
-                let (k_scale, v_scale) = self.effective_fp8_scales();
-                ops::reshape_and_cache_fp8(
-                    gpu,
-                    self.reshape_cache_k,
-                    k,
-                    v,
-                    kv_cache.k_pool_ptr(self.attn_layer_idx),
-                    kv_cache.v_pool_ptr(self.attn_layer_idx),
-                    slot,
-                    num_tokens,
-                    num_kv_heads,
-                    head_dim,
-                    block_size,
-                    k_scale,
-                    v_scale,
-                    key_stride,
-                    value_stride,
-                    kv_cache.cache_stride() as u64,
-                    stream,
-                )
-            }
+            // FP8 KV cache: the calibration window observes the write, then
+            // the write lands (`write_kv_cache_fp8.rs`).
+            _ => self.write_kv_cache_fp8(
+                gpu,
+                k,
+                v,
+                kv_cache,
+                slot,
+                num_tokens,
+                num_kv_heads,
+                head_dim,
+                block_size,
+                key_stride,
+                value_stride,
+                stream,
+                graph_capture,
+            ),
         }
     }
 }

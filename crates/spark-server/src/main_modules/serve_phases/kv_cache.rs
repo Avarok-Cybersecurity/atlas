@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
@@ -18,11 +18,7 @@ pub(crate) fn resolve_prefill_budget(
     args: &cli::ServeArgs,
     ssm_prefill_chunk: usize,
 ) -> PrefillBudget {
-    let spec_tokens = if args.speculative || args.self_speculative || args.ngram_speculative {
-        args.resolved_num_drafts() + 2
-    } else {
-        1
-    };
+    let spec_tokens = super::preflight::spec_reserve_tokens(args);
     let user_set_prefill = args.max_prefill_tokens != 8192;
     let prefill_budget_pre_hss = if user_set_prefill && args.max_prefill_tokens > 0 {
         args.max_prefill_tokens
@@ -106,7 +102,7 @@ pub(crate) fn resolve_prefill_budget(
         prefill_budget
     };
     // Default: max_batch_tokens = prefill_budget + max_batch_size (decode slots).
-    // ATLAS_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched
+    // AVAROK_MAX_BATCH_TOKENS env var override allows engaging the Q12 batched
     // kernel-dispatch path which requires `arena_cap >= N_streams × chunk_len`.
     // Set to (e.g.) 16384 with max_batch_size=4 to fit 4 stacked 4K chunks.
     // Memory cost: arena buffers scale ~linearly with max_batch_tokens —
@@ -114,11 +110,11 @@ pub(crate) fn resolve_prefill_budget(
     let default_max_batch_tokens = (prefill_budget + args.max_batch_size)
         .max(spec_tokens)
         .max(args.max_batch_size);
-    let max_batch_tokens = match std::env::var("ATLAS_MAX_BATCH_TOKENS") {
+    let max_batch_tokens = match std::env::var("AVAROK_MAX_BATCH_TOKENS") {
         Ok(v) => match v.parse::<usize>() {
             Ok(n) if n >= default_max_batch_tokens => {
                 tracing::info!(
-                    "ATLAS_MAX_BATCH_TOKENS override: {} (default would be {})",
+                    "AVAROK_MAX_BATCH_TOKENS override: {} (default would be {})",
                     n,
                     default_max_batch_tokens
                 );
@@ -126,14 +122,14 @@ pub(crate) fn resolve_prefill_budget(
             }
             Ok(n) => {
                 tracing::warn!(
-                    "ATLAS_MAX_BATCH_TOKENS={} ignored — must be >= default {}",
+                    "AVAROK_MAX_BATCH_TOKENS={} ignored — must be >= default {}",
                     n,
                     default_max_batch_tokens
                 );
                 default_max_batch_tokens
             }
             Err(e) => {
-                tracing::warn!("ATLAS_MAX_BATCH_TOKENS parse error: {e}");
+                tracing::warn!("AVAROK_MAX_BATCH_TOKENS parse error: {e}");
                 default_max_batch_tokens
             }
         },
@@ -254,9 +250,17 @@ pub(crate) fn resolve_kv_cache_config(
                     fp8_kv_scale_count,
                 );
             } else {
+                // #919: this used to read "freezing per-tensor scales on the
+                // first observed tokens", and meant it — the freeze fired on
+                // the first observe, i.e. on the readiness probe. The window is
+                // now accumulated across requests; each attention layer logs
+                // "FP8 KV scales frozen after N tokens (requested M)" when it
+                // closes, which is the line to grep for in a serve log.
                 tracing::info!(
                     "FP8 KV cache with online calibration (checkpoint ships no k/v scales): \
-                     freezing per-tensor scales on the first observed tokens.{}",
+                     accumulating per-tensor K/V amax over the first {} observed tokens \
+                     (across requests, readiness probe included) before freezing the scales.{}",
+                    config.fp8_kv_calibration_tokens,
                     if args.fp8_kv_calibration_tokens.is_none() {
                         " (auto-enabled from MODEL.toml)"
                     } else {
@@ -283,14 +287,24 @@ pub(crate) fn resolve_kv_cache_config(
         }
     }
     let num_attn_layers = config.num_attention_layers();
-    let kv_hp_layers: usize = match args.kv_high_precision_layers.to_lowercase().as_str() {
-        "max" | "all" => num_attn_layers,
-        "auto" => 2,
-        s => s.parse().unwrap_or_else(|_| {
-            tracing::warn!("Invalid --kv-high-precision-layers '{}', using 0", s);
-            0
-        }),
-    };
+    // Parsed through `cli::flag_values`, the same definition `validate_serve_args`
+    // refuses a typo with — so this cannot accept a form the validator rejects,
+    // or reject one it accepts. `?` rather than the previous
+    // `unwrap_or_else(|_| { warn!(); 0 })`: `0` defers to
+    // `auto_high_precision_layers`, so swallowing a typo did not serve the
+    // default, it served a third thing and said so in one warning line.
+    // Unreachable in practice — validation runs before the weight load — which
+    // is exactly why it must not be a silent fallback.
+    let kv_hp_layers: usize = args
+        .kv_high_precision_layers
+        .parse::<crate::cli::flag_values::KvHighPrecisionLayers>()
+        .map_err(|why| {
+            anyhow::anyhow!(
+                "--kv-high-precision-layers '{}': {why}",
+                args.kv_high_precision_layers
+            )
+        })?
+        .resolve(num_attn_layers);
     let kv_hp_layers = match (
         kv_hp_layers,
         crate::main_modules::auto_high_precision_layers(kv_dtype, num_attn_layers),

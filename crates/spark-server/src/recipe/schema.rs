@@ -18,7 +18,7 @@
 ///
 /// Verified 2026-07-31 against `cli/serve_args.rs`: neither `max_model_len`
 /// nor `tensor_parallel` exists as a field, and the listen address is `--bind`.
-const RENAMES: &[(&str, &str)] = &[
+pub(crate) const RENAMES: &[(&str, &str)] = &[
     // vLLM's spelling, kept in the recipes for cross-runtime familiarity.
     ("max_model_len", "max-seq-len"),
     ("tensor_parallel", "tp-size"),

@@ -292,7 +292,7 @@ fn qwen3_coder_f33_bash_description_has_retry_rule() {
         &crate::tool_parser::PromptLevers::OFF,
     );
     assert!(
-        prompt.contains("[atlas-f33]"),
+        prompt.contains("[avarok-f33]"),
         "F33 marker missing from Bash description"
     );
     assert!(
@@ -314,7 +314,7 @@ fn qwen3_coder_f33_bash_description_has_retry_rule() {
         &crate::tool_parser::PromptLevers::OFF,
     );
     assert!(
-        !prompt_write_only.contains("[atlas-f33]"),
+        !prompt_write_only.contains("[avarok-f33]"),
         "F33 marker should only attach to Bash, not Write"
     );
 }

@@ -8,7 +8,7 @@
 //! cargo run --release -p spark-model --example moe_blend_microtest --features cuda,gpu-examples -- [hidden] [top_k] [K] [seed]
 
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::{KernelLaunch, div_ceil};
 
@@ -72,7 +72,7 @@ fn main() -> Result<()> {
         .map(|_| f32_to_bf16(rng.uniform(-0.5, 0.5)))
         .collect();
 
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
     let eop = up(gpu, &u16le(&eo))?;

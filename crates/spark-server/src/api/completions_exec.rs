@@ -69,6 +69,7 @@ pub(super) async fn run_blocking(
     let mut sum_reasoning = 0usize;
     let mut sum_accepted = 0usize;
     let mut last_ttft = 0.0f64;
+    let mut last_decode_time_ms = 0.0f64;
     let mut last_tps = 0.0f64;
 
     for (prompt_i, prompt_tokens) in prompts.iter().enumerate() {
@@ -86,7 +87,7 @@ pub(super) async fn run_blocking(
                 early_stopping: p.early_stopping,
                 image_pixels: Vec::new(),
                 max_tokens: req.max_tokens,
-                min_tokens: 0,
+                min_tokens: req.min_tokens,
                 temperature: p.temperature,
                 top_k: p.top_k,
                 top_p: p.top_p,
@@ -156,8 +157,11 @@ pub(super) async fn run_blocking(
             };
             // Strips apply to the COMPLETION only; echoed prompt text is
             // returned verbatim per the legacy spec.
-            let completion_text = strip_stop_sequences(completion_text, &req.stop);
-            let completion_text = strip_thinking_tags(&completion_text);
+            let completion_text = finish_completion_text(
+                completion_text,
+                &req.stop,
+                state.tokenizer.uses_kimi_k3_xtml(),
+            );
             let text = if req.echo {
                 let prompt_text = state.tokenizer.decode(prompt_tokens).unwrap_or_default();
                 format!("{prompt_text}{completion_text}")
@@ -183,12 +187,11 @@ pub(super) async fn run_blocking(
             sum_reasoning += response.reasoning_tokens as usize;
             sum_accepted += response.accepted_prediction_tokens;
             last_ttft = response.time_to_first_token_ms;
-            last_tps = if response.decode_time_ms > 0.0 {
-                (response.output_tokens.len().saturating_sub(1)) as f64
-                    / (response.decode_time_ms / 1000.0)
-            } else {
-                0.0
-            };
+            last_decode_time_ms = response.decode_time_ms;
+            last_tps = crate::ir::Usage::decode_rate_tok_s(
+                response.output_tokens.len(),
+                response.decode_time_ms,
+            );
 
             choices.push(CompletionChoice {
                 index: prompt_i * n + n_i,
@@ -215,6 +218,8 @@ pub(super) async fn run_blocking(
         }),
         time_to_first_token_ms: last_ttft,
         response_tokens_per_second: last_tps,
+        decode_time_ms: last_decode_time_ms,
+        total_time_ms: last_ttft + last_decode_time_ms,
     };
 
     Json(CompletionResponse::from_choices(
@@ -224,3 +229,44 @@ pub(super) async fn run_blocking(
     ))
     .into_response()
 }
+
+fn finish_completion_text(text: String, stops: &[String], raw_xtml: bool) -> String {
+    let text = strip_stop_sequences(text, stops);
+    // XTML channels have their own structure. Plain <think> strings may be
+    // literal response/tool data, so the legacy Qwen extractor corrupts them.
+    if raw_xtml {
+        text
+    } else {
+        strip_thinking_tags(&text)
+    }
+}
+
+#[cfg(test)]
+impl CompletionParams {
+    pub(super) fn test() -> Self {
+        Self {
+            temperature: 1.0,
+            top_k: 20,
+            top_p: 0.95,
+            top_n_sigma: 0.0,
+            min_p: 0.0,
+            repetition_penalty: 1.0,
+            presence_penalty: 0.0,
+            frequency_penalty: 0.0,
+            logit_bias: Vec::new(),
+            stop_tokens: Vec::new(),
+            repetition_detection: None,
+            logprobs_k: None,
+            adapter_slot: -1,
+            src_lang_id: 0,
+            tgt_lang_id: 0,
+            num_beams: 1,
+            length_penalty: 1.0,
+            early_stopping: false,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "completions_exec_tests.rs"]
+mod tests;

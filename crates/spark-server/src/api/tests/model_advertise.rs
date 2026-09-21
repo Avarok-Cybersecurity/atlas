@@ -40,7 +40,7 @@ fn unknown_ceiling() -> serde_json::Value {
         id: "test-model".to_string(),
         object: "model".to_string(),
         created: 0,
-        owned_by: "atlas-spark".to_string(),
+        owned_by: "avarok-spark".to_string(),
         max_model_len: None,
     })
     .expect("ModelInfo serializes")

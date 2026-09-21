@@ -3,12 +3,12 @@
 
 Compares the freshly-dumped Atlas[FP8-native] hidden states on dgx2 against
 the existing HF[FP8->BF16] reference and the (older) HF[BF16-unquant]
-reference from /workspace/atlas-dumps/numdrift.
+reference from /workspace/avarok-dumps/numdrift.
 
 Layouts:
-  ATLAS_DIR  /workspace/atlas-dumps/fp8native_dgx2/atlas_L{0..39}.bin
-  HF_FP8_DIR /workspace/atlas-dumps/fp8dequant/hf_L{0..39}.bin       (HF[FP8->BF16])
-  HF_BF16_DIR /workspace/atlas-dumps/numdrift/hf_L{0..39}.bin        (HF[BF16-unquant])
+  AVAROK_DIR  /workspace/avarok-dumps/fp8native_dgx2/avarok_L{0..39}.bin
+  HF_FP8_DIR /workspace/avarok-dumps/fp8dequant/hf_L{0..39}.bin       (HF[FP8->BF16])
+  HF_BF16_DIR /workspace/avarok-dumps/numdrift/hf_L{0..39}.bin        (HF[BF16-unquant])
 
 Reports:
   A  HF[FP8->BF16] vs HF[BF16-unquant]   -> FP8 ceiling
@@ -22,9 +22,9 @@ import sys
 
 import numpy as np
 
-ATLAS = pathlib.Path("/workspace/atlas-dumps/fp8native_dgx2")
-HF_FP8 = pathlib.Path("/workspace/atlas-dumps/fp8dequant")
-HF_BF16 = pathlib.Path("/workspace/atlas-dumps/numdrift")
+AVAROK = pathlib.Path("/workspace/avarok-dumps/fp8native_dgx2")
+HF_FP8 = pathlib.Path("/workspace/avarok-dumps/fp8dequant")
+HF_BF16 = pathlib.Path("/workspace/avarok-dumps/numdrift")
 N_LAYERS = 40
 
 
@@ -46,12 +46,12 @@ def main(write_md: pathlib.Path | None = None) -> None:
     rows = []
     A, B, C = [], [], []
     for i in range(N_LAYERS):
-        atlas_p = ATLAS / f"atlas_L{i}.bin"
+        avarok_p = AVAROK / f"avarok_L{i}.bin"
         hf_fp8_p = HF_FP8 / f"hf_L{i}.bin"
         hf_bf16_p = HF_BF16 / f"hf_L{i}.bin"
         missing = []
-        if not atlas_p.exists():
-            missing.append("atlas")
+        if not avarok_p.exists():
+            missing.append("avarok")
         if not hf_fp8_p.exists():
             missing.append("hf_fp8")
         if not hf_bf16_p.exists():
@@ -59,12 +59,12 @@ def main(write_md: pathlib.Path | None = None) -> None:
         if missing:
             print(f"L{i:2d}: MISSING {missing}")
             continue
-        atlas = load(atlas_p)
+        avarok = load(avarok_p)
         hf_fp8 = load(hf_fp8_p)
         hf_bf16 = load(hf_bf16_p)
         rA = cmp(hf_fp8, hf_bf16)
-        rB = cmp(atlas, hf_bf16)
-        rC = cmp(atlas, hf_fp8)
+        rB = cmp(avarok, hf_bf16)
+        rC = cmp(avarok, hf_fp8)
         A.append(rA["cos"])
         B.append(rB["cos"])
         C.append(rC["cos"])

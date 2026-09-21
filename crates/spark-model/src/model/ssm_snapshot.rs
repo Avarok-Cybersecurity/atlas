@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -57,6 +57,12 @@ pub(crate) struct SsmSnapshotPool {
     /// Maps snapshot_slot_id → session_hash for session-scoped isolation.
     /// When restoring, skip snapshots that belong to a different session.
     pub(super) session_tags: Mutex<std::collections::HashMap<usize, u64>>,
+    /// Per-slot AUX layer state (PLE n-gram history/conv, QSA indexer keys)
+    /// captured at CHUNK-BOUNDARY saves as host blobs `(layer_idx, bytes)`.
+    /// Mid-chunk tail captures never carry aux — a model whose layers hold
+    /// aux state DECLINES restoring a slot without it (graceful miss beats
+    /// silently serving another request's lexical state).
+    pub(super) aux_blobs: Mutex<std::collections::HashMap<usize, Vec<(u32, Vec<u8>)>>>,
     /// Decode-rollback region: `h_snapshots` for the Phase-C ring.
     /// Layout per layer: `[max_batch_size * decode_ring_slots * h_bytes]`.
     /// Empty when `decode_ring_slots == 0`.
@@ -88,12 +94,17 @@ pub(crate) struct SsmSnapshotPool {
     /// Marconi slots that currently hold a valid `hidden_snapshot` entry
     /// (only leaf saves populate it; intermediate checkpoints do not).
     pub(super) slot_has_hidden: Mutex<std::collections::HashSet<usize>>,
-    /// FP16 -> FP32 h-state converter (`ATLAS_SSM_H_FP16`). A snapshot taken
+    /// FP16 -> FP32 h-state converter (`AVAROK_SSM_H_FP16`). A snapshot taken
     /// from a DECODING slot reads an FP16 state, but every restore lands in a
     /// PREFILL, which is FP32. Widening at save time keeps the snapshot pool
     /// uniformly FP32, so restore, spill, fault-in, the tier fingerprint and
     /// the swap file all stay dtype-agnostic. Zero when the module is absent.
     pub(super) h_f16_to_f32_k: KernelHandle,
+    /// FP32 -> FP16 h-state narrower, the restore-side twin: under the
+    /// stage-3 f16-SIZED pool (not serveable yet, no CLI surface) a
+    /// Marconi restore must narrow the FP32 snapshot into the 2-byte slot
+    /// — a plain byte copy would overrun it. Zero when the module is absent.
+    pub(super) h_f32_to_f16_k: KernelHandle,
     /// Reusable page-locked staging blob shared by the tier spill/fault-in
     /// paths. See [`super::ssm_spill_staging::SpillStaging`] — a fresh
     /// `vec![0u8; 66_846_720]` per event was part of the measured ~400 ms
@@ -102,6 +113,17 @@ pub(crate) struct SsmSnapshotPool {
 }
 
 impl SsmSnapshotPool {
+    /// Marconi occupancy: `(slots holding a live snapshot, total LRU
+    /// slots)`. The decode-rollback ring region is deliberately excluded —
+    /// it is deterministically addressed per sequence, not a cache whose
+    /// fullness means anything.
+    pub(super) fn occupancy(&self) -> (usize, usize) {
+        (
+            self.num_slots - self.free_slots.lock().len().min(self.num_slots),
+            self.num_slots,
+        )
+    }
+
     /// Build the snapshot pool.
     ///
     /// `num_slots` sizes the Marconi LRU region; `decode_ring_slots` ×
@@ -132,6 +154,7 @@ impl SsmSnapshotPool {
                 conv_bytes,
                 num_ssm_layers,
                 session_tags: Mutex::new(std::collections::HashMap::new()),
+                aux_blobs: Mutex::new(std::collections::HashMap::new()),
                 decode_h_snapshots: Vec::new(),
                 decode_conv_snapshots: Vec::new(),
                 decode_ring_slots: 0,
@@ -140,6 +163,7 @@ impl SsmSnapshotPool {
                 hidden_bytes,
                 slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
                 h_f16_to_f32_k: KernelHandle(0),
+                h_f32_to_f16_k: KernelHandle(0),
                 spill_staging: Default::default(),
             });
         }
@@ -191,6 +215,7 @@ impl SsmSnapshotPool {
             conv_bytes,
             num_ssm_layers,
             session_tags: Mutex::new(std::collections::HashMap::new()),
+            aux_blobs: Mutex::new(std::collections::HashMap::new()),
             decode_h_snapshots,
             decode_conv_snapshots,
             decode_ring_slots: if decode_enabled { decode_ring_slots } else { 0 },
@@ -199,6 +224,7 @@ impl SsmSnapshotPool {
             hidden_bytes,
             slot_has_hidden: Mutex::new(std::collections::HashSet::new()),
             h_f16_to_f32_k: crate::layers::try_kernel(gpu, "ssm_h_dtype", "ssm_h_state_f16_to_f32"),
+            h_f32_to_f16_k: crate::layers::try_kernel(gpu, "ssm_h_dtype", "ssm_h_state_f32_to_f16"),
             spill_staging: Default::default(),
         })
     }
@@ -229,10 +255,13 @@ impl SsmSnapshotPool {
     ) -> Result<()> {
         let flat = self.decode_flat_index(ssm_slot, ring_slot)?;
         for i in 0..self.num_ssm_layers {
+            // Payload = pool STORAGE width (bitwise ring: what the slot
+            // holds is what rolls back). The ring region itself stays
+            // FP32-strided, so `flat * h_bytes` addressing is unchanged.
             gpu.copy_d2d_async(
                 main_pool.h_state(i, ssm_slot),
                 self.decode_h_snapshots[i].offset(flat * self.h_bytes),
-                self.h_bytes,
+                main_pool.h_stored_bytes.min(self.h_bytes),
                 stream,
             )?;
             gpu.copy_d2d_async(
@@ -257,10 +286,11 @@ impl SsmSnapshotPool {
     ) -> Result<()> {
         let flat = self.decode_flat_index(ssm_slot, ring_slot)?;
         for i in 0..self.num_ssm_layers {
+            // Payload width mirrors `save_decode` — bitwise and symmetric.
             gpu.copy_d2d_async(
                 self.decode_h_snapshots[i].offset(flat * self.h_bytes),
                 main_pool.h_state(i, ssm_slot),
-                self.h_bytes,
+                main_pool.h_stored_bytes.min(self.h_bytes),
                 stream,
             )?;
             gpu.copy_d2d_async(
@@ -297,7 +327,7 @@ impl SsmSnapshotPool {
     /// Returns `None` if no free snapshot slots are available.
     /// Tags the snapshot with `session_hash` for session-scoped isolation.
     /// `h_is_f16` is the storage dtype of the SOURCE slot. Under
-    /// `ATLAS_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
+    /// `AVAROK_SSM_H_FP16` a decoding slot holds FP16, and this is the edge that
     /// widens it back: snapshots are always written FP32, so `restore` — which
     /// only ever lands in a prefill — needs no dtype knowledge, and neither do
     /// the spill, fault-in, tier-fingerprint or swap paths.
@@ -313,18 +343,22 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return Ok(None);
         }
-        if h_is_f16 && self.h_f16_to_f32_k.0 == 0 {
+        if main_pool.h_stored_bytes < self.h_bytes && !h_is_f16 {
             bail!(
-                "ATLAS_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
+                "f16-sized SSM h pool: cannot snapshot an FP32-flagged state out of a \
+                 2-byte-sized pool slot (the copy would overrun the slot). Prefill has \
+                 not narrowed this sequence's h-state — stage 3 is not serveable yet."
             );
         }
-        let snap_slot = match self.free_slots.lock().pop() {
+        if h_is_f16 && self.h_f16_to_f32_k.0 == 0 {
+            bail!(
+                "AVAROK_SSM_H_FP16: cannot widen a decode-produced snapshot —                  ssm_h_dtype::ssm_h_state_f16_to_f32 did not resolve"
+            );
+        }
+        let snap_slot = match self.claim_free_slot() {
             Some(s) => s,
             None => return Ok(None),
         };
-        // Reusing a freed slot: drop any stale last-token hidden tag. The
-        // caller re-populates it via `save_hidden` for leaf snapshots only.
-        self.slot_has_hidden.lock().remove(&snap_slot);
         for i in 0..self.num_ssm_layers {
             if h_is_f16 {
                 crate::layers::ops::ssm_h_state_f16_to_f32(
@@ -370,6 +404,15 @@ impl SsmSnapshotPool {
     }
 
     /// Restore SSM state from a snapshot slot into an active pool slot.
+    ///
+    /// Snapshots are uniformly FP32 (see `save`). Under the stage-3
+    /// f16-SIZED pool the h copy must NARROW (a plain `h_bytes` copy would
+    /// overrun the 2-byte slot); today that arm is unreachable in a serve
+    /// (the mode is refused at CLI validation and preflight) — it exists so
+    /// the byte-copier is already dtype-correct when the refusal lifts.
+    /// Remaining stage-3 work at this site: the restored slot then holds
+    /// f16 but the sequence's `h_is_f16` flag and the FP32 prefill kernels
+    /// that continue it still assume FP32.
     pub(super) fn restore(
         &self,
         snap_slot: usize,
@@ -378,13 +421,32 @@ impl SsmSnapshotPool {
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<()> {
+        let narrow = main_pool.h_stored_bytes < self.h_bytes;
+        if narrow && self.h_f32_to_f16_k.0 == 0 {
+            bail!(
+                "f16-sized SSM h pool: cannot restore an FP32 snapshot into a \
+                 2-byte-sized pool slot — ssm_h_dtype::ssm_h_state_f32_to_f16 did \
+                 not resolve on this target"
+            );
+        }
         for i in 0..self.num_ssm_layers {
-            gpu.copy_d2d_async(
-                self.h_snapshots[i].offset(snap_slot * self.h_bytes),
-                main_pool.h_state(i, ssm_slot),
-                self.h_bytes,
-                stream,
-            )?;
+            if narrow {
+                crate::layers::ops::ssm_h_state_f32_to_f16(
+                    gpu,
+                    self.h_f32_to_f16_k,
+                    self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+                    main_pool.h_state(i, ssm_slot),
+                    (self.h_bytes / 4) as u64,
+                    stream,
+                )?;
+            } else {
+                gpu.copy_d2d_async(
+                    self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+                    main_pool.h_state(i, ssm_slot),
+                    self.h_bytes,
+                    stream,
+                )?;
+            }
             gpu.copy_d2d_async(
                 self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),
                 main_pool.conv_state(i, ssm_slot),
@@ -395,13 +457,56 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
+    /// Take a slot off the free list, carrying NO bookkeeping from whoever held
+    /// it last.
+    ///
+    /// 🔴 One chokepoint on purpose. `free` already clears all three side tables,
+    /// so in today's call graph a popped slot is clean and this is defence in
+    /// depth — but "clean" is an invariant spread across every acquire site, and
+    /// there are three (`save`, `reserve_tail_slot`, and the spill path's
+    /// `try_pop_free_slot`). An acquire site that pops the list directly and
+    /// forgets one table does not fail loudly: the stale entry is
+    /// STRUCTURALLY VALID. `slot_has_hidden` would make `session_has_history`
+    /// report phantom history; `session_tags` would leak another session's
+    /// isolation; and `aux_blobs` is the worst of the three, because the restore
+    /// gate asks only `aux(snap_id).is_some()` and `restore_aux` validates
+    /// geometry and length — never provenance. A correctly sized blob from
+    /// another sequence therefore passes every check and lands that sequence's
+    /// PLE history or DSA indexer keys in this one: HTTP 200, wrong answer.
+    ///
+    /// Popping through here means a fourth acquire site cannot reintroduce the
+    /// gap by omission — the invalidation travels with the pop instead of being
+    /// remembered at each caller.
+    fn claim_free_slot(&self) -> Option<usize> {
+        let snap_slot = self.free_slots.lock().pop()?;
+        self.clear_slot_bookkeeping(snap_slot);
+        Some(snap_slot)
+    }
+
+    /// Drop every side table keyed by `snap_slot`. Add a table here, not at the
+    /// call sites: that is what keeps `free` and every acquire path in agreement.
+    pub(super) fn clear_slot_bookkeeping(&self, snap_slot: usize) {
+        self.slot_has_hidden.lock().remove(&snap_slot);
+        self.session_tags.lock().remove(&snap_slot);
+        self.aux_blobs.lock().remove(&snap_slot);
+    }
+
     /// Return a snapshot slot to the free list. Clears the slot's session
     /// tag: a freed slot carries no restorable state, so leaving the tag
     /// would make [`Self::session_has_history`] report phantom history.
     pub(super) fn free(&self, snap_slot: usize) {
-        self.slot_has_hidden.lock().remove(&snap_slot);
-        self.session_tags.lock().remove(&snap_slot);
+        self.clear_slot_bookkeeping(snap_slot);
         self.free_slots.lock().push(snap_slot);
+    }
+
+    /// Attach chunk-boundary aux layer state to a saved snapshot.
+    pub(super) fn set_aux(&self, snap_slot: usize, blobs: Vec<(u32, Vec<u8>)>) {
+        self.aux_blobs.lock().insert(snap_slot, blobs);
+    }
+
+    /// The aux blobs for a slot, if that save carried them.
+    pub(super) fn aux(&self, snap_slot: usize) -> Option<Vec<(u32, Vec<u8>)>> {
+        self.aux_blobs.lock().get(&snap_slot).cloned()
     }
 
     /// Whether any LIVE snapshot slot is tagged with `session_hash` — i.e.
@@ -431,8 +536,7 @@ impl SsmSnapshotPool {
         if !self.is_enabled() {
             return None;
         }
-        let snap_slot = self.free_slots.lock().pop()?;
-        self.slot_has_hidden.lock().remove(&snap_slot);
+        let snap_slot = self.claim_free_slot()?;
         if session_hash != 0 {
             self.session_tags.lock().insert(snap_slot, session_hash);
         }

@@ -19,6 +19,7 @@ use crate::layers::ops;
 impl Qwen3AttentionLayer {
     pub(in super::super) fn attention_forward(
         &self,
+        state: &mut dyn crate::layer::LayerState,
         normed: DevicePtr,
         seq_len: usize,
         block_table: &mut Vec<u32>,
@@ -391,6 +392,16 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         }
+        // FP8 KV decode fusion: when this layer qualifies, the K-side
+        // `rms_norm` below and the K half of the RoPE launch are SKIPPED and
+        // redone inside `write_kv_cache_fp8_fused`, which consumes the raw
+        // projection output and writes K and V to the FP8 cache in one launch.
+        // Bit-identical to the chain it replaces — see
+        // `reshape_and_cache_fused_k_fp8.cu`. 4 launches -> 3 per layer.
+        let rotary_dim = self
+            .rotary_dim_override
+            .unwrap_or(ctx.config.rotary_dim() as u32);
+        let fused_k_fp8 = self.fused_fp8_kv_decode_eligible(hd, rotary_dim);
         if let Some(ref k_norm_full) = self.attn.k_norm_full {
             ops::rms_norm(
                 ctx.gpu,
@@ -403,7 +414,7 @@ impl Qwen3AttentionLayer {
                 eps,
                 stream,
             )?;
-        } else if !self.attn.k_norm.weight.is_null() {
+        } else if !self.attn.k_norm.weight.is_null() && !fused_k_fp8 {
             ops::rms_norm(
                 ctx.gpu,
                 self.rms_norm_w_k,
@@ -502,6 +513,11 @@ impl Qwen3AttentionLayer {
                 stream,
             )?;
         } else {
+            // `num_kv_heads = 0` makes `rope_forward` Q-only: its grid is
+            // `num_q_heads + num_kv_heads` and every block then takes the Q
+            // arm. Same single launch, strictly less work — and K MUST be
+            // left un-rotated here because the fused writer rotates the raw
+            // projection itself.
             ops::rope(
                 ctx.gpu,
                 self.rope_k,
@@ -510,10 +526,9 @@ impl Qwen3AttentionLayer {
                 meta.positions,
                 1,
                 nq,
-                nkv,
+                if fused_k_fp8 { 0 } else { nkv },
                 hd,
-                self.rotary_dim_override
-                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                rotary_dim,
                 self.rope_theta_override
                     .unwrap_or(ctx.config.rope_theta as f32),
                 stream,
@@ -522,21 +537,44 @@ impl Qwen3AttentionLayer {
 
         // K/V are contiguous (separate dense_gemm outputs), stride = nkv * hd
         let kv_stride = nkv * hd;
-        self.write_kv_cache(
-            ctx.gpu,
-            k_out,
-            v_out,
-            kv_cache,
-            meta.slot,
-            1,
-            nkv,
-            hd,
-            bs as u32,
-            kv_stride,
-            kv_stride,
-            stream,
-            ctx.graph_capture,
-        )?;
+        if fused_k_fp8 {
+            self.write_kv_cache_fp8_fused(
+                ctx.gpu,
+                k_out,
+                v_out,
+                kv_cache,
+                meta.slot,
+                meta.positions,
+                1,
+                nkv,
+                hd,
+                // SSOT with the `rotary_dim` the eligibility check above read.
+                rotary_dim,
+                bs as u32,
+                kv_stride,
+                kv_stride,
+                eps,
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                stream,
+            )?;
+        } else {
+            self.write_kv_cache(
+                ctx.gpu,
+                k_out,
+                v_out,
+                kv_cache,
+                meta.slot,
+                1,
+                nkv,
+                hd,
+                bs as u32,
+                kv_stride,
+                kv_stride,
+                stream,
+                ctx.graph_capture,
+            )?;
+        }
 
         // Turbo KV cache: apply WHT to Q before paged decode.
         // KV cache stores WHT(K) and WHT(V). By Parseval's theorem,
@@ -551,9 +589,7 @@ impl Qwen3AttentionLayer {
         let v_is_turbo = v_dtype.is_wht_rotated();
         // InnerQ pre-WHT scale_inv on Q (no-op when d_innerq_active=0 on device).
         // Bypass runtime WHT(Q) when weights are pre-rotated at load (TQ_PLUS_WEIGHT_ROTATION=1).
-        let weight_pre_rotated = std::env::var("TQ_PLUS_WEIGHT_ROTATION")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
+        let weight_pre_rotated = crate::layers::ops::ModelLevers::get().weight_pre_rotated;
         if k_is_turbo && self.innerq_apply_q_k.0 != 0 && hd == 128 {
             use spark_runtime::kernel_args::KernelLaunch;
             KernelLaunch::new(ctx.gpu, self.innerq_apply_q_k)
@@ -595,6 +631,47 @@ impl Qwen3AttentionLayer {
         // and the bookend kernels recover real-V.
         let use_orchestrator = self.high_speed_swap_engaged(kv_cache);
 
+        // ── QSA indexer (Qwen3.8-Flash-Next) ──
+        // Ingest this token's raw indexer key EVERY step; once the visible
+        // prefix exceeds the inert bound, select the reference's top-512
+        // 4-token blocks (+ tail) and gather their K/V into contiguous
+        // scratch — which, through an identity block table, IS a valid paged
+        // cache for the standard decode attention below. Runs AFTER
+        // write_kv_cache so the current token is gatherable.
+        let qsa_sel = if let Some(ref qsa) = self.qsa {
+            anyhow::ensure!(
+                matches!(self.kv_dtype.kv_pair().0, KvCacheDtype::Bf16)
+                    && matches!(self.kv_dtype.kv_pair().1, KvCacheDtype::Bf16),
+                "QSA selection requires a plain BF16 KV cache (the gather \
+                 copies raw NHD rows); serve with --kv-cache-dtype bf16"
+            );
+            anyhow::ensure!(
+                !use_orchestrator,
+                "QSA + --high-speed-swap is not wired (the gather reads the \
+                 HBM pool)"
+            );
+            // `seq_len` here is the PRE-APPEND length (decode_a bumps
+            // `seq.seq_len` after the step), so the token being decoded
+            // sits at position `seq_len` — verified live: a 35-token
+            // prompt's first decode arrives with seq_len=35 and 35 raw
+            // keys already ingested by prefill.
+            let qsa_st =
+                crate::layers::qwen3_attention::helpers::qsa_seq_state(qsa, state, ctx.gpu)?;
+            qsa.decode_select(
+                qsa_st,
+                normed,
+                seq_len,
+                kv_cache.k_pool_ptr(self.attn_layer_idx),
+                kv_cache.v_pool_ptr(self.attn_layer_idx),
+                meta.block_table,
+                bs as u32,
+                ctx.gpu,
+                stream,
+            )?
+        } else {
+            None
+        };
+
         if use_orchestrator {
             // Phase 6.3: per-layer K/V offload to disk. The alloc-time
             // helper (`ensure_blocks_through_decode`) already grew
@@ -623,6 +700,32 @@ impl Qwen3AttentionLayer {
                 )
             })
             .expect("local installed checked in high_speed_swap_engaged")?;
+        } else if let Some(sel) = qsa_sel {
+            // Attention over ONLY the selected tokens: same BF16 kernel the
+            // dense path uses, pointed at the gathered scratch. Rope is
+            // already baked into the cached K rows and softmax is
+            // order-invariant, so this equals the reference's masked
+            // attention exactly.
+            ops::paged_decode_attn_bf16(
+                ctx.gpu,
+                self.paged_decode_k,
+                q_out,
+                sel.k_scratch,
+                sel.v_scratch,
+                attn_out,
+                sel.table_dev,
+                sel.seq_len_dev,
+                sel.max_blocks,
+                1,
+                nq,
+                nkv,
+                hd,
+                bs as u32,
+                inv_sqrt_d,
+                nq * hd,
+                0,
+                stream,
+            )?;
         } else {
             self.run_paged_decode(
                 ctx.gpu,

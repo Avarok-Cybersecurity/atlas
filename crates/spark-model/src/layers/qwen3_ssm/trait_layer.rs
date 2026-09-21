@@ -9,13 +9,108 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
 use super::Qwen3SsmLayer;
+use super::ple_seq::ple_seq_state;
 use crate::layer::{ForwardContext, GdnPrefillBuffers, LayerState, TransformerLayer};
 
 impl TransformerLayer for Qwen3SsmLayer {
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        self.woa_stash_seq_floats_impl()
+    }
+
+    fn gdn_woa_bind(&self, flag: DevicePtr, stash: DevicePtr, seqs: usize) {
+        self.woa_bind_impl(flag, stash, seqs)
+    }
+
+    fn gdn_fold_accepted(
+        &self,
+        gpu: &dyn GpuBackend,
+        h_table: DevicePtr,
+        na_tab: DevicePtr,
+        k_rows: usize,
+        n: usize,
+        stream: u64,
+    ) -> Result<bool> {
+        self.fold_accepted_impl(gpu, h_table, na_tab, k_rows, n, stream)
+    }
+
     /// Downcast hook so the LoRA install walk can reach this layer's MoE FFN
     /// (Feature-1: routed-expert/router deltas exist on GDN layers too).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+
+    /// PLE's host half (hash + NVMe fault-in + slot upload), hoisted before
+    /// graph replay/capture. No-op on the 47 layers without a PLE site.
+    fn decode_prestage(
+        &self,
+        token: u32,
+        state: &mut dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        if let Some(ple) = self.ple.as_ref() {
+            let st = ple_seq_state(ple, state, gpu)?;
+            ple.prestage(st, &[token], gpu, stream)?;
+        }
+        Ok(())
+    }
+
+    fn has_aux_state(&self) -> bool {
+        self.ple.is_some()
+    }
+
+    /// PLE's per-seq host hash on the hc multi-seq decode path is
+    /// capture-illegal (pageable reads); the single-decode path prestages
+    /// around it, the batched path does not — veto batched graphs.
+    fn decode_graph_unsupported(&self) -> bool {
+        self.ple.is_some()
+    }
+
+    fn snapshot_aux(
+        &self,
+        state: &dyn LayerState,
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let Some(ple) = self.ple.as_ref() else {
+            return Ok(None);
+        };
+        let ssm = state
+            .as_any()
+            .downcast_ref::<crate::layer::SsmLayerState>()
+            .ok_or_else(|| anyhow::anyhow!("PLE host layer state is not SsmLayerState"))?;
+        match ssm.ple.as_ref() {
+            Some(st) => Ok(Some(ple.snapshot_aux(st, gpu, stream)?)),
+            // Sequence never ran this layer (snapshot before first pass):
+            // nothing to carry, and restore-side declines aux-less slots.
+            None => Ok(None),
+        }
+    }
+
+    fn restore_aux(
+        &self,
+        state: &mut dyn LayerState,
+        blob: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let ple = self
+            .ple
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("restore_aux: no PLE on this layer"))?;
+        let st = ple_seq_state(ple, state, gpu)?;
+        ple.restore_aux(st, blob, gpu, stream)
+    }
+
+    fn decode_prestage_rearm(&self, state: &mut dyn LayerState) {
+        if let Some(ple) = self.ple.as_ref()
+            && let Some(ssm) = state
+                .as_any_mut()
+                .downcast_mut::<crate::layer::SsmLayerState>()
+            && let Some(st) = ssm.ple.as_mut()
+        {
+            ple.rearm(st);
+        }
     }
 
     fn decode(
@@ -31,6 +126,9 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        if self.hc.is_some() {
+            return self.decode_inner_hc(hidden, state, ctx, stream);
+        }
         self.decode_inner(
             hidden,
             residual,
@@ -59,6 +157,11 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // v1 is C=1 only under an mHC highway: these paths keep their own
+        // residual bookkeeping, which the highway replaces. Refusing is the
+        // point — a batched GDN step running on an unmixed stream produces
+        // plausible, wrong activations. Atlas #753.
+        self.refuse_batched_under_hc("decode_batched")?;
         self.decode_batched_inner(
             hidden,
             residual,
@@ -81,6 +184,7 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        self.refuse_batched_under_hc("decode_verify_multi")?;
         anyhow::ensure!(
             states.len() == n_seqs && ks.len() == n_seqs,
             "decode_verify_multi: states/ks/n mismatch"
@@ -112,6 +216,12 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        if self.hc.is_some() {
+            // #753 item B milestone 2: the highway replaces the residual the
+            // non-hc path folds into its fused norm kernels; run the
+            // hc-bracketed variant instead of refusing.
+            return self.decode_multi_seq_inner_hc(hidden, num_seqs, states, seq_lens, ctx, stream);
+        }
         self.decode_multi_seq_inner(
             hidden,
             residual,
@@ -140,6 +250,12 @@ impl TransformerLayer for Qwen3SsmLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Under an mHC highway the residual bookkeeping is completely
+        // different — the highway IS the residual — so this is a second entry
+        // path, not a flag on the first. See `trait_prefill_hc.rs`.
+        if self.hc.is_some() {
+            return self.prefill_inner_hc(hidden, num_tokens, state, seq_len_start, ctx, stream);
+        }
         self.prefill_inner(
             hidden,
             residual,
@@ -313,5 +429,27 @@ impl TransformerLayer for Qwen3SsmLayer {
 
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>> {
         self.alloc_state_inner(gpu)
+    }
+
+    /// Free the PLE carry this sequence lazily attached.
+    ///
+    /// Only the `ple` field — the h/conv state in `SsmLayerState` is pooled
+    /// and released by slot in `free_sequence_dispatch`, so freeing it here
+    /// would be a double free. The PLE conv buffer is the one piece that is
+    /// allocated per sequence and owned by nothing.
+    fn release_state(&self, state: &mut dyn LayerState, gpu: &dyn GpuBackend) -> Result<()> {
+        let Some(ssm) = state
+            .as_any_mut()
+            .downcast_mut::<crate::layer::SsmLayerState>()
+        else {
+            return Ok(());
+        };
+        let Some(mut st) = ssm.ple.take() else {
+            return Ok(());
+        };
+        let Some(ple) = self.ple.as_ref() else {
+            anyhow::bail!("release_state: PLE seq state present but layer has no PLE");
+        };
+        ple.release_seq_state(&mut st, gpu)
     }
 }

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Build an atlas-core [`ModelConfig`] from a bare GGUF file's metadata, so a
+//! Build an avarok-core [`ModelConfig`] from a bare GGUF file's metadata, so a
 //! directory containing only a `.gguf` (no `config.json`) can be served.
 //!
-//! `config_from_gguf` lives in atlas-core (which cannot see this crate's GGUF
-//! parser); this module bridges the two — it impls the atlas-core [`GgufMeta`]
+//! `config_from_gguf` lives in avarok-core (which cannot see this crate's GGUF
+//! parser); this module bridges the two — it impls the avarok-core [`GgufMeta`]
 //! accessor over [`GgufFile`] and supplies the two tensor-section facts the
 //! builder needs (vocab rows + presence of an untied `output.weight`).
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use atlas_core::config::{GgufConfigInputs, GgufMeta, ModelConfig, config_from_gguf};
+use avarok_core::config::{GgufConfigInputs, GgufMeta, ModelConfig, config_from_gguf};
 
 use super::container::GgufFile;
 use super::find_gguf;
@@ -28,6 +28,28 @@ impl GgufMeta for GgufFile {
     }
     fn get_arr_len(&self, key: &str) -> Option<usize> {
         GgufFile::arr_len(self, key)
+    }
+    /// Integer array, every element widened to u64.
+    ///
+    /// Accepts any integer element type: DeepSeek-V4.1 ships
+    /// `attention.compress_ratios` and `engram.layer_ids` as int32 but
+    /// `engram.{multipliers,primes,offsets}` as uint64, and a caller asking for
+    /// "the numbers in this array" should not have to know which. Returns
+    /// `None` if the key is absent or ANY element is not an integer, rather
+    /// than silently dropping elements.
+    fn get_u64_arr(&self, key: &str) -> Option<Vec<u64>> {
+        let arr = GgufFile::get(self, key)?.as_array()?;
+        arr.iter()
+            .map(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+            })
+            .collect()
+    }
+    /// Float array, every element widened to f64. Same all-or-nothing rule.
+    fn get_f64_arr(&self, key: &str) -> Option<Vec<f64>> {
+        let arr = GgufFile::get(self, key)?.as_array()?;
+        arr.iter().map(|v| v.as_f64()).collect()
     }
 }
 

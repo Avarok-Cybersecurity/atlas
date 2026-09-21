@@ -1,0 +1,5 @@
+{"pr":531,"head_sha":"d5068ae6d496681e16eeac2309ea0cdffe377722","run_id":"31960118634","attempt":1,"at":1786900161,"kind":"category","value":"capability","status":"partial"}
+{"pr":531,"head_sha":"f41a7b00a6f947447ee2b658c25f5162dd255cb1","run_id":"31965980379","attempt":1,"at":1786907233,"kind":"category","value":"capability/serving-api","status":"ok"}
+{"pr":531,"head_sha":"c6b75a64ca4309f5aabc520fdb04b16caf12f7a2","run_id":"31967510221","attempt":1,"at":1786908429,"kind":"category","value":"capability/serving-api","status":"ok"}
+{"pr":531,"head_sha":"d6ec34a9ff6d5d96600e96a6e20fbc181e0c1fc7","run_id":"31968092839","attempt":1,"at":1786909068,"kind":"category","value":"capability/serving-api","status":"ok"}
+{"pr":531,"head_sha":"dd6ce69afb73f2ceedb741597cbcdf818bd97c84","run_id":"31970658868","attempt":1,"at":1786912532,"kind":"category","value":"capability/serving-api","status":"ok"}

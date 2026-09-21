@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./run_tier.sh <tier-name> <N>
-#     [--container <name>]          (default atlas-qwen-final)
+#     [--container <name>]          (default avarok-qwen-final)
 #     [--split-dgx]                  (run N/2 locally + N/2 on dgx2 via tunnel)
 #     [--remote-api <URL>]           (default http://localhost:8889/v1)
 #     [--cosine-mode]                (use cosine_run.py diagnostic instead of opencode)
@@ -35,7 +35,7 @@ TIER="$1"
 N="$2"
 shift 2
 
-CONTAINER="atlas-qwen-final"
+CONTAINER="avarok-qwen-final"
 SPLIT_DGX=0
 REMOTE_API="http://localhost:8889/v1"
 COSINE_MODE=0
@@ -80,7 +80,7 @@ LOCAL_API="http://localhost:8888/v1"
 # tree (~7s idle, far worse under the FP8-model memory-pressure swap thrash).
 #
 # Fix: route the AGENT's cargo at the SAME shared warm target dir the scorer
-# uses (ATLAS_WARM_TARGET_DIR, SSOT with warm_cargo_cache.sh + score_run.py).
+# uses (AVAROK_WARM_TARGET_DIR, SSOT with warm_cargo_cache.sh + score_run.py).
 # Each agent build then reuses the pre-compiled dep rlibs and only links the
 # project's own tiny crate (~1.4s incremental). warm_cargo_cache.sh now warms
 # BOTH the debug and release profiles, since the agent's `cargo test`/`cargo
@@ -97,14 +97,14 @@ LOCAL_API="http://localhost:8888/v1"
 #
 # SSOT: same env var + same explicit default as warm_cargo_cache.sh and
 # score_run.py's _warm_target_dir() — the three never drift.
-ATLAS_WARM_TARGET_DIR="${ATLAS_WARM_TARGET_DIR:-${HOME}/.cargo/atlas-warm-target}"
+AVAROK_WARM_TARGET_DIR="${AVAROK_WARM_TARGET_DIR:-${HOME}/.cargo/avarok-warm-target}"
 # Pass into the agent's bash environment. opencode forwards the parent
 # environment to its bash tool, so exporting here reaches `cargo` in-agent.
 # Network stays ON (NOT CARGO_NET_OFFLINE): a generation that pins a dep
 # version outside the pre-warmed set must still resolve, or it would be a
 # false build failure. The warm TARGET dir is what kills the cold-compile
 # cost; the registry index is shared+persistent so the resolver hit is cheap.
-export CARGO_TARGET_DIR="${ATLAS_WARM_TARGET_DIR}"
+export CARGO_TARGET_DIR="${AVAROK_WARM_TARGET_DIR}"
 
 # ── opencode output cap (DIAGNOSTIC KNOB — default = model's natural cap) ───
 # The FP8 deep-context degeneration (model leaks repeated tool-call XML and
@@ -119,15 +119,15 @@ export CARGO_TARGET_DIR="${ATLAS_WARM_TARGET_DIR}"
 # absent. It DEFAULTS to 8192 (opencode's own model `limit.output`), i.e. it
 # does NOT clamp the model: capping output below the model's natural stopping
 # point would MASK the model's decode behaviour, which we explicitly do not do.
-# Set ATLAS_OPENCODE_OUTPUT_CAP to a lower value only for such experiments.
-ATLAS_OPENCODE_OUTPUT_CAP="${ATLAS_OPENCODE_OUTPUT_CAP:-8192}"
+# Set AVAROK_OPENCODE_OUTPUT_CAP to a lower value only for such experiments.
+AVAROK_OPENCODE_OUTPUT_CAP="${AVAROK_OPENCODE_OUTPUT_CAP:-8192}"
 apply_output_cap() {
   local cfg="${1:-${HOME}/.config/opencode/opencode.json}"
   [[ -f "${cfg}" ]] || { echo "[output-cap] no opencode config at ${cfg}; skipping" >&2; return 0; }
-  ATLAS_OPENCODE_OUTPUT_CAP="${ATLAS_OPENCODE_OUTPUT_CAP}" python3 - "${cfg}" <<'PY' >&2 || true
+  AVAROK_OPENCODE_OUTPUT_CAP="${AVAROK_OPENCODE_OUTPUT_CAP}" python3 - "${cfg}" <<'PY' >&2 || true
 import json, os, sys, tempfile
 cfg = sys.argv[1]
-cap = int(os.environ["ATLAS_OPENCODE_OUTPUT_CAP"])
+cap = int(os.environ["AVAROK_OPENCODE_OUTPUT_CAP"])
 try:
     d = json.load(open(cfg))
 except Exception as e:
@@ -173,7 +173,7 @@ warmup_endpoint() {
     echo "[warmup] raw body (first 400 chars): ${body:0:400}" >&2
     exit 4
   fi
-  if ! echo "${merged}" | grep -q '4'; then
+  if ! echo "${merged}" | grep -Eq '(^|[^[:alnum:]_])4([^[:alnum:]_]|$)'; then
     echo "[warmup] FATAL: ${label} did not emit '4' for '2+2' — catastrophic regression, halting" >&2
     echo "[warmup] response excerpt: ${merged:0:300}" >&2
     exit 4
@@ -188,14 +188,14 @@ if [[ "${SKIP_WARMUP}" == "0" ]]; then
     exit 3
   fi
   if ! curl -sS -m 5 "${LOCAL_API}/models" >/dev/null 2>&1; then
-    echo "FATAL: atlas /v1/models not responding on localhost:8888" >&2
+    echo "FATAL: avarok /v1/models not responding on localhost:8888" >&2
     exit 3
   fi
-  warmup_endpoint "${LOCAL_API}" "local-atlas"
+  warmup_endpoint "${LOCAL_API}" "local-avarok"
 
   if [[ "${SPLIT_DGX}" == "1" ]]; then
     if ! curl -sS -m 5 "${REMOTE_API}/models" >/dev/null 2>&1; then
-      echo "FATAL: remote vLLM/atlas /v1/models not responding at ${REMOTE_API}" >&2
+      echo "FATAL: remote vLLM/avarok /v1/models not responding at ${REMOTE_API}" >&2
       echo "       (expected an SSH tunnel: ssh -L 8889:localhost:8888 claude@10.10.10.2)" >&2
       exit 3
     fi
@@ -209,7 +209,7 @@ fi
 # bit-identical token sequence for every run, enabling prefix-cache reuse,
 # and (b) removes tokenization noise that would otherwise confound the
 # A/B comparison between tiers.
-PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the ATLAS_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("ATLAS_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Whenever you run the server or any long-lived process in the background, always start it detached with its output redirected to a file (for example `setsid cargo run > /tmp/server.log 2>&1 &`) so your shell never blocks waiting on it, and wrap any command that might hang, such as curl checks or process kills, in a short `timeout 15`. Finally, tear down the server by killing whatever is listening on its port rather than guessing the process name, always wrapped in a short timeout so it can never stall your shell, for example `timeout 5 fuser -k ${ATLAS_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.'
+PROMPT='Please create a pure rust Axum project here in the current working directory. Just have a ping/pong endpoint. The server MUST bind to the port from the AVAROK_HARNESS_PORT env var (default 3001) — use `let port: u16 = std::env::var("AVAROK_HARNESS_PORT").unwrap_or_else(|_| "3001".to_string()).parse().unwrap();` then bind to `0.0.0.0:port`. Add tests, run them and prove all tests pass, then run the server and use curl to prove it works. Whenever you run the server or any long-lived process in the background, always start it detached with its output redirected to a file (for example `setsid cargo run > /tmp/server.log 2>&1 &`) so your shell never blocks waiting on it, and wrap any command that might hang, such as curl checks or process kills, in a short `timeout 15`. Finally, tear down the server by killing whatever is listening on its port rather than guessing the process name, always wrapped in a short timeout so it can never stall your shell, for example `timeout 5 fuser -k ${AVAROK_HARNESS_PORT:-3001}/tcp 2>/dev/null || true`.'
 
 # CLI prompt override: --prompt-file PATH (or `-` for stdin). Enables the
 # graduated-difficulty ladder to drive the harness via piped/file input.
@@ -233,11 +233,11 @@ run_one() {
   local TARGET="/tmp/harness-${TIER}-r${i}"
   local OC_JSON="/tmp/harness-${TIER}-r${i}.json"
   local OC_ERR="/tmp/harness-${TIER}-r${i}.err"
-  local ATLAS_LOG="/tmp/harness-${TIER}-r${i}.atlas.log"
+  local AVAROK_LOG="/tmp/harness-${TIER}-r${i}.avarok.log"
   local OUT_JSON="${RUNS_DIR}/run_${TIER}_${i}.json"
 
-  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${ATLAS_LOG}"
-  : > "${ATLAS_LOG}"  # empty by default; populated below if local
+  rm -rf "${TARGET}" "${OC_JSON}" "${OC_ERR}" "${AVAROK_LOG}"
+  : > "${AVAROK_LOG}"  # empty by default; populated below if local
   # opencode's --dir is the agent's cwd; we pre-create it so opencode can
   # write into it on the first tool call.
   mkdir -p "${TARGET}"
@@ -250,7 +250,7 @@ run_one() {
   # hard ceiling. Default 360 (6 min) is the established harness ceiling; the
   # OC_TIMEOUT env var overrides it for de-confounding experiments (e.g. slow
   # full-BF16 runs that need a longer agentic budget to finish).
-  # ATLAS_HARNESS_PORT is exposed both to opencode (so the model can read it
+  # AVAROK_HARNESS_PORT is exposed both to opencode (so the model can read it
   # to write port-reading Rust) AND to score_run.py (so it can curl the right port).
   # --dir sets opencode's working directory; the model sees only "current
   # working directory" in the prompt, never the absolute path.
@@ -273,7 +273,7 @@ run_one() {
         env \
           ANTHROPIC_BASE_URL=http://localhost:8888 \
           ANTHROPIC_AUTH_TOKEN=dummy \
-          ATLAS_HARNESS_PORT=${HPORT:-3001} \
+          AVAROK_HARNESS_PORT=${HPORT:-3001} \
           /workspace/.local/bin/claude -p \
             --output-format stream-json --verbose \
             --permission-mode "${CC_PERMISSION_MODE:-plan}" \
@@ -292,8 +292,8 @@ run_one() {
     local _max_empty="${OC_EMPTY_RETRIES:-2}"
     while :; do
       rm -rf "${TARGET}"; mkdir -p "${TARGET}"
-      ATLAS_HARNESS_PORT=${HPORT:-3001} \
-        ATLAS_AGENT_SHELL=1 \
+      AVAROK_HARNESS_PORT=${HPORT:-3001} \
+        AVAROK_AGENT_SHELL=1 \
         env ${extra_env} \
         timeout "${OC_TIMEOUT:-360}" opencode run --dangerously-skip-permissions --dir "${TARGET}" --format json \
         "${PROMPT}" > "${OC_JSON}" 2> "${OC_ERR}" || true
@@ -339,17 +339,17 @@ run_one() {
   # Atlas log window for THIS run only (local only).
   if [[ "${label}" == "local" ]]; then
     START_TS_INT=${START_TS%.*}
-    sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${ATLAS_LOG}" || true
+    sudo docker logs "${CONTAINER}" --since "${START_TS_INT}" 2>&1 > "${AVAROK_LOG}" || true
   fi
 
-  ATLAS_HARNESS_PORT=${HPORT:-3001} \
+  AVAROK_HARNESS_PORT=${HPORT:-3001} \
     python3 "${HARNESS_DIR}/score_run.py" \
     --tier "${TIER}" \
     --run "${i}" \
     --target "${TARGET}" \
     --opencode-json "${OC_JSON}" \
     --opencode-stderr "${OC_ERR}" \
-    --atlas-log-window "${ATLAS_LOG}" \
+    --avarok-log-window "${AVAROK_LOG}" \
     --probe-start-ts "${START_TS}" \
     --probe-end-ts "${END_TS}" \
     --webserver-port ${HPORT:-3001} \
@@ -402,8 +402,8 @@ dup = len(lines) - len(set(lines))
 print(f"chars={len(blob)} lines={len(lines)} max_consecutive_repeat={best} dup_lines={dup}")
 PY
 )
-    cc_wd=$(grep -ciE 'loop|repeat|watchdog|stuck|NoSsmSnapshot|fuzzy|simhash|attractor|degener' "${ATLAS_LOG}" 2>/dev/null || echo 0)
-    echo "    [claude-code] ${cc_rep} | atlas_watchdog_hits=${cc_wd}  (raw: ${OC_JSON}, atlas-log: ${ATLAS_LOG})" >&2
+    cc_wd=$(grep -ciE 'loop|repeat|watchdog|stuck|NoSsmSnapshot|fuzzy|simhash|attractor|degener' "${AVAROK_LOG}" 2>/dev/null || echo 0)
+    echo "    [claude-code] ${cc_rep} | avarok_watchdog_hits=${cc_wd}  (raw: ${OC_JSON}, avarok-log: ${AVAROK_LOG})" >&2
   fi
 
   # --bail: exit immediately on the first failure (cargo_valid != true OR webserver_ok != true).

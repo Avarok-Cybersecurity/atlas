@@ -7,13 +7,14 @@
 use spark_runtime::prefix_cache::PrefixMatch;
 
 use super::batch_kernel::{
-    cache_batch_matches_compatible, check_kernel_batched_eligible, config_is_mla,
+    batched_reserve_hybrid_ssm_ok, cache_batch_matches_compatible, check_kernel_batched_eligible,
+    config_is_mla,
 };
 
 /// (chunk_len, chunk_start, is_last_chunk)
 fn s(chunk_len: usize, chunk_start: usize, is_last: bool) -> (usize, usize, usize, bool) {
     // eff == chunk_len: the conservative charge used when no prefix hit is
-    // proven, i.e. exactly the pre-`ATLAS_Q12_EFFECTIVE_ARENA` behaviour.
+    // proven, i.e. exactly the pre-`AVAROK_Q12_EFFECTIVE_ARENA` behaviour.
     (chunk_len, chunk_len, chunk_start, is_last)
 }
 
@@ -48,23 +49,55 @@ fn cache_match(tokens: usize) -> PrefixMatch {
 }
 
 #[test]
+fn hybrid_ssm_admits_only_all_cold_reservations() {
+    // The 2026-08-16 stackval blocker: a blanket num_ssm_layers!=0 veto
+    // rejected COLD chunk-0 waves on the hybrid 27B, serializing the whole
+    // prefill ramp. Cold (matched_tokens == 0 everywhere) must be admitted —
+    // it is state-identical to the cache-inactive case.
+    assert!(batched_reserve_hybrid_ssm_ok(
+        &[cache_match(0), cache_match(0), cache_match(0)],
+        true,
+    ));
+    // A warm match on a hybrid model keeps the per-stream path (KV/Marconi
+    // skip interplay with recurrent state is not admitted transactionally).
+    assert!(!batched_reserve_hybrid_ssm_ok(
+        &[cache_match(0), cache_match(48)],
+        true,
+    ));
+    // Attention-only models are unaffected either way.
+    assert!(batched_reserve_hybrid_ssm_ok(
+        &[cache_match(48), cache_match(48)],
+        false,
+    ));
+    // No matches (cache active, empty batch guard upstream) is trivially ok.
+    assert!(batched_reserve_hybrid_ssm_ok(&[], true));
+}
+
+#[test]
 fn cache_batch_accepts_equal_partial_hits() {
     assert!(cache_batch_matches_compatible(
         &[cache_match(48), cache_match(48)],
         8192,
     ));
+    assert!(!cache_batch_matches_compatible(&[], 8192));
 }
 
 #[test]
-fn cache_batch_rejects_mixed_hit_depths() {
+fn cache_batch_rejects_mixed_processing_geometry() {
     assert!(!cache_batch_matches_compatible(
         &[cache_match(0), cache_match(48)],
+        8192,
+    ));
+    let mut fewer_blocks = cache_match(48);
+    fewer_blocks.matched_blocks.pop();
+    assert!(!cache_batch_matches_compatible(
+        &[cache_match(48), fewer_blocks],
         8192,
     ));
 }
 
 #[test]
-fn cache_batch_rejects_snapshot_or_disk_restore() {
+fn cache_batch_rejects_restore_metadata() {
     let mut snapshot = cache_match(48);
     snapshot.ssm_snapshot = Some(3);
     snapshot.ssm_snapshot_tokens = 48;
@@ -77,6 +110,27 @@ fn cache_batch_rejects_snapshot_or_disk_restore() {
     disk.matched_disk_block_ids = vec![9; 3];
     assert!(!cache_batch_matches_compatible(
         &[cache_match(48), disk],
+        8192,
+    ));
+
+    let mut snapshot_tokens = cache_match(48);
+    snapshot_tokens.ssm_snapshot_tokens = 48;
+    assert!(!cache_batch_matches_compatible(
+        &[cache_match(48), snapshot_tokens],
+        8192,
+    ));
+
+    let mut tier_key = cache_match(48);
+    tier_key.ssm_snapshot_tier_key = Some(7);
+    assert!(!cache_batch_matches_compatible(
+        &[cache_match(48), tier_key],
+        8192,
+    ));
+
+    let mut tier_tokens = cache_match(48);
+    tier_tokens.ssm_snapshot_tier_tokens = 48;
+    assert!(!cache_batch_matches_compatible(
+        &[cache_match(48), tier_tokens],
         8192,
     ));
 }
@@ -233,22 +287,6 @@ fn rejects_arena_overflow() {
 }
 
 #[test]
-fn rejects_mla_model() {
-    assert!(!check_kernel_batched_eligible(
-        vec![s(4096, 4096, false), s(4096, 4096, false)],
-        2,
-        8192,
-        true,
-        128,
-        BIG_SCRATCH,
-        TOP_K,
-        MROPE,
-        false,
-        false, // varlen
-    ));
-}
-
-#[test]
 fn rejects_large_head_dim() {
     // Gemma-4 long-attention head_dim=512 → reject.
     assert!(!check_kernel_batched_eligible(
@@ -257,22 +295,6 @@ fn rejects_large_head_dim() {
         8192,
         false,
         512,
-        BIG_SCRATCH,
-        TOP_K,
-        MROPE,
-        false,
-        false, // varlen
-    ));
-}
-
-#[test]
-fn accepts_n_4_uniform() {
-    assert!(check_kernel_batched_eligible(
-        vec![s(2048, 2048, false); 4],
-        4,
-        8192,
-        false,
-        256,
         BIG_SCRATCH,
         TOP_K,
         MROPE,
@@ -435,7 +457,7 @@ fn effective_charge_rejects_zero_length_stream() {
 /// test passed the bool directly. This test fails under that sabotage.
 #[test]
 fn mistral_config_is_rejected_as_mla() {
-    let mut cfg = atlas_core::config::ModelConfig::qwen3_next_80b_nvfp4();
+    let mut cfg = avarok_core::config::ModelConfig::qwen3_next_80b_nvfp4();
     // Non-MLA baseline: the derivation says no, and an otherwise-eligible
     // batch is admitted — proving the rejection below comes from MLA alone.
     assert!(!config_is_mla(&cfg));

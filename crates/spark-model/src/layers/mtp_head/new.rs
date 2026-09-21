@@ -21,7 +21,7 @@ impl MtpHead {
         // batched-propose lm_head through it is the exact weight at tile-GEMM
         // bandwidth. Caller passes `None` for dedicated draft heads.
         lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         gpu: &dyn GpuBackend,
         quant: MtpQuantization,
         mtp_vocab_size: u32,
@@ -244,7 +244,9 @@ impl MtpHead {
         // drafter cannot need more live tokens than the main KV can hold, so
         // the cap keeps a 128K `--max-seq-len` config from blindly allocating
         // seqs x 8K blocks. Cost at the 16K/16-seq bench config: 15,203 blocks
-        // x 64 KB = ~0.97 GB, well inside the serve reserve.
+        // x 64 KB = ~0.97 GB — pre-charged against the KV budget by
+        // `factory::build`'s MTP propose-pool reserve, which mirrors THIS
+        // arithmetic; change one and change both.
         let per_seq_blocks = max_seq_len / kv_config.block_size + 1;
         let mtp_num_blocks = per_seq_blocks
             .saturating_mul(crate::speculative::mtp_max_seqs())
@@ -255,7 +257,7 @@ impl MtpHead {
         // the 4K era; agentic contexts of 10-20K tripped the stride ensure!
         // every step and made the batched propose permanently fall back to
         // per-sequence mode (PROGRESS_LOG 5.2/6.17). Floor 2048; override
-        // ATLAS_PROPOSE_META_STRIDE=<bytes>.
+        // AVAROK_PROPOSE_META_STRIDE=<bytes>.
         let propose_meta_stride =
             super::batch_caps::propose_meta_stride_env(max_seq_len, kv_config.block_size);
         let kv_cache = PagedKvCache::new(kv_config, mtp_num_blocks, gpu)?;
@@ -322,7 +324,7 @@ impl MtpHead {
         // PREFILL_CHUNK=512 rows). Dedicated rather than aliased onto the
         // shared arena so the pass has zero aliasing hazards; allocated only
         // when a consumer exists.
-        // The catch-up feed (ATLAS_MTP_CATCHUP) runs through the same batched
+        // The catch-up feed (AVAROK_MTP_CATCHUP) runs through the same batched
         // row writer as the drafter prefill and needs the same scratch.
         let prefill_scratch = if super::mtp_drafter_prefill_enabled(levers)
             || crate::speculative::mtp_catchup_enabled()
@@ -376,7 +378,7 @@ impl MtpHead {
             w4a16_gemv_k: gpu.kernel("w4a16_gemv", "w4a16_gemv")?,
             w4a16_gemv_sw_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_sw"),
             gemv_sw: crate::layers::ops::gemv_sw_from(
-                std::env::var("ATLAS_NO_GEMV_SW").ok().as_deref(),
+                std::env::var("AVAROK_NO_GEMV_SW").ok().as_deref(),
             ),
             w4a16_gemv_qg_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_qg")?,
             w4a16_gemv_dual_k: gpu.kernel("w4a16_gemv_fused", "w4a16_gemv_dual")?,
@@ -415,8 +417,15 @@ impl MtpHead {
                 "gemm",
                 "dense_gemm_bf16_pipelined",
             ),
-            w4a16_gemv_batch4_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch4"),
-            w4a16_gemv_batch8_k: crate::layers::try_kernel(gpu, "w4a16_gemv", "w4a16_gemv_batch8"),
+            // Batched BF16 GEMV for the M=2..8 propose widths; 0-handle on
+            // targets whose kernel set predates it (dispatch falls back to
+            // the pipelined GEMM — see `row_dispatch`).
+            dense_gemv_batchm_k: crate::layers::try_kernel(
+                gpu,
+                "dense_gemv_bf16_batchm",
+                "dense_gemv_bf16_batchm",
+            ),
+            w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers::resolve(gpu),
             w4a16_gemv_batch16_k: crate::layers::try_kernel(
                 gpu,
                 "w4a16_gemv",
@@ -431,9 +440,9 @@ impl MtpHead {
             // (process-static: handle + env + weight presence), so per-n CUDA
             // graph captures of the batched propose can never see the
             // selection flip. Kill switch is PRESENCE-style per the house
-            // convention (`ATLAS_NO_MTP_LMHEAD_TGEMM=0` is NOT off).
+            // convention (`AVAROK_NO_MTP_LMHEAD_TGEMM=0` is NOT off).
             lm_head_nvfp4_t: lm_head_nvfp4_t
-                .filter(|_| std::env::var_os("ATLAS_NO_MTP_LMHEAD_TGEMM").is_none()),
+                .filter(|_| std::env::var_os("AVAROK_NO_MTP_LMHEAD_TGEMM").is_none()),
             w4a16_gemm_t_k: crate::layers::tgemm_kernel(gpu),
             argmax_batch_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch"),
             argmax_batch_lp_k: crate::layers::try_kernel(gpu, "argmax", "argmax_bf16_batch_lp"),

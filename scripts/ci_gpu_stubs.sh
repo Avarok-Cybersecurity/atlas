@@ -4,7 +4,7 @@
 #
 # spark-storage uses raw `extern "C"` FFI to libcuda (cuStreamCreate etc.)
 # and spark-comm links libnccl directly, so linking the workspace needs
-# these libraries present even when `ATLAS_SKIP_BUILD=1` avoids nvcc.
+# these libraries present even when `AVAROK_SKIP_BUILD=1` avoids nvcc.
 # Every stub symbol returns a non-success code (CUDA_ERROR_NO_DEVICE = 100,
 # ncclSystemError = 2, cudart/cublasLt = 1) so any code path that actually
 # invokes a GPU call fails-fast at runtime — matching a real no-GPU host.
@@ -17,7 +17,7 @@ CUDA_STUBS=/usr/local/cuda/targets/x86_64-linux/lib/stubs
 
 cat > /tmp/libcuda_stub.c <<'EOF'
 /* Stub for every CUDA driver API symbol that any Atlas crate
- * links against (spark-storage, atlas-core::registry, cudarc).
+ * links against (spark-storage, avarok-core::registry, cudarc).
  * Each returns CUDA_ERROR_NO_DEVICE (100) so callers fail-fast.
  * Generated for CI link-time only; never exercised at runtime
  * because every test that touches these is #[ignore]-gated. */
@@ -104,6 +104,11 @@ int cuMemsetD8Async(unsigned long long a, unsigned char b, unsigned long c, void
 int cuMemsetD32Async(unsigned long long a, unsigned int b, unsigned long c, void *d) {
     (void)a; (void)b; (void)c; (void)d; return 100;
 }
+/* spark-runtime red-zone allocator (cuda_backend.rs) reaches these two
+ * driver entry points by raw FFI; without them the no-GPU test link fails
+ * with "undefined symbol: cuMemsetD8_v2 / cuMemcpyDtoH_v2". */
+int cuMemsetD8_v2(unsigned long long d, unsigned char v, unsigned long n) { (void)d; (void)v; (void)n; return 100; }
+int cuMemcpyDtoH_v2(void *d, unsigned long long s, unsigned long n) { (void)d; (void)s; (void)n; return 100; }
 /* Graphs */
 int cuGraphInstantiateWithFlags(void **a, void *b, unsigned long long c) {
     (void)a; (void)b; (void)c; return 100;
@@ -164,9 +169,9 @@ EOF
 cc -shared -fPIC -nostdlib -o /tmp/libnccl.so /tmp/libnccl_stub.c
 sudo install -m 0644 /tmp/libnccl.so "$DEST/libnccl.so"
 
-# The Holo-3.1/Ornith enablement added cublaslt.rs (ATLAS_CUBLAS_GEMM FFI)
+# The Holo-3.1/Ornith enablement added cublaslt.rs (AVAROK_CUBLAS_GEMM FFI)
 # and a cudaMemcpy2DAsync path; build.rs emits -lcublasLt/-lcudart even
-# under ATLAS_SKIP_BUILD. Every symbol returns 1 so a real invocation
+# under AVAROK_SKIP_BUILD. Every symbol returns 1 so a real invocation
 # fails-fast; GPU paths are #[ignore]-gated.
 cat > /tmp/libcublaslt_stub.c <<'EOF'
 int cublasLtCreate(void){return 1;}

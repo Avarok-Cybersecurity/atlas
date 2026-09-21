@@ -1,9 +1,19 @@
 <script>
-  import { hero, runCommand, githubUrl, discordUrl } from '$lib/data.js';
+  import { modal } from '$lib/modal.js';
+  import { hero, githubUrl, discordUrl } from '$lib/data.js';
+  import { currentInstall } from '$lib/install/host.svelte.js';
+
+  // Windows visitors were shown `curl … | sh`, which cannot run there.
+  const install = $derived(currentInstall());
+  import { copyLabel, copyOrSelect } from '$lib/clipboard.js';
   import Receipt from './Receipt.svelte';
   import DiscordIcon from './DiscordIcon.svelte';
 
-  let copied = $state(false);
+  let copyState = $state('idle'); // idle | copied | manual | blocked
+  let copyTimer;
+  // The flash outlives the component on navigation without this.
+  $effect(() => () => clearTimeout(copyTimer));
+  let cmdEl = $state(null);
   let dashboardOpen = $state(false);
 
   // PRPL "lazy-load": the dashboard is on-click only, so its component (and the
@@ -32,11 +42,11 @@
   }
 
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(runCommand);
-      copied = true;
-      setTimeout(() => (copied = false), 1600);
-    } catch {}
+    clearTimeout(copyTimer);
+    // Was a silent `return` on refusal: the button did not change, which is
+    // indistinguishable from success to the person who clicked it.
+    copyState = await copyOrSelect(install.command, cmdEl);
+    copyTimer = setTimeout(() => (copyState = 'idle'), 2400);
   }
 </script>
 
@@ -44,6 +54,7 @@
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape' && dashboardOpen && !Dashboard) closeDashboard(); }} />
 
 <section class="hero">
+
   <div class="hero-inner">
     <div class="hero-copy">
       <span class="hero-badge"><span class="dot"></span> {hero.badge}</span>
@@ -51,10 +62,10 @@
       <p class="hero-sub">{hero.sub}</p>
 
       <div class="hero-cmd" role="group" aria-label="Run Atlas">
-        <span class="prompt">$</span>
-        <code>{runCommand}</code>
+        <span class="prompt">{install.prompt}</span>
+        <code bind:this={cmdEl}>{install.command}</code>
         <button type="button" class="copy-btn" onclick={copy} aria-label="Copy run command">
-          {copied ? 'Copied' : 'Copy'}
+          {copyLabel(copyState)}
         </button>
       </div>
 
@@ -71,22 +82,21 @@
     </div>
 
     <div class="hero-receipt">
-      <button
-        type="button"
-        class="receipt-hit"
-        onclick={openDashboard}
-        onpointerenter={preloadDashboard}
-        onfocus={preloadDashboard}
-        aria-haspopup="dialog"
-        aria-label="Open the benchmark dashboard"
-      >
+      <div class="receipt-hit">
         <span class="receipt-chip" aria-hidden="true">⤢ expand</span>
         <Receipt compact={true} />
-        <span class="receipt-open-hint">
+        <button
+          type="button"
+          class="receipt-open-hint"
+          onclick={openDashboard}
+          onpointerenter={preloadDashboard}
+          onfocus={preloadDashboard}
+          aria-haspopup="dialog"
+        >
           <span class="rh-glyph" aria-hidden="true">⤢</span>
           view the benchmark dashboard
-        </span>
-      </button>
+        </button>
+      </div>
     </div>
   </div>
 </section>
@@ -98,7 +108,15 @@
     <!-- Same .bd-backdrop/.bd classes as the real dialog: identical dimensions,
          so the swap from skeleton to dashboard causes zero layout shift. -->
     <div class="bd-backdrop" onclick={closeDashboard} role="presentation">
-      <div class="bd bd-skeleton" role="dialog" aria-modal="true" aria-label="Benchmark dashboard, loading" aria-busy="true" onclick={(e) => e.stopPropagation()}>
+      <div
+        class="bd bd-skeleton"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Benchmark dashboard, loading"
+        aria-busy="true"
+        onclick={(e) => e.stopPropagation()}
+        use:modal
+      >
         {#if dashboardError}
           <p class="bd-skeleton-error">Couldn’t load the dashboard (network?). Close and try again.</p>
         {:else}

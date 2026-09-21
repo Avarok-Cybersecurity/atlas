@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -57,6 +57,11 @@ pub struct TransformerModel {
     /// to `levers`: what the kernels did, rather than what they do.
     pub(super) stats: crate::layers::ops::ModelStats,
     pub(super) embed_tokens: DenseWeight,
+    /// Fused n-gram input embedding (LongCat family), when the architecture
+    /// has one. `Mutex` because the forward path is `&self` while the row
+    /// cache mutates on lookup; the lock is taken once per embed, which is
+    /// nothing beside a transformer forward.
+    pub(super) ngram_embed: Option<std::sync::Mutex<crate::layers::ngram_embed::NgramEmbedding>>,
     pub(super) final_norm: DenseWeight,
     pub(super) lm_head_weight: DenseWeight,
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
@@ -71,7 +76,7 @@ pub struct TransformerModel {
     /// holder (including the `draft_lm_head_nvfp4` copy at `impl_a1.rs:157`)
     /// keeps a valid row-major pointer. Built once, immutable, never freed —
     /// so each per-`padded_n` CUDA graph binds one (kernel, tensor) pair.
-    /// `None` under `ATLAS_NO_LMHEAD_TGEMM=1`.
+    /// `None` under `AVAROK_NO_LMHEAD_TGEMM=1`.
     pub(super) lm_head_nvfp4_t: Option<(QuantizedWeight, u32)>,
     /// Runtime FP8 E4M3 LM head (per-row scales), decoded via `w8a16_gemv`.
     /// `Some` only when `--lm-head-dtype fp8` was requested; mutually exclusive
@@ -79,6 +84,17 @@ pub struct TransformerModel {
     /// `None`, the NVFP4/BF16 LM-head dispatch is byte-identical to before.
     pub(super) lm_head_fp8: Option<Fp8DenseWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
+    /// `true` when ANY layer's decode can never be captured into a CUDA
+    /// graph, so the whole model stays eager.
+    ///
+    /// Computed ONCE at construction. It was
+    /// `self.layers.iter().any(|l| l.decode_graph_unsupported())` — 48
+    /// virtual calls through `dyn TransformerLayer` per DECODE STEP, from two
+    /// sites (`decode_a` and `decode_a2`), to recompute a value that cannot
+    /// change: every implementation is a pure function of load-time structure
+    /// (`false`, `self.qsa.is_some()`, `self.ple.is_some()`). A new model is
+    /// a new `TransformerModel`, so this cannot go stale across a swap.
+    pub(super) decode_graph_veto: bool,
     pub(super) buffers: BufferArena,
     /// Startup-static LoRA adapter (pool + per-layer pairs + M2 pointer
     /// tables). `None` = no adapter. Installed post-construction via
@@ -86,8 +102,8 @@ pub struct TransformerModel {
     /// layer structs; kept here as the owner of the pool/tables and for
     /// status introspection.
     pub(super) lora: Option<crate::lora::LoraWeights>,
-    /// True when runtime adapter rotation is ARMED: `ATLAS_LORA_ROTATE=1`, or
-    /// `$ATLAS_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
+    /// True when runtime adapter rotation is ARMED: `AVAROK_LORA_ROTATE=1`, or
+    /// `$AVAROK_LORA_PEER` set. Armed ⇒ decode runs eager (no CUDA-graph
     /// capture) so a `set_active_lora` re-point is immediately live
     /// (eager-on-rotate). `false` (single startup adapter, no rotation env)
     /// keeps the decode-graph path byte-identical to today.
@@ -98,7 +114,7 @@ pub struct TransformerModel {
     /// rather than parked in a static: it writes `__device__` globals in THIS
     /// model's modules, so it must not outlive the model. Reached from the
     /// scheduler through `Model::poll_innerq`.
-    #[cfg(feature = "cuda")]
+    #[cfg(avarok_cuda)]
     pub(super) innerq: Option<crate::layers::qwen3_attention::InnerQDriver>,
     pub(super) rms_norm_kernel: KernelHandle,
     pub(super) dense_gemv_kernel: KernelHandle,
@@ -118,18 +134,16 @@ pub struct TransformerModel {
     /// layer where a near-tie argmax flip changes the emitted token. Memory
     /// records exactly that failure mode (stop/end-of-turn mis-ranking on DEEP
     /// agentic trajectories) for sub-bf16 lm_heads. Costs ~1% of step.
-    /// 0 when absent. Kill switch: ATLAS_NO_LMHEAD_LOSSLESS=1.
+    /// 0 when absent. Kill switch: AVAROK_NO_LMHEAD_LOSSLESS=1.
     pub(super) w4a16_gemm_t_bf16_kernel: KernelHandle,
     pub(super) w4a16_gemm_kernel: KernelHandle,
     pub(super) w4a16_gemv_batch2_kernel: KernelHandle,
-    /// Batched M<=4 NVFP4 GEMV for the K=3/K=4 verify lm_head (one weight
-    /// read for all rows; nsys 2026-07-18: the M64-tile `w4a16_gemm` at M=4
-    /// cost 19.3 ms/verify-step on the 248320-row lm_head — 94% tile padding).
-    /// 0-handle when the target lacks the kernel (dispatch falls back).
-    pub(super) w4a16_gemv_batch4_kernel: KernelHandle,
-    /// M<=8 batched GEMV for the K=5..8 chain-verify lm_head (batch8 —
-    /// removes the M>4 tile-GEMM cliff). 0-handle when absent.
-    pub(super) w4a16_gemv_batch8_kernel: KernelHandle,
+    /// Narrow `w4a16_gemv_batch{M}` family (M=4..8) for the K=3..8 verify
+    /// lm_head (one weight read for all rows; nsys 2026-07-18: the M64-tile
+    /// `w4a16_gemm` at M=4 cost 19.3 ms/verify-step on the 248320-row lm_head
+    /// — 94% tile padding). Individual tiers are 0-handles when the target
+    /// lacks them (dispatch falls back).
+    pub(super) w4a16_batchm: crate::layers::w4a16_gemv_tiers::W4a16BatchmTiers,
     pub(super) w4a16_gemv_batch16_kernel: KernelHandle,
     /// FP8 E4M3 LUT GEMV (M=1) for the FP8 LM head. Only used when
     /// `lm_head_fp8.is_some()`; loaded unconditionally (cheap handle) so the
@@ -144,6 +158,16 @@ pub struct TransformerModel {
     /// at decode: reads the ~617 MB vocab weight once with coalesced uint4
     /// loads, vs the scalar dense_gemm_bf16 (16x16 FFMA, ~89 GB/s). 0 = absent.
     pub(super) dense_gemv_batchm_kernel: KernelHandle,
+    /// Tensor-core BF16 decode GEMM with a 16-row M tile
+    /// (`dense_gemm_m16_bf16`, #927/#928) — the 5..=16-row BF16 lm_head arm
+    /// behind `AVAROK_LM_HEAD_M16_TC`. 0 when the kernel set lacks it, which is
+    /// how a target without it declines silently. REASSOCIATES the K reduction
+    /// against `dense_gemv_bf16_batchm`; rule in
+    /// `trait_impl/lm_head_batched.rs::lm_head_m16_tc_route`.
+    pub(super) lm_head_m16_tc_kernel: KernelHandle,
+    /// `N_TILE=64` twin of the above (`AVAROK_LM_HEAD_M16_TC_NTILE=64`).
+    /// 0 when absent — a `=64` request then falls back to the 32-wide kernel.
+    pub(super) lm_head_m16_tc_n64_kernel: KernelHandle,
     pub(super) argmax_kernel: KernelHandle,
     /// Batched argmax (one block per row). 0 when the kernel set lacks it.
     pub(super) argmax_batch_kernel: KernelHandle,
@@ -178,7 +202,7 @@ pub struct TransformerModel {
     pub(super) ssm_pool: Arc<SsmStatePool>,
     /// SSM state snapshot pool for Marconi prefix caching.
     pub(super) ssm_snapshots: SsmSnapshotPool,
-    /// Optional SSM snapshot spill tier (`ATLAS_SSM_TIER`). `None` (default)
+    /// Optional SSM snapshot spill tier (`AVAROK_SSM_TIER`). `None` (default)
     /// keeps the drop-only reclaim path byte-identical; `Some` moves an evicted
     /// snapshot's bytes to the tier (keeping its index entry findable) so a warm
     /// turn faults it back instead of recomputing. Threaded into
@@ -189,10 +213,10 @@ pub struct TransformerModel {
     pub(super) max_blocks_per_seq: u32,
     /// Permanent KV cache block for padding sequences in batched decode.
     pub(super) dummy_kv_block: u32,
-    /// Profile mode: skip graphs, sync+time each layer. Set ATLAS_PROFILE=1.
+    /// Profile mode: skip graphs, sync+time each layer. Set AVAROK_PROFILE=1.
     pub(super) profile: bool,
     /// One-shot profile flag for the next prefill request only. Set
-    /// ATLAS_PROFILE_FIRST=1 to capture per-step timing on the first prefill
+    /// AVAROK_PROFILE_FIRST=1 to capture per-step timing on the first prefill
     /// after startup without disabling CUDA graphs for subsequent decodes.
     /// Consumed (atomically swapped to false) by `prefill_chunk` / `prefill`.
     pub(super) profile_first_pending: std::sync::atomic::AtomicBool,
@@ -213,7 +237,7 @@ pub struct TransformerModel {
     /// hidden here FIRST (`stash_verify_hidden_rows`), then feeds the drafter
     /// from the stash (`save_hidden_for_mtp_from_stash`). NULL without MTP.
     pub(super) verify_hidden_stash: DevicePtr,
-    /// ATLAS_MTP_CATCHUP: circular per-position final-hidden ring captured
+    /// AVAROK_MTP_CATCHUP: circular per-position final-hidden ring captured
     /// during serial-decode stretches (BF16 rows, slot = position % ring
     /// len). Feeds the drafter catch-up on the next propose. NULL when the
     /// feature is off or no proposer exists.
@@ -221,7 +245,7 @@ pub struct TransformerModel {
     /// (first_position, count) of the contiguous position range currently
     /// resident in the ring; a non-contiguous capture resets the range.
     pub(super) mtp_catchup_meta: parking_lot::Mutex<(usize, usize)>,
-    /// ATLAS_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
+    /// AVAROK_MTP_DRAFTER_PREFILL: per-position final-layer hidden capture for
     /// the whole prompt, `[max_seq_len, hidden_size]` BF16 (~335 MB at 32k /
     /// h=5120). NULL unless the env is set AND an MTP proposer is built.
     /// Filled contiguously by the prefill chunk epilogues; consumed once by
@@ -247,20 +271,41 @@ pub struct TransformerModel {
     /// SSOT). 0 = no capture ever started (matches the fresh-seq stamp 0,
     /// which is harmless: `captured >= prompt_len >= 2` fails at len 0).
     pub(super) mtp_prefill_capture_gen: std::sync::atomic::AtomicU64,
-    /// ATLAS_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
+    /// Ticket dispenser for `mtp_store_range` ownership (`SequenceState::
+    /// mtp_store_gen`), drawn once per `alloc_sequence`.
+    ///
+    /// ★ SEPARATE FROM `mtp_prefill_capture_gen`, and it must stay separate.
+    /// Drawing the store ticket from the capture counter advances it on every
+    /// admission, and `owns_capture` (`trait_impl/speculative.rs`) requires the
+    /// sequence's captured generation to still EQUAL the current one — so any
+    /// sequence admitted between a capture and its propose silently disabled
+    /// the other sequence's drafter prefill. Measured: C=1 unaffected (no
+    /// interleaved admission), C=2 TPOT 62 -> 79 ms and 30.8 -> 23.5 tok/s,
+    /// reproduced twice. One counter, two meanings, was the whole bug.
+    pub(super) mtp_store_gen_seq: std::sync::atomic::AtomicU64,
+    /// AVAROK_MTP_CARRY_DRAFTER: the previous turn's drafter KV, held so the
     /// next turn of the same session can adopt it instead of rebuilding
     /// (1136 ms at 12k rows) or — as today — silently going without. Single
-    /// slot: MTP is gated `active.len() == 1` on every spec path, and one slot
-    /// makes block ownership unambiguous (blocks are owned here XOR by a live
-    /// sequence). `None` when the feature is off or nothing has been carried.
+    /// slot: the carry is force-disabled outside single-sequence dispatch
+    /// (`mtp_carry::carry_armed_with`), and one slot makes block ownership
+    /// unambiguous (blocks are owned here XOR by a live sequence). This used to
+    /// say "MTP is gated `active.len() == 1` on every spec path" — that is
+    /// false, the dispatch cap defaults to 32. `None` when the feature is off
+    /// or nothing has been carried.
     pub(super) mtp_carry: parking_lot::Mutex<Option<super::mtp_carry::CarriedDrafter>>,
-    /// Absolute position interval `[lo, hi)` of `mtp_prefill_hidden` rows
-    /// written by the CURRENT sequence's prefill chunks. Reset per
-    /// `alloc_sequence`, so a warm-turn append can only ever read hiddens this
-    /// turn computed — which is why the carry path cannot inherit another
-    /// sequence's hiddens the way the legacy `mtp_prefill_capture_len` path
-    /// can. Only maintained when ATLAS_MTP_CARRY_DRAFTER is on.
-    pub(super) mtp_store_range: parking_lot::Mutex<(usize, usize)>,
+    /// Absolute position interval of `mtp_prefill_hidden` rows, WITH the
+    /// sequence generation that wrote them. Only maintained when
+    /// AVAROK_MTP_CARRY_DRAFTER is on.
+    ///
+    /// ★ THE STAMP IS THE GUARD; the `alloc_sequence` reset is not. This doc
+    /// used to claim the interval was "per-sequence by construction" because
+    /// `alloc_sequence` resets it — and that was false, in two orderings. The
+    /// reset happens when a sequence is ADMITTED, but the writer
+    /// (`drafter_prefill`) had no ownership check at all, so a sequence whose
+    /// last chunk landed after another had been admitted merged its write into
+    /// the newcomer's interval and then read the newcomer's rows. Reset still
+    /// happens, as defence in depth; `gen` is what makes the claim true.
+    pub(super) mtp_store_range: parking_lot::Mutex<super::mtp_carry::StoreRange>,
     /// DFlash 5-layer hidden-state stack. Allocated only when a
     /// `BlockDiffusionDraftHead` proposer is built. Layout:
     /// `[5 × hidden_size × bf16]` shallow-to-deep at the layer indices
@@ -268,6 +313,16 @@ pub struct TransformerModel {
     /// token's intermediate hiddens; the drafter consumes them via its `fc`
     /// projection on the next propose() call. None for non-DFlash runs.
     pub(super) dflash_hidden_save: Option<DevicePtr>,
+    /// Lazily-allocated 16 KB metadata staging for the sliding-attention
+    /// per-token verify loop (`verify_attention_per_token`). The verify
+    /// bodies' multi-seq metadata overlay at `scratch + 32768` can span the
+    /// ENTIRE scratch buffer (scratch is sized to exactly `bt_meta`), so the
+    /// per-token loop CANNOT stage there without clobbering the metadata the
+    /// interleaved FullAttention layers' `decode_multi_seq` still reads --
+    /// doing so was a sticky CUDA-700 on Laguna-XS (2026-08-25). Layout
+    /// mirrors the scratch meta block: pos@0, slot@8, seq_len@16,
+    /// seq_slot@128, block_table@256 (cap ~15.7 KB, about 4000 blocks).
+    pub(super) verify_ptok_meta: std::sync::OnceLock<DevicePtr>,
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
@@ -275,6 +330,12 @@ pub struct TransformerModel {
     /// `try_dflash_capture_all` must never write past this many rows. Single
     /// source of truth for the buffer's KMAX; 0 when DFlash is disabled.
     pub(super) dflash_hidden_save_rows: usize,
+    /// Rows per per-sequence capture BAND in `dflash_hidden_save` (= γ+1).
+    /// Sequence `i` of a batched K=γ verify owns rows
+    /// `[i * dflash_kgamma, i * dflash_kgamma + k)`; single-sequence paths
+    /// use band 0. This is the stride the scheduler passes to `commit_ctx`
+    /// as `scratch_row`.
+    pub(super) dflash_kgamma: usize,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for
@@ -309,6 +370,35 @@ pub struct TransformerModel {
     /// single-launch table-form `gdn_decode_wy4` in the batched GDN arm.
     /// NULL without an MTP proposer (path self-gates).
     pub(super) verify_wy_tables: DevicePtr,
+    /// Write-on-accept: device `u32[VERIFY_WY_TABLE_SEQS]` of accepted row
+    /// counts for the post-verdict fold, and the ssm slots whose h state the
+    /// fold already committed this step (`commit_accepted_prefix` skips the
+    /// h restore for them). NULL/empty when no batched verify exists.
+    pub(super) gdn_woa_na_tab: DevicePtr,
+    pub(super) gdn_woa_folded_slots: Mutex<Vec<usize>>,
+    /// Set at the END of a batched verify that ran under a write-on-accept
+    /// request with its pointer tables staged; cleared at the START of every
+    /// batched verify and consumed by the fold. The fold declines (host h
+    /// restore runs) unless the verify that just completed set it.
+    pub(super) gdn_woa_eligible: std::sync::atomic::AtomicBool,
+    /// Write-on-accept engaged words and stash for every GDN layer, bound
+    /// on the FIRST write-on-accept request (pre-capture) and never moved:
+    /// `(flags, stash, seqs)`. NULL until then, so an MTP serve, a C=1
+    /// serve, a serve with the kernels absent or without the `AVAROK_GDN_WOA=1`
+    /// opt-in never pays the ~4 MB per layer.
+    pub(super) gdn_woa_bound: Mutex<(DevicePtr, DevicePtr, usize)>,
+    /// Encoded key of the bytes CURRENTLY staged in `verify_wy_tables`, or
+    /// `None` when nothing has been staged (the buffer is memset to zero at
+    /// allocation, which no key describes).
+    ///
+    /// `upload_verify_wy_tables` ran a 48 KB host build + a 48 KB H2D on
+    /// EVERY n>=2 verify step. The staged bytes are a pure function of
+    /// `(k, ssm-slot vector in batch order, ghost (slot, depth) pairs)` —
+    /// see `verify_wy_cache_key` for the enumeration and the proof — so a
+    /// step whose key matches what is already on the device may skip both.
+    /// Kill switch `AVAROK_NO_VERIFY_WY_CACHE` (PRESENCE) restores the
+    /// unconditional re-stage.
+    pub(super) verify_wy_cache: Mutex<Option<Vec<u64>>>,
     /// Cached CUDA graphs for DFlash K=γ verification, keyed by
     /// `(seq.slot_idx, K)`. K is `tokens.len()` (γ+1 typically). One graph
     /// per (slot, K) — different γ values coexist via the K dimension.
@@ -341,11 +431,11 @@ pub struct TransformerModel {
     /// Small GPU buffer for EP token broadcast (4 bytes).
     pub(super) ep_cmd_buf: DevicePtr,
     /// EP wire-protocol version. When true, the seq_id-preamble protocol
-    /// extension from atlas#99 is active — every command broadcast is
+    /// extension from avarok#99 is active — every command broadcast is
     /// preceded by a `seq_id` broadcast so the worker can dispatch
     /// slot-bound work into the right `SequenceState` slot. When false,
     /// the legacy single-sequence protocol is used. Set at construction
-    /// from `ATLAS_EP_PROTOCOL` env var; both ranks must agree.
+    /// from `AVAROK_EP_PROTOCOL` env var; both ranks must agree.
     pub(super) ep_protocol_v2: bool,
     /// Self-speculative decoding mode: draft via layer-skipping (no MTP weights needed).
     pub(super) self_speculative: bool,
@@ -395,14 +485,19 @@ pub struct TransformerModel {
     /// Kernel handle for fused SSM state normalization (prevents state explosion
     /// during long chunked prefill — the SSM forgetting bug).
     pub(super) ssm_state_norm_kernel: KernelHandle,
-    /// FP16 h-state twin of the above (`ATLAS_SSM_H_FP16`). Selected from the
+    /// FP16 h-state twin of the above (`AVAROK_SSM_H_FP16`). Selected from the
     /// sequence's own `SsmLayerState::h_is_f16`, so the dispatch reads the
     /// invariant rather than assuming it.
     pub(super) ssm_state_norm_f16_kernel: KernelHandle,
     /// GPU buffer for ssm_state_clamp_norm_fused's pointer table `[num_ssm_layers]`.
     pub(super) ssm_norm_ptrs_buf: DevicePtr,
-    /// One-shot FP32 -> FP16 h-state converter (`ATLAS_SSM_H_FP16`).
+    /// One-shot FP32 -> FP16 h-state converter (`AVAROK_SSM_H_FP16`).
     pub(super) ssm_h_f32_to_f16_kernel: KernelHandle,
+    /// Its widening inverse. Used ONLY by the stage-3 f16-SIZED pool
+    /// (`--ssm-h-dtype f16-pool`) on the BATCHED prefill path, whose GDN
+    /// kernels take a device pointer TABLE and so cannot be wrapped inside
+    /// the layer the way the single-stream ladder is. Zero otherwise.
+    pub(super) ssm_h_f16_to_f32_kernel: KernelHandle,
     /// Staging buffer for it, one layer wide (`h_bytes / 2`). The conversion is
     /// a narrowing compaction and CANNOT be done in place: thread `2i`'s write
     /// lands inside thread `i`'s read with nothing ordering them. Allocated
@@ -562,7 +657,7 @@ impl TransformerModel {
     }
 
     pub(super) fn release_pools(&mut self) -> anyhow::Result<()> {
-        use atlas_core::scope::ModelResource;
+        use avarok_core::scope::ModelResource;
 
         let gpu: &dyn GpuBackend = self.gpu.as_ref();
         let mut first_error: Option<anyhow::Error> = None;

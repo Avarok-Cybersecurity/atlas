@@ -5,18 +5,18 @@
 
 use anyhow::{Result, bail};
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 use std::ffi::c_void;
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 use super::workspaces;
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 unsafe extern "C" {
     // head_dim=128 (Laguna). Same ABI as hd256 plus `window_left` after
     // `causal`: -1 = full causal attention, otherwise sliding_window - 1.
     #[allow(clippy::too_many_arguments)]
-    fn atlas_fi_ragged_prefill_bf16_hd128(
+    fn avarok_fi_ragged_prefill_bf16_hd128(
         q: *const c_void,
         k: *const c_void,
         v: *const c_void,
@@ -76,7 +76,7 @@ pub fn ragged_prefill_bf16_hd128(
     sliding_window: Option<u32>,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_flashinfer)]
+    #[cfg(avarok_flashinfer)]
     {
         if head_dim != 128 {
             bail!("ragged_prefill_bf16_hd128 is head_dim=128 only (got {head_dim})");
@@ -92,7 +92,7 @@ pub fn ragged_prefill_bf16_hd128(
         };
         let ws = workspaces()?;
         let st = unsafe {
-            atlas_fi_ragged_prefill_bf16_hd128(
+            avarok_fi_ragged_prefill_bf16_hd128(
                 q as *const c_void,
                 k as *const c_void,
                 v as *const c_void,
@@ -127,7 +127,7 @@ pub fn ragged_prefill_bf16_hd128(
         }
         Ok(())
     }
-    #[cfg(not(atlas_flashinfer))]
+    #[cfg(not(avarok_flashinfer))]
     {
         let _ = (
             q,

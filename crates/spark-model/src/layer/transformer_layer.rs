@@ -3,7 +3,7 @@
 //! `TransformerLayer` trait — composable per-layer forward/decode hooks.
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
@@ -33,8 +33,14 @@ mod default_loops;
 /// is a pure host-side layout change). 48 GDN layers x 4 tables x 32
 /// entries x 8 B = 48 KB.
 pub const VERIFY_WY_TABLE_SEQS: usize = 32;
-/// Tables per GDN layer: h_state + Hi0..Hi2 (K=4 verify → 3 intermediates).
-pub const VERIFY_WY_TABLES_PER_LAYER: usize = 4;
+/// Tables per GDN layer: h_state + Hi0..Hi14 (K=16 verify → 15
+/// intermediates). 4 → 16 (2026-09-01): the wyN pointer-table twins
+/// extend the cross-sequence batched verify to K=5..16, so the staging
+/// gate `(2..=THIS)` must admit gamma-width verifies; at 4 every K>4
+/// batch silently declined to the per-sequence loop (measured 09-01:
+/// 187,392 wy10 launches = 27.7% of GPU time in a C=16 prose window).
+/// Cost: 48 layers x 16 x 32 x 8 B = 192 KB of host+device tables.
+pub const VERIFY_WY_TABLES_PER_LAYER: usize = 16;
 /// Bytes between consecutive tables within a layer slice.
 pub const VERIFY_WY_TABLE_STRIDE_BYTES: usize = VERIFY_WY_TABLE_SEQS * 8;
 /// Bytes between consecutive GDN layers' table slices.
@@ -42,10 +48,51 @@ pub const VERIFY_WY_LAYER_STRIDE_BYTES: usize =
     VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES;
 
 pub trait TransformerLayer: Send + Sync {
+    /// True when this layer's PREFILL attends only over the tokens it is
+    /// handed, so a prefix-cache skip would hide the cached prefix from
+    /// attention entirely. MLA layers on the paged path do; everything else
+    /// reads the paged cache and is unaffected.
+    fn uses_local_mla_prefill(&self) -> bool {
+        false
+    }
+
     /// `&mut dyn Any` downcast hook for post-construction weight overlays (e.g.
     /// the LoRA install walk). Default `None`; overlay-capable layers override.
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
+    }
+
+    /// Write-on-accept capability (GDN layers only): the per-sequence stash
+    /// size in f32 elements when this layer can run the K=4 write-on-accept
+    /// twin (kernels linked, write-on-accept not disabled), `None` otherwise.
+    /// The model sizes the stash from it and binds with [`Self::gdn_woa_bind`].
+    fn gdn_woa_stash_seq_floats(&self) -> Option<usize> {
+        None
+    }
+
+    /// Bind this layer's write-on-accept engaged word and stash slab (`seqs`
+    /// sequences of [`Self::gdn_woa_stash_seq_floats`] f32 each). Called once
+    /// by the model, pre-capture, on the first write-on-accept request; the
+    /// addresses are baked into verify graphs afterwards and never move.
+    fn gdn_woa_bind(&self, _flag: DevicePtr, _stash: DevicePtr, _seqs: usize) {}
+
+    /// Write-on-accept fold (GDN layers only): apply the accepted rows of the
+    /// last batched K=4 verify to this layer's h states. `h_table` is the
+    /// layer's slab-0 pointer table from the verify, `na_tab` a device
+    /// `u32[n]` of accepted row counts in batch order. `Ok(false)` when the
+    /// layer has nothing bound (not a GDN layer, or write-on-accept is off).
+    /// When the parent kernel ran for the last verify (engaged word 0) the
+    /// fold performs the parent's partial-accept restore instead.
+    fn gdn_fold_accepted(
+        &self,
+        _gpu: &dyn GpuBackend,
+        _h_table: DevicePtr,
+        _na_tab: DevicePtr,
+        _k_rows: usize,
+        _n: usize,
+        _stream: u64,
+    ) -> Result<bool> {
+        Ok(false)
     }
 
     /// Whether this layer's ONLINE FP8-KV calibration has frozen its scale.
@@ -57,6 +104,116 @@ pub trait TransformerLayer: Send + Sync {
     /// immediately.
     fn fp8_calibration_frozen(&self) -> Option<bool> {
         None
+    }
+
+    /// Hoisted per-step HOST work for layers that do host-side computation
+    /// at decode (PLE: n-gram hash + NVMe fault-in + slot upload). The
+    /// scheduler calls this every single-token decode step BEFORE any CUDA
+    /// graph replay/capture — the same phasing as the `token_ids` upload —
+    /// so the captured graph contains only kernels over stable device
+    /// buffers. Layers with no host-side decode work keep the no-op default.
+    fn decode_prestage(
+        &self,
+        _token: u32,
+        _state: &mut dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Re-arm consumed prestage state so a failed CUDA-graph capture attempt
+    /// can re-run the SAME step eagerly. Must be idempotent, and must not
+    /// recompute (PLE's history already advanced in `decode_prestage`).
+    fn decode_prestage_rearm(&self, _state: &mut dyn LayerState) {}
+
+    /// True when this layer's decode can NEVER be captured into a CUDA
+    /// graph — e.g. the QSA indexer's host top-k round trip, whose captured
+    /// dense fallback would silently replay WRONG attention once selection
+    /// activates. The scheduler ORs this across layers once and keeps the
+    /// whole model eager.
+    fn decode_graph_unsupported(&self) -> bool {
+        false
+    }
+
+    /// True when this layer cannot serve a BATCHED multi-sequence decode step
+    /// — i.e. `decode_multi_seq`'s shared-`ForwardContext` loop would alias
+    /// per-sequence state across rows rather than merely run slowly.
+    ///
+    /// Mirrors [`Self::decode_graph_unsupported`] exactly: layer-level
+    /// statement, default `false`, ORed across layers by the caller and
+    /// consumed at the DISPATCH site. A `true` layer is NOT refused
+    /// concurrency — it is routed onto the per-sequence highway loop that
+    /// #753 item B already built for mHC models, so C>1 keeps serving.
+    ///
+    /// Wired at BOTH multi-seq callers (`decode_a2`'s `hc_perseq` and
+    /// `decode_b`'s `hc_qsa_perseq`), because `decode_b` is the single-GPU
+    /// fused decode+prefill path and a decision made only in `decode_a2`
+    /// leaves it exposed.
+    fn decode_multi_seq_unsupported(&self) -> bool {
+        false
+    }
+
+    /// True when this layer keeps per-sequence state that lowering the
+    /// sequence's KV cursor does NOT rewind, so a content-loop rollback
+    /// (`rollback_to_boundary`: drop the degenerate tail, lower `seq_len`,
+    /// re-steer) would regenerate on state still conditioned on the
+    /// dropped tokens. Pure paged-KV attention rewinds by cursor and keeps
+    /// the default; SSM layers rewind through the decode snapshot ring;
+    /// a layer that owns a monotonic cache count, a running compressor
+    /// group or an n-gram history answers `true` here and the scheduler
+    /// declines the rollback (hard stop) instead of corrupting the tail.
+    ///
+    /// Same shape as [`Self::decode_graph_unsupported`]: layer-level
+    /// statement, default `false`, ORed across layers by the model.
+    fn decode_rollback_unsupported(&self) -> bool {
+        false
+    }
+
+    /// True when this layer cannot serve a BATCHED multi-sequence VERIFY
+    /// sweep (`decode_verify_multi`). Consumed by
+    /// `can_batch_verify_dispatch`; a `true` layer falls back to the
+    /// per-sequence verify loop, which is the sealed single-sequence path.
+    ///
+    /// Separate from [`Self::decode_multi_seq_unsupported`] because the two
+    /// answers can differ: verify carries its rows on the `k` axis with its
+    /// own R-row metadata block, decode carries them on the sequence axis.
+    fn decode_verify_multi_unsupported(&self) -> bool {
+        false
+    }
+
+    /// Marconi aux state: host-serialized per-layer SEQUENCE state that must
+    /// travel with an SSM snapshot for a prefix-cache hit to be complete —
+    /// PLE's n-gram history + conv state, QSA's ingested indexer keys.
+    /// Without these a restored prefix would silently serve the PREVIOUS
+    /// request's lexical state. Called at chunk-boundary snapshot saves;
+    /// any D2H inside must be stream-ordered (`copy_d2h_on_stream`).
+    /// Default: the layer carries no aux sequence state.
+    fn snapshot_aux(
+        &self,
+        _state: &dyn LayerState,
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    /// True when this layer WOULD produce aux state — restore sites use it
+    /// to decline snapshots that lack aux rather than restore a stale mix.
+    fn has_aux_state(&self) -> bool {
+        false
+    }
+
+    /// Restore the aux state captured by [`Self::snapshot_aux`] on a
+    /// prefix-cache hit, BEFORE the resumed prefill runs.
+    fn restore_aux(
+        &self,
+        _state: &mut dyn LayerState,
+        _blob: &[u8],
+        _gpu: &dyn GpuBackend,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!("restore_aux on a layer with no aux state")
     }
 
     /// Decode one token through this layer, modifying `hidden` in-place.
@@ -116,6 +273,62 @@ pub trait TransformerLayer: Send + Sync {
     /// populated (prefix caching). Attention layers skip KV writes for
     /// positions `< kv_write_start`. SSM layers ignore this (recurrent).
     #[allow(clippy::too_many_arguments)]
+    /// Does a captured decode graph go STALE when a new sequence takes this slot?
+    ///
+    /// 🔴 `decode_graph` is keyed by `slot_idx` on the premise that the only per-sequence
+    /// addresses a capture bakes live in the SSM pool, which is slot-addressed and stable.
+    /// A layer that allocates its own per-sequence state (GLM-5.3 allocates a fresh indexer
+    /// cache and KDA state per sequence) breaks that premise: the next sequence gets new
+    /// buffers and the old graph still reads and writes the freed ones — the second request
+    /// continues the first one's text. Such a layer says so here and `free_sequence` drops
+    /// the slot's graph, costing one re-capture per request.
+    fn graph_stale_on_new_sequence(&self) -> bool {
+        false
+    }
+
+    /// Reconcile whatever HOST-side per-sequence bookkeeping a step would have done, when
+    /// that step was served by a replayed CUDA graph instead of being run. `seq_len` is the
+    /// sequence length BEFORE this step's `k` rows.
+    ///
+    /// 🔴 A graph replay executes kernels and nothing else: the layer's `decode` never runs,
+    /// so a layer that tracks its own cache length on the host silently stops advancing and
+    /// every replayed step overwrites the same row.
+    ///
+    /// 🔴 It is a RECONCILE, not an advance. A K-row verify writes K rows and the scheduler
+    /// then keeps only the accepted prefix, so the counter has to be rewound to `seq_len`
+    /// first — exactly what `decode_k`'s own lockstep check does on the eager path. Advancing
+    /// blindly leaves the counter (k - accepted) ahead of the sequence on every rejected
+    /// draft, and that drift is ANOMALIES A56: the DRAFTER writes its indexer rows at
+    /// `state.len()`, so a counter running ahead lands them on rows the target then selects
+    /// over. Default is a no-op — only a layer with host-side state (GLM-5.3's DSA indexer
+    /// cache) needs this.
+    fn sync_replayed_step(
+        &self,
+        _state: &mut dyn LayerState,
+        _seq_len: usize,
+        _k: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Refuse a step whose writes would land past a host-tracked cache — BEFORE the graph
+    /// that performs them is replayed.
+    ///
+    /// 🔴 `sync_replayed_step` above is the RECONCILE and it deliberately runs AFTER
+    /// `launch_graph`, which is too late to prevent a write. A replayed `dsa_indexer_store`
+    /// places its row from a DEVICE position with no host code in the loop, so at the DSA
+    /// ceiling it writes one row past the buffer and the refusal arrives afterwards. The
+    /// resulting `CUDA_ERROR_ILLEGAL_ADDRESS (700)` is STICKY: it fails every later CUDA
+    /// call in the context, so one over-long sequence takes the serve down for every
+    /// subsequent request while the health endpoints keep answering 200. ANOMALIES A62.
+    ///
+    /// `seq_len` is the length BEFORE this step's `k` rows, so the step ends at
+    /// `seq_len + k` — the same post-condition `sync_replayed_step` reconciles to. Default
+    /// is a no-op: only a layer with host-side cache bookkeeping needs it.
+    fn check_replay_room(&self, _state: &dyn LayerState, _seq_len: usize, _k: usize) -> Result<()> {
+        Ok(())
+    }
+
     fn prefill(
         &self,
         hidden: DevicePtr,
@@ -571,4 +784,98 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Release the per-sequence state `alloc_state` produced, plus anything
+    /// the layer attached to it lazily afterwards.
+    ///
+    /// Called once per sequence from the teardown chokepoint
+    /// (`free_sequence_dispatch`). The default no-op is correct for layers
+    /// whose state owns no device memory (`EmptyLayerState`) and for state
+    /// that comes from a pool reclaimed by slot (`SsmLayerState`'s h/conv,
+    /// released via `ssm_pool.release_slot`).
+    ///
+    /// It exists because `LayerState` implementors hold BARE `DevicePtr`s:
+    /// dropping the box reclaims the host struct and leaks the device buffer.
+    /// The QSA indexer carry (~739 MB per request at 200K context across the
+    /// 12 full-attention layers) and the PLE conv carry both leaked this way.
+    /// On unified memory such a leak is invisible to RSS and reported as N/A
+    /// by `nvidia-smi`, so it surfaces only as the host exhausting RAM with no
+    /// process to blame.
+    ///
+    /// MUST be idempotent — teardown can run after a partial failure. Callers
+    /// log errors and continue rather than aborting: a sequence that cannot
+    /// free its state is still finished, and bailing would strand the rest.
+    /// Owns every device allocation reachable from this `LayerState` that the layer obtained
+    /// from `gpu.alloc`, whether in `alloc_state` or attached later. Idempotent; nulls what it
+    /// frees; never touches pool addresses.
+    ///
+    /// 🔴 Refuse by TYPE inside the impl, not by a filter at the call site. A call-site filter
+    /// is a second spelling of "is this pooled?" that can drift out of agreement with the
+    /// first; the type check lives where the knowledge is.
+    ///
+    /// 🔴 Invariant L2 (slot reuse), NOT a line order. It is tempting to write "the graph drop
+    /// must come before this call" — that over-states a call order as an invariant. The real
+    /// requirement is that when a slot is re-occupied, its graphs are destroyed AND its owned
+    /// pointers are freed and nulled. Nothing between the two blocks replays a graph, and
+    /// `destroy_graph` does not dereference baked pointers, so either order satisfies it.
+    /// ANOMALIES A56 is the history; slot reuse is the invariant.
+    fn release_state(&self, _state: &mut dyn LayerState, _gpu: &dyn GpuBackend) -> Result<()> {
+        Ok(())
+    }
+
+    /// Does this layer's recurrent state live in the shared SSM pool?
+    ///
+    /// `true` (the default) is the long-standing arrangement: sequence setup
+    /// sees `LayerType::LinearAttention` and hands the layer an `SsmLayerState`
+    /// pointing at pool-owned addresses, so `alloc_state` is never consulted.
+    ///
+    /// 🪤 A linear-attention mixer with its OWN state type must return `false`,
+    /// or it is handed an `SsmLayerState` and the downcast in its forward path
+    /// fails at layer 0 on the first request. GLM-5.3's KDA blocks are the case:
+    /// they are `linear_attention` in `layer_types` but carry
+    /// `Glm5NextLayerState::Kda`.
+    fn uses_ssm_pool(&self) -> bool {
+        true
+    }
+}
+
+#[cfg(test)]
+mod verify_wy_table_tests {
+    use super::{
+        VERIFY_WY_LAYER_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS, VERIFY_WY_TABLE_STRIDE_BYTES,
+        VERIFY_WY_TABLES_PER_LAYER,
+    };
+
+    /// The batched verify's widest arm is K=16, which stages h + Hi0..Hi14
+    /// = 16 slabs. The staging gate in verify_e2.rs admits
+    /// `(2..=VERIFY_WY_TABLES_PER_LAYER)`, so this const IS the k ceiling:
+    /// if it shrinks below 16, every gamma>3 batch silently declines to the
+    /// per-sequence loop again (the 187,392-launch storm of 2026-09-01).
+    #[test]
+    fn tables_per_layer_fund_the_widest_verify_arm() {
+        assert!(
+            (2..=VERIFY_WY_TABLES_PER_LAYER).contains(&16usize),
+            "VERIFY_WY_TABLES_PER_LAYER ({VERIFY_WY_TABLES_PER_LAYER}) must admit k=16"
+        );
+    }
+
+    /// The table-form wyN kernels REINTERPRET the stride argument as
+    /// "pointer entries between Hi slabs" and the dispatcher passes
+    /// `VERIFY_WY_TABLE_SEQS`. That only reaches slab t iff slabs are laid
+    /// out back-to-back at exactly SEQS entries (8 bytes each). Pin the
+    /// layout the kernels assume.
+    #[test]
+    fn slab_stride_matches_the_kernel_contract() {
+        assert_eq!(VERIFY_WY_TABLE_STRIDE_BYTES, VERIFY_WY_TABLE_SEQS * 8);
+        assert_eq!(
+            VERIFY_WY_LAYER_STRIDE_BYTES,
+            VERIFY_WY_TABLES_PER_LAYER * VERIFY_WY_TABLE_STRIDE_BYTES
+        );
+    }
+
+    /// C=16 batches (plus ghost entries) must fit the per-slab entry count.
+    #[test]
+    fn seqs_capacity_covers_c16() {
+        const { assert!(VERIFY_WY_TABLE_SEQS >= 16) };
+    }
 }

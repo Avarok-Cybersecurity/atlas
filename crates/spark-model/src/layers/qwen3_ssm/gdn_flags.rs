@@ -12,7 +12,7 @@
 //! ## Why these are set, not read
 //!
 //! They were three independent `std::env::var` reads scattered across six call
-//! sites, each with its own convention (`ATLAS_SSM_H_FP16` presence-gated —
+//! sites, each with its own convention (`AVAROK_SSM_H_FP16` presence-gated —
 //! where `=0` meant ON — and the other two `== "1"`). That is how the same
 //! flag came to be decoded two different ways in one binary. They are now ONE
 //! cell, written once from [`set_from_cli`] before any model is built.
@@ -34,6 +34,15 @@ static FLAGS: std::sync::OnceLock<GdnFlags> = std::sync::OnceLock::new();
 pub struct GdnFlags {
     /// `--ssm-h-dtype f16`: store the GDN decode h-state as FP16.
     pub h_f16: bool,
+    /// Stage 3 of the f16 h-state: additionally SIZE the h pools at 2 bytes
+    /// per element. Must imply `h_f16` (a narrow pool holding FP32 would be
+    /// an OOB write, not a mode). NOT serveable yet and therefore has NO
+    /// CLI surface — the CLI mapping always publishes `false`, and
+    /// `ssm_h_fp16_preconditions` refuses it besides (defense in depth) —
+    /// but the sizing plumbing keys off THIS field so the pool, preflight
+    /// and every byte-copier already agree on the storage width when
+    /// prefill narrowing lands.
+    pub h_f16_pool: bool,
     /// `--gdn-fused-norm`: fused GDN output-norm decode kernel.
     pub fused_norm: bool,
     /// `--ssm-batched-recurrent`: one strided recurrent launch per batch.
@@ -50,6 +59,15 @@ pub struct GdnFlags {
     /// implementations round differently — ~5e-5 of lanes by 1 ULP, on every
     /// shape measured (#459). Closing that needs single-row routing for the
     /// whole verify forward, which is future work.
+    ///
+    /// ★ Attribution warning, learned the hard way: a 2026-08-21 measurement
+    /// showed gross output degeneration (video-fidelity 0/2, 0/4 at C=2/C=4)
+    /// that this flag appeared to fix. The real cause was the K=4 verdict
+    /// rewind bug (#699); this flag only changed dispatch so the bug stopped
+    /// firing. The 1-ULP divergence this flag actually closes has never been
+    /// shown to cause more than an occasional flipped token at temperature 0.
+    /// If flipping this flag changes gross behavior, suspect a dispatch-
+    /// sensitive scheduler bug first. Details on `ServeArgs::exact_verify`.
     pub exact_verify: bool,
 }
 
@@ -69,17 +87,35 @@ impl GdnFlags {
     pub fn verify_exact_active(self) -> bool {
         self.exact_verify && !self.h_f16
     }
-    /// The legacy environment reading, used when the CLI never set anything.
+    /// The reading used when the CLI never set anything: the compiled
+    /// target's declaration, with the environment overriding.
     ///
-    /// `ATLAS_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
+    /// `batched_recurrent` takes its DEFAULT from
+    /// `kernels/<hw>/HARDWARE.toml` `[defaults] ssm_batched_recurrent` —
+    /// `hopper` declares it ON (+6% on the serve, md5-identical output to the
+    /// per-sequence launches), `gb10` and `b200` declare it OFF, unchanged. It
+    /// used to be `AVAROK_SSM_BATCHED_RECURRENT=1` in an H100 launch script
+    /// outside this repository, which is the structure the 2026-09-11
+    /// maintainer review asked for. `AVAROK_SSM_BATCHED_RECURRENT` still
+    /// overrides, and `=0` now means OFF rather than reading as absent (see
+    /// `layers::ops::target_defaults`); everything that ever set it set it
+    /// to `1`.
+    ///
+    /// `AVAROK_SSM_H_FP16` stays PRESENCE-gated here on purpose: that is how
     /// every script and ledger in the campaign wrote it, and silently changing
     /// `=0` from ON to OFF would retroactively re-label measurements. New
     /// configuration should use `--ssm-h-dtype`.
     fn from_env() -> Self {
         Self {
-            h_f16: std::env::var("ATLAS_SSM_H_FP16").is_ok(),
-            fused_norm: std::env::var("ATLAS_GDN_FUSED_NORM").as_deref() == Ok("1"),
-            batched_recurrent: std::env::var("ATLAS_SSM_BATCHED_RECURRENT").as_deref() == Ok("1"),
+            h_f16: std::env::var("AVAROK_SSM_H_FP16").is_ok(),
+            // No environment fallback on purpose (house rule: no new env
+            // knobs) — stage 3 has no CLI surface either until prefill
+            // narrowing lands; only unit tests exercise the sizing.
+            h_f16_pool: false,
+            fused_norm: std::env::var("AVAROK_GDN_FUSED_NORM").as_deref() == Ok("1"),
+            batched_recurrent: crate::layers::ops::target_defaults::resolved()
+                .ssm_batched_recurrent
+                .value,
             // No legacy environment variable on purpose (house rule: CLI flags
             // or defaults, no new env knobs). Default = the legacy WY arms;
             // exact verify is CLI-opt-in only (`--exact-verify`).
@@ -103,17 +139,87 @@ pub fn flags() -> GdnFlags {
     *FLAGS.get_or_init(GdnFlags::from_env)
 }
 
-/// `--ssm-h-dtype f16` (legacy `ATLAS_SSM_H_FP16`).
+/// Widest chain-verify K with an FP16 h-state twin
+/// (`gated_delta_rule_wy{5..16}_f16`).
+///
+/// The SSOT for "can this verify width run under the f16 pool". K=17 — the
+/// DFlash arm at gamma 16 — has no twin, and the FP32 wy17 kernel over an
+/// FP16 h-state emits fluent garbage rather than faulting, so the CLI
+/// validator and the serve preflight both gate on this instead of a literal.
+///
+/// Expressed as K, not gamma: the DFlash verify width is gamma + 1, and
+/// conflating the two is how the width check came to admit gamma 16 (K=17,
+/// no twin) while its message claimed to cover "widths 5..16".
+pub const MAX_F16_TWIN_K: usize = 16;
+
+/// The largest `--dflash-gamma` whose verify width still has an FP16 twin.
+pub const MAX_F16_TWIN_DFLASH_GAMMA: usize = MAX_F16_TWIN_K - 1;
+
+/// The served DFlash gamma for a drafter of this trained block size, when
+/// no `--dflash-gamma` was given.
+///
+/// THE SSOT, and it must stay that way: the drafter head resolves its gamma
+/// through this, and so does every preflight that sizes a pool or a reserve
+/// from a peeked `dflash_config.block_size`. Two spellings of this rule is
+/// how the SSM MTP intermediates came to be reserved for K=9 while verify
+/// asked for K=10, a hard error at the first verify step, mid-graph-capture.
+///
+/// `block + 2`, because these drafters chain PAST their trained block:
+/// measured on Qwen3.8-27B DFlash2 (block 8), gamma 8 runs 7 drafts, one
+/// short, while gamma 10 holds full-block 9/9 accepts and is the fastest
+/// measured serve (63.0 vs 56.2 tok/s on GB10, 2026-08-29).
+///
+/// Clamped to `MAX_F16_TWIN_DFLASH_GAMMA` so a block-16-class drafter lands
+/// on 15, the widest verify width with kernel coverage under both h-state
+/// dtypes, instead of gamma 18 / K=19, which no wyN kernel serves.
+pub const fn default_dflash_gamma(trained_block_size: usize) -> usize {
+    let bumped = trained_block_size + 2;
+    if bumped > MAX_F16_TWIN_DFLASH_GAMMA {
+        MAX_F16_TWIN_DFLASH_GAMMA
+    } else {
+        bumped
+    }
+}
+
+/// `--ssm-h-dtype f16` (legacy `AVAROK_SSM_H_FP16`).
 pub fn ssm_h_fp16_enabled() -> bool {
     flags().h_f16
 }
 
-/// `--gdn-fused-norm` (legacy `ATLAS_GDN_FUSED_NORM=1`).
+/// Stage 3 of the f16 h-state: h pools SIZED at 2 bytes/element
+/// (`--ssm-h-dtype f16-pool`). Implies [`ssm_h_fp16_enabled`] — a narrow
+/// pool holding FP32 would be an OOB write, not a mode — which
+/// [`ssm_h_dtype_bits`] guarantees at the one place the value is decoded.
+pub fn ssm_h_f16_pool_enabled() -> bool {
+    flags().h_f16_pool
+}
+
+/// SSOT decode of `--ssm-h-dtype` into the two h-state bits it publishes:
+/// `(h_f16, h_f16_pool)`.
+///
+/// Both the CLI validator (which rejects the pairs the mode cannot serve)
+/// and `publish_kernel_flags` (which publishes the cell the kernels
+/// dispatch on) go through THIS, so a validator that accepted one reading
+/// while the kernels took another is not expressible. Anything that is not
+/// exactly `f16` or `f16-pool` — including `f32` and an absent flag — is
+/// FP32; `check_enum` has already rejected unknown spellings by the time
+/// this runs, and defaulting an unknown one to FP32 here is the safe arm
+/// besides.
+pub fn ssm_h_dtype_bits(dtype: Option<&str>) -> (bool, bool) {
+    match dtype {
+        Some("f16") => (true, false),
+        // f16-pool is f16 PLUS the narrow pool: never one without the other.
+        Some("f16-pool") => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// `--gdn-fused-norm` (legacy `AVAROK_GDN_FUSED_NORM=1`).
 pub fn gdn_fused_norm_enabled() -> bool {
     flags().fused_norm
 }
 
-/// `--ssm-batched-recurrent` (legacy `ATLAS_SSM_BATCHED_RECURRENT=1`).
+/// `--ssm-batched-recurrent` (legacy `AVAROK_SSM_BATCHED_RECURRENT=1`).
 pub fn ssm_batched_recurrent_enabled() -> bool {
     flags().batched_recurrent
 }
@@ -126,12 +232,73 @@ pub fn verify_exact_enabled() -> bool {
     flags().verify_exact_active()
 }
 
+/// Batch width at which the multi-seq decode projections switch to the
+/// 128-row M-tile. `None` (kill switch `AVAROK_NO_SSM_M128`, PRESENCE check —
+/// `=0` is NOT "off") keeps the 64-row twin at every width.
+///
+/// 65 is the DERIVED crossover, not a tuned constant: `ceil(m/64) >
+/// ceil(m/128)` first holds at m=65, so m<=64 gains no weight-read reduction
+/// from the wider tile and would only pad MMA rows. Identical rule to the
+/// dense-FFN prefill macro's `m <= 64` small-M arm.
+pub(crate) fn ssm_m128_min_m() -> Option<u32> {
+    static M: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *M.get_or_init(|| {
+        if std::env::var("AVAROK_NO_SSM_M128").is_ok() {
+            None
+        } else {
+            Some(65)
+        }
+    })
+}
+
+/// Write-on-accept K=4 batched verify. **Default OFF — opt in with
+/// `AVAROK_GDN_WOA=1`.** With it off, the parent wy4 kernel runs (writes every
+/// intermediate) and `trait_layer.rs`'s fold reports `Ok(false)`, so
+/// `async_chkpt.rs` performs the pre-WOA `h` restore for every K.
+///
+/// ★ IT SHIPPED ON AND IT CORRUPTS GENERATION AT C=4..8.
+///
+/// Measured on gb10, five concurrency-sweep runs in four hours, 2026-09-18.
+/// The signal is the SimHash semantic-loop watchdog, which cuts a response
+/// once the model starts paraphrasing itself; the cell then reports a
+/// truncated delivery and the gate refuses to score it:
+///
+/// | run                       | C4 | C8 | fires | vacuous | gate |
+/// |---------------------------|----|----|-------|---------|------|
+/// | main                      |  0 |  0 |    10 |       0 | PASS |
+/// | this line, fold ON        |  4 |  1 |    16 |       2 | FAIL |
+/// | ditto, gamma pinned       |  6 |  4 |    20 |       2 | FAIL |
+/// | this line, fold OFF       |  0 |  1 |    10 |       0 | PASS |
+/// | fold ON + a folded-slots  |  4 |  2 |     8 |       2 | FAIL |
+/// | scope fix                 |    |    |       |         |      |
+///
+/// All five agree at C=16..128. So the ARM is identified and the bug inside it
+/// is not: the gamma resolver (pinning the width changed nothing), the EOS
+/// path (every request reports finish=length), the VERIFY_WY_TABLE_SEQS=32
+/// bound (C=4..8 cannot exceed it, and a breach asserts) and a stale
+/// folded-slots record (fix applied, C=4 unchanged at 4 fires) are each
+/// eliminated by measurement rather than argument.
+///
+/// No concurrency guard: `woa_now` does take `n`, but nothing in the code
+/// distinguishes n=4 from n=16 — same predicate, same kernels, same 2..=32
+/// gate — and C=64/128 chunk to <=32 so the fold runs there too. A guard would
+/// encode an unexplained measurement, not a mechanism.
+///
+/// Turn the default back on when #879's author can explain C=4..8.
+///
+/// Public so the serve can tell the gamma resolver whether the K=4 rung has
+/// its kernel (review of #845, question 3).
+pub fn gdn_woa_enabled() -> bool {
+    std::env::var("AVAROK_GDN_WOA").ok().as_deref() == Some("1")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::GdnFlags;
+    use super::{GdnFlags, ssm_h_dtype_bits};
 
     const BASE: GdnFlags = GdnFlags {
         h_f16: false,
+        h_f16_pool: false,
         fused_norm: false,
         batched_recurrent: false,
         exact_verify: false,
@@ -182,13 +349,36 @@ mod tests {
     }
 
     /// The environment fallback can NEVER turn exact verify on: there is no
-    /// `ATLAS_*` variable for it on purpose (house rule: no new env knobs),
+    /// `AVAROK_*` variable for it on purpose (house rule: no new env knobs),
     /// so a serve that skips `set_from_cli` still defaults to the WY arms.
     /// Deterministic despite reading the process environment, because only
     /// the `exact_verify` field is asserted and no variable feeds it.
     #[test]
     fn env_fallback_never_enables_exact_verify() {
         assert!(!GdnFlags::from_env().exact_verify);
+        // Same rule for the stage-3 pool sizing: no env variable feeds it.
+        // `--ssm-h-dtype f16-pool` is the ONLY way to publish it, so a
+        // legacy `AVAROK_SSM_H_FP16=1` script keeps the FP32-sized pool.
+        assert!(!GdnFlags::from_env().h_f16_pool);
+    }
+
+    /// A narrow pool holding FP32 is an out-of-bounds write, not a mode, so
+    /// `h_f16_pool` without `h_f16` must not be expressible from any input.
+    /// This is the ONE decode both the validator and the publisher use, so
+    /// pinning it here pins it for both.
+    #[test]
+    fn the_pool_bit_is_never_set_without_the_dtype_bit() {
+        for (spelling, expected) in [
+            (None, (false, false)),
+            (Some("f32"), (false, false)),
+            (Some("f16"), (true, false)),
+            (Some("f16-pool"), (true, true)),
+            (Some(""), (false, false)),
+            (Some("F16-POOL"), (false, false)),
+            (Some("f16 "), (false, false)),
+        ] {
+            assert_eq!(ssm_h_dtype_bits(spelling), expected, "{spelling:?}");
+        }
     }
 
     /// NEGATIVE: an FP16 h-state forces non-exact EVEN WHEN exact was

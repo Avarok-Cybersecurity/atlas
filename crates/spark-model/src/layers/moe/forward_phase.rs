@@ -32,7 +32,7 @@ impl MoeLayer {
         stream: u64,
     ) -> Result<()> {
         // Phase 8a unified-layout decode path: transposed weight tables
-        // for all three projections. Only fires when ATLAS_UNIFIED_MOE_LAYOUT=1
+        // for all three projections. Only fires when AVAROK_UNIFIED_MOE_LAYOUT=1
         // AND the weight loader has built persistent transposed copies for
         // gate / up / down (no lazy-scratch path).
         let gate_t = self

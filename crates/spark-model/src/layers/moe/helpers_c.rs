@@ -12,7 +12,7 @@ impl MoeLayer {
     pub fn predequant_for_prefill(
         &mut self,
         gpu: &dyn GpuBackend,
-        config: &atlas_core::config::ModelConfig,
+        config: &avarok_core::config::ModelConfig,
         stream: u64,
     ) -> Result<()> {
         let h = config.hidden_size;
@@ -78,7 +78,7 @@ impl MoeLayer {
 
     /// Set BF16 expert weights for the FP8-dequant-on-load MoE path.
     ///
-    /// Activated by `ATLAS_FP8_DEQUANT_MOE_TO_BF16=1`. Eliminates the per-layer
+    /// Activated by `AVAROK_FP8_DEQUANT_MOE_TO_BF16=1`. Eliminates the per-layer
     /// 0.989 FP8 cosine ceiling (measured in bench/fp8_dgx2_drift/cosine_run.py)
     /// by serving experts as BF16 throughout, matching vLLM-BF16 reference
     /// numerics. Memory cost: 2× expert weights vs native FP8.
@@ -175,7 +175,7 @@ impl MoeLayer {
                     k,
                     stream,
                 )
-            } else if ctx.dispatch.cublas_gemm {
+            } else if ctx.dispatch.cublas.ffn {
                 // Multi-token shared expert: cuBLASLt BF16 beats the hand-written
                 // mma.sync GEMM. The single-token arm above stays on the GEMV —
                 // decode-sized shapes do not repay cuBLAS heuristic overhead.
@@ -240,7 +240,7 @@ impl MoeLayer {
     /// Router gate GEMM for a BF16 (dense) gate weight at prefill:
     /// `gate_logits[n, num_experts] = router_in @ gate^T`.
     ///
-    /// PINNED to the scalar `dense_gemm` kernel, never a rerouted fast GEMM.
+    /// PINNED to scalar-ORDER numerics, never a reassociating fast GEMM.
     /// Router logits are selection inputs, not data: top-k reads them after a
     /// BF16 store, where near-tied experts sit 1 ulp apart, so ANY change in
     /// accumulation order flips selections on borderline tokens and the flip
@@ -250,8 +250,18 @@ impl MoeLayer {
     /// 84.76 overall — deterministic, reproduced to the hundredth on two
     /// trees (2026-08-12, 03a74eac19 / cb9f8ecab4) — while every dense-model
     /// gate stayed inside noise. The routed-expert GEMMs tolerate order
-    /// changes; the router does not. Perf is a non-argument at this shape:
-    /// N = num_experts is tiny next to the expert GEMMs this feeds.
+    /// changes; the router does not.
+    ///
+    /// `dense_gemm_bf16_router` satisfies the pin: it keeps the scalar
+    /// kernel's exact per-output FP32 fma chain in strict k = 0..K-1 order
+    /// (only blocking/vectorization differ) and is verified BIT-IDENTICAL to
+    /// `dense_gemm_bf16` under the production `--fmad=false` build (0
+    /// differing elements over [4510,2048]x[2048,256] and
+    /// [2255,2048]x[2048,256]) at ~2x the speed — the router GEMM is 40
+    /// layers x ~3.2 ms of cold prefill (the real payload of the mprof
+    /// "sort_by_expert" bucket), so the 2x is ~65 ms per 4.5k-token prefill.
+    /// Falls back to the scalar kernel when the variant is absent from a
+    /// model's gemm module.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn router_gate_gemm_dense(
         &self,
@@ -263,6 +273,19 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        if self.dense_gemm_router.0 != 0 {
+            return ops::dense_gemm_router(
+                ctx.gpu,
+                self.dense_gemm_router,
+                router_in,
+                &self.weights.gate,
+                gate_logits,
+                num_tokens,
+                num_experts,
+                hidden_size,
+                stream,
+            );
+        }
         ops::dense_gemm(
             ctx.gpu,
             self.dense_gemm,

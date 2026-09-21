@@ -21,7 +21,7 @@ use spark_runtime::prefix_cache::PrefixMatch;
 use super::super::types::TransformerModel;
 
 /// Minimum tier-snapshot depth (in tokens) below which a fault-in is skipped in
-/// favour of recompute. Overridable via `ATLAS_SSM_FAULT_MIN_TOKENS`; `0`
+/// favour of recompute. Overridable via `AVAROK_SSM_FAULT_MIN_TOKENS`; `0`
 /// disables the gate (always fault when a tier key exists).
 ///
 /// Cost model: a fault-in is a fixed ~28 ms — the full spill blob (every SSM
@@ -37,16 +37,16 @@ use super::super::types::TransformerModel;
 /// while the tuned tail-clustered checkpoints (near the ~15 K prompt tail) sit
 /// far above it and always fault in. A low threshold minimises wrongly skipping
 /// a beneficial deep fault. Tune per template via the miss-depth histogram.
-const DEFAULT_FAULT_MIN_TOKENS: usize = 256;
+pub(in crate::model) const DEFAULT_FAULT_MIN_TOKENS: usize = 256;
 
 /// Visible to `model::ssm_spill_gate`, which clamps the SPILL gate to never sit
 /// below this one (spilling what the fault-in gate would refuse to read back is
 /// a guaranteed pure loss).
 pub(in crate::model) fn fault_in_min_tokens() -> usize {
-    parse_fault_min_tokens(std::env::var("ATLAS_SSM_FAULT_MIN_TOKENS").ok())
+    parse_fault_min_tokens(std::env::var("AVAROK_SSM_FAULT_MIN_TOKENS").ok())
 }
 
-/// Pure parse of `ATLAS_SSM_FAULT_MIN_TOKENS`: an unset or unparseable value
+/// Pure parse of `AVAROK_SSM_FAULT_MIN_TOKENS`: an unset or unparseable value
 /// falls back to [`DEFAULT_FAULT_MIN_TOKENS`]; `0` disables the gate.
 fn parse_fault_min_tokens(raw: Option<String>) -> usize {
     raw.and_then(|v| v.parse::<usize>().ok())
@@ -128,7 +128,7 @@ impl TransformerModel {
         if should_skip_fault_for_depth(depth, min_depth) {
             tracing::info!(
                 "SSM tier fault-in SKIPPED (cost gate): tier snapshot depth {depth} < \
-                 ATLAS_SSM_FAULT_MIN_TOKENS={min_depth} — recomputing the shallow prefix \
+                 AVAROK_SSM_FAULT_MIN_TOKENS={min_depth} — recomputing the shallow prefix \
                  is cheaper than a ~28ms blob fault + replay"
             );
             return None;

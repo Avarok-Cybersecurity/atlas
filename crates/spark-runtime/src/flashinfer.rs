@@ -1,6 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Host-callable FlashInfer ragged/varlen prefill attention FFI (GB10/sm_121).
 //!
+//! ★ REFERENCE IMPLEMENTATION — A BENCHMARK TARGET, NOT A DEPENDENCY.
+//!
+//! Atlas ships its OWN kernels. FlashInfer is wrapped here for exactly one
+//! purpose: to be the opponent we measure against and beat. **Nothing in a
+//! default build or a default serve calls a single line of it.**
+//!
+//! Two independent gates keep that true, and BOTH must survive any edit:
+//!
+//!   1. COMPILE TIME — every item in this module is `#[cfg(avarok_flashinfer)]`, and
+//!      `build.rs` sets that cfg only when `FLASHINFER_HOME` is exported. A build
+//!      without it links no FlashInfer object at all.
+//!   2. RUNTIME — the dispatch arms are opt-in behind `AVAROK_FLASHINFER_PREFILL=1`.
+//!      The default is OFF.
+//!
+//! So the honest reading of an Atlas performance number is that Atlas kernels
+//! produced it, because a default binary cannot reach this code. Export the
+//! env var and you are measuring FlashInfer — label the number that way.
+//!
+//! ★ WHY KEEP IT COMPILED-BUT-DARK. Agentic benchmarking. An optimisation
+//! claim needs a credible opponent: "faster than our own previous commit" is
+//! a far weaker statement than "faster than FlashInfer on this shape". Keeping the
+//! wrapper one env var away lets any agent A/B a shape against the industry
+//! reference on the same box, same checkpoint, same stream — which is the
+//! only comparison worth quoting.
+//!
+//! Do NOT promote any of this to a default path. If a FlashInfer shape beats ours,
+//! the correct response is to make OUR kernel faster and re-measure.
+//!
 //! FlashInfer's `BatchPrefillWithRaggedKVCacheDispatched` is a FlashAttention-2
 //! SM80-class kernel (mma.sync/ldmatrix/cp.async) that codegens for sm_121f. We
 //! wrap it host-side exactly like the CUTLASS object: nvcc compiles
@@ -17,16 +45,16 @@ use anyhow::{Result, bail};
 mod hd128;
 pub use hd128::ragged_prefill_bf16_hd128;
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 use std::ffi::c_void;
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 use std::sync::OnceLock;
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 unsafe extern "C" {
     // Available for diagnostics; the wrapper uses fixed workspace budgets instead.
     #[allow(dead_code)]
-    fn atlas_fi_ragged_prefill_workspace_sizes(
+    fn avarok_fi_ragged_prefill_workspace_sizes(
         max_batch: u32,
         max_total_qo_rows: u32,
         num_qo_heads: u32,
@@ -38,7 +66,7 @@ unsafe extern "C" {
     ) -> i32;
 
     #[allow(clippy::too_many_arguments)]
-    fn atlas_fi_ragged_prefill_bf16_hd256(
+    fn avarok_fi_ragged_prefill_bf16_hd256(
         q: *const c_void,
         k: *const c_void,
         v: *const c_void,
@@ -64,20 +92,20 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
 
-    #[cfg(atlas_flashinfer)]
+    #[cfg(avarok_flashinfer)]
     fn cuMemAlloc_v2(dptr: *mut u64, bytesize: usize) -> i32;
-    #[cfg(atlas_flashinfer)]
+    #[cfg(avarok_flashinfer)]
     fn cudaHostAlloc(ptr: *mut *mut c_void, size: usize, flags: u32) -> i32;
 }
 
 /// Whether the FlashInfer wrapper was compiled in (FLASHINFER_HOME was set at build).
 pub fn available() -> bool {
-    cfg!(atlas_flashinfer)
+    cfg!(avarok_flashinfer)
 }
 
 // Persistent workspaces, sized for a generous max config and reused across calls
 // (FlashInfer plans into these each call; they don't carry state between calls).
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 struct Workspaces {
     float_ws: u64,
     int_ws: u64,
@@ -86,13 +114,13 @@ struct Workspaces {
     int_sz: usize,
     pinned_sz: usize,
 }
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 unsafe impl Send for Workspaces {}
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 unsafe impl Sync for Workspaces {}
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 /// STATIC, DELIBERATELY — CUDA host. This is a workspace allocated in THE
-/// process CUDA context (see `atlas_core::cuda_host`, which establishes one
+/// process CUDA context (see `avarok_core::cuda_host`, which establishes one
 /// per process) and sized by a fixed budget, not by any model's shapes: the
 /// bounds below are generous upper limits chosen to fit any realistic serving
 /// configuration, so a swap needs no reallocation and re-allocating per model
@@ -106,29 +134,29 @@ static WS: OnceLock<Workspaces> = OnceLock::new();
 // Max config the persistent workspaces are sized for. Generous upper bounds for
 // Holo serving (>= any realistic concurrent-prefill batch). num heads/head_dim
 // are fixed by the model.
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const MAX_BATCH: u32 = 16;
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const MAX_TOTAL_QO_ROWS: u32 = 16 * 16384;
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const N_QO_HEADS: u32 = 16;
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const N_KV_HEADS: u32 = 2;
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const HEAD_DIM: u32 = 256;
 
 // FlashInfer's float workspace is a BUDGET PrefillPlan splits KV within (it
 // plans to fit, not a hard requirement) — vLLM uses ~128MB. The int/pinned
 // workspaces hold the scheduler metadata arrays (request/tile indices), bounded
 // by tile count. Fixed generous budgets; PrefillPlan adapts within them.
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const FLOAT_WS_BYTES: usize = 256 << 20; // 256 MB
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const INT_WS_BYTES: usize = 64 << 20; // 64 MB
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 const PINNED_WS_BYTES: usize = 64 << 20; // 64 MB
 
-#[cfg(atlas_flashinfer)]
+#[cfg(avarok_flashinfer)]
 fn workspaces() -> Result<&'static Workspaces> {
     if let Some(w) = WS.get() {
         return Ok(w);
@@ -195,7 +223,7 @@ pub fn ragged_prefill_bf16_hd256(
     causal: bool,
     stream: u64,
 ) -> Result<()> {
-    #[cfg(atlas_flashinfer)]
+    #[cfg(avarok_flashinfer)]
     {
         if head_dim != HEAD_DIM {
             bail!("FlashInfer wrapper is head_dim=256 only (got {head_dim})");
@@ -205,7 +233,7 @@ pub fn ragged_prefill_bf16_hd256(
         }
         let ws = workspaces()?;
         let st = unsafe {
-            atlas_fi_ragged_prefill_bf16_hd256(
+            avarok_fi_ragged_prefill_bf16_hd256(
                 q as *const c_void,
                 k as *const c_void,
                 v as *const c_void,
@@ -238,7 +266,7 @@ pub fn ragged_prefill_bf16_hd256(
         }
         Ok(())
     }
-    #[cfg(not(atlas_flashinfer))]
+    #[cfg(not(avarok_flashinfer))]
     {
         let _ = (
             q,
@@ -263,7 +291,7 @@ pub fn ragged_prefill_bf16_hd256(
     }
 }
 
-#[cfg(all(test, atlas_flashinfer))]
+#[cfg(all(test, avarok_flashinfer))]
 mod tests {
     use super::*;
     use std::ffi::c_void;

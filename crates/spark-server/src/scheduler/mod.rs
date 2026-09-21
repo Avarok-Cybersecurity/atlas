@@ -14,16 +14,23 @@
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod adaptive_rung;
 mod adaptive_spec;
+mod admission;
 mod beam_prefill;
 mod confidence;
 mod decode_logits_content;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
+pub mod dflash_rung;
+#[cfg(test)]
+mod emit_eos_thinking_tests;
 mod emit_step;
 mod fast_greedy;
 #[cfg(test)]
 mod finish_guard_tests;
+mod first_token_policy;
+#[cfg(test)]
+mod first_token_policy_tests;
 mod helpers;
 mod lifecycle;
 #[cfg(test)]
@@ -45,23 +52,37 @@ pub(crate) mod mtp_timing;
 mod phase_continue_prefills;
 mod phase_promote_prefills;
 mod phase_start_prefills;
+mod preempt;
+#[cfg(test)]
+mod preempt_tests;
 mod prefill_a_step;
 mod prefill_a_step_params;
 mod prefill_b_step;
+#[cfg(test)]
+mod prefill_fifo_tests;
+#[cfg(test)]
+mod prefill_timing_tests;
 mod repetition;
 mod rollback;
 mod sample_step;
 pub mod sched_ctx;
+mod shutdown_drain;
+#[cfg(test)]
+mod shutdown_drain_tests;
 pub mod snapshot;
+mod spec_capacity;
 pub mod spec_stats;
 mod spec_step;
 mod ssm_decode_ring;
+#[cfg(test)]
+mod swap_out_tests;
 mod teardown;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
 mod think_skip_tests;
 mod types;
+mod verify_dflash_batch_step;
 mod verify_dflash_step;
 mod verify_k2_step;
 mod verify_k3_step;
@@ -78,6 +99,7 @@ use decode_logits_seq::*;
 use decode_logits_step::*;
 use decode_step::*;
 use emit_step::*;
+use first_token_policy::*;
 pub use helpers::WatchdogParams;
 pub(crate) use helpers::parse_disable_watchdogs;
 pub use helpers::resolve_content_loop_watchdog;
@@ -98,6 +120,7 @@ use sample_step::*;
 use spec_step::*;
 use ssm_decode_ring::SsmDecodeRing;
 use types::*;
+use verify_dflash_batch_step::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
@@ -149,7 +172,7 @@ pub enum LoraCommand {
         peer_addr: String,
         adapter_id: String,
         name: String,
-        peft: atlas_core::config::PeftAdapterConfig,
+        peft: avarok_core::config::PeftAdapterConfig,
     },
     /// No-RDMA sibling of [`Self::Promote`]: demand-driven DISK promote of a
     /// stageable-but-not-resident adapter loaded from `dir` into a cache pool
@@ -186,7 +209,7 @@ pub type LoraRotation = (
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 /// How many concurrent sequences may speculate. Default 16, override with
-/// `ATLAS_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
+/// `AVAROK_MTP_MAX_SEQS` (`=1` restores the single-sequence-only gate).
 ///
 /// `step_mtp` is index-correct over the active slice, so raising this runs
 /// MTP over n sequences per step. With the batched K=4 verify wired
@@ -195,7 +218,7 @@ pub type LoraRotation = (
 /// model can't batch (EP, HSS, LoRA, grammar, non-uniform K, DFlash) falls
 /// back to the serialized per-seq loop that MEASURED (2026-07-27) collapses
 /// throughput: cap=4 at C=4 25.8 vs 48.5 MTP-off. Kill switch for A/B:
-/// `ATLAS_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
+/// `AVAROK_NO_MTP_BATCH_VERIFY` (presence) forces that serialized loop.
 fn mtp_max_seqs() -> usize {
     // SSOT moved to `spark_model::speculative::mtp_max_seqs()` (batched-MTP
     // E1/E2): the model-side single-sequence MTP structures (catchup ring,
@@ -204,7 +227,7 @@ fn mtp_max_seqs() -> usize {
     // before the batched multi-seq verify + propose in
     // `verify_k4_batch_step.rs` removed the serialization that made cap=1
     // mandatory — C=4 cap=4: 25.8 serialized -> 49.0 batched vs 48.5
-    // MTP-off). `ATLAS_MTP_MAX_SEQS=8` restores the round-3 cap, `=1` the
+    // MTP-off). `AVAROK_MTP_MAX_SEQS=8` restores the round-3 cap, `=1` the
     // old single-sequence-only gate.
     spark_model::speculative::mtp_max_seqs()
 }
@@ -250,7 +273,7 @@ pub fn run(
     snapshot: std::sync::Arc<crate::scheduler::snapshot::SnapshotCell>,
 ) {
     // Everything this run needs that is derived from the model rather than the
-    // request. The levers were twenty-odd `ATLAS_*` statics; they are resolved
+    // request. The levers were twenty-odd `AVAROK_*` statics; they are resolved
     // once here and read through `sched` from every step function.
     let sched =
         crate::scheduler::sched_ctx::SchedCtx::new(vocab_masks, levers, snapshot, limits, watchdog);
@@ -309,7 +332,7 @@ pub fn run(
         tracing::info!(
             "MTP verify pools cover {spec_slot_cap}/{max_batch_size} SSM slots — \
              sequences on uncovered slots plain-decode until compaction moves them \
-             down (kill switch ATLAS_MTP_POOL_FULL_WIDTH restores full width)"
+             down (kill switch AVAROK_MTP_POOL_FULL_WIDTH restores full width)"
         );
     }
 
@@ -318,12 +341,17 @@ pub fn run(
     // budget). When ON, an active decode + an in-progress prefill always
     // takes a fused mixed step sized by the policy's prefill_slice_budget
     // so decode never starves during a prefill burst. Read once at startup.
-    let always_mixed = std::env::var("ATLAS_HOLO_ALWAYS_MIXED")
+    let always_mixed = std::env::var("AVAROK_HOLO_ALWAYS_MIXED")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if always_mixed {
-        tracing::info!("ATLAS_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
+        tracing::info!("AVAROK_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
     }
+
+    // Depth-aware admission watermark (PCND: explicit default = the served
+    // context ceiling, i.e. reserve each request's own max_tokens; see
+    // `admission` module docs and AVAROK_KV_ADMIT_WATERMARK).
+    let admit_watermark = admission::resolve_admit_watermark(sched.limits.max_seq_len);
 
     let pending = Arc::new((
         Mutex::new(PendingQueue {
@@ -369,6 +397,7 @@ pub fn run(
     let mut active: Vec<ActiveSeq> = Vec::new();
     let mut prefilling: Vec<PrefillInProgress> = Vec::new();
     let mut swapped: Vec<SwappedSeq> = Vec::new();
+    let mut preempted: Vec<PreemptedSeq> = Vec::new();
     let mut spill_manager: Option<KvSpillManager> = if swap_space_gb > 0 {
         let max_bytes = swap_space_gb as u64 * 1024 * 1024 * 1024;
         // Per-PROCESS directory. `KvSpillManager::new` wipes stale `swap_*` files
@@ -377,7 +406,7 @@ pub fn run(
         // they never overlap) — but a SHARED path means two `spark serve`
         // processes on one box wipe each other's live spill files. That is a
         // pre-existing hazard this work surfaced rather than introduced.
-        let spill_dir = std::env::temp_dir().join(format!("atlas-swap-{}", std::process::id()));
+        let spill_dir = std::env::temp_dir().join(format!("avarok-swap-{}", std::process::id()));
         match KvSpillManager::new(spill_dir.clone(), max_bytes) {
             Ok(mgr) => {
                 tracing::info!("Swap space: {swap_space_gb} GB at {}", spill_dir.display());
@@ -398,12 +427,35 @@ pub fn run(
     loop {
         // ── Drain pending → start prefill (chunked or full) ──
         // The `t_loop_*` brackets attribute the out-of-step GAP the
-        // ATLAS_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
+        // AVAROK_MTP_TIMING summary reports (see mtp_timing::Phase::Gap): each
         // records one scheduler-tick section. `record` no-ops when the env is
         // unset; the Instant::now() reads are the documented residual cost.
         let t_loop = std::time::Instant::now();
-        let new_reqs =
-            drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+        let new_reqs = drain_pending_requests(
+            &pending,
+            &active,
+            &prefilling,
+            &*policy,
+            max_batch_size,
+            // Parked sequences (spilled or requeued) are waiting on blocks,
+            // not on new requests — never block on the request condvar while
+            // any exist, or an empty active set would strand them forever.
+            !(swapped.is_empty() && preempted.is_empty()),
+        );
+        // ── Depth-aware admission: queue what cannot fit its decode depth ──
+        // (admit-then-preempt was the C=128 thrash; see `admission` docs).
+        let new_reqs = admission::gate_admissions(
+            &*model,
+            &pending,
+            new_reqs,
+            &active,
+            &prefilling,
+            &swapped,
+            &preempted,
+            admit_watermark,
+            sched.limits.max_seq_len,
+            block_size,
+        );
         sched.timing.record(mtp_timing::Phase::LoopDrain, t_loop);
 
         // ── Publish the observability snapshot (one uncontended lock + a
@@ -418,12 +470,24 @@ pub fn run(
             sched.snapshot.publish(snapshot::SchedulerSnapshot {
                 active_seqs: active.len() as u32,
                 prefilling_seqs: prefilling.len() as u32,
-                swapped_seqs: swapped.len() as u32,
+                swapped_seqs: (swapped.len() + preempted.len()) as u32,
                 pending_len: new_reqs.len() as u32,
                 kv_blocks_free: model.num_free_blocks() as u32,
                 kv_blocks_total: model.num_total_blocks() as u32,
-                ssm_slots_used: session_manager.session_count() as u32,
-                ssm_slots_total: session_manager.total_slots() as u32,
+                // The REAL Marconi pool occupancy. This used to read
+                // `session_manager.{session_count,total_slots}` — but
+                // `SessionSsmManager::save_snapshot` has no callers, so both
+                // were 0 forever and the TUI's SSM gauge rendered 0/0 on
+                // every serve (user-reported 2026-08-22). Fall back to the
+                // orphaned counters only when the model has no pool.
+                ssm_slots_used: model
+                    .ssm_snapshot_occupancy()
+                    .map(|(u, _)| u)
+                    .unwrap_or(session_manager.session_count() as u32),
+                ssm_slots_total: model
+                    .ssm_snapshot_occupancy()
+                    .map(|(_, t)| t)
+                    .unwrap_or(session_manager.total_slots() as u32),
                 mtp_mode,
                 delivered_tps,
                 steps_total: snapshot_steps,
@@ -440,7 +504,12 @@ pub fn run(
         // ref (#25), so without this gate a Promote/swap could evict/re-stage the
         // slot its KV was computed under and corrupt it on resume (#27 FINDING 1 /
         // #31). Otherwise the commands stay queued and retry once the batch drains.
-        if active.is_empty() && prefilling.is_empty() && new_reqs.is_empty() && swapped.is_empty() {
+        if active.is_empty()
+            && prefilling.is_empty()
+            && new_reqs.is_empty()
+            && swapped.is_empty()
+            && preempted.is_empty()
+        {
             let rotations = std::mem::take(&mut pending.0.lock().rotations);
             for (cmd, ack) in rotations {
                 let res = match cmd {
@@ -602,7 +671,23 @@ pub fn run(
         sched.timing.record(mtp_timing::Phase::LoopPrefill, t_loop);
 
         if active.is_empty() {
-            continue;
+            // Every sequence can be parked (decode-preempted/spilled) with
+            // nothing new admitted; the resume passes at the tail of the
+            // loop sit AFTER decode, which this `continue` skips — so give
+            // requeued victims their resume chance here or an otherwise
+            // idle server would strand them.
+            if !preempted.is_empty() {
+                preempt::resume_preempted_seqs(
+                    &*model,
+                    &mut active,
+                    &mut preempted,
+                    max_batch_size,
+                    block_size,
+                );
+            }
+            if active.is_empty() {
+                continue;
+            }
         }
 
         // Skip decode when mixed_forward already processed decode logits.
@@ -630,19 +715,20 @@ pub fn run(
                 think_start_token,
                 tool_call_start_token,
                 tool_call_end_token,
+                verify_pos: 0,
                 boundary_mask: sched.masks.boundary.clone(),
                 mid_word_mask: sched.masks.mid_word.clone(),
                 sampling: sched.levers.sampling(),
                 timing: sched.timing.clone(),
             };
-            // Spec-resume guard (ATLAS_DFLASH_RESUME_GUARD=N, default 0 = off):
+            // Spec-resume guard (AVAROK_DFLASH_RESUME_GUARD=N, default 0 = off):
             // keep the first N post-`</think>` tokens on plain serial decode.
             // The T=0 verify-vs-decode low-margin flips measured 2026-07-07
             // concentrate in the answer's opening tokens; serial-decoding that
             // window sidesteps them while leaving the high-accept answer body
             // speculated. N=0 preserves exact prior behavior.
             let dflash_resume_guard = sched.levers.dflash_resume_guard;
-            // ATLAS_DFLASH_SPEC_THINK=1: DFlash raw-argmax may speculate
+            // AVAROK_DFLASH_SPEC_THINK=1: DFlash raw-argmax may speculate
             // inside `<think>`. Standard MTP already verifies during think.
             // DFlash raw-argmax does not run ForcedThinkEnd, so it stays
             // serial-in-think unless this lever is on. Resume guard still
@@ -657,7 +743,7 @@ pub fn run(
             // sequence (LIFO free-list claim after churn) plain-decodes
             // until retirement-time compaction migrates it under the cap;
             // the `else` branch below already clears its stale drafts.
-            // Kill switch ATLAS_MTP_POOL_FULL_WIDTH (presence) restores
+            // Kill switch AVAROK_MTP_POOL_FULL_WIDTH (presence) restores
             // full-width pools and makes this guard vacuous at any bs.
             let spec_slots_covered = active.iter().all(|a| a.seq.slot_idx < spec_slot_cap);
             // WIDTH half of the runtime speculation regime (wave 47). The
@@ -686,13 +772,21 @@ pub fn run(
                 && active[0].grammar_state.is_none()
             {
                 // Self-speculative: draft via layer-skipping, verify with full model.
-                step_self_spec(&*model, &mut active, &sched, num_drafts, &verify_ctx);
+                // Clamped to the active slot's tiered verify capacity, like
+                // the MTP lane (see `spec_capacity`).
+                let nd = spec_capacity::clamp_drafts_to_slot_capacity(
+                    num_drafts,
+                    active
+                        .iter()
+                        .map(|a| model.mtp_slot_draft_capacity(a.seq.slot_idx)),
+                );
+                step_self_spec(&*model, &mut active, &sched, nd, &verify_ctx);
             } else if use_mtp
                 && spec_width_ok
                 && spec_slots_covered
                 && (
                     // Both lanes stay serial inside `<think>` unless
-                    // ATLAS_DFLASH_SPEC_THINK=1. Resume guard still
+                    // AVAROK_DFLASH_SPEC_THINK=1. Resume guard still
                     // serial-decodes the spec-entry window. EVERY active
                     // sequence must be eligible, not just active[0].
                     active.iter().all(|a| {
@@ -741,7 +835,20 @@ pub fn run(
                         .map(|a| a.post_think_emitted)
                         .min()
                         .unwrap_or(u32::MAX);
-                    if mtp_gate::entry_pin_forces_verify(min_post_think_emitted)
+                    // DFlash C<=2 pin: hold the verify arm whenever <=2
+                    // sequences are active. Arbitration is par on tok/s
+                    // there, but its serial<->batch-K forward flips fork
+                    // the temp-0 token stream mid-answer and the bad
+                    // attractor degenerates into repetition loops (see
+                    // `dflash_gate_pin_c2` lever doc for the measurements).
+                    // Pinned steps skip recording exactly like the
+                    // entry pin: charging verify walls to a Serial-mode
+                    // accumulator would corrupt the arbitration baselines
+                    // it resumes with at C>=3.
+                    let dflash_pin = dflash_verify_raw_argmax
+                        && active.len() <= 2
+                        && sched.levers.dflash_gate_pin_c2;
+                    if (dflash_pin || mtp_gate::entry_pin_forces_verify(min_post_think_emitted))
                         && gate.next_step() == mtp_gate::GateStep::MeasureDecode
                     {
                         let lens_before: Vec<usize> =
@@ -772,6 +879,9 @@ pub fn run(
                                     tool_call_end_token,
                                     adaptive_sampling,
                                     &sched,
+                                    spill_manager.as_mut(),
+                                    &mut swapped,
+                                    &mut preempted,
                                 );
                                 // A plain decode step emits ONE token PER
                                 // ACTIVE SEQUENCE. Charging 1 regardless of
@@ -783,7 +893,7 @@ pub fn run(
                                 for a in active.iter_mut() {
                                     a.mtp_acct.record_serial();
                                 }
-                                // ATLAS_MTP_CATCHUP: ring the serially decoded
+                                // AVAROK_MTP_CATCHUP: ring the serially decoded
                                 // token's hidden so the next MTP re-probe can
                                 // batch-feed the drafter over the serial gap
                                 // (no-op when the feature is off).
@@ -817,7 +927,7 @@ pub fn run(
                                 // of the batch, so ringing it would interleave
                                 // unrelated hiddens under one label space.
                                 // (`mtp_catchup_enabled` is also force-off when
-                                // ATLAS_MTP_MAX_SEQS > 1 — this guard keeps the
+                                // AVAROK_MTP_MAX_SEQS > 1 — this guard keeps the
                                 // save itself single-seq-only regardless.)
                                 if active.len() == 1
                                     && let Err(e) =
@@ -873,7 +983,7 @@ pub fn run(
                         }
                     }
                 } else {
-                    // Gate bypassed (ATLAS_MTP_GATE_FORCE=1): plain MTP.
+                    // Gate bypassed (AVAROK_MTP_GATE_FORCE=1): plain MTP.
                     let lens_before: Vec<usize> = active.iter().map(|a| a.seq.seq_len).collect();
                     step_mtp(
                         &*model,
@@ -913,6 +1023,9 @@ pub fn run(
                     tool_call_end_token,
                     adaptive_sampling,
                     &sched,
+                    spill_manager.as_mut(),
+                    &mut swapped,
+                    &mut preempted,
                 );
                 for a in active.iter_mut() {
                     a.mtp_acct.record_serial();
@@ -990,6 +1103,14 @@ pub fn run(
                 }
             }
         }
+        // ── Resume requeued (decode-preempted) sequences when blocks free ──
+        preempt::resume_preempted_seqs(
+            &*model,
+            &mut active,
+            &mut preempted,
+            max_batch_size,
+            block_size,
+        );
         sched.timing.record(mtp_timing::Phase::LoopSwap, t_loop);
     }
 
@@ -1009,16 +1130,13 @@ pub fn run(
     for mut a in active {
         finish_sequence(&*model, &mut a, sched.limits.max_seq_len);
     }
-    if let Some(ref mut spill) = spill_manager {
-        for s in swapped {
-            let _ = spill.remove_file(s.swap_id);
-        }
-    }
-    for p in prefilling {
-        let mut seq = p.seq;
-        let _ = model.free_sequence(&mut seq);
-        let _ = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1);
-    }
+    shutdown_drain::abort_in_flight_on_shutdown(
+        &*model,
+        prefilling,
+        swapped,
+        preempted,
+        spill_manager.as_mut(),
+    );
     // Shutdown applies to every slot the worker has; seq_id is ignored.
     let _ = model.ep_broadcast_cmd_for_seq(0, 0xFFFFFFFF);
 
@@ -1046,7 +1164,7 @@ pub fn run(
     // reading them, and on GB10 a freed mapping is unmapped, not merely reused.
     //
     // That is not theoretical. A hot-swap on 2026-08-07 took
-    //   NVRM: Xid 31, name=atlas-swap
+    //   NVRM: Xid 31, name=avarok-swap
     //   MMU Fault: ENGINE GRAPHICS GPC0 ... FAULT_PTE ACCESS_TYPE_VIRT_READ
     // — a graphics-engine read of an address with no page table entry, on the
     // thread that drives swap → join → teardown. A kernel reading memory this

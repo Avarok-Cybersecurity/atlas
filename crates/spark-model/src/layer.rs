@@ -9,7 +9,7 @@
 
 use std::any::Any;
 
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 
@@ -32,6 +32,23 @@ pub trait LayerState: Send + Sync {
 /// Empty state for layers that store all persistent state externally
 /// (e.g., attention layers where KV is in `PagedKvCache`).
 pub struct EmptyLayerState;
+
+/// Attention-layer per-sequence state. KV lives in `PagedKvCache`; the only
+/// resident piece is the QSA indexer carry on the 12 qwen4_exp
+/// full-attention layers (Atlas #753 item B).
+#[derive(Default)]
+pub struct AttnLayerState {
+    pub qsa: Option<crate::layers::qsa::QsaSeqState>,
+}
+
+impl LayerState for AttnLayerState {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 impl LayerState for EmptyLayerState {
     fn as_any(&self) -> &dyn Any {
@@ -60,16 +77,39 @@ pub struct SsmLayerState {
     pub h_state_intermediates: Vec<DevicePtr>,
     /// Intermediate conv_state snapshots during batched verification.
     pub conv_state_intermediates: Vec<DevicePtr>,
-    /// Storage dtype of `h_state`: `false` = FP32 (the only format prefill
-    /// ever writes), `true` = FP16 packed into the first half of the same
-    /// FP32-sized pool region (`ATLAS_SSM_H_FP16`).
+    /// Storage dtype of `h_state`: `false` = FP32, `true` = FP16
+    /// (`--ssm-h-dtype f16`).
     ///
-    /// This is the single source of truth for the h-state format. The decode
-    /// mixer flips it exactly once per sequence, on the first decode step
-    /// after any FP32 writer touched the slot, so no caller has to know where
-    /// the prefill->decode edge is. It rides through swap-out/swap-in because
-    /// `state_io` mutates these states in place rather than rebuilding them.
+    /// This is the single source of truth for the h-state format. Which edge
+    /// sets it depends on the POOL width:
+    ///
+    /// * FP32-sized pool (stage 1/2, `h_prefill_stage == None`): prefill is
+    ///   the only FP32 writer and writes the slot in place, so the flag
+    ///   starts `false` and the decode mixer
+    ///   (`TransformerModel::ssm_h_to_f16_dispatch`) flips it exactly once
+    ///   per sequence, on the first decode step. No caller has to know where
+    ///   the prefill->decode edge is.
+    /// * f16-SIZED pool (stage 3, `h_prefill_stage == Some`): the slot is
+    ///   physically 2 bytes/element and can NEVER hold FP32, so the flag is
+    ///   `true` from allocation onwards and the decode mixer is a no-op.
+    ///   Prefill's FP32 kernels run over [`Self::h_prefill_stage`] instead.
+    ///
+    /// It rides through swap-out/swap-in because `state_io` mutates these
+    /// states in place rather than rebuilding them.
     pub h_is_f16: bool,
+    /// Stage-3 f16-SIZED pool ONLY (`--ssm-h-dtype f16-pool`): the FP32
+    /// staging blob for THIS sequence's slot, which the GDN prefill widens
+    /// `h_state` into before its FP32 kernels run and narrows back after.
+    ///
+    /// `None` — every configuration before stage 3 — means "the slot IS
+    /// FP32-wide": prefill writes `h_state` in place exactly as it always
+    /// has, and not one byte moves. The same blob is shared by every layer
+    /// of the sequence (see `SsmStatePool::h_prefill_stage`).
+    pub h_prefill_stage: Option<DevicePtr>,
+    /// PLE per-sequence carry (n-gram history + dilated-conv state), present
+    /// only on the layer that hosts a `PleLayer` (Atlas #753 item B: one per
+    /// in-flight sequence, lazily created on the sequence's first pass).
+    pub ple: Option<crate::layers::ple::PleSeqState>,
 }
 
 impl LayerState for SsmLayerState {
@@ -247,6 +287,11 @@ pub struct GdnPrefillBuffers {
 pub struct ForwardContext<'a> {
     /// Pre-allocated scratch buffers.
     pub buffers: &'a BufferArena,
+    /// mHC highway ROW offset for this pass (#753 item B, mixed steps):
+    /// the fused decode+prefill step gives the prefill chunk highway rows
+    /// at `padded_n` so they live disjoint from the decode rows, mirroring
+    /// the hidden/residual layout. 0 everywhere else.
+    pub hc_row_offset: usize,
     /// GPU backend for kernel launches and memory ops.
     pub gpu: &'a dyn GpuBackend,
     /// Model configuration (dimensions, hyperparameters).
@@ -278,6 +323,15 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// True ONLY on the single-token decode step, where `attn_metadata`'s `positions`,
+    /// `slot`, `seq_len` and `block_table` are the step's SCALARS at stable addresses.
+    ///
+    /// 🪤 `prefill_default` drives a layer that has no `prefill` of its own by calling its
+    /// `decode` once per token — with the PREFILL context, whose `positions`/`slot` are
+    /// per-token ARRAYS and whose `block_table`/`seq_len` are NULL unless the pass is paged.
+    /// A layer that reads those pointers as decode scalars gets an illegal address on the
+    /// first prompt. Check this flag, not `attn_metadata.is_some()`.
+    pub decode_step: bool,
     /// True when this prefill pass continues from a restored Marconi SSM
     /// snapshot (warm prefix-cache hit). GDN layers must then take the
     /// bit-faithful WY4 recurrence instead of the FLA chunked kernel: FLA's
@@ -287,12 +341,26 @@ pub struct ForwardContext<'a> {
     /// into SHARED prefix-cache blocks — non-exact recompute poisons them
     /// and the drift ratchets across turns (2026-06-10 warm-hit stutter).
     pub gdn_exact_replay: bool,
+    /// The caller asked the batched GDN verify for WRITE-ON-ACCEPT: the K=4
+    /// twin writes no state and the caller commits the accepted rows itself
+    /// through `Model::gdn_fold_accepted` right after the verdict. An
+    /// explicit per-call request, never a layer-local default, because the
+    /// MTP batched K-row verify shares the same layer code and commits
+    /// through a path that never folds (review of PR #844). Only the DFlash
+    /// batched step sets it; every other forward leaves it `false`.
+    pub gdn_write_on_accept: bool,
     /// Device `[num_tokens]` u32 token IDs for the tokens being processed this
     /// pass, in the SAME order the per-token MoE loop visits them. Required by
     /// DeepSeek-V4 hash-MoE layers (static `tid2eid[token_id]` routing); `None`
     /// for models without hash routing. Must be a STABLE address across the
     /// layer loop (and, under CUDA-graph decode, uploaded before each replay).
     pub token_ids: Option<DevicePtr>,
+    /// HOST copy of the same token ids, when the caller had them in hand
+    /// (decode always does — it uploads `token_ids` FROM this value; chunked
+    /// prefill likewise). PLE computes its n-gram ids on the host, and
+    /// reading them back off the device costs a synchronous D2H per decode
+    /// step — pure overhead, and capture-unsupported inside a CUDA graph.
+    pub host_token_ids: Option<&'a [u32]>,
     /// #30 (routed-prefill precision): the REQUEST slot's per-layer LoRA pairs,
     /// GLOBAL-layer-indexed (`len == num_hidden_layers`), set ONLY at the prefill
     /// entries and ONLY when the request routes to a NON-active slot. `Some` makes
@@ -304,7 +372,7 @@ pub struct ForwardContext<'a> {
     /// the installed-active-pair path byte-identical. Prefill runs eager
     /// (`graph_capture: false`) so this per-pass CPU borrow is safe.
     pub routed_lora_layers: Option<&'a [Option<crate::lora::LoraLayerWeights>]>,
-    /// Default-ON mid-chunk SSM tail capture (opt-out `ATLAS_SSM_TAIL_MIDCHUNK=0`).
+    /// Default-ON mid-chunk SSM tail capture (opt-out `AVAROK_SSM_TAIL_MIDCHUNK=0`).
     ///
     /// `Some` only on the single prefill pass whose local token range spans
     /// the block-floored matched-prefix boundary `tb`. GDN/SSM layers then
@@ -394,3 +462,7 @@ pub enum MoeLoraRoute {
 /// each is attention, SSM, MoE, or dense FFN.
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "layer/release_contract_tests.rs"]
+mod release_contract_tests;

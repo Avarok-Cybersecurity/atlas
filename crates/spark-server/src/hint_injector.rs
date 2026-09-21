@@ -304,7 +304,7 @@ pub fn looks_like_error(text: &str) -> bool {
 // file(s) — the run finishes with a valid Cargo.toml but no real src/main.rs,
 // so webserver_ok never fires. This steering nudge fires when the agent has
 // made many tool calls with NO productive file output yet, redirecting it to
-// write + verify. Env-gated (PCND): ATLAS_BASH_WANDER_WATCHDOG=1.
+// write + verify. Env-gated (PCND): AVAROK_BASH_WANDER_WATCHDOG=1.
 
 /// Classify a tool call as PRODUCTIVE (produces/verifies a deliverable) vs
 /// exploratory. `write`/`edit`/`create` tools are productive; a `bash` call is

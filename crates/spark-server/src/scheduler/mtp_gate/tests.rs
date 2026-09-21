@@ -295,7 +295,7 @@ fn entry_pin_steps_do_not_touch_arbitration_state() {
     assert!(g.in_serial_mode(), "pin must not flip the gate's mode");
 }
 
-/// `ATLAS_SPEC_ENTRY_PIN` parsing: strict integer, default 8, `0` disables.
+/// `AVAROK_SPEC_ENTRY_PIN` parsing: strict integer, default 8, `0` disables.
 #[test]
 fn entry_pin_env_parse() {
     assert_eq!(parse_entry_pin_tokens(None), 8);
@@ -430,6 +430,34 @@ fn decode_steps_charge_the_batch_width() {
         "serial EWMA must read the delivered 400 tok/s, not the pre-fix \
          one-token 100 tok/s (got {serial:.1})"
     );
+}
+
+/// Drain-tail graph borrowing (spark-model `graph_borrow.rs`) may replay a
+/// WIDER captured CUDA graph for a shrinking batch — the wall then includes
+/// pad-lane compute. The arbiter stays honest only if the scheduler keeps
+/// charging steps at the ACTIVE width (tokens actually delivered), never at
+/// any padded width: the model layer hides padding entirely, so the call
+/// sites must pass `active.len()`.
+///
+/// PROVEN BY: rewriting the decode charge in `scheduler/mod.rs` to anything
+/// other than `active.len()` turns this red.
+#[test]
+fn arbiter_charges_active_width_never_a_padded_width() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/scheduler/mod.rs"),
+    )
+    .unwrap();
+    assert!(
+        src.contains("gate.record_decode(t0.elapsed(), active.len())"),
+        "decode steps must be charged at the active batch width"
+    );
+    for call in src.split("gate.record_decode(").skip(1) {
+        let args = call.split(';').next().unwrap_or("");
+        assert!(
+            args.contains("active.len()"),
+            "every decode charge must use active.len(), got `record_decode({args})`"
+        );
+    }
 }
 
 /// A width-regime change is a depth-regime change's twin: EWMAs measured at

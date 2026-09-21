@@ -3,7 +3,7 @@
 //! Gemma-4 weight loader: per-layer construction (`load_layers`).
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -18,6 +18,39 @@ use crate::weight_map::{
     quantize_to_nvfp4, quantized_any,
 };
 
+/// Can this box hold the transposed NVFP4 FFN copies for EVERY layer?
+///
+/// Same shape of question as `weight_loader::moe_prefill_copies_fit`, and the
+/// same reason for asking it once rather than per layer: `free_memory()` shrinks
+/// as layers load, so a per-layer probe transposes the early layers and skips the
+/// late ones, leaving prefill straddling two dispatch arms.
+///
+/// `AVAROK_GEMMA4_FFN_TRANSPOSE=0` forces the fallback — an A/B lever, and an
+/// escape hatch for a box under external memory pressure the probe cannot see.
+fn ffn_transpose_fits(config: &ModelConfig, gpu: &dyn GpuBackend) -> bool {
+    if std::env::var("AVAROK_GEMMA4_FFN_TRANSPOSE").ok().as_deref() == Some("0") {
+        tracing::info!("AVAROK_GEMMA4_FFN_TRANSPOSE=0: dense FFN prefill uses the w4a16 fallback");
+        return false;
+    }
+    let h = config.hidden_size;
+    let inter = config.intermediate_size;
+    // NVFP4: half a byte per weight plus one ue4m3 scale per 16 elements.
+    let per_weight = h * inter / 2 + h * inter / 16;
+    let total = 3 * per_weight * config.num_hidden_layers;
+    let available = gpu.free_memory().unwrap_or(0);
+    let headroom = 2 * 1024 * 1024 * 1024;
+    let fits = total <= available.saturating_sub(headroom);
+    if !fits {
+        tracing::warn!(
+            "Skipping Gemma-4 FFN transposition ({:.1} GB needed, {:.1} GB available). \
+             Prefill falls back to the untransposed w4a16 GEMM.",
+            total as f64 / (1024.0 * 1024.0 * 1024.0),
+            available as f64 / (1024.0 * 1024.0 * 1024.0),
+        );
+    }
+    fits
+}
+
 pub(super) fn load_layers_impl(
     store: &WeightStore,
     config: &ModelConfig,
@@ -29,6 +62,9 @@ pub(super) fn load_layers_impl(
     let variant = detect_nvfp4_variant(store, config);
     tracing::info!("Gemma-4 NVFP4 variant: {:?}", variant);
 
+    // Decided once, before any layer allocates — see the doc on the parameter.
+    let moe_prefill_copies =
+        config.num_experts > 0 && crate::weight_loader::moe_prefill_copies_fit(config, gpu);
     let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
     let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
     let stream = gpu.default_stream();
@@ -137,7 +173,7 @@ pub(super) fn load_layers_impl(
         // 60 dense layers flips a 0.125-logit-gap argmax tiebreak at
         // decode step 1 on creative prompts, after which the wrong
         // KV cache state self-reinforces a stopword loop ("Crystals a
-        // a a a a..."). Bisected via ATLAS_DIAG_GEMMA4=1 logits dump.
+        // a a a a..."). Bisected via AVAROK_DIAG_GEMMA4=1 logits dump.
         //
         // Default for Gemma-4 dense (31B): use BF16 attention via
         // dense_gemv fallback (qwen3_attention/decode.rs:622-699). This
@@ -148,8 +184,8 @@ pub(super) fn load_layers_impl(
         // token activation is naturally lower-precision-tolerant and
         // it works correctly on creative prompts already.
         //
-        // Override via ATLAS_GEMMA4_BF16_ATTN=0 to force NVFP4 for A/B
-        // testing; ATLAS_GEMMA4_BF16_ATTN=1 to force BF16 even on MoE.
+        // Override via AVAROK_GEMMA4_BF16_ATTN=0 to force NVFP4 for A/B
+        // testing; AVAROK_GEMMA4_BF16_ATTN=1 to force BF16 even on MoE.
         // Default to BF16 attention for ALL Gemma-4 variants (dense AND MoE).
         // The 31B-dense creative-collapse fix from 2026-05-01 lands here
         // because attention NVFP4 quantization noise compounds across 60
@@ -161,7 +197,7 @@ pub(super) fn load_layers_impl(
         // of the first one. 26B has ~28 GB total in BF16-attn mode,
         // well under the 119 GB single-GPU budget.
         let bf16_attn_default = true;
-        let bf16_attn = match std::env::var("ATLAS_GEMMA4_BF16_ATTN").ok().as_deref() {
+        let bf16_attn = match std::env::var("AVAROK_GEMMA4_BF16_ATTN").ok().as_deref() {
             Some("0") => false,
             Some("1") => true,
             _ => bf16_attn_default,
@@ -186,10 +222,10 @@ pub(super) fn load_layers_impl(
         // Memory cost when on: 60 layers × 3 weights × hidden(5376) ×
         // intermediate(21504) × 2 bytes = ~41 GB extra. Does fit in
         // 119 GB but increases swap-out risk. Leaving infrastructure
-        // wired for future bisection (`ATLAS_GEMMA4_BF16_MLP=1`
+        // wired for future bisection (`AVAROK_GEMMA4_BF16_MLP=1`
         // re-enables; `=0` is the default).
         let bf16_mlp_default = false;
-        let bf16_mlp = match std::env::var("ATLAS_GEMMA4_BF16_MLP").ok().as_deref() {
+        let bf16_mlp = match std::env::var("AVAROK_GEMMA4_BF16_MLP").ok().as_deref() {
             Some("0") => false,
             Some("1") => true,
             _ => bf16_mlp_default,
@@ -345,14 +381,48 @@ pub(super) fn load_layers_impl(
             variant,
             qctx,
         )?;
+        // ★ Transposed NVFP4 copies for the prefill GEMMs.
+        //
+        // These used to be unconditionally `None`, justified by a comment reading
+        // "Gemma-4 uses the bf16_weights prefill path". That path is DISABLED —
+        // `bf16_mlp_default = false` a few hundred lines up, because it costs
+        // ~41 GB — so the justification went stale while the `None` stayed.
+        //
+        // Every fast arm of `DenseFfnLayer::forward_prefill`'s `w4_gemm!` is
+        // guarded on `Some(wt)`: the n128 family, the bf16-TC pair, and both
+        // `t_m128` variants. With all three `None`, all six are skipped and
+        // dispatch lands on the final `_ =>` fallback, plain `w4a16_gemm`.
+        //
+        // MEASURED on nvidia/Gemma-4-31B-IT-NVFP4, 4096-token prefill: the FFN
+        // took 23,714 ms of a 28,180 ms wall — 60 layers, ~395 ms each, split
+        // evenly across gate (7,929 ms), up (7,781 ms) and down (8,005 ms). For
+        // that shape (3 x 5376 x 21504 x 4012 tok x 60 layers = 167 TFLOP) that
+        // is ~7.0 TFLOP/s, against the ~51 TFLOP/s this file's own comments
+        // attribute to `t_m128`.
+        //
+        // COST is a quarter of what made the BF16 path unattractive: NVFP4 is
+        // half a byte per weight, so 3 x h x inter x 0.5 x layers = ~10.4 GB on
+        // the 31B, against ~41 GB for the bf16_mlp alternative. Gated on
+        // `moe_prefill_copies_fit`-style free-memory arithmetic rather than
+        // assumed to fit, and skipped entirely when `bf16_mlp` IS on, where the
+        // original comment's reasoning does hold.
+        let want_ffn_t = !bf16_mlp && ffn_transpose_fits(config, gpu);
+        let (gate_proj_t, up_proj_t, down_proj_t) = if want_ffn_t {
+            (
+                Some(gate_proj.transpose_for_gemm(gpu, config.intermediate_size, h)?),
+                Some(up_proj.transpose_for_gemm(gpu, config.intermediate_size, h)?),
+                Some(down_proj.transpose_for_gemm(gpu, h, config.intermediate_size)?),
+            )
+        } else {
+            (None, None, None)
+        };
         let ffn_weights = DenseFfnWeights {
             gate_proj,
             up_proj,
             down_proj,
-            // Gemma-4 uses the bf16_weights prefill path; no transposed NVFP4 copies.
-            gate_proj_t: None,
-            up_proj_t: None,
-            down_proj_t: None,
+            gate_proj_t,
+            up_proj_t,
+            down_proj_t,
         };
         let bf16_mlp_weights = build_bf16_mlp(store, &lp, bf16_mlp, config, gpu, h)?;
         gpu.synchronize(stream)?;
@@ -371,7 +441,18 @@ pub(super) fn load_layers_impl(
 
         // ── MoE experts (Gemma-4 26B) — extracted to loader_b ──
         let moe_ffn = build_moe_ffn(
-            store, &lp, i, config, gpu, variant, qctx, h, absmax_k, quantize_k, stream,
+            store,
+            &lp,
+            i,
+            config,
+            gpu,
+            variant,
+            qctx,
+            h,
+            absmax_k,
+            quantize_k,
+            moe_prefill_copies,
+            stream,
         )?;
 
         tracing::info!("L{i}: building attention layer...");

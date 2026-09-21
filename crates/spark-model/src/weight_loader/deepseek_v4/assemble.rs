@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::{Context, Result};
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::DevicePtr;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
@@ -81,14 +81,14 @@ fn load_expert_proj(
 }
 
 /// Phase-K STEP 0 (gating): one-shot device byte-check of the native-MXFP4
-/// loader. When `ATLAS_DUMP_EXPERT0=1`, dumps `layers.0.ffn.experts.0.w1`'s
+/// loader. When `AVAROK_DUMP_EXPERT0=1`, dumps `layers.0.ffn.experts.0.w1`'s
 /// device-resident packed nibbles (`.weight`) + E8M0 scales (`.weight_scale`)
 /// to `/tmp` for sha256 vs the on-disk reference (`ARM-2-LEG1-BYTE-CHECK.md`:
 /// weight `177ac128…`, scale `ea4ac989…`). Dumps the PRE-transpose buffer (the
 /// loader output, before any `transpose_for_gemm` swizzle) — matches the Leg-1
 /// caveat. Sizes are fixed by the frozen ckpt: weight 4194304 B, scale 262144 B.
 fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) -> Result<()> {
-    if std::env::var("ATLAS_DUMP_EXPERT0").as_deref() != Ok("1") {
+    if std::env::var("AVAROK_DUMP_EXPERT0").as_deref() != Ok("1") {
         return Ok(());
     }
     if !prefix.ends_with("layers.0.ffn.experts.0.w1") {
@@ -98,10 +98,10 @@ fn maybe_dump_expert0(prefix: &str, qw: &QuantizedWeight, gpu: &dyn GpuBackend) 
     gpu.copy_d2h(qw.weight, &mut w)?;
     let mut s = vec![0u8; 262144];
     gpu.copy_d2h(qw.weight_scale, &mut s)?;
-    std::fs::write("/tmp/atlas_expert0_w1_weight.bin", &w)?;
-    std::fs::write("/tmp/atlas_expert0_w1_scale.bin", &s)?;
+    std::fs::write("/tmp/avarok_expert0_w1_weight.bin", &w)?;
+    std::fs::write("/tmp/avarok_expert0_w1_scale.bin", &s)?;
     tracing::info!(
-        "ATLAS_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/atlas_expert0_w1_*.bin",
+        "AVAROK_DUMP_EXPERT0: dumped {prefix} weight={} B scale={} B to /tmp/avarok_expert0_w1_*.bin",
         w.len(),
         s.len()
     );
@@ -550,6 +550,10 @@ pub fn assemble_layer(
             hc_mult: config.hc_mult,
             sinkhorn_iters: config.hc_sinkhorn_iters,
             hc_eps: config.hc_eps,
+            // V4 is all-attention, so the attention index IS the model index
+            // and these reproduce the guards they replaced exactly.
+            is_first_model_layer: layer_idx == 0,
+            is_last_model_layer: layer_idx + 1 == config.num_hidden_layers,
         });
     }
 
@@ -617,6 +621,8 @@ fn load_hc_site(
         hc_fn,
         hc_base,
         hc_scale,
+        // DeepSeek-V4 keeps the Sinkhorn mixer; None selects it.
+        lowrank: None,
     })
 }
 

@@ -31,7 +31,7 @@
 //!   and the SSM intermediates pools were built and audited for. Dropping a
 //!   sequence to zero drafts (rows_i = 1) is a separate, untested regime.
 //! * The budget is a FIXED ratio from the discrete bucket set, not a profiled
-//!   cost table. `ATLAS_MTP_DCUT_RATIO` picks it; values snap to the nearest
+//!   cost table. `AVAROK_MTP_DCUT_RATIO` picks it; values snap to the nearest
 //!   bucket so the search space stays the paper's four points.
 //! * Pruning changes only the VERIFY width. The propose already ran at full
 //!   width when this is called, so v1 banks the row saving, not a drafter
@@ -50,13 +50,21 @@ const BUCKETS: [f32; 4] = [0.25, 0.5, 0.75, 1.0];
 /// the budget is behavior-neutral for every default-reachable shape: the
 /// default ladder's widest row totals (16:2 = 48, 32:1 = 64, 8:3 = 32) all
 /// fit the OLD 64-row bound in one chunk, so chunking and pruning are
-/// unchanged — only explicit `ATLAS_MTP_K_LADDER` depth-at-width overrides
+/// unchanged — only explicit `AVAROK_MTP_K_LADDER` depth-at-width overrides
 /// (24:2 / 32:2) reach rows 65..=96.
-pub(super) const VERIFY_ROW_BUDGET: usize = 96;
+// Mirrors `VERIFY_ROW_CAP` (spark-model verify_e2.rs) — keep in
+// lock-step. 96 -> 160 with the DFlash n=20 × k=8 widening.
+pub(super) const VERIFY_ROW_BUDGET: usize = 160;
+
+/// Widest verify batch in SEQUENCES that the model can accept — the batched
+/// verify's hidden stash slot count, which `can_batch_verify` enforces as
+/// `(2..=VERIFY_WY_TABLE_SEQS).contains(&n)`. Read from the model crate, not
+/// restated, so the chunker tracks the stash if it is ever resized.
+pub(super) const WIDTH_CAP: usize = spark_model::layer::VERIFY_WY_TABLE_SEQS;
 
 /// Widest verify batch (SEQUENCES, not rows) D-Cut may prune —
-/// the D-Cut-at-depth policy. Value-parsed from `ATLAS_MTP_DCUT_MAX_SEQS`
-/// once per process (0 disables pruning entirely; `ATLAS_NO_MTP_DCUT` also
+/// the D-Cut-at-depth policy. Value-parsed from `AVAROK_MTP_DCUT_MAX_SEQS`
+/// once per process (0 disables pruning entirely; `AVAROK_NO_MTP_DCUT` also
 /// does).
 ///
 /// Default 8, anchored to two measurements on the same binary class:
@@ -73,14 +81,14 @@ pub(super) const VERIFY_ROW_BUDGET: usize = 96;
 pub(super) fn dcut_width_cap() -> usize {
     static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *N.get_or_init(|| {
-        std::env::var("ATLAS_MTP_DCUT_MAX_SEQS")
+        std::env::var("AVAROK_MTP_DCUT_MAX_SEQS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(8)
     })
 }
 
-/// Default ON, kill switch `ATLAS_NO_MTP_DCUT` — PRESENCE check (house
+/// Default ON, kill switch `AVAROK_NO_MTP_DCUT` — PRESENCE check (house
 /// convention: `=0` is NOT off).
 ///
 /// Measured at C=8 on binary `296b9674` (one fresh serve per leg, warmup
@@ -92,7 +100,7 @@ pub(super) fn dcut_width_cap() -> usize {
 /// pruning at the 16:2 rung's n=16 measured -9%).
 pub(super) fn dcut_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("ATLAS_NO_MTP_DCUT").is_none())
+    *ON.get_or_init(|| std::env::var_os("AVAROK_NO_MTP_DCUT").is_none())
 }
 
 /// Retention ratio, VALUE-parsed once and snapped to the nearest
@@ -108,7 +116,7 @@ pub(super) fn dcut_enabled() -> bool {
 pub(super) fn dcut_ratio() -> f32 {
     static R: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *R.get_or_init(|| {
-        let raw = std::env::var("ATLAS_MTP_DCUT_RATIO")
+        let raw = std::env::var("AVAROK_MTP_DCUT_RATIO")
             .ok()
             .and_then(|v| v.parse::<f32>().ok())
             .unwrap_or(0.75)
@@ -185,11 +193,32 @@ pub(super) fn select(
     retained
 }
 
-/// Plan one verify batch: choose each batchable sequence's retained draft
-/// count, truncate its drafts to that prefix, reorder the batch deepest-first,
-/// and return the resulting per-sequence ROW count (`retained + 1`).
+/// Plan one verify batch: choose the retained draft-count MULTISET from the
+/// drafter's confidences, assign it to the batch's ssm slots in the canonical
+/// order, truncate each sequence's drafts to its assigned prefix, and return
+/// the resulting per-sequence ROW count (`retained + 1`) in dispatch order.
 ///
-/// With `ATLAS_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
+/// ★ The depth→slot ASSIGNMENT is canonical (`verify_key::verify_batch_order`
+/// — depths descending paired with slots ascending), not confidence-ordered,
+/// AT BATCH WIDTHS >= `verify_key::CANONICAL_KEY_MIN_WIDTH` (8). D-Cut's row
+/// saving comes from the multiset, which stays confidence-chosen; WHO gets
+/// which depth was the half that multiplied the batched-verify CUDA-graph key
+/// space (266 arrangements at n=8 against a 32-entry cache → 89% of steps
+/// re-capturing, 23.2 ms/step). It also RECONCILES the batch's two ordering
+/// demands — contiguous equal-depth runs and ascending ssm slots — which the
+/// confidence-ordered arrangement put in direct conflict. Runs are physically
+/// consecutive only when the selected pool slots have no gaps; the model
+/// checks their pointers and declines the batched fast path otherwise.
+///
+/// Below that width the key space is 2 (n=2) or 10 (n=4) keys against a
+/// 32-entry cache — nothing to collapse — and the forced assignment measured
+/// NET NEGATIVE there (-2.4% at C=2, -3.7% at C=4), so this falls back to the
+/// pre-canonical assignment byte for byte. `verify_key::canonical_assignment`
+/// is the single gate (threshold + `AVAROK_CANONICAL_KEY_MIN_WIDTH` override +
+/// the `AVAROK_NO_CANONICAL_VERIFY_KEY` kill switch); see `verify_key`'s module
+/// docs and `CANONICAL_KEY_MIN_WIDTH` for the A/B table.
+///
+/// With `AVAROK_NO_MTP_DCUT` set — or the batch wider than [`dcut_width_cap`]
 /// sequences (the D-Cut-at-depth policy: pruning at the 16:2 rung's n=16
 /// measured -9%, so depth-at-width always verifies the uniform shape that
 /// won) — this is the uniform ladder shape and the batch order is untouched:
@@ -222,40 +251,73 @@ pub(super) fn plan(
         })
         .collect();
     let retained = select(&confs, ladder_nd, VERIFY_ROW_BUDGET, dcut_ratio());
-    for (slot, &idx) in batchable.iter().enumerate() {
-        let keep = retained[slot].clamp(1, ladder_nd);
-        active[idx].pending_drafts.truncate(keep);
-        active[idx].pending_draft_conf.truncate(keep);
-        ks[slot] = keep + 1;
+    for (pos, r) in retained.iter().enumerate() {
+        ks[pos] = (*r).clamp(1, ladder_nd) + 1;
     }
-    record(batchable.len() * rows, ks.iter().sum(), &ks);
-    // Deepest first so equal-depth sequences form CONTIGUOUS row runs — the
-    // cross-sequence batched GDN conv+WY fast path launches once per run, so
-    // fragmenting the depths would trade verify rows for kernel launches.
-    // Secondary key stays the ssm slot (canonical graph key + the
-    // consecutive-slot precondition).
-    let mut order: Vec<(usize, usize)> = batchable.iter().copied().zip(ks).collect();
-    order.sort_by_key(|&(idx, k)| {
-        (
-            std::cmp::Reverse(k),
-            active[idx].seq.ssm_slot_idx().unwrap_or(usize::MAX),
-        )
-    });
-    *batchable = order.iter().map(|&(i, _)| i).collect();
-    order.iter().map(|&(_, k)| k).collect()
+    // Dispatch order + depth assignment, from the ONE ordering rule shared
+    // with the graph key. Canonical: depths descending onto slots ascending,
+    // so `ks_out[p]` is the multiset's p-th deepest row count, NOT
+    // necessarily the confidence-chosen depth of the sequence placed there.
+    // Below `CANONICAL_KEY_MIN_WIDTH` (or with the kill switch set): each
+    // sequence keeps its own depth, deepest-first. This is the ONE place the
+    // assignment is decided, so it is the ONE place the width gate is asked —
+    // `mtp_step` re-applies the ORDER for the same `batchable.len()`.
+    let slots: Vec<usize> = batchable
+        .iter()
+        .map(|&idx| active[idx].seq.ssm_slot_idx().unwrap_or(usize::MAX))
+        .collect();
+    let (order, ks_out) = spark_model::speculative::verify_key::verify_batch_order(
+        &slots,
+        &ks,
+        spark_model::speculative::verify_key::canonical_assignment(batchable.len()),
+    );
+    // Truncate to the ASSIGNED depth. Every batchable sequence entered the
+    // step with exactly `ladder_nd` drafts (`mtp_step` truncates the surplus)
+    // and `ks_out[p] - 1` is in `1..=ladder_nd`, so this is always a prefix
+    // of what the drafter produced — deepening a sequence past its own drafts
+    // is unrepresentable, not merely unlikely.
+    let reordered: Vec<usize> = order.iter().map(|&p| batchable[p]).collect();
+    for (idx, &k) in reordered.iter().zip(&ks_out) {
+        let a = &mut active[*idx];
+        debug_assert!(
+            k >= 2 && k - 1 <= a.pending_drafts.len(),
+            "assigned depth {k} exceeds the {} drafts proposed",
+            a.pending_drafts.len()
+        );
+        a.pending_drafts.truncate(k - 1);
+        a.pending_draft_conf.truncate(k - 1);
+    }
+    record(batchable.len() * rows, ks_out.iter().sum(), &ks_out);
+    *batchable = reordered;
+    ks_out
 }
 
 /// Split a batch into verify chunks: `[lo, hi)` index ranges over `ks`.
 ///
-/// ONE cap: the row-buffer bound (`VERIFY_ROW_BUDGET` = 96) — the audited
-/// verify envelope (meta gaps / logits rows / bt staging, sizes.rs). The
-/// sequence-count cap is DERIVED from it per chunk (`budget / widest rows`:
-/// rows=4 → 24 seqs, rows=3 → 32 = the 32:2 shape in one chunk, rows=2 → 48;
-/// `can_batch_verify` separately bounds n at 32 = `VERIFY_WY_TABLE_SEQS`), no
-/// longer a hardcoded 8 for the deep widths. The old 8 was stale from the
+/// TWO caps, because `can_batch_verify` enforces two:
+/// * the row-buffer bound (`VERIFY_ROW_BUDGET` = 160) — the audited verify
+///   envelope (meta gaps / logits rows / bt staging, sizes.rs), from which a
+///   per-chunk sequence cap is DERIVED (`budget / widest rows`: rows=4 → 40
+///   seqs, rows=3 → 53, rows=2 → 80), no longer a hardcoded 8 for the deep
+///   widths;
+/// * the WIDTH bound `VERIFY_WY_TABLE_SEQS` = 32 — the batched verify's
+///   hidden stash has exactly 32 slots, so `can_batch_verify` admits only
+///   `(2..=32).contains(&n)`.
+///
+/// ★ The width bound used to be omitted here, on the reasoning that "n is
+/// separately bounded at 32" by the dispatch cap. It is — by
+/// `speculative::mtp_max_seqs()`, whose DEFAULT is 32 but which is an
+/// operator value (`AVAROK_MTP_MAX_SEQS`), and by nothing else. Raise it and
+/// the row-derived cap lets a chunk reach 40/53/80 sequences; every such
+/// chunk is refused WHOLESALE by the `can_batch_verify` gate in `mtp_step`
+/// and falls to the per-seq verify loop — one weight sweep PER SEQUENCE.
+/// That is the same "stale cap silently serializes the batch" artifact this
+/// function was written to close (the hardcoded 8), closed for ROWS and left
+/// open for WIDTH. Deriving BOTH caps here means a chunk this function emits
+/// is always one the model will actually batch. The old 8 was stale from the
 /// 32-row budget era and SILENTLY SERIALIZED any depth shape above n=8 into
 /// 8-wide verify chunks (double weight reads per step): a 2026-07-30 fixer-r2
-/// leg with `ATLAS_MTP_K_LADDER=..,16:2,..` measured 127-135 tok/s at C=16 vs
+/// leg with `AVAROK_MTP_K_LADDER=..,16:2,..` measured 127-135 tok/s at C=16 vs
 /// a 184-185 same-session 16:1 control, and its accept telemetry read
 /// `n=8 k_drafts=2` — the chunk cap, not depth economics (the exact artifact
 /// class the ladder history documents for "8:3 collapses" / "16:2 → 94.1").
@@ -271,8 +333,9 @@ pub(super) fn chunk_ranges(ks: &[usize]) -> Vec<(usize, usize)> {
     let mut lo = 0usize;
     while lo < ks.len() {
         // Derived, not hardcoded: rows <= 4 is ensured by the ladder clamp,
-        // so the division is well-defined and >= 24.
-        let seq_cap = VERIFY_ROW_BUDGET / ks[lo].max(1);
+        // so the division is well-defined and >= 40. Clamped by the verify
+        // stash width so the chunk is one `can_batch_verify` will accept.
+        let seq_cap = (VERIFY_ROW_BUDGET / ks[lo].max(1)).min(WIDTH_CAP);
         let mut hi = lo;
         let mut r = 0usize;
         while hi < ks.len() && hi - lo < seq_cap && r + ks[hi] <= VERIFY_ROW_BUDGET {
@@ -291,7 +354,7 @@ pub(super) fn chunk_ranges(ks: &[usize]) -> Vec<(usize, usize)> {
 }
 
 /// Per-step retained-rows telemetry, under the existing
-/// `ATLAS_MTP_ACCEPT_DEBUG` gate. Counters only; one line per `PERIOD` steps.
+/// `AVAROK_MTP_ACCEPT_DEBUG` gate. Counters only; one line per `PERIOD` steps.
 fn record(rows_full: usize, rows_kept: usize, ks: &[usize]) {
     use std::sync::atomic::{AtomicU64, Ordering};
     const PERIOD: u64 = 200;
@@ -315,132 +378,6 @@ fn record(rows_full: usize, rows_kept: usize, ks: &[usize]) {
         );
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ratio_one_retains_full_depth() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.1, -2.0, -3.0]; 4];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 1.0), vec![3, 3, 3, 3]);
-    }
-
-    #[test]
-    fn zero_ratio_keeps_the_mandatory_first_draft() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.1, -0.2, -0.3]; 4];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 0.0), vec![1, 1, 1, 1]);
-    }
-
-    #[test]
-    fn budget_spent_on_the_confident_sequence() {
-        // seq 0 is confident throughout, seq 1 collapses after its first draft.
-        let c = [vec![-0.01f32, -0.02, -0.03], vec![-3.0f32, -4.0, -5.0]];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        // 2 sequences x 2 prunable depths = 4 candidates; ratio 0.5 keeps 2,
-        // both of which belong to seq 0.
-        assert_eq!(select(&refs, 3, 32, 0.5), vec![3, 1]);
-    }
-
-    #[test]
-    fn retained_set_is_always_a_prefix() {
-        let c = [vec![-0.1f32, -9.0, -0.001], vec![-0.2f32, -0.2, -0.2]];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        let r = select(&refs, 3, 32, 0.5);
-        // Depth-3 of seq 0 has a WORSE survival score than depth-2 despite its
-        // own high confidence, because survival is the prefix product.
-        assert!(r[0] <= 2, "prefix product must dominate the local value");
-        assert!(r.iter().all(|&k| (1..=3).contains(&k)));
-    }
-
-    #[test]
-    fn row_budget_is_never_exceeded() {
-        let c: Vec<Vec<f32>> = vec![vec![-0.001, -0.001, -0.001]; 8];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        // 8 sequences, budget 24 rows: 16 committed, 8 spare -> 8 extra depths.
-        let r = select(&refs, 3, 24, 1.0);
-        let rows: usize = r.iter().map(|k| k + 1).sum();
-        assert!(rows <= 24, "rows={rows}");
-    }
-
-    #[test]
-    fn missing_confidences_are_never_pruned() {
-        let empty: Vec<f32> = Vec::new();
-        let c = [vec![-5.0f32, -5.0, -5.0], empty];
-        let refs: Vec<&[f32]> = c.iter().map(|v| v.as_slice()).collect();
-        assert_eq!(select(&refs, 3, 32, 0.5), vec![1, 3]);
-    }
-
-    #[test]
-    fn chunk_ranges_reproduce_the_uniform_caps() {
-        // Every default-ladder-reachable shape is a SINGLE chunk — true under
-        // the old 64-row budget too, so the 96 widening is default-inert.
-        assert_eq!(chunk_ranges(&[4; 8]), vec![(0, 8)]);
-        assert_eq!(chunk_ranges(&[3; 8]), vec![(0, 8)]);
-        // The 16:2 default rung: [3; 16] = 48 rows, one chunk.
-        assert_eq!(chunk_ranges(&[3; 16]), vec![(0, 16)]);
-        assert_eq!(chunk_ranges(&[2; 16]), vec![(0, 16)]);
-        // The 32:1 rung: one chunk up to n=32 (R = 64).
-        assert_eq!(chunk_ranges(&[2; 17]), vec![(0, 17)]);
-        assert_eq!(chunk_ranges(&[2; 32]), vec![(0, 32)]);
-    }
-
-    #[test]
-    fn chunk_ranges_seq_cap_derives_from_the_row_budget() {
-        // Depth above n=8 (env-ladder / ragged-D-Cut shapes) is no longer
-        // serialized into 8-wide chunks: the row budget is the only bound.
-        // rows=3: 96/3 = 32 seqs — 16:2, 24:2 AND 32:2 are each ONE chunk.
-        assert_eq!(chunk_ranges(&[3; 21]), vec![(0, 21)]);
-        assert_eq!(chunk_ranges(&[3; 24]), vec![(0, 24)]);
-        assert_eq!(chunk_ranges(&[3; 32]), vec![(0, 32)]);
-        assert_eq!(chunk_ranges(&[3; 33]), vec![(0, 32), (32, 33)]);
-        // rows=4: 96/4 = 24 seqs.
-        assert_eq!(chunk_ranges(&[4; 9]), vec![(0, 9)]);
-        assert_eq!(chunk_ranges(&[4; 24]), vec![(0, 24)]);
-        assert_eq!(chunk_ranges(&[4; 25]), vec![(0, 24), (24, 25)]);
-        // rows=2: 96/2 = 48 seqs.
-        assert_eq!(chunk_ranges(&[2; 48]), vec![(0, 48)]);
-        assert_eq!(chunk_ranges(&[2; 49]), vec![(0, 48), (48, 49)]);
-        // rows=3 with 10 seqs (the old (0,8),(8,10) split): one chunk now.
-        assert_eq!(chunk_ranges(&[3; 10]), vec![(0, 10)]);
-    }
-
-    #[test]
-    fn chunk_ranges_respect_the_row_budget_when_ragged() {
-        // Deepest-first, mixed depths: rows must never exceed the budget per
-        // chunk.
-        let ks = vec![4, 4, 4, 4, 4, 3, 3, 2, 2, 2];
-        for (lo, hi) in chunk_ranges(&ks) {
-            let rows: usize = ks[lo..hi].iter().sum();
-            assert!(rows <= VERIFY_ROW_BUDGET, "rows={rows}");
-            assert!(hi > lo);
-        }
-    }
-
-    // Env-independent as long as the test process does not set
-    // ATLAS_MTP_DCUT_MAX_SEQS (CI does not) — same pattern as the ladder
-    // default-shape test.
-    #[test]
-    fn dcut_width_cap_default_is_the_measured_win_regime() {
-        // 8 = the C=8 regime where ratio 0.75 measured +2.6%; pruning at the
-        // 16:2 rung's n=16 measured -9% (fixer r2 leg D), so `plan` must
-        // return the uniform shape for any wider batch.
-        assert_eq!(dcut_width_cap(), 8);
-    }
-
-    #[test]
-    fn ratio_snaps_to_a_bucket() {
-        // Pure snapping arithmetic, no env: 0.6 is closest to 0.5.
-        let nearest = |raw: f32| {
-            *BUCKETS
-                .iter()
-                .min_by(|a, b| (*a - raw).abs().partial_cmp(&(*b - raw).abs()).unwrap())
-                .unwrap()
-        };
-        assert_eq!(nearest(0.6), 0.5);
-        assert_eq!(nearest(0.9), 1.0);
-        assert_eq!(nearest(0.1), 0.25);
-    }
-}
+#[path = "mtp_dcut_tests.rs"]
+mod tests;

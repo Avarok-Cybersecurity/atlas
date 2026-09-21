@@ -9,7 +9,7 @@ use super::*;
 fn mmap_slot_arena_roundtrips() {
     let slot_bytes = 4096usize;
     let n = 3usize;
-    // Page-aligned heap buffer (AlignedBuf moved to atlas-tier as a private
+    // Page-aligned heap buffer (AlignedBuf moved to avarok-tier as a private
     // helper — allocate directly here).
     let mut p: *mut libc::c_void = std::ptr::null_mut();
     let rc = unsafe { libc::posix_memalign(&mut p, 4096, slot_bytes * n) };

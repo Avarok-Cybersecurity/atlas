@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use anyhow::Result;
-use atlas_core::config::ModelConfig;
+use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, KernelHandle};
 use spark_runtime::kv_cache::KvCacheDtype;
 use spark_runtime::weights::WeightStore;
@@ -329,7 +329,7 @@ fn load_dense_ffn(
         down_proj_t: Some(down_q.transpose_for_gemm(gpu, h, intermediate_size)?),
     };
     let mut dffn = DenseFfnLayer::new(dense_weights, gpu)?;
-    // ATLAS_FFN_MMQ: eager Q4_K materialize + free `_t` at load (before KV sizing).
+    // AVAROK_FFN_MMQ: eager Q4_K materialize + free `_t` at load (before KV sizing).
     dffn.finalize_q4k_load(gpu, h as u32, intermediate_size as u32, stream)?;
     Ok(FfnComponent::Dense(dffn))
 }
@@ -419,7 +419,7 @@ fn load_attention_layer(
     layer.set_dimension_overrides(config.head_dim, actual_q_heads, config.num_key_value_heads);
 
     let is_sliding = if !config.layer_types.is_empty() {
-        config.layer_types.get(i).copied() == Some(atlas_core::config::LayerType::SlidingAttention)
+        config.layer_types.get(i).copied() == Some(avarok_core::config::LayerType::SlidingAttention)
     } else {
         !i.is_multiple_of(4)
     };

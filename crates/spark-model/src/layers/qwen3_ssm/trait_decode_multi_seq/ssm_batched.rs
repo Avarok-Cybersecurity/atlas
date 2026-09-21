@@ -5,7 +5,7 @@
 use super::super::*;
 
 /// Tensor-core mixer projections for wide decode batches. **ON by default at
-/// n>=9**; `ATLAS_SSM_TC_PROJ=&lt;n&gt;` moves the threshold, `=0` disables.
+/// n>=9**; `AVAROK_SSM_TC_PROJ=&lt;n&gt;` moves the threshold, `=0` disables.
 ///
 /// WHY: the mixer's qkvz/out_proj run through `w4a16_gemv_batchm`, a SCALAR-FMA
 /// kernel. It reads the weights once for all n rows, but its arithmetic scales
@@ -30,10 +30,10 @@ use super::super::*;
 /// CAN move a greedy token. It is the production SSM PREFILL path for these
 /// exact two weights, and the coherence smoke is identical, but a BFCL gate is
 /// owed before this merges. Read ONCE — this site runs under graph capture.
-fn ssm_tc_proj_min_n() -> Option<usize> {
+pub(super) fn ssm_tc_proj_min_n() -> Option<usize> {
     static N: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
     *N.get_or_init(
-        || match std::env::var("ATLAS_SSM_TC_PROJ").ok().as_deref() {
+        || match std::env::var("AVAROK_SSM_TC_PROJ").ok().as_deref() {
             None => Some(9),
             Some("0") => None,
             Some("1") => Some(9),
@@ -56,29 +56,26 @@ impl Qwen3SsmLayer {
     /// are read straight from each `SsmLayerState`, so no contiguous-slot
     /// assumption is required.
     #[allow(clippy::too_many_arguments)]
+    /// `hc` (#753 item B): input rows arrive pre-mixed in `norm_output`
+    /// (hc_pre) and the out_proj rows stay in `moe_output` for the caller's
+    /// hc_post — both norm/residual steps skip; `hidden`/`residual` unused.
     pub(super) fn try_decode_multi_seq_ssm_batched<'a, 'b: 'a>(
         &self,
         hidden: DevicePtr,
         residual: DevicePtr,
         n: usize,
         states: &'a mut [&'b mut (dyn LayerState + 'static)],
+        hc: bool,
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<bool> {
         let use_f32_conv = self.conv1d_l2norm_f32_k.0 != 0;
         let use_f32_gdn = self.gdn_f32_k.0 != 0 && self.gated_rms_norm_f32_k.0 != 0;
-        // QKVZ via dense BF16 GEMM or block-scaled FP8 GEMM (w8a16). NVFP4 and
+        // QKVZ via dense-BF16/cuBLASLt, FP8 w8a16 GEMM, or NVFP4 batchm GEMV
+        // (M<=16; tile-GEMM twins `*_nvfp4_t` lift the cap for wide batches
+        // when both twins exist and the TC threshold admits n). Any arm
+        // amortizes the QKVZ/out_proj weight read across the n seqs;
         // interleaved-QKVZ layouts take the proven per-seq loop.
-        // FP8 build → batched w8a16 GEMM; NVFP4 build → batched w4a16 GEMV
-        // (batch4/16, M<=16). Either amortizes the QKVZ/out_proj weight read
-        // across the n seqs; otherwise the per-seq loop re-streams it n times.
-        // n>16: the batchm GEMV family caps at M=16, but the tile-GEMM twins
-        // (`w4a16_gemm_n128` on `qkvz_nvfp4_t`/`out_proj_nvfp4_t`, the
-        // production SSM prefill path) handle any M — so wide batches stay
-        // eligible whenever BOTH twins exist and the TC threshold admits n.
-        // Inert at n<=16: there the GEMV arm of the OR already granted
-        // eligibility and the dispatch match below already picked the tile
-        // path at n>=9.
         let tc_wide_ok = self.qkvz_nvfp4_t.is_some()
             && self.out_proj_nvfp4_t.is_some()
             && ssm_tc_proj_min_n().is_some_and(|min| n >= min);
@@ -94,7 +91,7 @@ impl Qwen3SsmLayer {
             && ((self.qkvz_fp8w.is_some() && self.w8a16_gemm_k.0 != 0)
                 || (self.qkvz_fp8w.is_none() && self.dense_gemm_k.0 != 0)))
             || (self.qkvz_nvfp4.is_some()
-                && ((self.w4a16_gemv_batch4_k.0 != 0 && n <= 16) || tc_wide_ok));
+                && ((self.w4a16_batchm.has_base() && n <= 16) || tc_wide_ok));
         let out_ok = self.out_proj_fp8w.is_some()
             || self.out_proj_dense.is_some()
             || self.qkvz_nvfp4.is_some();
@@ -123,7 +120,7 @@ impl Qwen3SsmLayer {
                     out_ok,
                 );
                 let nvfp4 = self.qkvz_nvfp4.is_some();
-                let b4 = self.w4a16_gemv_batch4_k.0 != 0;
+                let b4 = self.w4a16_batchm.has_base();
                 let tct = self.qkvz_nvfp4_t.is_some() && self.out_proj_nvfp4_t.is_some();
                 WHY.call_once(|| {
                     tracing::info!(
@@ -167,8 +164,8 @@ impl Qwen3SsmLayer {
         // and the FP32 conv path uses `ssm_conv_out_f32`, not `ssm_qkvz`.
         let normed_out_base = ctx.buffers.ssm_qkvz();
         let ssm_out_base = ctx.buffers.moe_output();
-        let detail_profile = std::env::var("ATLAS_SSM_DETAIL_PROFILE").ok().as_deref() == Some("1")
-            && !ctx.graph_capture;
+        let detail_profile =
+            crate::layers::ops::ModelLevers::get().ssm_detail_profile && !ctx.graph_capture;
         let mut detail_parts: Vec<(&'static str, u128)> = Vec::new();
         let mut detail_t0 = if detail_profile {
             ctx.gpu.synchronize(stream).ok();
@@ -192,146 +189,36 @@ impl Qwen3SsmLayer {
             };
         }
 
-        // ── 1. Batched input RMS norm: hidden[0..n] → normed[0..n], residual ──
-        ops::rms_norm_residual(
-            ctx.gpu,
-            self.rms_norm_residual_k,
-            hidden,
-            &self.input_norm,
-            normed_base,
-            residual,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
-        detail_step!("input_norm");
-
-        // ── 2. Batched QKVZ projection: ONE [N,h]→[N,qkvz] GEMM (weights ×1) ──
-        // FP8 (w8a16) when the decode overlay is installed, else BF16 dense.
-        // Prefer the pipelined (cp.async) w8a16 kernel — bit-identical, ~4.6×
-        // faster than the base w8a16_gemm, which nsys showed as 44.6% of the
-        // C>1 decode step. `.0 == 0` → fall back to the base kernel.
-        let w8a16_pipe = self.w8a16_gemm_pipelined_k.0 != 0;
-        // Weight-streaming block-scaled GEMV for batched decode: avoids the
-        // pipelined kernel's M->128 MMA pad (issue-bound). batch4 (M<=4) for the
-        // common path, batch16 (M<=16) for high-concurrency C=8/16. Bit-identical
-        // per row to w8a16_gemv. Disable with ATLAS_SSM_GEMV_BATCH4=0.
-        let gemv_batch_k = if n <= 4 {
-            self.w8a16_gemv_batch4_k
-        } else {
-            self.w8a16_gemv_batch16_k
-        };
-        let use_batch4 = gemv_batch_k.0 != 0
-            && n <= 16
-            && std::env::var("ATLAS_SSM_GEMV_BATCH4").ok().as_deref() != Some("0");
-        // FP4 sibling: w4a16_gemv batch4 (M<=4) / batch8 (M=5..8) / batch16
-        // (M<=16). Single NVFP4 weight pass for the QKVZ + out_proj GEMVs
-        // (amortizes the weight read). batch8 halves batch16's acc/smem
-        // pressure at the mid tier; 0-handle → batch16 as before.
-        let fp4_gemv_batch_k = if n <= 4 {
-            self.w4a16_gemv_batch4_k
-        } else if n <= 8 && self.w4a16_gemv_batch8_k.0 != 0 {
-            self.w4a16_gemv_batch8_k
-        } else {
-            self.w4a16_gemv_batch16_k
-        };
-        if let Some(ref fp8) = self.qkvz_fp8w {
-            if use_batch4 {
-                ops::w8a16_gemv_batch4(
-                    ctx.gpu,
-                    gemv_batch_k,
-                    normed_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    deinterleaved,
-                    n as u32,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else if w8a16_pipe {
-                ops::w8a16_gemm_pipelined(
-                    ctx.gpu,
-                    self.w8a16_gemm_pipelined_k,
-                    normed_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    deinterleaved,
-                    n as u32,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w8a16_gemm(
-                    ctx.gpu,
-                    self.w8a16_gemm_k,
-                    normed_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    deinterleaved,
-                    n as u32,
-                    qkvz_size as u32,
-                    h as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(ref nvfp4) = self.qkvz_nvfp4 {
-            match (ssm_tc_proj_min_n(), self.qkvz_nvfp4_t.as_ref()) {
-                (Some(min_n), Some(nvfp4_t)) if n >= min_n => {
-                    // Tile GEMM on the transposed twin — the same call the SSM
-                    // prefill path makes on this same weight. `ms_proj_gemm`
-                    // picks the 128-row M-tile at wide batches so the weight
-                    // is streamed once instead of ceil(n/64) times.
-                    self.ms_proj_gemm(
-                        ctx.gpu,
-                        normed_base,
-                        nvfp4_t,
-                        deinterleaved,
-                        n as u32,
-                        qkvz_size as u32,
-                        h as u32,
-                        stream,
-                    )?;
-                }
-                // FP4 batched QKVZ: ONE NVFP4 weight pass for all n seqs
-                // (sequential layout writes the deinterleaved buffer directly).
-                _ => {
-                    // w4a16_gemv_batch16 is a MAX_M=16 template: at M>16 it
-                    // silently computes rows 0..15 and never writes rows 16..
-                    // — garbage, not a crash. The eligibility gate makes this
-                    // arm unreachable at n>16 today; fail fast if that drifts.
-                    anyhow::ensure!(
-                        n <= 16,
-                        "SSM batchm QKVZ GEMV caps at M=16 (n={n}); tile-GEMM twins required"
-                    );
-                    ops::w4a16_gemv_batchm(
-                        ctx.gpu,
-                        fp4_gemv_batch_k,
-                        normed_base,
-                        nvfp4,
-                        deinterleaved,
-                        n as u32,
-                        qkvz_size as u32,
-                        h as u32,
-                        stream,
-                    )?
-                }
-            }
-        } else {
-            ops::dense_gemm(
+        // ── 1. Batched input RMS norm (hc: hc_pre already normed; skip) ──
+        if !hc {
+            ops::rms_norm_residual(
                 ctx.gpu,
-                self.dense_gemm_k,
+                self.rms_norm_residual_k,
+                hidden,
+                &self.input_norm,
                 normed_base,
-                &self.ssm.in_proj_qkvz,
-                deinterleaved,
+                residual,
                 n as u32,
-                qkvz_size as u32,
                 h as u32,
+                eps,
                 stream,
             )?;
         }
+        detail_step!("input_norm");
+
+        // ── 2. Batched QKVZ projection: ONE [N,h]→[N,qkvz] GEMM (weights ×1) ──
+        // Which GEMM serves it at this row count lives in `ssm_batched_proj.rs`.
+        let tier = self.batched_proj_tier(n);
+        self.ms_batched_qkvz(
+            ctx,
+            &tier,
+            n,
+            normed_base,
+            deinterleaved,
+            qkvz_size,
+            h,
+            stream,
+        )?;
         detail_step!("qkvz");
 
         // ── 3. Recurrent inner ──
@@ -368,123 +255,38 @@ impl Qwen3SsmLayer {
         detail_step!("recurrent_total_tail");
 
         // ── 4. Batched out_proj: ONE [N,value_dim]→[N,h] GEMM (weights ×1) ──
-        // FP8 (w8a16) when the decode overlay is installed, else BF16 dense.
-        if let Some(ref fp8) = self.out_proj_fp8w {
-            if use_batch4 {
-                ops::w8a16_gemv_batch4(
-                    ctx.gpu,
-                    gemv_batch_k,
-                    normed_out_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    ssm_out_base,
-                    n as u32,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )?;
-            } else if w8a16_pipe {
-                ops::w8a16_gemm_pipelined(
-                    ctx.gpu,
-                    self.w8a16_gemm_pipelined_k,
-                    normed_out_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    ssm_out_base,
-                    n as u32,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )?;
-            } else {
-                ops::w8a16_gemm(
-                    ctx.gpu,
-                    self.w8a16_gemm_k,
-                    normed_out_base,
-                    fp8.weight,
-                    fp8.row_scale,
-                    ssm_out_base,
-                    n as u32,
-                    h as u32,
-                    value_dim as u32,
-                    stream,
-                )?;
-            }
-        } else if let Some(ref out_proj_dense) = self.out_proj_dense {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed_out_base,
-                out_proj_dense,
-                ssm_out_base,
-                n as u32,
-                h as u32,
-                value_dim as u32,
-                stream,
-            )?;
-        } else if self.qkvz_nvfp4.is_some() {
-            match (ssm_tc_proj_min_n(), self.out_proj_nvfp4_t.as_ref()) {
-                (Some(min_n), Some(nvfp4_t)) if n >= min_n => {
-                    // Tile GEMM on the transposed twin — mirrors the SSM
-                    // prefill out_proj call on this same weight. `ms_proj_gemm`
-                    // picks the 128-row M-tile at wide batches so the weight
-                    // is streamed once instead of ceil(n/64) times.
-                    self.ms_proj_gemm(
-                        ctx.gpu,
-                        normed_out_base,
-                        nvfp4_t,
-                        ssm_out_base,
-                        n as u32,
-                        h as u32,
-                        value_dim as u32,
-                        stream,
-                    )?;
-                }
-                // FP4 batched out_proj: ONE NVFP4 weight pass for all n seqs.
-                // (qkvz_nvfp4.is_some() ⇒ the NVFP4 SSM build, where
-                // ssm.out_proj is the NVFP4 weight the per-seq path uses.)
-                _ => {
-                    // Same MAX_M=16 template as the QKVZ arm — silent row
-                    // truncation above 16. Unreachable at n>16 today; fail
-                    // fast if the eligibility gate drifts.
-                    anyhow::ensure!(
-                        n <= 16,
-                        "SSM batchm out_proj GEMV caps at M=16 (n={n}); tile-GEMM twins required"
-                    );
-                    ops::w4a16_gemv_batchm(
-                        ctx.gpu,
-                        fp4_gemv_batch_k,
-                        normed_out_base,
-                        &self.ssm.out_proj,
-                        ssm_out_base,
-                        n as u32,
-                        h as u32,
-                        value_dim as u32,
-                        stream,
-                    )?
-                }
-            }
-        }
+        self.ms_batched_out_proj(
+            ctx,
+            &tier,
+            n,
+            normed_out_base,
+            ssm_out_base,
+            h,
+            value_dim,
+            stream,
+        )?;
         detail_step!("out_proj");
 
         // GDN HeadParallel: reduce the row-parallel partial out_proj across TP
         // ranks (n × h BF16) before the residual add. No-op at tp=1.
-        self.ssm_tp_all_reduce(ssm_out_base, n, ctx, stream)?;
+        self.ssm_tp_all_reduce(ssm_out_base, normed_out_base, n, ctx, stream)?;
 
-        // ── 5. Batched residual add + post-attn RMS norm → norm_output[0..n] ──
-        ops::residual_add_rms_norm(
-            ctx.gpu,
-            self.residual_add_rms_norm_k,
-            hidden,
-            ssm_out_base,
-            &self.post_attn_norm,
-            normed_base,
-            residual,
-            n as u32,
-            h as u32,
-            eps,
-            stream,
-        )?;
+        // ── 5. Residual + post-norm (hc: caller hc_posts moe_output; skip) ──
+        if !hc {
+            ops::residual_add_rms_norm(
+                ctx.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                ssm_out_base,
+                &self.post_attn_norm,
+                normed_base,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+        }
         detail_step!("post_norm", final);
         if detail_profile {
             let summary = detail_parts
@@ -492,7 +294,7 @@ impl Qwen3SsmLayer {
                 .map(|(label, us)| format!("{label}={us}us"))
                 .collect::<Vec<_>>()
                 .join(" ");
-            tracing::info!("ATLAS_SSM_DETAIL n={n}: {summary}");
+            tracing::info!("AVAROK_SSM_DETAIL n={n}: {summary}");
         }
 
         Ok(true)

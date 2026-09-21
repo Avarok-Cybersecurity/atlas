@@ -3,7 +3,7 @@
 //! (desc, lower-idx tie-break) + softmax-over-all weights (renormalized over
 //! top-k when normalize=1). Grid(1,1,1) Block 256. CPU ref uses exact exp.
 use anyhow::Result;
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kernel_args::KernelLaunch;
 struct Rng(u64);
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     let mut r = Rng(seed);
     // realistic gate logits: mostly negative, a few high (like the dumped -1.9..-6)
     let gl: Vec<u16> = (0..ne).map(|_| f32_to_bf16(r.u(-7.0, -1.5))).collect();
-    let be = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let be = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &be;
     let st = gpu.create_stream()?;
     let glp = {

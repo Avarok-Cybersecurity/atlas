@@ -7,6 +7,7 @@ use super::super::*;
 use super::helpers::*;
 #[allow(unused_imports)]
 use crate::gpu::{DevicePtr, GpuBackend, KernelArg};
+use crate::weights::mlx_int8::MlxInt8Weight;
 
 /// End-to-end chain on real Qwen3.5-4B-MLX-8bit weights:
 /// `rms_norm(input_layernorm) → mlx_int8_gemv(q_proj)` for layer 3
@@ -30,7 +31,7 @@ use crate::gpu::{DevicePtr, GpuBackend, KernelArg};
 fn metal_real_model_chain_norm_then_qproj() {
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });
@@ -181,25 +182,21 @@ fn metal_real_model_chain_norm_then_qproj() {
     // Stage 2: Q projection (fused dequant + matvec).
     let n: u32 = n_rows as u32;
     let k: u32 = hidden_size;
-    let gemv_kernel = backend.kernel("mlx_int8_gemv", "mlx_int8_gemv").unwrap();
-    backend
-        .launch_typed(
-            gemv_kernel,
-            [n, 1, 1],
-            [64, 1, 1],
-            0,
-            backend.default_stream(),
-            &[
-                KernelArg::Bytes(&n.to_le_bytes()),
-                KernelArg::Bytes(&k.to_le_bytes()),
-                KernelArg::Bytes(&group_size.to_le_bytes()),
-                KernelArg::Buffer(pk_ptr),
-                KernelArg::Buffer(sc_ptr),
-                KernelArg::Buffer(bi_ptr),
-                KernelArg::Buffer(xn_ptr),
-                KernelArg::Buffer(q_ptr),
-            ],
-        )
+    // ★ THE PRODUCTION WRAPPER, not a hand-rolled launch: this is the leg that
+    // failed with max|kernel - cpu| = 1.4765625 (= 189/128, a real bf16 value,
+    // not a residual) because it dispatched `[n,1,1] x [64,1,1]` and rows with
+    // r mod 4 in {2,3} were never written. `MlxInt8Weight::gemv` owns the
+    // geometry (weights/mlx_int8.rs), so the test now launches what ships.
+    let q_proj = MlxInt8Weight {
+        packed: pk_ptr,
+        scales: sc_ptr,
+        biases: bi_ptr,
+        out_features: n,
+        in_features: k,
+        group_size,
+    };
+    q_proj
+        .gemv(&backend, xn_ptr, q_ptr, backend.default_stream())
         .expect("launch q_proj gemv");
     backend.synchronize(backend.default_stream()).unwrap();
 
@@ -234,6 +231,20 @@ fn metal_real_model_chain_norm_then_qproj() {
         nonzero_count >= n_rows / 2,
         "too many near-zero outputs ({nonzero_count}/{n_rows}); chain is suspicious"
     );
+    // Report the measurement on success too; a number that only appears in a
+    // panic message is not a baseline anyone can read.
+    let cos = cosine_bf16(&expected_q, &actual_q);
+    let mag = norm_ratio_bf16(&expected_q, &actual_q);
+    eprintln!(
+        "metal_real_model_chain_norm_then_qproj: rows={n_rows} K={k} \
+         max_abs={max_abs_diff:.3e} mean_abs={mean_abs:.3e} cos={cos:.7} norm_ratio={mag:.7}"
+    );
+    // 0.1 is loose on purpose and stays until the reference is made faithful:
+    // the kernel chain rounds x_norm to bf16 between the two stages while this
+    // CPU reference keeps it in fp32, and 2560 such roundings under |w| ~ 0.02
+    // can legitimately move q by up to ~0.08. A tighter bound needs the
+    // reference to round x_norm the way the chain does -- a follow-up, not a
+    // knob. It still fails on an unwritten row: |e| ~ 0.5 here, and it did.
     assert!(
         max_abs_diff < 0.1,
         "rms_norm + gemv chain: max |kernel - cpu| = {max_abs_diff}"
@@ -253,7 +264,7 @@ fn metal_real_model_chain_norm_then_qproj() {
 fn metal_mlx_int8_dequant_real_model() {
     use safetensors::SafeTensors;
 
-    let model_dir = std::env::var("ATLAS_MLX_MODEL_DIR").unwrap_or_else(|_| {
+    let model_dir = std::env::var("AVAROK_MLX_MODEL_DIR").unwrap_or_else(|_| {
         let home = std::env::var("HOME").expect("HOME unset");
         format!("{home}/models/Qwen3.5-4B-MLX-8bit")
     });

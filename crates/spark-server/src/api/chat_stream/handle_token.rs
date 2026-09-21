@@ -15,6 +15,25 @@ use super::super::sanitizer::sanitize_content_chunk;
 use super::super::stream_guards::{bump_f12_tool_call_count, check_loop_watchdog};
 use super::ctx::StreamCtx;
 use super::state::StreamState;
+
+/// `AVAROK_SIMHASH_LOOP=0` disables the F4 SimHash semantic-loop guard.
+/// Default ON — see the comment at the check site for why an operator would
+/// turn it off (one-strike near-duplicate detection kills streams over
+/// legitimately repetitive structured output).
+fn simhash_loop_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("AVAROK_SIMHASH_LOOP").as_deref() != Ok("0"))
+}
+
+/// `AVAROK_DISABLE_WATCHDOGS=1` covers the token loop watchdog too (#1135).
+fn watchdogs_disabled() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| {
+        crate::scheduler::parse_disable_watchdogs(
+            std::env::var("AVAROK_DISABLE_WATCHDOGS").ok().as_deref(),
+        )
+    })
+}
 use super::strip::{
     maybe_log_decode_trace, strip_all_preserving_boundary, strip_preserving_boundary,
 };
@@ -77,7 +96,21 @@ pub(super) fn strip_bare_role_literal(delta: &mut String, inside_tool_call: bool
 /// through is taken, leaving the doom-loop case (long suppressed
 /// stream of orphan `<tool_call>` openers) uncaught.
 pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> DeltaVec {
+    // Count the token HERE, as it is produced, so the dashboard's tok/s is a
+    // live rate rather than one spike at completion. See DECODED_TOKENS_TOTAL.
+    crate::metrics::DECODED_TOKENS_TOTAL.inc();
     let result = handle_token_inner(state, ctx, tok);
+    // TTFT forensics companion to the stable-delta line inside the body:
+    // brackets everything after it (sanitizer, detector, watchdogs) so a
+    // first-delta latency bisects to inside-handle_token vs downstream.
+    if !state.first_result_logged && !result.is_empty() {
+        state.first_result_logged = true;
+        tracing::debug!(
+            "stream: first delta batch leaves handle_token ({} deltas, {} tokens seen)",
+            result.len(),
+            state.all_toks.len(),
+        );
+    }
 
     // Orphan-suppression streak watchdog. The sanitizer flips
     // `suppressing_param_leak=true` when it sees an orphan
@@ -332,7 +365,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                                 tail = %tail,
                                 "in-think tool-call leak: opener threshold reached; cancelling \
                                  sequence (finish_reason \"length\", guard in_think_tool_leak). \
-                                 Raise/disable via ATLAS_INTHINK_TOOL_LEAK_OPENERS (0 = strip-only)"
+                                 Raise/disable via AVAROK_INTHINK_TOOL_LEAK_OPENERS (0 = strip-only)"
                             );
                             return deltas;
                         }
@@ -351,7 +384,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
                             hits = state.reasoning_xml_opener_hits,
                             threshold,
                             "in-think tool-call opener observed in reasoning; below \
-                             ATLAS_INTHINK_TOOL_LEAK_OPENERS threshold, not cancelling"
+                             AVAROK_INTHINK_TOOL_LEAK_OPENERS threshold, not cancelling"
                         );
                     }
                 }
@@ -419,6 +452,16 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Del
     let stable_end = state.content_decoded.len();
     let _ = tok; // tok already in state.all_toks via line 86
     let mut delta = if stable_end > state.emitted {
+        // TTFT forensics: the moment the FIRST stable content bytes exist
+        // stream-side. Compare against the scheduler's "Prefill first
+        // token" and the client's first-delta wall time to attribute any
+        // emission-path latency (task: first-delta gap).
+        if state.emitted == 0 {
+            tracing::debug!(
+                "stream: first stable content delta ({stable_end} bytes: {:?})",
+                &state.content_decoded[..stable_end.min(24)],
+            );
+        }
         let raw = state.content_decoded[state.emitted..stable_end].to_string();
         state.emitted = stable_end;
         raw
@@ -620,8 +663,16 @@ fn process_detector_content(
     // post-sanitizer text in both call sites.
     let sanitized = sanitized_or_raw;
 
-    // F4 SimHash guard.
-    let semantic_trip = if !state.loop_watchdog_triggered {
+    // F4 SimHash guard. `AVAROK_SIMHASH_LOOP=0` disables it (house watchdog
+    // convention, same shape as AVAROK_TOOL_ENVELOPE_WATCHDOG): the guard is
+    // ONE-STRIKE at Jaccard 0.55 over a 16-sentence ring, which legitimate
+    // structured output crosses easily — per-method docstrings, enumerations,
+    // boilerplate-heavy code all produce >=0.55 bigram overlap between
+    // honest sentences, and a fire KILLS the stream mid-reply. Before the
+    // #699 verdict fix most of its fires were masking genuinely degenerate
+    // output; with generation clean, the remaining fires skew
+    // false-positive (observed 2026-08-21: fired on a healthy TUI session).
+    let semantic_trip = if simhash_loop_enabled() && !state.loop_watchdog_triggered {
         state.simhash_pending.push_str(sanitized);
         let mut dup = false;
         if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
@@ -639,11 +690,12 @@ fn process_detector_content(
         false
     };
 
-    let token_trip = check_loop_watchdog(
-        sanitized,
-        &mut state.loop_scan_buf,
-        state.loop_watchdog_triggered,
-    );
+    let token_trip = !watchdogs_disabled()
+        && check_loop_watchdog(
+            sanitized,
+            &mut state.loop_scan_buf,
+            state.loop_watchdog_triggered,
+        );
 
     if semantic_trip || token_trip {
         if semantic_trip {

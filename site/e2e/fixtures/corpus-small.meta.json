@@ -1,0 +1,12 @@
+{
+  "bytes": 15087,
+  "commit_sha": "a3f9c1e7b2d84056917e2c3a4b5d6f7089abcde1",
+  "dim": 8,
+  "files": 15,
+  "generated_at": "2026-08-16T00:00:00Z",
+  "gz_bytes": 5748,
+  "model": "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+  "points": 20,
+  "repo": "Avarok-Cybersecurity/atlas",
+  "sha256": "2afafad8d5833e16cf9ba09a6c182ed01e45c2f276ecd874451d743ab2e7ef86"
+}

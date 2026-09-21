@@ -28,18 +28,18 @@ impl MoeLayer {
         // set → cuLaunchKernel hipErrorInvalidHandle at layer 0 for any prefill
         // chunk >64 tokens. forward_batched is the correct, complete per-token
         // path (its kernels are all bit-exact-verified on HIP) — route there for
-        // ALL token counts on atlas_hip. SCALE keeps grouped (its symlinked
+        // ALL token counts on avarok_hip. SCALE keeps grouped (its symlinked
         // grouped GEMM is real via PTX-recompile); NVIDIA byte-unchanged.
         //
         // EXCEPTION: the FP8 routed grouped GEMM (moe_fp8_grouped_gemm) has now
         // been ported to HIP WMMA (kernels/strix-hip/common/moe_fp8_grouped_gemm.cu
         // — weight-stationary per-expert, register-prefetch double-buffered, two-
         // level FP32 block-scale accumulation matching the GB10/oracle numerics),
-        // so long FP8 prefills (>64 tokens) take the grouped path on atlas_hip too
+        // so long FP8 prefills (>64 tokens) take the grouped path on avarok_hip too
         // — amortizing the ~50 GB/layer per-token weight re-streaming of
         // forward_batched. The BF16-dequant grouped GEMM is NOT ported (its
         // strix-hip kernel is still absent), so its branch stays HIP-batched.
-        let hip_force_batched = cfg!(atlas_hip);
+        let hip_force_batched = cfg!(avarok_hip);
         // FP8 grouped path is HIP-ready (kernel ported); do not force-batch it.
         let hip_force_batched_fp8 = false;
 
@@ -187,7 +187,8 @@ impl MoeLayer {
                 fp8,
                 gate_logits,
                 n,
-                num_experts,
+                // = num_experts everywhere except LongCat (zero-expert logits).
+                self.router_logits_n,
                 h,
                 stream,
             )?;
@@ -199,23 +200,31 @@ impl MoeLayer {
                 nvfp4,
                 gate_logits,
                 n,
-                num_experts,
+                self.router_logits_n,
                 h,
                 stream,
             )?;
         } else {
             // Selection numerics — see router_gate_gemm_dense for why this
-            // must stay on the scalar kernel and why ATLAS_CUBLAS_GEMM must
+            // must stay on the scalar kernel and why AVAROK_CUBLAS_GEMM must
             // not reroute it either (2026-08-12 BFCL regression: a rerouted
             // router GEMM flips top-k on borderline tokens deterministically).
-            self.router_gate_gemm_dense(router_in, gate_logits, n, num_experts, h, ctx, stream)?;
+            self.router_gate_gemm_dense(
+                router_in,
+                gate_logits,
+                n,
+                self.router_logits_n,
+                h,
+                ctx,
+                stream,
+            )?;
         }
         super::dump::dump_gate_logits(ctx.gpu, stream, gate_logits, n, num_experts)?;
         prof_step!("gate_gemm");
 
         // Feature-1: fold the router (`mlp.gate`) LoRA delta onto the routing
         // logits BEFORE top-k (reproduces PEFT `mlp.gate`). No-op unless a router
-        // delta is installed (ATLAS_LORA_EXPERTS=1).
+        // delta is installed (AVAROK_LORA_EXPERTS=1).
         self.apply_router_lora_prefill(router_in, gate_logits, n, ctx, stream)?;
 
         // 2. Batched topK dispatch. DeepSeek-V3 / MiniMax-M2 use sigmoid
@@ -265,6 +274,18 @@ impl MoeLayer {
                     ctx.config.norm_topk_prob,
                     ctx.config.routed_scaling_factor as f32,
                     n,
+                    stream,
+                )?;
+            } else if ctx.config.scoring_func == "softmax" {
+                self.router_softmax_bias_batched(
+                    gate_logits,
+                    bias,
+                    indices_dev,
+                    weights_dev,
+                    num_experts,
+                    top_k,
+                    n,
+                    ctx,
                     stream,
                 )?;
             } else {

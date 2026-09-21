@@ -59,7 +59,7 @@ CARGO = "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[d
 
 def envelope_cuts():
     rc, out, err = run(["bash", "-lc",
-                        "sudo docker logs --since 12m atlas-camp 2>&1 | "
+                        "sudo docker logs --since 12m avarok-camp 2>&1 | "
                         "grep -c 'Stuck in tool-call ENVELOPE'"])
     return out.strip()
 

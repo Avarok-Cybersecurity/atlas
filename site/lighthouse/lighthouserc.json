@@ -1,0 +1,30 @@
+{
+  "ci": {
+    "collect": {
+      "staticDistDir": "./site/build",
+      "url": [
+        "http://localhost/index.html",
+        "http://localhost/engine.html",
+        "http://localhost/control.html",
+        "http://localhost/diligence.html"
+      ],
+      "numberOfRuns": 5,
+      "settings": {
+        "preset": "desktop",
+        "chromeFlags": "--no-sandbox --headless=new"
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:accessibility": ["error", { "minScore": 1, "aggregationMethod": "median-run" }],
+        "categories:best-practices": ["error", { "minScore": 1, "aggregationMethod": "median-run" }],
+        "categories:seo": ["error", { "minScore": 1, "aggregationMethod": "median-run" }],
+        "categories:performance": ["error", { "minScore": 1, "aggregationMethod": "optimistic" }],
+        "resource-summary:third-party:count": ["error", { "maxNumericValue": 0 }]
+      }
+    },
+    "upload": {
+      "target": "temporary-public-storage"
+    }
+  }
+}

@@ -26,7 +26,7 @@ pub struct ModelStats {
     /// calls sampled, and the running unique-expert / slot totals behind the
     /// periodic aggregate line.
     pub moe_union: MoeUnionStats,
-    /// One-shot latches for the `ATLAS_*_DUMP` diagnostics. A latch is per
+    /// One-shot latches for the `AVAROK_*_DUMP` diagnostics. A latch is per
     /// model so a swap re-arms the dump instead of silently swallowing it.
     pub dumped: DumpLatches,
 }
@@ -44,7 +44,7 @@ pub struct MoeUnionStats {
 ///
 /// The named fields are the latches with a caller that already holds the
 /// struct; [`keyed`](DumpLatches::keyed) covers the long tail of
-/// `ATLAS_*_DUMP` gates, which are numerous, scattered, and identical in
+/// `AVAROK_*_DUMP` gates, which are numerous, scattered, and identical in
 /// shape — a field each would be noise, and a static each is the bug.
 #[derive(Debug, Default)]
 pub struct DumpLatches {
@@ -74,7 +74,7 @@ impl ModelStats {
 }
 
 impl DumpLatches {
-    /// `true` exactly once per model for `key`. Use for the `ATLAS_*_DUMP`
+    /// `true` exactly once per model for `key`. Use for the `AVAROK_*_DUMP`
     /// gates that would otherwise each grow a `static AtomicBool`.
     ///
     /// Call it only when the dump is actually wanted — it consumes the shot,

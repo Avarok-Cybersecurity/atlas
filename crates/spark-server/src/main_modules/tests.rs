@@ -18,7 +18,12 @@ fn test_cli_parse_positional_model() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
         Command::Serve(args) => {
             assert_eq!(
                 args.model.as_deref(),
@@ -46,7 +51,12 @@ fn test_cli_parse_model_from_path() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
         Command::Serve(args) => {
             assert!(args.model.is_none());
             assert_eq!(
@@ -70,7 +80,12 @@ fn test_cli_parse_slai_policy() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
         Command::Serve(args) => {
             assert_eq!(args.scheduling_policy, "slai");
             assert_eq!(args.tbt_deadline_ms, 50);
@@ -231,7 +246,12 @@ fn test_cli_parse_kv_high_precision_layers() {
     ]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
         Command::Serve(args) => {
             assert_eq!(args.kv_high_precision_layers, "3");
         }
@@ -243,7 +263,12 @@ fn test_cli_default_kv_high_precision_layers() {
     let cli = Cli::try_parse_from(["spark", "serve", "nvidia/model"]);
     assert!(cli.is_ok());
     match cli.unwrap().command {
-        Command::Benchmark(_) => unreachable!("this test parses a serve command"),
+        Command::Benchmark(_)
+        | Command::DumpServeOptions
+        | Command::SyncRecipes
+        | Command::Doctor => {
+            unreachable!("this test parses a serve command")
+        }
         Command::Serve(args) => {
             assert_eq!(args.kv_high_precision_layers, "0");
         }

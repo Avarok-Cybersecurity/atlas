@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Phase 2: per-token Q/K/V projection. Three branches:
+//! Phase 2: per-token Q/K/V projection. Branches:
 //! - n=3 + NVFP4 → batch3 GEMV path
 //! - n=2 + NVFP4 → batch2 GEMV path
+//! - n>3 + NVFP4 → wide-verify batched GEMM
+//! - n in 2..=8 + native FP8 → strided batched GEMV (`qkv_fp8_batch`)
+//! - n in 2..=8 + dense BF16 → `ms_qkv_batchm_bf16`
 //! - else        → sequential per-token GEMV (FP8/NVFP4/BF16 fallback)
 //!
 //! Both batch paths read each weight once for N tokens and then scatter
@@ -20,14 +23,14 @@ use crate::layers::qwen3_attention::Qwen3AttentionLayer;
 /// across CUDA-graph replays.
 pub(super) fn bf16_batchm_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
+    *ON.get_or_init(|| std::env::var("AVAROK_BF16_QKV_BATCHM").ok().as_deref() != Some("0"))
 }
 
 /// Fused [q|k|v] projection GEMM (one N=14336 launch instead of three).
-/// Kill switch: `ATLAS_NO_FUSED_QKV=1` restores the three separate GEMMs.
+/// Kill switch: `AVAROK_NO_FUSED_QKV=1` restores the three separate GEMMs.
 fn fused_qkv_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("ATLAS_NO_FUSED_QKV").ok().as_deref() != Some("1"))
+    *ON.get_or_init(|| std::env::var("AVAROK_NO_FUSED_QKV").ok().as_deref() != Some("1"))
 }
 
 impl Qwen3AttentionLayer {
@@ -72,6 +75,14 @@ impl Qwen3AttentionLayer {
             // weight loop in the wide verify — one GEMM per Q/K/V reads each
             // weight ONCE for all n rows instead of n× (mirrors batch3 with M=n).
             self.ms_qkv_batchn(c)?;
+        } else if self.ms_qkv_batchm_fp8_selected(c, super::qkv_fp8_batch::fp8_batchm_enabled()) {
+            // BATCHED NATIVE-FP8 QKV (O13, issue #927). Mutually exclusive with
+            // both the NVFP4 tiers above (they require `as_nvfp4()`) and the
+            // dense-BF16 tier below (it requires no quantized sidecar at all),
+            // so tier order here is readability, not precedence. See
+            // `qkv_fp8_batch.rs` for the launch-count argument and the
+            // graph-capture note on branching with the padded ctx `n`.
+            self.ms_qkv_batchm_fp8(c)?;
         } else if (2..=8).contains(&n)
             && !self.gated
             && self.dense_gemv_batchm_k.0 != 0
@@ -191,7 +202,7 @@ impl Qwen3AttentionLayer {
         Ok(())
     }
 
-    fn q_lora_active(&self) -> bool {
+    pub(super) fn q_lora_active(&self) -> bool {
         self.lora.as_ref().and_then(|lw| lw.q.as_ref()).is_some()
     }
 
@@ -316,11 +327,11 @@ impl Qwen3AttentionLayer {
         // `per_seq_qkv` apart — exactly the (rows_per_group, num_groups,
         // row_stride) shape `rms_norm_strided` takes. The per-sequence loop below
         // was 516 launches/step across the 16 attention layers (0.76 ms).
-        // Bit-identical: one block per row either way. Kill: ATLAS_NO_QK_NORM_STRIDED=1.
+        // Bit-identical: one block per row either way. Kill: AVAROK_NO_QK_NORM_STRIDED=1.
         fn qk_norm_strided_enabled() -> bool {
             static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ON.get_or_init(|| {
-                std::env::var("ATLAS_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
+                std::env::var("AVAROK_NO_QK_NORM_STRIDED").ok().as_deref() != Some("1")
             })
         }
         if n > 1
@@ -602,41 +613,19 @@ impl Qwen3AttentionLayer {
         // stream bandwidth. nsys (2026-07-18, drafts=3): the M64-tile
         // w4a16_gemm_t this bypasses cost 16.3 ms/verify-step across the 16
         // attention layers' q/k/v/o at M=4 (94% tile padding) vs ~4.5 ms via
-        // the GEMV. m=5..8 rides w4a16_gemv_batch8 (batchm_bench: same
-        // weight-streaming bandwidth, no M>4 cliff). Gated to m<=8 so the
-        // DFlash wide verify (M=17) keeps the GEMM.
-        if m <= 4 && self.w4a16_gemv_batch4_k.0 != 0 {
-            return ops::w4a16_gemv_batchm(
-                gpu,
-                self.w4a16_gemv_batch4_k,
-                input,
-                w_base,
-                output,
-                m,
-                n,
-                k,
-                stream,
-            );
-        }
-        if (5..=8).contains(&m) && self.w4a16_gemv_batch8_k.0 != 0 {
-            return ops::w4a16_gemv_batchm(
-                gpu,
-                self.w4a16_gemv_batch8_k,
-                input,
-                w_base,
-                output,
-                m,
-                n,
-                k,
-                stream,
-            );
+        // the GEMV. m=5..8 rides the narrow batch{5,6,7,8} tiers (batchm_bench:
+        // same weight-streaming bandwidth, no M>4 cliff). The family caps at
+        // M=8, so the DFlash wide verify (M=17) keeps the GEMM.
+        let batchm = self.w4a16_batchm.kernel(m);
+        if batchm.0 != 0 {
+            return ops::w4a16_gemv_batchm(gpu, batchm, input, w_base, output, m, n, k, stream);
         }
         if let Some(wt) = w_t {
             // Small-M routing (w4a16_m17_bench): at M<=64 the M64-tile
             // `w4a16_gemm_t` beats the M128-tile kernels (87% of an M128
             // tile is padding at M=17), and `w4a16_gemm_t_k64` wins deep-K
             // shapes. Mirrors dense_ffn::w4a16_prefill_gemm; same
-            // ATLAS_FFN_SMALLM=0 kill-switch.
+            // AVAROK_FFN_SMALLM=0 kill-switch.
             // The `OnceLock<bool>` static that lived here is now a field on
             // `layers::ops::ModelLevers` — resolved when the model is built and carried
             // on `ForwardContext`, because a static outlives the model whose flags it
@@ -765,7 +754,7 @@ impl Qwen3AttentionLayer {
         // in the model (23.6 GB/s, 9.75x off floor). Bit-identical — same dot
         // products, relocated along N — and the loader only builds the twin when
         // q/k/v share one `weight_scale_2`.
-        // Kill switch: ATLAS_NO_FUSED_QKV=1.
+        // Kill switch: AVAROK_NO_FUSED_QKV=1.
         let fused_n = q_proj_dim as usize + 2 * kv_dim_e;
         // n > 8 is REQUIRED, not an optimisation: `wide_verify_gemm` early-returns
         // on the batched-GEMV arms for m <= 8 using the BASE (non-transposed)

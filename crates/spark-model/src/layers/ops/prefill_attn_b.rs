@@ -266,7 +266,67 @@ pub fn paged_decode_attn_splitk_fp8(
         .launch(stream)
 }
 
+/// Split-K paged decode attention (BF16 KV cache) — Hopper twin (#928).
+///
+/// The capability `run_paged_decode.rs` did not have: its BF16 arm carried an
+/// explicit "no Split-K (not implemented for BF16 yet)" branch, so the
+/// `--kv-high-precision-layers auto` layers ran one CTA per (q_head, seq) at
+/// any occupancy. Kernel:
+/// `kernels/hopper/common/paged_decode_bf16_splitk_hopper.cu`.
+///
+/// No `cache_stride`: the BF16 cache is the contiguous
+/// `[blocks, block_size, kv_heads, head_dim]` layout and the kernel derives
+/// the page stride, matching `paged_decode_attn_bf16` next door.
+///
+/// Grid: (num_q_heads, num_splits, num_seqs)  Block: (256, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn paged_decode_attn_splitk_bf16(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k_cache: DevicePtr,
+    v_cache: DevicePtr,
+    workspace: DevicePtr,
+    block_tables: DevicePtr,
+    seq_lens: DevicePtr,
+    max_blocks_per_seq: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    block_size: u32,
+    inv_sqrt_d: f32,
+    num_splits: u32,
+    q_stride: u32,
+    num_seqs: u32,
+    sliding_window: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads, num_splits, num_seqs])
+        .block([256, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k_cache)
+        .arg_ptr(v_cache)
+        .arg_ptr(workspace)
+        .arg_ptr(block_tables)
+        .arg_ptr(seq_lens)
+        .arg_u32(max_blocks_per_seq)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(block_size)
+        .arg_f32(inv_sqrt_d)
+        .arg_u32(num_splits)
+        .arg_u32(q_stride)
+        .arg_u32(sliding_window)
+        .launch(stream)
+}
+
 /// Reduce split-K partials into final BF16 output (FP8 variant).
+///
+/// DTYPE-AGNOSTIC in everything but its name: the workspace is F32
+/// `[o[head_dim], m, l]` whatever the KV cache held, so the BF16 twin's reduce
+/// handle launches through this same wrapper (#928).
 ///
 /// Grid: (num_q_heads, num_seqs, 1)  Block: (32, 1, 1)
 #[allow(clippy::too_many_arguments)]

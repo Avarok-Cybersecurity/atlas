@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 
-use atlas_core::config::PeftAdapterConfig;
+use avarok_core::config::PeftAdapterConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::gpu::mock::MockGpuBackend;
 use spark_runtime::weights::{WeightDtype, WeightStore, WeightTensor};
@@ -67,6 +67,7 @@ fn peft_r(r: usize) -> PeftAdapterConfig {
         r,
         lora_alpha: 2.0 * r as f64, // scale = 2.0 either way (rank-independent)
         target_modules: vec!["gate_proj".into()],
+        target_modules_pattern: None,
         use_rslora: false,
         layers_to_transform: None,
         trainable_token_indices: Vec::new(),
@@ -214,4 +215,8 @@ fn pack_into_r16_layout_is_unpadded() {
     assert_eq!(off, sized);
     let rp = layers[3].as_ref().unwrap().router.as_ref().unwrap();
     assert_eq!((rp.rank, rp.max_rank), (16, 16));
+    let mut packed_b = vec![0u8; r_out * peft.r * 2];
+    gpu.copy_d2h(rp.b.weight, &mut packed_b).unwrap();
+    let source_b: Vec<u8> = (0..packed_b.len()).map(|i| (i % 251) as u8).collect();
+    assert_eq!(packed_b, source_b, "aligned B must be byte-identical");
 }

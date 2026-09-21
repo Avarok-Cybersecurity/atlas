@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use atlas_core::config::{LayerType, ModelConfig};
+use avarok_core::config::{LayerType, ModelConfig};
 use spark_runtime::buffers::BufferArena;
 use spark_runtime::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 use spark_runtime::kv_cache::PagedKvCache;
@@ -200,17 +200,25 @@ impl TransformerModel {
         }
 
         let hss_engaged = kv_cache.config().cache_blocks_per_seq.is_some();
-        // ATLAS_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
+        // AVAROK_LORA_EAGER: LoRA graph-vs-eager debugging hatch (see decode_a).
         let lora_eager = self.lora.is_some() && self.levers.lora_eager;
         let use_graphs = self.comm.is_none()
             && !self
                 .suppress_graphs
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !hss_engaged
-            && !lora_eager;
+            && !lora_eager
+            // Sliding-window layers verify via the eager per-token metadata
+            // loop (verify_attention_per_token) -- per-token H2D uploads are
+            // illegal under capture, and a captured verify would bake row-0's
+            // position into every token anyway (the Laguna-XS 'ToToTo...'
+            // failure this fix exists for).
+            && !(0..self.layers.len())
+                .any(|i| self.config.layer_type(i) == LayerType::SlidingAttention);
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
+            hc_row_offset: 0,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             dispatch: &self.dispatch,
@@ -221,8 +229,11 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+            decode_step: false,
             gdn_exact_replay: false,
+            gdn_write_on_accept: false,
             token_ids: None,
+            host_token_ids: None,
             routed_lora_layers: None, // #30: decode/verify never routes prefill.
             midchunk_capture: None,
             moe_lora_route: self.decode_moe_route(), // route-aware: base(Skip) decodes; adapter refuses
@@ -294,6 +305,21 @@ impl TransformerModel {
                             stream,
                         )?;
                     }
+                } else if layer_type == LayerType::SlidingAttention {
+                    // Sliding-window attention: per-token metadata loop --
+                    // the decode_batched default reuses ONE metadata upload
+                    // and decodes every token at the same position (Laguna
+                    // 'ToToTo...'). Graphs are off for sliding models above.
+                    self.verify_attention_per_token(
+                        layer.as_ref(),
+                        layer_idx,
+                        hidden,
+                        residual,
+                        m,
+                        seq,
+                        &mut kv_cache,
+                        stream,
+                    )?;
                 } else {
                     // SSM: batch all M tokens together (M=2/3 fast paths exist).
                     layer.decode_batched(
@@ -320,11 +346,8 @@ impl TransformerModel {
 
             // Final norm over all M rows.
             let normed = self.buffers.norm_output();
-            ops::rms_norm(
-                self.gpu.as_ref(),
-                self.rms_norm_kernel,
+            self.final_norm_apply(
                 hidden,
-                &self.final_norm,
                 normed,
                 m as u32,
                 h as u32,

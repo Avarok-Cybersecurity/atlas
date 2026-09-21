@@ -131,18 +131,18 @@ pub fn stripe_plan(
     rails
 }
 
-/// Chunk size for the striped snapshot pipeline (ATLAS_SSM_CHUNK_BYTES, default
-/// 1 MiB) and pipeline depth (ATLAS_SSM_PIPELINE_DEPTH, default 16, clamped
+/// Chunk size for the striped snapshot pipeline (AVAROK_SSM_CHUNK_BYTES, default
+/// 1 MiB) and pipeline depth (AVAROK_SSM_PIPELINE_DEPTH, default 16, clamped
 /// 1..=128, mirroring the KV backend).
 pub fn staging_chunk_bytes() -> usize {
-    std::env::var("ATLAS_SSM_CHUNK_BYTES")
+    std::env::var("AVAROK_SSM_CHUNK_BYTES")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&v| v >= 4096)
         .unwrap_or(1024 * 1024)
 }
 pub fn staging_depth() -> usize {
-    std::env::var("ATLAS_SSM_PIPELINE_DEPTH")
+    std::env::var("AVAROK_SSM_PIPELINE_DEPTH")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(16)

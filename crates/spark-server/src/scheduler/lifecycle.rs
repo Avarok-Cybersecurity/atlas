@@ -134,6 +134,17 @@ pub(super) fn derive_finish_reason(
 /// 0 = unlimited) — needed so the `"length"` decision reuses the exact
 /// stop predicate from `emit_step`/`decode_logits_step`.
 pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq, max_seq_len: usize) {
+    // 🔴 A FAILED sequence is not a finished one. Retirement is the single funnel
+    // for both, so the split belongs here: an inference error goes to the client
+    // AS an error, exactly as the decode path already does via `send_error`
+    // (`preempt.rs`). Falling through would synthesize an ordinary finish_reason
+    // over a truncated answer — and would also `cache_sequence` a sequence whose
+    // last step aborted, seeding the prefix cache from a failed generation.
+    // ANOMALIES A62.
+    if let Some(msg) = a.error.take() {
+        send_error(model, a, &msg);
+        return;
+    }
     let reason = derive_finish_reason(
         a.guard_stop,
         a.output_tokens.last().copied(),
@@ -284,7 +295,25 @@ pub fn swap_out_sequence(
 
     // Compact the swapped-in sequence (same logic as retire path).
     if victim_idx < active.len() && active[victim_idx].seq.slot_idx != victim_idx {
-        model.compact_sequence(&mut active[victim_idx].seq, victim_idx)?;
+        // NOT `?`. `a` is already OUT of `active` — this function holds the
+        // only handle to it — so an early return here is the one owner
+        // dropping the request, and the drop is silent twice over: the sink
+        // goes with it, so the client reads a SERVER-side compaction failure
+        // as `500 "Inference cancelled"`, the wording reserved for a client
+        // abort (see `send_error_to_sink`); and `free_sequence` never runs,
+        // so the victim's KV blocks and SSM slot leak for the life of the
+        // serve. The `Err` arm ten lines down already surfaces the victim on
+        // the identical failure one step later; nothing distinguishes the two
+        // except which call happened to fail first.
+        //
+        // Note the comment below reasons only about the LATER `?`s inside
+        // `spill_out_sequence` — this call sits above `detach_slot_for_reuse`,
+        // so the RAII guard is still armed and `a`'s own slot is released on
+        // drop. What is lost is the client and the KV blocks, not the slot.
+        if let Err(e) = model.compact_sequence(&mut active[victim_idx].seq, victim_idx) {
+            send_error(model, &mut a, &format!("swap-out failed: {e:#}"));
+            return Err(e);
+        }
         // Disown the victim's migrated slot BEFORE the fallible save below: sets
         // the reuse sentinel AND neutralizes the RAII guard so a `?`-early-
         // return (create_file/save_sequence_state error) that drops `a` cannot
@@ -292,89 +321,57 @@ pub fn swap_out_sequence(
         model.detach_slot_for_reuse(&mut a.seq);
     }
 
-    let (swap_id, mut writer) = spill.create_file()?;
-    model.save_sequence_state(&a.seq, &mut writer)?;
-    drop(writer);
-    spill.record_usage(swap_id);
+    // Save + free + build moved to `preempt::spill_out_sequence` so the
+    // decode-time preemption path (which must NOT reorder/compact the active
+    // vec mid-step) can share it — SSOT for the spill image. On error the
+    // victim is surfaced to its client and freed here rather than silently
+    // dropped (the old path leaked the GPU blocks AND the client saw only
+    // "Inference cancelled").
+    match super::preempt::spill_out_sequence(model, a, spill) {
+        Ok(s) => Ok(s),
+        Err((mut a, e)) => {
+            send_error(model, &mut a, &format!("swap-out failed: {e:#}"));
+            Err(e)
+        }
+    }
+}
 
-    let num_blocks = a.seq.block_table.len();
-    let seq_len = a.seq.seq_len;
-    let tokens = a.seq.tokens.clone();
-
-    // Free GPU resources (KV blocks + SSM slot).
-    let slot_idx = a.seq.slot_idx as u32;
-    model.free_sequence(&mut a.seq)?;
-    let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
-
-    Ok(SwappedSeq {
-        tokens,
-        session_hash: a.session_hash,
-        adapter_slot: a.seq.adapter_slot,
-        adapter_id: a.seq.adapter_id,
-        seq_len,
-        num_blocks,
-        last_token: a.last_token,
-        output_tokens: a.output_tokens,
-        remaining: a.remaining,
-        min_tokens: a.min_tokens,
-        eos_tokens: a.eos_tokens,
-        sink: a.sink,
-        temperature: a.temperature,
-        top_k: a.top_k,
-        top_p: a.top_p,
-        top_n_sigma: a.top_n_sigma,
-        min_p: a.min_p,
-        repetition_penalty: a.repetition_penalty,
-        presence_penalty: a.presence_penalty,
-        frequency_penalty: a.frequency_penalty,
-        repetition_penalty_window: 256,
-        lz_penalty: DEFAULT_LZ_PENALTY,
-        dry_multiplier: a.dry_multiplier,
-        dry_base: a.dry_base,
-        dry_allowed_length: a.dry_allowed_length,
-        dry_sequence_breakers: a.dry_sequence_breakers,
-        logit_bias: a.logit_bias,
-        inside_thinking: a.inside_thinking,
-        enable_thinking: a.enable_thinking,
-        thinking_budget: a.thinking_budget,
-        repetition_detection: a.repetition_detection,
-        spontaneous_think_budget: a.spontaneous_think_budget,
-        thinking_tokens: a.thinking_tokens,
-        force_end_thinking: a.force_end_thinking,
-        sentence_defer_count: a.sentence_defer_count,
-        consecutive_confident: a.consecutive_confident,
-        in_code_fence: a.in_code_fence,
-        think_end_token: a.think_end_token,
-        think_start_token: a.think_start_token,
-        think_ended: a.think_ended,
-        think_just_ended: a.think_just_ended,
-        post_think_emitted: a.post_think_emitted,
-        think_skip_count: a.think_skip_count,
-        require_tool_call: a.require_tool_call,
-        tool_request: a.tool_request,
-        tools_present: a.tools_present,
-        suppress_tool_call: a.suppress_tool_call,
-        disable_mtp: a.disable_mtp,
-        mtp_acct: a.mtp_acct,
-        content_started: a.content_started,
-        content_tokens: a.content_tokens,
-        prose_tokens_since_last_tool: a.prose_tokens_since_last_tool,
-        think_watchdog_fires: a.think_watchdog_fires,
-        think_force_closed: a.think_force_closed,
-        rollback_count: a.rollback_count,
-        tool_call_start_token: a.tool_call_start_token,
-        tool_call_opened: a.tool_call_opened,
-        tool_call_end_token: a.tool_call_end_token,
-        last_token_time: a.last_token_time,
-        request_start: a.request_start,
-        decode_start: a.decode_start,
-        seed: a.seed,
-        top_logprobs: a.top_logprobs,
-        logprobs_data: a.logprobs_data,
-        timeout_at: a.timeout_at,
-        swap_id,
-        cached_prompt_tokens: a.cached_prompt_tokens,
-    })
+/// Rebuild the GPU sequence for a parked request from its spill image.
+///
+/// Split out so [`resume_swapped_seq`] has exactly ONE fallible step to
+/// handle. Every `?` in here used to be a `?` in that function, where the
+/// caller's stack frame was the sole owner of the `SwappedSeq` — so each of
+/// them dropped the request's `ResponseSink` on the floor. Keeping them
+/// behind one boundary makes it impossible to add a fifth failure mode that
+/// forgets the client.
+///
+/// A sequence allocated before a later step fails is freed here rather than
+/// leaked, and the spill file is removed on every exit so a failed swap-in
+/// cannot strand it on disk.
+fn restore_swapped_image(
+    model: &dyn Model,
+    s: &SwappedSeq,
+    spill: &mut KvSpillManager,
+) -> Result<SequenceState> {
+    let mut seq = model.alloc_sequence()?;
+    // `reader` is dropped at the end of the closure, before `remove_file`.
+    let restored = spill
+        .open_file(s.swap_id)
+        .and_then(|mut reader| model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader));
+    if let Err(e) = restored {
+        if let Err(fe) = model.free_sequence(&mut seq) {
+            tracing::error!("restore_swapped_image: free_sequence after failed restore: {fe:#}");
+        }
+        let _ = spill.remove_file(s.swap_id);
+        return Err(e);
+    }
+    if let Err(e) = spill.remove_file(s.swap_id) {
+        if let Err(fe) = model.free_sequence(&mut seq) {
+            tracing::error!("restore_swapped_image: free_sequence after failed unlink: {fe:#}");
+        }
+        return Err(e);
+    }
+    Ok(seq)
 }
 
 /// Resume a swapped-out sequence by restoring its state from disk.
@@ -382,14 +379,28 @@ pub fn resume_swapped_seq(
     _think_end_token: Option<u32>,
     _think_start_token: Option<u32>,
     model: &dyn Model,
-    s: SwappedSeq,
+    mut s: SwappedSeq,
     spill: &mut KvSpillManager,
 ) -> Result<ActiveSeq> {
-    let mut seq = model.alloc_sequence()?;
-    let mut reader = spill.open_file(s.swap_id)?;
-    model.restore_sequence_state(&mut seq, s.num_blocks, &mut reader)?;
-    drop(reader);
-    spill.remove_file(s.swap_id)?;
+    // Starvation guard: a just-resumed sequence must not be the next KV
+    // victim before it makes real progress (see `preempt` module docs).
+    let immune_until = s.output_tokens.len() + super::preempt::PREEMPT_IMMUNITY_TOKENS;
+    let mut seq = match restore_swapped_image(model, &s, spill) {
+        Ok(seq) => seq,
+        Err(e) => {
+            // The caller (`scheduler::run`'s swap-in loop) has already taken
+            // this request out of `swapped`, and it only logs the `Err` — so
+            // returning without touching the sink drops the client's channel.
+            // That is not a quiet failure: the blocking side turns the closed
+            // oneshot into `500 "Inference cancelled"`, which is what the
+            // server says when the CLIENT aborted, and the streaming side
+            // just ends the SSE body under an HTTP 200 that has already been
+            // committed and already carries partial output. A swap-in failure
+            // is entirely server-side; the client has to be able to tell.
+            send_error_to_sink(&mut s.sink, &format!("swap-in failed: {e:#}"));
+            return Err(e);
+        }
+    };
 
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
@@ -412,6 +423,7 @@ pub fn resume_swapped_seq(
         min_tokens: s.min_tokens,
         eos_tokens: s.eos_tokens,
         finished: false,
+        error: None,
         guard_stop: None,
         param_close_pending: 0,
         sink: s.sink,
@@ -494,8 +506,21 @@ pub fn resume_swapped_seq(
         timeout_at: s.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
         cached_prompt_tokens: s.cached_prompt_tokens,
+        preempt_immune_until_tokens: immune_until,
     })
 }
 
 // Tests live in `lifecycle_tests.rs` (sibling module registered in
 // `scheduler/mod.rs`) to keep this file under the 500-line cap.
+
+/// Mark a sequence for retirement as a FAILURE. The caller keeps it in `active`;
+/// the retirement funnel (`finish_sequence`) turns `error` into the client-visible
+/// error and frees exactly once.
+///
+/// Use this, not a bare `finished = true`, wherever an inference step returned
+/// `Err` — that is the difference between a 500 the caller can act on and a 200
+/// that looks like the model chose to stop. ANOMALIES A62.
+pub fn fail_sequence(a: &mut ActiveSeq, msg: String) {
+    a.error = Some(msg);
+    a.finished = true;
+}

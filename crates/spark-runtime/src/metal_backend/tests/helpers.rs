@@ -15,13 +15,68 @@ use crate::metal_backend::MetalGpuBackend;
 ///
 /// Callers should `let Some(backend) = maybe_backend() else { return };`
 /// at the top of each test fn.
+/// Is this run ALLOWED to have no Metal device?
+///
+/// Pure, so the rule can be tested without a device and without touching the
+/// process environment from a parallel test.
+pub(super) fn no_device_is_declared(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
 pub(super) fn maybe_backend() -> Option<MetalGpuBackend> {
-    let modules = atlas_kernels::metallib_modules();
+    let modules = avarok_kernels::metallib_modules();
     match MetalGpuBackend::new(0, &modules) {
         Ok(b) => Some(b),
         Err(e) => {
-            eprintln!("skipping metal_backend test: {e}");
+            // ★ A SKIPPED LEG MUST NOT READ AS A PASS.
+            //
+            // 43 call sites spell the skip `let Some(b) = maybe_backend() else
+            // { return };`, and libtest counts an early return as `ok`. So on a
+            // host with no Metal device this suite reports GREEN having executed
+            // nothing -- indistinguishable from a suite that ran and passed, and
+            // the required context `cargo test --features metal (macOS aarch64)`
+            // is exactly that suite.
+            //
+            // The fix is not to stop skipping; a device-less runner is a real
+            // thing. It is to make the run DECLARE it, once, in its environment,
+            // so that "we could not look" stops being spelled the same way as
+            // "we looked and it was fine".
+            if !no_device_is_declared(std::env::var("AVAROK_METAL_NO_DEVICE").ok().as_deref()) {
+                panic!(
+                    "no Metal device ({e}), and AVAROK_METAL_NO_DEVICE is not set.\n\
+                     A leg that genuinely has no device must say so: set \
+                     AVAROK_METAL_NO_DEVICE=1 on that step. Without it, skipping \
+                     would report this suite as passing having executed nothing."
+                );
+            }
+            eprintln!("skipping metal_backend test (AVAROK_METAL_NO_DEVICE=1 declared): {e}");
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod no_device_rule_tests {
+    use super::no_device_is_declared;
+
+    /// The declaration is EXACTLY "1". Anything else -- unset, empty, "0",
+    /// "true", "yes" -- leaves the panic armed, because a typo in a CI step
+    /// must not silently re-open the hole this closes.
+    #[test]
+    fn only_an_explicit_one_declares_a_device_less_run() {
+        assert!(no_device_is_declared(Some("1")));
+        for v in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("yes"),
+            Some(" 1"),
+        ] {
+            assert!(
+                !no_device_is_declared(v),
+                "{v:?} must NOT count as a declaration"
+            );
         }
     }
 }
@@ -209,3 +264,161 @@ pub(super) const TQP_SIGNS2_256: [f32; 256] = [
     -1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0,
     -1.0, -1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
 ];
+
+/// The cosine gate every kernel A/B in this repo is judged by.
+///
+/// `crates/spark-model/examples/gdn_regresident_microtest.rs:26` uses exactly
+/// this value for the GDN output and state; the W8A16 microtests use 0.9995 and
+/// the MoE ones 0.999. A parity test that asserts an ABSOLUTE bound instead has
+/// to pick a number in the units of whatever it happens to be comparing, and
+/// gets it wrong silently: `parity_gdn` bounded `max|expected - actual|` at
+/// 0.02 while building inputs whose outputs land near 1e-3, so a kernel that
+/// wrote nothing at all passed it.
+pub(super) const COSINE_GATE: f64 = 0.9999;
+
+/// Cosine similarity accumulated in f64, the `cos_bf16` of the microtests.
+///
+/// Returns NaN when either side has zero norm, and every comparison against
+/// NaN is false — so `cosine_bf16(..) >= COSINE_GATE` REJECTS an all-zero
+/// output rather than congratulating it. That is the property an absolute
+/// difference bound cannot have.
+pub(super) fn cosine_bf16(a: &[half::bf16], b: &[half::bf16]) -> f64 {
+    let (mut d, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for i in 0..a.len() {
+        let (x, y) = (a[i].to_f32() as f64, b[i].to_f32() as f64);
+        d += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return f64::NAN;
+    }
+    d / (na.sqrt() * nb.sqrt())
+}
+
+/// Ratio of the two sides' L2 norms, smaller over larger, so it lands in
+/// [0, 1] like a cosine and is judged by the SAME constant — no new threshold
+/// is invented here.
+///
+/// Cosine alone is scale-free: a kernel with a uniform 1.005x gain scores
+/// 1.0000000 against the reference and sails through. Direction and magnitude
+/// are different failures, and the GDN kernel can produce either, so both are
+/// checked. Returns NaN when either norm is zero, which fails the gate.
+pub(super) fn norm_ratio_f32(a: &[f32], b: &[f32]) -> f64 {
+    let na: f64 = a
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt();
+    let nb: f64 = b
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt();
+    if na == 0.0 || nb == 0.0 {
+        return f64::NAN;
+    }
+    na.min(nb) / na.max(nb)
+}
+
+/// [`norm_ratio_f32`] over bf16 inputs.
+pub(super) fn norm_ratio_bf16(a: &[half::bf16], b: &[half::bf16]) -> f64 {
+    let fa: Vec<f32> = a.iter().map(|v| v.to_f32()).collect();
+    let fb: Vec<f32> = b.iter().map(|v| v.to_f32()).collect();
+    norm_ratio_f32(&fa, &fb)
+}
+
+/// One BF16 ulp at magnitude `x`: 8 significand bits, so ulp = 2^(exp-7).
+/// The same rule as `bf16_ulp` in `crates/spark-model/examples/
+/// glm5next_ffn_microtest.rs`, which an integration test of this crate cannot
+/// import from an example binary.
+pub(super) fn bf16_ulp(x: f32) -> f32 {
+    if x == 0.0 {
+        return f32::MIN_POSITIVE;
+    }
+    let e = x.abs().log2().floor() as i32;
+    2.0f32.powi(e - 7)
+}
+
+/// `cos_f32` of the microtests; same zero-norm rule as [`cosine_bf16`].
+pub(super) fn cosine_f32(a: &[f32], b: &[f32]) -> f64 {
+    let (mut d, mut na, mut nb) = (0f64, 0f64, 0f64);
+    for i in 0..a.len() {
+        let (x, y) = (a[i] as f64, b[i] as f64);
+        d += x * y;
+        na += x * x;
+        nb += y * y;
+    }
+    if na == 0.0 || nb == 0.0 {
+        return f64::NAN;
+    }
+    d / (na.sqrt() * nb.sqrt())
+}
+
+#[cfg(test)]
+mod cosine_tests {
+    use super::{COSINE_GATE, cosine_bf16, cosine_f32};
+
+    /// The control for the defect this replaced: an all-zero "output" must not
+    /// pass. Under the old `max|diff| < 0.02` bound against ~1e-3 values it did.
+    #[test]
+    fn an_all_zero_side_never_passes_the_gate() {
+        let truth: Vec<half::bf16> = (0..256)
+            .map(|i| half::bf16::from_f32(0.001 * ((i as f32) * 0.0123).sin()))
+            .collect();
+        let zeros = vec![half::bf16::ZERO; truth.len()];
+        let max_abs = truth
+            .iter()
+            .map(|v| v.to_f32().abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_abs < 0.02,
+            "precondition: these values are small enough that the OLD 0.02 bound \
+             accepted an all-zero output ({max_abs} < 0.02)"
+        );
+        assert!(
+            !(cosine_bf16(&truth, &zeros) >= COSINE_GATE),
+            "an all-zero output passed the cosine gate"
+        );
+        assert!(!(cosine_f32(&[0.0, 0.0], &[1.0, 2.0]) >= COSINE_GATE));
+    }
+
+    /// ... while an identical side scores exactly 1.0, so the gate is not
+    /// simply rejecting everything.
+    #[test]
+    fn an_identical_side_scores_one() {
+        let v: Vec<half::bf16> = (0..64)
+            .map(|i| half::bf16::from_f32((i as f32) * 0.01 - 0.3))
+            .collect();
+        assert!(cosine_bf16(&v, &v) >= COSINE_GATE);
+        assert!(cosine_f32(&[1.0, -2.0, 3.5], &[1.0, -2.0, 3.5]) >= COSINE_GATE);
+    }
+
+    /// A sign flip on one element of a short vector is a large angular change;
+    /// the gate must see it. Guards against a gate that passes anything.
+    #[test]
+    fn a_single_flipped_element_is_caught() {
+        let a: Vec<f32> = vec![1.0, 1.0, 1.0, 1.0];
+        let b: Vec<f32> = vec![1.0, 1.0, 1.0, -1.0];
+        assert!(!(cosine_f32(&a, &b) >= COSINE_GATE));
+    }
+
+    /// The reason `norm_ratio_*` exists: cosine CANNOT see a uniform gain, so
+    /// a kernel scaling every output by 1.005 is invisible to it. The norm
+    /// ratio catches exactly that, judged by the same constant.
+    #[test]
+    fn a_uniform_gain_is_invisible_to_cosine_and_caught_by_the_norm_ratio() {
+        let a: Vec<f32> = (0..128)
+            .map(|i| 0.001 * ((i as f32) * 0.0123).sin())
+            .collect();
+        let b: Vec<f32> = a.iter().map(|v| v * 1.005).collect();
+        assert!(
+            cosine_f32(&a, &b) >= COSINE_GATE,
+            "precondition: cosine is scale-free and must NOT flag a pure gain"
+        );
+        assert!(
+            !(super::norm_ratio_f32(&a, &b) >= COSINE_GATE),
+            "the norm ratio must catch the gain cosine cannot see"
+        );
+    }
+}
