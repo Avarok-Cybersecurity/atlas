@@ -103,6 +103,31 @@ fn q4_k_single_block() {
 }
 
 #[test]
+fn q5_k_single_block() {
+    // Same scale/nibble layout as q4_k_single_block, plus qh high bits.
+    // d = 2.0, dmin = 1.0; scales[0]=1, scales[1]=2; ql[0]=0x35 (low 5, high 3).
+    // qh[0] = 0x03 → bit0 on first-32, bit1 on second-32 of chunk 0.
+    // out[0]  = 2*(5+16) = 42
+    // out[32] = 4*(3+16) = 76
+    let mut blk = vec![0u8; 176];
+    blk[0] = (F16_2_0 & 0xFF) as u8;
+    blk[1] = (F16_2_0 >> 8) as u8;
+    blk[2] = (F16_1_0 & 0xFF) as u8;
+    blk[3] = (F16_1_0 >> 8) as u8;
+    blk[4] = 1; // scales[0]
+    blk[5] = 2; // scales[1]
+    blk[16] = 0x03; // qh[0]
+    blk[48] = 0x35; // ql[0]
+
+    let mut out = [0f32; 256];
+    dequant_to_f32(GgmlType::Q5K, &blk, 256, &mut out).unwrap();
+    assert_eq!(out[0], 42.0);
+    assert_eq!(out[32], 76.0);
+    // Without the high bit, nibble 5 at y=1 (ql[1]=0) stays zero-scale.
+    assert_eq!(out[1], 0.0);
+}
+
+#[test]
 fn q2_0_g128_single_block() {
     // PrismML id42, group 128, scale at FRONT. d = 2.0.
     // qs[0] = 0xE4 = 0b11_10_01_00 -> codes 0,1,2,3 (low-bits-first).

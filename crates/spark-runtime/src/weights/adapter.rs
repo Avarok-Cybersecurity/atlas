@@ -99,7 +99,7 @@ pub fn load_adapter_safetensors(
         };
         let ptr = gpu.alloc(bytes.len())?;
         gpu.copy_h2d(&bytes, ptr)?;
-        weights.insert(name, WeightTensor { ptr, shape, dtype });
+        weights.insert(name, WeightTensor::new(ptr, shape, dtype));
     }
 
     // Drop mmap before evicting page cache (GB10 unified memory).

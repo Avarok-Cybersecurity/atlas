@@ -76,11 +76,7 @@ mod attn_sink_dtype_tests {
     fn store_with(ptr: DevicePtr, dtype: WeightDtype, elements: usize) -> WeightStore {
         WeightStore::from_map(HashMap::from([(
             KEY.to_string(),
-            WeightTensor {
-                ptr,
-                shape: vec![elements],
-                dtype,
-            },
+            WeightTensor::new(ptr, vec![elements], dtype),
         )]))
     }
 

@@ -14,11 +14,7 @@ fn store(entries: &[(&str, WeightDtype, &[usize])]) -> WeightStore {
         .map(|(name, dtype, shape)| {
             (
                 (*name).to_string(),
-                WeightTensor {
-                    ptr: DevicePtr::NULL,
-                    shape: shape.to_vec(),
-                    dtype: *dtype,
-                },
+                WeightTensor::new(DevicePtr::NULL, shape.to_vec(), *dtype),
             )
         })
         .collect::<HashMap<_, _>>();

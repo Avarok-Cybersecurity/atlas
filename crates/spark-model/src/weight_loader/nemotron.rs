@@ -441,11 +441,7 @@ mod tests {
     use super::*;
 
     fn tensor(ptr: u64) -> WeightTensor {
-        WeightTensor {
-            ptr: DevicePtr(ptr),
-            shape: vec![4],
-            dtype: WeightDtype::BF16,
-        }
+        WeightTensor::new(DevicePtr(ptr), vec![4], WeightDtype::BF16)
     }
 
     fn config() -> ModelConfig {

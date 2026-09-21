@@ -134,9 +134,34 @@ pub struct WeightTensor {
     pub ptr: DevicePtr,
     pub shape: Vec<usize>,
     pub dtype: WeightDtype,
+    /// `true` when `ptr` is a `gpu.alloc` base this store uniquely owns.
+    /// GGUF stacked MoE experts insert `.offset()` views of one allocation
+    /// (`owned: false`); `cuMemFree` of those offsets is
+    /// `CUDA_ERROR_ILLEGAL_ADDRESS`.
+    pub owned: bool,
 }
 
 impl WeightTensor {
+    /// An allocation this store uniquely owns and may `gpu.free`.
+    pub fn new(ptr: DevicePtr, shape: Vec<usize>, dtype: WeightDtype) -> Self {
+        Self {
+            ptr,
+            shape,
+            dtype,
+            owned: true,
+        }
+    }
+
+    /// A byte-offset view of a larger allocation. Never passed to `gpu.free`.
+    pub fn sliced(ptr: DevicePtr, shape: Vec<usize>, dtype: WeightDtype) -> Self {
+        Self {
+            ptr,
+            shape,
+            dtype,
+            owned: false,
+        }
+    }
+
     pub fn num_elements(&self) -> usize {
         self.shape.iter().product()
     }
@@ -290,9 +315,8 @@ impl WeightStore {
     /// `weight_loader/step3p7.rs`) is still live in a layer struct — freeing it
     /// here is a use-after-free with no diagnostic. Match narrowly.
     ///
-    /// Per-entry free is sound for the same reason `release` gives below: the
-    /// loaders allocate one `gpu.alloc` per tensor, and no loader inserts an
-    /// `.offset()` view of a shared block into this map.
+    /// Sliced GGUF expert stacks (`owned: false`) share one `gpu.alloc`. Free
+    /// only the family base; offset views are forgotten without `cuMemFree`.
     pub fn free_matching(
         &mut self,
         gpu: &dyn GpuBackend,
@@ -307,9 +331,11 @@ impl WeightStore {
                 continue;
             };
             bytes += t.byte_size();
-            gpu.free(t.ptr)
-                .map_err(|e| e.context(format!("freeing weight {name}")))?;
             count += 1;
+            if t.owned {
+                gpu.free(t.ptr)
+                    .map_err(|e| e.context(format!("freeing weight {name}")))?;
+            }
         }
         Ok((count, bytes))
     }
@@ -473,12 +499,15 @@ impl SafetensorsLoader {
 pub mod adapter;
 mod derived;
 pub use derived::DerivedStore;
+mod alias;
 mod gguf;
 mod loader;
 pub mod mlx_int8;
 pub use gguf::dequant_cpu;
 pub use gguf::expert_stream;
-pub use gguf::{GgufLoader, GgufShardSet, config_from_gguf_dir, find_gguf, find_gguf_shards};
+pub use gguf::{
+    GgufLoader, GgufShardSet, config_from_gguf_dir, find_gguf, find_gguf_shards, gguf_chat_template,
+};
 pub(crate) use loader::estimate_load_bytes;
 // Platform-independent: consumed by the unix-only fast-weights (O_DIRECT) path
 // AND by the GGUF loader, which builds everywhere. Gating this on `unix` broke
@@ -499,12 +528,13 @@ pub use prefix_detect::auto_detect_weight_prefix;
 
 /// Release every weight tensor.
 ///
-/// Safe to free per-entry because the loaders allocate per-tensor: the fast
-/// path calls `gpu.alloc(meta.len)` once per tensor before inserting it
-/// (`fast_weights/mod.rs:360-388`), and no loader inserts an `.offset()` view of
-/// a shared block into this map. (Fused per-expert views DO exist — see
-/// `weight_loader/step3p7.rs:93` — but they live in the layer structs that own
-/// the fused allocation, not here, so this cannot double-free them.)
+/// Safetensors loaders allocate per-tensor (`gpu.alloc` once per name), so
+/// every remaining `owned: true` entry is a unique base. GGUF stacked MoE
+/// experts insert `.offset()` views (`owned: false`); `cuMemFree` of those
+/// offsets is `CUDA_ERROR_ILLEGAL_ADDRESS`. The loader frees each stack
+/// base via [`WeightStore::release_sliced_bf16_stacks`] at bind; teardown
+/// only `gpu.free`s unique owned allocs. Fused per-expert views in
+/// `weight_loader/step3p7.rs` live in layer structs, not this map.
 impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
     fn label(&self) -> &'static str {
         "weight store"
@@ -519,6 +549,9 @@ impl avarok_core::scope::ModelResource<dyn GpuBackend> for WeightStore {
         // `drain` rather than iterate: the map must not be left holding
         // pointers to memory that is gone, and it makes this idempotent.
         for (name, tensor) in self.weights.drain() {
+            if !tensor.owned {
+                continue;
+            }
             if let Err(e) = gpu.free(tensor.ptr)
                 && first_error.is_none()
             {

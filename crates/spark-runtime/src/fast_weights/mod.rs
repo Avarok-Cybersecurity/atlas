@@ -455,11 +455,7 @@ fn load_shard_fast(
 
         out.insert(
             meta.name.clone(),
-            WeightTensor {
-                ptr,
-                shape: meta.shape.clone(),
-                dtype: meta.dtype,
-            },
+            WeightTensor::new(ptr, meta.shape.clone(), meta.dtype),
         );
     }
 

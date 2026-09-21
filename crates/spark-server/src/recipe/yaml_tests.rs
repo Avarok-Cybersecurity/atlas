@@ -128,5 +128,5 @@ fn all_vendored_recipes_parse() {
             count += 1;
         }
     }
-    assert_eq!(count, 25, "the vendored corpus is 25 recipes");
+    assert_eq!(count, 26, "the vendored corpus is 26 recipes");
 }

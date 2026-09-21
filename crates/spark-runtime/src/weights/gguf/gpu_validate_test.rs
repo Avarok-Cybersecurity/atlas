@@ -105,6 +105,8 @@ fn gguf_gpu_validate_matches_cpu_oracle() {
     check_type(&gpu, "Q8_0", 8, 32, 34, &[0], 128, n);
     // Q4_K: QK=256, 144 B, fp16 d@0 + fp16 dmin@2.
     check_type(&gpu, "Q4_K", 12, 256, 144, &[0, 2], 128, n);
+    // Q5_K: QK=256, 176 B, fp16 d@0 + fp16 dmin@2 (UD-Q4_K_M down_exps).
+    check_type(&gpu, "Q5_K", 13, 256, 176, &[0, 2], 128, n);
     // Q6_K: QK=256, 210 B, fp16 d@208.
     check_type(&gpu, "Q6_K", 14, 256, 210, &[208], 128, n);
     // Q2_K: QK=256, 84 B, fp16 d@80 + fp16 dmin@82 (DeepSeek-V4.1 Flash Q2_K).

@@ -288,6 +288,10 @@ pub(crate) fn load_moe_qwen35(
         if let Ok(w) = store.get(&fused_down_key) {
             let _ = gpu.free(w.ptr);
         }
+    } else {
+        // GGUF `ffn_*_exps` fan out to per-expert slices of one BF16 alloc.
+        // quantized_any skipped those frees; drop each {gate,up,down} base now.
+        store.release_sliced_bf16_stacks(gpu, &format!("{p}.experts."))?;
     }
 
     Ok(MoeWeights {

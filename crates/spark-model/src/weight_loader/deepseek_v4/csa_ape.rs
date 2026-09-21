@@ -62,7 +62,7 @@ mod csa_ape_dtype_tests {
     fn store_with(ptr: DevicePtr, dtype: WeightDtype, shape: Vec<usize>) -> WeightStore {
         WeightStore::from_map(HashMap::from([(
             KEY.to_string(),
-            WeightTensor { ptr, shape, dtype },
+            WeightTensor::new(ptr, shape, dtype),
         )]))
     }
 

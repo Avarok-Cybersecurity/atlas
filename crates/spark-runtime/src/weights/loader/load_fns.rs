@@ -160,7 +160,7 @@ pub(super) fn load_sharded(
                 }
             };
 
-            weights.insert(name.clone(), WeightTensor { ptr, shape, dtype });
+            weights.insert(name.clone(), WeightTensor::new(ptr, shape, dtype));
         }
 
         // Drop mmap before evicting page cache — releases the mapping first.
@@ -222,7 +222,7 @@ pub(super) fn load_single(
         let ptr = gpu.alloc(data.len())?;
         gpu.copy_h2d(data, ptr)?;
 
-        weights.insert(name, WeightTensor { ptr, shape, dtype });
+        weights.insert(name, WeightTensor::new(ptr, shape, dtype));
     }
 
     // Drop mmap before evicting page cache.

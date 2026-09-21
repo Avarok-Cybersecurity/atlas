@@ -398,7 +398,7 @@ impl RdmaWeightLoader {
                     p
                 }
             };
-            weights.insert(rec.name.clone(), WeightTensor { ptr, shape, dtype });
+            weights.insert(rec.name.clone(), WeightTensor::new(ptr, shape, dtype));
         }
 
         // 6. Tear down: drop the rails (dereg MRs) BEFORE freeing the pinned

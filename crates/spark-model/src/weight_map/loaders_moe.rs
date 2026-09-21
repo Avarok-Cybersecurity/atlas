@@ -96,6 +96,11 @@ pub(super) fn load_moe_inner(
         }
     }
 
+    // GGUF stacked experts share one BF16 alloc per {gate,up,down} family.
+    // quantized_any skipped those frees; drop each family base now. No-op
+    // for unique safetensors allocs (`owned: true`).
+    store.release_sliced_bf16_stacks(gpu, &format!("{p}.experts."))?;
+
     Ok(MoeWeights {
         gate,
         shared_expert,

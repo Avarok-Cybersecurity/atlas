@@ -82,6 +82,23 @@ pub fn config_from_gguf_dir(model_dir: &Path) -> Result<ModelConfig> {
     config_from_gguf(&inputs).context("failed to build ModelConfig from GGUF metadata")
 }
 
+/// `tokenizer.chat_template` from the backbone GGUF, if present.
+pub fn gguf_chat_template(model_dir: &Path) -> Result<Option<String>> {
+    let path = match find_gguf(model_dir) {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let file =
+        std::fs::File::open(&path).with_context(|| format!("failed to open {}", path.display()))?;
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+    let gguf = GgufFile::parse(&mmap)
+        .with_context(|| format!("failed to parse GGUF metadata: {}", path.display()))?;
+    Ok(gguf
+        .get_str("tokenizer.chat_template")
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

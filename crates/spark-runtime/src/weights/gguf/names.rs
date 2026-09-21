@@ -70,7 +70,7 @@ fn arch_override(gguf_name: &str, arch: &str) -> Option<GgufName> {
         // / `attn_{qkv,gate}` names and the second RMSNorm as
         // `post_attention_norm`; everything else (attn_q/k/v/output, q/k norms,
         // ffn_*, top-level tensors) matches the default translation.
-        "qwen35" | "qwen3_5" => translate_qwen35_layer(gguf_name),
+        "qwen35" | "qwen3_5" | "qwen35moe" => translate_qwen35_layer(gguf_name),
         // NLLB-200 / M2M-100 encoder-decoder translation family. Names diverge
         // wholesale from the decoder-only default (two stacks `enc/dec.blk.N.*`,
         // tied `token_embd` → `model.shared`, cross-attention), so this arch is
@@ -280,6 +280,21 @@ fn translate_qwen35_layer(gguf_name: &str) -> Option<GgufName> {
         // without a `.weight` / `.bias` suffix, and loads them as F32.
         "ssm_a" => la("A_log"),
         "ssm_dt.bias" => la("dt_bias"),
+        // Shared expert (qwen35moe). Dense qwen35 files never carry these names.
+        "ffn_gate_shexp.weight" => {
+            format!("{HF_PREFIX}.layers.{layer}.mlp.shared_expert.gate_proj.weight")
+        }
+        "ffn_up_shexp.weight" => {
+            format!("{HF_PREFIX}.layers.{layer}.mlp.shared_expert.up_proj.weight")
+        }
+        "ffn_down_shexp.weight" => {
+            format!("{HF_PREFIX}.layers.{layer}.mlp.shared_expert.down_proj.weight")
+        }
+        "ffn_gate_inp_shexp.weight" => {
+            format!("{HF_PREFIX}.layers.{layer}.mlp.shared_expert_gate.weight")
+        }
+        // First ship: drop NextN/MTP tensors rather than invent a draft graph.
+        sub if sub.starts_with("nextn.") => return Some(GgufName::Drop),
         // Everything else (attn_norm, attn_q/k/v/output, attn_q/k_norm, ffn_*)
         // is handled by the default translator.
         _ => return None,
@@ -423,5 +438,7 @@ pub fn expert_name(layer: usize, proj: &str, e: usize) -> String {
     format!("{HF_PREFIX}.layers.{layer}.mlp.experts.{e}.{proj}_proj.weight")
 }
 
+#[cfg(test)]
+mod qwen35moe_tests;
 #[cfg(test)]
 mod tests;

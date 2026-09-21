@@ -42,14 +42,53 @@ const METADATA: &[&str] = &[
 /// safetensors the loader actually reads.
 fn is_excluded(name: &str) -> bool {
     const SKIP_DIRS: &[&str] = &["original/", "onnx/", "openvino/", "coreml/", "tflite/"];
-    const SKIP_EXT: &[&str] = &[
-        ".bin", ".pth", ".pt", ".msgpack", ".h5", ".onnx", ".gguf", ".tflite",
-    ];
+    const SKIP_EXT: &[&str] = &[".bin", ".pth", ".pt", ".msgpack", ".h5", ".onnx", ".tflite"];
     SKIP_DIRS.iter().any(|d| name.starts_with(d)) || SKIP_EXT.iter().any(|e| name.ends_with(e))
 }
 
-fn is_weight(name: &str) -> bool {
+fn is_safetensors(name: &str) -> bool {
     name.ends_with(".safetensors") || name.ends_with(".safetensors.index.json")
+}
+
+fn is_weight(name: &str) -> bool {
+    is_safetensors(name) || is_gguf_weight(name)
+}
+
+/// Backbone GGUF (not an mmproj sidecar). Split shards keep the `.gguf` suffix.
+fn is_gguf_weight(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".gguf") && !lower.contains("mmproj")
+}
+
+/// One quant from a GGUF-only Hub repo. Unsloth-style trees ship every
+/// bitwidth at once (terabytes). Prefer Unsloth `UD-Q4_K_M`, then `Q4_K_M`,
+/// then a lone file. Return `None` rather than downloading the whole tree.
+fn pick_gguf(files: &[RemoteFile]) -> Option<RemoteFile> {
+    let cands: Vec<&RemoteFile> = files
+        .iter()
+        .filter(|f| is_contained(&f.name) && is_gguf_weight(&f.name))
+        .collect();
+    if cands.is_empty() {
+        return None;
+    }
+    for needle in ["UD-Q4_K_M", "Q4_K_M"] {
+        let mut hits: Vec<&RemoteFile> = cands
+            .iter()
+            .copied()
+            .filter(|f| f.name.contains(needle))
+            .collect();
+        if hits.len() == 1 {
+            return Some(hits.remove(0).clone());
+        }
+        if hits.len() > 1 {
+            hits.sort_by_key(|f| (f.size.unwrap_or(u64::MAX), f.name.clone()));
+            return Some(hits[0].clone());
+        }
+    }
+    if cands.len() == 1 {
+        return Some(cands[0].clone());
+    }
+    None
 }
 
 /// Does this name stay inside the snapshot directory it is joined onto?
@@ -85,7 +124,9 @@ pub fn wanted(name: &str) -> bool {
     }
     // Only top-level metadata: a `subfolder/config.json` belongs to a
     // component the loader resolves separately, if at all.
-    is_weight(name) || (!name.contains('/') && METADATA.contains(&name))
+    // `.gguf` is NOT wanted here — a 20-quant Hub repo would otherwise
+    // download terabytes. `select` adds at most one via `pick_gguf`.
+    is_safetensors(name) || (!name.contains('/') && METADATA.contains(&name))
 }
 
 /// The files to fetch, in the order to fetch them.
@@ -95,6 +136,11 @@ pub fn wanted(name: &str) -> bool {
 /// whether the model is loadable at all — lands before gigabytes do.
 pub fn select(files: &[RemoteFile]) -> Vec<RemoteFile> {
     let mut out: Vec<RemoteFile> = files.iter().filter(|f| wanted(&f.name)).cloned().collect();
+    if !out.iter().any(|f| is_safetensors(&f.name))
+        && let Some(gguf) = pick_gguf(files)
+    {
+        out.push(gguf);
+    }
     out.sort_by(|a, b| {
         let key = |f: &RemoteFile| (is_weight(&f.name), f.size.unwrap_or(0), f.name.clone());
         key(a).cmp(&key(b))
@@ -104,10 +150,12 @@ pub fn select(files: &[RemoteFile]) -> Vec<RemoteFile> {
 
 /// Does this plan contain anything Atlas could actually load?
 ///
-/// A repo publishing only GGUF is a real and common case — the whole plan
-/// filters away and the download would "succeed" having fetched a tokenizer.
+/// A repo publishing only GGUF is a real and common case. We admit exactly
+/// one preferred quant (see [`pick_gguf`]); an unmatched 20-quant listing
+/// still yields no weights so the download cannot "succeed" on a tokenizer.
 pub fn has_weights(plan: &[RemoteFile]) -> bool {
-    plan.iter().any(|f| f.name.ends_with(".safetensors"))
+    plan.iter()
+        .any(|f| f.name.ends_with(".safetensors") || is_gguf_weight(&f.name))
 }
 
 /// Total bytes of a plan, counting only files whose size is known.

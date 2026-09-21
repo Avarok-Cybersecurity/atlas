@@ -13,11 +13,11 @@ fn store_with(gpu: &dyn GpuBackend, n: usize) -> WeightStore {
     for i in 0..n {
         map.insert(
             format!("w{i}"),
-            WeightTensor {
-                ptr: gpu.alloc(1024).expect("alloc"),
-                shape: vec![16, 16],
-                dtype: WeightDtype::BF16,
-            },
+            WeightTensor::new(
+                gpu.alloc(1024).expect("alloc"),
+                vec![16, 16],
+                WeightDtype::BF16,
+            ),
         );
     }
     WeightStore::from_map(map)
@@ -51,11 +51,7 @@ fn releasing_twice_is_harmless() {
 #[test]
 fn fp8_kv_scale_count_counts_only_k_scale_tensors() {
     let gpu = MockGpuBackend::new();
-    let tensor = || WeightTensor {
-        ptr: gpu.alloc(1024).expect("alloc"),
-        shape: vec![1],
-        dtype: WeightDtype::BF16,
-    };
+    let tensor = || WeightTensor::new(gpu.alloc(1024).expect("alloc"), vec![1], WeightDtype::BF16);
     let mut map = HashMap::new();
     for name in [
         "model.layers.0.self_attn.k_scale",
@@ -144,6 +140,41 @@ fn an_unadopted_derived_buffer_is_what_the_sweep_would_report() {
         "the orphan outlives teardown — adopt it via `store.derived()`"
     );
     gpu.free(orphan).expect("freed");
+}
+
+/// Known-bad: `gpu.free` of a GGUF expert-stack offset is not an alloc base.
+/// After the loader frees the family base, teardown must skip `owned: false`
+/// views rather than replay that free (CUDA_ERROR_ILLEGAL_ADDRESS).
+#[test]
+fn release_skips_sliced_gguf_expert_views() {
+    let gpu = MockGpuBackend::new();
+    let base = gpu.alloc(8).expect("stack");
+    let e1 = base.offset(4);
+    let shared = gpu.alloc(4).expect("shared");
+    let mut map = HashMap::new();
+    map.insert(
+        "model.layers.0.mlp.experts.0.gate_proj.weight".into(),
+        WeightTensor::sliced(base, vec![2], WeightDtype::BF16),
+    );
+    map.insert(
+        "model.layers.0.mlp.experts.1.gate_proj.weight".into(),
+        WeightTensor::sliced(e1, vec![2], WeightDtype::BF16),
+    );
+    map.insert(
+        "model.layers.0.mlp.shared_expert.gate_proj.weight".into(),
+        WeightTensor::new(shared, vec![2], WeightDtype::BF16),
+    );
+    let mut store = WeightStore::from_map(map);
+    assert_eq!(
+        store
+            .release_sliced_bf16_stacks(&gpu, "model.layers.0.mlp.experts.")
+            .unwrap(),
+        1
+    );
+    assert_eq!(gpu.live_alloc_count(), 1, "shared expert still live");
+    store.release(&gpu).expect("teardown skips slices");
+    assert_eq!(gpu.live_alloc_count(), 0, "owned shared expert freed");
+    assert_eq!(store.len(), 0);
 }
 
 /// Releasing twice must not double-free an adopted buffer either.

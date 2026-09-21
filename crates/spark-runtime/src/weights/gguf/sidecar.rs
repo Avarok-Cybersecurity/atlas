@@ -192,15 +192,15 @@ pub fn load_pass(
             gpu.copy_h2d(raw, ptr)?;
             weights.insert(
                 hf_name.clone(),
-                WeightTensor {
+                WeightTensor::new(
                     ptr,
-                    shape: hf_shape,
-                    dtype: if id == 10 {
+                    hf_shape,
+                    if id == 10 {
                         WeightDtype::Q2K
                     } else {
                         WeightDtype::Q3K
                     },
-                },
+                ),
             );
             continue;
         }
@@ -215,13 +215,13 @@ pub fn load_pass(
             gpu.copy_h2d(raw, ptr)?;
             weights.insert(
                 hf_name.clone(),
-                WeightTensor {
+                WeightTensor::new(
                     ptr,
-                    shape: hf_shape,
-                    dtype: WeightDtype::PackedQ2_0 {
+                    hf_shape,
+                    WeightDtype::PackedQ2_0 {
                         group: q2_group as u16,
                     },
-                },
+                ),
             );
             continue;
         }
@@ -255,13 +255,13 @@ pub fn load_pass(
             gpu.copy_h2d(&permuted, ptr)?;
             weights.insert(
                 hf_name.clone(),
-                WeightTensor {
+                WeightTensor::new(
                     ptr,
-                    shape: hf_shape,
-                    dtype: WeightDtype::PackedQ2_0 {
+                    hf_shape,
+                    WeightDtype::PackedQ2_0 {
                         group: q2_group as u16,
                     },
-                },
+                ),
             );
             continue;
         }
@@ -291,11 +291,7 @@ pub fn load_pass(
             names::GgufName::Direct(hf_name) => {
                 weights.insert(
                     hf_name,
-                    WeightTensor {
-                        ptr: bf16_ptr,
-                        shape: hf_shape,
-                        dtype: WeightDtype::BF16,
-                    },
+                    WeightTensor::new(bf16_ptr, hf_shape, WeightDtype::BF16),
                 );
             }
             names::GgufName::ExpertStack { layer, proj } => {
@@ -324,14 +320,14 @@ pub fn load_pass(
         gpu.copy_h2d(&host, ptr)?;
         weights.insert(
             value_transform::VISION_PATCH_EMBED_HF.to_string(),
-            WeightTensor {
+            WeightTensor::new(
                 ptr,
-                shape: vec![
+                vec![
                     dims.out_ch,
                     dims.in_ch * frames.len() * dims.patch * dims.patch,
                 ],
-                dtype: WeightDtype::BF16,
-            },
+                WeightDtype::BF16,
+            ),
         );
     }
 

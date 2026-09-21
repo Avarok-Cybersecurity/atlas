@@ -34,7 +34,7 @@ mod shards;
 mod sidecar;
 mod value_transform;
 
-pub use config::config_from_gguf_dir;
+pub use config::{config_from_gguf_dir, gguf_chat_template};
 pub use shards::{GgufShardSet, find_gguf_shards};
 
 use anyhow::{Context, Result, bail};
@@ -177,11 +177,7 @@ impl GgufLoader {
             let name = names::expert_name(layer, proj, e);
             weights.insert(
                 name,
-                WeightTensor {
-                    ptr,
-                    shape: expert_shape.clone(),
-                    dtype: WeightDtype::BF16,
-                },
+                WeightTensor::sliced(ptr, expert_shape.clone(), WeightDtype::BF16),
             );
         }
         Ok(())

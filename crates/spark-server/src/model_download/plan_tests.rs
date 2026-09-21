@@ -87,21 +87,47 @@ fn small_files_come_first_then_shards_ascending() {
 }
 
 #[test]
-fn a_gguf_only_repo_yields_no_weights() {
-    // Common, and it must be refused BEFORE any bytes move — otherwise the
-    // download "succeeds" having fetched a tokenizer and the load fails later
-    // with something far less clear.
+fn a_gguf_only_repo_downloads_one_preferred_quant() {
+    // Unsloth-style trees ship every bitwidth. Downloading the listing would
+    // be terabytes; the plan must pick UD-Q4_K_M and leave the rest.
     let gguf = vec![
-        f("config.json", 1_000),
-        f("model-Q4_K_M.gguf", 20_000_000_000),
         f("tokenizer.json", 900_000),
+        f("Qwen3.6-35B-A3B-UD-IQ2_XXS.gguf", 12_000_000_000),
+        f("Qwen3.6-35B-A3B-Q4_K_M.gguf", 22_000_000_000),
+        f("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf", 20_200_000_000),
+        f("Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf", 40_000_000_000),
+        f("Qwen3.6-35B-A3B-mmproj-F16.gguf", 1_000_000_000),
     ];
     let plan = select(&gguf);
-    assert!(!has_weights(&plan), "no safetensors means nothing to load");
-    assert!(
-        !plan.iter().any(|f| f.name.ends_with(".gguf")),
-        "and the gguf is not downloaded either"
-    );
+    assert!(has_weights(&plan));
+    let ggufs: Vec<&str> = plan
+        .iter()
+        .filter(|f| f.name.ends_with(".gguf"))
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(ggufs, vec!["Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"]);
+    assert!(plan.iter().any(|f| f.name == "tokenizer.json"));
+}
+
+#[test]
+fn a_multi_quant_gguf_repo_without_a_prefer_match_downloads_nothing() {
+    let gguf = vec![
+        f("tokenizer.json", 900_000),
+        f("model-Q2_K.gguf", 10_000_000_000),
+        f("model-Q5_K_M.gguf", 25_000_000_000),
+    ];
+    let plan = select(&gguf);
+    assert!(!has_weights(&plan), "must not fetch two random quants");
+    assert!(!plan.iter().any(|f| f.name.ends_with(".gguf")));
+}
+
+#[test]
+fn a_safetensors_repo_still_skips_gguf() {
+    let mut listing = repo();
+    listing.push(f("model-UD-Q4_K_M.gguf", 20_000_000_000));
+    let plan = select(&listing);
+    assert!(!plan.iter().any(|f| f.name.ends_with(".gguf")));
+    assert!(has_weights(&plan));
 }
 
 #[test]

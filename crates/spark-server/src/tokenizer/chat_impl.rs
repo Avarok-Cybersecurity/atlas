@@ -49,6 +49,14 @@ impl ChatTokenizer {
     ) -> Result<Self> {
         let official_k3 = super::kimi_k3::uses_xtml(model_dir, model_type)?;
         let tokenizer_path = model_dir.join("tokenizer.json");
+        if !tokenizer_path.exists() {
+            anyhow::bail!(
+                "Failed to load tokenizer: {} is missing. GGUF dirs need the HuggingFace \
+                 tokenizer.json sidecar (for Qwen3.6-35B-A3B: Qwen/Qwen3.6-35B-A3B). Atlas \
+                 does not reconstruct it from tokenizer.ggml.tokens.",
+                tokenizer_path.display()
+            );
+        }
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {e}"))?;
         tokenizer
@@ -98,6 +106,8 @@ impl ChatTokenizer {
             (override_tmpl, false)
         } else if let Some(config_tmpl) = super::jinja_helpers::load_config_template(model_dir)? {
             (config_tmpl, true)
+        } else if let Some(gguf_tmpl) = super::gguf_template::load(model_dir)? {
+            (gguf_tmpl, true)
         } else {
             tracing::warn!("No chat template found — using default ChatML");
             (

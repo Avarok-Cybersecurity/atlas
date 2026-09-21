@@ -23,20 +23,12 @@ fn projection_store(
 ) -> WeightStore {
     let mut tensors = HashMap::from([(
         "proj.weight".to_string(),
-        WeightTensor {
-            ptr: DevicePtr::NULL,
-            shape: weight_shape,
-            dtype: weight_dtype,
-        },
+        WeightTensor::new(DevicePtr::NULL, weight_shape, weight_dtype),
     )]);
     if let Some(shape) = scale_shape {
         tensors.insert(
             "proj.weight_scale".to_string(),
-            WeightTensor {
-                ptr: DevicePtr::NULL,
-                shape,
-                dtype: WeightDtype::BF16,
-            },
+            WeightTensor::new(DevicePtr::NULL, shape, WeightDtype::BF16),
         );
     }
     WeightStore::from_map(tensors)

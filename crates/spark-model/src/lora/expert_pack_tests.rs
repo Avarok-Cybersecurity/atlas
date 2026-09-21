@@ -83,11 +83,7 @@ fn up_tensor(gpu: &MockGpuBackend, shape: Vec<usize>) -> WeightTensor {
         .collect();
     let ptr = gpu.alloc(bytes.len()).unwrap();
     gpu.copy_h2d(&bytes, ptr).unwrap();
-    WeightTensor {
-        ptr,
-        shape,
-        dtype: WeightDtype::BF16,
-    }
+    WeightTensor::new(ptr, shape, WeightDtype::BF16)
 }
 
 /// Drive the REAL pack entry (`pack_into`) at r=12 through the mock GPU and

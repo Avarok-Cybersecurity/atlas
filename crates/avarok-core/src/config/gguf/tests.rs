@@ -10,6 +10,7 @@ struct Meta {
     f: HashMap<String, f64>,
     s: HashMap<String, String>,
     arr: HashMap<String, usize>,
+    uarr: HashMap<String, Vec<u64>>,
 }
 impl Meta {
     fn u(mut self, k: &str, v: u64) -> Self {
@@ -37,6 +38,9 @@ impl GgufMeta for Meta {
     }
     fn get_arr_len(&self, k: &str) -> Option<usize> {
         self.arr.get(k).copied()
+    }
+    fn get_u64_arr(&self, k: &str) -> Option<Vec<u64>> {
+        self.uarr.get(k).cloned()
     }
 }
 

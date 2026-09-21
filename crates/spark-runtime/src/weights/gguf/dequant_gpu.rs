@@ -32,7 +32,7 @@ const BLOCK_DIM: u32 = 256;
 
 /// True if a GPU dequant kernel exists for this ggml type id.
 pub(crate) fn supports(id: u32) -> bool {
-    matches!(id, 8 | 10 | 11 | 12 | 14 | 42)
+    matches!(id, 8 | 10 | 11 | 12 | 13 | 14 | 42)
 }
 
 /// Dequant a tensor's raw quant blocks (already uploaded to `q_ptr`) to a fresh
@@ -135,6 +135,28 @@ pub(crate) fn dequant_q3_k(
     Ok(out)
 }
 
+/// Q5_K: QK_K=256, 176-byte super-blocks. `n_blocks` = numel / 256.
+/// Unsloth UD-Q4_K_M stores routed MoE `ffn_down_exps` as this type.
+pub(crate) fn dequant_q5_k(
+    gpu: &dyn GpuBackend,
+    blocks: DevicePtr,
+    n_blocks: usize,
+) -> Result<DevicePtr> {
+    let out = gpu.alloc(n_blocks * 256 * 2)?;
+    let kernel = gpu.kernel(MODULE, "dequant_q5_k_to_bf16")?;
+    let stream = gpu.default_stream();
+    KernelLaunch::new(gpu, kernel)
+        .grid([n_blocks as u32, 1, 1])
+        .block([BLOCK_DIM, 1, 1])
+        .arg_ptr(blocks)
+        .arg_ptr(out)
+        .arg_u32(n_blocks as u32)
+        .arg_u32(176)
+        .launch(stream)?;
+    gpu.synchronize(stream)?;
+    Ok(out)
+}
+
 /// Q6_K: QK_K=256, 210-byte super-blocks. `n_blocks` = numel / 256.
 pub(crate) fn dequant_q6_k(
     gpu: &dyn GpuBackend,
@@ -197,6 +219,7 @@ fn dispatch_gpu_dequant(
         10 => dequant_q2_k(gpu, blocks, numel / 256)?, // Q2_K
         11 => dequant_q3_k(gpu, blocks, numel / 256)?, // Q3_K
         12 => dequant_q4_k(gpu, blocks, numel / 256)?, // Q4_K
+        13 => dequant_q5_k(gpu, blocks, numel / 256)?, // Q5_K
         14 => dequant_q6_k(gpu, blocks, numel / 256)?, // Q6_K
         42 => dequant_q2_0_gn(gpu, blocks, numel / q2_group, q2_group)?, // Q2_0 id42
         _ => return Ok(None),
@@ -211,10 +234,10 @@ mod tests {
 
     #[test]
     fn supports_matches_dispatch_set() {
-        for id in [8u32, 10, 11, 12, 14, 42] {
+        for id in [8u32, 10, 11, 12, 13, 14, 42] {
             assert!(supports(id), "id {id} should be GPU-supported");
         }
-        for id in [0u32, 1, 13, 30, 35, 999] {
+        for id in [0u32, 1, 30, 35, 999] {
             assert!(!supports(id), "id {id} must not claim GPU support");
         }
     }
@@ -226,5 +249,10 @@ mod tests {
         let q = gpu.alloc(64).unwrap();
         assert!(dispatch_gpu_dequant(&gpu, 0, q, 32, 128).unwrap().is_none());
         assert!(dispatch_gpu_dequant(&gpu, 8, q, 32, 128).unwrap().is_some());
+        assert!(
+            dispatch_gpu_dequant(&gpu, 13, q, 256, 128)
+                .unwrap()
+                .is_some()
+        );
     }
 }

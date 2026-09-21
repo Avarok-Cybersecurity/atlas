@@ -2,14 +2,16 @@
 
 // GPU dequant: raw packed GGUF quant blocks -> BF16, on device.
 //
-// Scope: the hot P0 ggml types for flagship GGUFs -- Q8_0, Q4_K, Q6_K -- plus
-// the PrismML-private Q2_0 group-N (id 42), plus Q2_K and Q3_K for the K-quant
-// checkpoints (DeepSeek-V4.1 Flash Q2_K: attention, embed and the engram tables
-// are Q2_K, the routed down projections Q3_K). Each kernel maps ONE CUDA block to
-// ONE GGUF (super-)block and fans per-element work across threads. Input is the
-// raw little-endian block bytes already uploaded h2d; output is contiguous BF16
-// [n_blocks * QK]. Block byte-strides are passed as params (never hardcoded) so
-// the Q2_0 group-128 (34 B) vs group-64 (18 B) variants share one kernel.
+// Scope: the hot P0 ggml types for flagship GGUFs -- Q8_0, Q4_K, Q5_K, Q6_K --
+// plus the PrismML-private Q2_0 group-N (id 42), plus Q2_K and Q3_K for the
+// K-quant checkpoints (DeepSeek-V4.1 Flash Q2_K: attention, embed and the
+// engram tables are Q2_K, the routed down projections Q3_K). Unsloth
+// UD-Q4_K_M MoE stores routed `ffn_down_exps` as Q5_K (id 13). Each kernel
+// maps ONE CUDA block to ONE GGUF (super-)block and fans per-element work
+// across threads. Input is the raw little-endian block bytes already uploaded
+// h2d; output is contiguous BF16 [n_blocks * QK]. Block byte-strides are
+// passed as params (never hardcoded) so the Q2_0 group-128 (34 B) vs group-64
+// (18 B) variants share one kernel.
 //
 // Math mirrors the CPU reference dequant (ggml-quants.c `dequantize_row_*`)
 // bit-for-bit; --fmad=false keeps CPU/GPU parity. These are load-time kernels:
@@ -85,6 +87,40 @@ extern "C" __global__ void dequant_q4_k_to_bf16(
         unsigned char byte = qs[c * 32u + l];
         unsigned int nib = half ? (byte >> 4) : (byte & 0x0F);
         float v = d * (float)sc * (float)nib - dmin * (float)mn;
+        o[y] = __float2bfloat16(v);
+    }
+}
+
+// ---- Q5_K : { f16 d; f16 dmin; u8 scales[12]; u8 qh[32]; u8 qs[128] }, 176 B --
+// Same 4x64 chunking and scale/min unpack as Q4_K. qs holds the low 4 bits;
+// qh[l] bit `is` is the 5th bit (adds 16). Mirrors dequant_cpu::blocks::dequant_q5_k.
+extern "C" __global__ void dequant_q5_k_to_bf16(
+    const unsigned char* __restrict__ blocks,
+    __nv_bfloat16* __restrict__ out,
+    unsigned int n_blocks,
+    unsigned int block_bytes)        // 176
+{
+    unsigned int b = blockIdx.x;
+    if (b >= n_blocks) return;
+    const unsigned char* blk = blocks + (unsigned long long)b * block_bytes;
+    float d    = dq_rd_f16(blk);
+    float dmin = dq_rd_f16(blk + 2);
+    const unsigned char* scales = blk + 4;
+    const unsigned char* qh     = blk + 16;
+    const unsigned char* qs     = blk + 48;
+    __nv_bfloat16* o = out + (unsigned long long)b * 256u;
+
+    for (unsigned int y = threadIdx.x; y < 256u; y += blockDim.x) {
+        unsigned int c    = y >> 6;          // chunk 0..3
+        unsigned int half = (y >> 5) & 1u;   // 0 = low nibble, 1 = high
+        unsigned int l    = y & 31u;
+        int is = (int)(2u * c + half);
+        unsigned char sc, mn;
+        dq_scale_min_k4(is, scales, &sc, &mn);
+        unsigned char byte = qs[c * 32u + l];
+        unsigned int nib = half ? (byte >> 4) : (byte & 0x0F);
+        unsigned int hi = (qh[l] & (unsigned char)(1u << is)) ? 16u : 0u;
+        float v = d * (float)sc * (float)(nib + hi) - dmin * (float)mn;
         o[y] = __float2bfloat16(v);
     }
 }

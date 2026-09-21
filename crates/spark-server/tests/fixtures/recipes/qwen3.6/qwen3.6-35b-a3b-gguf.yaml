@@ -1,0 +1,52 @@
+recipe_version: "2"
+model: unsloth/Qwen3.6-35B-A3B-GGUF
+runtime: atlas
+container: avarok/atlas-gb10:dev
+max_nodes: 1
+
+metadata:
+  description: |
+    Qwen3.6-35B-A3B Unsloth GGUF (qwen35moe) on a single GB10. Atlas maps
+    that GGUF architecture onto qwen3_6_moe (GDN + MoE + MRoPE). It does
+    not alias qwen3moe (no GDN) and it refuses kimi-k3 GGUF.
+
+    Download pin: the Hub repo ships every quant. Atlas selects exactly
+    one file, Qwen3.6-35B-A3B-UD-Q4_K_M.gguf (~20.2 GiB), plus tokenizer
+    sidecar files. The loader dequants Q4_K to BF16 on the way in.
+
+    tokenizer.json is required. If the GGUF repo omits it, copy it from
+    Qwen/Qwen3.6-35B-A3B. The chat template is taken from GGUF
+    tokenizer.chat_template when tokenizer_config.json has none.
+
+    First ship drops NextN/MTP tensors (speculative false). Do not raise
+    num_drafts until a GGUF MTP path exists.
+
+    Same OpenAI surface as the NVFP4 recipe: /v1/chat/completions,
+    reasoning_content / reasoning_effort, /v1/models only after weights
+    are resident. Same client can hit this and qwen3.6-35b-a3b-nvfp4.
+
+    Requires a tokenizer.json sidecar and GB10 spark-server with this
+    GGUF mapping. Unknown GGUF arches error; they never guess.
+  maintainer: atlas
+  category: agent
+  model_params: 35B
+  model_dtype: gguf-q4_k
+  quantization: gguf-ud-q4_k_m
+  kv_dtype: fp8
+
+defaults:
+  port: 8888
+  host: 0.0.0.0
+  max_model_len: 131072
+  kv_cache_dtype: fp8
+  gpu_memory_utilization: 0.88
+  scheduling_policy: slai
+  speculative: false
+  enable_prefix_caching: true
+  fp8_kv_calibration_tokens: 256
+  kv_high_precision_layers: auto
+  ssm_cache_slots: 128
+  ssm_checkpoint_interval: 32
+  tool_call_parser: qwen3_coder
+  disable_tool_grammar: true
+  disable_thinking: true

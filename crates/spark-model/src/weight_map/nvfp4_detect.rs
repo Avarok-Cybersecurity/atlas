@@ -329,7 +329,12 @@ pub(crate) fn quantized_any(
             // `quantized_any`) holds BOTH the ~60GB BF16 experts AND the ~22GB
             // NVFP4 copies → ~109GB pre-KV, no room for KV. Safe + mirrors
             // `quantized_from_fp8` which frees its BF16 intermediate the same way.
-            gpu.free(w.ptr)?;
+            // GGUF stacked experts alias one alloc (`owned: false`). Freeing
+            // expert 0's pointer unmaps the whole stack — CUDA 700 on the
+            // next sibling. Unique safetensors allocs still free here.
+            if w.owned {
+                gpu.free(w.ptr)?;
+            }
             T_FREE.fetch_add(_t.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let c = N.fetch_add(1, Ordering::Relaxed) + 1;
             if c.is_multiple_of(512) {
@@ -434,11 +439,11 @@ mod ep_detection_tests {
             .map(|n| {
                 (
                     n.clone(),
-                    spark_runtime::weights::WeightTensor {
-                        ptr: spark_runtime::gpu::DevicePtr::NULL,
-                        shape: vec![1],
-                        dtype: spark_runtime::weights::WeightDtype::FP8E4M3,
-                    },
+                    spark_runtime::weights::WeightTensor::new(
+                        spark_runtime::gpu::DevicePtr::NULL,
+                        vec![1],
+                        spark_runtime::weights::WeightDtype::FP8E4M3,
+                    ),
                 )
             })
             .collect();

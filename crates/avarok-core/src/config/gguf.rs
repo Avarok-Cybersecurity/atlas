@@ -22,6 +22,8 @@ use serde_json::{Map, Value, json};
 
 use super::{ModelConfig, finalize_config};
 
+mod qwen35;
+
 /// Typed read access to GGUF metadata. Implemented by the spark-runtime GGUF
 /// parser over its parsed key/value table. All getters return `None` when the
 /// key is absent or holds a different value type — the builder decides whether
@@ -77,6 +79,7 @@ pub struct GgufConfigInputs<'a> {
 /// with `num_experts == 0` (dense qwen3.5 loader). Returns an error for
 /// unmapped architectures rather than guessing.
 fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
+    qwen35::refuse_kimi_k3(arch)?;
     // (model_type, attn_gated)
     Ok(match arch {
         "llama" => ("mistral", false),
@@ -86,6 +89,11 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         // qwen3 dense: q_norm/k_norm, ungated Q. num_experts==0 → dense loader.
         "qwen3" => ("qwen3_5", false),
         "qwen3moe" => ("qwen3_5_moe", false),
+        // Qwen3.5/3.6 GDN-hybrid. `qwen3moe` is the older dense-attn MoE (no
+        // GDN) and must stay on `qwen3_5_moe`. `qwen35moe` is GDN + MoE +
+        // MRoPE → `qwen3_6_moe` (Qwen35WeightLoader, 35B-A3B first ship).
+        "qwen35" | "qwen3_5" => ("qwen3_5", true),
+        "qwen35moe" => ("qwen3_6_moe", true),
         // gemma family: GeGLU, ungated Q, embedding scale + logit softcap.
         "gemma" | "gemma2" | "gemma3" | "gemma4" => ("gemma4", false),
         // DeepSeek-V4.1 Flash. MLA + 384-expert MoE + mHC + shared compressed
@@ -95,7 +103,8 @@ fn arch_to_model_type(arch: &str) -> Result<(&'static str, bool)> {
         "deepseek41" => ("deepseek_v41", false),
         other => bail!(
             "GGUF general.architecture '{other}' has no Atlas model_type mapping. \
-             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, gemma/gemma2/gemma3/gemma4, deepseek41."
+             Supported GGUF arches: llama, qwen2, qwen3, qwen3moe, qwen35, qwen35moe, \
+             gemma/gemma2/gemma3/gemma4, deepseek41."
         ),
     })
 }
@@ -206,14 +215,15 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
     let tie_word_embeddings = !inputs.has_output_weight;
 
     // ── MoE (only for MoE arches) ──
-    let num_experts = if arch == "qwen3moe" {
+    let moe_arch = arch == "qwen3moe" || arch == "qwen35moe";
+    let num_experts = if moe_arch {
         req_u64("expert_count")? as usize
     } else {
         meta.get_u64(&k("expert_count"))
             .map(|v| v as usize)
             .unwrap_or(0)
     };
-    if arch == "qwen3moe" && num_experts == 0 {
+    if moe_arch && num_experts == 0 {
         bail!("GGUF metadata key '{arch}.expert_count' must be greater than zero");
     }
 
@@ -273,6 +283,9 @@ pub fn config_from_gguf(inputs: &GgufConfigInputs) -> Result<ModelConfig> {
 
     config.model_type = model_type.to_string();
     config.attn_gated = attn_gated;
+    if matches!(arch.as_str(), "qwen35" | "qwen3_5" | "qwen35moe") {
+        qwen35::apply_qwen35_hybrid(&mut config, meta, &arch)?;
+    }
     // The GGUF name map emits HF names under the `model.` prefix
     // (`model.embed_tokens.weight`, `model.layers.N.*`, `model.norm.weight`).
     // `layer_prefix()` yields `model.layers.N` for both "" and "model", but the
