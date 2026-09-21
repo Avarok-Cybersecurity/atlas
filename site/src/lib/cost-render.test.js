@@ -43,7 +43,7 @@ plugin({
 const { render } = await import('svelte/server');
 const { recordsFor, tabs } = await import('./gates.js');
 const { SUBJECTS } = await import('./concurrency-subjects.js');
-const { KEY, RUN_KEY, cellKey, DEFAULT_USD_PER_KWH } = await import('./cost.js');
+const { KEY, RUN_KEY, cellKey, DEFAULT_USD_PER_KWH, costTrend } = await import('./cost.js');
 const Panel = (await import('./components/CostSubjectPanel.svelte')).default;
 const Tab = (await import('./components/CostTab.svelte')).default;
 const Dashboard = (await import('./components/BenchmarkDashboard.svelte')).default;
@@ -84,7 +84,14 @@ const rec = (metrics, o = {}) => ({
 });
 
 const rung = (c, o = {}) => {
-  const { watts = 40, tokS = 20, windowS = 100, samples = 400 } = o;
+  // periodMs is declared because every REAL energy-bearing record declares it:
+  // all 6 on main carry gpu_rail_sample_period_ms, and readEnergy only ever
+  // runs on records that carry energy. A fixture without it is not a good
+  // record with a field missing -- it is a record whose coverage cannot be
+  // verified, and since #1216 it is drawn hollow, correctly. Tests that mean
+  // "a good record" must therefore say so. Pass `periodMs: null` to build the
+  // unverifiable case on purpose.
+  const { watts = 40, tokS = 20, windowS = 100, samples = 400, periodMs = 250 } = o;
   return {
     c,
     tok_s: tokS,
@@ -92,7 +99,8 @@ const rung = (c, o = {}) => {
     [KEY.energyJ]: watts * windowS,
     [KEY.tokens]: tokS * windowS,
     [KEY.windowS]: windowS,
-    [KEY.samples]: samples
+    [KEY.samples]: samples,
+    ...(periodMs === null ? {} : { [RUN_KEY.periodMs]: periodMs })
   };
 };
 
@@ -271,6 +279,38 @@ describe('absent is not zero, in the rendering too', () => {
 });
 
 // ---- under-sampled ----------------------------------------------------------
+
+// ★ THE CONTROL FOR THE FIXTURE CHANGE ABOVE. `rung()` now declares a cadence
+// by default, which is what every real energy-bearing record does — but that
+// must not be a way of switching the guard off. A rung built WITHOUT one has to
+// render hollow and stay out of the count, exactly like an under-sampled one.
+describe('a window whose sampler cadence was never recorded (#1216)', () => {
+  // The two paths refuse differently, and each is asserted where it renders.
+  // A RECORD without a cadence is untrusted, so costTrend drops it from the
+  // drawn series entirely and reports why in `excluded` -- checked directly
+  // against costTrend, because "not drawn" has no mark to match on. A RUNG
+  // without one renders in the ladder with its reason named.
+  const blindRung = panel([rec(cell(8))], ladders([rung(8, { periodMs: null })]));
+
+  test('a RECORD with no cadence is not drawn at all, and the trend says why', () => {
+    const blind = rec({ ...cell(8), [RUN_KEY.periodMs]: undefined });
+    const t = costTrend(8, [blind]);
+    expect(t.records).toHaveLength(0);
+    expect(t.excluded).toHaveLength(1);
+    expect(t.excluded[0].reason).toContain('cadence not recorded');
+  });
+
+  test('a RUNG with no cadence names the reason rather than just fading the point', () => {
+    expect(text(blindRung)).toContain('cadence not recorded');
+  });
+
+  test('declaring the cadence draws both — so neither assertion is vacuous', () => {
+    const seen = rec(cell(8));
+    expect(costTrend(8, [seen]).records).toHaveLength(1);
+    expect(costTrend(8, [seen]).excluded).toHaveLength(0);
+    expect(text(panel([seen], ladders([rung(8)])))).not.toContain('cadence not recorded');
+  });
+});
 
 describe('an under-sampled window is marked, not counted', () => {
   const thin = panel([rec(cell(8, { samples: 4 }))], ladders([rung(8)]));
