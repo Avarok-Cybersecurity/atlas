@@ -63,6 +63,17 @@ const TAB_DEFS = [
     id: 'concurrency',
     label: 'Concurrency',
     benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
+  },
+  // Cost reads the SAME records as Concurrency — the GPU-rail joules and the
+  // token count of the window they span ride in each sweep record's metrics
+  // map — so it earns a tab on the same evidence. It renders an explicit
+  // "not yet measured" state per subject until an energy-instrumented run
+  // lands, which is the state it ships in: a cost tab that appeared only once
+  // a number existed would hide the fact that nothing has been measured.
+  {
+    id: 'cost',
+    label: 'Cost',
+    benches: ['concurrency-sweep', 'concurrency-sweep-dflash2']
   }
 ];
 export const tabs = TAB_DEFS.filter((t) =>
