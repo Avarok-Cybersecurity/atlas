@@ -24,6 +24,13 @@ import {
   costInstrumentKey,
   costLadder,
   costPerMillion,
+  DISCLOSURES,
+  DEFAULT_PUE,
+  PUE_MAX,
+  PUE_MIN,
+  PUE_TYPICAL,
+  isPue,
+  pueRange,
   costTrend,
   emptyStateOf,
   energyOf,
@@ -134,15 +141,19 @@ describe('the dollar arithmetic', () => {
     expect(jTok).toBe(3.2);
     const kwh = (1e6 * jTok) / 3.6e6;
     expect(kwh).toBeCloseTo(0.889, 3);
-    expect(costPerMillion(jTok, DEFAULT_USD_PER_KWH)).toBeCloseTo(kwh * DEFAULT_USD_PER_KWH, 9);
-    expect(costPerMillion(jTok, DEFAULT_USD_PER_KWH)).toBeCloseTo(0.1333, 4);
-    expect(fmtUsd(costPerMillion(jTok, DEFAULT_USD_PER_KWH))).toBe('0.13');
+    expect(costPerMillion(jTok, DEFAULT_USD_PER_KWH, DEFAULT_PUE)).toBeCloseTo(kwh * DEFAULT_USD_PER_KWH, 9);
+    expect(costPerMillion(jTok, DEFAULT_USD_PER_KWH, DEFAULT_PUE)).toBeCloseTo(0.1333, 4);
+    expect(fmtUsd(costPerMillion(jTok, DEFAULT_USD_PER_KWH, DEFAULT_PUE))).toBe('0.13');
+    // ...and the same fixture through a datacentre: 0.889 kWh of IT load is
+    // 1.333 kWh at the building's meter at PUE 1.5, which is $0.20.
+    expect(costPerMillion(jTok, DEFAULT_USD_PER_KWH, 1.5)).toBeCloseTo(kwh * 1.5 * DEFAULT_USD_PER_KWH, 9);
+    expect(fmtUsd(costPerMillion(jTok, DEFAULT_USD_PER_KWH, 1.5))).toBe('0.2');
   });
 
   test('the formula is J/token x $/kWh / 3.6, not some other constant', () => {
     // Independent derivation: joules -> kWh -> dollars, no shared constant.
     for (const [j, price] of [[3.2, 0.15], [0.13, 0.3], [1.9, 0.08]]) {
-      expect(costPerMillion(j, price)).toBeCloseTo(((1e6 * j) / 3.6e6) * price, 12);
+      expect(costPerMillion(j, price, DEFAULT_PUE)).toBeCloseTo(((1e6 * j) / 3.6e6) * price, 12);
     }
   });
 
@@ -691,5 +702,99 @@ describe('readEnergy · coverage with no recorded cadence', () => {
     const e = readEnergy(window({ [KEY.samples]: undefined }), '', {}, 'r', null);
     expect(e.concerns.join(' ')).toContain('unauditable');
     expect(e.concerns.join(' ')).not.toContain('cadence not recorded');
+  });
+});
+
+// ---- facility overhead ------------------------------------------------------
+//
+// Asked for by the owner, 2026-09-21: put PUE next to the electricity price,
+// default it to 1.0, and show a low-to-high band. The properties below are
+// what make that safe to offer — above all that it cannot move the comparison.
+describe('PUE, the second reader input', () => {
+  test('the default applies NOTHING — it is the identity, not a guess', () => {
+    expect(DEFAULT_PUE).toBe(1);
+    for (const j of [3.2, 0.13, 1.9]) {
+      expect(costPerMillion(j, DEFAULT_USD_PER_KWH, DEFAULT_PUE)).toBe(
+        (j * DEFAULT_USD_PER_KWH) / 3.6
+      );
+    }
+  });
+
+  test('THE PROPERTY THAT MAKES IT SAFE: no PUE can change who is cheaper', () => {
+    // Two engines, one of them cheaper at every rung. PUE multiplies both, so
+    // the ratio is invariant and the winner cannot flip. If this ever fails,
+    // the control has become a way to argue rather than a way to look.
+    const atlas = [3.2, 1.1, 0.42];
+    const rival = [3.0, 1.3, 0.55];
+    const base = atlas.map((a, i) => a / rival[i]);
+    for (const pue of [1, 1.05, PUE_TYPICAL.low, PUE_TYPICAL.high, 2, PUE_MAX]) {
+      for (const price of [0.15, 0.3, 0.02]) {
+        atlas.forEach((a, i) => {
+          const ra = costPerMillion(a, price, pue);
+          const rb = costPerMillion(rival[i], price, pue);
+          expect(ra / rb).toBeCloseTo(base[i], 12);
+          expect(ra < rb).toBe(atlas[i] < rival[i]);
+        });
+      }
+    }
+  });
+
+  test('it scales linearly, so a band is a constant offset on a log axis', () => {
+    // The chart's y axis is log10; that is why a band can be drawn as a
+    // constant-height ribbon rather than recomputed per rung.
+    const j = 3.2;
+    const lo = costPerMillion(j, 0.15, PUE_TYPICAL.low);
+    const hi = costPerMillion(j, 0.15, PUE_TYPICAL.high);
+    expect(hi / lo).toBeCloseTo(PUE_TYPICAL.high / PUE_TYPICAL.low, 12);
+    const j2 = 0.13;
+    const lo2 = costPerMillion(j2, 0.15, PUE_TYPICAL.low);
+    const hi2 = costPerMillion(j2, 0.15, PUE_TYPICAL.high);
+    expect(Math.log10(hi) - Math.log10(lo)).toBeCloseTo(Math.log10(hi2) - Math.log10(lo2), 12);
+  });
+
+  test('`pue` is REQUIRED — a forgotten multiplier is NaN, never a silent 1.0', () => {
+    // The whole reason it is not defaulted: a call site that forgets must be
+    // loud, because the number it would otherwise return means something else.
+    expect(Number.isNaN(costPerMillion(3.2, 0.15, undefined))).toBe(true);
+    expect(Number.isNaN(costPerMillion(3.2, 0.15))).toBe(true);
+  });
+
+  test('isPue refuses below 1.0 — a building cannot use less than its IT load', () => {
+    expect(PUE_MIN).toBe(1);
+    for (const v of [1, 1.0001, 1.5, PUE_MAX]) expect(isPue(v)).toBe(true);
+    for (const v of [0.999, 0, -1, PUE_MAX + 0.001, NaN, Infinity, null, undefined, '1.2'])
+      expect(isPue(v)).toBe(false);
+  });
+
+  test('pueRange orders the pair, reports the band, and names the box it refused', () => {
+    expect(pueRange(1.1, 1.5)).toEqual({ low: 1.1, high: 1.5, band: true, lowOk: true, highOk: true });
+    // Typed in the other order is not an error; it is two numbers.
+    expect(pueRange(1.5, 1.1)).toEqual({ low: 1.1, high: 1.5, band: true, lowOk: true, highOk: true });
+    // Equal is one curve, not a zero-height band.
+    expect(pueRange(1.2, 1.2)).toEqual({ low: 1.2, high: 1.2, band: false, lowOk: true, highOk: true });
+    // An unusable box falls back to the IDENTITY and says which one it was,
+    // so the page can print it rather than quietly drawing an assumption.
+    expect(pueRange(0.4, 1.5)).toEqual({ low: 1, high: 1.5, band: true, lowOk: false, highOk: true });
+    expect(pueRange(1.2, 99)).toEqual({ low: 1, high: 1.2, band: true, lowOk: true, highOk: false });
+    expect(pueRange(NaN, NaN)).toEqual({ low: 1, high: 1, band: false, lowOk: false, highOk: false });
+  });
+
+  test('the default pair is a no-op: same numbers as before the control existed', () => {
+    const r = pueRange(DEFAULT_PUE, DEFAULT_PUE);
+    expect(r).toEqual({ low: 1, high: 1, band: false, lowOk: true, highOk: true });
+    for (const j of [3.2, 0.42]) {
+      expect(costPerMillion(j, 0.15, r.low)).toBe((j * 0.15) / 3.6);
+      expect(costPerMillion(j, 0.15, r.high)).toBe((j * 0.15) / 3.6);
+    }
+  });
+
+  test('the disclosure describes the control that exists, not the old absence', () => {
+    const d = DISCLOSURES.find((x) => x.head.toLowerCase().includes('facility overhead'));
+    expect(d).toBeDefined();
+    expect(d.head).not.toContain('is not applied');
+    expect(d.body).toContain(`${DEFAULT_PUE}`);
+    expect(d.body).toContain(`${PUE_TYPICAL.low}`);
+    expect(d.body).toContain(`${PUE_TYPICAL.high}`);
+    expect(d.body).toMatch(/changes no ratio/);
   });
 });

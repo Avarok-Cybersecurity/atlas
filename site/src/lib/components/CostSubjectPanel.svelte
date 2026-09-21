@@ -13,9 +13,15 @@
   import { colorFor, fmtDate } from '$lib/gates.js';
   import { instrumentLabel } from '$lib/concurrency-comparison.js';
   import {
+    DEFAULT_PUE,
     DEFAULT_USD_PER_KWH,
     DISCLOSURES,
     PRICE_STORAGE_KEY,
+    PUE_HIGH_STORAGE_KEY,
+    PUE_LOW_STORAGE_KEY,
+    PUE_MAX,
+    PUE_MIN,
+    PUE_TYPICAL,
     baselineSnapshots,
     costLadder,
     costPerMillion,
@@ -23,6 +29,7 @@
     emptyStateOf,
     extremeRungs,
     fmtUsd,
+    pueRange,
     rungsOf,
     verdictTile
   } from '$lib/cost.js';
@@ -67,6 +74,51 @@
     }
   });
 
+  // -- facility overhead: the reader's SECOND input, and it starts at none ---
+  //
+  // Two boxes, not one, because a building is a range. Both default to
+  // DEFAULT_PUE (1.0, the identity), so a reader who ignores this control sees
+  // exactly the chart that existed before it — the marks do not move and no
+  // band is drawn. `pueRange` orders the pair and reports which box it had to
+  // refuse, so an unusable value is SAID rather than silently defaulted.
+  let pueLowInput = $state(DEFAULT_PUE);
+  let pueHighInput = $state(DEFAULT_PUE);
+  const pue = $derived(pueRange(pueLowInput, pueHighInput));
+  const pueTypical = () => {
+    pueLowInput = PUE_TYPICAL.low;
+    pueHighInput = PUE_TYPICAL.high;
+  };
+  const pueNone = () => {
+    pueLowInput = DEFAULT_PUE;
+    pueHighInput = DEFAULT_PUE;
+  };
+  // Same storage contract as the price: per viewer, per origin, every access
+  // guarded, and never in the URL — a deep link must not carry someone else's
+  // facility any more than it carries their tariff.
+  $effect(() => {
+    for (const [key, set] of [
+      [PUE_LOW_STORAGE_KEY, (v) => (pueLowInput = v)],
+      [PUE_HIGH_STORAGE_KEY, (v) => (pueHighInput = v)]
+    ]) {
+      try {
+        const raw = localStorage.getItem(key);
+        const v = Number(raw);
+        if (raw !== null && Number.isFinite(v) && v >= PUE_MIN && v <= PUE_MAX) set(v);
+      } catch {
+        /* no stored PUE: 1.0 stands, and 1.0 applies nothing */
+      }
+    }
+  });
+  $effect(() => {
+    if (!pue.lowOk || !pue.highOk) return;
+    try {
+      localStorage.setItem(PUE_LOW_STORAGE_KEY, String(pueLowInput));
+      localStorage.setItem(PUE_HIGH_STORAGE_KEY, String(pueHighInput));
+    } catch {
+      /* storage refused: the overhead still applies to this view */
+    }
+  });
+
   // -- total vs above idle ---------------------------------------------------
   let aboveIdle = $state(false);
   const idle = $derived(cost.idle);
@@ -76,8 +128,17 @@
   const extremes = $derived(extremeRungs(cost.verdicts));
   // One place computes dollars from joules (cost.js); this only chooses which
   // joule count the current view is showing.
+  // Tiles carry the LOW edge — the same number the marks sit on, and at the
+  // default PUE the rail reading itself. A tile is not the place to show a
+  // range; the chart is, and the tile must agree with the mark beside it.
   const usdAt = (e) =>
-    fmtUsd(costPerMillion((showAboveIdle && e.aboveIdleJ !== null ? e.aboveIdleJ : e.energyJ) / e.tokens, usdPerKwh));
+    fmtUsd(
+      costPerMillion(
+        (showAboveIdle && e.aboveIdleJ !== null ? e.aboveIdleJ : e.energyJ) / e.tokens,
+        usdPerKwh,
+        pue.low
+      )
+    );
   const tiles = $derived.by(() => {
     if (cost.energyState === 'none') {
       return [
@@ -152,23 +213,63 @@
     </div>
   </header>
 
-  <!-- The one input on this page, and it is labelled as an input. -->
+  <!-- The two inputs on this page, and both are labelled as inputs. -->
   <div class="cost-price">
-    <label class="cost-price-field">
-      <span class="cost-price-label">electricity price</span>
-      <span class="cost-price-box">
-        <span aria-hidden="true">$</span>
-        <input type="number" min="0" step="0.01" inputmode="decimal"
-          bind:value={priceInput} aria-label="Electricity price in dollars per kilowatt-hour" />
-        <span aria-hidden="true">/ kWh</span>
-      </span>
-    </label>
+    <div class="cost-inputs">
+      <label class="cost-price-field">
+        <span class="cost-price-label">electricity price</span>
+        <span class="cost-price-box">
+          <span aria-hidden="true">$</span>
+          <input type="number" min="0" step="0.01" inputmode="decimal"
+            bind:value={priceInput} aria-label="Electricity price in dollars per kilowatt-hour" />
+          <span aria-hidden="true">/ kWh</span>
+        </span>
+      </label>
+
+      <!-- Facility overhead. Two boxes because a building is a range, and the
+           default is the identity so the control applies nothing until it is
+           touched. -->
+      <div class="cost-price-field" role="group" aria-labelledby="pue-label-{subject.id}">
+        <span class="cost-price-label" id="pue-label-{subject.id}">facility overhead (PUE)</span>
+        <span class="cost-price-box cost-pue-box">
+          <input type="number" min={PUE_MIN} max={PUE_MAX} step="0.05" inputmode="decimal"
+            bind:value={pueLowInput} aria-label="Lowest power usage effectiveness to draw" />
+          <span aria-hidden="true">–</span>
+          <input type="number" min={PUE_MIN} max={PUE_MAX} step="0.05" inputmode="decimal"
+            bind:value={pueHighInput} aria-label="Highest power usage effectiveness to draw" />
+          <span aria-hidden="true">×</span>
+        </span>
+        <span class="cost-pue-presets">
+          <button type="button" class="cmp-chip" aria-pressed={!pue.band && pue.low === DEFAULT_PUE}
+            onclick={pueNone}>none ({DEFAULT_PUE}×)</button>
+          <button type="button" class="cmp-chip"
+            aria-pressed={pue.low === PUE_TYPICAL.low && pue.high === PUE_TYPICAL.high}
+            onclick={pueTypical}>datacentre ({PUE_TYPICAL.low}–{PUE_TYPICAL.high}×)</button>
+        </span>
+      </div>
+    </div>
+
     <p class="cost-price-note">
       <strong>Your input, not a measurement.</strong> The default {DEFAULT_USD_PER_KWH} $/kWh is a round
       retail-commercial figure — change it to your own tariff. It is kept in this browser and is never
       written into the link.
       {#if !priceValid}
         <span class="cost-warn">That is not a price; the chart is drawn at {DEFAULT_USD_PER_KWH} $/kWh until it is one.</span>
+      {/if}
+    </p>
+    <p class="cost-price-note">
+      <strong>PUE starts at {DEFAULT_PUE}×, which applies nothing.</strong> Set a low and a high — a
+      datacentre is typically {PUE_TYPICAL.low}–{PUE_TYPICAL.high}× — and the chart shades the band
+      between them for <em>both</em> engines. Because it multiplies both equally it moves every
+      absolute figure and changes no ratio, no verdict and no winner.
+      {#if pue.band}
+        Drawing {pue.low}–{pue.high}×; the line is the rail, the band is the building.
+      {/if}
+      {#if !pue.lowOk || !pue.highOk}
+        <span class="cost-warn"
+          >{!pue.lowOk && !pue.highOk ? 'Neither box is' : !pue.lowOk ? 'The low box is not' : 'The high box is not'}
+          a PUE between {PUE_MIN} and {PUE_MAX}; {!pue.lowOk && !pue.highOk ? 'both are' : 'it is'} drawn at
+          {DEFAULT_PUE}× until {!pue.lowOk && !pue.highOk ? 'they are' : 'it is'}.</span>
       {/if}
     </p>
   </div>
@@ -207,7 +308,7 @@
       </span>
     </div>
 
-    <CostLadderChart {subject} {cost} {usdPerKwh} rungs={rungsMeasured} title={chartTitle}
+    <CostLadderChart {subject} {cost} {usdPerKwh} {pue} rungs={rungsMeasured} title={chartTitle}
       aboveIdle={showAboveIdle} {onselect} />
 
     <p class="cmp-caption">

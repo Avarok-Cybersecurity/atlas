@@ -470,6 +470,14 @@
 /* The one input on the tab. Boxed and labelled so it reads as something the
    reader typed, never as something that was measured. */
 .cost-price { display: grid; gap: 0.35rem; }
+/* Price and facility overhead sit side by side and wrap together: they are
+   the same KIND of thing — the reader's assumptions — and separating them
+   would imply one is more measured than the other. */
+.cost-inputs { display: flex; align-items: flex-start; gap: 1.4rem; flex-wrap: wrap; }
+.cost-pue-presets { display: inline-flex; gap: 0.35rem; flex-wrap: wrap; }
+/* Two boxes in the width one price box takes: a PUE is `1.15`, never a
+   tariff, so 5.5rem each would push the row off a phone. */
+.cost-pue-box input { width: 3.4rem; text-align: right; }
 .cost-price-field { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 .cost-price-label {
   font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.05em;
@@ -500,6 +508,13 @@
 .cost-rail { fill: var(--t3); font-family: var(--font-mono); font-size: 10px; }
 /* A losing rung's factor. Same ink as the axis: a loss is stated, not alarmed. */
 .cost-lose { fill: var(--t2); font-family: var(--font-mono); font-size: 10px; }
+
+/* The facility-overhead band. Deliberately faint and strokeless: it is the
+   reader's ASSUMPTION drawn around a measurement, so it must read as a
+   region of uncertainty and never as a second measured series. The colour is
+   the series' own, passed in as --band. */
+.cost-band { fill: var(--band, var(--t2)); opacity: 0.14; stroke: none; }
+.cost-band-tick { stroke-width: 6; opacity: 0.14; stroke-linecap: butt; }
 
 .cost-refused { color: var(--amber); }
 .cost-disclosure { font-size: 0.74rem; color: var(--t2); line-height: 1.6; display: grid; gap: 0.4rem; }
