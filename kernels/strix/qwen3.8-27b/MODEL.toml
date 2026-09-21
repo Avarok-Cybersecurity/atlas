@@ -1,0 +1,189 @@
+[model]
+name = "qwen3.8-27b"
+hf_id = "Qwen/Qwen3.8-27B"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# ── Why this target exists, and why it compiles no kernels of its own ──────
+# VERIFIED 2026-08-18 on the Strix Halo box against the checkpoint actually on
+# disk (unsloth/Qwen3.8-27B-NVFP4, snapshot 7d6f8d4d): every field of
+# `text_config` is byte-identical to unsloth/Qwen3.6-27B-NVFP4's — layer
+# counts, layer_types histogram, hidden/head/kv dims, vocab, rope_parameters,
+# attn_output_gate, mtp_num_hidden_layers. The two checkpoints differ ONLY in
+# weights and in `quantization_config`.
+#
+# Two consequences, both load-bearing:
+#
+#  * `kernel_source` reuses qwen3.6-27b's gfx1151 .cu tree verbatim rather
+#    than vendoring a duplicate copy. There is no 3.8-specific kernel work on
+#    this backend, exactly as on gb10.
+#
+#  * `match_names` is REQUIRED, not decorative. config.json cannot tell 3.8
+#    from 3.6 — same model_type "qwen3_5", same hidden_size 5120, same every
+#    numeric field — so kernel-target resolution hits an exact
+#    (qwen3_5, 5120) tie and breaks it by matching these needles against the
+#    checkpoint reference (HF id / --model-name / model dir). An unbroken tie
+#    is a hard startup error, never a build-order pick. See
+#    atlas-kernels/src/resolve.rs.
+match_names = ["qwen3.8-27b"]
+kernel_source = "qwen3.6-27b"
+
+# Architecture read from the checkpoint's text_config, not copied.
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+# ── MTP: 1, and this is a DELIBERATE divergence from gb10/qwen3.8-27b ──────
+# The gb10 target sets `mtp_layers = 0`. That is wrong for this checkpoint,
+# and it matters more here than it does on gb10 because the Strix MLPerf-edge
+# recipe serves with `--speculative --num-drafts N`, which is dead weight
+# without an MTP head.
+#
+# Evidence, read off the snapshot on disk rather than inferred:
+#   config.json  text_config.mtp_num_hidden_layers = 1
+#   model.safetensors.index.json references model_mtp.safetensors, and the
+#   weight_map carries 15 `mtp.*` entries — mtp.fc.weight,
+#   mtp.layers.0.{input_layernorm,post_attention_layernorm,mlp.*,self_attn.*}
+#
+# So the head ships, it is indexed, and the qwen35 loader's `mtp.fc.weight`
+# auto-detect finds it. This is the identical trap qwen3.6-27b/MODEL.toml
+# documents ("was previously stalled at 0 — stale value, MTP silently
+# disabled"): a 0 here produces no error and no warning, just a serve that
+# quietly ignores --speculative and decodes at 1x.
+mtp_layers = 1
+
+# The checkpoint is a Qwen3_5ForConditionalGeneration with a populated
+# vision_config; quantization_config.ignore lists the visual blocks.
+vision = true
+
+# Carried from the 27B siblings (3.5/3.6 share Atlas's hybrid-GDN
+# long-context behaviour; 3.8 is the same architecture). UNMEASURED on 3.8
+# weights on gfx1151 — revisit if long-context evals land.
+effective_context = 24576
+
+# ── Sampling ───────────────────────────────────────────────────────────────
+# Taken from gb10/qwen3.8-27b, NOT from strix/qwen3.6-27b. Sampling is a
+# property of the WEIGHTS, and these are the same weights gb10 serves, where
+# the card values were A/B'd on this checkpoint (N=10/tier: thinking temp 1.0
+# -> 4090 s Sigma-wall, temp 0.6 -> 4182 s, both 10/10 — the 3.6 retune bought
+# nothing on 3.8 weights, and 3.6's degeneration mode was not reproduced).
+# Importing qwen3.6-27b's empirically-retuned 0.6 / rep_pen 1.1 / dry 0.5
+# would be importing a bisect run against DIFFERENT weights.
+#
+# [sampling.tools] stays penalty-free: penalties are applied BEFORE the
+# grammar mask, so they shift the argmax among legal JSON tokens, and
+# tool-call JSON legitimately repeats `"`, `{`, `,` and key names. On
+# qwen3.6-27b that corrupted grammar-constrained args even at temp 0 and cost
+# ~9 points of BFCL non_live until the 2026-07-04 penalty-free sync.
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.8
+top_k = 20
+min_p = 0.0
+presence_penalty = 1.5
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.6
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# Both dense-27B siblings (3.5 and 3.6, independently trained) loop on
+# long-code prompts, so the prose-attractor is treated as a family trait of
+# this architecture until 3.8 evidence on gfx1151 says otherwise.
+enable_loop_watchdog = true
+
+# ── thinking_default: deliberately NOT set here ────────────────────────────
+# gb10/qwen3.8-27b sets `thinking_default = true`. strix/qwen3.6-27b
+# deliberately leaves it unset, because the dense 27B FP8/NVFP4 weights
+# exhibited a post-`</think>` content-collapse ON gfx1151 specifically —
+# coherent reasoning_content, then a premature stop plus chat-template
+# artefacts on the transition out of thinking.
+#
+# That is a gfx1151 x weights interaction, and 3.8 is different weights on the
+# same gfx1151. Neither sibling's value transfers on evidence: gb10's `true`
+# was measured on different silicon, and 3.6's implicit `false` was measured
+# on different weights. Unset (= false) is the conservative choice — clients
+# still get coherent answers, and an explicit per-request enable_thinking=true
+# still wins — and it is the value the 3.6 Strix submission was certified
+# under. Flip it here only with a gfx1151 A/B on THESE weights recorded in
+# this comment.
+thinking_in_tools = false
+max_thinking_budget = 512
+
+# default_num_drafts: 1, matching strix/qwen3.6-27b. gb10/qwen3.8-27b leaves
+# this unset on the argument that draft acceptance is a weights property and
+# 3.8 must earn its own K. That argument is right, and 1 is not a tuned K —
+# it is the floor that makes speculative decode WORK at all while a proper
+# chain-widening sweep is run on gfx1151. The Strix serve recipe passes
+# --num-drafts explicitly, which overrides this.
+default_num_drafts = 1
+
+# default_kv_dtype: deliberately NOT set. gb10/qwen3.8-27b sets "fp8",
+# carrying it with the shared kernel set. The Strix recipe serves
+# `--kv-cache-dtype bf16` (serve-amd.sh, and the certified MLPerf-edge run),
+# because on gfx1151 the SCALE device FP8 encode path is the one this port
+# works around (ATLAS_W4A16_VARIANT=v1 / ATLAS_NO_FP8_PREDEQUANT=1 exist for
+# exactly that reason). Setting an fp8 default here would silently change the
+# KV dtype of the proven configuration for anyone who does not pass the flag.
+
+# Upstream reports model_type = "qwen3_5". The MRoPE -> "qwen3_6_moe"
+# dispatch rewrite fires only for MoE checkpoints (is_moe gate in
+# atlas-core config/dispatch.rs), and this is a DENSE hybrid, so it stays
+# "qwen3_5". No belt-and-braces qwen3_6_moe entry: no 3.8 checkpoint is known
+# to rewrite, and every extra colliding entry widens the ambiguity surface
+# that resolution has to break.
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+# ── DFlash: intentionally ABSENT ───────────────────────────────────────────
+# qwen3.6-27b pairs with z-lab/Qwen3.6-27B-DFlash, whose fc projection
+# consumes Qwen3.6-27B hidden states from target layers [1,16,31,46,61].
+# Qwen3.8-27B has different weights, so that drafter's inputs are
+# out-of-distribution — a mismatched drafter degrades to near-zero acceptance
+# and can only slow decode. Add a [dflash] section when a 3.8-trained drafter
+# exists. Speculative decode on this target rides the native MTP head above.

@@ -109,7 +109,9 @@ pub(crate) fn build_full_attention_nvfp4(
                  full_k: usize,
                  kind: TpShardKind|
                  -> Result<(DenseWeight, crate::weight_map::QuantizedWeight)> {
+                    let __t0 = std::time::Instant::now();
                     let src = dense_auto(store, &format!("{p}.{name}.weight"), gpu)?;
+                    let __t_dq_ms = __t0.elapsed().as_millis();
                     let (sharded_ptr, local_n, local_k) =
                         shard_dense_bf16(src.weight, full_n, full_k, kind, tp_rank, tp_size, gpu)?;
                     let sharded = DenseWeight {
@@ -142,9 +144,18 @@ pub(crate) fn build_full_attention_nvfp4(
                             );
                         }
                     }
+                    let __t_q0 = std::time::Instant::now();
                     let q = quantize_to_nvfp4(
                         &sharded, local_n, local_k, gpu, absmax_k, quantize_k, stream,
                     )?;
+                    if std::env::var("AVAROK_LOAD_TIMING").is_ok() {
+                        tracing::info!(
+                            "  attn-load L{i} {name}: dense_auto(fp8->bf16)={}ms quantize_nvfp4={}ms total(incl shard/rot)={}ms",
+                            __t_dq_ms,
+                            __t_q0.elapsed().as_millis(),
+                            __t0.elapsed().as_millis(),
+                        );
+                    }
                     if sharded_ptr != src.weight {
                         gpu.free(sharded_ptr)?;
                     }
