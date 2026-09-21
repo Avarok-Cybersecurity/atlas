@@ -88,6 +88,14 @@ export const PRICE_STORAGE_KEY = 'atlas.cost.usd_per_kwh';
 export const MIN_POWER_SAMPLES = 10;
 export const MIN_SAMPLE_COVERAGE = 0.9;
 
+// ★ THE FLOOR UNDER A SPREAD, AND WHY IT IS TEN.
+// The range of n i.i.d. draws covers about (n-1)/(n+1) of the population it is
+// drawn from: 82% at n=10, 89% at n=17. Below ten, the observed min-max is a
+// truncated view of the real spread, and a truncated spread makes "this is a
+// real fall" too easy to claim -- the one direction this page must never make
+// easier. Ten is the smallest n where the envelope is more honest than silence.
+export const MIN_SPREAD_RUNS = 10;
+
 /**
  * `tokens / window_s` must agree with the cell's own `c{C}_aggregate_tok_s`:
  * the producer derives both from ONE batch (`throughput = tokens / wall`, the
@@ -426,6 +434,82 @@ export function extremeRungs({ rungs }) {
  * and stay visible on chart A): a trend line through a window the sampler
  * barely watched is a guess with a line through it.
  */
+const median = (xs) => {
+  const v = [...xs].sort((a, b) => a - b);
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+};
+
+/**
+ * The measured run-to-run spread of rung `c` on one instrument, as a relative
+ * multiplicative envelope around a plotted tokens-per-Wh point.
+ *
+ * ★ THE POPULATION IS KEYED ON `instrumentKey`, NEVER `costInstrumentKey`.
+ * `costInstrumentKey` appends `gpu_rail_sample_period_ms`, and almost no record
+ * carries that key -- keying on it collapses the population to the same two
+ * points the envelope is supposed to judge, and a band drawn from the points it
+ * judges is circular. The denominator's spread is a property of the SERVE
+ * instrument, so it is measured over every PASS run of that instrument,
+ * including the many that carry no joules at all.
+ *
+ * tok/Wh = (tok/s) / W, so the envelope is multiplicative: the throughput
+ * factor comes from the whole population, the rail factor only from this
+ * generation's measured points (usually one, in which case it is 1).
+ *
+ * ★ IT CAN ONLY EVER SUPPRESS A CLAIM. Real movement inside the window widens
+ * the envelope; nothing narrows it. So this cannot manufacture a trend, only
+ * refuse one -- which is the only direction it is safe to be wrong in here.
+ *
+ * @returns {{n:number,lo:number,hi:number,tMin:number,tMax:number,tMedian:number,powerMeasured:number}|null}
+ *   null when the instrument has fewer than `MIN_SPREAD_RUNS` usable runs.
+ */
+export function rungSpread(c, key, records) {
+  const tk = rungThroughputKey(c);
+  const t = [];
+  for (const rec of records || []) {
+    if (rec?.verdict !== 'PASS') continue;          // never average a failed run
+    if (instrumentKey(rec) !== key) continue;
+    const v = num(rec?.metrics?.[tk]);
+    if (v !== null && v > 0) t.push(v);
+  }
+  if (t.length < MIN_SPREAD_RUNS) return null;
+  const tMed = median(t);
+  const w = [];
+  for (const rec of records || []) {
+    if (instrumentKey(rec) !== key) continue;
+    const v = num(rec?.metrics?.[cellKey(c, KEY.meanW)]);
+    if (v !== null && v > 0) w.push(v);
+  }
+  const wMed = w.length ? median(w) : null;
+  const wLoF = wMed ? Math.max(...w) / wMed : 1;    // more watts => fewer tok/Wh
+  const wHiF = wMed ? Math.min(...w) / wMed : 1;
+  return {
+    n: t.length,
+    lo: Math.min(...t) / tMed / wLoF,
+    hi: Math.max(...t) / tMed / wHiF,
+    tMin: Math.min(...t),
+    tMax: Math.max(...t),
+    tMedian: tMed,
+    powerMeasured: w.length
+  };
+}
+
+/**
+ * Can two consecutive plotted points be told apart, given the envelope?
+ * Only when their bars do not overlap. Returns 'overlap' (the honest default),
+ * 'separated', or 'unmeasured' when there is no envelope to judge against.
+ */
+export function spreadVerdict(values, envelope) {
+  const v = (values || []).filter((x) => num(x) !== null && x > 0);
+  if (!envelope) return { state: 'unmeasured', n: 0 };
+  if (v.length < 2) return { state: 'unmeasured', n: envelope.n };
+  const a = v[v.length - 2];
+  const b = v[v.length - 1];
+  const rose = b * envelope.lo > a * envelope.hi;
+  const fell = a * envelope.lo > b * envelope.hi;
+  return { state: rose || fell ? 'separated' : 'overlap', direction: rose ? 'up' : fell ? 'down' : null, n: envelope.n };
+}
+
 export function costTrend(c, records) {
   const excluded = [];
   const usable = [];
@@ -463,7 +547,13 @@ export function costTrend(c, records) {
       g.differs = describeDiffers(differs) || 'sampler cadence';
     }
     g.label = newest ? 'tokens per Wh' : `tokens per Wh · earlier instrument (${g.differs})`;
-    metrics.push({ key: g.key, label: g.label, dashed: !newest });
+    // Recompute the key from the member rather than splitting it back out of
+    // `g.instrument`: costInstrumentKey is `${instrumentKey}|gpu_rail|${period}`
+    // and instrumentKey is a JSON array string, so a `|` inside any axis value
+    // would make that parse silently wrong.
+    g.spread = rungSpread(c, instrumentKey(g.members[0].rec), records);
+    g.verdict = spreadVerdict(g.members.map((u) => u.e.tokPerWh), g.spread);
+    metrics.push({ key: g.key, label: g.label, dashed: !newest, envelope: g.spread });
     for (const u of g.members) derived.push({ ...u.rec, metrics: { ...u.rec.metrics, [g.key]: u.e.tokPerWh } });
   });
 

@@ -197,3 +197,44 @@ describe('helpers', () => {
     expect(buildSeries(panel, [])).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The measured run-to-run envelope (#1214) reaches the chart, and the axis
+// policy is told about it.
+// ---------------------------------------------------------------------------
+describe('envelope', () => {
+  const at = (t, v) => ({ t, v, model: 'm', aggregated: false });
+  const seriesWith = (envelope) => [
+    { model: 'm', envelope, nodes: [at(1, 100), at(2, 110)] }
+  ];
+
+  test('buildSeries carries a metric envelope onto the series, and null when absent', () => {
+    const e = { n: 32, lo: 0.94, hi: 1.06 };
+    const recs = [
+      { recorded_at: 1, git_sha: 'a', verdict: 'PASS', metrics: { m: 100 } },
+      { recorded_at: 2, git_sha: 'b', verdict: 'PASS', metrics: { m: 110 } }
+    ];
+    const withE = buildSeries({ metrics: [{ key: 'm', label: 'm', envelope: e }] }, recs, 40);
+    const without = buildSeries({ metrics: [{ key: 'm', label: 'm' }] }, recs, 40);
+    expect(withE[0].envelope).toEqual(e);
+    expect(without[0].envelope).toBeNull();
+  });
+
+  test('drawnValues includes the envelope extremes, so the bar cannot be clipped by the axis', () => {
+    const v = drawnValues(seriesWith({ n: 32, lo: 0.9, hi: 1.1 }));
+    expect(Math.min(...v)).toBeCloseTo(90, 6);
+    expect(Math.max(...v)).toBeCloseTo(121, 6);
+  });
+
+  // ★ THE CONTROL. Without an envelope the axis input must be exactly the
+  // plotted values — otherwise every other panel on the dashboard silently
+  // changes its domain.
+  test('drawnValues is unchanged for a series with no envelope', () => {
+    expect(drawnValues(seriesWith(null))).toEqual([100, 110]);
+  });
+
+  test('an AGGREGATED node keeps its own observed span and gets no imputed one', () => {
+    const s = [{ model: 'm', envelope: { n: 32, lo: 0.5, hi: 2 }, nodes: [{ t: 1, v: 100, aggregated: true, vMin: 95, vMax: 105 }] }];
+    expect(drawnValues(s)).toEqual([100]);
+  });
+});
