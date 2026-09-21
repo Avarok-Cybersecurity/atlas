@@ -398,9 +398,7 @@ where
     let kv_lat = matvec(&w.kv_a, x, kv_in, x.len());
     let (c, pe) = kv_lat.split_at(cfg.kv_lora_rank);
     let c = rms_norm(c, &w.kv_a_ln, eps);
-    let kvb_out = cfg.heads * (cfg.qk_nope_head_dim + cfg.v_head_dim);
-    let kvb = matvec(&w.kv_b, &c, kvb_out, cfg.kv_lora_rank);
-    let (k, v) = pack_mla_kv(&kvb, pe, cfg);
+    let (k, v) = mla_kv_from_split(&w.k_b, &w.v_b, &c, pe, cfg);
     let mut k = k;
     let g = matvec(&w.g_proj, x, cfg.heads * cfg.v_head_dim, x.len());
     let attn = mla_decode(&mut q, &mut k, &v, &g, kv, cfg, pos, theta)?;
@@ -413,6 +411,46 @@ where
     ))
 }
 
+
+fn mla_kv_from_split(
+    k_b: &[f32],
+    v_b: &[f32],
+    c: &[f32],
+    k_pe: &[f32],
+    cfg: &MlaConfig,
+) -> (Vec<f32>, Vec<f32>) {
+    let heads = cfg.heads;
+    let nope = cfg.qk_nope_head_dim;
+    let rope = cfg.qk_rope_head_dim;
+    let dv = cfg.v_head_dim;
+    let lora = cfg.kv_lora_rank;
+    let qk = nope + rope;
+    let mut k = vec![0f32; heads * qk];
+    let mut v = vec![0f32; heads * dv];
+    for h in 0..heads {
+        for d in 0..nope {
+            let mut acc = 0.0f32;
+            for l in 0..lora {
+                acc += k_b[h * lora * nope + l * nope + d] * c[l];
+            }
+            k[h * qk + d] = acc;
+        }
+        if rope > 0 {
+            let dst = h * qk + nope;
+            k[dst..dst + rope].copy_from_slice(k_pe);
+        }
+        for d in 0..dv {
+            let mut acc = 0.0f32;
+            for l in 0..lora {
+                acc += v_b[h * dv * lora + d * lora + l] * c[l];
+            }
+            v[h * dv + d] = acc;
+        }
+    }
+    (k, v)
+}
+
+#[allow(dead_code)]
 fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32>) {
     let nope = cfg.qk_nope_head_dim;
     let rope = cfg.qk_rope_head_dim;

@@ -464,8 +464,10 @@ impl super::WeightLoader for GgufLoader {
         check_oom_guard(gpu, oom_reserve_bytes, "weight loading (GGUF)")?;
         tracing::info!("Loaded {} weight tensors (GGUF → BF16)", weights.len());
         let mut store = WeightStore::from_map(weights);
-        if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") && self.tp_world_size > 1 {
-            store.prepartitioned_tp = Some((self.tp_rank, self.tp_world_size));
+        if matches!(arch.as_str(), "kimi-k3" | "kimi_k3" | "kimik3") {
+            if self.tp_world_size > 1 {
+                store.prepartitioned_tp = Some((self.tp_rank, self.tp_world_size));
+            }
         }
         for (name, t) in deferred {
             store.defer(name, t);

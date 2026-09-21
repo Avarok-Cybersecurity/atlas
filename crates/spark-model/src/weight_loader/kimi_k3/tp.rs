@@ -65,6 +65,9 @@ pub fn load_sharded(
             }
         }
     };
+    if let Some(meta) = accept_split_kv_b(name, &t, config) {
+        return Ok((DenseWeight { weight: t.ptr }, meta));
+    }
     let (kind, full_out, full_in) = tensor_plan(name, mixer, mlp, config);
     if is_prepartitioned(store, config)? {
         if kind != TpShardKind::Replicated {
@@ -87,7 +90,9 @@ pub fn load_sharded(
                 TpShardKind::Replicated => unreachable!(),
             };
             ensure!(
-                t.shape.first() == Some(&local_out) && t.num_elements() == local_out * local_in,
+                t.num_elements() == local_out * local_in
+                    && (t.shape.first() == Some(&local_out)
+                        || (local_in == 1 && t.shape.as_slice() == [local_out].as_slice())),
                 "{name}: prepartitioned shape {:?} does not match [{local_out}, {local_in}]",
                 t.shape
             );
@@ -98,6 +103,7 @@ pub fn load_sharded(
                         | WeightDtype::FP32
                         | WeightDtype::Q8_0
                         | WeightDtype::Iq2Xs
+                        | WeightDtype::Iq3Xxs
                 ),
                 "{name}: unsupported dense prepartitioned dtype {:?}",
                 t.dtype
@@ -200,6 +206,38 @@ fn as_bf16(
         other => bail!("K3 TP shard: unsupported dtype {other:?}"),
     }
 }
+
+
+fn accept_split_kv_b(
+    name: &str,
+    t: &spark_runtime::weights::WeightTensor,
+    config: &ModelConfig,
+) -> Option<WeightMeta> {
+    let heads = config.num_attention_heads;
+    let lora = config.kv_lora_rank;
+    let is_k = name.ends_with(".self_attn.k_b_proj.weight");
+    let is_v = name.ends_with(".self_attn.v_b_proj.weight");
+    if !is_k && !is_v {
+        return None;
+    }
+    if t.shape.len() != 3 || t.shape.first() != Some(&heads) {
+        return None;
+    }
+    let ok = if is_k {
+        t.shape[1] == lora && t.shape[2] == config.qk_nope_head_dim
+    } else {
+        t.shape[1] == config.v_head_dim && t.shape[2] == lora
+    };
+    if !ok {
+        return None;
+    }
+    Some(WeightMeta {
+        name: name.to_string(),
+        dtype: t.dtype,
+        numel: t.num_elements(),
+    })
+}
+
 
 #[cfg(test)]
 mod tests {

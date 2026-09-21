@@ -52,7 +52,8 @@ pub fn layer_keys(
             k.extend([
                 format!("{lp}.self_attn.kv_a_layernorm.weight"),
                 format!("{lp}.self_attn.kv_a_proj_with_mqa.weight"),
-                format!("{lp}.self_attn.kv_b_proj.weight"),
+                format!("{lp}.self_attn.k_b_proj.weight"),
+                format!("{lp}.self_attn.v_b_proj.weight"),
                 format!("{lp}.self_attn.q_a_layernorm.weight"),
                 format!("{lp}.self_attn.q_a_proj.weight"),
                 format!("{lp}.self_attn.q_b_proj.weight"),

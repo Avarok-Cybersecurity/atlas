@@ -81,7 +81,7 @@ pub(super) fn translate_kimi_k3(gguf_name: &str) -> Option<GgufName> {
         "attn_q_a_norm" => Some("self_attn.q_a_layernorm"),
         "attn_kv_a_mqa" => Some("self_attn.kv_a_proj_with_mqa"),
         "attn_kv_a_norm" => Some("self_attn.kv_a_layernorm"),
-        "attn_k_b" => Some("self_attn.kv_b_proj"),
+        "attn_k_b" => Some("self_attn.k_b_proj"),
         "attn_v_b" => Some("self_attn.v_b_proj"),
         "ssm_beta" => Some("self_attn.b_proj"),
         "ssm_g" => Some("self_attn.g_proj"),

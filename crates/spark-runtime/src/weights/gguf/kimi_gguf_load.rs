@@ -26,6 +26,41 @@ fn kimi_rows(name: &str) -> bool {
         || name.contains(".w3.weight")
         || name.contains("b_proj")
         || name.contains("f_b_proj")
+        || name.ends_with(".A_log")
+        || name.ends_with(".dt_bias")
+        || name.contains("q_conv1d")
+        || name.contains("k_conv1d")
+        || name.contains("v_conv1d")
+}
+
+/// Contiguous row-slice of a dense (F32/BF16) or packed tensor along dim0.
+fn slice_rows_bytes(
+    raw: &[u8],
+    shape: &[usize],
+    rank: usize,
+    tp: usize,
+    elem_or_row_bytes: usize,
+    packed: bool,
+) -> Result<(Vec<u8>, Vec<usize>)> {
+    ensure!(!shape.is_empty(), "TP row slice needs a non-empty shape");
+    let n = shape[0];
+    ensure!(n.is_multiple_of(tp), "rows {n} not divisible by TP{tp}");
+    let local_n = n / tp;
+    let mut out_shape = shape.to_vec();
+    out_shape[0] = local_n;
+    if packed {
+        // caller passes per-row packed byte width as elem_or_row_bytes
+        let row_bytes = elem_or_row_bytes;
+        ensure!(raw.len() == n * row_bytes, "packed row bytes mismatch");
+        let start = rank * local_n * row_bytes;
+        Ok((raw[start..start + local_n * row_bytes].to_vec(), out_shape))
+    } else {
+        let tail: usize = shape[1..].iter().product::<usize>().max(1);
+        let row_bytes = tail * elem_or_row_bytes;
+        ensure!(raw.len() >= n * row_bytes, "dense row bytes mismatch");
+        let start = rank * local_n * row_bytes;
+        Ok((raw[start..start + local_n * row_bytes].to_vec(), out_shape))
+    }
 }
 
 fn kimi_cols(name: &str) -> bool {
@@ -73,32 +108,42 @@ pub(super) fn upload_direct_packed(
     let tp = loader.tp_world_size.max(1);
     let rank = loader.tp_rank;
     let mut shape = hf_shape.to_vec();
-    let kind = if matches!(id, 8 | 17 | 18) {
+    let kind = if matches!(id, 8 | 17 | 18 | 10 | 11 | 12 | 13 | 14) {
         Some(pack_kind(id)?)
     } else {
         None
     };
 
-    let upload: Vec<u8> = if tp > 1 && shape.len() == 2 {
-        let (n, k) = (shape[0], shape[1]);
+    let upload: Vec<u8> = if tp > 1 && kimi_rows(hf_name) && !shape.is_empty() {
         if let Some(pk) = kind {
-            if kimi_rows(hf_name) {
-                let (bytes, ln, lk) = kimi_tp_slice::slice_rows_packed(raw, n, k, rank, tp, pk)?;
-                shape = vec![ln, lk];
-                bytes
-            } else if kimi_cols(hf_name) {
-                let (bytes, ln, lk) = kimi_tp_slice::slice_cols_packed(raw, n, k, rank, tp, pk)?;
-                shape = vec![ln, lk];
-                bytes
-            } else {
-                raw.to_vec()
-            }
-        } else if kimi_rows(hf_name) && n.is_multiple_of(tp) && raw.len().is_multiple_of(n) {
-            let local_rows = n / tp;
-            let row_bytes = raw.len() / n;
-            let start = rank * local_rows * row_bytes;
-            shape = vec![local_rows, k];
-            raw[start..start + local_rows * row_bytes].to_vec()
+            ensure!(
+                shape.len() >= 2,
+                "{hf_name}: packed TP row slice needs rank >= 2, got {shape:?}"
+            );
+            ensure!(
+                shape[0] % tp == 0,
+                "{hf_name}: leading dim {} not divisible by TP{tp}",
+                shape[0]
+            );
+            let n = shape[0];
+            let k: usize = shape[1..].iter().product();
+            let (bytes, ln, lk) = kimi_tp_slice::slice_rows_packed(raw, n, k, rank, tp, pk)?;
+            ensure!(lk == k, "{hf_name}: row slice changed K {k} -> {lk}");
+            shape[0] = ln;
+            bytes
+        } else {
+            // F32 / raw dense: slice leading dim (A_log, dt_bias, conv, b_proj).
+            let elem = if id == 0 { 4 } else { 2 };
+            let (bytes, sh) = slice_rows_bytes(raw, &shape, rank, tp, elem, false)?;
+            shape = sh;
+            bytes
+        }
+    } else if tp > 1 && kimi_cols(hf_name) && shape.len() == 2 {
+        if let Some(pk) = kind {
+            let (n, k) = (shape[0], shape[1]);
+            let (bytes, ln, lk) = kimi_tp_slice::slice_cols_packed(raw, n, k, rank, tp, pk)?;
+            shape = vec![ln, lk];
+            bytes
         } else {
             raw.to_vec()
         }
@@ -107,16 +152,17 @@ pub(super) fn upload_direct_packed(
     };
 
     let (ptr, dtype, final_shape) = if id == 8 {
-        let k = if shape.len() >= 2 {
-            shape[1]
-        } else {
-            shape[0]
-        };
-        let n = if shape.len() >= 2 { shape[0] } else { 1 };
+        // Q8 attention / projections → BF16 at load (local slice fits).
+        let n = shape[0];
+        let k: usize = shape[1..].iter().product::<usize>().max(1);
         let bf = q8_to_bf16_bytes(&upload, n, k)?;
         let ptr = gpu.alloc(bf.len())?;
         gpu.copy_h2d(&bf, ptr)?;
         (ptr, WeightDtype::BF16, shape)
+    } else if id == 0 {
+        let ptr = gpu.alloc(upload.len())?;
+        gpu.copy_h2d(&upload, ptr)?;
+        (ptr, WeightDtype::FP32, shape)
     } else {
         let dtype = dtype_for_id(id);
         let ptr = gpu.alloc(upload.len())?;
@@ -202,22 +248,34 @@ pub(super) fn upload_expert_stack(
     let rank = loader.tp_rank;
     let rows = proj != "down";
 
+    let mut local_out = out;
+    let mut local_in = inn;
+    let mut packed: Vec<u8> = Vec::new();
     for e in 0..count {
         let expert_raw = &raw[e * per_bytes..(e + 1) * per_bytes];
-        let (upload, local_out, local_in) = if tp <= 1 {
+        let (upload, lo, li) = if tp <= 1 {
             (expert_raw.to_vec(), out, inn)
         } else if rows {
             kimi_tp_slice::slice_rows_packed(expert_raw, out, inn, rank, tp, pk)?
         } else {
             kimi_tp_slice::slice_cols_packed(expert_raw, out, inn, rank, tp, pk)?
         };
-        let ptr = gpu.alloc(upload.len())?;
-        gpu.copy_h2d(&upload, ptr)?;
+        if e == 0 {
+            local_out = lo;
+            local_in = li;
+            packed.reserve(upload.len().saturating_mul(count));
+        }
+        packed.extend_from_slice(&upload);
+    }
+    let stride = if count == 0 { 0 } else { packed.len() / count };
+    let base = gpu.alloc(packed.len())?;
+    gpu.copy_h2d(&packed, base)?;
+    for e in 0..count {
         let name = names::kimi_k3_expert_name(layer, proj, e);
         weights.insert(
             name,
             WeightTensor {
-                ptr,
+                ptr: base.offset(e * stride),
                 shape: vec![local_out, local_in],
                 dtype,
             },
@@ -231,6 +289,8 @@ pub(super) fn estimate_resident_bytes(tp_world: usize) -> usize {
     let disk = 802usize * 1024 * 1024 * 1024;
     disk / tp + 12usize * 1024 * 1024 * 1024
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -248,3 +308,4 @@ mod tests {
         ));
     }
 }
+

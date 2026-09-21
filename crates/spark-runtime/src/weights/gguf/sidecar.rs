@@ -201,7 +201,7 @@ pub fn load_pass(
 
         // kimi-k3: TP-slice keep-packed Direct + routed experts (see kimi_gguf_load).
         if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3")
-            && matches!(id, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 18)
+            && matches!(id, 0 | 8 | 10 | 11 | 12 | 13 | 14 | 17 | 18)
             && let names::GgufName::Direct(ref hf_name) = target
         {
             super::kimi_gguf_load::upload_direct_packed(

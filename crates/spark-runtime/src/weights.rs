@@ -312,6 +312,7 @@ impl WeightStore {
     ) -> Result<(usize, usize)> {
         let doomed: Vec<String> = self.weights.keys().filter(|n| pred(n)).cloned().collect();
         let (mut count, mut bytes) = (0usize, 0usize);
+        let mut freed_ptrs = std::collections::HashSet::new();
         for name in doomed {
             // `remove` before `free`: the map must never hold a pointer to
             // memory that is gone, even if the free below fails.
@@ -319,8 +320,10 @@ impl WeightStore {
                 continue;
             };
             bytes += t.byte_size();
-            gpu.free(t.ptr)
-                .map_err(|e| e.context(format!("freeing weight {name}")))?;
+            if freed_ptrs.insert(t.ptr.0) {
+                gpu.free(t.ptr)
+                    .map_err(|e| e.context(format!("freeing weight {name}")))?;
+            }
             count += 1;
         }
         Ok((count, bytes))
