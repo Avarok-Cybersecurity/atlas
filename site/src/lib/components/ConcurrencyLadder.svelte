@@ -40,15 +40,36 @@
   // `$derived`, not `const`: `ladder` is a prop now, and a plain const would
   // freeze the first ladder it saw while the heading below re-rendered from
   // the new one.
-  const subject = $derived(ladder.series.find((s) => s.role === 'subject'));
+  // ★ EVERY VIEW IN THIS COMPONENT READS `shown`. A leg scoped to cost
+  // (vllm-mtp-energy: the same engine, checkpoint and instrument as vllm-mtp,
+  // re-measured with power sampling so the Cost tab has a vLLM curve carrying
+  // joules) is not drawn here -- on a throughput chart it is a near-duplicate
+  // line that stops at C=16 and adds nothing to the claim this chart makes.
+  // cost.js still reads it through `baselineSeriesOf`: the scope narrows one
+  // VIEW, not the data.
+  //
+  // Derived ONCE because the sites below each reached for the raw series list
+  // separately, and the pills and the table kept enumerating a leg the chart
+  // had stopped drawing.
+  const shown = $derived(ladder.series.filter((s) => s.scope !== 'cost'));
+  const subject = $derived(shown.find((s) => s.role === 'subject'));
   const subjectShown = $derived(!hidden.includes(subject.id));
-  const baselines = $derived(visibleOf(ladder.series.filter((s) => s.role === 'baseline'), hidden));
+  // ★ A COST-SCOPED LEG IS NOT DRAWN HERE. `vllm-mtp-energy` is the same
+  // engine, checkpoint and instrument as `vllm-mtp`, re-measured with power
+  // sampling so the Cost tab has a vLLM curve that carries joules. On THIS
+  // chart it would be a near-duplicate fourth line that stops at C=16, and
+  // the published claim this chart makes is about throughput, which it adds
+  // nothing to. cost.js reads it through `baselineSeriesOf`, which is
+  // deliberately not filtered — the scope narrows one view, not the data.
+  const baselines = $derived(
+    visibleOf(shown.filter((s) => s.role === 'baseline'), hidden)
+  );
   // `variant`: another configuration of the SUBJECT engine, drawn but never
   // scored. It is deliberately outside the win/ratio maths in gen-ladder.mjs —
   // the published claim is Atlas against the matched vLLM baseline, and
   // letting a second Atlas configuration into that comparison would change
   // what the headline means rather than adding evidence for it.
-  const variants = $derived(visibleOf(ladder.series.filter((s) => s.role === 'variant'), hidden));
+  const variants = $derived(visibleOf(shown.filter((s) => s.role === 'variant'), hidden));
   const plotted = $derived.by(() => {
     const drawn = [...(subjectShown ? [subject] : []), ...variants, ...baselines];
     if (drawn.length === 0) throw new Error('ConcurrencyLadder: every series is hidden');
@@ -219,7 +240,7 @@
           </dd></div>
         </dl>
 
-        {#each ladder.series as s}
+        {#each shown as s}
           <article class="cl-series">
             <h3>{s.label} <span class="cl-eng">{s.engine}</span></h3>
             {#if s.parity === 'unmatched'}
@@ -257,7 +278,7 @@
                 </tr>
               </thead>
               <tbody>
-                {#each ladder.series as s}
+                {#each shown as s}
                   {#each s.rungs as r}
                     <tr>
                       <td>{s.label}</td>
