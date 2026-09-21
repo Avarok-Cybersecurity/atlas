@@ -123,6 +123,9 @@
   );
   const trend = $derived(selectedRung === null ? null : costTrend(selectedRung, records));
   const snapshots = $derived(selectedRung === null ? [] : baselineSnapshots(selectedRung, cost.baselines));
+  // The newest generation is the live line; older ones are dashed history and
+  // carry their own (unused) envelopes.
+  const newest = $derived(trend?.generations?.[trend.generations.length - 1] ?? null);
 </script>
 
 <div
@@ -241,6 +244,27 @@
             .map((g) => g.differs)
             .join('; ')})`
         : `one instrument, ${trend.runs} ${trend.runs === 1 ? 'run' : 'runs'}`}.
+      <!-- ★ THE VERDICT IS CARRIED IN WORDS, UNCONDITIONALLY. GateChart
+           suppresses a spread bar shorter than 3 px, so at the narrow rungs the
+           bar may not be visible at all — and a chart that looks like a clean
+           fall while the sentence that would contradict it is conditional on
+           pixel height is exactly the misreading this exists to prevent. -->
+      {#if newest?.spread}
+        The bar on each point is the measured run-to-run spread of this rung on this instrument:
+        across the {newest.spread.n} certified runs that share it, C={selectedRung} throughput spanned
+        {newest.spread.tMin.toFixed(2)}–{newest.spread.tMax.toFixed(2)} tok/s. It is measured on
+        throughput because only {newest.spread.powerMeasured} of those runs carry joules, and widened
+        by the spread of the rail across those — so it is a <strong>floor</strong> on this line's
+        spread, not a confidence interval.
+        {newest.verdict?.state === 'separated'
+          ? `The latest step is larger than that spread, so it is a real ${newest.verdict.direction === 'down' ? 'fall' : 'rise'}.`
+          : newest.verdict?.state === 'overlap'
+            ? 'Consecutive points here differ by less than that spread, so this line does not yet show a token getting cheaper.'
+            : 'There is only one point on this instrument so far, so there is no step to judge.'}
+      {:else}
+        The run-to-run spread of C={selectedRung} on this instrument is not yet measured
+        ({trend.runs} {trend.runs === 1 ? 'run' : 'runs'}), so this line cannot be told from noise.
+      {/if}
       {#each snapshots as s}
         {s.label} measured {s.tokPerWh.toFixed(0)} tok/Wh at C={selectedRung} on {s.date} — a one-shot,
         not re-run, and not a line.

@@ -12,6 +12,7 @@
 //   * a losing rung is returned exactly like a winning one, and k = 0 flips
 //     the headline to name the winner.
 import { describe, expect, test } from 'bun:test';
+import { instrumentKey } from './ladder-baselines.js';
 import {
   CROSS_CHECK_TOLERANCE,
   DEFAULT_USD_PER_KWH,
@@ -35,7 +36,10 @@ import {
   tokPerWh,
   trendMetricKey,
   verdictTile,
-  wattsOf
+  wattsOf,
+  MIN_SPREAD_RUNS,
+  rungSpread,
+  spreadVerdict
 } from './cost.js';
 
 // ---- fixtures ---------------------------------------------------------------
@@ -537,5 +541,155 @@ describe('the checks can fail', () => {
   test('NEGATIVE CONTROL: a subject WITH energy is not reported as empty', () => {
     const e = emptyStateOf(SUBJECT, [rec({ metrics: cell(8) })], laddersWith([]));
     expect(e.atlas).toContain('1 of 1 records carry GPU-rail joules');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The measured run-to-run spread (issue #1214)
+//
+// The Cost tab's second dated point made its trend line slope for the first
+// time, and the slope was smaller than the noise: J/token fell 5.6% at C=4
+// between two anchors whose throughput draws (47.33 and 50.47 tok/s) sit inside
+// a 6.1% run-to-run CoV over the 32 committed records that share their
+// instrument. These tests pin the envelope that refuses such a claim, and --
+// the load-bearing half -- pin that it can still ALLOW one.
+// ---------------------------------------------------------------------------
+
+/** A PASS run of `rec()`'s instrument carrying only a C=4 throughput. */
+const tput = (c4, o = {}) => rec({ ...o, metrics: { c4_aggregate_tok_s: c4, ...(o.metrics ?? {}) } });
+
+/** The same, on a DIFFERENT instrument (the old 1,4,8,16 ladder). */
+const otherInstrument = (c4) =>
+  rec({ params: { concurrencies: '1, 4, 8, 16', isls: '512', osl: '320', prompt_mode: 'natural' },
+        metrics: { c4_aggregate_tok_s: c4 } });
+
+const KEY_OF = (r) => instrumentKey(r);
+
+describe('rungSpread', () => {
+  test('a population under MIN_SPREAD_RUNS has no envelope, so nothing is claimed from it', () => {
+    const pop = Array.from({ length: MIN_SPREAD_RUNS - 1 }, (_, i) => tput(45 + i));
+    expect(rungSpread(4, KEY_OF(pop[0]), pop)).toBeNull();
+  });
+
+  test('at exactly MIN_SPREAD_RUNS it measures, and the envelope spans the observed range', () => {
+    const vals = [44.66, 46, 47, 47.33, 48, 49, 50, 50.47, 52, 53.84];
+    const pop = vals.map((v) => tput(v));
+    const e = rungSpread(4, KEY_OF(pop[0]), pop);
+    expect(e).not.toBeNull();
+    expect(e.n).toBe(MIN_SPREAD_RUNS);
+    expect(e.tMin).toBeCloseTo(44.66, 2);
+    expect(e.tMax).toBeCloseTo(53.84, 2);
+    expect(e.lo).toBeLessThan(1);
+    expect(e.hi).toBeGreaterThan(1);
+  });
+
+  // ★ THE CONTROL FOR THE CONTAMINATION THAT PROMPTED THIS. Pooling the whole
+  // .benchmarks history mixed two concurrency ladders and reported a 7.5% CoV
+  // where the matched population gives 6.1%. A record on another instrument
+  // must not move the envelope by so much as a digit.
+  test('a run on a DIFFERENT instrument does not widen the envelope', () => {
+    const pop = Array.from({ length: 12 }, (_, i) => tput(46 + i * 0.5));
+    const before = rungSpread(4, KEY_OF(pop[0]), pop);
+    const after = rungSpread(4, KEY_OF(pop[0]), [...pop, otherInstrument(9.9), otherInstrument(999)]);
+    expect(after).toEqual(before);
+  });
+
+  // ★ THE CONTROL AGAINST A CIRCULAR BAND. costInstrumentKey appends the
+  // sampler period, which almost no record carries; keying the population on it
+  // would collapse n to the handful of energy-bearing points the envelope is
+  // meant to judge.
+  test('the population is not restricted to records carrying energy', () => {
+    const pop = Array.from({ length: 12 }, (_, i) => tput(46 + i * 0.5));
+    const e = rungSpread(4, KEY_OF(pop[0]), pop);
+    expect(e.n).toBe(12);
+    expect(pop.filter((r) => r.metrics[KEY.energyJ] !== undefined)).toHaveLength(0);
+  });
+
+  test('a non-PASS run is never averaged into the spread', () => {
+    const pop = Array.from({ length: 12 }, (_, i) => tput(46 + i * 0.5));
+    const withFail = [...pop, tput(9.9, { verdict: 'FAIL' }), tput(999, { verdict: 'FAIL' })];
+    expect(rungSpread(4, KEY_OF(pop[0]), withFail)).toEqual(rungSpread(4, KEY_OF(pop[0]), pop));
+  });
+});
+
+describe('spreadVerdict', () => {
+  const envelope = { n: 32, lo: 0.94, hi: 1.06, tMin: 44.66, tMax: 53.84, tMedian: 48, powerMeasured: 2 };
+
+  test("two points closer than the spread are NOT distinguishable — tonight's real case", () => {
+    // 1279 vs 1277 tok/Wh: the step is 0.2%, the envelope is +/-6%.
+    expect(spreadVerdict([1277, 1279], envelope).state).toBe('overlap');
+  });
+
+  test('the 5.6% C=4 step that started this is still overlap', () => {
+    expect(spreadVerdict([1 / 1.3105, 1 / 1.2375], envelope).state).toBe('overlap');
+  });
+
+  // ★ WITHOUT THIS THE REFUSAL IS UNFALSIFIABLE DECORATION. A step that really
+  // does clear the envelope must be reported as separated, and in the right
+  // direction.
+  test('a step larger than the spread IS distinguishable, and names its direction', () => {
+    const v = spreadVerdict([1000, 1400], envelope);
+    expect(v.state).toBe('separated');
+    expect(v.direction).toBe('up');
+    expect(spreadVerdict([1400, 1000], envelope).direction).toBe('down');
+  });
+
+  test('with no envelope, or fewer than two points, nothing is claimed either way', () => {
+    expect(spreadVerdict([1000, 1400], null).state).toBe('unmeasured');
+    expect(spreadVerdict([1000], envelope).state).toBe('unmeasured');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The sampler-coverage guard runs on every record, or says it could not (#1216)
+//
+// Coverage is samples x period / window. With no recorded cadence it cannot be
+// computed, and the if/else-if chain used to fall off its end: ample samples
+// and no period collected NO concern, so the record was trusted, drawn solid
+// and counted everywhere, coverage unchecked. 2 of 72 committed records carry
+// the key.
+// ---------------------------------------------------------------------------
+describe('readEnergy · coverage with no recorded cadence', () => {
+  /** A well-formed window: 400 readings over 100 s, 80 W. */
+  const window = (o = {}) => ({
+    [KEY.energyJ]: 8000,
+    [KEY.tokens]: 2000,
+    [KEY.windowS]: 100,
+    [KEY.samples]: 400,
+    ...o
+  });
+
+  test('a record with ample samples and NO period is not silently trusted', () => {
+    const e = readEnergy(window(), '', {}, 'r', null);
+    expect(e.state).toBe('measured');
+    expect(e.trusted).toBe(false);
+    expect(e.concerns.join(' ')).toContain('cadence not recorded');
+  });
+
+  // ★ THE CONTROL. A record that DOES carry the cadence, and whose coverage is
+  // fine, must be unaffected — otherwise the fix makes every good record hollow.
+  test('a record that records its cadence, and is well covered, stays trusted', () => {
+    const e = readEnergy(window(), '', { [RUN_KEY.periodMs]: 250 }, 'r', null);
+    expect(e.trusted).toBe(true);
+    expect(e.concerns).toEqual([]);
+  });
+
+  test('the existing under-coverage refusal still fires and still names the numbers', () => {
+    // 100 readings at 250 ms = 25 s of a 100 s window = 25%.
+    const e = readEnergy(window({ [KEY.samples]: 100 }), '', { [RUN_KEY.periodMs]: 250 }, 'r', null);
+    expect(e.trusted).toBe(false);
+    expect(e.concerns.join(' ')).toContain('25%');
+  });
+
+  test('too few samples is still reported as under-sampling, not as a missing cadence', () => {
+    const e = readEnergy(window({ [KEY.samples]: MIN_POWER_SAMPLES - 1 }), '', {}, 'r', null);
+    expect(e.concerns.join(' ')).toContain('under-sampled');
+    expect(e.concerns.join(' ')).not.toContain('cadence not recorded');
+  });
+
+  test('no sample count at all is still reported as unauditable', () => {
+    const e = readEnergy(window({ [KEY.samples]: undefined }), '', {}, 'r', null);
+    expect(e.concerns.join(' ')).toContain('unauditable');
+    expect(e.concerns.join(' ')).not.toContain('cadence not recorded');
   });
 });

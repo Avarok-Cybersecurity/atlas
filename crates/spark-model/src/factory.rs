@@ -15,9 +15,9 @@ use crate::weight_loader::LongcatWeightLoader;
 use crate::weight_loader::Qwen4ExpWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, Glm5NextWeightLoader,
-    LagunaWeightLoader, MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader,
-    NllbWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader,
-    Qwen35WeightLoader, Step3p7WeightLoader,
+    KimiK3WeightLoader, LagunaWeightLoader, MinimaxM2WeightLoader, ModelWeightLoader,
+    NemotronHWeightLoader, NllbWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
+    Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -68,6 +68,7 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
     let normalized = config.model_type.to_lowercase().replace(['-', '.'], "_");
     match normalized.as_str() {
         // Qwen3 family: sub-dispatch by config predicates
+        "kimi_k3" | "kimi_linear" => Ok(Box::new(KimiK3WeightLoader)),
         "qwen3_next" => Ok(Box::new(Qwen3WeightLoader)),
         "qwen3_vl_moe" => Ok(Box::new(Qwen3VLWeightLoader)),
         "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35" => {

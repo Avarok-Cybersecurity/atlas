@@ -75,4 +75,28 @@ impl MockGpuBackend {
     pub fn host_pinned_alloc_count(&self) -> usize {
         self.host_pinned_allocs.load(Ordering::Relaxed)
     }
+
+    pub fn h2d_count(&self) -> usize {
+        self.h2d.load(Ordering::Relaxed)
+    }
+
+    pub fn h2d_bytes(&self) -> usize {
+        self.h2d_bytes.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::{DevicePtr, GpuBackend};
+
+    #[test]
+    fn h2d_counters_count_calls_and_bytes() {
+        let gpu = MockGpuBackend::new();
+        let p = gpu.alloc(16).unwrap();
+        gpu.copy_h2d(&[1u8, 2, 3, 4], p).unwrap();
+        gpu.copy_h2d(&[5u8, 6], DevicePtr(p.0 + 4)).unwrap();
+        assert_eq!(gpu.h2d_count(), 2);
+        assert_eq!(gpu.h2d_bytes(), 6);
+    }
 }
