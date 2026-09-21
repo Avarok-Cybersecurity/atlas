@@ -179,7 +179,7 @@ dependencies = [
  "anyhow",
  "avarok-closure",
  "avarok-governance",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures",
  "parking_lot",
  "ring",
@@ -280,12 +280,6 @@ name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
-
-[[package]]
-name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64"
@@ -2624,7 +2618,7 @@ dependencies = [
  "avarok-core",
  "avarok-kernels",
  "avarok-tier",
- "base64 0.22.1",
+ "base64 0.23.1",
  "half",
  "image",
  "memmap2",
@@ -2689,7 +2683,7 @@ dependencies = [
  "avarok-kernels",
  "avarok-plugin",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "crossterm",
  "futures",

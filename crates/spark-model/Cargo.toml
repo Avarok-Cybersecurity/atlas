@@ -50,7 +50,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 half = "2"
-base64 = "0.22"
+base64 = "0.23"
 # `gif` carries the video path: it is the one genuinely multi-frame container
 # decodable in pure Rust with no system dependency, so the whole temporal
 # pipeline can be proven before committing to an H.264 decoder.

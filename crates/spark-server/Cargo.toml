@@ -133,7 +133,7 @@ xgrammar = { path = "../xgrammar" }
 prometheus = { version = "0.14", default-features = false }
 lazy_static = "1"
 tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 tempfile = "3"
