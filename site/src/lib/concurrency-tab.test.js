@@ -61,6 +61,9 @@ const html = (C, props) => render(C, { props }).body.replace(/<!--[^]*?-->/g, ''
 const rungs = [...new Set(SUBJECTS.flatMap((s) => rungsDeclared(s, recordsFor)))].sort((a, b) => a - b);
 const benches = tabs.find((t) => t.id === 'concurrency').benches;
 const byId = (id) => SUBJECTS.find((s) => s.id === id);
+/** Entity-decoded, for assertions about words rather than about escaping. */
+const text = (x) => x.replace(/&quot;/g,'"').replace(/&amp;/g,'&').replace(/&#45;/g,'-').replace(/&minus;/g,'−');
+
 const renderTab = (subject, rf = recordsFor) =>
   html(Tab, { subject, rungs, benches, recordsFor: rf, onselect: () => {} });
 
@@ -572,5 +575,56 @@ describe('the published pair: series pills and the ladder they drive', () => {
 
   test('NEGATIVE CONTROL: an id that hides nothing changes nothing', () => {
     expect(html(Ladder, { embedded: true, hidden: ['no-such-series'] })).toBe(html(Ladder, { embedded: true }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The metric is called ITL on the page (#1218)
+//
+// "Call it ITL, and mention in the bottom disclaimer that it may be viewed as
+// TPOT." The record keys deliberately stay `tpot_p50_ms` — renaming a recorded
+// key would orphan every measurement already committed — so the rename lives in
+// the VIEW only, and these pin both halves of that split.
+// ---------------------------------------------------------------------------
+describe('ITL naming', () => {
+  const page = renderTab('qwen36-35b-a3b');
+
+  test('the column is headed ITL, not TPOT', () => {
+    expect(page).toContain('>ITL p50<');
+    expect(page).not.toContain('>TPOT p50<');
+  });
+
+  test('the disclaimer names TPOT as the other name for it, and gives the definition', () => {
+    const t = text(page);
+    expect(t).toContain('ITL');
+    expect(t).toContain('TPOT');
+    expect(t).toContain('(request_latency − TTFT) / (OSL − 1)');
+  });
+
+  // ★ BOTH COMPONENTS, BECAUSE ONE TEST COVERED ONLY ONE OF THEM. `renderTab`
+  // for a subject with no Atlas leg renders ConcurrencyBaseline; the ITL column
+  // in ConcurrencyLadder went untested, and reverting ITL->TPOT there left the
+  // suite green. Mutation-checked: reverting the header in EITHER component now
+  // turns exactly one of these red.
+  test('ConcurrencyLadder heads its column ITL too, and carries the disclaimer', () => {
+    const page = html(Ladder, {});
+    expect(page).toContain('>ITL p50<');
+    expect(page).not.toContain('>TPOT p50<');
+    const t = text(page);
+    expect(t).toContain('TPOT');
+    expect(t).toContain('(request_latency − TTFT) / (OSL − 1)');
+  });
+
+  // ★ THE CONTROL FOR THE SPLIT. The view renames; the data must not. If a
+  // later tidy-up renames the record key too, every committed record is
+  // orphaned — so assert the key is still what the records carry.
+  test('the record key is still tpot_p50_ms — the rename is display-only', () => {
+    const rung = publishedLadder?.subjects
+      ? Object.values(publishedLadder.subjects).flatMap((s) =>
+          Object.values(s.series ?? {}).flatMap((x) => x.rungs ?? [])
+        )[0]
+      : null;
+    if (rung) expect(Object.keys(rung)).toContain('tpot_p50_ms');
+    expect(page).not.toContain('itl_p50_ms');
   });
 });

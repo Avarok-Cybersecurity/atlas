@@ -164,13 +164,20 @@
 
       <article class="cl-series">
         <h3>Per-rung detail</h3>
+          <p class="cl-note">
+            <strong>ITL</strong> is inter-token latency as AIPerf defines it —
+            <code>(request_latency − TTFT) / (OSL − 1)</code>, the numerator ending at the
+            final response chunk. It is the same quantity usually called TPOT; the record
+            keys keep that name (<code>tpot_p50_ms</code>) because renaming a recorded key
+            would orphan every measurement already committed.
+          </p>
         <div class="cl-tablewrap">
           <table class="cl-table cl-table-dense">
             <thead>
               <tr>
                 <th scope="col">Series</th><th scope="col">C</th><th scope="col">tok/s</th>
                 <th scope="col">median</th><th scope="col">spread</th>
-                <th scope="col">TTFT p50</th><th scope="col">TPOT p50</th>
+                <th scope="col">TTFT p50</th><th scope="col">ITL p50</th>
                 <th scope="col">measured</th><th scope="col">source file</th>
               </tr>
             </thead>
