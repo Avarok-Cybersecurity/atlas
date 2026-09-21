@@ -35,7 +35,15 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
 half = "2"
-rand = "0.9"
+# Held at the 0.8 family deliberately. `rand_chacha 0.3` and `rand_distr 0.4`
+# are built on `rand_core 0.6`; with `rand 0.9` here, `use rand::SeedableRng`
+# and `rand::seq::SliceRandom` resolve to rand_core 0.9 traits that
+# `ChaCha8Rng` does not implement, and `rand::distributions` no longer exists
+# at all (renamed to `rand::distr`). Moving this crate to 0.9 means moving
+# all three crates and rewriting the eight predictor/projection call sites --
+# its own change, not a dependency bump. spark-runtime, whose only rand
+# dependency is `rand` itself, is on 0.9.
+rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 
