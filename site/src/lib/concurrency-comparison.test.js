@@ -67,7 +67,10 @@ describe('which ladder a subject gets', () => {
 });
 
 describe('the state, in precedence order', () => {
-  test('published > live > baseline > none', () => {
+  test('live-when-it-pairs > published > live > baseline > none', () => {
+    // DENSE has a published pair AND this record is on the RETIRED gate
+    // instrument, so nothing pairs and the frozen pair is still the best
+    // thing to draw. The case where it DOES pair is the describe below.
     expect(comparisonStateOf(DENSE, [gate({ target_model: DENSE.checkpoint })], ladders)).toBe('published');
     expect(comparisonStateOf(MOE, [], ladders)).toBe('baseline');
     expect(comparisonStateOf(MOE, [gate()], ladders)).toBe('live');
@@ -143,5 +146,93 @@ describe('what the page says about a rung with no point', () => {
     expect(oneShotChip(vllm)).toBe('vLLM + MTP · one-shot · measured 2026-09-19 · not re-run');
     const twoDays = { ...vllm, rungs: [{ measured_utc: '2026-09-19T22:25:43Z' }, { measured_utc: '2026-09-20T01:00:00Z' }] };
     expect(oneShotChip(twoDays)).toBe('vLLM + MTP · one-shot · measured 2026-09-19 → 2026-09-20 · not re-run');
+  });
+});
+
+// ── the live Atlas leg outranks the frozen published pair ───────────────────
+//
+// Ask, 2026-09-21: "the first chart shows atlas vs vllm; we MUST make that
+// graph show the latest values of Atlas ... the bottom graph needs to be the
+// same test as the top one". Two changes make that true and BOTH are load-
+// bearing, so both are controlled here:
+//   * kernels/gb10/qwen3.8-27b/BENCH.toml re-points the gate to the published
+//     ladder's instrument (isl 128 / osl 1024 / essay / ctx 2048), and
+//     bench/ladder38/published.json declares the prompt_mode those vLLM legs
+//     ran, without which a REQUIRED axis is undeclared and nothing can pair;
+//   * comparisonStateOf prefers a live record that pairs over the snapshot.
+// Remove either and these tests go red — proved by mutation, not assumed.
+describe('a live record that pairs outranks the published pair', () => {
+  const dense = ladders.subjects[DENSE.id];
+  // The instrument BENCH.toml pins after the re-point, as a record carries it
+  // (strings; threshold params present because a real record carries them and
+  // THRESHOLD_PARAM must keep excluding them from the fingerprint).
+  const repointed = (over = {}) => ({
+    ...gate({ target_model: DENSE.checkpoint }),
+    params: {
+      concurrencies: '1, 2, 4, 8, 16, 32, 64, 128',
+      isls: '128',
+      osl: '1024',
+      prompt_mode: 'essay',
+      warmup: '1',
+      min_c1: '0',
+      min_peak: '0'
+    },
+    serve_overrides: {
+      max_batch_size: '128',
+      kv_cache_dtype: 'fp8',
+      ssm_cache_slots: '32',
+      max_model_len: '2048'
+    },
+    ...over
+  });
+
+  test('THE ASK: a record on the published instrument makes the dense tab live, drawn against vllm-mtp', () => {
+    expect(comparisonStateOf(DENSE, [repointed()], ladders)).toBe('live');
+    const { drawn, refused } = pairWith(repointed(), dense);
+    expect(drawn.map((d) => d.id)).toEqual(['vllm-mtp']);
+    // The no-speculation leg is NOT quietly folded in: it is a different
+    // context and a different KV dtype, and it says so.
+    expect(refused.map((r) => r.series.id)).toEqual(['vllm-nospec']);
+    expect(refused[0].why).toBe('max_model_len 2048 → 4096, kv_cache_dtype fp8 → bf16');
+    // and the tile stops saying "published pair" and dates the leg it draws
+    expect(baselineTileOf(DENSE, [repointed()], ladders)).toBe('one-shot · 2026-08-17 → 2026-08-18');
+    expect(baselineTileOf(DENSE, [gate({ target_model: DENSE.checkpoint })], ladders)).toBe('published pair');
+  });
+
+  test('the fallback is not a formality: each axis alone sends it back to the snapshot', () => {
+    // One axis at a time, each the value the retired instrument had. Every one
+    // of these is a real mutation of the BENCH.toml change, and every one must
+    // cost the live series — otherwise "same test top and bottom" is unproved.
+    const off = (params, serve) =>
+      comparisonStateOf(DENSE, [repointed({ params: { ...repointed().params, ...params }, serve_overrides: { ...repointed().serve_overrides, ...serve } })], ladders);
+    expect(off({ isls: '512' }, {})).toBe('published');
+    expect(off({ osl: '320' }, {})).toBe('published');
+    expect(off({ prompt_mode: 'natural' }, {})).toBe('published');
+    expect(off({}, { max_model_len: '4096' })).toBe('published');
+    expect(off({}, { max_batch_size: '32' })).toBe('published');
+    expect(off({}, { kv_cache_dtype: 'bf16' })).toBe('published');
+  });
+
+  test('an UNDECLARED prompt_mode on the manifest is a difference, not a match', () => {
+    // The control for the published.json half of the change: strip the axis
+    // the manifest now declares and the pair is refused again, naming it.
+    const { prompt_mode: _drop, ...noMode } = dense.series.find((b) => b.id === 'vllm-mtp').instrument;
+    const stripped = {
+      ...dense,
+      series: dense.series.map((b) => (b.id === 'vllm-mtp' ? { ...b, instrument: noMode } : b))
+    };
+    const { drawn, refused } = pairWith(repointed(), stripped);
+    expect(drawn).toEqual([]);
+    expect(refused.find((r) => r.series.id === 'vllm-mtp').why).toContain('prompt_mode essay → undeclared');
+    expect(comparisonStateOf(DENSE, [repointed()], { subjects: { ...ladders.subjects, [DENSE.id]: stripped } })).toBe('published');
+  });
+
+  test('a paired record that is not eligible to be live does not win — the live rules still apply first', () => {
+    expect(comparisonStateOf(DENSE, [repointed({ verdict: 'FAIL' })], ladders)).toBe('published');
+    expect(comparisonStateOf(DENSE, [repointed({ branch: 'pr/x' })], ladders)).toBe('published');
+    // newest passing wins, so a retired-instrument record AFTER a re-pointed
+    // one takes the tab back to the snapshot rather than drawing a stale pair
+    expect(comparisonStateOf(DENSE, [repointed(), gate({ target_model: DENSE.checkpoint })], ladders)).toBe('published');
+    expect(comparisonStateOf(DENSE, [gate({ target_model: DENSE.checkpoint }), repointed()], ladders)).toBe('live');
   });
 });

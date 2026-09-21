@@ -131,7 +131,14 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
         ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
         ("ssm_cache_slots", "32"),
-        ("max_model_len", "4096"),
+        // ★ 4096 -> 2048 on 2026-09-21. `max_model_len` is a REQUIRED axis in
+        // site/src/lib/ladder-baselines.js and the published ladder's matched
+        // vLLM leg ran at 2048 (`--max-model-len 2048`), as did the published
+        // Atlas leg (`--max-seq-len 2048`); at 4096 the live record could not
+        // be drawn against that bar however well it measured. isl 128 + osl
+        // 1024 is ~1224 tokens with the template, so 2048 still holds the
+        // gate's sequences with ~1.7x headroom.
+        ("max_model_len", "2048"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),

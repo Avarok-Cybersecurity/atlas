@@ -6,7 +6,8 @@
 // around it (header tiles, the bridging note over the gate sweep) and the
 // tests cannot disagree about what is being drawn:
 //
-//   published  the frozen campaign PAIR from the subject's manifest (dense);
+//   published  the frozen campaign PAIR from the subject's manifest, drawn
+//              only when NO live record pairs with one of its baselines;
 //   live       the newest passing gate record on main, Atlas on the gate's
 //              instrument — plus any one-shot baseline whose instrument
 //              fingerprint EQUALS the record's (ladder-baselines.js decides,
@@ -48,8 +49,25 @@ export function baselineOnlyFor(subject, ladders) {
 export const liveRecordOf = (records) => records.filter((r) => r.verdict === 'PASS' && !r.branch).at(-1) ?? null;
 
 export function comparisonStateOf(subject, records, ladders) {
+  const live = liveRecordOf(records);
+  const ladder = ladderFor(subject, ladders);
+  // ★ A LIVE ATLAS LEG THAT PAIRS OUTRANKS THE FROZEN PUBLISHED PAIR (owner,
+  // 2026-09-21). The published pair is a campaign snapshot: its Atlas series
+  // is whatever main was in August, and it never moves again. The moment a
+  // gate record fingerprints as one of the SAME ladder's measured vLLM bars,
+  // there is a strictly better thing to draw — the same workload, the same
+  // vLLM number, and an Atlas leg that is this commit's. Falling back to
+  // 'published' is not a preference for the snapshot; it is what is left when
+  // no live record is comparable to any bar, and the alternative would be an
+  // Atlas curve with nothing to read it against.
+  //
+  // This is only reachable because the gate's own instrument was re-pointed
+  // to the published one (kernels/gb10/qwen3.8-27b/BENCH.toml, same day).
+  // Before that, `pairWith` refused every pair on four axes and the dense tab
+  // could never leave 'published' — the ordering below was never the reason.
+  if (live && ladder && pairWith(live, ladder).drawn.length > 0) return 'live';
   if (publishedFor(subject, ladders)) return 'published';
-  if (liveRecordOf(records)) return 'live';
+  if (live) return 'live';
   if (baselineOnlyFor(subject, ladders)) return 'baseline';
   return 'none';
 }

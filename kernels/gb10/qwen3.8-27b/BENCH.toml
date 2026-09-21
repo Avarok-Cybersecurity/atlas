@@ -436,6 +436,41 @@ note = """\
 BOX RULE (2026-09-13): Speed-class; spread across nodes only under \
 hardware::equivalence::SPEED_SPREAD, else bundled — see the decode-floor \
 note and docs/provable-benchmark-work.md §5c. \
+★ INSTRUMENT RE-POINTED 2026-09-21 TO THE PUBLISHED LADDER'S, owner's call. \
+This gate now measures ISL 128 / OSL 1024, ctx 2048, batch 128, fp8 KV, \
+ESSAY fixture — the instrument bench/ladder38 measured for the published \
+Atlas-vs-vLLM ladder, axis for axis. It previously measured ISL 512 / OSL \
+320, ctx 4096, natural fixture. site/src/lib/ladder-baselines.js exists \
+because those two instruments were being read as one engine (~478 vs ~116 \
+tok/s on the same checkpoint, same day); the fix asked for is not a chart \
+change but this one — the site's top chart must show the LIVE Atlas against \
+the measured vLLM bar, and that requires the live gate record to fingerprint \
+as the published instrument on every REQUIRED axis (isl, osl, prompt_mode, \
+max_model_len, max_batch_size, kv_cache_dtype). \
+★ EVERY RUNG FLOOR IS THEREFORE OFF (min = 0.0), NOT LOWERED. The committed \
+floors were cut at the retired instrument and sit 1.15x to 4.3x below what \
+this one produces — published Atlas on it reads C1 23.59, C2 41.02, C4 \
+74.21, C8 125.95, C16 203.36, C32 291.01, C64 386.63, C128 478.11 — so \
+leaving them in place would report a guard that cannot fail anywhere above \
+C=2 while risking a false FAIL at C=1, where 20.5 sits 13% under. `RUNGS` in \
+concurrency.rs names 0.0 as the record-without-gating state and that is \
+exactly what it is for: measure, then declare. The sweep is NOT unguarded \
+meanwhile — vacuous_cells = 0 and min_completion_tokens keep their bars, and \
+a sweep with any request error never passes, whatever the floors say. Re-cut \
+all nine together from >=3 records on THIS instrument under the speed-bound \
+policy and its guard, in a follow-up PR. \
+★ THIS RE-POINT INVALIDATES EVERY CONCURRENCY-SWEEP RECORD COMMITTED BEFORE \
+IT, because check_record demands an exact serve-pin and param match. That is \
+correct; they measured a different instrument. \
+★ WHAT IS STILL NOT THE PUBLISHED LEG: engine configuration. The published \
+Atlas leg's CLI pinned --scheduling-policy fifo, --ssm-cache-slots 8, \
+--ssm-h-dtype f16-pool, --gdn-fused-norm, --ssm-batched-recurrent and \
+--mtp-gate force; this gate serves main's recipe with four overrides. \
+Speculation IS shared — the recipe pins --speculative --mtp-quantization \
+bf16 with num_drafts 3, the same drafter and K the published leg ran — so \
+the live leg is not a weakened Atlas against a speculating vLLM. The \
+remainder is the engine under test, which is the point of a live series: \
+the WORKLOAD is pinned here, the configuration is whatever main ships. \
 ★ READ FIRST — EVERY LADDER FIGURE IN THIS NOTE IS SUPERSEDED HISTORY, NOT \
 THE BOUNDS IN FORCE. The floors this entry enforces were re-cut 2026-08-30 \
 from the WIDENED instrument (C=1..128 at bs=128, concurrent warm-up); their \
@@ -561,11 +596,23 @@ kv_cache_dtype = "fp8"
 # was cut cold on the 8-slot pin, so nothing it measures changes; C=2/4
 # keep their warm TTFT (506 / 656 ms, 2026-09-14).
 ssm_cache_slots = "32"
-# The gate's sequences are isl 512 + osl 320 (<900 tokens with template);
-# 4096 leaves >4x headroom while shrinking the per-sequence KV commitment
-# and the max_model_len-sized inference reserve — multiplying available KV
-# blocks roughly 8x vs the recipe's 32768.
-max_model_len = "4096"
+# ★ 4096 -> 2048 on 2026-09-21, with the instrument re-point. 2048 is the
+# published ladder's context on BOTH legs of the matched pair — the vLLM+MTP
+# baseline's instrument.max_model_len and the Atlas leg's own
+# `--max-seq-len 2048` in bench/ladder38/published.json — and max_model_len
+# is a REQUIRED axis in ladder-baselines.js, so at 4096 the live record could
+# never be drawn against that bar however well it measured.
+# It still holds the gate's sequences with room: isl 128 renders to ~200
+# tokens after the chat template, + osl 1024 is ~1224, so 2048 leaves ~1.7x
+# headroom, and it shrinks the per-sequence KV commitment and the
+# max_model_len-sized inference reserve further than 4096 did (the recipe's
+# own pin is 32768).
+# ★ It also decides WHICH baseline is comparable, and that is deliberate:
+# vllm-mtp (ctx 2048, fp8 KV) is the leg the published ratio uses and the one
+# this now pairs with; vllm-nospec (ctx 4096, bf16 KV) differs on two
+# required axes and stays unmatched, exactly as published.json already says
+# of it ("Unmatched fingerprint ... Plotted for completeness").
+max_model_len = "2048"
 # lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
 # correctness pin (exact argmax over the 248K vocab), not a throughput knob.
 
@@ -577,8 +624,27 @@ max_model_len = "4096"
 # claim ungated. C=2 is in because it is the thinnest margin on that ladder
 # and the one most easily lost silently.
 concurrencies = "1,2,4,8,16,32,64,128"
-isls = "512"
-osl = "320"
+# ★ 512/320 natural -> 128/1024 essay on 2026-09-21. These three lines ARE
+# the re-point; everything else in this entry follows from them.
+#   isls        128    the published ladder's ISL (~200 rendered tokens)
+#   osl        1024    its output budget
+#   prompt_mode essay  `Fixture::Essay` in concurrency.rs, whose ESSAY_TASK is
+#                      SUFFIX_ESSAY from bench/ladder38/harness_w55_conc_ladder.py
+#                      BYTE FOR BYTE (nonce width 6, presence_penalty and
+#                      frequency_penalty pinned to 0.0 on this fixture only),
+#                      SHA-256-pinned against the Python harness by
+#                      concurrency_verdict_tests.
+# ★ WHY THE FIXTURE HAD TO CHANGE WITH THE BUDGET, and why this is still only
+# a parameter change: the natural (MinHeap code) fixture's deterministic
+# completion is ~296 tokens, so at osl 1024 every cell would be vacuous by
+# construction — occupancy 0.29 against a 0.8 floor — and the gate would be
+# INCONCLUSIVE forever. The essay fixture is the published instrument's own
+# request and elicits the full budget. It already exists in the driver, so no
+# kernel or stats path moves and this entry costs no campaign of its own;
+# BENCH.toml is in NON_COMPILED_KERNEL_FILES.
+isls = "128"
+osl = "1024"
+prompt_mode = "essay"
 
 # ── Floors re-cut 2026-08-30 from 3 fresh reps of the WIDENED instrument
 # (C=1..128, bs=128, concurrent warm-up), mean - max(3*sigma, ~5%) per rung,
@@ -687,8 +753,19 @@ osl = "320"
 #   C32/C64/C128  all clear their formula bars by ~4.5%, but each has only
 #        n=11 committed history and none stepped. ~2.5 tok/s of tightening is
 #        not worth spending that thin a record on; re-cut them with the ladder.
-min = 20.5
-noise = 0.3
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 20.5, noise = 0.3.
+# The published ladder reads 23.59 tok/s at C=1 on the instrument now in
+# force, 1.15x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c2_aggregate_tok_s]
 # ★ NOT RATCHETED 2026-09-20, deliberately. The policy floor on the latest
@@ -702,8 +779,19 @@ noise = 0.3
 # once from a biased set, and the 25.5 run in the C1 block's survey would
 # clear that bar by 0.45, which is not a margin. The floor of 25.0 stays in
 # the gap between modes.
-min = 25.0
-noise = 0.95
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 25.0, noise = 0.95.
+# The published ladder reads 41.02 tok/s at C=2 on the instrument now in
+# force, 1.64x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c4_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 37.5 -> 43.5 (effective 35.7 -> 41.7 after the
@@ -716,8 +804,19 @@ noise = 0.95
 # committed runs since 2026-09-08, on every box, by at least 2.9. Re-cut
 # toward the policy once dgx1 has recorded on the 32-slot pin and the two
 # modes are understood (avarok#812 is still the open question at this rung).
-min = 43.5
-noise = 1.8
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 43.5, noise = 1.8.
+# The published ladder reads 74.21 tok/s at C=4 on the instrument now in
+# force, 1.71x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c8_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 48.0 -> 57.0 (effective 45.7 -> 54.7 after the
@@ -731,8 +830,19 @@ noise = 1.8
 # The floor of 57.0 is 58.83 x 0.975 rounded down; it clears every committed
 # run since 2026-09-08 by at least 4.1. Re-cut toward the policy once dgx1
 # has recorded on the 32-slot pin.
-min = 57.0
-noise = 2.3
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 57.0, noise = 2.3.
+# The published ladder reads 125.95 tok/s at C=8 on the instrument now in
+# force, 2.21x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c16_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 84.0 -> 86.0 (effective 82.55 -> 84.55 after the
@@ -745,8 +855,19 @@ noise = 2.3
 # the history. The floor of 86.0 is 88.61 x 0.975 rounded down; it clears
 # every committed run on the widened instrument (since 2026-08-30) by at
 # least 3.2.
-min = 86.0
-noise = 1.45
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 86.0, noise = 1.45.
+# The published ladder reads 203.36 tok/s at C=16 on the instrument now in
+# force, 2.36x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c32_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 98.5 -> 100 (effective 96.8 -> 98.3 after the
@@ -755,8 +876,19 @@ noise = 1.45
 # 10-step that applies from 100 up — which is why it lands 4.8% under the
 # latest value and not 2.5%). Guard: regime min 103.60 (2026-09-13-1a0dc88a8c,
 # dgx1; n=22, sigma 0.49), 5.3 above the effective bar.
-min = 100.0
-noise = 1.7
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 100.0, noise = 1.7.
+# The published ladder reads 291.01 tok/s at C=32 on the instrument now in
+# force, 2.91x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c64_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
@@ -764,8 +896,19 @@ noise = 1.7
 # 2026-09-20-43a3c9b202 value 116.38 (x 0.975 = 113.47, rounded down to the
 # 10-step). Guard: regime min 114.57 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.62), 6.5 above the effective bar.
-min = 110.0
-noise = 1.9
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.9.
+# The published ladder reads 386.63 tok/s at C=64 on the instrument now in
+# force, 3.51x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.c128_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
@@ -773,8 +916,19 @@ noise = 1.9
 # 2026-09-20-43a3c9b202 value 116.26 (x 0.975 = 113.35, rounded down to the
 # 10-step). Guard: regime min 114.00 (2026-09-11-da446c920b, dgx1; n=22, sigma
 # 0.72), 5.9 above the effective bar.
-min = 110.0
-noise = 1.9
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.9.
+# The published ladder reads 478.11 tok/s at C=128 on the instrument now in
+# force, 4.35x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.peak_aggregate_tok_s]
 # ★ RATCHETED 2026-09-20, 109.5 -> 110 (effective 107.6 -> 108.1 after the
@@ -789,17 +943,44 @@ noise = 1.9
 # curve having saturated near 115 from C=64 on. The floor is therefore the
 # C=64/C=128 bar, not the C=16 one the previous comment described: a sweep
 # whose peak fell below this has lost its top rung whichever C produced it.
-min = 110.0
-noise = 1.90
+#
+# ★ OFF 2026-09-21 — THE BAR ABOVE WAS CUT AT THE RETIRED 512/320 NATURAL
+# INSTRUMENT AND IS NOT A BOUND ON THIS ONE. Was min = 110.0, noise = 1.90.
+# The published ladder reads 478.11 tok/s at C=64/C=128 on the instrument now in
+# force, 4.35x the retired bar: keeping it would report a guard that
+# cannot fail. 0.0 is the documented record-without-gating state (`floor_spec`
+# in concurrency.rs; `RUNGS` names it as how a rung is recorded before it is
+# bounded). The derivation above is kept, not archived: its GUARD (no effective
+# bar above any committed PASS of the rung) and its two traps (C=2 bimodal,
+# C=16 dips with no regime change) are facts about the RUNG, not about the
+# instrument, and both still govern the re-cut.
+min = 0.0
+noise = 0.0
 
 [benchmarks.metrics.min_completion_tokens]
-# The vacuity guarantee, restated where the gate can see it. The original
-# calibration (fixture minimum 334 > 320, every request budget-capped) was
-# measured on a tree where MTP speculated inside <think>; with the
-# serial-in-think fix (2c80bf2f7) token trajectories shifted and the
-# fixture's minimum deterministic completion is 296 (natural EOS, temp 0).
-# The floor guards degenerate early-EOS collapse; per-cell vacuity is
-# policed by vacuous_cells below.
+# ★ KEPT AT 260 THROUGH THE 2026-09-21 RE-POINT, deliberately, while every
+# rung floor went to 0.0 — this is the one bar the re-point does not
+# invalidate, and it is not redundant with vacuous_cells.
+#
+# The sentence not to get wrong: the vacuity rule is NOT "no request under
+# 80% of the budget". concurrency_vacuity.rs was rewritten FOR this very
+# instrument — its module doc cites l38_r{7..11}_c*.json, where rep 2 of
+# C=128 deterministically stops one request at 691 tokens and C=64 one at
+# 753 — and now asks only for cell OCCUPANCY >= 0.8 of the total budget plus
+# a MAJORITY of requests over 0.8 x osl. A minority may deliver anything down
+# to zero. min_completion_tokens is what still denies that minority the
+# floor, so switching it off with the rung floors would have removed a guard
+# vacuity never replaced.
+#
+# 260 is loose here and is left loose ON PURPOSE rather than re-cut by
+# arithmetic. It was calibrated against the natural fixture's ~296-token
+# deterministic completion; the essay fixture's own minimum has not been
+# measured on this gate. The published raw files' observed minima on this
+# instrument are 691 (C=128) and 753 (C=64), so 260 passes everything ever
+# seen while still failing a degenerate early-EOS collapse. Re-cut it with
+# the nine rung floors from the same first records, not before: 0.8 x 1024 =
+# 819 is the number arithmetic would suggest, and declaring it now would be
+# a bootstrap.
 min = 260.0
 
 [benchmarks.metrics.vacuous_cells]
@@ -933,10 +1114,18 @@ draft_model = "incoai/Qwen3.8-27B-DFlash2"
 dflash_gamma = "8"
 
 [benchmarks.param_overrides]
-# The plain gate's instrument, truncated at the widest rung this serve can
-# actually admit (see the batch-cap note above). isl and osl are identical, so
-# the rungs the two ladders SHARE are directly comparable; the plain gate
-# simply continues past where this one can go.
+# ★ NO LONGER THE PLAIN GATE'S INSTRUMENT. Until 2026-09-21 this said "isl
+# and osl are identical, so the rungs the two ladders SHARE are directly
+# comparable"; that stopped being true when the plain gate was re-pointed to
+# the published ladder (isl 128 / osl 1024 / essay). This entry deliberately
+# stays at isl 512 / osl 200 / natural: its bars were cut there, DFlash2 is
+# not on the published ladder and never was, and re-pointing it would cost a
+# second set of floors to buy a comparison nothing draws. The two ladders are
+# now comparable to NEITHER each other nor the published pair — which the
+# entry note below already required of them for a different reason (speculation
+# moves low-C throughput by more than either bar is set to catch).
+# Rungs are still truncated at the widest this serve can admit (see the
+# batch-cap note above).
 concurrencies = "1,2,4,8,16"
 isls = "512"
 # 200, not the plain gate's 320 — see the osl note on this entry. Every request

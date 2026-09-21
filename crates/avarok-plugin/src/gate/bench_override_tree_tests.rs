@@ -65,26 +65,40 @@ fn every_committed_param_override_parses_against_its_gates_schema() {
                 "concurrencies".into(),
                 "1,2,4,8,16,32,64,128".into(),
             ),
+            // ★ 128 / 1024 / essay since 2026-09-21: the published ladder's
+            // instrument, so the live gate record fingerprints as the vLLM bar
+            // the site draws it against (site/src/lib/ladder-baselines.js).
+            // `prompt_mode` had to come with the budget — the natural fixture
+            // stops at ~296 tokens, so every cell at osl 1024 would be vacuous.
             (
                 "gb10".into(),
                 "qwen3.8-27b".into(),
                 "concurrency-sweep".into(),
                 "isls".into(),
-                "512".into(),
+                "128".into(),
             ),
             (
                 "gb10".into(),
                 "qwen3.8-27b".into(),
                 "concurrency-sweep".into(),
                 "osl".into(),
-                "320".into(),
+                "1024".into(),
             ),
-            // The DFlash2 gate's instrument is the plain one's TRUNCATED at
-            // the widest rung its serve can admit — same isl, same osl, so
-            // the rungs they share stay directly comparable. It stops at 16
-            // because a DFlash2 serve refuses to start above a narrow batch
-            // (measured; see the BENCH.toml note), and a rung above the batch
-            // cap would measure the cap rather than the engine.
+            (
+                "gb10".into(),
+                "qwen3.8-27b".into(),
+                "concurrency-sweep".into(),
+                "prompt_mode".into(),
+                "essay".into(),
+            ),
+            // The DFlash2 gate stops at 16 because a DFlash2 serve refuses to
+            // start above a narrow batch (measured; see the BENCH.toml note),
+            // and a rung above the batch cap would measure the cap rather than
+            // the engine. ★ It is NO LONGER "the plain one truncated": it kept
+            // isl 512 / osl 200 / natural through the 2026-09-21 re-point, on
+            // purpose — its bars were cut there, DFlash2 is not on the
+            // published ladder, and re-pointing it would cost a second set of
+            // floors to buy a comparison nothing draws.
             (
                 "gb10".into(),
                 "qwen3.8-27b".into(),
