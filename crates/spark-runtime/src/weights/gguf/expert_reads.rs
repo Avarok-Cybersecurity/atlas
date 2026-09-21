@@ -9,13 +9,14 @@
 use std::fs::File;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 /// Positional read of exactly `dst.len()` bytes at `offset`. No file position
 /// is shared, so any number of threads may read one `File` at once.
 pub fn pread(file: &File, offset: u64, dst: &mut [u8]) -> Result<()> {
     #[cfg(unix)]
     {
+        use anyhow::Context;
         use std::os::unix::fs::FileExt;
         file.read_exact_at(dst, offset)
             .with_context(|| format!("pread {} bytes at {offset}", dst.len()))
@@ -97,6 +98,7 @@ pub struct DirectSeg {
 pub fn pread_at_least(file: &File, offset: u64, dst: &mut [u8], need: usize) -> Result<()> {
     #[cfg(unix)]
     {
+        use anyhow::Context;
         use std::os::unix::fs::FileExt;
         let mut done = 0usize;
         while done < need {
