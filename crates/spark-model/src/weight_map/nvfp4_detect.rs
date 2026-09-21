@@ -373,7 +373,7 @@ pub(crate) fn quantized_from_fp8(
     // reason, and matters for the same class of checkpoint: a mixed-precision
     // NVFP4 net whose FP8 half is 11.56 GB (unsloth/Qwen3.8-27B-NVFP4). Holding
     // those sources alongside their 5.78 GB of NVFP4 copies put the dense load
-    // loop at 29.2 GB instead of 17.6 GB — measured with ATLAS_MEM_PROFILE=1 on
+    // loop at 29.2 GB instead of 17.6 GB — measured with AVAROK_MEM_PROFILE=1 on
     // gfx1151, where the GPU allocates from the same 64 GB the OS uses and the
     // practical ceiling is ~55 GB. It is the difference between serving and
     // `cuMemAlloc_v2 failed` at model build.
@@ -383,15 +383,15 @@ pub(crate) fn quantized_from_fp8(
     //
     //   * the GDN native-FP8 prefill precision policy (qwen35_dense.rs) reads
     //     linear_attn in_proj_qkv / out_proj as FP8 — live unless
-    //     ATLAS_NO_GDN_FP8_PREFILL is set;
+    //     AVAROK_NO_GDN_FP8_PREFILL is set;
     //   * the dense FP8 attention overlay (`dense_fp8_enabled`) reads
-    //     self_attn q/k/v/o as FP8 — live only when ATLAS_DENSE_FP8=1.
+    //     self_attn q/k/v/o as FP8 — live only when AVAROK_DENSE_FP8=1.
     //
     // Both off ⇒ the NVFP4 result is the only consumer of these bytes.
     // Deliberately conservative: this frees ALL FP8 sources or NONE, rather
     // than guessing per-tensor from `prefix`.
-    let gdn_fp8_prefill_on = std::env::var_os("ATLAS_NO_GDN_FP8_PREFILL").is_none();
-    let dense_fp8_on = std::env::var("ATLAS_DENSE_FP8").as_deref() == Ok("1");
+    let gdn_fp8_prefill_on = std::env::var_os("AVAROK_NO_GDN_FP8_PREFILL").is_none();
+    let dense_fp8_on = std::env::var("AVAROK_DENSE_FP8").as_deref() == Ok("1");
     if !gdn_fp8_prefill_on && !dense_fp8_on {
         store.reclaim(gpu, &format!("{prefix}.weight"))?;
     }

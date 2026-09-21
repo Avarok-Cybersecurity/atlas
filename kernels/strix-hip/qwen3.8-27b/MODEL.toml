@@ -25,7 +25,7 @@ architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
 #    (qwen3_5, 5120) tie and breaks it by matching these needles against the
 #    checkpoint reference (HF id / --model-name / model dir). An unbroken tie
 #    is a hard startup error, never a build-order pick. See
-#    atlas-kernels/src/resolve.rs.
+#    avarok-kernels/src/resolve.rs.
 match_names = ["qwen3.8-27b"]
 kernel_source = "qwen3.6-27b"
 
@@ -166,13 +166,13 @@ default_num_drafts = 1
 # carrying it with the shared kernel set. The Strix recipe serves
 # `--kv-cache-dtype bf16` (serve-amd.sh, and the certified MLPerf-edge run),
 # because on gfx1151 the SCALE device FP8 encode path is the one this port
-# works around (ATLAS_W4A16_VARIANT=v1 / ATLAS_NO_FP8_PREDEQUANT=1 exist for
+# works around (AVAROK_W4A16_VARIANT=v1 / AVAROK_NO_FP8_PREDEQUANT=1 exist for
 # exactly that reason). Setting an fp8 default here would silently change the
 # KV dtype of the proven configuration for anyone who does not pass the flag.
 
 # Upstream reports model_type = "qwen3_5". The MRoPE -> "qwen3_6_moe"
 # dispatch rewrite fires only for MoE checkpoints (is_moe gate in
-# atlas-core config/dispatch.rs), and this is a DENSE hybrid, so it stays
+# avarok-core config/dispatch.rs), and this is a DENSE hybrid, so it stays
 # "qwen3_5". No belt-and-braces qwen3_6_moe entry: no 3.8 checkpoint is known
 # to rewrite, and every extra colliding entry widens the ambiguity surface
 # that resolution has to break.

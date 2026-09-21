@@ -15,7 +15,7 @@
 //! Defaults: N=2048 K=4096 seed=0x51A7. Exit 0 = PASS (cosine >= gate), 1 = FAIL.
 
 use anyhow::{Result, bail};
-use spark_runtime::cuda_backend::AtlasCudaBackend;
+use spark_runtime::cuda_backend::AvarokCudaBackend;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kernel_args::KernelLaunch;
 use std::time::Instant;
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
     let scale2: f32 = 1.0;
 
     // ── GPU ──
-    let backend = AtlasCudaBackend::new(0, &atlas_kernels::ptx_modules())?;
+    let backend = AvarokCudaBackend::new(0, &avarok_kernels::ptx_modules())?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 

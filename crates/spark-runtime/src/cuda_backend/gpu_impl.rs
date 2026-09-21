@@ -455,7 +455,7 @@ impl GpuBackend for AvarokCudaBackend {
     ) -> Result<()> {
         // NVIDIA: one pitched copy (cudaMemcpyDeviceToDevice = 3) on the caller's
         // stream via the cudart runtime, replacing a per-row copy_d2d_async loop.
-        #[cfg(not(atlas_scale))]
+        #[cfg(not(avarok_scale))]
         {
             unsafe extern "C" {
                 fn cudaMemcpy2DAsync(
@@ -489,7 +489,7 @@ impl GpuBackend for AvarokCudaBackend {
         // strix/SCALE: no cudart runtime linked (SCALE's libcuda is driver-only).
         // Fall back to the per-row driver-API loop this pitched copy replaced —
         // `copy_d2d_async` uses `cuMemcpyDtoDAsync`, which SCALE provides.
-        #[cfg(atlas_scale)]
+        #[cfg(avarok_scale)]
         {
             for row in 0..height {
                 let s = DevicePtr(src.0 + (row * src_pitch) as u64);

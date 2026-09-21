@@ -1,6 +1,6 @@
 # Strix Halo on Windows (native HIP) — build status and test guide
 
-Windows AMD is the **native-HIP** path (`ATLAS_TARGET_HW=strix-hip`, hipcc, gfx1151).
+Windows AMD is the **native-HIP** path (`AVAROK_TARGET_HW=strix-hip`, hipcc, gfx1151).
 SCALE — Atlas's other AMD toolchain — is Linux-only, so HIP is the only conceivable
 Windows AMD target.
 
@@ -37,7 +37,7 @@ ERROR free_sequence: ssm_pool.zero_slot(0): cuMemsetD8Async failed: status 719
 ```
 
 Fault point drifts (7 / 42 / 54 min), so it is load-dependent, not input-dependent.
-`ATLAS_NO_MTP_DRAFTER_CONTEXT=1` does **not** avoid it. Recovery needs only a
+`AVAROK_NO_MTP_DRAFTER_CONTEXT=1` does **not** avoid it. Recovery needs only a
 process restart, not a reboot — the GPU itself stays healthy.
 
 > **If you benchmark this, read the result JSON before believing the score.**
@@ -65,7 +65,7 @@ point one variable at it, run one script:
 hf download nvidia/Qwen3.6-27B-NVFP4 --local-dir "$env:USERPROFILE\models\Qwen3.6-27B-NVFP4"
 
 # 3. Serve + smoke test:
-$env:ATLAS_BIN = "C:\path\to\unzipped\spark.exe"
+$env:AVAROK_BIN = "C:\path\to\unzipped\spark.exe"
 powershell -ExecutionPolicy Bypass -File scripts\strix-windows\first_run.ps1
 ```
 
@@ -82,7 +82,7 @@ TEXT: The three primary colors are **Red**, **Yellow**, and **Blue**. ...
 If you got that, the port works on your hardware. `-Phase check` audits the box
 and changes nothing, if you want to look before you leap.
 
-**Building from source instead?** Leave `ATLAS_BIN` unset and the same script
+**Building from source instead?** Leave `AVAROK_BIN` unset and the same script
 checks the toolchain, repairs the kernel symlinks a Windows clone breaks, builds,
 and serves. Everything it does is spelled out below.
 
@@ -97,9 +97,9 @@ Measured on run `30241443396` (2026-07-27), the first Windows build carrying the
 full Strix kernel set:
 
 ```
-atlas-kernels: compiled 97 kernels for target 0 (strix-hip, qwen3.6-27b, nvfp4)
-atlas-kernels: dedup+parallel: 97/97 unique nvcc invocations
-atlas-kernels: built Windows HIP runtime shim (cuda.dll/nvcuda.dll + import libs, 76 exports)
+avarok-kernels: compiled 97 kernels for target 0 (strix-hip, qwen3.6-27b, nvfp4)
+avarok-kernels: dedup+parallel: 97/97 unique nvcc invocations
+avarok-kernels: built Windows HIP runtime shim (cuda.dll/nvcuda.dll + import libs, 76 exports)
 artifact spark-windows-x86_64-amd-hip, 13,612,158 bytes
 ```
 
@@ -132,7 +132,7 @@ Two independent shims, which is why this is tractable at all:
 Two Windows-only source accommodations, both isolated to the HIP tree so gb10 /
 strix / metal stay byte-identical:
 
-1. `hip/compat/atlas_hip_win_shims.h` — Windows HIP does not declare the CUDA
+1. `hip/compat/avarok_hip_win_shims.h` — Windows HIP does not declare the CUDA
    mask-argument warp intrinsics (`__shfl_*_sync`, `__any_sync`, `__all_sync`,
    `__activemask`); Linux ROCm does. Force-included on Windows only.
 2. `(__bf16)x` → `(__bf16)(float)x`. Windows' `__hip_bfloat16` has ~14 implicit
@@ -156,16 +156,16 @@ To build it yourself you need the Windows HIP SDK and MSVC on PATH.
 repair; the raw commands are here for reference:
 
 ```powershell
-$env:ATLAS_TARGET_HW    = "strix-hip"
-$env:ATLAS_TARGET_MODEL = "qwen3.6-27b"    # MANDATORY
-$env:ATLAS_TARGET_QUANT = "nvfp4"          # MANDATORY
-$env:ATLAS_HIPCC        = "C:\Program Files\AMD\ROCm\6.4\bin\hipcc.bin.exe"
+$env:AVAROK_TARGET_HW    = "strix-hip"
+$env:AVAROK_TARGET_MODEL = "qwen3.6-27b"    # MANDATORY
+$env:AVAROK_TARGET_QUANT = "nvfp4"          # MANDATORY
+$env:AVAROK_HIPCC        = "C:\Program Files\AMD\ROCm\6.4\bin\hipcc.bin.exe"
 $env:HIP_PATH           = "C:\Program Files\AMD\ROCm\6.4"
 $env:CUDARC_CUDA_VERSION = "12080"
 cargo build --release -p spark-server --target x86_64-pc-windows-msvc --no-default-features --features cuda
 ```
 
-`ATLAS_TARGET_MODEL`/`QUANT` are not optional — the default target is a
+`AVAROK_TARGET_MODEL`/`QUANT` are not optional — the default target is a
 `qwen3-next-80b` kernel dir that does not exist under `strix-hip`, and `build.rs`
 panics resolving it. Build from **PowerShell, not Git Bash**: under bash on
 Windows, Git's `/usr/bin` precedes MSVC on PATH and rustc invokes the coreutils
@@ -182,11 +182,11 @@ run on real hardware** — the pre-runtime guesses are called out inline, becaus
 each one produces a failure that points somewhere else.
 
 ```powershell
-$env:ATLAS_W4A16_DP4A = "1"; $env:ATLAS_FORCE_GLOBAL_GDN = "1"; $env:ATLAS_W4A16_VARIANT = "v1"
-$env:ATLAS_KV_EXTERNAL_RESERVE_GB = "0"   # was 6 -- see below, 6 oversizes the KV pool
-$env:ATLAS_SSM_TAIL_MIDCHUNK = "0"        # was 1 -- see below, 1 corrupts shared prefixes
-$env:ATLAS_SSM_TAIL_PROTECT = "1"; $env:ATLAS_SSM_TAIL_LEASE_TTL = "128"
-$env:ATLAS_MTP_GATE_REPROBE = "64"
+$env:AVAROK_W4A16_DP4A = "1"; $env:AVAROK_FORCE_GLOBAL_GDN = "1"; $env:AVAROK_W4A16_VARIANT = "v1"
+$env:AVAROK_KV_EXTERNAL_RESERVE_GB = "0"   # was 6 -- see below, 6 oversizes the KV pool
+$env:AVAROK_SSM_TAIL_MIDCHUNK = "0"        # was 1 -- see below, 1 corrupts shared prefixes
+$env:AVAROK_SSM_TAIL_PROTECT = "1"; $env:AVAROK_SSM_TAIL_LEASE_TTL = "128"
+$env:AVAROK_MTP_GATE_REPROBE = "64"
 .\spark.exe serve <snapshot> --model-name nvidia/Qwen3.6-27B-NVFP4 --port 8081 `
   --max-seq-len 65536 --gpu-memory-utilization 0.80 --kv-cache-dtype bf16 `
   --max-batch-size 1 --speculative --num-drafts 2 --mtp-quantization bf16 `
@@ -194,7 +194,7 @@ $env:ATLAS_MTP_GATE_REPROBE = "64"
   --ssm-cache-slots 64 --ssm-checkpoint-interval 16 --disable-thinking
 ```
 
-**`ATLAS_KV_EXTERNAL_RESERVE_GB` must be 0, not 6.** `hipMemGetInfo` is broken on
+**`AVAROK_KV_EXTERNAL_RESERVE_GB` must be 0, not 6.** `hipMemGetInfo` is broken on
 Windows HIP — `hipErrorInvalidValue` standalone, `free == 0` under a live context —
 so `cuMemGetInfo_v2` now synthesises a truthful figure from tracked allocations.
 That tracker reports Atlas-own bytes only, so `build.rs`'s co-tenant *discount*
@@ -203,7 +203,7 @@ then died on a later 24 MB alloc. `0` fails `build.rs`'s `.filter(|gb| gb > 0.0)
 and falls through to the AUTO path (`baseline_free - free_now`), which is right
 given the fixed shim.
 
-**`ATLAS_SSM_TAIL_MIDCHUNK` must be 0, not 1.** Mid-chunk tail capture corrupts
+**`AVAROK_SSM_TAIL_MIDCHUNK` must be 0, not 1.** Mid-chunk tail capture corrupts
 *cross-request* SSM prefix reuse — the regression `scripts/mlperf-edge/ab_midchunk.sh`
 already documents. Requests sharing a system-prompt prefix reuse each other's tail
 snapshot; observed here as empty 1-token completions on 12/12 `live_multiple`
@@ -231,10 +231,10 @@ Two more things a first run needs, neither of them obvious:
   take. Once repaired, those 219 files show as modified in `git status` forever —
   real content where git expects a link blob. **Never commit them.**
 
-The Linux doc's `ATLAS_MTP_DRAFTER_PREFILL=1` and `ATLAS_MTP_CARRY_DRAFTER=1` are
+The Linux doc's `AVAROK_MTP_DRAFTER_PREFILL=1` and `AVAROK_MTP_CARRY_DRAFTER=1` are
 both **dropped on purpose**: `drafter_context` now ships prefill and carry ON by
 default, and unset is the shipped configuration. The kill switch, if you need to
-A/B against it, is `ATLAS_NO_MTP_DRAFTER_CONTEXT=1` (turns off both).
+A/B against it, is `AVAROK_NO_MTP_DRAFTER_CONTEXT=1` (turns off both).
 
 ### The memory model is the thing most likely to bite
 

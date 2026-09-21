@@ -7,7 +7,7 @@
 // remain the gb10/NVIDIA defaults. Selected only on strix-hip behind a flag, and only
 // once the FP8 experts have been requantized to NVFP4 at load.
 //
-// Decode profile (ATLAS_PROFILE, 35B-A3B-FP8) put the routed-expert GEMVs at ~24% of
+// Decode profile (AVAROK_PROFILE, 35B-A3B-FP8) put the routed-expert GEMVs at ~24% of
 // per-token decode, run in FP8 (1 byte/weight). Routing them to NVFP4 (0.5 byte/weight)
 // halves the dominant weight traffic on the bandwidth-bound LPDDR5X part, and DP4A
 // replaces the FP32 FMA epilogue with hardware `v_dot4` (`__builtin_amdgcn_sudot4`).

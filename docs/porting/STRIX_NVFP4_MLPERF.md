@@ -28,7 +28,7 @@ spark serve unsloth/Qwen3.6-27B-NVFP4 \
   --disable-tool-grammar true --enable-prefix-caching \
   --ssm-cache-slots 48 --ssm-checkpoint-interval 16
 ```
-Env: `ATLAS_W4A16_DP4A=1 ATLAS_FORCE_GLOBAL_GDN=1 ATLAS_W4A16_VARIANT=v1`.
+Env: `AVAROK_W4A16_DP4A=1 AVAROK_FORCE_GLOBAL_GDN=1 AVAROK_W4A16_VARIANT=v1`.
 
 **Warm-prefill (`--ssm-checkpoint-interval 16 --ssm-cache-slots 48`):** the default
 interval 256 checkpoints SSM state only every 4096 tokens, so a sub-4096 partial-prefix

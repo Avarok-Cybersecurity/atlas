@@ -34,7 +34,7 @@ question for Spectral.
 | qwen3.6-27b kernels compiling on SCALE/gfx1151 | **92 / 92** (authoritative sweep) |
 | e4m3 `m16n8k32` MMA replacement correctness | **bit-exact**, `max|ref-cand| = 0.0000` on GB10 (2 GPU equivalence tests) |
 | NVIDIA path regression | **none** — `nvcc sm_121f` byte-identical, every touched file |
-| `cargo check -p atlas-kernels -p spark-model` | **green** |
+| `cargo check -p avarok-kernels -p spark-model` | **green** |
 | Commits on branch | 11 port commits (42 total incl. history), tree clean |
 | NVIDIA production code risk | **zero** (all changes additive, `__SCALE__`-gated) |
 
@@ -42,14 +42,14 @@ question for Spectral.
 
 ## 3. What was delivered
 
-### 3.1 Build-system integration (`crates/atlas-kernels/`)
+### 3.1 Build-system integration (`crates/avarok-kernels/`)
 - **`ScaleTarget`** (`build_target.rs`): invokes
   `$SCALE_HOME/targets/<arch>/bin/nvcc --cuda-device-only -c -O3 <flags>`;
   `output_extension="o"`, `output_is_text=false`.
 - **`find_scale_dir()`** (`build_codegen.rs`): `$SCALE_HOME`/`$SCALE_ROOT`
   then conventional/`scale*-Linux` scan; fails fast (PCND).
 - **`resolve_compute_target()`**: `"amd"|"rocm"|"scale"` → `ScaleTarget`.
-- **`build.rs`**: propagates `force_br32_prefill` → `ATLAS_HW_FORCE_BR32`.
+- **`build.rs`**: propagates `force_br32_prefill` → `AVAROK_HW_FORCE_BR32`.
 
 ### 3.2 `kernels/strix/` tree
 SSOT **relative symlinks** to `kernels/gb10/` (identical CUDA source — never
@@ -85,7 +85,7 @@ forked); only real files: `HARDWARE.toml` (`vendor=amd`, `arch=gfx1151`,
 - **NVIDIA non-regression:** every touched `.cu`/`.cuh` re-compiled with
   `nvcc --ptx -arch=sm_121f --fmad=false` → same PTX line counts as before,
   zero errors (helper `#else` = verbatim asm, `__forceinline__` ⇒ identical
-  codegen). `cargo check -p atlas-kernels -p spark-model` green.
+  codegen). `cargo check -p avarok-kernels -p spark-model` green.
 - **Full compile sweep:** `~/atlas-kprobe` on the Strix box, all 92 `.cu`
   via `targets/gfx1151/bin/nvcc --cuda-device-only -c` → **92 PASS / 0 FAIL**.
 
@@ -135,8 +135,8 @@ export SCALE_HOME=~/scale17/scale-1.7.0-Linux
   -ffp-contract=off -Icommon <kernel>.cu -o /tmp/x.o     # → AMD GPU ELF
 
 # Full Atlas build for Strix (once runtime model + #8 settled):
-export ATLAS_TARGET_HW=strix ATLAS_TARGET_MODEL=qwen3.6-27b ATLAS_TARGET_QUANT=nvfp4
-rm -rf target/release/build/atlas-kernels-*    # stale-cache guard
+export AVAROK_TARGET_HW=strix AVAROK_TARGET_MODEL=qwen3.6-27b AVAROK_TARGET_QUANT=nvfp4
+rm -rf target/release/build/avarok-kernels-*    # stale-cache guard
 cargo build --release -p spark-server
 
 # e4m3-MMA bit-exactness re-proof (any GB10/NVIDIA, free GPU):

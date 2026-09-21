@@ -9,7 +9,7 @@ port rather than depending on the llama.cpp fork.
 
 ## What this adds
 
-Additive, strix-hip-only, **OFF by default** (`ATLAS_W4A16_DP4A=1` to enable;
+Additive, strix-hip-only, **OFF by default** (`AVAROK_W4A16_DP4A=1` to enable;
 the float E2M1-LUT path is untouched and remains the default on every target,
 and the NVIDIA/gb10 path is bit-identical). On gfx1151 builds the kernels are
 present; on any other target the handles miss and callers keep the float path.
@@ -40,12 +40,12 @@ Dispatch helpers live in `crates/spark-model/src/layers/ops/dp4a.rs`.
 
 **End-to-end A/B**, identical binary / model (`unsloth/Qwen3.6-27B-NVFP4`, 29 GB
 mixed-precision VL, dense FFN h=5120 inter=17408 × 64 layers) / env / prompts —
-only `ATLAS_W4A16_DP4A` changes:
+only `AVAROK_W4A16_DP4A` changes:
 
 | Path | 200-tok decode | Output |
 |------|----------------|--------|
-| `ATLAS_W4A16_DP4A=0` (float fused) | **9.83 tok/s** | coherent |
-| `ATLAS_W4A16_DP4A=1` (int8-DP4A)   | **12.35 tok/s** | coherent, byte-identical |
+| `AVAROK_W4A16_DP4A=0` (float fused) | **9.83 tok/s** | coherent |
+| `AVAROK_W4A16_DP4A=1` (int8-DP4A)   | **12.35 tok/s** | coherent, byte-identical |
 
 **+25.6 % decode**, coherence-neutral. The DP4A=1 output is **byte-identical to
 DP4A=0** on simple greedy prompts AND on a 3-city parallel multi-tool-call prompt
@@ -114,7 +114,7 @@ rocprofv3 (1367-tok prefill, graceful-shutdown trace) showed the bottleneck is t
 projection GEMMs (~89%), NOT GDN recurrence (~4%). The dense-27B GDN linear-attention
 qkvz/out_proj prefill was converting NVFP4→FP8 and running `fp8_gemm_t_m128` (23.9%
 / 2.6s) despite the transposed NVFP4 weights already being installed. Gating the FP8
-predequant on `!cfg!(atlas_hip)` (`qwen35_dense.rs`, mirroring `linear_attn_arms.rs`)
+predequant on `!cfg!(avarok_hip)` (`qwen35_dense.rs`, mirroring `linear_attn_arms.rs`)
 routes those 48 GDN qkvz GEMMs through the fast `w4a16_gemm_t` tensor-core kernel:
 
 | | before (FP8) | after (NVFP4 t_m128) |
@@ -126,7 +126,7 @@ routes those 48 GDN qkvz GEMMs through the fast `w4a16_gemm_t` tensor-core kerne
 | BFCL-v4 ST accuracy | 89.22 | **89.22** (accuracy-neutral) |
 
 NVFP4 prefill has higher activation precision than the FP8 path and matches what
-decode already uses — hence accuracy-neutral. (The dead `ATLAS_NO_FP8_PREDEQUANT`
+decode already uses — hence accuracy-neutral. (The dead `AVAROK_NO_FP8_PREDEQUANT`
 env var never gated this.)
 
 ### Full-attention q/k/v/o → tensor-core t_m128
@@ -150,13 +150,13 @@ them to the TC kernel:
 The win came from serving WITHOUT the structural-tag grammar and parsing tool
 calls from raw output (like llama.cpp): the qwen3_coder grammar both mangles
 single-call args (simple_python 96→67) and caps parallel at 58/75, whereas legacy
-multi-call (`ATLAS_LEGACY_MULTICALL`, default on) recovers parallel 0→91.67 /
+multi-call (`AVAROK_LEGACY_MULTICALL`, default on) recovers parallel 0→91.67 /
 parallel_multiple 0→100 while keeping simple/irrelevance intact.
 
 ## Reproduce
 
 ```bash
-# build (box /workspace/atlas, native-HIP): ~/build-hip-27b.sh  + SKIP_ATLAS_BUILD=1
+# build (box /workspace/atlas, native-HIP): ~/build-hip-27b.sh  + SKIP_AVAROK_BUILD=1
 # A/B smoke:        bash /workspace/atlas/dp4a_smoke.sh {0,1}
 # ST accuracy gate: bash /workspace/atlas/dp4a_st_run.sh {0,1}
 ```

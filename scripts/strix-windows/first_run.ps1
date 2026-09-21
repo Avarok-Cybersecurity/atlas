@@ -8,15 +8,15 @@
 #      Grab the prebuilt `spark-windows-x86_64-amd-hip` zip from any green run of
 #      the release matrix, unzip it KEEPING THE DLLs BESIDE spark.exe, then:
 #
-#        $env:ATLAS_BIN = "C:\path\to\unzipped\spark.exe"
+#        $env:AVAROK_BIN = "C:\path\to\unzipped\spark.exe"
 #        powershell -ExecutionPolicy Bypass -File scripts\strix-windows\first_run.ps1
 #
-#      With ATLAS_BIN set this skips the toolchain check, the symlink repair and
+#      With AVAROK_BIN set this skips the toolchain check, the symlink repair and
 #      the build entirely -- it only needs the AMD driver and the weights. This is
 #      the answer to "OK, how do I test it?".
 #
 #   2. BUILD IT FROM SOURCE (contributors)
-#      Leave ATLAS_BIN unset and it checks the toolchain, repairs the kernel
+#      Leave AVAROK_BIN unset and it checks the toolchain, repairs the kernel
 #      symlinks a Windows clone breaks, builds, then serves:
 #
 #        powershell -ExecutionPolicy Bypass -File scripts\strix-windows\first_run.ps1
@@ -35,15 +35,15 @@
 # Every phase is idempotent -- re-run after a failure and it resumes.
 #
 # Optional (all have working defaults):
-#   ATLAS_BIN        prebuilt spark.exe. Set it to skip straight to serving.
-#   ATLAS_REPO       repo root.        Default: the checkout this script lives in.
-#   ATLAS_MODEL_DIR  weights snapshot. Default: $env:USERPROFILE\models\Qwen3.6-27B-NVFP4
+#   AVAROK_BIN        prebuilt spark.exe. Set it to skip straight to serving.
+#   AVAROK_REPO       repo root.        Default: the checkout this script lives in.
+#   AVAROK_MODEL_DIR  weights snapshot. Default: $env:USERPROFILE\models\Qwen3.6-27B-NVFP4
 #   HIP_PATH         HIP SDK root.     Default: newest under C:\Program Files\AMD\ROCm
-#   ATLAS_GPU_UTIL   --gpu-memory-utilization. Default 0.80. Read the note in Serve
+#   AVAROK_GPU_UTIL   --gpu-memory-utilization. Default 0.80. Read the note in Serve
 #                    before raising it; it is a fraction of a total the driver
 #                    reports but will not honour.
-#   ATLAS_PORT       serve port.       Default 8081.
-#   ATLAS_BIND       serve host.       Default 127.0.0.1.
+#   AVAROK_PORT       serve port.       Default 8081.
+#   AVAROK_BIND       serve host.       Default 127.0.0.1.
 #
 # Parameters:
 #   -Phase   all (default) | check | symlinks | build | serve
@@ -61,30 +61,30 @@ $ErrorActionPreference = 'Stop'
 
 # Default the repo root to the checkout this script lives in, so the script works
 # from any working directory and from a moved clone.
-$RepoRoot = if ($env:ATLAS_REPO) { $env:ATLAS_REPO }
+$RepoRoot = if ($env:AVAROK_REPO) { $env:AVAROK_REPO }
             else { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
-$ModelDir = if ($env:ATLAS_MODEL_DIR) { $env:ATLAS_MODEL_DIR }
+$ModelDir = if ($env:AVAROK_MODEL_DIR) { $env:AVAROK_MODEL_DIR }
             else { "$env:USERPROFILE\models\Qwen3.6-27B-NVFP4" }
-$GpuUtil  = if ($env:ATLAS_GPU_UTIL) { $env:ATLAS_GPU_UTIL } else { '0.80' }
-$Port     = if ($env:ATLAS_PORT) { $env:ATLAS_PORT } else { '8081' }
-$BindHost = if ($env:ATLAS_BIND) { $env:ATLAS_BIND } else { '127.0.0.1' }
+$GpuUtil  = if ($env:AVAROK_GPU_UTIL) { $env:AVAROK_GPU_UTIL } else { '0.80' }
+$Port     = if ($env:AVAROK_PORT) { $env:AVAROK_PORT } else { '8081' }
+$BindHost = if ($env:AVAROK_BIND) { $env:AVAROK_BIND } else { '127.0.0.1' }
 
-# ATLAS_BIN points at a prebuilt spark.exe (the CI zip). When it is set there is
+# AVAROK_BIN points at a prebuilt spark.exe (the CI zip). When it is set there is
 # nothing to build, so the binary's own directory takes the place of target/ and
 # the toolchain checks are skipped -- a tester needs the driver and weights only.
-$Prebuilt = [bool]$env:ATLAS_BIN
+$Prebuilt = [bool]$env:AVAROK_BIN
 
 # Which toolchain pieces this invocation actually needs. Only compiling requires
 # MSVC / hipcc / Rust; serving an existing binary requires none of them, and
 # demanding them anyway is how a "just run it" path turns into a yak shave.
-# 'check' counts as needing them: with ATLAS_BIN unset it means "can this box
+# 'check' counts as needing them: with AVAROK_BIN unset it means "can this box
 # build and run Atlas?", which is the question someone auditing before they start
 # is actually asking. '-Phase serve' on an existing binary does not.
 $NeedsBuild = (-not $Prebuilt) -and ($Phase -in @('all', 'build', 'check'))
 
 if ($Prebuilt) {
-    if (-not (Test-Path $env:ATLAS_BIN)) { throw "ATLAS_BIN does not exist: $env:ATLAS_BIN" }
-    $ReleaseDir = Split-Path (Resolve-Path $env:ATLAS_BIN).Path -Parent
+    if (-not (Test-Path $env:AVAROK_BIN)) { throw "AVAROK_BIN does not exist: $env:AVAROK_BIN" }
+    $ReleaseDir = Split-Path (Resolve-Path $env:AVAROK_BIN).Path -Parent
 } else {
     $ReleaseDir = Join-Path $RepoRoot 'target\x86_64-pc-windows-msvc\release'
 }
@@ -105,7 +105,7 @@ function Phase-Check {
     # irrelevant. Check only what running actually needs -- the exe, the DLLs
     # that must sit beside it, and the GPU.
     if ($Prebuilt) {
-        Ok "prebuilt binary: $env:ATLAS_BIN"
+        Ok "prebuilt binary: $env:AVAROK_BIN"
         # cudarc dlopens nvcuda.dll from the exe's OWN directory, and that DLL
         # imports the versioned HIP runtime. Unzipping the exe on its own, or
         # copying it somewhere tidy and leaving the DLLs behind, fails at cuInit
@@ -127,7 +127,7 @@ function Phase-Check {
         return
     }
 
-    # VCToolsInstallDir is not only for cl.exe: atlas-kernels/build.rs uses it to
+    # VCToolsInstallDir is not only for cl.exe: avarok-kernels/build.rs uses it to
     # locate dumpbin.exe, which generates the HIP shim's export .def. Without
     # dumpbin the shim builds but exports nothing, and cudarc finds no symbols.
     if ($NeedsBuild) {
@@ -303,15 +303,15 @@ function Phase-Build {
         if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] }
     }
     $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-    $env:ATLAS_HIPCC = $script:Hipcc
+    $env:AVAROK_HIPCC = $script:Hipcc
 
     # MODEL and QUANT are MANDATORY: the default target is a qwen3-next-80b kernel
     # dir that does not exist under strix-hip, and build.rs panics resolving it.
-    $env:ATLAS_TARGET_HW     = 'strix-hip'
+    $env:AVAROK_TARGET_HW     = 'strix-hip'
     # Overridable so the same script serves other targets in this tree
-    # (e.g. ATLAS_TARGET_MODEL=qwen3.8-27b, or '*' to build every one).
-    if (-not $env:ATLAS_TARGET_MODEL) { $env:ATLAS_TARGET_MODEL = 'qwen3.6-27b' }
-    $env:ATLAS_TARGET_QUANT  = 'nvfp4'
+    # (e.g. AVAROK_TARGET_MODEL=qwen3.8-27b, or '*' to build every one).
+    if (-not $env:AVAROK_TARGET_MODEL) { $env:AVAROK_TARGET_MODEL = 'qwen3.6-27b' }
+    $env:AVAROK_TARGET_QUANT  = 'nvfp4'
     $env:CUDARC_CUDA_VERSION = '12080'
 
     Push-Location $RepoRoot
@@ -362,8 +362,8 @@ function Phase-Build {
 # ---------------------------------------------------------------------------
 function Phase-Serve {
     Head 'Serve'
-    $exe = if ($Prebuilt) { (Resolve-Path $env:ATLAS_BIN).Path } else { Join-Path $ReleaseDir 'spark.exe' }
-    if (-not (Test-Path $exe)) { throw "spark.exe not found -- run -Phase build first, or set ATLAS_BIN to a prebuilt one" }
+    $exe = if ($Prebuilt) { (Resolve-Path $env:AVAROK_BIN).Path } else { Join-Path $ReleaseDir 'spark.exe' }
+    if (-not (Test-Path $exe)) { throw "spark.exe not found -- run -Phase build first, or set AVAROK_BIN to a prebuilt one" }
     if (-not (Test-Path $ModelDir)) {
         throw "no weights at $ModelDir. Fetch with: hf download nvidia/Qwen3.6-27B-NVFP4 --local-dir `"$ModelDir`""
     }
@@ -373,12 +373,12 @@ function Phase-Serve {
     Set-Location $ReleaseDir
     $env:PATH = "$ReleaseDir;$env:HIP_PATH\bin;$env:PATH"
 
-    $env:ATLAS_W4A16_DP4A         = '1'
-    $env:ATLAS_FORCE_GLOBAL_GDN   = '1'
-    $env:ATLAS_W4A16_VARIANT      = 'v1'
-    $env:ATLAS_SSM_TAIL_PROTECT   = '1'
-    $env:ATLAS_SSM_TAIL_LEASE_TTL = '128'
-    $env:ATLAS_MTP_GATE_REPROBE   = '64'
+    $env:AVAROK_W4A16_DP4A         = '1'
+    $env:AVAROK_FORCE_GLOBAL_GDN   = '1'
+    $env:AVAROK_W4A16_VARIANT      = 'v1'
+    $env:AVAROK_SSM_TAIL_PROTECT   = '1'
+    $env:AVAROK_SSM_TAIL_LEASE_TTL = '128'
+    $env:AVAROK_MTP_GATE_REPROBE   = '64'
 
     # 0, NOT the 6 this doc carried before runtime. cuMemGetInfo_v2 now synthesises
     # a truthful free figure from tracked allocations, and that tracker reports
@@ -386,14 +386,14 @@ function Phase-Serve {
     # oversizes the KV pool (it allocated 11.3 GB of KV, then died on a later 24 MB
     # alloc). 0 fails build.rs's `.filter(|gb| gb > 0.0)` and falls through to the
     # AUTO path (baseline_free - free_now), which is correct given the fixed shim.
-    $env:ATLAS_KV_EXTERNAL_RESERVE_GB = '0'
+    $env:AVAROK_KV_EXTERNAL_RESERVE_GB = '0'
 
     # 0, NOT 1. Mid-chunk tail capture corrupts CROSS-REQUEST SSM prefix reuse:
     # BFCL single-turn requests share a system-prompt prefix and reuse each other's
     # tail snapshot -> garbled tool calls. Observed here as empty 1-token
     # completions on 12/12 live_multiple entries. This is a strict-"0" opt-out, NOT
     # a presence flag -- absent, or any other value, leaves it ON.
-    $env:ATLAS_SSM_TAIL_MIDCHUNK = '0'
+    $env:AVAROK_SSM_TAIL_MIDCHUNK = '0'
 
     if (-not $NoSmokeTest) {
         # The server owns this console until Ctrl-C, so probe from a detached
@@ -455,7 +455,7 @@ try {
 switch ($Phase) {
     'check'    { Phase-Check }
     'symlinks' { Phase-Symlinks }
-    'build'    { if ($Prebuilt) { throw 'ATLAS_BIN is set, so there is nothing to build. Unset it to build from source.' }
+    'build'    { if ($Prebuilt) { throw 'AVAROK_BIN is set, so there is nothing to build. Unset it to build from source.' }
                  Phase-Check; Phase-Build }
     'serve'    { Phase-Check; Phase-Serve }
     # With a prebuilt binary there is no source to repair and nothing to compile,

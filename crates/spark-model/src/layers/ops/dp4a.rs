@@ -4,7 +4,7 @@
 //!
 //! These wrap the additive DP4A kernels in
 //! `kernels/strix-hip/common/w4a16_gemv_dp4a.cu`. They are selected ONLY on
-//! gfx1151 behind the `ATLAS_W4A16_DP4A` flag (see `layers::dense_ffn`); the
+//! gfx1151 behind the `AVAROK_W4A16_DP4A` flag (see `layers::dense_ffn`); the
 //! float E2M1-LUT path (`w4a16_gemv*`) is untouched and remains the default on
 //! every target. The win is on the bandwidth-bound LPDDR5X part: int8 v_dot4
 //! (`__builtin_amdgcn_sudot4`) + branchless v_perm codebook replace per-weight
@@ -26,12 +26,12 @@ pub const DP4A_GROUP_SIZE: u32 = 16;
 
 /// Runtime gate for the W4A8 integer-DP4A decode path. OFF by default (PCND: no
 /// implicit production default — the float E2M1-LUT path stays the default on
-/// every target). Set `ATLAS_W4A16_DP4A=1` to enable on gfx1151 builds that
+/// every target). Set `AVAROK_W4A16_DP4A=1` to enable on gfx1151 builds that
 /// carry the DP4A kernels; on any other target the kernel handles miss
 /// (`KernelHandle(0)`) and callers fall back to the float path regardless.
 pub fn dp4a_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("ATLAS_W4A16_DP4A").as_deref() == Ok("1"))
+    *FLAG.get_or_init(|| std::env::var("AVAROK_W4A16_DP4A").as_deref() == Ok("1"))
 }
 
 /// Quantize one BF16 activation row `[1, K]` to int8 `[1, K]` + per-16-group
