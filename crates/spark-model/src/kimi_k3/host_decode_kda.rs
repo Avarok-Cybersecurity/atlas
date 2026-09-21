@@ -279,12 +279,20 @@ fn latent_moe_unpacked_does_not_lookup_gemm() {
     );
 }
 
+/// The launch schedule is w1+w3 batched into ONE grouped GEMM, then w2 — two
+/// launches, not three. #1186 fused the gate and up projections
+/// (`moe_cuda.rs:120-137`: the two pointer tables are concatenated, one
+/// `gemm_rows` runs at `2 * m` rows, and the result is split on the host), and
+/// shipped `tests/k3_moe_batching_cuda_oracle.rs` to prove the fused schedule
+/// agrees numerically with the separate gate/up/down one. That oracle is the
+/// authority on equivalence; this test only pins how many launches reach the
+/// backend, so it counts two.
 #[test]
-fn latent_moe_packed_launches_three_e8m0_gemms() {
+fn latent_moe_packed_launches_two_e8m0_gemms() {
     let model = K3CpuModel::synthetic_tiny();
     assert_eq!(model.layers[1].spec.mlp, MlpKind::LatentMoe);
     let (n, lookups) = run_layers_inner(&[(0, false, false), (1, false, false)], Some(1));
-    assert_eq!(n, 3, "w1, w3, and w2 each launch grouped GEMM");
+    assert_eq!(n, 2, "batched w1+w3 gate/up, then w2");
     assert_eq!(
         lookups,
         vec![(MOE_MODULE.to_string(), E8M0_ENTRY.to_string())]
