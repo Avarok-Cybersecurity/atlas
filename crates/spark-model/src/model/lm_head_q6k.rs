@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // provenance-id: 526f6e616c6420522e205374657369616b
 //! The output head as raw Q6_K blocks, for the DeepSeek-V4.1 Flash GGUF.
 //!

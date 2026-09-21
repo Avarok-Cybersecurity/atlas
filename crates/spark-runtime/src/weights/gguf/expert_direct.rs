@@ -134,10 +134,10 @@ mod tests {
             (100, 100_000, 1),
         ] {
             let w = direct_windows(a0, len, parts);
-            assert!(w[0].0 <= a0 && w[0].0 % 512 == 0 && a0 - w[0].0 < 512);
+            assert!(w[0].0 <= a0 && w[0].0.is_multiple_of(512) && a0 - w[0].0 < 512);
             let end = a0 + len;
             let last = w[w.len() - 1].1;
-            assert!(last >= end && last % 512 == 0 && last - end < 512);
+            assert!(last >= end && last.is_multiple_of(512) && last - end < 512);
             for (i, &(x, y)) in w.iter().enumerate() {
                 assert!(
                     x < y && x % 512 == 0 && y % 512 == 0,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 // provenance-id: 526f6e616c6420522e205374657369616b
 //! The hyper-connection launches of one DeepSeek-V4.1 block at decode.
 //!
