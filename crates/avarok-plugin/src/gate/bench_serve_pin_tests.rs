@@ -112,62 +112,51 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     );
     assert_eq!(p.serve_overrides.len(), 2, "{:?}", p.serve_overrides);
 
-    // The concurrency gate declares its whole batched serve profile: the
-    // shared agentic recipe is a serial reproduction config (batch 1, bf16 KV,
-    // 256 Marconi slots, 32K context) that strangles a concurrency instrument.
-    // lm_head_dtype is deliberately absent — the recipe's bf16 head is a
-    // correctness pin, not a throughput knob. Marconi is pinned at 32 slots
-    // (2026-09-13, back from the 8 of 2026-08-16): the sweep WARMS every
-    // cell and a warm request costs 3 slots across a cell, so its warm rule
-    // holds only while `slots > 3·C` — 32 keeps the 1/2/4/8 rungs warm and
-    // the sweep declares C ≥ 16 cold by construction (see the BENCH.toml
-    // comment and `concurrency::warm_cache_capable`).
+    // The concurrency gate no longer declares a serve profile at all: it names
+    // the recipe that IS the profile. Until 2026-09-22 it served the shared
+    // AGENTIC recipe — a serial reproduction config (batch 1, bf16 KV, 256
+    // Marconi slots, 32K context) that strangles a concurrency instrument —
+    // and overrode it seventeen keys at a time, which still left two of that
+    // recipe's defaults inherited in silence (`lm_head_dtype: bf16` and
+    // `kv_high_precision_layers: auto`). Marconi is no longer pinned either:
+    // the 32-slot rule was calibrated on the RETIRED isl-512 instrument, and at
+    // this gate's isl 128 (~200 rendered tokens) every snapshot restore is
+    // declined under DEFAULT_MARCONI_MIN_TOKENS = 256, so the recipe's 8 —
+    // which is also the published leg's value — costs no warm behaviour and
+    // returns ~3.55 GiB to the KV budget.
     let sweep = baseline_for(&root, "concurrency-sweep").unwrap();
     let (_, c) = sweep.resolve("gb10", None).unwrap();
+    // ★ SEVENTEEN PINS -> THREE, 2026-09-22 (owner: "the gate serves the
+    // throughput recipe ... match the throughput recipe"). The entry now names
+    // the THROUGHPUT recipe, which is bench/ladder38/published.json
+    // `series[0].cli` frozen as a file -- verified key for key. Fourteen pins
+    // were therefore re-stating that recipe's own defaults back at it and are
+    // gone; what they used to say is in the BENCH.toml block, with the A/B that
+    // justified the re-point (+41/45/53% at C=8/32/128).
+    //
+    // This assertion is the guard on the re-point itself: the gate had been
+    // serving the AGENTIC recipe and inheriting its `lm_head_dtype: bf16` in
+    // silence, which above M=8 (lm_head_batchm_max) drops the batched GEMV for
+    // a scalar dense_gemm over a 248K vocab -- a per-sequence cost, and the
+    // shape of the measured deficit.
+    assert_eq!(
+        c.recipe.as_deref(),
+        Some("qwen3.8/qwen3.8-27b-nvfp4-throughput"),
+        "the concurrency ladder must serve the published leg's own recipe, not the \
+         agentic profile it used to override key by key"
+    );
     for (key, want) in [
-        // 128, with the ladder: a batch cap below the widest measured rung
-        // makes that rung serial, which is the recipe's batch-1 defect one
-        // scale up.
+        // These three restate recipe defaults ON PURPOSE. ladder-baselines.js
+        // builds a record's fingerprint from `params` + `serve_overrides` and
+        // nothing else -- it never reads `serve_resolved` -- and all three are
+        // REQUIRED_AXES. Absent here they would read null, null counts as a
+        // difference on a required axis, and the live series would stop being
+        // comparable to the published bar: the exact defect the 2026-09-21
+        // re-point existed to fix. So they are fingerprint pins, not serve pins,
+        // and that is why they alone survived the cut.
         ("max_batch_size", "128"),
         ("kv_cache_dtype", "fp8"),
-        ("ssm_cache_slots", "32"),
-        // ★ 4096 -> 2048 on 2026-09-21. `max_model_len` is a REQUIRED axis in
-        // site/src/lib/ladder-baselines.js and the published ladder's matched
-        // vLLM leg ran at 2048 (`--max-model-len 2048`), as did the published
-        // Atlas leg (`--max-seq-len 2048`); at 4096 the live record could not
-        // be drawn against that bar however well it measured. isl 128 + osl
-        // 1024 is ~1224 tokens with the template, so 2048 still holds the
-        // gate's sequences with ~1.7x headroom.
         ("max_model_len", "2048"),
-        // ★ THE SPECULATION POLICY, pinned 2026-09-22. `serve_resolved` disclosed
-        // `speculative = true` and NOTHING for the MTP gate — the disclosure omits
-        // that key exactly when the flag was never given — so the scheduler decided
-        // and speculation tailed off as the ladder widened: 0.88x of the published
-        // ladder at C=1 falling to 0.57x at C=8, where the live leg loses to the vLLM
-        // leg this same manifest says it beats.
-        ("mtp_gate", "force"),
-        ("num_drafts", "3"),
-        ("mtp_quantization", "bf16"),
-        // Pinned although the recipe already sets it: check_record demands every pin
-        // on the record, so this turns an inherited default into a checked fact.
-        ("speculative", "true"),
-        // ★ THE PUBLISHED WINNING PROFILE'S REMAINING NINE, 2026-09-22. Each is a
-        // real ServeArgs flag, which is what separates them from the four env-only
-        // perf levers the same leg carries: a flag renders to argv and survives the
-        // node agent's env_clear(), an env var does not. `ssm_h_dtype = f16-pool` is
-        // the pool relief that lets MTP reach batch 128 at all, and `request_timeout
-        // = 0` disables the serve's 300 s deadline, which CUT C=64/128 mid-generation
-        // (finish_reason="timeout" -- not an error, so the cells went vacuous and the
-        // gate failed with nothing in the summary saying "timeout").
-        ("scheduling_policy", "fifo"),
-        ("ssm_checkpoint_interval", "32"),
-        ("ssm_h_dtype", "f16-pool"),
-        ("gdn_fused_norm", "true"),
-        ("ssm_batched_recurrent", "true"),
-        ("prefill_varlen_batch", "true"),
-        ("ssm_tail_midchunk", "false"),
-        ("disable_thinking", "true"),
-        ("request_timeout", "0"),
     ] {
         assert_eq!(
             c.serve_overrides.get(key).map(String::as_str),
@@ -176,10 +165,16 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
             c.serve_overrides
         );
     }
-    assert_eq!(c.serve_overrides.len(), 17, "{:?}", c.serve_overrides);
+    assert_eq!(c.serve_overrides.len(), 3, "{:?}", c.serve_overrides);
     assert!(
         !c.serve_overrides.contains_key("lm_head_dtype"),
-        "the bf16 head is a correctness pin the gate must not touch"
+        "the throughput recipe leaves the head at the checkpoint's native NVFP4; pinning \
+         bf16 here is what cost 41-53% across the ladder"
+    );
+    assert!(
+        !c.serve_overrides.contains_key("ssm_cache_slots"),
+        "the recipe's 8 is also the published leg's `--ssm-cache-slots 8`; overriding it \
+         back to 32 re-opens the last disagreement with that leg"
     );
 
     // The DFlash2 gate is the same profile PLUS the drafter, and nothing else.
@@ -242,44 +237,22 @@ fn the_trees_serve_pins_sit_on_the_gates_that_need_them() {
     // being directly comparable at the same moment, which is stated in
     // bench_override_tree_tests and in both BENCH.toml entries.
     const FORCED_BY_THE_REPOINT: [&str; 1] = ["max_model_len"];
-    // The MTP speculation policy, forced apart 2026-09-22 by what DFlash2 IS,
-    // not by a choice. `--dflash` conflicts with `--speculative` at the CLI — the
-    // assertion above already pins that a serve carrying both would not start —
-    // and the other three configure the MTP drafter this gate replaces with its
-    // own. Pinning them here would describe a serve that cannot boot.
-    const FORCED_BY_THE_MTP_POLICY: [&str; 4] =
-        ["mtp_gate", "num_drafts", "mtp_quantization", "speculative"];
-    // The published winning profile, forced apart 2026-09-22 for the SAME reason
-    // as max_model_len above and stated separately so the reason is recorded per
-    // axis rather than inferred. The plain gate now pins the nine remaining flags
-    // of bench/ladder38/published.json `series[0].cli` so its live record
-    // reproduces that leg. DFlash2 is not on the published ladder -- its bars were
-    // cut at ctx 4096 / ISL 512 / OSL 200 -- so following it here would buy a
-    // comparison nothing draws and cost every record this gate has, because
-    // `check_record` demands every pin and a new pin refuses the old records. It
-    // passes today ("5 cells, zero errors, zero vacuous"), and that is the thing
-    // not to spend.
-    //
-    // ssm_h_dtype has a SECOND and stronger reason, which is why it is listed even
-    // though the paragraph above would already cover it: the f16-pool relief is
-    // REJECTED with --dflash by design (the max_batch_size note above records the
-    // same fact from the other side). A serve carrying both would not start.
-    const FORCED_BY_THE_PUBLISHED_PROFILE: [&str; 9] = [
-        "scheduling_policy",
-        "ssm_checkpoint_interval",
-        "ssm_h_dtype",
-        "gdn_fused_norm",
-        "ssm_batched_recurrent",
-        "prefill_varlen_batch",
-        "ssm_tail_midchunk",
-        "disable_thinking",
-        "request_timeout",
-    ];
+    // ★ WHAT THIS RULE NO LONGER COVERS, stated because a narrowed test that
+    // does not say it narrowed is worse than no test. Until 2026-09-22 the two
+    // ladders shared the agentic recipe and differed only in their pins, so
+    // iterating the plain gate's seventeen pins really did compare the two
+    // serves. They now resolve DIFFERENT RECIPES -- throughput here,
+    // qwen3.8-27b-nvfp4-dflash2 there -- and the plain gate pins three keys,
+    // so this loop compares three. The MTP-policy and published-profile
+    // exception lists that used to stand here are deleted rather than kept as
+    // commentary: their keys are no longer pinned by the plain gate at all, so
+    // as consts they would be dead code, and as excuses they would outlive
+    // their cause -- which is the one thing this rule exists to forbid. The
+    // divergence they described is now a property of the two recipes and is
+    // asserted at its own source, by the `c.recipe` assertion above.
     for (key, want) in &c.serve_overrides {
         if FORCED_BY_THE_DRAFTER.contains(&key.as_str())
             || FORCED_BY_THE_REPOINT.contains(&key.as_str())
-            || FORCED_BY_THE_MTP_POLICY.contains(&key.as_str())
-            || FORCED_BY_THE_PUBLISHED_PROFILE.contains(&key.as_str())
         {
             assert_ne!(
                 d.serve_overrides.get(key),

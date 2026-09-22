@@ -428,7 +428,7 @@ max = 3.0
 quant = "nvfp4"
 checkpoint = "unsloth/Qwen3.8-27B-NVFP4"
 gate = "concurrency-sweep"
-recipe = "qwen3.8/qwen3.8-27b-nvfp4-unsloth"
+recipe = "qwen3.8/qwen3.8-27b-nvfp4-throughput"
 label = "Qwen3.8-27B dense (NVFP4, unsloth)"
 default = true
 status = "measured"
@@ -462,13 +462,14 @@ policy and its guard, in a follow-up PR. \
 ★ THIS RE-POINT INVALIDATES EVERY CONCURRENCY-SWEEP RECORD COMMITTED BEFORE \
 IT, because check_record demands an exact serve-pin and param match. That is \
 correct; they measured a different instrument. \
-★ WHAT IS STILL NOT THE PUBLISHED LEG, as of 2026-09-22: only \
-ssm_cache_slots. The published Atlas leg ran 8; this gate pins 32 by the \
-measured decision recorded above (slots_needed, and C=8's floor cut cold on \
-the 8-slot pin). Every other flag of that leg's CLI is now pinned in \
-[benchmarks.serve_overrides] below -- seventeen in all, including \
---scheduling-policy fifo, --ssm-h-dtype f16-pool, --gdn-fused-norm, \
---ssm-batched-recurrent and --mtp-gate force. The four env-only levers it \
+★ NOTHING IS STILL UNPINNED, as of 2026-09-22: this entry's `recipe =` \
+line now names qwen3.8/qwen3.8-27b-nvfp4-throughput, and that recipe IS the \
+published leg's CLI frozen as a file -- verified key for key against \
+published.json `series[0].cli`, including the two the gate had been getting \
+wrong by inheritance (--ssm-cache-slots 8, and NO --lm-head-dtype, i.e. the \
+native NVFP4 head). serve_overrides therefore drops from seventeen pins to \
+three, and the three that remain are there for the site fingerprint, not for \
+the serve -- see the block below. The four env-only levers it \
 also carried cannot be pinned here (no ServeArgs flag exists for any of \
 them) and are set in each node's bench.yaml env: map, which is the only \
 input the agent's env_clear() passes through -- and which is NODE-WIDE, so \
@@ -511,10 +512,12 @@ serial reproduction config (batch 1, bf16 KV, 256 Marconi slots, 32K \
 context) that strangles a concurrency instrument: the first certified run \
 served it verbatim and measured C=1..16 all ~19 tok/s with TTFT stacking \
 linearly, and its serve sized only ~0.6-1.1 GB of KV — nowhere near 16 \
-concurrent ~832-token sequences. The gate therefore pins its own serve \
-profile in [benchmarks.serve_overrides] below (each key justified inline), \
-disclosed on every record per the serve_overrides contract; lm_head_dtype \
-stays the recipe's bf16 correctness pin. \
+concurrent ~832-token sequences. That reasoning stands, but its REMEDY was replaced on 2026-09-22: rather than \
+override the agentic recipe key by key, the entry now points at the \
+throughput recipe, which is the published leg's own profile. The \
+lm_head_dtype sentence that stood here -- "stays the recipe's bf16 \
+correctness pin" -- was wrong and is retracted; see the serve_overrides \
+block. \
 ★ THOSE FIVE FLOORS ARE GONE — RE-CUT 2026-08-30; this paragraph is kept so \
 the sequence stays legible, and it described the file's state for weeks after \
 it stopped being true. The five placeholders were 24/43/63/94/94, cut from \
@@ -540,264 +543,82 @@ output."""
 # with no OVERRIDES disclosure line — keep every sub-table BELOW the header
 # it belongs to. bench_tests pins where each committed serve pin sits.
 [benchmarks.serve_overrides]
-# The gate's serve profile. Every key is a `defaults:` key of the
-# qwen3.8/qwen3.8-27b-nvfp4-unsloth recipe, overridden because that recipe
-# is the serial agentic reproduction config (see the note). Applied by gate
-# self-start, recorded on the run record, and demanded there by
-# check_record.
+# ★ SEVENTEEN PINS -> THREE, 2026-09-22, owner's call: "the gate serves the
+# throughput recipe ... match the throughput recipe". The `recipe =` line above
+# now names qwen3.8/qwen3.8-27b-nvfp4-throughput, and that file is not a
+# similar profile -- it is the published ladder's CLI frozen, verified key for
+# key against bench/ladder38/published.json `series[0].cli`. So the fourteen
+# pins removed here were re-stating the recipe's own defaults back at it:
+#   max_batch_size 128, kv_cache_dtype fp8, max_model_len 2048, mtp_gate force,
+#   num_drafts 3, mtp_quantization bf16, speculative true, scheduling_policy
+#   fifo, ssm_checkpoint_interval 32, ssm_h_dtype f16-pool, gdn_fused_norm
+#   true, ssm_batched_recurrent true, prefill_varlen_batch true,
+#   ssm_tail_midchunk false, disable_thinking true, request_timeout 0.
+# Each was compared to the recipe's value before removal. The f16-pool /
+# gdn_fused_norm boot requirement (serve_phases/preflight/ssm_h_fp16.rs bails
+# without the pair) is still satisfied -- by the recipe, which sets both -- and
+# the pair still must not be split.
 #
-# The recipe pins max_batch_size: 1 (its own memory doctrine). A concurrency
-# instrument measured at batch 1 is serial by construction — the 2026-08-15
-# first certified run proved it (C=1..16 all ~19 tok/s, TTFT stacking
-# linearly). 0.85 util + batch 32 verified to boot and serve on 2026-08-15
-# (the calibration ladders ran on it).
-# ⚠ 32 -> 128 on 2026-08-29, with the ladder. A batch cap below the widest
-# rung makes that rung serial by construction, which is the same defect the
-# recipe's batch 1 had at C=16 — the cap must cover the widest measured C or
-# the top of the curve measures the cap, not the engine. Because check_record
-# demands an exact serve-pin match, this INVALIDATES every concurrency-sweep
-# record committed before it; that is correct, they measured a different
-# instrument.
+# ★ WHAT WAS ACTUALLY WRONG. The gate had been serving
+# qwen3.8/qwen3.8-27b-nvfp4-unsloth -- the AGENTIC profile -- and overriding it
+# back toward the published leg one key at a time. Two of that recipe's
+# defaults were never in the override list and so were inherited in silence:
+# `lm_head_dtype: bf16` and `kv_high_precision_layers: auto`. The bf16 head is
+# the expensive one. kernels/gb10/HARDWARE.toml sets lm_head_batchm_max = 8, so
+# above M=8 lm_head_batched.rs abandons the batched GEMV and falls to
+# dense_gemm_bf16.cu: 16x16 tiles, one thread per output element, a scalar
+# accumulate over K=5120 into N=248320. That is ~3.25e11 FLOP per decode step
+# at M=128 -- paid once per step, i.e. a PER-SEQUENCE cost that grows with the
+# rung. It is exactly the shape of the measured deficit (0.91x at C=1
+# degrading to 0.51x at C=32); a flat regression cannot make that curve.
+#
+# A/B on this box, one sha, one harness, C=8/32/128 (scripts/ab_sweep.sh, a
+# SHORT-OSL RANKING RIG at osl 256 -- these are ratios, not ladder figures;
+# this gate's own osl is 1024 and the published bar is quoted there):
+#
+#     C=8     74.5 -> 104.9 tok/s  (+41%)   TPOT  94.8 -> 68.6 ms
+#     C=32   136.8 -> 198.9 tok/s  (+45%)   TPOT 206.2 -> 134.5 ms
+#     C=128  198.6 -> 303.6 tok/s  (+53%)   TPOT 550.9 -> 327.2 ms
+#
+# The gain growing with width is the per-sequence signature, as predicted, and
+# the treatment leg's serve log carries `LM head quantized to NVFP4` while the
+# control's does not -- the lever is proved armed, not assumed.
+#
+# ★ THE THREE BELOW ARE NOT REDUNDANT, THOUGH THEY DO RESTATE RECIPE DEFAULTS.
+# site/src/lib/ladder-baselines.js builds a record's fingerprint from `params`
+# + `serve_overrides` and NOTHING ELSE (line 88; it never reads
+# serve_resolved), and all three are REQUIRED_AXES. Dropped from this table
+# they would read null, null counts as a difference on a required axis, and the
+# live series would stop being comparable to published.json -- the precise
+# defect the 2026-09-21 re-point existed to fix. The other three required axes
+# (isl, osl, prompt_mode) come from [benchmarks.param_overrides] below.
 max_batch_size = "128"
-# The recipe's bf16 KV is its <=32K single-stream reproduction pin. This
-# model's own MODEL.toml carries default_kv_dtype = "fp8" (a property of the
-# shared FP8-KV kernel set), and the serve itself WARNs that bf16 is the
-# risky override for this model; fp8 halves KV bytes, which this profile
-# spends on concurrent sequences.
 kv_cache_dtype = "fp8"
-# The recipe's 256 slots built a measured 38.7 GB Marconi snapshot pool
-# (2026-08-16 gate serve log) — geometry for 1000-sample serial prefix
-# reuse, useless to a 16-way ladder and the single largest KV thief. Each
-# slot holds one full per-seq SSM blob (48 GDN layers × 3,309,568 B =
-# 151.5 MiB), so 32 slots reserve 4.73 GiB and 8 reserve 1.18 GiB.
-# Concurrency serving does not replay long shared prefixes — the ladder's
-# requests are independent ~832-token sequences — so 8 slots retain the
-# warm-prefix value at 1/4 the reserve, returning the other 3.55 GiB to
-# the KV budget on top of the ~34 GB the 256→32 cut already returned.
-# ⚠ The committed record above was measured with 32 slots; this pin change
-# means that record no longer covers, pending the planned re-record (the
-# floors already carry the "AWAIT RE-CUT" caveat in the note).
-#
-# 2026-09-13: 8 → 32. The sweep WARMS every cell and its warm rule demands a
-# material cached fraction, but a warm request costs 3 snapshot slots across
-# a cell (its tail checkpoint, its finish leaf, and one stale finish leaf an
-# earlier cell left for the same prompt; the redundant exact leaf is no
-# longer saved) and a re-home takes a fresh slot before releasing the old,
-# so a pool holds warm cells only while `slots > 3·C`. With 8 that was C ≤ 2
-# — measured: conc 2 warm TTFT 152 ms, conc 4 896 ms with every request
-# recomputing — and the rule was failing cells it could never hold once the
-# accounting became honest (#1041). 32 slots (4.73 GiB, the ladder's original
-# reserve) hold C ≤ 10: the 1/2/4/8 rungs warm; C ≥ 16 measure cold BY
-# CONSTRUCTION and the sweep says so per cell instead of applying the warm
-# rule (`warm_cache_capable`). The C ≥ 16 floors were cut with no reuse
-# (server TTFT ~900 ms at every rung above 1) so nothing they measure
-# changes; C=2..8 gain their warm TTFT back.
-#
-# 2026-09-14, the count corrected: `3·C` was one leaf per earlier cell, and
-# at C ≥ 8 the warm-up and measured generations drift apart by a token, so
-# an earlier cell leaves TWO stale leaves per prompt it ran. The pool's
-# eviction is session-first, so the overflow takes a whole prompt's tail.
-# Measured twice on this 32-slot pin, same node: C=8 after 1/2/4 lost two,
-# then three, of its eight tails (warm rule INCONCLUSIVE) while C=2/4 held
-# at 97 % cached. The rule is now `slots > Σ(2 + 2·earlier cells the prompt
-# ran in) + C` (`concurrency::slots_needed`): with 32, C=1/2/4 warm (3, 8,
-# 18 needed) and C=8 (38) upward measure cold by construction. C=8's floor
-# was cut cold on the 8-slot pin, so nothing it measures changes; C=2/4
-# keep their warm TTFT (506 / 656 ms, 2026-09-14).
-ssm_cache_slots = "32"
-# ★ THE PUBLISHED WINNING PROFILE, PINNED 2026-09-22. The gate served the
-# recipe's own speculation policy, and `serve_resolved` on every record proves
-# what that meant: it disclosed `speculative = true` and NOTHING for the MTP
-# gate. record_serve::disclosure omits `mtp_gate` precisely when the flag was
-# never given -- "the recipe pinned nothing" is the finding a reader needs --
-# so the scheduler's own policy decided, and speculation tailed off as the
-# ladder widened.
-#
-# It showed up as a widening deficit against bench/ladder38/published.json on
-# the SAME declared instrument, measured by campaign 8's aborted first run
-# (kept at campaign-1220/events.wrongconfig.ndjson):
-#
-#     C=1  20.70 vs 23.59  (0.88x)     C=8   72.10 vs 125.95 (0.57x)
-#     C=2  31.60 vs 41.02  (0.77x)     C=16 117.70 vs 203.36 (0.58x)
-#     C=4  53.60 vs 74.21  (0.72x)
-#
-# A ratio that DEGRADES with concurrency is the signature of a speculation
-# policy giving way, not of a flat regression -- and at those numbers the live
-# leg loses to vllm-mtp at C=2,4,8,16, which would have published Atlas as
-# slower than the baseline this same file says it beats on every rung.
-#
-# So the published leg's SPECULATION POLICY is pinned here -- and only that.
-# Keys render through recipe::schema::argv_for (underscores become dashes; a
-# presence-only flag takes "true"). `speculative` is pinned even though the
-# recipe already sets it: check_record demands every pin on the record, so
-# pinning it turns an inherited default into a checked fact.
-#
-# ★ SUPERSEDED 2026-09-22 -- these six ARE now pinned, in the block below.
-# The paragraph that stood here declined to pin ssm_h_dtype,
-# ssm_checkpoint_interval, gdn_fused_norm, ssm_batched_recurrent,
-# ssm_tail_midchunk and prefill_varlen_batch for two reasons, and set its own
-# condition for revisiting: "if a deficit survives this campaign they are the
-# next place to look, with a measurement behind them." Both gaps are now closed.
-#
-#   1. "Nothing shows the recipe differs on them." It does, and the recipe was
-#      read rather than inferred: qwen3.8/qwen3.8-27b-nvfp4-unsloth.yaml is the
-#      AGENTIC profile and sets `scheduling_policy: slai` and
-#      `ssm_checkpoint_interval: 16` while setting NONE of ssm_h_dtype,
-#      gdn_fused_norm, ssm_batched_recurrent, prefill_varlen_batch,
-#      ssm_tail_midchunk, disable_thinking or request_timeout -- and
-#      kernels/gb10/HARDWARE.toml [defaults] carries
-#      `ssm_batched_recurrent = false`. So the gate served every one of them
-#      differently from the published leg. `main_modules/serve_flags.rs` says
-#      why they exist as flags at all: "They are CONFIGURATION -- the
-#      concurrency campaign's best recipe needs three of them."
-#   2. "If a deficit survives this campaign." It did. Campaign 8 measured
-#      0.91x / 0.78x / 0.76x / 0.60x / 0.61x / 0.51x at C=1..32 and had C=64 and
-#      C=128 CUT by the serve's 300 s deadline (finish_reason="timeout", cells
-#      vacuous, gate FAILED).
-#
-# The f16-pool objection stands and is handled rather than dismissed: it does
-# force a third axis apart from the DFlash2 ladder, so bench_serve_pin_tests.rs
-# names all nine keys in FORCED_BY_THE_PUBLISHED_PROFILE with the reason
-# recorded per axis, and ssm_h_dtype carries its own second reason there.
-mtp_gate = "force"
-num_drafts = "3"
-mtp_quantization = "bf16"
-speculative = "true"
-# ★ ssm_cache_slots STAYS AT 32 and is NOT reverted to the published leg's 8.
-# That pin is a measured decision with its own justification above -- the
-# slots_needed rule, and the note that C=8's floor was cut cold on the 8-slot
-# pin so nothing it measures changes. Copying the published CLI wholesale would
-# have overwritten a documented measurement with a number from a hand-built
-# serve; the subject of this block is the speculation policy, not the pool.
-#
-# ★ WHAT CANNOT BE PINNED HERE: the published leg also carries four
-# environment variables (ATLAS_PREFILL_CODISPATCH, ATLAS_FP8_ROWWISE,
-# ATLAS_MTP_DCUT_RATIO, ATLAS_MTP_K_LADDER). serve_overrides render to `spark
-# serve` FLAGS only, so an entry here cannot set them and one that tried would
-# be refused by clap as an unknown flag. If a gap remains after this campaign,
-# it needs a different mechanism than this table.
-# ★ 4096 -> 2048 on 2026-09-21, with the instrument re-point. 2048 is the
-# published ladder's context on BOTH legs of the matched pair — the vLLM+MTP
-# baseline's instrument.max_model_len and the Atlas leg's own
-# `--max-seq-len 2048` in bench/ladder38/published.json — and max_model_len
-# is a REQUIRED axis in ladder-baselines.js, so at 4096 the live record could
-# never be drawn against that bar however well it measured.
-# It still holds the gate's sequences with room: isl 128 renders to ~200
-# tokens after the chat template, + osl 1024 is ~1224, so 2048 leaves ~1.7x
-# headroom, and it shrinks the per-sequence KV commitment and the
-# max_model_len-sized inference reserve further than 4096 did (the recipe's
-# own pin is 32768).
-# ★ It also decides WHICH baseline is comparable, and that is deliberate:
-# vllm-mtp (ctx 2048, fp8 KV) is the leg the published ratio uses and the one
-# this now pairs with; vllm-nospec (ctx 4096, bf16 KV) differs on two
-# required axes and stays unmatched, exactly as published.json already says
-# of it ("Unmatched fingerprint ... Plotted for completeness").
 max_model_len = "2048"
-# lm_head_dtype is deliberately NOT overridden: the recipe's bf16 head is a
-# correctness pin (exact argmax over the 248K vocab), not a throughput knob.
-
-# ============================================================================
-# ★ THE PUBLISHED WINNING PROFILE'S REMAINING NINE FLAGS, PINNED 2026-09-22.
-#
-# Campaign 8 measured this gate at 0.91x of bench/ladder38/published.json at
-# C=1 falling to 0.51x at C=32, with C=64 and C=128 CUT mid-generation
-# (`finish_reason="timeout"`, 73% and 37% of budget delivered, cells VACUOUS,
-# and `concurrency_verdict.rs` therefore FAILED the gate). The cause was not a
-# regression and not the instrument axes -- those were already re-pointed. It
-# was that this gate serves the AGENTIC recipe
-# (qwen3.8/qwen3.8-27b-nvfp4-unsloth: batch 1, bf16 KV, slai scheduler,
-# thinking ON, every GDN lever off, ssm_checkpoint_interval 16) and overrode
-# only eight of its axes. The published leg's own CLI -- recorded verbatim in
-# published.json `series[0].cli` -- carries NINE more, and every one of them is
-# a real ServeArgs flag.
-#
-# ★ WHY FLAGS AND NOT THE LOOSER GATE. The alternative was to pin only
-# `request_timeout = "0"` and accept a ~2 h sweep at the current speed. That
-# treats the symptom: the published leg did C=128 in ~274 s of decode ON THIS
-# BOX, so a cell that needs 850 s is the finding, not the deadline. Owner's
-# call, 2026-09-22: make the engine fast enough, keep the bar.
-#
-#   scheduling_policy = fifo       the recipe's `slai` is the agentic
-#                                  scheduler; the ladder was measured on fifo
-#   ssm_checkpoint_interval = 32   the recipe's 16 is the agentic (multi-turn)
-#                                  geometry and checkpoints twice as often
-#   ssm_h_dtype = f16-pool         ★ THE LOAD-BEARING ONE for the wide rungs:
-#                                  this is the pool relief that lets MTP reach
-#                                  batch 128 at all (see the DFlash2 note,
-#                                  which records that the same relief is
-#                                  REFUSED with --dflash by design)
-#   gdn_fused_norm = true          off by default on gb10 (`gdn_flags::from_env`
-#   ssm_batched_recurrent = true   gives h_f16=false, fused_norm=false; and
-#   prefill_varlen_batch = true    HARDWARE.toml [defaults]
-#                                  ssm_batched_recurrent = false)
-#
-# ★ THESE NINE ARE NOT NINE INDEPENDENT KNOBS. `ssm_h_dtype = f16-pool` HARD
-# REQUIRES `gdn_fused_norm`, and the requirement is enforced at BOOT:
-# serve_phases/preflight/ssm_h_fp16.rs bails with "--ssm-h-dtype f16 requires
-# --gdn-fused-norm -- the non-fused decode arms have no FP16 twin in stage 1."
-# So removing gdn_fused_norm while leaving ssm_h_dtype does not degrade, it
-# REFUSES TO START. Do not split the pair. Every other refusal in that list was
-# checked against this exact pin set before it was written:
-#   * self/ngram speculative      -- not set here (MTP only) OK
-#   * speculative && drafts > 3   -- num_drafts is pinned at exactly 3 OK
-#   * dflash gamma > 15           -- dflash is not set on this gate OK
-#   * AVAROK_GDN_FUSED_CONV=1     -- not set, and deliberately NOT added to the
-#                                    nodes bench.yaml alongside the four levers
-#   * linear head dims != 128/128 -- the published leg ran f16-pool on this
-#                                    exact checkpoint, so they are 128/128
-# f16-pool also SIZES every h pool at 2 bytes rather than 4, which is the
-# memory relief the dflash2 note calls "the f16-pool relief that lets MTP reach
-# 128" -- i.e. the pin is load-bearing for the widest rungs twice over, once for
-# speed and once for fit.
-#   ssm_tail_midchunk = false      published pinned it OFF explicitly; an
-#                                  omitted Option<bool> is not the same
-#                                  disclosure as a pinned false
-#   disable_thinking = true        the SERVER-SIDE half of an intent the
-#                                  harness already states per request: every
-#                                  cell body carries `reasoning_effort: "none"`
-#                                  (concurrency.rs request_body) because "on a
-#                                  thinking-on serve the output budget
-#                                  otherwise disappears into <think>". The
-#                                  agentic recipe leaves thinking ON at the
-#                                  serve, and the published leg pinned it off;
-#                                  ssm-state-poisoning-gate pins this same key.
-#                                  ★ IF A CELL STARTS FINISHING `stop` EARLY
-#                                  AFTER THIS CHANGE, THIS PIN IS THE FIRST
-#                                  SUSPECT: the live run reached `length×N` at
-#                                  C=1..8 with thinking on at the serve, so the
-#                                  per-request pin was already doing the work,
-#                                  and a shorter template answer would put a
-#                                  cell UNDER budget -- vacuous for the
-#                                  opposite reason the wide rungs were.
-#   request_timeout = 0            the serve's own deadline defaults to 300 s
-#                                  (DEFAULT_REQUEST_TIMEOUT_SECS) and CUTS a
-#                                  request with finish_reason="timeout" -- NOT
-#                                  an error, so the cell goes vacuous and the
-#                                  gate fails with nothing saying "timeout".
-#                                  Kept even though the flags above should make
-#                                  C=128 finish in ~274 s: 274 against 300 is a
-#                                  9% margin, and a benchmark must not sit one
-#                                  bad night away from truncating itself.
-#
-# ★ STILL NOT PINNABLE HERE, and now with a mechanism instead of a shrug: the
-# published leg also sets four ENV-ONLY levers (AVAROK_PREFILL_CODISPATCH,
-# AVAROK_FP8_ROWWISE, AVAROK_MTP_DCUT_RATIO, AVAROK_MTP_K_LADDER -- ATLAS_* in
-# the artifact, pre-#1101). None has a ServeArgs flag, so serve_overrides
-# cannot carry them, and the node agent spawns every child under `env_clear()`
-# (atlasctl-agent bench/ports_std.rs:91,212,327) so exporting them in the
-# driver reaches the orchestrating box and never the measuring one. They are
-# set instead in each node's own bench.yaml `env:` map, which is the only input
-# `child_env()` accepts -- audited by scripts/audit_armed_env.sh.
-# ============================================================================
-scheduling_policy = "fifo"
-ssm_checkpoint_interval = "32"
-ssm_h_dtype = "f16-pool"
-gdn_fused_norm = "true"
-ssm_batched_recurrent = "true"
-prefill_varlen_batch = "true"
-ssm_tail_midchunk = "false"
-disable_thinking = "true"
-request_timeout = "0"
+# ★ ssm_cache_slots IS DELIBERATELY ABSENT: 32 -> the recipe's 8, which is also
+# `--ssm-cache-slots 8` on the published CLI, so this table's last disagreement
+# with that leg is gone. The measured case for 32 above was real but
+# INSTRUMENT-SPECIFIC, and its instrument was retired on 2026-09-21: the
+# slots_needed calibration was taken on isl 512 / natural-fixture ~832-token
+# prompts, where a Marconi snapshot restore is eligible at all. This gate now
+# sends isl 128, which renders to ~200 tokens -- under
+# DEFAULT_MARCONI_MIN_TOKENS = 256 (mtp_carry.rs) -- so every restore is
+# DECLINED by design and the pool size barely moves warm behaviour. 8 slots
+# reserve 1.18 GiB against 32's 4.73 GiB, returning ~3.55 GiB to the KV budget,
+# which is where the widest rungs need it.
+# Consequence, stated rather than discovered: at 8 slots only C=1 is
+# `warm_cache_capable` (slots_needed is 3/8/18/38 at C=1/2/4/8 and the rule is
+# a strict `>`), so C>=2 measures cold BY CONSTRUCTION. That does not fail
+# anything -- cache_is_uncontrolled is evaluated per cell and only when
+# warm_capable (concurrency.rs:747), so those cells skip the warm rule rather
+# than trip it.
+# ★ lm_head_dtype IS ALSO ABSENT, and that is the whole point: the throughput
+# recipe leaves it unset, so the head runs the checkpoint's native NVFP4. The
+# comment that stood here called the agentic recipe's bf16 head "a correctness
+# pin (exact argmax over the 248K vocab), not a throughput knob". Both halves
+# were wrong: nothing ever measured an argmax difference, the published 478.11
+# ladder itself ran with no --lm-head-dtype flag, and the "not a throughput
+# knob" claim was off by 41-53%.
 
 [benchmarks.param_overrides]
 # The gate's instrument — see the block comment above. Values are parsed by
