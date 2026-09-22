@@ -387,7 +387,10 @@ impl TransformerModel {
     ///
     /// Command codes:
     /// - 0..0xFFFFFFEF: token ID → decode in the addressed slot
-    /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len tokens
+    /// - 0xFFFFFFF0: prefill start → chunk_len, chunk_start, full_len, then full_len
+    ///   tokens, then — ONLY when this model has a vision tower — the merged
+    ///   vision-row count and, when non-zero, that many `out_hidden_size` BF16
+    ///   rows. A text-only model's wire bytes are unchanged.
     /// - 0xFFFFFFF1: alloc slot (frees any prior occupant first, then re-allocates)
     /// - 0xFFFFFFF2/3/4: verify K=2/3/4 → K tokens, then accept/num_accepted
     /// - 0xFFFFFFF5: MTP propose → last_token, position, num_drafts, hidden_idx
@@ -489,6 +492,12 @@ impl TransformerModel {
                 let chunk_start = self.ep_broadcast_u32(0)? as usize;
                 let full_len = self.ep_broadcast_u32(0)? as usize;
                 let full_tokens = self.ep_broadcast_tokens(&vec![0u32; full_len])?;
+                // The merged vision rows, at the matching point of the head's
+                // send sequence. Without this the worker keeps the raw
+                // `<|image|>` embedding at every pad position and all-reduces
+                // it into rank 0's spliced rows — fluent, and about the wrong
+                // picture (rsafier, PR #1066). No-op for a text-only model.
+                self.ep_sync_vision_embeds(&full_tokens)?;
                 // Compute is_last from chunk bounds — must match rank 0's
                 // value so Marconi skip branches are identical (bug #33).
                 let is_last = chunk_start + chunk_len >= full_len;

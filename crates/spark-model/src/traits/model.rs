@@ -949,6 +949,20 @@ pub trait Model: Send + Sync {
         Ok(())
     }
 
+    /// Hand every rank the SAME merged vision rows for this prompt.
+    ///
+    /// Called by the head immediately after the prompt-token broadcast and by
+    /// the worker at the matching point of the `0xFFFFFFF0` handler, so the
+    /// collective pairs by construction. Without it only rank 0 splices the
+    /// encoder's output, every other rank keeps the raw pad-token embedding,
+    /// and the per-layer all-reduce mixes the two — the model stays fluent and
+    /// describes a picture it was never shown (rsafier, PR #1066).
+    ///
+    /// Default: no-op (single-GPU, and every text-only model).
+    fn ep_sync_vision_embeds(&self, _tokens: &[u32]) -> Result<()> {
+        Ok(())
+    }
+
     /// Batched vision encode across N requests' images in ONE `forward_batched`
     /// call (block GEMM weights read once over Σpatches). `per_request[i]` is
     /// request i's images. Returns one `(patch_row_offset, grid_index_offset,

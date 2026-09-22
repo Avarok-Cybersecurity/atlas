@@ -60,9 +60,20 @@ impl VisionTower {
         }
     }
 
+    /// Allocate the encoder's device scratch if it is not allocated yet.
+    ///
+    /// Normally the first image does this. A TENSOR-PARALLEL WORKER never sees
+    /// one — it receives the merged rows over NCCL instead — so it has to ask
+    /// for the buffers explicitly before `out_row` can name a destination.
+    pub fn ensure_scratch(&self, gpu: &dyn GpuBackend) -> Result<()> {
+        match self {
+            Self::Qwen(e) => e.scratch_init(gpu),
+            Self::Glm(e) => e.scratch_init(gpu),
+        }
+    }
+
     /// Device pointer to merged row `row` of the packed output. Valid only
-    /// after a `forward_batched` on this tower has allocated its scratch —
-    /// which is exactly when the splice runs.
+    /// after `forward_batched` or `ensure_scratch` has allocated the scratch.
     pub fn out_row(&self, row: usize) -> DevicePtr {
         match self {
             Self::Qwen(e) => e.scratch().buf_out.offset(row * e.out_hidden_size * 2),
