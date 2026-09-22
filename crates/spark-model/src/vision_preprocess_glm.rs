@@ -85,12 +85,23 @@ pub fn pixel_bounds(vcfg: &VisionConfig, operator_max: Option<usize>) -> (u64, u
 /// Fit `img` inside the `smart_resize` canvas preserving aspect, then zero-pad
 /// right/bottom to the canvas exactly. Returns the padded canvas.
 ///
-/// ⚠️ UNVERIFIED ORDERING: the pad fills with BLACK PIXELS, i.e. it happens
-/// before normalization, so a padded cell normalizes to `-mean/std` rather than
-/// to 0. `REFERENCE.md` §5 records the pad as `tvF.pad(..., fill=0)` without
-/// pinning it relative to `rescale`/`normalize`, and the golden fixtures supply
-/// `pixel_values` directly, so nothing in this branch's test suite can
-/// distinguish the two. Flagged rather than assumed.
+/// ★ VERIFIED against the reference's own `pixel_values` (2026-09-22), not
+/// assumed. Two properties were read straight out of the golden for image c
+/// (640x360 -> a 644x364 canvas), and both had a plausible alternative:
+///
+/// 1. **The pad is BLACK PIXELS, i.e. it precedes normalization.** Padded
+///    cells in the golden hold exactly `(0 - mean)/std` =
+///    `(-1.7926, -1.7520, -1.4801)`, not `0.0`. `REFERENCE.md` §5 recorded
+///    `tvF.pad(..., fill=0)` without pinning it relative to
+///    `rescale`/`normalize`; this settles it.
+/// 2. **The fit NEVER UPSCALES.** The golden's content occupies rows 0..360
+///    and columns 0..640 — the source dimensions, unresampled — with the
+///    remaining 4 rows and 4 columns padded. An aspect-fit that scaled up to
+///    fill the canvas (scale 1.00625 here) would have produced a 362x644
+///    content box and only 2 pad rows. Every sampled pixel of the golden
+///    matches the raw PNG normalized in place, to 4e-4 (float32 storage).
+///
+/// `tests/glm_vision_preprocess_pin.rs` pins both against the fixtures.
 pub fn resize_and_pad(
     img: &RgbImage,
     vcfg: &VisionConfig,
@@ -101,20 +112,30 @@ pub fn resize_and_pad(
     let (target_h, target_w) =
         smart_resize(img.height(), img.width(), factor, min_pixels, max_pixels);
 
-    // Largest scale that keeps BOTH sides inside the canvas.
+    // Largest scale that keeps BOTH sides inside the canvas, and never above
+    // 1.0 — `smart_resize` ROUNDS to the grid, so its canvas is routinely a
+    // few pixels LARGER than the input, and filling it would resample an image
+    // that needs no resampling at all.
     let scale = (target_h as f64 / img.height().max(1) as f64)
-        .min(target_w as f64 / img.width().max(1) as f64);
+        .min(target_w as f64 / img.width().max(1) as f64)
+        .min(1.0);
     let content_h = ((img.height() as f64 * scale).round() as u32).clamp(1, target_h);
     let content_w = ((img.width() as f64 * scale).round() as u32).clamp(1, target_w);
 
-    // CatmullRom is the `image` crate's closest match to PIL BICUBIC, which is
-    // what the HF processors resample with.
-    let fitted = image::imageops::resize(
-        img,
-        content_w,
-        content_h,
-        image::imageops::FilterType::CatmullRom,
-    );
+    // At scale 1.0 the content IS the source: return its pixels untouched
+    // rather than running them through a filter that is only approximately an
+    // identity. CatmullRom is the `image` crate's closest match to PIL BICUBIC,
+    // which is what the HF processors resample with.
+    let fitted = if (content_h, content_w) == (img.height(), img.width()) {
+        img.clone()
+    } else {
+        image::imageops::resize(
+            img,
+            content_w,
+            content_h,
+            image::imageops::FilterType::CatmullRom,
+        )
+    };
     if content_h == target_h && content_w == target_w {
         return fitted;
     }
@@ -269,6 +290,25 @@ mod tests {
         let (_, with_flag) = pixel_bounds(&vcfg, Some(512 * 512));
         assert!(with_flag <= 512 * 512);
         assert_eq!(with_flag / (14 * 14), 1337);
+    }
+
+    /// The canvas may be LARGER than the input (smart_resize rounds up), and
+    /// the content must not be stretched to fill it — the golden's image c has
+    /// its 360x640 pixels unresampled inside a 364x644 canvas.
+    #[test]
+    fn a_canvas_larger_than_the_input_pads_rather_than_upscales() {
+        let vcfg = glm_cfg();
+        let img = RgbImage::new(640, 360);
+        let out = resize_and_pad(&img, &vcfg, None);
+        assert_eq!(
+            (out.height(), out.width()),
+            (364, 644),
+            "the smart_resize canvas"
+        );
+        // Nothing to assert about pixel values on a blank image; the geometry
+        // claim is pinned end-to-end against the reference fixtures in
+        // `tests/glm_vision_preprocess_pin.rs`.
+        assert_eq!((out.height() / 14) * (out.width() / 14), 26 * 46);
     }
 
     /// Block-major is a PERMUTATION of raster over the same grid, and the

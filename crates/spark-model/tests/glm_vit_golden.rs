@@ -40,7 +40,7 @@
 //! ```text
 //! AVAROK_TARGET_HW=gb10 AVAROK_TARGET_MODEL=glm-5.3-flash AVAROK_TARGET_QUANT=nvfp4 \
 //! LIBRARY_PATH=$HOME/atlas-scratch/.ncclstub LD_LIBRARY_PATH=$LIBRARY_PATH \
-//! GLM_VIT_GOLDEN_GPU_ORDINAL=0 \
+//! AVAROK_GLM_VISION=1 GLM_VIT_GOLDEN_GPU_ORDINAL=0 \
 //! GLM_VIT_GOLDEN_DIR=$HOME/lazarus/spark-bench/runs/ws2-vision \
 //! AVAROK_DUMP_GLM_VIT=/tmp/glmvit-taps \
 //! cargo test -p spark-model --test glm_vit_golden -- --ignored --nocapture --test-threads=1
@@ -179,8 +179,9 @@ fn glm_vision_tower_matches_the_transformers_golden() -> Result<()> {
         avarok_core::config::parse_config(&std::fs::read_to_string(root.join("config.json"))?)
             .context("parse the checkpoint's own config.json")?;
     let v = cfg.vision.clone().context(
-        "parse_glm5_next did not populate config.vision — the parser branch is the thing under \
-         test here as much as the kernels are",
+        "config.vision is None. Either AVAROK_GLM_VISION=1 is unset — the tower is opt-in, and \
+         off is the default so a certified text serve keeps its footprint — or the parser \
+         branch regressed, which is under test here as much as the kernels are",
     )?;
     println!(
         "vision_config: depth={} hidden={} heads={} patch={} merge={} out={} proj_inter={} \

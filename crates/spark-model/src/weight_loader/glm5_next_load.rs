@@ -553,8 +553,8 @@ fn dense(store: &WeightStore, name: &str) -> Result<DenseWeight> {
 }
 
 impl ModelWeightLoader for Glm5NextWeightLoader {
-    /// This loader binds the tower when — and only when — the checkpoint
-    /// declares one.
+    /// This loader binds the tower when — and only when — the operator asked
+    /// for it with `AVAROK_GLM_VISION=1`.
     ///
     /// It used to answer a flat `false`, which kept 1.05 GiB/rank of
     /// `model.visual.*` off the GPU entirely. That was not free: measured
@@ -564,20 +564,20 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     /// correctness cleanup, and a GLM serve that wants the old headroom back
     /// has to be given it deliberately.
     ///
-    /// 🪤 This method takes no `ModelConfig`, so it CANNOT answer per
+    /// 🪤 This method takes no `ModelConfig`, so it cannot answer per
     /// checkpoint — `binds_vision(config)` in the server resolves the loader
-    /// from the config and then asks the loader alone. A `glm5_next_text`
-    /// export is unaffected only because it ships no `model.visual.*` tensors
-    /// for the withhold to have applied to; a multimodal checkpoint served
-    /// text-only now uploads the tower. Making that per-checkpoint means
-    /// passing the config through the trait, which is a wider change than this
-    /// one.
+    /// from the config and then asks the loader alone. That is why the gate is
+    /// an ENV read rather than a config field: it is the one input both this
+    /// method and `parse_glm5_next` can see, so the withhold decision and the
+    /// `config.vision` decision cannot disagree. Threading the config through
+    /// the trait would let the gate become a config field; it is a wider
+    /// change than this one.
     ///
     /// The `true` arm is a real bind (`glm5_next_vision.rs`), not a
     /// load-then-free: `factory::build`'s reclaim is keyed off whether a tower
     /// came back, so it stops firing for this model on its own.
     fn binds_vision_encoder(&self) -> bool {
-        true
+        avarok_core::config::glm_vision_enabled()
     }
 
     /// Bind the 347-tensor `model.visual.*` tower. See
@@ -1008,17 +1008,27 @@ mod vision_capability_tests {
     use super::Glm5NextWeightLoader;
     use crate::weight_loader::ModelWeightLoader;
 
+    /// The default is the pre-port behaviour: the tower is withheld, so a
+    /// certified text serve keeps the footprint it was certified with.
+    ///
+    /// This asserts against the UNSET environment, which is what CI and every
+    /// text serve run with. `glm_vision_enabled_from` carries the both-states
+    /// coverage, because setting the variable here would race the rest of the
+    /// binary.
     #[test]
-    fn glm5_next_now_binds_its_vision_tower() {
-        // Was `false` until the tower was ported. A `glm5_next_text` export
-        // has no `model.visual.*` tensors to withhold, so it is unaffected;
-        // `load_vision_encoder` also returns `None` there, because the parser
-        // leaves `config.vision` at `None` when there is no `vision_config`.
-        assert!(
+    fn the_vision_tower_is_off_unless_the_operator_asks() {
+        assert_eq!(
             Glm5NextWeightLoader.binds_vision_encoder(),
-            "GLM-5.3 binds `model.visual.*`; answering false here makes the \
-             checkpoint loader withhold the tensors this loader then asks for"
+            avarok_core::config::glm_vision_enabled(),
+            "the loader's withhold decision must be the SAME gate the config \
+             parser reads, or the two disagree and the loader asks for tensors \
+             that were never uploaded"
         );
+        assert!(
+            !avarok_core::config::glm_vision_enabled_from(None),
+            "unset must mean off: binding the tower costs 1.05 GiB/rank"
+        );
+        assert!(avarok_core::config::glm_vision_enabled_from(Some("1")));
     }
 
     #[test]

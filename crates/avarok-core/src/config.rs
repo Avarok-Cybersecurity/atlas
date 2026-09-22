@@ -868,6 +868,67 @@ pub struct QuantizationConfig {
     pub ignore_modules: Vec<String>,
 }
 
+/// Is GLM-5.3's vision tower enabled for this process?
+///
+/// **Default OFF.** Binding the tower is a MEMORY decision, not a correctness
+/// one: it is 1.05 GiB per rank, and the measurement that lived in
+/// `Glm5NextWeightLoader::binds_vision_encoder` says K=3 at 32 K needs
+/// 13.58 GiB against 12.07 GiB free — the tower is exactly the difference
+/// between `--speculative --num-drafts 2` fitting and not. The certified
+/// text recipe must keep the footprint it was certified with, so images are
+/// something an operator asks for, never something a port turns on for them.
+///
+/// THREE sites read this and they must agree, which is why it is one function:
+/// the config parser (so `config.vision` stays `None` and an image request is
+/// refused at the API edge with the existing "no vision config" error), the
+/// loader's `binds_vision_encoder` (so the checkpoint loader withholds
+/// `model.visual.*` instead of uploading it), and `load_vision_encoder` via
+/// `config.vision`. Off, every one of them behaves exactly as it did before
+/// the tower was ported.
+pub fn glm_vision_enabled() -> bool {
+    glm_vision_enabled_from(std::env::var("AVAROK_GLM_VISION").ok().as_deref())
+}
+
+/// The policy half of [`glm_vision_enabled`], split out so both states are
+/// testable — setting an environment variable is `unsafe` in this edition and
+/// a test that did it would race every other test in the binary.
+///
+/// Only an explicit affirmative enables. Anything else — unset, empty, `0`,
+/// `off`, a typo — leaves the tower off, because the failure mode of guessing
+/// wrong in that direction is an OOM on a certified serve.
+pub fn glm_vision_enabled_from(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+#[cfg(test)]
+mod glm_vision_gate_tests {
+    use super::glm_vision_enabled_from;
+
+    /// Off is the default, and "off" has to cover every way an operator can
+    /// fail to say yes — the cost of reading a typo as "on" is a 1.05 GiB/rank
+    /// allocation on a serve that was certified without it.
+    #[test]
+    fn only_an_explicit_affirmative_enables_the_tower() {
+        for off in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("off"),
+            Some("false"),
+            Some("no"),
+            Some("yes please"),
+        ] {
+            assert!(!glm_vision_enabled_from(off), "{off:?} must not enable");
+        }
+        for on in ["1", "true", "TRUE", "Yes", " on "] {
+            assert!(glm_vision_enabled_from(Some(on)), "{on:?} must enable");
+        }
+    }
+}
+
 /// Vision encoder configuration for Qwen3-VL models.
 #[derive(Debug, Clone)]
 pub struct VisionConfig {

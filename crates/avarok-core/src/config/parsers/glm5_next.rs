@@ -272,7 +272,14 @@ pub fn parse_glm5_next(json: &str) -> Result<ModelConfig> {
     // `text_config`, not a member of it. A `glm5_next_text` checkpoint has no
     // outer wrapper and therefore no `vision_config` — it stays text-only,
     // which is the behaviour every GLM serve had before this branch existed.
-    config.vision = parse_glm5_next_vision(&raw);
+    // Gated OFF by default — see `glm_vision_enabled`. When off this stays
+    // `None`, which is what it was before the tower was ported: the loader
+    // binds nothing and `msg_entry` refuses an image request with the existing
+    // "this model does not accept image or video input" error.
+    config.vision = match super::super::glm_vision_enabled() {
+        true => parse_glm5_next_vision(&raw),
+        false => None,
+    };
 
     finalize_config(&mut config, &raw).context("glm5_next: finalize_config")?;
     refuse_shared_indexer(text, &config).context("glm5_next: indexer_types")?;
@@ -361,12 +368,25 @@ fn parse_glm5_next_vision(raw: &serde_json::Value) -> Option<super::super::Visio
         projection_intermediate_size: u("projection_intermediate_size")?,
         swiglu_limit: f("swiglu_limit").unwrap_or(10.0),
         rope_theta,
-        // CLIP-style stats. They live in `processor_config.json`, which this
-        // parser does not see, so the checkpoint's own values are the default
-        // here rather than SigLIP's 0.5s — feeding a GLM tower SigLIP-normalised
-        // pixels is a ~2x scale error on every channel.
-        image_mean: stats("image_mean", [0.4815, 0.4578, 0.4082]),
-        image_std: stats("image_std", [0.2686, 0.2613, 0.2758]),
+        // CLIP-style stats, at the FULL precision `Glm5NextImageProcessor`
+        // carries as class defaults. They live in `processor_config.json`,
+        // which this parser does not see, so a default is unavoidable — and it
+        // must not be SigLIP's 0.5s, which is a ~2x scale error on every
+        // channel of every patch.
+        //
+        // 🪤 The checkpoint's `processor_config.json` prints these to 4 places
+        // (`0.4815`, `0.2686`, ...). Those are the SAME numbers rounded, but
+        // they are not equal: the reference's padded cells land on
+        // `-1.7922626` — `(0 - 0.48145466)/0.26862954` exactly — where the
+        // 4-place values give `-1.7926285`. The gap is 2.5% of one 1/255 pixel
+        // step, so nothing observable rides on it, but matching the reference
+        // bit-for-bit is free and a rounded constant that "looks right" is how
+        // a preprocessing drift hides. Verified against the golden
+        // `pixel_values` 2026-09-22.
+        // Written as the shortest decimals that round-trip through `f32` —
+        // the same values, in the only precision the type can hold.
+        image_mean: stats("image_mean", [0.481_454_67, 0.457_827_5, 0.408_210_72]),
+        image_std: stats("image_std", [0.268_629_55, 0.261_302_6, 0.275_777_1]),
         min_image_tokens: u("min_image_tokens").unwrap_or(16),
         max_image_tokens: u("max_image_tokens").unwrap_or(8000),
         block_major_patches: true,
