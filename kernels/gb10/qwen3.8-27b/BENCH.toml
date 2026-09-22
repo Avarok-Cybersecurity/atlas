@@ -462,10 +462,19 @@ policy and its guard, in a follow-up PR. \
 ★ THIS RE-POINT INVALIDATES EVERY CONCURRENCY-SWEEP RECORD COMMITTED BEFORE \
 IT, because check_record demands an exact serve-pin and param match. That is \
 correct; they measured a different instrument. \
-★ WHAT IS STILL NOT THE PUBLISHED LEG: engine configuration. The published \
-Atlas leg's CLI pinned --scheduling-policy fifo, --ssm-cache-slots 8, \
---ssm-h-dtype f16-pool, --gdn-fused-norm, --ssm-batched-recurrent and \
---mtp-gate force; this gate serves main's recipe with four overrides. \
+★ WHAT IS STILL NOT THE PUBLISHED LEG, as of 2026-09-22: only \
+ssm_cache_slots. The published Atlas leg ran 8; this gate pins 32 by the \
+measured decision recorded above (slots_needed, and C=8's floor cut cold on \
+the 8-slot pin). Every other flag of that leg's CLI is now pinned in \
+[benchmarks.serve_overrides] below -- seventeen in all, including \
+--scheduling-policy fifo, --ssm-h-dtype f16-pool, --gdn-fused-norm, \
+--ssm-batched-recurrent and --mtp-gate force. The four env-only levers it \
+also carried cannot be pinned here (no ServeArgs flag exists for any of \
+them) and are set in each node's bench.yaml env: map, which is the only \
+input the agent's env_clear() passes through -- and which is NODE-WIDE, so \
+arming them re-tunes every other gate on that node too: campaign 8 attempt 7 \
+failed ttft-warm-gate at +5.4%% median with AVAROK_PREFILL_CODISPATCH=1, \
+against three control records at 0 that agree to 0.045%%. \
 Speculation IS shared — the recipe pins --speculative --mtp-quantization \
 bf16 with num_drafts 3, the same drafter and K the published leg ran — so \
 the live leg is not a weakened Atlas against a speculating vLLM. The \
