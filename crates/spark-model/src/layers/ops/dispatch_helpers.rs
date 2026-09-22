@@ -181,7 +181,10 @@ mod tests {
         assert!(!prefill_batched_first_chunk_from_parts(false, None));
         // explicit off on both spellings
         assert!(!prefill_batched_first_chunk_from_parts(false, Some("0")));
-        assert!(!prefill_batched_first_chunk_from_parts(false, Some("false")));
+        assert!(!prefill_batched_first_chunk_from_parts(
+            false,
+            Some("false")
+        ));
         // ★ codispatch OFF does not veto Q12: it is an OR, not a master switch.
         // An `&&` here would read as "codispatch gates everything", which is
         // what the scheduler means by the word and NOT what this crate does.

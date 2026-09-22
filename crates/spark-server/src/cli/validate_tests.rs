@@ -140,10 +140,7 @@ fn an_absent_lever_flag_parses_as_unspecified() {
     // `--prefill-codispatch` must publish NOTHING, or the OnceLock seals on
     // every boot and `AVAROK_PREFILL_CODISPATCH` becomes inert while `--help`
     // still documents it.
-    assert!(
-        a.prefill_codispatch.is_none(),
-        "AVAROK_PREFILL_CODISPATCH"
-    );
+    assert!(a.prefill_codispatch.is_none(), "AVAROK_PREFILL_CODISPATCH");
 
     let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
     assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
