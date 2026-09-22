@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, ensure};
 use avarok_core::config::ModelConfig;
-use spark_runtime::gpu::GpuBackend;
+use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::weights::WeightStore;
 use spark_runtime::weights::expert_stream::{
-    EngramRowReader, ExpertLru, ExpertSliceMap, ExpertSource, PinnedArena, ShardFiles,
+    EngramRowReader, ExpertArena, ExpertSliceMap, ExpertSource, ShardFiles,
 };
 
 use crate::layer::TransformerLayer;
@@ -16,9 +16,10 @@ use crate::layers::attn_v41::{
     AttnV41, AttnV41Cfg, AttnV41LayerWeights, CompressorWeightsGpu, IndexerWeightsGpu, LayerRole,
     SharedV41,
 };
+use crate::layers::deepseek_v41_layer::SegState;
 use crate::layers::deepseek_v41_layer::{DeepSeekV41Layer, V41Runtime};
 use crate::layers::engram_v41::{EngramHashTables, EngramHasher, EngramLayerWeights, EngramV41};
-use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights};
+use crate::layers::moe_v41::{MoeV41, MoeV41Cfg, MoeV41LayerWeights, RouterWeights};
 use crate::weight_map::DenseWeight;
 
 use super::{
@@ -47,7 +48,7 @@ pub(super) fn load_layers(
         .context("deepseek-v4.1: the routed expert stacks were not deferred by the GGUF loader")?;
     let model_dir = anchor.path.parent().context("shard path has no parent")?;
     let files = Arc::new(ShardFiles::open_dir(model_dir)?);
-    let slices = ExpertSliceMap::new(files.clone())?;
+    let slices = Arc::new(ExpertSliceMap::new(files.clone())?);
     let rows = EngramRowReader::new(files.clone())?;
     ensure!(
         slices.num_experts() == config.num_experts,
@@ -59,8 +60,18 @@ pub(super) fn load_layers(
     // ── geometry ──
     let max_seq = env_usize("ATLAS_DS41_MAX_SEQ", 8192).min(config.max_position_embeddings.max(1));
     let max_tokens = env_usize("ATLAS_DS41_MAX_TOKENS", 2048).min(max_seq);
-    let cache_gib = env_usize("ATLAS_DS41_EXPERT_CACHE_GIB", 88);
-    let reader_threads = env_usize("ATLAS_DS41_READER_THREADS", 8);
+    // Fractional GiB parse ("100.5"): the arena edge on MinHeap is 37 slots
+    // (452 MiB) past 100 GiB and the box swaps at 102 (phase 7).
+    let cache_gib: f64 = std::env::var("ATLAS_DS41_EXPERT_CACHE_GIB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|g: &f64| g.is_finite() && *g > 0.0)
+        .unwrap_or(88.0);
+    let cache_bytes = (cache_gib * (1u64 << 30) as f64) as usize;
+    // 16 readers: one 12.22 MiB expert reads in ~2 ms whatever the split, but
+    // a prefill's gather of hundreds runs at the disk's 10-11 GB/s only past
+    // eight threads (09-19 NVMe probe)
+    let reader_threads = env_usize("ATLAS_DS41_READER_THREADS", 16);
     let ratios: Vec<usize> = config
         .compress_ratios
         .iter()
@@ -171,10 +182,44 @@ pub(super) fn load_layers(
 
     // ── the runtime shared by all layers ──
     let layout = slices.slot_layout();
-    let arena = PinnedArena::alloc(gpu, cache_gib << 30)?;
-    let lru = ExpertLru::new(arena.host(), arena.dev(), arena.bytes(), layout)?;
+    // The slots in DEVICE memory behind a page-locked staging ring (the
+    // expert GEMV reads device memory at 215 GB/s and the pinned arena at
+    // 176, same kernel, same counters: 3.2 ms of a 44 ms step, 09-19);
+    // `ATLAS_DS41_ARENA_DEVICE=0` restores the page-locked arena the GPU
+    // reads in place. The bytes are the same bytes at another address; no
+    // number changes. Both arenas sit off the allocation ledger, so the KV
+    // budget sees the same footprint either way.
+    let arena_device = !std::env::var("ATLAS_DS41_ARENA_DEVICE").is_ok_and(|v| v == "0");
+    let staging_slots = env_usize("ATLAS_DS41_STAGING_SLOTS", 16);
+    let (arena, mut lru) =
+        ExpertArena::alloc(gpu, cache_bytes, layout, arena_device, staging_slots)?;
     tracing::info!(
-        "DeepSeek-V4.1: expert cache {} slots of {:.2} MiB (page-locked, device-visible)",
+        "DeepSeek-V4.1: expert arena {}; MemAvailable now {}",
+        arena.describe(),
+        mem_available()
+    );
+    // `ATLAS_DS41_READER_POOL=1`: the persistent reader pool (misses and
+    // predicted experts in flight together; what `ATLAS_DS41_PREFETCH_K`
+    // needs). Default: the scoped threads a fetch, 3% faster on MinHeap in
+    // the 09-19 A/B (13.79 vs 14.20 tok/s) with nothing to prefetch. The
+    // pool writes slots directly, so it needs the page-locked arena.
+    if std::env::var("ATLAS_DS41_READER_POOL").is_ok_and(|v| v == "1") {
+        if arena_device {
+            tracing::warn!(
+                "DeepSeek-V4.1: ATLAS_DS41_READER_POOL=1 ignored with the device arena (set ATLAS_DS41_ARENA_DEVICE=0 for the pool)"
+            );
+        } else {
+            lru.set_pool(slices.clone(), reader_threads);
+            tracing::info!("DeepSeek-V4.1: expert reader pool of {reader_threads} threads");
+        }
+    }
+    if let Ok(path) = std::env::var("ATLAS_DS41_ROUTE_TRACE") {
+        // diagnostics: the exact expert access sequence, one line a fetch
+        lru.set_trace(&path)?;
+        tracing::info!("DeepSeek-V4.1: expert route trace -> {path}");
+    }
+    tracing::info!(
+        "DeepSeek-V4.1: expert cache {} slots of {:.2} MiB",
         lru.n_slots(),
         layout.bytes as f64 / 1048576.0
     );
@@ -200,11 +245,17 @@ pub(super) fn load_layers(
             k.len(),
             hc * dim
         );
-        engram.add_layer(EngramLayerWeights {
-            layer: l,
-            wkv: bf16_ptr(store, &format!("{lp}.engram.wkv"))?,
-            qk: EngramV41::upload_qk(gpu, &q, &k)?,
-        });
+        engram.add_layer(
+            gpu,
+            EngramLayerWeights {
+                layer: l,
+                wkv: bf16_ptr(store, &format!("{lp}.engram.wkv"))?,
+                qk: EngramV41::upload_qk(gpu, &q, &k)?,
+                raw: DevicePtr(0),
+                rows: DevicePtr(0),
+                wkv_q2k: super::engram_q2k::engram_wkv_q2k(gpu, &files, l)?,
+            },
+        )?;
     }
     let alloc_f32 = |n: usize| gpu.alloc((n * 4).max(16));
     let rt = Arc::new(V41Runtime {
@@ -228,6 +279,9 @@ pub(super) fn load_layers(
         sinkhorn_iters: config.hc_sinkhorn_iters.max(1),
         hc_eps: config.hc_eps,
         norm_eps: config.rms_norm_eps as f32,
+        seg: Mutex::new(SegState::default()),
+        roles: Mutex::new(vec![None; n_layers]),
+        engram_layers: Mutex::new(Vec::new()),
         pre_a: alloc_f32(max_tokens * hc)?,
         pre_f: alloc_f32(max_tokens * hc)?,
         post_s: alloc_f32(max_tokens * hc)?,
@@ -240,6 +294,15 @@ pub(super) fn load_layers(
         step_attn_ms: Mutex::new(0.0),
         step_engram_ms: Mutex::new(0.0),
         step_start: Mutex::new(None),
+        graph_disabled: std::sync::atomic::AtomicBool::new(false),
+        pred_x: gpu.alloc(3 * dim * 2)?,
+        pred_trace: Mutex::new(match std::env::var("ATLAS_DS41_PREDICT_TRACE") {
+            Ok(path) => {
+                tracing::info!("DeepSeek-V4.1: routing prediction trace -> {path}");
+                Some(std::io::BufWriter::new(std::fs::File::create(&path)?))
+            }
+            Err(_) => None,
+        }),
     });
 
     // ── kernels shared by every layer ──
@@ -248,6 +311,9 @@ pub(super) fn load_layers(
     let k_mixes_dot = gpu.kernel("hc_v41", "hc_v41_mixes_dot")?;
     let k_mixes_finish = gpu.kernel("hc_v41", "hc_v41_mixes_finish")?;
     let k_collapse = gpu.kernel("hc_v41", "hc_v41_collapse")?;
+    let k_finish_collapse = gpu.kernel("hc_v41", "hc_v41_finish_collapse")?;
+    let k_collapse_wide = gpu.kernel("hc_v41", "hc_v41_collapse_wide")?;
+    let k_post_wide = gpu.kernel("hc_v41", "hc_v41_post_wide")?;
     // V4.1 norm weights are plain (`w * x_normed`); the shared `rms_norm`
     // kernel applies the zero-centered `(1 + w)` convention, so every
     // DeepSeek-V4.1 norm goes through the vanilla twin (the model-level
@@ -349,21 +415,42 @@ pub(super) fn load_layers(
             "layer {l}: correction bias has {} entries",
             gate_bias.len()
         );
+        let gate_bias_dev = MoeV41::upload_bias(gpu, &gate_bias)?;
         let moe_w = MoeV41LayerWeights {
             layer: l as u32,
             gate_w: bf16_ptr(store, &format!("{lp}.ffn.gate.weight"))?,
             gate_bias,
+            gate_bias_dev,
             shared_w1: resident_mat(store, &format!("{lp}.ffn.shared_experts.w1"))?,
             shared_w2: resident_mat(store, &format!("{lp}.ffn.shared_experts.w2"))?,
             shared_w3: resident_mat(store, &format!("{lp}.ffn.shared_experts.w3"))?,
         };
+        let next_router = if l + 1 < n_layers {
+            let np = format!("model.layers.{}", l + 1);
+            Some(RouterWeights {
+                layer: (l + 1) as u32,
+                gate_w: bf16_ptr(store, &format!("{np}.ffn.gate.weight"))?,
+                gate_bias: download_f32(
+                    gpu,
+                    store,
+                    &format!("{np}.ffn.gate.e_score_correction_bias"),
+                )?,
+            })
+        } else {
+            None
+        };
         let engram_index = rt.tables.hash_index(l);
+        rt.roles.lock().unwrap()[l] = Some(role);
+        if let Some(hi) = engram_index {
+            rt.engram_layers.lock().unwrap().push((l, hi));
+        }
         layers.push(Box::new(DeepSeekV41Layer {
             idx: l,
             role,
             rt: rt.clone(),
             attn_w,
             moe_w,
+            next_router,
             engram_index,
             hc_attn: hc_site(gpu, store, &lp, "attn", config)?,
             hc_ffn: hc_site(gpu, store, &lp, "ffn", config)?,
@@ -378,8 +465,26 @@ pub(super) fn load_layers(
             k_mixes_dot,
             k_mixes_finish,
             k_collapse,
+            k_finish_collapse,
+            k_collapse_wide,
+            k_post_wide,
             k_rms_norm,
         }));
     }
     Ok(layers)
+}
+
+/// `MemAvailable` from `/proc/meminfo` as a printable figure (the arena is
+/// the box's memory on GB10; the load log should say what it left).
+fn mem_available() -> String {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("MemAvailable:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<f64>().ok())
+        })
+        .map(|kb| format!("{:.1} GiB", kb / 1048576.0))
+        .unwrap_or_else(|| "unknown".to_string())
 }

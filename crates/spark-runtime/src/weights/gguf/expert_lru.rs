@@ -21,9 +21,11 @@
 //! through [`ExpertSource::read_expert`](super::expert_stream::ExpertSource).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Result, bail, ensure};
 
+use super::expert_prefetch::{ReaderPool, Ticket};
 use super::expert_stream::{ExpertSource, SlotLayout};
 use crate::gpu::{DevicePtr, GpuBackend};
 
@@ -86,22 +88,40 @@ pub struct LruStats {
     pub misses: u64,
     pub evictions: u64,
     pub bytes_read: u64,
+    /// Hits on a slot whose read was still in flight (a prediction that
+    /// arrived in time to be waited on rather than missed).
+    pub waited: u64,
+    /// Experts read on a prediction, and of those, never asked for.
+    pub prefetched: u64,
+    pub prefetch_unused: u64,
 }
 
-const NONE: u32 = u32::MAX;
+pub(super) const NONE: u32 = u32::MAX;
 
-struct SlotMeta {
-    key: Option<(u32, u32)>,
-    prev: u32,
-    next: u32,
+pub(super) struct SlotMeta {
+    pub(super) key: Option<(u32, u32)>,
+    pub(super) prev: u32,
+    pub(super) next: u32,
     /// Epoch of the last fetch; equal to the current epoch = pinned.
-    epoch: u64,
+    pub(super) epoch: u64,
+    /// The read filling this slot, while it is in flight (pool only).
+    pub(super) ticket: Option<Arc<Ticket>>,
+    /// Filled by a prediction and not yet asked for by a real fetch.
+    pub(super) speculative: bool,
 }
 
 /// A raw slot address that may cross into a scoped reader thread: every miss
 /// in one `fetch_many` owns a distinct slot, so the regions never overlap.
 #[derive(Clone, Copy)]
-struct SlotPtr(*mut u8);
+pub(super) struct SlotPtr(pub(super) *mut u8);
+
+impl SlotPtr {
+    /// The address, read through `self` so a closure captures the `Send`
+    /// wrapper and not the raw pointer.
+    pub(super) fn get(self) -> *mut u8 {
+        self.0
+    }
+}
 // SAFETY: see above; the pointer is only dereferenced as a disjoint `&mut [u8]`
 // by the one thread whose chunk names it (or, split into byte ranges, by
 // several threads on disjoint ranges of it).
@@ -115,17 +135,35 @@ type MissRange = (u32, (u32, u32), SlotPtr, usize, usize);
 
 pub struct ExpertLru {
     host: *mut u8,
-    dev: u64,
+    pub(super) dev: u64,
     layout: SlotLayout,
-    n_slots: usize,
-    meta: Vec<SlotMeta>,
-    map: HashMap<(u32, u32), u32>,
+    pub(super) n_slots: usize,
+    pub(super) meta: Vec<SlotMeta>,
+    pub(super) map: HashMap<(u32, u32), u32>,
     /// Most recently used.
-    head: u32,
+    pub(super) head: u32,
     /// Least recently used.
-    tail: u32,
-    epoch: u64,
-    stats: LruStats,
+    pub(super) tail: u32,
+    pub(super) epoch: u64,
+    pub(super) stats: LruStats,
+    /// The persistent reader pool and the source it reads from (see
+    /// `set_pool` in `expert_lru_pool.rs`); without it, misses are read on
+    /// scoped threads inside `fetch_many`.
+    pub(super) pool: Option<(Arc<dyn ExpertSource + Send + Sync>, ReaderPool)>,
+    /// Slots with a ticket that may still be in flight.
+    pub(super) in_flight: Vec<u32>,
+    /// The victim is drawn from the oldest this-many percent (0 = strict LRU).
+    pub(super) evict_pct: usize,
+    pub(super) rng: u64,
+    /// `ATLAS_DS41_ROUTE_TRACE`: one line per `fetch_many` (see `set_trace`).
+    pub(super) trace: Option<std::io::BufWriter<std::fs::File>>,
+    pub(super) t0: std::time::Instant,
+    /// Set when the slots are device memory fed through a page-locked ring
+    /// (`expert_arena.rs`); `fetch_many_on` is then the only fetch.
+    pub(super) staging: Option<super::expert_arena::Staging>,
+    /// `(layer, expert, slot | -1)` since the last `drain_slot_changes`: what
+    /// a device-side slot table has to learn (assignments and evictions).
+    pub(super) slot_changes: Vec<(u32, u32, i32)>,
 }
 
 // SAFETY: the raw arena pointers are addresses into memory the caller owns
@@ -155,6 +193,8 @@ impl ExpertLru {
                     i + 1
                 },
                 epoch: 0,
+                ticket: None,
+                speculative: false,
             });
         }
         Ok(ExpertLru {
@@ -168,6 +208,18 @@ impl ExpertLru {
             tail: n_slots as u32 - 1,
             epoch: 1,
             stats: LruStats::default(),
+            pool: None,
+            in_flight: Vec::new(),
+            evict_pct: std::env::var("ATLAS_DS41_EVICT_RANDOM_PCT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|p| *p <= 100)
+                .unwrap_or(8),
+            rng: 0x9E37_79B9_7F4A_7C15,
+            trace: None,
+            t0: std::time::Instant::now(),
+            staging: None,
+            slot_changes: Vec::new(),
         })
     }
 
@@ -200,6 +252,9 @@ impl ExpertLru {
     /// `begin_token`; everything fetched earlier becomes evictable again.
     pub fn begin_token(&mut self) {
         self.epoch += 1;
+        if self.pool.is_some() {
+            self.reap();
+        }
     }
 
     pub fn slot(&self, i: u32) -> ExpertSlot {
@@ -209,17 +264,22 @@ impl ExpertLru {
             gate: DevicePtr(self.dev + (base + l.gate_off) as u64),
             up: DevicePtr(self.dev + (base + l.up_off) as u64),
             down: DevicePtr(self.dev + (base + l.down_off) as u64),
-            // SAFETY: `base + bytes <= n_slots * bytes <= arena bytes`.
-            host: unsafe { self.host.add(base) as *const u8 },
+            // SAFETY: `base + bytes <= n_slots * bytes <= arena bytes`; a
+            // device arena has no host alias (null stays null).
+            host: if self.host.is_null() {
+                std::ptr::null()
+            } else {
+                unsafe { self.host.add(base) as *const u8 }
+            },
         }
     }
 
-    fn slot_ptr(&self, i: u32) -> SlotPtr {
+    pub(super) fn slot_ptr(&self, i: u32) -> SlotPtr {
         // SAFETY: as in `slot`.
         SlotPtr(unsafe { self.host.add(i as usize * self.layout.bytes) })
     }
 
-    fn unlink(&mut self, i: u32) {
+    pub(super) fn unlink(&mut self, i: u32) {
         let (p, n) = (self.meta[i as usize].prev, self.meta[i as usize].next);
         if p == NONE {
             self.head = n;
@@ -246,47 +306,30 @@ impl ExpertLru {
         }
     }
 
-    fn touch(&mut self, i: u32) {
+    pub(super) fn touch(&mut self, i: u32) {
         self.unlink(i);
         self.push_front(i);
         self.meta[i as usize].epoch = self.epoch;
     }
 
-    /// Take the least recently used slot that is not pinned in this epoch,
-    /// dropping whatever it held.
-    fn take_victim(&mut self) -> Result<u32> {
-        let mut i = self.tail;
-        while i != NONE {
-            if self.meta[i as usize].epoch != self.epoch {
-                if let Some(k) = self.meta[i as usize].key.take() {
-                    self.map.remove(&k);
-                    self.stats.evictions += 1;
-                }
-                return Ok(i);
-            }
-            i = self.meta[i as usize].prev;
-        }
-        bail!(
-            "expert cache of {} slots is smaller than one token's working set ({} pinned)",
-            self.n_slots,
-            self.map.len()
-        )
-    }
-
     /// Assign a slot for `key` and map it (the bytes are not read yet).
-    fn assign(&mut self, key: (u32, u32)) -> Result<u32> {
+    pub(super) fn assign(&mut self, key: (u32, u32)) -> Result<u32> {
         let i = self.take_victim()?;
         self.meta[i as usize].key = Some(key);
         self.map.insert(key, i);
+        self.slot_changes.push((key.0, key.1, i as i32));
         self.touch(i);
         Ok(i)
     }
 
-    fn unmap(&mut self, i: u32) {
+    pub(super) fn unmap(&mut self, i: u32) {
         if let Some(k) = self.meta[i as usize].key.take() {
             self.map.remove(&k);
+            self.slot_changes.push((k.0, k.1, -1));
         }
         self.meta[i as usize].epoch = 0;
+        self.meta[i as usize].ticket = None;
+        self.meta[i as usize].speculative = false;
         self.unlink(i);
         // back to the LRU end so it is the next victim
         let m = &mut self.meta[i as usize];
@@ -308,6 +351,10 @@ impl ExpertLru {
         layer: u32,
         expert: u32,
     ) -> Result<(ExpertSlot, bool)> {
+        ensure!(
+            self.staging.is_none(),
+            "device expert cache: use fetch_many_on"
+        );
         let key = (layer, expert);
         if let Some(&i) = self.map.get(&key) {
             self.touch(i);
@@ -336,8 +383,16 @@ impl ExpertLru {
         keys: &[(u32, u32)],
         threads: usize,
     ) -> Result<Vec<ExpertSlot>> {
+        ensure!(
+            self.staging.is_none(),
+            "device expert cache: use fetch_many_on"
+        );
+        if self.pool.is_some() {
+            return self.fetch_many_prefetching(keys, &[]);
+        }
         let mut out = Vec::with_capacity(keys.len());
         let mut misses: Vec<(u32, (u32, u32))> = Vec::new();
+        let evictions0 = self.stats.evictions;
         for &key in keys {
             if let Some(&i) = self.map.get(&key) {
                 self.touch(i);
@@ -417,6 +472,10 @@ impl ExpertLru {
         let n_ok = misses.len() - failures.len();
         self.stats.misses += n_ok as u64;
         self.stats.bytes_read += (n_ok * bytes) as u64;
+        if self.trace.is_some() {
+            let ev = self.stats.evictions - evictions0;
+            self.trace_line(keys, misses.len(), ev, 0);
+        }
         if let Some((_, first)) = failures.first() {
             let msg = format!(
                 "{} of {} expert reads failed; first: {first:#}",
