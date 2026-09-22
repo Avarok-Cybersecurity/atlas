@@ -14,9 +14,28 @@
 //! Rules 2 and 3 default OFF and are allow-listed per model, because
 //! withholding a tensor a loader DOES read is invisible until the output is
 //! subtly wrong. Rule 1 is structural and always active under EP.
+//!
+//! **DEFER is a fifth rule and a different kind.** A skipped tensor is gone; a
+//! deferred one is recorded with its on-disk location because the model's own
+//! loader will read it from the host. [`FastSafetensorsLoader::is_deferred`]
+//! lives here so the two questions are answered side by side, but it is asked
+//! AFTER `should_skip_tensor` — see [`crate::weights::deferred`].
 
 use super::FastSafetensorsLoader;
-use crate::weights::parse_expert_index;
+use crate::weights::{WeightDtype, parse_expert_index};
+
+impl FastSafetensorsLoader {
+    /// Does the model's loader claim this tensor? `false` when no hook is set,
+    /// which is every model but the ones that opt in.
+    ///
+    /// 🪤 Keyed on the STORE dtype — the width the tensor would have had in the
+    /// store, which for an F16 export is BF16. A predicate that says "BF16
+    /// routed expert" therefore also catches the F16 spelling of the same
+    /// export, which is the honest answer.
+    pub fn is_deferred(&self, name: &str, dtype: WeightDtype) -> bool {
+        self.defer.as_ref().is_some_and(|f| f(name, dtype))
+    }
+}
 
 impl FastSafetensorsLoader {
     pub(super) fn should_skip_tensor(&self, name: &str) -> bool {
@@ -55,3 +74,7 @@ impl FastSafetensorsLoader {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "defer_tests.rs"]
+mod defer_tests;

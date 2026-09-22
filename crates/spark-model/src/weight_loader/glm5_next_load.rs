@@ -49,6 +49,8 @@ use crate::layers::ops::{Glm5NextMhcKernels, Glm5NextMhcSiteWeights, MHC_MIX_MAX
 use crate::weight_map::DenseWeight;
 
 #[cfg(test)]
+mod defer_hook_tests;
+#[cfg(test)]
 mod export_layout_tests;
 mod nvfp4_dequant;
 mod nvfp4_quant;
@@ -107,11 +109,47 @@ fn is_reuploaded(name: &str, num_layers: usize) -> bool {
 /// `layers.{num_hidden_layers}` — which `factory::build` guarantees by calling
 /// `prune_after_load` last, and which is the same ordering `is_reuploaded`'s
 /// "the MTP block is kept" rule already depends on.
+///
+/// On both disk loaders this now matches NOTHING, because
+/// [`Glm5NextWeightLoader::defer_predicate`] keeps those tensors off the device
+/// in the first place. It stays for the paths that have no defer hook — the
+/// RDMA weight peer, and any future loader that fills a store directly — where
+/// a BF16 expert still arrives resident and still has to be freed.
 fn is_quantized_expert_weight(name: &str, dtype: WeightDtype) -> bool {
     dtype == WeightDtype::BF16
         && name.starts_with("model.language_model.layers.")
         && name.contains(".mlp.experts.")
         && name.ends_with("_proj.weight")
+}
+
+/// Is this a routed-expert projection of the MTP block that the export left at
+/// full width — the family [`Glm5NextWeightLoader::defer_predicate`] keeps off
+/// the device entirely?
+///
+/// Both halves of the key matter:
+///
+/// * **the LAYER** is `config.num_hidden_layers`, never a literal. GLM puts the
+///   MTP block one past the text stack, and the text stack's own experts are
+///   packed U8 in both exports — deferring one of those would withhold the
+///   kernel's actual operand.
+/// * **the DTYPE** is BF16. `LibertAIDAI/GLM-5.3-Flash-NVFP4` quantises this
+///   block like every other, so on that checkpoint this is false for every
+///   tensor and the loader defers nothing at all.
+///
+/// 🪤 `mlp.experts.` and not `experts.`: the SHARED expert
+/// (`mlp.shared_experts.{gate,up,down}_proj.weight`) is a plain float tensor in
+/// both exports, is read through [`LayerSource`], and must stay resident.
+fn is_full_width_mtp_expert(name: &str, dtype: WeightDtype, num_layers: usize) -> bool {
+    if dtype != WeightDtype::BF16 || !name.ends_with("_proj.weight") {
+        return false;
+    }
+    let Some(rest) = name.strip_prefix("model.language_model.layers.") else {
+        return false;
+    };
+    let Some((idx, rel)) = rest.split_once('.') else {
+        return false;
+    };
+    idx.parse::<usize>().ok() == Some(num_layers) && rel.starts_with("mlp.experts.")
 }
 
 /// Read a device tensor back as host bytes.
@@ -346,6 +384,18 @@ fn bind_mhc_site(
 /// flag. `LibertAIDAI/GLM-5.3-Flash-NVFP4`'s experts are U8 everywhere, so that
 /// checkpoint takes the zero-copy arm for every expert of every layer exactly
 /// as it did before the BF16 arm existed.
+///
+/// Three arms, in the order they are tried:
+///
+/// 1. **deferred** — the weight loader honoured
+///    [`Glm5NextWeightLoader::defer_predicate`] and left it on disk. Read the
+///    host bytes, quantise, upload the NVFP4. Nothing full-width ever touches
+///    the device. This is the arm the official export takes.
+/// 2. **U8 resident** — the checkpoint already carries the triple; bind it
+///    where it lies, zero copy. The community export takes this arm.
+/// 3. **BF16 resident** — a store filled by something with no defer hook (the
+///    RDMA weight peer). Read it back off the device and quantise;
+///    `prune_after_load` frees the source.
 pub(super) fn bind_expert(
     gpu: &dyn GpuBackend,
     store: &WeightStore,
@@ -354,7 +404,13 @@ pub(super) fn bind_expert(
 ) -> Result<Glm5NextExpertWeights> {
     let proj = |p: &str| -> Result<Nvfp4Proj> {
         let base = format!("mlp.experts.{id}.{p}");
-        let w = store.get(&qualify(layer, &format!("{base}.weight")))?;
+        let wname = qualify(layer, &format!("{base}.weight"));
+        // Deferred: never uploaded, at this loader's own request. Checked
+        // FIRST, because the store has no tensor under this name at all.
+        if let Some(d) = store.deferred(&wname) {
+            return quantize_deferred_expert_proj(gpu, store, d, &base);
+        }
+        let w = store.get(&wname)?;
         match w.dtype {
             // The checkpoint already carries the triple: bind it where it lies.
             WeightDtype::UInt8 => {
@@ -384,20 +440,60 @@ pub(super) fn bind_expert(
     })
 }
 
-/// Quantise one full-width BF16 expert projection to NVFP4 at load.
+/// Quantise one full-width expert projection the loader left ON DISK.
 ///
-/// Only the ~3.6x smaller result reaches the device, and only for the experts
-/// this EP rank owns — `build_moe` calls `bind_expert` over
-/// `local_expert_range()` alone, and the checkpoint loader's own EP rule never
-/// uploaded a remote expert to begin with. The BF16 source is then dead; it is
-/// released by [`Glm5NextWeightLoader::prune_after_load`], which is the only
-/// place that can, because every binder takes `&WeightStore`.
+/// This is the arm that makes the official export fit. The BF16 bytes are read
+/// from the shard into host memory, quantised, and only the ~3.6x smaller
+/// NVFP4 triple is uploaded — so at no point in the 45-layer build is a
+/// full-width expert resident. Measured 2026-09-21, before this arm existed:
+/// the fast loader swept the 432 BF16 tensors of one EP=2 rank (~7.25 GB) to
+/// the device and they stayed there until `prune_after_load`, which killed
+/// rank 0 at layer 38 on a 32K boot. See `spark_runtime::weights::deferred`.
 ///
-/// 🪤 Both buffers are ADOPTED by the store's derived-weight ledger. A
-/// `gpu.alloc` that lives in a layer struct has no owner otherwise: teardown's
-/// `sweep_unreleased` reclaims it, but only after the backend is gone, so the
-/// bytes are unreclaimable for the life of the model (see
-/// `spark_runtime::weights::derived`).
+/// Only the experts this rank owns are read: `build_moe` calls
+/// [`bind_expert`] over `local_expert_range()` alone, and the loader's own EP
+/// rule never deferred a remote expert to begin with.
+///
+/// 🪤 One host buffer at a time. `read_host_bytes` + the `f32` expansion are
+/// ~40 MB together for a `[2048, 4096]` BF16 projection, and both are dropped
+/// before the next projection is read — on a unified-memory box the host
+/// working set IS the device working set.
+fn quantize_deferred_expert_proj(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    d: &spark_runtime::weights::DeferredTensor,
+    base: &str,
+) -> Result<Nvfp4Proj> {
+    let [rows, cols] = d.shape[..] else {
+        bail!(
+            "{base}.weight must be 2-D to quantise, got shape {:?}",
+            d.shape
+        );
+    };
+    if d.dtype != WeightDtype::BF16 {
+        bail!(
+            "{base}.weight was deferred as {:?}; only a full-width BF16 expert is \
+             quantised at load",
+            d.dtype
+        );
+    }
+    let bytes = d
+        .read_host_bytes()
+        .with_context(|| format!("{base}.weight: reading the deferred expert from its shard"))?;
+    let values: Vec<f32> = bytes
+        .chunks_exact(2)
+        .map(|c| half::bf16::from_bits(u16::from_le_bytes([c[0], c[1]])).to_f32())
+        .collect();
+    drop(bytes);
+    quantize_and_upload(gpu, store, base, &values, rows, cols)
+}
+
+/// Quantise one full-width BF16 expert projection that IS resident.
+///
+/// Reached only by a store no defer hook filled (the RDMA weight peer). The
+/// BF16 source is dead afterwards and is released by
+/// [`Glm5NextWeightLoader::prune_after_load`], which is the only place that
+/// can, because every binder takes `&WeightStore`.
 fn quantize_expert_proj(
     gpu: &dyn GpuBackend,
     store: &WeightStore,
@@ -411,8 +507,25 @@ fn quantize_expert_proj(
         );
     };
     let values = host_f32(gpu, w, &format!("{base}.weight"))?;
-    let blob = nvfp4_quant::quantize_to_nvfp4(base, &values, rows, cols)?;
-    drop(values);
+    quantize_and_upload(gpu, store, base, &values, rows, cols)
+}
+
+/// The tail both quantise arms share: encode, upload, adopt.
+///
+/// 🪤 Both buffers are ADOPTED by the store's derived-weight ledger. A
+/// `gpu.alloc` that lives in a layer struct has no owner otherwise: teardown's
+/// `sweep_unreleased` reclaims it, but only after the backend is gone, so the
+/// bytes are unreclaimable for the life of the model (see
+/// `spark_runtime::weights::derived`).
+fn quantize_and_upload(
+    gpu: &dyn GpuBackend,
+    store: &WeightStore,
+    base: &str,
+    values: &[f32],
+    rows: usize,
+    cols: usize,
+) -> Result<Nvfp4Proj> {
+    let blob = nvfp4_quant::quantize_to_nvfp4(base, values, rows, cols)?;
     let packed = upload_bytes(gpu, store, &blob.packed)?;
     let scale = upload_bytes(gpu, store, &blob.scales)?;
     Ok(Nvfp4Proj {
@@ -448,6 +561,34 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
     /// fits (measured 2026-08-29: K=3 at 32 K needs 13.58 GiB against 12.07 free).
     fn binds_vision_encoder(&self) -> bool {
         false
+    }
+
+    /// Keep the MTP block's full-width routed experts off the device.
+    ///
+    /// `nvidia/GLM-5.3-Flash-NVFP4` ships `layers.{num_hidden_layers}.mlp.
+    /// experts.E.{gate,up,down}_proj.weight` as BF16 `[2048, 4096]` against a
+    /// w4a16-only forward. [`bind_expert`] reads each one ONCE and replaces it
+    /// with an NVFP4 triple ~3.6x smaller, so uploading the originals is pure
+    /// transient — and on GB10's unified memory the transient is the problem:
+    /// measured 2026-09-21 at EP=2, ~7.25 GB per rank resident from the fast
+    /// loader's sweep until `prune_after_load`, i.e. across the whole 45-layer
+    /// build. That survived a 2048-token boot (host floor 1.74 GB) and killed
+    /// rank 0 at layer 38 on the 32K qualification shape (935 MB against a
+    /// 1200 MB floor), BEFORE the MTP bind could free anything.
+    ///
+    /// Deferring them makes the transient structurally impossible: the BF16
+    /// stays in the page cache and [`bind_expert`] reads it from there.
+    ///
+    /// 🪤 `None` would be wrong ONLY as a silent default — the predicate is
+    /// dtype-keyed, so returning it on `LibertAIDAI/GLM-5.3-Flash-NVFP4`
+    /// (packed U8 experts everywhere) defers nothing and that checkpoint loads
+    /// byte-identically. The layer index comes from the config, never a
+    /// literal: `layers.45` is `num_hidden_layers`, not a property of GLM.
+    fn defer_predicate(&self, config: &ModelConfig) -> Option<spark_runtime::weights::DeferHook> {
+        let num_layers = config.num_hidden_layers;
+        Some(std::sync::Arc::new(
+            move |name: &str, dtype: WeightDtype| is_full_width_mtp_expert(name, dtype, num_layers),
+        ))
     }
 
     /// All three halves shard: DSA by head, KDA by head/channel, the MLP by width (TP) and by
@@ -732,9 +873,12 @@ impl ModelWeightLoader for Glm5NextWeightLoader {
         );
         // Full-width BF16 routed experts (NVIDIA's official export leaves the
         // MTP block's that way) were re-encoded by `bind_expert`, so they are
-        // dead the same way every other re-uploaded tensor is — and they are
-        // the single largest such family: ~7 GB per EP rank against the ~2 GB
-        // of NVFP4 that replaced them.
+        // dead the same way every other re-uploaded tensor is.
+        //
+        // Empty on both disk loaders: `defer_predicate` keeps that family off
+        // the device entirely, which is the whole point — freeing 7 GB here is
+        // 45 layers too late. This sweep remains for a store filled by
+        // something with no defer hook (the RDMA weight peer).
         let quantized: std::collections::BTreeSet<String> = store
             .names()
             .filter(|n| {

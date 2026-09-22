@@ -118,6 +118,7 @@ pub(crate) fn load_weight_store(
                     config.model_type,
                 );
             }
+            loader.defer = defer_hook(config);
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("AVAROK_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -142,6 +143,7 @@ pub(crate) fn load_weight_store(
         loader.peak_memory_multiplier = mult;
         loader.skip_activation_scales = skip_activation_scales(config);
         loader.skip_mtp = skip_mtp(config);
+        loader.defer = defer_hook(config);
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
             .context("Failed to load model weights")?
@@ -448,4 +450,28 @@ fn binds_vision(config: &avarok_core::config::ModelConfig) -> bool {
     spark_model::factory::loader_for_config(config)
         .map(|l| l.binds_vision_encoder())
         .unwrap_or(true)
+}
+
+/// Which tensors will the model's weight loader read from DISK at bind time?
+///
+/// Asked once, before the load, and handed to whichever checkpoint loader
+/// runs — the same shape as `binds_vision`. An unresolvable model type answers
+/// `None`: upload everything, never withhold a tensor on a guess.
+///
+/// 🔴 NOT an allow-list here, unlike `skip_activation_scales` / `skip_mtp`.
+/// Those two withhold tensors on a name rule the SERVER decides, which is why
+/// they must be listed per model. This one is the loader's own declaration
+/// about tensors it will read itself, so the loader is the right place for it
+/// and a model that does not override the trait default defers nothing.
+fn defer_hook(config: &ModelConfig) -> Option<spark_runtime::weights::DeferHook> {
+    let hook = spark_model::factory::loader_for_config(config)
+        .ok()?
+        .defer_predicate(config)?;
+    tracing::info!(
+        "Weight loader for model_type '{}' defers part of the checkpoint: those tensors are \
+         recorded with their on-disk location and read by the model's own loader, never \
+         uploaded.",
+        config.model_type,
+    );
+    Some(hook)
 }
