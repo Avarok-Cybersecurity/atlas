@@ -335,7 +335,10 @@ fn a_requested_warm_path_requires_a_uniform_cache_state() {
     // ran that same threshold and was cold too. A run where nothing disagrees
     // is not an uncontrolled run.
     assert!(!cache_is_uncontrolled(&[cold.clone()], 1));
-    assert!(!cache_is_uncontrolled(&[cold.clone(), cold.clone(), cold], 1));
+    assert!(!cache_is_uncontrolled(
+        &[cold.clone(), cold.clone(), cold],
+        1
+    ));
 
     let mut missing_usage = evidence(128);
     missing_usage.prompt_tokens = 0;

@@ -395,8 +395,7 @@ fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
         return true;
     }
     let warm = |request: &RequestEvidence| {
-        (request.cached_prompt_tokens as f64)
-            >= WARM_CACHE_FLOOR * request.prompt_tokens as f64
+        (request.cached_prompt_tokens as f64) >= WARM_CACHE_FLOOR * request.prompt_tokens as f64
     };
     requests.iter().any(&warm) != requests.iter().all(&warm)
 }
