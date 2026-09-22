@@ -65,7 +65,7 @@ pub fn load_sharded(
             }
         }
     };
-    if let Some(meta) = accept_split_kv_b(name, &t, config) {
+    if let Some(meta) = accept_split_kv_b(name, t, config) {
         return Ok((DenseWeight { weight: t.ptr }, meta));
     }
     let (kind, full_out, full_in) = tensor_plan(name, mixer, mlp, config);

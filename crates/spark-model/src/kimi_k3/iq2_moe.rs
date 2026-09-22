@@ -75,7 +75,10 @@ fn dequant_expert_iq2(
             _ => unreachable!(),
         }
     } else {
-        ensure!(inn % IQ2_QK == 0, "{name}: inn={inn} not IQ aligned");
+        ensure!(
+            inn.is_multiple_of(IQ2_QK),
+            "{name}: inn={inn} not IQ aligned"
+        );
         let nbytes = out_rows * (inn / IQ2_QK) * block;
         let raw = d2h_bytes(gpu, w.weight, nbytes)?;
         match m.dtype {

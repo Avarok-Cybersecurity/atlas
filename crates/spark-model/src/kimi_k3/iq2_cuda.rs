@@ -108,7 +108,10 @@ fn expert_gemv(
     let (skip, n_cover) = if let Some((full_k, rank, world)) = col_cover {
         cover(full_k, k_local, rank, world)?
     } else {
-        ensure!(k_local % IQ2_QK == 0, "{name}: k {k_local} not IQ aligned");
+        ensure!(
+            k_local.is_multiple_of(IQ2_QK),
+            "{name}: k {k_local} not IQ aligned"
+        );
         (0, (k_local / IQ2_QK) as u32)
     };
     gemv_packed(gpu, w.weight, m.dtype, x, n, k_local, skip, n_cover, stream)
