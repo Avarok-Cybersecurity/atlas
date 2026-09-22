@@ -136,6 +136,11 @@ fn an_absent_lever_flag_parses_as_unspecified() {
     // is OPT-IN) is asserted in gdn_flags' own tests.
     assert!(a.exact_verify.is_none(), "--exact-verify");
     assert!(a.prefill_varlen_batch.is_none(), "AVAROK_PREFILL_VARLEN");
+    // Same reason, and the one this flag was created for: an absent
+    // `--prefill-codispatch` must publish NOTHING, or the OnceLock seals on
+    // every boot and `AVAROK_PREFILL_CODISPATCH` becomes inert while `--help`
+    // still documents it.
+    assert!(a.prefill_codispatch.is_none(), "AVAROK_PREFILL_CODISPATCH");
 
     let a = parse(&["--ssm-tail-midchunk", "false", "--mtp-gate", "force"]);
     assert_eq!(a.ssm_tail_midchunk, Some(false), "given, it still wins");
@@ -164,6 +169,14 @@ fn the_bare_gdn_switches_still_mean_on() {
     assert_eq!(a.prefill_varlen_batch, Some(true));
     let a = parse(&["--prefill-varlen-batch", "false"]);
     assert_eq!(a.prefill_varlen_batch, Some(false));
+    // `--prefill-codispatch` follows it too. The explicit `false` is not
+    // decoration here: the gate needs "off" to be EXPRESSIBLE and distinct
+    // from "absent", because absent leaves the node-wide env fallback live and
+    // that is exactly the coupling this flag exists to break.
+    let a = parse(&["--prefill-codispatch"]);
+    assert_eq!(a.prefill_codispatch, Some(true));
+    let a = parse(&["--prefill-codispatch", "false"]);
+    assert_eq!(a.prefill_codispatch, Some(false));
 }
 
 #[test]

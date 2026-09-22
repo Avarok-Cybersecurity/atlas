@@ -325,6 +325,24 @@ pub struct ServeArgs {
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub prefill_varlen_batch: Option<bool>,
 
+    /// Co-dispatch fresh prompts: when >=2 requests are admitted together with
+    /// nothing decoding, defer their chunk-0 prefill so they batch into one
+    /// forward.
+    ///
+    /// ★ PER-GATE ON PURPOSE. This was env-only, and `bench.yaml env:` is
+    /// NODE-WIDE -- arming it for one gate armed it for every gate on the box.
+    /// `concurrency-sweep` wants it; `ttft-warm-gate` measures +4.78% warm TTFT
+    /// with it on (three controls at off agree to 0.045%, so that is ~107x the
+    /// spread) against a +3.0% limit. A flag is the only thing that separates
+    /// them.
+    ///
+    /// Legacy: `AVAROK_PREFILL_CODISPATCH=1`, on the same terms as
+    /// `--prefill-varlen-batch`, and `Option` for the same reason: an absent
+    /// flag must publish NOTHING or it seals the cell and makes the variable
+    /// inert.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+    pub prefill_codispatch: Option<bool>,
+
     /// Sequential-decode-exact GDN/SSM verify chain — OPT-IN (default: off).
     ///
     /// ★ THIS FLAG IS NOT A CORRECTNESS SWITCH. A 2026-08-21 measurement on

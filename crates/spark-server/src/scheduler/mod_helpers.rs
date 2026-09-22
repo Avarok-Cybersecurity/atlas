@@ -60,7 +60,8 @@ pub(super) fn install_high_speed_swap(
     }
 }
 
-/// Co-dispatch admission window: `Some(duration)` when `AVAROK_PREFILL_CODISPATCH=1`,
+/// Co-dispatch admission window: `Some(duration)` when `--prefill-codispatch` is on
+/// (legacy `AVAROK_PREFILL_CODISPATCH=1`),
 /// else `None`. The window length is `AVAROK_PREFILL_CODISPATCH_WINDOW_MS`
 /// (default 100). A burst of concurrent requests arrives over tens of ms
 /// (HTTP accept + tokenize spread); the old 10 ms default admitted only the
@@ -69,9 +70,7 @@ pub(super) fn install_high_speed_swap(
 /// step's worth of TTFT — negligible against the multi-second serialized
 /// alternative. Only in effect when codispatch is explicitly enabled.
 fn codispatch_window() -> Option<std::time::Duration> {
-    let on = std::env::var("AVAROK_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    let on = spark_model::layers::ops::prefill_codispatch_enabled();
     if !on {
         return None;
     }

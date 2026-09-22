@@ -31,14 +31,12 @@ pub(super) fn start_new_requests(
     active: &mut Vec<ActiveSeq>,
     prefilling: &mut Vec<PrefillInProgress>,
 ) {
-    // Co-dispatch (AVAROK_PREFILL_CODISPATCH=1): when >=2 non-vision requests are
+    // Co-dispatch (`--prefill-codispatch`): when >=2 non-vision requests are
     // co-admitted this tick with no active decode to starve, DEFER their chunk-0
     // prefill so they batch into one forward via run_batched_prefill_step (which
     // sees prefilling.len() >= 2 → can_batch_prefill_only). Vision excluded: a
     // shared prepare_vision_embed buffer would cross-contaminate stacked streams.
-    let want_codispatch = std::env::var("AVAROK_PREFILL_CODISPATCH")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    let want_codispatch = spark_model::layers::ops::prefill_codispatch_enabled()
         && chunked
         && new_reqs.len() >= 2
         && active.is_empty()
