@@ -10,6 +10,10 @@ use avarok_core::config::ModelConfig;
 
 use crate::cli;
 
+#[cfg(test)]
+#[path = "weights_allowlist_tests.rs"]
+mod weights_allowlist_tests;
+
 pub(crate) fn quant_multiplier(config: &ModelConfig) -> Option<f64> {
     if config.model_type == "glm5_next" {
         // GLM-5.3 at TP=2/EP=2 is 99.64 GB on-disk per rank against ~111.5 GB free. The
@@ -118,6 +122,7 @@ pub(crate) fn load_weight_store(
                     config.model_type,
                 );
             }
+            loader.defer = defer_hook(config);
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("AVAROK_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -142,6 +147,7 @@ pub(crate) fn load_weight_store(
         loader.peak_memory_multiplier = mult;
         loader.skip_activation_scales = skip_activation_scales(config);
         loader.skip_mtp = skip_mtp(config);
+        loader.defer = defer_hook(config);
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
             .context("Failed to load model weights")?
@@ -426,8 +432,21 @@ pub(crate) fn load_lora_adapters(
 /// `input_scale` on its own loader path, and silently withholding a tensor a
 /// loader DOES read is exactly the class of bug that stays invisible until
 /// the output is subtly wrong.
+///
+/// `glm5_next` (2026-09-21): `nvidia/GLM-5.3-Flash-NVFP4` ships ~19k of these
+/// scalars, one per quantised projection across the text stack and the MTP
+/// block. The GLM port reads NONE of them — its routed experts are bound as
+/// `Nvfp4Proj` (packed / block scales / `weight_scale_2`) and its dense MLP is
+/// dequantised to BF16 on the host; nothing in the port ever constructs a
+/// `QuantizedWeight`, which is the only struct with an `input_scale` field.
+///
+/// 🪤 The rule in both loaders is `name.ends_with(".input_scale")` and nothing
+/// else (`weights::SafetensorsLoader::should_skip_tensor`,
+/// `fast_weights::skip`). `.weight_scale` and `.weight_scale_2` — which the
+/// w4a16 path absolutely does read — cannot match that suffix, and
+/// `skip.rs`'s own test pins it.
 fn skip_activation_scales(config: &ModelConfig) -> bool {
-    matches!(config.model_type.as_str(), "qwen4_exp")
+    matches!(config.model_type.as_str(), "qwen4_exp" | "glm5_next")
 }
 
 /// Whether this model's loader builds no MTP head, so `mtp.*` need not be
@@ -448,4 +467,28 @@ fn binds_vision(config: &avarok_core::config::ModelConfig) -> bool {
     spark_model::factory::loader_for_config(config)
         .map(|l| l.binds_vision_encoder())
         .unwrap_or(true)
+}
+
+/// Which tensors will the model's weight loader read from DISK at bind time?
+///
+/// Asked once, before the load, and handed to whichever checkpoint loader
+/// runs — the same shape as `binds_vision`. An unresolvable model type answers
+/// `None`: upload everything, never withhold a tensor on a guess.
+///
+/// 🔴 NOT an allow-list here, unlike `skip_activation_scales` / `skip_mtp`.
+/// Those two withhold tensors on a name rule the SERVER decides, which is why
+/// they must be listed per model. This one is the loader's own declaration
+/// about tensors it will read itself, so the loader is the right place for it
+/// and a model that does not override the trait default defers nothing.
+fn defer_hook(config: &ModelConfig) -> Option<spark_runtime::weights::DeferHook> {
+    let hook = spark_model::factory::loader_for_config(config)
+        .ok()?
+        .defer_predicate(config)?;
+    tracing::info!(
+        "Weight loader for model_type '{}' defers part of the checkpoint: those tensors are \
+         recorded with their on-disk location and read by the model's own loader, never \
+         uploaded.",
+        config.model_type,
+    );
+    Some(hook)
 }

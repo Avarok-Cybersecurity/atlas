@@ -86,6 +86,14 @@ pub struct FastSafetensorsLoader {
     /// load time until `build_model` frees it — which is after the inference
     /// -buffer preflight has already refused the serve.
     pub skip_vision: bool,
+    /// Tensors the MODEL's weight loader will read from disk itself, so this
+    /// loader records their location instead of uploading them.
+    ///
+    /// Set by the caller from `ModelWeightLoader::defer_predicate()`, the same
+    /// way `skip_vision` comes from `binds_vision_encoder()`. `None` for every
+    /// model that does not opt in. See [`crate::weights::DeferHook`] for the
+    /// contract — including the half that says the pre-flight must agree.
+    pub defer: Option<crate::weights::DeferHook>,
 }
 
 /// Is this tensor part of a multimodal checkpoint's vision tower?
@@ -125,6 +133,7 @@ impl FastSafetensorsLoader {
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
             skip_vision: false,
+            defer: None,
         }
     }
 
@@ -140,6 +149,7 @@ impl FastSafetensorsLoader {
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
             skip_vision: false,
+            defer: None,
         }
     }
 }
@@ -152,6 +162,8 @@ impl WeightLoader for FastSafetensorsLoader {
         oom_reserve_bytes: usize,
     ) -> Result<WeightStore> {
         let skip_fn = |name: &str| self.should_skip_tensor(name);
+        let defer_fn =
+            |name: &str, dtype: crate::weights::WeightDtype| self.is_deferred(name, dtype);
 
         // Resolve shard list (sharded index, single file, or unindexed shards).
         let (shard_files, tensor_to_shard): (Vec<PathBuf>, Option<HashMap<String, String>>) =
@@ -159,14 +171,21 @@ impl WeightLoader for FastSafetensorsLoader {
 
         // Pre-flight OOM estimate (identical to SafetensorsLoader).
         //
-        // The n-gram tables are DEFERRED further down — they are never
+        // Deferred tensors are DEFERRED further down — they are never
         // uploaded, so counting them here refuses a model that fits. On
-        // LongCat-Flash-Lite they are 62.8 of the checkpoint's 138 GB, which
-        // is the difference between a 167 GB "peak" and a 98 GB one.
+        // LongCat-Flash-Lite the n-gram tables are 62.8 of the checkpoint's
+        // 138 GB, which is the difference between a 167 GB "peak" and a 98 GB
+        // one; on `nvidia/GLM-5.3-Flash-NVFP4` the MTP block's full-width
+        // routed experts are ~7.25 GB per EP=2 rank.
+        //
+        // 🔴 These two closures and the retain loop below MUST stay the same
+        // rule. A tensor counted here but deferred there inflates the peak;
+        // one deferred here but swept there is the OOM this pre-flight exists
+        // to prevent.
         let preflight_skip = |name: &str| skip_fn(name) || crate::weights::is_ngram_table(name);
         {
-            let estimated = estimate_load_bytes(&shard_files, &preflight_skip)?;
-            let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip)?;
+            let estimated = estimate_load_bytes(&shard_files, &preflight_skip, &defer_fn)?;
+            let has_fp8 = estimate_has_fp8(&shard_files, &preflight_skip, &defer_fn)?;
             let mult = self
                 .peak_memory_multiplier
                 .unwrap_or(if has_fp8 { 1.5 } else { 1.3 });
@@ -234,6 +253,7 @@ impl WeightLoader for FastSafetensorsLoader {
                 tensor_filter.as_deref(),
                 gpu,
                 &skip_fn,
+                &defer_fn,
                 self.try_direct_io,
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
@@ -268,6 +288,7 @@ impl WeightLoader for FastSafetensorsLoader {
 
         // Extra weights (e.g. MTP grafted from another quantization).
         let no_skip = |_: &str| false;
+        let no_defer = |_: &str, _: crate::weights::WeightDtype| false;
         let extra = model_dir.join("extra_weights.safetensors");
         if extra.exists() {
             tracing::info!("Fast-loading extra_weights.safetensors");
@@ -277,6 +298,7 @@ impl WeightLoader for FastSafetensorsLoader {
                 None,
                 gpu,
                 &no_skip,
+                &no_defer,
                 self.try_direct_io,
                 self.direct_io_tensor_cap,
                 self.prefetch_shards,
@@ -310,6 +332,7 @@ fn load_shard_fast(
     tensor_filter: Option<&[String]>,
     gpu: &dyn GpuBackend,
     skip_fn: &dyn Fn(&str) -> bool,
+    defer_fn: &dyn Fn(&str, crate::weights::WeightDtype) -> bool,
     try_direct_io: bool,
     direct_io_tensor_cap: usize,
     prefetch_shards: bool,
@@ -335,10 +358,18 @@ fn load_shard_fast(
     // on GB10 is managed memory, i.e. Linux swap, i.e. a kernel freeze. They
     // are recorded with their on-disk location and served either by streaming
     // per-table quantize-on-load or straight off NVMe by the row cache.
+    //
+    // The MODEL's loader can claim tensors too (`defer_fn`), for the other
+    // reason a tensor must not be swept: the bytes that reach the device are
+    // not the bytes on disk. `nvidia/GLM-5.3-Flash-NVFP4` ships the MTP
+    // block's routed experts full-width BF16 against a w4a16-only forward, so
+    // every one of them would be uploaded, read back, quantised and freed —
+    // ~7.25 GB per EP=2 rank resident across the whole 45-layer build.
     let mut deferred_here: Vec<(String, crate::weights::DeferredTensor)> = Vec::new();
+    let mut ngram_count = 0usize;
     #[allow(clippy::items_after_statements)]
     tensors.retain(|t| {
-        if crate::weights::is_ngram_table(&t.name) {
+        let mut defer = |t: &header::TensorMeta| {
             deferred_here.push((
                 t.name.clone(),
                 crate::weights::DeferredTensor {
@@ -348,15 +379,35 @@ fn load_shard_fast(
                     dtype: t.dtype,
                 },
             ));
+        };
+        if crate::weights::is_ngram_table(&t.name) {
+            defer(t);
+            ngram_count += 1;
             return false;
         }
-        !skip_fn(&t.name)
+        // 🪤 The model hook is asked only about tensors this rank KEEPS. Asked
+        // first, it would record a remote expert's on-disk location and invite
+        // a binder to read weights EP gave to another rank.
+        if skip_fn(&t.name) {
+            return false;
+        }
+        // 🪤 `from_f16` is not deferrable: the store's BF16 is a REWRITE of the
+        // disk bytes, so a (path, offset) locator would hand its reader F16.
+        // `estimate_load_bytes` refuses the same case, so the two agree.
+        if !t.from_f16 && defer_fn(&t.name, t.dtype) {
+            defer(t);
+            return false;
+        }
+        true
     });
     if !deferred_here.is_empty() {
         tracing::info!(
-            "Deferred {} n-gram table(s) in {} — served from disk, not uploaded",
+            "Deferred {} tensor(s) in {} ({} n-gram table(s), {} claimed by the model's \
+             weight loader) — served from disk, not uploaded",
             deferred_here.len(),
-            shard_path.display()
+            shard_path.display(),
+            ngram_count,
+            deferred_here.len() - ngram_count,
         );
         deferred_out.extend(deferred_here);
     }

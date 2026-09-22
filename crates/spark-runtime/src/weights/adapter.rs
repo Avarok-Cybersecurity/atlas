@@ -45,7 +45,8 @@ pub fn load_adapter_safetensors(
 
     // Header-only preflight (no mmap): F16 counts 2 B/elem — identical to
     // its post-conversion BF16 footprint.
-    let estimated = super::estimate_load_bytes(std::slice::from_ref(&path), &|_| false)?;
+    let estimated =
+        super::estimate_load_bytes(std::slice::from_ref(&path), &|_| false, &|_, _| false)?;
     let free = gpu.free_memory()?;
     if estimated + oom_reserve_bytes > free {
         bail!(

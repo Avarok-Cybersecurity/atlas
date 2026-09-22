@@ -67,7 +67,7 @@ use anyhow::Result;
 use avarok_core::config::ModelConfig;
 use spark_runtime::gpu::GpuBackend;
 use spark_runtime::kv_cache::KvCacheDtype;
-use spark_runtime::weights::WeightStore;
+use spark_runtime::weights::{DeferHook, WeightStore};
 
 use crate::layer::TransformerLayer;
 use crate::layers::VisionEncoder;
@@ -394,6 +394,29 @@ pub trait ModelWeightLoader {
     /// this is a peak-memory optimisation, not the correctness gate.
     fn binds_vision_encoder(&self) -> bool {
         true
+    }
+
+    /// Which checkpoint tensors will this loader read from the HOST at bind
+    /// time, so the weight loader must record their location instead of
+    /// uploading them?
+    ///
+    /// Default `None` — "upload everything" is the safe answer, exactly as
+    /// with [`Self::binds_vision_encoder`], so a loader that never overrides
+    /// this can never lose a tensor it needs. Plumbed the same way:
+    /// `serve_phases::weights` asks once, before the load, and hands the
+    /// answer to whichever checkpoint loader runs.
+    ///
+    /// This is NOT "skip": a deferred tensor's `(path, offset, shape, dtype)`
+    /// is kept in `WeightStore::deferred`, and the loader that asked for it is
+    /// the only thing that will ever read it. Override only when the bytes
+    /// that belong on the device are DERIVED from the on-disk ones — a
+    /// full-width export of a weight whose only forward is quantised, say —
+    /// because then the upload is pure transient and on a unified-memory box
+    /// the transient is the whole problem. See
+    /// [`spark_runtime::weights::DeferHook`] for the full contract, including
+    /// the half that says the OOM pre-flight must agree.
+    fn defer_predicate(&self, _config: &ModelConfig) -> Option<DeferHook> {
+        None
     }
 
     /// Load vision encoder weights (returns None for text-only models).
