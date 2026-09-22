@@ -293,9 +293,9 @@ fn perf_env_defaults_match_the_scheduler() {
     );
     // And the rule itself, executed rather than read: unset MUST be off.
     assert!(
-        !crate::gate::record::resolve_perf_env(|_| None)
+        crate::gate::record::resolve_perf_env(|_| None)
             .get("AVAROK_PREFILL_CODISPATCH")
-            .is_some_and(|v| v == "1"),
+            .is_none_or(|v| v != "1"),
         "an unset codispatch must resolve to off"
     );
     // The scheduler must no longer read the variable behind the SSOT's back —
