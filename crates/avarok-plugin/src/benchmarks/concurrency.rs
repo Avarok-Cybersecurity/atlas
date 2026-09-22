@@ -357,13 +357,48 @@ fn warm_cache_capable(conc: usize, slots: Option<usize>, earlier: &[usize]) -> b
     slots.is_none_or(|slots| slots > slots_needed(conc, earlier))
 }
 
+/// A cell's cache state is UNCONTROLLED when its requests disagree about it.
+///
+/// ★ UNIFORMLY COLD IS CONTROLLED. This used to fail any cell that requested a
+/// warm-up and then observed less than `WARM_CACHE_FLOOR` cached — testing
+/// INTENT against OUTCOME. That is the wrong invariant, and on the published
+/// ladder's own instrument it fails a correct run: at isl 128 the prompt is
+/// ~200 tokens, `marconi_min_tokens()` declines a snapshot restore below
+/// `DEFAULT_MARCONI_MIN_TOKENS = 256`, and so EVERY request of EVERY cell
+/// reports 0 cached (`prefix_reuse.rs` names that path). The published Atlas leg
+/// ran the same threshold with no override and was uniformly cold too — and
+/// still set the bar this gate is drawn against.
+///
+/// What actually makes a cell's tok/s unreadable is a MIXTURE: a warm request
+/// skips prefill work, so a cell holding both warm and cold requests is two
+/// measurements reported as one. Coldness is not the defect; disagreement is.
+///
+/// Per-cell is the right scope, not a narrowed one — the sweep already declares
+/// whole cells cold by construction above the warm-capacity bound
+/// (`warm_cache_capable`), so cross-cell mixture is intended and only WITHIN a
+/// cell does a mixture corrupt a single number.
+///
+/// ★ WHAT THIS GIVES UP, deliberately: it no longer reports "you asked for a
+/// warm-up and got nothing". That is real operator information, and it survives
+/// because the record still carries `min_cached_prompt_pct` and
+/// `min_cached_prompt_tokens` on every run — the evidence line prints the
+/// per-request `cached [a/b, ...]` too. What is lost is the automatic FAIL, and
+/// that is the point: the engine declining a restore it has measured as a loss
+/// must not be reported as an operator error.
 fn cache_is_uncontrolled(requests: &[RequestEvidence], warmup: usize) -> bool {
-    warmup > 0
-        && requests.iter().any(|request| {
-            request.prompt_tokens == 0
-                || (request.cached_prompt_tokens as f64)
-                    < WARM_CACHE_FLOOR * request.prompt_tokens as f64
-        })
+    if warmup == 0 {
+        return false;
+    }
+    // A request with no usage at all says nothing about the cache state, so the
+    // cell cannot be claimed as controlled in either direction.
+    if requests.iter().any(|request| request.prompt_tokens == 0) {
+        return true;
+    }
+    let warm = |request: &RequestEvidence| {
+        (request.cached_prompt_tokens as f64)
+            >= WARM_CACHE_FLOOR * request.prompt_tokens as f64
+    };
+    requests.iter().any(&warm) != requests.iter().all(&warm)
 }
 
 /// The prompt identities one cell executes before and during measurement.
