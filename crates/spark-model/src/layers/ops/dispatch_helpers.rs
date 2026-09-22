@@ -20,24 +20,69 @@ use spark_runtime::gpu::GpuBackend;
 
 // The two BATCHED-PREFILL ADMISSION flags below are not GEMM-path dispatch and
 // have no `GemmDispatch` field; they gate whether concurrent prefills co-admit
-// into one forward. They stay env reads for now (flag→lever conversion is
-// per-PR follow-up work, tracked in the integration notes).
+// into one forward. CODISPATCH is now a command-line flag on the same terms as
+// VARLEN below -- the flag→lever conversion those integration notes tracked.
+// Q12 stays env-only: it is the older spelling of the same path, kept for
+// recipes that predate the rename, and nothing measures it.
+
+/// The resolved CODISPATCH decision. ONE cell, FIVE readers: the three
+/// scheduler sites in `spark-server` (the admission window, the chunk-0 defer,
+/// and the shared-geometry guard) and the two batched-first-chunk sites in this
+/// crate. A `OnceLock` so the decision cannot change mid-serve.
+///
+/// ★ WHY IT BECAME A FLAG, 2026-09-22. `bench.yaml env:` is NODE-WIDE, so the
+/// env spelling arms every gate on a box at once. `concurrency-sweep` wants
+/// this lever and `ttft-warm-gate` cannot tolerate it: three control records at
+/// 0 agree to 0.045% (193.469 / 193.528 / 193.556 ms) while the one run at 1 is
+/// 202.760 ms -- +4.78%, about 107x that spread, against a +3.0% limit. Only a
+/// per-gate flag can give one gate the lever and deny it to the other.
+static PREFILL_CODISPATCH: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Publish the command line's `--prefill-codispatch` decision. Returns the
+/// value IN FORCE, which differs from `enabled` when something already resolved
+/// the cell (then the command line did NOT take effect -- the caller warns,
+/// mirroring `set_prefill_varlen_from_cli`). Absent flag ⇒ never called ⇒ the
+/// documented `AVAROK_PREFILL_CODISPATCH` fallback stays reachable.
+pub fn set_prefill_codispatch_from_cli(enabled: bool) -> bool {
+    let _ = PREFILL_CODISPATCH.set(enabled);
+    *PREFILL_CODISPATCH.get().expect("just set")
+}
+
+/// Cross-request co-dispatch of fresh prompts enabled? (`--prefill-codispatch`,
+/// legacy `AVAROK_PREFILL_CODISPATCH=1`; default OFF).
+///
+/// SSOT for all five readers. They must agree: the scheduler defers chunk-0 on
+/// this decision and the model layer then decides whether the batched path is
+/// eligible, so a disagreement strands streams mid-admission.
+pub fn prefill_codispatch_enabled() -> bool {
+    *PREFILL_CODISPATCH.get_or_init(|| {
+        bool_value_enabled(std::env::var("AVAROK_PREFILL_CODISPATCH").ok().as_deref())
+    })
+}
 
 /// Whether chunk-zero streams may use the paged batched-prefill path.
 ///
-/// `AVAROK_PREFILL_CODISPATCH` is the end-to-end request-admission flag;
-/// keep the older Q12 spelling as a compatibility alias for existing recipes.
+/// ★ THE OR MUST SURVIVE THE PROMOTION. In THIS crate codispatch is one of TWO
+/// ways to enable the same path, OR-ed with the older `AVAROK_Q12_BATCHED_FIRST_CHUNK`
+/// spelling; in `spark-server` it is a standalone scheduling switch. A 1:1
+/// replacement of the env read here would have silently dropped the Q12 alias
+/// and turned a path off for recipes that still set it. The two meanings are
+/// why this reads as an explicit OR rather than sharing the scheduler's call.
 pub fn prefill_batched_first_chunk_enabled() -> bool {
-    prefill_batched_first_chunk_from_values([
+    prefill_batched_first_chunk_from_parts(
+        prefill_codispatch_enabled(),
         std::env::var("AVAROK_Q12_BATCHED_FIRST_CHUNK")
             .ok()
             .as_deref(),
-        std::env::var("AVAROK_PREFILL_CODISPATCH").ok().as_deref(),
-    ])
+    )
 }
 
-fn prefill_batched_first_chunk_from_values(values: [Option<&str>; 2]) -> bool {
-    values.into_iter().any(bool_value_enabled)
+/// The pure OR, kept separable so the rule is testable without touching a
+/// process-wide `OnceLock` or the environment. Note the ASYMMETRY that the
+/// promotion introduced and that the signature now states: codispatch arrives
+/// ALREADY RESOLVED (flag, else env), while Q12 is still a raw env spelling.
+fn prefill_batched_first_chunk_from_parts(codispatch: bool, q12: Option<&str>) -> bool {
+    codispatch || bool_value_enabled(q12)
 }
 
 /// The resolved VARLEN batched-prefill decision. One cell, three readers
@@ -106,7 +151,7 @@ pub fn log_gemm_shape(gpu: &dyn GpuBackend, name: &str, m: u32, n: u32, k: u32) 
 
 #[cfg(test)]
 mod tests {
-    use super::{bool_value_enabled, prefill_batched_first_chunk_from_values};
+    use super::{bool_value_enabled, prefill_batched_first_chunk_from_parts};
 
     #[test]
     fn accepts_boolean_environment_spellings() {
@@ -118,17 +163,28 @@ mod tests {
         assert!(!bool_value_enabled(None));
     }
 
+    /// ★ THE ASSERTION THAT CATCHES A 1:1 PROMOTION. When codispatch became a
+    /// command-line flag it stopped being an env read HERE too -- and the
+    /// tempting edit was to replace both env reads with the one resolved
+    /// decision. That would have dropped the Q12 alias silently, turning the
+    /// batched chunk-0 path OFF for every recipe that still sets the older
+    /// spelling and nothing but a production regression to say so. The third
+    /// case below is the one that fails if anyone does it.
     #[test]
     fn either_chunk_zero_spelling_enables_admission() {
-        assert!(prefill_batched_first_chunk_from_values([Some("1"), None]));
-        assert!(prefill_batched_first_chunk_from_values([
-            None,
-            Some("true")
-        ]));
-        assert!(!prefill_batched_first_chunk_from_values([None, None]));
-        assert!(!prefill_batched_first_chunk_from_values([
-            Some("0"),
-            Some("false")
-        ]));
+        // codispatch alone (the flag, or its env fallback, already resolved)
+        assert!(prefill_batched_first_chunk_from_parts(true, None));
+        // Q12 alone -- the alias that must survive the promotion
+        assert!(prefill_batched_first_chunk_from_parts(false, Some("true")));
+        assert!(prefill_batched_first_chunk_from_parts(false, Some("1")));
+        // neither
+        assert!(!prefill_batched_first_chunk_from_parts(false, None));
+        // explicit off on both spellings
+        assert!(!prefill_batched_first_chunk_from_parts(false, Some("0")));
+        assert!(!prefill_batched_first_chunk_from_parts(false, Some("false")));
+        // ★ codispatch OFF does not veto Q12: it is an OR, not a master switch.
+        // An `&&` here would read as "codispatch gates everything", which is
+        // what the scheduler means by the word and NOT what this crate does.
+        assert!(prefill_batched_first_chunk_from_parts(false, Some("1")));
     }
 }

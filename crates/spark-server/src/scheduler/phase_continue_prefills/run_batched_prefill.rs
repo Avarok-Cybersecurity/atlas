@@ -47,18 +47,16 @@ pub(super) fn run_batched_prefill_step(
     // planner below AND subsumes the codispatch shared-geometry hack (varlen
     // admits ragged chunk-0 batches directly, so equal-length coercion is
     // redundant; per-stream geometry is what the cu_seqlens path wants).
-    // Precedence: when both `--prefill-varlen-batch` and the codispatch env
+    // Precedence: when both `--prefill-varlen-batch` and `--prefill-codispatch`
     // are set, varlen wins.
     let varlen = spark_model::layers::ops::prefill_varlen_enabled();
-    // Co-dispatch (AVAROK_PREFILL_CODISPATCH=1): when all streams are at chunk 0
+    // Co-dispatch (`--prefill-codispatch`): when all streams are at chunk 0
     // and equal-length, give them ONE shared geometry so the kernel-batched path
     // is eligible (check_kernel_batched_eligible requires identical chunk_len /
     // chunk_start / is_last across streams). Ragged or non-chunk-0 batches keep
     // per-stream geometry, which the dispatcher handles via per-stream fallback.
     let shared_geom: Option<(usize, bool)> = if !varlen
-        && std::env::var("AVAROK_PREFILL_CODISPATCH")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
+        && spark_model::layers::ops::prefill_codispatch_enabled()
         && !model.is_mla()
         && n >= 2
         && prefilling.iter().all(|p| p.chunk_offset == 0)
