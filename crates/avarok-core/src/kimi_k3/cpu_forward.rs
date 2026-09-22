@@ -10,12 +10,13 @@ use super::cpu_weights::{
     Ablation, DenseMlp, K3CpuLayer, K3CpuModel, KdaWeights, MixerW, MlaWeights, MlpW, MoeWeights,
 };
 use super::kda::{KdaConfig, KdaState, bounded_gate, kda_decode_token};
-use super::latent_moe::{LatentMoeConfig, mix_routed_experts, sigmoid_topk};
+use super::latent_moe::{LatentMoeConfig, mix_routed_experts};
 use super::mla::{MlaConfig, mla_decode_token};
 use super::ops::{embed_token, matvec, matvec_column_tp};
 use super::situ::sigmoid;
 
 mod dense;
+mod moe;
 mod stream;
 pub use stream::AttnResStream;
 
@@ -44,6 +45,9 @@ pub struct K3LayerCtx<'a> {
     /// After row-parallel `o_proj` (and dense MLP `down`). None at TP=1.
     pub reduce_hidden: Option<HiddenReduce<'a>>,
     pub dense_mlp: Option<DenseMlpCore<'a>>,
+    /// Rank in TP. Slice hidden for routed down/up (7168/8, not n_experts).
+    pub tp_rank: usize,
+    pub tp_world: usize,
 }
 
 impl<'a> K3LayerCtx<'a> {
@@ -60,6 +64,8 @@ impl<'a> K3LayerCtx<'a> {
             rope_theta: model.rope_theta,
             reduce_hidden: None,
             dense_mlp: None,
+            tp_rank: 0,
+            tp_world: 1,
         }
     }
 }
@@ -297,7 +303,7 @@ where
             }
             y
         }
-        MlpW::Moe(w) => moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
+        MlpW::Moe(w) => moe::moe_mlp_with(w, &x, ctx, ablation.force_expert, &mut moe_experts)?,
     };
     stream.add(&mlp_out);
     Ok(())
@@ -411,7 +417,6 @@ where
     ))
 }
 
-
 fn mla_kv_from_split(
     k_b: &[f32],
     v_b: &[f32],
@@ -469,41 +474,4 @@ fn pack_mla_kv(kvb: &[f32], k_pe: &[f32], cfg: &MlaConfig) -> (Vec<f32>, Vec<f32
         v[h * dv..(h + 1) * dv].copy_from_slice(&src[nope..]);
     }
     (k, v)
-}
-
-fn moe_mlp_with<F>(
-    w: &MoeWeights,
-    x: &[f32],
-    ctx: &K3LayerCtx<'_>,
-    force: Option<usize>,
-    experts_fn: &mut F,
-) -> Result<Vec<f32>>
-where
-    F: FnMut(&MoeWeights, &[f32], &[usize], &[f32], &LatentMoeConfig) -> Result<Vec<f32>>,
-{
-    let mut logits = matvec(&w.router, x, ctx.moe.n_routed, ctx.moe.hidden);
-    if let Some(e) = force {
-        logits.fill(0.0);
-        logits[e] = 8.0;
-    }
-    let shared = w
-        .shared
-        .as_ref()
-        .map(|s| dense::run(ctx, s, x, ctx.moe.expert_hidden))
-        .transpose()?;
-    let latent = matvec(&w.down, x, ctx.moe.latent, ctx.moe.hidden);
-    let (ids, weights) = sigmoid_topk(&logits, &w.bias, ctx.moe.top_k);
-    let mixed = experts_fn(w, &latent, &ids, &weights, ctx.moe)?;
-    let mixed = if ctx.moe.use_norm {
-        rms_norm(&mixed, &w.norm, ctx.eps)
-    } else {
-        mixed
-    };
-    let mut out = matvec(&w.up, &mixed, ctx.moe.hidden, ctx.moe.latent);
-    if let Some(s) = shared {
-        for (o, ss) in out.iter_mut().zip(&s) {
-            *o += ss;
-        }
-    }
-    Ok(out)
 }

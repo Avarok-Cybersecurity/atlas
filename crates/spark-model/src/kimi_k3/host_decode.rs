@@ -93,6 +93,8 @@ impl K3BoundLayer {
             rope_theta: ctx.config.rope_theta as f32,
             reduce_hidden: Some(reduce_ref),
             dense_mlp: if use_dense { Some(&dense_core) } else { None },
+            tp_rank: ctx.config.tp_rank,
+            tp_world: ctx.config.tp_world_size.max(1),
         };
         let use_cuda_kda = want_cuda_kda && self.spec.mixer == MixerKind::Kda;
         let use_cuda_mla = want_cuda_mla && self.spec.mixer == MixerKind::Mla;
@@ -361,7 +363,10 @@ fn bind_layer(layer: &K3BoundLayer, gpu: &dyn GpuBackend) -> Result<K3CpuLayer> 
     for (w, meta) in layer.weights.iter().zip(&layer.weight_meta) {
         // IQ2 experts stay packed on GPU; assemble_moe leaves empty slots and
         // the mix callback dequants top-k on demand.
-        if matches!(meta.dtype, WeightDtype::Iq2Xs | WeightDtype::Q8_0 | WeightDtype::Iq3Xxs) {
+        if matches!(
+            meta.dtype,
+            WeightDtype::Iq2Xs | WeightDtype::Q8_0 | WeightDtype::Iq3Xxs
+        ) {
             continue;
         }
         got.insert(

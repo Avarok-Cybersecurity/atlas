@@ -10,7 +10,6 @@
 //! cannot be used as either one.
 
 #[cfg(test)]
-#[cfg(test)]
 use anyhow::{Result, ensure};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,10 +44,7 @@ pub fn axis_for(hf_name: &str) -> Axis {
 }
 
 fn replicated_name(name: &str) -> bool {
-    name.contains("routed_expert_down_proj")
-        || name.contains("routed_expert_up_proj")
-        || name.contains("routed_expert_norm")
-        || name.contains("shared_experts.")
+    name.contains("routed_expert_norm")
         || name.contains("q_a_proj")
         || name.contains("q_a_layernorm")
         || name.contains("kv_a_proj")
@@ -91,7 +87,9 @@ fn splits_cols_name(name: &str) -> bool {
 }
 
 fn row_why(name: &str) -> &'static str {
-    if name.contains("k_b_proj") || name.contains("v_b_proj") || name.contains("q_b_proj") {
+    if name.contains("routed_expert_up") {
+        "hidden_over_tp"
+    } else if name.contains("k_b_proj") || name.contains("v_b_proj") || name.contains("q_b_proj") {
         "heads"
     } else if name.ends_with(".A_log") || name.contains("dt_bias") || name.contains("conv1d") {
         "heads"
@@ -109,7 +107,9 @@ fn row_why(name: &str) -> &'static str {
 }
 
 fn col_why(name: &str) -> &'static str {
-    if name.contains("o_proj") {
+    if name.contains("routed_expert_down") {
+        "hidden_over_tp"
+    } else if name.contains("o_proj") {
         "head_concat_then_allreduce"
     } else if name.contains(".w2.") {
         "expert_intermediate"
@@ -189,10 +189,7 @@ pub fn op_expected_numel(hf_name: &str, hf_shape: &[usize], tp: usize) -> Result
 
 #[cfg(test)]
 fn op_replicated(name: &str) -> bool {
-    name.contains("routed_expert_down_proj")
-        || name.contains("routed_expert_up_proj")
-        || name.contains("routed_expert_norm")
-        || name.contains("shared_experts.")
+    name.contains("routed_expert_norm")
         || name.contains("q_a_proj")
         || name.contains("q_a_layernorm")
         || name.contains("kv_a_proj")

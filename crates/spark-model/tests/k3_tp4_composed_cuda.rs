@@ -289,6 +289,8 @@ fn k3_tp4_rank_local_composed_graph_reset_and_history() -> Result<()> {
         rope_theta: c.rope_theta as f32,
         reduce_hidden: None,
         dense_mlp: Some(&dense_core),
+        tp_rank: 0,
+        tp_world: 1,
     };
     let build_seconds = build.elapsed().as_secs_f64();
     let run = |inputs: &[usize]| -> Result<Vec<Vec<f32>>> {

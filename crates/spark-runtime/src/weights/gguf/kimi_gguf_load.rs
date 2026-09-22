@@ -295,11 +295,17 @@ mod tests {
     }
 
     #[test]
-    fn routed_latent_projections_stay_replicated() {
+    fn routed_latent_projections_split_hidden_over_tp() {
         let down = "model.layers.1.block_sparse_moe.routed_expert_down_proj.weight";
         let up = "model.layers.1.block_sparse_moe.routed_expert_up_proj.weight";
-        assert!(!kimi_cols(down), "routed down is full [latent, hidden]");
-        assert!(!kimi_rows(up), "routed up is full [hidden, latent]");
+        assert!(
+            kimi_cols(down),
+            "routed down splits hidden (7168/8), not n_experts"
+        );
+        assert!(
+            kimi_rows(up),
+            "routed up splits hidden (7168/8), not n_experts"
+        );
         assert!(kimi_cols("model.layers.0.mlp.down_proj.weight"));
         assert!(kimi_rows("model.layers.0.mlp.up_proj.weight"));
     }

@@ -73,29 +73,34 @@ fn hidden_over_tp_is_not_the_expert_axis() {
     assert_eq!(HIDDEN / TP, N_EXPERTS);
     let row = contract(down_name(), &[LATENT, HIDDEN], TP).unwrap();
     assert!(row.matches());
-    assert!(row.replicated);
-    assert_eq!(row.tp_axis, "replicated");
-    assert_eq!(row.numel_on_rank, LATENT * HIDDEN);
-    assert_eq!(row.op_expected_numel, 25_690_112);
-    assert_ne!(row.numel_on_rank, LATENT * (HIDDEN / TP));
-    assert_ne!(row.numel_on_rank, 3_211_264);
+    assert!(!row.replicated);
+    assert_eq!(row.after_tp, vec![LATENT, HIDDEN / TP]);
+    assert_eq!(row.tp_axis, "cols:hidden_over_tp");
+    assert_eq!(row.numel_on_rank, LATENT * (HIDDEN / TP));
+    assert_eq!(row.numel_on_rank, 3_211_264);
+    assert_eq!(row.op_expected_numel, 3_211_264);
 }
 
 #[test]
-fn sliced_routed_down_does_not_match_the_op() {
-    let stored_if_sliced = LATENT * (HIDDEN / TP);
-    assert_eq!(stored_if_sliced, 3_211_264);
+fn sliced_routed_down_matches_3584_by_hidden_over_tp() {
+    let stored = LATENT * (HIDDEN / TP);
+    assert_eq!(stored, 3_211_264);
     let op = op_expected_numel(down_name(), &[LATENT, HIDDEN], TP).unwrap();
-    assert_eq!(op, LATENT * HIDDEN);
-    assert_ne!(stored_if_sliced, op);
+    assert_eq!(op, stored);
+    let row = contract(down_name(), &[LATENT, HIDDEN], TP).unwrap();
+    assert_eq!(row.tp_axis, "cols:hidden_over_tp");
+    assert!(!row.tp_axis.contains("n_experts"));
+    assert_eq!(row.after_tp, vec![LATENT, HIDDEN / TP]);
 }
 
 #[test]
-fn routed_up_is_replicated_full_hidden_by_latent() {
+fn routed_up_splits_hidden_not_latent() {
     let name = "model.layers.1.block_sparse_moe.routed_expert_up_proj.weight";
     let row = contract(name, &[HIDDEN, LATENT], TP).unwrap();
-    assert!(row.matches() && row.replicated);
-    assert_eq!(row.numel_on_rank, HIDDEN * LATENT);
+    assert!(row.matches() && !row.replicated);
+    assert_eq!(row.after_tp, vec![HIDDEN / TP, LATENT]);
+    assert_eq!(row.tp_axis, "rows:hidden_over_tp");
+    assert_eq!(row.numel_on_rank, (HIDDEN / TP) * LATENT);
 }
 
 #[test]
@@ -171,8 +176,8 @@ fn embed_and_lm_head_keep_full_vocab_and_hidden() {
 fn row_text_names_replication_not_expert_count() {
     let row = contract(down_name(), &[LATENT, HIDDEN], TP).unwrap();
     let text = format_row("blk.1.ffn_routed_down.weight", &[HIDDEN, LATENT], &row);
-    assert!(text.contains("replicated"));
-    assert!(text.contains("25690112"));
+    assert!(text.contains("hidden_over_tp"));
+    assert!(text.contains("3211264"));
     assert!(!text.contains("n_experts"));
 }
 
