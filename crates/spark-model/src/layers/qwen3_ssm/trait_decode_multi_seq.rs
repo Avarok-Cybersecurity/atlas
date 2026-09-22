@@ -307,7 +307,23 @@ impl Qwen3SsmLayer {
                 // The launch-overhead fix at small N remains CUDA graphs for
                 // n>=2, not MoE batching (graphs capture these per-token
                 // launches for free).
-                if crate::layers::moe_grouped_decode_for(n) {
+                if self.ffn.fp8_grouped_decode_ok(n, ctx) {
+                    // CROSS-ROW GROUPED FP8 MoE (G9): FP8 block-scaled experts had
+                    // no batched arm at all below 64 rows — forward_token_major
+                    // and forward_prefill both hand FP8 back to the per-token
+                    // forward_batched loop. One expert-grouped dispatch instead.
+                    self.ffn
+                        .forward_fp8_grouped_decode(normed_base, n, ctx, stream)?;
+                    let moe_out = ctx.buffers.moe_output();
+                    ops::residual_add(
+                        ctx.gpu,
+                        self.residual_add_k,
+                        hidden,
+                        moe_out,
+                        (n * h) as u32,
+                        stream,
+                    )?;
+                } else if crate::layers::moe_grouped_decode_for(n) {
                     // Grouped-GEMM MoE over all N tokens (each expert read once).
                     // Only sensible under CUDA graphs, where the sort/permute
                     // launch overhead that made this a loss is captured for free.

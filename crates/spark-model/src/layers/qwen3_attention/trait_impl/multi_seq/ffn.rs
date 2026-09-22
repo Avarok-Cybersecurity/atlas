@@ -180,6 +180,37 @@ impl Qwen3AttentionLayer {
                 (n * h) as u32,
                 stream,
             )?;
+        } else if !force_seq_ffn && self.ffn.fp8_grouped_decode_ok(n, fwd) {
+            // CROSS-ROW GROUPED FP8 MoE (G9): ahead of BOTH the grouped-GEMM
+            // arm (whose forward_prefill hands FP8 back to the per-token
+            // forward_batched loop below 64 rows) and the pairwise K=2 walk
+            // (which still streams every routed expert once per PAIR). One
+            // expert-grouped dispatch over all n rows, weights read once.
+            let normed2 = fwd.buffers.norm_output();
+            ops::residual_add_rms_norm(
+                fwd.gpu,
+                self.residual_add_rms_norm_k,
+                hidden,
+                o_out,
+                &self.post_attn_norm,
+                normed2,
+                residual,
+                n as u32,
+                h as u32,
+                eps,
+                stream,
+            )?;
+            self.ffn
+                .forward_fp8_grouped_decode(normed2, n, fwd, stream)?;
+            let moe_out = fwd.buffers.moe_output();
+            ops::residual_add(
+                fwd.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (n * h) as u32,
+                stream,
+            )?;
         } else if !force_seq_ffn
             && (self.ffn.is_dense() || crate::layers::moe_grouped_decode_for(n))
         {

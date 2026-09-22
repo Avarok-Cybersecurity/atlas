@@ -1278,6 +1278,27 @@ impl Qwen3SsmLayer {
                 (num_tokens * h) as u32,
                 stream,
             )?;
+        } else if self.ffn.fp8_grouped_decode_ok(num_tokens, ctx) {
+            // CROSS-ROW GROUPED FP8 MoE (G9, 2026-09-22): the per-token `else`
+            // arm below ran the whole MoE once per verify row — Σk = 4/8/16
+            // serial single-token dispatches per layer at C=1/2/4 with K=4
+            // drafts — so aggregate MoE throughput was flat above C=1.
+            // forward_fp8_grouped_decode groups the rows by expert and reads
+            // each routed/shared expert once per step; row math is
+            // bit-identical to the loop's kernels (see that file's header).
+            k4_diag_checkpoint(ctx, "10a:residual_add_rms_norm", stream)?;
+            self.ffn
+                .forward_fp8_grouped_decode(normed2_base, num_tokens, ctx, stream)?;
+            k4_diag_checkpoint(ctx, "10b:ffn_fp8_grouped_decode", stream)?;
+            let moe_out = ctx.buffers.moe_output();
+            ops::residual_add(
+                ctx.gpu,
+                self.residual_add_k,
+                hidden,
+                moe_out,
+                (num_tokens * h) as u32,
+                stream,
+            )?;
         } else if self.ffn.is_dense() {
             // WIDE-VERIFY BATCHED DENSE FFN (DFlash γ=16, num_tokens=17). This
             // is the MAJORITY layer type (GDN/SSM) on the hybrid 27B, so its

@@ -495,6 +495,28 @@ impl FfnComponent {
             }
         }
     }
+
+    /// Whether the cross-row grouped FP8 MoE decode can serve `m` rows here
+    /// (MoE with FP8 block-scaled experts, grouped kernels shipped, arena wide
+    /// enough, kill switch unset). False for dense/none.
+    pub fn fp8_grouped_decode_ok(&self, m: usize, ctx: &ForwardContext) -> bool {
+        matches!(self, Self::Moe(moe) if moe.fp8_grouped_decode_ok(m, ctx))
+    }
+
+    /// Cross-row grouped FP8 MoE decode over `[m, H]` rows into `moe_output()`.
+    /// Gate on `fp8_grouped_decode_ok` first; MoE-only by construction.
+    pub fn forward_fp8_grouped_decode(
+        &self,
+        input: DevicePtr,
+        m: usize,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        match self {
+            Self::Moe(moe) => moe.forward_fp8_grouped_decode(input, m, ctx, stream),
+            _ => anyhow::bail!("forward_fp8_grouped_decode is MoE-only (m={m})"),
+        }
+    }
 }
 
 pub(crate) use gemv_tier::batch8_kernel;

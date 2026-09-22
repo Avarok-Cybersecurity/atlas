@@ -55,6 +55,7 @@ mod fp8_moe;
 mod fp8_moe_batch_a;
 #[path = "ops/fp8_moe_batch_b.rs"]
 mod fp8_moe_batch_b;
+mod fp8_moe_grouped;
 #[path = "ops/gdn_flashinfer.rs"]
 // The FlashInfer GDN bridge uses dlopen/dlsym, which do not exist on Windows.
 // The absent variant is mounted at the SAME module path so both call sites
@@ -239,6 +240,7 @@ pub use fp8_gemv_batch::*;
 pub use fp8_moe::*;
 pub use fp8_moe_batch_a::*;
 pub use fp8_moe_batch_b::*;
+pub use fp8_moe_grouped::*;
 pub use gemm_dense::*;
 pub use gemm_dense_int8::*;
 pub use gemm_fp4::*;
