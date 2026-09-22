@@ -8,7 +8,6 @@
 
 use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
-use spark_runtime::kernel_args::KernelLaunch;
 
 use super::{
     AttnV41, AttnV41LayerState, AttnV41LayerWeights, AttnV41Run, SharedV41, at, upload_i32,
@@ -42,7 +41,7 @@ impl AttnV41 {
             start_pos + m,
             c.max_seq
         );
-        let (nh, hd, dim) = (c.n_heads, c.head_dim, c.dim);
+        let (nh, hd) = (c.n_heads, c.head_dim);
         let yarn = w.role.ratio > 0;
         let pos: Vec<i32> = (0..m).map(|t| (start_pos + t) as i32).collect();
         let hpos: Vec<i32> = pos
@@ -52,26 +51,7 @@ impl AttnV41 {
         upload_i32(gpu, self.pos, &pos)?;
         upload_i32(gpu, self.head_pos, &hpos)?;
 
-        // q: low-rank, normed, up-projected, rotated
-        self.gemm(gpu, x, w.wq_a, self.qr_raw, m, c.q_rank, dim, stream)?;
-        self.rmsnorm(
-            gpu,
-            false,
-            self.qr_raw,
-            w.q_norm,
-            self.qr,
-            m,
-            c.q_rank,
-            stream,
-        )?;
-        self.gemm(gpu, self.qr, w.wq_b, self.q, m, nh * hd, c.q_rank, stream)?;
-        self.rope(gpu, self.q, self.head_pos, m * nh, hd, yarn, false, stream)?;
-
-        // kv: one latent row per token, normed, rotated, fp8
-        self.gemm(gpu, x, w.wkv, self.kv_raw, m, hd, dim, stream)?;
-        self.rmsnorm(gpu, false, self.kv_raw, w.kv_norm, self.kv, m, hd, stream)?;
-        self.rope(gpu, self.kv, self.pos, m, hd, yarn, false, stream)?;
-        self.act_quant(gpu, self.kv, m * hd, stream)?;
+        self.q_kv_projections(gpu, w, x, m, yarn, stream)?;
 
         // the window ring (stream-ordered copies, no host sync)
         let win = c.window;
@@ -188,69 +168,16 @@ impl AttnV41 {
         );
         upload_i32(gpu, self.idx_dev, &idx)?;
 
-        // sparse attention with the sink, then the inverse rotation
-        let scale = (hd as f32).powf(-0.5);
-        KernelLaunch::new(gpu, self.k.sparse_attn)
-            .grid([m as u32, nh as u32, 1])
-            .block([256, 1, 1])
-            .arg_ptr(self.q)
-            .arg_ptr(rows_a)
-            .arg_ptr(rows_b.unwrap_or(rows_a))
-            .arg_u32(rows_a_len as u32)
-            .arg_ptr(self.idx_dev)
-            .arg_ptr(w.sink)
-            .arg_ptr(self.o)
-            .arg_u32(nh as u32)
-            .arg_u32(hd as u32)
-            .arg_u32(topk as u32)
-            .arg_f32(scale)
-            .launch(stream)?;
-        // `run.o` is the pre-rotation output (the reference's `sa_o`); the
-        // inverse rotation runs on a copy
-        let o_copy = self.o_rot;
-        gpu.copy_d2d_async(self.o, o_copy, m * nh * hd * 2, stream)?;
-        self.rope(gpu, o_copy, self.head_pos, m * nh, hd, yarn, true, stream)?;
-
-        // grouped low-rank output projection: og[t, g*o_rank + r] = o_g . wo_a[g*o_rank + r]
-        let gw = c.gw();
-        for g in 0..c.groups {
-            KernelLaunch::new(gpu, self.k.slice_cols)
-                .grid([m as u32, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(o_copy)
-                .arg_ptr(self.slice_in)
-                .arg_u32((nh * hd) as u32)
-                .arg_u32((g * gw) as u32)
-                .arg_u32(gw as u32)
-                .launch(stream)?;
-            self.gemm(
-                gpu,
-                self.slice_in,
-                w.wo_a.at_rows(g * c.o_rank, gw),
-                self.slice_out,
-                m,
-                c.o_rank,
-                gw,
-                stream,
-            )?;
-            KernelLaunch::new(gpu, self.k.scatter_cols)
-                .grid([m as u32, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(self.slice_out)
-                .arg_ptr(self.og)
-                .arg_u32((c.groups * c.o_rank) as u32)
-                .arg_u32((g * c.o_rank) as u32)
-                .arg_u32(c.o_rank as u32)
-                .launch(stream)?;
-        }
-        self.gemm(
+        self.attend_and_project(
             gpu,
-            self.og,
-            w.wo_b,
-            self.out,
+            w,
+            rows_a,
+            rows_a_len,
+            rows_b,
+            self.idx_dev,
+            topk,
             m,
-            dim,
-            c.groups * c.o_rank,
+            yarn,
             stream,
         )?;
         // no host sync here: everything downstream runs on the same stream,

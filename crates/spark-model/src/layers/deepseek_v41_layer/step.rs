@@ -6,17 +6,39 @@
 
 use anyhow::{Context, Result, ensure};
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
-use spark_runtime::kernel_args::KernelLaunch;
 
-use super::{DeepSeekV41Layer, V41LayerState};
+use super::step_graph_on;
+use super::{DeepSeekV41Layer, GraphMode, V41LayerState, graph_mode};
 use crate::layer::{ForwardContext, LayerState};
 use crate::layers::attn_v41::SharedV41;
 use crate::layers::engram_v41::ENGRAM_ROW_BYTES;
 use crate::layers::ops;
-use crate::layers::qwen3_attention::HcSiteWeights;
 
-fn diag_on() -> bool {
+pub(super) fn diag_on() -> bool {
     std::env::var("ATLAS_DS41_DIAG").is_ok_and(|v| v == "1")
+}
+
+/// `ATLAS_DS41_TRACE=1`, read once: after every layer's attention and MoE
+/// halves, synchronise and log a checksum of the half's output and of the
+/// highway, so two runs of the same request can be diffed to the first
+/// (position, layer, half) where they part. Diagnostics only.
+pub(super) fn trace_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("ATLAS_DS41_TRACE").is_ok_and(|v| v == "1"))
+}
+
+/// FNV-1a over `bytes` device bytes at `p` (synchronises).
+pub(super) fn trace_hash(gpu: &dyn GpuBackend, p: DevicePtr, bytes: usize) -> u64 {
+    let mut b = vec![0u8; bytes];
+    if gpu.copy_d2h(p, &mut b).is_err() {
+        return 0;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
 }
 
 /// RMS of the first `n` f32 values at `p` (diagnostics only, synchronises).
@@ -32,7 +54,7 @@ fn diag_rms_f32(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32 {
     (v.iter().map(|x| x * x).sum::<f32>() / n.max(1) as f32).sqrt()
 }
 
-fn diag_rms_bf16(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32 {
+pub(super) fn diag_rms_bf16(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32 {
     let mut b = vec![0u8; n * 2];
     if gpu.copy_d2h(p, &mut b).is_err() {
         return f32::NAN;
@@ -45,93 +67,7 @@ fn diag_rms_bf16(gpu: &dyn GpuBackend, p: DevicePtr, n: usize) -> f32 {
 }
 
 impl DeepSeekV41Layer {
-    fn mixes(
-        &self,
-        gpu: &dyn GpuBackend,
-        site: &HcSiteWeights,
-        streams: DevicePtr,
-        pre: DevicePtr,
-        post: DevicePtr,
-        comb: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        let rt = &self.rt;
-        let mix_hc = (2 + rt.hc_mult) * rt.hc_mult;
-        // one block per (token, mix) for the 24 dot products over hc * H, then
-        // the tiny epilogue; bit-identical to the one-block hc_v41_mixes
-        KernelLaunch::new(gpu, self.k_mixes_dot)
-            .grid([m as u32, mix_hc as u32, 1])
-            .block([256, 1, 1])
-            .arg_ptr(streams)
-            .arg_ptr(site.hc_fn)
-            .arg_ptr(rt.mixes_s)
-            .arg_u32(rt.hidden as u32)
-            .arg_u32(rt.hc_mult as u32)
-            .arg_f32(rt.norm_eps)
-            .launch(stream)?;
-        KernelLaunch::new(gpu, self.k_mixes_finish)
-            .grid([m as u32, 1, 1])
-            .block([32, 1, 1])
-            .arg_ptr(rt.mixes_s)
-            .arg_ptr(site.hc_scale)
-            .arg_ptr(site.hc_base)
-            .arg_ptr(pre)
-            .arg_ptr(post)
-            .arg_ptr(comb)
-            .arg_u32(rt.hc_mult as u32)
-            .arg_u32(rt.sinkhorn_iters as u32)
-            .arg_f32(rt.hc_eps)
-            .launch(stream)
-    }
-
-    fn collapse(
-        &self,
-        gpu: &dyn GpuBackend,
-        streams: DevicePtr,
-        pre: DevicePtr,
-        y: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        KernelLaunch::new(gpu, self.k_collapse)
-            .grid([m as u32, 1, 1])
-            .block([256, 1, 1])
-            .arg_ptr(streams)
-            .arg_ptr(pre)
-            .arg_ptr(y)
-            .arg_u32(self.rt.hidden as u32)
-            .arg_u32(self.rt.hc_mult as u32)
-            .launch(stream)
-    }
-
-    fn hc_post(
-        &self,
-        gpu: &dyn GpuBackend,
-        block_out: DevicePtr,
-        streams: DevicePtr,
-        post: DevicePtr,
-        comb: DevicePtr,
-        m: usize,
-        stream: u64,
-    ) -> Result<()> {
-        ops::hc_post(
-            gpu,
-            self.k_hc_post,
-            block_out,
-            streams,
-            post,
-            comb,
-            streams,
-            m as u32,
-            self.rt.hidden as u32,
-            self.rt.hc_mult as u32,
-            stream,
-        )
-    }
-
-    /// The token ids of this step, for the engram hash.
-    fn step_token_ids(&self, ctx: &ForwardContext, m: usize) -> Result<Vec<u32>> {
+    pub(super) fn step_token_ids(&self, ctx: &ForwardContext, m: usize) -> Result<Vec<u32>> {
         if let Some(ids) = ctx.host_token_ids {
             ensure!(
                 ids.len() >= m,
@@ -151,7 +87,7 @@ impl DeepSeekV41Layer {
             .collect())
     }
 
-    fn engram(
+    pub(super) fn engram(
         &self,
         hi: usize,
         streams: DevicePtr,
@@ -180,7 +116,7 @@ impl DeepSeekV41Layer {
         let mut raw = vec![0u8; row_ids.len() * ENGRAM_ROW_BYTES];
         rt.rows.read_rows(self.idx, &row_ids, &mut raw)?;
         let engram = rt.engram.lock().unwrap();
-        engram.rows_from_q2k(gpu, &raw, row_ids.len(), stream)?;
+        engram.rows_from_q2k(gpu, Some(self.idx), &raw, row_ids.len(), stream)?;
         engram.apply(gpu, self.idx, streams, m, stream)
     }
 
@@ -211,6 +147,9 @@ impl DeepSeekV41Layer {
             .context("deepseek-v4.1 layer given a foreign state")?;
         let streams = ctx.buffers.hc_streams();
         let (h, hc) = (rt.hidden, rt.hc_mult);
+        if step_graph_on() {
+            self.note_window(st.attn.window());
+        }
 
         if self.idx == 0 {
             if start_pos == 0 {
@@ -219,6 +158,9 @@ impl DeepSeekV41Layer {
                 rt.hasher.lock().unwrap().reset();
                 *rt.step_hashes.lock().unwrap() = None;
             }
+            // a new step: the captured step's device-side position and
+            // selection are stale
+            rt.attn.lock().unwrap().invalidate_decode_uploads();
             // the initial pre-mix is one-hot on stream 0
             let mut onehot = vec![0u8; m * hc * 4];
             for t in 0..m {
@@ -242,6 +184,17 @@ impl DeepSeekV41Layer {
             *rt.step_attn_ms.lock().unwrap() = 0.0;
             *rt.step_engram_ms.lock().unwrap() = 0.0;
         }
+        // the whole-step segment graphs: the single-token step at a position
+        // > 0, with the engram rows for every engram layer uploaded up front
+        // by layer 0 (`step_seg.rs`)
+        let seg_mode = step_graph_on()
+            && m == 1
+            && start_pos > 0
+            && !gpu.debug_sync_kernels()
+            && !rt.seg.lock().unwrap().disabled;
+        if seg_mode {
+            return self.step_seg(hidden, start_pos, st, ctx, stream);
+        }
         let te = std::time::Instant::now();
         if let Some(hi) = self.engram_index
             && !std::env::var("ATLAS_DS41_NO_ENGRAM").is_ok_and(|v| v == "1")
@@ -259,18 +212,113 @@ impl DeepSeekV41Layer {
             );
         }
 
+        // the single-token step at a position > 0 is the captured one; prefill
+        // (m > 1, or the one-token prompt at position 0) stays eager
+        let mode = graph_mode();
+        let graph = mode != GraphMode::Off && m == 1 && start_pos > 0 && !gpu.debug_sync_kernels();
+        match (graph, mode) {
+            (false, _) => self.step_eager(hidden, m, start_pos, st, ctx, stream),
+            (true, GraphMode::Oracle) => self.step_oracle(hidden, start_pos, st, ctx, stream),
+            (true, _) => self.step_graph(hidden, start_pos, st, ctx, stream),
+        }
+    }
+
+    /// `ATLAS_DS41_PREDICT_TRACE`: before this layer's routing, run its
+    /// router on the MoE inputs of layers L-1 and L-2 (kept in `rt.pred_x`),
+    /// keep the 12 best of each, note which of the layer's experts are
+    /// resident now, then save this layer's input for the layers after it.
+    /// Diagnostics: synchronises twice a layer.
+    #[allow(clippy::type_complexity)]
+    pub(super) fn predict_before_moe(
+        &self,
+        gpu: &dyn GpuBackend,
+        normed: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        stream: u64,
+    ) -> Result<Option<(Vec<bool>, Vec<Vec<usize>>)>> {
+        let rt = &self.rt;
+        if m != 1 || start_pos == 0 || rt.pred_trace.lock().unwrap().is_none() {
+            return Ok(None);
+        }
+        let h = rt.hidden;
+        let slot = |l: usize| DevicePtr(rt.pred_x.0 + ((l % 3) * h * 2) as u64);
+        let moe = rt.moe.lock().unwrap();
+        let mut preds = Vec::new();
+        for d in 1..=2 {
+            if self.idx >= d {
+                preds.push(moe.route_predict(gpu, &self.moe_w, slot(self.idx - d), 12, stream)?);
+            }
+        }
+        gpu.copy_d2d_async(normed, slot(self.idx), h * 2, stream)?;
+        let lru = rt.lru.lock().unwrap();
+        let resident: Vec<bool> = (0..rt.moe_cfg.n_routed)
+            .map(|e| lru.contains(self.idx as u32, e as u32))
+            .collect();
+        Ok(Some((resident, preds)))
+    }
+
+    pub(super) fn predict_log(
+        &self,
+        start_pos: usize,
+        resident: &[bool],
+        preds: &[Vec<usize>],
+        actual: &[usize],
+    ) {
+        use std::io::Write;
+        let mut g = self.rt.pred_trace.lock().unwrap();
+        let Some(w) = g.as_mut() else { return };
+        let ids = |v: &[usize]| {
+            v.iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let misses: Vec<usize> = actual.iter().copied().filter(|&e| !resident[e]).collect();
+        let _ = write!(
+            w,
+            "pos={start_pos} L{} act={} miss={}",
+            self.idx,
+            ids(actual),
+            ids(&misses)
+        );
+        for (i, p) in preds.iter().enumerate() {
+            // the prediction, and the part of it a prefetch would have to read
+            let cold: Vec<usize> = p.iter().copied().filter(|&e| !resident[e]).collect();
+            let _ = write!(w, " d{}={} c{}={}", i + 1, ids(p), i + 1, ids(&cold));
+        }
+        let _ = writeln!(w);
+    }
+
+    /// The eager step after the engram: every launch issued from the host,
+    /// the attention and the MoE with their host work inline. This is the
+    /// path `ATLAS_DS41_GRAPH` unset (or `0`) takes, and prefill always.
+    pub(super) fn step_eager(
+        &self,
+        hidden: DevicePtr,
+        m: usize,
+        start_pos: usize,
+        st: &mut V41LayerState,
+        ctx: &ForwardContext,
+        stream: u64,
+    ) -> Result<()> {
+        let rt = &self.rt;
+        let gpu = ctx.gpu;
+        let streams = ctx.buffers.hc_streams();
+        let h = rt.hidden;
+        let diag = diag_on();
+
         // attention
-        self.mixes(
+        self.mixes_collapse(
             gpu,
             &self.hc_attn,
             streams,
             rt.pre_a,
-            rt.post_s,
-            rt.comb_s,
+            rt.pre_prev,
+            hidden,
             m,
             stream,
         )?;
-        self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;
         let normed = ctx.buffers.norm_output();
         ops::rms_norm(
             gpu,
@@ -300,6 +348,16 @@ impl DeepSeekV41Layer {
             run.out
         };
         *rt.step_attn_ms.lock().unwrap() += ta.elapsed().as_secs_f64() * 1e3;
+        if trace_on() {
+            gpu.synchronize(stream)?;
+            tracing::info!(
+                "DS41 trace pos={} L{} attn={:016x} normed={:016x}",
+                start_pos,
+                self.idx,
+                trace_hash(gpu, attn_out, m * h * 2),
+                trace_hash(gpu, normed, m * h * 2)
+            );
+        }
         if diag {
             gpu.synchronize(stream)?;
             tracing::info!(
@@ -310,96 +368,7 @@ impl DeepSeekV41Layer {
                 diag_rms_bf16(gpu, attn_out, h)
             );
         }
-        self.hc_post(gpu, attn_out, streams, rt.post_s, rt.comb_s, m, stream)?;
-
-        // ffn
-        self.mixes(
-            gpu,
-            &self.hc_ffn,
-            streams,
-            rt.pre_f,
-            rt.post_s,
-            rt.comb_s,
-            m,
-            stream,
-        )?;
-        self.collapse(gpu, streams, rt.pre_a, hidden, m, stream)?;
-        ops::rms_norm(
-            gpu,
-            self.k_rms_norm,
-            hidden,
-            &self.ffn_norm,
-            normed,
-            m as u32,
-            h as u32,
-            rt.norm_eps,
-            stream,
-        )?;
-        let moe_out = {
-            let moe = rt.moe.lock().unwrap();
-            let mut lru = rt.lru.lock().unwrap();
-            let (out, _w, _i) = moe.forward(
-                gpu,
-                &self.moe_w,
-                &mut lru,
-                &rt.slices,
-                normed,
-                m,
-                rt.reader_threads,
-                stream,
-            )?;
-            rt.step_moe.lock().unwrap().add(&moe.last.get());
-            out
-        };
-        if diag {
-            gpu.synchronize(stream)?;
-            tracing::info!(
-                "DS41 L{} ffn: in rms {:.4} normed rms {:.4} out rms {:.4}",
-                self.idx,
-                diag_rms_bf16(gpu, hidden, h),
-                diag_rms_bf16(gpu, normed, h),
-                diag_rms_bf16(gpu, moe_out, h)
-            );
-        }
-        self.hc_post(gpu, moe_out, streams, rt.post_s, rt.comb_s, m, stream)?;
-        gpu.copy_d2d_async(rt.pre_f, rt.pre_prev, m * hc * 4, stream)?;
-
-        if self.idx + 1 == rt.n_layers && diag_on() {
-            let total = rt
-                .step_start
-                .lock()
-                .unwrap()
-                .map(|t| t.elapsed().as_secs_f64() * 1e3)
-                .unwrap_or(0.0);
-            let mo = *rt.step_moe.lock().unwrap();
-            // one guard at a time: two `lru.lock()` temporaries in a single
-            // statement deadlock on the std Mutex (the first guard lives to the
-            // end of the statement)
-            let (resident, n_slots) = {
-                let lru = rt.lru.lock().unwrap();
-                (lru.resident(), lru.n_slots())
-            };
-            let attn_ms = *rt.step_attn_ms.lock().unwrap();
-            let engram_ms = *rt.step_engram_ms.lock().unwrap();
-            tracing::info!(
-                "DS41 step: {m} tok pos {start_pos}: total {total:.0} ms = attn {:.0} + engram {:.0} + moe(route {:.0} fetch {:.0} compute {:.0}) ms; experts hit {} miss {} read {:.2} GiB; cache {}/{} resident",
-                attn_ms,
-                engram_ms,
-                mo.route_ms,
-                mo.fetch_ms,
-                mo.compute_ms,
-                mo.hits,
-                mo.misses,
-                mo.bytes_read as f64 / 1073741824.0,
-                resident,
-                n_slots
-            );
-        }
-        if self.idx + 1 == rt.n_layers {
-            // no learned head on V4.1: the final collapse uses the last ffn pre
-            self.collapse(gpu, streams, rt.pre_prev, hidden, m, stream)?;
-            gpu.synchronize(stream)?;
-        }
-        Ok(())
+        // the attention's `hc_post` opens the ffn half (`step_ffn.rs`)
+        self.ffn_eager(hidden, m, start_pos, ctx, stream)
     }
 }

@@ -1,0 +1,179 @@
+{
+ "provenance-id": "526f6e616c6420522e205374657369616b",
+ "target": "b200",
+ "arch": "sm_100a",
+ "model_dir": "deepseek-v4-flash",
+ "snapshot_of_commit": "cc06bf548",
+ "generated": "2026-09-19",
+ "note": "Each entry is a symlink into kernels/gb10 (the mechanism this tree uses for every b200 model directory today; check_cross_hardware.py rule S1 forbids NEW cross-hardware symlinks and leaves these standing). The blob and sha256 pin the exact bytes the sm_100a gate compiled.",
+ "files": [
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/KERNEL.toml",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/KERNEL.toml",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/KERNEL.toml",
+   "git_blob_at_cc06bf548": "5411f20f00104161ec24f8895d9e84530b07c082",
+   "sha256": "c69a53a3e66301a7fac7ec2679978fcbb3ef4bbd6a6aeceeccf3d4119f48c15e"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/attn_v41.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/attn_v41.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/attn_v41.cu",
+   "git_blob_at_cc06bf548": "07d3d05f19f574054c0abe6092e5e72115645e2b",
+   "sha256": "5da451fcc4e1114db73fb5d1294e0cddb2289e61e64992d3ce5149dff2628637"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/csa_compress.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/csa_compress.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/csa_compress.cu",
+   "git_blob_at_cc06bf548": "81d8d5ce1c85ad67f5c6d2e7b4e619610800da7e",
+   "sha256": "862c35a514243d1e4f0f5f440e6a535c76e3dbd7fa809e8226a2045cb006ba38"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/engram_v41.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/engram_v41.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/engram_v41.cu",
+   "git_blob_at_cc06bf548": "0e51b8c191708c9466f08c888bd5f417ea5bf3d3",
+   "sha256": "95ff00f333467156b0b15d208fc459ad700636ac9f9f71ba34092686d5fba222"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/grouped_gemm_mla.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/grouped_gemm_mla.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/grouped_gemm_mla.cu",
+   "git_blob_at_cc06bf548": "08e5be2832fade2d3937ba99d36ba709631badf8",
+   "sha256": "be52dc14d164f649c2471c4e8db81488acff297587261373d520bb98504e7731"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/hc_v41.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/hc_v41.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/hc_v41.cu",
+   "git_blob_at_cc06bf548": "7e931d812cb043932a8ed6d6d89e8bde977d70ed",
+   "sha256": "8b47379b37a83265320299a9ed89ecaa9e8581a4ff19186c7f3504591c8bd542"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/hyper_connection.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/hyper_connection.cu",
+   "git_blob_at_cc06bf548": "cef8cce515623bd00d2e584d410922f471451bab",
+   "sha256": "110279d76c403116932853f92619fd512f1136fa6a27fb35739d44b02f5367dc"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/inferspark_prefill_512.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/inferspark_prefill_512.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/inferspark_prefill_512.cu",
+   "git_blob_at_cc06bf548": "0b0a814b2a384acb48d4feac24bdc626945fad61",
+   "sha256": "1649ab41e48b7525505bbfa603a433240d7406f34b11427f9169bff956f3e953"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/kquant_moe.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/kquant_moe.cu",
+   "git_blob_at_cc06bf548": "f9ccfc1ec19367c9bdce12ae0657b389d68ac6bb",
+   "sha256": "cebc958ac6021af85e47cf97615763182fbd9b51f2a9c129cf20d08ccc9ec34a"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_absorbed.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_absorbed.cu",
+   "git_blob_at_cc06bf548": "c27f551128f6aa16802436cfaa3d56ae8f16001f",
+   "sha256": "6d4f1901002c0a25efdcc6f0d65f3820af43499e036fa59f2bbbe56d34315162"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_cache_assemble_fp8.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_cache_assemble_fp8.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_cache_assemble_fp8.cu",
+   "git_blob_at_cc06bf548": "2b0b6000694d007ac1a3c6dc4073219930fe24eb",
+   "sha256": "79c4adfc32bfef3d3803d824cb71ca6dc7dee6cdbb0febd16a63040d02b86d60"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_fused_prefill.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_fused_prefill.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_fused_prefill.cu",
+   "git_blob_at_cc06bf548": "ff31a8dd60119d0de238c4b8d89493133e18f0ed",
+   "sha256": "848509b22e3b2342090558e8dc033532a4c8285b8efb27f92b7496e80e9f266c"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_paged_decode.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_paged_decode.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_paged_decode.cu",
+   "git_blob_at_cc06bf548": "16e279a51a225e38025149d8abd03a1c00122c72",
+   "sha256": "b1f4fee8b6421167dd317cec5b1649e3185ee6a924b0c1827631d039fcb77c3f"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_paged_decode_fp8.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_paged_decode_fp8.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_paged_decode_fp8.cu",
+   "git_blob_at_cc06bf548": "a9d5aeaadc0278f2016cb5cdd74faf23f9de5200",
+   "sha256": "4f64108c63d1d2a52d2081382e06c28f66609cbce58f5876eabfe9aaab5d529e"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/mla_prefill_attn.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/mla_prefill_attn.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/mla_prefill_attn.cu",
+   "git_blob_at_cc06bf548": "852513f3d8f08441334e361a7102748bffb1d185",
+   "sha256": "4781bc4b4331f3381ec9ec2a43fa063c481e9aa0105d33c17f5068bff8b656bb"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/moe_silu_mul.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/moe_silu_mul.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/moe_silu_mul.cu",
+   "git_blob_at_cc06bf548": "d402b6d46473a5b3dee3556ba7ca87c5c3368dc0",
+   "sha256": "8fb636da79beaf29f7392016f37eef07eebb41b75e3e087d118df6b620ef019d"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/moe_v41.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/moe_v41.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/moe_v41.cu",
+   "git_blob_at_cc06bf548": "feb78bdfdd023383775f4fc5dcdccc37e3150162",
+   "sha256": "0f8012e9a57aeff1e2df86e9e638b734a5fe49f31cdf0ac657ae2bd095e93fab"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/moe_w4a16_grouped_gemm.cu",
+   "git_blob_at_cc06bf548": "8f51c2bcebcf374191de8b7831a8b38b57eb82b4",
+   "sha256": "a3012d9bc5763794b7169bbed90ecfb0f546e80b90b304344ae6abc253184832"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_512.cu",
+   "git_blob_at_cc06bf548": "3357de3c26bd21191250938c0838aeed7ea1de4d",
+   "sha256": "1e1d4287b6180309a15f822e2aeaacac3e56efb20f176d40b1a22fc800216d4a"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_fp8_mla.cu",
+   "git_blob_at_cc06bf548": "b1fafab217ec4e5f06e60e544e9b9349061dcfef",
+   "sha256": "05d80cc2d295e913a7da5381c41ebe34b8e2572307939b1fa6cfef04643bec65"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_mla.cu",
+   "git_blob_at_cc06bf548": "74ce31ff64039a5b6c12c8fb9fbbbd2810a4ece7",
+   "sha256": "dce47ff3963249b7fbd2d2afc376425c9fa30d5e468e4cc23d47595b8d79766e"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/paged_decode_attn_nvfp4.cu",
+   "git_blob_at_cc06bf548": "f6b3ffec4ca2cf2cb8e2b2d25d71bdb0c73458e2",
+   "sha256": "2f4ed155a0432189917327c3b5fb2d5c677fcf07f2830a0bad534d7398677d8c"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/prefill_attn_compressed.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/prefill_attn_compressed.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/prefill_attn_compressed.cu",
+   "git_blob_at_cc06bf548": "b51f5f81eda9a136a12544579c5d778c4ebba8bb",
+   "sha256": "0865561e81a66af05ef9e0c3c71d9806a29ed9b58cb71f7a8f262a4b383285c9"
+  },
+  {
+   "path": "kernels/b200/deepseek-v4-flash/nvfp4/w4a16_gemm.cu",
+   "symlink_to": "../../../gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu",
+   "source": "kernels/gb10/deepseek-v4-flash/nvfp4/w4a16_gemm.cu",
+   "git_blob_at_cc06bf548": "5613356224d525cfc89d27ca69d3902f796ebdec",
+   "sha256": "cebe9517580668b9767818b1b25d861f6368740cc15cd9e194ffb7136e3500d9"
+  }
+ ]
+}

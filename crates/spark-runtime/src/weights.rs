@@ -54,6 +54,10 @@ pub enum WeightDtype {
     Q2K,
     /// Raw GGUF `Q3_K` blocks kept on the device (110 bytes per 256 weights).
     Q3K,
+    /// Raw GGUF `Q6_K` blocks kept on the device (210 bytes per 256 weights):
+    /// the DeepSeek-V4.1 output head, run by the K-quant GEMV instead of a
+    /// bf16 expansion (0.82 instead of 2 bytes a weight read every token).
+    Q6K,
 }
 
 impl WeightDtype {
@@ -71,6 +75,7 @@ impl WeightDtype {
             Self::PackedQ2_0 { .. } => 0,
             Self::Q2K => 0,
             Self::Q3K => 0,
+            Self::Q6K => 0,
         }
     }
 
@@ -153,6 +158,7 @@ impl WeightTensor {
             }
             WeightDtype::Q2K => self.num_elements() / 256 * 84,
             WeightDtype::Q3K => self.num_elements() / 256 * 110,
+            WeightDtype::Q6K => self.num_elements() / 256 * 210,
             d => self.num_elements() * d.byte_size(),
         }
     }
@@ -193,7 +199,7 @@ pub struct WeightStore {
 }
 
 mod deferred;
-pub use deferred::DeferredTensor;
+pub use deferred::{DeferHook, DeferredTensor};
 
 impl WeightStore {
     /// Create an empty weight store (for testing).
@@ -382,6 +388,10 @@ pub struct SafetensorsLoader {
     /// OPT-IN: a model that DOES build an MTP head must keep them, so this is
     /// set only where `load_mtp_weights` is known to return `None`.
     pub skip_mtp: bool,
+    /// Tensors the MODEL's weight loader will read from disk itself, so this
+    /// loader must record their location instead of uploading them. See
+    /// [`DeferHook`] for the contract and why a loader asks for it.
+    pub defer: Option<DeferHook>,
 }
 
 impl Default for SafetensorsLoader {
@@ -400,6 +410,7 @@ impl SafetensorsLoader {
             peak_memory_multiplier: None,
             skip_activation_scales: false,
             skip_mtp: false,
+            defer: None,
         }
     }
 
@@ -412,7 +423,18 @@ impl SafetensorsLoader {
             peak_memory_multiplier: None,
             skip_activation_scales: false,
             skip_mtp: false,
+            defer: None,
         }
+    }
+
+    /// Does the model's loader claim this tensor? `false` when no hook is set,
+    /// which is every model but the ones that opt in.
+    ///
+    /// 🪤 Consulted only for tensors `should_skip_tensor` KEPT — deferring a
+    /// tensor this rank was never going to load would put a remote expert's
+    /// location in the store and invite a binder to read it.
+    pub fn is_deferred(&self, name: &str, dtype: WeightDtype) -> bool {
+        self.defer.as_ref().is_some_and(|f| f(name, dtype))
     }
 
     /// Check if a tensor should be skipped under EP.
