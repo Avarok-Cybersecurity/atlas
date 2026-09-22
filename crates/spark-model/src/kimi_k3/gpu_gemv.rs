@@ -116,7 +116,7 @@ pub fn gemv_raw(
     let tag = dtype_tag(dtype)?;
     let x_bytes: Vec<u8> = x.iter().flat_map(|v| v.to_le_bytes()).collect();
     let xin = gpu.alloc(x_bytes.len())?;
-    let yout = gpu.alloc(n * 4)?;
+    let y_out = gpu.alloc(n * 4)?;
     let result = (|| -> Result<Vec<f32>> {
         gpu.copy_h2d(&x_bytes, xin)?;
         KernelLaunch::new(gpu, kernel)
@@ -124,20 +124,20 @@ pub fn gemv_raw(
             .block([128, 1, 1])
             .arg_ptr(xin)
             .arg_ptr(w)
-            .arg_ptr(yout)
+            .arg_ptr(y_out)
             .arg_u32(n as u32)
             .arg_u32(k as u32)
             .arg_u32(tag)
             .launch(stream)?;
         gpu.synchronize(stream)?;
         let mut raw = vec![0u8; n * 4];
-        gpu.copy_d2h(yout, &mut raw)?;
+        gpu.copy_d2h(y_out, &mut raw)?;
         Ok(raw
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
             .collect())
     })();
-    let _ = gpu.free(yout);
+    let _ = gpu.free(y_out);
     let _ = gpu.free(xin);
     let out = result?;
     ensure!(out.iter().all(|v| v.is_finite()), "K3 gpu_gemv nonfinite");

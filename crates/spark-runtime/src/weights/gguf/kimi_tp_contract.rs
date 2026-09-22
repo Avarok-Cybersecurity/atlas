@@ -89,11 +89,15 @@ fn splits_cols_name(name: &str) -> bool {
 fn row_why(name: &str) -> &'static str {
     if name.contains("routed_expert_up") {
         "hidden_over_tp"
-    } else if name.contains("k_b_proj") || name.contains("v_b_proj") || name.contains("q_b_proj") {
-        "heads"
-    } else if name.ends_with(".A_log") || name.contains("dt_bias") || name.contains("conv1d") {
-        "heads"
-    } else if name.contains("b_proj") || name.contains("f_b_proj") {
+    } else if name.contains("k_b_proj")
+        || name.contains("v_b_proj")
+        || name.contains("q_b_proj")
+        || name.ends_with(".A_log")
+        || name.contains("dt_bias")
+        || name.contains("conv1d")
+        || name.contains("b_proj")
+        || name.contains("f_b_proj")
+    {
         "heads"
     } else if name.contains("gate_proj")
         || name.contains("up_proj")

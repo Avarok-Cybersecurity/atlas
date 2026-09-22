@@ -89,10 +89,10 @@ fn dequant_expert_iq2(
 
 /// True when this layer bound IQ2 experts (GGUF keep-packed path).
 pub fn layer_has_iq2(layer: &K3BoundLayer) -> bool {
-    layer
-        .weight_meta
-        .iter()
-        .any(|m| m.name.contains("block_sparse_moe.experts.") && matches!(m.dtype, WeightDtype::Iq2Xs | WeightDtype::Iq3Xxs))
+    layer.weight_meta.iter().any(|m| {
+        m.name.contains("block_sparse_moe.experts.")
+            && matches!(m.dtype, WeightDtype::Iq2Xs | WeightDtype::Iq3Xxs)
+    })
 }
 
 pub fn mix_iq2_experts(

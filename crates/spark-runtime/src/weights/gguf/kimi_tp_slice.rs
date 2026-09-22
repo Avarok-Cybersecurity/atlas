@@ -43,8 +43,15 @@ pub fn slice_rows_packed(
     kind: PackKind,
 ) -> Result<(Vec<u8>, usize, usize)> {
     ensure!(world > 0 && rank < world, "bad TP");
-    ensure!(n % world == 0, "rows {n} not divisible by TP{world}");
-    ensure!(k % kind.qk() == 0, "K={k} not multiple of {}", kind.qk());
+    ensure!(
+        n.is_multiple_of(world),
+        "rows {n} not divisible by TP{world}"
+    );
+    ensure!(
+        k.is_multiple_of(kind.qk()),
+        "K={k} not multiple of {}",
+        kind.qk()
+    );
     let local_n = n / world;
     let row_bytes = (k / kind.qk()) * kind.block_bytes();
     ensure!(raw.len() >= n * row_bytes, "row-packed raw too small");
@@ -65,7 +72,10 @@ pub fn slice_cols_packed(
     kind: PackKind,
 ) -> Result<(Vec<u8>, usize, usize)> {
     ensure!(world > 0 && rank < world, "bad TP");
-    ensure!(k % world == 0, "cols {k} not divisible by TP{world}");
+    ensure!(
+        k.is_multiple_of(world),
+        "cols {k} not divisible by TP{world}"
+    );
     let k_local = k / world;
     let qk = kind.qk();
     let blk = kind.block_bytes();
@@ -73,7 +83,7 @@ pub fn slice_cols_packed(
     let row_bytes_full = full_blocks * blk;
     ensure!(raw.len() >= n * row_bytes_full, "col-packed raw too small");
 
-    if k_local % qk == 0 {
+    if k_local.is_multiple_of(qk) {
         // Block-aligned column memcpy.
         let local_blocks = k_local / qk;
         let row_bytes = local_blocks * blk;

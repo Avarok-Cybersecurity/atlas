@@ -67,8 +67,16 @@ pub fn dequant_iq3_xxs(blk: &[u8], out: &mut [f32]) {
             let g2 = IQ3XXS_GRID[qs[8 * ib32 + 2 * l + 1] as usize].to_le_bytes();
             let group_base = weight_base + l * 8;
             for j in 0..4 {
-                let s0 = if signs & KMASK_IQ2XS[j] != 0 { -1.0 } else { 1.0 };
-                let s1 = if signs & KMASK_IQ2XS[j + 4] != 0 { -1.0 } else { 1.0 };
+                let s0 = if signs & KMASK_IQ2XS[j] != 0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let s1 = if signs & KMASK_IQ2XS[j + 4] != 0 {
+                    -1.0
+                } else {
+                    1.0
+                };
                 out[group_base + j] = db * g1[j] as f32 * s0;
                 out[group_base + 4 + j] = db * g2[j] as f32 * s1;
             }
@@ -77,8 +85,16 @@ pub fn dequant_iq3_xxs(blk: &[u8], out: &mut [f32]) {
 }
 
 /// Dequant a row-major IQ3_XXS tensor (`n * k` weights, `k` multiple of 256).
-pub fn dequant_iq3_xxs_tensor(raw: &[u8], n: usize, k: usize, out: &mut [f32]) -> anyhow::Result<()> {
-    anyhow::ensure!(k > 0 && k % QK == 0, "IQ3_XXS K={k} must be multiple of {QK}");
+pub fn dequant_iq3_xxs_tensor(
+    raw: &[u8],
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        k > 0 && k.is_multiple_of(QK),
+        "IQ3_XXS K={k} must be multiple of {QK}"
+    );
     anyhow::ensure!(out.len() >= n * k, "IQ3_XXS out too small");
     let blocks_per_row = k / QK;
     let row_bytes = blocks_per_row * BLOCK_BYTES;
@@ -107,7 +123,7 @@ pub fn dequant_iq3_xxs_column_cover(
     out: &mut [f32],
 ) -> anyhow::Result<()> {
     anyhow::ensure!(world > 0 && rank < world, "bad TP rank");
-    anyhow::ensure!(full_k % world == 0, "full_k not divisible by TP");
+    anyhow::ensure!(full_k.is_multiple_of(world), "full_k not divisible by TP");
     anyhow::ensure!(k_local == full_k / world, "k_local mismatch");
     anyhow::ensure!(out.len() >= n * k_local, "out too small");
     let k0 = rank * k_local;
@@ -150,7 +166,11 @@ mod tests {
         let mag = 4.0f32;
         let scale = d * 0.25;
         for (i, &v) in out.iter().enumerate() {
-            let sign = if sign0 & KMASK_IQ2XS[i % 8] != 0 { -1.0 } else { 1.0 };
+            let sign = if sign0 & KMASK_IQ2XS[i % 8] != 0 {
+                -1.0
+            } else {
+                1.0
+            };
             let expected = scale * mag * sign;
             assert!((v - expected).abs() < 1e-4, "out[{i}]={v} want {expected}");
         }

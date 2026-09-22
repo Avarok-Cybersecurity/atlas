@@ -314,7 +314,7 @@ pub fn load_pass(
         };
 
         match target {
-                        names::GgufName::Direct(hf_name) => {
+            names::GgufName::Direct(hf_name) => {
                 weights.insert(
                     hf_name.clone(),
                     WeightTensor {
@@ -323,17 +323,17 @@ pub fn load_pass(
                         dtype: WeightDtype::BF16,
                     },
                 );
-                if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3") {
-                    if let Some(stem) = hf_name.strip_suffix("_res_proj.weight") {
-                        weights.insert(
-                            format!("{stem}_res_norm.weight"),
-                            WeightTensor {
-                                ptr: bf16_ptr,
-                                shape: hf_shape,
-                                dtype: WeightDtype::BF16,
-                            },
-                        );
-                    }
+                if matches!(arch, "kimi-k3" | "kimi_k3" | "kimik3")
+                    && let Some(stem) = hf_name.strip_suffix("_res_proj.weight")
+                {
+                    weights.insert(
+                        format!("{stem}_res_norm.weight"),
+                        WeightTensor {
+                            ptr: bf16_ptr,
+                            shape: hf_shape,
+                            dtype: WeightDtype::BF16,
+                        },
+                    );
                 }
             }
             names::GgufName::ExpertStack { layer, proj } => {

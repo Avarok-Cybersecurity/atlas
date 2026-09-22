@@ -5,6 +5,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+#[rustfmt::skip]
 pub static IQ2XS_GRID: [u64; 512] = [
     0x0808080808080808, 0x080808080808082b, 0x0808080808081919, 0x0808080808082b08,
     0x0808080808082b2b, 0x0808080808190819, 0x0808080808191908, 0x080808080819192b,
@@ -136,14 +137,13 @@ pub static IQ2XS_GRID: [u64; 512] = [
     0x2b2b2b2b082b2b08, 0x2b2b2b2b082b2b2b, 0x2b2b2b2b2b190819, 0x2b2b2b2b2b2b2b2b,
 ];
 pub static KSIGNS_IQ2XS: [u8; 128] = [
-    0, 129, 130, 3, 132, 5, 6, 135, 136, 9, 10, 139, 12, 141, 142, 15,
-    144, 17, 18, 147, 20, 149, 150, 23, 24, 153, 154, 27, 156, 29, 30, 159,
-    160, 33, 34, 163, 36, 165, 166, 39, 40, 169, 170, 43, 172, 45, 46, 175,
-    48, 177, 178, 51, 180, 53, 54, 183, 184, 57, 58, 187, 60, 189, 190, 63,
-    192, 65, 66, 195, 68, 197, 198, 71, 72, 201, 202, 75, 204, 77, 78, 207,
-    80, 209, 210, 83, 212, 85, 86, 215, 216, 89, 90, 219, 92, 221, 222, 95,
-    96, 225, 226, 99, 228, 101, 102, 231, 232, 105, 106, 235, 108, 237, 238, 111,
-    240, 113, 114, 243, 116, 245, 246, 119, 120, 249, 250, 123, 252, 125, 126, 255,
+    0, 129, 130, 3, 132, 5, 6, 135, 136, 9, 10, 139, 12, 141, 142, 15, 144, 17, 18, 147, 20, 149,
+    150, 23, 24, 153, 154, 27, 156, 29, 30, 159, 160, 33, 34, 163, 36, 165, 166, 39, 40, 169, 170,
+    43, 172, 45, 46, 175, 48, 177, 178, 51, 180, 53, 54, 183, 184, 57, 58, 187, 60, 189, 190, 63,
+    192, 65, 66, 195, 68, 197, 198, 71, 72, 201, 202, 75, 204, 77, 78, 207, 80, 209, 210, 83, 212,
+    85, 86, 215, 216, 89, 90, 219, 92, 221, 222, 95, 96, 225, 226, 99, 228, 101, 102, 231, 232,
+    105, 106, 235, 108, 237, 238, 111, 240, 113, 114, 243, 116, 245, 246, 119, 120, 249, 250, 123,
+    252, 125, 126, 255,
 ];
 pub static KMASK_IQ2XS: [u8; 8] = [1, 2, 4, 8, 16, 32, 64, 128];
 
@@ -188,8 +188,16 @@ pub fn dequant_iq2_xs(blk: &[u8], out: &mut [f32]) {
 }
 
 /// Dequant an entire row-major IQ2_XS tensor (`n * k` weights, `k` multiple of 256).
-pub fn dequant_iq2_xs_tensor(raw: &[u8], n: usize, k: usize, out: &mut [f32]) -> anyhow::Result<()> {
-    anyhow::ensure!(k > 0 && k % QK == 0, "IQ2_XS K={k} must be multiple of {QK}");
+pub fn dequant_iq2_xs_tensor(
+    raw: &[u8],
+    n: usize,
+    k: usize,
+    out: &mut [f32],
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        k > 0 && k.is_multiple_of(QK),
+        "IQ2_XS K={k} must be multiple of {QK}"
+    );
     anyhow::ensure!(out.len() >= n * k, "IQ2_XS out too small");
     let blocks_per_row = k / QK;
     let row_bytes = blocks_per_row * BLOCK_BYTES;
@@ -219,7 +227,7 @@ pub fn dequant_iq2_xs_column_cover(
     out: &mut [f32],
 ) -> anyhow::Result<()> {
     anyhow::ensure!(world > 0 && rank < world, "bad TP rank");
-    anyhow::ensure!(full_k % world == 0, "full_k not divisible by TP");
+    anyhow::ensure!(full_k.is_multiple_of(world), "full_k not divisible by TP");
     anyhow::ensure!(k_local == full_k / world, "k_local mismatch");
     anyhow::ensure!(out.len() >= n * k_local, "out too small");
     let k0 = rank * k_local;

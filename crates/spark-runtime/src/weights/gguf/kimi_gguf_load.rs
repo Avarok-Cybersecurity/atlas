@@ -70,7 +70,7 @@ fn pack_kind(id: u32) -> Result<PackKind> {
 }
 
 fn q8_to_bf16_bytes(raw: &[u8], n: usize, k: usize) -> Result<Vec<u8>> {
-    ensure!(k % 32 == 0, "Q8_0 K={k} not multiple of 32");
+    ensure!(k.is_multiple_of(32), "Q8_0 K={k} not multiple of 32");
     let mut bits = vec![0u16; n * k];
     dequant_cpu::dequant_to_bf16(GgmlType::Q8_0, raw, n * k, &mut bits)?;
     let mut out = Vec::with_capacity(bits.len() * 2);
@@ -106,7 +106,7 @@ pub(super) fn upload_direct_packed(
                 "{hf_name}: packed TP row slice needs rank >= 2, got {shape:?}"
             );
             ensure!(
-                shape[0] % tp == 0,
+                shape[0].is_multiple_of(tp),
                 "{hf_name}: leading dim {} not divisible by TP{tp}",
                 shape[0]
             );
@@ -172,8 +172,7 @@ pub(super) fn upload_direct_packed(
                 dtype,
             },
         );
-    } else if hf_name.ends_with("output_attn_res_proj.weight") {
-        let stem = &hf_name[..hf_name.len() - "output_attn_res_proj.weight".len()];
+    } else if let Some(stem) = hf_name.strip_suffix("output_attn_res_proj.weight") {
         weights.insert(
             format!("{stem}output_attn_res_norm.weight"),
             WeightTensor {

@@ -277,7 +277,7 @@ where
     let x = rms_norm(&h, &layer.input_norm, eps);
     let mut mix_out = match (&layer.mixer, mixer_state) {
         (MixerW::Kda(w), LayerCache::Kda(state)) => {
-            mixer::kda_mixer(ctx, w, &x, ctx.kda, state, eps, ablation, &mut kda_decode)?
+            mixer::kda_mixer(ctx, w, &x, state, ablation, &mut kda_decode)?
         }
         (MixerW::Mla(w), LayerCache::Mla(kv)) => mixer::mla_mixer(
             ctx,

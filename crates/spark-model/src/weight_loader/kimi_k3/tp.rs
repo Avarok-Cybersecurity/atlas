@@ -207,7 +207,6 @@ fn as_bf16(
     }
 }
 
-
 fn accept_split_kv_b(
     name: &str,
     t: &spark_runtime::weights::WeightTensor,
@@ -237,7 +236,6 @@ fn accept_split_kv_b(
         numel: t.num_elements(),
     })
 }
-
 
 #[cfg(test)]
 mod tests {

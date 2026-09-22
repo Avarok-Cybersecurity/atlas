@@ -15,9 +15,7 @@ use crate::config::parsers::parse_kimi_k3;
 /// Build a validated `kimi_k3` [`ModelConfig`] from Unsloth/llama.cpp K3 GGUF
 /// metadata (`kimi-k3.*` keys).
 pub(super) fn config_from_kimi_k3_gguf(meta: &dyn GgufMeta) -> Result<ModelConfig> {
-    let arch = meta
-        .get_str("general.architecture")
-        .unwrap_or("kimi-k3");
+    let arch = meta.get_str("general.architecture").unwrap_or("kimi-k3");
     let k = |suffix: &str| format!("{arch}.{suffix}");
     let req_u64 = |suffix: &str| -> Result<u64> {
         meta.get_u64(&k(suffix))
@@ -56,9 +54,7 @@ pub(super) fn config_from_kimi_k3_gguf(meta: &dyn GgufMeta) -> Result<ModelConfi
     let v_mla = meta
         .get_u64(&k("attention.value_length_mla"))
         .unwrap_or(128) as usize;
-    let k_mla = meta
-        .get_u64(&k("attention.key_length_mla"))
-        .unwrap_or(192) as usize;
+    let k_mla = meta.get_u64(&k("attention.key_length_mla")).unwrap_or(192) as usize;
 
     let kv_flags = meta
         .get_u64_arr(&k("attention.head_count_kv"))

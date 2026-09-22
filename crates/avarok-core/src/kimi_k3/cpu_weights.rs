@@ -423,8 +423,16 @@ fn synth_mla(mla: &MlaConfig, hidden: usize, seed: u32) -> MlaWeights {
         q_b: fill(qk * mla.q_lora_rank, seed, 0.05),
         kv_a: fill(kv_in * hidden, seed + 1, 0.05),
         kv_a_ln: ones(mla.kv_lora_rank),
-        k_b: fill(mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim, seed + 2, 0.05),
-        v_b: fill(mla.heads * mla.v_head_dim * mla.kv_lora_rank, seed + 3, 0.05),
+        k_b: fill(
+            mla.heads * mla.kv_lora_rank * mla.qk_nope_head_dim,
+            seed + 2,
+            0.05,
+        ),
+        v_b: fill(
+            mla.heads * mla.v_head_dim * mla.kv_lora_rank,
+            seed + 3,
+            0.05,
+        ),
         g_proj: fill(dv * hidden, seed + 3, 0.05),
         o_proj: ident(hidden, dv),
     }

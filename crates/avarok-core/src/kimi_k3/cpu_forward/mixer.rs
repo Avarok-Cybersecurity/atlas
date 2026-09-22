@@ -51,15 +51,15 @@ pub(super) fn kda_mixer<F>(
     ctx: &K3LayerCtx<'_>,
     w: &KdaWeights,
     x: &[f32],
-    cfg: &KdaConfig,
     state: &mut KdaState,
-    eps: f32,
     ablation: Ablation,
     kda_decode: &mut F,
 ) -> Result<Vec<f32>>
 where
     F: FnMut(&[f32], &[f32], &[f32], &[f32], &KdaConfig, &mut KdaState) -> Result<Vec<f32>>,
 {
+    let cfg = ctx.kda;
+    let eps = ctx.eps;
     let qdim = cfg.qkv_dim();
     let q = gemv(ctx, "q_proj", &w.q_proj, x, qdim, x.len())?;
     let k = gemv(ctx, "k_proj", &w.k_proj, x, qdim, x.len())?;
